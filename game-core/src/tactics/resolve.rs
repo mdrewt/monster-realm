@@ -546,12 +546,13 @@ pub fn damage_pipeline(
     } else {
         d2.max(1)
     };
-    let (applied, hp_after, stood_ground) = if d3 > 0 && target.first_stand && d3 >= target.cur_hp {
-        (target.cur_hp - 1, 1, true)
-    } else {
-        let applied = d3.min(target.cur_hp);
-        (applied, target.cur_hp - applied, false)
-    };
+    let (applied, hp_after, stood_ground) =
+        if target.first_stand && target.cur_hp > 0 && d3 >= target.cur_hp {
+            (target.cur_hp - 1, 1, true)
+        } else {
+            let applied = d3.min(target.cur_hp);
+            (applied, target.cur_hp - applied, false)
+        };
     PipelineTrace {
         hit: true,
         d0,

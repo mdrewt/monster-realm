@@ -56,7 +56,7 @@ use super::resolve::{
     RollPair, SkillTactics, TacticalEvent, TacticalState, TacticalUnit, TargetResult, UnitKit,
     UnitState,
 };
-use super::tuning::{BattleKind, TacticsTuning};
+use super::tuning::{BattleKind, TacticsTuning, TuningError};
 
 // ===========================================================================
 // Shared fixture builders
@@ -1459,26 +1459,42 @@ fn a_status_lands_only_on_a_clean_surviving_hit_bt2_5() {
     );
 }
 
-/// The status the carried 1v1 `resolve_turn` applies for a skill with `kind`.
-fn carried_status_for(kind: StatusKind) -> StatusEffect {
-    let monster = |species_id: u32| BattleMonster {
-        species_id,
+/// The status the carried 1v1 `resolve_turn` applies to its defender, or `None` when it applies
+/// none: a Water attack-10 attacker uses a Fire power-20 skill applying `kind` (the same numbers
+/// as the tactics fixtures) under `chart` against a Water defender of 100 max HP at
+/// `defender_hp`, with `defender_defense` and the `prior` status.
+fn carried_status(
+    kind: StatusKind,
+    chart: &TypeChart,
+    defender_hp: u16,
+    defender_defense: u16,
+    prior: Option<StatusEffect>,
+) -> Option<StatusEffect> {
+    let attacker = BattleMonster {
+        species_id: 1,
         affinity: Affinity::Water,
         level: 5,
-        current_hp: 500,
-        max_hp: 500,
-        stats: stat_block(500, 10, CHIP_DEF, 50),
+        current_hp: 100,
+        max_hp: 100,
+        stats: stat_block(100, 10, CHIP_DEF, 50),
         known_skill_ids: vec![1],
         status: None,
+    };
+    let defender = BattleMonster {
+        species_id: 2,
+        current_hp: defender_hp,
+        stats: stat_block(100, 10, defender_defense, 40),
+        status: prior,
+        ..attacker.clone()
     };
     let mut battle = BattleState {
         side_a: BattleSide {
             active: 0,
-            team: vec![monster(1)],
+            team: vec![attacker],
         },
         side_b: BattleSide {
             active: 0,
-            team: vec![monster(2)],
+            team: vec![defender],
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
@@ -1506,7 +1522,7 @@ fn carried_status_for(kind: StatusKind) -> StatusEffect {
         TurnChoice::Attack { skill_id: 1 },
         TurnChoice::Pass,
         &[skill],
-        &chart(),
+        chart,
         &variance,
     )
     .into_iter()
@@ -1518,7 +1534,65 @@ fn carried_status_for(kind: StatusKind) -> StatusEffect {
         } => Some(status),
         _ => None,
     })
-    .expect("the carried resolver applies the status")
+}
+
+/// The status the carried resolver applies on a clean chip hit (live chart, 100 HP, no prior).
+fn carried_status_for(kind: StatusKind) -> StatusEffect {
+    carried_status(kind, &chart(), 100, CHIP_DEF, None)
+        .expect("the carried resolver applies the status on a clean hit")
+}
+
+/// BT2.5 (desync guard): the tactics status gate and the carried 1v1 resolver AGREE on whether
+/// a status lands, driven with the same numbers — both apply Burn on a clean surviving hit, and
+/// NEITHER applies one on an immune hit (hand-built immune chart), on a KO (3 HP, lethal
+/// defence), or onto a defender that already has a status.
+/// Kills: a tactics gate that drifts from M14 on any of the three negatives (e.g. a status
+/// applied on an immune hit, onto a fainting target, or stacked over Poison).
+#[test]
+fn the_status_gate_agrees_with_the_carried_resolver_bt2_5() {
+    let burn = SkillTactics {
+        applies_status: Some(StatusKind::Burn),
+        ..light(10, Affinity::Fire, melee())
+    };
+    let live = chart();
+    let immune = immune_chart();
+    let cases = [
+        (
+            "a clean hit",
+            &live,
+            100u16,
+            CHIP_DEF,
+            None,
+            Some(StatusEffect::Burn),
+        ),
+        ("an immune hit", &immune, 100, CHIP_DEF, None, None),
+        ("a KO", &live, 3, LETHAL_DEF, None, None),
+        (
+            "an already-poisoned defender",
+            &live,
+            100,
+            CHIP_DEF,
+            Some(StatusEffect::Poison),
+            None,
+        ),
+    ];
+    for (name, ch, hp, defense, prior, want) in cases {
+        let carried = carried_status(StatusKind::Burn, ch, hp, defense, prior);
+        let (_, events) = status_after(
+            burn.clone(),
+            water(100, defense, 40, vec![]),
+            hp,
+            prior,
+            true,
+            ch,
+        );
+        let tactics = events.iter().find_map(|e| match e {
+            TacticalEvent::StatusApplied { unit: 2, status } => Some(*status),
+            _ => None,
+        });
+        assert_eq!(carried, want, "carried, {name}");
+        assert_eq!(tactics, carried, "tactics vs carried, {name}");
+    }
 }
 
 /// BT2.5 (plan A10): the status a tactics hit applies is the carried M14 one for every
@@ -2551,4 +2625,450 @@ fn a_pvp_double_ko_is_adjudicated_from_the_pre_attack_snapshot_bt2_10() {
     );
     assert_eq!(st.outcome, BattleOutcome::SideBWins);
     assert_eq!(st.attack_damage_dealt, [5, 0]);
+}
+
+// ===========================================================================
+// Round 2 — gaps found by review and red-team
+// ===========================================================================
+
+/// BT2.5 (judgement 5): both rolls are drawn for every target even when the skill cannot miss —
+/// an accuracy-100 Light advances `action_seq` by exactly 2 for one target and by 6 for three,
+/// and each target's damage still comes from the variance of its OWN pair (lethal defence:
+/// damage = 9·v/100 with v the second draw of the pair).
+/// Kills: skipping the accuracy draw when accuracy ≥ 100 (the stream would shift by one per
+/// target, and later targets would read the wrong variance).
+#[test]
+fn a_sure_hit_still_draws_both_rolls_for_every_target_bt2_5() {
+    let mut one = versus(
+        light(10, Affinity::Fire, melee()),
+        water(50, LETHAL_DEF, 40, vec![]),
+        50,
+    );
+    let seq = one.action_seq;
+    let variance = rolls_at(one.seed, seq).variance;
+    let out = strike(&mut one, &chart());
+    assert_eq!(one.action_seq, seq + 2, "one target, two draws");
+    assert_eq!(
+        executed_results(&out)[0].damage,
+        9 * u16::from(variance) / 100
+    );
+
+    let seed = 77;
+    let mut st = state(
+        BattleKind::Pvp,
+        seed,
+        vec![
+            unit(
+                1,
+                Side::A,
+                0,
+                c(3, 1),
+                water(
+                    100,
+                    CHIP_DEF,
+                    50,
+                    vec![light(10, Affinity::Fire, diamond(FfFilter::Enemies, 2))],
+                ),
+                100,
+            ),
+            unit(
+                3,
+                Side::B,
+                0,
+                c(4, 3),
+                water(50, LETHAL_DEF, 40, vec![]),
+                50,
+            ),
+            unit(
+                4,
+                Side::B,
+                1,
+                c(3, 3),
+                water(50, LETHAL_DEF, 30, vec![]),
+                50,
+            ),
+            unit(
+                5,
+                Side::B,
+                2,
+                c(2, 3),
+                water(50, LETHAL_DEF, 20, vec![]),
+                50,
+            ),
+        ],
+    );
+    ready(&mut st, 1);
+    let seq0 = st.action_seq;
+    let out = resolve_attack(&mut st, 1, 10, c(3, 3), &chart(), &design()).expect("a valid AoE");
+    assert_eq!(st.action_seq, seq0 + 6, "three targets, six draws");
+    let got: Vec<(u32, u16)> = executed_results(&out)
+        .iter()
+        .map(|r| (r.unit, r.damage))
+        .collect();
+    let want: Vec<(u32, u16)> = [5u32, 4, 3]
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let v = rolls_at(seed, seq0 + 2 * i as u64).variance;
+            (id, 9 * u16::from(v) / 100)
+        })
+        .collect();
+    assert_eq!(got, want);
+}
+
+/// BT2.10 (a non-square substrate): a 6-wide, 8-high map keeps its own geometry —
+/// `TacticalState::new` copies width 6, height 8, the exact row-major terrain (Rough at (1,2),
+/// Water at (4,5)) and the LoS blockers ((2,6)); `board()` returns them unchanged; a unit at
+/// the far corner (5,7) deploys while (7,5), (6,0) and (0,8) are `BadPosition`; and an AoE
+/// aimed at the corner resolves on both units there.
+/// Kills: width and height transposed in the position check or the stored state; tiles copied
+/// column-major; `blocks_los` dropped or defaulted.
+#[test]
+fn a_non_square_map_keeps_its_own_width_height_and_tiles_bt2_10() {
+    let at = |x: u8, y: u8| usize::from(y) * 6 + usize::from(x);
+    let mut tiles = vec![
+        TileDef {
+            terrain: Terrain::Plain,
+            elevation: 0,
+            blocks_los: false,
+        };
+        48
+    ];
+    tiles[at(1, 2)].terrain = Terrain::Rough;
+    tiles[at(4, 5)].terrain = Terrain::Water;
+    tiles[at(2, 6)].blocks_los = true;
+    let terrain: Vec<Terrain> = tiles.iter().map(|t| t.terrain).collect();
+    let los: Vec<bool> = tiles.iter().map(|t| t.blocks_los).collect();
+    let map = BattleMapDef {
+        width: 6,
+        height: 8,
+        tiles,
+        spawn_a: vec![c(1, 0), c(2, 0), c(3, 0)],
+        spawn_b: vec![c(2, 7), c(3, 7), c(4, 7)],
+    };
+    let attacker = unit(
+        1,
+        Side::A,
+        0,
+        c(5, 6),
+        water(
+            100,
+            CHIP_DEF,
+            50,
+            vec![light(10, Affinity::Fire, diamond(FfFilter::Enemies, 1))],
+        ),
+        100,
+    );
+    let corner = unit(
+        2,
+        Side::B,
+        0,
+        c(5, 7),
+        water(100, CHIP_DEF, 40, vec![]),
+        100,
+    );
+    let beside = unit(
+        3,
+        Side::B,
+        1,
+        c(4, 7),
+        water(100, CHIP_DEF, 30, vec![]),
+        100,
+    );
+    let mut st = TacticalState::new(
+        BattleKind::Pvp,
+        3,
+        &map,
+        vec![attacker.clone(), corner.clone(), beside],
+    )
+    .expect("(5,7) is on a 6-wide, 8-high map");
+    assert_eq!((st.width, st.height), (6, 8));
+    assert_eq!(st.terrain, terrain);
+    assert_eq!(st.blocks_los, los);
+    let board = st.board();
+    assert_eq!((board.width, board.height), (6, 8));
+    assert_eq!(board.terrain, terrain);
+    assert_eq!(board.blocks_los, los);
+    for off_map in [c(7, 5), c(6, 0), c(0, 8)] {
+        let mut stray = corner.clone();
+        stray.pos = off_map;
+        assert_eq!(
+            TacticalState::new(BattleKind::Pvp, 3, &map, vec![attacker.clone(), stray]).err(),
+            Some(DeployError::BadPosition { id: 2 }),
+            "{off_map:?}"
+        );
+    }
+    ready(&mut st, 1);
+    let out = resolve_attack(&mut st, 1, 10, c(5, 7), &chart(), &design())
+        .expect("the far corner is on the board");
+    let hits: Vec<(u32, u16)> = executed_results(&out)
+        .iter()
+        .map(|r| (r.unit, r.damage))
+        .collect();
+    assert_eq!(hits, vec![(3, 1), (2, 1)]);
+    assert_eq!(unit_of(&st, 2).cur_hp, 99);
+}
+
+/// BT2.3 (round-2 contract): a second TurnEnd after a Guard-granting one is a no-op — Guard
+/// stays, `Ok(true)` (an auto-pass included), the state is unchanged — and TurnEnd on a unit
+/// that never started is `Ok(false)` with its idle budget and the state untouched.
+/// Kills: a repeated TurnEnd that recomputes Guard from the idle budget (0 AP) and revokes it;
+/// Guard granted to a unit that never activated.
+#[test]
+fn a_repeated_or_unstarted_turn_end_changes_nothing_bt2_3() {
+    let tu = design();
+    let mut st = duel(BattleKind::Pvp, 3);
+    ready(&mut st, 1);
+    assert_eq!(turn_end(&mut st, 1, TurnEndCause::EndTurn, &tu), Ok(true));
+    let ended = st.clone();
+    assert_eq!(turn_end(&mut st, 1, TurnEndCause::EndTurn, &tu), Ok(true));
+    assert_eq!(turn_end(&mut st, 1, TurnEndCause::AutoPass, &tu), Ok(true));
+    assert_eq!(st, ended);
+    assert_eq!(turn_end(&mut st, 2, TurnEndCause::EndTurn, &tu), Ok(false));
+    assert_eq!(st, ended, "unit 2 never started: nothing changes");
+    let idle = unit_of(&st, 2);
+    assert_eq!((idle.guard, idle.budget), (false, TurnBudget::default()));
+}
+
+/// BT2.3: Guard belongs to the unit that earned it — A's 1 and B's 2 each end Guarded; then A's
+/// 3 starts, Lights B's 4 and ends unguarded, and both Guards still hold; each Guarded unit
+/// takes ×3/4 in the pipeline (a lethal-defence Light at variance 100: d0 9 → d2 6).
+/// Kills: a TurnStart, TurnEnd or attack that clears or recomputes OTHER units' Guard.
+#[test]
+fn guard_belongs_to_the_unit_that_earned_it_bt2_3() {
+    let tu = design();
+    let mut st = state(
+        BattleKind::Pvp,
+        4,
+        vec![
+            unit(
+                1,
+                Side::A,
+                0,
+                c(0, 0),
+                water(50, LETHAL_DEF, 60, vec![]),
+                50,
+            ),
+            unit(
+                3,
+                Side::A,
+                1,
+                c(2, 3),
+                water(100, CHIP_DEF, 50, vec![light(10, Affinity::Fire, melee())]),
+                100,
+            ),
+            unit(
+                2,
+                Side::B,
+                0,
+                c(6, 0),
+                water(50, LETHAL_DEF, 40, vec![]),
+                50,
+            ),
+            unit(
+                4,
+                Side::B,
+                1,
+                c(3, 3),
+                water(100, CHIP_DEF, 30, vec![]),
+                100,
+            ),
+        ],
+    );
+    for id in [1, 2] {
+        ready(&mut st, id);
+        assert_eq!(
+            turn_end(&mut st, id, TurnEndCause::EndTurn, &tu),
+            Ok(true),
+            "unit {id}"
+        );
+    }
+    ready(&mut st, 3);
+    resolve_attack(&mut st, 3, 10, c(3, 3), &chart(), &tu).expect("A's 3 Lights B's 4");
+    assert_eq!(turn_end(&mut st, 3, TurnEndCause::EndTurn, &tu), Ok(false));
+    assert!(unit_of(&st, 1).guard, "A's Guard survives");
+    assert!(unit_of(&st, 2).guard, "B's Guard survives");
+    assert!(!unit_of(&st, 3).guard);
+    let striker = unit(
+        9,
+        Side::A,
+        2,
+        c(5, 0),
+        water(100, CHIP_DEF, 10, vec![]),
+        100,
+    );
+    for id in [1, 2] {
+        let trace = damage_pipeline(
+            &striker,
+            unit_of(&st, id),
+            &light(10, Affinity::Fire, melee()),
+            &chart(),
+            false,
+            SURE,
+            &tu,
+        );
+        assert_eq!((trace.d0, trace.d2, trace.d3), (9, 6, 6), "unit {id}");
+    }
+}
+
+/// BT2.10 (hostile state): `resolve_attack` validates the tuning FIRST — a zero Guard
+/// denominator, a zero flank denominator and a zero AP turn are each `Tuning(..)`, ahead of
+/// every other check (even a 0-HP actor) — with the state byte-identical and nothing drawn.
+/// Kills: an unvalidated tuning reaching `apply_guard`/`apply_flank` (a divide-by-zero panic);
+/// the tuning checked after the actor.
+#[test]
+fn an_unusable_tuning_is_refused_before_anything_else_bt2_10() {
+    type Edit = fn(&mut TacticsTuning);
+    let cases: [(Edit, TuningError); 3] = [
+        (|t| t.guard_den = 0, TuningError::ZeroGuardDen),
+        (|t| t.flank_den = 0, TuningError::ZeroFlankDen),
+        (|t| t.ap_turn = 0, TuningError::ZeroApTurn),
+    ];
+    for (edit, want) in cases {
+        let bad = perturb(edit);
+        let mut st = duel(BattleKind::Pvp, 5);
+        ready(&mut st, 1);
+        for actor_hp in [100u16, 0] {
+            st.unit_mut(1).expect("unit 1").cur_hp = actor_hp;
+            let before = st.clone();
+            assert_eq!(
+                resolve_attack(&mut st, 1, 10, c(3, 3), &chart(), &bad),
+                Err(ResolveError::Tuning(want)),
+                "actor at {actor_hp} HP"
+            );
+            assert_eq!(st, before, "{want:?} must leave the battle byte-identical");
+        }
+    }
+}
+
+/// BT2.10 (hostile state): a unit hand-edited past `TacticalState::new` is refused as `BadUnit`
+/// with the state byte-identical and nothing drawn — the actor (checked after can-act and
+/// BEFORE its skill), and every target in target order (checked after geometry and BEFORE the
+/// AP): the first bad target in (y, x, id) order is the one named.
+/// Kills: `calc_damage` reached with defence 0; an over-max actor resolving; targets left
+/// unchecked; targets checked in units or id order.
+#[test]
+fn a_hand_edited_invalid_unit_is_refused_untouched_bt2_10() {
+    let started = || {
+        let mut st = duel(BattleKind::Pvp, 5);
+        ready(&mut st, 1);
+        st
+    };
+    let mut soft = started();
+    soft.unit_mut(2).expect("unit 2").kit.stats.defense = 0;
+    assert_rejected(
+        soft,
+        1,
+        10,
+        c(3, 3),
+        ResolveError::BadUnit(DeployError::ZeroDefense { id: 2 }),
+    );
+    let mut swollen = started();
+    swollen.unit_mut(1).expect("unit 1").cur_hp = 101;
+    let over = ResolveError::BadUnit(DeployError::HpAboveMax {
+        id: 1,
+        cur_hp: 101,
+        max_hp: 100,
+    });
+    assert_rejected(swollen.clone(), 1, 10, c(3, 3), over);
+    assert_rejected(swollen, 1, 99, c(3, 3), over);
+
+    let mut idle_soft = duel(BattleKind::Pvp, 5);
+    idle_soft.unit_mut(2).expect("unit 2").kit.stats.defense = 0;
+    assert_rejected(
+        idle_soft.clone(),
+        1,
+        10,
+        c(5, 3),
+        ResolveError::Geometry(GeometryError::OutOfRange { distance: 3 }),
+    );
+    assert_rejected(
+        idle_soft,
+        1,
+        10,
+        c(3, 3),
+        ResolveError::BadUnit(DeployError::ZeroDefense { id: 2 }),
+    );
+
+    let mut st = state(
+        BattleKind::Pvp,
+        5,
+        vec![
+            unit(
+                1,
+                Side::A,
+                0,
+                c(3, 1),
+                water(
+                    100,
+                    CHIP_DEF,
+                    50,
+                    vec![light(10, Affinity::Fire, diamond(FfFilter::Enemies, 2))],
+                ),
+                100,
+            ),
+            unit(
+                4,
+                Side::B,
+                0,
+                c(4, 3),
+                water(100, CHIP_DEF, 40, vec![]),
+                100,
+            ),
+            unit(
+                5,
+                Side::B,
+                1,
+                c(2, 3),
+                water(100, CHIP_DEF, 30, vec![]),
+                100,
+            ),
+            unit(
+                6,
+                Side::B,
+                2,
+                c(3, 3),
+                water(100, CHIP_DEF, 20, vec![]),
+                100,
+            ),
+        ],
+    );
+    ready(&mut st, 1);
+    st.unit_mut(4).expect("unit 4").kit.stats.defense = 0;
+    st.unit_mut(5).expect("unit 5").cur_hp = 101;
+    assert_rejected(
+        st,
+        1,
+        10,
+        c(3, 3),
+        ResolveError::BadUnit(DeployError::HpAboveMax {
+            id: 5,
+            cur_hp: 101,
+            max_hp: 100,
+        }),
+    );
+}
+
+/// BT2.10 (hostile state, round-2 contract): `damage_pipeline` against a target already at
+/// 0 HP with First-Stand still set never saves or revives it — applied 0, hp_after 0, no
+/// StoodGround — and never panics.
+/// Kills: a save that computes `cur_hp − 1` on a corpse (an underflow panic) or lifts it to 1 HP.
+#[test]
+fn the_pipeline_never_revives_a_zero_hp_target_bt2_10() {
+    let mut corpse = plant_target(14);
+    corpse.cur_hp = 0;
+    assert!(corpse.first_stand);
+    let trace = damage_pipeline(
+        &fire_attacker(),
+        &corpse,
+        &fire40(),
+        &chart(),
+        false,
+        SURE,
+        &design(),
+    );
+    assert_eq!(
+        (trace.hit, trace.applied, trace.hp_after, trace.stood_ground),
+        (true, 0, 0, false)
+    );
 }

@@ -10,6 +10,8 @@
 //! loses — so the player side (A) loses a wild mutual wipe. `BattleOutcome` gains NO variant:
 //! outcomes stay `SideAWins | SideBWins | Fled`.
 
+use std::cmp::Ordering;
+
 use serde::{Deserialize, Serialize};
 
 use crate::combat::types::BattleOutcome;
@@ -79,31 +81,34 @@ pub fn adjudicate(
     seed: u64,
     round: u16,
 ) -> (Side, Adjudication) {
-    let higher = |a: u32, b: u32| if a > b { Side::A } else { Side::B };
-    if snap.hp_pct[0] != snap.hp_pct[1] {
-        return (
-            higher(snap.hp_pct[0], snap.hp_pct[1]),
-            Adjudication::HpPercent,
-        );
-    }
-    if snap.conscious[0] != snap.conscious[1] {
-        return (
-            higher(u32::from(snap.conscious[0]), u32::from(snap.conscious[1])),
-            Adjudication::Conscious,
-        );
-    }
-    if attack_damage_dealt[0] != attack_damage_dealt[1] {
-        return (
-            higher(attack_damage_dealt[0], attack_damage_dealt[1]),
-            Adjudication::DamageDealt,
-        );
-    }
-    let coin = if splitmix64(seed ^ u64::from(round)) & 1 == 0 {
-        Side::A
-    } else {
-        Side::B
+    let decide = |a: u32, b: u32, why: Adjudication| match a.cmp(&b) {
+        Ordering::Greater => Some((Side::A, why)),
+        Ordering::Less => Some((Side::B, why)),
+        Ordering::Equal => None,
     };
-    (coin, Adjudication::Coin)
+    decide(snap.hp_pct[0], snap.hp_pct[1], Adjudication::HpPercent)
+        .or_else(|| {
+            decide(
+                u32::from(snap.conscious[0]),
+                u32::from(snap.conscious[1]),
+                Adjudication::Conscious,
+            )
+        })
+        .or_else(|| {
+            decide(
+                attack_damage_dealt[0],
+                attack_damage_dealt[1],
+                Adjudication::DamageDealt,
+            )
+        })
+        .unwrap_or_else(|| {
+            let coin = if splitmix64(seed ^ u64::from(round)) & 1 == 0 {
+                Side::A
+            } else {
+                Side::B
+            };
+            (coin, Adjudication::Coin)
+        })
 }
 
 /// The KO sweep, once for every cause: each unit with `state == Active` and `cur_hp == 0` (in the

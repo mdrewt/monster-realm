@@ -30,7 +30,28 @@
 //!
 //! So `Rolls { seed 0, seq 0 }` draws x = 0 then x = 1 → (35, 85 + 1 = 86); `{ seed 2, seq 2 }`
 //! draws 2^2 = 0 then 2^3 = 1 → (35, 86) again (an additive `seed + seq` would not); `{ seed 7,
-//! seq 6 }` draws 7^6 = 1 then 7^7 = 0 → (65, 85 + 15 = 100). Priority seeds 24 301 (0x5EED),
+//! seq 6 }` draws 7^6 = 1 then 7^7 = 0 → (65, 85 + 15 = 100).
+//!
+//! `Rolls { seed 5, seq 9, draws 3 }` draws x = 5^9, 5^10, …, 5^14 = 12, 15, 14, 9, 8, 11. For
+//! a small x the first step is linear: x + γ differs from γ = 0x9E37_79B9_7F4A_7C15 only in its
+//! low byte, so after `^ (>> 30)` the state is v(0) + b with b = (0x15 + x) ^ 0xE5, and the first
+//! product is w(x) = w(0) + (b − 0xF0)·C1, w(0) = 0x6F68_261B_57E7_A770 (the x = 0 step that
+//! reproduces 0xE220_A839_7B1D_CDAF, and x = 1 the 0x910A… value). Worked by hand from there:
+//!
+//! ```text
+//! x  b     w(x)                    splitmix64(x)            used
+//! 12 0xC4  0x8C3B_DF5A_6090_2BA4   0x943F_F9FC_99DE_8F03    mod 100 = 23
+//! 15 0xC1  0x4E33_0913_09E1_7A79   …… low nibble 5          mod 16  = 5  → 90
+//! 14 0xC6  0x0AEC_6E34_9A59_F716   0x6AA9_D614_35DB_E63E    mod 100 = 38
+//!  9 0xFB  0xA833_37CB_95BD_8663   …… low nibble 4          mod 16  = 4  → 89
+//!  8 0xF8  0x6A2A_6184_3F0E_D538   0x9E56_51B0_EF95_3636    mod 100 = 22
+//! 11 0xC5  0x4B94_26C7_7D75_115D   …… low nibble 13         mod 16  = 13 → 98
+//! ```
+//!
+//! (for the three variance draws only z mod 2^35 of the second product is needed: the output's
+//! low nibble is z's bits 0..3 XOR bits 31..34) → `[(23, 90), (38, 89), (22, 98)]`.
+//!
+//! Priority seeds 24 301 (0x5EED),
 //! 24 300 (0x5EEC) and 24 299 (0x5EEB) salt to x = 0, 1 and 6 (B, B, A); 6 637 398 714
 //! (0x1_8B9E_AABA) salts to 0x1_8B9E_F457 (A). Adjudication coins use seed ^ round = 0, 6, 1
 //! and 0x1_8B9E_F457 (seed 6 637 417 560, round 15).
@@ -71,7 +92,7 @@ const FIXTURE: &str = include_str!("../../tests/fixtures/tactics_golden.json");
 
 /// The pinned size of the fixture. Growing it (BT2.5, BT4.8, BT11.7 join the harness) is a
 /// deliberate edit here AND in the vitest.
-const CASE_COUNT: usize = 285;
+const CASE_COUNT: usize = 286;
 /// Cases that must come back `BadCase`: a malformed board (no rows / too large / ragged / bad
 /// glyph) or, since bt-2, a Pipeline unit that fails `validate_unit`.
 const BAD_CASE_COUNT: usize = 17;

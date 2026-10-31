@@ -471,8 +471,11 @@ fn each_frozen_unit_draws_one_thaw_roll_in_initiative_order_bt2_7() {
 
 /// BT2.7 (plan A10): `status_tick_damage` equals the `StatusDamage.amount` the carried public
 /// `apply_post_turn_effects` deals for every max_hp in 1..=65 535 — Poison and Burn — and both
-/// tick nothing for Paralysis, Sleep and Freeze.
-/// Kills: a re-stated DoT that drifts from M14 (wrong divisor, no min 1, a ceiling).
+/// tick nothing for Paralysis, Sleep and Freeze. At 1 HP left the carried DoT still reports its
+/// FULL amount (not the 1 HP it can remove), and so do `status_tick_damage` and the upkeep's
+/// `StatusTick` event, for a sample of max_hp values.
+/// Kills: a re-stated DoT that drifts from M14 (wrong divisor, no min 1, a ceiling); a tick
+/// amount clamped to the HP left.
 #[test]
 fn status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7() {
     let monster = |max_hp: u16| BattleMonster {
@@ -533,6 +536,86 @@ fn status_tick_damage_is_the_carried_dot_for_every_max_hp_bt2_7() {
             );
         }
     }
+    for status in [StatusEffect::Poison, StatusEffect::Burn] {
+        let store = BattleStatusStore {
+            side_a: vec![Some(status)],
+            side_b: vec![None],
+        };
+        for max_hp in [1u16, 2, 7, 8, 9, 15, 16, 17, 100, 255, 256, 1_000, 65_535] {
+            {
+                let m = battle.side_a.active_monster_mut();
+                m.max_hp = max_hp;
+                m.current_hp = 1;
+            }
+            battle.outcome = BattleOutcome::Ongoing;
+            let carried = apply_post_turn_effects(&mut battle, &store)
+                .into_iter()
+                .find_map(|e| match e {
+                    BattleEvent::StatusDamage {
+                        side: SideId::SideA,
+                        amount,
+                    } => Some(amount),
+                    _ => None,
+                });
+            assert!(
+                carried.is_some(),
+                "{status:?} at max_hp {max_hp}, 1 HP left"
+            );
+            assert_eq!(
+                status_tick_damage(&status, max_hp),
+                carried,
+                "{status:?} at max_hp {max_hp}, 1 HP left"
+            );
+            let mut st = state(
+                BattleKind::Pvp,
+                1,
+                vec![
+                    sick(body(1, Side::A, 0, max_hp, 1, 50), status),
+                    body(2, Side::B, 0, 100, 100, 40),
+                ],
+            );
+            let ticked = carried.map(|amount| TacticalEvent::StatusTick {
+                unit: 1,
+                status,
+                amount,
+            });
+            assert_eq!(
+                run_upkeep(&mut st, &design()).first(),
+                ticked.as_ref(),
+                "{status:?} at max_hp {max_hp}, 1 HP left"
+            );
+            assert_eq!(unit_of(&st, 1).cur_hp, 0);
+        }
+    }
+}
+
+/// BT2.7: the round cap is a WILD rule — with `wild_round_cap` perturbed to 3, a Pvp and a
+/// Practice battle at round 3 carry on to round 4, while a wild battle at round 3 auto-flees
+/// (`Fled` by `RoundCap`) and stays at round 3.
+/// Kills: the cap applied to every battle kind, or keyed on `uses_pvp_rules` the wrong way.
+#[test]
+fn only_a_wild_battle_flees_at_a_perturbed_round_cap_bt2_7() {
+    let cap3 = perturb(|t| t.wild_round_cap = 3);
+    for kind in [BattleKind::Pvp, BattleKind::Practice] {
+        let mut st = duel(kind, 1);
+        st.round = 3;
+        assert!(run_upkeep(&mut st, &cap3).is_empty(), "{kind:?}");
+        assert_eq!(
+            (st.round, st.outcome),
+            (4, BattleOutcome::Ongoing),
+            "{kind:?}"
+        );
+    }
+    let mut wild = duel(BattleKind::Wild, 1);
+    wild.round = 3;
+    assert_eq!(
+        run_upkeep(&mut wild, &cap3),
+        vec![TacticalEvent::BattleEnd {
+            outcome: BattleOutcome::Fled,
+            how: BattleEndHow::RoundCap
+        }]
+    );
+    assert_eq!((wild.round, wild.outcome), (3, BattleOutcome::Fled));
 }
 
 /// BT2.7 (plan A12): a wild battle auto-flees at the round cap — round 29's upkeep advances to

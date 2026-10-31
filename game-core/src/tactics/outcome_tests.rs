@@ -17,7 +17,7 @@ use super::outcome::{
     adjudicate, check_battle_end, end_battle, settle, sweep_kos, Adjudication, BattleEndHow,
     StepSnapshot,
 };
-use super::resolve::{resolve_attack, TacticalEvent, UnitState};
+use super::resolve::{can_act, resolve_attack, ActError, TacticalEvent, UnitState};
 use super::resolve_tests::{
     c, chart, coin, design, diamond, duel, heavy, ready, state, unit, unit_of, water, CHIP_DEF,
     LETHAL_DEF,
@@ -456,4 +456,76 @@ fn the_ko_sweep_touches_only_active_units_at_zero_hp_bt2_10() {
     assert_eq!(sweep_kos(&mut st), vec![TacticalEvent::Ko { unit: 1 }]);
     assert_eq!(unit_of(&st, 2).state, UnitState::Recruited);
     assert_eq!(unit_of(&st, 3).state, UnitState::Active);
+}
+
+// ===========================================================================
+// Round 2 — gaps found by review and red-team
+// ===========================================================================
+
+/// BT2.10: a recruit removal empties a side just like a KO — with B's LAST unit set Recruited
+/// (its HP left at 100), `can_act` reports it Recruited, the battle-end check treats it as not
+/// alive (A wins by `SideEmpty`), and `settle` ends the battle for A without re-fainting the
+/// recruit or touching its HP.
+/// Kills: "alive" read from `cur_hp` alone (a recruited enemy with HP would keep the battle
+/// going); the sweep re-fainting a recruit.
+#[test]
+fn a_recruited_last_enemy_empties_its_side_bt2_10() {
+    let mut st = duel(BattleKind::Wild, 1);
+    let snap = StepSnapshot::capture(&st);
+    st.unit_mut(2).expect("unit 2").state = UnitState::Recruited;
+    assert_eq!(can_act(&st, 2), Err(ActError::Recruited(2)));
+    assert_eq!(
+        check_battle_end(&st, &snap),
+        Some((BattleOutcome::SideAWins, BattleEndHow::SideEmpty))
+    );
+    assert_eq!(
+        settle(&mut st, &snap),
+        vec![TacticalEvent::BattleEnd {
+            outcome: BattleOutcome::SideAWins,
+            how: BattleEndHow::SideEmpty
+        }]
+    );
+    assert_eq!(st.outcome, BattleOutcome::SideAWins);
+    let recruit = unit_of(&st, 2);
+    assert_eq!((recruit.state, recruit.cur_hp), (UnitState::Recruited, 100));
+}
+
+/// BT2.9: a decided battle is settled once — a second `settle` emits nothing and changes
+/// nothing, `end_battle` on it leaves the outcome as decided, and even a later 0-HP winner never
+/// produces a second `BattleEnd` or a new outcome.
+/// Kills: a settle that re-runs the battle-end check on a finished battle (a second BattleEnd,
+/// or the winner overwritten by a later wipe).
+#[test]
+fn a_decided_battle_is_never_settled_twice_bt2_9() {
+    let mut st = duel(BattleKind::Pvp, 1);
+    let snap = StepSnapshot::capture(&st);
+    st.unit_mut(2).expect("unit 2").cur_hp = 0;
+    assert_eq!(
+        settle(&mut st, &snap),
+        vec![
+            TacticalEvent::Ko { unit: 2 },
+            TacticalEvent::BattleEnd {
+                outcome: BattleOutcome::SideAWins,
+                how: BattleEndHow::SideEmpty
+            },
+        ]
+    );
+    let decided = st.clone();
+    assert!(settle(&mut st, &snap).is_empty());
+    assert_eq!(st, decided);
+    let _ = end_battle(
+        &mut st,
+        BattleOutcome::SideBWins,
+        BattleEndHow::Adjudicated(Adjudication::Coin),
+    );
+    assert_eq!(st.outcome, BattleOutcome::SideAWins);
+    st.unit_mut(1).expect("unit 1").cur_hp = 0;
+    let late = settle(&mut st, &snap);
+    assert!(
+        !late
+            .iter()
+            .any(|e| matches!(e, TacticalEvent::BattleEnd { .. })),
+        "{late:?}"
+    );
+    assert_eq!(st.outcome, BattleOutcome::SideAWins);
 }

@@ -27,7 +27,7 @@ const FIXTURE_PATH = path.join(
 );
 
 /** The pinned fixture size (keep equal to CASE_COUNT in golden_tests.rs). */
-const CASE_COUNT = 285;
+const CASE_COUNT = 286;
 /** Cases that must come back as `{"BadCase": "<text>"}`: malformed boards, invalid Pipeline units. */
 const BAD_CASE_COUNT = 17;
 /** U+00E9, built from its code point (never a pasted or escaped literal). */
