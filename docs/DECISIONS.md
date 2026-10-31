@@ -192,9 +192,12 @@ as integer codes.
 **Why.** Whether a READY plan exists is the one fact an opponent could act on (design
 §6.3), so it must not be derivable from any participant-visible row: the queue is
 owner-only and the unit row has no flag for it. The seed replays every roll; the wild
-seeds rebuild a recruited wild. Transcripts are deleted 24 h after a battle and the
-summary is aggregate telemetry, so an export would copy either nothing durable or no
-personal data. `battle_unit.owner` is `Option<Identity>` (a wild unit has none, and a
+seeds rebuild a recruited wild. Transcripts are deleted 24 h after a battle, so an
+export would copy nothing durable of them. The summary (one row per battle naming both
+sides, with the counters bt-9 reads) and the formation (a live preference the owner
+already reads through `my_formation`) are kept out of the export bundle by the spec
+(BT7.4); whether a player's export should include them is an open spec question.
+`battle_unit.owner` is `Option<Identity>` (a wild unit has none, and a
 future two-ally side is just more rows), which no index can key, so unit rows are reached
 through the battle they belong to.
 

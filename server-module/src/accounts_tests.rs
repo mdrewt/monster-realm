@@ -8952,7 +8952,13 @@ mod acct_nh {
     /// (1)): 2015 (anchor gone, the subject's CLOCK is the only route), 996 (its
     /// READY row), 997 (its deploy row), 998 (a summary naming it), 999 (a lone
     /// unit it owns — only the `battle_unit` owner scan finds it), each with
-    /// sibling rows only the per-battle sweep can reach. Every `battle_summary`
+    /// sibling rows only the per-battle sweep can reach — and every battle
+    /// ONLY the anchor chain reaches: 2016 (the subject is
+    /// `battle.player_identity` and nothing else names it) and 2017 (the
+    /// mirror: only `battle.opponent_identity`), each a settled anchor against
+    /// the bystander with its tactical row, its secret and the BYSTANDER's
+    /// deploy + clock rows, so only the anchor's two index lookups find it, and
+    /// only while the anchor still names the subject. Every `battle_summary`
     /// row naming the subject SURVIVES with exactly that side swapped to
     /// `crate::TOMBSTONE_IDENTITY` (subject-B, B-subject, subject-subject,
     /// subject-wild) and the other side intact; the subject's formation goes.
@@ -8961,9 +8967,11 @@ mod acct_nh {
     /// survives. A non-scheduler caller and a not-yet-due tick touch nothing.
     ///
     /// Kills: `erase_tactical_rows` a no-op (the red-phase stub) or dropped
-    ///        from the reaper, or sequenced AFTER `battle::anonymize_battles`
-    ///        (the anchors no longer name the subject); battle ids from one
-    ///        anchor column only (2012 or 2011 survives); ids from the anchor
+    ///        from the reaper; sequenced AFTER `battle::anonymize_battles`
+    ///        (the swap leaves neither anchor naming the subject: 2016 and 2017
+    ///        survive, `[bt7/cascade-anchor-only]`); battle ids from the
+    ///        `opponent_identity` anchor index only (2016 survives) or from the
+    ///        `player_identity` one only (2017 survives); ids from the anchor
     ///        chain only (2015, 996-999 siblings survive); the clock / queue /
     ///        deploy / summary / unit-scan route dropped (one of 2015, 996, 997,
     ///        998, 999 survives); erasing by owner instead of by battle (the
@@ -9022,8 +9030,76 @@ mod acct_nh {
         w.wild_unit.seed(&wild_unit_row(989, 0));
         w.summary.seed(&summary_row(990, b, x, BattleKind::Pvp));
         w.clock.seed(&clock_row(990, SideRow::B, x));
+        // Anchor-only battles: the subject is named by the settled `battle`
+        // anchor and by NOTHING else (no clock, queue, deploy, summary or unit
+        // row), so only `erase_tactical_rows`'s two anchor-index lookups reach
+        // them. 2016: the subject is `player_identity` only; 2017: the mirror,
+        // `opponent_identity` only. Each holds its tactical row, its secret
+        // and the bystander's (the PEER's) deploy + clock rows.
+        let anchor_only = [(2016, v, b, SideRow::B), (2017, b, v, SideRow::A)];
+        let anchor_of = |battle_id: u64, player: Identity, opponent: Identity| {
+            let mut anchor = battle_row(player, opponent);
+            anchor.battle_id = battle_id;
+            anchor.state.outcome = game_core::BattleOutcome::SideAWins;
+            anchor
+        };
+        for (battle_id, player, opponent, peer_side) in anchor_only {
+            w.battle.seed(&anchor_of(battle_id, player, opponent));
+            w.tactical.seed(&tactical_row(battle_id, BattleKind::Pvp));
+            w.secret.seed(&secret_row(battle_id));
+            w.deploy.seed(&deploy_row(battle_id, peer_side, b));
+            w.clock.seed(&clock_row(battle_id, peer_side, b));
+        }
+        // Every row of one battle in the eight per-battle tables and
+        // `battle_summary`, as `(table, canonical bytes)` in table order.
+        let rows_of = |battle_id: u64| -> Vec<(&'static str, Vec<u8>)> {
+            let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+            for (table, rows) in per_battle_rows(&w) {
+                for (bid, bytes) in rows {
+                    if bid == battle_id {
+                        out.push((table, bytes));
+                    }
+                }
+            }
+            for s in w.summary.rows() {
+                if s.battle_id == battle_id {
+                    out.push(("battle_summary", enc(&s)));
+                }
+            }
+            out
+        };
+        for (battle_id, player, opponent, peer_side) in anchor_only {
+            let anchors: Vec<crate::schema::Battle> = w
+                .battle
+                .rows()
+                .into_iter()
+                .filter(|r| r.battle_id == battle_id)
+                .collect();
+            assert_eq!(
+                encs(&anchors),
+                encs(&[anchor_of(battle_id, player, opponent)]),
+                "fixture: anchor-only battle {battle_id} has exactly one settled anchor, naming \
+                 the subject on exactly one column"
+            );
+            assert_eq!(
+                rows_of(battle_id),
+                vec![
+                    (
+                        "battle_tactical",
+                        enc(&tactical_row(battle_id, BattleKind::Pvp)),
+                    ),
+                    ("battle_secret", enc(&secret_row(battle_id))),
+                    ("battle_deploy", enc(&deploy_row(battle_id, peer_side, b))),
+                    ("battle_clock", enc(&clock_row(battle_id, peer_side, b))),
+                ],
+                "fixture: anchor-only battle {battle_id} must hold exactly its tactical row, its \
+                 secret and the PEER's deploy + clock rows — any row naming the subject outside \
+                 the anchor is a second route, and the anchor-only erase check below goes vacuous"
+            );
+        }
 
-        let subject_battles: [u64; 9] = [2011, 2012, 2013, 2014, 2015, 996, 997, 998, 999];
+        let mut subject_battles = vec![2011, 2012, 2013, 2014, 2015, 996, 997, 998, 999];
+        subject_battles.extend(anchor_only.map(|(battle_id, ..)| battle_id));
         let before = per_battle_rows(&w);
         for (table, rows) in &before {
             assert!(
@@ -9084,6 +9160,27 @@ mod acct_nh {
             crate::accounts::account_deletion_reaper(ctx, sched())
         });
         assert_eq!(got, Ok(()));
+
+        // The anchor-only battles go whole. Nothing but one anchor column names
+        // the subject in each, so a survivor names the lookup that did not run.
+        for (battle_id, player, _, _) in anchor_only {
+            let column = if player == v {
+                "player_identity"
+            } else {
+                "opponent_identity"
+            };
+            let left: Vec<&str> = rows_of(battle_id)
+                .into_iter()
+                .map(|(table, _)| table)
+                .collect();
+            assert!(
+                left.is_empty(),
+                "[bt7/cascade-anchor-only] battle {battle_id} still holds rows in {left:?} — \
+                 the subject is named ONLY by `battle.{column}`, so `erase_tactical_rows` \
+                 must collect battle ids through that anchor index, while the anchor still \
+                 names the subject (BEFORE `battle::anonymize_battles` swaps in the tombstone)"
+            );
+        }
 
         let after = per_battle_rows(&w);
         for ((table, was), (_, now)) in before.iter().zip(after.iter()) {
