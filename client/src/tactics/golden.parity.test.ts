@@ -9,9 +9,11 @@
 // targets (a HashMap iteration order, a float, a tie-break) shows up as a string mismatch.
 // There is no TypeScript reimplementation of any rule here: every answer comes from game-core.
 //
-// Pinned on purpose: the case count, the nine case kinds, and the number of malformed boards.
-// Growing the harness (BT2.5, BT4.8, BT11.7) is a deliberate edit to these literals AND to the
-// matching constants in golden_tests.rs.
+// Pinned on purpose: the case count, every case kind, and the number of BadCase results
+// (malformed boards, and since bt-2 invalid Pipeline units). Growing the harness (BT2.5, BT4.8,
+// BT11.7) is a deliberate edit to these literals AND to the matching constants in
+// golden_tests.rs. The BT2.5 block below is the wasm half of bt-2's golden join: the roll
+// stream, economy, Surge, status tick, initiative, priority, pipeline and adjudication kinds.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -25,9 +27,9 @@ const FIXTURE_PATH = path.join(
 );
 
 /** The pinned fixture size (keep equal to CASE_COUNT in golden_tests.rs). */
-const CASE_COUNT = 196;
-/** Cases whose board is malformed: they must come back as `{"BadCase": "<text>"}`. */
-const BAD_CASE_COUNT = 13;
+const CASE_COUNT = 285;
+/** Cases that must come back as `{"BadCase": "<text>"}`: malformed boards, invalid Pipeline units. */
+const BAD_CASE_COUNT = 17;
 /** U+00E9, built from its code point (never a pasted or escaped literal). */
 const E_ACUTE = String.fromCharCode(0xe9);
 /** Every `GoldenCase` kind; each must appear in the fixture at least once. */
@@ -41,6 +43,25 @@ const KINDS = [
   'Weight',
   'Path',
   'Disengage',
+  'Rolls',
+  'Economy',
+  'SurgeDamage',
+  'StatusTick',
+  'Initiative',
+  'Priority',
+  'Pipeline',
+  'Adjudicate',
+] as const;
+/** The kinds bt-2 added (BT2.5). */
+const BT2_KINDS = [
+  'Rolls',
+  'Economy',
+  'SurgeDamage',
+  'StatusTick',
+  'Initiative',
+  'Priority',
+  'Pipeline',
+  'Adjudicate',
 ] as const;
 
 interface GoldenFixture {
@@ -99,7 +120,7 @@ describe('BT1.9 tactics golden: wasm == native on the shared JSON fixture', () =
     expect(typeof pkgExport).toBe('function');
   });
 
-  it('BT1.9 the fixture is the pinned size and covers all nine case kinds', () => {
+  it('BT1.9 the fixture is the pinned size and covers every case kind', () => {
     expect(fixture.cases).toHaveLength(CASE_COUNT);
     expect(fixture.expected).toHaveLength(CASE_COUNT);
     const kinds = fixture.cases.map(kindOf);
@@ -156,6 +177,11 @@ describe('BT1.9 tactics golden: wasm == native on the shared JSON fixture', () =
       `bad terrain '${E_ACUTE}' at (1,0)`,
       "bad terrain 'x' at (0,0)",
       'ragged row 1',
+      // bt-2 (BT2.5): Pipeline units failing validate_unit, the attacker checked first.
+      'invalid unit: Fainted { id: 7 }',
+      'invalid unit: HpAboveMax { id: 8, cur_hp: 101, max_hp: 100 }',
+      'invalid unit: ZeroDefense { id: 8 }',
+      'invalid unit: ZeroDefense { id: 7 }',
     ]);
   });
 
@@ -180,6 +206,209 @@ describe('BT1.9 tactics golden: wasm == native on the shared JSON fixture', () =
       canon({ BadCase: 'board too large' }),
       canon({ Los: true }),
       canon({ BadCase: 'board too large' }),
+    ]);
+  });
+});
+
+/** Run inline cases through the wasm export (the fixture-independent probes below). */
+function wasmGolden(cases: unknown[]): unknown[] {
+  if (tacticsGolden === undefined) {
+    throw new Error('client-wasm exports no tactics_golden() — the pkg is stale, run `just wasm`');
+  }
+  const result = tacticsGolden(cases);
+  expect(Array.isArray(result), 'tactics_golden returns an array').toBe(true);
+  return result as unknown[];
+}
+
+interface UnitSpec {
+  id: number;
+  side: 'A' | 'B';
+  affinity: string;
+  attack: number;
+  defense: number;
+  curHp: number;
+  guard: boolean;
+  firstStand: boolean;
+}
+
+/** A level-5, 100-max-HP tactical unit as the fixture spells it (serde field names). */
+function tacticalUnit(u: UnitSpec): Record<string, unknown> {
+  return {
+    id: u.id,
+    side: u.side,
+    slot: 0,
+    kit: {
+      species_id: u.id,
+      affinity: u.affinity,
+      level: 5,
+      stats: {
+        hp: 100,
+        attack: u.attack,
+        defense: u.defense,
+        speed: 50,
+        sp_attack: 50,
+        sp_defense: 50,
+      },
+      base_speed: 50,
+      class: 'Walk',
+      skills: [],
+    },
+    pos: { x: u.side === 'A' ? 0 : 1, y: 0 },
+    cur_hp: u.curHp,
+    status: null,
+    budget: { ap: 0, strides_used: 0, attacks: 0, last: null },
+    guard: u.guard,
+    first_stand: u.firstStand,
+    state: 'Active',
+  };
+}
+
+/** Fire power 40, accuracy 100, melee — the carried known-answer skill. */
+const FIRE_40 = {
+  skill_id: 1,
+  tier: 'Light',
+  affinity: 'Fire',
+  power: 40,
+  accuracy: 100,
+  applies_status: null,
+  geometry: {
+    range_min: 1,
+    range_max: 1,
+    origin: 'TargetUnit',
+    shape: 'Single',
+    radius: 0,
+    ff_filter: 'Enemies',
+  },
+};
+
+const SURE = { accuracy: 0, variance: 100 };
+
+describe('BT2.5 tactics golden: the bt-2 rules answer byte-identically in wasm', () => {
+  it('BT2.5 the fixture carries every bt-2 case kind', () => {
+    const kinds = fixture.cases.map(kindOf);
+    for (const want of BT2_KINDS) {
+      expect(
+        kinds.filter((k) => k === want).length,
+        `${want} cases in the fixture`,
+      ).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('BT2.5 every bt-2 fixture case is canonically byte-identical to its expected value', () => {
+    const results = runWasm();
+    let checked = 0;
+    fixture.cases.forEach((c, i) => {
+      if ((BT2_KINDS as readonly string[]).includes(kindOf(c))) {
+        expect(canon(results[i]), `case #${i}: ${canon(c)}`).toBe(canon(fixture.expected[i]));
+        checked += 1;
+      }
+    });
+    expect(checked).toBeGreaterThanOrEqual(BT2_KINDS.length * 2);
+  });
+
+  it('BT2.5 the wasm pipeline floors flank (x5/4) before Guard (x3/4)', () => {
+    // d0 5 (Water L5 attack 40, Fire power 40, into a Wind defence-40 target at variance 100):
+    // flank 25/4 = 6, then Guard 18/4 = 4 — Guard first would give 3.
+    const results = wasmGolden([
+      {
+        Pipeline: {
+          attacker: tacticalUnit({
+            id: 1,
+            side: 'A',
+            affinity: 'Water',
+            attack: 40,
+            defense: 40,
+            curHp: 100,
+            guard: false,
+            firstStand: false,
+          }),
+          target: tacticalUnit({
+            id: 2,
+            side: 'B',
+            affinity: 'Wind',
+            attack: 40,
+            defense: 40,
+            curHp: 100,
+            guard: true,
+            firstStand: false,
+          }),
+          skill: FIRE_40,
+          flank: true,
+          rolls: SURE,
+        },
+      },
+    ]);
+    expect(results.map(canon)).toEqual([
+      canon({
+        Pipeline: {
+          hit: true,
+          d0: 5,
+          d1: 6,
+          d2: 4,
+          d3: 4,
+          effectiveness: 'Neutral',
+          applied: 4,
+          hp_after: 96,
+          stood_ground: false,
+        },
+      }),
+    ]);
+  });
+
+  it('BT2.5 the wasm roll stream draws accuracy then variance from splitmix64(seed ^ action_seq)', () => {
+    // splitmix64(0) is 35 mod 100 and 15 mod 16; splitmix64(1) is 65 mod 100 and 1 mod 16.
+    const results = wasmGolden([
+      { Rolls: { seed: 0, action_seq: 0, draws: 1 } },
+      { Rolls: { seed: 2, action_seq: 2, draws: 1 } },
+      { Rolls: { seed: 7, action_seq: 6, draws: 1 } },
+      { Rolls: { seed: 0, action_seq: 0, draws: 0 } },
+    ]);
+    expect(results.map(canon)).toEqual([
+      canon({ Rolls: [{ accuracy: 35, variance: 86 }] }),
+      canon({ Rolls: [{ accuracy: 35, variance: 86 }] }),
+      canon({ Rolls: [{ accuracy: 65, variance: 100 }] }),
+      canon({ Rolls: [] }),
+    ]);
+  });
+
+  it('BT2.5 an invalid Pipeline unit comes back as a BadCase naming its deploy error', () => {
+    const fainted = tacticalUnit({
+      id: 7,
+      side: 'A',
+      affinity: 'Fire',
+      attack: 40,
+      defense: 40,
+      curHp: 0,
+      guard: false,
+      firstStand: false,
+    });
+    const softTarget = tacticalUnit({
+      id: 8,
+      side: 'B',
+      affinity: 'Plant',
+      attack: 40,
+      defense: 0,
+      curHp: 30,
+      guard: false,
+      firstStand: false,
+    });
+    const healthy = tacticalUnit({
+      id: 7,
+      side: 'A',
+      affinity: 'Fire',
+      attack: 40,
+      defense: 40,
+      curHp: 100,
+      guard: false,
+      firstStand: false,
+    });
+    const pipeline = (attacker: unknown, target: unknown) => ({
+      Pipeline: { attacker, target, skill: FIRE_40, flank: false, rolls: SURE },
+    });
+    const results = wasmGolden([pipeline(fainted, softTarget), pipeline(healthy, softTarget)]);
+    expect(results.map(canon)).toEqual([
+      canon({ BadCase: 'invalid unit: Fainted { id: 7 }' }),
+      canon({ BadCase: 'invalid unit: ZeroDefense { id: 8 }' }),
     ]);
   });
 });
