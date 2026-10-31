@@ -10,7 +10,7 @@
 //! every payload is its own `#[derive(SpacetimeType)]` struct — which also freezes its field order.
 //!
 //! `QueuedAction` is CLIENT input: `MoveAction::strides` and every id are hostile until the submit
-//! gate (`queue::Battle::validate_submit`) and the execution gate (`queue::validate_at_pop`) have
+//! gate (`queue::TacticalBattle::validate_submit`) and the execution gate (`queue::validate_at_pop`) have
 //! refused or accepted them. Nothing here validates; these are the shapes.
 
 use serde::{Deserialize, Serialize};
@@ -26,8 +26,9 @@ pub const MAX_PLAN_ACTIONS: usize = 3;
 /// Entries a stored plan may hold: `MAX_PLAN_ACTIONS` plus the trailing `EndTurn`.
 pub const MAX_STORED_ENTRIES: usize = MAX_PLAN_ACTIONS + 1;
 
-/// `Move{dest, strides}` — the bound destination and the stride count (1 or 2; the gates refuse
-/// anything else). `x`/`y` are stored flat because `Cell` is not a wire type.
+/// `Move{dest, strides}` — the bound destination and the stride count (`1..=max_strides_per_turn`,
+/// 2 at the design's numbers; the gates refuse anything else). `x`/`y` are stored flat because
+/// `Cell` is not a wire type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct MoveAction {

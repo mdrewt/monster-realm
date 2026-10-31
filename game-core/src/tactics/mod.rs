@@ -19,7 +19,7 @@
 //! - `types`      — the storage enums: `QueuedAction`, `TurnState`, `Phase` (BSATN, append-only).
 //! - `events`     — the `battle_event` payload enum + the §9.4 presentation caps.
 //! - `clock`      — the idle clock: pure window / pad / reset / strike arithmetic.
-//! - `queue`      — `Battle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
+//! - `queue`      — `TacticalBattle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
 
 pub mod clock;
 #[cfg(test)]
@@ -64,10 +64,7 @@ pub mod upkeep;
 #[cfg(test)]
 mod upkeep_tests;
 
-pub use clock::{
-    accept_submit, begin_unit_turn, deploy_budget_ms, expire, open_window, window_budget_ms,
-    ClockError, ClockState, Expiry, Window,
-};
+pub use clock::{ClockError, ClockState, Expiry, Window};
 pub use economy::{
     apply_flank, apply_guard, cost, guard_granted, plan_cost, spend, EconomyError, Entry, Tier,
     TurnBudget, TurnEndCause,
@@ -96,9 +93,9 @@ pub use outcome::{
     StepSnapshot,
 };
 pub use queue::{
-    is_player_owned, min_action_cost, status_blocks_turn, validate_at_pop, AdvancePin, CancelError,
-    ConcludeError, ExpireError, HaltReason, Hooks, ReadyPlan, Rules, StepError, StepResult,
-    SubmitError, TacticalBattle, Validated,
+    is_player_owned, min_action_cost, status_blocks_turn, stride_points, validate_at_pop,
+    AdvancePin, CancelError, ConcludeError, ExpireError, HaltReason, Hooks, ReadyPlan, Rules,
+    StepError, StepResult, SubmitError, TacticalBattle, Validated,
 };
 pub use resolve::{
     can_act, damage_pipeline, deploy_unit, draw_rolls, resolve_attack, splitmix64, turn_end,

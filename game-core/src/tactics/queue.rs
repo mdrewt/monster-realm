@@ -83,12 +83,14 @@ pub trait Hooks {
     fn take_item(&mut self, unit: u32, item_id: u32) -> bool;
     /// Whether `unit`'s owner can receive a recruited monster (bt-5's `check_headroom` result).
     fn recruit_headroom(&self, unit: u32) -> bool;
-    /// The wild planner (bt-4 `ai::plan`): a pure function of the live board, no seed. Only
-    /// `Move`, `Skill` and a trailing `EndTurn` are accepted from it (anything else halts the
-    /// plan as `BadShape` at idx 0).
+    /// The wild planner (bt-4 `ai::plan`): a pure function of the live board, no seed — it is
+    /// handed the state with `seed` and `action_seq` zeroed, so its answer is one a client can
+    /// reproduce. Only `Move`, `Skill` and a trailing `EndTurn` are accepted from it (anything
+    /// else halts the plan as `BadShape` at idx 0).
     fn plan_ai(&self, state: &TacticalState, unit: u32) -> Vec<QueuedAction>;
     /// Extra rules of a delegated entry (item range and target filter, recruit pre-flight), at
-    /// submit (first entry of a live submit) and at pop.
+    /// submit (first entry of a live submit) and at pop; sees the state with the secret stream
+    /// zeroed.
     ///
     /// # Errors
     /// The halt reason (the entry is wasted, 0 AP, nothing debited).
@@ -99,9 +101,10 @@ pub trait Hooks {
         validated: &Validated,
     ) -> Result<(), HaltReason>;
     /// Resolve a validated, paid, debited delegated entry: the item's effect, the recruit roll and
-    /// removal (`RecruitResult`), the flee bookkeeping (the executor itself sets `outcome = Fled`
-    /// and emits `BattleEnd`). May return only `RecruitResult`, `Awards`, `Status`, `Ko`, `Moved`
-    /// and `ItemUsed` payloads; every other kind is the executor's and is dropped.
+    /// removal (`RecruitResult`), the flee bookkeeping. May return only `RecruitResult`,
+    /// `Awards` and `Status` payloads (its own rule's outcomes); every other kind is the
+    /// executor's or bt-2's and is dropped. A hook never decides the outcome: the terminal sweep
+    /// (`outcome::settle`) does after it, and the executor itself sets `Fled` for a flee.
     fn resolve_delegated(
         &mut self,
         state: &mut TacticalState,
@@ -163,14 +166,14 @@ pub enum SubmitError {
         x: u8,
         y: u8,
     },
+    /// Recruit without party headroom (the same predicate the client greys the verb with).
+    NoHeadroom,
     /// The owner holds fewer of `item_id` than the plan uses (Item entries + bait).
     ItemNotHeld {
         item_id: u32,
         needed: u32,
         held: u32,
     },
-    /// Recruit without party headroom (the same predicate the client greys the verb with).
-    NoHeadroom,
     /// The disengage predicate refused a start tile (unreachable once `OffBoard` passed).
     Path(PathError),
     /// Costing on the unchanged board: stride cap, unaffordable, Recruit/Flee without the full budget.
@@ -273,8 +276,9 @@ pub enum Validated {
         path: Path,
         entry: Entry,
     },
-    /// `aim` is the bound unit's CURRENT tile (or the caster's for `SelfTarget`); the targets are
-    /// `target_set`'s answer on the live board.
+    /// `aim` is the bound unit's CURRENT tile (or the caster's for `SelfTarget`); `targets` is
+    /// `target_set`'s answer on the live board — the gate's word for the client's forecast and
+    /// badges (bt-11), not read by the executor, which lets `resolve_attack` recompute it.
     Skill {
         skill_id: u32,
         aim: Cell,
@@ -304,7 +308,7 @@ pub enum CancelError {
     NotYourUnit,
     /// The row was consumed at TurnStart (the unit is waiting or has acted this round).
     AlreadyActing,
-    /// No READY row and the unit has not started its turn this round.
+    /// No READY row and the unit has not started its turn this round (or no such unit).
     NoPlan,
 }
 
@@ -332,7 +336,7 @@ pub enum ExpireError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepError {
     Tuning(TuningError),
-    /// `start` when not `NotActive` + `Ongoing`; `advance` when not `Advancing`.
+    /// `start` when not `NotActive` + `Ongoing`; `advance` when not `Advancing` + `Ongoing`.
     NotStartable {
         turn_state: TurnState,
     },
@@ -363,16 +367,25 @@ pub struct StepResult {
     pub actions: u8,
 }
 
-/// The tactical battle between transactions (the server composes it from its rows; see the
-/// persistence manifest in the slice's plan memo / PR body).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The tactical battle between transactions. The server composes it from its rows and writes
+/// it back — the persistence manifest (bt-7): `battle_id` (the anchor row); `state.{kind, seed,
+/// action_seq, round, width, height, terrain, blocks_los, initiative, attack_damage_dealt}`
+/// (`battle_tactical` + `battle_secret` + the map id; `attack_damage_dealt` is not in design §8.1
+/// — appended); `state.units[*]` with `budget.{ap, strides_used, attacks, last}`, `guard`,
+/// `first_stand`, `state`, `slot` (`battle_unit`); `plans` (`battle_queue`); `turn_state`
+/// (`battle_tactical`); `clocks[side]` (`battle_clock`, keyed by SIDE — in Practice one player
+/// holds both sides and both strike counts); `pending_pad_ms` (`battle_tactical`, not in §8.1 —
+/// appended). `state.queued` is derived from `plans`, never stored. Never serialised toward a
+/// client: it holds the seed.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TacticalBattle {
     pub battle_id: u64,
     pub state: TacticalState,
-    /// READY rows, ascending `unit`. The authority: `state.queued` is derived from it.
+    /// READY rows. Canonicalised (ascending `unit`, unique, units of this battle only) at the
+    /// entry of every input; the authority `state.queued` is derived from.
     pub plans: Vec<ReadyPlan>,
     pub turn_state: TurnState,
-    /// Per side (A = 0, B = 1). A wild side's clock never runs. bt-7 keys `battle_clock` by side.
+    /// Per side (A = 0, B = 1). A wild side's clock never runs.
     pub clocks: [ClockState; 2],
     /// Σ presentation caps of the events emitted since the last Waiting (persisted across
     /// transactions; saturating; capped at `pad_cap_ms` when a window opens).
@@ -395,8 +408,10 @@ pub fn min_action_cost(t: &TacticsTuning) -> u8 {
 
 /// The carried M14 turn-skip rule (`combat::status::apply_pre_turn_effects`, private helper
 /// `check_action_block`): Sleep and Freeze always block, Paralysis blocks when `roll < 25`, Poison,
-/// Burn and no status never. Re-stated because the carried function needs a 1v1 `BattleState`;
-/// `queue_tests` pins it equal to the carried function over every status × roll (bt-17 retires both).
+/// Burn and no status never. Re-stated (the `upkeep::status_tick_damage` precedent) because the
+/// carried function takes a 1v1 `BattleState`, whose `BattleSide` has a sanctioned constructor
+/// surface this module may not bypass; `queue_tests` pins it equal to the carried function over
+/// every status × roll (bt-17 retires both).
 #[must_use]
 pub fn status_blocks_turn(status: Option<StatusEffect>, roll: u8) -> bool {
     match status {
@@ -404,6 +419,13 @@ pub fn status_blocks_turn(status: Option<StatusEffect>, roll: u8) -> bool {
         Some(StatusEffect::Paralysis) => roll < 25,
         Some(StatusEffect::Sleep { .. } | StatusEffect::Freeze) => true,
     }
+}
+
+/// The stride points a Move of `strides` strides buys a unit of `base_speed`
+/// (`strides × stride_for_base_speed`); the cheapest live path must cost no more.
+#[must_use]
+pub fn stride_points(strides: u8, base_speed: u16) -> u16 {
+    u16::from(strides) * u16::from(stride_for_base_speed(base_speed))
 }
 
 /// Where a plan came from (design §2.2 `origin`).
@@ -428,17 +450,26 @@ impl PlanOrigin {
     }
 }
 
-/// How a unit-turn (or the whole step) left the executor.
+/// How a unit-turn left the executor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
-    /// The unit could not act: nothing happened.
-    Skipped,
-    /// The unit's turn ended; the round continues.
+    /// The unit's turn ended (or it could not act); the round continues.
     Ended,
     /// `Waiting(U)`: the step stops here.
     Waiting,
     /// The battle is decided: the step stops here.
     Finished,
+}
+
+/// What one executed entry did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolved {
+    /// Charged and resolved; the plan goes on.
+    Executed,
+    /// `EndTurn` executed: the turn ended.
+    TurnEnded,
+    /// Flee executed: the battle ended.
+    BattleOver,
 }
 
 /// The shape every plan must have, whatever its origin: ≤ `MAX_PLAN_ACTIONS` actions and
@@ -478,13 +509,23 @@ fn resolve_target(
     }
 }
 
+/// The state as a client could build it: the secret stream (`seed`, `action_seq`) zeroed. What
+/// the planner and the delegated validators see, so their answers can never depend on it.
+fn public_view(state: &TacticalState) -> TacticalState {
+    TacticalState {
+        seed: 0,
+        action_seq: 0,
+        ..state.clone()
+    }
+}
+
 /// The execution gate (design §2.3): validate `action` for `unit` on the live `state`, reading
 /// the owner's inventory through `hooks`. Pure (reads only). Per kind, first failure wins:
 /// - every kind: `t.validate()` → `Tuning`; `can_act` → `Act`; `validate_unit(actor)` → `BadUnit`;
 /// - Move: `disengage_taxed` on the unit's CURRENT tile → `spend` on a copy of the budget
 ///   (`Economy`: zero strides, the stride cap — checked before any stride math — affordability)
 ///   → `find_path` on the live board (`Path`: unreachable, occupied, impassable, off-board — the
-///   whole Move is invalid, never a partial walk) → `cost > strides × stride` → `TooFar`;
+///   whole Move is invalid, never a partial walk) → `cost > stride_points` → `TooFar`;
 /// - Skill: skill in the kit (`UnknownSkill`) → the bound unit conscious, `aim` = its current
 ///   tile, or the caster's for `SelfTarget` (`TargetGone`) → `spend` copy (`Economy`, Exert
 ///   included) → `target_set` through the ONE geometry function (`Geometry`) → `validate_unit`
@@ -498,6 +539,8 @@ fn resolve_target(
 /// - Flee: `NotAllowed(Flee)` under PvP rules or by a wild → `spend` copy →
 ///   `hooks.validate_delegated`;
 /// - EndTurn: always valid.
+///
+/// The delegated validators see the [`public_view`] of the state.
 ///
 /// # Errors
 /// See [`HaltReason`].
@@ -514,7 +557,6 @@ pub fn validate_at_pop(
         .unit(unit)
         .ok_or(HaltReason::Act(ActError::UnknownUnit(unit)))?;
     validate_unit(actor).map_err(HaltReason::BadUnit)?;
-    let board = state.board();
     let player_owned = is_player_owned(state.kind, actor.side);
     let pvp = state.kind.uses_pvp_rules();
     // Every spend below runs on a COPY: the gate charges nothing.
@@ -524,8 +566,13 @@ pub fn validate_at_pop(
             .map(|_| ())
             .map_err(HaltReason::Economy)
     };
+    let delegated = |validated: Validated| -> Result<Validated, HaltReason> {
+        hooks.validate_delegated(&public_view(state), unit, &validated)?;
+        Ok(validated)
+    };
     match action {
         QueuedAction::Move(m) => {
+            let board = state.board();
             let taxed = disengage_taxed(&board, unit, actor.pos).map_err(HaltReason::Path)?;
             let entry = Entry::Move {
                 strides: m.strides,
@@ -533,8 +580,7 @@ pub fn validate_at_pop(
             };
             affordable(entry)?;
             let path = find_path(&board, unit, actor.pos, m.dest()).map_err(HaltReason::Path)?;
-            let points =
-                u16::from(m.strides) * u16::from(stride_for_base_speed(actor.kit.base_speed));
+            let points = stride_points(m.strides, actor.kit.base_speed);
             if path.cost > points {
                 return Err(HaltReason::TooFar {
                     cost: path.cost,
@@ -554,6 +600,7 @@ pub fn validate_at_pop(
                 })?;
             let (_, aim) = resolve_target(state, unit, actor.pos, s.target)?;
             affordable(Entry::Attack(skill.tier))?;
+            let board = state.board();
             let targets =
                 target_set(&skill.geometry, unit, aim, &board).map_err(HaltReason::Geometry)?;
             for target in targets.iter().filter_map(|&id| state.unit(id)) {
@@ -574,13 +621,11 @@ pub fn validate_at_pop(
                 return Err(HaltReason::ItemNotHeld { item_id: i.item_id });
             }
             affordable(Entry::Item)?;
-            let validated = Validated::Item {
+            delegated(Validated::Item {
                 item_id: i.item_id,
                 target,
                 entry: Entry::Item,
-            };
-            hooks.validate_delegated(state, unit, &validated)?;
-            Ok(validated)
+            })
         }
         QueuedAction::Recruit(r) => {
             if pvp || !player_owned {
@@ -605,41 +650,33 @@ pub fn validate_at_pop(
                 }
             }
             affordable(Entry::Recruit)?;
-            let validated = Validated::Recruit {
+            delegated(Validated::Recruit {
                 target: r.target,
                 bait: r.bait,
                 entry: Entry::Recruit,
-            };
-            hooks.validate_delegated(state, unit, &validated)?;
-            Ok(validated)
+            })
         }
         QueuedAction::Flee => {
             if pvp || !player_owned {
                 return Err(HaltReason::NotAllowed(ActionKind::Flee));
             }
             affordable(Entry::Flee)?;
-            let validated = Validated::Flee { entry: Entry::Flee };
-            hooks.validate_delegated(state, unit, &validated)?;
-            Ok(validated)
+            delegated(Validated::Flee { entry: Entry::Flee })
         }
         QueuedAction::EndTurn => Ok(Validated::EndTurn),
     }
 }
 
-/// The payload kinds a hook may contribute; everything else is the executor's.
+/// The payload kinds a hook may contribute (its own rule's outcomes); everything else — every
+/// kind this module or bt-2's rules emit — is dropped.
 fn hook_may_emit(event: &EventPayload) -> bool {
     matches!(
         event,
-        EventPayload::RecruitResult(_)
-            | EventPayload::Awards(_)
-            | EventPayload::Status(_)
-            | EventPayload::Ko(_)
-            | EventPayload::Moved(_)
-            | EventPayload::ItemUsed(_)
+        EventPayload::RecruitResult(_) | EventPayload::Awards(_) | EventPayload::Status(_)
     )
 }
 
-/// The other side's win.
+/// The other side's win (`outcome::winner_outcome` is private — out of this slice's touches).
 fn win_for_opponent_of(side: Side) -> BattleOutcome {
     match side {
         Side::A => BattleOutcome::SideBWins,
@@ -739,38 +776,40 @@ impl TacticalBattle {
         }
         plan_shape(entries)?;
         let actions = entries.iter().filter(|e| e.is_action()).count();
-        for kind in entries
+        let alone_kind = entries
             .iter()
             .map(QueuedAction::kind)
-            .filter(|k| matches!(k, ActionKind::Recruit | ActionKind::Flee))
-        {
+            .find(|k| matches!(k, ActionKind::Recruit | ActionKind::Flee));
+        if let Some(kind) = alone_kind {
             if actions != 1 {
                 return Err(SubmitError::MustBeAlone(kind));
             }
-        }
-        if self.state.kind.uses_pvp_rules() {
-            if let Some(kind) = entries
-                .iter()
-                .map(QueuedAction::kind)
-                .find(|k| matches!(k, ActionKind::Recruit | ActionKind::Flee))
-            {
+            if self.state.kind.uses_pvp_rules() {
                 return Err(SubmitError::NotInPvp(kind));
             }
         }
+        // One pass: the per-entry refusals, and the costable entries (a Move's tax is judged
+        // in the costing pass below, once the start tiles are known).
         let known = |id: u32| self.state.unit(id).is_some();
+        let mut plan: Vec<Entry> = Vec::with_capacity(entries.len());
         for entry in entries {
-            match entry {
+            plan.push(match entry {
                 QueuedAction::Skill(s) => {
-                    if !actor.kit.skills.iter().any(|k| k.skill_id == s.skill_id) {
-                        return Err(SubmitError::UnknownSkill {
+                    let tier = actor
+                        .kit
+                        .skills
+                        .iter()
+                        .find(|k| k.skill_id == s.skill_id)
+                        .map(|k| k.tier)
+                        .ok_or(SubmitError::UnknownSkill {
                             skill_id: s.skill_id,
-                        });
-                    }
+                        })?;
                     if let ActionTarget::Unit(id) = s.target {
                         if !known(id) {
                             return Err(SubmitError::UnknownTarget { id });
                         }
                     }
+                    Entry::Attack(tier)
                 }
                 QueuedAction::Item(i) => {
                     if let ActionTarget::Unit(id) = i.target {
@@ -778,25 +817,28 @@ impl TacticalBattle {
                             return Err(SubmitError::UnknownTarget { id });
                         }
                     }
+                    Entry::Item
                 }
                 QueuedAction::Recruit(r) => {
                     if !known(r.target) {
                         return Err(SubmitError::UnknownTarget { id: r.target });
                     }
+                    Entry::Recruit
                 }
                 QueuedAction::Move(m) => {
                     if m.x >= self.state.width || m.y >= self.state.height {
                         return Err(SubmitError::OffBoard { x: m.x, y: m.y });
                     }
+                    Entry::Move {
+                        strides: m.strides,
+                        taxed: false,
+                    }
                 }
-                QueuedAction::Flee | QueuedAction::EndTurn => {}
-            }
+                QueuedAction::Flee => Entry::Flee,
+                QueuedAction::EndTurn => Entry::EndTurn,
+            });
         }
-        if entries
-            .iter()
-            .any(|e| matches!(e, QueuedAction::Recruit(_)))
-            && !hooks.recruit_headroom(unit)
-        {
+        if alone_kind == Some(ActionKind::Recruit) && !hooks.recruit_headroom(unit) {
             return Err(SubmitError::NoHeadroom);
         }
         let mut usage: Vec<(u32, u32)> = Vec::new();
@@ -830,34 +872,11 @@ impl TacticalBattle {
         }
         let board = self.state.board();
         let mut start = actor.pos;
-        let mut plan: Vec<Entry> = Vec::with_capacity(entries.len());
-        for entry in entries {
-            plan.push(match entry {
-                QueuedAction::Move(m) => {
-                    let taxed = disengage_taxed(&board, unit, start).map_err(SubmitError::Path)?;
-                    start = m.dest();
-                    Entry::Move {
-                        strides: m.strides,
-                        taxed,
-                    }
-                }
-                QueuedAction::Skill(s) => {
-                    let tier = actor
-                        .kit
-                        .skills
-                        .iter()
-                        .find(|k| k.skill_id == s.skill_id)
-                        .map(|k| k.tier)
-                        .ok_or(SubmitError::UnknownSkill {
-                            skill_id: s.skill_id,
-                        })?;
-                    Entry::Attack(tier)
-                }
-                QueuedAction::Item(_) => Entry::Item,
-                QueuedAction::Recruit(_) => Entry::Recruit,
-                QueuedAction::Flee => Entry::Flee,
-                QueuedAction::EndTurn => Entry::EndTurn,
-            });
+        for (entry, action) in plan.iter_mut().zip(entries) {
+            if let (Entry::Move { taxed, .. }, QueuedAction::Move(m)) = (entry, action) {
+                *taxed = disengage_taxed(&board, unit, start).map_err(SubmitError::Path)?;
+                start = m.dest();
+            }
         }
         let budget = if live {
             actor.budget
@@ -875,10 +894,10 @@ impl TacticalBattle {
     }
 
     /// `submit_queue`: [`TacticalBattle::validate_submit`], then — pre-queue: normalise (append
-    /// `EndTurn` iff absent; `[]` becomes `[EndTurn]`), replace any previous plan for the unit (in
-    /// place, `plans` stays sorted by unit), return an empty result (U's clock untouched); live:
-    /// snapshot the initiative and the continuation index FIRST, close U's window
-    /// (`clock::accept_submit`), execute with origin `Live`, continue the round from the snapshot.
+    /// `EndTurn` iff absent; `[]` becomes `[EndTurn]`), replace any previous plan for the unit,
+    /// return an empty result (U's clock untouched); live: snapshot the initiative and the
+    /// continuation index FIRST, close U's window (`clock::accept_submit`), execute with origin
+    /// `Live`, continue the round from the snapshot.
     ///
     /// # Errors
     /// See [`SubmitError`]; on `Err` the battle is byte-identical (nothing executes, no clock change).
@@ -892,7 +911,7 @@ impl TacticalBattle {
         hooks: &mut dyn Hooks,
     ) -> Result<StepResult, SubmitError> {
         self.validate_submit(sender, unit, &entries, hooks, rules.tuning)?;
-        self.derive_queued();
+        self.canonicalise_plans();
         let mut out = StepResult {
             round: self.state.round,
             ..StepResult::default()
@@ -928,14 +947,16 @@ impl TacticalBattle {
     ///
     /// # Errors
     /// `NotYourUnit`; `AlreadyActing` when no row exists because TurnStart consumed it (the unit
-    /// is waiting or precedes the waiting unit this round); `NoPlan` otherwise.
+    /// is waiting or precedes the waiting unit this round); `NoPlan` otherwise. Every `Err`
+    /// leaves the battle byte-identical.
     pub fn cancel_queue(&mut self, sender: Side, unit: u32) -> Result<(), CancelError> {
         let side = self.side_of(unit).ok_or(CancelError::NoPlan)?;
         if side != sender {
             return Err(CancelError::NotYourUnit);
         }
-        self.derive_queued();
-        if self.take_plan(unit).is_some() {
+        if self.plan(unit).is_some() {
+            self.canonicalise_plans();
+            self.take_plan(unit);
             return Ok(());
         }
         if let TurnState::Waiting(waiting) = self.turn_state {
@@ -971,7 +992,7 @@ impl TacticalBattle {
                 turn_state: self.turn_state,
             });
         }
-        self.derive_queued();
+        self.canonicalise_plans();
         let mut out = StepResult {
             round: self.state.round,
             ..StepResult::default()
@@ -987,7 +1008,7 @@ impl TacticalBattle {
         Ok(out)
     }
 
-    /// The zero-delay `tactical_advance` row fired: from `Advancing` with `pin ==
+    /// The zero-delay `tactical_advance` row fired: from `Advancing` + `Ongoing` with `pin ==
     /// advance_pin()` only, run the new round from its first unit (as [`TacticalBattle::start`]).
     ///
     /// # Errors
@@ -1000,13 +1021,16 @@ impl TacticalBattle {
         hooks: &mut dyn Hooks,
     ) -> Result<StepResult, StepError> {
         rules.tuning.validate().map_err(StepError::Tuning)?;
-        let current = self.advance_pin().ok_or(StepError::NotStartable {
-            turn_state: self.turn_state,
-        })?;
+        let current = self
+            .advance_pin()
+            .filter(|_| self.state.outcome == BattleOutcome::Ongoing)
+            .ok_or(StepError::NotStartable {
+                turn_state: self.turn_state,
+            })?;
         if pin != current {
             return Err(StepError::StaleAdvance { current });
         }
-        self.derive_queued();
+        self.canonicalise_plans();
         let mut out = StepResult {
             round: self.state.round,
             ..StepResult::default()
@@ -1019,8 +1043,8 @@ impl TacticalBattle {
     /// The scheduled deadline fired for `unit`'s window `window_seq` at `now_ms`:
     /// `clock::expire` → PvP ruleset `AutoPass` (turn ends uncommitted, no Guard, one strike;
     /// the `autopass_forfeit`-th concludes the battle with `BattleEnd{Forfeit}` for the other
-    /// side) or wild `AutoFlee` (the flee hook, then `conclude(Fled, AutoFlee)` whatever the hook
-    /// did), then continue the round from the snapshot taken before anything ran.
+    /// side) or wild `AutoFlee` (the flee hook, then `BattleEnd{Fled, AutoFlee}` whatever the
+    /// hook did), then continue the round from the snapshot taken before anything ran.
     ///
     /// # Errors
     /// `Tuning`, `NotWaiting`, `WrongUnit`, `StaleWindow`, `NotDue` — every one changes nothing.
@@ -1051,14 +1075,13 @@ impl TacticalBattle {
             Err(clock::ClockError::NotDue { deadline_ms }) => {
                 return Err(ExpireError::NotDue { deadline_ms })
             }
-            Err(clock::ClockError::NoWindow | clock::ClockError::AlreadyOpen) => {
-                return Err(ExpireError::StaleWindow { current })
-            }
-            Err(clock::ClockError::WindowCap { .. }) => {
-                return Err(ExpireError::StaleWindow { current })
-            }
+            Err(
+                clock::ClockError::NoWindow
+                | clock::ClockError::AlreadyOpen
+                | clock::ClockError::WindowCap { .. },
+            ) => return Err(ExpireError::StaleWindow { current }),
         };
-        self.derive_queued();
+        self.canonicalise_plans();
         let order = self.state.initiative.clone();
         let next = self.position(unit).map_or(order.len(), |p| p + 1);
         let mut out = StepResult {
@@ -1080,22 +1103,22 @@ impl TacticalBattle {
                 self.after_turn(flow, &order, next, now_ms, rules, hooks, &mut out);
             }
             clock::Expiry::AutoFlee => {
-                let events = hooks.resolve_delegated(
-                    &mut self.state,
+                self.delegate(
                     unit,
                     &Validated::Flee { entry: Entry::Flee },
+                    hooks,
+                    &mut out,
                 );
-                self.emit_from_hook(&mut out, events);
                 self.end_with(BattleOutcome::Fled, EndHow::AutoFlee, &mut out);
             }
         }
         Ok(out)
     }
 
-    /// End the battle from outside the chain (a forfeit, a disconnect): `outcome` is recorded
-    /// (never overwriting a decided one), `BattleEnd{outcome, how}` is emitted, every READY plan
-    /// is voided (`QueueVoided` each, ascending unit), any open window is closed without idle
-    /// accounting, `turn_state = NotActive`. The same path every in-chain end takes.
+    /// End the battle from outside the chain (a forfeit, a disconnect): `outcome` is recorded,
+    /// `BattleEnd{outcome, how}` is emitted, every READY plan is voided (`QueueVoided` each,
+    /// ascending unit), any open window is closed without idle accounting, `turn_state =
+    /// NotActive`. The same path every in-chain end takes.
     ///
     /// # Errors
     /// `NotAnEnd` for `Ongoing`; `AlreadyFinished`.
@@ -1110,7 +1133,7 @@ impl TacticalBattle {
         if self.state.outcome != BattleOutcome::Ongoing {
             return Err(ConcludeError::AlreadyFinished);
         }
-        self.derive_queued();
+        self.canonicalise_plans();
         let mut out = StepResult {
             round: self.state.round,
             ..StepResult::default()
@@ -1139,7 +1162,7 @@ impl TacticalBattle {
                 return;
             }
             match self.start_turn(id, now_ms, rules, hooks, out) {
-                Flow::Skipped | Flow::Ended => {}
+                Flow::Ended => {}
                 Flow::Waiting | Flow::Finished => return,
             }
         }
@@ -1162,9 +1185,7 @@ impl TacticalBattle {
         out: &mut StepResult,
     ) {
         match flow {
-            Flow::Skipped | Flow::Ended => {
-                self.continue_round(order, next, now_ms, rules, hooks, out);
-            }
+            Flow::Ended => self.continue_round(order, next, now_ms, rules, hooks, out),
             Flow::Waiting | Flow::Finished => {}
         }
     }
@@ -1199,10 +1220,10 @@ impl TacticalBattle {
     ) -> Flow {
         let t = rules.tuning;
         if can_act(&self.state, unit).is_err() || turn_start(&mut self.state, unit, t).is_err() {
-            return Flow::Skipped;
+            return Flow::Ended;
         }
         let Some((side, status)) = self.state.unit(unit).map(|u| (u.side, u.status)) else {
-            return Flow::Skipped;
+            return Flow::Ended;
         };
         out.unit_turns = out.unit_turns.saturating_add(1);
         let player_owned = is_player_owned(self.state.kind, side);
@@ -1214,25 +1235,23 @@ impl TacticalBattle {
         } else {
             0
         };
-        if let Some(status) = status {
-            if status_blocks_turn(Some(status), roll) {
-                self.emit(
-                    out,
-                    EventPayload::Status(StatusEvent {
-                        unit,
-                        status,
-                        change: StatusChange::Blocked,
-                        amount: 0,
-                    }),
-                );
-                if self.take_plan(unit).is_some() {
-                    self.emit(out, EventPayload::QueueVoided(QueueVoidedEvent { unit }));
-                }
-                return self.end_turn(unit, TurnEndCause::AutoPass, t, out);
+        if let Some(status) = status.filter(|_| status_blocks_turn(status, roll)) {
+            self.emit(
+                out,
+                EventPayload::Status(StatusEvent {
+                    unit,
+                    status,
+                    change: StatusChange::Blocked,
+                    amount: 0,
+                }),
+            );
+            if self.take_plan(unit).is_some() {
+                self.emit(out, EventPayload::QueueVoided(QueueVoidedEvent { unit }));
             }
+            return self.end_turn(unit, TurnEndCause::AutoPass, t, out);
         }
         if !player_owned {
-            let plan = hooks.plan_ai(&self.state, unit);
+            let plan = hooks.plan_ai(&public_view(&self.state), unit);
             return self.execute(unit, &plan, PlanOrigin::Ai, now_ms, rules, hooks, out);
         }
         if let Some(plan) = self.take_plan(unit) {
@@ -1249,7 +1268,8 @@ impl TacticalBattle {
         self.enter_waiting(unit, now_ms, rules, out)
     }
 
-    /// Execute(entries, origin) — design §2.2.
+    /// Execute(entries, origin) — design §2.2: the shape check for every origin, then each entry
+    /// through the gate; the first refusal halts the plan (the one halt site).
     #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
@@ -1273,173 +1293,17 @@ impl TacticalBattle {
             return self.halt(unit, 0, HaltReason::BadShape, origin, now_ms, rules, out);
         }
         for (idx, action) in entries.iter().enumerate() {
-            let idx = u8::try_from(idx).unwrap_or(u8::MAX);
-            let snap = StepSnapshot::capture(&self.state);
-            let validated = match validate_at_pop(&self.state, unit, action, hooks, t) {
-                Ok(validated) => validated,
-                Err(reason) => return self.halt(unit, idx, reason, origin, now_ms, rules, out),
-            };
-            match validated {
-                Validated::EndTurn => {
-                    if let Err(e) = self.charge(unit, Entry::EndTurn, t) {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::Economy(e),
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    }
-                    return self.end_turn(unit, TurnEndCause::EndTurn, t, out);
+            match self.run_entry(unit, action, rules, hooks, out) {
+                Err(reason) => {
+                    let idx = u8::try_from(idx).unwrap_or(u8::MAX);
+                    return self.halt(unit, idx, reason, origin, now_ms, rules, out);
                 }
-                Validated::Move { path, entry } => {
-                    let Some(from) = self.state.unit(unit).map(|u| u.pos) else {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::Act(ActError::UnknownUnit(unit)),
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    };
-                    if let Err(e) = self.charge(unit, entry, t) {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::Economy(e),
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    }
-                    let to = path.steps.last().copied().unwrap_or(from);
-                    if let Some(u) = self.state.unit_mut(unit) {
-                        u.pos = to;
-                    }
-                    self.emit(
-                        out,
-                        EventPayload::Moved(MovedEvent {
-                            unit,
-                            from_x: from.x,
-                            from_y: from.y,
-                            to_x: to.x,
-                            to_y: to.y,
-                            tiles: u8::try_from(path.steps.len()).unwrap_or(u8::MAX),
-                        }),
-                    );
-                    self.settle_now(&snap, out);
-                }
-                Validated::Skill { skill_id, aim, .. } => {
-                    match resolve_attack(&mut self.state, unit, skill_id, aim, rules.chart, t) {
-                        Ok(outcome) => {
-                            for event in &outcome.events {
-                                self.emit(out, payload_of(event));
-                            }
-                        }
-                        Err(e) => {
-                            return self.halt(
-                                unit,
-                                idx,
-                                HaltReason::of_resolve(e),
-                                origin,
-                                now_ms,
-                                rules,
-                                out,
-                            )
-                        }
-                    }
-                }
-                Validated::Item {
-                    item_id,
-                    target,
-                    entry,
-                } => {
-                    if !hooks.take_item(unit, item_id) {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::ItemNotHeld { item_id },
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    }
-                    if let Err(e) = self.charge(unit, entry, t) {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::Economy(e),
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    }
-                    self.emit(
-                        out,
-                        EventPayload::ItemUsed(ItemUsedEvent {
-                            unit,
-                            item_id,
-                            target,
-                        }),
-                    );
-                    let events = hooks.resolve_delegated(&mut self.state, unit, &validated);
-                    self.emit_from_hook(out, events);
-                    self.settle_now(&snap, out);
-                }
-                Validated::Recruit { bait, entry, .. } => {
-                    if let Some(bait) = bait {
-                        if !hooks.take_item(unit, bait) {
-                            return self.halt(
-                                unit,
-                                idx,
-                                HaltReason::ItemNotHeld { item_id: bait },
-                                origin,
-                                now_ms,
-                                rules,
-                                out,
-                            );
-                        }
-                    }
-                    if let Err(e) = self.charge(unit, entry, t) {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::Economy(e),
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    }
-                    let events = hooks.resolve_delegated(&mut self.state, unit, &validated);
-                    self.emit_from_hook(out, events);
-                    self.settle_now(&snap, out);
-                }
-                Validated::Flee { entry } => {
-                    if let Err(e) = self.charge(unit, entry, t) {
-                        return self.halt(
-                            unit,
-                            idx,
-                            HaltReason::Economy(e),
-                            origin,
-                            now_ms,
-                            rules,
-                            out,
-                        );
-                    }
-                    let events = hooks.resolve_delegated(&mut self.state, unit, &validated);
-                    self.emit_from_hook(out, events);
+                Ok(Resolved::TurnEnded) => return Flow::Ended,
+                Ok(Resolved::BattleOver) => {
                     out.actions = out.actions.saturating_add(1);
-                    self.end_with(BattleOutcome::Fled, EndHow::Fled, out);
                     return Flow::Finished;
                 }
+                Ok(Resolved::Executed) => {}
             }
             out.actions = out.actions.saturating_add(1);
             self.sync_plans(out);
@@ -1460,6 +1324,100 @@ impl TacticalBattle {
                 self.end_turn(unit, TurnEndCause::EndTurn, t, out)
             }
             PlanOrigin::Live => self.enter_waiting(unit, now_ms, rules, out),
+        }
+    }
+
+    /// One entry: the gate, then the resolution. `Err` is a halt — nothing charged, nothing
+    /// debited (a debit precedes its charge, and both follow the gate).
+    fn run_entry(
+        &mut self,
+        unit: u32,
+        action: &QueuedAction,
+        rules: &Rules,
+        hooks: &mut dyn Hooks,
+        out: &mut StepResult,
+    ) -> Result<Resolved, HaltReason> {
+        let t = rules.tuning;
+        let snap = StepSnapshot::capture(&self.state);
+        let validated = validate_at_pop(&self.state, unit, action, hooks, t)?;
+        match &validated {
+            Validated::EndTurn => {
+                self.charge(unit, Entry::EndTurn, t)?;
+                self.end_turn(unit, TurnEndCause::EndTurn, t, out);
+                Ok(Resolved::TurnEnded)
+            }
+            Validated::Move { path, entry } => {
+                let from = self
+                    .state
+                    .unit(unit)
+                    .map(|u| u.pos)
+                    .ok_or(HaltReason::Act(ActError::UnknownUnit(unit)))?;
+                self.charge(unit, *entry, t)?;
+                let to = path.steps.last().copied().unwrap_or(from);
+                if let Some(u) = self.state.unit_mut(unit) {
+                    u.pos = to;
+                }
+                self.emit(
+                    out,
+                    EventPayload::Moved(MovedEvent {
+                        unit,
+                        from_x: from.x,
+                        from_y: from.y,
+                        to_x: to.x,
+                        to_y: to.y,
+                        tiles: u8::try_from(path.steps.len()).unwrap_or(u8::MAX),
+                    }),
+                );
+                self.settle_now(&snap, out);
+                Ok(Resolved::Executed)
+            }
+            Validated::Skill { skill_id, aim, .. } => {
+                let outcome =
+                    resolve_attack(&mut self.state, unit, *skill_id, *aim, rules.chart, t)
+                        .map_err(HaltReason::of_resolve)?;
+                for event in &outcome.events {
+                    self.emit(out, payload_of(event));
+                }
+                Ok(Resolved::Executed)
+            }
+            Validated::Item {
+                item_id,
+                target,
+                entry,
+            } => {
+                if !hooks.take_item(unit, *item_id) {
+                    return Err(HaltReason::ItemNotHeld { item_id: *item_id });
+                }
+                self.charge(unit, *entry, t)?;
+                self.emit(
+                    out,
+                    EventPayload::ItemUsed(ItemUsedEvent {
+                        unit,
+                        item_id: *item_id,
+                        target: *target,
+                    }),
+                );
+                self.delegate(unit, &validated, hooks, out);
+                self.settle_now(&snap, out);
+                Ok(Resolved::Executed)
+            }
+            Validated::Recruit { bait, entry, .. } => {
+                if let Some(bait) = *bait {
+                    if !hooks.take_item(unit, bait) {
+                        return Err(HaltReason::ItemNotHeld { item_id: bait });
+                    }
+                }
+                self.charge(unit, *entry, t)?;
+                self.delegate(unit, &validated, hooks, out);
+                self.settle_now(&snap, out);
+                Ok(Resolved::Executed)
+            }
+            Validated::Flee { entry } => {
+                self.charge(unit, *entry, t)?;
+                self.delegate(unit, &validated, hooks, out);
+                self.end_with(BattleOutcome::Fled, EndHow::Fled, out);
+                Ok(Resolved::BattleOver)
+            }
         }
     }
 
@@ -1497,7 +1455,8 @@ impl TacticalBattle {
     }
 
     /// `Waiting(U)`: open the owner's window with the accumulated pad. A refused window (the
-    /// per-unit-turn cap, unreachable at the design's numbers) ends the turn uncommitted.
+    /// per-unit-turn cap, unreachable at the design's numbers; or a window the shell left open)
+    /// ends the turn uncommitted.
     fn enter_waiting(
         &mut self,
         unit: u32,
@@ -1522,7 +1481,12 @@ impl TacticalBattle {
                 out.window = Some(window);
                 Flow::Waiting
             }
-            Err(_) => {
+            Err(clock::ClockError::WindowCap { .. } | clock::ClockError::AlreadyOpen) => {
+                self.turn_state = TurnState::NotActive;
+                self.end_turn(unit, TurnEndCause::AutoPass, t, out)
+            }
+            Err(clock::ClockError::NoWindow | clock::ClockError::NotDue { .. }) => {
+                // `open_window` never returns these; treated as the cap for totality.
                 self.turn_state = TurnState::NotActive;
                 self.end_turn(unit, TurnEndCause::AutoPass, t, out)
             }
@@ -1553,7 +1517,7 @@ impl TacticalBattle {
         Flow::Ended
     }
 
-    /// `outcome::settle` after a non-attack entry: its events, then the plan sync.
+    /// `outcome::settle` after a non-attack entry (the one terminal-sweep site), then the plan sync.
     fn settle_now(&mut self, snap: &StepSnapshot, out: &mut StepResult) {
         let events = settle(&mut self.state, snap);
         for event in &events {
@@ -1561,17 +1525,30 @@ impl TacticalBattle {
         }
     }
 
-    /// Record a decided outcome (never overwriting one), emit `BattleEnd`, `finish`.
-    fn end_with(&mut self, outcome: BattleOutcome, how: EndHow, out: &mut StepResult) {
-        if self.state.outcome == BattleOutcome::Ongoing {
-            self.state.outcome = outcome;
+    /// A delegated resolution: the hook's events (roster-filtered). A hook never decides the
+    /// outcome — an outcome it wrote is restored, the terminal sweep decides (`settle`), and the
+    /// Flee arms set `Fled` themselves.
+    fn delegate(
+        &mut self,
+        unit: u32,
+        validated: &Validated,
+        hooks: &mut dyn Hooks,
+        out: &mut StepResult,
+    ) {
+        let before = self.state.outcome;
+        let events = hooks.resolve_delegated(&mut self.state, unit, validated);
+        self.state.outcome = before;
+        for event in events.into_iter().filter(hook_may_emit) {
+            self.emit(out, event);
         }
+    }
+
+    /// Record `outcome` (the caller guarantees the battle is undecided), emit `BattleEnd`, `finish`.
+    fn end_with(&mut self, outcome: BattleOutcome, how: EndHow, out: &mut StepResult) {
+        self.state.outcome = outcome;
         self.emit(
             out,
-            EventPayload::BattleEnd(BattleEndEvent {
-                outcome: self.state.outcome,
-                how,
-            }),
+            EventPayload::BattleEnd(BattleEndEvent { outcome, how }),
         );
         self.finish(out);
     }
@@ -1595,11 +1572,12 @@ impl TacticalBattle {
     }
 
     /// Spend `entry` from `unit`'s budget (already validated on a copy).
-    fn charge(&mut self, unit: u32, entry: Entry, t: &TacticsTuning) -> Result<u8, EconomyError> {
-        match self.state.unit_mut(unit) {
-            Some(u) => spend(&mut u.budget, entry, t),
-            None => Ok(0),
-        }
+    fn charge(&mut self, unit: u32, entry: Entry, t: &TacticsTuning) -> Result<u8, HaltReason> {
+        let u = self
+            .state
+            .unit_mut(unit)
+            .ok_or(HaltReason::Act(ActError::UnknownUnit(unit)))?;
+        spend(&mut u.budget, entry, t).map_err(HaltReason::Economy)
     }
 
     /// Push an event and accumulate its presentation cap into the pending pad.
@@ -1608,13 +1586,6 @@ impl TacticalBattle {
             .pending_pad_ms
             .saturating_add(presentation_cap_ms(&event));
         out.events.push(event);
-    }
-
-    /// Push a hook's events, keeping only the kinds a hook may contribute.
-    fn emit_from_hook(&mut self, out: &mut StepResult, events: Vec<EventPayload>) {
-        for event in events.into_iter().filter(hook_may_emit) {
-            self.emit(out, event);
-        }
     }
 
     /// Drop every plan whose unit left `state.queued` (bt-2's sweep or a recruit removal). A
@@ -1638,28 +1609,35 @@ impl TacticalBattle {
         }
     }
 
-    /// `state.queued` from `plans` (the authority).
+    /// Canonicalise the shell-loaded rows — ascending `unit`, one per unit (the first kept),
+    /// units of this battle only — and derive `state.queued` from them (the authority).
+    fn canonicalise_plans(&mut self) {
+        self.plans.retain(|p| self.state.unit(p.unit).is_some());
+        self.plans.sort_by_key(|p| p.unit);
+        self.plans.dedup_by_key(|p| p.unit);
+        self.derive_queued();
+    }
+
+    /// `state.queued` from `plans`.
     fn derive_queued(&mut self) {
         self.state.queued = self.plans.iter().map(|p| p.unit).collect();
     }
 
-    /// Insert or replace in place, keeping `plans` sorted by unit; mirror the id.
+    /// Insert or replace in place (`plans` is canonical), then re-derive the mirror.
     fn put_plan(&mut self, plan: ReadyPlan) {
-        let unit = plan.unit;
-        match self.plans.binary_search_by_key(&unit, |p| p.unit) {
+        match self.plans.binary_search_by_key(&plan.unit, |p| p.unit) {
             Ok(i) => self.plans[i] = plan,
             Err(i) => self.plans.insert(i, plan),
         }
-        if !self.state.queued.contains(&unit) {
-            self.state.queued.push(unit);
-        }
+        self.derive_queued();
     }
 
-    /// Remove and return the plan for `unit`; un-mirror the id.
+    /// Remove and return the plan for `unit`, then re-derive the mirror.
     fn take_plan(&mut self, unit: u32) -> Option<ReadyPlan> {
         let i = self.plans.iter().position(|p| p.unit == unit)?;
-        self.state.queued.retain(|&u| u != unit);
-        Some(self.plans.remove(i))
+        let plan = self.plans.remove(i);
+        self.derive_queued();
+        Some(plan)
     }
 
     fn side_of(&self, unit: u32) -> Option<Side> {
