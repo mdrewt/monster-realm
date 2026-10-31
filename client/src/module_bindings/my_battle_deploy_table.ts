@@ -10,6 +10,7 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 import {
+  SideRow,
   DeployPick,
 } from "./types";
 
@@ -18,6 +19,9 @@ export default __t.row({
   deployId: __t.u64().name("deploy_id"),
   battleId: __t.u64().name("battle_id"),
   owner: __t.identity(),
+  get side() {
+    return SideRow;
+  },
   get picks() {
     return __t.array(DeployPick);
   },

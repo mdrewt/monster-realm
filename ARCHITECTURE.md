@@ -51,7 +51,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `types` | Shared data types (`CharacterState`, `Direction`, `MoveInput`, `Millis`, `TilePos`, `NpcInteraction`). |
 | `monster` | Individuality rolls (IVs, nature), stat derivation, levels and XP curve. |
 | `combat` | Battle state and turn resolution, damage and accuracy, statuses, abilities, weather, AI, XP rewards, PvP forfeit and challenge staleness. |
-| `tactics` | Tactical-battle grid rules (in progress, M-battle-tactics): Manhattan geometry and the one skill target-set function, line of sight, flank, stride bands, terrain × class weights, Dijkstra pathing with an explicit `(cost, y, x)` tie-break, disengage, and the battle-map validator. `tactics::golden` runs a shared JSON fixture natively and through the `tactics_golden` wasm export to prove native = wasm. |
+| `tactics` | Tactical-battle rules (in progress, M-battle-tactics): `geometry` (Manhattan metric, line of sight, the one skill target-set function, flank), `movement` (stride bands, terrain × class weights, Dijkstra pathing with an explicit `(cost, y, x)` tie-break, disengage), `map` (the battle-map validator), `tuning` (`TacticsTuning`, `BattleKind`), `economy` (AP costs, Exert, Guard), `initiative`, `resolve` (`TacticalState` and the damage pipeline), `upkeep`, `outcome` (KO sweep, adjudication), `types` (the storage enums `QueuedAction`, `TurnState`, `Phase`), `events` (the `battle_event` payload), `clock`, `queue` (`TacticalBattle`: the submit gate and executor), `ai`, `encounter`, `recruit`, `rewards`, and `content` (the sidecar registries and lints). `tactics::golden` runs a shared JSON fixture natively and through the `tactics_golden` wasm export to prove native = wasm. |
 | `taming` | Encounter triggers and rolls, recruit chance. |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |
@@ -242,8 +242,9 @@ part of the schema:
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
 | Public world state | `character`, `player`, `profile`, `trade_offer`, `battle_challenge`, `player_quest` | direct subscription |
 | Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
-| Private, participant-readable | `battle` | view `my_battle` (either side) |
-| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `player_dialogue_state`, `heal_cooldown`, `guest_claim`, `player_session`, all schedule tables | none |
+| Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
+| Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`) |
+| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `player_dialogue_state`, `heal_cooldown`, `guest_claim`, `player_session`, all schedule tables | none |
 
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.
@@ -259,13 +260,19 @@ body is the whole security boundary.
 - **`battle`.** Only the two participants see a battle, through `my_battle`. A
   practice battle (same identity on both sides) appears once. `BattleState` carries
   derived stats only, never genes.
+- **Tactical tables.** The participant views join through `battle`'s identity
+  indexes, so a stranger gets nothing; the queue and deploy staging are owner-only,
+  and `battle_unit` carries no queue or ready field (`docs/DECISIONS.md`, "Tactical
+  battle privacy is structural"). `battle_secret`, `battle_wild_unit` and
+  `battle_summary` have no client read path.
 - **Accepted exposures.** `trade_offer` is public so both parties can see it, so the
   amounts offered reveal a lower bound on the offering player's balance. The display
   cards in an offer carry public-projection fields only.
 - **Data lifecycle.** `schema::DATA_LIFECYCLE_MANIFEST` gives every table a deletion
   policy (Erase, Anonymize, ViaJoin, NotOwned), a written basis, and an `exportable`
   flag. A test in `accounts_tests.rs` fails if a table is missing from it or listed
-  but gone.
+  but gone. The tactical tables are swept by `accounts::erase_tactical_rows` (by
+  `battle_id`, before the `battle` anchor is tombstoned) and none is exportable.
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned

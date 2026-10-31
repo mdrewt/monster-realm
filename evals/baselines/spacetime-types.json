@@ -860,20 +860,15 @@
     ]
   },
   "BudgetLastEntry": {
-    "kind": "struct",
-    "fields": [
-      [
-        "kind",
-        "u8"
-      ],
-      [
-        "strides",
-        "u8"
-      ],
-      [
-        "taxed",
-        "bool"
-      ]
+    "kind": "enum",
+    "variants": [
+      "Move",
+      "AttackLight",
+      "AttackHeavy",
+      "Item",
+      "Recruit",
+      "Flee",
+      "EndTurn"
     ]
   },
   "DeployPick": {
@@ -886,6 +881,43 @@
       [
         "slot",
         "u8"
+      ]
+    ]
+  },
+  "SideRow": {
+    "kind": "enum",
+    "variants": [
+      "A",
+      "B"
+    ]
+  },
+  "MoveClassRow": {
+    "kind": "enum",
+    "variants": [
+      "Walk",
+      "Nimble",
+      "Swim",
+      "Fly"
+    ]
+  },
+  "StanceRow": {
+    "kind": "enum",
+    "variants": [
+      "Aggressive",
+      "Territorial",
+      "Skittish"
+    ]
+  },
+  "BudgetMoveSpend": {
+    "kind": "struct",
+    "fields": [
+      [
+        "strides",
+        "u8"
+      ],
+      [
+        "taxed",
+        "bool"
       ]
     ]
   }

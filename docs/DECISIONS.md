@@ -164,6 +164,35 @@ argument. Tables that are public on purpose: content, `character`, `player`,
 `profile` (the leaderboard), `trade_offer` and `battle_challenge` (both parties need
 them), and `player_quest`.
 
+## Tactical battle privacy is structural, and tactical rows are not exportable
+
+**Decision.** The ten tactical tables (`server-module/src/schema.rs`, M-battle-tactics
+bt-7) are all private. Both participants read `battle_tactical`, `battle_unit`,
+`battle_event` and `battle_clock` through views that join through the `battle` anchor's
+two identity indexes (`my_tactical_battle`, `my_battle_units`, `my_battle_events`,
+`my_battle_clock`); a player reads only their own `battle_queue`, `battle_deploy` and
+`player_formation` rows (`my_battle_queue`, `my_battle_deploy`, `my_formation`); and
+`battle_secret` (the seed), `battle_wild_unit` (wild individuality seeds) and
+`battle_summary` (telemetry) have no view at all. `battle_unit` carries no queue or
+ready field. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
+the cascade (`accounts::erase_tactical_rows`) sweeps the per-battle rows by `battle_id`
+before `battle::anonymize_battles` tombstones the anchor, and `battle_summary` survives
+with the deleting side swapped to the tombstone identity.
+
+**Why.** Whether a READY plan exists is the one fact an opponent could act on (design
+§6.3), so it must not be derivable from any participant-visible row: the queue is
+owner-only and the unit row has no flag for it. The seed replays every roll; the wild
+seeds rebuild a recruited wild. Transcripts are deleted 24 h after a battle and the
+summary is aggregate telemetry, so an export would copy either nothing durable or no
+personal data. `battle_unit.owner` is `Option<Identity>` (a wild unit has none, and a
+future two-ally side is just more rows), which no index can key, so unit rows are reached
+through the battle they belong to.
+
+**Rules out.** A ready or queued flag on `battle_unit`; a view over `battle_secret`,
+`battle_wild_unit` or `battle_summary`; a view taking an identity argument; adding an
+exporter for a tactical table; an owner-keyed cascade step for `battle_unit` (it would
+miss wild units and could never be indexed).
+
 ## Bounded client prediction
 
 **Decision.** The client never predicts further ahead than the server would accept.

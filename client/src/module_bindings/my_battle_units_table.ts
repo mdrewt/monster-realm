@@ -13,7 +13,10 @@ import {
   Affinity,
   StatBlock,
   StatusEffect,
+  SideRow,
   BudgetLastEntry,
+  MoveClassRow,
+  StanceRow,
   UnitState,
 } from "./types";
 
@@ -21,7 +24,9 @@ import {
 export default __t.row({
   unitId: __t.u32().name("unit_id"),
   battleId: __t.u64().name("battle_id"),
-  side: __t.u8(),
+  get side() {
+    return SideRow;
+  },
   owner: __t.option(__t.identity()),
   slot: __t.u8(),
   monsterId: __t.option(__t.u64()).name("monster_id"),
@@ -34,7 +39,6 @@ export default __t.row({
   x: __t.u8(),
   y: __t.u8(),
   curHp: __t.u16().name("cur_hp"),
-  maxHp: __t.u16().name("max_hp"),
   get stats() {
     return StatBlock;
   },
@@ -50,9 +54,13 @@ export default __t.row({
   },
   guard: __t.bool(),
   firstStand: __t.bool().name("first_stand"),
-  movement: __t.u8(),
+  get movement() {
+    return MoveClassRow;
+  },
   stride: __t.u8(),
-  stance: __t.option(__t.u8()),
+  get stance() {
+    return __t.option(StanceRow);
+  },
   get state() {
     return UnitState;
   },

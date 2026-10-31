@@ -10,6 +10,7 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 import {
+  SideRow,
   BattleKind,
   Phase,
   TurnState,
@@ -33,7 +34,9 @@ export default __t.row({
   get turnState() {
     return TurnState.name("turn_state");
   },
-  tiePrioritySide: __t.u8().name("tie_priority_side"),
+  get tiePrioritySide() {
+    return SideRow.name("tie_priority_side");
+  },
   pendingPadMs: __t.u32().name("pending_pad_ms"),
   attackDamageDealtA: __t.u32().name("attack_damage_dealt_a"),
   attackDamageDealtB: __t.u32().name("attack_damage_dealt_b"),

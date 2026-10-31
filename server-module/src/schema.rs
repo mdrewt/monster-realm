@@ -16,7 +16,7 @@ use game_core::{
     ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
     StatusKind, TrustTier,
 };
-use spacetimedb::{ConnectionId, Identity};
+use spacetimedb::{ConnectionId, Identity, ReducerContext};
 
 // --- Tables (additive; world tables carry an indexed zone_id) ---
 
@@ -974,23 +974,59 @@ pub struct BattleAction {
 // its primary key, `auto_inc` and index set are decided HERE because the
 // automigration never accepts a key or uniqueness change later.
 //
-// Column codes for game-core types that are not wire types (game-core derives
-// no `SpacetimeType` for them; bt-8's marshal layer owns the mapping):
-// `movement` = `tactics::movement::MoveClass` in declaration order (0 Walk,
-// 1 Nimble, 2 Swim, 3 Fly); `stance` = `tactics::ai::Stance` in declaration
-// order (0 Aggressive, 1 Territorial, 2 Skittish), `None` for a player unit;
-// `side` and `tie_priority_side` = `tactics::geometry::Side` (0 A, 1 B).
+// game-core's `tactics::geometry::Side`, `tactics::movement::MoveClass`,
+// `tactics::ai::Stance` and `tactics::economy::Entry` are deliberately not wire
+// types, so each has a schema-local `SpacetimeType` twin below (variants in the
+// game-core declaration order, append-only). bt-8's marshal layer owns the two
+// exhaustive `match` converters per pair; an enum column cannot hold an illegal
+// code the way a `u8` could.
 
-/// The last ACTION a unit spent this turn (`economy::TurnBudget::last`, the
-/// Guard Recruit or Flee clause), stored losslessly: `kind` is
-/// `economy::Entry` in declaration order (0 Move, 1 Attack Light, 2 Attack
-/// Heavy, 3 Item, 4 Recruit, 5 Flee, 6 EndTurn); `strides` and `taxed` carry a
-/// Move's payload and are 0 and false otherwise.
+/// `tactics::geometry::Side` as a column: `A` = 0, `B` = 1.
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BudgetLastEntry {
-    pub kind: u8,
+pub enum SideRow {
+    A,
+    B,
+}
+
+/// `tactics::movement::MoveClass` as a column.
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveClassRow {
+    Walk,
+    Nimble,
+    Swim,
+    Fly,
+}
+
+/// `tactics::ai::Stance` as a column: the stance in force for a wild unit,
+/// fixed from species content at materialisation (the AI re-derives its plan
+/// from the public board each turn; content is the authority, this is the
+/// battle's record of it). `None` on a player unit.
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StanceRow {
+    Aggressive,
+    Territorial,
+    Skittish,
+}
+
+/// A Move's spend (`economy::Entry::Move { strides, taxed }`).
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetMoveSpend {
     pub strides: u8,
     pub taxed: bool,
+}
+
+/// `economy::TurnBudget::last` as a column (the Guard Recruit or Flee clause):
+/// `economy::Entry` losslessly, `Attack(Tier)` flattened into two variants.
+/// `EndTurn` never updates `last`, so it is representable but never written.
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BudgetLastEntry {
+    Move(BudgetMoveSpend),
+    AttackLight,
+    AttackHeavy,
+    Item,
+    Recruit,
+    Flee,
+    EndTurn,
 }
 
 /// One deploy pick: the owner's monster bound to a spawn slot of its side.
@@ -1021,7 +1057,7 @@ pub struct BattleTactical {
     pub initiative: Vec<u32>,
     pub turn_idx: u8,
     pub turn_state: game_core::tactics::types::TurnState,
-    pub tie_priority_side: u8,
+    pub tie_priority_side: SideRow,
     pub pending_pad_ms: u32,
     pub attack_damage_dealt_a: u32,
     pub attack_damage_dealt_b: u32,
@@ -1034,6 +1070,8 @@ pub struct BattleTactical {
 /// field that revealed a pending plan would be the §6.3 leak. `owner` is a
 /// sum type and carries no index; the cascade reaches units through
 /// `battle_id`. `slot` and `budget_last` are the bt-3 persistence columns.
+/// The unit's max HP is `stats.hp` (as `TacticalUnit::max_hp`), not a second
+/// column that could disagree with it.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = battle_unit)]
 pub struct BattleUnit {
@@ -1042,7 +1080,7 @@ pub struct BattleUnit {
     pub unit_id: u32,
     #[index(btree)]
     pub battle_id: u64,
-    pub side: u8,
+    pub side: SideRow,
     pub owner: Option<Identity>,
     pub slot: u8,
     pub monster_id: Option<u64>,
@@ -1053,7 +1091,6 @@ pub struct BattleUnit {
     pub x: u8,
     pub y: u8,
     pub cur_hp: u16,
-    pub max_hp: u16,
     pub stats: game_core::StatBlock,
     pub skill_ids: Vec<u32>,
     pub status: Option<game_core::StatusEffect>,
@@ -1063,9 +1100,9 @@ pub struct BattleUnit {
     pub budget_last: Option<BudgetLastEntry>,
     pub guard: bool,
     pub first_stand: bool,
-    pub movement: u8,
+    pub movement: MoveClassRow,
     pub stride: u8,
-    pub stance: Option<u8>,
+    pub stance: Option<StanceRow>,
     pub state: game_core::tactics::resolve::UnitState,
 }
 
@@ -1088,9 +1125,10 @@ pub struct BattleQueue {
 }
 
 /// PRIVATE deploy staging (design §8.1 `battle_deploy`): the owner's picks
-/// before materialisation; deleted when units are created. Owner-only read
+/// for one SIDE before materialisation; deleted when units are created. In a
+/// Practice battle one owner stages both sides, hence `side`. Owner-only read
 /// path (`my_battle_deploy`). Synthetic `deploy_id` key: the natural key
-/// `(battle_id, owner)` is a pair.
+/// `(battle_id, side)` is a pair.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = battle_deploy)]
 pub struct BattleDeploy {
@@ -1101,6 +1139,7 @@ pub struct BattleDeploy {
     pub battle_id: u64,
     #[index(btree)]
     pub owner: Identity,
+    pub side: SideRow,
     pub picks: Vec<DeployPick>,
     pub locked: bool,
 }
@@ -1118,7 +1157,7 @@ pub struct BattleClock {
     pub clock_id: u64,
     #[index(btree)]
     pub battle_id: u64,
-    pub side: u8,
+    pub side: SideRow,
     #[index(btree)]
     pub player: Identity,
     pub window_seq: u32,
@@ -1181,7 +1220,9 @@ pub struct BattleEvent {
 /// identity columns mirror `battle` (a wild battle's `opponent_identity` is
 /// zero) so the deletion cascade can tombstone the deleting side while the
 /// row survives. `windows_histogram[k]` counts unit-turns that opened `k`
-/// windows; `idle_ms_a` and `idle_ms_b` are per side.
+/// windows; `idle_ms_a` and `idle_ms_b` are per side; `unit_turns_prequeued`
+/// vs `unit_turns_live`, `halted_plans` and `se_kos_after_r1` (single-hit
+/// super-effective KOs after round 1) are the BT9.5 and design §12-F inputs.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = battle_summary)]
 pub struct BattleSummary {
@@ -1207,6 +1248,10 @@ pub struct BattleSummary {
     pub damage_dealt_b: u32,
     pub hits: u16,
     pub misses: u16,
+    pub unit_turns_prequeued: u16,
+    pub unit_turns_live: u16,
+    pub halted_plans: u16,
+    pub se_kos_after_r1: u16,
 }
 
 /// PRIVATE remembered formation (design §3.3, §8.1 `player_formation`): the
@@ -1224,7 +1269,14 @@ pub struct PlayerFormation {
 /// scan pair (two point reads over `battle`'s identity indexes; the trailing
 /// filter is the practice-battle dedup, see `my_battle`). The four participant
 /// views below key their per-battle point reads on this list and nothing else.
+/// The zero identity (a wild battle's opponent column) and the deletion
+/// tombstone are not callers: they would otherwise match every wild or every
+/// anonymised battle, so they get nothing.
 fn participant_battle_ids(ctx: &spacetimedb::ViewContext) -> Vec<u64> {
+    let sender = ctx.sender();
+    if sender == Identity::ZERO || sender == crate::TOMBSTONE_IDENTITY {
+        return Vec::new();
+    }
     ctx.db
         .battle()
         .player_identity()
@@ -1322,6 +1374,57 @@ fn my_formation(ctx: &spacetimedb::ViewContext) -> Option<PlayerFormation> {
     // RED-PHASE STUB (bt-7): nothing for anyone; the owner boundary lands in the GREEN phase.
     let _ = ctx.sender();
     None
+}
+
+// --- tactical tables: cascade + claim-flow helpers (bt-7) ----
+//
+// The tactical tables have no domain module until bt-8 lands `tactics.rs`, and
+// `accounts.rs` writes only its own tables (its WRITE-ISOLATION header), so the
+// three helpers the accounts paths delegate to live HERE, beside the tables
+// they write. bt-8 may re-home them with the reducers.
+
+/// True if `identity` owns a `player_formation` row (a REKEY-policy table, so
+/// it counts as game data for `accounts::account_has_game_data`).
+pub(crate) fn has_formation(ctx: &ReducerContext, identity: Identity) -> bool {
+    // RED-PHASE STUB (bt-7).
+    let _ = (ctx, identity);
+    false
+}
+
+/// Re-key the guest's `player_formation` row onto the claimer (PK-on-owner:
+/// find, delete, insert under `to`). The claim flow refuses a destination
+/// that already plays, so the two rows never coexist.
+pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity) {
+    // RED-PHASE STUB (bt-7).
+    let _ = (ctx, from, to);
+}
+
+/// The tactical half of the deletion cascade, called by
+/// `accounts::account_deletion_reaper` immediately BEFORE
+/// `battle::anonymize_battles` (after it the owner's anchors are no longer
+/// findable by identity).
+///
+/// (1) The battle-id set is the UNION of every path that still names the
+/// owner: the `battle` anchor chain (`anonymize_battles`'s two index scans),
+/// `battle_clock.player`, `battle_queue.owner`, `battle_deploy.owner`, both
+/// `battle_summary` identity columns, and a scan of `battle_unit` for
+/// `owner == Some(owner)` (a sum type carries no index; the scan is bounded by
+/// bt-8's 24 h GC). The union matters because the cascade's first step
+/// (`resolve_all_live_interactions`) and the prior-terminal sweep in
+/// `battle.rs` can delete an anchor row BEFORE this step runs. (2) For every id
+/// in the set: delete the `battle_tactical`, `battle_secret`,
+/// `battle_wild_unit`, `battle_event`, `battle_unit`, `battle_queue`,
+/// `battle_deploy` and `battle_clock` rows by `battle_id` — the whole battle's
+/// tactical rows go, the other participant's included: the anchor is forced
+/// terminal for both sides and the transcript is GC-bound. (3) Owner-keyed
+/// defence-in-depth deletes for rows naming the identity directly
+/// (`battle_queue.owner`, `battle_deploy.owner`, `battle_clock.player`,
+/// `player_formation`). (4) Every `battle_summary` row naming the owner on
+/// either side is UPDATED once with `crate::TOMBSTONE_IDENTITY` on the matching
+/// column(s) — both at once for a practice row — and survives (telemetry).
+pub(crate) fn erase_tactical_rows(ctx: &ReducerContext, owner: Identity) {
+    // RED-PHASE STUB (bt-7).
+    let _ = (ctx, owner);
 }
 
 // --- data lifecycle (privacy, deletion, export) ----
@@ -1437,11 +1540,10 @@ pub struct DataLifecycleEntry {
 }
 
 /// THE data-lifecycle manifest: exactly one entry per live
-/// table, gate-enforced bidirectionally by
-/// `data_lifecycle_manifest_totality_bidirectional` in `accounts_tests.rs`, so
-/// a new table cannot silently retain personal data — adding a table without
-/// classifying it here is a hard test failure, and a stale entry for a removed
-/// table is too.
+/// table. `accounts_tests.rs` compares this table set with the generated module
+/// definition (`native_host_tests::Fixture::module_def`), so a new table cannot
+/// silently retain personal data — adding a table without classifying it here
+/// is a hard test failure, and a stale entry for a removed table is too.
 ///
 /// Do not re-partition: add new tables with their own entry.
 pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[

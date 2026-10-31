@@ -1166,7 +1166,7 @@
       "initiative": "Vec<u32>",
       "turn_idx": "u8",
       "turn_state": "game_core::tactics::types::TurnState",
-      "tie_priority_side": "u8",
+      "tie_priority_side": "SideRow",
       "pending_pad_ms": "u32",
       "attack_damage_dealt_a": "u32",
       "attack_damage_dealt_b": "u32"
@@ -1200,7 +1200,7 @@
     "columns": {
       "unit_id": "u32",
       "battle_id": "u64",
-      "side": "u8",
+      "side": "SideRow",
       "owner": "Option<Identity>",
       "slot": "u8",
       "monster_id": "Option<u64>",
@@ -1211,7 +1211,6 @@
       "x": "u8",
       "y": "u8",
       "cur_hp": "u16",
-      "max_hp": "u16",
       "stats": "game_core::StatBlock",
       "skill_ids": "Vec<u32>",
       "status": "Option<game_core::StatusEffect>",
@@ -1221,9 +1220,9 @@
       "budget_last": "Option<BudgetLastEntry>",
       "guard": "bool",
       "first_stand": "bool",
-      "movement": "u8",
+      "movement": "MoveClassRow",
       "stride": "u8",
-      "stance": "Option<u8>",
+      "stance": "Option<StanceRow>",
       "state": "game_core::tactics::resolve::UnitState"
     },
     "order": [
@@ -1240,7 +1239,6 @@
       "x",
       "y",
       "cur_hp",
-      "max_hp",
       "stats",
       "skill_ids",
       "status",
@@ -1294,6 +1292,7 @@
       "deploy_id": "u64",
       "battle_id": "u64",
       "owner": "Identity",
+      "side": "SideRow",
       "picks": "Vec<DeployPick>",
       "locked": "bool"
     },
@@ -1301,6 +1300,7 @@
       "deploy_id",
       "battle_id",
       "owner",
+      "side",
       "picks",
       "locked"
     ],
@@ -1318,7 +1318,7 @@
     "columns": {
       "clock_id": "u64",
       "battle_id": "u64",
-      "side": "u8",
+      "side": "SideRow",
       "player": "Identity",
       "window_seq": "u32",
       "window_open_ms": "Option<i64>",
@@ -1437,7 +1437,11 @@
       "damage_dealt_a": "u32",
       "damage_dealt_b": "u32",
       "hits": "u16",
-      "misses": "u16"
+      "misses": "u16",
+      "unit_turns_prequeued": "u16",
+      "unit_turns_live": "u16",
+      "halted_plans": "u16",
+      "se_kos_after_r1": "u16"
     },
     "order": [
       "battle_id",
@@ -1458,7 +1462,11 @@
       "damage_dealt_a",
       "damage_dealt_b",
       "hits",
-      "misses"
+      "misses",
+      "unit_turns_prequeued",
+      "unit_turns_live",
+      "halted_plans",
+      "se_kos_after_r1"
     ],
     "defaults": [],
     "unique": [],

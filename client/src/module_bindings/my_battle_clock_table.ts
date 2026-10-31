@@ -9,11 +9,17 @@ import {
   type AlgebraicTypeType as __AlgebraicTypeType,
   type Infer as __Infer,
 } from "spacetimedb";
+import {
+  SideRow,
+} from "./types";
+
 
 export default __t.row({
   clockId: __t.u64().name("clock_id"),
   battleId: __t.u64().name("battle_id"),
-  side: __t.u8(),
+  get side() {
+    return SideRow;
+  },
   player: __t.identity(),
   windowSeq: __t.u32().name("window_seq"),
   windowOpenMs: __t.option(__t.i64()).name("window_open_ms"),

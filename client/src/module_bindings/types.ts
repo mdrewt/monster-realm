@@ -128,7 +128,9 @@ export type BattleChallengeReaperSchedule = __Infer<typeof BattleChallengeReaper
 export const BattleClock = __t.object("BattleClock", {
   clockId: __t.u64(),
   battleId: __t.u64(),
-  side: __t.u8(),
+  get side() {
+    return SideRow;
+  },
   player: __t.identity(),
   windowSeq: __t.u32(),
   windowOpenMs: __t.option(__t.i64()),
@@ -143,6 +145,9 @@ export const BattleDeploy = __t.object("BattleDeploy", {
   deployId: __t.u64(),
   battleId: __t.u64(),
   owner: __t.identity(),
+  get side() {
+    return SideRow;
+  },
   get picks() {
     return __t.array(DeployPick);
   },
@@ -278,6 +283,10 @@ export const BattleSummary = __t.object("BattleSummary", {
   damageDealtB: __t.u32(),
   hits: __t.u16(),
   misses: __t.u16(),
+  unitTurnsPrequeued: __t.u16(),
+  unitTurnsLive: __t.u16(),
+  haltedPlans: __t.u16(),
+  seKosAfterR1: __t.u16(),
 });
 export type BattleSummary = __Infer<typeof BattleSummary>;
 
@@ -298,7 +307,9 @@ export const BattleTactical = __t.object("BattleTactical", {
   get turnState() {
     return TurnState;
   },
-  tiePrioritySide: __t.u8(),
+  get tiePrioritySide() {
+    return SideRow;
+  },
   pendingPadMs: __t.u32(),
   attackDamageDealtA: __t.u32(),
   attackDamageDealtB: __t.u32(),
@@ -308,7 +319,9 @@ export type BattleTactical = __Infer<typeof BattleTactical>;
 export const BattleUnit = __t.object("BattleUnit", {
   unitId: __t.u32(),
   battleId: __t.u64(),
-  side: __t.u8(),
+  get side() {
+    return SideRow;
+  },
   owner: __t.option(__t.identity()),
   slot: __t.u8(),
   monsterId: __t.option(__t.u64()),
@@ -321,7 +334,6 @@ export const BattleUnit = __t.object("BattleUnit", {
   x: __t.u8(),
   y: __t.u8(),
   curHp: __t.u16(),
-  maxHp: __t.u16(),
   get stats() {
     return StatBlock;
   },
@@ -337,9 +349,13 @@ export const BattleUnit = __t.object("BattleUnit", {
   },
   guard: __t.bool(),
   firstStand: __t.bool(),
-  movement: __t.u8(),
+  get movement() {
+    return MoveClassRow;
+  },
   stride: __t.u8(),
-  stance: __t.option(__t.u8()),
+  get stance() {
+    return __t.option(StanceRow);
+  },
   get state() {
     return UnitState;
   },
@@ -364,12 +380,25 @@ export const BattleWildUnit = __t.object("BattleWildUnit", {
 });
 export type BattleWildUnit = __Infer<typeof BattleWildUnit>;
 
-export const BudgetLastEntry = __t.object("BudgetLastEntry", {
-  kind: __t.u8(),
+// The tagged union or sum type for the algebraic type `BudgetLastEntry`.
+export const BudgetLastEntry = __t.enum("BudgetLastEntry", {
+  get Move() {
+    return BudgetMoveSpend;
+  },
+  AttackLight: __t.unit(),
+  AttackHeavy: __t.unit(),
+  Item: __t.unit(),
+  Recruit: __t.unit(),
+  Flee: __t.unit(),
+  EndTurn: __t.unit(),
+});
+export type BudgetLastEntry = __Infer<typeof BudgetLastEntry>;
+
+export const BudgetMoveSpend = __t.object("BudgetMoveSpend", {
   strides: __t.u8(),
   taxed: __t.bool(),
 });
-export type BudgetLastEntry = __Infer<typeof BudgetLastEntry>;
+export type BudgetMoveSpend = __Infer<typeof BudgetMoveSpend>;
 
 // The tagged union or sum type for the algebraic type `ChallengeStatus`.
 export const ChallengeStatus = __t.enum("ChallengeStatus", {
@@ -781,6 +810,15 @@ export const MoveAction = __t.object("MoveAction", {
 });
 export type MoveAction = __Infer<typeof MoveAction>;
 
+// The tagged union or sum type for the algebraic type `MoveClassRow`.
+export const MoveClassRow = __t.enum("MoveClassRow", {
+  Walk: __t.unit(),
+  Nimble: __t.unit(),
+  Swim: __t.unit(),
+  Fly: __t.unit(),
+});
+export type MoveClassRow = __Infer<typeof MoveClassRow>;
+
 // The tagged union or sum type for the algebraic type `MoveInput`.
 export const MoveInput = __t.enum("MoveInput", {
   get Step() {
@@ -1039,6 +1077,13 @@ export const ShopRow = __t.object("ShopRow", {
 });
 export type ShopRow = __Infer<typeof ShopRow>;
 
+// The tagged union or sum type for the algebraic type `SideRow`.
+export const SideRow = __t.enum("SideRow", {
+  A: __t.unit(),
+  B: __t.unit(),
+});
+export type SideRow = __Infer<typeof SideRow>;
+
 export const SkillAction = __t.object("SkillAction", {
   skillId: __t.u32(),
   get target() {
@@ -1076,6 +1121,14 @@ export const SpeciesRow = __t.object("SpeciesRow", {
   tier: __t.u8(),
 });
 export type SpeciesRow = __Infer<typeof SpeciesRow>;
+
+// The tagged union or sum type for the algebraic type `StanceRow`.
+export const StanceRow = __t.enum("StanceRow", {
+  Aggressive: __t.unit(),
+  Territorial: __t.unit(),
+  Skittish: __t.unit(),
+});
+export type StanceRow = __Infer<typeof StanceRow>;
 
 export const StatBlock = __t.object("StatBlock", {
   hp: __t.u16(),
