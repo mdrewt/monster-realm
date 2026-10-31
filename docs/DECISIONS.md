@@ -331,6 +331,62 @@ the player's battle.
 **Rules out.** Per-call-site battle checks; forfeiting on any single socket close;
 rating practice or wild battles.
 
+## Queued actions halt-and-return; the idle clock resets on every accepted submit
+
+**Decision.** At pop (`game-core/src/tactics/queue.rs`), the first entry failing
+`validate_at_pop` and every later one are wasted: never executed, no AP charged, never
+retried, visible only as `PlanHalted{unit, idx, reason_kind}`. Control returns live
+(`Waiting(U)`) to a player-owned conscious unit with at least `min_action_cost` (2) AP, else
+the turn ends committed. The idle clock (`tactics/clock.rs`) runs only while the battle waits
+on a player's unit; each accepted submit for it closes the window, and re-entering `Waiting`
+opens a fresh full one after the capped presentation pad. A live submit whose first entry
+fails is refused (`InvalidNow`) and changes nothing, clock included. The AP floor bounds a
+unit-turn to 3 windows (6 → 4 → 2). PvP-ruleset expiry auto-passes without Guard and the 4th
+strike against one side forfeits; wild expiry auto-flees. The planner, inventory, recruit headroom
+and Item/Recruit/Flee resolution reach the executor only through the `Hooks` trait; a hook
+may add only `RecruitResult`, `Awards` and `Status` events and never decides the outcome (the
+terminal sweep does; a flee is `Fled` whatever the hook did). Clocks and strike counts are
+kept per side, so in Practice one player holds both. A submit that lands after its deadline
+but before the fire commits is accepted; the fire then finds the window closed and is a no-op.
+
+**Why.** Paying AP for a non-event reads as economy theft, the most-resented pattern in the
+reception corpus; halting means nothing executes from a board the plan did not assume. The
+clock takes the "resets the moment they submit" ruling (D583.2) literally; refusing a submit
+that executes nothing stops zero-cost resubmits refilling the clock forever. `queue.rs` is in
+no later slice's `touches:`, so later rules arrive as hooks the server implements over game-core.
+
+**Rules out.** Charging the first invalid entry's nominal AP (design §12 Q2's alternative); a
+cumulative per-unit-turn clock (§12 Q1's); skipping past an invalid entry (conditional
+scripting); trusting a client-sent tile (a Skill re-aims at its bound unit, a Move re-paths);
+wiring a rule into the executor except through `Hooks`. Accepted reveals: `reason_kind` names
+the failure kind of the first discarded entry, and `QueueVoided` shows that a plan existed.
+
+## Tactical rule conventions carried from bt-2
+
+**Decision.** In a wild battle side A is the player: only it is player-owned
+(`queue::is_player_owned`) and it holds round-1 tie priority (`initiative::round1_priority`).
+Both coins, the round-1 PvP priority coin and the adjudication coin (`outcome::adjudicate`),
+read `splitmix64(..) & 1` with 0 → A. Practice runs the PvP ruleset through the one mapping,
+`BattleKind::uses_pvp_rules` (`tactics/tuning.rs`). A wild mutual wipe is `SideBWins` by
+`FixedOrder` (ADR-0156 R5 as carried; `outcome::check_battle_end`). Every target of an attack
+draws an accuracy then a variance roll, hit or miss (`resolve::draw_rolls`). Flank is judged on
+the board captured before the attack (`resolve::resolve_attack`). Freeze thaw rolls come off the
+one `splitmix64(seed ^ action_seq)` stream (`resolve::draw`, `upkeep::run_upkeep`). The wild
+round cap fires on `round >= wild_round_cap`. First-Stand clears when it saves the unit, as
+well as at its first TurnStart.
+
+**Why.** Each looks arbitrary in the code and is easy to flip, but the executor and its tests
+build on them (`is_player_owned` decides who may use an item, recruit, flee or run a clock).
+Every roll comes off one `action_seq` counter, so one added or skipped draw moves every later
+roll of the battle; the golden fixture (`game-core/tests/fixtures/tactics_golden.json`) pins
+`draw_rolls` natively and in wasm.
+
+**Rules out.** A round-1 coin in a wild battle; matching on `BattleKind::Pvp`, which runs
+Practice as PvE; adjudicating a wild mutual wipe, or a draw outcome (`BattleOutcome` gains no
+variant); one roll shared by an attack's targets, or no variance draw on a miss; flank re-read
+after an earlier KO in the same AoE; a second RNG stream for status rolls; `round ==
+wild_round_cap` (the spec's wording); a First-Stand that survives its own save.
+
 ## Accounts, guest identity and the claim flow
 
 **Decision.** Anonymous play is first-class: every connection gets a SpacetimeDB
