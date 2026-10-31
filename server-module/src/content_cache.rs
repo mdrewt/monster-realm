@@ -43,6 +43,22 @@ static ABILITIES: LazyLock<Result<Vec<game_core::AbilityDef>, String>> =
 static HEAL_LOCATIONS: LazyLock<Result<Vec<game_core::HealLocationDef>, String>> =
     LazyLock::new(game_core::load_heal_locations);
 
+// bt-6: the five tactical sidecar registries (`game_core::tactics::content`).
+static TACTICS_SKILLS: LazyLock<Result<Vec<game_core::TacticsSkillDef>, String>> =
+    LazyLock::new(game_core::load_tactics_skills);
+
+static TACTICS_SPECIES: LazyLock<Result<Vec<game_core::TacticsSpeciesDef>, String>> =
+    LazyLock::new(game_core::load_tactics_species);
+
+static TACTICS_ITEMS: LazyLock<Result<Vec<game_core::TacticsItemDef>, String>> =
+    LazyLock::new(game_core::load_tactics_items);
+
+static TACTICS_ZONES: LazyLock<Result<Vec<game_core::TacticsZoneDef>, String>> =
+    LazyLock::new(game_core::load_tactics_zones);
+
+static BATTLE_MAPS: LazyLock<Result<Vec<game_core::BattleMapEntry>, String>> =
+    LazyLock::new(game_core::load_battle_maps);
+
 /// Zone-maps registry: parsed once, returned as `&'static` on every subsequent call.
 ///
 /// # Errors
@@ -97,6 +113,47 @@ pub(crate) fn cached_abilities() -> Result<&'static Vec<game_core::AbilityDef>, 
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
 pub(crate) fn cached_heal_locations() -> Result<&'static Vec<game_core::HealLocationDef>, String> {
     (*HEAL_LOCATIONS).as_ref().map_err(Clone::clone)
+}
+
+/// `tactics_skills` sidecar registry: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_tactics_skills() -> Result<&'static Vec<game_core::TacticsSkillDef>, String> {
+    (*TACTICS_SKILLS).as_ref().map_err(Clone::clone)
+}
+
+/// `tactics_species` sidecar registry: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_tactics_species() -> Result<&'static Vec<game_core::TacticsSpeciesDef>, String>
+{
+    (*TACTICS_SPECIES).as_ref().map_err(Clone::clone)
+}
+
+/// `tactics_items` sidecar registry: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_tactics_items() -> Result<&'static Vec<game_core::TacticsItemDef>, String> {
+    (*TACTICS_ITEMS).as_ref().map_err(Clone::clone)
+}
+
+/// `tactics_zones` sidecar registry: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_tactics_zones() -> Result<&'static Vec<game_core::TacticsZoneDef>, String> {
+    (*TACTICS_ZONES).as_ref().map_err(Clone::clone)
+}
+
+/// `battle_maps` registry: parsed once per process (validated by `sync_content`).
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_battle_maps() -> Result<&'static Vec<game_core::BattleMapEntry>, String> {
+    (*BATTLE_MAPS).as_ref().map_err(Clone::clone)
 }
 
 // --- Version-keyed type-chart cache ----------------------

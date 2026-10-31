@@ -2626,3 +2626,124 @@ fn dialogue_trees_contract_renderer_escapes_and_orders() {
          node z\ntext line1\\nchoice x forged\nchoice a go\n"
     );
 }
+
+// ===========================================================================
+// bt-6 (BT6.5): the tactical content gate runs in sync_content's VALIDATE phase.
+//
+// Content is compiled-in RON with no injection seam, so no invalid tactical content can reach
+// `sync_content_inner`; the rejection predicate itself (`validate_tactics_content`) is exercised
+// with fixtures in game-core. What is left to pin HERE is the wiring: exactly one call site, in
+// the validate phase (after `VALIDATE PHASE`, before `WRITE PHASE`, so a bad registry rejects
+// before any write), its result propagated with `?` and never discarded. The scan reads the
+// comment-stripped body of the one function so a mention in a comment is not a call.
+// ===========================================================================
+
+/// Remove `/* ... */` block comments, then everything from `//` to the end of each line.
+fn bt6_strip_comments(src: &str) -> String {
+    let mut no_block = String::new();
+    let mut rest = src;
+    while let Some(open) = rest.find("/*") {
+        no_block.push_str(&rest[..open]);
+        match rest[open + 2..].find("*/") {
+            Some(close) => rest = &rest[open + 2 + close + 2..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    no_block.push_str(rest);
+    no_block
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `sync_content_inner` calls `validate_tactics_content` exactly once, inside the validate phase,
+/// and propagates its result with `?`.
+///
+/// kills: no call at all (the gate is never run at publish), the call moved below the
+/// `WRITE PHASE` marker (a bad registry rejects AFTER rows were written), a second call site, a
+/// call above the `VALIDATE PHASE` marker, and a discarded result (`let _ = ...`, `.ok()`,
+/// `unwrap_or`).
+#[test]
+fn sync_content_validates_tactics_content_before_any_write_bt6_5() {
+    const CALL: &str = "validate_tactics_content(";
+    let src = include_str!("content.rs");
+    let start = src
+        .find("pub(crate) fn sync_content_inner")
+        .expect("sync_content_inner must exist in content.rs");
+    let end = start
+        + src[start..]
+            .find("\n}\n")
+            .expect("sync_content_inner must end with a column-0 closing brace");
+    let body = &src[start..end];
+
+    let validate_marker = body
+        .find("====== VALIDATE PHASE ======")
+        .expect("the VALIDATE PHASE marker must exist in sync_content_inner");
+    let write_marker = body
+        .find("====== WRITE PHASE ======")
+        .expect("the WRITE PHASE marker must exist in sync_content_inner");
+    assert!(
+        validate_marker < write_marker,
+        "the VALIDATE PHASE marker must precede the WRITE PHASE marker"
+    );
+
+    let whole = bt6_strip_comments(body);
+    assert_eq!(
+        whole.matches(CALL).count(),
+        1,
+        "sync_content_inner must call validate_tactics_content exactly once (comments excluded)"
+    );
+
+    let before = bt6_strip_comments(&body[..validate_marker]);
+    let validate = bt6_strip_comments(&body[validate_marker..write_marker]);
+    let after = bt6_strip_comments(&body[write_marker..]);
+    assert_eq!(
+        before.matches(CALL).count(),
+        0,
+        "the call must not sit above the VALIDATE PHASE marker"
+    );
+    assert_eq!(
+        after.matches(CALL).count(),
+        0,
+        "the call must not sit at or below the WRITE PHASE marker (a bad registry must reject before any write)"
+    );
+    assert_eq!(
+        validate.matches(CALL).count(),
+        1,
+        "the call must sit between the VALIDATE PHASE and WRITE PHASE markers"
+    );
+
+    let at = validate.find(CALL).expect("call located above");
+    let stmt_end = at
+        + validate[at..]
+            .find(';')
+            .expect("the validate_tactics_content statement must be terminated by `;`");
+    let stmt = validate[at..stmt_end].trim_end();
+    assert!(
+        stmt.ends_with('?'),
+        "the validate_tactics_content result must be propagated with `?`, statement was: {stmt:?}"
+    );
+    for discard in [".ok()", "unwrap_or", "is_ok", "is_err"] {
+        assert!(
+            !stmt.contains(discard),
+            "the result must not be discarded via `{discard}`: {stmt:?}"
+        );
+    }
+
+    // What precedes the call on its own statement: nothing, a `game_core::` path, or a plain
+    // `let <binding> =` -- never `let _ =` / `_ =`.
+    let boundary = validate[..at].rfind([';', '{', '}']).map_or(0, |i| i + 1);
+    let prefix = validate[boundary..at].trim();
+    let prefix = prefix.strip_suffix("game_core::").unwrap_or(prefix).trim();
+    assert!(
+        prefix.is_empty() || (prefix.starts_with("let ") && prefix.ends_with('=')),
+        "the call must be a statement or a `let` binding, found prefix {prefix:?}"
+    );
+    assert!(
+        !prefix.starts_with("let _ ") && !prefix.starts_with("let _="),
+        "the result must not be bound to `_`: {prefix:?}"
+    );
+}
