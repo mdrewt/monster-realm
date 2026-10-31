@@ -60,9 +60,15 @@ mod outcome_tests;
 pub mod queue;
 #[cfg(test)]
 mod queue_tests;
+pub mod recruit;
+#[cfg(test)]
+mod recruit_tests;
 pub mod resolve;
 #[cfg(test)]
 mod resolve_tests;
+pub mod rewards;
+#[cfg(test)]
+mod rewards_tests;
 pub mod tuning;
 #[cfg(test)]
 mod tuning_tests;
