@@ -16,7 +16,7 @@ use crate::combat::status::{tick_status, BattleStatusStore, StatusVariance};
 use crate::combat::types::{BattleOutcome, StatusEffect};
 
 use super::outcome::{end_battle, settle, BattleEndHow, StepSnapshot};
-use super::resolve::{splitmix64, TacticalEvent, TacticalState};
+use super::resolve::{draw, TacticalEvent, TacticalState};
 use super::tuning::{BattleKind, TacticsTuning};
 
 /// Carried M14 damage per tick: Poison `max_hp / 8`, Burn `max_hp / 16`, both min 1; every other
@@ -114,11 +114,7 @@ pub fn run_upkeep(state: &mut TacticalState, t: &TacticsTuning) -> Vec<TacticalE
             continue;
         };
         let thaw_roll = match status {
-            StatusEffect::Freeze => {
-                let roll = (splitmix64(state.seed ^ state.action_seq) % 100) as u8;
-                state.action_seq = state.action_seq.wrapping_add(1);
-                roll
-            }
+            StatusEffect::Freeze => (draw(state) % 100) as u8,
             StatusEffect::Poison
             | StatusEffect::Burn
             | StatusEffect::Paralysis

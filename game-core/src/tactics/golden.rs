@@ -292,6 +292,7 @@ fn roll_stream(seed: u64, action_seq: u64) -> TacticalState {
         width: 1,
         height: 1,
         terrain: vec![Terrain::Plain],
+        blocks_los: vec![false],
         units: Vec::new(),
         initiative: Vec::new(),
         queued: Vec::new(),

@@ -36,9 +36,10 @@ impl StepSnapshot {
         };
         for unit in state.units.iter().filter(|u| u.state == UnitState::Active) {
             let idx = side_index(unit.side);
-            snap.hp_pct[idx] += (u32::from(unit.cur_hp) * 100)
+            let pct = (u32::from(unit.cur_hp) * 100)
                 .checked_div(u32::from(unit.max_hp()))
                 .unwrap_or(0);
+            snap.hp_pct[idx] = snap.hp_pct[idx].saturating_add(pct);
             if unit.is_conscious() {
                 snap.conscious[idx] = snap.conscious[idx].saturating_add(1);
             }
@@ -188,7 +189,7 @@ pub fn settle(state: &mut TacticalState, snap: &StepSnapshot) -> Vec<TacticalEve
 }
 
 /// `Side::A → SideAWins`, `Side::B → SideBWins`.
-pub(crate) fn winner_outcome(side: Side) -> BattleOutcome {
+fn winner_outcome(side: Side) -> BattleOutcome {
     match side {
         Side::A => BattleOutcome::SideAWins,
         Side::B => BattleOutcome::SideBWins,

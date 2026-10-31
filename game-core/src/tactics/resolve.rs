@@ -39,9 +39,9 @@ use super::geometry::{
 };
 use super::initiative::{order, priority_for_round, round1_priority, Contender};
 use super::map::BattleMapDef;
-use super::movement::{stride_for_base_speed, MoveClass, Terrain};
+use super::movement::{MoveClass, Terrain};
 use super::outcome::{settle, BattleEndHow, StepSnapshot};
-use super::tuning::{BattleKind, TacticsTuning};
+use super::tuning::{BattleKind, TacticsTuning, TuningError};
 
 /// The canonical splitmix64 output for state `x` (`crate::tick_seed(x, 0, 0)`):
 /// `splitmix64(0) == 0xE220_A839_7B1D_CDAF`. Every tactics roll and coin is one of these.
@@ -112,12 +112,6 @@ impl TacticalUnit {
     #[must_use]
     pub fn is_conscious(&self) -> bool {
         self.state == UnitState::Active && self.cur_hp > 0
-    }
-
-    /// `movement::stride_for_base_speed(kit.base_speed)`.
-    #[must_use]
-    pub fn stride(&self) -> u8 {
-        stride_for_base_speed(self.kit.base_speed)
     }
 }
 
@@ -208,6 +202,8 @@ pub struct TacticalState {
     pub height: u8,
     /// Row-major `y * width + x` (the validated map's tiles).
     pub terrain: Vec<Terrain>,
+    /// Row-major LoS blockers (the map's `blocks_los`; all false on every P1 map).
+    pub blocks_los: Vec<bool>,
     pub units: Vec<TacticalUnit>,
     /// This round's frozen order (ids); KO and recruit removals are the only mid-round edits
     /// (always a subsequence of the list built at round start). bt-3 owns the turn cursor.
@@ -225,6 +221,8 @@ impl TacticalState {
     /// `Ongoing`. Every unit passes [`validate_unit`], then the set checks (unique id, unique
     /// `(side, slot)`, in-bounds non-overlapping `pos`, a unit on each side); `units` is then
     /// canonicalised to `(side, slot)` order so every per-unit iteration is replay-stable.
+    /// Precondition: `map` passed `map::validate_battle_map` (the caller loads validated content;
+    /// the tile grid is copied as-is).
     ///
     /// # Errors
     /// See [`DeployError`].
@@ -273,6 +271,7 @@ impl TacticalState {
             width: map.width,
             height: map.height,
             terrain: map.tiles.iter().map(|t| t.terrain).collect(),
+            blocks_los: map.tiles.iter().map(|t| t.blocks_los).collect(),
             units,
             initiative: Vec::new(),
             queued: Vec::new(),
@@ -283,14 +282,14 @@ impl TacticalState {
         Ok(state)
     }
 
-    /// The geometry/movement view: no LoS blockers in P1; `alive = is_conscious()`.
+    /// The geometry/movement view: `alive = is_conscious()`.
     #[must_use]
     pub fn board(&self) -> Board {
         Board {
             width: self.width,
             height: self.height,
             terrain: self.terrain.clone(),
-            blocks_los: vec![false; self.terrain.len()],
+            blocks_los: self.blocks_los.clone(),
             units: self.units.iter().map(board_unit_of).collect(),
         }
     }
@@ -384,7 +383,9 @@ pub fn turn_start(state: &mut TacticalState, id: u32, t: &TacticsTuning) -> Resu
 
 /// TurnEnd: sets the unit's Guard per `economy::guard_granted` (read from its budget), then
 /// resets the budget to idle (`TurnBudget::default()`) so nothing can be spent until its next
-/// TurnStart. Returns whether Guard was granted.
+/// TurnStart. Returns the unit's Guard. A unit whose budget is already idle (its turn never
+/// started, or already ended) is left untouched: a second TurnEnd is a no-op that reports the
+/// standing Guard, never a revocation.
 ///
 /// # Errors
 /// [`can_act`]'s.
@@ -396,6 +397,9 @@ pub fn turn_end(
 ) -> Result<bool, ActError> {
     can_act(state, id)?;
     let unit = state.unit_mut(id).ok_or(ActError::UnknownUnit(id))?;
+    if unit.budget == TurnBudget::default() {
+        return Ok(unit.guard);
+    }
     let guard = guard_granted(cause, &unit.budget, t);
     unit.guard = guard;
     unit.budget = TurnBudget::default();
@@ -472,11 +476,17 @@ pub struct RollPair {
 /// Draw one target's [`RollPair`] from `splitmix64(seed ^ action_seq)`, advancing `action_seq`
 /// (wrapping) once per value: accuracy = `% 100` first, then variance = `85 + % 16`.
 pub fn draw_rolls(state: &mut TacticalState) -> RollPair {
-    let accuracy = (splitmix64(state.seed ^ state.action_seq) % 100) as u8;
-    state.action_seq = state.action_seq.wrapping_add(1);
-    let variance = 85 + (splitmix64(state.seed ^ state.action_seq) % 16) as u8;
-    state.action_seq = state.action_seq.wrapping_add(1);
+    let accuracy = (draw(state) % 100) as u8;
+    let variance = 85 + (draw(state) % 16) as u8;
     RollPair { accuracy, variance }
+}
+
+/// ONE value from the private stream — `splitmix64(seed ^ action_seq)` — advancing
+/// `action_seq` (wrapping). Every tactics roll goes through here, so the stream cannot fork.
+pub(crate) fn draw(state: &mut TacticalState) -> u64 {
+    let value = splitmix64(state.seed ^ state.action_seq);
+    state.action_seq = state.action_seq.wrapping_add(1);
+    value
 }
 
 /// Every intermediate of the pipeline for one target (the golden vectors pin the order).
@@ -495,6 +505,9 @@ pub struct PipelineTrace {
 }
 
 /// The pure §2.4 pipeline for one target with the rolls already drawn. Mutates nothing.
+/// Preconditions (enforced by `resolve_attack` and the golden harness, not here): both units
+/// pass [`validate_unit`] and `t.validate()` passed — the carried `calc_damage` divides by the
+/// target's defense and Guard/flank by the tuning denominators.
 #[must_use]
 pub fn damage_pipeline(
     attacker: &TacticalUnit,
@@ -552,13 +565,18 @@ pub fn damage_pipeline(
     }
 }
 
-/// Why an attack entry is INVALID (0 AP, no rolls drawn, state untouched).
+/// Why an attack entry is INVALID (0 AP, no rolls drawn, state untouched). `Tuning` and
+/// `BadUnit` are the hostile-state guards: a state composed outside `TacticalState::new` (the
+/// fields are public) or an unvalidated tuning is refused before any arithmetic can divide by
+/// zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolveError {
     Act(ActError),
     UnknownSkill { unit: u32, skill_id: u32 },
     Geometry(GeometryError),
     Economy(EconomyError),
+    Tuning(TuningError),
+    BadUnit(DeployError),
 }
 
 /// What one resolved attack did. Whether the actor KO'd itself (an `All`-filter AoE → the
@@ -569,8 +587,9 @@ pub struct AttackOutcome {
     pub ap_spent: u8,
 }
 
-/// Resolve one attack entry: snapshot (`StepSnapshot::capture`), validate (`can_act` → skill in
-/// kit → `target_set` → `spend`), then per target in `target_set` order draw accuracy and
+/// Resolve one attack entry: snapshot (`StepSnapshot::capture`), validate (`t.validate()` →
+/// `can_act` → `validate_unit(actor)` → skill in kit → `target_set` → `validate_unit` on every
+/// target → `spend`), then per target in `target_set` order draw accuracy and
 /// variance (both, hit or miss; exactly two draws per target), run [`damage_pipeline`] with flank
 /// evaluated on the PRE-attack board, apply HP / First-Stand / status (the carried rule: hit, not
 /// immune, not KO'd, no prior status; Sleep arrives with 3 turns), add enemy-side `damage` to
@@ -589,11 +608,13 @@ pub fn resolve_attack(
     t: &TacticsTuning,
 ) -> Result<AttackOutcome, ResolveError> {
     let snap = StepSnapshot::capture(state);
+    t.validate().map_err(ResolveError::Tuning)?;
     can_act(state, attacker).map_err(ResolveError::Act)?;
     let actor = state
         .unit(attacker)
         .ok_or(ResolveError::Act(ActError::UnknownUnit(attacker)))?
         .clone();
+    validate_unit(&actor).map_err(ResolveError::BadUnit)?;
     let skill = actor
         .kit
         .skills
@@ -607,6 +628,9 @@ pub fn resolve_attack(
     let board = state.board();
     let targets =
         target_set(&skill.geometry, attacker, aim, &board).map_err(ResolveError::Geometry)?;
+    for target in targets.iter().filter_map(|&id| state.unit(id)) {
+        validate_unit(target).map_err(ResolveError::BadUnit)?;
+    }
     let ap_spent = {
         let unit = state
             .unit_mut(attacker)
@@ -659,7 +683,8 @@ pub fn resolve_attack(
             }
         }
         if target.side != actor.side {
-            state.attack_damage_dealt[side_index(actor.side)] += u32::from(trace.applied);
+            let tally = &mut state.attack_damage_dealt[side_index(actor.side)];
+            *tally = tally.saturating_add(u32::from(trace.applied));
         }
         results.push(TargetResult {
             unit: target_id,
