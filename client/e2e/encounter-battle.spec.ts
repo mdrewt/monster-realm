@@ -27,10 +27,16 @@ import { pressAccel, pressButton } from './controls';
 // to 8 (battle_xp_reward is >= 1, xp.rs) — a VISIBLE XP grant in the box. The seed level MUST stay
 // inside zone 0's encounter bands (Lv3-7 / Lv4-8, content/encounters/000-core.ron):
 // game-core roll_encounter only draws entries whose band contains the PARTY level, so a Lv9+
-// party meets nothing in zone 0 (measured: a Lv10 seed walked 120 grass steps without a roll). Its defense columns are
-// raised so a zone-0 wild (Lv3-8) cannot KO it; attack is left natural, so a kill normally takes
-// several hits and E1 sees an intermediate HP frame. Level 8 stays far below every evolution gate
-// out of species 1 (min_level 20 / essence gates), so no evolution can fire here.
+// party meets nothing in zone 0 (measured: a Lv10 seed walked 120 grass steps without a roll).
+// The level seed leaves the stats alone: the starter keeps its level-5 creation roll
+// (roll_starter: attack 8-12, HP 19-21), so the attack and defense columns are seeded too.
+// Defense 250 makes the wild's Heavy (the AI always throws it) land only 1 HP per hit, so the
+// starter takes 19+ hits to fall; attack 100 (SEED_ATTACK) makes Ember, the first skill cell
+// (accuracy 100), KO the toughest zone-0 wild in <= 4 hits. On the natural roll the starter
+// lost that race on bad draws once bt-6 retuned Ember 40 -> 20. E1 reads either an intermediate
+// or a terminal HP frame (a Sproutlet dies in one hit; the terminal frame keeps both cards).
+// Level 8 stays far below every evolution gate out of species 1 (min_level 20 / essence gates),
+// so no evolution can fire here.
 //
 // Water wilds (Tidalin) resist Fire and are fled with Run, exactly as recruit.spec does — bounded.
 // No millisecond-class assertions: every wait is a multi-second waitForFunction.
@@ -46,6 +52,16 @@ import { pressAccel, pressButton } from './controls';
 const SEED_LEVEL = 7;
 const SEED_XP = 8 * 8 * 8 - 1; // one short of level 8 (xp_for_level = level^3)
 const SEED_DEFENSE = 250;
+/** Starter attack. Every attack presses the FIRST skill cell, Ember, a Light that bt-6 retuned
+ *  40 -> 20. The SQL raises the level, not the stats, so the starter fought on its level-5
+ *  creation roll (attack 8-12) and lost the chip race on bad draws: E2 read Defeat (master red
+ *  since bt-6, CI run 41227281094). At Lv7 (2L/5+2 = 4) against the toughest zone-0 wild, a
+ *  Lv7 Flameling (defense 15, HP 25): 4*20*100/15/50+2 = 12 -> STAB 18 -> x0.5 = 9 -> variance
+ *  85-100 = 7-9 per hit, <= 4 hits; a Lv8 Sproutlet (defense 16, HP 27): 12 -> 18 -> x2 = 36
+ *  -> 30-36, one hit. The wild's Heavy lands 1 per hit on SEED_DEFENSE, so the starter
+ *  (HP >= 19) takes >= 19 hits to fall (calc_damage, derive_stats; an enumeration of all 2^32
+ *  encounter seeds: P(win) 79.4 % on the natural roll, 100 % at SEED_ATTACK). */
+const SEED_ATTACK = 100;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls. 120 steps ~ 60 grass entries,
  *  P(no encounter) = 0.8^60 ~ 1.5e-6 (recruit.spec MAX_WALK_STEPS arithmetic). */
 const MAX_WALK_STEPS = 120;
@@ -399,6 +415,7 @@ test.describe
       for (const [col, val] of [
         ['stat_defense', SEED_DEFENSE],
         ['stat_sp_defense', SEED_DEFENSE],
+        ['stat_attack', SEED_ATTACK],
       ] as const) {
         sql(`UPDATE monster SET ${col} = ${val} WHERE monster_id = ${monsterId}`, 'seed');
       }
@@ -406,6 +423,19 @@ test.describe
         sql(`UPDATE ${table} SET xp = ${SEED_XP} WHERE monster_id = ${monsterId}`, 'seed');
         sql(`UPDATE ${table} SET level = ${SEED_LEVEL} WHERE monster_id = ${monsterId}`, 'seed');
       }
+      // ANTI-NO-OP: read the seed back. A seed that matched no row, or landed in the wrong
+      // table, would leave the starter on its natural roll: E2 red on ~21 % of encounter seeds
+      // with no pointer to the cause.
+      const row = sqlRows(
+        sql(`SELECT * FROM monster WHERE monster_id = ${monsterId}`, 'seed'),
+        'seed',
+      ).find((r) => r.monster_id === monsterId);
+      expect(Number(row?.stat_attack), 'the starter row reads back the attack seed').toBe(
+        SEED_ATTACK,
+      );
+      expect(Number(row?.stat_defense), 'the starter row reads back the defense seed').toBe(
+        SEED_DEFENSE,
+      );
       await page.waitForFunction(
         (lvl) => (window as unknown as Win).__game().ownMonsters[0]?.level === lvl,
         SEED_LEVEL,
