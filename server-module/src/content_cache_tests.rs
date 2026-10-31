@@ -245,6 +245,142 @@ fn cached_items_ptr_eq_second_call() {
 }
 
 // ===========================================================================
+// bt-6 (BT6.6): the five tactical sidecar registries
+//
+// Each accessor must (a) return exactly what the game-core loader returns and
+// (b) parse once per process. Every row type derives `PartialEq + Eq`, so the
+// comparison is the whole `Vec`. The non-empty assertions keep a vacuous
+// `[] == []` from passing; the exact row counts are pinned by the game-core
+// content tests, not here.
+// ===========================================================================
+
+/// `cached_tactics_skills()` == `game_core::load_tactics_skills()`.
+///
+/// Wrong impl killed: a static over the wrong loader, a truncated or reordered Vec.
+#[test]
+fn cached_tactics_skills_matches_load_bt6_6() {
+    let cached = cached_tactics_skills().expect("cached_tactics_skills() must succeed");
+    let loaded =
+        game_core::load_tactics_skills().expect("game_core::load_tactics_skills() must succeed");
+    assert!(!cached.is_empty(), "tactics_skills must not be empty");
+    assert_eq!(
+        *cached, loaded,
+        "cached_tactics_skills() data does not match game_core::load_tactics_skills()"
+    );
+}
+
+/// `cached_tactics_species()` == `game_core::load_tactics_species()`.
+#[test]
+fn cached_tactics_species_matches_load_bt6_6() {
+    let cached = cached_tactics_species().expect("cached_tactics_species() must succeed");
+    let loaded =
+        game_core::load_tactics_species().expect("game_core::load_tactics_species() must succeed");
+    assert!(!cached.is_empty(), "tactics_species must not be empty");
+    assert_eq!(
+        *cached, loaded,
+        "cached_tactics_species() data does not match game_core::load_tactics_species()"
+    );
+}
+
+/// `cached_tactics_items()` == `game_core::load_tactics_items()`.
+#[test]
+fn cached_tactics_items_matches_load_bt6_6() {
+    let cached = cached_tactics_items().expect("cached_tactics_items() must succeed");
+    let loaded =
+        game_core::load_tactics_items().expect("game_core::load_tactics_items() must succeed");
+    assert!(!cached.is_empty(), "tactics_items must not be empty");
+    assert_eq!(
+        *cached, loaded,
+        "cached_tactics_items() data does not match game_core::load_tactics_items()"
+    );
+}
+
+/// `cached_tactics_zones()` == `game_core::load_tactics_zones()`.
+#[test]
+fn cached_tactics_zones_matches_load_bt6_6() {
+    let cached = cached_tactics_zones().expect("cached_tactics_zones() must succeed");
+    let loaded =
+        game_core::load_tactics_zones().expect("game_core::load_tactics_zones() must succeed");
+    assert!(!cached.is_empty(), "tactics_zones must not be empty");
+    assert_eq!(
+        *cached, loaded,
+        "cached_tactics_zones() data does not match game_core::load_tactics_zones()"
+    );
+}
+
+/// `cached_battle_maps()` == `game_core::load_battle_maps()`.
+#[test]
+fn cached_battle_maps_matches_load_bt6_6() {
+    let cached = cached_battle_maps().expect("cached_battle_maps() must succeed");
+    let loaded = game_core::load_battle_maps().expect("game_core::load_battle_maps() must succeed");
+    assert!(!cached.is_empty(), "battle_maps must not be empty");
+    assert_eq!(
+        *cached, loaded,
+        "cached_battle_maps() data does not match game_core::load_battle_maps()"
+    );
+}
+
+/// Two successive calls to `cached_tactics_skills()` return the SAME `Vec` pointer.
+#[test]
+fn cached_tactics_skills_ptr_eq_second_call_bt6_6() {
+    let first = cached_tactics_skills().expect("first call must succeed");
+    let second = cached_tactics_skills().expect("second call must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_tactics_skills() returned different pointers on two calls — \
+         LazyLock is not caching"
+    );
+}
+
+/// Two successive calls to `cached_tactics_species()` return the SAME `Vec` pointer.
+#[test]
+fn cached_tactics_species_ptr_eq_second_call_bt6_6() {
+    let first = cached_tactics_species().expect("first call must succeed");
+    let second = cached_tactics_species().expect("second call must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_tactics_species() returned different pointers on two calls — \
+         LazyLock is not caching"
+    );
+}
+
+/// Two successive calls to `cached_tactics_items()` return the SAME `Vec` pointer.
+#[test]
+fn cached_tactics_items_ptr_eq_second_call_bt6_6() {
+    let first = cached_tactics_items().expect("first call must succeed");
+    let second = cached_tactics_items().expect("second call must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_tactics_items() returned different pointers on two calls — \
+         LazyLock is not caching"
+    );
+}
+
+/// Two successive calls to `cached_tactics_zones()` return the SAME `Vec` pointer.
+#[test]
+fn cached_tactics_zones_ptr_eq_second_call_bt6_6() {
+    let first = cached_tactics_zones().expect("first call must succeed");
+    let second = cached_tactics_zones().expect("second call must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_tactics_zones() returned different pointers on two calls — \
+         LazyLock is not caching"
+    );
+}
+
+/// Two successive calls to `cached_battle_maps()` return the SAME `Vec` pointer.
+#[test]
+fn cached_battle_maps_ptr_eq_second_call_bt6_6() {
+    let first = cached_battle_maps().expect("first call must succeed");
+    let second = cached_battle_maps().expect("second call must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_battle_maps() returned different pointers on two calls — \
+         LazyLock is not caching"
+    );
+}
+
+// ===========================================================================
 // Abilities + heal-locations caches, and the
 // version-keyed type-chart cache
 //

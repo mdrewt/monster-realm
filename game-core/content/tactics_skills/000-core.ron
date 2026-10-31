@@ -1,0 +1,28 @@
+// Tactical skill sidecar (bt-6) — one row per skill, keyed by skill_id. The
+// carried skills/ rows keep power, accuracy and affinity; this registry adds
+// the AP tier and the grid geometry (design 3.1, 4.1). Lints: a range_max of 3
+// or more starts at range_min 2; an `All` friendly-fire filter needs origin
+// TargetUnit.
+[
+    // Melee (range 1, single target).
+    (skill_id: 2,  tier: Heavy, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 4,  tier: Light, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 41, tier: Heavy, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    // Lance (range 1-2, single target).
+    (skill_id: 3,  tier: Light, range_min: 1, range_max: 2, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 5,  tier: Light, range_min: 1, range_max: 2, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 11, tier: Light, range_min: 1, range_max: 2, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 43, tier: Heavy, range_min: 1, range_max: 2, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    // Ranged (range 2-3, single target).
+    (skill_id: 1,  tier: Light, range_min: 2, range_max: 3, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 40, tier: Light, range_min: 2, range_max: 3, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    // Artillery (range 2-3, Diamond radius 1 around the target).
+    (skill_id: 6,  tier: Heavy, range_min: 2, range_max: 3, origin: TargetUnit, shape: Diamond, radius: 1, ff_filter: Enemies),
+    // Self-centred Burst (radius 1, the caster's own tile excluded).
+    (skill_id: 42, tier: Light, range_min: 0, range_max: 0, origin: Caster, shape: Burst, radius: 1, ff_filter: Enemies),
+    // Weather setters: a row each, in no P1 kit (they return with the weather wave).
+    (skill_id: 7,  tier: Light, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 8,  tier: Light, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 9,  tier: Light, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+    (skill_id: 10, tier: Light, range_min: 1, range_max: 1, origin: TargetUnit, shape: Single, radius: 0, ff_filter: Enemies),
+]

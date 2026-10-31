@@ -25,6 +25,7 @@
 //! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement.
 //! - `recruit`    — the recruit rules behind the turn machine's gate: quantized odds + line items, preflight, the roll, the rebuild.
 //! - `rewards`    — the KO hook's in-battle ledger (XP split, essence, currency) and the battle-end payout.
+//! - `content`    — the bt-6 sidecar registries (skills/species/items/zones/maps + tuning), the kit join, the lints.
 
 pub mod ai;
 #[cfg(test)]
@@ -32,6 +33,9 @@ mod ai_tests;
 pub mod clock;
 #[cfg(test)]
 mod clock_tests;
+pub mod content;
+#[cfg(test)]
+mod content_tests;
 pub mod economy;
 #[cfg(test)]
 mod economy_tests;
@@ -83,6 +87,13 @@ mod upkeep_tests;
 
 pub use ai::{is_exhausted, plan, Stance};
 pub use clock::{ClockError, ClockState, Expiry, Window};
+pub use content::{
+    build_kits, dmg_ref, lint_kits, load_battle_maps, load_tactics_items, load_tactics_skills,
+    load_tactics_species, load_tactics_tuning, load_tactics_zones, parse_tactics_tuning,
+    validate_battle_maps, validate_tactics_content, validate_tactics_items, validate_tactics_zones,
+    BattleMapEntry, ItemTarget, Role, SpeciesTactics, TacticsContentError, TacticsItemDef,
+    TacticsRegistries, TacticsSkillDef, TacticsSpeciesDef, TacticsZoneDef,
+};
 pub use economy::{
     apply_flank, apply_guard, cost, guard_granted, plan_cost, spend, EconomyError, Entry, Tier,
     TurnBudget, TurnEndCause,

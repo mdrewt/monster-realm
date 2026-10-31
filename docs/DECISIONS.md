@@ -88,6 +88,25 @@ editing `game-core/content/` without bumping `CONTENT_VERSION` and regenerating 
 baseline (the eval failure message prints the exact command); a locale column on
 content rows; localized strings in RON content.
 
+## Tactical content lives in sidecar registries keyed by id
+
+**Decision.** Tactical battle data does not add fields to `SkillDef`, `Species`, `ItemDef`,
+`ZoneDef` or `EncounterTable`. It lives in its own registries under `game-core/content/`
+(`tactics_skills/`, `tactics_species/`, `tactics_items/`, `tactics_zones/`, `battle_maps/`,
+plus the `tactics_tuning.ron` singleton), each row keyed by the carried id.
+`tactics::content::build_kits` joins them onto the carried rows, and
+`validate_tactics_content` runs that join plus the kit lints. CI runs it as ordinary tests;
+`sync_content` runs it in its validate phase, before any write.
+
+**Why.** A new field on a carried content struct breaks every hand-built struct literal
+(about 100 across game-core and the server tests) and the production marshaling. A field on
+the encounter row would also be lost on the `encounter` table round trip without a schema
+change. Sidecars keep the carried structs and tables frozen. Coverage ("every skill and
+species id has exactly one row") is checked in the join, so a missing row fails loudly.
+
+**Rules out.** Folding tactical fields into the carried structs before the 1v1 system is
+retired; a second copy of the lints in the server; a default row for an uncovered id.
+
 ## Server authority: thin reducers in domain modules
 
 **Decision.** The server module is split into domain modules (`server-module/src/`:

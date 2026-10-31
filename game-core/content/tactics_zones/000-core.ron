@@ -1,0 +1,7 @@
+// Tactical zone sidecar (bt-6) — one row per zone, keyed by zone_id: the
+// pack-size weights in per-mille (sum 1000) and the PvE battle-map pool (ids
+// into battle_maps/; the map is pool[encounter_seed % len]).
+[
+    (zone_id: 0, pack_weights: (one: 600, two: 300, three: 100), battle_map_pool: [1, 3, 4, 6]),
+    (zone_id: 1, pack_weights: (one: 600, two: 300, three: 100), battle_map_pool: [1, 2, 4, 5]),
+]

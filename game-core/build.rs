@@ -17,7 +17,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// The thirteen glob-loaded registries, each a directory of `*.ron` parts.
+/// The eighteen glob-loaded registries, each a directory of `*.ron` parts.
 const REGISTRIES: &[&str] = &[
     "zones",
     "species",
@@ -35,6 +35,12 @@ const REGISTRIES: &[&str] = &[
     // The empty-part guard below is a FILE-count check, so a lone part
     // containing `[]` is legal.
     "evolution_paths",
+    // bt-6: the tactical SIDECAR registries keyed by id (`tactics::content`).
+    "tactics_skills",
+    "tactics_species",
+    "tactics_items",
+    "tactics_zones",
+    "battle_maps",
 ];
 
 fn main() {
