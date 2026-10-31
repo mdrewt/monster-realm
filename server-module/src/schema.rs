@@ -16,7 +16,7 @@ use game_core::{
     ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
     StatusKind, TrustTier,
 };
-use spacetimedb::{ConnectionId, Identity, ReducerContext};
+use spacetimedb::{ConnectionId, Identity, ReducerContext, Table};
 
 // --- Tables (additive; world tables carry an indexed zone_id) ---
 
@@ -1297,12 +1297,9 @@ fn participant_battle_ids(ctx: &spacetimedb::ViewContext) -> Vec<u64> {
 /// battle the caller is a side of. THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_tactical_battle, public)]
 fn my_tactical_battle(ctx: &spacetimedb::ViewContext) -> Vec<BattleTactical> {
-    // RED-PHASE STUB (bt-7): every battle's row; the participant boundary lands in the GREEN phase.
-    let _ = ctx.sender();
-    ctx.db
-        .battle_tactical()
-        .map_id()
-        .filter(0u32..=u32::MAX)
+    participant_battle_ids(ctx)
+        .into_iter()
+        .filter_map(|id| ctx.db.battle_tactical().battle_id().find(id))
         .collect()
 }
 
@@ -1311,24 +1308,18 @@ fn my_tactical_battle(ctx: &spacetimedb::ViewContext) -> Vec<BattleTactical> {
 /// participants per design §6.3). THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_battle_units, public)]
 fn my_battle_units(ctx: &spacetimedb::ViewContext) -> Vec<BattleUnit> {
-    // RED-PHASE STUB (bt-7): every battle's rows; the participant boundary lands in the GREEN phase.
-    let _ = ctx.sender();
-    ctx.db
-        .battle_unit()
-        .battle_id()
-        .filter(0u64..=u64::MAX)
+    participant_battle_ids(ctx)
+        .into_iter()
+        .flat_map(|id| ctx.db.battle_unit().battle_id().filter(id))
         .collect()
 }
 
 /// Participant read path for `battle_event`. THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_battle_events, public)]
 fn my_battle_events(ctx: &spacetimedb::ViewContext) -> Vec<BattleEvent> {
-    // RED-PHASE STUB (bt-7): every battle's rows; the participant boundary lands in the GREEN phase.
-    let _ = ctx.sender();
-    ctx.db
-        .battle_event()
-        .battle_id()
-        .filter(0u64..=u64::MAX)
+    participant_battle_ids(ctx)
+        .into_iter()
+        .flat_map(|id| ctx.db.battle_event().battle_id().filter(id))
         .collect()
 }
 
@@ -1336,12 +1327,9 @@ fn my_battle_events(ctx: &spacetimedb::ViewContext) -> Vec<BattleEvent> {
 /// battle the caller is in. THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_battle_clock, public)]
 fn my_battle_clock(ctx: &spacetimedb::ViewContext) -> Vec<BattleClock> {
-    // RED-PHASE STUB (bt-7): every battle's rows; the participant boundary lands in the GREEN phase.
-    let _ = ctx.sender();
-    ctx.db
-        .battle_clock()
-        .battle_id()
-        .filter(0u64..=u64::MAX)
+    participant_battle_ids(ctx)
+        .into_iter()
+        .flat_map(|id| ctx.db.battle_clock().battle_id().filter(id))
         .collect()
 }
 
@@ -1349,21 +1337,17 @@ fn my_battle_clock(ctx: &spacetimedb::ViewContext) -> Vec<BattleClock> {
 /// nothing of the opponent's (design §6.3). THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_battle_queue, public)]
 fn my_battle_queue(ctx: &spacetimedb::ViewContext) -> Vec<BattleQueue> {
-    // RED-PHASE STUB (bt-7): the design 6.3 leak — both participants' rows; the owner boundary lands in the GREEN phase.
-    participant_battle_ids(ctx)
-        .into_iter()
-        .flat_map(|id| ctx.db.battle_queue().battle_id().filter(id))
-        .collect()
+    ctx.db.battle_queue().owner().filter(ctx.sender()).collect()
 }
 
 /// OWNER-ONLY read path for `battle_deploy`: the caller's own staging rows.
 /// THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_battle_deploy, public)]
 fn my_battle_deploy(ctx: &spacetimedb::ViewContext) -> Vec<BattleDeploy> {
-    // RED-PHASE STUB (bt-7): the design 6.3 leak — both participants' rows; the owner boundary lands in the GREEN phase.
-    participant_battle_ids(ctx)
-        .into_iter()
-        .flat_map(|id| ctx.db.battle_deploy().battle_id().filter(id))
+    ctx.db
+        .battle_deploy()
+        .owner()
+        .filter(ctx.sender())
         .collect()
 }
 
@@ -1371,9 +1355,10 @@ fn my_battle_deploy(ctx: &spacetimedb::ViewContext) -> Vec<BattleDeploy> {
 /// nothing. THIS BODY is the whole boundary.
 #[spacetimedb::view(accessor = my_formation, public)]
 fn my_formation(ctx: &spacetimedb::ViewContext) -> Option<PlayerFormation> {
-    // RED-PHASE STUB (bt-7): nothing for anyone; the owner boundary lands in the GREEN phase.
-    let _ = ctx.sender();
-    None
+    ctx.db
+        .player_formation()
+        .owner_identity()
+        .find(ctx.sender())
 }
 
 // --- tactical tables: cascade + claim-flow helpers (bt-7) ----
@@ -1386,17 +1371,25 @@ fn my_formation(ctx: &spacetimedb::ViewContext) -> Option<PlayerFormation> {
 /// True if `identity` owns a `player_formation` row (a REKEY-policy table, so
 /// it counts as game data for `accounts::account_has_game_data`).
 pub(crate) fn has_formation(ctx: &ReducerContext, identity: Identity) -> bool {
-    // RED-PHASE STUB (bt-7).
-    let _ = (ctx, identity);
-    false
+    ctx.db
+        .player_formation()
+        .owner_identity()
+        .find(identity)
+        .is_some()
 }
 
 /// Re-key the guest's `player_formation` row onto the claimer (PK-on-owner:
 /// find, delete, insert under `to`). The claim flow refuses a destination
 /// that already plays, so the two rows never coexist.
 pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity) {
-    // RED-PHASE STUB (bt-7).
-    let _ = (ctx, from, to);
+    let Some(row) = ctx.db.player_formation().owner_identity().find(from) else {
+        return;
+    };
+    ctx.db.player_formation().owner_identity().delete(from);
+    ctx.db.player_formation().insert(PlayerFormation {
+        owner_identity: to,
+        monster_ids: row.monster_ids,
+    });
 }
 
 /// The tactical half of the deletion cascade, called by
@@ -1423,8 +1416,113 @@ pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity
 /// either side is UPDATED once with `crate::TOMBSTONE_IDENTITY` on the matching
 /// column(s) — both at once for a practice row — and survives (telemetry).
 pub(crate) fn erase_tactical_rows(ctx: &ReducerContext, owner: Identity) {
-    // RED-PHASE STUB (bt-7).
-    let _ = (ctx, owner);
+    // (1) The battle-id set: every path that still names the owner.
+    let mut ids: Vec<u64> = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(owner)
+        .map(|b| b.battle_id)
+        .collect();
+    ids.extend(
+        ctx.db
+            .battle()
+            .opponent_identity()
+            .filter(owner)
+            .map(|b| b.battle_id),
+    );
+    ids.extend(
+        ctx.db
+            .battle_clock()
+            .player()
+            .filter(owner)
+            .map(|c| c.battle_id),
+    );
+    ids.extend(
+        ctx.db
+            .battle_queue()
+            .owner()
+            .filter(owner)
+            .map(|q| q.battle_id),
+    );
+    ids.extend(
+        ctx.db
+            .battle_deploy()
+            .owner()
+            .filter(owner)
+            .map(|d| d.battle_id),
+    );
+    ids.extend(
+        ctx.db
+            .battle_summary()
+            .player_identity()
+            .filter(owner)
+            .map(|s| s.battle_id),
+    );
+    ids.extend(
+        ctx.db
+            .battle_summary()
+            .opponent_identity()
+            .filter(owner)
+            .map(|s| s.battle_id),
+    );
+    ids.extend(
+        ctx.db
+            .battle_unit()
+            .iter()
+            .filter(|u| u.owner == Some(owner))
+            .map(|u| u.battle_id),
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    // (2) The whole battle's per-battle rows, by battle id.
+    for id in ids {
+        ctx.db.battle_tactical().battle_id().delete(id);
+        ctx.db.battle_secret().battle_id().delete(id);
+        ctx.db.battle_wild_unit().battle_id().delete(id);
+        ctx.db.battle_event().battle_id().delete(id);
+        ctx.db.battle_unit().battle_id().delete(id);
+        ctx.db.battle_queue().battle_id().delete(id);
+        ctx.db.battle_deploy().battle_id().delete(id);
+        ctx.db.battle_clock().battle_id().delete(id);
+    }
+    // (3) Owner-keyed defence in depth.
+    ctx.db.battle_queue().owner().delete(owner);
+    ctx.db.battle_deploy().owner().delete(owner);
+    ctx.db.battle_clock().player().delete(owner);
+    ctx.db.player_formation().owner_identity().delete(owner);
+    // (4) Summaries survive, tombstoned once per row (a practice row names the
+    // owner on both sides and is swapped on both in the same write).
+    let mut summaries: Vec<BattleSummary> = ctx
+        .db
+        .battle_summary()
+        .player_identity()
+        .filter(owner)
+        .collect();
+    summaries.extend(
+        ctx.db
+            .battle_summary()
+            .opponent_identity()
+            .filter(owner)
+            .filter(|s| s.player_identity != owner),
+    );
+    for s in summaries {
+        let player_identity = if s.player_identity == owner {
+            crate::TOMBSTONE_IDENTITY
+        } else {
+            s.player_identity
+        };
+        let opponent_identity = if s.opponent_identity == owner {
+            crate::TOMBSTONE_IDENTITY
+        } else {
+            s.opponent_identity
+        };
+        ctx.db.battle_summary().battle_id().update(BattleSummary {
+            player_identity,
+            opponent_identity,
+            ..s
+        });
+    }
 }
 
 // --- data lifecycle (privacy, deletion, export) ----
