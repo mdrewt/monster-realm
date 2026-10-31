@@ -939,7 +939,9 @@ impl TacticalBattle {
             hooks,
             &mut out,
         );
-        self.after_turn(flow, &order, next, now_ms, rules, hooks, &mut out);
+        if flow == Flow::Ended {
+            self.continue_round(&order, next, now_ms, rules, hooks, &mut out);
+        }
         Ok(out)
     }
 
@@ -1095,12 +1097,12 @@ impl TacticalBattle {
                     &mut out,
                     EventPayload::AutoPass(AutoPassEvent { unit, strike }),
                 );
-                let flow = self.end_turn(unit, TurnEndCause::AutoPass, t, &mut out);
+                self.end_turn(unit, TurnEndCause::AutoPass, t, &mut out);
                 if forfeit {
                     self.end_with(win_for_opponent_of(side), EndHow::Forfeit, &mut out);
                     return Ok(out);
                 }
-                self.after_turn(flow, &order, next, now_ms, rules, hooks, &mut out);
+                self.continue_round(&order, next, now_ms, rules, hooks, &mut out);
             }
             clock::Expiry::AutoFlee => {
                 self.delegate(
@@ -1172,24 +1174,6 @@ impl TacticalBattle {
         self.end_round(rules, out);
     }
 
-    /// What follows one unit's turn inside a live submit or an expiry.
-    #[allow(clippy::too_many_arguments)]
-    fn after_turn(
-        &mut self,
-        flow: Flow,
-        order: &[u32],
-        next: usize,
-        now_ms: i64,
-        rules: &Rules,
-        hooks: &mut dyn Hooks,
-        out: &mut StepResult,
-    ) {
-        match flow {
-            Flow::Ended => self.continue_round(order, next, now_ms, rules, hooks, out),
-            Flow::Waiting | Flow::Finished => {}
-        }
-    }
-
     /// The end-of-round upkeep: `RoundEnded{r}` first (the batch header), then the upkeep's
     /// events, then `Advancing` — or `finish` when the upkeep decided the battle.
     fn end_round(&mut self, rules: &Rules, out: &mut StepResult) {
@@ -1219,7 +1203,7 @@ impl TacticalBattle {
         out: &mut StepResult,
     ) -> Flow {
         let t = rules.tuning;
-        if can_act(&self.state, unit).is_err() || turn_start(&mut self.state, unit, t).is_err() {
+        if turn_start(&mut self.state, unit, t).is_err() {
             return Flow::Ended;
         }
         let Some((side, status)) = self.state.unit(unit).map(|u| (u.side, u.status)) else {
@@ -1468,7 +1452,6 @@ impl TacticalBattle {
         let Some(side) = self.side_of(unit) else {
             return self.end_turn(unit, TurnEndCause::AutoPass, t, out);
         };
-        self.turn_state = TurnState::Waiting(unit);
         match clock::open_window(
             &mut self.clocks[side_index(side)],
             now_ms,
@@ -1477,19 +1460,13 @@ impl TacticalBattle {
             t,
         ) {
             Ok(window) => {
+                self.turn_state = TurnState::Waiting(unit);
                 self.pending_pad_ms = 0;
                 out.window = Some(window);
                 Flow::Waiting
             }
-            Err(clock::ClockError::WindowCap { .. } | clock::ClockError::AlreadyOpen) => {
-                self.turn_state = TurnState::NotActive;
-                self.end_turn(unit, TurnEndCause::AutoPass, t, out)
-            }
-            Err(clock::ClockError::NoWindow | clock::ClockError::NotDue { .. }) => {
-                // `open_window` never returns these; treated as the cap for totality.
-                self.turn_state = TurnState::NotActive;
-                self.end_turn(unit, TurnEndCause::AutoPass, t, out)
-            }
+            // The cap (or a window the shell left open): the turn ends uncommitted.
+            Err(_) => self.end_turn(unit, TurnEndCause::AutoPass, t, out),
         }
     }
 
