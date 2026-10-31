@@ -29,7 +29,7 @@ use crate::combat::types::{BattleOutcome, Effectiveness, StatusEffect};
 use crate::monster::types::{Affinity, StatBlock};
 
 use super::economy::{EconomyError, Tier, TurnBudget, TurnEndCause};
-use super::geometry::{Board, BoardUnit, Cell, GeometryError, Side, SkillGeometry};
+use super::geometry::{Board, Cell, GeometryError, Side, SkillGeometry};
 use super::initiative::Contender;
 use super::map::BattleMapDef;
 use super::movement::{MoveClass, Terrain};
