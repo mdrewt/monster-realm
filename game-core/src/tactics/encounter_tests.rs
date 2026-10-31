@@ -171,6 +171,54 @@ fn pack_weights_must_sum_to_exactly_1000_in_u32_bt4_7() {
     }
 }
 
+/// BT4.7: `PackWeights` is the serde shape the content `pack_weights` loads through, and its
+/// deserialization is STRICT — exercised through the product's own derive in both formats the
+/// crate reads (JSON via `serde_json`, RON via `ron`, the content format):
+/// - JSON `{"one":600,"two":300,"three":100}` is `DEFAULT`, and `DEFAULT` serializes to exactly
+///   that text; RON `(one: 600, two: 300, three: 100)` is `DEFAULT` and `DEFAULT` round-trips;
+/// - an unknown key (`"four": 0`) is an error naming it, in both formats;
+/// - a missing field (`three`) is an error naming it, in both formats — `{one: 600, two: 400}`
+///   would otherwise default to a sum of exactly 1000 and pass `validate`.
+///
+/// Kills: `deny_unknown_fields` dropped (a misspelt bucket silently ignored); a `serde(default)`
+/// (a missing bucket read as 0); a renamed field.
+#[test]
+fn pack_weights_deserialize_strictly_bt4_7() {
+    let json = r#"{"one":600,"two":300,"three":100}"#;
+    assert_eq!(
+        serde_json::from_str::<PackWeights>(json).expect("the JSON shape parses"),
+        PackWeights::DEFAULT
+    );
+    assert_eq!(
+        serde_json::to_string(&PackWeights::DEFAULT).expect("DEFAULT serializes"),
+        json
+    );
+    let unknown =
+        serde_json::from_str::<PackWeights>(r#"{"one":600,"two":300,"three":100,"four":0}"#)
+            .expect_err("an unknown JSON key is refused");
+    assert!(unknown.to_string().contains("four"), "{unknown}");
+    let missing = serde_json::from_str::<PackWeights>(r#"{"one":600,"two":400}"#)
+        .expect_err("a missing JSON field is refused");
+    assert!(missing.to_string().contains("three"), "{missing}");
+
+    assert_eq!(
+        ron::from_str::<PackWeights>("(one: 600, two: 300, three: 100)")
+            .expect("the RON shape parses"),
+        PackWeights::DEFAULT
+    );
+    let text = ron::to_string(&PackWeights::DEFAULT).expect("DEFAULT serializes to RON");
+    assert_eq!(
+        ron::from_str::<PackWeights>(&text).expect("DEFAULT round-trips through RON"),
+        PackWeights::DEFAULT
+    );
+    let unknown = ron::from_str::<PackWeights>("(one: 600, two: 300, three: 100, four: 0)")
+        .expect_err("an unknown RON field is refused");
+    assert!(unknown.to_string().contains("four"), "{unknown}");
+    let missing = ron::from_str::<PackWeights>("(one: 600, two: 400)")
+        .expect_err("a missing RON field is refused");
+    assert!(missing.to_string().contains("three"), "{missing}");
+}
+
 // ===========================================================================
 // The clamp
 // ===========================================================================

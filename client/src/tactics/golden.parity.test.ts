@@ -30,7 +30,7 @@ const FIXTURE_PATH = path.join(
 );
 
 /** The pinned fixture size (keep equal to CASE_COUNT in golden_tests.rs). */
-const CASE_COUNT = 304;
+const CASE_COUNT = 306;
 /** Cases that must come back as `{"BadCase": "<text>"}`: malformed boards, invalid Pipeline units. */
 const BAD_CASE_COUNT = 17;
 /** U+00E9, built from its code point (never a pasted or escaped literal). */
@@ -288,7 +288,7 @@ const FIRE_40 = {
 const SURE = { accuracy: 0, variance: 100 };
 
 /** The AiPlan cases the fixture carries (bt-4's matrix; keep equal to AI_PLAN_CASES in golden_tests.rs). */
-const AI_PLAN_CASES = 18;
+const AI_PLAN_CASES = 20;
 
 /** The entry tags of an `{"AiPlan": [...]}` result (`"EndTurn"` is a bare string), comma-joined. */
 function planShape(result: unknown): string {

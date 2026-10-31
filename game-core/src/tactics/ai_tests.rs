@@ -1,7 +1,7 @@
 //! bt-4 gating tests — BT4.1–BT4.6 (`tactics::ai`). Written by the tester from the EARS criteria.
 //!
 //! Every expected plan is hand-derived from the plan's contract (bt-4 plan, "Contracts → ai.rs"
-//! and the judgement calls J1–J14), never read back from an implementation. The derivation sits
+//! and the judgement calls J1–J15), never read back from an implementation. The derivation sits
 //! in a comment above each row.
 //!
 //! # The arithmetic every derivation uses
@@ -54,10 +54,16 @@ use super::types::{ActionTarget, MoveAction, QueuedAction, SkillAction};
 // ===========================================================================
 
 const WILD: u32 = 11;
+/// The wild's pack-mate (side B, slot 1) where a board has two wilds.
+const MATE: u32 = 12;
 const P1: u32 = 1;
 const P2: u32 = 2;
 const LIGHT: u32 = 10;
+/// A second Light skill id (a kit-order tie).
+const LIGHT2: u32 = 12;
 const HEAVY: u32 = 20;
+/// A second Heavy skill id (a kit-order / tile-before-skill / band tie).
+const HEAVY2: u32 = 21;
 const BURST: u32 = 30;
 const END: QueuedAction = QueuedAction::EndTurn;
 const STANCES: [Stance; 3] = [Stance::Aggressive, Stance::Territorial, Stance::Skittish];
@@ -92,6 +98,19 @@ fn diamond_all() -> SkillGeometry {
         range_min: 1,
         range_max: 2,
         origin: Origin::TargetUnit,
+        shape: Shape::Diamond,
+        radius: 1,
+        ff_filter: FfFilter::All,
+    }
+}
+
+/// A radius-1 diamond centred on the CASTER (range 0, aim = its own tile) that hits everyone in
+/// it — so it always holds the caster itself.
+fn caster_diamond_all() -> SkillGeometry {
+    SkillGeometry {
+        range_min: 0,
+        range_max: 0,
+        origin: Origin::Caster,
         shape: Shape::Diamond,
         radius: 1,
         ff_filter: FfFilter::All,
@@ -161,6 +180,27 @@ fn wild(x: u8, y: u8, max_hp: u16, hp: u16, base: u16, skills: Vec<SkillTactics>
             skills,
         ),
         hp,
+    )
+}
+
+/// The wild's pack-mate (unit 12, side B, slot 1) at `(x, y)`: 100/100 HP, levelled speed 70 —
+/// slower than unit 11, faster than every player — base speed 30, carrying `skills`.
+fn pack_mate(x: u8, y: u8, skills: Vec<SkillTactics>) -> TacticalUnit {
+    rt::unit(
+        MATE,
+        Side::B,
+        1,
+        rt::c(x, y),
+        rt::kit(
+            2,
+            Affinity::Water,
+            5,
+            rt::stat_block(100, 10, rt::CHIP_DEF, 70),
+            30,
+            MoveClass::Walk,
+            skills,
+        ),
+        100,
     )
 }
 
@@ -366,8 +406,9 @@ impl Hooks for AiHooks {
     }
 }
 
-/// The gate's hooks for Move / Skill / EndTurn entries (none of those reads a hook).
-struct NoHooks;
+/// The gate's hooks for Move / Skill / EndTurn entries (none of those reads a hook). Shared with
+/// `golden_tests.rs`'s gate replay.
+pub(super) struct NoHooks;
 
 impl Hooks for NoHooks {
     fn item_count(&self, _unit: u32, _item_id: u32) -> u32 {
@@ -605,6 +646,124 @@ fn on_a_forged_slot_and_row_tie_the_lower_x_is_the_target_bt4_1() {
         plan_of(&st, Stance::Aggressive, rt::c(3, 3)),
         vec![hit(HEAVY, P2), END]
     );
+}
+
+/// BT4.1: every TIE board plans the answer derived on its seed-0 board for every seed {0, 1,
+/// 2^53 − 1, u64::MAX} × action_seq {0, 1, u64::MAX} (the J9 board of the twin test above has no
+/// tie, so a tie broken by a seed or counter bit escapes it about half the time). The boards and
+/// their derivations are the round-1 rows named here:
+/// - target key 2 (`at_equal_distance_the_lower_cur_hp_is_the_target_bt4_1`) → `[Heavy → P2, End]`;
+/// - key 3, slot (forged) → `[Heavy → P2, End]`; key 4, y (forged) → `[Heavy → P2, End]`;
+///   key 5, x (forged) → `[Heavy → P2, End]`;
+/// - the approach tie by cost (`an_aggressive_approach_breaks_a_distance_tie_by_path_cost_…`:
+///   (4,3) cost 2 vs (5,2) / (5,4) cost 4 at d 2) → `[Move (4,3) ×1, End]`;
+/// - the Aggressive attack-tile tie (the taxed ranged duel: (3,2), (2,3), (3,4) all cost 1) →
+///   `[Move (3,2) ×1, Light → P1, End]`;
+/// - the Skittish farthest-tile tie ((2,2), (4,2), (3,3) all d 3, cost 1) →
+///   `[Move (2,2) ×1, Heavy → P1, End]`;
+/// - the skill tie (two Lights r1–3 both hitting P1 from the own tile, kit [10, 12]) →
+///   `[Light 10 → P1, End]`.
+///
+/// Kills: a tie (target slot, approach tile, attack tile, skill) broken by any bit of `seed` or
+/// `action_seq`.
+#[test]
+fn every_tie_break_answers_its_seed_zero_plan_whatever_the_secret_stream_bt4_1() {
+    let ties = [
+        (
+            "target key 2 (cur_hp)",
+            board(
+                vec![
+                    wild(3, 3, 100, 100, 30, far_kit()),
+                    player(P1, 0, 3, 1, 90),
+                    player(P2, 1, 5, 3, 40),
+                ],
+                &[],
+            ),
+            Stance::Aggressive,
+            vec![hit(HEAVY, P2), END],
+        ),
+        (
+            "target key 3 (slot, forged)",
+            forged(vec![
+                wild(3, 3, 100, 100, 30, far_kit()),
+                player(P1, 1, 3, 1, 50),
+                player(P2, 0, 5, 3, 50),
+            ]),
+            Stance::Aggressive,
+            vec![hit(HEAVY, P2), END],
+        ),
+        (
+            "target key 4 (y, forged)",
+            forged(vec![
+                wild(3, 3, 100, 100, 30, far_kit()),
+                player(P1, 0, 5, 3, 50),
+                player(P2, 0, 3, 1, 50),
+            ]),
+            Stance::Aggressive,
+            vec![hit(HEAVY, P2), END],
+        ),
+        (
+            "target key 5 (x, forged)",
+            forged(vec![
+                wild(3, 3, 100, 100, 30, far_kit()),
+                player(P1, 0, 5, 3, 50),
+                player(P2, 0, 1, 3, 50),
+            ]),
+            Stance::Aggressive,
+            vec![hit(HEAVY, P2), END],
+        ),
+        (
+            "approach tile tie",
+            board(
+                vec![
+                    wild(2, 3, 100, 100, 30, melee_kit()),
+                    player(P1, 0, 6, 3, 100),
+                ],
+                &[(5, 3, Terrain::Blocked)],
+            ),
+            Stance::Aggressive,
+            vec![mv(4, 3, 1), END],
+        ),
+        (
+            "attack tile tie",
+            duel(ranged_kit()),
+            Stance::Aggressive,
+            vec![mv(3, 2, 1), hit(LIGHT, P1), END],
+        ),
+        (
+            "Skittish farthest tile tie",
+            board(
+                vec![
+                    wild(3, 2, 100, 100, 30, ranged_kit()),
+                    player(P1, 0, 3, 0, 100),
+                ],
+                &[],
+            ),
+            Stance::Skittish,
+            vec![mv(2, 2, 1), hit(HEAVY, P1), END],
+        ),
+        (
+            "skill tie",
+            three_apart(100, vec![lt(LIGHT, single(1, 3)), lt(LIGHT2, single(1, 3))]),
+            Stance::Aggressive,
+            vec![hit(LIGHT, P1), END],
+        ),
+    ];
+    for (label, base, stance, want) in ties {
+        let spawn = rt::unit_of(&base, WILD).pos;
+        for seed in [0_u64, 1, (1_u64 << 53) - 1, u64::MAX] {
+            for action_seq in [0_u64, 1, u64::MAX] {
+                let mut st = base.clone();
+                st.seed = seed;
+                st.action_seq = action_seq;
+                assert_eq!(
+                    plan_of(&st, stance, spawn),
+                    want,
+                    "{label}: seed {seed:#x}, action_seq {action_seq:#x}"
+                );
+            }
+        }
+    }
 }
 
 // ===========================================================================
@@ -866,6 +1025,103 @@ fn a_disengage_tax_of_three_leaves_a_pinned_ranged_wild_nothing_but_end_turn_bt4
     );
 }
 
+/// BT4.2 / J13 (within a tier, the FIRST skill in kit order): wild (1,3) with two Lights, both
+/// single r1–3, and no Heavy; P1 (4,3) is 3 away, so both hit from the own tile (cost 0,
+/// `[Light, End]` = 2) — tier Light, tile the own one, then the first Light listed: kit [10, 12]
+/// → `[Light 10 → P1, End]`; kit [12, 10] → `[Light 12 → P1, End]` (kit order, not id order).
+/// Kills: the kit index reversed in the key (or the skill id used in its place).
+#[test]
+fn within_a_tier_the_first_skill_in_kit_order_is_the_one_planned_bt4_2() {
+    let both = |first: u32, second: u32| {
+        three_apart(100, vec![lt(first, single(1, 3)), lt(second, single(1, 3))])
+    };
+    assert_eq!(
+        plan_of(&both(LIGHT, LIGHT2), Stance::Aggressive, rt::c(1, 3)),
+        vec![hit(LIGHT, P1), END]
+    );
+    assert_eq!(
+        plan_of(&both(LIGHT2, LIGHT), Stance::Aggressive, rt::c(1, 3)),
+        vec![hit(LIGHT2, P1), END]
+    );
+}
+
+/// BT4.2 / J13 (the tile is chosen before the skill): wild (1,3), kit [Heavy 20 melee, Heavy 21
+/// single r1–3], P1 (4,3). Heavy candidates: Heavy 21 from the own tile (3 away, cost 0,
+/// `[Heavy, End]` = 4) and Heavy 20 from (3,3) after one stride (cost 2, 6 AP). Tier Heavy; the
+/// tile key `(0, cost, y, x)` takes the own tile; the first Heavy in kit order that hits FROM it
+/// is Heavy 21 → `[Heavy 21 → P1, End]`.
+/// Kills: the kit index ranked before the tile (→ `[Move (3,3) ×1, Heavy 20 → P1, End]`).
+#[test]
+fn the_cheapest_attack_tile_is_chosen_before_the_skill_bt4_2() {
+    let st = three_apart(100, vec![hv(HEAVY, single(1, 1)), hv(HEAVY2, single(1, 3))]);
+    assert_eq!(
+        plan_of(&st, Stance::Aggressive, rt::c(1, 3)),
+        vec![hit(HEAVY2, P1), END]
+    );
+}
+
+/// BT4.2 (the approach is costed as emitted too): `ap_turn = 2` on the six-apart board (wild
+/// (0,3), melee kit, P1 (6,3)). Nothing attacks: P1 is out of melee reach of the own tile and a
+/// Light after any stride is 2 + 2 = 4 > 2. The approach may only use a Move `[Move, End]`
+/// affords: one stride (2 AP), never two (4). Among the cost ≤ 2 tiles the least `d` is (2,3)
+/// (d 4, cost 2) → `[Move (2,3) ×1, End]` (DESIGN: `[Move (4,3) ×2, End]`). Through the executor
+/// that plan runs with no `PlanHalted`.
+/// Kills: the admissibility filter dropped from the approach (→ the 4-AP `[Move (4,3) ×2, End]`,
+/// which the gate halts as unaffordable).
+#[test]
+fn an_approach_only_takes_a_move_the_budget_affords_bt4_2() {
+    let t = rt::perturb(|t| t.ap_turn = 2);
+    let want = vec![mv(2, 3, 1), END];
+    assert_eq!(
+        plan(&six_apart(), WILD, Stance::Aggressive, rt::c(0, 3), &t),
+        want
+    );
+    let (out, _battle, hooks) = start_battle(
+        six_apart(),
+        vec![(WILD, Stance::Aggressive, rt::c(0, 3))],
+        &t,
+    );
+    assert_eq!(hooks.plans(), vec![(WILD, want)]);
+    assert!(!halted(&out), "events: {:?}", out.events);
+}
+
+/// BT4.2: a FAINTED unit of the other side is no player — `d` is never measured to it. Wild
+/// (3,3), melee kit; P1 conscious at (0,0), 6 away (nothing beside it within 4 points → no
+/// attack); P2 listed but fainted — 0 HP with state Active, and (a second row) state Fainted —
+/// right beside the wild at (4,3). The approach measures `d` to P1 alone: `d = x + y ≥ 2` in
+/// reach, `d` 2 at (0,2), (1,1), (2,0), all cost 4 → lowest y: `[Move (2,0) ×2, End]`. (Measured
+/// to P2 as well, P2's own tile — no wall, nobody alive stands there — has `d` 0 at cost 1 →
+/// `[Move (4,3) ×1, End]`.)
+/// Kills: the conscious filter dropped from the players `d` is measured to.
+#[test]
+fn a_fainted_unit_of_the_other_side_never_draws_the_approach_bt4_2() {
+    let base = || {
+        board(
+            vec![
+                wild(3, 3, 100, 100, 30, melee_kit()),
+                player(P1, 0, 0, 0, 100),
+                player(P2, 1, 4, 3, 100),
+            ],
+            &[],
+        )
+    };
+    let at_zero_hp = edited(base(), |st| {
+        st.unit_mut(P2).expect("P2").cur_hp = 0;
+    });
+    let fainted = edited(base(), |st| {
+        let p2 = st.unit_mut(P2).expect("P2");
+        p2.cur_hp = 0;
+        p2.state = UnitState::Fainted;
+    });
+    for (label, st) in [("0 HP, Active", at_zero_hp), ("Fainted", fainted)] {
+        assert_eq!(
+            plan_of(&st, Stance::Aggressive, rt::c(3, 3)),
+            vec![mv(2, 0, 2), END],
+            "P2 {label}"
+        );
+    }
+}
+
 // ===========================================================================
 // BT4.3 — Territorial (leash 2 from the spawn tile; End when no attack)
 // ===========================================================================
@@ -955,6 +1211,31 @@ fn a_territorial_wild_never_approaches_bt4_3() {
         vec![mv(3, 0, 2), END]
     );
     assert_eq!(plan_of(&st, Stance::Territorial, spawn), vec![END]);
+}
+
+/// BT4.3 (the leash boundary is inclusive): the board of
+/// `a_territorial_wild_attacks_from_the_cheapest_attack_tile_inside_its_leash_bt4_3` (wild (5,3),
+/// melee kit, P1 (6,1); the one-stride Heavy tiles beside P1 are (5,1) and (6,2), both cost 2;
+/// (6,0) costs 4; the own tile is 3 from P1) with the spawn moved:
+/// - spawn (6,4): (6,2) is EXACTLY 2 from it — inside the leash — and (5,1) / (6,0) are 4 →
+///   `[Move (6,2) ×1, Heavy → P1, End]`;
+/// - spawn (6,5): (6,2) is 3 from it, (5,1) and (6,0) 5 → no attack tile → `[End]`.
+///
+/// Kills: `≤ 2` read as `< 2` (→ `[End]` at spawn (6,4)); a leash of 3 (→ the attack at (6,5)).
+#[test]
+fn the_leash_admits_a_tile_exactly_two_from_the_spawn_bt4_3() {
+    let st = board(
+        vec![
+            wild(5, 3, 100, 100, 30, melee_kit()),
+            player(P1, 0, 6, 1, 100),
+        ],
+        &[],
+    );
+    assert_eq!(
+        plan_of(&st, Stance::Territorial, rt::c(6, 4)),
+        vec![mv(6, 2, 1), hit(HEAVY, P1), END]
+    );
+    assert_eq!(plan_of(&st, Stance::Territorial, rt::c(6, 5)), vec![END]);
 }
 
 /// BT4.3 (Guard): through the REAL executor — the wild of the leash-blocked board (levelled speed
@@ -1154,6 +1435,56 @@ fn a_skittish_wild_without_a_heavy_never_attacks_and_kites_within_two_bt4_4() {
     assert_eq!(
         plan_of(&st, Stance::Skittish, rt::c(1, 0)),
         vec![mv(2, 0, 1), END]
+    );
+}
+
+/// BT4.4 (the band is the GREATEST Heavy `range_max` + 2): Skittish wild (3,3), P1 (0,0), 6 away
+/// and untaxed. Kit Light 10 r1, Heavy 20 single r1, Heavy 21 single r1–3: no Heavy reaches P1
+/// (a one-stride tile is ≥ 4 from it; two strides + Heavy is 8) → kite with band max(1, 3) + 2 =
+/// 5. In reach (4 points) `d = x + y`, the farthest in band is `d` 5: (2,3) and (3,2) cost 1,
+/// (1,4) and (4,1) cost 3 ((0,5) and (5,0) are 5 points away) → `(Reverse 5, 1, y 2)` → (3,2):
+/// `[Move (3,2) ×1, End]` — and the same with the two Heavies swapped in the kit. (A band of 3 —
+/// the least Heavy range, or the first or last Heavy alone — would kite to `d` 3: (0,3), (1,2),
+/// (2,1), (3,0), all cost 3 → `[Move (3,0) ×2, End]`.)
+/// Kills: `max` → `min`; the first (or the last) Heavy's range instead of the greatest.
+#[test]
+fn the_kite_band_is_the_greatest_heavy_range_plus_two_bt4_4() {
+    let want = vec![mv(3, 2, 1), END];
+    for heavies in [
+        [hv(HEAVY, single(1, 1)), hv(HEAVY2, single(1, 3))],
+        [hv(HEAVY2, single(1, 3)), hv(HEAVY, single(1, 1))],
+    ] {
+        let mut skills = vec![lt(LIGHT, single(1, 1))];
+        skills.extend(heavies);
+        let st = board(
+            vec![wild(3, 3, 100, 100, 30, skills), player(P1, 0, 0, 0, 100)],
+            &[],
+        );
+        assert_eq!(plan_of(&st, Stance::Skittish, rt::c(3, 3)), want);
+    }
+}
+
+/// BT4.4 (the farthest tile is measured to the NEAREST player, not to the target): wild (3,3),
+/// the pinned kit (Light melee, Heavy 20 single r2–3); P1 (3,1) 2 away and P2 (1,4) 3 away, so
+/// untaxed and the target is P1 (nearer). Heavy tiles for P1 in one stride (2–3 from (3,1)): the
+/// own (3,3), (2,3), (4,3), (3,4), (2,2), (4,2). `d` to the nearest player (P1 | P2): (3,3) 2|3,
+/// (2,3) 3|2, (4,3) 3|4, (3,4) 3|2, (2,2) 2|3, (4,2) 2|5 → only (4,3) reaches `d` 3, cost 1 →
+/// `[Move (4,3) ×1, Heavy → P1, End]` (re-derived; the red-team's reference agrees). Measured to
+/// the target P1 alone, (2,3), (4,3) and (3,4) would tie at 3 → (2,3).
+/// Kills: the farthest-tile primary measured to the target instead of the nearest player.
+#[test]
+fn the_skittish_attack_tile_is_farthest_from_the_nearest_player_not_the_target_bt4_4() {
+    let st = board(
+        vec![
+            wild(3, 3, 100, 100, 30, pinned_kit()),
+            player(P1, 0, 3, 1, 100),
+            player(P2, 1, 1, 4, 100),
+        ],
+        &[],
+    );
+    assert_eq!(
+        plan_of(&st, Stance::Skittish, rt::c(3, 3)),
+        vec![mv(4, 3, 1), hit(HEAVY, P1), END]
     );
 }
 
@@ -1601,6 +1932,211 @@ fn a_planned_move_and_attack_executes_through_the_real_executor_bt4_6() {
             committed: true,
         })));
     assert_eq!(rt::unit_of(&battle.state, WILD).pos, rt::c(3, 3));
+}
+
+/// BT4.6 (the gate's `validate_unit` runs on EVERY unit of the target set, so the planner's
+/// does too):
+/// - forged, units listed wild first: the wild (3,3) carries one Heavy, the `diamond_all`
+///   (Diamond(1) r1–2, friendly fire `All`); P1 (5,3) is valid, P2 (5,4) has defence 0 and stands
+///   inside the diamond around P1. Every aim — at P1 or at P2 — puts P2 in the set → no attack.
+///   The approach (untaxed): `d` 1 at (4,3) cost 1, (4,4) cost 2, (5,2) cost 3, (5,5) cost 4 →
+///   `[Move (4,3) ×1, End]`; Territorial `[End]`.
+/// - the melee duel with its ONLY player invalid (defence 0; HP 101 of 100): no attack is
+///   plannable. Aggressive keeps its tile (`d` 1, cost 0) → `[End]`; Territorial `[End]`;
+///   Skittish kites (band 1 + 2 = 3, taxed: one stride 3, two 5): `d` 3 at (3,1), (2,2), (1,3),
+///   (2,4), (3,5) cost 2, the other `d`-3 tiles cost 4 → lowest y `[Move (3,1) ×1, End]`.
+///
+/// Kills: the target-set check dropped or looking up the wrong unit (→ an attack the gate halts
+/// as `BadUnit`: `[Heavy → P1, End]`).
+#[test]
+fn an_attack_whose_target_set_holds_an_invalid_unit_is_never_planned_bt4_6() {
+    let collateral = edited(
+        forged(vec![
+            wild(3, 3, 100, 100, 30, vec![hv(HEAVY, diamond_all())]),
+            player(P1, 0, 5, 3, 100),
+            player(P2, 1, 5, 4, 100),
+        ]),
+        |st| st.unit_mut(P2).expect("P2").kit.stats.defense = 0,
+    );
+    assert_eq!(
+        plan_of(&collateral, Stance::Aggressive, rt::c(3, 3)),
+        vec![mv(4, 3, 1), END]
+    );
+    assert_eq!(
+        plan_of(&collateral, Stance::Territorial, rt::c(3, 3)),
+        vec![END]
+    );
+    let soft = edited(duel(melee_kit()), |st| {
+        st.unit_mut(P1).expect("P1").kit.stats.defense = 0;
+    });
+    let over = edited(duel(melee_kit()), |st| {
+        st.unit_mut(P1).expect("P1").cur_hp = 101;
+    });
+    for (label, st) in [("P1 defence 0", soft), ("P1 HP above max", over)] {
+        for (stance, want) in [
+            (Stance::Aggressive, vec![END]),
+            (Stance::Territorial, vec![END]),
+            (Stance::Skittish, vec![mv(3, 1, 1), END]),
+        ] {
+            assert_eq!(
+                plan_of(&st, stance, rt::c(3, 3)),
+                want,
+                "{label} ({stance:?})"
+            );
+        }
+    }
+}
+
+/// BT4.6 / J11 (never self-hit), a Caster-centred AoE: the wild's only skill is a Heavy
+/// Diamond(1) around ITSELF (range 0, friendly fire `All`), so every cast holds the wild and none
+/// is plannable. Melee-duel geometry (wild (3,3), P1 adjacent at (4,3)): Aggressive keeps its tile
+/// (`d` 1, cost 0) → `[End]`; Territorial `[End]`; Skittish kites (band 0 + 2 = 2, taxed): `d` 2
+/// at (3,2), (2,3), (3,4) cost 1 → `[Move (3,2) ×1, End]`. Exhausted (24 HP) — the self-KO case J11
+/// names — `[End]` for every stance.
+/// Kills: the `unit ∉ ids` term dropped (→ `[Heavy 20 → SelfTarget, End]`).
+#[test]
+fn a_caster_aoe_that_holds_the_wild_itself_is_never_planned_bt4_6() {
+    let st = duel(vec![hv(HEAVY, caster_diamond_all())]);
+    for (stance, want) in [
+        (Stance::Aggressive, vec![END]),
+        (Stance::Territorial, vec![END]),
+        (Stance::Skittish, vec![mv(3, 2, 1), END]),
+    ] {
+        assert_eq!(plan_of(&st, stance, rt::c(3, 3)), want, "{stance:?}");
+    }
+    let tired = with_wild(st, |w| w.cur_hp = 24);
+    for stance in STANCES {
+        assert_eq!(
+            plan_of(&tired, stance, rt::c(3, 3)),
+            vec![END],
+            "Exhausted {stance:?}"
+        );
+    }
+}
+
+/// BT4.6 / J11, a targeted AoE: the `diamond_all` as the wild's only skill — a Light, Diamond(1)
+/// r1–2, friendly fire `All` — with the wild at (3,3) and P1 adjacent at (4,3). From the own tile
+/// the diamond around P1 holds the wild → excluded; a tile EXACTLY 2 from P1 keeps the wild outside
+/// it. Taxed: a Light after one stride is 3 + 2 = 5 (after two, 7: refused); the cost-1 tiles 2
+/// from P1 are (3,2), (2,3), (3,4) → `(0, 1, y 2)` → `[Move (3,2) ×1, Light → P1, End]`, for
+/// Aggressive and for Territorial (spawn (3,3); (3,2) is 1 from it). (Re-derived; the red-team's
+/// reference agrees.)
+/// Kills: the `unit ∉ ids` term dropped (→ the stationary `[Light → P1, End]`).
+#[test]
+fn a_targeted_aoe_is_cast_only_from_a_tile_outside_its_own_blast_bt4_6() {
+    let st = duel(vec![lt(LIGHT, diamond_all())]);
+    for stance in [Stance::Aggressive, Stance::Territorial] {
+        assert_eq!(
+            plan_of(&st, stance, rt::c(3, 3)),
+            vec![mv(3, 2, 1), hit(LIGHT, P1), END],
+            "{stance:?}"
+        );
+    }
+}
+
+/// BT4.6: the wild off the board (x = 7 on the 7-wide board) carrying the RANGED kit (both r2–3):
+/// P1 at (4,3) is 3 away, so a cast from the off-board tile WOULD reach it — only the off-board
+/// guard (`disengage_taxed` refuses the start tile) stops it: `[End]` for every stance. (The
+/// round-1 row uses the melee kit, which plans `[End]` from there for another reason.)
+/// Kills: the off-board refusal waived (read as "untaxed") → `[Heavy → P1, End]`.
+#[test]
+fn an_off_board_wild_with_a_target_in_range_ends_its_turn_bt4_6() {
+    let st = with_wild(duel(ranged_kit()), |w| w.pos = rt::c(7, 3));
+    for stance in STANCES {
+        assert_eq!(
+            plan_of(&st, stance, rt::unit_of(&st, WILD).pos),
+            vec![END],
+            "{stance:?}"
+        );
+    }
+}
+
+/// BT4.6: a CROSS-SIDE duplicate id — a side-A unit (slot 1, at (0,6)) carrying the wild's own
+/// id 11, appended to the melee duel — is a hostile state: `Unit(11)` names two units →
+/// `[End]` for every stance (the duel itself plans `[Heavy → P1, End]`).
+/// Kills: the duplicate-id guard keyed by `(id, side)` (→ `[Heavy → P1, End]`).
+#[test]
+fn a_player_sharing_the_wilds_id_leaves_the_wild_nothing_but_end_turn_bt4_6() {
+    let st = edited(duel(melee_kit()), |st| {
+        st.units.push(player(WILD, 1, 0, 6, 100));
+    });
+    for stance in STANCES {
+        assert_eq!(plan_of(&st, stance, rt::c(3, 3)), vec![END], "{stance:?}");
+    }
+}
+
+/// BT4.6 / J12 (pack-mate collateral is not scored): wild 11 at (3,3) with one Heavy, the
+/// `diamond_all`; P1 at (5,3); the pack-mate wild 12 (slot 1, melee kit) at (5,4), INSIDE the
+/// diamond around P1, while wild 11 (2 from P1) is outside it. The set {P1, 12} holds only valid
+/// units and not wild 11 → the attack from the own tile (untaxed, 4 AP): `[Heavy 20 → P1, End]`.
+/// Through the executor (levelled speeds 80 and 70 against P1's 30, so both wilds act first):
+/// wild 11 plans that, wild 12 (P1 adjacent, melee Heavy from its own tile) plans
+/// `[Heavy 20 → P1, End]`, and nothing halts.
+/// Kills: an aim refused (or scored away) because it catches a pack-mate (→ the approach
+/// `[Move (4,3) ×1, End]`).
+#[test]
+fn a_pack_mate_inside_the_blast_does_not_stop_the_attack_bt4_6() {
+    let st = board(
+        vec![
+            wild(3, 3, 100, 100, 30, vec![hv(HEAVY, diamond_all())]),
+            pack_mate(5, 4, melee_kit()),
+            player(P1, 0, 5, 3, 100),
+        ],
+        &[],
+    );
+    let want = vec![hit(HEAVY, P1), END];
+    assert_eq!(plan_of(&st, Stance::Aggressive, rt::c(3, 3)), want);
+    let t = rt::design();
+    let (out, _battle, hooks) = start_battle(
+        st,
+        vec![
+            (WILD, Stance::Aggressive, rt::c(3, 3)),
+            (MATE, Stance::Aggressive, rt::c(5, 4)),
+        ],
+        &t,
+    );
+    assert_eq!(
+        hooks.plans(),
+        vec![(WILD, want), (MATE, vec![hit(HEAVY, P1), END])]
+    );
+    assert!(!halted(&out), "events: {:?}", out.events);
+    assert!(out.events.iter().any(
+        |e| matches!(e, EventPayload::Executed(x) if x.attacker == WILD && x.skill_id == HEAVY)
+    ));
+}
+
+/// BT4.6 / J15: a kit entry whose `skill_id` repeats an EARLIER entry's is never planned (the gate
+/// and the resolver find a skill by id, first match). Kit [Light 10 melee, Heavy 10 single r2–3],
+/// wild (3,3), P1 (3,1) 2 away (untaxed): only the melee Light 10 counts, and nothing hits from
+/// the own tile. Beside P1 in reach: (3,2) cost 1, (2,1) and (4,1) cost 3 ((3,0) costs 5) → tier
+/// Light, tile (3,2) → `[Move (3,2) ×1, Skill 10 → P1, End]`, which the executor runs with no
+/// `PlanHalted`. Kit order swapped [Heavy 10 r2–3, Light 10 melee]: the Heavy is the one that
+/// counts and hits from the own tile → `[Skill 10 → P1, End]`.
+/// Kills: the shadowing check dropped (→ "Heavy 10" from the own tile, which the gate resolves as
+/// the melee Light 10 → `Geometry(OutOfRange)`, halted).
+#[test]
+fn a_kit_entry_repeating_an_earlier_skill_id_is_never_planned_bt4_6() {
+    let kit_of = |skills: Vec<SkillTactics>| {
+        board(
+            vec![wild(3, 3, 100, 100, 30, skills), player(P1, 0, 3, 1, 100)],
+            &[],
+        )
+    };
+    // Both kit entries carry skill id 10.
+    let shared = LIGHT;
+    let shadowed = kit_of(vec![lt(shared, single(1, 1)), hv(shared, single(2, 3))]);
+    let want = vec![mv(3, 2, 1), hit(shared, P1), END];
+    assert_eq!(plan_of(&shadowed, Stance::Aggressive, rt::c(3, 3)), want);
+    let t = rt::design();
+    let (out, _battle, hooks) =
+        start_battle(shadowed, vec![(WILD, Stance::Aggressive, rt::c(3, 3))], &t);
+    assert_eq!(hooks.plans(), vec![(WILD, want)]);
+    assert!(!halted(&out), "events: {:?}", out.events);
+    let swapped = kit_of(vec![hv(shared, single(2, 3)), lt(shared, single(1, 1))]);
+    assert_eq!(
+        plan_of(&swapped, Stance::Aggressive, rt::c(3, 3)),
+        vec![hit(shared, P1), END]
+    );
 }
 
 // ---------------------------------------------------------------------------

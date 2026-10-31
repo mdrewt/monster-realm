@@ -1,6 +1,7 @@
 //! bt-1 gating tests — BT1.9 (`tactics::golden`): the native half of the native = wasm
 //! byte-identity harness — plus bt-2's BT2.5 additions (the roll stream, economy, Surge, status
-//! tick, initiative, priority, pipeline and adjudication kinds join the same fixture).
+//! tick, initiative, priority, pipeline and adjudication kinds join the same fixture) and bt-4's
+//! BT4.8 addition (the wild planner's `AiPlan` kind — the client's intent chip).
 //!
 //! The fixture `game-core/tests/fixtures/tactics_golden.json` is `{"cases": [...], "expected":
 //! [...]}` (serde EXTERNALLY tagged, plan A10). Every `expected` entry was hand-derived from the
@@ -9,8 +10,8 @@
 //! `tactics_golden` wasm export; both halves compare the CANONICAL form (compact JSON with
 //! object keys sorted recursively, plan A1) so a key-order or number-format drift is caught.
 //!
-//! Names start `bt1_9_` (BT1.9) or end `_bt2_5` (BT2.5) — the acceptance ledgers' CHECKs filter
-//! on those tags.
+//! Names start `bt1_9_` (BT1.9) or end `_bt2_5` (BT2.5) or `_bt4_8` (BT4.8) — the acceptance
+//! ledgers' CHECKs filter on those tags.
 //!
 //! # How the bt-2 expected values were derived
 //!
@@ -76,23 +77,28 @@
 
 use serde_json::Value;
 
-use crate::combat::types::{Effectiveness, StatusEffect};
+use crate::combat::types::{BattleOutcome, Effectiveness, StatusEffect};
+use crate::monster::types::Affinity;
 
-use super::economy::{EconomyError, Entry, Tier, TurnBudget};
+use super::ai::Stance;
+use super::ai_tests::NoHooks;
+use super::economy::{spend, EconomyError, Entry, Tier, TurnBudget};
 use super::geometry::{BoardUnit, Cell, FfFilter, Origin, Shape, Side, SkillGeometry};
 use super::golden::{run_golden, GoldenBoard, GoldenCase, GoldenResult};
 use super::initiative::Contender;
 use super::movement::{MoveClass, Path, PathError, Terrain};
 use super::outcome::{Adjudication, StepSnapshot};
-use super::resolve::{PipelineTrace, RollPair, TacticalUnit};
+use super::queue::{validate_at_pop, Validated};
+use super::resolve::{PipelineTrace, RollPair, SkillTactics, TacticalState, TacticalUnit};
 use super::resolve_tests as rt;
-use super::tuning::BattleKind;
+use super::tuning::{BattleKind, TacticsTuning};
+use super::types::{ActionTarget, MoveAction, QueuedAction, SkillAction};
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/tactics_golden.json");
 
 /// The pinned size of the fixture. Growing it (BT2.5, BT4.8, BT11.7 join the harness) is a
 /// deliberate edit here AND in the vitest.
-const CASE_COUNT: usize = 304;
+const CASE_COUNT: usize = 306;
 /// Cases that must come back `BadCase`: a malformed board (no rows / too large / ragged / bad
 /// glyph) or, since bt-2, a Pipeline unit that fails `validate_unit`.
 const BAD_CASE_COUNT: usize = 17;
@@ -913,7 +919,7 @@ fn golden_rolls_are_the_per_target_stream_from_seed_xor_action_seq_bt2_5() {
 // BT4.8 — the wild planner joins the harness (intent-chip parity)
 // ===========================================================================
 //
-// The 18 AiPlan fixture cases (#286..=#303, in this order) and how each expected plan was derived.
+// The 20 AiPlan fixture cases (#286..=#305, in this order) and how each expected plan was derived.
 // All run at the DESIGN tuning on 7×7 boards; the wild is unit 11 (side B, levelled speed 80, base
 // speed 30 = stride 2 unless stated, 100/100 HP unless stated), players are side A. The arithmetic
 // is `ai_tests.rs`'s module doc: 6 AP; Move 2 AP per stride (+1 when an enemy is adjacent to the
@@ -957,59 +963,19 @@ fn golden_rolls_are_the_per_target_stream_from_seed_xor_action_seq_bt2_5() {
 //    P1 (5,3): (4,3) costs 4 = one stride → Heavy (6 AP) → [Move (4,3) ×1, Skill 20 → 1, End]
 // 17 case 2 with seed 9 007 199 254 740 991 and action_seq 7 → case 2's plan (seed-blind)
 // 18 case 2 with the wild's stored budget fresh (ap 6) instead of idle → case 2's plan (J14)
-
-use crate::combat::types::BattleOutcome;
-use crate::monster::types::Affinity;
-
-use super::ai::Stance;
-use super::economy::spend;
-use super::events::EventPayload;
-use super::queue::{validate_at_pop, HaltReason, Hooks, Validated};
-use super::resolve::{SkillTactics, TacticalState};
-use super::tuning::TacticsTuning;
-use super::types::{ActionTarget, MoveAction, QueuedAction, SkillAction};
+// 19 Aggressive, melee, W (0,3), P1 (6,3), plus a pack-mate (unit 12, side B slot 1) on (4,3)
+//    and a FAINTED P2 (cur_hp 0, state Active) on (1,1). P2 is no player (not conscious): no
+//    target, and `d` is never measured to it. No attack in reach (every tile beside P1 is ≥ 5
+//    away). Approach: (4,3) (d 2) is the ally's tile — a unit never ends on a living ally — and
+//    no other reachable tile has d 2; (3,3) (d 3) costs 3 → two strides → [Move (3,3) ×2, End]
+//    (without the ally: [Move (4,3) ×2, End]; with `d` measured to P2 too: (1,1), d 0, cost 3)
+// 20 case 1's board with P1's id listed twice (a second id-1 unit, side A slot 1, on (0,6)): a
+//    duplicated id is a hostile state → [End] (case 1 itself answers [Skill 20 → 1, End]). A
+//    Fainted wild would plan [End] too, but the gate refuses even EndTurn for a unit that cannot
+//    act, so the gate-oracle replay below could not run it.
 
 /// The AiPlan cases the fixture carries (the bt-4 matrix above).
-const AI_PLAN_CASES: usize = 18;
-
-/// The gate's hooks for Move / Skill / EndTurn entries (none of those reads a hook).
-struct NoHooks;
-
-impl Hooks for NoHooks {
-    fn item_count(&self, _unit: u32, _item_id: u32) -> u32 {
-        0
-    }
-
-    fn take_item(&mut self, _unit: u32, _item_id: u32) -> bool {
-        false
-    }
-
-    fn recruit_headroom(&self, _unit: u32) -> bool {
-        false
-    }
-
-    fn plan_ai(&self, _state: &TacticalState, _unit: u32) -> Vec<QueuedAction> {
-        vec![QueuedAction::EndTurn]
-    }
-
-    fn validate_delegated(
-        &self,
-        _state: &TacticalState,
-        _unit: u32,
-        _validated: &Validated,
-    ) -> Result<(), HaltReason> {
-        Ok(())
-    }
-
-    fn resolve_delegated(
-        &mut self,
-        _state: &mut TacticalState,
-        _unit: u32,
-        _validated: &Validated,
-    ) -> Vec<EventPayload> {
-        Vec::new()
-    }
-}
+const AI_PLAN_CASES: usize = 20;
 
 /// The fixture indices of the AiPlan cases.
 fn ai_case_indices(fx: &Value) -> Vec<usize> {
@@ -1152,7 +1118,7 @@ fn golden_player(id: u32, x: u8, y: u8) -> TacticalUnit {
     )
 }
 
-/// BT4.8: every AiPlan fixture case (at least the 18 above) reproduces its hand-derived plan in
+/// BT4.8: every AiPlan fixture case (at least the 20 above) reproduces its hand-derived plan in
 /// canonical form — the native half of the intent-chip parity (the vitest compares the SAME
 /// expected values through the wasm `tactics_golden`).
 /// Kills: any drift in the planner's answer on a frozen board; an AiPlan dispatched elsewhere.
@@ -1285,87 +1251,6 @@ fn a_malformed_ai_plan_board_is_a_bad_case_with_the_golden_board_texts_bt4_8() {
             ]),
         ]
     );
-}
-
-/// BT4.8: the seed twin (case 17: seed 2^53 − 1, action_seq 7) and the budget twin (case 18: the
-/// wild's stored budget fresh) each have a base board in the fixture (the same case with the
-/// secret stream zeroed and every budget idle — case 2), and twin and base have identical
-/// expected AND identical planned answers.
-/// Kills: a planner whose answer moves with the secret stream or the stored budget.
-#[test]
-fn the_seed_twin_and_the_budget_twin_plan_exactly_like_their_base_board_bt4_8() {
-    let fx = fixture();
-    let expected = expected_array(&fx);
-    let got = run_fixture();
-    let cases = fixture_cases(&fx);
-    let ai = ai_case_indices(&fx);
-    let base_of = |case: &GoldenCase| -> GoldenCase {
-        let mut base = case.clone();
-        if let GoldenCase::AiPlan {
-            units,
-            seed,
-            action_seq,
-            ..
-        } = &mut base
-        {
-            *seed = 0;
-            *action_seq = 0;
-            for u in units.iter_mut() {
-                u.budget = TurnBudget::default();
-            }
-        }
-        base
-    };
-    let seed_twin = ai
-        .iter()
-        .copied()
-        .find(|&i| {
-            matches!(
-                &cases[i],
-                GoldenCase::AiPlan {
-                    seed: 9_007_199_254_740_991,
-                    action_seq: 7,
-                    ..
-                }
-            )
-        })
-        .expect("the fixture has the seed twin (seed 2^53 - 1, action_seq 7)");
-    let budget_twin = ai
-        .iter()
-        .copied()
-        .find(|&i| {
-            matches!(
-                &cases[i],
-                GoldenCase::AiPlan { units, .. }
-                    if units.iter().any(|u| u.budget != TurnBudget::default())
-            )
-        })
-        .expect("the fixture has the budget twin (a stored budget that is not idle)");
-    for (label, twin) in [("seed", seed_twin), ("budget", budget_twin)] {
-        let base = base_of(&cases[twin]);
-        let b = ai
-            .iter()
-            .copied()
-            .find(|&i| i != twin && cases[i] == base)
-            .unwrap_or_else(|| {
-                panic!("the {label} twin #{twin} has its base board in the fixture")
-            });
-        assert_eq!(
-            canon(&expected[twin]),
-            canon(&expected[b]),
-            "{label} twin #{twin} vs base #{b}: expected"
-        );
-        assert_eq!(
-            canon(&got[twin]),
-            canon(&got[b]),
-            "{label} twin #{twin} vs base #{b}: planned"
-        );
-        assert_eq!(
-            canon(&got[twin]),
-            canon(&expected[twin]),
-            "{label} twin #{twin}"
-        );
-    }
 }
 
 /// BT4.8: `run_golden` answers an inline AiPlan case with `ai::plan` at the design tuning and the
