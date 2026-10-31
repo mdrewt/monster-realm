@@ -1549,6 +1549,11 @@ function run(cmd, args, opts) {
       ok: false,
       stdout: String(e.stdout || ''),
       stderr: String(e.stderr || e.message || '').slice(-1500),
+      // The spawn outcome, so a 60 s timeout (SIGTERM, no exit status) is
+      // never mistaken for a server-side rejection (which has a status).
+      status: e.status === undefined ? null : e.status,
+      signal: e.signal === undefined ? null : e.signal,
+      code: e.code === undefined ? null : String(e.code),
     };
   }
 }
@@ -1906,7 +1911,9 @@ const DRIVER_SRC = [
   '  if (wild === null) bail("S9-wild-live", "no wild encounter within 80 shuttle steps over zone-0 grass (rate 200/1000 per grass step)");',
   '  emit("S9-wild-live", true, { battleId: String(wild.battleId) });',
   '  emit("S9-seed-ready", true, { wildBattleId: String(wild.battleId) });',
-  '  await waitGo(2, 120000);',
+  '  // bt-7: the pre-cascade snapshot is ~75 sequential CLI queries (the ten',
+  '  // tactical tables added ~15); 120 s expired mid-snapshot twice, measured.',
+  '  await waitGo(2, 300000);',
   '  const exq = await tryReducer(a.conn.reducers.requestDataExport());',
   '  if (!exq.ok) bail("S9-export-chunks", "requestDataExport rejected: " + exq.err);',
   '  let chunkRowsS9 = [];',
@@ -1984,7 +1991,8 @@ const DRIVER_SRC = [
   '  const lx = await tryReducer(a.conn.reducers.requestDataExport());',
   '  emit("S9-late-export", lx.ok === false && String(lx.err).indexOf(ERR_EXPORT) !== -1, { err: lx.err });',
   '  emit("S9-cascade-done", true, {});',
-  '  await waitGo(5, 150000);',
+  '  // bt-7: the post-cascade snapshot grew by the same ~15 queries.',
+  '  await waitGo(5, 300000);',
   '  const dAcct = accountRows(d2.conn);',
   '  emit("S9-D-still-active", dAcct.length === 1 && dAcct[0].status.tag === "Active" && (dAcct[0].terminalAtMs === null || dAcct[0].terminalAtMs === undefined), { rows: dAcct.length });',
   '  emit("S9-done", true, {});',
@@ -2199,13 +2207,40 @@ async function runLivePhase() {
       driverGone = true;
     });
     const s9Sql = [];
+    const s9T0 = Date.now();
     const s9G22Raw = [];
     const sqlJsonRows = (query) => {
       const res = run('spacetime', ['sql', '--format', 'json', '-s', dbUrl, DB_NAME, query], {
         timeout: 60_000,
       });
-      if (!res.ok) throw new Error('sql-json failed (' + query + '): ' + res.stderr);
-      s9Sql.push(query + ' => ' + res.stdout.trim().replace(/\s+/g, ' ').slice(0, 500));
+      if (!res.ok)
+        throw new Error(
+          'sql-json failed (' +
+            query +
+            '): ' +
+            res.stderr +
+            ' :: stdout ' +
+            res.stdout.slice(-300) +
+            ' :: status ' +
+            res.status +
+            ' signal ' +
+            res.signal +
+            ' code ' +
+            res.code +
+            ' :: seq ' +
+            s9Sql.length +
+            ' at +' +
+            (Date.now() - s9T0) +
+            'ms',
+        );
+      s9Sql.push(
+        '+' +
+          (Date.now() - s9T0) +
+          'ms ' +
+          query +
+          ' => ' +
+          res.stdout.trim().replace(/\s+/g, ' ').slice(0, 500),
+      );
       return decodeSqlJson(res.stdout);
     };
     const sqlDml = (stmt) => {
