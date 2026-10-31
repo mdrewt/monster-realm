@@ -518,6 +518,66 @@ fn bt1_2_non_square_boards_bound_x_by_width_and_y_by_height() {
 }
 
 #[test]
+fn bt1_2_units_standing_off_the_board_are_never_in_a_target_set() {
+    // 6x6 board; unit 2 stands at (6,5) and unit 3 at (5,6) — both OFF the board, yet within
+    // Manhattan 1 of the caster at (5,5). The area is clipped to the board, so neither counts.
+    let board = open_board(
+        6,
+        6,
+        vec![
+            unit(1, Side::A, 5, 5),
+            unit(2, Side::B, 6, 5),
+            unit(3, Side::B, 5, 6),
+        ],
+    );
+    assert_eq!(
+        target_set(&g(0, 5, CA, Shape::Diamond, 2, ALL), 1, c(5, 5), &board),
+        Ok(vec![1])
+    );
+    assert_eq!(
+        target_set(&g(0, 5, CA, Shape::Diamond, 2, EN), 1, c(5, 5), &board),
+        Ok(vec![])
+    );
+    assert_eq!(
+        target_set(&g(0, 0, CA, Shape::Burst, 1, ALL), 1, c(5, 5), &board),
+        Ok(vec![])
+    );
+}
+
+#[test]
+fn bt1_2_units_sharing_a_tile_are_ordered_by_id_within_the_tile() {
+    // Ids 9 and 4 stack on (2,2); id 7 stands at (1,2). Sort key is (y, x, id): the (1,2) unit
+    // first, then the stacked pair by ascending id — whatever order they were listed in.
+    let geom = g(1, 4, TU, Shape::Diamond, 1, EN);
+    for stacked in [
+        [unit(9, Side::B, 2, 2), unit(4, Side::B, 2, 2)],
+        [unit(4, Side::B, 2, 2), unit(9, Side::B, 2, 2)],
+    ] {
+        let mut units = vec![unit(1, Side::A, 0, 0), unit(7, Side::B, 1, 2)];
+        units.extend(stacked);
+        let board = open_board(5, 5, units);
+        assert_eq!(target_set(&geom, 1, c(2, 2), &board), Ok(vec![7, 4, 9]));
+    }
+}
+
+#[test]
+fn bt1_2_all_but_self_excludes_only_the_caster_id() {
+    // Caster id 5 (side A) shares tile (2,2) with a different-id ally 2; ally 3 (side A) is
+    // adjacent; enemy 4 is adjacent. Sorted (y,x,id): (2,2)->2,5  (3,2)->3  (2,3)->4.
+    let units = vec![
+        unit(5, Side::A, 2, 2),
+        unit(2, Side::A, 2, 2),
+        unit(3, Side::A, 3, 2),
+        unit(4, Side::B, 2, 3),
+    ];
+    let board = open_board(5, 5, units);
+    let at = |f: FfFilter| target_set(&g(0, 0, CA, Shape::Diamond, 1, f), 5, c(2, 2), &board);
+    assert_eq!(at(ABS), Ok(vec![2, 3, 4]), "only id 5 is dropped");
+    assert_eq!(at(ALL), Ok(vec![2, 5, 3, 4]));
+    assert_eq!(at(EN), Ok(vec![4]));
+}
+
+#[test]
 fn bt1_2_caster_origin_requires_the_aim_to_be_the_caster_tile() {
     assert_eq!(
         ts(g(0, 0, CA, Shape::Burst, 1, ALL), 1, 4, 2),

@@ -181,7 +181,21 @@
 {"Path":{"board":{"rows":[".q",".z"],"units":[]},"mover":1,"start":{"x":0,"y":0},"dest":{"x":1,"y":0}}},
 {"Los":{"board":{"rows":["...","..W"],"units":[]},"from":{"x":0,"y":0},"to":{"x":2,"y":1}}},
 {"Disengage":{"board":{"rows":["#."," ."],"units":[]},"mover":1,"start":{"x":0,"y":0}}},
-{"Path":{"board":{"rows":["","."],"units":[]},"mover":1,"start":{"x":0,"y":0},"dest":{"x":0,"y":0}}}
+{"Path":{"board":{"rows":["","."],"units":[]},"mover":1,"start":{"x":0,"y":0},"dest":{"x":0,"y":0}}},
+{"Path":{"board":{"rows":["....."],"units":[{"id":1,"side":"A","pos":{"x":0,"y":0},"alive":true,"class":"Walk"},{"id":2,"side":"B","pos":{"x":2,"y":0},"alive":false,"class":"Walk"}]},"mover":1,"start":{"x":0,"y":0},"dest":{"x":4,"y":0}}},
+{"Path":{"board":{"rows":["....."],"units":[{"id":1,"side":"A","pos":{"x":0,"y":0},"alive":true,"class":"Walk"},{"id":2,"side":"B","pos":{"x":2,"y":0},"alive":false,"class":"Walk"}]},"mover":1,"start":{"x":0,"y":0},"dest":{"x":2,"y":0}}},
+{"Disengage":{"board":{"rows":[".....",".....",".....",".....","....."],"units":[{"id":1,"side":"A","pos":{"x":2,"y":2},"alive":true,"class":"Walk"},{"id":2,"side":"B","pos":{"x":3,"y":2},"alive":false,"class":"Walk"},{"id":3,"side":"B","pos":{"x":4,"y":2},"alive":true,"class":"Walk"}]},"mover":1,"start":{"x":2,"y":2}}},
+{"Disengage":{"board":{"rows":[".....",".....",".....",".....","....."],"units":[{"id":1,"side":"A","pos":{"x":2,"y":2},"alive":true,"class":"Walk"},{"id":2,"side":"B","pos":{"x":3,"y":2},"alive":false,"class":"Walk"},{"id":3,"side":"B","pos":{"x":1,"y":2},"alive":true,"class":"Walk"}]},"mover":1,"start":{"x":2,"y":2}}},
+{"Disengage":{"board":{"rows":[".....",".....",".....",".....","....."],"units":[{"id":1,"side":"A","pos":{"x":2,"y":2},"alive":true,"class":"Walk"}]},"mover":1,"start":{"x":9,"y":9}}},
+{"Disengage":{"board":{"rows":[".....",".....",".....",".....","....."],"units":[{"id":1,"side":"A","pos":{"x":2,"y":2},"alive":true,"class":"Walk"}]},"mover":9,"start":{"x":9,"y":9}}},
+{"TargetSet":{"board":{"rows":[".....",".....",".....",".....","....."],"units":[{"id":3,"side":"B","pos":{"x":3,"y":3},"alive":false,"class":"Walk"},{"id":5,"side":"A","pos":{"x":3,"y":1},"alive":false,"class":"Walk"},{"id":1,"side":"A","pos":{"x":2,"y":2},"alive":true,"class":"Walk"},{"id":2,"side":"B","pos":{"x":3,"y":2},"alive":true,"class":"Walk"},{"id":4,"side":"B","pos":{"x":4,"y":2},"alive":true,"class":"Walk"}]},"caster":1,"aim":{"x":3,"y":2},"geometry":{"range_min":1,"range_max":1,"origin":"TargetUnit","shape":"Diamond","radius":1,"ff_filter":"All"}}},
+{"TargetSet":{"board":{"rows":[".....",".....",".....",".....","....."],"units":[{"id":3,"side":"B","pos":{"x":3,"y":3},"alive":false,"class":"Walk"},{"id":5,"side":"A","pos":{"x":3,"y":1},"alive":false,"class":"Walk"},{"id":1,"side":"A","pos":{"x":2,"y":2},"alive":true,"class":"Walk"},{"id":2,"side":"B","pos":{"x":3,"y":2},"alive":true,"class":"Walk"},{"id":4,"side":"B","pos":{"x":4,"y":2},"alive":true,"class":"Walk"}]},"caster":1,"aim":{"x":3,"y":2},"geometry":{"range_min":1,"range_max":1,"origin":"TargetUnit","shape":"Diamond","radius":1,"ff_filter":"Enemies"}}},
+{"Flank":{"units":[{"id":1,"side":"A","pos":{"x":3,"y":6},"alive":true,"class":"Walk"},{"id":2,"side":"A","pos":{"x":2,"y":3},"alive":true,"class":"Walk"},{"id":3,"side":"A","pos":{"x":3,"y":4},"alive":false,"class":"Walk"},{"id":4,"side":"A","pos":{"x":4,"y":3},"alive":false,"class":"Walk"}],"attacker":1,"target":{"x":3,"y":3}}},
+{"Flank":{"units":[{"id":1,"side":"A","pos":{"x":3,"y":2},"alive":true,"class":"Walk"},{"id":2,"side":"A","pos":{"x":4,"y":3},"alive":false,"class":"Walk"},{"id":3,"side":"A","pos":{"x":2,"y":3},"alive":true,"class":"Walk"}],"attacker":1,"target":{"x":3,"y":3}}},
+{"Los":{"board":{"rows":["................................................................................................................................................................................................................................................................................................................................................................................................................"],"units":[]},"from":{"x":0,"y":0},"to":{"x":0,"y":0}}},
+{"Los":{"board":{"rows":[".é."],"units":[]},"from":{"x":0,"y":0},"to":{"x":0,"y":0}}},
+{"Los":{"board":{"rows":["x..",".."],"units":[]},"from":{"x":0,"y":0},"to":{"x":0,"y":0}}},
+{"Los":{"board":{"rows":["...",""],"units":[]},"from":{"x":0,"y":0},"to":{"x":0,"y":0}}}
 ],
 "expected":[
 {"Distance":14},
@@ -365,6 +379,20 @@
 {"BadCase":"bad terrain 'q' at (1,0)"},
 {"BadCase":"bad terrain 'W' at (2,1)"},
 {"BadCase":"bad terrain ' ' at (0,1)"},
-{"BadCase":"empty board"}
+{"BadCase":"empty board"},
+{"Path":{"Ok":{"steps":[{"x":1,"y":0},{"x":2,"y":0},{"x":3,"y":0},{"x":4,"y":0}],"cost":4}}},
+{"Path":{"Ok":{"steps":[{"x":1,"y":0},{"x":2,"y":0}],"cost":2}}},
+{"Disengage":{"Ok":false}},
+{"Disengage":{"Ok":true}},
+{"Disengage":{"Err":"OutOfBounds"}},
+{"Disengage":{"Err":{"UnknownMover":9}}},
+{"TargetSet":{"Ok":[1,2,4]}},
+{"TargetSet":{"Ok":[2,4]}},
+{"Flank":false},
+{"Flank":true},
+{"BadCase":"board too large"},
+{"BadCase":"bad terrain 'é' at (1,0)"},
+{"BadCase":"bad terrain 'x' at (0,0)"},
+{"BadCase":"ragged row 1"}
 ]
 }

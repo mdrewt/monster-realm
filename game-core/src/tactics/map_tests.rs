@@ -562,6 +562,35 @@ fn bt1_8_every_spawn_must_share_one_walk_component() {
     );
 }
 
+#[test]
+fn bt1_8_min_distance_ranges_over_all_nine_pairs_not_just_the_first_slots() {
+    // A(0,2)-B(1,2) = 1 is the closest of the 9 cross pairs; the slot-0 pair A(0,0)-B(7,7) is 14.
+    // 8x8 => min 5, so the measured 1 is named.
+    let d = map(8, 8, [(0, 0), (0, 1), (0, 2)], [(7, 7), (7, 6), (1, 2)]);
+    assert_eq!(validate_battle_map(&d), Err(min_err(5, 1)));
+}
+
+#[test]
+fn bt1_8_connectivity_covers_every_spawn_slot_including_the_third_of_side_a() {
+    // A's third slot (0,5) is enclosed by Blocked (0,4), (1,5), (0,6); the other five spawns
+    // connect. Distances are legal on 7x7 (closest pair A(1,0)-B(6,0) = 5 >= 4, farthest
+    // A(0,5)-B(6,0) = 11 <= 11), so only connectivity can reject it.
+    let mut d = map(7, 7, [(0, 0), (1, 0), (0, 5)], [(6, 0), (6, 1), (6, 2)]);
+    assert_eq!(validate_battle_map(&d), Ok(()), "control: no enclosure");
+    set(&mut d, 0, 4, Terrain::Blocked);
+    set(&mut d, 1, 5, Terrain::Blocked);
+    set(&mut d, 0, 6, Terrain::Blocked);
+    assert_eq!(validate_battle_map(&d), Err(MapError::Disconnected));
+}
+
+#[test]
+fn bt1_8_connectivity_floods_leftwards_when_side_a_is_on_the_right() {
+    // A in column 6, B in column 0 on an all-Plain 7x7: every pair is 6..=8 apart, and the
+    // flood from A's first slot has to travel in -x to reach B.
+    let d = map(7, 7, [(6, 0), (6, 1), (6, 2)], [(0, 0), (0, 1), (0, 2)]);
+    assert_eq!(validate_battle_map(&d), Ok(()));
+}
+
 // ===========================================================================
 // BT1.8 — tile schema: elevation / blocks_los are defaulted and unread
 // ===========================================================================

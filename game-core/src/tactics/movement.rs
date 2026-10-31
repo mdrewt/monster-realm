@@ -91,7 +91,8 @@ fn enter_weight(board: &Board, mover: &BoardUnit, c: Cell) -> Option<u16> {
     terrain_weight(mover.class, terrain).map(u16::from)
 }
 
-fn neighbours(c: Cell) -> impl Iterator<Item = Cell> {
+/// The in-`u8` orthogonal neighbours of `c`, in `(y, x)` order (callers bound them).
+pub(crate) fn neighbours(c: Cell) -> impl Iterator<Item = Cell> {
     let up = c.y.checked_sub(1).map(|y| Cell { x: c.x, y });
     let left = c.x.checked_sub(1).map(|x| Cell { x, y: c.y });
     let right = c.x.checked_add(1).map(|x| Cell { x, y: c.y });
@@ -115,7 +116,10 @@ fn dijkstra(board: &Board, mover: &BoardUnit, start: Cell) -> Vec<Option<(u16, O
             let Some(w) = enter_weight(board, mover, next) else {
                 continue;
             };
-            let candidate = cost + w;
+            // A cost past u16::MAX is dropped (unreachable), never an overflow panic.
+            let Some(candidate) = cost.checked_add(w) else {
+                continue;
+            };
             let slot = &mut best[index(board, next)];
             if slot.is_none_or(|(d, _)| candidate < d) {
                 *slot = Some((candidate, Some(here)));
@@ -128,7 +132,8 @@ fn dijkstra(board: &Board, mover: &BoardUnit, start: Cell) -> Vec<Option<(u16, O
 
 /// The cheapest path for `mover_id` from `start` to `dest` (tie-break: module doc).
 /// `steps` exclude `start` and end at `dest`; `cost` is the summed entry weight.
-/// No stride budget is applied here — the caller checks `cost` against it.
+/// No stride budget is applied here — the caller checks `cost` against it. A tile
+/// whose cheapest cost would exceed `u16::MAX` is unreachable.
 ///
 /// # Errors
 /// In order: `UnknownMover` (no living unit with the id), `OutOfBounds` (start or
@@ -180,12 +185,15 @@ pub fn find_path(board: &Board, mover_id: u32, start: Cell, dest: Cell) -> Resul
 /// `Fly`-class.
 ///
 /// # Errors
-/// [`PathError::UnknownMover`] when no living unit has `mover_id` — an unknown mover
-/// is refused, never silently waived.
+/// [`PathError::UnknownMover`] when no living unit has `mover_id`, then
+/// [`PathError::OutOfBounds`] for an off-board `start` — refused, never silently waived.
 pub fn disengage_taxed(board: &Board, mover_id: u32, start: Cell) -> Result<bool, PathError> {
     let mover = board
         .living(mover_id)
         .ok_or(PathError::UnknownMover(mover_id))?;
+    if !board.contains(start) {
+        return Err(PathError::OutOfBounds);
+    }
     if mover.class == MoveClass::Fly {
         return Ok(false);
     }

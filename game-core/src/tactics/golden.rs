@@ -87,12 +87,16 @@ pub enum GoldenResult {
 
 impl GoldenBoard {
     /// The rule-level [`Board`] (no LoS blockers), or the `BadCase` message for a
-    /// malformed board: empty, ragged, or an unknown terrain glyph.
+    /// malformed board, first match wins: empty, too large (> 255 rows or columns),
+    /// then row by row a ragged row before an unknown terrain glyph.
     fn to_board(&self) -> Result<Board, String> {
         let width = self.rows.first().map_or(0, |r| r.chars().count());
         if width == 0 {
             return Err("empty board".to_owned());
         }
+        let (Ok(w), Ok(h)) = (u8::try_from(width), u8::try_from(self.rows.len())) else {
+            return Err("board too large".to_owned());
+        };
         let mut terrain = Vec::with_capacity(width * self.rows.len());
         for (y, row) in self.rows.iter().enumerate() {
             if row.chars().count() != width {
@@ -108,9 +112,6 @@ impl GoldenBoard {
                 });
             }
         }
-        let (Ok(w), Ok(h)) = (u8::try_from(width), u8::try_from(self.rows.len())) else {
-            return Err("board too large".to_owned());
-        };
         Ok(Board {
             width: w,
             height: h,

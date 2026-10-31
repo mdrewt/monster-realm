@@ -503,6 +503,65 @@ fn bt1_6_path_error_order_is_pairwise_fixed() {
     );
 }
 
+/// 255x255 board, every passable tile Rough (a Walk mover pays 2 per entered tile). Tiles with
+/// `(x - y) mod 3 == 2` are walls except ONE connector per wall diagonal, alternating between
+/// the two ends of the diagonal, so any route across the board has to snake through every band.
+fn diagonal_maze_rows() -> Vec<String> {
+    let n = 255usize;
+    let mut g = vec![vec!['#'; n]; n];
+    for (y, row) in g.iter_mut().enumerate() {
+        for (x, cell) in row.iter_mut().enumerate() {
+            let d = (x as i32 - y as i32).rem_euclid(3);
+            if d != 2 {
+                *cell = 'r';
+            }
+        }
+    }
+    let mut j = -85i32;
+    let mut flip = false;
+    while 3 * j + 2 <= 254 {
+        let d = 3 * j + 2;
+        let (x, y) = if flip {
+            if d >= 0 {
+                (254usize, (254 - d) as usize)
+            } else {
+                ((254 + d) as usize, 254usize)
+            }
+        } else if d >= 0 {
+            (d as usize, 0usize)
+        } else {
+            (0usize, (-d) as usize)
+        };
+        g[y][x] = 'r';
+        flip = !flip;
+        j += 1;
+    }
+    g.iter().map(|r| r.iter().collect()).collect()
+}
+
+#[test]
+fn bt1_6_a_cost_beyond_u16_max_is_unreachable_and_never_a_panic() {
+    // Contract: a relaxation whose cumulative cost would exceed u16::MAX is dropped, so
+    // find_path never panics and such a destination is Unreachable.
+    //
+    // Why (254,0) is provably past the limit: every step changes (x - y) by exactly 1, so a
+    // route from (0,254) [x-y = -254] to (254,0) [x-y = 254] must land on every wall diagonal
+    // x-y = 3j+2, and each wall has a single open connector. Visiting the 170 connectors in
+    // order costs at least the sum of their Manhattan gaps: 21336 + 505 + 21168 = 43009 steps,
+    // each entering a Rough tile (cost 2) => >= 86018 > 65535. (253,0) lies behind the same
+    // walls minus the last 3-step gap => >= 86012 > 65535.
+    let rows = diagonal_maze_rows();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let b = board(&refs, vec![me(MoveClass::Walk, 0, 254)]);
+    // Near destinations stay Ok with an exact cost: the only exit from the start is the
+    // connector (0,253) (cost 2); (1,253) is the next band cell behind it (cost 4).
+    assert_eq!(go(&b, 1, (0, 254), (0, 253)), ok(&[(0, 253)], 2));
+    assert_eq!(go(&b, 1, (0, 254), (1, 253)), ok(&[(0, 253), (1, 253)], 4));
+    // Far destinations: dropped, not wrapped and not a panic.
+    assert_eq!(go(&b, 1, (0, 254), (254, 0)), Err(PathError::Unreachable));
+    assert_eq!(go(&b, 1, (0, 254), (253, 0)), Err(PathError::Unreachable));
+}
+
 #[test]
 fn bt1_6_start_is_explicit_and_the_movers_own_unit_never_blocks_itself() {
     // A second Move entry starts where the first ended: the unit still records (0,0).
@@ -1122,6 +1181,47 @@ fn bt1_7_unknown_or_dead_mover_is_an_error_never_a_silent_waiver() {
     let d = open5(vec![dead(me(MoveClass::Walk, 2, 2)), foe(2, 3, 2)]);
     assert_eq!(
         disengage_taxed(&d, 1, c(2, 2)),
+        Err(PathError::UnknownMover(1))
+    );
+}
+
+#[test]
+fn bt1_7_a_start_outside_the_board_is_out_of_bounds() {
+    let b = open5(vec![me(MoveClass::Walk, 2, 2), foe(2, 0, 0)]);
+    assert_eq!(
+        disengage_taxed(&b, 1, c(5, 2)),
+        Err(PathError::OutOfBounds),
+        "x == width"
+    );
+    assert_eq!(
+        disengage_taxed(&b, 1, c(2, 5)),
+        Err(PathError::OutOfBounds),
+        "y == height"
+    );
+    assert_eq!(
+        disengage_taxed(&b, 1, c(255, 255)),
+        Err(PathError::OutOfBounds)
+    );
+    // The last in-bounds tile is fine (no enemy adjacent to (4,4) here).
+    assert_eq!(disengage_taxed(&b, 1, c(4, 4)), Ok(false));
+    // A Fly mover is not exempt from the bounds check.
+    let fly = open5(vec![me(MoveClass::Fly, 2, 2)]);
+    assert_eq!(
+        disengage_taxed(&fly, 1, c(9, 9)),
+        Err(PathError::OutOfBounds)
+    );
+}
+
+#[test]
+fn bt1_7_unknown_mover_is_checked_before_the_start_bounds() {
+    let b = open5(vec![me(MoveClass::Walk, 2, 2)]);
+    assert_eq!(
+        disengage_taxed(&b, 9, c(9, 9)),
+        Err(PathError::UnknownMover(9))
+    );
+    let d = open5(vec![dead(me(MoveClass::Walk, 2, 2))]);
+    assert_eq!(
+        disengage_taxed(&d, 1, c(9, 9)),
         Err(PathError::UnknownMover(1))
     );
 }

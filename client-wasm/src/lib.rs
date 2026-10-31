@@ -475,7 +475,8 @@ pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
 /// The tactics golden harness across the wasm boundary: runs game-core's
 /// `tactics::run_golden` over the shared fixture's `cases` so
 /// `client/src/tactics/golden.parity.test.ts` can assert the wasm build answers
-/// byte-identically to the native `golden_tests.rs` run of the same JSON.
+/// byte-identically to the native `golden_tests.rs` run of the same JSON. A
+/// determinism test hook: no production caller.
 ///
 /// # Errors
 /// Returns a JS error if `cases` does not deserialize as `Vec<GoldenCase>`.

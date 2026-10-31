@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::geometry::{manhattan, Cell, Side};
-use super::movement::{terrain_weight, MoveClass, Terrain};
+use super::movement::{neighbours, terrain_weight, MoveClass, Terrain};
 
 /// Map side bounds (both width and height).
 const SIDE_RANGE: std::ops::RangeInclusive<u8> = 6..=8;
@@ -62,28 +62,25 @@ fn min_opposing(def: &BattleMapDef) -> u16 {
     }
 }
 
+/// Row-major tile index of `c`.
+fn at(def: &BattleMapDef, c: Cell) -> usize {
+    usize::from(c.y) * usize::from(def.width) + usize::from(c.x)
+}
+
 fn walkable(def: &BattleMapDef, c: Cell) -> bool {
-    let i = usize::from(c.y) * usize::from(def.width) + usize::from(c.x);
     def.tiles
-        .get(i)
+        .get(at(def, c))
         .is_some_and(|t| terrain_weight(MoveClass::Walk, t.terrain).is_some())
 }
 
 /// Every tile Walk-reachable from `from` (units ignored), row-major.
 fn walk_component(def: &BattleMapDef, from: Cell) -> Vec<bool> {
-    let w = usize::from(def.width);
-    let mut seen = vec![false; w * usize::from(def.height)];
+    let mut seen = vec![false; def.tiles.len()];
     let mut stack = vec![from];
-    seen[usize::from(from.y) * w + usize::from(from.x)] = true;
+    seen[at(def, from)] = true;
     while let Some(c) = stack.pop() {
-        let steps = [
-            c.y.checked_sub(1).map(|y| Cell { x: c.x, y }),
-            c.x.checked_sub(1).map(|x| Cell { x, y: c.y }),
-            Some(Cell { x: c.x + 1, y: c.y }).filter(|n| n.x < def.width),
-            Some(Cell { x: c.x, y: c.y + 1 }).filter(|n| n.y < def.height),
-        ];
-        for n in steps.into_iter().flatten() {
-            let i = usize::from(n.y) * w + usize::from(n.x);
+        for n in neighbours(c).filter(|n| n.x < def.width && n.y < def.height) {
+            let i = at(def, n);
             if !seen[i] && walkable(def, n) {
                 seen[i] = true;
                 stack.push(n);
@@ -157,11 +154,7 @@ pub fn validate_battle_map(def: &BattleMapDef) -> Result<(), MapError> {
         });
     }
     let reach = walk_component(def, spawns[0]);
-    let w = usize::from(def.width);
-    if spawns
-        .iter()
-        .any(|c| !reach[usize::from(c.y) * w + usize::from(c.x)])
-    {
+    if spawns.iter().any(|&c| !reach[at(def, c)]) {
         return Err(MapError::Disconnected);
     }
     Ok(())

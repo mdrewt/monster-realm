@@ -25,9 +25,11 @@ const FIXTURE_PATH = path.join(
 );
 
 /** The pinned fixture size (keep equal to CASE_COUNT in golden_tests.rs). */
-const CASE_COUNT = 182;
+const CASE_COUNT = 196;
 /** Cases whose board is malformed: they must come back as `{"BadCase": "<text>"}`. */
-const BAD_CASE_COUNT = 9;
+const BAD_CASE_COUNT = 13;
+/** U+00E9, built from its code point (never a pasted or escaped literal). */
+const E_ACUTE = String.fromCharCode(0xe9);
 /** Every `GoldenCase` kind; each must appear in the fixture at least once. */
 const KINDS = [
   'Distance',
@@ -150,6 +152,34 @@ describe('BT1.9 tactics golden: wasm == native on the shared JSON fixture', () =
       "bad terrain 'W' at (2,1)",
       "bad terrain ' ' at (0,1)",
       'empty board',
+      'board too large',
+      `bad terrain '${E_ACUTE}' at (1,0)`,
+      "bad terrain 'x' at (0,0)",
+      'ragged row 1',
+    ]);
+  });
+
+  it('BT1.9 the board size limit is exactly 255 columns by 255 rows', () => {
+    if (tacticsGolden === undefined) {
+      throw new Error(
+        'client-wasm exports no tactics_golden() — the pkg is stale, run `just wasm`',
+      );
+    }
+    const los = (rows: string[]) => ({
+      Los: { board: { rows, units: [] }, from: { x: 0, y: 0 }, to: { x: 0, y: 0 } },
+    });
+    const cases = [
+      los(['.'.repeat(255)]),
+      los(['.'.repeat(256)]),
+      los(Array.from({ length: 255 }, () => '.')),
+      los(Array.from({ length: 256 }, () => '.')),
+    ];
+    const results = tacticsGolden(cases) as unknown[];
+    expect(results.map(canon)).toEqual([
+      canon({ Los: true }),
+      canon({ BadCase: 'board too large' }),
+      canon({ Los: true }),
+      canon({ BadCase: 'board too large' }),
     ]);
   });
 });

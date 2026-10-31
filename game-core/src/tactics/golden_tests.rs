@@ -20,9 +20,10 @@ const FIXTURE: &str = include_str!("../../tests/fixtures/tactics_golden.json");
 
 /// The pinned size of the fixture. Growing it (BT2.5, BT4.8, BT11.7 join the harness) is a
 /// deliberate edit here AND in the vitest.
-const CASE_COUNT: usize = 182;
-/// Cases whose board is malformed (no rows / ragged / bad glyph): they must come back `BadCase`.
-const BAD_CASE_COUNT: usize = 9;
+const CASE_COUNT: usize = 196;
+/// Cases whose board is malformed (no rows / too large / ragged / bad glyph): they must come
+/// back `BadCase`.
+const BAD_CASE_COUNT: usize = 13;
 
 /// Every `GoldenCase` kind. Each must appear in the fixture at least once.
 const KINDS: [&str; 9] = [
@@ -184,19 +185,49 @@ fn bt1_9_bad_cases_are_exactly_the_malformed_boards() {
         }
     }
     assert_eq!(bad.len(), BAD_CASE_COUNT);
+    let mut want: Vec<String> = [
+        "empty board",
+        "empty board",
+        "ragged row 1",
+        "ragged row 2",
+        "bad terrain 'x' at (1,1)",
+        "bad terrain 'q' at (1,0)",
+        "bad terrain 'W' at (2,1)",
+        "bad terrain ' ' at (0,1)",
+        "empty board",
+        "board too large",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    want.push(format!("bad terrain '{}' at (1,0)", e_acute()));
+    want.push("bad terrain 'x' at (0,0)".to_string());
+    want.push("ragged row 1".to_string());
+    assert_eq!(bad, want);
+}
+
+/// U+00E9, built from its code point (never a pasted or escaped literal).
+fn e_acute() -> char {
+    char::from_u32(0xE9).expect("U+00E9 is a scalar value")
+}
+
+#[test]
+fn bt1_9_fixture_carries_a_row_wider_than_255_columns_that_is_board_too_large() {
+    let fx = fixture();
+    let cases = cases_array(&fx);
+    let expected = expected_array(&fx);
+    let wide_idx = cases
+        .iter()
+        .position(|case| {
+            case.as_object()
+                .and_then(|m| m.values().next())
+                .and_then(|body| body["board"]["rows"][0].as_str())
+                .is_some_and(|row| row.chars().count() > 255)
+        })
+        .expect("the fixture has a first row wider than 255 columns");
     assert_eq!(
-        bad,
-        [
-            "empty board",
-            "empty board",
-            "ragged row 1",
-            "ragged row 2",
-            "bad terrain 'x' at (1,1)",
-            "bad terrain 'q' at (1,0)",
-            "bad terrain 'W' at (2,1)",
-            "bad terrain ' ' at (0,1)",
-            "empty board",
-        ]
+        expected[wide_idx],
+        serde_json::json!({ "BadCase": "board too large" })
     );
 }
 
@@ -443,4 +474,120 @@ fn bt1_9_malformed_boards_are_golden_errors_with_exact_text() {
         to: c(3, 0),
     }]);
     assert_eq!(fine, vec![GoldenResult::Los(true)]);
+}
+
+/// The same malformed board through all four board-carrying case kinds.
+fn bad_results(rows: &[&str]) -> Vec<GoldenResult> {
+    let geometry = SkillGeometry {
+        range_min: 0,
+        range_max: 0,
+        origin: Origin::Caster,
+        shape: Shape::Single,
+        radius: 0,
+        ff_filter: FfFilter::All,
+    };
+    run_golden(&[
+        GoldenCase::Los {
+            board: board(rows, vec![]),
+            from: c(0, 0),
+            to: c(0, 0),
+        },
+        GoldenCase::TargetSet {
+            board: board(rows, vec![]),
+            caster: 1,
+            aim: c(0, 0),
+            geometry,
+        },
+        GoldenCase::Path {
+            board: board(rows, vec![]),
+            mover: 1,
+            start: c(0, 0),
+            dest: c(1, 0),
+        },
+        GoldenCase::Disengage {
+            board: board(rows, vec![]),
+            mover: 1,
+            start: c(0, 0),
+        },
+    ])
+}
+
+fn all_bad(text: &str) -> Vec<GoldenResult> {
+    vec![GoldenResult::BadCase(text.to_string()); 4]
+}
+
+#[test]
+fn bt1_9_board_size_limit_is_255_columns_by_255_rows() {
+    let los = |rows: Vec<String>| {
+        let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+        run_golden(&[GoldenCase::Los {
+            board: board(&refs, vec![]),
+            from: c(0, 0),
+            to: c(0, 0),
+        }])
+    };
+    let too_large = vec![GoldenResult::BadCase("board too large".to_string())];
+    assert_eq!(los(vec![".".repeat(255)]), vec![GoldenResult::Los(true)]);
+    assert_eq!(los(vec![".".repeat(256)]), too_large);
+    assert_eq!(
+        los(vec![".".to_string(); 255]),
+        vec![GoldenResult::Los(true)]
+    );
+    assert_eq!(los(vec![".".to_string(); 256]), too_large);
+}
+
+#[test]
+fn bt1_9_bad_case_precedence_empty_then_too_large_then_per_row_ragged_then_glyph() {
+    let wide = ".".repeat(256);
+    let mut tall = vec!["..."; 256];
+    // Too large (any row count > 255) beats raggedness further down.
+    tall[1] = "..";
+    assert_eq!(bad_results(&tall), all_bad("board too large"));
+    // ...but an empty first row is "empty board" even on a 256-row board.
+    tall[0] = "";
+    assert_eq!(bad_results(&tall), all_bad("empty board"));
+    // A first row wider than 255 characters beats a bad glyph on a later row.
+    assert_eq!(
+        bad_results(&[wide.as_str(), "x"]),
+        all_bad("board too large")
+    );
+    // Per row, in order: row 0's glyph error precedes row 1's raggedness...
+    assert_eq!(
+        bad_results(&["x..", ".."]),
+        all_bad("bad terrain 'x' at (0,0)")
+    );
+    assert_eq!(
+        bad_results(&[".x", "..."]),
+        all_bad("bad terrain 'x' at (1,0)")
+    );
+    // ...and within one row the ragged check precedes its glyph check.
+    assert_eq!(bad_results(&["..", "x"]), all_bad("ragged row 1"));
+    assert_eq!(bad_results(&["...", ""]), all_bad("ragged row 1"));
+    // Row 1's glyph error precedes row 2's raggedness.
+    assert_eq!(
+        bad_results(&["..", "x.", "."]),
+        all_bad("bad terrain 'x' at (0,1)")
+    );
+}
+
+#[test]
+fn bt1_9_bad_case_counts_characters_not_bytes() {
+    let e = e_acute();
+    let with_e = format!(".{e}.");
+    assert_eq!(
+        bad_results(&[with_e.as_str()]),
+        all_bad(&format!("bad terrain '{e}' at (1,0)"))
+    );
+    // 130 characters = 260 bytes: by characters this is NOT too large, so the glyph is named.
+    let many_e: String = std::iter::repeat_n(e, 130).collect();
+    assert_eq!(
+        bad_results(&[many_e.as_str()]),
+        all_bad(&format!("bad terrain '{e}' at (0,0)"))
+    );
+    // Row 1 is one character (two bytes) against a two-character row 0: ragged by characters.
+    let one_e = e.to_string();
+    assert_eq!(
+        bad_results(&["..", one_e.as_str()]),
+        all_bad("ragged row 1")
+    );
 }
