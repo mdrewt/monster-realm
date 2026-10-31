@@ -7,8 +7,9 @@
 //! family (monster_mgmt / inventory / npc / raising / economy / ranking /
 //! `schema::rekey_formation`), `privacy::purge_export_bundles`, and the
 //! `erase_*` / `anonymize_*` cascade family the deletion reaper delegates to
-//! (the tactical tables' `schema::erase_tactical_rows` included). Bare reads of `player` are permitted
-//! (no single owning module); the wallet is not read here at all; battle liveness
+//! (the tactical tables' `schema::erase_tactical_rows` included). Bare reads of
+//! `player` are permitted (no single owning module); the wallet is not read
+//! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
 //!
 //! BOTH scheduled reaper table + reducer pairs (`guest_claim_reaper`,

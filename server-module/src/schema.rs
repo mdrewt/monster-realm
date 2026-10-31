@@ -1280,14 +1280,14 @@ fn participant_battle_ids(ctx: &spacetimedb::ViewContext) -> Vec<u64> {
     ctx.db
         .battle()
         .player_identity()
-        .filter(ctx.sender())
+        .filter(sender)
         .map(|b| b.battle_id)
         .chain(
             ctx.db
                 .battle()
                 .opponent_identity()
-                .filter(ctx.sender())
-                .filter(|b| b.player_identity != ctx.sender())
+                .filter(sender)
+                .filter(move |b| b.player_identity != sender)
                 .map(|b| b.battle_id),
         )
         .collect()

@@ -5759,9 +5759,12 @@ mod acct_nh {
         out
     }
 
+    /// `(table, [(battle_id, row bytes)])` per tactical table (clippy type_complexity alias).
+    type PerBattleRows = Vec<(&'static str, Vec<(u64, Vec<u8>)>)>;
+
     /// The eight tactical tables the cascade erases BY BATTLE ID, each as
     /// `(battle_id, canonical bytes)` rows.
-    fn per_battle_rows(w: &W<'_>) -> Vec<(&'static str, Vec<(u64, Vec<u8>)>)> {
+    fn per_battle_rows(w: &W<'_>) -> PerBattleRows {
         vec![
             (
                 "battle_tactical",
@@ -8590,7 +8593,8 @@ mod acct_nh {
         seed_tactical_battle(&w, 8106, tomb, Some(b));
 
         // (caller, its battles, tactical rows, units, events, clocks)
-        let cases: [(Identity, &[u64], usize, usize, usize, usize); 6] = [
+        type ViewCase<'a> = (Identity, &'a [u64], usize, usize, usize, usize);
+        let cases: [ViewCase<'_>; 6] = [
             (a, &[8101, 8102, 8103, 8105], 4, 15, 9, 7),
             (b, &[8101, 8102, 8104, 8106], 4, 13, 8, 8),
             (c, &[8104], 1, 3, 2, 2),
