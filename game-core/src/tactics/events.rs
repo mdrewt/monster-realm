@@ -14,9 +14,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::combat::types::{BattleOutcome, StatusEffect};
+use crate::combat::types::{BattleOutcome, Effectiveness, StatusEffect};
 
-use super::resolve::TacticalEvent;
+use super::outcome::{Adjudication, BattleEndHow};
+use super::resolve::{TacticalEvent, TargetResult};
 
 /// Per-action playback cap (§9.4).
 pub const ACTION_CAP_MS: u32 = 400;
@@ -276,8 +277,99 @@ pub enum EventPayload {
 /// `how` flattens `Adjudicated(which)` into the four `Adjudicated*` kinds.
 #[must_use]
 pub fn payload_of(event: &TacticalEvent) -> EventPayload {
-    let _ = event;
-    todo!("bt-3 skeleton")
+    match event {
+        TacticalEvent::Executed {
+            attacker,
+            skill_id,
+            results,
+        } => EventPayload::Executed(ExecutedEvent {
+            attacker: *attacker,
+            skill_id: *skill_id,
+            results: results.iter().map(target_hit_of).collect(),
+        }),
+        TacticalEvent::Missed { attacker, target } => EventPayload::Missed(MissedEvent {
+            attacker: *attacker,
+            target: *target,
+        }),
+        TacticalEvent::StoodGround { unit } => {
+            EventPayload::StoodGround(StoodGroundEvent { unit: *unit })
+        }
+        TacticalEvent::StatusApplied { unit, status } => EventPayload::Status(StatusEvent {
+            unit: *unit,
+            status: *status,
+            change: StatusChange::Applied,
+            amount: 0,
+        }),
+        TacticalEvent::StatusTick {
+            unit,
+            status,
+            amount,
+        } => EventPayload::Status(StatusEvent {
+            unit: *unit,
+            status: *status,
+            change: StatusChange::Tick,
+            amount: *amount,
+        }),
+        TacticalEvent::StatusCured { unit, status } => EventPayload::Status(StatusEvent {
+            unit: *unit,
+            status: *status,
+            change: StatusChange::Cured,
+            amount: 0,
+        }),
+        TacticalEvent::Surge {
+            round,
+            unit,
+            amount,
+        } => EventPayload::Surge(SurgeEvent {
+            round: *round,
+            unit: *unit,
+            amount: *amount,
+        }),
+        TacticalEvent::Ko { unit } => EventPayload::Ko(KoEvent { unit: *unit }),
+        TacticalEvent::QueueVoided { unit } => {
+            EventPayload::QueueVoided(QueueVoidedEvent { unit: *unit })
+        }
+        TacticalEvent::BattleEnd { outcome, how } => EventPayload::BattleEnd(BattleEndEvent {
+            outcome: *outcome,
+            how: end_how_of(*how),
+        }),
+    }
+}
+
+/// The storage shape of one target's result.
+fn target_hit_of(r: &TargetResult) -> TargetHit {
+    TargetHit {
+        unit: r.unit,
+        hit: r.hit,
+        damage: r.damage,
+        effectiveness: r.effectiveness.map(hit_effectiveness_of),
+        flank: r.flank,
+        guard: r.guard,
+        ko: r.ko,
+    }
+}
+
+/// `combat::types::Effectiveness` → its storage mirror.
+fn hit_effectiveness_of(e: Effectiveness) -> HitEffectiveness {
+    match e {
+        Effectiveness::Immune => HitEffectiveness::Immune,
+        Effectiveness::NotVeryEffective => HitEffectiveness::NotVeryEffective,
+        Effectiveness::Neutral => HitEffectiveness::Neutral,
+        Effectiveness::SuperEffective => HitEffectiveness::SuperEffective,
+    }
+}
+
+/// `outcome::BattleEndHow` flattened for storage.
+fn end_how_of(how: BattleEndHow) -> EndHow {
+    match how {
+        BattleEndHow::SideEmpty => EndHow::SideEmpty,
+        BattleEndHow::Adjudicated(Adjudication::HpPercent) => EndHow::AdjudicatedHpPercent,
+        BattleEndHow::Adjudicated(Adjudication::Conscious) => EndHow::AdjudicatedConscious,
+        BattleEndHow::Adjudicated(Adjudication::DamageDealt) => EndHow::AdjudicatedDamageDealt,
+        BattleEndHow::Adjudicated(Adjudication::Coin) => EndHow::AdjudicatedCoin,
+        BattleEndHow::FixedOrder => EndHow::FixedOrder,
+        BattleEndHow::RoundCap => EndHow::RoundCap,
+    }
 }
 
 /// Design §9.4: the playback cap of one event — `Executed`, `ItemUsed`, `RecruitResult` 400 ms;
@@ -287,6 +379,23 @@ pub fn payload_of(event: &TacticalEvent) -> EventPayload {
 /// batch's cap.
 #[must_use]
 pub fn presentation_cap_ms(event: &EventPayload) -> u32 {
-    let _ = event;
-    todo!("bt-3 skeleton")
+    match event {
+        EventPayload::Executed(_) | EventPayload::ItemUsed(_) | EventPayload::RecruitResult(_) => {
+            ACTION_CAP_MS
+        }
+        EventPayload::Moved(m) => (TILE_CAP_MS * u32::from(m.tiles)).min(MOVE_CAP_MS),
+        EventPayload::RoundEnded(_) => UPKEEP_CAP_MS,
+        EventPayload::BattleStarted(_) => BATTLE_START_CAP_MS,
+        EventPayload::BattleEnd(_) => RESULTS_CAP_MS,
+        EventPayload::Missed(_)
+        | EventPayload::PlanHalted(_)
+        | EventPayload::QueueVoided(_)
+        | EventPayload::AutoPass(_)
+        | EventPayload::StoodGround(_)
+        | EventPayload::Status(_)
+        | EventPayload::Surge(_)
+        | EventPayload::Ko(_)
+        | EventPayload::Awards(_)
+        | EventPayload::TurnEnded(_) => 0,
+    }
 }

@@ -400,5 +400,463 @@
       "Pvp",
       "Practice"
     ]
+  },
+  "HitEffectiveness": {
+    "kind": "enum",
+    "variants": [
+      "Immune",
+      "NotVeryEffective",
+      "Neutral",
+      "SuperEffective"
+    ]
+  },
+  "TargetHit": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "hit",
+        "bool"
+      ],
+      [
+        "damage",
+        "u16"
+      ],
+      [
+        "effectiveness",
+        "Option<HitEffectiveness>"
+      ],
+      [
+        "flank",
+        "bool"
+      ],
+      [
+        "guard",
+        "bool"
+      ],
+      [
+        "ko",
+        "bool"
+      ]
+    ]
+  },
+  "ExecutedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "attacker",
+        "u32"
+      ],
+      [
+        "skill_id",
+        "u32"
+      ],
+      [
+        "results",
+        "Vec<TargetHit>"
+      ]
+    ]
+  },
+  "MissedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "attacker",
+        "u32"
+      ],
+      [
+        "target",
+        "u32"
+      ]
+    ]
+  },
+  "HaltKind": {
+    "kind": "enum",
+    "variants": [
+      "CannotAct",
+      "BadShape",
+      "UnknownSkill",
+      "TargetGone",
+      "Unreachable",
+      "TooFar",
+      "Geometry",
+      "NotAdjacent",
+      "NotWild",
+      "NotAllowed",
+      "NoHeadroom",
+      "ItemNotHeld",
+      "Unaffordable",
+      "BadState"
+    ]
+  },
+  "PlanHaltedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "idx",
+        "u8"
+      ],
+      [
+        "reason_kind",
+        "HaltKind"
+      ]
+    ]
+  },
+  "QueueVoidedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ]
+    ]
+  },
+  "AutoPassEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "strike",
+        "u8"
+      ]
+    ]
+  },
+  "StoodGroundEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ]
+    ]
+  },
+  "StatusChange": {
+    "kind": "enum",
+    "variants": [
+      "Applied",
+      "Tick",
+      "Cured",
+      "Blocked"
+    ]
+  },
+  "StatusEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "status",
+        "StatusEffect"
+      ],
+      [
+        "change",
+        "StatusChange"
+      ],
+      [
+        "amount",
+        "u16"
+      ]
+    ]
+  },
+  "SurgeEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "round",
+        "u16"
+      ],
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "amount",
+        "u16"
+      ]
+    ]
+  },
+  "KoEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ]
+    ]
+  },
+  "RecruitResultEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "target",
+        "u32"
+      ],
+      [
+        "success",
+        "bool"
+      ],
+      [
+        "pct",
+        "u8"
+      ]
+    ]
+  },
+  "AwardsEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "xp",
+        "u32"
+      ],
+      [
+        "essence",
+        "u32"
+      ],
+      [
+        "currency",
+        "u64"
+      ]
+    ]
+  },
+  "MovedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "from_x",
+        "u8"
+      ],
+      [
+        "from_y",
+        "u8"
+      ],
+      [
+        "to_x",
+        "u8"
+      ],
+      [
+        "to_y",
+        "u8"
+      ],
+      [
+        "tiles",
+        "u8"
+      ]
+    ]
+  },
+  "ItemUsedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "item_id",
+        "u32"
+      ],
+      [
+        "target",
+        "u32"
+      ]
+    ]
+  },
+  "TurnEndedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "unit",
+        "u32"
+      ],
+      [
+        "guard",
+        "bool"
+      ],
+      [
+        "committed",
+        "bool"
+      ]
+    ]
+  },
+  "RoundEndedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "round",
+        "u16"
+      ]
+    ]
+  },
+  "BattleStartedEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "round",
+        "u16"
+      ]
+    ]
+  },
+  "EndHow": {
+    "kind": "enum",
+    "variants": [
+      "SideEmpty",
+      "AdjudicatedHpPercent",
+      "AdjudicatedConscious",
+      "AdjudicatedDamageDealt",
+      "AdjudicatedCoin",
+      "FixedOrder",
+      "RoundCap",
+      "Forfeit",
+      "Fled",
+      "AutoFlee"
+    ]
+  },
+  "BattleEndEvent": {
+    "kind": "struct",
+    "fields": [
+      [
+        "outcome",
+        "BattleOutcome"
+      ],
+      [
+        "how",
+        "EndHow"
+      ]
+    ]
+  },
+  "EventPayload": {
+    "kind": "enum",
+    "variants": [
+      "Executed",
+      "Missed",
+      "PlanHalted",
+      "QueueVoided",
+      "AutoPass",
+      "StoodGround",
+      "Status",
+      "Surge",
+      "Ko",
+      "RecruitResult",
+      "Awards",
+      "Moved",
+      "ItemUsed",
+      "TurnEnded",
+      "RoundEnded",
+      "BattleStarted",
+      "BattleEnd"
+    ]
+  },
+  "MoveAction": {
+    "kind": "struct",
+    "fields": [
+      [
+        "x",
+        "u8"
+      ],
+      [
+        "y",
+        "u8"
+      ],
+      [
+        "strides",
+        "u8"
+      ]
+    ]
+  },
+  "ActionTarget": {
+    "kind": "enum",
+    "variants": [
+      "Unit",
+      "SelfTarget"
+    ]
+  },
+  "SkillAction": {
+    "kind": "struct",
+    "fields": [
+      [
+        "skill_id",
+        "u32"
+      ],
+      [
+        "target",
+        "ActionTarget"
+      ]
+    ]
+  },
+  "ItemAction": {
+    "kind": "struct",
+    "fields": [
+      [
+        "item_id",
+        "u32"
+      ],
+      [
+        "target",
+        "ActionTarget"
+      ]
+    ]
+  },
+  "RecruitAction": {
+    "kind": "struct",
+    "fields": [
+      [
+        "target",
+        "u32"
+      ],
+      [
+        "bait",
+        "Option<u32>"
+      ]
+    ]
+  },
+  "QueuedAction": {
+    "kind": "enum",
+    "variants": [
+      "Move",
+      "Skill",
+      "Item",
+      "Recruit",
+      "Flee",
+      "EndTurn"
+    ]
+  },
+  "TurnState": {
+    "kind": "enum",
+    "variants": [
+      "NotActive",
+      "Waiting",
+      "Advancing"
+    ]
+  },
+  "Phase": {
+    "kind": "enum",
+    "variants": [
+      "Deploying",
+      "Active",
+      "Finished"
+    ]
   }
 }

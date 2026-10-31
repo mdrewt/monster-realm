@@ -69,21 +69,26 @@ pub enum Expiry {
 /// The per-window budget: `pvp_window_ms` under the PvP ruleset, `pve_window_ms` for a wild battle.
 #[must_use]
 pub fn window_budget_ms(kind: BattleKind, t: &TacticsTuning) -> u32 {
-    let _ = (kind, t);
-    todo!("bt-3 skeleton")
+    if kind.uses_pvp_rules() {
+        t.pvp_window_ms
+    } else {
+        t.pve_window_ms
+    }
 }
 
 /// The deploy window: `pvp_deploy_ms` under the PvP ruleset, `pve_deploy_ms` for a wild battle.
 #[must_use]
 pub fn deploy_budget_ms(kind: BattleKind, t: &TacticsTuning) -> u32 {
-    let _ = (kind, t);
-    todo!("bt-3 skeleton")
+    if kind.uses_pvp_rules() {
+        t.pvp_deploy_ms
+    } else {
+        t.pve_deploy_ms
+    }
 }
 
 /// A fresh unit-turn for this player: `windows_this_unit_turn = 0`; nothing else changes.
 pub fn begin_unit_turn(clock: &mut ClockState) {
-    let _ = clock;
-    todo!("bt-3 skeleton")
+    clock.windows_this_unit_turn = 0;
 }
 
 /// Open a window at `now_ms + min(pad_ms, pad_cap_ms)` with `deadline = opens_at + budget`
@@ -100,8 +105,26 @@ pub fn open_window(
     kind: BattleKind,
     t: &TacticsTuning,
 ) -> Result<Window, ClockError> {
-    let _ = (clock, now_ms, pad_ms, kind, t);
-    todo!("bt-3 skeleton")
+    if clock.window_open_ms.is_some() {
+        return Err(ClockError::AlreadyOpen);
+    }
+    if clock.windows_this_unit_turn >= t.max_windows_per_turn {
+        return Err(ClockError::WindowCap {
+            windows: clock.windows_this_unit_turn,
+            cap: t.max_windows_per_turn,
+        });
+    }
+    let opens_at_ms = now_ms.saturating_add(i64::from(pad_ms.min(t.pad_cap_ms)));
+    let deadline_ms = opens_at_ms.saturating_add(i64::from(window_budget_ms(kind, t)));
+    clock.window_seq = clock.window_seq.wrapping_add(1);
+    clock.windows_this_unit_turn = clock.windows_this_unit_turn.saturating_add(1);
+    clock.window_open_ms = Some(opens_at_ms);
+    clock.deadline_ms = Some(deadline_ms);
+    Ok(Window {
+        seq: clock.window_seq,
+        opens_at_ms,
+        deadline_ms,
+    })
 }
 
 /// An accepted submit at `now_ms` closes the window and books `max(0, now − opens_at)` as idle
@@ -112,8 +135,13 @@ pub fn open_window(
 /// # Errors
 /// `NoWindow` when none is open (the clock is untouched).
 pub fn accept_submit(clock: &mut ClockState, now_ms: i64) -> Result<u64, ClockError> {
-    let _ = (clock, now_ms);
-    todo!("bt-3 skeleton")
+    let opens_at_ms = clock.window_open_ms.ok_or(ClockError::NoWindow)?;
+    let span = i128::from(now_ms) - i128::from(opens_at_ms);
+    let idle = u64::try_from(span.max(0)).unwrap_or(u64::MAX);
+    clock.idle_ms_total = clock.idle_ms_total.saturating_add(idle);
+    clock.window_open_ms = None;
+    clock.deadline_ms = None;
+    Ok(idle)
 }
 
 /// The open window expired at `now_ms`: closes it; under the PvP ruleset `autopass_count += 1`
@@ -129,6 +157,22 @@ pub fn expire(
     kind: BattleKind,
     t: &TacticsTuning,
 ) -> Result<Expiry, ClockError> {
-    let _ = (clock, now_ms, kind, t);
-    todo!("bt-3 skeleton")
+    let deadline_ms = match (clock.window_open_ms, clock.deadline_ms) {
+        (Some(_), Some(deadline_ms)) => deadline_ms,
+        _ => return Err(ClockError::NoWindow),
+    };
+    if now_ms < deadline_ms {
+        return Err(ClockError::NotDue { deadline_ms });
+    }
+    clock.window_open_ms = None;
+    clock.deadline_ms = None;
+    if kind.uses_pvp_rules() {
+        clock.autopass_count = clock.autopass_count.saturating_add(1);
+        Ok(Expiry::AutoPass {
+            strike: clock.autopass_count,
+            forfeit: clock.autopass_count >= t.autopass_forfeit,
+        })
+    } else {
+        Ok(Expiry::AutoFlee)
+    }
 }

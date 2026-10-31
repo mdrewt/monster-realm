@@ -40,7 +40,10 @@ impl MoveAction {
     /// The bound destination as a board tile.
     #[must_use]
     pub fn dest(&self) -> Cell {
-        todo!("bt-3 skeleton")
+        Cell {
+            x: self.x,
+            y: self.y,
+        }
     }
 }
 
@@ -104,13 +107,20 @@ impl QueuedAction {
     /// The entry's kind.
     #[must_use]
     pub fn kind(&self) -> ActionKind {
-        todo!("bt-3 skeleton")
+        match self {
+            QueuedAction::Move(_) => ActionKind::Move,
+            QueuedAction::Skill(_) => ActionKind::Skill,
+            QueuedAction::Item(_) => ActionKind::Item,
+            QueuedAction::Recruit(_) => ActionKind::Recruit,
+            QueuedAction::Flee => ActionKind::Flee,
+            QueuedAction::EndTurn => ActionKind::EndTurn,
+        }
     }
 
     /// Everything but the terminal `EndTurn`.
     #[must_use]
     pub fn is_action(&self) -> bool {
-        todo!("bt-3 skeleton")
+        !matches!(self, QueuedAction::EndTurn)
     }
 }
 
@@ -140,7 +150,11 @@ impl Phase {
     /// The phase of a deployed battle: `Ongoing` → `Active`, anything decided → `Finished`.
     #[must_use]
     pub fn of(outcome: BattleOutcome) -> Phase {
-        let _ = outcome;
-        todo!("bt-3 skeleton")
+        match outcome {
+            BattleOutcome::Ongoing => Phase::Active,
+            BattleOutcome::SideAWins | BattleOutcome::SideBWins | BattleOutcome::Fled => {
+                Phase::Finished
+            }
+        }
     }
 }
