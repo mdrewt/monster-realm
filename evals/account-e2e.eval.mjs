@@ -25,7 +25,7 @@
 //     from parts.
 //   - any credential-shaped fixture value uses the INTERNAL_SECRET_ prefix
 //     allowlisted in .gitleaks.toml.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { webcrypto as wc } from 'node:crypto';
 import {
   cpSync,
@@ -126,11 +126,15 @@ export const TOMBSTONE_IDENTITY_HEX_E2E =
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
-// snapshot, each with its measured reason. HARD-CAPPED — a fourth entry is a
-// seeding regression, not an allowlist edit (red-team MEDIUM-8).
+// snapshot, each with its measured reason. HARD-CAPPED — an entry beyond the cap
+// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). The seven
+// `(until bt-8)` rows are bt-7's schema-only tactical tables: their columns are
+// enums, Vecs or Options (not DML-expressible on this CLI) and their only
+// organic writers are bt-8's reducers — bt-8 MUST seed them through those
+// reducers and retire these rows (grep "until bt-8").
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
@@ -144,8 +148,39 @@ export const S9_VACUITY_ALLOWLIST = [
     'player_dialogue_state',
     'Vec<String> columns are not expressible in 2.8.1 SQL DML (probed: 400) and no zone-0 organic writer fits the e2e budget',
   ],
+  [
+    'battle_tactical',
+    'enum columns (kind, phase, turn_state) are not DML-expressible; the organic writer is bt-8 start_wild_tactical (until bt-8)',
+  ],
+  [
+    'battle_unit',
+    'enum and Vec columns (affinity, status, state, skill_ids) are not DML-expressible; the organic writer is bt-8 deploy materialisation (until bt-8)',
+  ],
+  [
+    'battle_queue',
+    'Vec<QueuedAction> is not DML-expressible; the organic writer is bt-8 submit_queue (until bt-8)',
+  ],
+  [
+    'battle_deploy',
+    'Vec<DeployPick> is not DML-expressible; the organic writer is bt-8 deploy_units (until bt-8)',
+  ],
+  [
+    'battle_clock',
+    'Option<i64> columns are not DML-expressible; the organic writer is bt-8 window arming (until bt-8)',
+  ],
+  [
+    'battle_event',
+    'the EventPayload enum column is not DML-expressible; the organic writer is bt-8 execution (until bt-8)',
+  ],
+  [
+    'player_formation',
+    'Vec<u64> is not DML-expressible; the organic writer is bt-12 formation editing via a bt-8 reducer (until bt-8)',
+  ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 3;
+export const S9_VACUITY_ALLOWLIST_CAP = 10;
+// Erase-policy identity columns that are `Option<Identity>` (a sum type): the
+// snapshot counts them by battle reachability, never by an identity WHERE.
+export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
 // Independent seeded-rows floor: >500 playtest_event rows plus the rest of the
 // loaded account. A run that seeded nothing cannot reach this sum.
 export const S9_SEEDED_FLOOR = 520;
@@ -1094,9 +1129,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 43) {
+  if (!Array.isArray(entries) || entries.length !== 53) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 43',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 53',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1110,7 +1145,7 @@ export function checkCascadeTruth(input) {
   const allowed = new Set(allowlist.map(([t]) => t));
   const vacuous = [];
   let seededSum = 0;
-  const anonymizeHandled = new Set(['account', 'player', 'profile', 'battle']);
+  const anonymizeHandled = new Set(['account', 'player', 'profile', 'battle', 'battle_summary']);
 
   for (const e of entries) {
     if (e.policy === 'Erase') {
@@ -1243,6 +1278,37 @@ export function checkCascadeTruth(input) {
     );
   }
 
+  // bt-7 `battle_summary` (Anonymize): telemetry rows are never deleted (the
+  // total row count is unchanged across the cascade) and no surviving row names
+  // the deleted identity on either side (both columns swapped to the tombstone).
+  // Until bt-8 writes summaries the counts are 0 == 0 and 0: the assert is
+  // live, the fixture is not — bt-8's organic summary writer makes it bite.
+  if (
+    !pre.battleSummary ||
+    !post.battleSummary ||
+    typeof pre.battleSummary.total !== 'number' ||
+    typeof post.battleSummary.total !== 'number' ||
+    typeof post.battleSummary.aRows !== 'number'
+  ) {
+    return fail('[s9/summary-unattempted] no battle_summary census was taken pre and post');
+  }
+  if (post.battleSummary.total !== pre.battleSummary.total) {
+    return fail(
+      '[s9/summary-anonymize-gone] battle_summary rows changed count across the cascade (' +
+        pre.battleSummary.total +
+        ' -> ' +
+        post.battleSummary.total +
+        ') — Anonymize must never delete',
+    );
+  }
+  if (post.battleSummary.aRows !== 0) {
+    return fail(
+      '[s9/summary-anonymize-side] ' +
+        post.battleSummary.aRows +
+        ' battle_summary row(s) still name the deleted identity on a side',
+    );
+  }
+
   // NotOwned world content must SURVIVE (an erase-everything cascade would
   // otherwise pass every A-scoped zero-count above).
   if (
@@ -1295,7 +1361,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 43 classified entries',
+    reason: 'cascade truth held over 53 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -1320,9 +1386,14 @@ export function checkCascadeTruth(input) {
  * table can carry a pre-cascade row at all (the vacuity allowlist is
  * hard-capped at 3 and full).
  */
-export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
+export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId, battle1Id) {
   if (typeof aHex !== 'string' || !/^0x[0-9a-f]{64}$/.test(aHex)) {
     throw new Error('[s9/seed-build] subject identity is not 0x + 64 lowercase hex: ' + aHex);
+  }
+  if (typeof battle1Id !== 'string' || !/^[1-9][0-9]*$/.test(battle1Id)) {
+    throw new Error(
+      '[s9/seed-build] battle1 id must be a positive decimal string, got ' + battle1Id,
+    );
   }
   if (typeof aMonsterId !== 'string' || !/^[1-9][0-9]*$/.test(aMonsterId)) {
     throw new Error(
@@ -1395,6 +1466,17 @@ export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
   // 0 unfavorable events read as 83% = Devoted, comfortably past Friendly's
   // 60% floor. Two single-assignment UPDATEs rather than one two-assignment
   // statement: the single-column form is the one this rig has measured.
+  // bt-7: the two scalar-only tactical join tables are seeded under the
+  // subject's terminal PvP battle, so their ViaJoin(battle) sweep is proven on
+  // real rows (the enum / Vec / Option tables are on the vacuity allowlist).
+  stmts.push(
+    'INSERT INTO battle_secret (battle_id, seed, action_seq) VALUES (' + battle1Id + ', 7, 0)',
+  );
+  stmts.push(
+    'INSERT INTO battle_wild_unit (wild_unit_id, battle_id, wild_index, species_id, level, individuality_seed) VALUES (0, ' +
+      battle1Id +
+      ', 0, 1, 5, 99)',
+  );
   stmts.push('UPDATE monster SET essence_fire = 150 WHERE monster_id = ' + aMonsterId);
   stmts.push('UPDATE monster SET trust_favorable_count = 40 WHERE monster_id = ' + aMonsterId);
   const batch = 50;
@@ -1454,6 +1536,33 @@ function reservePort() {
   });
 }
 
+/**
+ * `run` without blocking the event loop. The G22 issuer stub lives in THIS
+ * process: a synchronous CLI call during a snapshot stalls every host-side
+ * key refresh against the stub, and the host then holds its validator lock
+ * until the CLI is killed (measured bt-7: a 62 s auth stall that ended 2 s
+ * after the SIGTERM, four runs out of four). The S9 orchestration therefore
+ * awaits its CLI calls.
+ */
+function runAsync(cmd, args, opts) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: 'utf8', ...opts }, (e, stdout, stderr) => {
+      if (!e) {
+        resolve({ ok: true, stdout: String(stdout), stderr: '' });
+        return;
+      }
+      resolve({
+        ok: false,
+        stdout: String(stdout || ''),
+        stderr: String(stderr || e.message || '').slice(-1500),
+        status: typeof e.code === 'number' ? e.code : null,
+        signal: e.signal === undefined ? null : e.signal,
+        code: e.code === undefined ? null : String(e.code),
+      });
+    });
+  });
+}
+
 function run(cmd, args, opts) {
   try {
     const stdout = execFileSync(cmd, args, {
@@ -1467,6 +1576,11 @@ function run(cmd, args, opts) {
       ok: false,
       stdout: String(e.stdout || ''),
       stderr: String(e.stderr || e.message || '').slice(-1500),
+      // The spawn outcome, so a 60 s timeout (SIGTERM, no exit status) is
+      // never mistaken for a server-side rejection (which has a status).
+      status: e.status === undefined ? null : e.status,
+      signal: e.signal === undefined ? null : e.signal,
+      code: e.code === undefined ? null : String(e.code),
     };
   }
 }
@@ -1824,7 +1938,9 @@ const DRIVER_SRC = [
   '  if (wild === null) bail("S9-wild-live", "no wild encounter within 80 shuttle steps over zone-0 grass (rate 200/1000 per grass step)");',
   '  emit("S9-wild-live", true, { battleId: String(wild.battleId) });',
   '  emit("S9-seed-ready", true, { wildBattleId: String(wild.battleId) });',
-  '  await waitGo(2, 120000);',
+  '  // bt-7: the pre-cascade snapshot is ~75 sequential CLI queries (the ten',
+  '  // tactical tables added ~15); 120 s expired mid-snapshot twice, measured.',
+  '  await waitGo(2, 300000);',
   '  const exq = await tryReducer(a.conn.reducers.requestDataExport());',
   '  if (!exq.ok) bail("S9-export-chunks", "requestDataExport rejected: " + exq.err);',
   '  let chunkRowsS9 = [];',
@@ -1902,7 +2018,8 @@ const DRIVER_SRC = [
   '  const lx = await tryReducer(a.conn.reducers.requestDataExport());',
   '  emit("S9-late-export", lx.ok === false && String(lx.err).indexOf(ERR_EXPORT) !== -1, { err: lx.err });',
   '  emit("S9-cascade-done", true, {});',
-  '  await waitGo(5, 150000);',
+  '  // bt-7: the post-cascade snapshot grew by the same ~15 queries.',
+  '  await waitGo(5, 300000);',
   '  const dAcct = accountRows(d2.conn);',
   '  emit("S9-D-still-active", dAcct.length === 1 && dAcct[0].status.tag === "Active" && (dAcct[0].terminalAtMs === null || dAcct[0].terminalAtMs === undefined), { rows: dAcct.length });',
   '  emit("S9-done", true, {});',
@@ -2117,20 +2234,62 @@ async function runLivePhase() {
       driverGone = true;
     });
     const s9Sql = [];
+    const s9T0 = Date.now();
     const s9G22Raw = [];
-    const sqlJsonRows = (query) => {
-      const res = run('spacetime', ['sql', '--format', 'json', '-s', dbUrl, DB_NAME, query], {
-        timeout: 60_000,
-      });
-      if (!res.ok) throw new Error('sql-json failed (' + query + '): ' + res.stderr);
-      s9Sql.push(query + ' => ' + res.stdout.trim().replace(/\s+/g, ' ').slice(0, 500));
+    // bt-7, measured: with the ten tactical tables the pre-cascade snapshot is
+    // ~75 back-to-back CLI calls, and under that cadence the host's auth path
+    // ("Getting validator for issuer https://auth.spacetimedb.com") once
+    // stalled for 62 s with no key fetch, then served every later call. A 60 s
+    // per-call cap turned that stall into a SIGTERM/ETIMEDOUT failure four
+    // runs out of four; the cap now clears it, and the error carries the spawn
+    // status, signal, code and timing so a real rejection is never confused
+    // with a stall.
+    const SQL_CALL_TIMEOUT_MS = 150_000;
+    const sqlJsonRows = async (query) => {
+      const res = await runAsync(
+        'spacetime',
+        ['sql', '--format', 'json', '-s', dbUrl, DB_NAME, query],
+        {
+          timeout: SQL_CALL_TIMEOUT_MS,
+        },
+      );
+      if (!res.ok)
+        throw new Error(
+          'sql-json failed (' +
+            query +
+            '): ' +
+            res.stderr +
+            ' :: stdout ' +
+            res.stdout.slice(-300) +
+            ' :: status ' +
+            res.status +
+            ' signal ' +
+            res.signal +
+            ' code ' +
+            res.code +
+            ' :: seq ' +
+            s9Sql.length +
+            ' at +' +
+            (Date.now() - s9T0) +
+            'ms',
+        );
+      s9Sql.push(
+        '+' +
+          (Date.now() - s9T0) +
+          'ms ' +
+          query +
+          ' => ' +
+          res.stdout.trim().replace(/\s+/g, ' ').slice(0, 500),
+      );
       return decodeSqlJson(res.stdout);
     };
-    const sqlDml = (stmt) => {
-      const res = run('spacetime', ['sql', '-s', dbUrl, DB_NAME, stmt], { timeout: 60_000 });
+    const sqlDml = async (stmt) => {
+      const res = await runAsync('spacetime', ['sql', '-s', dbUrl, DB_NAME, stmt], {
+        timeout: SQL_CALL_TIMEOUT_MS,
+      });
       if (!res.ok) throw new Error('sql-dml failed (' + stmt.slice(0, 120) + '): ' + res.stderr);
     };
-    const cnt = (q) => countFromRows(sqlJsonRows(q));
+    const cnt = async (q) => countFromRows(await sqlJsonRows(q));
     const writeGo = (n) => writeFileSync(s9GoPrefix + n, '1');
     const waitEvent = async (name, ms) => {
       const t0 = Date.now();
@@ -2171,15 +2330,28 @@ async function runLivePhase() {
       refs: null,
       g22Tables: null,
     };
-    const takeS9Snapshot = (entries, phase) => {
+    const takeS9Snapshot = async (entries, phase) => {
       const refs = s9.refs;
       const aCounts = {};
       const viaJoin = {};
+      // bt-7: every tactical row hangs off a battle the subject is a side of,
+      // and the subject's battles are PINNED (battle1 + the wild battle) before
+      // the pre pass, so both passes ask about the same rows.
+      const tacticalReach = async (table) =>
+        (await cnt('SELECT COUNT(*) AS n FROM ' + table + ' WHERE battle_id = ' + refs.battle1Id)) +
+        (await cnt('SELECT COUNT(*) AS n FROM ' + table + ' WHERE battle_id = ' + refs.wildId));
       for (const e of entries) {
         if (e.policy !== 'Erase') continue;
         aCounts[e.table] = {};
         for (const c of e.cols) {
-          aCounts[e.table][c] = cnt(
+          if (S9_OPTION_IDENTITY_COLS.some(([t, col]) => t === e.table && col === c)) {
+            // A sum-typed Option<Identity> column cannot be WHERE-matched on
+            // this CLI (400, the account.claimed_from precedent); its erase
+            // proof is reachability through the subject's pinned battles.
+            aCounts[e.table][c] = await tacticalReach(e.table);
+            continue;
+          }
+          aCounts[e.table][c] = await cnt(
             'SELECT COUNT(*) AS n FROM ' + e.table + ' WHERE ' + c + ' = ' + refs.aHex,
           );
         }
@@ -2187,17 +2359,19 @@ async function runLivePhase() {
       if (phase === 'pre') {
         // Pin every ViaJoin parent key NOW: the post pass must ask about the
         // SAME rows the pre pass saw, never re-derive from post-cascade state.
-        const players = sqlJsonRows('SELECT identity, entity_id FROM player').filter(
+        const players = (await sqlJsonRows('SELECT identity, entity_id FROM player')).filter(
           (r) => identityCellHex(r.identity) === normHex(refs.aHex),
         );
         refs.entityId = players.length > 0 ? String(players[0].entity_id) : null;
-        refs.tradeIds = sqlJsonRows(
-          'SELECT trade_id FROM trade_offer WHERE initiator = ' + refs.aHex,
+        refs.tradeIds = (
+          await sqlJsonRows('SELECT trade_id FROM trade_offer WHERE initiator = ' + refs.aHex)
         ).map((r) => String(r.trade_id));
-        refs.challengeIds = sqlJsonRows(
-          'SELECT challenge_id FROM battle_challenge WHERE challenger = ' + refs.aHex,
+        refs.challengeIds = (
+          await sqlJsonRows(
+            'SELECT challenge_id FROM battle_challenge WHERE challenger = ' + refs.aHex,
+          )
         ).map((r) => String(r.challenge_id));
-        const b1 = sqlJsonRows(
+        const b1 = await sqlJsonRows(
           'SELECT player_identity, opponent_identity FROM battle WHERE battle_id = ' +
             refs.battle1Id,
         );
@@ -2209,48 +2383,71 @@ async function runLivePhase() {
       }
       // Diagnostic dump both phases: the deadline table is tiny and its
       // scheduled_id/turn_number decide any [s9/viajoin-live] forensics.
-      sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
+      await sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
       viaJoin.character =
         refs.entityId === null
           ? 0
-          : cnt('SELECT COUNT(*) AS n FROM character WHERE entity_id = ' + refs.entityId);
-      viaJoin.battle_wild = cnt(
+          : await cnt('SELECT COUNT(*) AS n FROM character WHERE entity_id = ' + refs.entityId);
+      viaJoin.battle_wild = await cnt(
         'SELECT COUNT(*) AS n FROM battle_wild WHERE battle_id = ' + refs.wildId,
       );
       viaJoin.pvp_deadline_schedule =
-        cnt('SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.wildId) +
-        cnt('SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.battle1Id);
+        (await cnt(
+          'SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.wildId,
+        )) +
+        (await cnt(
+          'SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.battle1Id,
+        ));
+      for (const t of ['battle_tactical', 'battle_secret', 'battle_wild_unit', 'battle_event']) {
+        viaJoin[t] = await tacticalReach(t);
+      }
       let chalSched = 0;
       for (const id of refs.challengeIds) {
-        chalSched += cnt(
+        chalSched += await cnt(
           'SELECT COUNT(*) AS n FROM battle_challenge_reaper_schedule WHERE challenge_id = ' + id,
         );
       }
       viaJoin.battle_challenge_reaper_schedule = chalSched;
       let tradeSched = 0;
       for (const id of refs.tradeIds) {
-        tradeSched += cnt(
+        tradeSched += await cnt(
           'SELECT COUNT(*) AS n FROM trade_offer_reaper_schedule WHERE trade_id = ' + id,
         );
       }
       viaJoin.trade_offer_reaper_schedule = tradeSched;
       const dCounts = {
-        monster: cnt('SELECT COUNT(*) AS n FROM monster WHERE owner_identity = ' + refs.dHex),
-        monster_pub: cnt(
+        monster: await cnt('SELECT COUNT(*) AS n FROM monster WHERE owner_identity = ' + refs.dHex),
+        monster_pub: await cnt(
           'SELECT COUNT(*) AS n FROM monster_pub WHERE owner_identity = ' + refs.dHex,
         ),
-        inventory: cnt('SELECT COUNT(*) AS n FROM inventory WHERE owner_identity = ' + refs.dHex),
-        wallet: cnt('SELECT COUNT(*) AS n FROM player_wallet WHERE owner_identity = ' + refs.dHex),
-        playtest: cnt('SELECT COUNT(*) AS n FROM playtest_event WHERE identity = ' + refs.dHex),
-        player: cnt('SELECT COUNT(*) AS n FROM player WHERE identity = ' + refs.dHex),
-        profile: cnt('SELECT COUNT(*) AS n FROM profile WHERE identity = ' + refs.dHex),
+        inventory: await cnt(
+          'SELECT COUNT(*) AS n FROM inventory WHERE owner_identity = ' + refs.dHex,
+        ),
+        wallet: await cnt(
+          'SELECT COUNT(*) AS n FROM player_wallet WHERE owner_identity = ' + refs.dHex,
+        ),
+        playtest: await cnt(
+          'SELECT COUNT(*) AS n FROM playtest_event WHERE identity = ' + refs.dHex,
+        ),
+        player: await cnt('SELECT COUNT(*) AS n FROM player WHERE identity = ' + refs.dHex),
+        profile: await cnt('SELECT COUNT(*) AS n FROM profile WHERE identity = ' + refs.dHex),
       };
       const world = {
-        species: cnt('SELECT COUNT(*) AS n FROM species_row'),
-        zones: cnt('SELECT COUNT(*) AS n FROM zone_def'),
-        config: cnt('SELECT COUNT(*) AS n FROM config'),
+        species: await cnt('SELECT COUNT(*) AS n FROM species_row'),
+        zones: await cnt('SELECT COUNT(*) AS n FROM zone_def'),
+        config: await cnt('SELECT COUNT(*) AS n FROM config'),
       };
       const snap = { aCounts, viaJoin, dCounts, world };
+      snap.battleSummary = { total: await cnt('SELECT COUNT(*) AS n FROM battle_summary') };
+      if (phase === 'post') {
+        snap.battleSummary.aRows =
+          (await cnt(
+            'SELECT COUNT(*) AS n FROM battle_summary WHERE player_identity = ' + refs.aHex,
+          )) +
+          (await cnt(
+            'SELECT COUNT(*) AS n FROM battle_summary WHERE opponent_identity = ' + refs.aHex,
+          ));
+      }
       if (phase === 'pre') {
         const sqlCounts = {};
         for (const e of entries) {
@@ -2262,7 +2459,9 @@ async function runLivePhase() {
               // 2.8.1 SQL cannot WHERE-match a sum-typed literal (probed 400).
               // A's own account row is counted via its plain `identity` column.
               if (e.table === 'account' && c === 'claimed_from') continue;
-              n += cnt('SELECT COUNT(*) AS n FROM ' + e.table + ' WHERE ' + c + ' = ' + refs.aHex);
+              n += await cnt(
+                'SELECT COUNT(*) AS n FROM ' + e.table + ' WHERE ' + c + ' = ' + refs.aHex,
+              );
             }
             // Per-column sums equal the row count only because this seed never
             // places A on both identity columns of one row (documented).
@@ -2274,7 +2473,7 @@ async function runLivePhase() {
         snap.sqlCounts = sqlCounts;
       }
       if (phase === 'post') {
-        const acct = sqlJsonRows(
+        const acct = await sqlJsonRows(
           'SELECT auth_issuer, status, deletion_requested_at_ms, terminal_at_ms, claimed_from FROM account WHERE identity = ' +
             refs.aHex,
         );
@@ -2291,13 +2490,13 @@ async function runLivePhase() {
         } else {
           snap.account = { present: false };
         }
-        const pl = sqlJsonRows('SELECT name FROM player WHERE identity = ' + refs.aHex);
+        const pl = await sqlJsonRows('SELECT name FROM player WHERE identity = ' + refs.aHex);
         snap.player =
           pl.length === 1 ? { present: true, name: String(pl[0].name) } : { present: false };
-        const pr = sqlJsonRows('SELECT name FROM profile WHERE identity = ' + refs.aHex);
+        const pr = await sqlJsonRows('SELECT name FROM profile WHERE identity = ' + refs.aHex);
         snap.profile =
           pr.length === 1 ? { present: true, name: String(pr[0].name) } : { present: false };
-        const b1 = sqlJsonRows(
+        const b1 = await sqlJsonRows(
           'SELECT player_identity, opponent_identity FROM battle WHERE battle_id = ' +
             refs.battle1Id,
         );
@@ -2320,9 +2519,9 @@ async function runLivePhase() {
           snap.battle1 = { present: false };
         }
         // Diagnostic dumps (cheap; land in s9Sql for failure forensics).
-        sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
-        sqlJsonRows('SELECT battle_id, player_identity, opponent_identity FROM battle');
-        const dAcct = sqlJsonRows(
+        await sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
+        await sqlJsonRows('SELECT battle_id, player_identity, opponent_identity FROM battle');
+        const dAcct = await sqlJsonRows(
           'SELECT status, terminal_at_ms FROM account WHERE identity = ' + refs.dHex,
         );
         snap.dAccountActive =
@@ -2366,35 +2565,41 @@ async function runLivePhase() {
           guestClaim: sqlTable(dbUrl, 'SELECT guest_identity, code FROM guest_claim', s9G22Raw),
           monster: sqlTable(dbUrl, 'SELECT owner_identity FROM monster', s9G22Raw),
         };
-        for (const stmt of buildSeedStatements(s9.refs.aHex, 501, Date.now(), s9.refs.aMonsterId))
-          sqlDml(stmt);
+        for (const stmt of buildSeedStatements(
+          s9.refs.aHex,
+          501,
+          Date.now(),
+          s9.refs.aMonsterId,
+          s9.refs.battle1Id,
+        ))
+          await sqlDml(stmt);
         writeGo(1);
         const evSeed = await waitEvent('S9-seed-ready', 240_000);
         s9.refs.wildId = String(evSeed.data.wildBattleId);
-        s9.pre = takeS9Snapshot(entries, 'pre');
+        s9.pre = await takeS9Snapshot(entries, 'pre');
         writeGo(2);
         await waitEvent('S9-cancel-done', 420_000);
         // export_bundle rows are created AFTER the go2 pre-snapshot (the export
         // is S9-11), so its honest pre-cascade count is sampled HERE — after the
         // export, before the cascade (the reaper fires 15 s after the REDELETE).
         s9.pre.aCounts.export_bundle = {
-          owner_identity: cnt(
+          owner_identity: await cnt(
             'SELECT COUNT(*) AS n FROM export_bundle WHERE owner_identity = ' + s9.refs.aHex,
           ),
         };
-        s9.censusCancel = cnt(
+        s9.censusCancel = await cnt(
           'SELECT COUNT(*) AS n FROM account_deletion_reaper_schedule WHERE account_identity = ' +
             s9.refs.aHex,
         );
         writeGo(3);
         await waitEvent('S9-redelete-done', 120_000);
-        s9.censusRedelete = cnt(
+        s9.censusRedelete = await cnt(
           'SELECT COUNT(*) AS n FROM account_deletion_reaper_schedule WHERE account_identity = ' +
             s9.refs.aHex,
         );
         writeGo(4);
         await waitEvent('S9-cascade-done', 300_000);
-        s9.post = takeS9Snapshot(entries, 'post');
+        s9.post = await takeS9Snapshot(entries, 'post');
         writeGo(5);
       } catch (e) {
         s9.error = e;

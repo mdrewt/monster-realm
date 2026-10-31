@@ -802,10 +802,15 @@ fn data_lifecycle_partition_matches_spec_section3() {
 
     // Spec §3 ERASE (12) + this slice's own `export_bundle`
     // + rb-73's `player_session`
-    // + 20r-d's `pending_evolution_notice`.
+    // + 20r-d's `pending_evolution_notice`
+    // + bt-7's five identity-bearing tactical tables.
     let expected_erase = [
         "battle_action",
         "battle_challenge",
+        "battle_clock",
+        "battle_deploy",
+        "battle_queue",
+        "battle_unit",
         "export_bundle",
         "heal_cooldown",
         "inventory",
@@ -814,6 +819,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "pending_evolution_notice",
         "player_conversation",
         "player_dialogue_state",
+        "player_formation",
         "player_quest",
         "player_session",
         "player_wallet",
@@ -827,39 +833,48 @@ fn data_lifecycle_partition_matches_spec_section3() {
          player_conversation, heal_cooldown, the wallet, playtest_event, trade_offer, \
          battle_challenge, battle_action), this slice adds `export_bundle` — a snapshot of \
          personal data is itself personal data — rb-73 adds `player_session` (ADR-0245 \
-         D1) and 20r-d adds `pending_evolution_notice` (ADR-0254 D2). A table moved OUT of \
+         D1), 20r-d adds `pending_evolution_notice` (ADR-0254 D2) and bt-7 adds the five \
+         tactical tables that carry the identity themselves (battle_unit, battle_queue, \
+         battle_deploy, battle_clock, player_formation): twenty in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
 
-    let expected_anonymize = ["account", "battle", "player", "profile"];
+    let expected_anonymize = ["account", "battle", "battle_summary", "player", "profile"];
     assert_eq!(
         anonymize, expected_anonymize,
-        "T2 / spec §3 ANONYMIZE: exactly four rows survive with their identity/PII fields \
+        "T2 / spec §3 ANONYMIZE: exactly five rows survive with their identity/PII fields \
          overwritten — `player` (the anchor `character` and every still-live multi-user row \
          point at), `profile` (ADR-0119's explicit never-delete invariant), `account` \
-         (auth_issuer becomes the tombstone SENTINEL, keeping the column non-nullable) and \
+         (auth_issuer becomes the tombstone SENTINEL, keeping the column non-nullable), \
          `battle` (terminal PvP rows demonstrably persist, so a surviving opponent's \
-         my_battle view must still resolve them months later)."
+         my_battle view must still resolve them months later) and bt-7's `battle_summary` \
+         (per-battle telemetry: the deleting side is tombstoned, the row survives)."
     );
 
     let expected_join_only = [
         ("battle_challenge_reaper_schedule", "battle_challenge"),
+        ("battle_event", "battle"),
+        ("battle_secret", "battle"),
+        ("battle_tactical", "battle"),
         ("battle_wild", "battle"),
+        ("battle_wild_unit", "battle"),
         ("character", "player"),
         ("pvp_deadline_schedule", "battle"),
         ("trade_offer_reaper_schedule", "trade_offer"),
     ];
     assert_eq!(
         join_only, expected_join_only,
-        "T2 / spec §3 JOIN-ONLY: the five structurally-invisible tables and their OWNING \
+        "T2 / spec §3 JOIN-ONLY: the nine structurally-invisible tables and their OWNING \
          PARENTS are pinned by value. These tables carry no Identity column, so \
          findIdentityColumns cannot see them and nothing else in the repo can re-derive the \
          parent. Each parent here was checked against the real join column: \
          character.entity_id -> player.entity_id, battle_wild.battle_id -> battle, \
          pvp_deadline_schedule.battle_id -> battle, \
          battle_challenge_reaper_schedule.challenge_id -> battle_challenge, \
-         trade_offer_reaper_schedule.trade_id -> trade_offer."
+         trade_offer_reaper_schedule.trade_id -> trade_offer, and bt-7's four tactical \
+         join tables (battle_tactical, battle_secret, battle_wild_unit, battle_event), each \
+         keyed by battle_id -> battle."
     );
 
     let expected_not_owned = [
@@ -923,10 +938,10 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
     }
     assert_eq!(
         pairs.len(),
-        5,
-        "T3 non-vacuity: spec §3 names exactly five JOIN-ONLY tables, so this scan must have \
-         five parents to check. Zero ViaJoin entries would make every clause below \
-         vacuously true."
+        9,
+        "T3 non-vacuity: spec §3 names five JOIN-ONLY tables and bt-7 adds four (the tactical \
+         join tables, all swept via `battle`), so this scan must have nine parents to check. \
+         Zero ViaJoin entries would make every clause below vacuously true."
     );
 
     for (table, parent) in &pairs {
@@ -2805,8 +2820,44 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::pvp::BattleChallengeReaperSchedule as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "battle_clock",
+            <crate::schema::BattleClock as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_deploy",
+            <crate::schema::BattleDeploy as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_event",
+            <crate::schema::BattleEvent as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_queue",
+            <crate::schema::BattleQueue as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_secret",
+            <crate::schema::BattleSecret as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_summary",
+            <crate::schema::BattleSummary as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_tactical",
+            <crate::schema::BattleTactical as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_unit",
+            <crate::schema::BattleUnit as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "battle_wild",
             <crate::schema::BattleWild as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_wild_unit",
+            <crate::schema::BattleWildUnit as SpacetimeType>::make_type(&mut ts),
         ),
         (
             "character",
@@ -2891,6 +2942,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
         (
             "player_dialogue_state",
             <crate::schema::PlayerDialogueStateRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "player_formation",
+            <crate::schema::PlayerFormation as SpacetimeType>::make_type(&mut ts),
         ),
         (
             "player_quest",
@@ -3048,12 +3103,12 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 43,
+        registry_len, 53,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 43 (15 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, \
-         schema.rs :989-993) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), \
-         plus rb-73's `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` \
-         (ADR-0254). \
+         manifest carries exactly 53 (20 ERASE + 5 ANONYMIZE + 9 JOIN-ONLY + 19 NOT-OWNED) — \
+         40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
+         `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
+         bt-7's ten tactical tables. \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -3065,11 +3120,14 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 23,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 43 registered row types \
-         carry an Identity column at some depth; exactly 23 is the live count (the 19 \
+        identity_bearing, 29,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 53 registered row types \
+         carry an Identity column at some depth; exactly 29 is the live count (the 25 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). rb-73's `player_session` (ADR-0245) adds one: its \
+         exceptions R3 below names). bt-7 adds six — battle_unit (its `Option<Identity>` \
+         owner, visible only to this deep walk), battle_queue and battle_deploy (`owner`), \
+         battle_clock (`player`), battle_summary (both sides) and player_formation (its key) — \
+         and its four ViaJoin tables add none. rb-73's `player_session` (ADR-0245) adds one: its \
          `identity` column is what its Erase classification rests on; 20r-d's \
          `pending_evolution_notice` (ADR-0254) adds another on the same reasoning — its \
          `owner_identity` primary key is what its Erase classification rests on. The count was \
@@ -3150,12 +3208,13 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 19,
+        population, 25,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 19 (15 ERASE + 4 ANONYMIZE — schema.rs's own count at \
-         :990, rb-73's `player_session` and 20r-d's `pending_evolution_notice` included). A \
-         floor would let this population grow silently; an exact count forces a \
-         conscious edit to this test alongside any reclassification."
+         the live partition is exactly 25 (20 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
+         20r-d's `pending_evolution_notice` and bt-7's five Erase tactical tables plus its \
+         Anonymize `battle_summary` included). A floor would let this population grow \
+         silently; an exact count forces a conscious edit to this test alongside any \
+         reclassification."
     );
 }
 
@@ -3225,10 +3284,11 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
         );
     }
     assert_eq!(
-        population, 5,
+        population, 9,
         "[m22s6/x2-population] {population} manifest entries are classified ViaJoin; the live \
-         set is exactly 5 (character, battle_wild, pvp_deadline_schedule, \
-         battle_challenge_reaper_schedule, trade_offer_reaper_schedule)."
+         set is exactly 9 (character, battle_wild, pvp_deadline_schedule, \
+         battle_challenge_reaper_schedule, trade_offer_reaper_schedule, and bt-7's \
+         battle_tactical, battle_secret, battle_wild_unit, battle_event)."
     );
 }
 
@@ -4351,6 +4411,488 @@ fn rb83_plan_declines_at_cancel_truth_table() {
 }
 
 // ===========================================================================
+// bt-7 — THE TACTICAL TABLES (M-battle-tactics): row shapes, view-row secrecy,
+// manifest classification. The executed halves (the generated module def, the
+// seven views, the deletion cascade, the claim-flow re-key) live in `acct_nh`.
+// The column lists below are the plan table (design §8.1 plus the bt-3
+// persistence columns and the plan-review API delta), shared by the derive-
+// metadata test here and the generated-module-def test in `acct_nh`.
+// ===========================================================================
+
+const BT7_COLUMNS_BATTLE_TACTICAL: &[&str] = &[
+    "battle_id",
+    "kind",
+    "format",
+    "map_id",
+    "content_version",
+    "phase",
+    "round",
+    "initiative",
+    "turn_idx",
+    "turn_state",
+    "tie_priority_side",
+    "pending_pad_ms",
+    "attack_damage_dealt_a",
+    "attack_damage_dealt_b",
+];
+
+const BT7_COLUMNS_BATTLE_UNIT: &[&str] = &[
+    "unit_id",
+    "battle_id",
+    "side",
+    "owner",
+    "slot",
+    "monster_id",
+    "wild_index",
+    "species_id",
+    "level",
+    "affinity",
+    "x",
+    "y",
+    "cur_hp",
+    "stats",
+    "skill_ids",
+    "status",
+    "ap",
+    "strides_used",
+    "attacks",
+    "budget_last",
+    "guard",
+    "first_stand",
+    "movement",
+    "stride",
+    "stance",
+    "state",
+];
+
+const BT7_COLUMNS_BATTLE_QUEUE: &[&str] = &[
+    "unit_id",
+    "battle_id",
+    "owner",
+    "entries",
+    "submitted_at_ms",
+];
+
+const BT7_COLUMNS_BATTLE_DEPLOY: &[&str] =
+    &["deploy_id", "battle_id", "owner", "side", "picks", "locked"];
+
+const BT7_COLUMNS_BATTLE_CLOCK: &[&str] = &[
+    "clock_id",
+    "battle_id",
+    "side",
+    "player",
+    "window_seq",
+    "window_open_ms",
+    "deadline_ms",
+    "windows_this_unit_turn",
+    "idle_ms_total",
+    "autopass_count",
+];
+
+const BT7_COLUMNS_BATTLE_SECRET: &[&str] = &["battle_id", "seed", "action_seq"];
+
+const BT7_COLUMNS_BATTLE_WILD_UNIT: &[&str] = &[
+    "wild_unit_id",
+    "battle_id",
+    "wild_index",
+    "species_id",
+    "level",
+    "individuality_seed",
+];
+
+const BT7_COLUMNS_BATTLE_EVENT: &[&str] = &["event_id", "battle_id", "seq", "round", "payload"];
+
+const BT7_COLUMNS_BATTLE_SUMMARY: &[&str] = &[
+    "battle_id",
+    "player_identity",
+    "opponent_identity",
+    "kind",
+    "outcome",
+    "rounds",
+    "wall_ms",
+    "idle_ms_a",
+    "idle_ms_b",
+    "windows_histogram",
+    "autopasses",
+    "recruit_attempts",
+    "recruit_successes",
+    "weaken_first",
+    "items_used",
+    "damage_dealt_a",
+    "damage_dealt_b",
+    "hits",
+    "misses",
+    "unit_turns_prequeued",
+    "unit_turns_live",
+    "halted_plans",
+    "se_kos_after_r1",
+];
+
+const BT7_COLUMNS_PLAYER_FORMATION: &[&str] = &["owner_identity", "monster_ids"];
+
+/// `battle` as committed before bt-7 (BT7.1: unchanged by this slice).
+const BT7_COLUMNS_BATTLE: &[&str] = &[
+    "battle_id",
+    "player_identity",
+    "opponent_identity",
+    "state",
+    "party_monster_ids",
+    "opponent_monster_ids",
+    "created_at_ms",
+];
+
+/// `battle_challenge` as committed before bt-7 (BT7.1: unchanged by this slice).
+const BT7_COLUMNS_BATTLE_CHALLENGE: &[&str] = &[
+    "challenge_id",
+    "challenger",
+    "target",
+    "challenger_party_ids",
+    "status",
+    "created_at_ms",
+];
+
+/// BT7.1 — every tactical row type declares EXACTLY the plan's columns in the
+/// plan's order, read from its own `SpacetimeType` derive metadata (the column
+/// list the host stores and the bindings generate), and `battle_unit` carries
+/// no column that could say whether a READY plan exists.
+///
+/// The order is part of the contract, not cosmetics: BSATN is positional, the
+/// tables ship once and the automigration accepts only tail-appended columns,
+/// so a reorder after this slice is a destructive republish.
+///
+/// Kills: a reordered, renamed, dropped or added column on any of the ten
+///        tables (one entry each); a `ready` / `queued` / `has_plan` flag added
+///        to `BattleUnit` (design §6.3: whether a READY row exists is secret,
+///        and `my_battle_units` hands every unit to BOTH participants); a
+///        `max_hp` column re-added beside `stats` (two sources of max HP that
+///        can disagree); the bt-3 persistence columns (`slot`, `budget_last`,
+///        `pending_pad_ms`, `attack_damage_dealt_a/_b`) or the summary's four
+///        BT9.5 inputs dropped; `side` and `owner` folded into one column
+///        (§8.1 stores them separately so a two-ally side is just rows);
+///        `battle_deploy` losing its `side` (a Practice owner stages both).
+#[test]
+fn tactical_row_types_declare_the_pinned_columns_in_order_bt7_1() {
+    let mut ts = M22s6InlineTypespace;
+    let rows: [(&str, AlgebraicType, &[&str]); 10] = [
+        (
+            "battle_tactical",
+            <crate::schema::BattleTactical as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_TACTICAL,
+        ),
+        (
+            "battle_unit",
+            <crate::schema::BattleUnit as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_UNIT,
+        ),
+        (
+            "battle_queue",
+            <crate::schema::BattleQueue as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_QUEUE,
+        ),
+        (
+            "battle_deploy",
+            <crate::schema::BattleDeploy as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_DEPLOY,
+        ),
+        (
+            "battle_clock",
+            <crate::schema::BattleClock as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_CLOCK,
+        ),
+        (
+            "battle_secret",
+            <crate::schema::BattleSecret as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_SECRET,
+        ),
+        (
+            "battle_wild_unit",
+            <crate::schema::BattleWildUnit as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_WILD_UNIT,
+        ),
+        (
+            "battle_event",
+            <crate::schema::BattleEvent as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_EVENT,
+        ),
+        (
+            "battle_summary",
+            <crate::schema::BattleSummary as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_BATTLE_SUMMARY,
+        ),
+        (
+            "player_formation",
+            <crate::schema::PlayerFormation as SpacetimeType>::make_type(&mut ts),
+            BT7_COLUMNS_PLAYER_FORMATION,
+        ),
+    ];
+    for (accessor, ty, want) in &rows {
+        let got = m22s9_top_level_column_names(accessor, ty);
+        assert_eq!(
+            got, *want,
+            "[bt7/columns] `{accessor}` declares {got:?}; the plan pins {want:?}, in that order. \
+             BSATN is positional and the automigration only appends, so the column list and \
+             its order are frozen the day this slice ships."
+        );
+    }
+
+    let unit_columns = m22s9_top_level_column_names(
+        "battle_unit",
+        &<crate::schema::BattleUnit as SpacetimeType>::make_type(&mut ts),
+    );
+    let tells: Vec<&String> = unit_columns
+        .iter()
+        .filter(|c| c.contains("ready") || c.contains("queue") || c.contains("plan"))
+        .collect();
+    assert!(
+        tells.is_empty(),
+        "[bt7/unit-no-ready-flag] `battle_unit` carries {tells:?}. Both participants read \
+         every unit row through `my_battle_units`, so any column saying whether a unit has a \
+         READY plan is exactly the design §6.3 leak (the opponent learns a plan exists)."
+    );
+}
+
+/// Every product-field and sum-variant name reachable from `ty`, depth-first,
+/// under the same 12-level cap as `m22s6_identity_bearing` (the inline builder
+/// never interns, so there is no `Ref` to stop on).
+fn bt7_names_at_any_depth(ty: &AlgebraicType, depth: usize, out: &mut Vec<String>) {
+    assert!(
+        depth <= 12,
+        "[bt7/name-depth-cap] a view row type nests more than 12 levels deep; this walk \
+         refuses to recurse further (see `M22s6InlineTypespace`)."
+    );
+    match ty {
+        AlgebraicType::Product(p) => {
+            for e in p.elements.iter() {
+                if let Some(name) = e.name.as_ref() {
+                    out.push(name.to_string());
+                }
+                bt7_names_at_any_depth(&e.algebraic_type, depth + 1, out);
+            }
+        }
+        AlgebraicType::Sum(s) => {
+            for v in s.variants.iter() {
+                if let Some(name) = v.name.as_ref() {
+                    out.push(name.to_string());
+                }
+                bt7_names_at_any_depth(&v.algebraic_type, depth + 1, out);
+            }
+        }
+        AlgebraicType::Array(a) => bt7_names_at_any_depth(&a.elem_ty, depth + 1, out),
+        _ => {}
+    }
+}
+
+/// Does `name` name a secret or an owner-staging field (design §6.3)? The two
+/// staging nouns `entries` / `picks` exactly; anything spelling a seed, the roll
+/// counter, a READY flag or a queue, as a case-insensitive substring.
+fn bt7_is_secret_or_staging_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "entries"
+        || lower == "picks"
+        || ["seed", "action_seq", "ready", "queue"]
+            .iter()
+            .any(|needle| lower.contains(*needle))
+}
+
+/// BT7.3 — no view row type reaches a secret: walking each of the seven new
+/// views' row types to ANY depth (fields, enum variants, nested payloads), the
+/// names that spell a seed, the roll counter, a READY flag, a queue or an
+/// owner-staging list are EXACTLY this allowlist — `entries` on
+/// `my_battle_queue` and `picks` on `my_battle_deploy` (the two OWNER-ONLY
+/// views; their owner boundary is executed in `acct_nh`), and the
+/// `QueueVoided` event variant on `my_battle_events` (BT3.7: a voided READY
+/// plan is deleted WITH a visible event, at execution — design §6.3's
+/// "inferable only after the fact"). Everything else is empty.
+///
+/// The predicate is first shown to fire on the two secret tables' own row
+/// types, so an empty answer below is a real absence, not a blind matcher.
+///
+/// Kills: `my_battle_units` / `my_tactical_battle` / `my_battle_clock` /
+///        `my_battle_events` / `my_formation` re-typed to (or extended with) a
+///        row carrying `seed`, `action_seq` or `individuality_seed` (the
+///        `battle_secret` / `battle_wild_unit` doctrine: a client that could
+///        read the seed replays every roll); a `ready` / `queued` field or a
+///        nested plan anywhere in a participant view's row; the queue's
+///        `entries` or the deploy `picks` reachable through a PARTICIPANT view
+///        (an extra hit on any of the four); a new event variant spelling a
+///        queue or a READY state (the allowlist is exact, so it reds until a
+///        human re-reads §6.3).
+#[test]
+fn tactical_view_row_types_reach_no_secret_or_staging_field_bt7_3() {
+    let hits_of = |ty: &AlgebraicType| -> Vec<String> {
+        let mut names = Vec::new();
+        bt7_names_at_any_depth(ty, 0, &mut names);
+        let mut hits: Vec<String> = names
+            .into_iter()
+            .filter(|n| bt7_is_secret_or_staging_name(n))
+            .collect();
+        hits.sort();
+        hits.dedup();
+        hits
+    };
+    let mut ts = M22s6InlineTypespace;
+
+    let secret = hits_of(&<crate::schema::BattleSecret as SpacetimeType>::make_type(
+        &mut ts,
+    ));
+    assert_eq!(
+        secret,
+        ["action_seq", "seed"],
+        "[bt7/secret-names-fixture] the matcher must fire on `battle_secret`'s own row, or every \
+         empty answer below is a blind matcher rather than an absence"
+    );
+    let wild = hits_of(&<crate::schema::BattleWildUnit as SpacetimeType>::make_type(&mut ts));
+    assert_eq!(
+        wild,
+        ["individuality_seed"],
+        "[bt7/secret-names-fixture] the matcher must fire on `battle_wild_unit`'s own row"
+    );
+
+    let views: [(&str, AlgebraicType, &[&str]); 7] = [
+        (
+            "my_tactical_battle",
+            <crate::schema::BattleTactical as SpacetimeType>::make_type(&mut ts),
+            &[],
+        ),
+        (
+            "my_battle_units",
+            <crate::schema::BattleUnit as SpacetimeType>::make_type(&mut ts),
+            &[],
+        ),
+        (
+            "my_battle_events",
+            <crate::schema::BattleEvent as SpacetimeType>::make_type(&mut ts),
+            &["QueueVoided"],
+        ),
+        (
+            "my_battle_clock",
+            <crate::schema::BattleClock as SpacetimeType>::make_type(&mut ts),
+            &[],
+        ),
+        (
+            "my_battle_queue",
+            <crate::schema::BattleQueue as SpacetimeType>::make_type(&mut ts),
+            &["entries"],
+        ),
+        (
+            "my_battle_deploy",
+            <crate::schema::BattleDeploy as SpacetimeType>::make_type(&mut ts),
+            &["picks"],
+        ),
+        (
+            "my_formation",
+            <crate::schema::PlayerFormation as SpacetimeType>::make_type(&mut ts),
+            &[],
+        ),
+    ];
+    for (view, ty, allowed) in &views {
+        let hits = hits_of(ty);
+        assert_eq!(
+            hits, *allowed,
+            "[bt7/view-row-secrecy] the row type `{view}` serves reaches {hits:?} at some depth; \
+             exactly {allowed:?} is allowed. Design §6.3: the seed, the roll counter and the \
+             wild individuality never leave the server, whether a READY plan exists is never \
+             participant-visible, and queue entries / deploy picks reach their OWNER only."
+        );
+    }
+}
+
+/// BT7.4 (manifest half) — each of the ten tactical tables is classified
+/// exactly once with the plan's policy (five Erase, `battle_summary`
+/// Anonymize, four `ViaJoin("battle")`), none is exportable, and the export
+/// bundle's table set is EXACTLY the seventeen it was before this slice — the
+/// transcripts are GC-bound and the summary is telemetry, so bt-7 adds no
+/// exporter.
+///
+/// Kills: a tactical table flipped to `exportable: true` (the export grows a
+///        table with no `rows_*` exporter, or ships seeds and plans to the
+///        subject's download); `battle_summary` classified Erase (telemetry the
+///        H1/H2 tuning reads is destroyed by every deletion) or `battle_unit`
+///        ViaJoin (its `Option<Identity>` owner would be invisible to every
+///        per-owner rule); a ViaJoin parent other than `battle`; a duplicate
+///        entry; any existing table's export flag changed in passing.
+#[test]
+fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
+    let label = |p: &DeletionPolicy| -> String {
+        match p {
+            DeletionPolicy::Erase => "Erase".to_string(),
+            DeletionPolicy::Anonymize => "Anonymize".to_string(),
+            DeletionPolicy::ViaJoin(parent) => format!("ViaJoin({parent})"),
+            DeletionPolicy::NotOwned => "NotOwned".to_string(),
+        }
+    };
+    let expected: [(&str, &str); 10] = [
+        ("battle_clock", "Erase"),
+        ("battle_deploy", "Erase"),
+        ("battle_event", "ViaJoin(battle)"),
+        ("battle_queue", "Erase"),
+        ("battle_secret", "ViaJoin(battle)"),
+        ("battle_summary", "Anonymize"),
+        ("battle_tactical", "ViaJoin(battle)"),
+        ("battle_unit", "Erase"),
+        ("battle_wild_unit", "ViaJoin(battle)"),
+        ("player_formation", "Erase"),
+    ];
+    for (table, policy) in expected {
+        let entries: Vec<&DataLifecycleEntry> = DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|e| e.table == table)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "[bt7/manifest-entry] `{table}` must be classified exactly once"
+        );
+        assert_eq!(
+            label(&entries[0].policy),
+            policy,
+            "[bt7/manifest-policy] `{table}` carries the wrong deletion policy"
+        );
+        assert!(
+            !entries[0].exportable,
+            "[bt7/manifest-not-exported] `{table}` must carry `exportable: false` — the \
+             transcript is GC-bound telemetry and the staging rows are secrets; BT7.4 says the \
+             export bundle is unchanged"
+        );
+    }
+
+    let mut exportable: Vec<&str> = DATA_LIFECYCLE_MANIFEST
+        .iter()
+        .filter(|e| e.exportable)
+        .map(|e| e.table)
+        .collect();
+    exportable.sort_unstable();
+    assert_eq!(
+        exportable,
+        [
+            "account",
+            "battle",
+            "battle_action",
+            "battle_challenge",
+            "character",
+            "heal_cooldown",
+            "inventory",
+            "monster",
+            "monster_pub",
+            "player",
+            "player_conversation",
+            "player_dialogue_state",
+            "player_quest",
+            "player_wallet",
+            "playtest_event",
+            "profile",
+            "trade_offer",
+        ],
+        "[bt7/export-unchanged] the exportable set must be EXACTLY the seventeen pre-bt-7 tables"
+    );
+    assert_eq!(
+        DATA_LIFECYCLE_MANIFEST.len(),
+        53,
+        "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables"
+    );
+}
+
+// ===========================================================================
 // THE ACCOUNTS NATIVE-HOST SUITE.
 //
 // Executes the SHIPPED reducers and helpers against real rows in the in-memory
@@ -4379,12 +4921,17 @@ mod acct_nh {
     use crate::privacy::ExportBundleReaperSchedule;
     use crate::pvp::BattleChallengeReaperSchedule;
     use crate::schema::{
-        Account, BattleAction, BattleChallenge, ChallengeStatus, Character, DeletionPolicy,
-        EvolutionRevealRow, ExportBundle, GuestClaim, HealCooldown, Inventory, Monster, MonsterPub,
-        PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
-        PlayerSession, PlayerWallet, Profile, TradeOffer, DATA_LIFECYCLE_MANIFEST,
+        Account, BattleAction, BattleChallenge, BattleClock, BattleDeploy, BattleEvent,
+        BattleQueue, BattleSecret, BattleSummary, BattleTactical, BattleUnit, BattleWildUnit,
+        ChallengeStatus, Character, DeletionPolicy, DeployPick, EvolutionRevealRow, ExportBundle,
+        GuestClaim, HealCooldown, Inventory, Monster, MonsterPub, MoveClassRow,
+        PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
+        PlayerFormation, PlayerQuestRow, PlayerSession, PlayerWallet, Profile, SideRow, StanceRow,
+        TradeOffer, DATA_LIFECYCLE_MANIFEST,
     };
     use crate::trading::TradeOfferReaperSchedule;
+    use game_core::tactics::tuning::BattleKind;
+    use game_core::tactics::types::{MoveAction, QueuedAction};
     use spacetimedb::sats::bsatn;
     use spacetimedb::{ConnectionId, Identity, ReducerContext, ScheduleAt, Serialize, Timestamp};
 
@@ -4496,14 +5043,37 @@ mod acct_nh {
         export: Handle<'a, ExportBundle>,
         export_reaper: Handle<'a, ExportBundleReaperSchedule, u64>,
         battle: Handle<'a, crate::schema::Battle>,
+        // bt-7 tactical tables: per-battle tables keyed on `battle_id`, the
+        // formation on its owner key.
+        tactical: Handle<'a, BattleTactical, u64>,
+        unit: Handle<'a, BattleUnit, u64>,
+        queue: Handle<'a, BattleQueue, u64>,
+        deploy: Handle<'a, BattleDeploy, u64>,
+        clock: Handle<'a, BattleClock, u64>,
+        secret: Handle<'a, BattleSecret, u64>,
+        wild_unit: Handle<'a, BattleWildUnit, u64>,
+        event: Handle<'a, BattleEvent, u64>,
+        summary: Handle<'a, BattleSummary, u64>,
+        formation: Handle<'a, PlayerFormation>,
     }
 
     /// Registers every index the shipped accounts / claim / cascade / export
     /// paths read or write through, opens writes on each table (post-state
     /// assertions, not the write wall, are this suite's oracle) and opens full
     /// scans ONLY where the shipped code scans (`playtest_event`,
-    /// `battle_action`, the `export_bundle` count, the export reaper singleton).
-    /// `battle` stays unregistered: its reads answer empty.
+    /// `battle_action`, the `export_bundle` count, the export reaper singleton,
+    /// `pvp_deadline_schedule` for `pvp::disarm_pvp_deadlines`, and `battle_unit`
+    /// for the tactical cascade's `owner == Some(..)` scan — a sum type carries
+    /// no index).
+    ///
+    /// bt-7: EVERY index of the ten tactical tables is registered here,
+    /// unconditionally — the participant / owner views read through them, and
+    /// the tactical cascade step deletes / updates through them (an
+    /// index-point delete or an update through an index no fixture registered
+    /// ABORTS the whole test process, D5). `battle.battle_id`, `battle_wild`'s
+    /// key and `pvp_deadline_schedule` are registered too, because
+    /// `battle::anonymize_battles` deletes / updates / scans through them for
+    /// every battle row the cascade subject is a side of.
     fn world(fx: &Fixture) -> W<'_> {
         // Secondary indexes first (registration is per fixture, not per handle).
         let _ = fx
@@ -4548,6 +5118,39 @@ mod acct_nh {
             .table::<crate::schema::Battle>("battle", "opponent_identity", |r| r.opponent_identity);
         let _ = fx.table_keyed::<ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
             r.created_at_ms
+        });
+        // bt-7: the anchor's key, its wild sidecar and the deadline schedule
+        // (`battle::anonymize_battles` reaches all three per battle row).
+        let _ =
+            fx.table_keyed::<crate::schema::Battle, u64>("battle", "battle_id", |r| r.battle_id);
+        let _ = fx.table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| {
+            r.battle_id
+        });
+        let _ = fx
+            .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
+                "pvp_deadline_schedule",
+                "scheduled_id",
+                |r| r.scheduled_id,
+            )
+            .scannable();
+        // bt-7: every secondary index of the tactical tables (the `battle_id`
+        // btree / key of each is the W handle below).
+        let _ = fx.table_keyed::<BattleTactical, u32>("battle_tactical", "map_id", |r| r.map_id);
+        let _ = fx.table_keyed::<BattleUnit, u32>("battle_unit", "unit_id", |r| r.unit_id);
+        let _ = fx.table_keyed::<BattleQueue, u32>("battle_queue", "unit_id", |r| r.unit_id);
+        let _ = fx.table::<BattleQueue>("battle_queue", "owner", |r| r.owner);
+        let _ = fx.table_keyed::<BattleDeploy, u64>("battle_deploy", "deploy_id", |r| r.deploy_id);
+        let _ = fx.table::<BattleDeploy>("battle_deploy", "owner", |r| r.owner);
+        let _ = fx.table_keyed::<BattleClock, u64>("battle_clock", "clock_id", |r| r.clock_id);
+        let _ = fx.table::<BattleClock>("battle_clock", "player", |r| r.player);
+        let _ = fx.table_keyed::<BattleWildUnit, u64>("battle_wild_unit", "wild_unit_id", |r| {
+            r.wild_unit_id
+        });
+        let _ = fx.table_keyed::<BattleEvent, u64>("battle_event", "event_id", |r| r.event_id);
+        let _ =
+            fx.table::<BattleSummary>("battle_summary", "player_identity", |r| r.player_identity);
+        let _ = fx.table::<BattleSummary>("battle_summary", "opponent_identity", |r| {
+            r.opponent_identity
         });
         W {
             account: fx
@@ -4667,6 +5270,42 @@ mod acct_nh {
                 .auto_inc(|r| r.id, |r, v| r.id = v),
             battle: fx
                 .table::<crate::schema::Battle>("battle", "player_identity", |r| r.player_identity)
+                .writable(),
+            tactical: fx
+                .table_keyed::<BattleTactical, u64>("battle_tactical", "battle_id", |r| r.battle_id)
+                .writable(),
+            unit: fx
+                .table_keyed::<BattleUnit, u64>("battle_unit", "battle_id", |r| r.battle_id)
+                .writable()
+                .scannable(),
+            queue: fx
+                .table_keyed::<BattleQueue, u64>("battle_queue", "battle_id", |r| r.battle_id)
+                .writable(),
+            deploy: fx
+                .table_keyed::<BattleDeploy, u64>("battle_deploy", "battle_id", |r| r.battle_id)
+                .writable(),
+            clock: fx
+                .table_keyed::<BattleClock, u64>("battle_clock", "battle_id", |r| r.battle_id)
+                .writable(),
+            secret: fx
+                .table_keyed::<BattleSecret, u64>("battle_secret", "battle_id", |r| r.battle_id)
+                .writable(),
+            wild_unit: fx
+                .table_keyed::<BattleWildUnit, u64>("battle_wild_unit", "battle_id", |r| {
+                    r.battle_id
+                })
+                .writable(),
+            event: fx
+                .table_keyed::<BattleEvent, u64>("battle_event", "battle_id", |r| r.battle_id)
+                .writable(),
+            summary: fx
+                .table_keyed::<BattleSummary, u64>("battle_summary", "battle_id", |r| r.battle_id)
+                .writable(),
+            formation: fx
+                .table::<PlayerFormation>("player_formation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .unique()
                 .writable(),
         }
     }
@@ -4833,6 +5472,333 @@ mod acct_nh {
             opponent_monster_ids: vec![],
             created_at_ms: 1,
         }
+    }
+
+    // --- bt-7 tactical rows --------------------------------------------------
+    //
+    // Fixture ids derive from the battle id so every key is distinct across
+    // battles: unit `n` of battle `b` is `10·b + n` (n = 1, 2 side A; 3, 4 side
+    // B), and the per-side clock / deploy ids are `10·b + 1` (A) / `10·b + 2` (B).
+
+    fn unit_id_of(battle_id: u64, n: u64) -> u32 {
+        u32::try_from(battle_id * 10 + n).expect("a fixture unit id fits a u32")
+    }
+
+    fn side_key(side: SideRow) -> u64 {
+        match side {
+            SideRow::A => 1,
+            SideRow::B => 2,
+        }
+    }
+
+    fn tactical_row(battle_id: u64, kind: BattleKind) -> BattleTactical {
+        BattleTactical {
+            battle_id,
+            kind,
+            format: 1,
+            map_id: 3,
+            content_version: crate::CONTENT_VERSION,
+            phase: game_core::tactics::types::Phase::Active,
+            round: 2,
+            initiative: vec![unit_id_of(battle_id, 1), unit_id_of(battle_id, 3)],
+            turn_idx: 0,
+            turn_state: game_core::tactics::types::TurnState::Waiting(unit_id_of(battle_id, 1)),
+            tie_priority_side: SideRow::A,
+            pending_pad_ms: 400,
+            attack_damage_dealt_a: 12,
+            attack_damage_dealt_b: 9,
+        }
+    }
+
+    /// Unit `n` of `battle_id` on `side`; `owner: None` is a wild unit (it then
+    /// carries a `wild_index` and a stance, no `monster_id`).
+    fn unit_row(battle_id: u64, n: u64, side: SideRow, owner: Option<Identity>) -> BattleUnit {
+        let slot: u8 = if n % 2 == 1 { 0 } else { 1 };
+        BattleUnit {
+            unit_id: unit_id_of(battle_id, n),
+            battle_id,
+            side,
+            owner,
+            slot,
+            monster_id: owner.map(|_| battle_id * 10 + n),
+            wild_index: owner.is_none().then_some(slot),
+            species_id: 1,
+            level: 7,
+            affinity: game_core::Affinity::Fire,
+            x: slot,
+            y: match side {
+                SideRow::A => 0,
+                SideRow::B => 6,
+            },
+            cur_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            skill_ids: vec![1, 2],
+            status: None,
+            ap: 6,
+            strides_used: 0,
+            attacks: 0,
+            budget_last: None,
+            guard: false,
+            first_stand: true,
+            movement: MoveClassRow::Walk,
+            stride: 2,
+            stance: owner.is_none().then_some(StanceRow::Aggressive),
+            state: game_core::tactics::resolve::UnitState::Active,
+        }
+    }
+
+    fn clock_row(battle_id: u64, side: SideRow, player: Identity) -> BattleClock {
+        BattleClock {
+            clock_id: battle_id * 10 + side_key(side),
+            battle_id,
+            side,
+            player,
+            window_seq: 3,
+            window_open_ms: Some(T0),
+            deadline_ms: Some(T0 + 30_000),
+            windows_this_unit_turn: 1,
+            idle_ms_total: 1_500,
+            autopass_count: 0,
+        }
+    }
+
+    /// A READY plan for unit `n` of `battle_id`.
+    fn queue_row(battle_id: u64, n: u64, owner: Identity) -> BattleQueue {
+        BattleQueue {
+            unit_id: unit_id_of(battle_id, n),
+            battle_id,
+            owner,
+            entries: vec![
+                QueuedAction::Move(MoveAction {
+                    x: 2,
+                    y: 3,
+                    strides: 1,
+                }),
+                QueuedAction::EndTurn,
+            ],
+            submitted_at_ms: T0,
+        }
+    }
+
+    fn deploy_row(battle_id: u64, side: SideRow, owner: Identity) -> BattleDeploy {
+        BattleDeploy {
+            deploy_id: battle_id * 10 + side_key(side),
+            battle_id,
+            owner,
+            side,
+            picks: vec![DeployPick {
+                monster_id: battle_id * 100 + side_key(side),
+                slot: 0,
+            }],
+            locked: false,
+        }
+    }
+
+    fn secret_row(battle_id: u64) -> BattleSecret {
+        BattleSecret {
+            battle_id,
+            seed: battle_id ^ 0x5EED_5EED,
+            action_seq: 7,
+        }
+    }
+
+    fn wild_unit_row(battle_id: u64, wild_index: u8) -> BattleWildUnit {
+        BattleWildUnit {
+            wild_unit_id: battle_id * 10 + u64::from(wild_index) + 1,
+            battle_id,
+            wild_index,
+            species_id: 2,
+            level: 6,
+            individuality_seed: 0x00C0_FFEE + u32::from(wild_index),
+        }
+    }
+
+    fn event_row(battle_id: u64, n: u64) -> BattleEvent {
+        BattleEvent {
+            event_id: battle_id * 10 + n,
+            battle_id,
+            seq: u32::try_from(n).expect("a fixture event seq fits a u32"),
+            round: 1,
+            payload: game_core::tactics::events::EventPayload::RoundEnded(
+                game_core::tactics::events::RoundEndedEvent { round: 1 },
+            ),
+        }
+    }
+
+    fn summary_row(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        kind: BattleKind,
+    ) -> BattleSummary {
+        BattleSummary {
+            battle_id,
+            player_identity: player,
+            opponent_identity: opponent,
+            kind,
+            outcome: game_core::BattleOutcome::SideAWins,
+            rounds: 5,
+            wall_ms: 90_000,
+            idle_ms_a: 1_000,
+            idle_ms_b: 2_000,
+            windows_histogram: vec![0, 3, 1],
+            autopasses: 0,
+            recruit_attempts: 0,
+            recruit_successes: 0,
+            weaken_first: false,
+            items_used: 1,
+            damage_dealt_a: 40,
+            damage_dealt_b: 30,
+            hits: 6,
+            misses: 2,
+            unit_turns_prequeued: 3,
+            unit_turns_live: 4,
+            halted_plans: 1,
+            se_kos_after_r1: 0,
+        }
+    }
+
+    fn formation_row(owner: Identity, k: u64) -> PlayerFormation {
+        PlayerFormation {
+            owner_identity: owner,
+            monster_ids: vec![100 + k, 200 + k],
+        }
+    }
+
+    /// One tactical battle's PUBLIC-to-participants row set plus its secrets:
+    /// the anchor `battle` row (settled — `SideAWins`, or `Fled` for a wild
+    /// battle — so the cascade's 6a resolver leaves it alone), its tactical
+    /// row, its secret, `1 + id % 3` events, two side-A units and `1 + id % 2`
+    /// side-B units (row counts differ per battle on purpose, so a reader that
+    /// serves only one battle's rows cannot match a multiset), one clock per
+    /// side that has a player, and its summary. `side_b: None` is a WILD battle
+    /// (opponent = the zero wild sentinel, side-B units `owner: None`, plus two
+    /// `battle_wild_unit` rows); `Some(side_a)` is a practice battle.
+    fn seed_tactical_battle(w: &W<'_>, battle_id: u64, side_a: Identity, side_b: Option<Identity>) {
+        let kind = match side_b {
+            None => BattleKind::Wild,
+            Some(b) if b == side_a => BattleKind::Practice,
+            Some(_) => BattleKind::Pvp,
+        };
+        let opponent = side_b.unwrap_or(crate::WILD_IDENTITY);
+        let mut anchor = battle_row(side_a, opponent);
+        anchor.battle_id = battle_id;
+        anchor.state.outcome = if side_b.is_some() {
+            game_core::BattleOutcome::SideAWins
+        } else {
+            game_core::BattleOutcome::Fled
+        };
+        w.battle.seed(&anchor);
+        w.tactical.seed(&tactical_row(battle_id, kind));
+        w.secret.seed(&secret_row(battle_id));
+        for n in 1..=(1 + battle_id % 3) {
+            w.event.seed(&event_row(battle_id, n));
+        }
+        for n in [1, 2] {
+            w.unit
+                .seed(&unit_row(battle_id, n, SideRow::A, Some(side_a)));
+        }
+        for n in 3..=(3 + battle_id % 2) {
+            w.unit.seed(&unit_row(battle_id, n, SideRow::B, side_b));
+        }
+        w.clock.seed(&clock_row(battle_id, SideRow::A, side_a));
+        match side_b {
+            Some(b) => w.clock.seed(&clock_row(battle_id, SideRow::B, b)),
+            None => {
+                for i in 0..2u8 {
+                    w.wild_unit.seed(&wild_unit_row(battle_id, i));
+                }
+            }
+        }
+        w.summary
+            .seed(&summary_row(battle_id, side_a, opponent, kind));
+    }
+
+    /// The OWNER-ONLY staging of a battle: a READY plan on unit 1 (side A) and
+    /// a deploy row for side A, plus the same for side B (unit 3) when side B
+    /// has a player.
+    fn seed_staging(w: &W<'_>, battle_id: u64, side_a: Identity, side_b: Option<Identity>) {
+        w.queue.seed(&queue_row(battle_id, 1, side_a));
+        w.deploy.seed(&deploy_row(battle_id, SideRow::A, side_a));
+        if let Some(b) = side_b {
+            w.queue.seed(&queue_row(battle_id, 3, b));
+            w.deploy.seed(&deploy_row(battle_id, SideRow::B, b));
+        }
+    }
+
+    /// The tactical population of `who`: four battles `2000 + 10·k + n` — n=1
+    /// `who` as side A vs `peer`, n=2 `peer` as side A vs `who` (the other
+    /// battle role), n=3 a wild battle (`owner: None` units + wild-unit rows),
+    /// n=4 a practice battle (`who` on both sides) — each with its staging, plus
+    /// `who`'s formation.
+    fn seed_tactical_population(w: &W<'_>, who: Identity, peer: Identity, k: u64) {
+        let base = 2000 + 10 * k;
+        for (n, side_a, side_b) in [
+            (1, who, Some(peer)),
+            (2, peer, Some(who)),
+            (3, who, None),
+            (4, who, Some(who)),
+        ] {
+            seed_tactical_battle(w, base + n, side_a, side_b);
+            seed_staging(w, base + n, side_a, side_b);
+        }
+        w.formation.seed(&formation_row(who, k));
+    }
+
+    /// Every row of `rows` as `(battle_id, canonical bytes)`, sorted.
+    fn rows_by_battle<R: Serialize>(rows: Vec<R>, battle_of: fn(&R) -> u64) -> Vec<(u64, Vec<u8>)> {
+        let mut out: Vec<(u64, Vec<u8>)> = rows.iter().map(|r| (battle_of(r), enc(r))).collect();
+        out.sort();
+        out
+    }
+
+    /// `(table, [(battle_id, row bytes)])` per tactical table (clippy type_complexity alias).
+    type PerBattleRows = Vec<(&'static str, Vec<(u64, Vec<u8>)>)>;
+
+    /// The eight tactical tables the cascade erases BY BATTLE ID, each as
+    /// `(battle_id, canonical bytes)` rows.
+    fn per_battle_rows(w: &W<'_>) -> PerBattleRows {
+        vec![
+            (
+                "battle_tactical",
+                rows_by_battle(w.tactical.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_secret",
+                rows_by_battle(w.secret.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_wild_unit",
+                rows_by_battle(w.wild_unit.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_event",
+                rows_by_battle(w.event.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_unit",
+                rows_by_battle(w.unit.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_queue",
+                rows_by_battle(w.queue.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_deploy",
+                rows_by_battle(w.deploy.rows(), |r| r.battle_id),
+            ),
+            (
+                "battle_clock",
+                rows_by_battle(w.clock.rows(), |r| r.battle_id),
+            ),
+        ]
     }
 
     /// One row in each of the NINE re-key tables (monster + its projection,
@@ -5067,6 +6033,68 @@ mod acct_nh {
                         .rows()
                         .into_iter()
                         .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            // bt-7: the six owner-keyed tactical tables (`battle_unit` through its
+            // `Option<Identity>` owner; `battle_summary` on either side).
+            (
+                "battle_unit",
+                encs(
+                    &w.unit
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner == Some(who))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_queue",
+                encs(
+                    &w.queue
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_deploy",
+                encs(
+                    &w.deploy
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_clock",
+                encs(
+                    &w.clock
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.player == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_summary",
+                encs(
+                    &w.summary
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.player_identity == who || r.opponent_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_formation",
+                encs(
+                    &w.formation
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
                         .collect::<Vec<_>>(),
                 ),
             ),
@@ -5773,7 +6801,7 @@ mod acct_nh {
     /// owner-keyed table added to the manifest without a re-key decision.
     #[test]
     fn acct_rekey_roster_is_total_and_game_data_sees_every_rekeyed_table() {
-        const REKEYED: [&str; 9] = [
+        const REKEYED: [&str; 10] = [
             "monster",
             "monster_pub",
             "pending_evolution_notice",
@@ -5783,12 +6811,15 @@ mod acct_nh {
             "heal_cooldown",
             "player_wallet",
             "profile",
+            "player_formation",
         ];
         // Left under the guest on purpose: presence / session rows die with the
         // connection (guard 9), live interactions block the claim (guard 10),
         // telemetry and the export store are not game data, and the account is
-        // the claimer's own.
-        const NOT_REKEYED: [&str; 10] = [
+        // the claimer's own. bt-7: a live tactical battle's anchor row blocks
+        // the claim (guard 10), a finished battle's per-battle rows belong to
+        // that battle (GC-bound), and `battle_summary` is telemetry.
+        const NOT_REKEYED: [&str; 15] = [
             "player",
             "player_conversation",
             "player_session",
@@ -5799,6 +6830,11 @@ mod acct_nh {
             "playtest_event",
             "export_bundle",
             "account",
+            "battle_unit",
+            "battle_queue",
+            "battle_deploy",
+            "battle_clock",
+            "battle_summary",
         ];
         let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
             .iter()
@@ -5829,10 +6865,11 @@ mod acct_nh {
             w.heal.remove(g);
             w.wallet.remove(g);
             w.profile.remove(g);
+            w.formation.remove(g);
         };
         wipe(&w);
         assert!(owned_tables(&owned_by(&w, g)).is_empty());
-        let singles: [(&str, &dyn Fn()); 8] = [
+        let singles: [(&str, &dyn Fn()); 9] = [
             ("monster", &|| w.monster.seed(&monster_row(103, g))),
             ("pending_evolution_notice", &|| {
                 w.notice.seed(&PendingEvolutionNotice {
@@ -5882,6 +6919,12 @@ mod acct_nh {
                     rating: 0,
                     wins: 0,
                     losses: 0,
+                })
+            }),
+            ("player_formation", &|| {
+                w.formation.seed(&PlayerFormation {
+                    owner_identity: g,
+                    monster_ids: vec![103],
                 })
             }),
         ];
@@ -6040,8 +7083,12 @@ mod acct_nh {
     /// Seed one row for `who` in every Erase table, plus its Anonymize rows
     /// (player + character join, profile) — the cascade population.
     /// `k` keeps keys distinct; `peer` is the other party of the two-party rows.
+    /// bt-7: plus `who`'s tactical population (`seed_tactical_population`:
+    /// both battle roles against `peer`, a wild and a practice battle, every
+    /// tactical table, the formation).
     fn seed_cascade_population(w: &W<'_>, who: Identity, peer: Identity, k: u64) {
         seed_rekey_rows(w, who, k);
+        seed_tactical_population(w, who, peer, k);
         w.player
             .seed(&player_row(who, 600 + k, &format!("name{k}")));
         w.character.seed(&character_row(600 + k));
@@ -6110,7 +7157,12 @@ mod acct_nh {
     /// display names tombstoned, the account anonymized and stamped terminal —
     /// erases every Erase row, the character via the player join, and every
     /// reaper row keyed on an erased trade / challenge. The bystander's rows are
-    /// byte-identical throughout.
+    /// byte-identical throughout. bt-7: the population includes the subject's
+    /// tactical battles, so the subject may name no tactical row afterwards
+    /// (its summaries survive tombstoned, so they no longer name it either),
+    /// while the bystander's tactical rows outside those battles are untouched;
+    /// the exact per-table proof is
+    /// `deletion_cascade_erases_tactical_rows_by_battle_and_tombstones_summaries_bt7_4`.
     ///
     /// kills: any erase delegate dropped from the cascade; an erase keyed on the
     /// wrong identity (the bystander loses rows); the terminal stamp written
@@ -6135,6 +7187,23 @@ mod acct_nh {
         seed_cascade_population(&w, v, b, 1);
         seed_cascade_population(&w, b, x, 2);
         let victim_before = owned_by(&w, v);
+        // bt-7: every per-battle row of a battle the subject is a side of goes
+        // (the bystander's own units / staging / clock in a SHARED battle
+        // included), and the shared battles' summaries are tombstoned on the
+        // subject's side; the bystander keeps, byte-identical, everything in
+        // the battles WITHOUT the subject.
+        let subject_battles: Vec<u64> = w
+            .battle
+            .rows()
+            .into_iter()
+            .filter(|r| r.player_identity == v || r.opponent_identity == v)
+            .map(|r| r.battle_id)
+            .collect();
+        assert_eq!(
+            subject_battles.len(),
+            4,
+            "fixture: the subject is a side of four tactical battles (both roles, wild, practice)"
+        );
         let bystander_now = |w: &W<'_>| -> Vec<(&'static str, Vec<Vec<u8>>)> {
             owned_by(w, b)
                 .into_iter()
@@ -6155,6 +7224,48 @@ mod acct_nh {
                                     (r.challenger == b || r.target == b)
                                         && r.challenger != v
                                         && r.target != v
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_unit" => encs(
+                            &w.unit
+                                .rows()
+                                .into_iter()
+                                .filter(|r| {
+                                    r.owner == Some(b) && !subject_battles.contains(&r.battle_id)
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_queue" => encs(
+                            &w.queue
+                                .rows()
+                                .into_iter()
+                                .filter(|r| r.owner == b && !subject_battles.contains(&r.battle_id))
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_deploy" => encs(
+                            &w.deploy
+                                .rows()
+                                .into_iter()
+                                .filter(|r| r.owner == b && !subject_battles.contains(&r.battle_id))
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_clock" => encs(
+                            &w.clock
+                                .rows()
+                                .into_iter()
+                                .filter(|r| {
+                                    r.player == b && !subject_battles.contains(&r.battle_id)
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_summary" => encs(
+                            &w.summary
+                                .rows()
+                                .into_iter()
+                                .filter(|r| {
+                                    (r.player_identity == b || r.opponent_identity == b)
+                                        && !subject_battles.contains(&r.battle_id)
                                 })
                                 .collect::<Vec<_>>(),
                         ),
@@ -6953,5 +8064,1351 @@ mod acct_nh {
                 );
             }
         }
+    }
+
+    // =======================================================================
+    // bt-7 — THE TACTICAL TABLES, EXECUTED: the generated module definition
+    // (BT7.1), the seven views through the runtime's own view entry point
+    // (BT7.2 / BT7.3), the deletion cascade and the claim-flow re-key (BT7.4).
+    // =======================================================================
+
+    /// The column names of the row a view serves, read from its GENERATED
+    /// return type: `Vec<T>` (an array) or `Option<T>` (the `some` arm of a
+    /// sum), `T` resolved through the module typespace to its product type.
+    fn bt7_view_row_columns(
+        ts: &spacetimedb::sats::Typespace,
+        ret: &spacetimedb::sats::AlgebraicType,
+        view: &str,
+    ) -> Vec<String> {
+        use spacetimedb::sats::AlgebraicType;
+        let resolve = |ty: &AlgebraicType| -> AlgebraicType {
+            match ty {
+                AlgebraicType::Ref(r) => ts[*r].clone(),
+                other => other.clone(),
+            }
+        };
+        let row = match resolve(ret) {
+            AlgebraicType::Array(a) => {
+                let elem: &AlgebraicType = &a.elem_ty;
+                resolve(elem)
+            }
+            AlgebraicType::Sum(s) => {
+                let Some(some) = s
+                    .variants
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some("some"))
+                else {
+                    panic!("[bt7/view-return-shape] `{view}` returns a sum with no `some` arm")
+                };
+                resolve(&some.algebraic_type)
+            }
+            other => panic!(
+                "[bt7/view-return-shape] `{view}` returns {other:?}: neither Vec<T> nor Option<T>"
+            ),
+        };
+        let AlgebraicType::Product(p) = row else {
+            panic!("[bt7/view-return-shape] `{view}`'s row type is not a product")
+        };
+        p.elements
+            .iter()
+            .map(|e| e.name.as_deref().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// BT7.1 / manifest totality — the GENERATED module definition's table set
+    /// (every `#[spacetimedb::table]` the module describes to its host) equals
+    /// the `DATA_LIFECYCLE_MANIFEST` table set EXACTLY, in both directions, and
+    /// the ten bt-7 tables are in it. This is the manifest-totality gate, read
+    /// from the artifact the host consumes rather than from source text.
+    ///
+    /// Kills: a table added to the schema (any slice, any module) with no
+    ///        lifecycle classification — its rows would survive every account
+    ///        deletion with every other gate green; a manifest entry naming a
+    ///        table that no longer exists or is misspelt (a classification that
+    ///        governs nothing); a duplicate manifest entry; one of the ten
+    ///        tactical tables not declared as a table at all.
+    #[test]
+    fn generated_table_set_equals_the_lifecycle_manifest_bt7_1() {
+        let fx = fixture();
+        let def = fx.module_def();
+        let tables = def.tables().unwrap_or_else(|| {
+            panic!("[bt7/describe-tables] the generated module def carries no Tables section")
+        });
+        let mut generated: Vec<String> = tables.iter().map(|t| t.source_name.to_string()).collect();
+        generated.sort();
+        let mut manifest: Vec<&str> = DATA_LIFECYCLE_MANIFEST.iter().map(|e| e.table).collect();
+        manifest.sort_unstable();
+
+        let unclassified: Vec<&String> = generated
+            .iter()
+            .filter(|g| !manifest.contains(&g.as_str()))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "[bt7/manifest-totality-unclassified] the module declares {unclassified:?} with no \
+             DATA_LIFECYCLE_MANIFEST entry. An unclassified table is invisible to the deletion \
+             cascade, the export scope and every partition rule: classify it in schema.rs."
+        );
+        let stale: Vec<&&str> = manifest
+            .iter()
+            .filter(|m| !generated.iter().any(|g| g == **m))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "[bt7/manifest-totality-stale] DATA_LIFECYCLE_MANIFEST classifies {stale:?}, which the \
+             module does not declare (removed, renamed or misspelt)."
+        );
+        assert_eq!(
+            generated, manifest,
+            "[bt7/manifest-totality-multiset] the generated table list and the manifest must be the \
+             same multiset (a duplicate on either side is a classification that shadows another)"
+        );
+        assert_eq!(
+            generated.len(),
+            53,
+            "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables"
+        );
+        for table in [
+            "battle_tactical",
+            "battle_unit",
+            "battle_queue",
+            "battle_deploy",
+            "battle_clock",
+            "battle_secret",
+            "battle_wild_unit",
+            "battle_event",
+            "battle_summary",
+            "player_formation",
+        ] {
+            assert!(
+                generated.iter().any(|g| g == table),
+                "[bt7/manifest-totality-tactical] `{table}` is not a generated table"
+            );
+        }
+    }
+
+    /// BT7.1 — read from the GENERATED module definition: each of the ten
+    /// tactical tables is PRIVATE, declares the plan's columns in order, and
+    /// carries exactly the plan's primary key, auto-inc set, unique-constraint
+    /// set and btree index set (`battle_tactical.map_id`; `battle_id` on the
+    /// seven per-battle child tables; `owner` on queue + deploy; `player` on
+    /// clock; both identity columns on the summary; the PK index of each) — and
+    /// NO index on `battle_unit.owner`. `battle` and `battle_challenge` keep
+    /// their committed columns, access, keys and indexes (BT7.1: unchanged).
+    ///
+    /// Every key decision is frozen here because the automigration refuses a
+    /// primary-key, uniqueness or `auto_inc` change on a live table.
+    ///
+    /// Kills: `public` on any tactical table (every client would receive every
+    ///        battle's seeds, plans and staging — the view boundary bypassed);
+    ///        a PK on the wrong column (`battle_queue` keyed by `battle_id`
+    ///        allows one READY row per battle; `player_formation` keyed by a
+    ///        synthetic id allows two formations per owner); a dropped or extra
+    ///        `auto_inc` (`battle_queue.unit_id` auto-inc would mint ids that are
+    ///        not the unit's); a missing btree (`battle_unit.battle_id` — the
+    ///        cascade's only path to a unit; `battle_queue.owner` — the owner
+    ///        view's key; `battle_tactical.map_id` — the zoning rule); an index
+    ///        on the sum-typed `battle_unit.owner`; a hash index where the plan
+    ///        says btree; `battle` or `battle_challenge` altered in passing.
+    #[test]
+    fn tactical_tables_are_private_with_pinned_keys_and_indexes_bt7_1() {
+        use spacetimedb::sats::AlgebraicType;
+        use spacetimedb::spacetimedb_lib::db::raw_def::v9::{
+            RawConstraintDataV9, RawIndexAlgorithm, TableAccess,
+        };
+
+        struct Want {
+            table: &'static str,
+            access: TableAccess,
+            columns: &'static [&'static str],
+            pk: &'static str,
+            auto_inc: &'static [&'static str],
+            btree: &'static [&'static str],
+        }
+        let wants = [
+            Want {
+                table: "battle_tactical",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_TACTICAL,
+                pk: "battle_id",
+                auto_inc: &[],
+                btree: &["battle_id", "map_id"],
+            },
+            Want {
+                table: "battle_unit",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_UNIT,
+                pk: "unit_id",
+                auto_inc: &["unit_id"],
+                btree: &["battle_id", "unit_id"],
+            },
+            Want {
+                table: "battle_queue",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_QUEUE,
+                pk: "unit_id",
+                auto_inc: &[],
+                btree: &["battle_id", "owner", "unit_id"],
+            },
+            Want {
+                table: "battle_deploy",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_DEPLOY,
+                pk: "deploy_id",
+                auto_inc: &["deploy_id"],
+                btree: &["battle_id", "deploy_id", "owner"],
+            },
+            Want {
+                table: "battle_clock",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_CLOCK,
+                pk: "clock_id",
+                auto_inc: &["clock_id"],
+                btree: &["battle_id", "clock_id", "player"],
+            },
+            Want {
+                table: "battle_secret",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_SECRET,
+                pk: "battle_id",
+                auto_inc: &[],
+                btree: &["battle_id"],
+            },
+            Want {
+                table: "battle_wild_unit",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_WILD_UNIT,
+                pk: "wild_unit_id",
+                auto_inc: &["wild_unit_id"],
+                btree: &["battle_id", "wild_unit_id"],
+            },
+            Want {
+                table: "battle_event",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_EVENT,
+                pk: "event_id",
+                auto_inc: &["event_id"],
+                btree: &["battle_id", "event_id"],
+            },
+            Want {
+                table: "battle_summary",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE_SUMMARY,
+                pk: "battle_id",
+                auto_inc: &[],
+                btree: &["battle_id", "opponent_identity", "player_identity"],
+            },
+            Want {
+                table: "player_formation",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_PLAYER_FORMATION,
+                pk: "owner_identity",
+                auto_inc: &[],
+                btree: &["owner_identity"],
+            },
+            Want {
+                table: "battle",
+                access: TableAccess::Private,
+                columns: super::BT7_COLUMNS_BATTLE,
+                pk: "battle_id",
+                auto_inc: &["battle_id"],
+                btree: &["battle_id", "opponent_identity", "player_identity"],
+            },
+            Want {
+                table: "battle_challenge",
+                access: TableAccess::Public,
+                columns: super::BT7_COLUMNS_BATTLE_CHALLENGE,
+                pk: "challenge_id",
+                auto_inc: &["challenge_id"],
+                btree: &["challenge_id", "challenger", "target"],
+            },
+        ];
+
+        let fx = fixture();
+        let def = fx.module_def();
+        let ts = def.typespace().unwrap_or_else(|| {
+            panic!("[bt7/describe-typespace] the generated module def carries no typespace")
+        });
+        let tables = def.tables().unwrap_or_else(|| {
+            panic!("[bt7/describe-tables] the generated module def carries no Tables section")
+        });
+        for want in &wants {
+            let name = want.table;
+            let Some(t) = tables.iter().find(|t| &*t.source_name == name) else {
+                panic!("[bt7/table-missing] `{name}` is not in the generated module def")
+            };
+            let AlgebraicType::Product(row) = &ts[t.product_type_ref] else {
+                panic!("[bt7/table-row-shape] `{name}`'s row type is not a product")
+            };
+            let columns: Vec<String> = row
+                .elements
+                .iter()
+                .map(|e| e.name.as_deref().unwrap_or("").to_string())
+                .collect();
+            assert_eq!(
+                columns, want.columns,
+                "[bt7/table-columns] `{name}`'s generated columns, in order"
+            );
+            let name_of = |col: u16| columns[usize::from(col)].clone();
+
+            assert_eq!(
+                t.table_access, want.access,
+                "[bt7/table-access] `{name}`: every tactical table is PRIVATE — the client reads \
+                 only through the seven views, and three tables have no read path at all"
+            );
+            assert!(
+                !t.is_event,
+                "[bt7/table-not-event] `{name}` is a stored table"
+            );
+
+            let pk: Vec<String> = t
+                .primary_key
+                .to_u16_vec()
+                .iter()
+                .map(|&col| name_of(col))
+                .collect();
+            assert_eq!(pk, [want.pk], "[bt7/table-pk] `{name}`'s primary key");
+
+            let mut unique: Vec<String> = t
+                .constraints
+                .iter()
+                .map(|c| match &c.data {
+                    RawConstraintDataV9::Unique(u) => u
+                        .columns
+                        .to_u16_vec()
+                        .iter()
+                        .map(|&col| name_of(col))
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    other => panic!("[bt7/table-constraint] `{name}` carries {other:?}"),
+                })
+                .collect();
+            unique.sort();
+            assert_eq!(
+                unique,
+                [want.pk],
+                "[bt7/table-unique] `{name}`: the primary key is the ONLY uniqueness (a later \
+                 unique constraint is automigration-forbidden, so none ships by accident)"
+            );
+
+            let mut auto_inc: Vec<String> = t
+                .sequences
+                .iter()
+                .map(|s| name_of(u16::from(s.column)))
+                .collect();
+            auto_inc.sort();
+            assert_eq!(
+                auto_inc, want.auto_inc,
+                "[bt7/table-auto-inc] `{name}`'s auto_inc columns"
+            );
+
+            let mut btree: Vec<String> = t
+                .indexes
+                .iter()
+                .map(|ix| match &ix.algorithm {
+                    RawIndexAlgorithm::BTree { columns } => columns
+                        .to_u16_vec()
+                        .iter()
+                        .map(|&col| name_of(col))
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    other => {
+                        panic!("[bt7/table-index-kind] `{name}` carries a non-btree {other:?}")
+                    }
+                })
+                .collect();
+            btree.sort();
+            assert_eq!(
+                btree, want.btree,
+                "[bt7/table-indexes] `{name}`'s btree index set (each entry one index, columns \
+                 joined by +). `battle_unit.owner` is a sum type and must carry none."
+            );
+        }
+    }
+
+    /// BT7.1 — the GENERATED view roster is exactly the fifteen views (the
+    /// eight pre-bt-7 plus the seven tactical ones), each at the position its
+    /// `VIEW_MY_*` id names, every one public, caller-scoped (not anonymous)
+    /// and parameterless; no view is named for a secret table; and each new
+    /// view serves exactly its own table's row (its generated return type
+    /// resolved through the typespace).
+    ///
+    /// Kills: a view for `battle_secret`, `battle_wild_unit` or
+    ///        `battle_summary` (BT7.2: none, ever); a view taking an argument
+    ///        (an `owner: Identity` parameter is a caller-chosen-owner leak); an
+    ///        anonymous view (it cannot know its caller, so it cannot scope);
+    ///        a tactical view re-typed to serve another table's row (say
+    ///        `my_battle_events -> Vec<BattleSecret>`); `my_formation` widened to
+    ///        a `Vec`; a dropped or renamed view; a `VIEW_MY_*` id pointing at the
+    ///        wrong view (every `call_view` test below would then read a
+    ///        different boundary than it names).
+    #[test]
+    fn generated_view_roster_is_exactly_fifteen_caller_scoped_views_bt7_1() {
+        use crate::native_host_tests::{
+            VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
+            VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS, VIEW_MY_CONVERSATION,
+            VIEW_MY_EXPORT_BUNDLE, VIEW_MY_FORMATION, VIEW_MY_INVENTORY, VIEW_MY_MONSTER_PUB,
+            VIEW_MY_PENDING_EVOLUTION_NOTICES, VIEW_MY_TACTICAL_BATTLE, VIEW_MY_WALLET,
+        };
+        let fx = fixture();
+        let def = fx.module_def();
+        let views = def.views().unwrap_or_else(|| {
+            panic!("[bt7/describe-views] the generated module def carries no Views section")
+        });
+
+        let mut names: Vec<String> = views.iter().map(|v| v.source_name.to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "my_account",
+                "my_battle",
+                "my_battle_clock",
+                "my_battle_deploy",
+                "my_battle_events",
+                "my_battle_queue",
+                "my_battle_units",
+                "my_conversation",
+                "my_export_bundle",
+                "my_formation",
+                "my_inventory",
+                "my_monster_pub",
+                "my_pending_evolution_notices",
+                "my_tactical_battle",
+                "my_wallet",
+            ],
+            "[bt7/view-roster] the generated view set"
+        );
+
+        for (id, name) in [
+            (VIEW_MY_WALLET, "my_wallet"),
+            (VIEW_MY_ACCOUNT, "my_account"),
+            (VIEW_MY_CONVERSATION, "my_conversation"),
+            (VIEW_MY_MONSTER_PUB, "my_monster_pub"),
+            (VIEW_MY_BATTLE, "my_battle"),
+            (
+                VIEW_MY_PENDING_EVOLUTION_NOTICES,
+                "my_pending_evolution_notices",
+            ),
+            (VIEW_MY_EXPORT_BUNDLE, "my_export_bundle"),
+            (VIEW_MY_INVENTORY, "my_inventory"),
+            (VIEW_MY_TACTICAL_BATTLE, "my_tactical_battle"),
+            (VIEW_MY_BATTLE_UNITS, "my_battle_units"),
+            (VIEW_MY_BATTLE_EVENTS, "my_battle_events"),
+            (VIEW_MY_BATTLE_CLOCK, "my_battle_clock"),
+            (VIEW_MY_BATTLE_QUEUE, "my_battle_queue"),
+            (VIEW_MY_BATTLE_DEPLOY, "my_battle_deploy"),
+            (VIEW_MY_FORMATION, "my_formation"),
+        ] {
+            let v = &views[id];
+            assert_eq!(
+                &*v.source_name, name,
+                "[bt7/view-id] view id {id} must name `{name}` — the ids are positional, and \
+                 every call_view test reads the boundary its id points at"
+            );
+            assert_eq!(
+                u32::try_from(id).ok(),
+                Some(v.index),
+                "[bt7/view-id] `{name}`'s generated index"
+            );
+        }
+
+        for v in views {
+            let name = v.source_name.to_string();
+            assert!(
+                v.is_public,
+                "[bt7/view-public] `{name}` must be a public view"
+            );
+            assert!(
+                !v.is_anonymous,
+                "[bt7/view-caller-scoped] `{name}` must know its caller (ViewContext, not anonymous)"
+            );
+            assert!(
+                v.params.elements.is_empty(),
+                "[bt7/view-no-params] `{name}` takes parameters — a caller-chosen key is a leak"
+            );
+            for banned in ["secret", "wild_unit", "summary"] {
+                assert!(
+                    !name.contains(banned),
+                    "[bt7/view-no-secret-table] `{name}` names `{banned}`: battle_secret, \
+                     battle_wild_unit and battle_summary have NO view (BT7.2)"
+                );
+            }
+        }
+
+        let ts = def.typespace().unwrap_or_else(|| {
+            panic!("[bt7/describe-typespace] the generated module def carries no typespace")
+        });
+        for (view, columns) in [
+            ("my_tactical_battle", super::BT7_COLUMNS_BATTLE_TACTICAL),
+            ("my_battle_units", super::BT7_COLUMNS_BATTLE_UNIT),
+            ("my_battle_events", super::BT7_COLUMNS_BATTLE_EVENT),
+            ("my_battle_clock", super::BT7_COLUMNS_BATTLE_CLOCK),
+            ("my_battle_queue", super::BT7_COLUMNS_BATTLE_QUEUE),
+            ("my_battle_deploy", super::BT7_COLUMNS_BATTLE_DEPLOY),
+            ("my_formation", super::BT7_COLUMNS_PLAYER_FORMATION),
+        ] {
+            let Some(v) = views.iter().find(|v| &*v.source_name == view) else {
+                panic!("[bt7/view-missing] `{view}`")
+            };
+            assert_eq!(
+                bt7_view_row_columns(ts, &v.return_type, view),
+                columns,
+                "[bt7/view-row] `{view}` must serve exactly its own table's row"
+            );
+        }
+    }
+
+    /// BT7.2 — the four PARTICIPANT views, through the runtime's own view entry
+    /// point, return to each caller exactly the rows of every battle it is a
+    /// side of — BOTH sides' units and clocks — each battle once (the practice
+    /// battle included once), and nothing to a stranger, to the zero identity
+    /// (a wild battle's opponent column) or to the deletion tombstone (an
+    /// anonymised battle's side). Battles: 8101 A-B, 8102 B-A, 8103 A-A
+    /// (practice), 8104 B-C, 8105 A-wild, 8106 tombstone-B; row counts differ
+    /// per battle.
+    ///
+    /// Kills: any participant view serving every battle (the red-phase stub)
+    ///        or keyed on one identity column only (8102 vanishes for A, 8101
+    ///        for B); the practice dedup dropped (8103 twice for A) or inverted
+    ///        to `player != opponent` (8103 gone); a view serving only the
+    ///        caller's own side's units / clock (the opponent's units of 8101
+    ///        missing); only the first battle's rows; the zero identity served
+    ///        every wild battle, or the tombstone every anonymised one.
+    #[test]
+    fn participant_views_return_each_battle_to_both_sides_exactly_once_bt7_2() {
+        use crate::native_host_tests::{
+            VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_EVENTS, VIEW_MY_BATTLE_UNITS,
+            VIEW_MY_TACTICAL_BATTLE,
+        };
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c, d) = (id(0x4A), id(0x4B), id(0x4C), id(0x4D));
+        let tomb = crate::TOMBSTONE_IDENTITY;
+        seed_tactical_battle(&w, 8101, a, Some(b));
+        seed_tactical_battle(&w, 8102, b, Some(a));
+        seed_tactical_battle(&w, 8103, a, Some(a));
+        seed_tactical_battle(&w, 8104, b, Some(c));
+        seed_tactical_battle(&w, 8105, a, None);
+        seed_tactical_battle(&w, 8106, tomb, Some(b));
+
+        // (caller, its battles, tactical rows, units, events, clocks)
+        type ViewCase<'a> = (Identity, &'a [u64], usize, usize, usize, usize);
+        let cases: [ViewCase<'_>; 6] = [
+            (a, &[8101, 8102, 8103, 8105], 4, 15, 9, 7),
+            (b, &[8101, 8102, 8104, 8106], 4, 13, 8, 8),
+            (c, &[8104], 1, 3, 2, 2),
+            (d, &[], 0, 0, 0, 0),
+            (Identity::ZERO, &[], 0, 0, 0, 0),
+            (tomb, &[], 0, 0, 0, 0),
+        ];
+        for (who, ids, n_tactical, n_units, n_events, n_clocks) in cases {
+            let tactical = encs(
+                &w.tactical
+                    .rows()
+                    .into_iter()
+                    .filter(|r| ids.contains(&r.battle_id))
+                    .collect::<Vec<_>>(),
+            );
+            let units = encs(
+                &w.unit
+                    .rows()
+                    .into_iter()
+                    .filter(|r| ids.contains(&r.battle_id))
+                    .collect::<Vec<_>>(),
+            );
+            let events = encs(
+                &w.event
+                    .rows()
+                    .into_iter()
+                    .filter(|r| ids.contains(&r.battle_id))
+                    .collect::<Vec<_>>(),
+            );
+            let clocks = encs(
+                &w.clock
+                    .rows()
+                    .into_iter()
+                    .filter(|r| ids.contains(&r.battle_id))
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                (tactical.len(), units.len(), events.len(), clocks.len()),
+                (n_tactical, n_units, n_events, n_clocks),
+                "fixture: {who:?}'s expected row counts"
+            );
+            assert_eq!(
+                encs(&fx.call_view::<BattleTactical>(VIEW_MY_TACTICAL_BATTLE, who)),
+                tactical,
+                "[bt7/participant-tactical] {who:?} must receive the tactical row of exactly \
+                 battles {ids:?}, each once"
+            );
+            assert_eq!(
+                encs(&fx.call_view::<BattleUnit>(VIEW_MY_BATTLE_UNITS, who)),
+                units,
+                "[bt7/participant-units] {who:?} must receive BOTH sides' units of exactly \
+                 battles {ids:?}"
+            );
+            assert_eq!(
+                encs(&fx.call_view::<BattleEvent>(VIEW_MY_BATTLE_EVENTS, who)),
+                events,
+                "[bt7/participant-events] {who:?} must receive the events of exactly {ids:?}"
+            );
+            assert_eq!(
+                encs(&fx.call_view::<BattleClock>(VIEW_MY_BATTLE_CLOCK, who)),
+                clocks,
+                "[bt7/participant-clock] {who:?} must receive BOTH sides' clocks of exactly \
+                 battles {ids:?}"
+            );
+        }
+
+        // The shared battle, explicitly: each side sees the OTHER side's units
+        // and clock (design §6.3 — positions, HP and the opponent's clock are
+        // public to participants).
+        for (viewer, other) in [(a, b), (b, a)] {
+            let units = fx.call_view::<BattleUnit>(VIEW_MY_BATTLE_UNITS, viewer);
+            assert_eq!(
+                units
+                    .iter()
+                    .filter(|u| u.battle_id == 8101 && u.owner == Some(other))
+                    .count(),
+                2,
+                "[bt7/participant-both-sides] {viewer:?} must see {other:?}'s two units of 8101"
+            );
+            let clocks = fx.call_view::<BattleClock>(VIEW_MY_BATTLE_CLOCK, viewer);
+            assert_eq!(
+                clocks
+                    .iter()
+                    .filter(|k| k.battle_id == 8101 && k.player == other)
+                    .count(),
+                1,
+                "[bt7/participant-both-sides] {viewer:?} must see {other:?}'s clock of 8101"
+            );
+        }
+    }
+
+    /// BT7.2 — the three OWNER views return the caller's own rows and nothing
+    /// else, across battles the owners SHARE: `my_battle_queue` /
+    /// `my_battle_deploy` exactly the caller's READY / staging rows (in the
+    /// shared battle 8101, the practice battle 8103 where one owner stages
+    /// both sides, and 8104), `my_formation` the caller's row or nothing; a
+    /// stranger gets nothing from any of them.
+    ///
+    /// Kills: an owner view scoped by battle instead of by owner (the
+    ///        red-phase stub: A receives B's READY row of 8101 — the §6.3 leak);
+    ///        `my_formation` returning nothing (the stub) or another owner's
+    ///        row; an owner view dropping the practice battle's second-side
+    ///        rows; a view serving every row.
+    #[test]
+    fn owner_views_return_only_the_callers_own_rows_bt7_2() {
+        use crate::native_host_tests::{
+            VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_QUEUE, VIEW_MY_FORMATION,
+        };
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c, d) = (id(0x4A), id(0x4B), id(0x4C), id(0x4D));
+        seed_tactical_battle(&w, 8101, a, Some(b));
+        seed_tactical_battle(&w, 8102, b, Some(a));
+        seed_tactical_battle(&w, 8103, a, Some(a));
+        seed_tactical_battle(&w, 8104, b, Some(c));
+        seed_staging(&w, 8101, a, Some(b));
+        seed_staging(&w, 8103, a, Some(a));
+        seed_staging(&w, 8104, b, Some(c));
+        w.formation.seed(&formation_row(a, 1));
+        w.formation.seed(&formation_row(b, 2));
+
+        for (who, n_staging) in [(a, 3usize), (b, 2), (c, 1), (d, 0)] {
+            let own_queue = encs(
+                &w.queue
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner == who)
+                    .collect::<Vec<_>>(),
+            );
+            let own_deploy = encs(
+                &w.deploy
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner == who)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                (own_queue.len(), own_deploy.len()),
+                (n_staging, n_staging),
+                "fixture: {who:?}'s own staging rows"
+            );
+            assert_eq!(
+                encs(&fx.call_view::<BattleQueue>(VIEW_MY_BATTLE_QUEUE, who)),
+                own_queue,
+                "[bt7/owner-queue] {who:?} must receive exactly its own READY rows"
+            );
+            assert_eq!(
+                encs(&fx.call_view::<BattleDeploy>(VIEW_MY_BATTLE_DEPLOY, who)),
+                own_deploy,
+                "[bt7/owner-deploy] {who:?} must receive exactly its own deploy staging"
+            );
+        }
+
+        let formation =
+            |who: Identity| encs(&fx.call_view::<PlayerFormation>(VIEW_MY_FORMATION, who));
+        assert_eq!(
+            formation(a),
+            encs(&[formation_row(a, 1)]),
+            "[bt7/owner-formation] A must receive its own formation"
+        );
+        assert_eq!(
+            formation(b),
+            encs(&[formation_row(b, 2)]),
+            "[bt7/owner-formation] B must receive its own formation"
+        );
+        assert!(
+            formation(c).is_empty() && formation(d).is_empty(),
+            "[bt7/owner-formation] a caller with no formation row receives nothing"
+        );
+    }
+
+    /// BT7.3 — the design §6.3 proof. In ONE shared battle where BOTH sides
+    /// hold READY rows on every unit and deploy staging, neither participant's
+    /// `my_battle_queue` / `my_battle_deploy` carries a single row of the
+    /// opponent's (by owner, by unit id, by bytes), while each still receives
+    /// its own exactly. A strangers' battle with staging is present too.
+    ///
+    /// Kills: the red-phase stub (owner views scoped by participation: each
+    ///        side reads the other's plans — whether a READY row exists and its
+    ///        entries are the competitively decisive secret); an owner filter
+    ///        on the wrong column; an owner view that de-duplicates by unit so
+    ///        an opponent row can stand in for a missing own row.
+    #[test]
+    fn opponent_never_receives_a_queue_or_deploy_row_bt7_3() {
+        use crate::native_host_tests::{VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_QUEUE};
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c, d) = (id(0x5A), id(0x5B), id(0x5C), id(0x5D));
+        seed_tactical_battle(&w, 8301, a, Some(b));
+        for (n, owner) in [(1, a), (2, a), (3, b), (4, b)] {
+            w.queue.seed(&queue_row(8301, n, owner));
+        }
+        w.deploy.seed(&deploy_row(8301, SideRow::A, a));
+        w.deploy.seed(&deploy_row(8301, SideRow::B, b));
+        seed_tactical_battle(&w, 8302, c, Some(d));
+        seed_staging(&w, 8302, c, Some(d));
+
+        for (viewer, opponent) in [(a, b), (b, a)] {
+            let opponent_units: Vec<u32> = w
+                .unit
+                .rows()
+                .into_iter()
+                .filter(|u| u.battle_id == 8301 && u.owner == Some(opponent))
+                .map(|u| u.unit_id)
+                .collect();
+            let opponent_queue = encs(
+                &w.queue
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner == opponent)
+                    .collect::<Vec<_>>(),
+            );
+            let opponent_deploy = encs(
+                &w.deploy
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner == opponent)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                (
+                    opponent_units.len(),
+                    opponent_queue.len(),
+                    opponent_deploy.len()
+                ),
+                (2, 2, 1),
+                "fixture: the opponent HAS two units, two READY rows and a deploy row in 8301"
+            );
+
+            let queue = fx.call_view::<BattleQueue>(VIEW_MY_BATTLE_QUEUE, viewer);
+            let leaked: Vec<u32> = queue
+                .iter()
+                .filter(|r| r.owner != viewer || opponent_units.contains(&r.unit_id))
+                .map(|r| r.unit_id)
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "[bt7/no-opponent-queue] {viewer:?} received the opponent's READY rows for units \
+                 {leaked:?} — design §6.3: whether a READY row exists at all is secret"
+            );
+            assert!(
+                encs(&queue).iter().all(|e| !opponent_queue.contains(e)),
+                "[bt7/no-opponent-queue] {viewer:?} received a row byte-equal to the opponent's"
+            );
+            let deploy = fx.call_view::<BattleDeploy>(VIEW_MY_BATTLE_DEPLOY, viewer);
+            let leaked: Vec<u64> = deploy
+                .iter()
+                .filter(|r| r.owner != viewer)
+                .map(|r| r.deploy_id)
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "[bt7/no-opponent-deploy] {viewer:?} received the opponent's staging {leaked:?}"
+            );
+            assert!(
+                encs(&deploy).iter().all(|e| !opponent_deploy.contains(e)),
+                "[bt7/no-opponent-deploy] {viewer:?} received a row byte-equal to the opponent's"
+            );
+
+            assert_eq!(
+                encs(&queue),
+                encs(
+                    &w.queue
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner == viewer)
+                        .collect::<Vec<_>>()
+                ),
+                "[bt7/own-queue] {viewer:?} still receives exactly its own two READY rows"
+            );
+            assert_eq!(
+                encs(&deploy),
+                encs(
+                    &w.deploy
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner == viewer)
+                        .collect::<Vec<_>>()
+                ),
+                "[bt7/own-deploy] {viewer:?} still receives exactly its own staging"
+            );
+        }
+    }
+
+    /// BT7.3 — `battle_unit` exposes no queue or ready signal: both
+    /// participants' `my_battle_units` results are byte-identical to the shared
+    /// battle's unit rows BEFORE and AFTER a READY row is stored for one of A's
+    /// units (whose existence its owner can confirm through `my_battle_queue`),
+    /// and A's and B's results are the same set. A strangers' battle is present.
+    ///
+    /// Kills: a units view that serves every battle (the red-phase stub: the
+    ///        strangers' units arrive); a units view that hides, flags, reorders
+    ///        or re-stamps a unit with a pending plan (the opponent would learn
+    ///        a READY row exists — design §6.3); per-viewer unit projections
+    ///        that differ between the two sides.
+    #[test]
+    fn unit_rows_do_not_reveal_whether_a_plan_is_ready_bt7_3() {
+        use crate::native_host_tests::{VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS};
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c, d) = (id(0x5E), id(0x5F), id(0x60), id(0x61));
+        seed_tactical_battle(&w, 8401, a, Some(b));
+        seed_tactical_battle(&w, 8402, c, Some(d));
+        let units = |who: Identity| encs(&fx.call_view::<BattleUnit>(VIEW_MY_BATTLE_UNITS, who));
+        let shared = encs(
+            &w.unit
+                .rows()
+                .into_iter()
+                .filter(|u| u.battle_id == 8401)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(shared.len(), 4, "fixture: battle 8401 has four units");
+
+        let (a_before, b_before) = (units(a), units(b));
+        assert_eq!(
+            a_before, shared,
+            "[bt7/units-before] A must receive exactly the shared battle's four units"
+        );
+        assert_eq!(
+            b_before, shared,
+            "[bt7/units-before] B must receive exactly the shared battle's four units"
+        );
+
+        let plan = queue_row(8401, 1, a);
+        w.queue.seed(&plan);
+        assert_eq!(
+            encs(&fx.call_view::<BattleQueue>(VIEW_MY_BATTLE_QUEUE, a)),
+            encs(std::slice::from_ref(&plan)),
+            "fixture: the READY row exists and its owner can see it"
+        );
+
+        let (a_after, b_after) = (units(a), units(b));
+        assert_eq!(
+            a_after, a_before,
+            "[bt7/units-no-ready-signal] A's unit rows changed when a READY row was stored"
+        );
+        assert_eq!(
+            b_after, b_before,
+            "[bt7/units-no-ready-signal] B's unit rows changed when A stored a READY row — \
+             the opponent can now tell a plan exists"
+        );
+        assert_eq!(
+            a_after, b_after,
+            "[bt7/units-same-for-both] both participants must receive the same unit rows"
+        );
+    }
+
+    /// BT7.4 — the due `account_deletion_reaper` tick erases EVERY tactical row
+    /// of every battle the subject is a side of, by `battle_id` presence (not by
+    /// owner): both battle roles (2011 subject-B, 2012 B-subject), its wild
+    /// battle (units with `owner: None`, wild-unit rows) and its practice
+    /// battle, the bystander's own rows in those SHARED battles included — and
+    /// every battle the anchor chain can no longer reach but some row still
+    /// names the subject through (the UNION of schema.rs `erase_tactical_rows`
+    /// (1)): 2015 (anchor gone, the subject's CLOCK is the only route), 996 (its
+    /// READY row), 997 (its deploy row), 998 (a summary naming it), 999 (a lone
+    /// unit it owns — only the `battle_unit` owner scan finds it), each with
+    /// sibling rows only the per-battle sweep can reach — and every battle
+    /// ONLY the anchor chain reaches: 2016 (the subject is
+    /// `battle.player_identity` and nothing else names it) and 2017 (the
+    /// mirror: only `battle.opponent_identity`), each a settled anchor against
+    /// the bystander with its tactical row, its secret and the BYSTANDER's
+    /// deploy + clock rows, so only the anchor's two index lookups find it, and
+    /// only while the anchor still names the subject. Every `battle_summary`
+    /// row naming the subject SURVIVES with exactly that side swapped to
+    /// `crate::TOMBSTONE_IDENTITY` (subject-B, B-subject, subject-subject,
+    /// subject-wild) and the other side intact; the subject's formation goes.
+    /// The bystander's rows in battles WITHOUT the subject — its own battles and
+    /// orphan controls under other dead ids — are byte-identical, its formation
+    /// survives. A non-scheduler caller and a not-yet-due tick touch nothing.
+    ///
+    /// Kills: `erase_tactical_rows` a no-op (the red-phase stub) or dropped
+    ///        from the reaper; sequenced AFTER `battle::anonymize_battles`
+    ///        (the swap leaves neither anchor naming the subject: 2016 and 2017
+    ///        survive, `[bt7/cascade-anchor-only]`); battle ids from the
+    ///        `opponent_identity` anchor index only (2016 survives) or from the
+    ///        `player_identity` one only (2017 survives); ids from the anchor
+    ///        chain only (2015, 996-999 siblings survive); the clock / queue /
+    ///        deploy / summary / unit-scan route dropped (one of 2015, 996, 997,
+    ///        998, 999 survives); erasing by owner instead of by battle (the
+    ///        `owner: None` wild units, the tactical / secret / event / wild-unit
+    ///        rows and the bystander's units of 2011 survive); one per-battle
+    ///        table forgotten; a summary deleted, tombstoned on the wrong side,
+    ///        on both sides of a two-player row, or on one side of a practice
+    ///        row; a bystander's unshared row touched; the formation kept or the
+    ///        bystander's taken; the scheduler guard or due-ness check moved
+    ///        below the tactical step.
+    #[test]
+    fn deletion_cascade_erases_tactical_rows_by_battle_and_tombstones_summaries_bt7_4() {
+        let fx = fixture();
+        let w = world(&fx);
+        let v = id(0x6A);
+        let b = id(0x6B);
+        let x = id(0x6C);
+        let tomb = crate::TOMBSTONE_IDENTITY;
+        let wild = crate::WILD_IDENTITY;
+        let requested = T0;
+        let pending = crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(v, "iss".to_string(), 1),
+            requested,
+        );
+        w.account.seed(&pending);
+        w.account
+            .seed(&crate::accounts::new_account_row(b, "iss".to_string(), 1));
+        seed_tactical_population(&w, v, b, 1);
+        seed_tactical_population(&w, b, x, 2);
+
+        // Union routes: battles the anchor chain cannot reach, each named by
+        // exactly ONE owner-keyed row, each with siblings only a per-battle
+        // sweep reaches.
+        w.tactical.seed(&tactical_row(2015, BattleKind::Wild));
+        w.secret.seed(&secret_row(2015));
+        w.event.seed(&event_row(2015, 1));
+        w.unit.seed(&unit_row(2015, 3, SideRow::B, None));
+        w.wild_unit.seed(&wild_unit_row(2015, 0));
+        w.clock.seed(&clock_row(2015, SideRow::A, v));
+        w.queue.seed(&queue_row(996, 1, v));
+        w.tactical.seed(&tactical_row(996, BattleKind::Pvp));
+        w.deploy.seed(&deploy_row(997, SideRow::A, v));
+        w.secret.seed(&secret_row(997));
+        w.summary.seed(&summary_row(998, v, b, BattleKind::Pvp));
+        w.wild_unit.seed(&wild_unit_row(998, 0));
+        w.unit.seed(&unit_row(999, 1, SideRow::A, Some(v)));
+        w.event.seed(&event_row(999, 1));
+        // Bystander orphan controls under OTHER dead battle ids: all survive.
+        w.queue.seed(&queue_row(986, 1, b));
+        w.tactical.seed(&tactical_row(986, BattleKind::Pvp));
+        w.deploy.seed(&deploy_row(987, SideRow::A, b));
+        w.secret.seed(&secret_row(987));
+        w.clock.seed(&clock_row(988, SideRow::A, b));
+        w.event.seed(&event_row(988, 1));
+        w.unit.seed(&unit_row(989, 1, SideRow::A, Some(b)));
+        w.wild_unit.seed(&wild_unit_row(989, 0));
+        w.summary.seed(&summary_row(990, b, x, BattleKind::Pvp));
+        w.clock.seed(&clock_row(990, SideRow::B, x));
+        // Anchor-only battles: the subject is named by the settled `battle`
+        // anchor and by NOTHING else (no clock, queue, deploy, summary or unit
+        // row), so only `erase_tactical_rows`'s two anchor-index lookups reach
+        // them. 2016: the subject is `player_identity` only; 2017: the mirror,
+        // `opponent_identity` only. Each holds its tactical row, its secret
+        // and the bystander's (the PEER's) deploy + clock rows.
+        let anchor_only = [(2016, v, b, SideRow::B), (2017, b, v, SideRow::A)];
+        let anchor_of = |battle_id: u64, player: Identity, opponent: Identity| {
+            let mut anchor = battle_row(player, opponent);
+            anchor.battle_id = battle_id;
+            anchor.state.outcome = game_core::BattleOutcome::SideAWins;
+            anchor
+        };
+        for (battle_id, player, opponent, peer_side) in anchor_only {
+            w.battle.seed(&anchor_of(battle_id, player, opponent));
+            w.tactical.seed(&tactical_row(battle_id, BattleKind::Pvp));
+            w.secret.seed(&secret_row(battle_id));
+            w.deploy.seed(&deploy_row(battle_id, peer_side, b));
+            w.clock.seed(&clock_row(battle_id, peer_side, b));
+        }
+        // Every row of one battle in the eight per-battle tables and
+        // `battle_summary`, as `(table, canonical bytes)` in table order.
+        let rows_of = |battle_id: u64| -> Vec<(&'static str, Vec<u8>)> {
+            let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+            for (table, rows) in per_battle_rows(&w) {
+                for (bid, bytes) in rows {
+                    if bid == battle_id {
+                        out.push((table, bytes));
+                    }
+                }
+            }
+            for s in w.summary.rows() {
+                if s.battle_id == battle_id {
+                    out.push(("battle_summary", enc(&s)));
+                }
+            }
+            out
+        };
+        for (battle_id, player, opponent, peer_side) in anchor_only {
+            let anchors: Vec<crate::schema::Battle> = w
+                .battle
+                .rows()
+                .into_iter()
+                .filter(|r| r.battle_id == battle_id)
+                .collect();
+            assert_eq!(
+                encs(&anchors),
+                encs(&[anchor_of(battle_id, player, opponent)]),
+                "fixture: anchor-only battle {battle_id} has exactly one settled anchor, naming \
+                 the subject on exactly one column"
+            );
+            assert_eq!(
+                rows_of(battle_id),
+                vec![
+                    (
+                        "battle_tactical",
+                        enc(&tactical_row(battle_id, BattleKind::Pvp)),
+                    ),
+                    ("battle_secret", enc(&secret_row(battle_id))),
+                    ("battle_deploy", enc(&deploy_row(battle_id, peer_side, b))),
+                    ("battle_clock", enc(&clock_row(battle_id, peer_side, b))),
+                ],
+                "fixture: anchor-only battle {battle_id} must hold exactly its tactical row, its \
+                 secret and the PEER's deploy + clock rows — any row naming the subject outside \
+                 the anchor is a second route, and the anchor-only erase check below goes vacuous"
+            );
+        }
+
+        let mut subject_battles = vec![2011, 2012, 2013, 2014, 2015, 996, 997, 998, 999];
+        subject_battles.extend(anchor_only.map(|(battle_id, ..)| battle_id));
+        let before = per_battle_rows(&w);
+        for (table, rows) in &before {
+            assert!(
+                rows.iter().any(|(bid, _)| subject_battles.contains(bid))
+                    && rows.iter().any(|(bid, _)| !subject_battles.contains(bid)),
+                "fixture: `{table}` must hold rows of the subject's battles AND of battles \
+                 without it, or the erase and keep halves below are vacuous"
+            );
+        }
+        assert_eq!(
+            w.unit
+                .rows()
+                .iter()
+                .filter(|u| u.battle_id == 2013 && u.owner.is_none())
+                .count(),
+            2,
+            "fixture: the subject's wild battle has two `owner: None` units"
+        );
+        let summaries_before = w.summary.rows();
+        let untouched = |w: &W<'_>| {
+            (
+                per_battle_rows(w),
+                encs(&w.summary.rows()),
+                encs(&w.formation.rows()),
+            )
+        };
+        let snapshot = untouched(&w);
+
+        let sched = || AccountDeletionReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(requested))),
+            account_identity: v,
+        };
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+
+        let got = fx.run_as_at(v, at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(
+            got,
+            Err("account_deletion_reaper is scheduler-only".to_string())
+        );
+        assert!(
+            untouched(&w) == snapshot,
+            "[bt7/cascade-refused] a non-scheduler tick touched a tactical row"
+        );
+        let got = fx.run_as_at(scheduler(), at(grace_end - 1), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(got, Ok(()));
+        assert!(
+            untouched(&w) == snapshot,
+            "[bt7/cascade-early] a not-yet-due tick touched a tactical row"
+        );
+        w.del_reaper.remove(v);
+
+        let got = fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(got, Ok(()));
+
+        // The anchor-only battles go whole. Nothing but one anchor column names
+        // the subject in each, so a survivor names the lookup that did not run.
+        for (battle_id, player, _, _) in anchor_only {
+            let column = if player == v {
+                "player_identity"
+            } else {
+                "opponent_identity"
+            };
+            let left: Vec<&str> = rows_of(battle_id)
+                .into_iter()
+                .map(|(table, _)| table)
+                .collect();
+            assert!(
+                left.is_empty(),
+                "[bt7/cascade-anchor-only] battle {battle_id} still holds rows in {left:?} — \
+                 the subject is named ONLY by `battle.{column}`, so `erase_tactical_rows` \
+                 must collect battle ids through that anchor index, while the anchor still \
+                 names the subject (BEFORE `battle::anonymize_battles` swaps in the tombstone)"
+            );
+        }
+
+        let after = per_battle_rows(&w);
+        for ((table, was), (_, now)) in before.iter().zip(after.iter()) {
+            let survivors: Vec<u64> = now
+                .iter()
+                .map(|(bid, _)| *bid)
+                .filter(|bid| subject_battles.contains(bid))
+                .collect();
+            assert!(
+                survivors.is_empty(),
+                "[bt7/cascade-erase] `{table}` still holds rows of the subject's battles \
+                 {survivors:?} — every tactical row of a battle the subject is (or was) a side \
+                 of goes, found through the anchor chain AND every row still naming the subject"
+            );
+            let kept: Vec<&(u64, Vec<u8>)> = was
+                .iter()
+                .filter(|(bid, _)| !subject_battles.contains(bid))
+                .collect();
+            let now_refs: Vec<&(u64, Vec<u8>)> = now.iter().collect();
+            assert_eq!(
+                now_refs, kept,
+                "[bt7/cascade-keep] `{table}`: every row of a battle WITHOUT the subject must be \
+                 byte-identical after the cascade"
+            );
+        }
+
+        assert_eq!(
+            encs(&w.formation.rows()),
+            encs(&[formation_row(b, 2)]),
+            "[bt7/cascade-formation] the subject's formation goes, the bystander's survives"
+        );
+
+        let sides = |battle_id: u64| -> (Identity, Identity) {
+            let rows: Vec<BattleSummary> = w
+                .summary
+                .rows()
+                .into_iter()
+                .filter(|s| s.battle_id == battle_id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "[bt7/cascade-summary-survives] battle {battle_id}'s summary must survive, once"
+            );
+            (rows[0].player_identity, rows[0].opponent_identity)
+        };
+        for (battle_id, want) in [
+            (2011, (tomb, b)),
+            (2012, (b, tomb)),
+            (2013, (tomb, wild)),
+            (2014, (tomb, tomb)),
+            (998, (tomb, b)),
+            (2021, (b, x)),
+            (2022, (x, b)),
+            (2023, (b, wild)),
+            (2024, (b, b)),
+            (990, (b, x)),
+        ] {
+            assert_eq!(
+                sides(battle_id),
+                want,
+                "[bt7/cascade-summary-sides] battle {battle_id}: exactly the subject's side(s) \
+                 become the tombstone, every other side is untouched"
+            );
+        }
+        let expected: Vec<BattleSummary> = summaries_before
+            .into_iter()
+            .map(|mut s| {
+                if s.player_identity == v {
+                    s.player_identity = tomb;
+                }
+                if s.opponent_identity == v {
+                    s.opponent_identity = tomb;
+                }
+                s
+            })
+            .collect();
+        assert_eq!(
+            encs(&w.summary.rows()),
+            encs(&expected),
+            "[bt7/cascade-summary-rows] the summary rows survive with only the subject's \
+             identity columns rewritten; every telemetry column is byte-identical and none is \
+             deleted"
+        );
+    }
+
+    /// BT7.4 — `complete_guest_claim` moves the guest's formation onto the
+    /// claimer through `rekey_all`: afterwards exactly one row, under the
+    /// claimer, with the guest's monster ids; none under the guest; a
+    /// bystander's formation byte-identical.
+    ///
+    /// Kills: `rekey_formation` a no-op (the red-phase stub) or dropped from
+    ///        `rekey_all`; a re-key that copies instead of moving (the guest
+    ///        keeps a row); one that loses or rewrites the monster ids; one that
+    ///        re-keys every formation (the bystander's moves).
+    #[test]
+    fn guest_claim_moves_the_formation_onto_the_claimer_bt7_4() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x7E);
+        let c = id(0x7F);
+        let bystander = id(0x80);
+        let secret = code('5');
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(w.player.remove(g), 1, "the guest disconnects");
+        let guest_formation = formation_row(g, 7);
+        let bystander_formation = formation_row(bystander, 8);
+        w.formation.seed(&guest_formation);
+        w.formation.seed(&bystander_formation);
+        w.account
+            .seed(&crate::accounts::new_account_row(c, "i".to_string(), 1));
+
+        assert_eq!(
+            signed_in(&fx, c, T0 + 1_000, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Ok(()),
+            "a destination with no game data completes the claim"
+        );
+        let of = |who: Identity| {
+            encs(
+                &w.formation
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner_identity == who)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            of(c),
+            encs(&[PlayerFormation {
+                owner_identity: c,
+                monster_ids: guest_formation.monster_ids.clone(),
+            }]),
+            "[bt7/rekey-formation] the guest's formation arrives under the claimer, its monster \
+             ids unchanged"
+        );
+        assert!(
+            of(g).is_empty(),
+            "[bt7/rekey-formation] no formation may stay under the retired guest identity"
+        );
+        assert_eq!(
+            of(bystander),
+            encs(&[bystander_formation]),
+            "[bt7/rekey-formation] a bystander's formation never moves"
+        );
+        assert_eq!(w.formation.rows().len(), 2, "a move, not a copy");
+    }
+
+    /// BT7.4 — a `player_formation` row is game data: `account_has_game_data`
+    /// is true for an identity whose ONLY row is a formation and false again
+    /// once it is gone; a stranger's formation is not the caller's data; and
+    /// through the claim guard (AUTH-20) a destination whose only row is a
+    /// formation is refused with nothing moved and the code unspent.
+    ///
+    /// Kills: `has_formation` constant false (the red-phase stub) or dropped
+    ///        from `account_has_game_data` (a claim would overwrite a
+    ///        destination that already plays); `has_formation` answering for
+    ///        ANY row (the stranger case) or keyed on the wrong column.
+    #[test]
+    fn a_lone_formation_row_counts_as_game_data_bt7_4() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x81);
+        let stranger = id(0x82);
+        let has =
+            |who: Identity| fx.run_as(who, |ctx| crate::accounts::account_has_game_data(ctx, who));
+        assert!(!has(g), "an identity with no rows has no game data");
+        w.formation.seed(&formation_row(stranger, 1));
+        assert!(
+            has(stranger),
+            "[bt7/formation-game-data] a lone formation row is game data"
+        );
+        assert!(
+            !has(g),
+            "[bt7/formation-game-data] a stranger's formation is not g's game data"
+        );
+        w.formation.seed(&formation_row(g, 2));
+        assert!(
+            has(g),
+            "[bt7/formation-game-data] g's lone formation row is game data"
+        );
+        assert_eq!(w.formation.remove(g), 1);
+        assert!(!has(g), "no formation, no game data");
+
+        let guest = id(0x83);
+        let claimer = id(0x84);
+        let secret = code('6');
+        w.player.seed(&player_row(guest, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(guest, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(w.player.remove(guest), 1, "the guest disconnects");
+        w.account.seed(&crate::accounts::new_account_row(
+            claimer,
+            "i".to_string(),
+            1,
+        ));
+        w.formation.seed(&formation_row(claimer, 9));
+        let formations_before = encs(&w.formation.rows());
+        assert_eq!(
+            signed_in(&fx, claimer, T0 + 10, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Err("already has game data".to_string()),
+            "[bt7/formation-claim-guard] a destination whose only row is a formation already \
+             plays: the claim must be refused"
+        );
+        assert_eq!(
+            encs(&w.formation.rows()),
+            formations_before,
+            "a refused claim moves no formation"
+        );
+        assert_eq!(
+            w.claim.rows().len(),
+            1,
+            "a refused claim does not spend the code"
+        );
     }
 }

@@ -1090,6 +1090,137 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_inventory, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_inventory"]
     fn register_view_my_inventory();
+    /// `#[spacetimedb::view(accessor = my_tactical_battle, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_tactical_battle"]
+    fn register_view_my_tactical_battle();
+    /// `#[spacetimedb::view(accessor = my_battle_units, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_units"]
+    fn register_view_my_battle_units();
+    /// `#[spacetimedb::view(accessor = my_battle_events, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_events"]
+    fn register_view_my_battle_events();
+    /// `#[spacetimedb::view(accessor = my_battle_clock, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_clock"]
+    fn register_view_my_battle_clock();
+    /// `#[spacetimedb::view(accessor = my_battle_queue, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_queue"]
+    fn register_view_my_battle_queue();
+    /// `#[spacetimedb::view(accessor = my_battle_deploy, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_deploy"]
+    fn register_view_my_battle_deploy();
+    /// `#[spacetimedb::view(accessor = my_formation, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_formation"]
+    fn register_view_my_formation();
+    // Every `#[spacetimedb::table]` describer (macro `table.rs:1176`
+    // `__preinit__20_register_describer_<accessor>`), registered before the views
+    // so `Fixture::module_def` carries the full generated table set — the
+    // artifact `accounts_tests.rs` compares `DATA_LIFECYCLE_MANIFEST` against.
+    #[link_name = "__preinit__20_register_describer_guest_claim_reaper_schedule"]
+    fn register_table_guest_claim_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_movement_tick_schedule"]
+    fn register_table_movement_tick_schedule();
+    #[link_name = "__preinit__20_register_describer_mr_heartbeat_schedule"]
+    fn register_table_mr_heartbeat_schedule();
+    #[link_name = "__preinit__20_register_describer_playtest_event"]
+    fn register_table_playtest_event();
+    #[link_name = "__preinit__20_register_describer_playtest_reaper_schedule"]
+    fn register_table_playtest_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_pvp_deadline_schedule"]
+    fn register_table_pvp_deadline_schedule();
+    #[link_name = "__preinit__20_register_describer_battle_challenge_reaper_schedule"]
+    fn register_table_battle_challenge_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_character"]
+    fn register_table_character();
+    #[link_name = "__preinit__20_register_describer_player"]
+    fn register_table_player();
+    #[link_name = "__preinit__20_register_describer_config"]
+    fn register_table_config();
+    #[link_name = "__preinit__20_register_describer_zone_def"]
+    fn register_table_zone_def();
+    #[link_name = "__preinit__20_register_describer_species_row"]
+    fn register_table_species_row();
+    #[link_name = "__preinit__20_register_describer_skill_row"]
+    fn register_table_skill_row();
+    #[link_name = "__preinit__20_register_describer_type_relation_row"]
+    fn register_table_type_relation_row();
+    #[link_name = "__preinit__20_register_describer_item_row"]
+    fn register_table_item_row();
+    #[link_name = "__preinit__20_register_describer_shop_row"]
+    fn register_table_shop_row();
+    #[link_name = "__preinit__20_register_describer_shop_item_row"]
+    fn register_table_shop_item_row();
+    #[link_name = "__preinit__20_register_describer_encounter"]
+    fn register_table_encounter();
+    #[link_name = "__preinit__20_register_describer_monster"]
+    fn register_table_monster();
+    #[link_name = "__preinit__20_register_describer_monster_pub"]
+    fn register_table_monster_pub();
+    #[link_name = "__preinit__20_register_describer_battle"]
+    fn register_table_battle();
+    #[link_name = "__preinit__20_register_describer_battle_wild"]
+    fn register_table_battle_wild();
+    #[link_name = "__preinit__20_register_describer_inventory"]
+    fn register_table_inventory();
+    #[link_name = "__preinit__20_register_describer_evolution_path"]
+    fn register_table_evolution_path();
+    #[link_name = "__preinit__20_register_describer_npc"]
+    fn register_table_npc();
+    #[link_name = "__preinit__20_register_describer_player_dialogue_state"]
+    fn register_table_player_dialogue_state();
+    #[link_name = "__preinit__20_register_describer_player_quest"]
+    fn register_table_player_quest();
+    #[link_name = "__preinit__20_register_describer_player_conversation"]
+    fn register_table_player_conversation();
+    #[link_name = "__preinit__20_register_describer_heal_location_row"]
+    fn register_table_heal_location_row();
+    #[link_name = "__preinit__20_register_describer_heal_cooldown"]
+    fn register_table_heal_cooldown();
+    #[link_name = "__preinit__20_register_describer_trade_offer"]
+    fn register_table_trade_offer();
+    #[link_name = "__preinit__20_register_describer_player_wallet"]
+    fn register_table_player_wallet();
+    #[link_name = "__preinit__20_register_describer_account"]
+    fn register_table_account();
+    #[link_name = "__preinit__20_register_describer_guest_claim"]
+    fn register_table_guest_claim();
+    #[link_name = "__preinit__20_register_describer_profile"]
+    fn register_table_profile();
+    #[link_name = "__preinit__20_register_describer_battle_challenge"]
+    fn register_table_battle_challenge();
+    #[link_name = "__preinit__20_register_describer_battle_action"]
+    fn register_table_battle_action();
+    #[link_name = "__preinit__20_register_describer_trade_offer_reaper_schedule"]
+    fn register_table_trade_offer_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_export_bundle"]
+    fn register_table_export_bundle();
+    #[link_name = "__preinit__20_register_describer_account_deletion_reaper_schedule"]
+    fn register_table_account_deletion_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_export_bundle_reaper_schedule"]
+    fn register_table_export_bundle_reaper_schedule();
+    #[link_name = "__preinit__20_register_describer_player_session"]
+    fn register_table_player_session();
+    #[link_name = "__preinit__20_register_describer_pending_evolution_notice"]
+    fn register_table_pending_evolution_notice();
+    #[link_name = "__preinit__20_register_describer_battle_tactical"]
+    fn register_table_battle_tactical();
+    #[link_name = "__preinit__20_register_describer_battle_unit"]
+    fn register_table_battle_unit();
+    #[link_name = "__preinit__20_register_describer_battle_queue"]
+    fn register_table_battle_queue();
+    #[link_name = "__preinit__20_register_describer_battle_deploy"]
+    fn register_table_battle_deploy();
+    #[link_name = "__preinit__20_register_describer_battle_clock"]
+    fn register_table_battle_clock();
+    #[link_name = "__preinit__20_register_describer_battle_secret"]
+    fn register_table_battle_secret();
+    #[link_name = "__preinit__20_register_describer_battle_wild_unit"]
+    fn register_table_battle_wild_unit();
+    #[link_name = "__preinit__20_register_describer_battle_event"]
+    fn register_table_battle_event();
+    #[link_name = "__preinit__20_register_describer_battle_summary"]
+    fn register_table_battle_summary();
+    #[link_name = "__preinit__20_register_describer_player_formation"]
+    fn register_table_player_formation();
     /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1102,8 +1233,66 @@ unsafe extern "C" {
     ) -> i16;
 }
 
+/// Every table describer, in `evals/baselines/table-schemas.json` order (the
+/// order is immaterial to the module def; it is a set).
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 53] = [
+    register_table_guest_claim_reaper_schedule,
+    register_table_movement_tick_schedule,
+    register_table_mr_heartbeat_schedule,
+    register_table_playtest_event,
+    register_table_playtest_reaper_schedule,
+    register_table_pvp_deadline_schedule,
+    register_table_battle_challenge_reaper_schedule,
+    register_table_character,
+    register_table_player,
+    register_table_config,
+    register_table_zone_def,
+    register_table_species_row,
+    register_table_skill_row,
+    register_table_type_relation_row,
+    register_table_item_row,
+    register_table_shop_row,
+    register_table_shop_item_row,
+    register_table_encounter,
+    register_table_monster,
+    register_table_monster_pub,
+    register_table_battle,
+    register_table_battle_wild,
+    register_table_inventory,
+    register_table_evolution_path,
+    register_table_npc,
+    register_table_player_dialogue_state,
+    register_table_player_quest,
+    register_table_player_conversation,
+    register_table_heal_location_row,
+    register_table_heal_cooldown,
+    register_table_trade_offer,
+    register_table_player_wallet,
+    register_table_account,
+    register_table_guest_claim,
+    register_table_profile,
+    register_table_battle_challenge,
+    register_table_battle_action,
+    register_table_trade_offer_reaper_schedule,
+    register_table_export_bundle,
+    register_table_account_deletion_reaper_schedule,
+    register_table_export_bundle_reaper_schedule,
+    register_table_player_session,
+    register_table_pending_evolution_notice,
+    register_table_battle_tactical,
+    register_table_battle_unit,
+    register_table_battle_queue,
+    register_table_battle_deploy,
+    register_table_battle_clock,
+    register_table_battle_secret,
+    register_table_battle_wild_unit,
+    register_table_battle_event,
+    register_table_battle_summary,
+    register_table_player_formation,
+];
+
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 8] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 15] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1112,6 +1301,13 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 8] = [
     register_view_my_pending_evolution_notices,
     register_view_my_export_bundle,
     register_view_my_inventory,
+    register_view_my_tactical_battle,
+    register_view_my_battle_units,
+    register_view_my_battle_events,
+    register_view_my_battle_clock,
+    register_view_my_battle_queue,
+    register_view_my_battle_deploy,
+    register_view_my_formation,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1137,6 +1333,33 @@ pub(crate) const VIEW_MY_EXPORT_BUNDLE: usize = 6;
 
 /// `VIEWS` id of `my_inventory` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_INVENTORY: usize = 7;
+
+/// `VIEWS` id of `my_tactical_battle` (its index in [`VIEW_DESCRIBERS`]; bt-7).
+pub(crate) const VIEW_MY_TACTICAL_BATTLE: usize = 8;
+
+/// `VIEWS` id of `my_battle_units` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_UNITS: usize = 9;
+
+/// `VIEWS` id of `my_battle_events` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_EVENTS: usize = 10;
+
+/// `VIEWS` id of `my_battle_clock` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_CLOCK: usize = 11;
+
+/// `VIEWS` id of `my_battle_queue` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_QUEUE: usize = 12;
+
+/// `VIEWS` id of `my_battle_deploy` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_DEPLOY: usize = 13;
+
+/// `VIEWS` id of `my_formation` (bt-7).
+pub(crate) const VIEW_MY_FORMATION: usize = 14;
+
+/// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
+/// `RawModuleDef` (V10 on 2.11.0), captured once per process so a test can read
+/// table access, keys, indexes and the exact view roster from the artifact the
+/// host itself consumes — never from source text.
+static DESCRIBE_OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 const VIEW_SINK: u32 = 0x71E5;
 
@@ -1175,6 +1398,27 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// The generated module definition, decoded from the bytes the shipped
+    /// `__describe_module__` wrote (a V10 def on 2.11.0; any other version is a
+    /// toolchain hop this harness must be re-pointed at, so it panics by name).
+    pub(crate) fn module_def(
+        &self,
+    ) -> spacetimedb::spacetimedb_lib::db::raw_def::v10::RawModuleDefV10 {
+        ensure_run_as_registered();
+        let bytes = DESCRIBE_OUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        match bsatn::from_slice::<spacetimedb::spacetimedb_lib::RawModuleDef>(&bytes)
+            .expect("native_host_tests: the describe bytes must decode as a RawModuleDef")
+        {
+            spacetimedb::spacetimedb_lib::RawModuleDef::V10(def) => def,
+            other => panic!("native_host_tests: expected a V10 module def, got {other:?}"),
+        }
+    }
+}
+
 /// Registers the trampoline and publishes `REDUCERS`, once per process.
 fn ensure_run_as_registered() {
     static READY: OnceLock<()> = OnceLock::new();
@@ -1184,7 +1428,7 @@ fn ensure_run_as_registered() {
         // the `pub extern "C"` symbol the view macro exports; calling it pushes the
         // SHIPPED view fn into the module's `views` list, exactly as a host's preinit
         // pass would.
-        for register in VIEW_DESCRIBERS {
+        for register in TABLE_DESCRIBERS.iter().chain(VIEW_DESCRIBERS.iter()) {
             // SAFETY: a macro-generated zero-argument describer; it only appends to the
             // not-yet-described module def.
             unsafe { register() };
@@ -1369,7 +1613,15 @@ unsafe extern "C" fn bytes_sink_write(
     len_ptr: *mut usize,
 ) -> u16 {
     // Returning 0 leaves `*len_ptr` at the full buffer length: all consumed.
-    if sink == DESCRIBE_SINK || sink == ERROR_SINK {
+    if sink == DESCRIBE_SINK {
+        // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.
+        let bytes = unsafe { std::slice::from_raw_parts(buffer_ptr, *len_ptr) };
+        DESCRIBE_OUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend_from_slice(bytes);
+        0
+    } else if sink == ERROR_SINK {
         0
     } else if sink == VIEW_SINK {
         // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.

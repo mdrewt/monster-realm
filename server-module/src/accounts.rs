@@ -4,10 +4,12 @@
 //! `account`, `guest_claim`, `guest_claim_reaper_schedule`,
 //! `account_deletion_reaper_schedule`. Every write to any pre-existing table goes
 //! through a `pub(crate)` helper in that table's OWNING module — the `rekey_*`
-//! family (monster_mgmt / inventory / npc / raising / economy / ranking),
-//! `privacy::purge_export_bundles`, and the `erase_*` / `anonymize_*` cascade
-//! family the deletion reaper delegates to. Bare reads of `player` are permitted
-//! (no single owning module); the wallet is not read here at all; battle liveness
+//! family (monster_mgmt / inventory / npc / raising / economy / ranking /
+//! `schema::rekey_formation`), `privacy::purge_export_bundles`, and the
+//! `erase_*` / `anonymize_*` cascade family the deletion reaper delegates to
+//! (the tactical tables' `schema::erase_tactical_rows` included). Bare reads of
+//! `player` are permitted (no single owning module); the wallet is not read
+//! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
 //!
 //! BOTH scheduled reaper table + reducer pairs (`guest_claim_reaper`,
@@ -495,6 +497,7 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
         || crate::ranking::profile_exists(ctx, identity)
         || crate::npc::has_quest_or_dialogue_state(ctx, identity)
         || crate::raising::has_heal_cooldown(ctx, identity)
+        || crate::schema::has_formation(ctx, identity)
 }
 
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
@@ -515,6 +518,7 @@ pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> R
     crate::raising::rekey_heal_cooldown(ctx, from, to);
     crate::economy::rekey_wallet(ctx, from, to);
     crate::ranking::rekey_profile(ctx, from, to);
+    crate::schema::rekey_formation(ctx, from, to);
     Ok(())
 }
 
@@ -1041,6 +1045,7 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
+    crate::schema::erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);
     ctx.db
         .account()
