@@ -597,13 +597,14 @@ fn bt1_8_parse_defaults_elevation_to_zero_and_blocks_los_to_false() {
             blocks_los: false
         }
     );
+    // Tile (0,0) is a spawn, so it must stay Walk-passable (Plain) for the validator to accept.
     let src =
-        to_ron(&d, false).replacen("(terrain: Plain)", "(terrain: Water, blocks_los: true)", 1);
+        to_ron(&d, false).replacen("(terrain: Plain)", "(terrain: Plain, blocks_los: true)", 1);
     let partial = parse_battle_map(&src).expect("partial tile parses");
     assert_eq!(
         partial.tiles[0],
         TileDef {
-            terrain: Terrain::Water,
+            terrain: Terrain::Plain,
             elevation: 0,
             blocks_los: true
         }

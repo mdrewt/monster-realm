@@ -51,6 +51,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `types` | Shared data types (`CharacterState`, `Direction`, `MoveInput`, `Millis`, `TilePos`, `NpcInteraction`). |
 | `monster` | Individuality rolls (IVs, nature), stat derivation, levels and XP curve. |
 | `combat` | Battle state and turn resolution, damage and accuracy, statuses, abilities, weather, AI, XP rewards, PvP forfeit and challenge staleness. |
+| `tactics` | Tactical-battle grid rules (in progress, M-battle-tactics): Manhattan geometry and the one skill target-set function, line of sight, flank, stride bands, terrain × class weights, Dijkstra pathing with an explicit `(cost, y, x)` tie-break, disengage, and the battle-map validator. `tactics::golden` runs a shared JSON fixture natively and through the `tactics_golden` wasm export to prove native = wasm. |
 | `taming` | Encounter triggers and rolls, recruit chance. |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |

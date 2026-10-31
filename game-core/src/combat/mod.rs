@@ -1,9 +1,10 @@
 //! Combat engine — pure, deterministic, integer-only.
 //!
 //! All battle resolution lives here exactly once (single source of truth). The server
-//! resolves battles authoritatively; the client does NOT predict
-//! battles (client-wasm prediction applies to movement only). Re-implementing a
-//! battle rule in another crate is the desync bug.
+//! resolves battles authoritatively; the client does not resolve them. Tactical
+//! battles (`crate::tactics`) let the client compute forecasts and highlights by
+//! calling the same game-core rules through the wasm build — never a TypeScript
+//! copy. Re-implementing a battle rule in another crate is the desync bug.
 //!
 //! # Module layout
 //! - `types`      — value objects (`BattleMonster`, `BattleState`, `BattleEvent`, …)
