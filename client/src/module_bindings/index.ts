@@ -86,11 +86,18 @@ import HealLocationRowRow from "./heal_location_row_table";
 import ItemRowRow from "./item_row_table";
 import MyAccountRow from "./my_account_table";
 import MyBattleRow from "./my_battle_table";
+import MyBattleClockRow from "./my_battle_clock_table";
+import MyBattleDeployRow from "./my_battle_deploy_table";
+import MyBattleEventsRow from "./my_battle_events_table";
+import MyBattleQueueRow from "./my_battle_queue_table";
+import MyBattleUnitsRow from "./my_battle_units_table";
 import MyConversationRow from "./my_conversation_table";
 import MyExportBundleRow from "./my_export_bundle_table";
+import MyFormationRow from "./my_formation_table";
 import MyInventoryRow from "./my_inventory_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
 import MyPendingEvolutionNoticesRow from "./my_pending_evolution_notices_table";
+import MyTacticalBattleRow from "./my_tactical_battle_table";
 import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
@@ -346,6 +353,41 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyBattleRow),
+  myBattleClock: __table({
+    name: 'my_battle_clock',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBattleClockRow),
+  myBattleDeploy: __table({
+    name: 'my_battle_deploy',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBattleDeployRow),
+  myBattleEvents: __table({
+    name: 'my_battle_events',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBattleEventsRow),
+  myBattleQueue: __table({
+    name: 'my_battle_queue',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBattleQueueRow),
+  myBattleUnits: __table({
+    name: 'my_battle_units',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBattleUnitsRow),
   myConversation: __table({
     name: 'my_conversation',
     indexes: [
@@ -360,6 +402,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyExportBundleRow),
+  myFormation: __table({
+    name: 'my_formation',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyFormationRow),
   myInventory: __table({
     name: 'my_inventory',
     indexes: [
@@ -381,6 +430,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyPendingEvolutionNoticesRow),
+  myTacticalBattle: __table({
+    name: 'my_tactical_battle',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyTacticalBattleRow),
   myWallet: __table({
     name: 'my_wallet',
     indexes: [
@@ -468,16 +524,30 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_account": Omit<typeof tablesSchema.schemaType.tables["myAccount"], "accessorName"> & { readonly accessorName: "my_account" };
     /** @deprecated Use `myBattle` instead. This alias will be removed in the next major version. */
     readonly "my_battle": Omit<typeof tablesSchema.schemaType.tables["myBattle"], "accessorName"> & { readonly accessorName: "my_battle" };
+    /** @deprecated Use `myBattleClock` instead. This alias will be removed in the next major version. */
+    readonly "my_battle_clock": Omit<typeof tablesSchema.schemaType.tables["myBattleClock"], "accessorName"> & { readonly accessorName: "my_battle_clock" };
+    /** @deprecated Use `myBattleDeploy` instead. This alias will be removed in the next major version. */
+    readonly "my_battle_deploy": Omit<typeof tablesSchema.schemaType.tables["myBattleDeploy"], "accessorName"> & { readonly accessorName: "my_battle_deploy" };
+    /** @deprecated Use `myBattleEvents` instead. This alias will be removed in the next major version. */
+    readonly "my_battle_events": Omit<typeof tablesSchema.schemaType.tables["myBattleEvents"], "accessorName"> & { readonly accessorName: "my_battle_events" };
+    /** @deprecated Use `myBattleQueue` instead. This alias will be removed in the next major version. */
+    readonly "my_battle_queue": Omit<typeof tablesSchema.schemaType.tables["myBattleQueue"], "accessorName"> & { readonly accessorName: "my_battle_queue" };
+    /** @deprecated Use `myBattleUnits` instead. This alias will be removed in the next major version. */
+    readonly "my_battle_units": Omit<typeof tablesSchema.schemaType.tables["myBattleUnits"], "accessorName"> & { readonly accessorName: "my_battle_units" };
     /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
     readonly "my_conversation": Omit<typeof tablesSchema.schemaType.tables["myConversation"], "accessorName"> & { readonly accessorName: "my_conversation" };
     /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
     readonly "my_export_bundle": Omit<typeof tablesSchema.schemaType.tables["myExportBundle"], "accessorName"> & { readonly accessorName: "my_export_bundle" };
+    /** @deprecated Use `myFormation` instead. This alias will be removed in the next major version. */
+    readonly "my_formation": Omit<typeof tablesSchema.schemaType.tables["myFormation"], "accessorName"> & { readonly accessorName: "my_formation" };
     /** @deprecated Use `myInventory` instead. This alias will be removed in the next major version. */
     readonly "my_inventory": Omit<typeof tablesSchema.schemaType.tables["myInventory"], "accessorName"> & { readonly accessorName: "my_inventory" };
     /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
     readonly "my_monster_pub": Omit<typeof tablesSchema.schemaType.tables["myMonsterPub"], "accessorName"> & { readonly accessorName: "my_monster_pub" };
     /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
     readonly "my_pending_evolution_notices": Omit<typeof tablesSchema.schemaType.tables["myPendingEvolutionNotices"], "accessorName"> & { readonly accessorName: "my_pending_evolution_notices" };
+    /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
+    readonly "my_tactical_battle": Omit<typeof tablesSchema.schemaType.tables["myTacticalBattle"], "accessorName"> & { readonly accessorName: "my_tactical_battle" };
     /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
     readonly "my_wallet": Omit<typeof tablesSchema.schemaType.tables["myWallet"], "accessorName"> & { readonly accessorName: "my_wallet" };
   };
@@ -512,11 +582,18 @@ const tableAccessorAliases = {
   "zone_def": "zoneDef",
   "my_account": "myAccount",
   "my_battle": "myBattle",
+  "my_battle_clock": "myBattleClock",
+  "my_battle_deploy": "myBattleDeploy",
+  "my_battle_events": "myBattleEvents",
+  "my_battle_queue": "myBattleQueue",
+  "my_battle_units": "myBattleUnits",
   "my_conversation": "myConversation",
   "my_export_bundle": "myExportBundle",
+  "my_formation": "myFormation",
   "my_inventory": "myInventory",
   "my_monster_pub": "myMonsterPub",
   "my_pending_evolution_notices": "myPendingEvolutionNotices",
+  "my_tactical_battle": "myTacticalBattle",
   "my_wallet": "myWallet",
 } as const;
 
@@ -566,16 +643,30 @@ export type DbView = __DbViewBase & {
   readonly "my_account": __DbViewBase["myAccount"];
   /** @deprecated Use `myBattle` instead. This alias will be removed in the next major version. */
   readonly "my_battle": __DbViewBase["myBattle"];
+  /** @deprecated Use `myBattleClock` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_clock": __DbViewBase["myBattleClock"];
+  /** @deprecated Use `myBattleDeploy` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_deploy": __DbViewBase["myBattleDeploy"];
+  /** @deprecated Use `myBattleEvents` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_events": __DbViewBase["myBattleEvents"];
+  /** @deprecated Use `myBattleQueue` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_queue": __DbViewBase["myBattleQueue"];
+  /** @deprecated Use `myBattleUnits` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_units": __DbViewBase["myBattleUnits"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __DbViewBase["myConversation"];
   /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
   readonly "my_export_bundle": __DbViewBase["myExportBundle"];
+  /** @deprecated Use `myFormation` instead. This alias will be removed in the next major version. */
+  readonly "my_formation": __DbViewBase["myFormation"];
   /** @deprecated Use `myInventory` instead. This alias will be removed in the next major version. */
   readonly "my_inventory": __DbViewBase["myInventory"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __DbViewBase["myMonsterPub"];
   /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
   readonly "my_pending_evolution_notices": __DbViewBase["myPendingEvolutionNotices"];
+  /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
+  readonly "my_tactical_battle": __DbViewBase["myTacticalBattle"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __DbViewBase["myWallet"];
 };
@@ -610,16 +701,30 @@ export type Tables = __TablesBase & {
   readonly "my_account": __TablesBase["myAccount"];
   /** @deprecated Use `myBattle` instead. This alias will be removed in the next major version. */
   readonly "my_battle": __TablesBase["myBattle"];
+  /** @deprecated Use `myBattleClock` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_clock": __TablesBase["myBattleClock"];
+  /** @deprecated Use `myBattleDeploy` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_deploy": __TablesBase["myBattleDeploy"];
+  /** @deprecated Use `myBattleEvents` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_events": __TablesBase["myBattleEvents"];
+  /** @deprecated Use `myBattleQueue` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_queue": __TablesBase["myBattleQueue"];
+  /** @deprecated Use `myBattleUnits` instead. This alias will be removed in the next major version. */
+  readonly "my_battle_units": __TablesBase["myBattleUnits"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __TablesBase["myConversation"];
   /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
   readonly "my_export_bundle": __TablesBase["myExportBundle"];
+  /** @deprecated Use `myFormation` instead. This alias will be removed in the next major version. */
+  readonly "my_formation": __TablesBase["myFormation"];
   /** @deprecated Use `myInventory` instead. This alias will be removed in the next major version. */
   readonly "my_inventory": __TablesBase["myInventory"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __TablesBase["myMonsterPub"];
   /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
   readonly "my_pending_evolution_notices": __TablesBase["myPendingEvolutionNotices"];
+  /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
+  readonly "my_tactical_battle": __TablesBase["myTacticalBattle"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __TablesBase["myWallet"];
 };

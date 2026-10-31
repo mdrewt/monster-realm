@@ -47,6 +47,13 @@ export const ActionState = __t.enum("ActionState", {
 });
 export type ActionState = __Infer<typeof ActionState>;
 
+// The tagged union or sum type for the algebraic type `ActionTarget`.
+export const ActionTarget = __t.enum("ActionTarget", {
+  Unit: __t.u32(),
+  SelfTarget: __t.unit(),
+});
+export type ActionTarget = __Infer<typeof ActionTarget>;
+
 // The tagged union or sum type for the algebraic type `Affinity`.
 export const Affinity = __t.enum("Affinity", {
   Fire: __t.unit(),
@@ -59,6 +66,20 @@ export const Affinity = __t.enum("Affinity", {
   Dark: __t.unit(),
 });
 export type Affinity = __Infer<typeof Affinity>;
+
+export const AutoPassEvent = __t.object("AutoPassEvent", {
+  unit: __t.u32(),
+  strike: __t.u8(),
+});
+export type AutoPassEvent = __Infer<typeof AutoPassEvent>;
+
+export const AwardsEvent = __t.object("AwardsEvent", {
+  unit: __t.u32(),
+  xp: __t.u32(),
+  essence: __t.u32(),
+  currency: __t.u64(),
+});
+export type AwardsEvent = __Infer<typeof AwardsEvent>;
 
 export const Battle = __t.object("Battle", {
   battleId: __t.u64(),
@@ -104,6 +125,60 @@ export const BattleChallengeReaperSchedule = __t.object("BattleChallengeReaperSc
 });
 export type BattleChallengeReaperSchedule = __Infer<typeof BattleChallengeReaperSchedule>;
 
+export const BattleClock = __t.object("BattleClock", {
+  clockId: __t.u64(),
+  battleId: __t.u64(),
+  side: __t.u8(),
+  player: __t.identity(),
+  windowSeq: __t.u32(),
+  windowOpenMs: __t.option(__t.i64()),
+  deadlineMs: __t.option(__t.i64()),
+  windowsThisUnitTurn: __t.u8(),
+  idleMsTotal: __t.u64(),
+  autopassCount: __t.u8(),
+});
+export type BattleClock = __Infer<typeof BattleClock>;
+
+export const BattleDeploy = __t.object("BattleDeploy", {
+  deployId: __t.u64(),
+  battleId: __t.u64(),
+  owner: __t.identity(),
+  get picks() {
+    return __t.array(DeployPick);
+  },
+  locked: __t.bool(),
+});
+export type BattleDeploy = __Infer<typeof BattleDeploy>;
+
+export const BattleEndEvent = __t.object("BattleEndEvent", {
+  get outcome() {
+    return BattleOutcome;
+  },
+  get how() {
+    return EndHow;
+  },
+});
+export type BattleEndEvent = __Infer<typeof BattleEndEvent>;
+
+export const BattleEvent = __t.object("BattleEvent", {
+  eventId: __t.u64(),
+  battleId: __t.u64(),
+  seq: __t.u32(),
+  round: __t.u16(),
+  get payload() {
+    return EventPayload;
+  },
+});
+export type BattleEvent = __Infer<typeof BattleEvent>;
+
+// The tagged union or sum type for the algebraic type `BattleKind`.
+export const BattleKind = __t.enum("BattleKind", {
+  Wild: __t.unit(),
+  Pvp: __t.unit(),
+  Practice: __t.unit(),
+});
+export type BattleKind = __Infer<typeof BattleKind>;
+
 export const BattleMonster = __t.object("BattleMonster", {
   speciesId: __t.u32(),
   get affinity() {
@@ -131,6 +206,24 @@ export const BattleOutcome = __t.enum("BattleOutcome", {
 });
 export type BattleOutcome = __Infer<typeof BattleOutcome>;
 
+export const BattleQueue = __t.object("BattleQueue", {
+  unitId: __t.u32(),
+  battleId: __t.u64(),
+  owner: __t.identity(),
+  get entries() {
+    return __t.array(QueuedAction);
+  },
+  submittedAtMs: __t.i64(),
+});
+export type BattleQueue = __Infer<typeof BattleQueue>;
+
+export const BattleSecret = __t.object("BattleSecret", {
+  battleId: __t.u64(),
+  seed: __t.u64(),
+  actionSeq: __t.u64(),
+});
+export type BattleSecret = __Infer<typeof BattleSecret>;
+
 export const BattleSide = __t.object("BattleSide", {
   active: __t.u32(),
   get team() {
@@ -138,6 +231,11 @@ export const BattleSide = __t.object("BattleSide", {
   },
 });
 export type BattleSide = __Infer<typeof BattleSide>;
+
+export const BattleStartedEvent = __t.object("BattleStartedEvent", {
+  round: __t.u16(),
+});
+export type BattleStartedEvent = __Infer<typeof BattleStartedEvent>;
 
 export const BattleState = __t.object("BattleState", {
   get sideA() {
@@ -156,6 +254,98 @@ export const BattleState = __t.object("BattleState", {
 });
 export type BattleState = __Infer<typeof BattleState>;
 
+export const BattleSummary = __t.object("BattleSummary", {
+  battleId: __t.u64(),
+  playerIdentity: __t.identity(),
+  opponentIdentity: __t.identity(),
+  get kind() {
+    return BattleKind;
+  },
+  get outcome() {
+    return BattleOutcome;
+  },
+  rounds: __t.u16(),
+  wallMs: __t.u64(),
+  idleMsA: __t.u64(),
+  idleMsB: __t.u64(),
+  windowsHistogram: __t.array(__t.u32()),
+  autopasses: __t.u16(),
+  recruitAttempts: __t.u16(),
+  recruitSuccesses: __t.u16(),
+  weakenFirst: __t.bool(),
+  itemsUsed: __t.u16(),
+  damageDealtA: __t.u32(),
+  damageDealtB: __t.u32(),
+  hits: __t.u16(),
+  misses: __t.u16(),
+});
+export type BattleSummary = __Infer<typeof BattleSummary>;
+
+export const BattleTactical = __t.object("BattleTactical", {
+  battleId: __t.u64(),
+  get kind() {
+    return BattleKind;
+  },
+  format: __t.u8(),
+  mapId: __t.u32(),
+  contentVersion: __t.u32(),
+  get phase() {
+    return Phase;
+  },
+  round: __t.u16(),
+  initiative: __t.array(__t.u32()),
+  turnIdx: __t.u8(),
+  get turnState() {
+    return TurnState;
+  },
+  tiePrioritySide: __t.u8(),
+  pendingPadMs: __t.u32(),
+  attackDamageDealtA: __t.u32(),
+  attackDamageDealtB: __t.u32(),
+});
+export type BattleTactical = __Infer<typeof BattleTactical>;
+
+export const BattleUnit = __t.object("BattleUnit", {
+  unitId: __t.u32(),
+  battleId: __t.u64(),
+  side: __t.u8(),
+  owner: __t.option(__t.identity()),
+  slot: __t.u8(),
+  monsterId: __t.option(__t.u64()),
+  wildIndex: __t.option(__t.u8()),
+  speciesId: __t.u32(),
+  level: __t.u8(),
+  get affinity() {
+    return Affinity;
+  },
+  x: __t.u8(),
+  y: __t.u8(),
+  curHp: __t.u16(),
+  maxHp: __t.u16(),
+  get stats() {
+    return StatBlock;
+  },
+  skillIds: __t.array(__t.u32()),
+  get status() {
+    return __t.option(StatusEffect);
+  },
+  ap: __t.u8(),
+  stridesUsed: __t.u8(),
+  attacks: __t.u8(),
+  get budgetLast() {
+    return __t.option(BudgetLastEntry);
+  },
+  guard: __t.bool(),
+  firstStand: __t.bool(),
+  movement: __t.u8(),
+  stride: __t.u8(),
+  stance: __t.option(__t.u8()),
+  get state() {
+    return UnitState;
+  },
+});
+export type BattleUnit = __Infer<typeof BattleUnit>;
+
 export const BattleWild = __t.object("BattleWild", {
   battleId: __t.u64(),
   wildSpeciesId: __t.u32(),
@@ -163,6 +353,23 @@ export const BattleWild = __t.object("BattleWild", {
   individualitySeed: __t.u32(),
 });
 export type BattleWild = __Infer<typeof BattleWild>;
+
+export const BattleWildUnit = __t.object("BattleWildUnit", {
+  wildUnitId: __t.u64(),
+  battleId: __t.u64(),
+  wildIndex: __t.u8(),
+  speciesId: __t.u32(),
+  level: __t.u8(),
+  individualitySeed: __t.u32(),
+});
+export type BattleWildUnit = __Infer<typeof BattleWildUnit>;
+
+export const BudgetLastEntry = __t.object("BudgetLastEntry", {
+  kind: __t.u8(),
+  strides: __t.u8(),
+  taxed: __t.bool(),
+});
+export type BudgetLastEntry = __Infer<typeof BudgetLastEntry>;
 
 // The tagged union or sum type for the algebraic type `ChallengeStatus`.
 export const ChallengeStatus = __t.enum("ChallengeStatus", {
@@ -199,6 +406,12 @@ export const Config = __t.object("Config", {
 });
 export type Config = __Infer<typeof Config>;
 
+export const DeployPick = __t.object("DeployPick", {
+  monsterId: __t.u64(),
+  slot: __t.u8(),
+});
+export type DeployPick = __Infer<typeof DeployPick>;
+
 // The tagged union or sum type for the algebraic type `Direction`.
 export const Direction = __t.enum("Direction", {
   North: __t.unit(),
@@ -225,6 +438,21 @@ export const EncounterRow = __t.object("EncounterRow", {
 });
 export type EncounterRow = __Infer<typeof EncounterRow>;
 
+// The tagged union or sum type for the algebraic type `EndHow`.
+export const EndHow = __t.enum("EndHow", {
+  SideEmpty: __t.unit(),
+  AdjudicatedHpPercent: __t.unit(),
+  AdjudicatedConscious: __t.unit(),
+  AdjudicatedDamageDealt: __t.unit(),
+  AdjudicatedCoin: __t.unit(),
+  FixedOrder: __t.unit(),
+  RoundCap: __t.unit(),
+  Forfeit: __t.unit(),
+  Fled: __t.unit(),
+  AutoFlee: __t.unit(),
+});
+export type EndHow = __Infer<typeof EndHow>;
+
 export const EssenceRequirementRow = __t.object("EssenceRequirementRow", {
   get affinity() {
     return Affinity;
@@ -232,6 +460,62 @@ export const EssenceRequirementRow = __t.object("EssenceRequirementRow", {
   amount: __t.u32(),
 });
 export type EssenceRequirementRow = __Infer<typeof EssenceRequirementRow>;
+
+// The tagged union or sum type for the algebraic type `EventPayload`.
+export const EventPayload = __t.enum("EventPayload", {
+  get Executed() {
+    return ExecutedEvent;
+  },
+  get Missed() {
+    return MissedEvent;
+  },
+  get PlanHalted() {
+    return PlanHaltedEvent;
+  },
+  get QueueVoided() {
+    return QueueVoidedEvent;
+  },
+  get AutoPass() {
+    return AutoPassEvent;
+  },
+  get StoodGround() {
+    return StoodGroundEvent;
+  },
+  get Status() {
+    return StatusEvent;
+  },
+  get Surge() {
+    return SurgeEvent;
+  },
+  get Ko() {
+    return KoEvent;
+  },
+  get RecruitResult() {
+    return RecruitResultEvent;
+  },
+  get Awards() {
+    return AwardsEvent;
+  },
+  get Moved() {
+    return MovedEvent;
+  },
+  get ItemUsed() {
+    return ItemUsedEvent;
+  },
+  get TurnEnded() {
+    return TurnEndedEvent;
+  },
+  get RoundEnded() {
+    return RoundEndedEvent;
+  },
+  get BattleStarted() {
+    return BattleStartedEvent;
+  },
+  get BattleEnd() {
+    return BattleEndEvent;
+  },
+});
+export type EventPayload = __Infer<typeof EventPayload>;
 
 export const EvolutionPathRow = __t.object("EvolutionPathRow", {
   pathId: __t.u64(),
@@ -257,6 +541,15 @@ export const EvolutionRevealRow = __t.object("EvolutionRevealRow", {
   evolvedAtMs: __t.i64(),
 });
 export type EvolutionRevealRow = __Infer<typeof EvolutionRevealRow>;
+
+export const ExecutedEvent = __t.object("ExecutedEvent", {
+  attacker: __t.u32(),
+  skillId: __t.u32(),
+  get results() {
+    return __t.array(TargetHit);
+  },
+});
+export type ExecutedEvent = __Infer<typeof ExecutedEvent>;
 
 export const ExportBundle = __t.object("ExportBundle", {
   chunkId: __t.u64(),
@@ -292,6 +585,25 @@ export const GuestClaimReaperSchedule = __t.object("GuestClaimReaperSchedule", {
 });
 export type GuestClaimReaperSchedule = __Infer<typeof GuestClaimReaperSchedule>;
 
+// The tagged union or sum type for the algebraic type `HaltKind`.
+export const HaltKind = __t.enum("HaltKind", {
+  CannotAct: __t.unit(),
+  BadShape: __t.unit(),
+  UnknownSkill: __t.unit(),
+  TargetGone: __t.unit(),
+  Unreachable: __t.unit(),
+  TooFar: __t.unit(),
+  Geometry: __t.unit(),
+  NotAdjacent: __t.unit(),
+  NotWild: __t.unit(),
+  NotAllowed: __t.unit(),
+  NoHeadroom: __t.unit(),
+  ItemNotHeld: __t.unit(),
+  Unaffordable: __t.unit(),
+  BadState: __t.unit(),
+});
+export type HaltKind = __Infer<typeof HaltKind>;
+
 export const HealCooldown = __t.object("HealCooldown", {
   ownerIdentity: __t.identity(),
   lastHealAtMs: __t.i64(),
@@ -310,6 +622,15 @@ export const HealLocationRow = __t.object("HealLocationRow", {
 });
 export type HealLocationRow = __Infer<typeof HealLocationRow>;
 
+// The tagged union or sum type for the algebraic type `HitEffectiveness`.
+export const HitEffectiveness = __t.enum("HitEffectiveness", {
+  Immune: __t.unit(),
+  NotVeryEffective: __t.unit(),
+  Neutral: __t.unit(),
+  SuperEffective: __t.unit(),
+});
+export type HitEffectiveness = __Infer<typeof HitEffectiveness>;
+
 export const Inventory = __t.object("Inventory", {
   invId: __t.u64(),
   ownerIdentity: __t.identity(),
@@ -317,6 +638,14 @@ export const Inventory = __t.object("Inventory", {
   count: __t.u32(),
 });
 export type Inventory = __Infer<typeof Inventory>;
+
+export const ItemAction = __t.object("ItemAction", {
+  itemId: __t.u32(),
+  get target() {
+    return ActionTarget;
+  },
+});
+export type ItemAction = __Infer<typeof ItemAction>;
 
 export const ItemRow = __t.object("ItemRow", {
   id: __t.u32(),
@@ -333,6 +662,24 @@ export const ItemRow = __t.object("ItemRow", {
   },
 });
 export type ItemRow = __Infer<typeof ItemRow>;
+
+export const ItemUsedEvent = __t.object("ItemUsedEvent", {
+  unit: __t.u32(),
+  itemId: __t.u32(),
+  target: __t.u32(),
+});
+export type ItemUsedEvent = __Infer<typeof ItemUsedEvent>;
+
+export const KoEvent = __t.object("KoEvent", {
+  unit: __t.u32(),
+});
+export type KoEvent = __Infer<typeof KoEvent>;
+
+export const MissedEvent = __t.object("MissedEvent", {
+  attacker: __t.u32(),
+  target: __t.u32(),
+});
+export type MissedEvent = __Infer<typeof MissedEvent>;
 
 export const Monster = __t.object("Monster", {
   monsterId: __t.u64(),
@@ -427,6 +774,13 @@ export const MonsterPub = __t.object("MonsterPub", {
 });
 export type MonsterPub = __Infer<typeof MonsterPub>;
 
+export const MoveAction = __t.object("MoveAction", {
+  x: __t.u8(),
+  y: __t.u8(),
+  strides: __t.u8(),
+});
+export type MoveAction = __Infer<typeof MoveAction>;
+
 // The tagged union or sum type for the algebraic type `MoveInput`.
 export const MoveInput = __t.enum("MoveInput", {
   get Step() {
@@ -435,6 +789,16 @@ export const MoveInput = __t.enum("MoveInput", {
   Jump: __t.unit(),
 });
 export type MoveInput = __Infer<typeof MoveInput>;
+
+export const MovedEvent = __t.object("MovedEvent", {
+  unit: __t.u32(),
+  fromX: __t.u8(),
+  fromY: __t.u8(),
+  toX: __t.u8(),
+  toY: __t.u8(),
+  tiles: __t.u8(),
+});
+export type MovedEvent = __Infer<typeof MovedEvent>;
 
 export const MovementTickSchedule = __t.object("MovementTickSchedule", {
   id: __t.u64(),
@@ -509,6 +873,23 @@ export const PendingEvolutionNotice = __t.object("PendingEvolutionNotice", {
 });
 export type PendingEvolutionNotice = __Infer<typeof PendingEvolutionNotice>;
 
+// The tagged union or sum type for the algebraic type `Phase`.
+export const Phase = __t.enum("Phase", {
+  Deploying: __t.unit(),
+  Active: __t.unit(),
+  Finished: __t.unit(),
+});
+export type Phase = __Infer<typeof Phase>;
+
+export const PlanHaltedEvent = __t.object("PlanHaltedEvent", {
+  unit: __t.u32(),
+  idx: __t.u8(),
+  get reasonKind() {
+    return HaltKind;
+  },
+});
+export type PlanHaltedEvent = __Infer<typeof PlanHaltedEvent>;
+
 export const Player = __t.object("Player", {
   identity: __t.identity(),
   entityId: __t.u64(),
@@ -531,6 +912,12 @@ export const PlayerDialogueStateRow = __t.object("PlayerDialogueStateRow", {
   doneQuests: __t.array(__t.string()),
 });
 export type PlayerDialogueStateRow = __Infer<typeof PlayerDialogueStateRow>;
+
+export const PlayerFormation = __t.object("PlayerFormation", {
+  ownerIdentity: __t.identity(),
+  monsterIds: __t.array(__t.u64()),
+});
+export type PlayerFormation = __Infer<typeof PlayerFormation>;
 
 export const PlayerQuestRow = __t.object("PlayerQuestRow", {
   pqId: __t.u64(),
@@ -595,6 +982,49 @@ export const PvpDeadlineSchedule = __t.object("PvpDeadlineSchedule", {
 });
 export type PvpDeadlineSchedule = __Infer<typeof PvpDeadlineSchedule>;
 
+export const QueueVoidedEvent = __t.object("QueueVoidedEvent", {
+  unit: __t.u32(),
+});
+export type QueueVoidedEvent = __Infer<typeof QueueVoidedEvent>;
+
+// The tagged union or sum type for the algebraic type `QueuedAction`.
+export const QueuedAction = __t.enum("QueuedAction", {
+  get Move() {
+    return MoveAction;
+  },
+  get Skill() {
+    return SkillAction;
+  },
+  get Item() {
+    return ItemAction;
+  },
+  get Recruit() {
+    return RecruitAction;
+  },
+  Flee: __t.unit(),
+  EndTurn: __t.unit(),
+});
+export type QueuedAction = __Infer<typeof QueuedAction>;
+
+export const RecruitAction = __t.object("RecruitAction", {
+  target: __t.u32(),
+  bait: __t.option(__t.u32()),
+});
+export type RecruitAction = __Infer<typeof RecruitAction>;
+
+export const RecruitResultEvent = __t.object("RecruitResultEvent", {
+  unit: __t.u32(),
+  target: __t.u32(),
+  success: __t.bool(),
+  pct: __t.u8(),
+});
+export type RecruitResultEvent = __Infer<typeof RecruitResultEvent>;
+
+export const RoundEndedEvent = __t.object("RoundEndedEvent", {
+  round: __t.u16(),
+});
+export type RoundEndedEvent = __Infer<typeof RoundEndedEvent>;
+
 export const ShopItemRow = __t.object("ShopItemRow", {
   shopItemId: __t.u64(),
   shopId: __t.u32(),
@@ -608,6 +1038,14 @@ export const ShopRow = __t.object("ShopRow", {
   name: __t.string(),
 });
 export type ShopRow = __Infer<typeof ShopRow>;
+
+export const SkillAction = __t.object("SkillAction", {
+  skillId: __t.u32(),
+  get target() {
+    return ActionTarget;
+  },
+});
+export type SkillAction = __Infer<typeof SkillAction>;
 
 export const SkillRow = __t.object("SkillRow", {
   id: __t.u32(),
@@ -660,6 +1098,15 @@ export const StatKind = __t.enum("StatKind", {
 });
 export type StatKind = __Infer<typeof StatKind>;
 
+// The tagged union or sum type for the algebraic type `StatusChange`.
+export const StatusChange = __t.enum("StatusChange", {
+  Applied: __t.unit(),
+  Tick: __t.unit(),
+  Cured: __t.unit(),
+  Blocked: __t.unit(),
+});
+export type StatusChange = __Infer<typeof StatusChange>;
+
 // The tagged union or sum type for the algebraic type `StatusEffect`.
 export const StatusEffect = __t.enum("StatusEffect", {
   Poison: __t.unit(),
@@ -670,6 +1117,18 @@ export const StatusEffect = __t.enum("StatusEffect", {
 });
 export type StatusEffect = __Infer<typeof StatusEffect>;
 
+export const StatusEvent = __t.object("StatusEvent", {
+  unit: __t.u32(),
+  get status() {
+    return StatusEffect;
+  },
+  get change() {
+    return StatusChange;
+  },
+  amount: __t.u16(),
+});
+export type StatusEvent = __Infer<typeof StatusEvent>;
+
 // The tagged union or sum type for the algebraic type `StatusKind`.
 export const StatusKind = __t.enum("StatusKind", {
   Poison: __t.unit(),
@@ -679,6 +1138,31 @@ export const StatusKind = __t.enum("StatusKind", {
   Freeze: __t.unit(),
 });
 export type StatusKind = __Infer<typeof StatusKind>;
+
+export const StoodGroundEvent = __t.object("StoodGroundEvent", {
+  unit: __t.u32(),
+});
+export type StoodGroundEvent = __Infer<typeof StoodGroundEvent>;
+
+export const SurgeEvent = __t.object("SurgeEvent", {
+  round: __t.u16(),
+  unit: __t.u32(),
+  amount: __t.u16(),
+});
+export type SurgeEvent = __Infer<typeof SurgeEvent>;
+
+export const TargetHit = __t.object("TargetHit", {
+  unit: __t.u32(),
+  hit: __t.bool(),
+  damage: __t.u16(),
+  get effectiveness() {
+    return __t.option(HitEffectiveness);
+  },
+  flank: __t.bool(),
+  guard: __t.bool(),
+  ko: __t.bool(),
+});
+export type TargetHit = __Infer<typeof TargetHit>;
 
 export const TradeItem = __t.object("TradeItem", {
   itemId: __t.u32(),
@@ -737,6 +1221,21 @@ export const TrustTier = __t.enum("TrustTier", {
 });
 export type TrustTier = __Infer<typeof TrustTier>;
 
+export const TurnEndedEvent = __t.object("TurnEndedEvent", {
+  unit: __t.u32(),
+  guard: __t.bool(),
+  committed: __t.bool(),
+});
+export type TurnEndedEvent = __Infer<typeof TurnEndedEvent>;
+
+// The tagged union or sum type for the algebraic type `TurnState`.
+export const TurnState = __t.enum("TurnState", {
+  NotActive: __t.unit(),
+  Waiting: __t.u32(),
+  Advancing: __t.unit(),
+});
+export type TurnState = __Infer<typeof TurnState>;
+
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),
   get attacker() {
@@ -748,6 +1247,14 @@ export const TypeRelationRow = __t.object("TypeRelationRow", {
   effectiveness: __t.u8(),
 });
 export type TypeRelationRow = __Infer<typeof TypeRelationRow>;
+
+// The tagged union or sum type for the algebraic type `UnitState`.
+export const UnitState = __t.enum("UnitState", {
+  Active: __t.unit(),
+  Fainted: __t.unit(),
+  Recruited: __t.unit(),
+});
+export type UnitState = __Infer<typeof UnitState>;
 
 // The tagged union or sum type for the algebraic type `WeatherEffect`.
 export const WeatherEffect = __t.enum("WeatherEffect", {

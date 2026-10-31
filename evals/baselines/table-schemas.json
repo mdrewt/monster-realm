@@ -1151,5 +1151,337 @@
     "unique": [],
     "indexes": [],
     "scheduled": null
+  },
+  "battle_tactical": {
+    "pk": "battle_id",
+    "visibility": "private",
+    "columns": {
+      "battle_id": "u64",
+      "kind": "game_core::tactics::tuning::BattleKind",
+      "format": "u8",
+      "map_id": "u32",
+      "content_version": "u32",
+      "phase": "game_core::tactics::types::Phase",
+      "round": "u16",
+      "initiative": "Vec<u32>",
+      "turn_idx": "u8",
+      "turn_state": "game_core::tactics::types::TurnState",
+      "tie_priority_side": "u8",
+      "pending_pad_ms": "u32",
+      "attack_damage_dealt_a": "u32",
+      "attack_damage_dealt_b": "u32"
+    },
+    "order": [
+      "battle_id",
+      "kind",
+      "format",
+      "map_id",
+      "content_version",
+      "phase",
+      "round",
+      "initiative",
+      "turn_idx",
+      "turn_state",
+      "tie_priority_side",
+      "pending_pad_ms",
+      "attack_damage_dealt_a",
+      "attack_damage_dealt_b"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "map_id"
+    ],
+    "scheduled": null
+  },
+  "battle_unit": {
+    "pk": "unit_id",
+    "visibility": "private",
+    "columns": {
+      "unit_id": "u32",
+      "battle_id": "u64",
+      "side": "u8",
+      "owner": "Option<Identity>",
+      "slot": "u8",
+      "monster_id": "Option<u64>",
+      "wild_index": "Option<u8>",
+      "species_id": "u32",
+      "level": "u8",
+      "affinity": "Affinity",
+      "x": "u8",
+      "y": "u8",
+      "cur_hp": "u16",
+      "max_hp": "u16",
+      "stats": "game_core::StatBlock",
+      "skill_ids": "Vec<u32>",
+      "status": "Option<game_core::StatusEffect>",
+      "ap": "u8",
+      "strides_used": "u8",
+      "attacks": "u8",
+      "budget_last": "Option<BudgetLastEntry>",
+      "guard": "bool",
+      "first_stand": "bool",
+      "movement": "u8",
+      "stride": "u8",
+      "stance": "Option<u8>",
+      "state": "game_core::tactics::resolve::UnitState"
+    },
+    "order": [
+      "unit_id",
+      "battle_id",
+      "side",
+      "owner",
+      "slot",
+      "monster_id",
+      "wild_index",
+      "species_id",
+      "level",
+      "affinity",
+      "x",
+      "y",
+      "cur_hp",
+      "max_hp",
+      "stats",
+      "skill_ids",
+      "status",
+      "ap",
+      "strides_used",
+      "attacks",
+      "budget_last",
+      "guard",
+      "first_stand",
+      "movement",
+      "stride",
+      "stance",
+      "state"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": null
+  },
+  "battle_queue": {
+    "pk": "unit_id",
+    "visibility": "private",
+    "columns": {
+      "unit_id": "u32",
+      "battle_id": "u64",
+      "owner": "Identity",
+      "entries": "Vec<game_core::tactics::types::QueuedAction>",
+      "submitted_at_ms": "i64"
+    },
+    "order": [
+      "unit_id",
+      "battle_id",
+      "owner",
+      "entries",
+      "submitted_at_ms"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id",
+      "owner"
+    ],
+    "scheduled": null
+  },
+  "battle_deploy": {
+    "pk": "deploy_id",
+    "visibility": "private",
+    "columns": {
+      "deploy_id": "u64",
+      "battle_id": "u64",
+      "owner": "Identity",
+      "picks": "Vec<DeployPick>",
+      "locked": "bool"
+    },
+    "order": [
+      "deploy_id",
+      "battle_id",
+      "owner",
+      "picks",
+      "locked"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id",
+      "owner"
+    ],
+    "scheduled": null
+  },
+  "battle_clock": {
+    "pk": "clock_id",
+    "visibility": "private",
+    "columns": {
+      "clock_id": "u64",
+      "battle_id": "u64",
+      "side": "u8",
+      "player": "Identity",
+      "window_seq": "u32",
+      "window_open_ms": "Option<i64>",
+      "deadline_ms": "Option<i64>",
+      "windows_this_unit_turn": "u8",
+      "idle_ms_total": "u64",
+      "autopass_count": "u8"
+    },
+    "order": [
+      "clock_id",
+      "battle_id",
+      "side",
+      "player",
+      "window_seq",
+      "window_open_ms",
+      "deadline_ms",
+      "windows_this_unit_turn",
+      "idle_ms_total",
+      "autopass_count"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id",
+      "player"
+    ],
+    "scheduled": null
+  },
+  "battle_secret": {
+    "pk": "battle_id",
+    "visibility": "private",
+    "columns": {
+      "battle_id": "u64",
+      "seed": "u64",
+      "action_seq": "u64"
+    },
+    "order": [
+      "battle_id",
+      "seed",
+      "action_seq"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "battle_wild_unit": {
+    "pk": "wild_unit_id",
+    "visibility": "private",
+    "columns": {
+      "wild_unit_id": "u64",
+      "battle_id": "u64",
+      "wild_index": "u8",
+      "species_id": "u32",
+      "level": "u8",
+      "individuality_seed": "u32"
+    },
+    "order": [
+      "wild_unit_id",
+      "battle_id",
+      "wild_index",
+      "species_id",
+      "level",
+      "individuality_seed"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": null
+  },
+  "battle_event": {
+    "pk": "event_id",
+    "visibility": "private",
+    "columns": {
+      "event_id": "u64",
+      "battle_id": "u64",
+      "seq": "u32",
+      "round": "u16",
+      "payload": "game_core::tactics::events::EventPayload"
+    },
+    "order": [
+      "event_id",
+      "battle_id",
+      "seq",
+      "round",
+      "payload"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": null
+  },
+  "battle_summary": {
+    "pk": "battle_id",
+    "visibility": "private",
+    "columns": {
+      "battle_id": "u64",
+      "player_identity": "Identity",
+      "opponent_identity": "Identity",
+      "kind": "game_core::tactics::tuning::BattleKind",
+      "outcome": "game_core::BattleOutcome",
+      "rounds": "u16",
+      "wall_ms": "u64",
+      "idle_ms_a": "u64",
+      "idle_ms_b": "u64",
+      "windows_histogram": "Vec<u32>",
+      "autopasses": "u16",
+      "recruit_attempts": "u16",
+      "recruit_successes": "u16",
+      "weaken_first": "bool",
+      "items_used": "u16",
+      "damage_dealt_a": "u32",
+      "damage_dealt_b": "u32",
+      "hits": "u16",
+      "misses": "u16"
+    },
+    "order": [
+      "battle_id",
+      "player_identity",
+      "opponent_identity",
+      "kind",
+      "outcome",
+      "rounds",
+      "wall_ms",
+      "idle_ms_a",
+      "idle_ms_b",
+      "windows_histogram",
+      "autopasses",
+      "recruit_attempts",
+      "recruit_successes",
+      "weaken_first",
+      "items_used",
+      "damage_dealt_a",
+      "damage_dealt_b",
+      "hits",
+      "misses"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "player_identity",
+      "opponent_identity"
+    ],
+    "scheduled": null
+  },
+  "player_formation": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "monster_ids": "Vec<u64>"
+    },
+    "order": [
+      "owner_identity",
+      "monster_ids"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   }
 }

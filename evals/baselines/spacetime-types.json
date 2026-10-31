@@ -858,5 +858,35 @@
       "Active",
       "Finished"
     ]
+  },
+  "BudgetLastEntry": {
+    "kind": "struct",
+    "fields": [
+      [
+        "kind",
+        "u8"
+      ],
+      [
+        "strides",
+        "u8"
+      ],
+      [
+        "taxed",
+        "bool"
+      ]
+    ]
+  },
+  "DeployPick": {
+    "kind": "struct",
+    "fields": [
+      [
+        "monster_id",
+        "u64"
+      ],
+      [
+        "slot",
+        "u8"
+      ]
+    ]
   }
 }
