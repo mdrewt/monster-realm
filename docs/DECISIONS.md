@@ -150,10 +150,13 @@ private (no `public` in its `#[spacetimedb::table]`). Each owner reads their own
 through a `#[spacetimedb::view]` whose body filters on `ctx.sender()`
 (`server-module/src/schema.rs`): `my_monster_pub`, `my_inventory`, `my_wallet`,
 `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_battle` (either
-participant), and `my_export_bundle` (`privacy.rs`). Some tables have no client read
-path at all: `monster` (IVs, EVs, nature), `encounter` (spawn weights), `battle_wild`
-(the wild's individuality seed), `battle_action` (secret PvP picks), `heal_cooldown`,
-`guest_claim`, `player_session`.
+participant), `my_export_bundle` (`privacy.rs`), and the tactical set (`my_tactical_battle`,
+`my_battle_units`, `my_battle_events`, `my_battle_clock` for either participant;
+`my_battle_queue`, `my_battle_deploy`, `my_formation` for the owner). Some tables have no
+client read path at all: `monster` (IVs, EVs, nature), `encounter` (spawn weights),
+`battle_wild` and `battle_wild_unit` (wild individuality seeds), `battle_secret` (the
+tactical seed), `battle_summary` (telemetry), `battle_action` (secret PvP picks),
+`heal_cooldown`, `guest_claim`, `player_session`.
 
 **Why.** Hidden stats, item stock, balances and a pending PvP pick are competitive
 information. The view body is the entire boundary, so each view takes only the
@@ -175,9 +178,16 @@ two identity indexes (`my_tactical_battle`, `my_battle_units`, `my_battle_events
 `battle_secret` (the seed), `battle_wild_unit` (wild individuality seeds) and
 `battle_summary` (telemetry) have no view at all. `battle_unit` carries no queue or
 ready field. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
-the cascade (`accounts::erase_tactical_rows`) sweeps the per-battle rows by `battle_id`
-before `battle::anonymize_battles` tombstones the anchor, and `battle_summary` survives
-with the deleting side swapped to the tombstone identity.
+the cascade step (`schema::erase_tactical_rows`, beside the tables it writes) collects
+the battle ids from every row that still names the identity (the `battle` anchor chain,
+the clock, queue, deploy and summary identity columns, and a scan of `battle_unit`),
+sweeps the whole battle's per-battle rows by `battle_id` before `battle::anonymize_battles`
+tombstones the anchor, and leaves `battle_summary` with the deleting side swapped to the
+tombstone identity. The other participant's rows of a shared battle go with it: the
+anchor is forced terminal for both sides and the transcript is GC-bound. Game-core's
+non-wire enums (`Side`, `MoveClass`, `Stance`, `Entry`) are stored through schema-local
+`SpacetimeType` twins (`SideRow`, `MoveClassRow`, `StanceRow`, `BudgetLastEntry`), never
+as integer codes.
 
 **Why.** Whether a READY plan exists is the one fact an opponent could act on (design
 §6.3), so it must not be derivable from any participant-visible row: the queue is
@@ -190,8 +200,10 @@ through the battle they belong to.
 
 **Rules out.** A ready or queued flag on `battle_unit`; a view over `battle_secret`,
 `battle_wild_unit` or `battle_summary`; a view taking an identity argument; adding an
-exporter for a tactical table; an owner-keyed cascade step for `battle_unit` (it would
-miss wild units and could never be indexed).
+exporter for a tactical table; an owner-keyed-only cascade step for `battle_unit` (it
+would miss wild units and could never be indexed); a cascade that finds tactical rows
+only through the `battle` anchor (the reaper's first step can delete an ongoing wild
+anchor before the sweep runs); `u8` codes for game-core enums in a row.
 
 ## Bounded client prediction
 
@@ -494,7 +506,8 @@ anonymous connections; widening the audience allowlist to more than this game's 
 
 **Decision.** Every table is classified once in `schema::DATA_LIFECYCLE_MANIFEST`
 (Erase / Anonymize / ViaJoin / NotOwned, a written basis, and whether it is
-exportable). A test fails if a table is missing or stale. `delete_account` sets
+exportable). A test compares the manifest with the generated module definition's
+table set, so a missing or stale entry fails. `delete_account` sets
 `PendingDeletion` and arms a one-shot reaper for `DELETION_GRACE_MS_DEFAULT` (7 days,
 `game-core/src/accounts/deletion.rs`); `cancel_account_deletion` reverses it. When
 the reaper fires, the cascade force-resolves live interactions first, forces ongoing

@@ -270,8 +270,8 @@ body is the whole security boundary.
   cards in an offer carry public-projection fields only.
 - **Data lifecycle.** `schema::DATA_LIFECYCLE_MANIFEST` gives every table a deletion
   policy (Erase, Anonymize, ViaJoin, NotOwned), a written basis, and an `exportable`
-  flag. A test in `accounts_tests.rs` fails if a table is missing from it or listed
-  but gone. The tactical tables are swept by `accounts::erase_tactical_rows` (by
+  flag. A test in `accounts_tests.rs` compares it with the generated module
+  definition's table set, so a table missing from it or listed but gone fails. The tactical tables are swept by `schema::erase_tactical_rows` (by
   `battle_id`, before the `battle` anchor is tombstoned) and none is exportable.
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
