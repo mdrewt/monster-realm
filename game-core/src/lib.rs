@@ -87,7 +87,9 @@ pub use raising::{
     focus_train, is_cooldown_ready, FocusTrainError, FocusTrainResult, CARE_COOLDOWN_MS,
 };
 pub use ranking::{apply_elo, compute_rating_update, INITIAL_RATING};
-pub use tactics::{find_path, parse_battle_map, run_golden, target_set};
+pub use tactics::{
+    find_path, parse_battle_map, resolve_attack, run_golden, run_upkeep, target_set, TacticsTuning,
+};
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
     EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR, RECRUIT_BASE_RATE,
