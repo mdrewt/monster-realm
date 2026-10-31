@@ -19,7 +19,7 @@ use super::resolve::splitmix64;
 pub const MAX_PACK: u8 = 3;
 
 /// The per-mille scale the weights are expressed in (the carried `roll % 1000 < threshold` idiom).
-const PER_MILLE: u64 = 1000;
+const PER_MILLE: u32 = 1000;
 
 /// Per-mille pack-size weights (the zone's `pack_weights`, bt-6). Must sum to 1000.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ impl PackWeights {
     /// [`EncounterError::BadWeights`] with the actual sum.
     pub fn validate(&self) -> Result<(), EncounterError> {
         let sum = u32::from(self.one) + u32::from(self.two) + u32::from(self.three);
-        if u64::from(sum) == PER_MILLE {
+        if sum == PER_MILLE {
             Ok(())
         } else {
             Err(EncounterError::BadWeights { sum })
@@ -75,7 +75,7 @@ pub enum EncounterError {
 /// [`PackWeights::validate`]'s.
 pub fn roll_pack_size(weights: &PackWeights, encounter_seed: u64) -> Result<u8, EncounterError> {
     weights.validate()?;
-    let r = encounter_seed % PER_MILLE;
+    let r = encounter_seed % u64::from(PER_MILLE);
     if r < u64::from(weights.one) {
         Ok(1)
     } else if r < u64::from(weights.one) + u64::from(weights.two) {

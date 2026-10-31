@@ -102,12 +102,11 @@ struct Reach {
 }
 
 /// One way to attack: `target` from `reach.tile` with the `skill_idx`-th kit skill, aimed as `aim`.
-struct Candidate {
+struct Candidate<'a> {
     target: u32,
-    tier: Tier,
     reach: Reach,
     skill_idx: usize,
-    skill_id: u32,
+    skill: &'a SkillTactics,
     aim: ActionTarget,
 }
 
@@ -260,7 +259,7 @@ impl<'a> View<'a> {
         reach: &[Reach],
         tile_ok: impl Fn(Cell) -> bool,
         tier_ok: impl Fn(Tier) -> bool,
-    ) -> Vec<Candidate> {
+    ) -> Vec<Candidate<'a>> {
         let mut out = Vec::new();
         for &r in reach.iter().filter(|r| tile_ok(r.tile)) {
             let board_at = self.board_at(r.tile);
@@ -277,10 +276,9 @@ impl<'a> View<'a> {
                     if let Some(aim) = self.hits(&board_at, r.tile, skill, target) {
                         out.push(Candidate {
                             target: target.id,
-                            tier: skill.tier,
                             reach: r,
                             skill_idx,
-                            skill_id: skill.skill_id,
+                            skill,
                             aim,
                         });
                     }
@@ -309,7 +307,7 @@ impl<'a> View<'a> {
             .min_by_key(|p| (manhattan(pos, p.pos), p.cur_hp, p.slot, p.pos.y, p.pos.x))?;
         let tier = if candidates
             .iter()
-            .any(|c| c.target == target.id && c.tier == Tier::Heavy)
+            .any(|c| c.target == target.id && c.skill.tier == Tier::Heavy)
         {
             Tier::Heavy
         } else {
@@ -317,7 +315,7 @@ impl<'a> View<'a> {
         };
         let best = candidates
             .iter()
-            .filter(|c| c.target == target.id && c.tier == tier)
+            .filter(|c| c.target == target.id && c.skill.tier == tier)
             .min_by_key(|c| {
                 let primary = farthest.then(|| Reverse(self.distance(c.reach.tile)));
                 (
@@ -331,7 +329,7 @@ impl<'a> View<'a> {
         let mut out = Vec::with_capacity(3);
         out.extend(move_action(best.reach));
         out.push(QueuedAction::Skill(SkillAction {
-            skill_id: best.skill_id,
+            skill_id: best.skill.skill_id,
             target: best.aim,
         }));
         out.push(QueuedAction::EndTurn);
