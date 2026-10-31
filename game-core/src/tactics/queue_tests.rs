@@ -47,9 +47,9 @@ use super::geometry::{target_set, FfFilter, GeometryError, Origin, Shape, Side, 
 use super::map::{BattleMapDef, TileDef};
 use super::movement::{Path, PathError, Terrain};
 use super::queue::{
-    is_player_owned, min_action_cost, status_blocks_turn, validate_at_pop, AdvancePin, CancelError,
-    ConcludeError, ExpireError, HaltReason, Hooks, ReadyPlan, Rules, StepError, StepResult,
-    SubmitError, TacticalBattle, Validated,
+    is_player_owned, min_action_cost, status_blocks_turn, stride_points, validate_at_pop,
+    AdvancePin, CancelError, ConcludeError, ExpireError, HaltReason, Hooks, ReadyPlan, Rules,
+    StepError, StepResult, SubmitError, TacticalBattle, Validated,
 };
 use super::resolve::{
     turn_start, ActError, DeployError, SkillTactics, TacticalState, TacticalUnit, UnitState,
@@ -233,6 +233,30 @@ enum ItemFx {
     Wipe,
 }
 
+/// A state edit every `resolve_delegated` makes AFTER its kind's own effect — a side-effecting
+/// or misbehaving rule the executor must cope with (the default list is empty).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HookFx {
+    /// Drop the unit to 0 HP (a KO only the terminal sweep may record).
+    Ko(u32),
+    /// Mark the unit Recruited and drop it from the order (a silent removal).
+    Recruit(u32),
+    /// Write a decided outcome (a hook trying to end the battle itself).
+    Outcome(BattleOutcome),
+}
+
+/// What a hook was shown: `(unit asked about, seed, action_seq, that unit's cur_hp in the view)`.
+type Seen = (u32, u64, u64, Option<u16>);
+
+fn seen(state: &TacticalState, unit: u32) -> Seen {
+    (
+        unit,
+        state.seed,
+        state.action_seq,
+        state.unit(unit).map(|u| u.cur_hp),
+    )
+}
+
 /// The injected seam. The inventory is keyed by OWNER (`owner_of`), the AI plans are scripted
 /// per unit (default `[EndTurn]`), `validate_delegated` returns `refuse` when set, and every
 /// call is logged so a test can pin how many times (and with what) the executor asked.
@@ -252,6 +276,12 @@ struct FakeHooks {
     validate_calls: RefCell<Vec<(u32, Validated)>>,
     take_calls: Vec<(u32, u32)>,
     resolve_calls: Vec<(u32, Validated)>,
+    /// Applied in order after every `resolve_delegated`'s own effect.
+    fx: Vec<HookFx>,
+    /// What every `plan_ai` call was shown.
+    plan_ai_seen: RefCell<Vec<Seen>>,
+    /// What every `validate_delegated` call was shown.
+    validate_seen: RefCell<Vec<Seen>>,
 }
 
 /// Both player sides' units map to one owner per side: A → 0, B → 1.
@@ -278,6 +308,9 @@ impl FakeHooks {
             validate_calls: RefCell::new(Vec::new()),
             take_calls: Vec::new(),
             resolve_calls: Vec::new(),
+            fx: Vec::new(),
+            plan_ai_seen: RefCell::new(Vec::new()),
+            validate_seen: RefCell::new(Vec::new()),
         }
     }
 
@@ -347,8 +380,9 @@ impl Hooks for FakeHooks {
         self.headroom
     }
 
-    fn plan_ai(&self, _state: &TacticalState, unit: u32) -> Vec<QueuedAction> {
+    fn plan_ai(&self, state: &TacticalState, unit: u32) -> Vec<QueuedAction> {
         self.plan_ai_calls.borrow_mut().push(unit);
+        self.plan_ai_seen.borrow_mut().push(seen(state, unit));
         self.ai
             .iter()
             .find(|(u, _)| *u == unit)
@@ -357,13 +391,14 @@ impl Hooks for FakeHooks {
 
     fn validate_delegated(
         &self,
-        _state: &TacticalState,
+        state: &TacticalState,
         unit: u32,
         validated: &Validated,
     ) -> Result<(), HaltReason> {
         self.validate_calls
             .borrow_mut()
             .push((unit, validated.clone()));
+        self.validate_seen.borrow_mut().push(seen(state, unit));
         match self.refuse {
             Some(reason) => Err(reason),
             None => Ok(()),
@@ -407,6 +442,22 @@ impl Hooks for FakeHooks {
             | Validated::Skill { .. }
             | Validated::Flee { .. }
             | Validated::EndTurn => {}
+        }
+        for fx in &self.fx {
+            match *fx {
+                HookFx::Ko(id) => {
+                    if let Some(u) = state.unit_mut(id) {
+                        u.cur_hp = 0;
+                    }
+                }
+                HookFx::Recruit(id) => {
+                    if let Some(u) = state.unit_mut(id) {
+                        u.state = UnitState::Recruited;
+                    }
+                    state.remove_from_initiative(id);
+                }
+                HookFx::Outcome(outcome) => state.outcome = outcome,
+            }
         }
         out.extend(self.extra.iter().cloned());
         out
@@ -538,6 +589,15 @@ fn item_used(unit: u32, item_id: u32, target: u32) -> EventPayload {
 
 fn auto_pass(unit: u32, strike: u8) -> EventPayload {
     EventPayload::AutoPass(AutoPassEvent { unit, strike })
+}
+
+fn recruit_result(unit: u32, target: u32, success: bool, pct: u8) -> EventPayload {
+    EventPayload::RecruitResult(RecruitResultEvent {
+        unit,
+        target,
+        success,
+        pct,
+    })
 }
 
 fn awards(unit: u32) -> EventPayload {
@@ -4966,4 +5026,1300 @@ fn events_are_emitted_only_for_executed_entries_bt3_10() {
     let out = start_at(&mut b, T0, &w, &mut h);
     assert_eq!(execution_events(&out.events), 1);
     assert_eq!(out.actions, 1);
+}
+
+// ===========================================================================
+// Round 2 — the red-team's survivor pins and the review lenses' contract fixes
+// ===========================================================================
+
+// --- BT3.2 -----------------------------------------------------------------
+
+/// BT3.2: the headroom predicate gates Recruit only — `[Flee]` pre-queued with no party headroom
+/// is stored, while `[Recruit]` from the same side is `NoHeadroom`.
+/// Kills: the headroom check applied to every must-be-alone plan (Flee refused).
+#[test]
+fn a_flee_pre_queue_needs_no_recruit_headroom_bt3_2() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = gate_battle(&w, &mut h);
+    h.headroom = false;
+    assert_eq!(submit(&mut b, T0, 2, vec![FLEE], &w, &mut h), quiet(1));
+    assert_eq!(entries_of(&b, 2), Some(vec![FLEE, END]));
+    assert_eq!(
+        refused(&mut b, T0, Side::A, 3, vec![recruit(11, None)], &w, &mut h),
+        SubmitError::NoHeadroom
+    );
+}
+
+/// BT3.2: the per-entry pass checks a skill against the kit BEFORE its bound id —
+/// `Skill{9999, Unit(u32::MAX)}` is `UnknownSkill`; a known skill on that id is `UnknownTarget`.
+/// Kills: the bound id looked up before the skill.
+#[test]
+fn an_unknown_skill_is_reported_before_an_unknown_target_bt3_2() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = gate_battle(&w, &mut h);
+    assert_eq!(
+        refused(
+            &mut b,
+            T0,
+            Side::A,
+            2,
+            vec![sk(9_999, u32::MAX)],
+            &w,
+            &mut h
+        ),
+        SubmitError::UnknownSkill { skill_id: 9_999 }
+    );
+    assert_eq!(
+        refused(
+            &mut b,
+            T0,
+            Side::A,
+            2,
+            vec![sk(LIGHT, u32::MAX)],
+            &w,
+            &mut h
+        ),
+        SubmitError::UnknownTarget { id: u32::MAX }
+    );
+}
+
+/// BT3.2: the action count is judged before the EndTurn position — `[Move ×3, EndTurn, Move]`
+/// (4 actions, a non-terminal EndTurn) is `TooManyActions{4}`, not `EndTurnNotLast`.
+/// Kills: the EndTurn-position pass run first.
+#[test]
+fn too_many_actions_is_reported_before_end_turn_not_last_bt3_2() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = gate_battle(&w, &mut h);
+    let step = mv(2, 6, 1);
+    assert_eq!(
+        refused(
+            &mut b,
+            T0,
+            Side::A,
+            2,
+            vec![step, step, step, END, step],
+            &w,
+            &mut h
+        ),
+        SubmitError::TooManyActions { count: 4 }
+    );
+}
+
+// --- BT3.3 -----------------------------------------------------------------
+
+/// BT3.3: an Item with none held is `ItemNotHeld` before its cost is judged — 2 AP left and no
+/// potion reports the inventory (the delegated rule never asked); held, the same entry is
+/// refused on its cost.
+/// Kills: the spend copy run before the inventory read.
+#[test]
+fn an_item_none_held_is_item_not_held_before_its_cost_bt3_3() {
+    let empty = FakeHooks::new();
+    let mut st = pop_state(
+        BattleKind::Wild,
+        &[],
+        vec![mon(1, Side::A, 0, 1, 1, 40), mon(11, Side::B, 0, 6, 6, 30)],
+        &[1],
+    );
+    st.unit_mut(1).expect("unit 1").budget.ap = 2;
+    assert_eq!(
+        pop(&st, 1, use_item(POTION, ActionTarget::SelfTarget), &empty),
+        Err(HaltReason::ItemNotHeld { item_id: POTION })
+    );
+    assert!(empty.validate_log().is_empty());
+    let held = FakeHooks::new().holding(POTION, 1);
+    assert_eq!(
+        pop(&st, 1, use_item(POTION, ActionTarget::SelfTarget), &held),
+        Err(HaltReason::Economy(EconomyError::Unaffordable {
+            cost: 3,
+            ap: 2
+        }))
+    );
+}
+
+/// BT3.3: a Skill bound to a fainted unit is `TargetGone` before its cost is judged — with 1 AP
+/// left, on an ADJACENT corpse — while the same Skill on a living adjacent target is
+/// `Unaffordable`.
+/// Kills: the spend copy run before the bound unit is re-checked.
+#[test]
+fn a_skill_bound_to_a_fainted_unit_is_target_gone_before_its_cost_bt3_3() {
+    let h = FakeHooks::new();
+    let mut st = pop_state(
+        BattleKind::Wild,
+        &[],
+        vec![
+            mon(1, Side::A, 0, 1, 1, 40),
+            mon(11, Side::B, 0, 2, 1, 30),
+            mon(12, Side::B, 1, 1, 2, 20),
+        ],
+        &[1],
+    );
+    st.unit_mut(1).expect("unit 1").budget.ap = 1;
+    {
+        let u = st.unit_mut(12).expect("unit 12");
+        u.state = UnitState::Fainted;
+        u.cur_hp = 0;
+    }
+    assert_eq!(
+        pop(&st, 1, sk(LIGHT, 12), &h),
+        Err(HaltReason::TargetGone { id: 12 })
+    );
+    assert_eq!(
+        pop(&st, 1, sk(LIGHT, 11), &h),
+        Err(HaltReason::Economy(EconomyError::Unaffordable {
+            cost: 2,
+            ap: 1
+        }))
+    );
+}
+
+/// BT3.3: a Move's cost is judged before its path — 0 AP and a destination an enemy holds is
+/// `Unaffordable` with the live tax (2 + 1 = 3); with the full budget the same Move is the path
+/// refusal.
+/// Kills: `find_path` run before the spend copy.
+#[test]
+fn a_move_onto_an_occupied_tile_is_refused_on_cost_before_path_bt3_3() {
+    let h = FakeHooks::new();
+    let mut st = pop_state(
+        BattleKind::Wild,
+        &[],
+        vec![mon(1, Side::A, 0, 1, 1, 40), mon(11, Side::B, 0, 2, 1, 30)],
+        &[1],
+    );
+    st.unit_mut(1).expect("unit 1").budget.ap = 0;
+    assert_eq!(
+        pop(&st, 1, mv(2, 1, 1), &h),
+        Err(HaltReason::Economy(EconomyError::Unaffordable {
+            cost: 3,
+            ap: 0
+        }))
+    );
+    st.unit_mut(1).expect("unit 1").budget.ap = 6;
+    assert_eq!(
+        pop(&st, 1, mv(2, 1, 1), &h),
+        Err(HaltReason::Path(PathError::DestOccupied))
+    );
+}
+
+/// BT3.3: the delegated validator is shown the public view — the live board (the actor at 77
+/// HP) with `seed` and `action_seq` zeroed — for Item, Recruit and Flee, while the state the
+/// gate read keeps its own stream (seed 7, action_seq 5) and is untouched.
+/// Kills: the real state handed to `validate_delegated` (its answer could read the secret).
+#[test]
+fn the_delegated_validator_sees_the_secret_stream_zeroed_bt3_3() {
+    let h = FakeHooks::new().holding(POTION, 1).holding(BAIT, 1);
+    let mut st = pop_state(
+        BattleKind::Wild,
+        &[],
+        vec![
+            with_hp(mon(1, Side::A, 0, 3, 3, 40), 77),
+            mon(11, Side::B, 0, 4, 3, 30),
+        ],
+        &[1],
+    );
+    st.action_seq = 5;
+    let before = st.clone();
+    assert_eq!(
+        pop(&st, 1, use_item(POTION, ActionTarget::SelfTarget), &h),
+        Ok(Validated::Item {
+            item_id: POTION,
+            target: 1,
+            entry: Entry::Item,
+        })
+    );
+    assert_eq!(
+        pop(&st, 1, recruit(11, Some(BAIT)), &h),
+        Ok(Validated::Recruit {
+            target: 11,
+            bait: Some(BAIT),
+            entry: Entry::Recruit,
+        })
+    );
+    assert_eq!(
+        pop(&st, 1, FLEE, &h),
+        Ok(Validated::Flee { entry: Entry::Flee })
+    );
+    assert_eq!(
+        h.validate_seen.borrow().clone(),
+        vec![(1, 0, 0, Some(77)); 3]
+    );
+    assert_eq!((st.seed, st.action_seq), (7, 5));
+    assert_eq!(st, before);
+}
+
+/// BT3.3: `stride_points` is `strides × stride(BASE speed)` in u16 — 2 × 2, 1 × 3, 2 × 4, the
+/// band edges 49 / 50 / 89 / 90, and a hostile 255 strides (1 020, no u8 wrap).
+/// Kills: a fixed stride; the band edges off by one; u8 arithmetic.
+#[test]
+fn stride_points_are_strides_times_the_base_speed_stride_bt3_3() {
+    assert_eq!(stride_points(2, 40), 4);
+    assert_eq!(stride_points(1, 50), 3);
+    assert_eq!(stride_points(2, 90), 8);
+    assert_eq!(stride_points(1, 49), 2);
+    assert_eq!(stride_points(1, 89), 3);
+    assert_eq!(stride_points(0, 90), 0);
+    assert_eq!(stride_points(255, 90), 1_020);
+}
+
+// --- BT3.4 -----------------------------------------------------------------
+
+/// BT3.4: `ItemUsed.target` is the RESOLVED target — a potion from 1 on `Unit(2)` names 2, the
+/// hook is handed target 2 and heals 2 (50 → 70), not the actor.
+/// Kills: the actor's id written as the target.
+#[test]
+fn item_used_names_the_resolved_target_bt3_4() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    let (mut b, _) = drive(
+        BattleKind::Wild,
+        vec![
+            mon(1, Side::A, 0, 1, 1, 40),
+            with_hp(mon(2, Side::A, 1, 1, 3, 35), 50),
+            mon(11, Side::B, 0, 6, 6, 30),
+        ],
+        &w,
+        &mut h,
+    );
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    let t1 = T0 + 3_000;
+    let out = submit(
+        &mut b,
+        t1,
+        1,
+        vec![use_item(POTION, ActionTarget::Unit(2))],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![item_used(1, POTION, 2)],
+            round: 1,
+            window: Some(Window {
+                seq: 2,
+                opens_at_ms: t1 + 400,
+                deadline_ms: t1 + 400 + PVE_MS,
+            }),
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+    assert_eq!(
+        h.resolve_calls,
+        vec![(
+            1,
+            Validated::Item {
+                item_id: POTION,
+                target: 2,
+                entry: Entry::Item,
+            }
+        )]
+    );
+    assert_eq!((unit_in(&b, 1).cur_hp, unit_in(&b, 2).cur_hp), (100, 70));
+}
+
+/// BT3.4: `Moved.tiles` counts the tiles walked, not the stride points paid — one stride onto a
+/// Rough tile (path cost 2) is `tiles 1`, so the window pad is 100 ms, not 200.
+/// Kills: `tiles = path.cost`.
+#[test]
+fn moved_counts_the_tiles_walked_not_the_path_cost_bt3_4() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = TacticalBattle::new(
+        BID,
+        state_on(
+            BattleKind::Wild,
+            7,
+            &[(2, 1, Terrain::Rough)],
+            vec![mon(1, Side::A, 0, 1, 1, 40), mon(11, Side::B, 0, 6, 6, 30)],
+        ),
+    );
+    start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    let t1 = T0 + 3_000;
+    let out = submit(&mut b, t1, 1, vec![mv(2, 1, 1)], &w, &mut h);
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![moved(1, (1, 1), (2, 1), 1)],
+            round: 1,
+            window: Some(Window {
+                seq: 2,
+                opens_at_ms: t1 + 100,
+                deadline_ms: t1 + 100 + PVE_MS,
+            }),
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+    assert_eq!(
+        unit_in(&b, 1).budget,
+        TurnBudget {
+            ap: 4,
+            strides_used: 1,
+            attacks: 0,
+            last: Some(Entry::Move {
+                strides: 1,
+                taxed: false
+            }),
+        }
+    );
+}
+
+/// BT3.4: a live Flee is an executed action — `actions 1`, `unit_turns 1` (the live unit).
+/// Kills: the Flee's early return skipping the action count.
+#[test]
+fn a_live_flee_counts_one_action_and_one_unit_turn_bt3_4() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = drive_to_waiting((1, 1), (6, 6), &w, &mut h);
+    let out = submit(&mut b, T0 + 3_000, 1, vec![FLEE], &w, &mut h);
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![battle_end(BattleOutcome::Fled, EndHow::Fled)],
+            round: 1,
+            window: None,
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+}
+
+/// BT3.4: the AP floor is the cheapest of the THREE costs under any tuning — (light 1, stride 2,
+/// item 3) → 1, (5, 4, 3) → 3, (4, 5, 6) → 4.
+/// Kills: the floor read from one cost or the min of two; a floor pinned at 2.
+#[test]
+fn the_ap_floor_is_the_cheapest_of_light_stride_and_item_bt3_4() {
+    let floor = |light: u8, stride: u8, item: u8| {
+        min_action_cost(&perturb(|t| {
+            t.light_cost = light;
+            t.move_stride_cost = stride;
+            t.item_cost = item;
+        }))
+    };
+    assert_eq!(floor(1, 2, 3), 1);
+    assert_eq!(floor(5, 4, 3), 3);
+    assert_eq!(floor(4, 5, 6), 4);
+}
+
+/// BT3.4: a flee hook that writes `SideAWins` decides nothing — the executor ends the battle
+/// `BattleEnd{Fled, Fled}` and records `Fled`.
+/// Kills: the Flee end recorded only when the hook left the battle undecided.
+#[test]
+fn a_flee_whose_hook_writes_an_outcome_still_ends_fled_bt3_4() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    h.fx = vec![HookFx::Outcome(BattleOutcome::SideAWins)];
+    let mut b = drive_to_waiting((1, 1), (6, 6), &w, &mut h);
+    let out = submit(&mut b, T0 + 3_000, 1, vec![FLEE], &w, &mut h);
+    assert_eq!(
+        out.events,
+        vec![battle_end(BattleOutcome::Fled, EndHow::Fled)]
+    );
+    assert_eq!(b.state.outcome, BattleOutcome::Fled);
+    assert_eq!(
+        h.resolve_calls,
+        vec![(1, Validated::Flee { entry: Entry::Flee })]
+    );
+    assert_eq!(
+        (b.phase(), b.turn_state),
+        (Phase::Finished, TurnState::NotActive)
+    );
+}
+
+/// BT3.4: an item hook that writes `SideAWins` is overruled — the outcome is restored to
+/// `Ongoing`, no `BattleEnd`, 1 gets its remaining 3 AP back live, and its later EndTurn runs
+/// the round on to its upkeep.
+/// Kills: a hook-written outcome kept (the battle finished without a BattleEnd).
+#[test]
+fn an_item_whose_hook_writes_an_outcome_is_overruled_bt3_4() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    h.fx = vec![HookFx::Outcome(BattleOutcome::SideAWins)];
+    let mut b = drive_to_waiting((1, 1), (6, 6), &w, &mut h);
+    let t1 = T0 + 3_000;
+    let out = submit(
+        &mut b,
+        t1,
+        1,
+        vec![use_item(POTION, ActionTarget::SelfTarget)],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![item_used(1, POTION, 1)],
+            round: 1,
+            window: Some(Window {
+                seq: 2,
+                opens_at_ms: t1 + 400,
+                deadline_ms: t1 + 400 + PVE_MS,
+            }),
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+    assert_eq!(b.state.outcome, BattleOutcome::Ongoing);
+    assert_eq!(
+        (b.phase(), b.turn_state),
+        (Phase::Active, TurnState::Waiting(1))
+    );
+    let out = submit(&mut b, t1 + 1_000, 1, vec![END], &w, &mut h);
+    assert_eq!(
+        out.events,
+        vec![ended(1, true, true), ended(11, true, true), round_ended(1)]
+    );
+    assert_eq!(b.turn_state, TurnState::Advancing);
+}
+
+/// BT3.4: the hook roster is `RecruitResult | Awards | Status` only — a hook that also returns
+/// `Ko`, `Moved` and `ItemUsed` (executor / bt-2 kinds) has them dropped from the events and
+/// from the pad, while the three allowed kinds pass through in the hook's order.
+/// Kills: a roster that lets Ko / Moved / ItemUsed through.
+#[test]
+fn a_hook_may_emit_only_recruit_result_awards_and_status_bt3_4() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    let burn = status_ev(1, StatusEffect::Burn, StatusChange::Applied, 0);
+    h.extra = vec![
+        ko(11),
+        recruit_result(1, 11, false, 0),
+        moved(11, (6, 6), (6, 5), 1),
+        awards(1),
+        item_used(1, ETHER, 11),
+        burn.clone(),
+    ];
+    let mut b = drive_to_waiting((1, 1), (6, 6), &w, &mut h);
+    let t1 = T0 + 3_000;
+    let out = submit(
+        &mut b,
+        t1,
+        1,
+        vec![use_item(POTION, ActionTarget::SelfTarget)],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out.events,
+        vec![
+            item_used(1, POTION, 1),
+            recruit_result(1, 11, false, 0),
+            awards(1),
+            burn,
+        ]
+    );
+    assert_eq!(
+        out.window,
+        Some(Window {
+            seq: 2,
+            opens_at_ms: t1 + 800,
+            deadline_ms: t1 + 800 + PVE_MS,
+        }),
+        "ItemUsed 400 + RecruitResult 400; the forged Moved and ItemUsed pad nothing"
+    );
+    assert_eq!(b.state.outcome, BattleOutcome::Ongoing);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+}
+
+// --- BT3.5 -----------------------------------------------------------------
+
+/// BT3.5: a sleeping WILD is blocked at TurnStart like any unit — `Status{Blocked}` and the
+/// uncommitted `TurnEnded` — and the planner is never asked (its scripted Move never runs).
+/// Kills: the AI plan executed before, or instead of, the turn-skip check.
+#[test]
+fn a_sleeping_wild_is_blocked_without_asking_the_planner_bt3_5() {
+    let w = World::new();
+    let sleep = StatusEffect::Sleep { turns_remaining: 3 };
+    let mut h = FakeHooks::new().ai_plan(11, vec![mv(6, 3, 1), END]);
+    let mut b = wild(vec![
+        afflicted(mon(11, Side::B, 0, 4, 3, 45), sleep),
+        mon(1, Side::A, 0, 3, 3, 40),
+    ]);
+    let out = start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![
+                battle_started(1),
+                status_ev(11, sleep, StatusChange::Blocked, 0),
+                ended(11, false, false),
+            ],
+            round: 1,
+            window: Some(Window {
+                seq: 1,
+                opens_at_ms: T0 + 2_000,
+                deadline_ms: T0 + 2_000 + PVE_MS,
+            }),
+            unit_turns: 2,
+            actions: 0,
+        }
+    );
+    assert!(h.plan_ai_log().is_empty(), "a sleeping wild never plans");
+    let sleeper = unit_in(&b, 11);
+    assert_eq!(
+        (sleeper.pos, sleeper.guard, sleeper.budget),
+        (c(4, 3), false, TurnBudget::default())
+    );
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    assert_eq!(b.state.action_seq, 0, "Sleep draws nothing");
+    assert_eq!(b.clocks[1], ClockState::default());
+}
+
+/// BT3.5: the wild planner is shown the public view — the live board (11 already chipped to 99)
+/// with `seed` and `action_seq` zeroed — while the battle keeps its own stream (seed 7, the two
+/// draws of 1's Light).
+/// Kills: the real state handed to `plan_ai` (an AI answer that could read the secret seed).
+#[test]
+fn the_wild_planner_sees_the_secret_stream_zeroed_bt3_5() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = drive_to_waiting((3, 3), (4, 3), &w, &mut h);
+    assert!(h.plan_ai_seen.borrow().is_empty());
+    let out = submit(&mut b, T0 + 3_000, 1, vec![sk(LIGHT, 11), END], &w, &mut h);
+    assert_eq!(
+        out.events,
+        vec![
+            executed(1, LIGHT, vec![chip(11)]),
+            ended(1, false, true),
+            ended(11, true, true),
+            round_ended(1),
+        ]
+    );
+    assert_eq!((b.state.seed, b.state.action_seq), (7, 2));
+    assert_eq!(h.plan_ai_seen.borrow().clone(), vec![(11, 0, 0, Some(99))]);
+}
+
+// --- BT3.6 -----------------------------------------------------------------
+
+/// BT3.6: recruiting the LAST wild ends the battle at that entry — the sweep after the
+/// delegated resolution finds side B empty: `[RecruitResult, BattleEnd{SideAWins, SideEmpty}]`,
+/// no further TurnStart (2 never activates), no upkeep, `NotActive`, the window closed.
+/// Kills: no settle after a Recruit (the round running on against an empty field).
+#[test]
+fn recruiting_the_last_wild_ends_the_battle_at_once_bt3_6() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let (mut b, _) = drive(
+        BattleKind::Wild,
+        vec![
+            mon(1, Side::A, 0, 3, 3, 40),
+            mon(11, Side::B, 0, 4, 3, 35),
+            mon(2, Side::A, 1, 0, 7, 30),
+        ],
+        &w,
+        &mut h,
+    );
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    let out = submit(&mut b, T0 + 3_000, 1, vec![recruit(11, None)], &w, &mut h);
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![
+                recruit_result(1, 11, true, 50),
+                battle_end(BattleOutcome::SideAWins, EndHow::SideEmpty),
+            ],
+            round: 1,
+            window: None,
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+    assert_eq!(b.state.outcome, BattleOutcome::SideAWins);
+    assert_eq!(
+        (b.phase(), b.turn_state),
+        (Phase::Finished, TurnState::NotActive)
+    );
+    assert_eq!(b.state.round, 1, "no upkeep ran");
+    assert_eq!(unit_in(&b, 2).budget, TurnBudget::default());
+    assert!(h.plan_ai_log().is_empty());
+    assert_eq!(
+        (b.clocks[0].window_open_ms, b.clocks[0].deadline_ms),
+        (None, None)
+    );
+}
+
+/// BT3.6: the adjudication snapshot is captured before EACH entry, not once per plan — PvP
+/// `[Light → 11, Item (wipes the board)]`: just before the Item, A holds 100 % to B's 99 %, so A
+/// wins on HP percent. A plan-start (or post-hook) snapshot ties on HP and conscious units and
+/// would decide on damage dealt (A 1 : B 0) instead.
+/// Kills: one snapshot per plan; the snapshot taken after the delegated resolution.
+#[test]
+fn the_double_ko_snapshot_is_taken_before_each_entry_bt3_6() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    h.item_fx = ItemFx::Wipe;
+    let mut b = pvp_battle(vec![
+        mon(1, Side::A, 0, 1, 1, 40),
+        mon(11, Side::B, 0, 2, 1, 30),
+    ]);
+    start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    let out = submit(
+        &mut b,
+        T0 + 3_000,
+        1,
+        vec![sk(LIGHT, 11), use_item(POTION, ActionTarget::SelfTarget)],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![
+                executed(1, LIGHT, vec![chip(11)]),
+                item_used(1, POTION, 1),
+                ko(1),
+                ko(11),
+                battle_end(BattleOutcome::SideAWins, EndHow::AdjudicatedHpPercent),
+            ],
+            round: 1,
+            window: None,
+            unit_turns: 1,
+            actions: 2,
+        }
+    );
+    assert_eq!(b.state.attack_damage_dealt, [1, 0]);
+}
+
+/// BT3.6: an `advance` step is stamped with the round it STARTED — round 2 runs to the next
+/// boundary (`RoundEnded{2}`, `state.round` becomes 3, pinned 3) and the step still says 2.
+/// Kills: `StepResult.round` read after the upkeep incremented the round.
+#[test]
+fn an_advance_step_reports_the_round_it_started_bt3_6() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = wild(vec![
+        mon(1, Side::A, 0, 1, 1, 40),
+        mon(11, Side::B, 0, 6, 6, 30),
+    ]);
+    submit(&mut b, T0 - 100, 1, vec![END], &w, &mut h);
+    let out = start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(
+        out.events,
+        vec![
+            battle_started(1),
+            ended(1, true, true),
+            ended(11, true, true),
+            round_ended(1),
+        ]
+    );
+    let pin = b.advance_pin().expect("pinned");
+    assert_eq!(
+        pin,
+        AdvancePin {
+            battle_id: BID,
+            round: 2
+        }
+    );
+    assert_eq!(submit(&mut b, T0 + 100, 1, vec![END], &w, &mut h), quiet(2));
+    let out = b
+        .advance(T0 + 200, pin, &w.rules(), &mut h)
+        .expect("round 2");
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![ended(1, true, true), ended(11, true, true), round_ended(2)],
+            round: 2,
+            window: None,
+            unit_turns: 2,
+            actions: 0,
+        }
+    );
+    assert_eq!(b.state.round, 3);
+    assert_eq!(
+        b.advance_pin(),
+        Some(AdvancePin {
+            battle_id: BID,
+            round: 3
+        })
+    );
+}
+
+/// BT3.6: `advance` validates the tuning before anything else — `guard_den = 0` is `Tuning`
+/// with the current pin AND with a stale one, and changes nothing; the same pin with a usable
+/// tuning then runs round 2.
+/// Kills: the tuning unchecked on `advance`; the pin compared before the tuning.
+#[test]
+fn advance_refuses_an_unusable_tuning_before_anything_runs_bt3_6() {
+    let w = World::new();
+    let bad = World::tuned(perturb(|t| t.guard_den = 0));
+    let (mut b, _, mut h) = chain4(&w);
+    let pin = b.advance_pin().expect("pinned");
+    let before = b.clone();
+    let tuning: Result<StepResult, StepError> = Err(StepError::Tuning(TuningError::ZeroGuardDen));
+    let t1 = T0 + 60_000;
+    assert_eq!(b.advance(t1, pin, &bad.rules(), &mut h), tuning);
+    assert_eq!(b, before);
+    let stale = AdvancePin {
+        battle_id: BID,
+        round: 7,
+    };
+    assert_eq!(
+        b.advance(t1, stale, &bad.rules(), &mut h),
+        tuning,
+        "Tuning before StaleAdvance"
+    );
+    assert_eq!(b, before);
+    let out = b.advance(t1, pin, &w.rules(), &mut h).expect("round 2");
+    assert_eq!(out.round, 2);
+}
+
+/// BT3.6: `advance` refuses a DECIDED battle even when its `turn_state` reads `Advancing` (a
+/// forged row): `NotStartable{Advancing}` with the battle's own pin and with a stale one, and
+/// nothing changes.
+/// Kills: the `Ongoing` check missing from `advance` (a finished battle stepped again).
+#[test]
+fn advance_refuses_a_decided_battle_even_when_marked_advancing_bt3_6() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = gate_battle(&w, &mut h);
+    b.conclude(BattleOutcome::SideBWins, EndHow::Forfeit)
+        .expect("ends");
+    b.turn_state = TurnState::Advancing;
+    let pin = b.advance_pin().expect("the forged state is pinned");
+    assert_eq!(
+        pin,
+        AdvancePin {
+            battle_id: BID,
+            round: 1
+        }
+    );
+    let before = b.clone();
+    let refusal: Result<StepResult, StepError> = Err(StepError::NotStartable {
+        turn_state: TurnState::Advancing,
+    });
+    assert_eq!(b.advance(T0 + 5_000, pin, &w.rules(), &mut h), refusal);
+    assert_eq!(b, before);
+    let stale = AdvancePin {
+        battle_id: BID,
+        round: 9,
+    };
+    assert_eq!(
+        b.advance(T0 + 5_000, stale, &w.rules(), &mut h),
+        refusal,
+        "NotStartable before StaleAdvance"
+    );
+    assert_eq!(b, before);
+}
+
+/// The replay script, against fresh hooks: `start`; 1's live Light; 1's second live Light
+/// (Exert: 4 AP, its turn ends, 11 waits); 11's window expires at its deadline.
+fn replay_script(b: &mut TacticalBattle, w: &World) -> Vec<StepResult> {
+    let mut h = FakeHooks::new();
+    let started = start_at(b, T0, w, &mut h);
+    let first = submit(b, T0 + 3_000, 1, vec![sk(LIGHT, 11)], w, &mut h);
+    let second = submit(b, T0 + 4_000, 1, vec![sk(LIGHT, 11)], w, &mut h);
+    let window = second.window.expect("11 waits");
+    let expired = b
+        .expire(window.deadline_ms, 11, window.seq, &w.rules(), &mut h)
+        .expect("due");
+    vec![started, first, second, expired]
+}
+
+/// BT3.6: the machine is a pure function of its inputs — a PvP battle and its clone fed the
+/// same script (start, two live submits, an expiry) produce equal `StepResult`s and end equal;
+/// and the run is the hand-derived one (four rolls drawn, 11 chipped twice, 11's window padded
+/// by the Light, the round at its boundary).
+/// Kills: any hidden input (a wall clock, an unseeded roll, iteration over unordered state).
+#[test]
+fn a_cloned_battle_fed_the_same_inputs_replays_identically_bt3_6() {
+    let w = World::new();
+    let mut first = pvp_battle(vec![
+        mon(1, Side::A, 0, 3, 3, 40),
+        mon(11, Side::B, 0, 4, 3, 30),
+    ]);
+    let mut second = first.clone();
+    let run_one = replay_script(&mut first, &w);
+    let run_two = replay_script(&mut second, &w);
+    assert_eq!(run_one, run_two);
+    assert_eq!(first, second);
+    let window = |seq: u32, opens_at_ms: i64| {
+        Some(Window {
+            seq,
+            opens_at_ms,
+            deadline_ms: opens_at_ms + PVP_MS,
+        })
+    };
+    assert_eq!(
+        run_one,
+        vec![
+            StepResult {
+                events: vec![battle_started(1)],
+                round: 1,
+                window: window(1, T0 + 2_000),
+                unit_turns: 1,
+                actions: 0,
+            },
+            StepResult {
+                events: vec![executed(1, LIGHT, vec![chip(11)])],
+                round: 1,
+                window: window(2, T0 + 3_400),
+                unit_turns: 1,
+                actions: 1,
+            },
+            StepResult {
+                events: vec![executed(1, LIGHT, vec![chip(11)]), ended(1, false, true)],
+                round: 1,
+                window: window(1, T0 + 4_400),
+                unit_turns: 2,
+                actions: 1,
+            },
+            StepResult {
+                events: vec![auto_pass(11, 1), ended(11, false, false), round_ended(1)],
+                round: 1,
+                window: None,
+                unit_turns: 1,
+                actions: 0,
+            },
+        ]
+    );
+    assert_eq!(first.turn_state, TurnState::Advancing);
+    assert_eq!(
+        (first.state.action_seq, unit_in(&first, 11).cur_hp),
+        (4, 98)
+    );
+}
+
+// --- BT3.7 -----------------------------------------------------------------
+
+/// BT3.7: the mirror is re-derived at `advance` — 2 (1 HP, Guard from its committed EndTurn)
+/// holds a READY row across the boundary, the shell loads `queued` empty, and 11's round-2
+/// Light KOs 2 before its turn: exactly ONE `QueueVoided` (the sweep's), the row gone.
+/// Kills: `queued` trusted on `advance` (the KO voiding the row silently).
+#[test]
+fn a_stale_mirror_is_re_derived_at_advance_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let (mut b, _) = drive(
+        BattleKind::Wild,
+        vec![
+            mon(11, Side::B, 0, 4, 3, 50),
+            with_hp(mon(2, Side::A, 1, 3, 3, 45), 1),
+            mon(1, Side::A, 0, 0, 7, 40),
+        ],
+        &w,
+        &mut h,
+    );
+    assert_eq!(b.turn_state, TurnState::Waiting(2));
+    submit(&mut b, T0 + 1_000, 2, vec![END], &w, &mut h);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    submit(&mut b, T0 + 1_500, 2, vec![mv(3, 5, 1)], &w, &mut h);
+    submit(&mut b, T0 + 2_000, 1, vec![END], &w, &mut h);
+    assert_eq!(b.turn_state, TurnState::Advancing);
+    assert_eq!(entries_of(&b, 2), Some(vec![mv(3, 5, 1), END]));
+    h.ai = vec![(11, vec![sk(LIGHT, 2), END])];
+    b.state.queued.clear();
+    let t1 = T0 + 3_000;
+    let pin = b.advance_pin().expect("pinned");
+    let out = b.advance(t1, pin, &w.rules(), &mut h).expect("round 2");
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![
+                executed(
+                    11,
+                    LIGHT,
+                    vec![TargetHit {
+                        guard: true,
+                        ..lethal(2)
+                    }]
+                ),
+                ko(2),
+                voided(2),
+                ended(11, false, true),
+            ],
+            round: 2,
+            window: Some(Window {
+                seq: 3,
+                opens_at_ms: t1 + 1_400,
+                deadline_ms: t1 + 1_400 + PVE_MS,
+            }),
+            unit_turns: 2,
+            actions: 1,
+        }
+    );
+    assert_eq!(b.plan(2), None);
+    assert!(b.state.queued.is_empty());
+}
+
+/// BT3.7: the mirror is re-derived at `expire` — PvP: 1's window expires with `queued` loaded
+/// empty, the round continues, and 11's READY Light KOs the queued 2 before its turn: exactly
+/// ONE `QueueVoided`, the row gone.
+/// Kills: `queued` trusted on `expire`.
+#[test]
+fn a_stale_mirror_is_re_derived_at_expire_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = pvp_battle(vec![
+        mon(1, Side::A, 0, 1, 1, 50),
+        exposed(with_hp(mon(2, Side::A, 1, 3, 3, 30), 1)),
+        mon(11, Side::B, 0, 4, 3, 45),
+    ]);
+    submit(&mut b, T0 - 100, 2, vec![mv(3, 5, 1)], &w, &mut h);
+    submit(&mut b, T0 - 100, 11, vec![sk(LIGHT, 2)], &w, &mut h);
+    let out = start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(out.events, vec![battle_started(1)]);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    b.state.queued.clear();
+    let out = b
+        .expire(T0 + 2_000 + PVP_MS, 1, 1, &w.rules(), &mut h)
+        .expect("due");
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![
+                auto_pass(1, 1),
+                ended(1, false, false),
+                executed(11, LIGHT, vec![lethal(2)]),
+                ko(2),
+                voided(2),
+                ended(11, false, true),
+                round_ended(1),
+            ],
+            round: 1,
+            window: None,
+            unit_turns: 2,
+            actions: 1,
+        }
+    );
+    assert!(b.plans.is_empty() && b.state.queued.is_empty());
+    assert_eq!(b.turn_state, TurnState::Advancing);
+}
+
+/// BT3.7: the mirror is re-derived at a live `submit_queue` — 2 (2 HP, Poisoned) holds a READY
+/// row for its next turn, the shell loads `queued` empty, 1's live EndTurn runs the round to its
+/// upkeep and the tick KOs 2: exactly ONE `QueueVoided`, after its `Ko`.
+/// Kills: `queued` trusted on a live submit.
+#[test]
+fn a_stale_mirror_is_re_derived_at_a_live_submit_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut two = unit(
+        2,
+        Side::A,
+        1,
+        c(1, 1),
+        water(16, CHIP_DEF, 45, kit_skills()),
+        2,
+    );
+    two.status = Some(StatusEffect::Poison);
+    let (mut b, _) = drive(
+        BattleKind::Wild,
+        vec![
+            two,
+            mon(1, Side::A, 0, 1, 5, 40),
+            mon(11, Side::B, 0, 7, 7, 30),
+        ],
+        &w,
+        &mut h,
+    );
+    assert_eq!(b.turn_state, TurnState::Waiting(2));
+    submit(&mut b, T0 + 1_000, 2, vec![END], &w, &mut h);
+    submit(&mut b, T0 + 1_500, 2, vec![mv(1, 3, 1)], &w, &mut h);
+    assert_eq!(b.state.queued, vec![2]);
+    b.state.queued.clear();
+    let out = submit(&mut b, T0 + 2_000, 1, vec![END], &w, &mut h);
+    assert_eq!(
+        out.events,
+        vec![
+            ended(1, true, true),
+            ended(11, true, true),
+            round_ended(1),
+            status_ev(2, StatusEffect::Poison, StatusChange::Tick, 2),
+            ko(2),
+            voided(2),
+        ]
+    );
+    assert_eq!(b.plan(2), None);
+    assert!(b.state.queued.is_empty());
+    assert_eq!(b.turn_state, TurnState::Advancing);
+}
+
+/// Wild, started at T0 and waiting on 1: 1 A (1,1) speed 40, 2 A (1,4) speed 35 holding the
+/// READY row `[Move (1,5)]`, 11 B (6,6) speed 30.
+fn ally_row(w: &World, h: &mut FakeHooks) -> TacticalBattle {
+    let mut b = wild(vec![
+        mon(1, Side::A, 0, 1, 1, 40),
+        mon(2, Side::A, 1, 1, 4, 35),
+        mon(11, Side::B, 0, 6, 6, 30),
+    ]);
+    submit(&mut b, T0 - 100, 2, vec![mv(1, 5, 1)], w, h);
+    start_at(&mut b, T0, w, h);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    assert_eq!(b.state.queued, vec![2]);
+    b
+}
+
+/// BT3.7: an Item whose (hook) effect KOs a queued ally drops the ally's row AT THAT ENTRY —
+/// the sweep's `Ko` + `QueueVoided` (exactly one), `plans` empty when the step stops (1 keeps
+/// its turn: 3 AP, a fresh window).
+/// Kills: the plan sync skipped after a non-attack entry (a dead unit's row left stored).
+#[test]
+fn an_item_whose_effect_kos_a_queued_ally_drops_its_row_at_once_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    let mut b = ally_row(&w, &mut h);
+    h.fx = vec![HookFx::Ko(2)];
+    let t1 = T0 + 3_000;
+    let out = submit(
+        &mut b,
+        t1,
+        1,
+        vec![use_item(POTION, ActionTarget::SelfTarget)],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![item_used(1, POTION, 1), ko(2), voided(2)],
+            round: 1,
+            window: Some(Window {
+                seq: 2,
+                opens_at_ms: t1 + 400,
+                deadline_ms: t1 + 400 + PVE_MS,
+            }),
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+    assert!(b.plans.is_empty() && b.state.queued.is_empty());
+    assert_eq!(unit_in(&b, 2).state, UnitState::Fainted);
+}
+
+/// BT3.7: the same for a Recruit entry — the recruit hook also KOs the queued 2: one
+/// `QueueVoided` after its `Ko`, and the row is gone when the step stops at `Waiting(3)` (2
+/// fainted and 11 recruited are skipped; no later sync runs before the stop).
+/// Kills: the plan sync skipped after a Recruit.
+#[test]
+fn a_recruit_whose_effect_kos_a_queued_ally_drops_its_row_at_once_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = wild(vec![
+        mon(1, Side::A, 0, 3, 3, 45),
+        mon(2, Side::A, 1, 1, 5, 40),
+        mon(11, Side::B, 0, 4, 3, 35),
+        mon(3, Side::A, 2, 0, 7, 30),
+        mon(12, Side::B, 1, 7, 7, 20),
+    ]);
+    submit(&mut b, T0 - 100, 2, vec![mv(1, 6, 1)], &w, &mut h);
+    start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    h.fx = vec![HookFx::Ko(2)];
+    let t1 = T0 + 3_000;
+    let out = submit(&mut b, t1, 1, vec![recruit(11, None)], &w, &mut h);
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![
+                recruit_result(1, 11, true, 50),
+                ko(2),
+                voided(2),
+                ended(1, false, true),
+            ],
+            round: 1,
+            window: Some(Window {
+                seq: 2,
+                opens_at_ms: t1 + 400,
+                deadline_ms: t1 + 400 + PVE_MS,
+            }),
+            unit_turns: 2,
+            actions: 1,
+        }
+    );
+    assert_eq!(b.turn_state, TurnState::Waiting(3));
+    assert!(b.plans.is_empty() && b.state.queued.is_empty());
+}
+
+/// BT3.7: a hook that silently removes a queued ally (Recruited + `remove_from_initiative`, no
+/// KO) gets the row voided by the plan sync — exactly ONE `QueueVoided`, the row gone at that
+/// entry.
+/// Kills: the sync voiding only fainted units' rows (no event for a silent removal, or the row
+/// kept).
+#[test]
+fn a_queued_ally_removed_silently_by_a_hook_is_voided_exactly_once_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    let mut b = ally_row(&w, &mut h);
+    h.fx = vec![HookFx::Recruit(2)];
+    let t1 = T0 + 3_000;
+    let out = submit(
+        &mut b,
+        t1,
+        1,
+        vec![use_item(POTION, ActionTarget::SelfTarget)],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![item_used(1, POTION, 1), voided(2)],
+            round: 1,
+            window: Some(Window {
+                seq: 2,
+                opens_at_ms: t1 + 400,
+                deadline_ms: t1 + 400 + PVE_MS,
+            }),
+            unit_turns: 1,
+            actions: 1,
+        }
+    );
+    assert!(b.plans.is_empty() && b.state.queued.is_empty());
+    assert_eq!(unit_in(&b, 2).state, UnitState::Recruited);
+}
+
+/// BT3.7: a cancel for a unit that is not in the battle is `NoPlan` from either side (no side
+/// owns it) and changes nothing.
+/// Kills: `NotYourUnit` for an unknown id.
+#[test]
+fn a_cancel_for_a_unit_not_in_the_battle_is_no_plan_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = gate_battle(&w, &mut h);
+    submit(&mut b, T0, 2, vec![END], &w, &mut h);
+    let before = b.clone();
+    assert_eq!(b.cancel_queue(Side::A, 4242), Err(CancelError::NoPlan));
+    assert_eq!(b.cancel_queue(Side::B, 4242), Err(CancelError::NoPlan));
+    assert_eq!(b, before);
+}
+
+/// BT3.7: shell-loaded rows are canonicalised at the input — handed in unsorted, with two rows
+/// for 3 and one for a unit not in the battle, `start` keeps exactly one row per unit,
+/// ascending, the FIRST row for 3, and drops the stranger silently (no `QueueVoided`); a
+/// re-submit for 3 then replaces its row in place.
+/// Kills: rows used in load order (a duplicate kept, a second row on re-submit, a ghost row kept
+/// or voided visibly).
+#[test]
+fn shell_loaded_rows_are_canonicalised_at_the_input_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = wild(vec![
+        mon(1, Side::A, 0, 2, 2, 40),
+        mon(2, Side::A, 1, 2, 5, 35),
+        mon(11, Side::B, 0, 5, 2, 30),
+        mon(3, Side::A, 2, 0, 7, 25),
+        mon(12, Side::B, 1, 6, 6, 20),
+    ]);
+    let row = |unit: u32, entries: Vec<QueuedAction>| ReadyPlan { unit, entries };
+    b.plans = vec![
+        row(3, vec![END]),
+        row(999, vec![END]),
+        row(2, vec![END]),
+        row(3, vec![mv(1, 7, 1), END]),
+    ];
+    let out = start_at(&mut b, T0, &w, &mut h);
+    assert_eq!(out.events, vec![battle_started(1)]);
+    assert_eq!(b.turn_state, TurnState::Waiting(1));
+    assert_eq!(b.plans, vec![row(2, vec![END]), row(3, vec![END])]);
+    assert_eq!(b.state.queued, vec![2, 3]);
+    assert_eq!(
+        submit(&mut b, T0 + 100, 3, vec![mv(0, 6, 1)], &w, &mut h),
+        quiet(1)
+    );
+    assert_eq!(
+        b.plans,
+        vec![row(2, vec![END]), row(3, vec![mv(0, 6, 1), END])]
+    );
+    assert_eq!(b.state.queued, vec![2, 3]);
+}
+
+/// BT3.7: a refused cancel leaves the battle byte-identical even with the mirror hand-scrambled
+/// to `[3, 2]` — `AlreadyActing` (the waiting 1), `NotYourUnit`, and `NoPlan` (an unknown id; a
+/// later unit without a row) re-derive nothing.
+/// Kills: the mirror canonicalised before the refusal (an `Err` that still writes).
+#[test]
+fn a_refused_cancel_leaves_a_scrambled_mirror_untouched_bt3_7() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    let mut b = gate_battle(&w, &mut h);
+    submit(&mut b, T0, 3, vec![END], &w, &mut h);
+    submit(&mut b, T0, 2, vec![END], &w, &mut h);
+    b.state.queued = vec![3, 2];
+    let before = b.clone();
+    assert_eq!(b.cancel_queue(Side::A, 1), Err(CancelError::AlreadyActing));
+    assert_eq!(b, before);
+    assert_eq!(b.cancel_queue(Side::B, 2), Err(CancelError::NotYourUnit));
+    assert_eq!(b, before);
+    assert_eq!(b.cancel_queue(Side::A, 4242), Err(CancelError::NoPlan));
+    assert_eq!(b, before);
+
+    let mut b = gate_battle(&w, &mut h);
+    submit(&mut b, T0, 3, vec![END], &w, &mut h);
+    b.state.queued = vec![3, 2];
+    let before = b.clone();
+    assert_eq!(b.cancel_queue(Side::A, 2), Err(CancelError::NoPlan));
+    assert_eq!(b, before);
+}
+
+// --- BT3.9 -----------------------------------------------------------------
+
+/// BT3.9: a hook's own events feed the pad like the executor's — an Item whose hook reports a
+/// `RecruitResult` (400) after `ItemUsed` (400) opens the next window at `now + 800`.
+/// Kills: hook events emitted around the pad accumulator.
+#[test]
+fn hook_events_feed_the_presentation_pad_bt3_9() {
+    let w = World::new();
+    let mut h = FakeHooks::new().holding(POTION, 1);
+    h.extra = vec![recruit_result(1, 11, false, 0)];
+    let mut b = drive_to_waiting((1, 1), (6, 6), &w, &mut h);
+    let t1 = T0 + 3_000;
+    let out = submit(
+        &mut b,
+        t1,
+        1,
+        vec![use_item(POTION, ActionTarget::SelfTarget)],
+        &w,
+        &mut h,
+    );
+    assert_eq!(
+        out.events,
+        vec![item_used(1, POTION, 1), recruit_result(1, 11, false, 0)]
+    );
+    assert_eq!(
+        out.window,
+        Some(Window {
+            seq: 2,
+            opens_at_ms: t1 + 800,
+            deadline_ms: t1 + 800 + PVE_MS,
+        })
+    );
+    assert_eq!(b.pending_pad_ms, 0);
+}
+
+/// BT3.9: an auto-flee whose flee hook writes `SideAWins` still ends `BattleEnd{Fled,
+/// AutoFlee}` with the outcome `Fled` (the hook ran once, with the validated Flee).
+/// Kills: the AutoFlee end recorded only when the hook left the battle undecided.
+#[test]
+fn an_auto_flee_whose_hook_writes_an_outcome_still_ends_fled_bt3_9() {
+    let w = World::new();
+    let mut h = FakeHooks::new();
+    h.fx = vec![HookFx::Outcome(BattleOutcome::SideAWins)];
+    let mut b = drive_to_waiting((1, 1), (6, 6), &w, &mut h);
+    let out = b
+        .expire(T0 + 2_000 + PVE_MS, 1, 1, &w.rules(), &mut h)
+        .expect("due");
+    assert_eq!(
+        out,
+        StepResult {
+            events: vec![battle_end(BattleOutcome::Fled, EndHow::AutoFlee)],
+            round: 1,
+            window: None,
+            unit_turns: 1,
+            actions: 0,
+        }
+    );
+    assert_eq!(b.state.outcome, BattleOutcome::Fled);
+    assert_eq!(
+        h.resolve_calls,
+        vec![(1, Validated::Flee { entry: Entry::Flee })]
+    );
+    assert_eq!(
+        (b.phase(), b.turn_state),
+        (Phase::Finished, TurnState::NotActive)
+    );
 }
