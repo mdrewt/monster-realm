@@ -1,12 +1,14 @@
 //! Outcome — design §6.4 adjudication, §2.2 battle-end check and the KO sweep (the one site for
 //! every KO cause), plus the standing r2 double-KO ruling for wild battles.
 //!
-//! `check_battle_end` runs after every resolved entry (`resolve_attack`) and in upkeep step 4.
-//! When both sides empty in the same step, the PvP ruleset adjudicates by the exact tuple (higher
-//! Σ cur_hp×100/max_hp at step start, more conscious units at step start, more cumulative attack
-//! damage dealt, `splitmix64(seed ^ round) & 1`); a wild battle follows ADR-0156 R5 as carried —
-//! fixed `[A, B]` evaluation, the first side found empty loses — so the player side (A) loses a
-//! wild mutual wipe. `BattleOutcome` gains NO variant: outcomes stay `SideAWins | SideBWins | Fled`.
+//! [`settle`] is the single "KO sweep + battle-end check + adjudication" site: `resolve_attack`
+//! calls it after every attack, upkeep calls it at step 4, and bt-3's executor calls it after
+//! every other resolved entry. When both sides empty in the same step, the PvP ruleset
+//! adjudicates by the exact tuple (higher Σ cur_hp×100/max_hp at step START, more conscious units
+//! at step START, more cumulative attack damage dealt, `splitmix64(seed ^ round) & 1`); a wild
+//! battle follows ADR-0156 R5 as carried — fixed `[A, B]` evaluation, the first side found empty
+//! loses — so the player side (A) loses a wild mutual wipe. `BattleOutcome` gains NO variant:
+//! outcomes stay `SideAWins | SideBWins | Fled`.
 
 use serde::{Deserialize, Serialize};
 
@@ -55,16 +57,22 @@ pub enum BattleEndHow {
     RoundCap,
 }
 
-/// Design §6.4: the exact tuple. Never returns anything but a side.
+/// Design §6.4: the exact tuple over the step-start `snap`, the match's cumulative attack damage
+/// per side and the coin `splitmix64(seed ^ round) & 1` (0 → A, 1 → B). Never anything but a side.
 #[must_use]
-pub fn adjudicate(state: &TacticalState, snap: &StepSnapshot) -> (Side, Adjudication) {
-    let _ = (state, snap);
+pub fn adjudicate(
+    snap: &StepSnapshot,
+    attack_damage_dealt: [u32; 2],
+    seed: u64,
+    round: u16,
+) -> (Side, Adjudication) {
+    let _ = (snap, attack_damage_dealt, seed, round);
     todo!("bt-2 outcome: adjudicate")
 }
 
-/// The KO sweep, once for every cause: each unit with `state == Active` and `cur_hp == 0` (in
-/// `units` order) becomes `Fainted`, leaves the initiative (and the queued ids), and emits
-/// `Ko` then `QueueVoided` iff it held a READY plan.
+/// The KO sweep, once for every cause: each unit with `state == Active` and `cur_hp == 0` (in the
+/// canonical `units` order) becomes `Fainted`, leaves the initiative (and the queued ids), and
+/// emits `Ko` then `QueueVoided` iff it held a READY plan.
 pub fn sweep_kos(state: &mut TacticalState) -> Vec<TacticalEvent> {
     let _ = state;
     todo!("bt-2 outcome: sweep_kos")
@@ -92,9 +100,9 @@ pub fn end_battle(
     todo!("bt-2 outcome: end_battle")
 }
 
-/// `Side::A → SideAWins`, `Side::B → SideBWins`.
-#[must_use]
-pub fn winner_outcome(side: Side) -> BattleOutcome {
-    let _ = side;
-    todo!("bt-2 outcome: winner_outcome")
+/// The ONE terminal-sweep site: [`sweep_kos`], then [`check_battle_end`] against `snap`, then
+/// [`end_battle`] when it decides. Returns the events in that order.
+pub fn settle(state: &mut TacticalState, snap: &StepSnapshot) -> Vec<TacticalEvent> {
+    let _ = (state, snap);
+    todo!("bt-2 outcome: settle")
 }

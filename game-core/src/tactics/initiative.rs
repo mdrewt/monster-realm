@@ -7,18 +7,17 @@
 //! under the PvP ruleset. The list is frozen for the round: `resolve`/`outcome` only ever REMOVE
 //! ids (KO, recruit); speed or status changes apply at the next rebuild.
 //!
-//! No HashMap, no floats: the sort key is a tuple of integers and the order is total on
-//! `(side, slot)`-unique contenders (ids break any remaining tie, ascending, as a safety net).
+//! `eff_speed` is the carried `StatBlock.speed` after status modifiers; carried M14 has no
+//! speed-modifying status, so `TacticalState::contenders` passes `stats.speed` — a future
+//! modifier lands there, once. No HashMap, no floats: the sort key is a tuple of integers and the
+//! order is total on `(side, slot)`-unique contenders (ids break any remaining tie, ascending).
 
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use crate::combat::types::StatusEffect;
-use crate::monster::types::StatBlock;
-
 use super::geometry::Side;
-use super::resolve::BattleKind;
+use super::tuning::BattleKind;
 
 /// The salt XOR'd into the battle seed for the round-1 PvP tie coin (design §2.2).
 pub const TIE_SALT: u64 = 0x5EED;
@@ -34,7 +33,7 @@ pub struct Contender {
 }
 
 /// The side holding tie priority in round 1: the player side (A) in a wild battle; under the
-/// PvP ruleset (Pvp, Practice) `splitmix64(seed ^ TIE_SALT) & 1` — 0 → A, 1 → B.
+/// PvP ruleset `splitmix64(seed ^ TIE_SALT) & 1` — 0 → A, 1 → B.
 #[must_use]
 pub fn round1_priority(kind: BattleKind, seed: u64) -> Side {
     let _ = (kind, seed);
@@ -47,14 +46,6 @@ pub fn round1_priority(kind: BattleKind, seed: u64) -> Side {
 pub fn priority_for_round(round1: Side, round: u16) -> Side {
     let _ = (round1, round);
     todo!("bt-2 initiative: priority_for_round")
-}
-
-/// The carried speed after status modifiers. Carried M14 has no speed-modifying status, so this
-/// is `stats.speed` for every status; a future modifier lands here, once.
-#[must_use]
-pub fn eff_speed(stats: &StatBlock, status: Option<&StatusEffect>) -> u16 {
-    let _ = (stats, status);
-    todo!("bt-2 initiative: eff_speed")
 }
 
 /// The design comparator: `eff_speed` desc, `base_speed` desc, tie_rank asc (0 = `priority`

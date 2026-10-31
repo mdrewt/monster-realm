@@ -7,12 +7,15 @@
 //! which is what keeps Heavy + Light (8) and Heavy + Heavy (10) out of a 6-AP turn; two stationary
 //! Lights (2 + 4 = 6) are the only double attack.
 //!
-//! Guard replaces AP banking: a unit that ends its turn by player commitment without attacking and
-//! with ≥ `guard_min_ap` unspent takes ×`guard_num/guard_den` attack damage until its next
-//! TurnStart. It never stacks (a flag), and status ticks and Surge ignore it (they never call
-//! [`apply_guard`]).
+//! Guard replaces AP banking: a unit that ends its turn by player commitment without attacking,
+//! with ≥ `guard_min_ap` unspent and whose last action was not Recruit or Flee takes
+//! ×`guard_num/guard_den` attack damage until its next TurnStart. It never stacks (a flag), and
+//! status ticks and Surge ignore it (they never call [`apply_guard`]).
 //!
-//! This module depends on `tuning` only; `resolve` embeds a [`TurnBudget`] in every unit.
+//! `strides` is CLIENT-controlled (bt-3's `Move{dest, strides}`), so every sum and product here is
+//! u16 or saturating and the stride cap is checked before any multiplication: a hostile
+//! `strides: 255` is a typed `Err`, never a trap. This module depends on `tuning` only; `resolve`
+//! embeds a [`TurnBudget`] in every unit.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,17 +40,19 @@ pub enum Entry {
     EndTurn,
 }
 
-/// The per-unit-turn ledger (stored per unit; the design's `ap`, `strides_used`, `attacks`).
-/// `Default` (all zero) is a unit that has not activated yet.
+/// The per-unit-turn ledger (stored per unit; the design's `ap`, `strides_used`, `attacks`, plus
+/// the last ACTION spent — `EndTurn` never updates it — for Guard's Recruit/Flee clause).
+/// `Default` (all zero, no last action) is a unit that has not activated, or whose turn ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnBudget {
     pub ap: u8,
     pub strides_used: u8,
     pub attacks: u8,
+    pub last: Option<Entry>,
 }
 
 impl TurnBudget {
-    /// The budget at a unit's TurnStart: `ap_turn` AP, nothing used.
+    /// The budget at a unit's TurnStart: `ap_turn` AP, nothing used, no last action.
     #[must_use]
     pub fn fresh(t: &TacticsTuning) -> Self {
         let _ = t;
@@ -60,7 +65,7 @@ impl TurnBudget {
 pub enum EconomyError {
     /// A Move of zero strides is not an entry.
     ZeroStrides,
-    /// `strides_used + requested` exceeds `max_strides_per_turn`.
+    /// `strides_used + requested` exceeds `max_strides_per_turn` (checked before any cost math).
     StrideCap { used: u8, requested: u8, cap: u8 },
     /// Recruit and Flee need the unit's full `ap_turn` AP at execution.
     NeedsFullBudget { ap: u8, required: u8 },
@@ -89,7 +94,8 @@ impl TurnEndCause {
     }
 }
 
-/// The AP an entry costs against `budget` (Exert reads `budget.attacks`). Saturating u8.
+/// The AP an entry costs against `budget` (Exert reads `budget.attacks`). u16 math, saturating
+/// into the u8 result.
 #[must_use]
 pub fn cost(entry: Entry, budget: &TurnBudget, t: &TacticsTuning) -> u8 {
     let _ = (entry, budget, t);
@@ -99,7 +105,8 @@ pub fn cost(entry: Entry, budget: &TurnBudget, t: &TacticsTuning) -> u8 {
 /// Spend `entry` from `budget`, returning the AP charged. Checks, first failure wins:
 /// `Move { strides: 0 }` → `ZeroStrides`; stride cap → `StrideCap`; Recruit/Flee without the
 /// full budget → `NeedsFullBudget`; `cost > ap` → `Unaffordable`. On `Err` the budget is
-/// untouched. On `Ok` it subtracts the cost, adds the strides and counts an attack.
+/// untouched. On `Ok` it subtracts the cost, adds the strides, counts an attack, and records the
+/// entry as `last` unless it is `EndTurn`.
 ///
 /// # Errors
 /// See [`EconomyError`].
@@ -108,26 +115,25 @@ pub fn spend(budget: &mut TurnBudget, entry: Entry, t: &TacticsTuning) -> Result
     todo!("bt-2 economy: spend")
 }
 
-/// The total cost of `entries` spent in order from a fresh budget (the submit gate's costing
-/// and the §2.1.3 audit's oracle).
+/// The total cost of `entries` spent in order from `start` (a fresh budget for a pre-queue, the
+/// current one for a live submit — the submit gate's costing and the §2.1.3 audit's oracle).
 ///
 /// # Errors
 /// The first entry that cannot be spent.
-pub fn plan_cost(entries: &[Entry], t: &TacticsTuning) -> Result<u8, EconomyError> {
-    let _ = (entries, t);
+pub fn plan_cost(
+    start: &TurnBudget,
+    entries: &[Entry],
+    t: &TacticsTuning,
+) -> Result<u8, EconomyError> {
+    let _ = (start, entries, t);
     todo!("bt-2 economy: plan_cost")
 }
 
 /// Design §2.1.2: Guard iff the end was committed AND no attack executed AND
-/// `ap ≥ guard_min_ap` AND the last entry was not Recruit or Flee.
+/// `ap ≥ guard_min_ap` AND `budget.last` is not Recruit or Flee.
 #[must_use]
-pub fn guard_granted(
-    cause: TurnEndCause,
-    budget: &TurnBudget,
-    last: Option<Entry>,
-    t: &TacticsTuning,
-) -> bool {
-    let _ = (cause, budget, last, t);
+pub fn guard_granted(cause: TurnEndCause, budget: &TurnBudget, t: &TacticsTuning) -> bool {
+    let _ = (cause, budget, t);
     todo!("bt-2 economy: guard_granted")
 }
 
@@ -139,7 +145,7 @@ pub fn apply_guard(damage: u16, t: &TacticsTuning) -> u16 {
     todo!("bt-2 economy: apply_guard")
 }
 
-/// Flank on attack damage: `damage × flank_num / flank_den`, floor (clamped to `u16::MAX`).
+/// Flank on attack damage: `damage × flank_num / flank_den`, floor (saturating at `u16::MAX`).
 #[must_use]
 pub fn apply_flank(damage: u16, t: &TacticsTuning) -> u16 {
     let _ = (damage, t);

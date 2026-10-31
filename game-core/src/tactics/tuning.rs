@@ -1,13 +1,34 @@
 //! `TacticsTuning` — every constant of the M-battle-tactics design (§2.1, §2.1.2, §2.3, §2.4,
-//! §3.7, §6.4) in one struct, read by every tactics rule.
+//! §3.7, §6.4) in one struct, read by every tactics rule — and `BattleKind`, the ruleset selector.
 //!
 //! bt-6 loads `game-core/content/tactics_tuning.ron` into this struct; until then (and in every
 //! test) [`TacticsTuning::DESIGN`] carries the design's numbers. A rule never hard-codes one of
 //! these values: `economy`, `resolve` and `upkeep` take `&TacticsTuning` and read the field, so
 //! a retune is a content edit, not a code edit. `deny_unknown_fields` makes a misspelt RON key a
-//! load error instead of a silently ignored constant.
+//! load error instead of a silently ignored constant, and [`TacticsTuning::validate`] rejects a
+//! zero denominator before any rule can divide by it. There is deliberately no `Default`: a
+//! caller must name `DESIGN` or load content, never fall back silently.
 
 use serde::{Deserialize, Serialize};
+
+/// Battle kind (stored in `battle_tactical.kind`). Wild = PvE. Pvp and Practice share the PvP
+/// ruleset (Surge, adjudication, no Recruit/Flee; Practice has no rating or rewards) — the ONE
+/// place that mapping lives is [`BattleKind::uses_pvp_rules`]. Append-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
+pub enum BattleKind {
+    Wild,
+    Pvp,
+    Practice,
+}
+
+impl BattleKind {
+    /// Pvp and Practice (design §6.1: Practice uses the PvP ruleset). Wild never.
+    #[must_use]
+    pub fn uses_pvp_rules(self) -> bool {
+        todo!("bt-2 tuning: BattleKind::uses_pvp_rules")
+    }
+}
 
 /// The design constants (values: design §2.1 table, §2.1.2 Guard, §2.3 clock, §2.4 flank,
 /// §3.7 wild bounds, §6.4 Surge). Integers only.
@@ -40,11 +61,11 @@ pub struct TacticsTuning {
     pub guard_min_ap: u8,
     /// Guard multiplies incoming attack damage by `guard_num / guard_den` (floor, min 1).
     pub guard_num: u8,
-    /// Denominator of the Guard multiplier.
+    /// Denominator of the Guard multiplier (never 0: `validate`).
     pub guard_den: u8,
     /// Flank multiplies attack damage by `flank_num / flank_den` (floor).
     pub flank_num: u8,
-    /// Denominator of the flank multiplier.
+    /// Denominator of the flank multiplier (never 0: `validate`).
     pub flank_den: u8,
     /// First round whose upkeep deals Surge (PvP ruleset only).
     pub surge_start_round: u16,
@@ -66,6 +87,17 @@ pub struct TacticsTuning {
     pub autopass_forfeit: u8,
     /// Cap on the presentation pad added before a window opens.
     pub pad_cap_ms: u32,
+}
+
+/// A tuning value no rule can use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TuningError {
+    /// `guard_den == 0`.
+    ZeroGuardDen,
+    /// `flank_den == 0`.
+    ZeroFlankDen,
+    /// `ap_turn == 0`: no entry could ever be spent.
+    ZeroApTurn,
 }
 
 impl TacticsTuning {
@@ -98,10 +130,12 @@ impl TacticsTuning {
         autopass_forfeit: 4,
         pad_cap_ms: 5_000,
     };
-}
 
-impl Default for TacticsTuning {
-    fn default() -> Self {
-        Self::DESIGN
+    /// Reject a tuning no rule can run on (checked in [`TuningError`] declaration order).
+    ///
+    /// # Errors
+    /// See [`TuningError`].
+    pub fn validate(&self) -> Result<(), TuningError> {
+        todo!("bt-2 tuning: TacticsTuning::validate")
     }
 }

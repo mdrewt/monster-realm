@@ -25,17 +25,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::combat::ability::StatusKind;
 use crate::combat::type_chart::TypeChart;
-use crate::combat::types::{BattleMonster, BattleOutcome, Effectiveness, StatusEffect};
-use crate::content::SkillDef;
+use crate::combat::types::{BattleOutcome, Effectiveness, StatusEffect};
 use crate::monster::types::{Affinity, StatBlock};
 
-use super::economy::{EconomyError, Entry, Tier, TurnBudget, TurnEndCause};
+use super::economy::{EconomyError, Tier, TurnBudget, TurnEndCause};
 use super::geometry::{Board, BoardUnit, Cell, GeometryError, Side, SkillGeometry};
 use super::initiative::Contender;
 use super::map::BattleMapDef;
 use super::movement::{MoveClass, Terrain};
 use super::outcome::BattleEndHow;
-use super::tuning::TacticsTuning;
+use super::tuning::{BattleKind, TacticsTuning};
 
 /// The canonical splitmix64 output for state `x` (`crate::tick_seed(x, 0, 0)`):
 /// `splitmix64(0) == 0xE220_A839_7B1D_CDAF`. Every tactics roll and coin is one of these.
@@ -43,16 +42,6 @@ use super::tuning::TacticsTuning;
 pub fn splitmix64(x: u64) -> u64 {
     let _ = x;
     todo!("bt-2 resolve: splitmix64")
-}
-
-/// Battle kind (stored in `battle_tactical.kind`). Wild = PvE; Pvp and Practice share the PvP
-/// ruleset (Surge, adjudication; Practice has no rating or rewards). Append-only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
-pub enum BattleKind {
-    Wild,
-    Pvp,
-    Practice,
 }
 
 /// Unit lifecycle (stored in `battle_unit.state`). Append-only.
@@ -126,24 +115,41 @@ impl TacticalUnit {
     }
 }
 
-/// Why a unit cannot be deployed (reject, never clamp).
+/// Why a unit (or a set of units) cannot be deployed — reject, never clamp. The per-unit checks
+/// run in declaration order; the set checks (`DuplicateId`, `DuplicateSlot`, `BadPosition`,
+/// `EmptySide`) run in `TacticalState::new` after every unit passed on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeployError {
     /// `cur_hp == 0`: fainted units never deploy (r2).
     Fainted { id: u32 },
     /// `cur_hp > kit.stats.hp`.
     HpAboveMax { id: u32, cur_hp: u16, max_hp: u16 },
-    /// `kit.stats.hp == 0`.
-    ZeroMaxHp { id: u32 },
     /// `kit.stats.defense == 0` (the carried `calc_damage` precondition).
     ZeroDefense { id: u32 },
+    /// Two units share an id.
+    DuplicateId { id: u32 },
+    /// Two units share a `(side, slot)`.
+    DuplicateSlot { side: Side, slot: u8 },
+    /// A unit's tile is off the map or already held by another unit.
+    BadPosition { id: u32 },
+    /// A side has no unit.
+    EmptySide { side: Side },
 }
 
-/// Deploy a conscious unit: `first_stand = true`, `state = Active`, no Guard, an idle budget
-/// (its first TurnStart refreshes it).
+/// The ONE per-unit validation: `cur_hp ≥ 1`, `cur_hp ≤ max_hp`, `defense ≥ 1`.
 ///
 /// # Errors
-/// See [`DeployError`]; checked in declaration order.
+/// `Fainted`, `HpAboveMax`, `ZeroDefense` in that order.
+pub fn validate_unit(unit: &TacticalUnit) -> Result<(), DeployError> {
+    let _ = unit;
+    todo!("bt-2 resolve: validate_unit")
+}
+
+/// Deploy a conscious unit: `first_stand = true`, `state = Active`, no Guard, no status, an idle
+/// budget (its first TurnStart refreshes it). Runs [`validate_unit`].
+///
+/// # Errors
+/// See [`validate_unit`].
 pub fn deploy_unit(
     id: u32,
     side: Side,
@@ -171,10 +177,9 @@ pub struct TacticalState {
     /// Row-major `y * width + x` (the validated map's tiles).
     pub terrain: Vec<Terrain>,
     pub units: Vec<TacticalUnit>,
-    /// This round's frozen order (ids); KO and recruit removals are the only mid-round edits.
+    /// This round's frozen order (ids); KO and recruit removals are the only mid-round edits
+    /// (always a subsequence of the list built at round start). bt-3 owns the turn cursor.
     pub initiative: Vec<u32>,
-    /// Index into `initiative` of the acting unit.
-    pub turn_idx: u8,
     /// Units holding a READY plan on the server (ids only; bt-3 owns the rows). A KO voids it
     /// with a visible `QueueVoided`.
     pub queued: Vec<u32>,
@@ -184,9 +189,19 @@ pub struct TacticalState {
 }
 
 impl TacticalState {
-    /// A battle at round 1 on `map` with `units` deployed, initiative built, `Ongoing`.
-    #[must_use]
-    pub fn new(kind: BattleKind, seed: u64, map: &BattleMapDef, units: Vec<TacticalUnit>) -> Self {
+    /// A battle at round 1 on `map` with `units` deployed, `action_seq` 0, initiative built,
+    /// `Ongoing`. Every unit passes [`validate_unit`], then the set checks (unique id, unique
+    /// `(side, slot)`, in-bounds non-overlapping `pos`, a unit on each side); `units` is then
+    /// canonicalised to `(side, slot)` order so every per-unit iteration is replay-stable.
+    ///
+    /// # Errors
+    /// See [`DeployError`].
+    pub fn new(
+        kind: BattleKind,
+        seed: u64,
+        map: &BattleMapDef,
+        units: Vec<TacticalUnit>,
+    ) -> Result<Self, DeployError> {
         let _ = (kind, seed, map, units);
         todo!("bt-2 resolve: TacticalState::new")
     }
@@ -220,13 +235,13 @@ impl TacticalState {
         todo!("bt-2 resolve: TacticalState::contenders")
     }
 
-    /// `initiative = order(contenders, tie_priority)`, `turn_idx = 0`.
+    /// `initiative = order(contenders, tie_priority)`.
     pub fn rebuild_initiative(&mut self) {
         todo!("bt-2 resolve: TacticalState::rebuild_initiative")
     }
 
-    /// Drop `id` from `initiative` and `queued`; keeps `turn_idx` on the same acting unit when
-    /// an earlier entry is removed. Returns whether `id` was in the initiative.
+    /// Drop `id` from `initiative` and `queued` (the only mid-round edits; a recruit removal
+    /// calls this too). Returns whether `id` was in the initiative.
     pub fn remove_from_initiative(&mut self, id: u32) -> bool {
         let _ = id;
         todo!("bt-2 resolve: TacticalState::remove_from_initiative")
@@ -261,7 +276,9 @@ pub fn turn_start(state: &mut TacticalState, id: u32, t: &TacticsTuning) -> Resu
     todo!("bt-2 resolve: turn_start")
 }
 
-/// TurnEnd: sets the unit's Guard per `economy::guard_granted` and returns it.
+/// TurnEnd: sets the unit's Guard per `economy::guard_granted` (read from its budget), then
+/// resets the budget to idle (`TurnBudget::default()`) so nothing can be spent until its next
+/// TurnStart. Returns whether Guard was granted.
 ///
 /// # Errors
 /// [`can_act`]'s.
@@ -269,15 +286,15 @@ pub fn turn_end(
     state: &mut TacticalState,
     id: u32,
     cause: TurnEndCause,
-    last: Option<Entry>,
     t: &TacticsTuning,
 ) -> Result<bool, ActError> {
-    let _ = (state, id, cause, last, t);
+    let _ = (state, id, cause, t);
     todo!("bt-2 resolve: turn_end")
 }
 
-/// One target's outcome inside `Executed`. A miss has `damage 0`, `effectiveness None` and every
-/// flag false.
+/// One target's outcome inside `Executed` (bt-3's `Executed{per-target dmg, hit, flank, guard}`).
+/// `damage` is the HP actually removed (after First-Stand's clamp). A miss has `damage 0`,
+/// `effectiveness None` and every flag false. `StoodGround`/`StatusApplied` are separate events.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetResult {
     pub unit: u32,
@@ -286,9 +303,7 @@ pub struct TargetResult {
     pub effectiveness: Option<Effectiveness>,
     pub flank: bool,
     pub guard: bool,
-    pub stood_ground: bool,
     pub ko: bool,
-    pub status: Option<StatusEffect>,
 }
 
 /// Everything the rules emit. Exhaustive on purpose (an exhaustive `match` is the OCP gate);
@@ -345,7 +360,7 @@ pub struct RollPair {
 }
 
 /// Draw one target's [`RollPair`] from `splitmix64(seed ^ action_seq)`, advancing `action_seq`
-/// once per value (accuracy first, then variance).
+/// (wrapping) once per value: accuracy = `% 100` first, then variance = `85 + % 16`.
 pub fn draw_rolls(state: &mut TacticalState) -> RollPair {
     let _ = state;
     todo!("bt-2 resolve: draw_rolls")
@@ -390,23 +405,25 @@ pub enum ResolveError {
     Economy(EconomyError),
 }
 
-/// What one resolved attack did.
+/// What one resolved attack did. Whether the actor KO'd itself (an `All`-filter AoE → the
+/// executor ends its turn) or the battle ended is read from the state (`can_act`, `outcome`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttackOutcome {
     pub events: Vec<TacticalEvent>,
     pub ap_spent: u8,
-    /// The actor KO'd itself (an `All`-filter AoE): the executor ends its turn.
-    pub actor_fainted: bool,
-    pub battle_over: bool,
 }
 
-/// Resolve one attack entry: validate (`can_act` → skill in kit → `target_set` → `spend`), then
-/// per target in `target_set` order draw accuracy and variance (both, hit or miss), run
-/// [`damage_pipeline`] against the pre-attack board's flank, apply HP/First-Stand/status, then
-/// `Executed` + the per-target detail events, the KO sweep and the battle-end check.
+/// Resolve one attack entry: snapshot (`StepSnapshot::capture`), validate (`can_act` → skill in
+/// kit → `target_set` → `spend`), then per target in `target_set` order draw accuracy and
+/// variance (both, hit or miss; exactly two draws per target), run [`damage_pipeline`] with flank
+/// evaluated on the PRE-attack board, apply HP / First-Stand / status (the carried rule: hit, not
+/// immune, not KO'd, no prior status; Sleep arrives with 3 turns), add enemy-side `damage` to
+/// `attack_damage_dealt[attacker.side]`, then emit `Executed` (an empty target set is a valid
+/// attack: AP spent, no draws, `results: []`), the per-target detail events in target order
+/// (`Missed` | `StoodGround`, `StatusApplied`), and `outcome::settle`'s events.
 ///
 /// # Errors
-/// An invalid entry ([`ResolveError`]) leaves `state` byte-identical.
+/// An invalid entry ([`ResolveError`]) leaves `state` byte-identical (0 AP, no draws).
 pub fn resolve_attack(
     state: &mut TacticalState,
     attacker: u32,
@@ -417,32 +434,4 @@ pub fn resolve_attack(
 ) -> Result<AttackOutcome, ResolveError> {
     let _ = (state, attacker, skill_id, aim, chart, t);
     todo!("bt-2 resolve: resolve_attack")
-}
-
-/// The carried `BattleMonster` view of a unit for `calc_damage` (by value, no rule copied).
-#[must_use]
-pub fn battle_monster_of(unit: &TacticalUnit) -> BattleMonster {
-    let _ = unit;
-    todo!("bt-2 resolve: battle_monster_of")
-}
-
-/// The carried `SkillDef` view of a tactical skill for `calc_damage`.
-#[must_use]
-pub fn skill_def_of(skill: &SkillTactics) -> SkillDef {
-    let _ = skill;
-    todo!("bt-2 resolve: skill_def_of")
-}
-
-/// The `BoardUnit` of a unit (`alive = is_conscious()`).
-#[must_use]
-pub fn board_unit_of(unit: &TacticalUnit) -> BoardUnit {
-    let _ = unit;
-    todo!("bt-2 resolve: board_unit_of")
-}
-
-/// Side → adjudication/damage array index (A = 0, B = 1).
-#[must_use]
-pub fn side_index(side: Side) -> usize {
-    let _ = side;
-    todo!("bt-2 resolve: side_index")
 }

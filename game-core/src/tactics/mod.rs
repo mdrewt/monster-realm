@@ -9,7 +9,7 @@
 //! - `geometry`   — Manhattan metric, line of sight, the skill target set, flank.
 //! - `movement`   — stride bands, terrain × class weights, Dijkstra pathing, disengage.
 //! - `map`        — the battle-map RON schema and its validator.
-//! - `tuning`     — `TacticsTuning`: every design constant, read by every rule below.
+//! - `tuning`     — `TacticsTuning` (every design constant, read by every rule below) + `BattleKind`.
 //! - `economy`    — AP costs, Exert, the stride cap, Guard eligibility and multiplier.
 //! - `initiative` — the round comparator and the tie-priority coin.
 //! - `resolve`    — the battle model (`TacticalState`, events) and the §2.4 damage pipeline.
@@ -57,20 +57,21 @@ pub use geometry::{
     FfFilter, GeometryError, Origin, Shape, Side, SkillGeometry,
 };
 pub use golden::{run_golden, GoldenBoard, GoldenCase, GoldenResult};
-pub use initiative::{order, priority_for_round, round1_priority, Contender};
+pub use initiative::{compare, order, priority_for_round, round1_priority, Contender, TIE_SALT};
 pub use map::{parse_battle_map, validate_battle_map, BattleMapDef, MapError, TileDef};
 pub use movement::{
     disengage_taxed, find_path, stride_for_base_speed, terrain_weight, MoveClass, Path, PathError,
     Terrain,
 };
 pub use outcome::{
-    adjudicate, check_battle_end, sweep_kos, Adjudication, BattleEndHow, StepSnapshot,
+    adjudicate, check_battle_end, end_battle, settle, sweep_kos, Adjudication, BattleEndHow,
+    StepSnapshot,
 };
 pub use resolve::{
     can_act, damage_pipeline, deploy_unit, draw_rolls, resolve_attack, splitmix64, turn_end,
-    turn_start, ActError, AttackOutcome, BattleKind, DeployError, PipelineTrace, ResolveError,
+    turn_start, validate_unit, ActError, AttackOutcome, DeployError, PipelineTrace, ResolveError,
     RollPair, SkillTactics, TacticalEvent, TacticalState, TacticalUnit, TargetResult, UnitKit,
     UnitState,
 };
-pub use tuning::TacticsTuning;
-pub use upkeep::{run_upkeep, status_tick_damage, surge_damage, UpkeepStep, UPKEEP_ORDER};
+pub use tuning::{BattleKind, TacticsTuning, TuningError};
+pub use upkeep::{run_upkeep, status_tick_damage, surge_damage};
