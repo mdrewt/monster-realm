@@ -213,11 +213,12 @@ fn build_skills_only(
     build_kits(&[], skills, tskills, &[])
 }
 
-/// Skills 1 (Light, Fire, power 20, acc 100, Poison) and 2 (Heavy, Water, power 65, acc 95).
+/// Skills 1 (Light, Fire, power 20, acc 100, Poison) and 2 (Heavy, Water, power 70, acc 95).
+/// 70 is the smallest Heavy power with heavy > 2 x light at every level 5..=100 (65 fails at L8).
 fn base_skills() -> Vec<SkillDef> {
     let mut light = sk(1, 20, 100, Affinity::Fire);
     light.applies_status = Some(StatusKind::Poison);
-    vec![light, sk(2, 65, 95, Affinity::Water)]
+    vec![light, sk(2, 70, 95, Affinity::Water)]
 }
 
 /// Light = r1..2 Single (lance), Heavy = r2..3 Single: distinct bands, a melee skill, and
@@ -362,7 +363,7 @@ fn kit(
     }
 }
 
-/// Light (id 1, power 20, geometry `lg`), Heavy (id 2, power 65, geometry `hg`).
+/// Light (id 1, power 20, geometry `lg`), Heavy (id 2, power 70, geometry `hg`).
 fn std_kit(
     species_id: u32,
     base_speed: u16,
@@ -373,7 +374,7 @@ fn std_kit(
         species_id,
         base_speed,
         st(1, Tier::Light, 20, lg),
-        st(2, Tier::Heavy, 65, hg),
+        st(2, Tier::Heavy, 70, hg),
     )
 }
 
@@ -411,9 +412,10 @@ fn lights_are_power_20_and_tier_light_bt6_1() {
     }
 }
 
-/// The Heavies (2, 6, 41, 43) are tier Heavy with power in 65..=75; Razor Leaf (6) is exactly 65.
+/// The Heavies (2, 6, 41, 43) are tier Heavy, power in 65..=75, and exactly 70 each (70 is the
+/// smallest power with heavy > 2 x light at every level; Razor Leaf (6) is retuned to 70).
 #[test]
-fn heavies_are_tier_heavy_with_power_65_to_75_bt6_1() {
+fn heavies_are_tier_heavy_with_power_exactly_70_bt6_1() {
     let l = live();
     for id in [2u32, 6, 41, 43] {
         let power = skill_by_id(&l, id).power;
@@ -421,9 +423,10 @@ fn heavies_are_tier_heavy_with_power_65_to_75_bt6_1() {
             (65..=75).contains(&power),
             "heavy skill {id} power {power} must be in 65..=75"
         );
+        assert_eq!(power, 70, "heavy skill {id} power");
         assert_eq!(tskill_by_id(&l, id).tier, Tier::Heavy, "skill {id} tier");
     }
-    assert_eq!(skill_by_id(&l, 6).power, 65, "Razor Leaf is retuned to 65");
+    assert_eq!(skill_by_id(&l, 6).power, 70, "Razor Leaf is retuned to 70");
 }
 
 /// The weather setters (7..=10) have a tactics row but appear in no species kit.
@@ -851,7 +854,7 @@ fn build_kits_fixture_join_is_exact_bt6_2() {
                 skill_id: 2,
                 tier: Tier::Heavy,
                 affinity: Affinity::Water,
-                power: 65,
+                power: 70,
                 accuracy: 95,
                 applies_status: None,
                 geometry: band(2, 3),
@@ -1659,6 +1662,37 @@ fn dmg_ref_exact_values_bt6_5() {
     assert_eq!(dmg_ref(&heavy, 50), 30, "L50 P65");
     assert_eq!(dmg_ref(&light, 100), 18, "L100 P20");
     assert_eq!(dmg_ref(&heavy, 100), 56, "L100 P65");
+    // L8: k = 2*8/5 + 2 = 5.
+    let heavy70 = st(2, Tier::Heavy, 70, band(1, 1));
+    assert_eq!(dmg_ref(&heavy70, 8), 9, "L8 P70 = 5*70/50 + 2");
+    assert_eq!(dmg_ref(&heavy, 8), 8, "L8 P65 = 5*65/50 + 2");
+    assert_eq!(dmg_ref(&light, 8), 4, "L8 P20 = 5*20/50 + 2");
+}
+
+/// Why the spec moved the Heavies to 70: a 20 vs 65 kit fails the lint at level 8
+/// (8 is not > 2 x 4), while 20 vs 70 (9 > 8) passes.
+#[test]
+fn heavy_65_fails_the_lint_at_level_8_bt6_5() {
+    let weak = kit(
+        3,
+        40,
+        st(1, Tier::Light, 20, band(1, 2)),
+        st(2, Tier::Heavy, 65, band(2, 3)),
+    );
+    assert_eq!(
+        lint_kits(&[weak]),
+        Err(TacticsContentError::HeavyNotStrong {
+            species_id: 3,
+            level: 8
+        })
+    );
+    let strong = kit(
+        3,
+        40,
+        st(1, Tier::Light, 20, band(1, 2)),
+        st(2, Tier::Heavy, 70, band(2, 3)),
+    );
+    assert_eq!(lint_kits(&[strong]), Ok(()));
 }
 
 /// Neutral, no STAB: the skill's own affinity must not change the reference damage.

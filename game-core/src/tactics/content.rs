@@ -19,11 +19,35 @@ use super::ai::Stance;
 use super::economy::Tier;
 use super::encounter::PackWeights;
 use super::geometry::{FfFilter, Origin, Shape, SkillGeometry};
-use super::map::{BattleMapDef, MapError};
+use super::map::{validate_battle_map, BattleMapDef, MapError};
+use super::movement::stride_for_base_speed;
 use super::movement::MoveClass;
+use super::queue::min_action_cost;
 use super::resolve::SkillTactics;
 use super::tuning::{TacticsTuning, TuningError};
-use crate::content::{ItemDef, SkillDef, Species, ZoneDef};
+use crate::combat::damage::calc_damage;
+use crate::combat::type_chart::TypeChart;
+use crate::combat::types::BattleMonster;
+use crate::content::{
+    parse_parts, ItemDef, SkillDef, Species, ZoneDef, BATTLE_MAPS_RON_PARTS,
+    TACTICS_ITEMS_RON_PARTS, TACTICS_SKILLS_RON_PARTS, TACTICS_SPECIES_RON_PARTS,
+    TACTICS_ZONES_RON_PARTS,
+};
+use crate::monster::types::{Affinity, StatBlock};
+
+/// The embedded singleton (the `type_chart.ron` idiom: one file, not a glob registry).
+const TACTICS_TUNING_RON: &str = include_str!("../../content/tactics_tuning.ron");
+
+/// The level band the `dmg_ref` lint sweeps (design §2.1.1).
+const LINT_LEVELS: std::ops::RangeInclusive<u8> = 5..=100;
+/// `stride + heavy.range_max` ceiling (design §4.1).
+const MAX_HEAVY_REACH: u16 = 6;
+/// `stride + range_max` ceiling for any kit skill (design §4.1).
+const MAX_REACH: u16 = 7;
+/// A skill reaching this far must start at range 2 (design §4.1).
+const LONG_RANGE: u8 = 3;
+/// The range_min every long-range skill carries.
+const LONG_RANGE_MIN: u8 = 2;
 
 /// The role chip (design §4.1): a UI tag and stance default, never a rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,7 +84,14 @@ impl TacticsSkillDef {
     /// The geometry half of the row, as `tactics::geometry` consumes it.
     #[must_use]
     pub fn geometry(&self) -> SkillGeometry {
-        todo!("bt-6")
+        SkillGeometry {
+            range_min: self.range_min,
+            range_max: self.range_max,
+            origin: self.origin,
+            shape: self.shape,
+            radius: self.radius,
+            ff_filter: self.ff_filter,
+        }
     }
 }
 
@@ -209,7 +240,7 @@ pub struct TacticsRegistries<'a> {
 /// # Errors
 /// A malformed part (the message names the file).
 pub fn load_tactics_skills() -> Result<Vec<TacticsSkillDef>, String> {
-    todo!("bt-6")
+    parse_parts(TACTICS_SKILLS_RON_PARTS, "tactics_skills")
 }
 
 /// Parse the embedded `tactics_species/` registry.
@@ -217,7 +248,7 @@ pub fn load_tactics_skills() -> Result<Vec<TacticsSkillDef>, String> {
 /// # Errors
 /// A malformed part (the message names the file).
 pub fn load_tactics_species() -> Result<Vec<TacticsSpeciesDef>, String> {
-    todo!("bt-6")
+    parse_parts(TACTICS_SPECIES_RON_PARTS, "tactics_species")
 }
 
 /// Parse the embedded `tactics_items/` registry.
@@ -225,7 +256,7 @@ pub fn load_tactics_species() -> Result<Vec<TacticsSpeciesDef>, String> {
 /// # Errors
 /// A malformed part (the message names the file).
 pub fn load_tactics_items() -> Result<Vec<TacticsItemDef>, String> {
-    todo!("bt-6")
+    parse_parts(TACTICS_ITEMS_RON_PARTS, "tactics_items")
 }
 
 /// Parse the embedded `tactics_zones/` registry.
@@ -233,7 +264,7 @@ pub fn load_tactics_items() -> Result<Vec<TacticsItemDef>, String> {
 /// # Errors
 /// A malformed part (the message names the file).
 pub fn load_tactics_zones() -> Result<Vec<TacticsZoneDef>, String> {
-    todo!("bt-6")
+    parse_parts(TACTICS_ZONES_RON_PARTS, "tactics_zones")
 }
 
 /// Parse the embedded `battle_maps/` registry (parse only — [`validate_battle_maps`] validates).
@@ -241,7 +272,7 @@ pub fn load_tactics_zones() -> Result<Vec<TacticsZoneDef>, String> {
 /// # Errors
 /// A malformed part (the message names the file).
 pub fn load_battle_maps() -> Result<Vec<BattleMapEntry>, String> {
-    todo!("bt-6")
+    parse_parts(BATTLE_MAPS_RON_PARTS, "battle_maps")
 }
 
 /// Parse a `tactics_tuning.ron` source and reject a tuning no rule can run on
@@ -251,8 +282,28 @@ pub fn load_battle_maps() -> Result<Vec<BattleMapEntry>, String> {
 /// [`TacticsContentError::TuningParse`], [`TacticsContentError::Tuning`] or
 /// [`TacticsContentError::TuningFloor`].
 pub fn parse_tactics_tuning(src: &str) -> Result<TacticsTuning, TacticsContentError> {
-    let _ = src;
-    todo!("bt-6")
+    let tuning: TacticsTuning =
+        ron::from_str(src).map_err(|e| TacticsContentError::TuningParse(e.to_string()))?;
+    check_tuning(&tuning)?;
+    Ok(tuning)
+}
+
+/// `TacticsTuning::validate`, then the floors (in [`TacticsContentError::TuningFloor`] order).
+fn check_tuning(t: &TacticsTuning) -> Result<(), TacticsContentError> {
+    t.validate().map_err(TacticsContentError::Tuning)?;
+    let floors: [(&'static str, bool); 7] = [
+        ("max_windows_per_turn", t.max_windows_per_turn >= 1),
+        ("autopass_forfeit", t.autopass_forfeit >= 1),
+        ("pvp_window_ms", t.pvp_window_ms > 0),
+        ("pve_window_ms", t.pve_window_ms > 0),
+        ("pvp_deploy_ms", t.pvp_deploy_ms > 0),
+        ("pve_deploy_ms", t.pve_deploy_ms > 0),
+        ("ap_turn", t.ap_turn >= min_action_cost(t)),
+    ];
+    match floors.iter().find(|(_, ok)| !ok) {
+        Some(&(field, _)) => Err(TacticsContentError::TuningFloor(field)),
+        None => Ok(()),
+    }
 }
 
 /// [`parse_tactics_tuning`] over the embedded `tactics_tuning.ron`.
@@ -260,15 +311,48 @@ pub fn parse_tactics_tuning(src: &str) -> Result<TacticsTuning, TacticsContentEr
 /// # Errors
 /// See [`parse_tactics_tuning`].
 pub fn load_tactics_tuning() -> Result<TacticsTuning, TacticsContentError> {
-    todo!("bt-6")
+    parse_tactics_tuning(TACTICS_TUNING_RON)
 }
 
 /// The reference damage of the lints (design §2.1.1): the carried `calc_damage` for `skill` at
 /// `level`, neutral type, no STAB, attack = defense, variance 100, no weather.
 #[must_use]
 pub fn dmg_ref(skill: &SkillTactics, level: u8) -> u16 {
-    let _ = (skill, level);
-    todo!("bt-6")
+    // Any affinity other than the skill's own: no STAB. The empty chart is neutral (×1).
+    let affinity = if skill.affinity == Affinity::Fire {
+        Affinity::Water
+    } else {
+        Affinity::Fire
+    };
+    let stats = StatBlock {
+        hp: 100,
+        attack: 100,
+        defense: 100,
+        speed: 100,
+        sp_attack: 100,
+        sp_defense: 100,
+    };
+    let monster = BattleMonster {
+        species_id: 0,
+        affinity,
+        level,
+        current_hp: 100,
+        max_hp: 100,
+        stats,
+        known_skill_ids: Vec::new(),
+        status: None,
+    };
+    let def = SkillDef {
+        id: skill.skill_id,
+        name: String::new(),
+        affinity: skill.affinity,
+        power: skill.power,
+        accuracy: skill.accuracy,
+        pp: 1,
+        sets_weather: None,
+        applies_status: None,
+    };
+    calc_damage(&monster, &monster, &def, &TypeChart::new(&[]), 100, None).0
 }
 
 /// Join the sidecars onto the carried skill and species rows (the parse-don't-validate boundary).
@@ -285,8 +369,135 @@ pub fn build_kits(
     tactics_skills: &[TacticsSkillDef],
     tactics_species: &[TacticsSpeciesDef],
 ) -> Result<Vec<SpeciesTactics>, TacticsContentError> {
-    let _ = (species, skills, tactics_skills, tactics_species);
-    todo!("bt-6")
+    let skill_ids: Vec<u32> = skills.iter().map(|s| s.id).collect();
+    cover(
+        tactics_skills.iter().map(|r| r.skill_id),
+        &skill_ids,
+        TacticsContentError::DuplicateSkillEntry,
+        TacticsContentError::UnknownSkill,
+        TacticsContentError::MissingSkillEntry,
+    )?;
+    for r in tactics_skills {
+        check_skill_row(r)?;
+    }
+    let species_ids: Vec<u32> = species.iter().map(|s| s.id).collect();
+    cover(
+        tactics_species.iter().map(|r| r.species_id),
+        &species_ids,
+        TacticsContentError::DuplicateSpeciesEntry,
+        TacticsContentError::UnknownSpecies,
+        TacticsContentError::MissingSpeciesEntry,
+    )?;
+    tactics_species
+        .iter()
+        .map(|r| {
+            if r.signature.is_some() || r.footprint != 1 {
+                return Err(TacticsContentError::DormantLever(r.species_id));
+            }
+            let [light_id, heavy_id] = r.kit;
+            let light = kit_skill(r.species_id, light_id, Tier::Light, skills, tactics_skills)?;
+            let heavy = kit_skill(r.species_id, heavy_id, Tier::Heavy, skills, tactics_skills)?;
+            for (id, def) in [(light_id, light.1), (heavy_id, heavy.1)] {
+                if def.sets_weather.is_some() {
+                    return Err(TacticsContentError::KitWeatherSetter {
+                        species_id: r.species_id,
+                        skill_id: id,
+                    });
+                }
+            }
+            let base_speed = species
+                .iter()
+                .find(|s| s.id == r.species_id)
+                .map(|s| s.base_stats.speed)
+                .ok_or(TacticsContentError::UnknownSpecies(r.species_id))?;
+            Ok(SpeciesTactics {
+                species_id: r.species_id,
+                base_speed,
+                movement: r.movement,
+                role: r.role,
+                stance: r.stance,
+                light: light.0,
+                heavy: heavy.0,
+            })
+        })
+        .collect()
+}
+
+/// A sidecar keyed by id covers the loaded ids exactly once: no duplicate row, then no row for an
+/// unloaded id, then no loaded id without a row (each pass in registry order).
+fn cover(
+    rows: impl Iterator<Item = u32> + Clone,
+    loaded: &[u32],
+    duplicate: fn(u32) -> TacticsContentError,
+    unknown: fn(u32) -> TacticsContentError,
+    missing: fn(u32) -> TacticsContentError,
+) -> Result<(), TacticsContentError> {
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(id) = rows.clone().find(|&id| !seen.insert(id)) {
+        return Err(duplicate(id));
+    }
+    if let Some(id) = rows.clone().find(|id| !loaded.contains(id)) {
+        return Err(unknown(id));
+    }
+    match loaded.iter().find(|id| !seen.contains(id)) {
+        Some(&id) => Err(missing(id)),
+        None => Ok(()),
+    }
+}
+
+/// One skill row, first failure wins: runnable geometry, the long-range floor, the `All` origin.
+fn check_skill_row(r: &TacticsSkillDef) -> Result<(), TacticsContentError> {
+    let radius_ok = match r.shape {
+        Shape::Line | Shape::Cone => false,
+        Shape::Single => r.radius == 0,
+        Shape::Diamond => r.radius <= 2,
+        Shape::Burst => r.radius == 1,
+    };
+    if !radius_ok || r.range_min > r.range_max {
+        return Err(TacticsContentError::BadGeometry(r.skill_id));
+    }
+    if r.range_max >= LONG_RANGE && r.range_min != LONG_RANGE_MIN {
+        return Err(TacticsContentError::LongRangeMin(r.skill_id));
+    }
+    if r.ff_filter == FfFilter::All && r.origin != Origin::TargetUnit {
+        return Err(TacticsContentError::AllNeedsTargetOrigin(r.skill_id));
+    }
+    Ok(())
+}
+
+/// Resolve one kit slot to its joined [`SkillTactics`] (and the carried row), requiring `tier`.
+fn kit_skill<'a>(
+    species_id: u32,
+    skill_id: u32,
+    tier: Tier,
+    skills: &'a [SkillDef],
+    tactics_skills: &[TacticsSkillDef],
+) -> Result<(SkillTactics, &'a SkillDef), TacticsContentError> {
+    let wrong_tier = TacticsContentError::KitTier {
+        species_id,
+        skill_id,
+    };
+    let row = tactics_skills
+        .iter()
+        .find(|r| r.skill_id == skill_id)
+        .ok_or_else(|| wrong_tier.clone())?;
+    let def = skills
+        .iter()
+        .find(|s| s.id == skill_id)
+        .ok_or_else(|| wrong_tier.clone())?;
+    if row.tier != tier {
+        return Err(wrong_tier);
+    }
+    let joined = SkillTactics {
+        skill_id,
+        tier,
+        affinity: def.affinity,
+        power: def.power,
+        accuracy: def.accuracy,
+        applies_status: def.applies_status,
+        geometry: row.geometry(),
+    };
+    Ok((joined, def))
 }
 
 /// The design §4.1 kit lints over a join, per kit in order: distinct geometry, a melee skill,
@@ -296,8 +507,40 @@ pub fn build_kits(
 /// # Errors
 /// The first violation as a [`TacticsContentError`].
 pub fn lint_kits(kits: &[SpeciesTactics]) -> Result<(), TacticsContentError> {
-    let _ = kits;
-    todo!("bt-6")
+    for k in kits {
+        let (l, h) = (&k.light.geometry, &k.heavy.geometry);
+        if (l.range_min, l.range_max, l.shape) == (h.range_min, h.range_max, h.shape) {
+            return Err(TacticsContentError::KitSameGeometry(k.species_id));
+        }
+        if l.range_min != 1 && h.range_min != 1 {
+            return Err(TacticsContentError::KitNoMelee(k.species_id));
+        }
+        let stride = u16::from(stride_for_base_speed(k.base_speed));
+        if stride + u16::from(h.range_max) > MAX_HEAVY_REACH {
+            return Err(TacticsContentError::HeavyReach {
+                species_id: k.species_id,
+                skill_id: k.heavy.skill_id,
+            });
+        }
+        for s in [&k.light, &k.heavy] {
+            if stride + u16::from(s.geometry.range_max) > MAX_REACH {
+                return Err(TacticsContentError::Reach {
+                    species_id: k.species_id,
+                    skill_id: s.skill_id,
+                });
+            }
+        }
+        if let Some(level) = LINT_LEVELS
+            .clone()
+            .find(|&lv| u32::from(dmg_ref(&k.heavy, lv)) <= 2 * u32::from(dmg_ref(&k.light, lv)))
+        {
+            return Err(TacticsContentError::HeavyNotStrong {
+                species_id: k.species_id,
+                level,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Every map passes bt-1's validator and map ids are unique (registry order).
@@ -305,8 +548,17 @@ pub fn lint_kits(kits: &[SpeciesTactics]) -> Result<(), TacticsContentError> {
 /// # Errors
 /// [`TacticsContentError::DuplicateMap`] or [`TacticsContentError::BadMap`].
 pub fn validate_battle_maps(maps: &[BattleMapEntry]) -> Result<(), TacticsContentError> {
-    let _ = maps;
-    todo!("bt-6")
+    let mut seen = std::collections::BTreeSet::new();
+    for m in maps {
+        if !seen.insert(m.id) {
+            return Err(TacticsContentError::DuplicateMap(m.id));
+        }
+        validate_battle_map(&m.map).map_err(|error| TacticsContentError::BadMap {
+            map_id: m.id,
+            error,
+        })?;
+    }
+    Ok(())
 }
 
 /// The item sidecar: unique rows, each naming a loaded battle-usable item (`cure_status` set),
@@ -318,8 +570,18 @@ pub fn validate_tactics_items(
     items: &[ItemDef],
     tactics_items: &[TacticsItemDef],
 ) -> Result<(), TacticsContentError> {
-    let _ = (items, tactics_items);
-    todo!("bt-6")
+    let usable: Vec<u32> = items
+        .iter()
+        .filter(|i| i.cure_status.is_some())
+        .map(|i| i.id)
+        .collect();
+    cover(
+        tactics_items.iter().map(|r| r.item_id),
+        &usable,
+        TacticsContentError::DuplicateItemEntry,
+        TacticsContentError::NotBattleUsable,
+        TacticsContentError::MissingItemEntry,
+    )
 }
 
 /// The zone sidecar: unique rows naming loaded zones, every zone covered, then per row the pack
@@ -332,8 +594,37 @@ pub fn validate_tactics_zones(
     tactics_zones: &[TacticsZoneDef],
     maps: &[BattleMapEntry],
 ) -> Result<(), TacticsContentError> {
-    let _ = (zones, tactics_zones, maps);
-    todo!("bt-6")
+    let zone_ids: Vec<u32> = zones.iter().map(|z| z.id).collect();
+    cover(
+        tactics_zones.iter().map(|r| r.zone_id),
+        &zone_ids,
+        TacticsContentError::DuplicateZoneEntry,
+        TacticsContentError::UnknownZone,
+        TacticsContentError::MissingZoneEntry,
+    )?;
+    for r in tactics_zones {
+        let w = &r.pack_weights;
+        if w.validate().is_err() {
+            return Err(TacticsContentError::PackWeights {
+                zone_id: r.zone_id,
+                sum: u32::from(w.one) + u32::from(w.two) + u32::from(w.three),
+            });
+        }
+        if r.battle_map_pool.is_empty() {
+            return Err(TacticsContentError::EmptyMapPool(r.zone_id));
+        }
+        if let Some(&map_id) = r
+            .battle_map_pool
+            .iter()
+            .find(|&&id| !maps.iter().any(|m| m.id == id && !m.pvp))
+        {
+            return Err(TacticsContentError::PoolMap {
+                zone_id: r.zone_id,
+                map_id,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The whole tactical content gate, in order: tuning, maps, [`build_kits`], [`lint_kits`], items,
@@ -344,6 +635,16 @@ pub fn validate_tactics_zones(
 pub fn validate_tactics_content(
     reg: &TacticsRegistries<'_>,
 ) -> Result<Vec<SpeciesTactics>, TacticsContentError> {
-    let _ = reg;
-    todo!("bt-6")
+    check_tuning(reg.tuning)?;
+    validate_battle_maps(reg.battle_maps)?;
+    let kits = build_kits(
+        reg.species,
+        reg.skills,
+        reg.tactics_skills,
+        reg.tactics_species,
+    )?;
+    lint_kits(&kits)?;
+    validate_tactics_items(reg.items, reg.tactics_items)?;
+    validate_tactics_zones(reg.zones, reg.tactics_zones, reg.battle_maps)?;
+    Ok(kits)
 }

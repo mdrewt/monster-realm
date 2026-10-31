@@ -2315,17 +2315,18 @@ mod tests {
 "#;
 
     /// Pre-migration skills.ron — frozen inline snapshot (6 skills, ids 1–6), with the bt-6
-    /// values-only retune applied (ids 1, 3, 4, 5 power -> 20; id 6 Razor Leaf power -> 65);
+    /// values-only retune applied (ids 1, 3, 4, 5 power -> 20; Heavies id 2 Fire Fang and id 6
+    /// Razor Leaf power -> 70, the smallest power with heavy > 2 x light at every level);
     /// ids, names, affinities, accuracy and pp are unchanged from the pre-migration record.
     /// Kills: a migration that drops, reorders, or alters any of the 6 rows.
     const SKILLS_GOLDEN: &str = r#"// Skill registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 [
     (id: 1, name: "Ember",       affinity: Fire,    power: 20, accuracy: 100, pp: 25),
-    (id: 2, name: "Fire Fang",   affinity: Fire,    power: 65, accuracy: 95,  pp: 15),
+    (id: 2, name: "Fire Fang",   affinity: Fire,    power: 70, accuracy: 95,  pp: 15),
     (id: 3, name: "Water Gun",   affinity: Water,   power: 20, accuracy: 100, pp: 25),
     (id: 4, name: "Aqua Jet",    affinity: Water,   power: 20, accuracy: 100, pp: 20),
     (id: 5, name: "Vine Whip",   affinity: Plant,   power: 20, accuracy: 100, pp: 25),
-    (id: 6, name: "Razor Leaf",  affinity: Plant,   power: 65, accuracy: 95,  pp: 25),
+    (id: 6, name: "Razor Leaf",  affinity: Plant,   power: 70, accuracy: 95,  pp: 25),
 ]
 "#;
 

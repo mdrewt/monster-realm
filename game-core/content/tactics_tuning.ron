@@ -1,2 +1,32 @@
-// bt-6 placeholder (red phase).
-()
+// Tactical tuning (bt-6) — every constant of the M-battle-tactics design
+// (2.1 economy, 2.1.2 Guard, 2.3 clock, 2.4 flank, 3.7 wild cap, 6.4 Surge),
+// loaded into TacticsTuning. Unknown keys are a load error; zero denominators,
+// zero windows and an ap_turn below the cheapest action are rejected.
+(
+    ap_turn: 6,
+    move_stride_cost: 2,
+    max_strides_per_turn: 2,
+    disengage_tax: 1,
+    light_cost: 2,
+    heavy_cost: 4,
+    exert_surcharge: 2,
+    item_cost: 3,
+    recruit_cost: 6,
+    flee_cost: 6,
+    end_turn_cost: 0,
+    guard_min_ap: 2,
+    guard_num: 3,
+    guard_den: 4,
+    flank_num: 5,
+    flank_den: 4,
+    surge_start_round: 9,
+    surge_pct_per_round: 5,
+    wild_round_cap: 30,
+    pvp_window_ms: 30000,
+    pve_window_ms: 300000,
+    pvp_deploy_ms: 45000,
+    pve_deploy_ms: 300000,
+    max_windows_per_turn: 3,
+    autopass_forfeit: 4,
+    pad_cap_ms: 5000,
+)

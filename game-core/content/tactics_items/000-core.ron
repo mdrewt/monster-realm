@@ -1,2 +1,6 @@
-// bt-6 placeholder (red phase).
-[]
+// Tactical item sidecar (bt-6) — one row per battle-usable item (an item with
+// a cure_status), keyed by item_id: its Manhattan reach (0 = self) and who it
+// may target (Ally includes the user).
+[
+    (item_id: 3, range: 1, target_filter: Ally),
+]

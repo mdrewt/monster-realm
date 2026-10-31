@@ -1,2 +1,32 @@
-// bt-6 placeholder (red phase).
-[]
+// Tactical species sidecar (bt-6) — one row per species, keyed by species_id:
+// the design 4.1 battler levers and the two-skill kit (Light, Heavy) — a
+// fixed-size pair, so RON writes it as a tuple.
+// signature and footprint are dormant in P1 (None / 1).
+//
+// PROVISIONAL KITS: species id=2, id=6, id=7, id=8, id=9, id=20, id=21, id=22,
+// id=23 and id=30 cannot form a Light + Heavy kit from their learnable skills
+// yet (only Lights and weather setters are learnable, and no Water, Dark,
+// Earth or Wind Heavy exists). Their kits borrow an existing Heavy until the
+// species registry gains one (deferred from bt-6; a test pins this exact set).
+[
+    (species_id: 1,  movement: Walk,   role: Striker,    stance: Aggressive,  kit: (1, 2),   signature: None, footprint: 1),
+    (species_id: 2,  movement: Swim,   role: Guardian,   stance: Territorial, kit: (3, 6),   signature: None, footprint: 1),
+    (species_id: 3,  movement: Walk,   role: Artillery,  stance: Skittish,    kit: (5, 6),   signature: None, footprint: 1),
+    (species_id: 4,  movement: Nimble, role: Striker,    stance: Aggressive,  kit: (1, 2),   signature: None, footprint: 1),
+    (species_id: 5,  movement: Walk,   role: Striker,    stance: Aggressive,  kit: (1, 2),   signature: None, footprint: 1),
+    (species_id: 6,  movement: Swim,   role: Support,    stance: Territorial, kit: (1, 2),   signature: None, footprint: 1),
+    (species_id: 7,  movement: Walk,   role: Guardian,   stance: Territorial, kit: (1, 2),   signature: None, footprint: 1),
+    (species_id: 8,  movement: Nimble, role: Skirmisher, stance: Skittish,    kit: (11, 2),  signature: None, footprint: 1),
+    (species_id: 9,  movement: Walk,   role: Guardian,   stance: Territorial, kit: (5, 6),   signature: None, footprint: 1),
+    (species_id: 10, movement: Nimble, role: Skirmisher, stance: Aggressive,  kit: (11, 2),  signature: None, footprint: 1),
+    (species_id: 20, movement: Fly,    role: Skirmisher, stance: Skittish,    kit: (11, 2),  signature: None, footprint: 1),
+    (species_id: 21, movement: Fly,    role: Artillery,  stance: Skittish,    kit: (4, 6),   signature: None, footprint: 1),
+    (species_id: 22, movement: Nimble, role: Striker,    stance: Aggressive,  kit: (11, 2),  signature: None, footprint: 1),
+    (species_id: 23, movement: Fly,    role: Artillery,  stance: Skittish,    kit: (3, 6),   signature: None, footprint: 1),
+    (species_id: 30, movement: Swim,   role: Guardian,   stance: Territorial, kit: (3, 6),   signature: None, footprint: 1),
+    (species_id: 31, movement: Nimble, role: Striker,    stance: Aggressive,  kit: (11, 2),  signature: None, footprint: 1),
+    (species_id: 40, movement: Nimble, role: Skirmisher, stance: Skittish,    kit: (40, 41), signature: None, footprint: 1),
+    (species_id: 41, movement: Nimble, role: Striker,    stance: Aggressive,  kit: (40, 41), signature: None, footprint: 1),
+    (species_id: 42, movement: Fly,    role: Support,    stance: Skittish,    kit: (42, 43), signature: None, footprint: 1),
+    (species_id: 43, movement: Fly,    role: Support,    stance: Territorial, kit: (42, 43), signature: None, footprint: 1),
+]

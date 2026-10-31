@@ -5,6 +5,10 @@
 //! private `encounter` tables from the `game-core` RON registries when the
 //! stored content version is stale.
 
+use crate::content_cache::{
+    cached_battle_maps, cached_tactics_items, cached_tactics_skills, cached_tactics_species,
+    cached_tactics_zones,
+};
 use crate::marshal::{encounter_rows_from_table, pub_from_monster};
 use crate::schema::{
     character, config, encounter, evolution_path, heal_location_row, item_row, monster,
@@ -52,6 +56,14 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     let heal_defs = load_heal_locations().map_err(|e| format!("heal_locations: {e}"))?;
     let shops = load_shops().map_err(|e| format!("shops: {e}"))?;
     let abilities = load_abilities().map_err(|e| format!("abilities: {e}"))?;
+    // bt-6: the tactical sidecars (process-cached; validated below, never written in P1).
+    let tactics_skills = cached_tactics_skills().map_err(|e| format!("tactics_skills: {e}"))?;
+    let tactics_species = cached_tactics_species().map_err(|e| format!("tactics_species: {e}"))?;
+    let tactics_items = cached_tactics_items().map_err(|e| format!("tactics_items: {e}"))?;
+    let tactics_zones = cached_tactics_zones().map_err(|e| format!("tactics_zones: {e}"))?;
+    let battle_maps = cached_battle_maps().map_err(|e| format!("battle_maps: {e}"))?;
+    let tactics_tuning =
+        game_core::load_tactics_tuning().map_err(|e| format!("tactics_tuning: {e:?}"))?;
 
     // ====== VALIDATE PHASE ======
     game_core::validate_zones(&zones).map_err(|e| format!("zones invalid: {e}"))?;
@@ -82,6 +94,20 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
         .map_err(|e| format!("npc_interactions invalid: {e}"))?;
     validate_shops(&shops, &items).map_err(|e| format!("shops invalid: {e}"))?;
     validate_abilities(&abilities, &species).map_err(|e| format!("abilities invalid: {e}"))?;
+    // bt-6: the tactical join + kit lints — the same gate the game-core CI tests run.
+    game_core::validate_tactics_content(&game_core::TacticsRegistries {
+        species: &species,
+        skills: &skills,
+        items: &items,
+        zones: &zones,
+        tactics_skills,
+        tactics_species,
+        tactics_items,
+        tactics_zones,
+        battle_maps,
+        tuning: &tactics_tuning,
+    })
+    .map_err(|e| format!("tactics content invalid: {e:?}"))?;
 
     // ====== WRITE PHASE ======
     // zone_def deletions: zones dropped from the RON registry lose
