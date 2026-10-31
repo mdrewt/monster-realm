@@ -1,12 +1,12 @@
 //! Wild AI — design §4.2: the three stances + the universal Exhausted rule, **seed-free**.
 //!
 //! [`plan`] is a pure function of the public board. It takes no RNG and no seed parameter (the
-//! compile shape), reads the state only through a private [`View`] that has no `seed`/`action_seq`
-//! field, and costs from a fresh budget — so the client's intent chip (the same wasm build on the
-//! shared provisional board) and the server's TurnStart plan can never disagree. A stance that
-//! wants randomness cannot compile against a seed; it must move its telegraph into server-pushed
-//! `battle_event`s. Every choice is one `min_by_key` over an explicit tuple, so native and wasm
-//! agree byte for byte.
+//! compile shape); every rule below it reads a private `View` that carries no `seed`, `action_seq`
+//! or budget (so a new stance has nothing secret to reach for), and it costs from a fresh budget —
+//! so the client's intent chip (the same wasm build on the shared provisional board) and the
+//! server's TurnStart plan can never disagree. A stance that wants randomness cannot compile
+//! against a seed; it must move its telegraph into server-pushed `battle_event`s. Every choice is
+//! one `min_by_key` over an explicit tuple, so native and wasm agree byte for byte.
 //!
 //! The plan is executed by the same executor as player queues (`queue::TacticalBattle`), so every
 //! emitted entry is one `validate_at_pop` accepts: paths come from `movement::find_path`, aims
@@ -101,7 +101,7 @@ struct Reach {
     strides: u8,
 }
 
-/// One way to attack: `target` from `tile` with the `skill_idx`-th kit skill, aimed as `aim`.
+/// One way to attack: `target` from `reach.tile` with the `skill_idx`-th kit skill, aimed as `aim`.
 struct Candidate {
     target: u32,
     tier: Tier,
@@ -111,8 +111,8 @@ struct Candidate {
     aim: ActionTarget,
 }
 
-/// The public board as the planner reads it — deliberately without `seed` or `action_seq`, so no
-/// stance can read the secret stream even by mistake.
+/// The public board as the planner reads it — deliberately without `seed`, `action_seq` or the
+/// actor's stored budget: every helper takes this, never the state.
 struct View<'a> {
     board: Board,
     units: &'a [TacticalUnit],
@@ -181,9 +181,10 @@ impl<'a> View<'a> {
         for y in 0..self.board.height {
             for x in 0..self.board.width {
                 let tile = Cell { x, y };
-                if tile == pos || manhattan(pos, tile) > max_points {
+                if manhattan(pos, tile) > max_points {
                     continue;
                 }
+                // The own tile is already in `out`: `find_path` refuses it as `SameTile`.
                 let Ok(path) = find_path(&self.board, self.actor.id, pos, tile) else {
                     continue;
                 };
@@ -264,7 +265,12 @@ impl<'a> View<'a> {
         for &r in reach.iter().filter(|r| tile_ok(r.tile)) {
             let board_at = self.board_at(r.tile);
             for (skill_idx, skill) in self.actor.kit.skills.iter().enumerate() {
-                if !tier_ok(skill.tier) || !self.admissible(r, Some(skill.tier)) {
+                // The gate and the resolver find a skill by id, first match: a later kit entry that
+                // repeats an id can never be the one executed, so it is never the one planned.
+                let shadowed = self.actor.kit.skills[..skill_idx]
+                    .iter()
+                    .any(|s| s.skill_id == skill.skill_id);
+                if shadowed || !tier_ok(skill.tier) || !self.admissible(r, Some(skill.tier)) {
                     continue;
                 }
                 for target in &self.players {
@@ -313,11 +319,7 @@ impl<'a> View<'a> {
             .iter()
             .filter(|c| c.target == target.id && c.tier == tier)
             .min_by_key(|c| {
-                let primary = if farthest {
-                    Reverse(self.distance(c.reach.tile))
-                } else {
-                    Reverse(u16::MAX)
-                };
+                let primary = farthest.then(|| Reverse(self.distance(c.reach.tile)));
                 (
                     primary,
                     c.reach.cost,
@@ -344,21 +346,13 @@ impl<'a> View<'a> {
             .filter(move |&r| self.admissible(r, None))
     }
 
-    /// `[Move?, EndTurn]` to `r` (just `[EndTurn]` for the wild's own tile).
-    fn move_plan(r: Reach) -> Vec<QueuedAction> {
-        move_action(r)
-            .into_iter()
-            .chain(std::iter::once(QueuedAction::EndTurn))
-            .collect()
-    }
-
     /// Aggressive: the reachable tile with the least distance to the nearest player, by
     /// `(distance, cost, y, x)` — the wild's own tile (cost 0) wins a tie.
     fn approach(&self, reach: &[Reach]) -> Vec<QueuedAction> {
         let best = self
             .open(reach)
             .min_by_key(|r| (self.distance(r.tile), r.cost, r.tile.y, r.tile.x));
-        best.map_or_else(|| vec![QueuedAction::EndTurn], Self::move_plan)
+        best.map_or_else(|| vec![QueuedAction::EndTurn], move_plan)
     }
 
     /// Skittish: within `heavy range_max + 2` of the nearest player, the farthest reachable tile by
@@ -378,8 +372,16 @@ impl<'a> View<'a> {
             .open(reach)
             .filter(|r| self.distance(r.tile) <= band)
             .min_by_key(|r| (Reverse(self.distance(r.tile)), r.cost, r.tile.y, r.tile.x));
-        best.map_or_else(|| self.approach(reach), Self::move_plan)
+        best.map_or_else(|| self.approach(reach), move_plan)
     }
+}
+
+/// `[Move?, EndTurn]` to `r` (just `[EndTurn]` for the wild's own tile).
+fn move_plan(r: Reach) -> Vec<QueuedAction> {
+    move_action(r)
+        .into_iter()
+        .chain(std::iter::once(QueuedAction::EndTurn))
+        .collect()
 }
 
 /// The emitted Move for `r` (none for the wild's own tile).

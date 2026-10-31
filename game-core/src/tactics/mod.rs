@@ -9,7 +9,8 @@
 //! - `geometry`   — Manhattan metric, line of sight, the skill target set, flank.
 //! - `movement`   — stride bands, terrain × class weights, Dijkstra pathing, disengage.
 //! - `map`        — the battle-map RON schema and its validator.
-//! - `tuning`     — `TacticsTuning` (every design constant, read by every rule below) + `BattleKind`.
+//! - `tuning`     — `TacticsTuning` (the design's economy, clock and upkeep constants, read by every rule
+//!   below; the bt-4 stance numbers and the pack constants live beside their rules) + `BattleKind`.
 //! - `economy`    — AP costs, Exert, the stride cap, Guard eligibility and multiplier.
 //! - `initiative` — the round comparator and the tie-priority coin.
 //! - `resolve`    — the battle model (`TacticalState`, events) and the §2.4 damage pipeline.

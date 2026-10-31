@@ -114,11 +114,12 @@ pub fn wild_seed(encounter_seed: u64, index: u8) -> u32 {
 /// # Errors
 /// `pool_len == 0` → [`EncounterError::EmptyMapPool`].
 pub fn pick_map_index(pool_len: usize, encounter_seed: u64) -> Result<usize, EncounterError> {
+    // Neither conversion can fail on a supported target (`usize` is at most 64 bits, and
+    // `encounter_seed % len < len`); both are mapped onto the pool's one error rather than a panic.
     let len = u64::try_from(pool_len).map_err(|_| EncounterError::EmptyMapPool)?;
     if len == 0 {
         return Err(EncounterError::EmptyMapPool);
     }
-    // `encounter_seed % len < len ≤ usize::MAX`, so the narrowing cannot fail.
     usize::try_from(encounter_seed % len).map_err(|_| EncounterError::EmptyMapPool)
 }
 
@@ -157,6 +158,8 @@ pub fn generate_encounter(
     encounter_seed: u64,
     conscious_party_count: u8,
 ) -> Result<Encounter, EncounterError> {
+    // Validated here first so `BadWeights` precedes `EmptyMapPool` (declaration order); the roll
+    // validates again, harmlessly.
     weights.validate()?;
     let map_index = pick_map_index(pool_len, encounter_seed)?;
     let rolled = roll_pack_size(weights, encounter_seed)?;
