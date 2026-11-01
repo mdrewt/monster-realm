@@ -36,7 +36,11 @@ export function battleButton(
   stack: Stack,
   btn: NavInput,
   outcomeAgeMs?: number,
+  tactical = false,
 ): ScreenResult | undefined {
+  // bt-11 API freeze: `tactical` (the tactical shell owns the frame) leaves Start at a bare battle
+  // base to the battle adapter (End Turn / Guard / Submit) — not implemented yet.
+  void tactical;
   const top = stack[stack.length - 1];
   if (btn.button === 'Start' && isBareBattle(stack)) {
     return btn.repeat ? 'consumed' : { kind: 'openMenu' };
@@ -88,6 +92,8 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   useItem: 'safe',
   pvpAttack: 'safe',
   pvpSwap: 'safe',
+  submitQueue: 'safe',
+  cancelQueue: 'safe',
   advanceDialogue: 'refuse',
   dismissDialogue: 'safe',
   pickShop: 'refuse',

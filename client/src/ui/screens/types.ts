@@ -3,6 +3,7 @@
 // state and a `Command` (or `consumed` / `unhandled`); the shell keeps that state per frame
 // (`ScreenHost`, screens/index.ts) and main.ts runs every command through ONE exhaustive `dispatch`.
 import type { Bindings } from '../../input/bindings';
+import type { QueuedAction } from '../../module_bindings/types';
 import type { AuthoritativeStore } from '../../net/store';
 import type { LeaderboardView } from '../leaderboardView';
 import type { NavInput } from '../nav';
@@ -66,6 +67,15 @@ export type Command =
   | { readonly kind: 'useItem'; readonly battleId: bigint; readonly itemId: number }
   | { readonly kind: 'pvpAttack'; readonly battleId: bigint; readonly skillId: number }
   | { readonly kind: 'pvpSwap'; readonly battleId: bigint; readonly teamIndex: number }
+  // Tactical battle (bt-11): a unit's plan to `submit_queue` (binding-shaped entries) and the
+  // READY-row cancel. The tactical shell issues them through its deps (bt-12 wires them).
+  | {
+      readonly kind: 'submitQueue';
+      readonly battleId: bigint;
+      readonly unitId: number;
+      readonly entries: readonly QueuedAction[];
+    }
+  | { readonly kind: 'cancelQueue'; readonly battleId: bigint; readonly unitId: number }
   // Dialogue. `pickShop` is the greet-then-shop choice: it ends the conversation, and the shop
   // opens on the first batch with no conversation.
   | { readonly kind: 'advanceDialogue'; readonly choiceIdx: number }

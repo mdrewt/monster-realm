@@ -17,7 +17,8 @@
 // It owns no game rule (the overlay tile sets and the next round's order are inputs), reads time
 // only through `deps.now`, and reads reduced motion through `deps.reduceMotion()` on every
 // render/ingest (never cached).
-import type { EventPayload } from '../module_bindings/types';
+import type { EventPayload, QueuedAction } from '../module_bindings/types';
+import type { HintBattle } from '../ui/hintBarModel';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
 import type { BattleOp, BattleOpsView } from '../ui/screens/battleScreen';
 import {
@@ -25,8 +26,8 @@ import {
   type CursorMemory,
   cursorFor,
   type Dir,
+  EMPTY_OVERLAYS,
   moveCursor,
-  type OverlaySets,
   type TacticalUnit,
   type Tile,
   unitAt,
@@ -37,29 +38,55 @@ import { Playback, planBeats, showsTurnBanner } from './presentation';
 import * as s from './strings';
 import { Ticker, type TickerNames, tickerLine } from './ticker';
 import { renderTurnBar, turnBarVM } from './turnBar';
+import type { QueuedActionRule, RulesBoard, TacticsRules } from './wasm';
 
+/** A bait the player holds (an inventory row whose item def has `recruitBonus > 0`; bt-12 builds it). */
+export interface BaitOption {
+  readonly itemId: number;
+  readonly name: string;
+  readonly count: number;
+  /** The item's `recruitBonus` (permille), the rules' `bait_bonus`. */
+  readonly bonus: number;
+}
 export interface TacticsBattleVM {
   readonly battleId: bigint;
   readonly kind: 'wild' | 'pvp';
   readonly width: number;
   readonly height: number;
   readonly units: readonly TacticalUnit[];
+  /** The current initiative unit of EITHER side (`Waiting(U)` / the AI or READY unit executing). */
   readonly activeUnitId: number | null;
   readonly round: number;
   readonly initiative: readonly number[];
   readonly turnIdx: number;
   readonly nextInitiative: readonly number[];
-  readonly readyUnitIds: ReadonlySet<number>;
   readonly surgeStartRound: number;
   readonly wildRoundCap: number;
-  readonly overlays: OverlaySets;
-  readonly draftedAp: number;
   readonly targetUnitId: number | null;
+  /** bt-11: the raw `battle_unit` rows the rules read (bt-12: `unitRowOf` over `my_battle_units`);
+   *  every overlay, band, forecast and projection is computed from it through `deps.rules`. */
+  readonly board: RulesBoard;
+  /** bt-11: this player's READY plans by unit id (`my_battle_queue`); the turn bar's lock derives from it. */
+  readonly readyPlans: ReadonlyMap<number, readonly QueuedActionRule[]>;
+  /** bt-11: the baits held (the Recruit sub-list and the forecast's bait selector). */
+  readonly baits: readonly BaitOption[];
+  /** bt-11: no recruit headroom (the Recruit row greys with "Party full"). */
+  readonly partyFull: boolean;
 }
 export interface TacticsBattleDeps {
   readonly now: () => number;
   readonly reduceMotion: () => boolean;
   readonly names: TickerNames;
+  /** bt-11: the rules port, bound LAZILY on first use (main.ts: `bindTacticsRules(pkg)`). */
+  readonly rules: () => TacticsRules;
+  /** bt-11: a unit's plan to `submit_queue` (binding-shaped entries) — a live commit or a pre-queue. */
+  readonly onSubmitQueue: (
+    battleId: bigint,
+    unitId: number,
+    entries: readonly QueuedAction[],
+  ) => void;
+  /** bt-11: the confirmed "Clear plan" row → `cancel_queue`. */
+  readonly onCancelQueue: (battleId: bigint, unitId: number) => void;
 }
 
 function div(className: string): HTMLElement {
@@ -205,6 +232,11 @@ export class TacticsBattle implements BattleOpsView {
     this.#paint();
   }
 
+  /** What the hint bar shows for the selected unit (BT11.6): Start's verb and whether B undoes. */
+  hint(): HintBattle {
+    throw new Error('bt-11: not implemented');
+  }
+
   applyBattleOp(op: BattleOp): void {
     switch (op.kind) {
       case 'move':
@@ -220,6 +252,11 @@ export class TacticsBattle implements BattleOpsView {
       case 'activate':
         // The command menu is bt-11's.
         return;
+      case 'danger':
+      case 'cycle':
+      case 'start':
+        // bt-11 API freeze (BT11.6): not implemented yet.
+        throw new Error('bt-11: not implemented');
       default:
         op satisfies never;
     }
@@ -285,7 +322,8 @@ export class TacticsBattle implements BattleOpsView {
         units: vm.units,
         activeUnitId: vm.activeUnitId,
         cursor: this.#cursor,
-        overlays: vm.overlays,
+        // bt-11 API freeze: the overlays come from deps.rules() over vm.board (not implemented yet).
+        overlays: EMPTY_OVERLAYS,
         dangerOn: this.#dangerOn,
       }),
       (tile) => this.#pointTo(tile),
@@ -302,7 +340,8 @@ export class TacticsBattle implements BattleOpsView {
       infoBoxes(vm.units, {
         activeUnitId: vm.activeUnitId,
         focusUnitId: (target ?? under)?.unitId ?? null,
-        draftedAp: vm.draftedAp,
+        // bt-11 API freeze: the drafted spend comes from the unit's draft (not implemented yet).
+        draftedAp: 0,
       }),
     );
 
@@ -315,7 +354,7 @@ export class TacticsBattle implements BattleOpsView {
         turnIdx: vm.turnIdx,
         nextInitiative: vm.nextInitiative,
         units: vm.units,
-        readyUnitIds: vm.readyUnitIds,
+        readyUnitIds: new Set(vm.readyPlans.keys()),
         surgeStartRound: vm.surgeStartRound,
         wildRoundCap: vm.wildRoundCap,
       }),
@@ -332,7 +371,7 @@ export class TacticsBattle implements BattleOpsView {
       id === undefined ? undefined : vm.units.find((u) => u.unitId === id && u.state === 'Active');
     const shown =
       unit !== undefined &&
-      showsTurnBanner({ mine: unit.mine, ready: vm.readyUnitIds.has(unit.unitId), ai: unit.ai });
+      showsTurnBanner({ mine: unit.mine, ready: vm.readyPlans.has(unit.unitId), ai: unit.ai });
     this.#bannerEl.hidden = !shown;
     this.#bannerEl.textContent = shown ? s.bannerTurn(this.#deps.names.unit(unit.unitId)) : '';
   }

@@ -1865,6 +1865,20 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         tag: 'Swap',
         value: command.teamIndex,
       });
+    case 'submitQueue': {
+      // bt-11: a unit's plan (a live commit or a pre-queue) to `submit_queue`; the server costs it
+      // on its board and refuses with a typed reason, reported like every other rejection.
+      const { battleId, unitId, entries } = command;
+      return sendGuarded('submit-queue', () =>
+        conn?.live()?.reducers.submitQueue({ battleId, unitId, entries: [...entries] }),
+      );
+    }
+    case 'cancelQueue': {
+      const { battleId, unitId } = command;
+      return sendGuarded('cancel-queue', () =>
+        conn?.live()?.reducers.cancelQueue({ battleId, unitId }),
+      );
+    }
     case 'advanceDialogue': {
       const { choiceIdx } = command;
       // qf-6: the server refuses a reply chosen too far from the NPC, in another zone, or with the

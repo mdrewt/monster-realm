@@ -219,6 +219,8 @@ export interface ForecastOut {
   readonly status_blocked: boolean;
   readonly flank_factor: readonly [number, number];
   readonly guard_factor: readonly [number, number];
+  /** The carried type-chart multiplier over 10, reduced: [0,1] Immune, [1,2], [1,1], [2,1]. */
+  readonly type_factor: readonly [number, number];
 }
 export interface PlanOut {
   readonly costs: readonly number[];
@@ -265,6 +267,7 @@ export interface TacticsWasmExports {
   tactics_forecast(attacker: unknown, target: unknown, skill: unknown, flank: boolean): unknown;
   tactics_recruit_odds(maxHp: number, hp: number, baitBonus: number): unknown;
   tactics_ai_plan(board: unknown, unit: number): unknown;
+  tactics_recruit_targets(board: unknown, unit: number, budget: unknown): unknown;
   tactics_is_exhausted(curHp: number, maxHp: number): boolean;
   tactics_plan(start: unknown, entries: unknown): unknown;
   tactics_overlays(board: unknown, q: unknown): unknown;
@@ -289,6 +292,9 @@ export interface TacticsRules {
   forecast(attacker: RulesUnit, target: RulesUnit, skillId: number, flank: boolean): ForecastOut;
   recruitOdds(maxHp: number, hp: number, baitBonus: number): RuleResult<RecruitOdds, RecruitError>;
   aiPlan(board: RulesBoard, unit: number): QueuedActionRule[];
+  /** The Recruit targets `unit` could bind now with `budget` as its ledger (one `validate_at_pop`
+   *  chain per candidate: PvP refusal, wild actor, player-owned target, adjacency, full budget). */
+  recruitTargets(board: RulesBoard, unit: number, budget: TurnBudget): number[];
   isExhausted(curHp: number, maxHp: number): boolean;
   plan(start: TurnBudget, entries: readonly Entry[]): RuleResult<PlanOut, EconomyError>;
   overlays(board: RulesBoard, q: OverlayQuery): OverlaysOut;
@@ -306,6 +312,7 @@ const EXPORT_NAMES = [
   'tactics_forecast',
   'tactics_recruit_odds',
   'tactics_ai_plan',
+  'tactics_recruit_targets',
   'tactics_is_exhausted',
   'tactics_plan',
   'tactics_overlays',
@@ -370,6 +377,8 @@ export function bindTacticsRules(pkg: TacticsWasmExports): TacticsRules {
       ) as RuleResult<RecruitOdds, RecruitError>,
     aiPlan: (board, unit) =>
       pkg.tactics_ai_plan(board, int('unit', unit, U32_MAX)) as QueuedActionRule[],
+    recruitTargets: (board, unit, budget) =>
+      pkg.tactics_recruit_targets(board, int('unit', unit, U32_MAX), budget) as number[],
     isExhausted: (curHp, maxHp) =>
       pkg.tactics_is_exhausted(int('curHp', curHp, U16_MAX), int('maxHp', maxHp, U16_MAX)),
     plan: (start, entries) => pkg.tactics_plan(start, entries) as RuleResult<PlanOut, EconomyError>,

@@ -30,12 +30,22 @@ export interface HintWorld {
 
 const NO_WORLD: HintWorld = { target: null, sheetOpen: false, requestWaiting: false };
 
+/** What only the tactical battle shell knows (bt-11, BT11.6): what Start does for the selected unit
+ *  and whether B undoes a drafted chip. Absent at a legacy battle. */
+export interface HintBattle {
+  readonly start: 'endTurn' | 'guard' | 'submit';
+  readonly undo: boolean;
+}
+
 export function hintBar(
   stack: Stack,
   bindings: Bindings,
   notices: readonly Notice[],
   world: HintWorld = NO_WORLD,
+  battle?: HintBattle,
 ): readonly HintChip[] {
+  // bt-11 API freeze: the tactical chips are not implemented yet.
+  if (battle !== undefined) throw new Error('bt-11: not implemented');
   const chip = (button: VButton, verb: string, badge = false): HintChip => {
     const code = bindings.buttons[button][0];
     return { button, keycap: code === undefined ? '' : glyph(code), verb, badge };

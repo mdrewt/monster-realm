@@ -15,7 +15,12 @@ import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 export type BattleOp =
   | { readonly kind: 'move'; readonly dir: CursorDir }
   | { readonly kind: 'activate' }
-  | { readonly kind: 'back' };
+  | { readonly kind: 'back' }
+  // bt-11 (BT11.6): the danger toggle (X), own-unit cycling (LB / RB) and Start (End Turn / Guard
+  // live, Submit for a pre-queue). The legacy BattleView ignores them (its switch has no default arm).
+  | { readonly kind: 'danger' }
+  | { readonly kind: 'cycle'; readonly dir: -1 | 1 }
+  | { readonly kind: 'start' };
 
 /** What the battle view implements. */
 export interface BattleOpsView {

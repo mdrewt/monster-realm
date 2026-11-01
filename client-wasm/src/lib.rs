@@ -618,6 +618,9 @@ pub struct ForecastOut {
     pub status_blocked: bool,
     pub flank_factor: (u8, u8),
     pub guard_factor: (u8, u8),
+    /// The carried type-chart multiplier for (skill affinity → target affinity), over 10 and
+    /// reduced: Immune (0, 1), NotVeryEffective (1, 2), Neutral (1, 1), SuperEffective (2, 1).
+    pub type_factor: (u8, u8),
 }
 
 /// A draft costed in order (`economy::spend` per entry): the per-entry charges, their total, the
@@ -964,6 +967,8 @@ pub fn forecast_of(
         status_blocked,
         flank_factor: (t.flank_num, t.flank_den),
         guard_factor: (t.guard_num, t.guard_den),
+        // bt-11 REV 5 A27: not implemented yet (the continuation's host test pins it).
+        type_factor: (0, 0),
         min,
         max,
     })
@@ -1009,6 +1014,19 @@ pub fn ai_plan_of(board: &BoardIn, unit: u32) -> Result<Vec<QueuedAction>, Strin
         .ok_or_else(|| format!("unit {unit} not in the battle"))?;
     let (stance, spawn) = wild_inputs(row, map_of(board.map_id)?)?;
     Ok(ai_plan(&state, unit, stance, spawn, &content.tuning))
+}
+
+/// The Recruit targets `unit` could bind NOW with `budget` as its ledger (REV 5 A26): every unit `t`
+/// of the other side for which `queue::validate_at_pop(state', unit, Recruit{target: t, bait: None},
+/// HeadroomHooks, tuning)` is Ok — the ONE rule chain (PvP refusal, a wild actor, a player-owned
+/// target, adjacency, the full budget) answered by game-core; party headroom is the client's own
+/// `partyFull` flag (the hooks answer `true`). Sorted state order.
+///
+/// # Errors
+/// Content failed to load, a malformed board, an unknown `unit`.
+pub fn recruit_targets_of(board: &BoardIn, unit: u32, budget: &TurnBudget) -> Result<Vec<u32>, String> {
+    let _ = (board, unit, budget);
+    Err("bt-11: not implemented".to_string())
 }
 
 /// A draft costed in order from `start`: `economy::spend` per entry on a copy (the charges and
@@ -1441,6 +1459,19 @@ pub fn tactics_ai_plan(board: JsValue, unit: u32) -> Result<JsValue, JsValue> {
     let board: BoardIn =
         serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
     to_js(&ai_plan_of(&board, unit).map_err(js_err)?)
+}
+
+/// The Recruit targets `unit` could bind now with `budget` as its ledger (REV 5 A26): `Vec<u32>`.
+///
+/// # Errors
+/// Undeserialisable inputs, an unknown unit, content failed to load.
+#[wasm_bindgen]
+pub fn tactics_recruit_targets(board: JsValue, unit: u32, budget: JsValue) -> Result<JsValue, JsValue> {
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
+    let budget: TurnBudget =
+        serde_wasm_bindgen::from_value(budget).map_err(|e| js_err(format!("budget: {e}")))?;
+    to_js(&recruit_targets_of(&board, unit, &budget).map_err(js_err)?)
 }
 
 /// `ai::is_exhausted` — the Exhausted icon's rule (R-bt-4-CHIPLABEL).
