@@ -17,7 +17,6 @@ import type {
   BattleQueue,
   BattleTactical,
   BattleUnit,
-  DeployPick,
   PlayerFormation,
   QueuedAction,
 } from '../module_bindings/types';
@@ -75,9 +74,10 @@ import type {
 //      assigning that wider union to a narrower store field (StoreTradeOffer.status)
 //      is a tsc error — forcing a deliberate store-union + consumer decision.
 //   3. narrowTag is the runtime net: an unknown tag is logged and passed through
-//      (fail-soft — NEVER throw; flushBatch has no per-listener isolation).
+//      (fail-soft — NEVER throw: a throw inside a view reconcile would drop that
+//      whole view's rows for the flush).
 // Registry entries WITHOUT a narrowTag call site feed bare-string store fields,
-// where the eval alone forces author awareness (accepted limitation).
+// where the registry pins alone force author awareness (accepted limitation).
 //
 // The variant lists mirror module_bindings/types.ts EXACTLY (unit-test-pinned).
 export const HANDLED_ENUM_VARIANTS = {
@@ -1024,7 +1024,6 @@ export type SdkBattleEventRow = BattleEvent;
 export type SdkFormationRow = Omit<PlayerFormation, 'ownerIdentity'> & {
   readonly ownerIdentity: SdkIdentity;
 };
-export type { DeployPick };
 
 /** A payload-carrying enum tag this client does not know: the row is dropped (see the callers). */
 class UnknownTagError extends Error {}

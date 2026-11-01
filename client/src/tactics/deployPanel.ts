@@ -129,7 +129,6 @@ export class DeployPanel implements BattleOpsView {
   readonly #deps: DeployPanelDeps;
   readonly #root: HTMLElement;
   readonly #titleEl: HTMLElement;
-  readonly #bodyEl: HTMLElement;
 
   #visible = false;
   #vm: DeployVM | null = null;
@@ -152,8 +151,7 @@ export class DeployPanel implements BattleOpsView {
     this.#titleEl = el('h2', 'tactics-title');
     this.#titleEl.setAttribute('data-testid', 'battle-title');
     this.#titleEl.setAttribute('tabindex', '-1');
-    this.#bodyEl = el('div', 'tactics-deploy-body');
-    this.#root.append(this.#titleEl, this.#bodyEl);
+    this.#root.appendChild(this.#titleEl);
     parent.appendChild(this.#root);
   }
 
@@ -177,9 +175,10 @@ export class DeployPanel implements BattleOpsView {
       this.#assignment = [];
       this.#lock = null;
     } else if (this.#mode === 'edit') {
-      // The edits survive a re-render; a monster no longer offered leaves its slot.
+      // The edits survive a re-render with the monsters' FRESH rows; one no longer offered leaves
+      // its slot.
       this.#assignment = this.#assignment.map((m) =>
-        m !== null && vm.candidates.some((c) => c.monsterId === m.monsterId) ? m : null,
+        m === null ? null : (vm.candidates.find((c) => c.monsterId === m.monsterId) ?? null),
       );
       while (this.#assignment.length < vm.formation.length) this.#assignment.push(null);
       this.#assignment.length = vm.formation.length;
@@ -207,7 +206,7 @@ export class DeployPanel implements BattleOpsView {
     this.#cursor = 'deploy';
     this.#candidate = null;
     this.#assignment = [];
-    this.#bodyEl.replaceChildren();
+    this.#root.replaceChildren(this.#titleEl);
     closeOverlayA11y('battleView', null);
   }
 
@@ -228,7 +227,7 @@ export class DeployPanel implements BattleOpsView {
     if (this.#mode === 'confirm') {
       switch (op.kind) {
         case 'activate':
-          if (this.#cursor === 'deploy') this.#send(picksOf(vm.formation));
+          if (this.#cursor === 'deploy') this.#sendPicks(picksOf(vm.formation));
           else if (this.#cursor === 'edit') this.#enterEdit();
           return;
         case 'danger':
@@ -351,14 +350,13 @@ export class DeployPanel implements BattleOpsView {
   }
 
   #sendAssignment(): void {
-    const picks = picksOf(this.#assignment);
-    if (picks.length === 0) return;
-    this.#send(picks);
+    this.#sendPicks(picksOf(this.#assignment));
   }
 
-  #send(picks: readonly DeployPick[]): void {
+  /** Send `picks` unless empty (nothing to deploy: no lock, no status line) or already in flight. */
+  #sendPicks(picks: readonly DeployPick[]): void {
     const vm = this.#vm;
-    if (vm === null || this.#lock !== null) return;
+    if (vm === null || picks.length === 0 || this.#lock !== null) return;
     const lock = Symbol('deploy');
     this.#lock = lock;
     this.#paint();
@@ -368,7 +366,15 @@ export class DeployPanel implements BattleOpsView {
       this.#lock = null;
       if (this.#visible) this.#paint();
     };
-    this.#deps.onDeploy(vm.battleId, picks).then(settled, settled);
+    let sent: Promise<void>;
+    try {
+      sent = this.#deps.onDeploy(vm.battleId, picks);
+    } catch (err) {
+      // A synchronous throw must not strand the lock (the panel would read "Deploying…" forever).
+      settled();
+      throw err;
+    }
+    sent.then(settled, settled);
   }
 
   // --- the paint --------------------------------------------------------------------------------
@@ -398,15 +404,11 @@ export class DeployPanel implements BattleOpsView {
       const prev = el('button', 'tactics-deploy-prev');
       prev.type = 'button';
       prev.setAttribute('aria-label', s.deployPrevMonster());
-      prev.addEventListener('click', () => {
-        if (this.#lock === null) this.#cycle(-1);
-      });
+      prev.addEventListener('click', () => this.applyBattleOp({ kind: 'cycle', dir: -1 }));
       const next = el('button', 'tactics-deploy-next');
       next.type = 'button';
       next.setAttribute('aria-label', s.deployNextMonster());
-      next.addEventListener('click', () => {
-        if (this.#lock === null) this.#cycle(1);
-      });
+      next.addEventListener('click', () => this.applyBattleOp({ kind: 'cycle', dir: 1 }));
       const candidate = vm.candidates.find((c) => c.monsterId === this.#candidate);
       group.appendChild(prev);
       if (candidate !== undefined) group.append(...monsterSpans(candidate));
@@ -446,7 +448,14 @@ export class DeployPanel implements BattleOpsView {
     parts.push(menu);
     if (locked) parts.push(el('p', 'tactics-deploy-status', s.deploySending()));
     this.#titleEl.textContent = edit ? s.deployEdit() : s.deployTitle();
-    this.#bodyEl.replaceChildren(...parts);
+    // Where focus was before the rebuild: inside the root (the title the dialog opened on, a row or
+    // a button the pointer pressed) or stranded on <body>. The rebuild destroyed any focused row.
+    const active = document.activeElement;
+    const focusWasOurs = active === null || active === document.body || this.#root.contains(active);
+    this.#root.replaceChildren(this.#titleEl, ...parts);
+    // The cursor must be heard and a click must not strand focus (the tacticsBattle.ts rule): while
+    // shown, focus the listbox so its aria-activedescendant announces the cursor row.
+    if (this.#visible && focusWasOurs) menu.focus({ preventScroll: true });
   }
 
   #rowLabel(key: string): string {

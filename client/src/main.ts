@@ -68,7 +68,7 @@ import {
   rateLimitTick,
   resolveDevLogLevel,
 } from './net/devLog';
-import { AuthoritativeStore, ownPerspective } from './net/store';
+import { AuthoritativeStore, ownPerspective, type StoreMonsterPub } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
@@ -120,6 +120,8 @@ import {
   continuedBattleId,
   hideOtherBattleViews,
   isBareBattle,
+  outcomeOnTop,
+  popPlayerFramesOverBattle,
   shouldAutoContinue,
 } from './ui/battlePolicy';
 import type { BattleRewardsVM, BattleView } from './ui/battleView';
@@ -690,9 +692,7 @@ function syncStack(): void {
     apply(edge);
     inputRouter.resetRepeat();
   }
-  const top = contextStack[contextStack.length - 1];
-  const outcomeUp =
-    contextStack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView';
+  const outcomeUp = outcomeOnTop(contextStack);
   if (!outcomeUp) {
     outcomeShownAtMs = null;
     autoContinuedAtMs = null;
@@ -3034,23 +3034,22 @@ function refreshBattle(): void {
     // fresh one would leave that frame inert (REV 2 A2). The open is the LAST statement of each arm.
     const tacticalRow = store.tacticalBattle(r.action.battle.battleId);
     const renderer = battleRenderer(tacticalRow?.phase);
-    const panelVM =
+    const panel =
       renderer === 'deploy' && tacticalRow !== undefined
-        ? buildDeployVM(r.action.battle, tacticalRow.mapId)
+        ? buildDeployPanel(r.action.battle, tacticalRow.mapId)
         : renderer === 'results'
-          ? buildResultsVM(r.action.battle.battleId)
+          ? buildResultsPanel(r.action.battle.battleId)
           : null;
-    if (panelVM !== null) {
-      const target = panelVM.kind === 'deploy' ? deployPanel : resultsPanel;
-      if (target !== undefined) {
-        popOverBattleBeforeSwitch(target);
-        hideOtherBattleViews(battleViews(), target);
-        if (panelVM.kind === 'deploy') (target as DeployPanel).render(panelVM.vm);
-        else (target as ResultsPanel).render(panelVM.vm);
-        if (!target.visible) target.show();
-        lastBattleVM = null;
-        return;
-      }
+    if (panel !== null) {
+      // The HIDDEN target is rendered first (no a11y state moves), so a render throw leaves the
+      // frame's current owner shown (B17); only then the switch: pop, hide the others, show.
+      if (panel.kind === 'deploy') panel.view.render(panel.vm);
+      else panel.view.render(panel.vm);
+      popOverBattleBeforeSwitch(panel.view);
+      hideOtherBattleViews(battleViews(), panel.view);
+      if (!panel.view.visible) panel.view.show();
+      lastBattleVM = null;
+      return;
     }
     popOverBattleBeforeSwitch(battleView);
     hideOtherBattleViews(battleViews(), battleView);
@@ -3090,34 +3089,51 @@ function refreshBattle(): void {
 }
 
 /** A renderer SWITCH (another battle view is visible and `target` is not) under frames that sit over
- *  a battle base first pops to the base through each frame's own close path (REV 2 A2): the roots
- *  share one overlay record. A battle's first show, with nothing visible yet, pops nothing. */
+ *  a battle base first pops every PLAYER frame through its own close path (REV 2 A2): the roots share
+ *  one overlay record. A suspended server conversation stays (the client never ends a dialogue), and
+ *  a battle's first show, with nothing visible yet, pops nothing. */
 function popOverBattleBeforeSwitch(target: { readonly visible: boolean }): void {
   if (target.visible) return;
   const switching = battleViews().some((v) => v !== undefined && v !== target && v.visible);
-  if (switching && contextStack[0].kind === 'battle' && contextStack.length > 1) {
-    applyStack(contextStack, popToBase(contextStack));
-  }
+  if (switching) applyStack(contextStack, popPlayerFramesOverBattle(contextStack));
 }
 
-/** The deploy panel's view model for the own-perspective anchor `battle` (bt-12, BT12.2 / BT12.3):
- *  the anchor's party order joined with the own monster rows (a member with no row is dropped), the
- *  remembered formation and the map's spawn count. Builds the panel on first use. null (logged) when
- *  the rules port or the map cannot be read — the 1v1 view then keeps the frame (B17). */
-function buildDeployVM(
+/** The one name rule for an own monster: the nickname, else the species name, else `#id`. */
+function ownMonsterName(m: StoreMonsterPub): string {
+  return m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${m.monsterId}`);
+}
+
+/** The deploy slot count per map, read once per mapId through the rules port (a whole map
+ *  definition crosses the wasm boundary for one length). */
+const deploySlotCounts = new Map<number, number>();
+
+/** The deploy panel and its view model for the own-perspective anchor `battle` (bt-12, BT12.2 /
+ *  BT12.3): the anchor's party order joined with the own monster rows (a member with no own row is
+ *  dropped), the remembered formation and the map's spawn count. Builds the panel on first use. null
+ *  (reported once) when the rules port or the map cannot be read — the 1v1 view keeps the frame (B17). */
+function buildDeployPanel(
   battle: { readonly battleId: bigint; readonly partyMonsterIds: readonly bigint[] },
   mapId: number,
-): { readonly kind: 'deploy'; readonly vm: DeployVM } | null {
+): { readonly kind: 'deploy'; readonly view: DeployPanel; readonly vm: DeployVM } | null {
   if (battleMount === undefined) return null;
   try {
-    const slotCount = tacticsRules().map(mapId).spawn_a.length;
+    let slotCount = deploySlotCounts.get(mapId);
+    if (slotCount === undefined) {
+      slotCount = tacticsRules().map(mapId).spawn_a.length;
+      deploySlotCounts.set(mapId, slotCount);
+    }
     const own = new Map(store.ownMonsters(identity).map((m) => [m.monsterId, m] as const));
     const party = battle.partyMonsterIds.flatMap((id) => {
       const m = own.get(id);
       if (m === undefined) return [];
-      const name =
-        m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${m.monsterId}`);
-      return [{ monsterId: m.monsterId, name, level: m.level, hp: m.currentHp, maxHp: m.statHp }];
+      const row = {
+        monsterId: m.monsterId,
+        name: ownMonsterName(m),
+        level: m.level,
+        hp: m.currentHp,
+        maxHp: m.statHp,
+      };
+      return [row];
     });
     const vm = deployVM({
       battleId: battle.battleId,
@@ -3128,19 +3144,19 @@ function buildDeployVM(
     deployPanel ??= new DeployPanel(battleMount, {
       onDeploy: (battleId, picks) => dispatch({ kind: 'deployUnits', battleId, picks }),
     });
-    return { kind: 'deploy', vm };
+    return { kind: 'deploy', view: deployPanel, vm };
   } catch (err) {
-    console.error('[battle] deploy view-model failed; the 1v1 view keeps the frame', err);
+    reportPaintError(err);
     return null;
   }
 }
 
-/** The results panel's view model from the RAW anchor (bt-12, BT12.4): the raw side decides won /
- *  lost, the transcript's Awards and RecruitResult lines are folded per unit. Builds the panel on
+/** The results panel and its view model from the RAW anchor (bt-12, BT12.4): the raw side decides
+ *  won / lost, the transcript's Awards and RecruitResult lines are folded per unit. Builds the panel on
  *  first use. null when the anchor is not terminal — the 1v1 view then keeps the frame. */
-function buildResultsVM(
+function buildResultsPanel(
   battleId: bigint,
-): { readonly kind: 'results'; readonly vm: ResultsVM } | null {
+): { readonly kind: 'results'; readonly view: ResultsPanel; readonly vm: ResultsVM } | null {
   if (battleMount === undefined) return null;
   const raw = store.latestPlayerBattle(identity);
   if (raw === undefined || raw.battleId !== battleId) return null;
@@ -3152,23 +3168,19 @@ function buildResultsVM(
     events: store.battleEvents(battleId),
     monsterName: (monsterId) => {
       const m = store.ownMonsters(identity).find((row) => row.monsterId === monsterId);
-      if (m === undefined) return `#${monsterId}`;
-      return m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${monsterId}`);
+      return m === undefined ? `#${monsterId}` : ownMonsterName(m);
     },
     speciesName: (speciesId) => store.species(speciesId)?.name ?? `#${speciesId}`,
   });
   if (vm === null) return null;
   resultsPanel ??= new ResultsPanel(battleMount, {
     // Continue: pop the outcome frame, only while it is the top frame over the world (the same
-    // predicate as A's continue, battlePolicy.ts); the pop latches the dismissed battle.
+    // predicate as A's continue); the pop latches the dismissed battle.
     onContinue: () => {
-      const top = contextStack[contextStack.length - 1];
-      if (contextStack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView') {
-        void dispatch({ kind: 'pop' });
-      }
+      if (outcomeOnTop(contextStack)) void dispatch({ kind: 'pop' });
     },
   });
-  return { kind: 'results', vm };
+  return { kind: 'results', view: resultsPanel, vm };
 }
 // --- qf-17: the KO-win payout lines (QF17.1, QF17.2) ---------------------------------------
 // The server pays a win silently, in the ONE transaction that also flips the battle row terminal

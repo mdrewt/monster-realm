@@ -1095,9 +1095,11 @@
   min-width: 2rem;
 }
 .tactics-deploy-prev::before {
+  content: "\25C0";
   content: "\25C0" / "";
 }
 .tactics-deploy-next::before {
+  content: "\25B6";
   content: "\25B6" / "";
 }
 .tactics-deploy-status {
