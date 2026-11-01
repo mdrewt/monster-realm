@@ -292,9 +292,11 @@ premature one re-arms); a round that completes without player input leaves the b
 the Deploying window rides the deadline table with `unit_id 0`, `window_seq 0` and closes
 the battle as `Fled` with no HP write. Every step mirrors the deployed units' HP into the
 anchor's legacy side-A team, so the one write-back primitive (`battle::write_back_party_hp`)
-persists damaged HP at every terminal, and a battle whose rows can no longer be loaded
-(content drift) is closed by a fallback that writes unit HP straight to the monster rows —
-the scheduled reducers never leave a tactical battle `Ongoing`. Content (kits, maps,
+persists damaged HP at every tactical terminal; a battle whose rows can no longer be loaded
+(content drift) is closed by a fallback that writes each unit's HP to its monster row only
+while that monster still belongs to the unit's owner, and a tactical row whose anchor a
+legacy reducer already ended closes with no HP write at all (that reducer's own write-back
+ran) — the scheduled reducers never leave a tactical battle `Ongoing`. Content (kits, maps,
 tuning, the type chart, encounter tables) is the game-core embedded registry parsed once
 per process; `Item` and `Recruit` entries are refused until bt-9 wires their glue.
 

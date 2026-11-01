@@ -70,6 +70,10 @@ pub(crate) const DEPLOY_WINDOW_UNIT: u32 = 0;
 /// must never equal the per-wild individuality seeds (`encounter::wild_seed` is the same
 /// mixer over the raw encounter seed).
 pub(crate) const BATTLE_SEED_SALT: u64 = 0x7A57_1C5B_A771_E5EE;
+/// The per-wild species/level roll's seed is `splitmix64(wild_seed ^ SPAWN_ROLL_SALT) >> 32`:
+/// decorrelated from the wild's individuality seed (same mixer) while §3.4's
+/// `individuality_seed = wild_seed(seed, i)` is kept.
+const SPAWN_ROLL_SALT: u64 = 0x5BA7_0E5E_ED11_C0DE;
 /// A wild battle: side A is the player, side B the pack (design §2.2).
 const WILD_FORMAT: u8 = 0;
 /// The build-phase refusal of the entries bt-9 wires (design §5, §8.3 item rules).
@@ -1382,7 +1386,12 @@ pub(crate) fn start_wild_tactical(
     let mut wilds: Vec<(u8, u32, u8, u32)> = Vec::with_capacity(usize::from(pack));
     for i in 0..pack {
         let seed = wild_seed(encounter_seed, i);
-        let spawn = resolve_encounter(&always, seed, lead_level)
+        // The spawn roll runs on a DERIVED seed: `resolve_encounter` and `roll_individuality`
+        // share one splitmix32 mixer, so rolling species/level from the individuality seed
+        // itself would tie the level band to the wild's IVs (verifier F6).
+        let spawn_seed =
+            u32::try_from(splitmix64(u64::from(seed) ^ SPAWN_ROLL_SALT) >> 32).unwrap_or(u32::MAX);
+        let spawn = resolve_encounter(&always, spawn_seed, lead_level)
             .ok_or_else(|| "no encounter triggered".to_string())?;
         content.species(spawn.species_id)?;
         content.kit(spawn.species_id)?;
