@@ -31,7 +31,13 @@ import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import type { VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';
 import type { Stack } from './contextStack';
-import { type HintBattle, type HintChip, type HintWorld, hintBar } from './hintBarModel';
+import {
+  type HintBattle,
+  type HintChip,
+  type HintDeploy,
+  type HintWorld,
+  hintBar,
+} from './hintBarModel';
 import { setLocale, t } from './i18n/resolver';
 import type { Notice } from './noticeModel';
 
@@ -326,6 +332,117 @@ describe('hintBar: the tactical battle base (bt-11, BT11.6)', () => {
     expect(frBar, 'fr: the French verbs').toEqual(want('chrome.chip.back', 'chrome.chip.endTurn'));
     expect(frBar[2]?.[2], 'fr: the X verb is not the English one').not.toBe(enDanger);
     setLocale('en');
+  });
+});
+
+/** U+00E9 (e acute), by code point (never a pasted glyph). */
+const E_ACUTE = String.fromCharCode(0x00e9);
+
+describe('hintBar: the deploy panel at the battle base (bt-12 B, BT12.2, R-bt-12-DEPLOYHINT)', () => {
+  it('given the deploy panel`s hint, the bare battle base shows the confirm chips (A Deploy, X Edit formation, Start menu badged, Select help) or the editor chips (A Assign, B back, LB / RB prev / next monster, Start submit, Select help), full arrays in English and French; a frame above keeps its frame bar; the tactical bar is unchanged [BT12-2-DEPLOY-HINTS]', () => {
+    // WRONG IMPL KILLED: the deploy hint ignored (the legacy A ok / Start / Select bar: X and the
+    // editor's LB / RB never advertised — R-bt-12-DEPLOYHINT); the two modes swapped (Assign on the
+    // confirm screen); a confirm bar carrying the tactical X Danger / LB / RB unit chips, or B back
+    // (there is no back-out at the confirm screen, BT12.2); the confirm Start not the menu (Start
+    // still opens the menu there) or its request badge dropped; an editor Start that says Menu (it
+    // submits) or carries the request badge; the chips in another order; a deploy hint read as a
+    // tactical one (`'deploy' in b` never tested: the HintBattle branch reads `start` undefined);
+    // keycaps hard-coded; a deploy bar leaking into a menu opened over the battle; the verbs
+    // resolved at import (a French boot reads English).
+    const cap = (button: VButton, table: Bindings = DEFAULT_BINDINGS): string => {
+      const code = table.buttons[button][0];
+      return code === undefined ? '' : glyph(code);
+    };
+    const bar = (
+      hint: HintDeploy,
+      w: HintWorld = world(),
+      table: Bindings = DEFAULT_BINDINGS,
+      stack: Stack = BATTLE,
+    ) => rows(hintBar(stack, table, NO_NOTICES, w, hint));
+    const CONFIRM: HintDeploy = { deploy: 'confirm' };
+    const EDIT: HintDeploy = { deploy: 'edit' };
+
+    // --- English, the exact verbs -------------------------------------------------------------
+    setLocale('en');
+    expect(bar(CONFIRM), 'en confirm').toEqual([
+      ['A', cap('A'), 'Deploy', false],
+      ['X', cap('X'), 'Edit formation', false],
+      ['Start', cap('Start'), 'Menu', false],
+      ['Select', cap('Select'), 'Help', false],
+    ]);
+    expect(bar(CONFIRM, world({ requestWaiting: true })), 'en confirm, a request waits').toEqual([
+      ['A', cap('A'), 'Deploy', false],
+      ['X', cap('X'), 'Edit formation', false],
+      ['Start', cap('Start'), 'Menu', true],
+      ['Select', cap('Select'), 'Help', false],
+    ]);
+    const enEdit = [
+      ['A', cap('A'), 'Assign', false],
+      ['B', cap('B'), 'Back', false],
+      ['LB', cap('LB'), 'Prev monster', false],
+      ['RB', cap('RB'), 'Next monster', false],
+      ['Start', cap('Start'), 'Submit', false],
+      ['Select', cap('Select'), 'Help', false],
+    ];
+    expect(bar(EDIT), 'en edit').toEqual(enEdit);
+    expect(bar(EDIT, world({ requestWaiting: true })), 'en edit: Start submits, no badge').toEqual(
+      enEdit,
+    );
+
+    // Live keycaps: a remapped X / LB shows on the very next call.
+    const remapped: Bindings = {
+      ...DEFAULT_BINDINGS,
+      buttons: { ...DEFAULT_BINDINGS.buttons, X: ['KeyG'], LB: ['KeyZ', 'KeyQ'] },
+    };
+    expect(cap('X', remapped), 'fixture: the remap changes the X keycap').not.toBe(cap('X'));
+    expect(bar(CONFIRM, world(), remapped)[1], 'the remapped X keycap').toEqual([
+      'X',
+      cap('X', remapped),
+      'Edit formation',
+      false,
+    ]);
+    expect(bar(EDIT, world(), remapped)[2], 'the remapped LB keycap').toEqual([
+      'LB',
+      cap('LB', remapped),
+      'Prev monster',
+      false,
+    ]);
+
+    // A frame above the battle keeps its frame bar whatever the deploy hint says.
+    for (const hint of [CONFIRM, EDIT]) {
+      expect(
+        hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES, undefined, hint),
+        `a menu over the battle (${hint.deploy}): the frame bar`,
+      ).toEqual(hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES));
+    }
+    // The tactical bar is unchanged by the widened parameter.
+    const tactical: HintBattle = { start: 'endTurn', undo: false };
+    expect(
+      rows(hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES, undefined, tactical)).map((r) => r[0]),
+      'the tactical bar keeps its seven buttons',
+    ).toEqual(['A', 'B', 'X', 'LB', 'RB', 'Start', 'Select']);
+
+    // --- French, the exact verbs (the deploy ones pinned literally, the shared ones by id) -----
+    setLocale('fr');
+    expect(bar(CONFIRM), 'fr confirm').toEqual([
+      ['A', cap('A'), `D${E_ACUTE}ployer`, false],
+      ['X', cap('X'), 'Modifier la formation', false],
+      ['Start', cap('Start'), verb('chrome.chip.menu'), false],
+      ['Select', cap('Select'), 'Aide', false],
+    ]);
+    expect(bar(EDIT), 'fr edit').toEqual([
+      ['A', cap('A'), 'Assigner', false],
+      ['B', cap('B'), verb('chrome.chip.back'), false],
+      ['LB', cap('LB'), `Monstre pr${E_ACUTE}c${E_ACUTE}dent`, false],
+      ['RB', cap('RB'), 'Monstre suivant', false],
+      ['Start', cap('Start'), verb('chrome.chip.submit'), false],
+      ['Select', cap('Select'), 'Aide', false],
+    ]);
+    expect(verb('chrome.chip.back'), 'fixture: the French Back is not the English one').not.toBe(
+      'Back',
+    );
+    setLocale('en');
+    expect(bar(CONFIRM)[0]?.[2], 'back to English at the next call').toBe('Deploy');
   });
 });
 

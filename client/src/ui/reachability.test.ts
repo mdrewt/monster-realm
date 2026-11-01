@@ -3160,6 +3160,8 @@ const BT12R_VM: DeployVM = {
   battleId: BT12R_BATTLE,
   candidates: [BT12R_SPRIGG, BT12R_CINDER, BT12R_MOSS],
   formation: [BT12R_SPRIGG, BT12R_CINDER, null],
+  // NAMED CHANGE (bt-12 B, plan REV B2.11): DeployVM gains the pack the confirm screen lists.
+  wilds: [{ speciesId: 29, name: 'Duskling', level: 5 }],
 };
 const BT12R_DOWN: BattleOp = { kind: 'move', dir: 'Down' };
 const BT12R_UP: BattleOp = { kind: 'move', dir: 'Up' };

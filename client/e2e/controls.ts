@@ -661,3 +661,127 @@ export async function interactWithNpc(page: Page, o: InteractOpts): Promise<numb
         : ` (expected ${JSON.stringify(o.chip)} while the NPC is in front)`),
   );
 }
+
+// ---------------------------------------------------------------------------------------------
+// bt-12 (BT12.5): the tactical battle helpers. They read the DEV `__mrTactics` hook (read-only: the
+// local player's tactical rows and the own monsters' HP) and the shell's DOM, and press virtual
+// buttons through `pressButton`; nothing here calls a reducer.
+// ---------------------------------------------------------------------------------------------
+
+/** The `__mrTactics.battle()` snapshot (bigints as decimal strings), or null without a battle. */
+export interface TacticsSnap {
+  battleId: string;
+  phase: string;
+  round: number;
+  turnIdx: number;
+  initiative: number[];
+  activeUnitId: number | null;
+  turnState: string;
+  owner: 'legacy' | 'deploy' | 'tactical' | 'results' | null;
+  events: number;
+  deadlineMs: string | null;
+  units: {
+    unitId: number;
+    side: 'A' | 'B';
+    mine: boolean;
+    x: number;
+    y: number;
+    curHp: number;
+    maxHp: number;
+    state: string;
+  }[];
+}
+export interface OwnMonsterHp {
+  monsterId: string;
+  currentHp: number;
+  maxHp: number;
+  partySlot: number;
+}
+type TacticsWindow = Window & {
+  __mrTactics?: { battle(): TacticsSnap | null; ownMonsters(): OwnMonsterHp[] };
+};
+
+export const readTactics = (page: Page): Promise<TacticsSnap | null> =>
+  page.evaluate(() => {
+    const hook = (window as unknown as TacticsWindow).__mrTactics;
+    if (hook === undefined) throw new Error('readTactics: window.__mrTactics is missing (DEV only)');
+    return hook.battle();
+  });
+
+export const readOwnMonsters = (page: Page): Promise<OwnMonsterHp[]> =>
+  page.evaluate(() => {
+    const hook = (window as unknown as TacticsWindow).__mrTactics;
+    if (hook === undefined) throw new Error('readOwnMonsters: window.__mrTactics is missing');
+    return hook.ownMonsters();
+  });
+
+/** The shell's DOM, by class (the tactical views are constructed roots under #app). */
+export const TACTICS = {
+  shell: '.tactics-battle',
+  deploy: '.tactics-deploy',
+  results: '.tactics-results',
+  menuRow: (key: string): string => `.tactics-menu-row[data-row="${key}"]`,
+  cursorTile: '.tactics-tile--cursor',
+  bandTile: '.tactics-tile--reach1, .tactics-tile--reach2',
+  forecast: '.tactics-forecast',
+  wildRow: '.tactics-deploy-wild',
+} as const;
+
+/** The tile under the shell's cursor, read from the painted board. */
+export async function readCursorTile(page: Page): Promise<Tile> {
+  const tile = page.locator(TACTICS.cursorTile).first();
+  const x = Number(await tile.getAttribute('data-x'));
+  const y = Number(await tile.getAttribute('data-y'));
+  if (!Number.isInteger(x) || !Number.isInteger(y)) {
+    throw new Error('readCursorTile: the board paints no cursor tile');
+  }
+  return { x, y };
+}
+
+/** The painted band (Move aim) tiles, in DOM order. */
+export async function readBandTiles(page: Page): Promise<Tile[]> {
+  const tiles = await page.locator(TACTICS.bandTile).all();
+  const out: Tile[] = [];
+  for (const t of tiles) {
+    out.push({ x: Number(await t.getAttribute('data-x')), y: Number(await t.getAttribute('data-y')) });
+  }
+  return out;
+}
+
+/** Walk the shell's cursor to `to` one D-pad press at a time, re-reading the painted cursor after
+ *  every press (never a blind count). Bounded by the board's perimeter. */
+export async function dpadCursorTo(page: Page, to: Tile, maxPresses = 24): Promise<void> {
+  for (let presses = 0; presses <= maxPresses; presses += 1) {
+    const at = await readCursorTile(page);
+    if (at.x === to.x && at.y === to.y) return;
+    if (presses === maxPresses) {
+      throw new Error(`dpadCursorTo: cursor stuck at (${at.x},${at.y}) short of (${to.x},${to.y})`);
+    }
+    const button: VButton =
+      at.x < to.x ? 'Right' : at.x > to.x ? 'Left' : at.y < to.y ? 'Down' : 'Up';
+    await pressButton(page, button);
+    await expect
+      .poll(async () => {
+        const now = await readCursorTile(page);
+        return `${now.x},${now.y}`;
+      }, { timeout: 2_000 })
+      .not.toBe(`${at.x},${at.y}`)
+      .catch(() => undefined);
+  }
+}
+
+/** Walk the open tactical menu's cursor to the row `key` with Down presses, bounded by the row
+ *  count; fails naming the row when it is absent or greyed (`aria-disabled`). */
+export async function menuCursorTo(page: Page, key: string): Promise<void> {
+  const row = page.locator(TACTICS.menuRow(key));
+  await expect(row, `the menu offers the ${key} row`).toHaveCount(1, { timeout: 5_000 });
+  if ((await row.getAttribute('aria-disabled')) === 'true') {
+    throw new Error(`menuCursorTo: the ${key} row is greyed`);
+  }
+  const rows = await page.locator('.tactics-menu-row').count();
+  for (let presses = 0; presses <= rows; presses += 1) {
+    if ((await row.getAttribute('aria-selected')) === 'true') return;
+    if (presses === rows) throw new Error(`menuCursorTo: Down never reached the ${key} row`);
+    await pressButton(page, 'Down');
+  }
+}

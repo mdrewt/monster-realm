@@ -48,6 +48,7 @@ import {
   type DeployMonster,
   DeployPanel,
   type DeployVM,
+  type DeployWild,
   deployVM,
   type PartyMember,
   picksOf,
@@ -76,8 +77,22 @@ const DOWN_MON = mon(9_007_199_254_741_001n, 'Kip', 17, 0, 47);
 /** A remembered id that is not in the party (boxed or traded away). */
 const STRANGER = 9_007_199_254_741_003n;
 
-/** Three conscious monsters, the formation in party order. */
-const VM3: DeployVM = { battleId: BATTLE, candidates: [M1, M2, M3], formation: [M1, M2, M3] };
+/** bt-12 B (BT12.2): the wild pack the confirm screen lists, in `wild_index` order. Species ids and
+ *  levels are distinct primes; names are model data. */
+const W1: DeployWild = { speciesId: 29, name: 'Duskling', level: 5 };
+const W2: DeployWild = { speciesId: 31, name: 'Mirefin', level: 13 };
+const W3: DeployWild = { speciesId: 37, name: 'Thornet', level: 19 };
+/** NAMED CHANGE (bt-12 B, plan REV B2.11): every DeployInput / DeployVM literal gains `wilds`. */
+const PACK: readonly DeployWild[] = [W1, W2];
+const NO_WILDS: readonly DeployWild[] = [];
+
+/** Three conscious monsters, the formation in party order, a pack of two. */
+const VM3: DeployVM = {
+  battleId: BATTLE,
+  candidates: [M1, M2, M3],
+  formation: [M1, M2, M3],
+  wilds: PACK,
+};
 
 const UP: BattleOp = { kind: 'move', dir: 'Up' };
 const DOWN: BattleOp = { kind: 'move', dir: 'Down' };
@@ -223,6 +238,7 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       party: [M1, M2, M3, DOWN_MON],
       remembered: [M3.monsterId, DOWN_MON.monsterId, STRANGER, M1.monsterId],
       slotCount: 3,
+      wilds: PACK,
     };
     const vm = deployVM(input);
     expect(vm.battleId, 'the battle id, past 2^53, exactly').toBe(BATTLE);
@@ -253,12 +269,14 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       party: [DOWN_MON, M2, M1],
       remembered: [],
       slotCount: 3,
+      wilds: PACK,
     });
     expect(firstDown.candidates, 'a fainted lead is skipped, the order kept').toEqual([M2, M1]);
     expect(firstDown.formation, 'and the third slot stays empty').toEqual([M2, M1, null]);
     const oneHp = mon(9_007_199_254_741_005n, 'Pip', 19, 1, 53);
     expect(
-      deployVM({ battleId: BATTLE, party: [oneHp], remembered: [], slotCount: 3 }).candidates,
+      deployVM({ battleId: BATTLE, party: [oneHp], remembered: [], slotCount: 3, wilds: PACK })
+        .candidates,
       '1 HP is conscious',
     ).toEqual([oneHp]);
     const allDown = deployVM({
@@ -266,6 +284,7 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       party: [DOWN_MON],
       remembered: [DOWN_MON.monsterId],
       slotCount: 3,
+      wilds: PACK,
     });
     expect(allDown.candidates, 'an all-fainted party offers nobody').toEqual([]);
     expect(allDown.formation, 'and deploys nobody').toEqual([null, null, null]);
@@ -330,7 +349,12 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       { battleId: BATTLE, picks: [pick(M1, 0), pick(M2, 1), pick(M3, 2)] },
     ]);
 
-    const sparse = mount({ battleId: BATTLE, candidates: [M2, M3], formation: [null, M2, M3] });
+    const sparse = mount({
+      battleId: BATTLE,
+      candidates: [M2, M3],
+      formation: [null, M2, M3],
+      wilds: PACK,
+    });
     ops(sparse.panel, A);
     expect(sparse.sends, 'a sparse formation sends slots 1 and 2').toEqual([
       { battleId: BATTLE, picks: [pick(M2, 1), pick(M3, 2)] },
@@ -384,10 +408,9 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       'A on slot 2 places Mossback there, and the slot it left takes Cindertail (a swap)',
     ).toEqual(['Sprigg', 'Mossback', 'Cindertail']);
     expect(m.sends, 'assigning sends nothing').toEqual([]);
-    expect(m.panel.hint(), 'the hint bar`s verbs for the editor').toEqual({
-      start: 'submit',
-      undo: false,
-    });
+    // NAMED CHANGE (bt-12 B, plan REV B2.7 / B2.11): the deploy hint is `HintDeploy`
+    // `{ deploy: 'confirm' | 'edit' }`; was the tactical `{ start: 'submit', undo: false }`.
+    expect(m.panel.hint(), 'the hint bar`s screen is the editor').toEqual({ deploy: 'edit' });
     ops(m.panel, DOWN, DOWN);
     expect(cursorKey(root), 'down to Confirm').toBe('confirm');
     ops(m.panel, A);
@@ -404,7 +427,12 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       { battleId: BATTLE, picks: [pick(M2, 0), pick(M1, 1), pick(M3, 2)] },
     ]);
 
-    const sparse = mount({ battleId: BATTLE, candidates: [M1], formation: [M1, null, null] });
+    const sparse = mount({
+      battleId: BATTLE,
+      candidates: [M1],
+      formation: [M1, null, null],
+      wilds: PACK,
+    });
     ops(sparse.panel, X, DOWN, DOWN);
     expect(cursorKey(sparse.root()), 'the third slot').toBe('slot-2');
     ops(sparse.panel, A);
@@ -422,12 +450,22 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
     ops(held.panel, X, RB, RB, DOWN, DOWN, DOWN);
     expect(cursorKey(held.root()), 'fixture: the cursor on Confirm').toBe('confirm');
     expect(candidateName(held.root()), 'fixture: Mossback is the candidate').toBe('Mossback');
-    held.panel.render({ battleId: BATTLE, candidates: [M3, M1, M2], formation: [M1, M2, M3] });
+    held.panel.render({
+      battleId: BATTLE,
+      candidates: [M3, M1, M2],
+      formation: [M1, M2, M3],
+      wilds: PACK,
+    });
     expect(cursorKey(held.root()), 'a re-render keeps the cursor on its row').toBe('confirm');
     expect(candidateName(held.root()), 'and the candidate by monster id, not by index').toBe(
       'Mossback',
     );
-    held.panel.render({ battleId: BATTLE, candidates: [M1, M2], formation: [M1, M2, null] });
+    held.panel.render({
+      battleId: BATTLE,
+      candidates: [M1, M2],
+      formation: [M1, M2, null],
+      wilds: PACK,
+    });
     expect(
       candidateName(held.root()),
       'a candidate no longer offered falls back to the first one offered',
@@ -621,6 +659,180 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
   });
 });
 
+// --- BT12.2 (bt-12 B): the wild composition and the "Still there?" countdown ----------------------
+
+/** The confirm screen's wild list as painted: one `[data-wild-index, name, level]` per row. */
+const wildRows = (root: HTMLElement): (readonly [string | null, string | null, string | null])[] =>
+  [...root.querySelectorAll('ul.tactics-deploy-wilds > li.tactics-deploy-wild')].map(
+    (li) =>
+      [
+        li.getAttribute('data-wild-index'),
+        li.querySelector('.tactics-deploy-name')?.textContent ?? null,
+        li.querySelector('.tactics-deploy-level')?.textContent ?? null,
+      ] as const,
+  );
+const countdowns = (root: HTMLElement): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('p.tactics-countdown'),
+];
+
+describe('deploy panel: the wild composition and the countdown (bt-12 B, BT12.2)', () => {
+  it('deployVM copies the pack in order; the confirm screen lists every wild BEFORE the formation, by index with its species name and level line, under the catalog`s wild-pack label in English and French; the editor lists none and Back brings the list back; a new pack repaints [BT12-2-DEPLOY-COMPOSITION]', () => {
+    // WRONG IMPL KILLED: the API-freeze `wilds: []` (the composition never reaches the screen:
+    // BT12.2 "THE Deploying phase SHALL show the wild composition"); the pack reordered, deduped or
+    // truncated to the slot count (three wilds against two slots); only wild 0 listed (the legacy
+    // anchor's side B); the list painted AFTER the formation or the menu; the level built by
+    // concatenation instead of the catalog's level line; a literal label instead of
+    // `tactics.deploy.wilds` (a French boot reads English); the list left in the editor; a list
+    // that survives as stale nodes after a new pack renders (the old names still shown); data
+    // indexes 1-based.
+    const party = [M1, M2, M3];
+    const input: DeployInput = {
+      battleId: BATTLE,
+      party,
+      remembered: [],
+      slotCount: 2,
+      wilds: [W3, W1, W2],
+    };
+    expect(deployVM(input).wilds, 'the pack, in the order given, all three for two slots').toEqual([
+      W3,
+      W1,
+      W2,
+    ]);
+    expect(deployVM({ ...input, wilds: [W2] }).wilds, 'a pack of one').toEqual([W2]);
+    expect(deployVM({ ...input, wilds: NO_WILDS }).wilds, 'no wilds: none').toEqual([]);
+
+    for (const [locale, C] of [
+      ['en', EN],
+      ['fr', FR],
+    ] as const) {
+      setLocale(locale);
+      const m = mount(deployVM(input));
+      const root = m.root();
+      const list = root.querySelector('ul.tactics-deploy-wilds');
+      expect(list, `${locale}: the confirm screen paints the wild list`).not.toBeNull();
+      expect(list?.getAttribute('aria-label'), `${locale}: named by tactics.deploy.wilds`).toBe(
+        cat(C, 'tactics.deploy.wilds'),
+      );
+      expect(wildRows(root), `${locale}: every wild, in pack order`).toEqual([
+        ['0', 'Thornet', cat(C, 'tactics.hud.level', { level: 19 })],
+        ['1', 'Duskling', cat(C, 'tactics.hud.level', { level: 5 })],
+        ['2', 'Mirefin', cat(C, 'tactics.hud.level', { level: 13 })],
+      ]);
+      const formation = root.querySelector('ul.tactics-deploy-formation');
+      expect(formation, `${locale}: fixture: the formation list is painted`).not.toBeNull();
+      expect(
+        list !== null &&
+          formation !== null &&
+          (list.compareDocumentPosition(formation) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+        `${locale}: the wild list comes BEFORE the formation list`,
+      ).toBe(true);
+      expect(
+        root.querySelectorAll('ul.tactics-deploy-wilds'),
+        `${locale}: exactly one wild list`,
+      ).toHaveLength(1);
+      for (const li of root.querySelectorAll('li.tactics-deploy-wild')) {
+        expect(
+          textsOf(li as HTMLElement).length,
+          `${locale}: a wild row holds its name and level only`,
+        ).toBe(2);
+      }
+
+      ops(m.panel, X);
+      expect(m.panel.mode, `${locale}: fixture: the editor is open`).toBe('edit');
+      expect(root.querySelector('.tactics-deploy-wilds'), `${locale}: the editor lists none`).toBe(
+        null,
+      );
+      ops(m.panel, B);
+      expect(
+        wildRows(root).map((r) => r[1]),
+        `${locale}: back on the confirm screen`,
+      ).toEqual(['Thornet', 'Duskling', 'Mirefin']);
+
+      m.panel.render(deployVM({ ...input, wilds: [W2] }));
+      expect(wildRows(root), `${locale}: a new pack repaints, nothing stale`).toEqual([
+        ['0', 'Mirefin', cat(C, 'tactics.hud.level', { level: 13 })],
+      ]);
+      m.panel.hide();
+    }
+  });
+
+  it('setCountdown(n) paints ONE p.tactics-countdown with the catalog`s "Still there?" line as the root`s last child; the same value writes nothing, a new value rewrites the same node, a re-render, a cursor move and the editor keep it last, null and hide() remove it, and after hide() the same value paints again [BT12-2-DEPLOY-COUNTDOWN]', () => {
+    // WRONG IMPL KILLED: the API-freeze no-op (BT12.2 "a Still there? countdown SHALL appear");
+    // a node appended on every call (two lines after two frames); a same-value call that rewrites
+    // the text (the pump runs every frame: a screen reader re-reads, the DOM churns); a `#paint`
+    // that drops the node (it vanishes on every cursor move until the next second ticks) or puts it
+    // before the menu; a literal "Still there?" (a French boot reads English); null that blanks the
+    // text but leaves the node; a hide() that leaves it (a stale countdown on the next battle's
+    // panel); a memo that survives hide() (the same seconds on the next show paint nothing).
+    for (const [locale, C] of [
+      ['en', EN],
+      ['fr', FR],
+    ] as const) {
+      setLocale(locale);
+      const m = mount(VM3);
+      const root = m.root();
+      expect(countdowns(root), `${locale}: no countdown before setCountdown`).toHaveLength(0);
+
+      m.panel.setCountdown(42);
+      expect(countdowns(root), `${locale}: one countdown line`).toHaveLength(1);
+      const node = countdowns(root)[0];
+      expect(node?.textContent, `${locale}: the catalog line for 42`).toBe(
+        cat(C, 'tactics.clock.stillThere', { s: 42 }),
+      );
+      expect(root.lastElementChild, `${locale}: the root's last child`).toBe(node);
+
+      // The same value writes nothing: a sentinel written behind the panel's back survives.
+      if (node !== undefined) node.textContent = 'sentinel';
+      m.panel.setCountdown(42);
+      expect(countdowns(root), `${locale}: still one line`).toHaveLength(1);
+      expect(countdowns(root)[0]?.textContent, `${locale}: the same value wrote nothing`).toBe(
+        'sentinel',
+      );
+      m.panel.setCountdown(41);
+      expect(countdowns(root)[0], `${locale}: a new value reuses the node`).toBe(node);
+      expect(node?.textContent, `${locale}: and rewrites it`).toBe(
+        cat(C, 'tactics.clock.stillThere', { s: 41 }),
+      );
+
+      ops(m.panel, DOWN);
+      expect(countdowns(root), `${locale}: a cursor move keeps it`).toEqual([node]);
+      expect(root.lastElementChild, `${locale}: still last after the cursor move`).toBe(node);
+      m.panel.render({ ...VM3, formation: [M2, M1, M3] });
+      expect(countdowns(root), `${locale}: a re-render keeps it`).toEqual([node]);
+      expect(root.lastElementChild, `${locale}: still last after the re-render`).toBe(node);
+      expect(node?.textContent, `${locale}: with its text`).toBe(
+        cat(C, 'tactics.clock.stillThere', { s: 41 }),
+      );
+      ops(m.panel, X);
+      expect(m.panel.mode, `${locale}: fixture: the editor`).toBe('edit');
+      expect(countdowns(root), `${locale}: the editor keeps it`).toEqual([node]);
+      expect(root.lastElementChild, `${locale}: still last in the editor`).toBe(node);
+
+      m.panel.setCountdown(null);
+      expect(countdowns(root), `${locale}: null removes it`).toHaveLength(0);
+      m.panel.setCountdown(null);
+      expect(countdowns(root), `${locale}: null again: still none`).toHaveLength(0);
+      m.panel.setCountdown(7);
+      expect(
+        countdowns(root).map((n) => n.textContent),
+        `${locale}: back at 7`,
+      ).toEqual([cat(C, 'tactics.clock.stillThere', { s: 7 })]);
+
+      m.panel.hide();
+      expect(countdowns(root), `${locale}: hide() removes it`).toHaveLength(0);
+      m.panel.render(VM3);
+      m.panel.show();
+      expect(countdowns(root), `${locale}: a fresh show paints none by itself`).toHaveLength(0);
+      m.panel.setCountdown(7);
+      expect(
+        countdowns(root).map((n) => n.textContent),
+        `${locale}: the same 7 after hide() paints again (the memo was reset)`,
+      ).toEqual([cat(C, 'tactics.clock.stillThere', { s: 7 })]);
+      m.panel.hide();
+    }
+  });
+});
+
 // --- BT12.3: the remembered formation rule ---------------------------------------------------------
 
 describe('deploy panel: resolveFormation (bt-12, BT12.3)', () => {
@@ -784,8 +996,11 @@ describe('deploy panel: every string from the catalog (bt-12, BT12.6)', () => {
       ['fr', FR],
     ] as const) {
       setLocale(locale);
+      // NAMED CHANGE (bt-12 B, BT12.2 + plan REV B2.11): the fixture carries a one-wild pack, and the
+      // confirm screen's wild list (its label, the wild's name and level line) joins the allowed
+      // texts and accessible names below — the composition list is catalog text plus model data too.
       const m = mount(
-        { battleId: BATTLE, candidates: [M1, M2], formation: [M1, M2, null] },
+        { battleId: BATTLE, candidates: [M1, M2], formation: [M1, M2, null], wilds: [W3] },
         'manual',
       );
       const root = m.root();
@@ -864,6 +1079,8 @@ describe('deploy panel: every string from the catalog (bt-12, BT12.6)', () => {
         cat(C, 'tactics.deploy.empty'),
         cat(C, 'tactics.deploy.deploy'),
         cat(C, 'tactics.deploy.edit'),
+        W3.name,
+        cat(C, 'tactics.hud.level', { level: W3.level }),
       ]);
       expect(
         textsOf(root).filter((text) => !confirmTexts.has(text)),
@@ -929,6 +1146,7 @@ describe('deploy panel: every string from the catalog (bt-12, BT12.6)', () => {
                 cat(C, 'tactics.deploy.prevMonster'),
                 cat(C, 'tactics.deploy.nextMonster'),
                 cat(C, 'tactics.deploy.label'),
+                cat(C, 'tactics.deploy.wilds'),
               ].includes(label),
           ),
         `${locale}: every accessible name inside the panel is a catalog value`,
@@ -1018,7 +1236,12 @@ describe('deploy panel: focus (bt-12, BT12.6)', () => {
     expect(document.activeElement, 'fixture: an outside control has focus').toBe(outside);
     const quiet = mount(null);
     quiet.panel.render(VM3);
-    quiet.panel.render({ battleId: BATTLE, candidates: [M1, M2, M3], formation: [M2, M1, M3] });
+    quiet.panel.render({
+      battleId: BATTLE,
+      candidates: [M1, M2, M3],
+      formation: [M2, M1, M3],
+      wilds: PACK,
+    });
     await tick();
     expect(
       document.activeElement,

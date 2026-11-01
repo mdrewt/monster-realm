@@ -880,9 +880,13 @@ describe('InputRouter screen seam (ctl-6b)', () => {
       }
     }
 
-    // The D-pad and X never ask the screen: the world's walk and jump stay the router's.
+    // The D-pad never asks the screen in these contexts (none is a nav-capable SCREEN): the world's
+    // walk stays the router's. bt-12 B (NAMED INTENTIONAL CHANGE, plan §2.4 / REV B2.1): X left this
+    // list — X now asks a nav-capable SCREEN (`nav.screen`), so "X never asks the screen" is no
+    // longer the rule; X in these four contexts (the world's jump, a frame with no nav, a covered
+    // frame, the main menu) is pinned by [BT12-2-ROUTER-X] below, the screen never asked there.
     for (const ctx of SCREEN_CONTEXTS) {
-      for (const button of ['Up', 'Down', 'Left', 'Right', 'X'] as const) {
+      for (const button of ['Up', 'Down', 'Left', 'Right'] as const) {
         let asked = 0;
         const screen = (): ScreenResult => {
           asked += 1;
@@ -1481,6 +1485,152 @@ describe('InputRouter under a nav-capable screen (ctl-7c)', () => {
     expect(flagged.seen, 'control: screen: true hands the press to the screen').toEqual([
       { button: 'Down', repeat: false },
     ]);
+  });
+});
+
+// ==========================================================================================
+// bt-12 B: X under a nav-capable screen (BT12.2 "X SHALL open the editor"; plan §2.4 + REV B2.1)
+// ==========================================================================================
+//
+// Under an UNCOVERED nav-capable SCREEN (`nav.screen === true`) an X press asks `ctx.screen` once,
+// fresh: a Command becomes a command effect, and BOTH `consumed` and `unhandled` are swallowed (X's
+// key is Space, and an unconsumed Space scrolls the page — the D-pad rule). The X release is
+// swallowed everywhere and asks nobody. Everywhere else X is unchanged: one jump per press at the
+// world, swallowed under the main menu, a covered frame, a frame with no nav, or with no adapter.
+
+describe('InputRouter: X under a nav-capable screen (bt-12 B, BT12.2)', () => {
+  it('X asks an uncovered nav-capable screen once per press (a Command is a command effect, consumed and unhandled are both swallowed, the release is swallowed and asks nobody, nothing repeats); covered, menu, no-nav frame and no adapter swallow X without asking; the world jump is unchanged [BT12-2-ROUTER-X]', () => {
+    // WRONG IMPL KILLED: X still swallowed under a nav screen (the deploy confirm's X never opens
+    // the editor: BT12.2); an `unhandled` X left unconsumed under a screen (Space scrolls the page
+    // under the battle frame); X asked on the release too (two editor toggles per press) or the
+    // release left unconsumed; X asked with `repeat: true` or twice; X arming the D-pad repeat (a
+    // held Space would re-toggle the editor every 100 ms); X routed to the screen under the main
+    // menu (the menu owns A/B/Y only, R8), under a COVERED nav screen (a hidden screen answers), or
+    // under a frame with no nav (a prompt would get X); X sent to the screen at the world (the jump
+    // lost) or a world jump that also asks the screen; a jump on the release or under a gated world.
+    const OPEN_EDITOR: ScreenResult = { kind: 'popToBase' };
+    const answers: ReadonlyArray<{
+      readonly name: string;
+      readonly answer: ScreenResult;
+      readonly expected: { readonly consumed: boolean; readonly effects: readonly RouterEffect[] };
+    }> = [
+      {
+        name: 'a Command',
+        answer: OPEN_EDITOR,
+        expected: { consumed: true, effects: [commandEffect(OPEN_EDITOR)] },
+      },
+      { name: 'consumed', answer: 'consumed', expected: SWALLOWED_EDGE },
+      { name: 'unhandled', answer: 'unhandled', expected: SWALLOWED_EDGE },
+    ];
+    for (const a of answers) {
+      const { seen, screen } = askingScreen(() => a.answer);
+      const r = new InputRouter();
+      expect(r.route(edge('X', true), screenNavCtx(1000, screen)), `X / ${a.name}: down`).toEqual(
+        a.expected,
+      );
+      expect(seen, `X / ${a.name}: asked once, with a fresh press`).toEqual([
+        { button: 'X', repeat: false },
+      ]);
+      expect(
+        r.route(edge('X', false), screenNavCtx(1100, screen)),
+        `X / ${a.name}: the release is swallowed`,
+      ).toEqual(SWALLOWED_EDGE);
+      expect(seen.length, `X / ${a.name}: the release asks nobody`).toBe(1);
+      // A second press is a second ask; nothing repeats on the frame clock.
+      expect(r.route(edge('X', true), screenNavCtx(1200, screen)), `X / ${a.name}: again`).toEqual(
+        a.expected,
+      );
+      for (const t of [1350, 1450, 1550, 1650, 5000]) {
+        expect(r.tick(screenNavCtx(t, screen)), `X / ${a.name}: no repeat at ${t}`).toEqual([]);
+      }
+      expect(seen, `X / ${a.name}: exactly the two presses, never a repeat`).toEqual([
+        { button: 'X', repeat: false },
+        { button: 'X', repeat: false },
+      ]);
+    }
+
+    // Held X (two down edges, no release): still no repeat armed.
+    const held = askingScreen(() => 'consumed');
+    const heldRouter = new InputRouter();
+    heldRouter.route(edge('X', true), screenNavCtx(1000, held.screen));
+    heldRouter.route(edge('X', true), screenNavCtx(1030, held.screen));
+    expect(heldRouter.tick(screenNavCtx(1400, held.screen)), 'a held X arms nothing').toEqual([]);
+    expect(heldRouter.tick(screenNavCtx(3000, held.screen))).toEqual([]);
+    expect(
+      held.seen.filter((b) => b.repeat),
+      'never asked with repeat',
+    ).toEqual([]);
+
+    // No adapter bound under a nav screen: swallowed (the page keeps no Space).
+    expect(
+      new InputRouter().route(edge('X', true), screenNavCtx(1000)),
+      'nav screen, no adapter',
+    ).toEqual(SWALLOWED_EDGE);
+
+    // Every other context: X never asks, and is swallowed (or the world's jump).
+    const others: ReadonlyArray<{
+      readonly name: string;
+      readonly make: (screen: RouteContext['screen']) => RouteContext;
+    }> = [
+      {
+        name: 'a covered nav screen',
+        make: (screen) => ({
+          worldActive: false,
+          nav: { covered: true, now: 1000, screen: true },
+          screen,
+        }),
+      },
+      { name: 'the main menu', make: (screen) => ({ ...navCtx(1000), screen }) },
+      {
+        name: 'the main menu, screen: false',
+        make: (screen) => ({
+          worldActive: false,
+          nav: { covered: false, now: 1000, screen: false },
+          screen,
+        }),
+      },
+      { name: 'a covered main menu', make: (screen) => ({ ...navCtx(1000, true), screen }) },
+      {
+        name: 'a frame with no nav (a prompt)',
+        make: (screen) => ({ worldActive: false, screen }),
+      },
+    ];
+    for (const ctx of others) {
+      const { seen, screen } = askingScreen(() => OPEN_EDITOR);
+      const r = new InputRouter();
+      expect(r.route(edge('X', true), ctx.make(screen)), `${ctx.name}: X down`).toEqual(
+        SWALLOWED_EDGE,
+      );
+      expect(r.route(edge('X', false), ctx.make(screen)), `${ctx.name}: X up`).toEqual(
+        SWALLOWED_EDGE,
+      );
+      expect(seen, `${ctx.name}: the screen is never asked`).toEqual([]);
+      expect(
+        new InputRouter().route(edge('X', true), ctx.make(undefined)),
+        `${ctx.name}: no adapter`,
+      ).toEqual(SWALLOWED_EDGE);
+    }
+
+    // The world jump is unchanged: one jump per press, the release nothing, a gated press nothing,
+    // and an adapter bound at the world is never asked for X.
+    const worldAsk = askingScreen(() => OPEN_EDITOR);
+    for (const screen of [undefined, worldAsk.screen]) {
+      const r = new InputRouter();
+      const ctx: RouteContext = { worldActive: true, screen };
+      expect(r.route(edge('X', true), ctx), 'world: X down jumps once').toEqual({
+        consumed: true,
+        effects: [{ kind: 'jump' }],
+      });
+      expect(r.route(edge('X', false), ctx), 'world: X up does nothing').toEqual(SWALLOWED_EDGE);
+      expect(r.route(edge('X', true), ctx), 'world: each press is one jump').toEqual({
+        consumed: true,
+        effects: [{ kind: 'jump' }],
+      });
+    }
+    expect(worldAsk.seen, 'the world never asks the adapter for X').toEqual([]);
+    expect(new InputRouter().route(edge('X', true), GATED), 'a gated world: nothing').toEqual(
+      SWALLOWED_EDGE,
+    );
   });
 });
 

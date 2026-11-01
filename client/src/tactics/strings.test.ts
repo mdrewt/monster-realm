@@ -230,19 +230,30 @@ const BT12_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.results.recruited': ['name'],
 };
 
-/** Every `tactics.*` key after bt-12 increment A: 83 plain, 49 parameterised = 132 (bt-11
- *  increment C's 69 + 45 = 114, named intentional change). */
+/** bt-12 increment B (plan §2.9): the deploy confirm screen's wild-pack list label — 1 plain key. */
+const BT12B_PLAIN_KEYS: readonly string[] = ['tactics.deploy.wilds'];
+
+/** bt-12 increment B (plan §2.9): the "Still there?" countdown, reading the whole seconds `s`. */
+const BT12B_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'tactics.clock.stillThere': ['s'],
+};
+
+/** Every `tactics.*` key after bt-12 increment B: 84 plain, 50 parameterised = 134 (NAMED
+ *  INTENTIONAL CHANGE, plan §2.9: increment A's 83 + 49 = 132, +`tactics.deploy.wilds` and
+ *  +`tactics.clock.stillThere`; bt-11 increment C's 69 + 45 = 114 before that). */
 const PLAIN_KEYS: readonly string[] = [
   ...BT10_PLAIN_KEYS,
   ...BT11_PLAIN_KEYS,
   ...BT11C_PLAIN_KEYS,
   ...BT12_PLAIN_KEYS,
+  ...BT12B_PLAIN_KEYS,
 ];
 const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT10_PARAM_FIELDS,
   ...BT11_PARAM_FIELDS,
   ...BT11C_PARAM_FIELDS,
   ...BT12_PARAM_FIELDS,
+  ...BT12B_PARAM_FIELDS,
 };
 
 const PARAM_KEYS = Object.keys(PARAM_FIELDS);
@@ -362,7 +373,7 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     ).toEqual([]);
   });
 
-  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 132 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, and (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 134 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, and (bt-12 increment B) the wild-pack label and the Still-there countdown — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
     // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam; round 4: REV 6 R6.7): a menu label, reason,
     // dock or queue key missing from one locale (a French boot throws on opening the command menu);
     // a badge word, a forecast line or a Projected line missing from one locale (a French boot
@@ -377,9 +388,11 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     expect(BT11C_PLAIN_KEYS, 'fixture: 12 increment-C plain keys').toHaveLength(12);
     expect(BT11C_PARAM_KEYS, 'fixture: 14 increment-C parameterised keys').toHaveLength(14);
     // bt-12 (named intentional change): 69 → 83 plain, 45 → 49 parameterised, 114 → 132.
-    expect(PLAIN_KEYS, 'fixture: 83 plain keys in all').toHaveLength(83);
-    expect(PARAM_KEYS, 'fixture: 49 parameterised keys in all').toHaveLength(49);
-    expect(new Set(ROSTER).size, 'fixture: 132 keys, none listed twice').toBe(132);
+    // bt-12 increment B (named intentional change, plan §2.9): 83 → 84 plain (+tactics.deploy.wilds),
+    // 49 → 50 parameterised (+tactics.clock.stillThere), 132 → 134.
+    expect(PLAIN_KEYS, 'fixture: 84 plain keys in all').toHaveLength(84);
+    expect(PARAM_KEYS, 'fixture: 50 parameterised keys in all').toHaveLength(50);
+    expect(new Set(ROSTER).size, 'fixture: 134 keys, none listed twice').toBe(134);
     expect(
       BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
       'fixture: the increment-B keys are new',
@@ -393,8 +406,8 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
       expect(Object.hasOwn(FR, dropped), `fr ${dropped} was dropped by A27`).toBe(false);
     }
 
-    expect(tacticsKeys(EN), 'the English catalog holds exactly the 132-key roster').toEqual(ROSTER);
-    expect(tacticsKeys(FR), 'the French catalog holds exactly the 132-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(EN), 'the English catalog holds exactly the 134-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(FR), 'the French catalog holds exactly the 134-key roster').toEqual(ROSTER);
 
     for (const key of BT11C_PLAIN_KEYS) {
       expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
@@ -765,7 +778,7 @@ describe('tactics strings: the source scans (A6)', () => {
 });
 
 describe('tactics strings: strings.ts (BT10.6, A6)', () => {
-  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 132 tactics.* keys (bt-12: 60 + 28 + 26 + 18) are requested', () => {
+  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 134 tactics.* keys (bt-12 increment B: 60 + 28 + 26 + 18 + 2) are requested', () => {
     // WRONG IMPL KILLED: a dynamic key (`t(\`tactics.stance.${s}\`)` — PARITY-02's dynamic-key scan
     // refuses it, and a typo would only fail at runtime); an aliased import the scan cannot follow;
     // t() on a closure key or tf() on a plain key (the resolver throws); a catalog key nothing
@@ -970,5 +983,71 @@ describe('tactics strings: the deploy and results panels (bt-12, BT12.6)', () =>
       expect(out, `fr resultsTitle('${outcome}') is the shipped French ${key}`).toBe(FR_CAT[key]);
       expect(out, `fr resultsTitle('${outcome}') is not the English`).not.toBe(text);
     }
+  });
+});
+
+/** U+00E0 (a grave) and U+00A0 (no-break space), by code point (never a pasted glyph). */
+const A_GRAVE = String.fromCharCode(0x00e0);
+const NBSP = String.fromCharCode(0x00a0);
+
+describe('tactics strings: the wild-pack label and the Still-there countdown (bt-12 B, BT12.6)', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('deployWilds() and stillThere(s) resolve their exact English, a French translation that differs, and print the seconds they are given [BT12-6-STRINGS-COMPOSITION]', () => {
+    // WRONG IMPL KILLED: a function missing from strings.ts (the panel or the shell would write its
+    // own literal); deployWilds resolving a sibling deploy key (the formation label, the title);
+    // stillThere baking in a number or reading another field than `s` (7 and 42 would print the
+    // same line); a seconds count run through a formatter that pads or groups it; the English
+    // copied into the French catalog; a French question mark set off by a plain breaking space
+    // (catalog.fr.ts's typography convention is U+00A0 before `?`); a French closure that drops
+    // the seconds; and a strings.ts function that resolves once at import (the locale switch
+    // would not show).
+    const fns = s as unknown as Record<string, unknown>;
+    const call = (name: string, ...args: unknown[]): string => {
+      const fn = fns[name];
+      expect(typeof fn, `strings.ts exports ${name}()`).toBe('function');
+      const out = (fn as (...a: unknown[]) => unknown)(...args);
+      expect(typeof out, `${name}() returns a string`).toBe('string');
+      return out as string;
+    };
+
+    setLocale('en');
+    expect(call('deployWilds'), 'en deployWilds()').toBe('Wild pack');
+    expect(call('stillThere', 7), 'en stillThere(7)').toBe('Still there? 7 s');
+    expect(call('stillThere', 42), 'en stillThere(42): the number is read').toBe(
+      'Still there? 42 s',
+    );
+    expect(call('stillThere', 60), 'en stillThere(60): no padding, no grouping').toBe(
+      'Still there? 60 s',
+    );
+    const enWilds = call('deployWilds');
+    const enStill = call('stillThere', 7);
+
+    setLocale('fr');
+    const frWilds = call('deployWilds');
+    expect(frWilds, 'fr deployWilds(): the plan`s French').toBe('Meute sauvage');
+    expect(frWilds, 'fr deployWilds() is a translation').not.toBe(enWilds);
+    const frStill = call('stillThere', 7);
+    expect(frStill, 'fr stillThere(7) is a translation').not.toBe(enStill);
+    expect(frStill.replaceAll(NBSP, ' '), 'fr stillThere(7): the plan`s French, spaces aside').toBe(
+      `Toujours l${A_GRAVE} ? 7 s`,
+    );
+    expect(
+      frStill.startsWith(`Toujours l${A_GRAVE}${NBSP}?`),
+      'fr stillThere: a U+00A0 no-break space before the question mark (catalog.fr.ts convention)',
+    ).toBe(true);
+    expect(frStill, 'fr stillThere(7) is the French catalog`s own line for s = 7').toBe(
+      (CATALOG_FR as unknown as Record<string, (p: { s: number }) => string>)[
+        'tactics.clock.stillThere'
+      ]({ s: 7 }),
+    );
+    const frStill42 = call('stillThere', 42);
+    expect(frStill42.includes('42'), `fr stillThere(42) prints 42: ${frStill42}`).toBe(true);
+    expect(frStill42.includes('7'), 'fr stillThere(42) does not print 7').toBe(false);
+
+    setLocale('en');
+    expect(call('deployWilds'), 'back to English at the next call').toBe('Wild pack');
   });
 });
