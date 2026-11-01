@@ -395,6 +395,334 @@
     animation: none;
   }
 }
+/*
+ * The tactical battle (client/src/tactics, bt-10). The shell's root also wears the shared
+ * `mr-frame mr-shell mr-shell--top mr-shell--battle` classes (they place it), but NO selector below
+ * names those classes: battleView.test.ts rosters their rules. Every rule hangs off a `tactics-`
+ * class. The root is a column: turn bar, the field (70 % of the height, one shared background),
+ * the ticker and the dock (a darker, bordered command band).
+ */
+.tactics-battle {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  background: #0b0b12;
+  color: #eee;
+}
+.tactics-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.tactics-turnbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: #15151f;
+}
+.tactics-turnbar-chips {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+  overflow-x: auto;
+}
+.tactics-turnbar-badge:empty {
+  display: none;
+}
+.tactics-turnbar-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #5a2a6a;
+  font-weight: bold;
+}
+.tactics-chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid #556;
+  border-radius: 3px;
+  background: #2a2a3a;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tactics-chip--mine {
+  border-color: #3c9;
+}
+.tactics-chip--current {
+  border-color: #fff;
+  background: #44445a;
+  font-weight: bold;
+}
+.tactics-chip--acted {
+  opacity: 0.55;
+}
+.tactics-chip--ghost {
+  border-style: dashed;
+  opacity: 0.6;
+}
+.tactics-chip-lock::before {
+  content: "\1F512" / "";
+  margin-left: 4px;
+}
+
+.tactics-field {
+  position: relative;
+  height: 70%;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.tactics-board {
+  height: 100%;
+}
+/* The ONE shared background: every tile and unit draws over it. */
+.tactics-bg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(#3a5a40, #2d4733);
+}
+.tactics-grid {
+  display: grid;
+  max-width: 100%;
+  max-height: 100%;
+  height: 100%;
+}
+.tactics-tile {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+}
+.tactics-tile--reach1 {
+  background-color: rgba(50, 110, 255, 0.5);
+}
+.tactics-tile--reach2 {
+  background-color: rgba(140, 195, 255, 0.45);
+}
+.tactics-tile--aoe {
+  box-shadow: inset 0 0 0 100px rgba(255, 215, 0, 0.4);
+}
+.tactics-tile--shield {
+  outline: 3px dotted #7fe;
+  outline-offset: -3px;
+}
+.tactics-tile--range::before,
+.tactics-tile--danger::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.tactics-tile--range::before {
+  background:
+    linear-gradient(#f33, #f33) center / 2px 60% no-repeat,
+    linear-gradient(#f33, #f33) center / 60% 2px no-repeat,
+    rgba(255, 0, 0, 0.22);
+}
+.tactics-tile--danger::after {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(150, 60, 200, 0.6) 0,
+    rgba(150, 60, 200, 0.6) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+.tactics-tile--cursor {
+  outline: 3px solid #fff;
+  outline-offset: -3px;
+  z-index: 1;
+}
+
+.tactics-unit {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  cursor: pointer;
+}
+.tactics-unit--active {
+  filter: drop-shadow(0 0 4px #fff);
+}
+.tactics-sprite {
+  width: 64px;
+  height: 64px;
+  background-size: 192px 256px;
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+.tactics-sprite--none {
+  border: 2px dashed #bbb;
+  background-color: rgba(0, 0, 0, 0.35);
+}
+.tactics-hp {
+  width: 48px;
+  height: 6px;
+  margin-top: 2px;
+  background: #222;
+  border: 1px solid #000;
+}
+.tactics-hp-fill {
+  height: 100%;
+  transition: width 0.3s;
+}
+.tactics-hp--high .tactics-hp-fill {
+  background: #4c4;
+}
+.tactics-hp--mid .tactics-hp-fill {
+  background: #ec3;
+}
+.tactics-hp--low .tactics-hp-fill {
+  background: #e44;
+}
+.tactics-unit-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 0 2px #000;
+}
+.tactics-intent {
+  position: absolute;
+  top: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #000;
+  font-size: 11px;
+}
+
+.tactics-hud {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.tactics-info {
+  z-index: 3;
+  margin: 4px;
+  padding: 4px 6px;
+  list-style: none;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 12px;
+}
+.tactics-info--own {
+  border-left: 3px solid #3c3;
+}
+.tactics-info--foe {
+  border-left: 3px solid #e44;
+}
+.tactics-info:empty {
+  display: none;
+}
+.tactics-info-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tactics-info-row--fainted {
+  opacity: 0.5;
+}
+.tactics-info-row--expanded {
+  background: rgba(255, 255, 255, 0.12);
+}
+.tactics-info-chips {
+  display: flex;
+  flex-basis: 100%;
+  gap: 4px;
+}
+.tactics-pips {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+.tactics-pip {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.tactics-pip--full {
+  background: #4cf;
+}
+.tactics-pip--drafted {
+  background: #fc3;
+}
+.tactics-pip--spent {
+  background: #444;
+}
+.tactics-blink {
+  animation: tactics-blink 0.8s steps(2, start) infinite;
+}
+@keyframes tactics-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.25;
+  }
+}
+.tactics-banner {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  font-weight: bold;
+  pointer-events: none;
+}
+.tactics-banner[hidden] {
+  display: none;
+}
+
+.tactics-ticker {
+  flex: 1 1 0;
+  min-height: 3em;
+  margin: 0;
+  padding: 4px 8px;
+  overflow-y: auto;
+  list-style: none;
+  font-size: 12px;
+}
+.tactics-dock {
+  flex: 0 0 auto;
+  min-height: 56px;
+  border-top: 2px solid #556;
+  background: #0d0d16;
+}
+
+/* Reduced motion. ORDER IS LOAD-BEARING: these follow the base rules above (equal specificity, so
+ * source order decides). `none`, not `0.01ms`: nothing listens for transitionend/animationend.
+ * Two channels: the OS preference (the media query) and the shell's own boolean (`.tactics--reduced`
+ * on the root, ScreenContext.reduceMotion's lineage). */
+@media (prefers-reduced-motion: reduce) {
+  .tactics-blink {
+    animation: none;
+  }
+  .tactics-hp-fill {
+    transition: none;
+  }
+}
+.tactics--reduced .tactics-blink {
+  animation: none;
+}
+.tactics--reduced .tactics-hp-fill {
+  transition: none;
+}
+
 /* The interact prompt and the deletion countdown are frames too, but small and positioned by
  * main.ts (the prompt follows its anchor tile every frame). No click target: pointer-events off. */
 .mr-frame--prompt,

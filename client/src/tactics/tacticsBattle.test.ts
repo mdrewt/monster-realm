@@ -160,7 +160,7 @@ const expandedIds = (root: HTMLElement): string[] =>
   );
 
 /** True when `a` comes before `b` in document order (and neither contains the other). */
-function before(a: Element, b: Element): boolean {
+function precedes(a: Element, b: Element): boolean {
   return (
     !a.contains(b) &&
     !b.contains(a) &&
@@ -206,9 +206,9 @@ describe('TacticsBattle: the frame (BT10.1)', () => {
     const field = q(root, '.tactics-field');
     const ticker = q(root, '.tactics-ticker');
     const dock = q(root, '.tactics-dock');
-    expect(before(turnbar, field), 'turn bar above the field').toBe(true);
-    expect(before(field, ticker), 'field above the ticker').toBe(true);
-    expect(before(ticker, dock), 'ticker above the dock').toBe(true);
+    expect(precedes(turnbar, field), 'turn bar above the field').toBe(true);
+    expect(precedes(field, ticker), 'field above the ticker').toBe(true);
+    expect(precedes(ticker, dock), 'ticker above the dock').toBe(true);
     expect(root.lastElementChild, 'the dock is the last band of the frame').toBe(dock);
     expect(field.querySelectorAll('.tactics-bg'), 'one background inside the field').toHaveLength(
       1,
