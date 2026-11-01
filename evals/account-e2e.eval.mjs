@@ -137,8 +137,8 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
 // `dev_reducers` and `spacetime call` cannot act as the subject, so they become
 // organic when bt-16 flips the live encounter path and retargets the
 // S9-wild-live scenario (R-bt-8-E2EVACUITY; grep "until bt-16"). Two rows are
-// permanent: a wild battle's `battle_deploy` row is written and consumed in the
-// same deploy transaction, and `tactical_advance_sched` fires with zero delay.
+// permanent: a wild deploy never writes a `battle_deploy` staging row (PvP's
+// secret deploy does, bt-14), and `tactical_advance_sched` fires with zero delay.
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
@@ -166,7 +166,7 @@ export const S9_VACUITY_ALLOWLIST = [
   ],
   [
     'battle_deploy',
-    'Vec<DeployPick> is not DML-expressible, and a wild battle never leaves a battle_deploy row: deploy_units writes and consumes it in one transaction (PvP staging is bt-14)',
+    'Vec<DeployPick> is not DML-expressible, and a wild battle never holds a battle_deploy row: deploy_units materialises the picks directly and the staging row is PvP secret-deploy state (bt-14)',
   ],
   [
     'battle_clock',
