@@ -5,6 +5,8 @@
 // `battleRefused`), the bare-battle probe (`isBareBattle`) and the continued-outcome latch
 // (`continuedBattleId`). Pure — no DOM, SDK, module state or clock. The stack itself, its
 // transitions and SCREEN_POLICY stay in contextStack.ts.
+
+import type { TacticalPhaseName } from '../net/rowConvert';
 import type { Stack } from './contextStack';
 import type { NavInput } from './nav';
 import type { Command as ScreenCommand, ScreenResult } from './screens/types';
@@ -95,6 +97,7 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   pvpSwap: 'safe',
   submitQueue: 'safe',
   cancelQueue: 'safe',
+  deployUnits: 'safe',
   advanceDialogue: 'refuse',
   dismissDialogue: 'safe',
   pickShop: 'refuse',
@@ -115,4 +118,45 @@ export function battleSafeCommand(command: ScreenCommand): boolean {
  *  battle-safe. */
 export function battleRefused(stack: Stack, command: ScreenCommand): boolean {
   return stack[0].kind === 'battle' && !battleSafeCommand(command);
+}
+
+// --- bt-12: which view owns the `battleView` frame, and the results countdown ------------------
+// API FREEZE (plan §3.6 + REV 2 A3/A7): bodies throw until the GREEN phase.
+
+const BT12_NOT_IMPLEMENTED = 'bt-12: not implemented';
+
+/** The view that owns the battle frame for a tactical phase: no tactical row → the 1v1 view;
+ *  Deploying → the deploy panel; Active → the tactical shell (the continuation; A keeps the 1v1 view
+ *  there); Finished → the results panel. Total over the phase names; an unknown phase still shows a
+ *  battle (B17). */
+export type BattleRenderer = 'legacy' | 'deploy' | 'tactical' | 'results';
+export function battleRenderer(_phase: TacticalPhaseName | undefined): BattleRenderer {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+
+/** What the battle views share: the 1v1 view, the deploy panel and the results panel. */
+export interface BattleViewLike {
+  readonly visible: boolean;
+  hide(): void;
+}
+/** Hide every VISIBLE view other than `keep` and return the ones hidden, in order. A HIDDEN view's
+ *  `hide()` must never run here: the three roots share the `battleView` overlay a11y record (keyed by
+ *  id), so it would tear down the shown root's dialog role and focus trap. */
+export function hideOtherBattleViews(
+  _views: readonly (BattleViewLike | undefined)[],
+  _keep: BattleViewLike | undefined,
+): BattleViewLike[] {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+
+/** The outcome frame has been the top frame for `capMs` (the presentation results cap) and the
+ *  results panel is what it shows: continue it. `outcomeShownAtMs` is null whenever the outcome is
+ *  not on top, so a frame over it pauses the countdown and it restarts when the outcome resurfaces. */
+export function shouldAutoContinue(
+  _outcomeShownAtMs: number | null,
+  _nowMs: number,
+  _resultsShown: boolean,
+  _capMs: number,
+): boolean {
+  throw new Error(BT12_NOT_IMPLEMENTED);
 }

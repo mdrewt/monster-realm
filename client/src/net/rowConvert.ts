@@ -10,14 +10,32 @@ import {
   type WasmDirection,
 } from '../convert/convert';
 import type {
+  BattleClock,
+  BattleDeploy,
+  BattleEvent,
+  BattleQueue,
+  BattleTactical,
+  BattleUnit,
+  DeployPick,
+  PlayerFormation,
+  QueuedAction,
+} from '../module_bindings/types';
+import type { QueuedActionRule } from '../tactics/wasm';
+import type {
   StoreAccount,
   StoreBattle,
   StoreBattleChallenge,
+  StoreBattleClock,
+  StoreBattleDeploy,
+  StoreBattleEvent,
   StoreBattleMonster,
+  StoreBattleQueue,
+  StoreBattleUnit,
   StoreCharacter,
   StoreEssenceRequirement,
   StoreEvolutionPath,
   StoreExportChunk,
+  StoreFormation,
   StoreHealLocationRow,
   StoreInventory,
   StoreItemRow,
@@ -33,6 +51,7 @@ import type {
   StoreShopRow,
   StoreSkillRow,
   StoreSpeciesRow,
+  StoreTacticalBattle,
   StoreTradeItem,
   StoreTradeOffer,
   StoreWallet,
@@ -940,4 +959,62 @@ export function profileRowToStore(row: SdkProfileRow): StoreProfile {
     wins: row.wins,
     losses: row.losses,
   };
+}
+
+// --- bt-12 (BT12.1): the seven tactical views -------------------------------------------------
+// API FREEZE (plan §3.1 + REV 2 A8/A13 + REV 2b B6): the names and types below are the contract;
+// every body throws until the GREEN phase. The GREEN phase derives the three name types from the
+// grown `HANDLED_ENUM_VARIANTS` registry (the contract-A7 style, like `AffinityName` above); the
+// freeze spells them out so the registry's growth stays a RED test.
+
+const BT12_NOT_IMPLEMENTED = 'bt-12: not implemented';
+
+export type TacticalKindName = 'Wild' | 'Pvp' | 'Practice';
+export type TacticalPhaseName = 'Deploying' | 'Active' | 'Finished';
+
+/** An identity column as the SDK delivers it (structural, so tests build plain objects). */
+interface SdkIdentity {
+  toHexString(): string;
+}
+export type SdkTacticalBattleRow = BattleTactical;
+/** `owner` is structural: `unitRowOf` reads no identity. */
+export type SdkBattleUnitRow = Omit<BattleUnit, 'owner'> & {
+  readonly owner?: SdkIdentity | undefined;
+};
+export type SdkBattleQueueRow = Omit<BattleQueue, 'owner'> & { readonly owner: SdkIdentity };
+export type SdkBattleDeployRow = Omit<BattleDeploy, 'owner'> & { readonly owner: SdkIdentity };
+export type SdkBattleClockRow = Omit<BattleClock, 'player'> & { readonly player: SdkIdentity };
+export type SdkBattleEventRow = BattleEvent;
+export type SdkFormationRow = Omit<PlayerFormation, 'ownerIdentity'> & {
+  readonly ownerIdentity: SdkIdentity;
+};
+export type { DeployPick };
+
+/** null (plus one console.warn) for a row whose `turnState` carries an unknown tag — the row is
+ *  dropped, never a throw that starves the view's other rows. */
+export function tacticalBattleRowToStore(_row: SdkTacticalBattleRow): StoreTacticalBattle | null {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+export function battleUnitRowToStore(_row: SdkBattleUnitRow): StoreBattleUnit {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+/** null (plus one console.warn) for a row with an unknown `QueuedAction` / `ActionTarget` tag. */
+export function battleQueueRowToStore(_row: SdkBattleQueueRow): StoreBattleQueue | null {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+/** The exact inverse of draft.ts `toWire`: `toWire(entries.map(queuedActionToRule))` ≡ entries. */
+export function queuedActionToRule(_action: QueuedAction): QueuedActionRule {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+export function battleDeployRowToStore(_row: SdkBattleDeployRow): StoreBattleDeploy {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+export function battleClockRowToStore(_row: SdkBattleClockRow): StoreBattleClock {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+export function battleEventRowToStore(_row: SdkBattleEventRow): StoreBattleEvent {
+  throw new Error(BT12_NOT_IMPLEMENTED);
+}
+export function formationRowToStore(_row: SdkFormationRow): StoreFormation {
+  throw new Error(BT12_NOT_IMPLEMENTED);
 }

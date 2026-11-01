@@ -12,12 +12,14 @@
 // per-row callbacks, so the adapter coalesces them within a microtask and calls
 // `flushBatch` once per transaction burst.
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
+import type { EventPayload } from '../module_bindings/types';
 import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
+import type { QueuedActionRule, RuleSide, UnitRow } from '../tactics/wasm';
 // Type-only, therefore erased: no runtime import edge, no cycle. `AffinityName` is
 // derived from the SDK-boundary registry (contract A7); `TrustTierName` comes from the
 // eligibility port, which owns the hard-coded ascending TRUST_TIER_ORDER (A7/A8).
 import type { TrustTierName } from '../ui/evolutionModel';
-import type { AffinityName } from './rowConvert';
+import type { AffinityName, TacticalKindName, TacticalPhaseName } from './rowConvert';
 
 export type { AffinityName };
 
@@ -407,6 +409,81 @@ export interface StoreSpeciesRow {
 }
 
 /** A positional snapshot stamped with local receive time (remote interpolation). */
+
+// --- bt-12 (BT12.1): the seven tactical views, normalized -------------------------------------
+// API FREEZE (plan §3.2 + REV 2 A13): identities as hex strings, u64/i64 as bigint, unit-variant
+// enums as their names, the unit's rules-facing fields as the ONE bt-11 `UnitRow` join
+// (`unitRowOf`), queue entries in the wasm serde form, event payloads as the binding `EventPayload`
+// (the ticker, the presentation and the results panel all consume it). Type-only imports, erased.
+export type StoreTurnState =
+  | { readonly kind: 'NotActive' }
+  | { readonly kind: 'Waiting'; readonly unitId: number }
+  | { readonly kind: 'Advancing' };
+export type StoreTacticalBattle = {
+  readonly battleId: bigint;
+  readonly kind: TacticalKindName;
+  readonly format: number;
+  readonly mapId: number;
+  readonly contentVersion: number;
+  readonly phase: TacticalPhaseName;
+  readonly round: number;
+  readonly initiative: readonly number[];
+  readonly turnIdx: number;
+  readonly turnState: StoreTurnState;
+  readonly tiePrioritySide: RuleSide;
+  readonly pendingPadMs: number;
+  readonly attackDamageDealtA: number;
+  readonly attackDamageDealtB: number;
+};
+export type StoreBattleUnit = {
+  readonly unitId: number;
+  readonly battleId: bigint;
+  /** The owning player's hex identity; null for a wild. */
+  readonly owner: string | null;
+  readonly monsterId: bigint | null;
+  readonly affinity: AffinityName;
+  /** The rules port's row (side, slot, pos, hp, status, budget, guard, state, stance, wild_index). */
+  readonly row: UnitRow;
+};
+export type StoreBattleQueue = {
+  readonly unitId: number;
+  readonly battleId: bigint;
+  readonly owner: string;
+  readonly entries: readonly QueuedActionRule[];
+  readonly submittedAtMs: bigint;
+};
+export type StoreBattleDeploy = {
+  readonly deployId: bigint;
+  readonly battleId: bigint;
+  readonly owner: string;
+  readonly side: RuleSide;
+  readonly picks: readonly { readonly monsterId: bigint; readonly slot: number }[];
+  readonly locked: boolean;
+};
+export type StoreBattleClock = {
+  readonly clockId: bigint;
+  readonly battleId: bigint;
+  readonly side: RuleSide;
+  readonly player: string;
+  readonly windowSeq: number;
+  readonly windowOpenMs: bigint | null;
+  readonly deadlineMs: bigint | null;
+  readonly windowsThisUnitTurn: number;
+  readonly idleMsTotal: bigint;
+  readonly autopassCount: number;
+};
+export type StoreBattleEvent = {
+  readonly eventId: bigint;
+  readonly battleId: bigint;
+  readonly seq: number;
+  readonly round: number;
+  readonly payload: EventPayload;
+};
+export type StoreFormation = {
+  readonly ownerIdentity: string;
+  readonly monsterIds: readonly bigint[];
+};
+
 export interface Snapshot {
   readonly tileX: number;
   readonly tileY: number;
@@ -1361,6 +1438,55 @@ export class AuthoritativeStore {
   ownEvolutionNotices(identity: string): readonly StoreEvolutionReveal[] {
     const slot = this.#ownEvolutionNotices;
     return slot !== undefined && slot.ownerIdentity === identity ? slot.entries : [];
+  }
+
+  // --- bt-12 (BT12.1): the seven tactical views ----------------------------------------------
+  // API FREEZE (plan §3.2 + REV 2 A13): each reconcile is AUTHORITATIVE (keep-set; an absent key is
+  // deleted) and sets #dirty only on a real `deepRowEq` change; the formation is an Option-view
+  // slot (`rows[0]` wins, an empty list clears). Bodies throw until the GREEN phase.
+  reconcileTacticalBattlesFromView(_rows: readonly StoreTacticalBattle[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  reconcileBattleUnitsFromView(_rows: readonly StoreBattleUnit[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  reconcileBattleQueuesFromView(_rows: readonly StoreBattleQueue[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  reconcileBattleDeploysFromView(_rows: readonly StoreBattleDeploy[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  reconcileBattleClocksFromView(_rows: readonly StoreBattleClock[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  reconcileBattleEventsFromView(_rows: readonly StoreBattleEvent[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  reconcileFormationFromView(_rows: readonly StoreFormation[]): void {
+    throw new Error('bt-12: not implemented');
+  }
+  tacticalBattle(_battleId: bigint): StoreTacticalBattle | undefined {
+    throw new Error('bt-12: not implemented');
+  }
+  /** Ascending unitId. */
+  battleUnits(_battleId: bigint): readonly StoreBattleUnit[] {
+    throw new Error('bt-12: not implemented');
+  }
+  /** `owner === identity` only ('' → none); ascending unitId. */
+  ownQueue(_battleId: bigint, _identity: string): readonly StoreBattleQueue[] {
+    throw new Error('bt-12: not implemented');
+  }
+  /** Ascending clockId. */
+  battleClocks(_battleId: bigint): readonly StoreBattleClock[] {
+    throw new Error('bt-12: not implemented');
+  }
+  /** Ascending seq, then eventId. */
+  battleEvents(_battleId: bigint): readonly StoreBattleEvent[] {
+    throw new Error('bt-12: not implemented');
+  }
+  /** The own formation row, by exact owner match ('' → undefined). */
+  ownFormation(_identity: string): StoreFormation | undefined {
+    throw new Error('bt-12: not implemented');
   }
 }
 

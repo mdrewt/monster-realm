@@ -1889,6 +1889,9 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
           }),
       );
     }
+    case 'deployUnits':
+      // bt-12 API freeze: wired in the GREEN phase (plan §3.7).
+      return Promise.reject(new Error('bt-12: not implemented'));
     case 'advanceDialogue': {
       const { choiceIdx } = command;
       // qf-6: the server refuses a reply chosen too far from the NPC, in another zone, or with the
