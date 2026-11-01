@@ -30,6 +30,33 @@ test('findDevHooks ignores clean code, dead literals, comment tokens and the __m
   }
 });
 
+// bt-12 B (BT12.5, plan §2.11 + REV B2.10): the DEV-gated `__mrTactics` e2e hook joins the set, in
+// the two binding forms, the two defineProperty forms AND the bare name (the only shape that catches
+// `Object.assign(window, { __mrTactics })` or a bracket write; the name occurs nowhere else).
+// WRONG IMPL KILLED: the hook left out of DEV_HOOK_FINGERPRINTS (a release build ships a read-only
+// window into battle state); only the `.x=` form added (a pretty build's `window.__mrTactics = …` or
+// a defineProperty escape ships); the bare form missing (an Object.assign / bracket write ships);
+// a bare form so broad it flags the ungated `__mrBuild` stamp.
+test('findDevHooks flags the __mrTactics hook in assignment, defineProperty, Object.assign and bracket form, and still passes a clean bundle with the __mrBuild stamp', () => {
+  for (const bundle of [
+    'w.__mrTactics=1;',
+    'window.__mrTactics = function(){};',
+    'Object.defineProperty(window,"__mrTactics",{value:fn})',
+    "Object.defineProperty(window,'__mrTactics',{value:fn})",
+    'Object.assign(window,{__mrTactics:t});',
+    'Object.assign(window, { __mrTactics });',
+    'window["__mrTactics"]=t;',
+  ]) {
+    assert.ok(flagged(bundle), `not flagged: ${bundle}`);
+  }
+  for (const bundle of [
+    "window.__mrBuild = {sha:'abc123',time:'2026-11-01'};",
+    'var tactics={battle:function(){},ownMonsters:function(){}};export{tactics};',
+  ]) {
+    assert.deepEqual(findDevHooks(bundle, DEV_HOOK_FINGERPRINTS), [], bundle);
+  }
+});
+
 test('bundleBakesDb detects the baked db value in pretty and minified builds', () => {
   assert.ok(
     bundleBakesDb(

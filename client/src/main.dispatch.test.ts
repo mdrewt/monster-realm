@@ -62,11 +62,16 @@ import type { Connection, ConnectionOptions } from './net/connection';
 import type {
   StoreBattle,
   StoreBattleChallenge,
+  StoreBattleClock,
+  StoreBattleEvent,
   StoreBattleMonster,
+  StoreBattleQueue,
+  StoreBattleUnit,
   StoreItemRow,
   StoreMonsterPub,
   StoreNpcRow,
   StoreTacticalBattle,
+  StoreTradeOffer,
 } from './net/store';
 // bt-12: the results cap the auto-advance waits for (the presentation constitution's, never a
 // literal 3000 here either).
@@ -194,7 +199,20 @@ vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub('TradePro
 // bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
 // map the stub gives TWO spawn cells (every other map has the shipped three), so a deploy slot count
 // taken from anywhere but the tactical row's own map shows.
-const T12 = vi.hoisted(() => ({ mapCalls: [] as number[], twoSpawnMap: 17 }));
+// bt-12 B (named intentional change, plan REV B2.11): map 19 has FOUR spawn cells (the slot count is
+// `min(tuning.max_pack, spawn_a.length)`); `tuning` is what the stubbed `tactics_tuning` answers (a
+// case may lower `max_pack` before its first deploy render and must restore it); `nextInit` answers
+// `tactics_next_initiative` and `nextInitCalls` records its arguments; `overlayQueries` records every
+// `tactics_overlays` query (its `viewer` is the shell's `mySide`).
+const T12 = vi.hoisted(() => ({
+  mapCalls: [] as number[],
+  twoSpawnMap: 17,
+  fourSpawnMap: 19,
+  tuning: { surge_start_round: 11, wild_round_cap: 37, max_pack: 3 },
+  nextInitCalls: [] as unknown[][],
+  nextInit: ((..._args: unknown[]): unknown => []) as (...args: unknown[]) => unknown,
+  overlayQueries: [] as unknown[],
+}));
 
 // wasm pkg: every name main.ts imports. The party size (3), the box sentinel (255) and the
 // per-side trade cap (37) are distinct so a handler argument or a constant read from the wrong
@@ -217,12 +235,53 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
       width: 7,
       height: 5,
       tiles: [],
-      spawn_a: mapId === T12.twoSpawnMap ? spawnA.slice(0, 2) : spawnA,
+      spawn_a:
+        mapId === T12.twoSpawnMap
+          ? spawnA.slice(0, 2)
+          : mapId === T12.fourSpawnMap
+            ? [...spawnA, { x: 3, y: 0 }]
+            : spawnA,
       spawn_b: [],
     };
   },
   tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
-  tactics_unit: (row: unknown) => row,
+  // bt-12 B (named intentional change): the shell now renders in these cases, so the join answers a
+  // rules unit (the row's fields plus a skill-less kit) and `plan` costs any draft at 0 AP.
+  tactics_unit: (row: {
+    id: number;
+    side: string;
+    slot: number;
+    species_id: number;
+    level: number;
+    stats: unknown;
+    pos: unknown;
+    cur_hp: number;
+    status: unknown;
+    budget: unknown;
+    guard: boolean;
+    first_stand: boolean;
+    state: string;
+  }) => ({
+    id: row.id,
+    side: row.side,
+    slot: row.slot,
+    kit: {
+      species_id: row.species_id,
+      affinity: 'Plant',
+      level: row.level,
+      stats: row.stats,
+      base_speed: 43,
+      class: 'Walk',
+      skills: [],
+    },
+    pos: row.pos,
+    cur_hp: row.cur_hp,
+    status: row.status,
+    budget: row.budget,
+    guard: row.guard,
+    first_stand: row.first_stand,
+    state: row.state,
+  }),
   tactics_targets: () => ({ Ok: [] }),
   tactics_path: () => ({ Err: 'Unreachable' }),
   tactics_disengage: () => ({ Ok: false }),
@@ -232,16 +291,26 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   tactics_ai_plan: () => [],
   tactics_recruit_targets: () => [],
   tactics_is_exhausted: () => false,
-  tactics_plan: () => ({ Err: 'ZeroStrides' }),
-  tactics_overlays: () => ({
-    reach1: [],
-    reach2: [],
-    range: [],
-    aoe: [],
-    danger: [],
-    shield: [],
-    intents: [],
+  tactics_plan: (start: unknown, entries: readonly unknown[]) => ({
+    Ok: { costs: entries.map(() => 0), total: 0, remaining: start, guard_on_end: false },
   }),
+  tactics_overlays: (_board: unknown, q: unknown) => {
+    T12.overlayQueries.push(q);
+    return {
+      reach1: [],
+      reach2: [],
+      range: [],
+      aoe: [],
+      danger: [],
+      shield: [],
+      intents: [],
+    };
+  },
+  tactics_tuning: () => ({ ...T12.tuning }),
+  tactics_next_initiative: (...args: unknown[]) => {
+    T12.nextInitCalls.push(args);
+    return T12.nextInit(...args);
+  },
 }));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
@@ -4982,7 +5051,10 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     document.body.replaceChildren();
   });
 
-  it('the battle frame has exactly one owner at every step: the 1v1 view with no tactical row, the deploy panel while Deploying (an identical batch keeps its dialog role), the 1v1 view once Active (a Help frame over the Deploying base is popped first), and the results panel once Finished — one displayed battle title and one aria-modal root each time [BT12-1-BOOT-FRAME-OWNER]', async () => {
+  it('the battle frame has exactly one owner at every step: the 1v1 view with no tactical row, the deploy panel while Deploying (an identical batch keeps its dialog role), the tactical shell once Active (a Help frame over the Deploying base is popped first), and the results panel once Finished — one displayed battle title and one aria-modal root each time [BT12-1-BOOT-FRAME-OWNER]', async () => {
+    // NAMED INTENTIONAL CHANGE (bt-12 B, plan REV B2.11): Active is now the tactical SHELL
+    // (`.tactics-battle`), no longer the 1v1 interim, and the Active step carries unit rows (a real
+    // battle has units). Was: "the 1v1 view once Active".
     // WRONG IMPL KILLED (R1, R2, R6, A2): the deploy panel shown beside the 1v1 view (two titles,
     // two modal roots); a battle base with nothing shown (B17); the hidden 1v1 view hidden again on
     // an identical batch (its unguarded close strips the deploy root's dialog role, R1); the 1v1 view
@@ -5054,14 +5126,33 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
       'battle',
       'helpView',
     ]);
-    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Active')]);
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(B, 1, { owner: H.identity, monsterId: LEAD, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(B, 2, { owner: null, monsterId: null, side: 'B', slot: 0, x: 5, y: 3, wild: 0 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      {
+        ...bt12Tactical(B, 'Active'),
+        initiative: [1, 2],
+        turnState: { kind: 'Waiting', unitId: 1 },
+      },
+    ]);
     server(1500);
     expect(stackNow(), 'the switch first popped what sat over the battle base (A2)').toEqual([
       { kind: 'battle', battleId: String(B) },
     ]);
     const help = document.getElementById('help-overlay');
     expect(help !== null && bt12Displayed(help), 'Help is hidden').toBe(false);
-    owner('Active (the 1v1 interim)', legacy.title, legacy.root);
+    const shell = document.querySelector<HTMLElement>('#app .tactics-battle');
+    expect(shell, 'Active: the tactical shell is built under #app').not.toBeNull();
+    if (shell === null) return;
+    owner(
+      'Active (the tactical shell)',
+      shell.querySelector('[data-testid="battle-title"]'),
+      shell,
+    );
+    expect(shell.getAttribute('role'), 'the shell root is the dialog').toBe('dialog');
+    expect(bt12Displayed(legacy.root), 'the 1v1 view is not shown').toBe(false);
     expect(deploy.getAttribute('role'), 'the deploy root holds no dialog').toBeNull();
     expect(bt12Displayed(deploy), 'and is hidden').toBe(false);
 
@@ -5075,6 +5166,8 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     expect(results.getAttribute('role'), 'the results root is the dialog').toBe('dialog');
     expect(legacy.root.getAttribute('role'), 'the 1v1 root holds none').toBeNull();
     expect(bt12Displayed(legacy.root), 'and is hidden').toBe(false);
+    expect(shell.getAttribute('role'), 'the shell root holds none').toBeNull();
+    expect(bt12Displayed(shell), 'and is hidden').toBe(false);
     expect(bt12Frames(), 'the outcome frame over the world').toEqual(['world', 'battleView']);
   });
 
@@ -5144,22 +5237,41 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     );
   });
 
-  it('a battle first seen Active (a pack of 1, deployed server-side) never shows a deploy panel: the 1v1 view keeps the frame, A sends no deploy and the rules port is never asked for a map, through to its results [BT12-2-BOOT-PACK1-NO-PANEL]', async () => {
+  it('a battle first seen Active (a pack of 1, deployed server-side) never shows a deploy panel: the tactical shell keeps the frame, A sends no deploy, nothing asks the rules port before the battle and every map it asks is the battle`s own, through to its results [BT12-2-BOOT-PACK1-NO-PANEL]', async () => {
+    // NAMED INTENTIONAL CHANGE (bt-12 B, plan REV B2.11): the frame owner at Active is the tactical
+    // SHELL, never the deploy panel (was: "the 1v1 view keeps the frame"); the shell sizes its board
+    // from `rules.map(row.mapId)`, so "the rules port is never asked for a map" becomes "nothing is
+    // asked before the battle, and only the battle's own map after"; the battle carries unit rows.
     // WRONG IMPL KILLED: a deploy panel shown for any tactical row (a pack of 1 is auto-deployed,
-    // BT12.2); a battle with nothing shown (B17); a rules port bound or asked at boot or on a
-    // non-deploy render (R7: the bind is lazy, on the first deploy render only).
+    // BT12.2); a battle with nothing shown, or the 1v1 view kept at Active (B17, BT12.1); a rules
+    // port bound or asked at boot (R7: the bind is lazy); a board sized off another map.
+    T12.mapCalls.length = 0;
     await bootReady();
     server(1000);
     const legacy = await bt12Legacy();
-    T12.mapCalls.length = 0;
+    expect(T12.mapCalls, 'nothing asked the rules port at boot').toEqual([]);
     const B = 9_007_199_254_741_027n;
     const P = 9_007_199_254_741_029n;
     opts.store.upsertMonster(bt12Monster(P, 0));
     opts.store.upsertBattle(bt12Anchor(B, 'Ongoing', [P]));
-    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Active')]);
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(B, 1, { owner: H.identity, monsterId: P, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(B, 2, { owner: null, monsterId: null, side: 'B', slot: 0, x: 5, y: 3, wild: 0 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      {
+        ...bt12Tactical(B, 'Active'),
+        initiative: [1, 2],
+        turnState: { kind: 'Waiting', unitId: 1 },
+      },
+    ]);
     server(1100);
     expect(bt12Shown('tactics-deploy'), 'first seen Active: no deploy panel').toBe(false);
-    expect(bt12Displayed(legacy.root), 'the battle is shown (B17): the 1v1 view').toBe(true);
+    const shell = document.querySelector<HTMLElement>('#app .tactics-battle');
+    expect(shell !== null && bt12Displayed(shell), 'the battle is shown (B17): the shell').toBe(
+      true,
+    );
+    expect(bt12Displayed(legacy.root), 'and not the 1v1 view').toBe(false);
     server(1200);
     expect(bt12Shown('tactics-deploy'), 'a later Active batch: still none').toBe(false);
     H.calls = [];
@@ -5171,7 +5283,10 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     server(1400);
     expect(bt12Shown('tactics-results'), 'its results show').toBe(true);
     expect(bt12Shown('tactics-deploy'), 'and no deploy panel ever did').toBe(false);
-    expect(T12.mapCalls, 'the rules port was never asked for a map').toEqual([]);
+    expect(
+      [...new Set(T12.mapCalls)],
+      'every map the rules port was asked for is the battle`s own (13)',
+    ).toEqual([13]);
   });
 
   it('after a confirmed deploy, the new my_formation row (an order that is not the party`s) is what the next Deploying battle`s A sends, slot by slot, and a two-spawn map takes its first two [BT12-3-BOOT-FORMATION-UPDATE]', async () => {
@@ -5345,5 +5460,950 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     frame(closedAt + 2 * CAP);
     await flush();
     expect(bt12Frames(), 'exactly once').toEqual(['world']);
+  });
+});
+
+// --- bt-12 increment B: the tactical shell owns the Active phase; the countdown; X at the confirm ---
+//
+// SOURCE OF TRUTH: spec BT12.1 (WHILE a my_tactical_battle row exists THE tactical renderer SHALL own
+// the battleView frame) and BT12.2 (the composition, X opens the editor, the "Still there?"
+// countdown); plan memory/projects/monster-realm-bt-12-plan-b.md §2.10 as amended by REV B2.2 (the
+// no-op guard), B2.3 (the in-flight release), B2.4 (ingest order and the per-battle watermark), B2.5
+// (the VM mappers and fixtures, the slot count, the throwing batch), B2.8 (the countdown pump) and
+// B2.11 (this file's wasm stub gains `tactics_tuning` / `tactics_next_initiative`).
+//
+// The 1v1 view is bt12Legacy()'s faithful stand-in. Tactical rows reach the store through the store's
+// own reconciles, then a batch (`server(t)`); every input is a key (A Enter, B Backspace, X Space,
+// Start KeyM, Select KeyR, RB PageDown), never a click. Battle and monster ids sit past 2^53. RED
+// REASON: main.ts keeps the 1v1 view at Active (no shell is built), the deploy slot count ignores the
+// pack cap, the router swallows X, and no countdown is pumped.
+
+const BT12B_STATS = { hp: 31, attack: 7, defense: 7, speed: 7, sp_attack: 7, sp_defense: 7 };
+
+interface Bt12bUnitSpec {
+  readonly owner: string | null;
+  readonly monsterId: bigint | null;
+  readonly side: 'A' | 'B';
+  readonly slot: number;
+  readonly x: number;
+  readonly y: number;
+  /** A wild's index (its stance is Aggressive); absent for a player's unit. */
+  readonly wild?: number;
+}
+
+/** One `my_battle_units` row (the rules-facing `UnitRow` inside), Active at full HP with 6 AP. */
+function bt12bUnit(battleId: bigint, unitId: number, s: Bt12bUnitSpec): StoreBattleUnit {
+  return {
+    unitId,
+    battleId,
+    owner: s.owner,
+    monsterId: s.monsterId,
+    affinity: 'Plant',
+    row: {
+      id: unitId,
+      side: s.side,
+      slot: s.slot,
+      species_id: 1,
+      level: 5,
+      stats: BT12B_STATS,
+      pos: { x: s.x, y: s.y },
+      cur_hp: 31,
+      status: null,
+      budget: { ap: 6, strides_used: 0, attacks: 0, last: null },
+      guard: false,
+      first_stand: false,
+      state: 'Active',
+      stance: s.wild === undefined ? null : 'Aggressive',
+      wild_index: s.wild ?? null,
+    },
+  };
+}
+
+/** The `my_tactical_battle` row of an Active battle on map 13. */
+function bt12bTactical(
+  battleId: bigint,
+  kind: StoreTacticalBattle['kind'],
+  o: {
+    readonly initiative: readonly number[];
+    readonly turnIdx: number;
+    readonly turnState: StoreTacticalBattle['turnState'];
+    readonly tiePrioritySide: 'A' | 'B';
+    readonly round?: number;
+    readonly phase?: StoreTacticalBattle['phase'];
+  },
+): StoreTacticalBattle {
+  return {
+    battleId,
+    kind,
+    format: 1,
+    mapId: 13,
+    contentVersion: 1,
+    phase: o.phase ?? 'Active',
+    round: o.round ?? 1,
+    initiative: [...o.initiative],
+    turnIdx: o.turnIdx,
+    turnState: o.turnState,
+    tiePrioritySide: o.tiePrioritySide,
+    pendingPadMs: 0,
+    attackDamageDealtA: 0,
+    attackDamageDealtB: 0,
+  };
+}
+
+/** A `my_battle_events` row: a RoundEnded whose round is `seq + 1` (one distinct ticker line each). */
+function bt12bEvent(battleId: bigint, seq: number): StoreBattleEvent {
+  return {
+    eventId: battleId * 100n + BigInt(seq),
+    battleId,
+    seq,
+    round: 1,
+    payload: { tag: 'RoundEnded', value: { round: seq + 1 } },
+  };
+}
+
+/** The own side-A `my_battle_clock` row of `battleId`. */
+function bt12bClock(
+  battleId: bigint,
+  deadlineMs: bigint | null,
+  windowOpenMs: bigint | null,
+  player: string = H.identity,
+): StoreBattleClock {
+  return {
+    clockId: battleId + 1n,
+    battleId,
+    side: 'A',
+    player,
+    windowSeq: 1,
+    windowOpenMs,
+    deadlineMs,
+    windowsThisUnitTurn: 1,
+    idleMsTotal: 0n,
+    autopassCount: 0,
+  };
+}
+
+/** The battle anchor: `player` is side A, `opponent` side B (the wild identity by default). */
+function bt12bAnchor(
+  battleId: bigint,
+  outcome: string,
+  party: readonly bigint[],
+  player: string = H.identity,
+  opponent: string = WILD_IDENTITY,
+): StoreBattle {
+  return {
+    ...battleRow(battleId, outcome),
+    playerIdentity: player,
+    opponentIdentity: opponent,
+    partyMonsterIds: [...party],
+  };
+}
+
+const bt12bShell = (): HTMLElement | null =>
+  document.querySelector<HTMLElement>('#app .tactics-battle');
+const bt12bTicker = (): string[] =>
+  [...(bt12bShell()?.querySelectorAll('.tactics-ticker > *') ?? [])].map(
+    (el) => el.textContent ?? '',
+  );
+const bt12bRoundLines = (rounds: readonly number[]): string[] =>
+  rounds.map((round) => i18n.tf('tactics.ticker.roundEnded', { round }));
+/** The submit_queue sends so far: battle id, unit id and the entry tags. */
+const bt12bSubmits = (): { battleId: unknown; unitId: unknown; tags: string[] }[] =>
+  H.calls
+    .filter((c) => c.name === 'submitQueue')
+    .map((c) => {
+      const a = c.args as { battleId: unknown; unitId: unknown; entries: { tag: string }[] };
+      return { battleId: a.battleId, unitId: a.unitId, tags: a.entries.map((e) => e.tag) };
+    });
+const bt12bIdsOf = (root: ParentNode, selector: string): string[] =>
+  [...root.querySelectorAll(selector)].map((el) => el.getAttribute('data-unit-id') ?? '');
+const bt12bCountdowns = (): HTMLElement[] => [
+  ...document.querySelectorAll<HTMLElement>('.tactics-countdown'),
+];
+
+describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
+  sequential: true,
+}, () => {
+  const saved = { tuning: { ...T12.tuning }, nextInit: T12.nextInit };
+  afterEach(() => {
+    T12.tuning = { ...saved.tuning };
+    T12.nextInit = saved.nextInit;
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  /** Exactly one displayed battle title (the owner's) and one displayed aria-modal root (it). */
+  const owner = (step: string, root: Element | null): void => {
+    expect(root, `${step}: the owner's root exists`).not.toBeNull();
+    const titles = bt12Titles();
+    expect(titles.length, `${step}: exactly one displayed battle title under #app`).toBe(1);
+    expect(root?.contains(titles[0] ?? null), `${step}: and it is the owner's`).toBe(true);
+    const modal = bt12ModalRoots();
+    expect(modal.length, `${step}: exactly one displayed aria-modal root`).toBe(1);
+    expect(modal[0] === root, `${step}: and it is the owner's root`).toBe(true);
+  };
+
+  it('an Active battle is the tactical shell`s: one displayed root holding the dialog role (the 1v1 view hidden) built from the store rows — the Waiting unit active whatever turnIdx says, the wilds on side B, mine by owner, the tuning`s round cap, the rules` next initiative asked with the row`s tie side — the transcript ingested once while hidden then live, a watermark per battle, an identical batch painting nothing, Start the shell`s End Turn, the shell`s hint chips, Deploying → Active → Finished with one modal root each, PvP side B and Practice, the pack cap sizing the deploy, a throwing batch keeping the frame, and a legacy battle`s Start opening the menu once the shell is gone [BT12-1-BOOT-ACTIVE-SHELL]', async () => {
+    // WRONG IMPL KILLED: the API freeze (the 1v1 view keeps the Active frame: BT12.1); the shell
+    // shown beside the 1v1 view (two titles / modal roots, R1); `activeUnitId = initiative[turnIdx]`
+    // for Waiting(U) (21 would be active and Start would send nothing); the wilds drawn on side A or
+    // `mine` taken from the side instead of the owner (Practice's side-B own unit, PvP side B);
+    // `mySide` hard-coded A (the PvP accepter's overlays asked for viewer A); Practice mapped to
+    // 'wild' (no Surge badge at round 8); the round cap / Surge start read from anywhere but the
+    // tuning (37 and 11 are not the design's 30 and 9); `tiePrioritySide` restated as the next
+    // round's (the stub must be asked with 'B') or the next initiative computed in TS (the sentinel
+    // order 22, 11, 21 is no rule's); the transcript re-ingested on every batch (duplicate lines, R1)
+    // or ingested before the first render (a hidden view plays nothing, the first render clears the
+    // ticker: R2) or playing history on a first sighting; a watermark keyed by anything but the
+    // battle id (a battle differing from the last only above 2^53 skips its own seq 0..1); a render
+    // on every identical batch (the open menu node is rebuilt: B2.2) or a `readyPlans` change that
+    // does NOT repaint (a Map compares as {}); Start at the bare base opening the menu while the
+    // shell owns the frame; hint chips not the shell's; the deploy slot count from spawn_a or a
+    // literal 3 (max_pack 2 on a 4-spawn map sends two picks); a throwing batch that demotes the
+    // visible shell to the 1v1 view; a render throw on a first sighting that advances the watermark
+    // (the next good batch would lose the history); `tacticalOwnsStart` left true once the shell is
+    // hidden (a legacy battle's Start would no longer open the menu).
+    await bootReady();
+    server(1000);
+    const legacy = await bt12Legacy();
+    let t = 1000;
+    const at = (): number => {
+      t += 100;
+      return t;
+    };
+
+    // --- the pack cap: max_pack 2 on a FOUR-spawn map sizes the deploy at two ------------------
+    T12.tuning = { ...T12.tuning, max_pack: 2 };
+    const S = 2n ** 60n + 1n;
+    const SP = [2n ** 60n + 3n, 2n ** 60n + 5n, 2n ** 60n + 7n, 2n ** 60n + 9n];
+    for (const [slot, id] of SP.entries()) opts.store.upsertMonster(bt12Monster(id, slot));
+    opts.store.upsertBattle(bt12bAnchor(S, 'Ongoing', SP));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(S, 'Deploying', T12.fourSpawnMap)]);
+    server(at());
+    expect(bt12Shown('tactics-deploy'), 'precondition: the deploy panel is shown').toBe(true);
+    H.calls = [];
+    press('Enter', at());
+    await flush();
+    expect(bt12Sends(), 'min(max_pack 2, four spawns): two picks').toEqual([
+      { battleId: S, picks: [bt12Pick(SP[0] as bigint, 0), bt12Pick(SP[1] as bigint, 1)] },
+    ]);
+    opts.store.removeBattle(S);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    server(at());
+    expect(bt12Frames(), 'fixture: back at the world').toEqual(['world']);
+
+    // --- a wild battle first seen Active -------------------------------------------------------
+    T12.nextInit = () => [22, 11, 21];
+    T12.nextInitCalls.length = 0;
+    T12.overlayQueries.length = 0;
+    const B = 2n ** 60n + 11n;
+    const P1 = 2n ** 60n + 13n;
+    const P2 = 2n ** 60n + 15n;
+    opts.store.upsertMonster(bt12Monster(P1, 0));
+    opts.store.upsertMonster(bt12Monster(P2, 1));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P1, P2]));
+    const bUnits = [
+      bt12bUnit(B, 11, { owner: H.identity, monsterId: P1, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(B, 12, { owner: H.identity, monsterId: P2, side: 'A', slot: 1, x: 3, y: 1 }),
+      bt12bUnit(B, 21, { owner: null, monsterId: null, side: 'B', slot: 0, x: 1, y: 4, wild: 0 }),
+      bt12bUnit(B, 22, { owner: null, monsterId: null, side: 'B', slot: 1, x: 5, y: 4, wild: 1 }),
+    ];
+    const bRow = bt12bTactical(B, 'Wild', {
+      initiative: [21, 11, 12, 22],
+      turnIdx: 0,
+      turnState: { kind: 'Waiting', unitId: 11 },
+      tiePrioritySide: 'B',
+      round: 26,
+    });
+    opts.store.reconcileBattleUnitsFromView(bUnits);
+    opts.store.reconcileBattleEventsFromView([0, 1, 2].map((seq) => bt12bEvent(B, seq)));
+    opts.store.reconcileTacticalBattlesFromView([bRow]);
+    server(at());
+    const shell = bt12bShell();
+    expect(shell, 'Active: the tactical shell is built under #app').not.toBeNull();
+    if (shell === null) return;
+    owner('a wild battle first seen Active', shell);
+    expect(shell.getAttribute('role'), 'the shell root holds the dialog role').toBe('dialog');
+    expect(bt12Displayed(legacy.root), 'the 1v1 view is hidden').toBe(false);
+    expect(bt12Frames(), 'a bare battle base').toEqual(['battle']);
+    expect(
+      bt12bIdsOf(shell, '.tactics-unit--side-b').sort(),
+      'the wild rows are drawn on side B',
+    ).toEqual(['21', '22']);
+    expect(bt12bIdsOf(shell, '.tactics-unit--mine').sort(), 'mine by owner').toEqual(['11', '12']);
+    expect(
+      bt12bIdsOf(shell, '.tactics-unit--active'),
+      'Waiting(11) is the active unit, whatever initiative[turnIdx] (21) says',
+    ).toEqual(['11']);
+    expect(
+      shell.querySelector('.tactics-turnbar-badge')?.textContent,
+      'round 26 of a wild battle: the retreat badge at the TUNING`s round cap (37)',
+    ).toBe(i18n.tf('tactics.turnbar.retreatAt', { round: 37 }));
+    expect(
+      bt12bIdsOf(shell, '.tactics-turnbar .tactics-chip--ghost'),
+      'the next round is the rules` answer, in its order (the sentinel 22, 11, 21)',
+    ).toEqual(['22', '11', '21']);
+    const asked = T12.nextInitCalls.at(-1) ?? [];
+    const askedBoard = asked[0] as { kind: string; map_id: number; units: { id: number }[] };
+    expect(asked[1], 'asked with THIS round`s tie side, as the row holds it').toBe('B');
+    expect(
+      [askedBoard?.kind, askedBoard?.map_id, askedBoard?.units.map((u) => u.id)],
+      'over the battle`s board: its kind, map and unit rows',
+    ).toEqual(['Wild', 13, [11, 12, 21, 22]]);
+    expect(
+      (T12.overlayQueries.at(-1) as { viewer?: string } | undefined)?.viewer,
+      'the wild battle`s player is side A',
+    ).toBe('A');
+    expect(bt12bTicker(), 'the transcript, once, from seq 0').toEqual(bt12bRoundLines([1, 2, 3]));
+    expect(
+      shell.classList.contains('tactics-battle--playing'),
+      'a first sighting plays no history',
+    ).toBe(false);
+
+    // A later batch with one new seq plays it and adds exactly one line; another adds one more.
+    opts.store.reconcileBattleEventsFromView([0, 1, 2, 3].map((seq) => bt12bEvent(B, seq)));
+    server(at());
+    expect(bt12bTicker(), 'seq 3 added once').toEqual(bt12bRoundLines([1, 2, 3, 4]));
+    expect(shell.classList.contains('tactics-battle--playing'), 'a live event plays').toBe(true);
+    opts.store.reconcileBattleEventsFromView([0, 1, 2, 3, 4].map((seq) => bt12bEvent(B, seq)));
+    server(at());
+    server(at());
+    expect(bt12bTicker(), 'seq 4 added once; an event-less batch adds nothing').toEqual(
+      bt12bRoundLines([1, 2, 3, 4, 5]),
+    );
+
+    // The hint bar shows the shell's chips (Start = End turn, X = Danger).
+    frame(at());
+    const chipVerb = (button: string): string | null =>
+      document.querySelector(`#hint-bar [data-button="${button}"] .mr-chip-verb`)?.textContent ??
+      null;
+    expect(chipVerb('Start'), 'Start is the shell`s End turn').toBe(i18n.t('chrome.chip.endTurn'));
+    expect(chipVerb('X'), 'X is the danger toggle').toBe(i18n.t('chrome.chip.danger'));
+
+    // The no-op guard: an identical batch keeps the open menu's node; a readyPlans-only change repaints.
+    press('Enter', at());
+    const menu = shell.querySelector('.tactics-menu');
+    expect(menu, 'fixture: A on the selected own unit opened its menu').not.toBeNull();
+    server(at());
+    expect(shell.querySelector('.tactics-menu'), 'an identical batch paints nothing').toBe(menu);
+    const queue: StoreBattleQueue = {
+      unitId: 12,
+      battleId: B,
+      owner: H.identity,
+      entries: ['EndTurn'],
+      submittedAtMs: 5n,
+    };
+    opts.store.reconcileBattleQueuesFromView([queue]);
+    server(at());
+    expect(
+      shell.querySelector('.tactics-menu') === menu,
+      'a batch differing only in readyPlans repaints',
+    ).toBe(false);
+    press('Backspace', at());
+
+    // Start at the bare base is the shell's: End Turn for the Waiting own unit, no main menu.
+    H.calls = [];
+    press('KeyM', at());
+    await flush();
+    expect(bt12Frames(), 'no main menu opens').toEqual(['battle']);
+    expect(bt12bSubmits(), 'submit_queue once: [EndTurn] for unit 11').toEqual([
+      { battleId: B, unitId: 11, tags: ['EndTurn'] },
+    ]);
+
+    // A batch whose build throws keeps the visible shell as the frame owner.
+    T12.nextInit = () => {
+      throw new Error('tactics_next_initiative: refused');
+    };
+    opts.store.reconcileBattleEventsFromView([0, 1, 2, 3, 4, 5].map((seq) => bt12bEvent(B, seq)));
+    server(at());
+    owner('a throwing batch', shell);
+    expect(bt12Displayed(legacy.root), 'never demoted to the 1v1 view').toBe(false);
+    T12.nextInit = () => [22, 11, 21];
+
+    // Active → Finished: the results panel, one modal root; continue; the battle goes.
+    opts.store.upsertBattle(bt12bAnchor(B, 'SideAWins', [P1, P2]));
+    opts.store.reconcileTacticalBattlesFromView([{ ...bRow, phase: 'Finished' }]);
+    server(at());
+    owner('Finished', bt12Root('tactics-results'));
+    expect(bt12Displayed(shell), 'the shell is hidden').toBe(false);
+    expect(shell.getAttribute('role'), 'and holds no dialog').toBeNull();
+    press('Backspace', at());
+    await flush();
+    opts.store.removeBattle(B);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    opts.store.reconcileBattleUnitsFromView([]);
+    opts.store.reconcileBattleQueuesFromView([]);
+    server(at());
+    expect(bt12Frames(), 'fixture: back at the world').toEqual(['world']);
+
+    // --- Deploying → Active for a battle differing from B only above 2^53 ----------------------
+    const C = B + 2n ** 53n;
+    const PC = 2n ** 60n + 17n;
+    opts.store.upsertMonster(bt12Monster(PC, 0));
+    opts.store.upsertBattle(bt12bAnchor(C, 'Ongoing', [PC]));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(C, 'Deploying')]);
+    server(at());
+    owner('C Deploying', bt12Root('tactics-deploy'));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(C, 31, { owner: H.identity, monsterId: PC, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(C, 32, { owner: null, monsterId: null, side: 'B', slot: 0, x: 5, y: 4, wild: 0 }),
+    ]);
+    opts.store.reconcileBattleEventsFromView([0, 1].map((seq) => bt12bEvent(C, seq)));
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(C, 'Wild', {
+        initiative: [31, 32],
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 31 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    server(at());
+    owner('C Deploying → Active', shell);
+    expect(bt12Shown('tactics-deploy'), 'the deploy panel is hidden').toBe(false);
+    expect(
+      bt12bTicker(),
+      'battle C`s own seq 0..1 (a watermark keyed by the battle id, not the last battle`s seq)',
+    ).toEqual(bt12bRoundLines([1, 2]));
+    opts.store.removeBattle(C);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    opts.store.reconcileBattleUnitsFromView([]);
+    opts.store.reconcileBattleEventsFromView([]);
+    server(at());
+
+    // --- PvP: the local player is the accepter (side B) ----------------------------------------
+    const D = 2n ** 60n + 19n;
+    const PD = 2n ** 60n + 21n;
+    opts.store.upsertMonster(bt12Monster(PD, 0));
+    opts.store.upsertBattle(bt12bAnchor(D, 'Ongoing', [], OTHER_IDENTITY, H.identity));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(D, 41, {
+        owner: OTHER_IDENTITY,
+        monsterId: 2n ** 60n + 23n,
+        side: 'A',
+        slot: 0,
+        x: 1,
+        y: 1,
+      }),
+      bt12bUnit(D, 42, { owner: H.identity, monsterId: PD, side: 'B', slot: 0, x: 5, y: 4 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(D, 'Pvp', {
+        initiative: [41, 42],
+        turnIdx: 1,
+        turnState: { kind: 'Waiting', unitId: 42 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    T12.overlayQueries.length = 0;
+    server(at());
+    owner('PvP side B', shell);
+    expect(bt12bIdsOf(shell, '.tactics-unit--mine'), 'the accepter`s own unit is side B`s').toEqual(
+      ['42'],
+    );
+    expect(
+      (T12.overlayQueries.at(-1) as { viewer?: string } | undefined)?.viewer,
+      'the shell views from side B (mySide from the raw anchor)',
+    ).toBe('B');
+    H.calls = [];
+    press('KeyM', at());
+    await flush();
+    expect(bt12bSubmits(), 'Start ends the accepter`s live turn').toEqual([
+      { battleId: D, unitId: 42, tags: ['EndTurn'] },
+    ]);
+    opts.store.removeBattle(D);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    opts.store.reconcileBattleUnitsFromView([]);
+    server(at());
+
+    // --- Practice: both sides are the player's; the PvP ruleset's Surge badge -------------------
+    const E = 2n ** 60n + 25n;
+    const PE1 = 2n ** 60n + 27n;
+    const PE2 = 2n ** 60n + 29n;
+    opts.store.upsertMonster(bt12Monster(PE1, 0));
+    opts.store.upsertMonster(bt12Monster(PE2, 1));
+    opts.store.upsertBattle(bt12bAnchor(E, 'Ongoing', [PE1], H.identity, H.identity));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(E, 51, { owner: H.identity, monsterId: PE1, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(E, 61, { owner: H.identity, monsterId: PE2, side: 'B', slot: 0, x: 5, y: 4 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(E, 'Practice', {
+        initiative: [61, 51],
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 61 },
+        tiePrioritySide: 'B',
+        round: 8,
+      }),
+    ]);
+    server(at());
+    owner('Practice', shell);
+    expect(bt12bIdsOf(shell, '.tactics-unit--mine').sort(), 'both sides are mine').toEqual([
+      '51',
+      '61',
+    ]);
+    expect(
+      shell.querySelector('.tactics-turnbar-badge')?.textContent,
+      'Practice runs the PvP ruleset: Surge in (11 - 8) at round 8',
+    ).toBe(i18n.tf('tactics.turnbar.surgeIn', { n: 3 }));
+    H.calls = [];
+    press('KeyM', at());
+    await flush();
+    expect(bt12bSubmits(), 'Start ends the side-B own unit`s live turn').toEqual([
+      { battleId: E, unitId: 61, tags: ['EndTurn'] },
+    ]);
+    opts.store.removeBattle(E);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    opts.store.reconcileBattleUnitsFromView([]);
+    server(at());
+
+    // --- a first sighting whose build throws: no shell, nothing ingested; the next good batch ---
+    const F = 2n ** 60n + 31n;
+    const PF = 2n ** 60n + 33n;
+    opts.store.upsertMonster(bt12Monster(PF, 0));
+    opts.store.upsertBattle(bt12bAnchor(F, 'Ongoing', [PF]));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(F, 71, { owner: H.identity, monsterId: PF, side: 'A', slot: 0, x: 1, y: 1 }),
+    ]);
+    opts.store.reconcileBattleEventsFromView([0, 1, 2].map((seq) => bt12bEvent(F, seq)));
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(F, 'Wild', {
+        initiative: [71],
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 71 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    T12.nextInit = () => {
+      throw new Error('tactics_next_initiative: refused');
+    };
+    server(at());
+    expect(bt12Displayed(shell), 'a first sighting that fails to build shows no shell').toBe(false);
+    expect(bt12Titles().length, 'but the battle is still shown (B17)').toBe(1);
+    T12.nextInit = () => [];
+    server(at());
+    owner('the next good batch', shell);
+    expect(bt12bTicker(), 'it ingests the whole transcript: the watermark never moved').toEqual(
+      bt12bRoundLines([1, 2, 3]),
+    );
+    opts.store.removeBattle(F);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    opts.store.reconcileBattleUnitsFromView([]);
+    opts.store.reconcileBattleEventsFromView([]);
+    server(at());
+
+    // --- once the shell is gone, a legacy battle's Start opens the main menu --------------------
+    const G = 2n ** 60n + 35n;
+    opts.store.upsertBattle(bt12bAnchor(G, 'Ongoing', [PF]));
+    server(at());
+    expect(bt12Displayed(legacy.root), 'a legacy battle: the 1v1 view').toBe(true);
+    press('KeyM', at());
+    expect(bt12Frames(), 'Start opens the main menu (tacticalOwnsStart is false)').toEqual([
+      'battle',
+      'menuView',
+    ]);
+  });
+
+  it('a submit the server REJECTS releases the unit`s in-flight key: the next Start sends again, and on the success path each turn key sends exactly once [BT12-1-BOOT-SUBMIT-RELEASE]', async () => {
+    // WRONG IMPL KILLED (REV B2.3): the dispatch arm passing no `onRejected` (a refused
+    // submit_queue — a stale turn, a race — locks the unit until the turn key changes); a release
+    // fired on the SEND instead of the settle (a double Start would double-send while in flight); a
+    // release on SUCCESS too (every Start sends again on the same turn key); a release of every unit.
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const B = 2n ** 60n + 41n;
+    const P = 2n ** 60n + 43n;
+    opts.store.upsertMonster(bt12Monster(P, 0));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P]));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(B, 11, { owner: H.identity, monsterId: P, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(B, 21, { owner: null, monsterId: null, side: 'B', slot: 0, x: 5, y: 4, wild: 0 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(B, 'Wild', {
+        initiative: [11, 21],
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 11 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    server(1100);
+    expect(bt12bShell() !== null && bt12Displayed(bt12bShell() as HTMLElement), 'the shell').toBe(
+      true,
+    );
+
+    H.calls = [];
+    let reject: (err: unknown) => void = () => {};
+    H.gate = new Promise<void>((_resolve, rej) => {
+      reject = rej;
+    });
+    press('KeyM', 1200);
+    press('KeyM', 1250);
+    expect(bt12bSubmits(), 'in flight: one send, the second Start waits').toHaveLength(1);
+    reject(new Error('submit_queue: not your turn'));
+    await flush();
+    H.gate = null;
+    press('KeyM', 1300);
+    await flush();
+    expect(bt12bSubmits(), 'the rejection released the key: Start sends again').toEqual([
+      { battleId: B, unitId: 11, tags: ['EndTurn'] },
+      { battleId: B, unitId: 11, tags: ['EndTurn'] },
+    ]);
+    press('KeyM', 1400);
+    await flush();
+    expect(bt12bSubmits(), 'the accepted resend holds the key: no third send').toHaveLength(2);
+  });
+
+  it('a reconnect resets the shell: the same rows re-fill the ticker exactly once, and a held in-flight key is cleared so Start sends again [BT12-1-BOOT-RESEED]', async () => {
+    // WRONG IMPL KILLED (plan §2.8 / §2.10): `resetPredictionState` not calling the shell's `reset()`
+    // (the in-flight key of a submit the dropped link lost keeps the unit locked); the ingest
+    // watermark kept across a reconnect (the re-seeded transcript is skipped: an empty ticker) or the
+    // ticker not cleared (every line twice); the shell left shown by RECONNECT_RESETS.
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const B = 2n ** 60n + 51n;
+    const P = 2n ** 60n + 53n;
+    const seed = (t: number): void => {
+      opts.store.upsertMonster(bt12Monster(P, 0));
+      opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P]));
+      opts.store.reconcileBattleUnitsFromView([
+        bt12bUnit(B, 11, { owner: H.identity, monsterId: P, side: 'A', slot: 0, x: 1, y: 1 }),
+        bt12bUnit(B, 21, { owner: null, monsterId: null, side: 'B', slot: 0, x: 5, y: 4, wild: 0 }),
+      ]);
+      opts.store.reconcileBattleEventsFromView([0, 1, 2].map((seq) => bt12bEvent(B, seq)));
+      opts.store.reconcileTacticalBattlesFromView([
+        bt12bTactical(B, 'Wild', {
+          initiative: [11, 21],
+          turnIdx: 0,
+          turnState: { kind: 'Waiting', unitId: 11 },
+          tiePrioritySide: 'A',
+        }),
+      ]);
+      server(t);
+    };
+    seed(1100);
+    expect(bt12bTicker(), 'fixture: three lines').toEqual(bt12bRoundLines([1, 2, 3]));
+    H.calls = [];
+    press('KeyM', 1200);
+    press('KeyM', 1250);
+    await flush();
+    expect(bt12bSubmits(), 'fixture: the turn key is held').toHaveLength(1);
+
+    opts.store.reset();
+    must(opts.onReconnect, 'onReconnect')(H.identity);
+    expect(
+      bt12bShell() !== null && bt12Displayed(bt12bShell() as HTMLElement),
+      'the reconnect hides the shell',
+    ).toBe(false);
+    seed(1300);
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'the same rows show it again').toBe(true);
+    expect(bt12bTicker(), 'the transcript re-filled exactly once').toEqual(
+      bt12bRoundLines([1, 2, 3]),
+    );
+    press('KeyM', 1400);
+    await flush();
+    expect(bt12bSubmits(), 'the in-flight key was cleared: Start sends again').toEqual([
+      { battleId: B, unitId: 11, tags: ['EndTurn'] },
+      { battleId: B, unitId: 11, tags: ['EndTurn'] },
+    ]);
+  });
+
+  it('the "Still there?" countdown runs on the wall clock in the last minute of a WILD window, on the deploy panel and on the shell: none 70 s out, 59 s after 11 s of frames alone, ticking down, gone at the deadline; exactly one node, in the shown root; a finished battle`s clock never leaks into the next; the live region announces the first value once; a reconnect clears it and the same rows bring it back; PvP and Practice never show it [BT12-2-BOOT-STILL-THERE]', async () => {
+    // WRONG IMPL KILLED (REV B2.8, R5): no pump (BT12.2 "a Still there? countdown SHALL appear");
+    // a countdown driven by store batches (it freezes between batches: here only rAF frames run);
+    // `performance.now` read instead of the wall clock (the deadline is an epoch instant; the two
+    // clocks are stubbed apart); a lead measured from the window OPEN (the Active fixture's window is
+    // 120 s long: 240 s after its open never comes); the countdown shown in PvP or Practice; the clock
+    // row of the battle last SHOWN (a finished shell battle) read for a new Deploying one; the line
+    // painted on a hidden root or twice; a countdown left after a reconnect, or a memo that keeps the
+    // same rows from painting it again; the live region announcing every second (or never).
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const wall = { t: 1_750_000_000_000 };
+    vi.spyOn(Date, 'now').mockImplementation(() => wall.t);
+    let t = 1000;
+    const tick = (wallMs: number): void => {
+      wall.t = wallMs;
+      t += 50;
+      frame(t);
+    };
+    const W0 = wall.t;
+    const line = (s: number): string => i18n.tf('tactics.clock.stillThere', { s });
+    const shownIn = (root: Element | null): string[] =>
+      bt12bCountdowns().map((n) =>
+        root !== null && root.contains(n) ? (n.textContent ?? '') : 'OUTSIDE',
+      );
+
+    // A finished shell battle whose clock row stays in the store (30 s left on it).
+    const Z = 2n ** 60n + 61n;
+    const PZ = 2n ** 60n + 63n;
+    opts.store.upsertMonster(bt12Monster(PZ, 0));
+    opts.store.upsertBattle(bt12bAnchor(Z, 'Ongoing', [PZ]));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(Z, 11, { owner: H.identity, monsterId: PZ, side: 'A', slot: 0, x: 1, y: 1 }),
+    ]);
+    const zRow = bt12bTactical(Z, 'Wild', {
+      initiative: [11],
+      turnIdx: 0,
+      turnState: { kind: 'Waiting', unitId: 11 },
+      tiePrioritySide: 'A',
+    });
+    opts.store.reconcileTacticalBattlesFromView([zRow]);
+    opts.store.reconcileBattleClocksFromView([
+      bt12bClock(Z, BigInt(W0 + 30_000), BigInt(W0 - 90_000)),
+    ]);
+    t += 50;
+    server(t);
+    tick(W0);
+    expect(shownIn(bt12bShell()), 'the shell battle shows its 30').toEqual([line(30)]);
+    const live = (): string => document.getElementById('a11y-live')?.textContent ?? '';
+    for (let i = 1; i <= 30; i += 1) tick(W0 + i * 100);
+    expect(shownIn(bt12bShell()), 'three seconds of frames on: 27').toEqual([line(27)]);
+    expect(live(), 'the live region announced the FIRST value of this deadline, once').toBe(
+      line(30),
+    );
+    opts.store.upsertBattle(bt12bAnchor(Z, 'SideAWins', [PZ]));
+    opts.store.reconcileTacticalBattlesFromView([{ ...zRow, phase: 'Finished' }]);
+    t += 50;
+    server(t);
+    press('Backspace', (t += 50));
+    await flush();
+    opts.store.removeBattle(Z);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    t += 50;
+    server(t);
+    tick(W0 + 100);
+    expect(bt12bCountdowns(), 'no battle, no countdown').toEqual([]);
+
+    // A Deploying wild battle: its own clock carries the deploy deadline 70 s ahead (no open window).
+    const B = 2n ** 60n + 65n;
+    const PB = 2n ** 60n + 67n;
+    opts.store.upsertMonster(bt12Monster(PB, 0));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [PB]));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Deploying')]);
+    const deadline = W0 + 70_200;
+    opts.store.reconcileBattleClocksFromView([
+      bt12bClock(Z, BigInt(W0 + 30_000), BigInt(W0 - 90_000)),
+      bt12bClock(B, BigInt(deadline), null),
+    ]);
+    t += 50;
+    server(t);
+    const deploy = bt12Root('tactics-deploy');
+    expect(deploy !== null && bt12Displayed(deploy), 'fixture: the deploy panel is shown').toBe(
+      true,
+    );
+    tick(W0 + 200);
+    expect(bt12bCountdowns(), '70 s out: none (and never the finished battle`s 30)').toEqual([]);
+    tick(W0 + 5_200);
+    expect(bt12bCountdowns(), '65 s out: none').toEqual([]);
+    tick(W0 + 11_200);
+    expect(shownIn(deploy), 'after 11 s of frames alone: 59 s, on the deploy root').toEqual([
+      line(59),
+    ]);
+    tick(W0 + 12_200);
+    expect(shownIn(deploy), 'it ticks down on frames').toEqual([line(58)]);
+    tick(deadline - 1);
+    expect(shownIn(deploy), '1 ms before the deadline: 1 s').toEqual([line(1)]);
+    tick(deadline);
+    expect(bt12bCountdowns(), 'at the deadline: gone').toEqual([]);
+
+    // Active: the shell, a 120 s window opened 75 s ago (45 s left).
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(B, 11, { owner: H.identity, monsterId: PB, side: 'A', slot: 0, x: 1, y: 1 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(B, 'Wild', {
+        initiative: [11],
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 11 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    const W1 = deadline + 10_000;
+    const activeDeadline = W1 + 45_000;
+    opts.store.reconcileBattleClocksFromView([
+      bt12bClock(B, BigInt(activeDeadline), BigInt(activeDeadline - 120_000)),
+    ]);
+    t += 50;
+    server(t);
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'fixture: the shell is shown').toBe(true);
+    tick(W1);
+    expect(shownIn(shell), 'the shell shows 45 (the deadline, not 240 s after the open)').toEqual([
+      line(45),
+    ]);
+    for (let i = 1; i <= 30; i += 1) tick(W1 + i * 100);
+    expect(shownIn(shell), 'three seconds on: 42, in the shell root only').toEqual([line(42)]);
+
+    // A reconnect clears every countdown; the same rows bring it back.
+    opts.store.reset();
+    must(opts.onReconnect, 'onReconnect')(H.identity);
+    tick(W1 + 3_100);
+    expect(bt12bCountdowns(), 'after a reconnect: no countdown anywhere').toEqual([]);
+    opts.store.upsertMonster(bt12Monster(PB, 0));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [PB]));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(B, 11, { owner: H.identity, monsterId: PB, side: 'A', slot: 0, x: 1, y: 1 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(B, 'Wild', {
+        initiative: [11],
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 11 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    opts.store.reconcileBattleClocksFromView([
+      bt12bClock(B, BigInt(activeDeadline), BigInt(activeDeadline - 120_000)),
+    ]);
+    t += 50;
+    server(t);
+    tick(W1 + 3_200);
+    expect(shownIn(bt12bShell()), 'the same rows and value show it again').toEqual([line(42)]);
+    opts.store.removeBattle(B);
+    opts.store.reconcileTacticalBattlesFromView([]);
+    opts.store.reconcileBattleUnitsFromView([]);
+    opts.store.reconcileBattleClocksFromView([]);
+    t += 50;
+    server(t);
+
+    // PvP and Practice never show it, whatever their own clock says.
+    for (const [kind, id] of [
+      ['Pvp', 2n ** 60n + 71n],
+      ['Practice', 2n ** 60n + 73n],
+    ] as const) {
+      const PM = id + 1n;
+      opts.store.upsertMonster(bt12Monster(PM, 0));
+      opts.store.upsertBattle(
+        kind === 'Pvp'
+          ? bt12bAnchor(id, 'Ongoing', [PM], H.identity, OTHER_IDENTITY)
+          : bt12bAnchor(id, 'Ongoing', [PM], H.identity, H.identity),
+      );
+      opts.store.reconcileBattleUnitsFromView([
+        bt12bUnit(id, 11, { owner: H.identity, monsterId: PM, side: 'A', slot: 0, x: 1, y: 1 }),
+      ]);
+      opts.store.reconcileTacticalBattlesFromView([
+        bt12bTactical(id, kind, {
+          initiative: [11],
+          turnIdx: 0,
+          turnState: { kind: 'Waiting', unitId: 11 },
+          tiePrioritySide: 'A',
+        }),
+      ]);
+      opts.store.reconcileBattleClocksFromView([
+        bt12bClock(id, BigInt(W1 + 20_000), BigInt(W1 - 10_000)),
+      ]);
+      t += 50;
+      server(t);
+      const pvpShell = bt12bShell();
+      expect(pvpShell !== null && bt12Displayed(pvpShell), `${kind}: fixture: the shell`).toBe(
+        true,
+      );
+      tick(W1 + 5_000);
+      expect(bt12bCountdowns(), `${kind}: 15 s left, no countdown`).toEqual([]);
+      opts.store.removeBattle(id);
+      opts.store.reconcileTacticalBattlesFromView([]);
+      opts.store.reconcileBattleUnitsFromView([]);
+      opts.store.reconcileBattleClocksFromView([]);
+      t += 50;
+      server(t);
+    }
+  });
+
+  it('X at the confirm screen opens the formation editor, and a monster in the player`s open trade (either side of it) is neither a candidate nor in the default formation [BT12-2-BOOT-DEPLOY-X]', async () => {
+    // WRONG IMPL KILLED: the router swallowing X under a nav screen (BT12.2 "X SHALL open the
+    // editor"; R-bt-11-ROUTERX); X handled by the 1v1 path (a jump); a traded monster offered or
+    // deployed (deploy_units refuses it: the whole deploy fails — R-bt-12-TRADEDEPLOY); only the
+    // initiator's side of the offer excluded (the counterparty's ask is locked too); the exclusion
+    // read from a stale offer.
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const offer = (
+      tradeId: bigint,
+      mine: 'initiator' | 'counterparty',
+      id: bigint,
+    ): StoreTradeOffer => ({
+      tradeId,
+      initiator: mine === 'initiator' ? H.identity : OTHER_IDENTITY,
+      counterparty: mine === 'initiator' ? OTHER_IDENTITY : H.identity,
+      initiatorMonsterIds: mine === 'initiator' ? [id] : [],
+      initiatorItems: [],
+      initiatorCurrency: 0n,
+      counterpartyMonsterIds: mine === 'counterparty' ? [id] : [],
+      counterpartyItems: [],
+      counterpartyCurrency: 0n,
+      initiatorCards: [],
+      counterpartyCards: [],
+      status: 'Pending',
+      createdAtMs: 1_000n,
+    });
+    let t = 1000;
+    const at = (): number => {
+      t += 100;
+      return t;
+    };
+    const candidate = (): string | null =>
+      bt12Root('tactics-deploy')?.querySelector('.tactics-deploy-candidate .tactics-deploy-name')
+        ?.textContent ?? null;
+
+    for (const [side, battleId] of [
+      ['initiator', 2n ** 60n + 81n],
+      ['counterparty', 2n ** 60n + 91n],
+    ] as const) {
+      const PA = battleId + 2n;
+      const PB = battleId + 4n;
+      const PC = battleId + 6n;
+      for (const [slot, id] of [PA, PB, PC].entries())
+        opts.store.upsertMonster(bt12Monster(id, slot));
+      opts.store.upsertTradeOffer(offer(battleId, side, PB));
+      opts.store.upsertBattle(bt12bAnchor(battleId, 'Ongoing', [PA, PB, PC]));
+      opts.store.reconcileTacticalBattlesFromView([bt12Tactical(battleId, 'Deploying')]);
+      server(at());
+      expect(bt12Shown('tactics-deploy'), `${side}: the deploy panel is shown`).toBe(true);
+      expect(
+        [
+          ...(bt12Root('tactics-deploy')?.querySelectorAll(
+            '.tactics-deploy-formation .tactics-deploy-name',
+          ) ?? []),
+        ].map((el) => el.textContent),
+        `${side}: the default formation skips the traded monster`,
+      ).toEqual([`m${PA}`, `m${PC}`]);
+
+      press('Space', at());
+      expect(
+        bt12Root('tactics-deploy')?.querySelector('.tactics-deploy-candidate'),
+        `${side}: X at the confirm screen opened the editor`,
+      ).not.toBeNull();
+      expect(bt12Frames(), `${side}: and nothing else (no frame, no jump)`).toEqual(['battle']);
+      const seen = new Set<string | null>([candidate()]);
+      for (let i = 0; i < 4; i += 1) {
+        press('PageDown', at());
+        seen.add(candidate());
+      }
+      expect([...seen].sort(), `${side}: RB cycles the two untraded monsters only`).toEqual(
+        [`m${PA}`, `m${PC}`].sort(),
+      );
+      H.calls = [];
+      press('KeyM', at());
+      await flush();
+      expect(bt12Sends(), `${side}: the editor's Start sends no traded monster`).toEqual([
+        { battleId, picks: [bt12Pick(PA, 0), bt12Pick(PC, 1)] },
+      ]);
+      opts.store.removeTradeOffer(battleId);
+      opts.store.removeBattle(battleId);
+      opts.store.reconcileTacticalBattlesFromView([]);
+      server(at());
+    }
   });
 });

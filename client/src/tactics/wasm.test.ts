@@ -41,8 +41,10 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadWasmPkg } from '../../test-util/wasmPkg';
 import type { BattleUnit } from '../module_bindings/types';
+import type { StoreTurnState } from '../net/store';
 import { type TacticalUnit as BoardUnitVM, buildBoard } from './boardModel';
 import {
+  activeUnitOf,
   type BattleMapDef,
   bindTacticsRules,
   type Cell,
@@ -62,6 +64,9 @@ import {
   type RuleTerrain,
   type RuleUnitState,
   type SkillTactics,
+  shellKind,
+  statusTagOf,
+  type TacticsClientRules,
   type TacticsRules,
   type TacticsWasmExports,
   type TurnBudget,
@@ -75,10 +80,13 @@ const SLOW = { timeout: 120_000 };
 
 // --- the contract's names -------------------------------------------------------------------------
 
-/** The 14 `tactics_*` exports (`TacticsWasmExports`, wasm.ts) and the `TacticsRules` method each
+/** The 16 `tactics_*` exports (`TacticsWasmExports`, wasm.ts) and the `TacticsClientRules` method each
  *  backs. bt-11 round 3 (named intentional change, plan REV 5 A26): +`tactics_recruit_targets`
- *  (`recruitTargets`), bound after `tactics_ai_plan`. Was: 13. */
-const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof TacticsRules])[] = [
+ *  (`recruitTargets`), bound after `tactics_ai_plan`. Was: 13. bt-12 B (NAMED INTENTIONAL CHANGE,
+ *  plan §2.2 "EXPORT_NAMES 14 → 16, a pkg missing either throws at bind"): +`tactics_tuning`
+ *  (`tuning`) and +`tactics_next_initiative` (`nextInitiative`), bound last; the port's type is
+ *  `TacticsClientRules`. Was: 14 (a fake pkg of the 14 no longer binds). */
+const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof TacticsClientRules])[] = [
   ['tactics_map', 'map'],
   ['tactics_fresh_budget', 'freshBudget'],
   ['tactics_unit', 'unit'],
@@ -93,6 +101,8 @@ const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof Tactic
   ['tactics_is_exhausted', 'isExhausted'],
   ['tactics_plan', 'plan'],
   ['tactics_overlays', 'overlays'],
+  ['tactics_tuning', 'tuning'],
+  ['tactics_next_initiative', 'nextInitiative'],
 ];
 
 // --- content, transcribed (battle_maps/000-core.ron) -----------------------------------------------
@@ -243,7 +253,7 @@ function q(o: Partial<OverlayQuery> = {}): OverlayQuery {
 // --- the pkg, the port, the golden harness ----------------------------------------------------------
 
 let pkg: Record<string, unknown> | undefined;
-let bound: TacticsRules | undefined;
+let bound: TacticsClientRules | undefined;
 
 beforeAll(async () => {
   pkg = await loadWasmPkg();
@@ -255,7 +265,7 @@ function realPkg(): Record<string, unknown> {
 }
 
 /** The port under test, bound once to the REAL pkg (throws while the stub is in place). */
-function rules(): TacticsRules {
+function rules(): TacticsClientRules {
   bound ??= bindTacticsRules(realPkg() as unknown as TacticsWasmExports);
   return bound;
 }
@@ -894,7 +904,7 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
     );
     const tp = bindTacticsRules(allThrow.pkg);
     const sample = row({ id: 1, side: 'A', slot: 0, species: 1, at: [0, 0] });
-    const everyMethod: readonly (readonly [keyof TacticsRules, () => unknown])[] = [
+    const everyMethod: readonly (readonly [keyof TacticsClientRules, () => unknown])[] = [
       ['map', () => tp.map(1)],
       ['freshBudget', () => tp.freshBudget()],
       ['unit', () => tp.unit(sample)],
@@ -909,6 +919,9 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       ['isExhausted', () => tp.isExhausted(1, 4)],
       ['plan', () => tp.plan(FRESH, [])],
       ['overlays', () => tp.overlays(blank, q())],
+      // bt-12 B (named intentional change, plan §2.2): the two client-rules methods.
+      ['tuning', () => tp.tuning()],
+      ['nextInitiative', () => tp.nextInitiative(blank, 'A')],
     ];
     expect(
       everyMethod.map(([m]) => m),
@@ -2750,5 +2763,161 @@ describe('tactics rules port: the recruit targets (BT11.1, REV 5 A26)', () => {
 
     rejects('recruitTargets(absent unit 9001)', () => r.recruitTargets(b, 9001, FRESH), '9001');
     expect(r.recruitTargets(b, 5, FRESH), 'a later valid call still answers').toEqual([31]);
+  });
+});
+
+// --- bt-12 B (BT12.1): the tuning, the next round's initiative, the view-model mappers -------------
+//
+// SOURCE OF TRUTH: plan memory/projects/monster-realm-bt-12-plan-b.md §2.1 / §2.2 as amended by REV B2.5
+// (`TacticsTuningOut` keeps `{ surge_start_round, wild_round_cap, max_pack }` only; the three pure
+// mappers live here). RED REASON: the pkg's `tactics_tuning` / `tactics_next_initiative` bodies are
+// `todo!()` (a call throws), and `shellKind` / `activeUnitOf` / `statusTagOf` throw.
+
+describe('tactics rules port: the client rules (bt-12 B, BT12.1)', () => {
+  it('rules.tuning() is exactly the surge start, the wild round cap and the pack cap the shipped tuning and game-core carry (9, 30, 3), integers, no window fields; the port forwards tactics_tuning with no argument and a pkg without it fails to bind naming it [BT12-1-WASM-TUNING]', () => {
+    // WRONG IMPL KILLED: the `todo!()` body (the turn bar's Surge / retreat badges and the deploy
+    // slot count would have no source); the two u16 fields swapped (surge 30, cap 9); a literal
+    // `max_pack: 3` read from nowhere vs. game-core's MAX_PACK (pinned on the host by
+    // bt12_tuning_out_mirrors_the_loaded_tuning_and_max_pack — here the VALUE the pkg answers);
+    // the whole TacticsTuning serialised (window and deploy fields leaking: REV B2.5 drops them);
+    // a field as a string or a BigInt (serde_wasm_bindgen u16/u8 are numbers); a port that calls
+    // the export with an argument, or binds without it.
+    const tuning = rules().tuning();
+    expect(
+      tuning,
+      'the three client-facing fields, exactly (tuning.rs DESIGN; MAX_PACK)',
+    ).toStrictEqual({ surge_start_round: 9, wild_round_cap: 30, max_pack: 3 });
+    for (const [field, value] of Object.entries(tuning)) {
+      expect(Number.isInteger(value), `${field} is an integer number`).toBe(true);
+    }
+    expect(rules().tuning(), 'a second call answers the same').toStrictEqual(tuning);
+
+    const answer = { surge_start_round: 11, wild_round_cap: 13, max_pack: 2 };
+    const { pkg: spy, calls } = fakePkg({ tactics_tuning: () => answer });
+    expect(bindTacticsRules(spy).tuning(), 'the port returns the pkg answer').toBe(answer);
+    expect(
+      calls.filter((x) => x.name === 'tactics_tuning'),
+      'one call, no argument',
+    ).toEqual([{ name: 'tactics_tuning', args: [] }]);
+
+    const without = Object.fromEntries(
+      Object.entries(realPkg()).filter(([k]) => k !== 'tactics_tuning'),
+    );
+    let message = '';
+    try {
+      bindTacticsRules(without as unknown as TacticsWasmExports);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message, 'binding without tactics_tuning names it').toContain('tactics_tuning');
+    const shellPort: TacticsRules = rules();
+    expect(typeof shellPort.map, 'the client rules are still the shell`s port').toBe('function');
+  });
+
+  it('rules.nextInitiative(board, thisRoundPriority) is game-core`s order under the OTHER side`s tie priority: speed first, base speed next, then the side that did not hold priority this round; a fainted unit is absent; a duplicate id and a bad side are refused; the port forwards board and side as given [BT12-1-WASM-NEXT-INITIATIVE]', () => {
+    // WRONG IMPL KILLED: the `todo!()` body; the CURRENT round's priority used (no flip: the tie
+    // 11 / 21 comes out the same both ways — R3/F4); a flip restated in the wrong direction (always
+    // A, always B); a fainted unit kept in the order (23 is the fastest on paper); a sort by id, by
+    // slot or by input order (the expected orders are none of those); base speed ignored (22 ties
+    // 11 / 21 on speed and must come last on its lower base speed); a duplicate id answered instead
+    // of refused (state_of's malformed-input rule); an unknown side defaulted.
+    const r = rules();
+    const fast = (s: UnitRow, speed: number): UnitRow => ({ ...s, stats: { ...s.stats, speed } });
+    const units: UnitRow[] = [
+      fast(row({ id: 11, side: 'A', slot: 0, species: 1, at: [1, 1] }), 50),
+      fast(row({ id: 12, side: 'A', slot: 1, species: 2, at: [3, 1] }), 80),
+      fast(
+        row({ id: 21, side: 'B', slot: 0, species: 1, at: [1, 5], wild: 0, stance: 'Aggressive' }),
+        50,
+      ),
+      fast(
+        row({ id: 22, side: 'B', slot: 1, species: 3, at: [3, 5], wild: 1, stance: 'Skittish' }),
+        50,
+      ),
+      fast(
+        row(
+          fainted({
+            id: 23,
+            side: 'B',
+            slot: 2,
+            species: 1,
+            at: [5, 5],
+            wild: 2,
+            stance: 'Territorial',
+          }),
+        ),
+        99,
+      ),
+    ];
+    const b: RulesBoard = { kind: 'Wild', map_id: 1, units };
+    // By hand (initiative.rs `compare`): 12 leads on speed 80; 11 and 21 tie on speed 50 and base
+    // speed 65 (species 1), so the side holding NEXT round's priority goes first; 22 (species 3,
+    // base speed 45) follows them; 23 is fainted.
+    expect(r.nextInitiative(b, 'A'), 'A held priority this round: B ranks first next').toEqual([
+      12, 21, 11, 22,
+    ]);
+    expect(r.nextInitiative(b, 'B'), 'B held priority this round: A ranks first next').toEqual([
+      12, 11, 21, 22,
+    ]);
+    expect(
+      r.nextInitiative({ ...b, units: [...units].reverse() }, 'A'),
+      'the input order does not matter',
+    ).toEqual([12, 21, 11, 22]);
+    expect(
+      r.nextInitiative({ ...b, kind: 'Pvp' }, 'B'),
+      'the ruleset does not change the comparator',
+    ).toEqual([12, 11, 21, 22]);
+
+    const dup: RulesBoard = {
+      ...b,
+      units: [...units, { ...units[0], slot: 3, pos: c(2, 2) } as UnitRow],
+    };
+    rejects('nextInitiative(duplicate id 11)', () => r.nextInitiative(dup, 'A'), /11/);
+    rejects(
+      'nextInitiative(side C)',
+      () => r.nextInitiative(b, 'C' as unknown as RuleSide),
+      /priority|side|variant/i,
+    );
+    expect(r.nextInitiative(b, 'B'), 'a later valid call still answers').toEqual([12, 11, 21, 22]);
+
+    const { pkg: spy, calls } = fakePkg({ tactics_next_initiative: () => [901, 902] });
+    expect(bindTacticsRules(spy).nextInitiative(b, 'B'), 'the pkg answer').toEqual([901, 902]);
+    expect(
+      calls.filter((x) => x.name === 'tactics_next_initiative'),
+      'the board and the side, as given',
+    ).toEqual([{ name: 'tactics_next_initiative', args: [b, 'B'] }]);
+  });
+
+  it('shellKind maps Wild to wild and Pvp AND Practice to pvp; activeUnitOf is the Waiting unit, else the Advancing initiative entry at turnIdx (null out of range), else null; statusTagOf names every status, the Sleep object by its tag, and keeps null [BT12-1-VM-MAPPERS]', () => {
+    // WRONG IMPL KILLED: the throwing stubs; Practice mapped to 'wild' (R-bt-11-PRACTICEKIND: it
+    // runs the PvP ruleset); Waiting(U) answered with initiative[turnIdx] (the fixture points
+    // turnIdx at ANOTHER unit); Advancing answered null (the executing AI unit's chip loses its
+    // highlight) or with initiative[0]; an out-of-range turnIdx answered `undefined` or wrapped; a
+    // NotActive battle answered with the initiative head; a Sleep status passed through as the
+    // object (the HUD's status chip keys on the tag) or a string status rewritten; null turned
+    // into a tag.
+    expect(shellKind('Wild'), 'Wild').toBe('wild');
+    expect(shellKind('Pvp'), 'Pvp').toBe('pvp');
+    expect(shellKind('Practice'), 'Practice uses the PvP ruleset').toBe('pvp');
+
+    const order = [41, 43, 47, 53];
+    const waiting: StoreTurnState = { kind: 'Waiting', unitId: 47 };
+    expect(activeUnitOf(waiting, order, 0), 'Waiting(47) while turnIdx points at 41').toBe(47);
+    expect(activeUnitOf(waiting, [], 3), 'Waiting needs no initiative').toBe(47);
+    const advancing: StoreTurnState = { kind: 'Advancing' };
+    expect(activeUnitOf(advancing, order, 2), 'Advancing: the entry at turnIdx').toBe(47);
+    expect(activeUnitOf(advancing, order, 0), 'Advancing at 0').toBe(41);
+    expect(activeUnitOf(advancing, order, 3), 'Advancing at the last index').toBe(53);
+    expect(activeUnitOf(advancing, order, 4), 'turnIdx past the end: null').toBeNull();
+    expect(activeUnitOf(advancing, [], 0), 'no initiative: null').toBeNull();
+    const idle: StoreTurnState = { kind: 'NotActive' };
+    expect(activeUnitOf(idle, order, 1), 'NotActive: null').toBeNull();
+
+    expect(statusTagOf(null), 'no status').toBeNull();
+    for (const tag of ['Poison', 'Burn', 'Paralysis', 'Freeze'] as const) {
+      expect(statusTagOf(tag), tag).toBe(tag);
+    }
+    expect(statusTagOf({ Sleep: { turns_remaining: 2 } }), 'the Sleep object').toBe('Sleep');
+    expect(statusTagOf({ Sleep: { turns_remaining: 0 } }), 'Sleep with 0 turns left').toBe('Sleep');
   });
 });

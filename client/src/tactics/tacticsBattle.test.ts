@@ -4041,3 +4041,192 @@ describe('TacticsBattle: the controller map (BT11.6)', () => {
     expect(k.shell.selectedUnitId, 'a foe`s turn leaves it alone').toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// bt-12 B (BT12.1 / BT12.2): reset, release and the "Still there?" countdown on the shell
+// ---------------------------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH: plan memory/projects/monster-realm-bt-12-plan-b.md §2.8 (setCountdown, reset) and
+// REV B2.3 (release). RED REASON: the three methods are API-freeze no-ops.
+
+/** The drafted / READY chips the strip shows, by their `data-action`. */
+const bt12Chips = (root: HTMLElement): string[] =>
+  [...root.querySelectorAll('.tactics-strip .tactics-chip[data-action]')].map(
+    (el) => el.getAttribute('data-action') ?? '',
+  );
+const bt12Countdowns = (root: HTMLElement): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('.tactics-countdown'),
+];
+const bt12Tags = (k: Kit): string[][] => k.sent.map((s) => s.entries.map((e) => e.tag));
+
+describe('TacticsBattle: reset, release and the countdown (bt-12 B)', () => {
+  it('reset() forgets the battle: a render of the SAME battle afterwards re-selects the active own unit on its tile with no cursor memory, no danger, no open menu, no draft, an empty ticker and no playback, and the next commit for that unit is sent again [BT12-1-SHELL-RESET]', () => {
+    // WRONG IMPL KILLED: the API-freeze no-op (a reconnect keeps the in-flight key of a submit the
+    // dropped link lost: the unit's turn is locked until the round changes — plan §2.8); a reset
+    // that only clears `#battleId` lazily but keeps the in-flight map (the startBattle path must
+    // run on the next render); a reset that clears the ticker but not the playback (the root stays
+    // `--playing` and B keeps skipping) or the reverse; the cursor memory, the danger toggle, the
+    // menu mode, the drafts or the cycled selection carried over (the re-seeded battle opens on
+    // stale planning state); a reset that hides or shows the view (the frame owner is main.ts's).
+    const k = make();
+    k.shell.render(vmOf());
+    expect(k.shell.selectedUnitId, 'fixture: unit 1 waits and is selected').toBe(1);
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(bt12Tags(k), 'fixture: Start ends unit 1`s live turn').toEqual([['EndTurn']]);
+    k.shell.render(vmOf());
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(k.sent, 'control: the same turn key is held across a plain render').toHaveLength(1);
+
+    // Planning state worth forgetting: a drafted Move, a remembered cursor, danger on, a cycled
+    // selection with its menu open, and a ticker line still playing.
+    k.shell.applyBattleOp({ kind: 'activate' });
+    click(q(k.root, '.tactics-menu-row[data-row="move"]'));
+    k.shell.applyBattleOp({ kind: 'move', dir: 'Right' });
+    k.shell.applyBattleOp({ kind: 'activate' });
+    expect(bt12Chips(k.root), 'fixture: a Move is drafted for unit 1').toEqual(['Move']);
+    k.shell.applyBattleOp({ kind: 'move', dir: 'Down' });
+    expect(k.shell.cursor, 'fixture: unit 1`s cursor is remembered at (2,2)').toEqual(c(2, 2));
+    k.shell.toggleDanger();
+    k.shell.cycleUnit(1);
+    k.shell.applyBattleOp({ kind: 'activate' });
+    expect(k.shell.selectedUnitId, 'fixture: unit 2 is selected').toBe(2);
+    expect(k.root.querySelector('.tactics-menu'), 'fixture: unit 2`s menu is open').not.toBeNull();
+    k.shell.ingest([roundEnded(2)]);
+    expect(tickerTexts(k.root), 'fixture: one ticker line').toHaveLength(1);
+    expect(k.root.classList.contains('tactics-battle--playing'), 'fixture: playing').toBe(true);
+
+    k.shell.reset();
+    expect(k.shell.visible, 'reset neither hides nor shows').toBe(true);
+    k.shell.render(vmOf());
+    expect(k.shell.selectedUnitId, 'the waiting own unit is selected afresh').toBe(1);
+    expect(k.shell.cursor, 'on its own tile').toEqual(c(1, 1));
+    expect(k.shell.dangerOn, 'danger is off').toBe(false);
+    expect(k.root.querySelector('.tactics-menu'), 'no menu is open').toBeNull();
+    expect(bt12Chips(k.root), 'unit 1`s draft is gone').toEqual([]);
+    expect(tickerTexts(k.root), 'the ticker is empty').toEqual([]);
+    expect(k.root.classList.contains('tactics-battle--playing'), 'nothing plays').toBe(false);
+    k.shell.cycleUnit(1);
+    k.shell.cycleUnit(-1);
+    expect(k.shell.cursor, 'the cursor memory is gone: unit 1 returns to its tile').toEqual(
+      c(1, 1),
+    );
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(bt12Tags(k), 'the in-flight key is gone: Start sends again').toEqual([
+      ['EndTurn'],
+      ['EndTurn'],
+    ]);
+    expect(k.sent[1]?.unitId, 'for unit 1').toBe(1);
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(k.sent, 'and the new send holds the key again').toHaveLength(2);
+  });
+
+  it('release(unitId) lets the next commit for that unit go out on the SAME turn key; a release of another unit, or before any render, changes nothing [BT12-1-SHELL-RELEASE]', () => {
+    // WRONG IMPL KILLED: the API-freeze no-op (a REJECTED submit_queue — a stale turn, a race —
+    // locks the unit's turn until the turn key changes: REV B2.3); a release that clears EVERY
+    // unit's key (another unit's refusal would let unit 1 double-send); a release that also
+    // re-sends by itself (the player must press again); a release that throws before a render.
+    const early = make();
+    expect(() => early.shell.release(1), 'a release before any render is harmless').not.toThrow();
+
+    const k = make();
+    k.shell.render(vmOf());
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(k.sent, 'fixture: the first commit').toHaveLength(1);
+    k.shell.release(2);
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(k.sent, 'releasing ANOTHER unit leaves unit 1 held').toHaveLength(1);
+    k.shell.release(1);
+    expect(k.sent, 'a release sends nothing by itself').toHaveLength(1);
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(bt12Tags(k), 'after release(1) the same turn key commits again').toEqual([
+      ['EndTurn'],
+      ['EndTurn'],
+    ]);
+    expect(
+      k.sent.map((s) => s.unitId),
+      'both for unit 1',
+    ).toEqual([1, 1]);
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(k.sent, 'the resend holds the key again').toHaveLength(2);
+    k.shell.release(1);
+    k.shell.release(1);
+    k.shell.applyBattleOp({ kind: 'start' });
+    expect(k.sent, 'a double release still allows one send per press').toHaveLength(3);
+  });
+
+  it('setCountdown(n) paints ONE .tactics-countdown in the field after the banner with the catalog`s "Still there?" line; the same value writes nothing, a render and a cursor move keep the node, null, hide() and a new battle remove it, and after hide() the same value paints again; French reads French [BT12-1-SHELL-COUNTDOWN]', () => {
+    // WRONG IMPL KILLED: the API-freeze no-op; a node appended per call (two lines after two
+    // frames); a same-value call that rewrites the text (the pump runs every frame); `#commit`
+    // rebuilding the field and dropping the node (it would vanish on every subscription batch and
+    // reappear only on the next whole second — R5); the line placed outside the field or before the
+    // banner, or as the root's last child (the dock must stay last); a literal English line; null
+    // that blanks but keeps the node; hide() or a new battle leaving a stale countdown; a memo that
+    // survives hide() (the same seconds on the next show paint nothing).
+    const k = make();
+    k.shell.render(vmOf());
+    expect(bt12Countdowns(k.root), 'none before setCountdown').toHaveLength(0);
+    k.shell.setCountdown(42);
+    expect(bt12Countdowns(k.root), 'one countdown').toHaveLength(1);
+    const node = bt12Countdowns(k.root)[0] as HTMLElement;
+    expect(node.textContent, 'the catalog line for 42').toBe(
+      en('tactics.clock.stillThere', { s: 42 }),
+    );
+    expect(q(k.root, '.tactics-field').contains(node), 'inside the field').toBe(true);
+    expect(precedes(q(k.root, '.tactics-banner'), node), 'after the banner').toBe(true);
+    expect(k.root.lastElementChild, 'the dock stays the last band').toBe(
+      q(k.root, '.tactics-dock'),
+    );
+
+    node.textContent = 'sentinel';
+    k.shell.setCountdown(42);
+    expect(bt12Countdowns(k.root), 'still one').toHaveLength(1);
+    expect(bt12Countdowns(k.root)[0], 'the same node').toBe(node);
+    expect(node.textContent, 'the same value wrote nothing').toBe('sentinel');
+    k.shell.setCountdown(41);
+    expect(bt12Countdowns(k.root)[0], 'a new value reuses the node').toBe(node);
+    expect(node.textContent, 'and rewrites it').toBe(en('tactics.clock.stillThere', { s: 41 }));
+
+    k.shell.render(vmOf({ round: 2, turnIdx: 1 }));
+    expect(bt12Countdowns(k.root), 'a render keeps one line').toHaveLength(1);
+    expect(bt12Countdowns(k.root)[0], 'the same node (#commit never touches it)').toBe(node);
+    expect(node.textContent, 'with its text').toBe(en('tactics.clock.stillThere', { s: 41 }));
+    k.shell.applyBattleOp({ kind: 'move', dir: 'Right' });
+    k.shell.toggleDanger();
+    expect(bt12Countdowns(k.root), 'a cursor move and a repaint keep one line').toHaveLength(1);
+    expect(bt12Countdowns(k.root)[0], 'the same node').toBe(node);
+
+    k.shell.setCountdown(null);
+    expect(bt12Countdowns(k.root), 'null removes it').toHaveLength(0);
+    k.shell.setCountdown(7);
+    expect(
+      bt12Countdowns(k.root).map((n) => n.textContent),
+      'back at 7',
+    ).toEqual([en('tactics.clock.stillThere', { s: 7 })]);
+    k.shell.hide();
+    expect(bt12Countdowns(k.root), 'hide() removes it').toHaveLength(0);
+    k.shell.show();
+    expect(bt12Countdowns(k.root), 'a fresh show paints none by itself').toHaveLength(0);
+    k.shell.setCountdown(7);
+    expect(
+      bt12Countdowns(k.root).map((n) => n.textContent),
+      'the same 7 after hide() paints again (the memo was reset)',
+    ).toEqual([en('tactics.clock.stillThere', { s: 7 })]);
+
+    k.shell.render(vmOf({ battleId: 2n }));
+    expect(bt12Countdowns(k.root), 'a new battle clears it').toHaveLength(0);
+
+    setLocale('fr');
+    k.shell.setCountdown(8);
+    const FR = CATALOG_FR as unknown as Record<string, unknown>;
+    const frLine = (FR['tactics.clock.stillThere'] as (p: Record<string, unknown>) => string)({
+      s: 8,
+    });
+    expect(
+      bt12Countdowns(k.root).map((n) => n.textContent),
+      'French reads French',
+    ).toEqual([frLine]);
+    expect(frLine, 'fixture: the French line differs').not.toBe(
+      en('tactics.clock.stillThere', { s: 8 }),
+    );
+  });
+});

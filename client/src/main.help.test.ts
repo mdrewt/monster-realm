@@ -32,7 +32,13 @@ import type { WasmMoveInput } from './convert/convert';
 import { DEFAULT_BINDINGS } from './input/bindings';
 import { VBUTTONS } from './input/buttons';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster, StoreTradeOffer } from './net/store';
+import type {
+  StoreBattle,
+  StoreBattleMonster,
+  StoreMonsterPub,
+  StoreTacticalBattle,
+  StoreTradeOffer,
+} from './net/store';
 import { t as i18nT } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -43,9 +49,46 @@ const H = vi.hoisted(() => ({
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
-vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
-  wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
-);
+// bt-12 B (named intentional change, BT12.2 / R-bt-12-DEPLOYHINT): the factory gains the 16
+// `tactics_*` exports the rules port binds (`bindTacticsRules` refuses a pkg missing any), so a
+// Deploying battle's deploy panel can render here; nothing else in this file reads them.
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
+  ...wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+  tactics_map: () => ({
+    width: 7,
+    height: 5,
+    tiles: [],
+    spawn_a: [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ],
+    spawn_b: [],
+  }),
+  tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
+  tactics_unit: (row: unknown) => row,
+  tactics_targets: () => ({ Ok: [] }),
+  tactics_path: () => ({ Err: 'Unreachable' }),
+  tactics_disengage: () => ({ Ok: false }),
+  tactics_flank: () => false,
+  tactics_forecast: () => ({}),
+  tactics_recruit_odds: () => ({ Err: { UnknownUnit: { id: 0 } } }),
+  tactics_ai_plan: () => [],
+  tactics_recruit_targets: () => [],
+  tactics_is_exhausted: () => false,
+  tactics_plan: () => ({ Err: 'ZeroStrides' }),
+  tactics_overlays: () => ({
+    reach1: [],
+    reach2: [],
+    range: [],
+    aoe: [],
+    danger: [],
+    shield: [],
+    intents: [],
+  }),
+  tactics_tuning: () => ({ surge_start_round: 9, wild_round_cap: 30, max_pack: 3 }),
+  tactics_next_initiative: () => [],
+}));
 
 vi.mock('./net/connection', () => connectionRecordingMock(H));
 
@@ -766,5 +809,135 @@ describe('main.ts Help: what a stale or short-cut implementation gets wrong (rou
     expect(rows[1], 'B dismisses its banner').toContain(i18nT('chrome.chip.dismiss'));
     expect(rows[2]).toContain(i18nT('chrome.chip.menu'));
     expect(rows[3]).toContain(i18nT('chrome.chip.help'));
+  }, 120_000);
+});
+
+// --- bt-12 B: Help over the deploy panel (BT12.2, R-bt-12-DEPLOYHINT) ----------------------------
+
+/** An own party monster past 2^53, conscious. */
+const deployMonster = (monsterId: bigint, partySlot: number): StoreMonsterPub => ({
+  monsterId,
+  ownerIdentity: H.identity,
+  speciesId: 1,
+  nickname: `m${monsterId}`,
+  level: 5,
+  xp: 0,
+  currentHp: 20,
+  statHp: 20,
+  statAttack: 5,
+  statDefense: 5,
+  statSpeed: 5,
+  statSpAttack: 5,
+  statSpDefense: 5,
+  partySlot,
+  tier: 0,
+  essence: {} as StoreMonsterPub['essence'],
+  trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
+  qualityTimeTier: 0,
+  nutritionPct: 0,
+  lastCareAtMs: 0n,
+});
+
+describe('main.ts Help over the deploy panel (bt-12 B, BT12.2)', { sequential: true }, () => {
+  afterEach(teardown);
+
+  it('over a Deploying battle Help`s This screen lists the deploy confirm chips (A Deploy, X Edit formation, Start Menu, Select Help) and, once the editor is open, the editor chips (A Assign, B Back, LB Prev monster, RB Next monster, Start Submit, Select Help) [BT12-2-HELP-DEPLOY]', async () => {
+    // WRONG IMPL KILLED (REV B2.7): main.ts handing `hintBar` no battle hint while the deploy panel
+    // is shown (This screen would read the legacy OK / Menu / Help: X and the editor's LB / RB never
+    // discoverable — R-bt-12-DEPLOYHINT); the deploy hint passed only in one mode (REV 2 A6's
+    // "confirm passes undefined" is superseded); the panel's hint read as the tactical shell's
+    // (Danger / Prev unit / End turn chips over the deploy panel); a Help built from the stack WITH
+    // the help frame (Close / Back / OK).
+    const B = 9_007_199_254_741_101n;
+    const P1 = 9_007_199_254_741_103n;
+    const P2 = 9_007_199_254_741_105n;
+    const tactical: StoreTacticalBattle = {
+      battleId: B,
+      kind: 'Wild',
+      format: 1,
+      mapId: 13,
+      contentVersion: 1,
+      phase: 'Deploying',
+      round: 0,
+      initiative: [],
+      turnIdx: 0,
+      turnState: { kind: 'NotActive' },
+      tiePrioritySide: 'A',
+      pendingPadMs: 0,
+      attackDamageDealtA: 0,
+      attackDamageDealtB: 0,
+    };
+    await bootReady();
+    batch();
+    opts.store.upsertMonster(deployMonster(P1, 0));
+    opts.store.upsertMonster(deployMonster(P2, 1));
+    opts.store.upsertBattle({ ...battleRow(B), partyMonsterIds: [P1, P2] });
+    opts.store.reconcileTacticalBattlesFromView([tactical]);
+    batch();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    frame();
+    const deploy = document.querySelector<HTMLElement>('#app .tactics-deploy');
+    expect(
+      deploy !== null && deploy.style.display !== 'none',
+      'precondition: the deploy panel is shown',
+    ).toBe(true);
+    expect(stackNames(), 'precondition: a bare battle base').toEqual(['battle']);
+
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'Select opened Help over the Deploying battle').toEqual([
+      'battle',
+      'helpView',
+    ]);
+    const confirm = rowTexts(SCREEN_PANEL);
+    expect(confirm, 'the confirm screen`s four chips').toHaveLength(4);
+    const want = (rows: readonly string[], verbs: readonly string[], label: string): void => {
+      verbs.forEach((verb, i) => {
+        expect(rows[i], `${label}: row ${i}`).toContain(verb);
+      });
+    };
+    want(
+      confirm,
+      [
+        i18nT('chrome.chip.deploy'),
+        i18nT('chrome.chip.editFormation'),
+        i18nT('chrome.chip.menu'),
+        i18nT('chrome.chip.help'),
+      ],
+      'confirm',
+    );
+    for (const tacticalOnly of ['chrome.chip.danger', 'chrome.chip.endTurn'] as const) {
+      expect(confirm.join('|'), `no tactical-shell chip (${tacticalOnly})`).not.toContain(
+        i18nT(tacticalOnly),
+      );
+    }
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'Select closed Help').toEqual(['battle']);
+
+    press('ArrowDown');
+    press('Enter');
+    frame();
+    expect(
+      deploy?.querySelector('.tactics-deploy-candidate'),
+      'precondition: Down and A on Edit formation opened the editor',
+    ).not.toBeNull();
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'Select opened Help over the editor').toEqual(['battle', 'helpView']);
+    const edit = rowTexts(SCREEN_PANEL);
+    expect(edit, 'the editor`s six chips').toHaveLength(6);
+    want(
+      edit,
+      [
+        i18nT('chrome.chip.assign'),
+        i18nT('chrome.chip.back'),
+        i18nT('chrome.chip.prevMonster'),
+        i18nT('chrome.chip.nextMonster'),
+        i18nT('chrome.chip.submit'),
+        i18nT('chrome.chip.help'),
+      ],
+      'edit',
+    );
   }, 120_000);
 });
