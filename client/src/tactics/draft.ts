@@ -75,6 +75,18 @@ function hitSet(
   return hit.Ok;
 }
 
+/** `board` with ONE action of `unitId` applied (the step `applyPlan` folds; REV 6 R6.1), or null when
+ *  the rules refuse it now: a Move whose `rules.path` is Err, a Skill whose aim is refused or whose
+ *  bound unit is not among the hits. Item / Recruit / Flee / EndTurn leave the same board object. */
+export function applyAction(
+  _rules: TacticsRules,
+  _board: RulesBoard,
+  _unitId: number,
+  _action: QueuedActionRule,
+): RulesBoard | null {
+  throw new Error('bt-11: not implemented');
+}
+
 /** The board with `unitId`'s `actions` applied in order (REV 5 A25): a Move puts the row on its
  *  destination when `rules.path` is Ok; a Skill sets each hit target's `cur_hp` to the forecast's
  *  minimum-roll `hp_after` (Fainted when `kills_min`); an Err halts the rest of the plan. */
