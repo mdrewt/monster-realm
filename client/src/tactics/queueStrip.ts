@@ -19,18 +19,21 @@ export interface StripVM {
   /** The rules' total / remaining budget over the whole plan, or null when the plan is refused. */
   readonly total: number | null;
   readonly remaining: TurnBudget | null;
-  /** A READY row is shown and no draft replaces it. */
-  readonly locked: boolean;
 }
 export interface StripInput {
   readonly rules: TacticsRules;
+  /** The board as it stands NOW: every chip's cost (the disengage tax included) is judged on it. */
   readonly liveBoard: RulesBoard;
+  /** The board the unit will ACT on (the projection up to its turn; the live board on a live turn):
+   *  every chip's legality is judged on it, chained through `applyAction`. */
+  readonly actBoard: RulesBoard;
   /** `rules.unit(...)` of the planning unit's LIVE row. */
   readonly unit: RulesUnit;
   readonly startBudget: TurnBudget;
   readonly actions: readonly QueuedActionRule[];
   readonly mode: 'live' | 'prequeue';
-  readonly locked: boolean;
+  /** No recruit headroom: a Recruit chip is never legal. */
+  readonly partyFull: boolean;
   /** Baits held by item id. */
   readonly baitHeld: ReadonlyMap<number, number>;
   /** Baits planned by item id across this unit's shown plan and every other own unit's READY row. */

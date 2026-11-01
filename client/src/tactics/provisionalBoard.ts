@@ -13,10 +13,6 @@ export interface Projection {
   readonly board: RulesBoard;
   /** PvP only: the enemy units walked BEFORE `upTo` (they act first, with a secret plan). */
   readonly hidden: ReadonlySet<number>;
-  /** The walk applied at least one Move or Skill (the board differs from the live one). */
-  readonly provisional: boolean;
-  /** PvP and provisional: the projection assumes the enemies hold their tiles. */
-  readonly assumesEnemiesHold: boolean;
 }
 export interface ProjectInput {
   readonly kind: 'wild' | 'pvp';
@@ -26,6 +22,9 @@ export interface ProjectInput {
   readonly plans: readonly PlanInput[];
   /** Wilds whose live `Intent.block_pct` is 100 (asleep / frozen): they do not act. */
   readonly blocked: ReadonlySet<number>;
+  /** Apply each wild's `rules.aiPlan` at its turn (the aim board); false holds every enemy at its
+   *  live tile (the danger board: where the enemies can strike on their UPCOMING turn). */
+  readonly wilds: boolean;
   /** Stop BEFORE this unit's turn (the forecast board of a pre-queued unit). */
   readonly upTo?: number;
 }
