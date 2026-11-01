@@ -32,10 +32,16 @@ import { createOidcClient } from './oidc';
 import {
   accountRowToStore,
   battleChallengeRowToStore,
+  battleClockRowToStore,
+  battleDeployRowToStore,
+  battleEventRowToStore,
+  battleQueueRowToStore,
   battleRowToStore,
+  battleUnitRowToStore,
   characterRowToStore,
   evolutionPathRowToStore,
   exportChunkRowToStore,
+  formationRowToStore,
   healLocationRowToStore,
   inventoryRowToStore,
   itemRowToStore,
@@ -49,10 +55,16 @@ import {
   profileRowToStore,
   type SdkAccountRow,
   type SdkBattleChallengeRow,
+  type SdkBattleClockRow,
+  type SdkBattleDeployRow,
+  type SdkBattleEventRow,
+  type SdkBattleQueueRow,
   type SdkBattleRow,
+  type SdkBattleUnitRow,
   type SdkCharacterRow,
   type SdkEvolutionPathRow,
   type SdkExportChunkRow,
+  type SdkFormationRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkMonsterPubRow,
@@ -64,12 +76,14 @@ import {
   type SdkShopRowRow,
   type SdkSkillRowRow,
   type SdkSpeciesRowRow,
+  type SdkTacticalBattleRow,
   type SdkTradeOfferRow,
   shopItemRowToStore,
   shopRowToStore,
   shouldRemoveOnViewDelete,
   skillRowToStore,
   speciesRowToStore,
+  tacticalBattleRowToStore,
   tradeOfferRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
@@ -237,6 +251,75 @@ export function connect(opts: ConnectionOptions): Connection {
       } catch (err) {
         console.error('[net] view reconcile threw; flushing anyway', err);
       }
+      // bt-12 (BT12.1): the seven tactical views, each rebuilt from the post-burst cache in its OWN
+      // try (a throwing converter — bindings skew, a malformed row — is contained to that view; the
+      // other six and every reconcile above still land and the flush is still delivered). All seven
+      // run BEFORE flushBatch(): main.ts's refreshBattle reads the phase in a batch listener, so a
+      // reconcile after the flush would show the deploy panel one batch late. AUTHORITATIVE: a row
+      // absent from the cache is deleted (a finished battle's rows go with the GC, a cancelled plan
+      // with its row); a converter's null (an unknown payload-enum tag) drops only that row.
+      const guarded = (reconcile: () => void): void => {
+        try {
+          reconcile();
+        } catch (err) {
+          console.error('[net] view reconcile threw; flushing anyway', err);
+        }
+      };
+      const present = <T>(rows: readonly (T | null)[]): T[] =>
+        rows.filter((row): row is T => row !== null);
+      guarded(() =>
+        store.reconcileTacticalBattlesFromView(
+          present(
+            [...live.db.myTacticalBattle.iter()].map((row) =>
+              tacticalBattleRowToStore(row as unknown as SdkTacticalBattleRow),
+            ),
+          ),
+        ),
+      );
+      guarded(() =>
+        store.reconcileBattleUnitsFromView(
+          [...live.db.myBattleUnits.iter()].map((row) =>
+            battleUnitRowToStore(row as unknown as SdkBattleUnitRow),
+          ),
+        ),
+      );
+      guarded(() =>
+        store.reconcileBattleQueuesFromView(
+          present(
+            [...live.db.myBattleQueue.iter()].map((row) =>
+              battleQueueRowToStore(row as unknown as SdkBattleQueueRow),
+            ),
+          ),
+        ),
+      );
+      guarded(() =>
+        store.reconcileBattleDeploysFromView(
+          [...live.db.myBattleDeploy.iter()].map((row) =>
+            battleDeployRowToStore(row as unknown as SdkBattleDeployRow),
+          ),
+        ),
+      );
+      guarded(() =>
+        store.reconcileBattleClocksFromView(
+          [...live.db.myBattleClock.iter()].map((row) =>
+            battleClockRowToStore(row as unknown as SdkBattleClockRow),
+          ),
+        ),
+      );
+      guarded(() =>
+        store.reconcileBattleEventsFromView(
+          [...live.db.myBattleEvents.iter()].map((row) =>
+            battleEventRowToStore(row as unknown as SdkBattleEventRow),
+          ),
+        ),
+      );
+      guarded(() =>
+        store.reconcileFormationFromView(
+          [...live.db.myFormation.iter()].map((row) =>
+            formationRowToStore(row as unknown as SdkFormationRow),
+          ),
+        ),
+      );
     }
     // hydration-complete — AFTER the reconciles (the store now holds the applied snapshot)
     // and BEFORE flushBatch (listeners observe it delivered). Outside the live-guard on purpose:
@@ -728,6 +811,23 @@ export function connect(opts: ConnectionOptions): Connection {
     // burst — the client would keep showing a reveal the server has already erased.
     conn.db.myPendingEvolutionNotices.onInsert(() => batcher.schedule());
     conn.db.myPendingEvolutionNotices.onDelete(() => batcher.schedule());
+    // bt-12 (BT12.1): the seven tactical views — PK-less (a Vec or an Option view), so the SDK
+    // never fires onUpdate (do NOT wire one) and every change is an unordered insert+delete pair;
+    // no per-row store write here: the batcher's flush closure rebuilds each map from the cache.
+    conn.db.myTacticalBattle.onInsert(() => batcher.schedule());
+    conn.db.myTacticalBattle.onDelete(() => batcher.schedule());
+    conn.db.myBattleUnits.onInsert(() => batcher.schedule());
+    conn.db.myBattleUnits.onDelete(() => batcher.schedule());
+    conn.db.myBattleQueue.onInsert(() => batcher.schedule());
+    conn.db.myBattleQueue.onDelete(() => batcher.schedule());
+    conn.db.myBattleDeploy.onInsert(() => batcher.schedule());
+    conn.db.myBattleDeploy.onDelete(() => batcher.schedule());
+    conn.db.myBattleClock.onInsert(() => batcher.schedule());
+    conn.db.myBattleClock.onDelete(() => batcher.schedule());
+    conn.db.myBattleEvents.onInsert(() => batcher.schedule());
+    conn.db.myBattleEvents.onDelete(() => batcher.schedule());
+    conn.db.myFormation.onInsert(() => batcher.schedule());
+    conn.db.myFormation.onDelete(() => batcher.schedule());
   }
 
   /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
@@ -899,6 +999,17 @@ export function connect(opts: ConnectionOptions): Connection {
             // the PRIVATE pending_evolution_notice table — subscribing the table itself would
             // error the whole batch and onApplied would never fire.
             'SELECT * FROM my_pending_evolution_notices',
+            // bt-12 (BT12.1): the seven owner- / participant-scoped tactical VIEWS (schema.rs
+            // my_tactical_battle … my_formation). Every table behind them is PRIVATE — subscribing
+            // `battle_unit` or `player_formation` itself would error the whole batch and
+            // onApplied would never fire. Names are EXACT.
+            'SELECT * FROM my_tactical_battle',
+            'SELECT * FROM my_battle_units',
+            'SELECT * FROM my_battle_queue',
+            'SELECT * FROM my_battle_deploy',
+            'SELECT * FROM my_battle_clock',
+            'SELECT * FROM my_battle_events',
+            'SELECT * FROM my_formation',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

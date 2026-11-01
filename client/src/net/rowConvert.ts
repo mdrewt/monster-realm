@@ -10,6 +10,7 @@ import {
   type WasmDirection,
 } from '../convert/convert';
 import type {
+  ActionTarget,
   BattleClock,
   BattleDeploy,
   BattleEvent,
@@ -20,7 +21,8 @@ import type {
   PlayerFormation,
   QueuedAction,
 } from '../module_bindings/types';
-import type { QueuedActionRule } from '../tactics/wasm';
+import type { ActionTarget as ActionTargetRule, QueuedActionRule, RuleSide } from '../tactics/wasm';
+import { unitRowOf } from '../tactics/wasm';
 import type {
   StoreAccount,
   StoreBattle,
@@ -54,6 +56,7 @@ import type {
   StoreTacticalBattle,
   StoreTradeItem,
   StoreTradeOffer,
+  StoreTurnState,
   StoreWallet,
   StoreWeather,
 } from './store';
@@ -64,9 +67,9 @@ import type {
 // crosses the SDK→store boundary in this file (row READS only — write-direction
 // enums such as PvpAction are excluded: rowConvert never reads them from a row).
 // It is the data half of a three-part ratchet:
-//   1. evals/sdk-enum-exhaustiveness.eval.mjs statically diffs this registry
+//   1. rowConvert.test.ts (T4-5 / T4-6 and the per-key mirror test) diffs this registry
 //      against the generated `__t.enum` blocks in module_bindings/types.ts — a
-//      server-added variant widens types.ts on regen and turns the eval RED until
+//      server-added variant widens types.ts on regen and turns those pins RED until
 //      the registry (and the handling code) are consciously updated.
 //   2. Widening a registry entry widens narrowTag's inferred T at its call site;
 //      assigning that wider union to a narrower store field (StoreTradeOffer.status)
@@ -92,6 +95,41 @@ export const HANDLED_ENUM_VARIANTS = {
   // Order mirrors types.ts declaration order, which for TrustTier IS the ranking the
   // eligibility port compares through (see TRUST_TIER_ORDER in ui/evolutionModel.ts).
   TrustTier: ['Hostile', 'Wary', 'Neutral', 'Friendly', 'Devoted'],
+  // bt-12 (BT12.1): the seven tactical views' boundary reads, in types.ts declaration order.
+  // `kind` / `phase` / `tiePrioritySide` / unit and deploy and clock `side` are narrowTag sites;
+  // TurnState, QueuedAction and ActionTarget carry payloads and are switched exhaustively (an
+  // unknown tag DROPS the row, never throws); UnitState / StanceRow / BudgetLastEntry / StatusEffect
+  // are read exhaustively by the ONE bt-11 unit mapper (`unitRowOf`); EventPayload is the ticker's,
+  // the presentation's and the results panel's switch subject. MoveClassRow is not stored (YAGNI).
+  BattleKind: ['Wild', 'Pvp', 'Practice'],
+  Phase: ['Deploying', 'Active', 'Finished'],
+  TurnState: ['NotActive', 'Waiting', 'Advancing'],
+  SideRow: ['A', 'B'],
+  UnitState: ['Active', 'Fainted', 'Recruited'],
+  StanceRow: ['Aggressive', 'Territorial', 'Skittish'],
+  BudgetLastEntry: ['Move', 'AttackLight', 'AttackHeavy', 'Item', 'Recruit', 'Flee', 'EndTurn'],
+  StatusEffect: ['Poison', 'Burn', 'Paralysis', 'Sleep', 'Freeze'],
+  QueuedAction: ['Move', 'Skill', 'Item', 'Recruit', 'Flee', 'EndTurn'],
+  ActionTarget: ['Unit', 'SelfTarget'],
+  EventPayload: [
+    'Executed',
+    'Missed',
+    'PlanHalted',
+    'QueueVoided',
+    'AutoPass',
+    'StoodGround',
+    'Status',
+    'Surge',
+    'Ko',
+    'RecruitResult',
+    'Awards',
+    'Moved',
+    'ItemUsed',
+    'TurnEnded',
+    'RoundEnded',
+    'BattleStarted',
+    'BattleEnd',
+  ],
 } as const;
 
 /** The eight essence affinities, DERIVED from the registry (contract A7) — never a
@@ -962,15 +1000,13 @@ export function profileRowToStore(row: SdkProfileRow): StoreProfile {
 }
 
 // --- bt-12 (BT12.1): the seven tactical views -------------------------------------------------
-// API FREEZE (plan §3.1 + REV 2 A8/A13 + REV 2b B6): the names and types below are the contract;
-// every body throws until the GREEN phase. The GREEN phase derives the three name types from the
-// grown `HANDLED_ENUM_VARIANTS` registry (the contract-A7 style, like `AffinityName` above); the
-// freeze spells them out so the registry's growth stays a RED test.
+// Plan §3.1 + REV 2 A8/A13 + REV 2b B6. Identities become hex strings, u64/i64 stay bigint
+// (`?? null` for an Option, never `||`: a 0 / 0n is a real value), unit-variant enums pass through
+// `narrowTag` (fail-soft), payload-carrying enums are switched exhaustively and an unknown tag DROPS
+// that one row with one console.warn — a throw here would starve the view's other rows.
 
-const BT12_NOT_IMPLEMENTED = 'bt-12: not implemented';
-
-export type TacticalKindName = 'Wild' | 'Pvp' | 'Practice';
-export type TacticalPhaseName = 'Deploying' | 'Active' | 'Finished';
+export type TacticalKindName = (typeof HANDLED_ENUM_VARIANTS.BattleKind)[number];
+export type TacticalPhaseName = (typeof HANDLED_ENUM_VARIANTS.Phase)[number];
 
 /** An identity column as the SDK delivers it (structural, so tests build plain objects). */
 interface SdkIdentity {
@@ -990,31 +1026,166 @@ export type SdkFormationRow = Omit<PlayerFormation, 'ownerIdentity'> & {
 };
 export type { DeployPick };
 
-/** null (plus one console.warn) for a row whose `turnState` carries an unknown tag — the row is
- *  dropped, never a throw that starves the view's other rows. */
-export function tacticalBattleRowToStore(_row: SdkTacticalBattleRow): StoreTacticalBattle | null {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+/** A payload-carrying enum tag this client does not know: the row is dropped (see the callers). */
+class UnknownTagError extends Error {}
+
+function dropRow(what: string, err: unknown): null {
+  const detail = err instanceof Error ? err.message : String(err);
+  console.warn(
+    `[rowConvert] ${what} row dropped: ${detail} (fail-soft; the view's other rows land)`,
+  );
+  return null;
 }
-export function battleUnitRowToStore(_row: SdkBattleUnitRow): StoreBattleUnit {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+
+const sideName = (side: { readonly tag: string }): RuleSide =>
+  narrowTag(side.tag, HANDLED_ENUM_VARIANTS.SideRow, 'SideRow');
+
+function turnStateOf(ts: BattleTactical['turnState']): StoreTurnState {
+  switch (ts.tag) {
+    case 'NotActive':
+      return { kind: 'NotActive' };
+    case 'Waiting':
+      return { kind: 'Waiting', unitId: ts.value };
+    case 'Advancing':
+      return { kind: 'Advancing' };
+    default:
+      ts satisfies never;
+      throw new UnknownTagError(`unknown TurnState tag '${(ts as { tag: string }).tag}'`);
+  }
 }
-/** null (plus one console.warn) for a row with an unknown `QueuedAction` / `ActionTarget` tag. */
-export function battleQueueRowToStore(_row: SdkBattleQueueRow): StoreBattleQueue | null {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+
+/** null (plus one console.warn) for a row whose `turnState` carries an unknown tag. */
+export function tacticalBattleRowToStore(row: SdkTacticalBattleRow): StoreTacticalBattle | null {
+  let turnState: StoreTurnState;
+  try {
+    turnState = turnStateOf(row.turnState);
+  } catch (err) {
+    // Only an unknown TAG drops the row; a malformed row (a throwing property) still propagates to
+    // the per-view guard in connection.ts, which logs it.
+    if (!(err instanceof UnknownTagError)) throw err;
+    return dropRow('my_tactical_battle', err);
+  }
+  return {
+    battleId: row.battleId,
+    kind: narrowTag(row.kind.tag, HANDLED_ENUM_VARIANTS.BattleKind, 'BattleKind'),
+    format: row.format,
+    mapId: row.mapId,
+    contentVersion: row.contentVersion,
+    phase: narrowTag(row.phase.tag, HANDLED_ENUM_VARIANTS.Phase, 'Phase'),
+    round: row.round,
+    initiative: [...row.initiative],
+    turnIdx: row.turnIdx,
+    turnState,
+    tiePrioritySide: sideName(row.tiePrioritySide),
+    pendingPadMs: row.pendingPadMs,
+    attackDamageDealtA: row.attackDamageDealtA,
+    attackDamageDealtB: row.attackDamageDealtB,
+  };
 }
+
+export function battleUnitRowToStore(row: SdkBattleUnitRow): StoreBattleUnit {
+  return {
+    unitId: row.unitId,
+    battleId: row.battleId,
+    owner: row.owner?.toHexString() ?? null,
+    monsterId: row.monsterId ?? null,
+    affinity: narrowTag(row.affinity.tag, HANDLED_ENUM_VARIANTS.Affinity, 'Affinity'),
+    // The ONE bt-11 join (R-bt-11-SHAREDJOIN): `unitRowOf` reads no identity.
+    row: unitRowOf({ ...row, owner: undefined }),
+  };
+}
+
+function ruleTarget(target: ActionTarget): ActionTargetRule {
+  switch (target.tag) {
+    case 'Unit':
+      return { Unit: target.value };
+    case 'SelfTarget':
+      return 'SelfTarget';
+    default:
+      target satisfies never;
+      throw new UnknownTagError(`unknown ActionTarget tag '${(target as { tag: string }).tag}'`);
+  }
+}
+
 /** The exact inverse of draft.ts `toWire`: `toWire(entries.map(queuedActionToRule))` ≡ entries. */
-export function queuedActionToRule(_action: QueuedAction): QueuedActionRule {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+export function queuedActionToRule(action: QueuedAction): QueuedActionRule {
+  switch (action.tag) {
+    case 'Move':
+      return { Move: { x: action.value.x, y: action.value.y, strides: action.value.strides } };
+    case 'Skill':
+      return {
+        Skill: { skill_id: action.value.skillId, target: ruleTarget(action.value.target) },
+      };
+    case 'Item':
+      return { Item: { item_id: action.value.itemId, target: ruleTarget(action.value.target) } };
+    case 'Recruit':
+      return { Recruit: { target: action.value.target, bait: action.value.bait ?? null } };
+    case 'Flee':
+      return 'Flee';
+    case 'EndTurn':
+      return 'EndTurn';
+    default:
+      action satisfies never;
+      throw new UnknownTagError(`unknown QueuedAction tag '${(action as { tag: string }).tag}'`);
+  }
 }
-export function battleDeployRowToStore(_row: SdkBattleDeployRow): StoreBattleDeploy {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+
+/** null (plus one console.warn) for a row with an unknown `QueuedAction` / `ActionTarget` tag. */
+export function battleQueueRowToStore(row: SdkBattleQueueRow): StoreBattleQueue | null {
+  let entries: QueuedActionRule[];
+  try {
+    entries = row.entries.map(queuedActionToRule);
+  } catch (err) {
+    if (!(err instanceof UnknownTagError)) throw err;
+    return dropRow('my_battle_queue', err);
+  }
+  return {
+    unitId: row.unitId,
+    battleId: row.battleId,
+    owner: row.owner.toHexString(),
+    entries,
+    submittedAtMs: row.submittedAtMs,
+  };
 }
-export function battleClockRowToStore(_row: SdkBattleClockRow): StoreBattleClock {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+
+export function battleDeployRowToStore(row: SdkBattleDeployRow): StoreBattleDeploy {
+  return {
+    deployId: row.deployId,
+    battleId: row.battleId,
+    owner: row.owner.toHexString(),
+    side: sideName(row.side),
+    picks: row.picks.map((p) => ({ monsterId: p.monsterId, slot: p.slot })),
+    locked: row.locked,
+  };
 }
-export function battleEventRowToStore(_row: SdkBattleEventRow): StoreBattleEvent {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+
+export function battleClockRowToStore(row: SdkBattleClockRow): StoreBattleClock {
+  return {
+    clockId: row.clockId,
+    battleId: row.battleId,
+    side: sideName(row.side),
+    player: row.player.toHexString(),
+    windowSeq: row.windowSeq,
+    windowOpenMs: row.windowOpenMs ?? null,
+    deadlineMs: row.deadlineMs ?? null,
+    windowsThisUnitTurn: row.windowsThisUnitTurn,
+    idleMsTotal: row.idleMsTotal,
+    autopassCount: row.autopassCount,
+  };
 }
-export function formationRowToStore(_row: SdkFormationRow): StoreFormation {
-  throw new Error(BT12_NOT_IMPLEMENTED);
+
+/** The payload is kept BY REFERENCE (immutable plain SDK data); its tag passes through narrowTag. */
+export function battleEventRowToStore(row: SdkBattleEventRow): StoreBattleEvent {
+  narrowTag(row.payload.tag, HANDLED_ENUM_VARIANTS.EventPayload, 'EventPayload');
+  return {
+    eventId: row.eventId,
+    battleId: row.battleId,
+    seq: row.seq,
+    round: row.round,
+    payload: row.payload,
+  };
+}
+
+export function formationRowToStore(row: SdkFormationRow): StoreFormation {
+  return { ownerIdentity: row.ownerIdentity.toHexString(), monsterIds: [...row.monsterIds] };
 }

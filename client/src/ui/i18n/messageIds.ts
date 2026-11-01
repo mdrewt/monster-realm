@@ -541,6 +541,26 @@ export type MessageId =
   | 'tactics.forecast.firstStand'
   | 'tactics.projected.label'
   | 'tactics.projected.enemiesHold'
+  // bt-12 (BT12.2/BT12.3/BT12.4/BT12.6): the deploy panel (the pack >= 2 confirm screen and its
+  // formation editor) and the results panel (client/src/tactics/strings.ts requests them).
+  | 'tactics.deploy.title'
+  | 'tactics.deploy.label'
+  | 'tactics.deploy.empty'
+  | 'tactics.deploy.deploy'
+  | 'tactics.deploy.edit'
+  | 'tactics.deploy.sending'
+  | 'tactics.deploy.candidateLabel'
+  | 'tactics.deploy.prevMonster'
+  | 'tactics.deploy.nextMonster'
+  | 'tactics.deploy.confirm'
+  | 'tactics.deploy.back'
+  | 'tactics.deploy.slot'
+  | 'tactics.results.label'
+  | 'tactics.results.none'
+  | 'tactics.results.continue'
+  | 'tactics.results.monster'
+  | 'tactics.results.currency'
+  | 'tactics.results.recruited'
   | 'tactics.badge.onlyHeld'
   | 'tactics.chip.cost'
   | 'tactics.forecast.vs'
@@ -823,6 +843,16 @@ export interface MessageParams {
   };
   readonly 'tactics.forecast.bait': { readonly item: string };
   readonly 'tactics.projected.assumes': { readonly unit: string; readonly tile: string };
+  // bt-12: the deploy panel's 1-based slot label and the results panel's lines. `amount` is the
+  // player's gold as the u64 the server pays (a bigint, printed digit for digit).
+  readonly 'tactics.deploy.slot': { readonly n: number };
+  readonly 'tactics.results.monster': {
+    readonly name: string;
+    readonly xp: number;
+    readonly essence: number;
+  };
+  readonly 'tactics.results.currency': { readonly amount: bigint };
+  readonly 'tactics.results.recruited': { readonly name: string };
 }
 
 /** Keys resolved by `tf(key, params)`. */

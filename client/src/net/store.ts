@@ -576,6 +576,16 @@ export class AuthoritativeStore {
    * @param stepMs - Server tick interval from wasm `step_ms()` export. When 0
    *   (default), burst detection and jitter estimation are disabled — existing
    *   tests that construct `new AuthoritativeStore()` are unaffected. */
+  // bt-12 (BT12.1): the seven tactical views (keys: battleId / unitId / unitId / deployId / clockId /
+  // eventId; the formation is the own Option-view slot).
+  #tacticalBattles = new Map<bigint, StoreTacticalBattle>();
+  #battleUnits = new Map<number, StoreBattleUnit>();
+  #battleQueues = new Map<number, StoreBattleQueue>();
+  #battleDeploys = new Map<bigint, StoreBattleDeploy>();
+  #battleClocks = new Map<bigint, StoreBattleClock>();
+  #battleEvents = new Map<bigint, StoreBattleEvent>();
+  #ownFormation: StoreFormation | undefined;
+
   constructor(stepMs = 0) {
     this.#stepMs = stepMs;
   }
@@ -960,6 +970,16 @@ export class AuthoritativeStore {
     // new identity); repopulated from the `my_pending_evolution_notices` view's initial
     // snapshot when the subscription re-applies.
     this.#ownEvolutionNotices = undefined;
+    // bt-12: the seven tactical views — cleared on disconnect so a previous identity's battle,
+    // plans, clocks, transcript, staging and remembered formation never surface to the next one;
+    // repopulated from the views' initial snapshot when the subscription re-applies.
+    this.#tacticalBattles.clear();
+    this.#battleUnits.clear();
+    this.#battleQueues.clear();
+    this.#battleDeploys.clear();
+    this.#battleClocks.clear();
+    this.#battleEvents.clear();
+    this.#ownFormation = undefined;
     this.#dirty = false;
   }
 
@@ -1441,52 +1461,96 @@ export class AuthoritativeStore {
   }
 
   // --- bt-12 (BT12.1): the seven tactical views ----------------------------------------------
-  // API FREEZE (plan §3.2 + REV 2 A13): each reconcile is AUTHORITATIVE (keep-set; an absent key is
-  // deleted) and sets #dirty only on a real `deepRowEq` change; the formation is an Option-view
-  // slot (`rows[0]` wins, an empty list clears). Bodies throw until the GREEN phase.
-  reconcileTacticalBattlesFromView(_rows: readonly StoreTacticalBattle[]): void {
-    throw new Error('bt-12: not implemented');
+  // Plan §3.2 + REV 2 A13. Each reconcile is AUTHORITATIVE (keep-set; an absent key is deleted) and
+  // sets #dirty only on a real `deepRowEq` change (every row nests fresh objects per flush); the
+  // formation is an Option-view slot (`rows[0]` wins, an empty list clears). Rows are replaced,
+  // never mutated: consumers hold references to published rows.
+  #reconcileKeyed<K, V>(map: Map<K, V>, rows: readonly V[], keyOf: (row: V) => K): void {
+    const keep = new Set<K>();
+    for (const row of rows) {
+      const key = keyOf(row);
+      keep.add(key);
+      const prev = map.get(key);
+      if (prev === undefined || !deepRowEq(prev, row)) {
+        map.set(key, row);
+        this.#dirty = true;
+      }
+    }
+    for (const key of [...map.keys()]) {
+      if (!keep.has(key)) {
+        map.delete(key);
+        this.#dirty = true;
+      }
+    }
   }
-  reconcileBattleUnitsFromView(_rows: readonly StoreBattleUnit[]): void {
-    throw new Error('bt-12: not implemented');
+  reconcileTacticalBattlesFromView(rows: readonly StoreTacticalBattle[]): void {
+    this.#reconcileKeyed(this.#tacticalBattles, rows, (r) => r.battleId);
   }
-  reconcileBattleQueuesFromView(_rows: readonly StoreBattleQueue[]): void {
-    throw new Error('bt-12: not implemented');
+  reconcileBattleUnitsFromView(rows: readonly StoreBattleUnit[]): void {
+    this.#reconcileKeyed(this.#battleUnits, rows, (r) => r.unitId);
   }
-  reconcileBattleDeploysFromView(_rows: readonly StoreBattleDeploy[]): void {
-    throw new Error('bt-12: not implemented');
+  reconcileBattleQueuesFromView(rows: readonly StoreBattleQueue[]): void {
+    this.#reconcileKeyed(this.#battleQueues, rows, (r) => r.unitId);
   }
-  reconcileBattleClocksFromView(_rows: readonly StoreBattleClock[]): void {
-    throw new Error('bt-12: not implemented');
+  reconcileBattleDeploysFromView(rows: readonly StoreBattleDeploy[]): void {
+    this.#reconcileKeyed(this.#battleDeploys, rows, (r) => r.deployId);
   }
-  reconcileBattleEventsFromView(_rows: readonly StoreBattleEvent[]): void {
-    throw new Error('bt-12: not implemented');
+  reconcileBattleClocksFromView(rows: readonly StoreBattleClock[]): void {
+    this.#reconcileKeyed(this.#battleClocks, rows, (r) => r.clockId);
   }
-  reconcileFormationFromView(_rows: readonly StoreFormation[]): void {
-    throw new Error('bt-12: not implemented');
+  reconcileBattleEventsFromView(rows: readonly StoreBattleEvent[]): void {
+    this.#reconcileKeyed(this.#battleEvents, rows, (r) => r.eventId);
   }
-  tacticalBattle(_battleId: bigint): StoreTacticalBattle | undefined {
-    throw new Error('bt-12: not implemented');
+  reconcileFormationFromView(rows: readonly StoreFormation[]): void {
+    const next = rows[0];
+    const prev = this.#ownFormation;
+    if (next === undefined ? prev !== undefined : prev === undefined || !deepRowEq(prev, next)) {
+      this.#ownFormation = next;
+      this.#dirty = true;
+    }
+  }
+  tacticalBattle(battleId: bigint): StoreTacticalBattle | undefined {
+    return this.#tacticalBattles.get(battleId);
   }
   /** Ascending unitId. */
-  battleUnits(_battleId: bigint): readonly StoreBattleUnit[] {
-    throw new Error('bt-12: not implemented');
+  battleUnits(battleId: bigint): readonly StoreBattleUnit[] {
+    return [...this.#battleUnits.values()]
+      .filter((u) => u.battleId === battleId)
+      .sort((a, b) => a.unitId - b.unitId);
   }
   /** `owner === identity` only ('' → none); ascending unitId. */
-  ownQueue(_battleId: bigint, _identity: string): readonly StoreBattleQueue[] {
-    throw new Error('bt-12: not implemented');
+  ownQueue(battleId: bigint, identity: string): readonly StoreBattleQueue[] {
+    if (identity === '') return [];
+    return [...this.#battleQueues.values()]
+      .filter((q) => q.battleId === battleId && q.owner === identity)
+      .sort((a, b) => a.unitId - b.unitId);
   }
   /** Ascending clockId. */
-  battleClocks(_battleId: bigint): readonly StoreBattleClock[] {
-    throw new Error('bt-12: not implemented');
+  battleClocks(battleId: bigint): readonly StoreBattleClock[] {
+    return [...this.#battleClocks.values()]
+      .filter((c) => c.battleId === battleId)
+      .sort((a, b) => (a.clockId < b.clockId ? -1 : a.clockId > b.clockId ? 1 : 0));
   }
   /** Ascending seq, then eventId. */
-  battleEvents(_battleId: bigint): readonly StoreBattleEvent[] {
-    throw new Error('bt-12: not implemented');
+  battleEvents(battleId: bigint): readonly StoreBattleEvent[] {
+    return [...this.#battleEvents.values()]
+      .filter((e) => e.battleId === battleId)
+      .sort((a, b) =>
+        a.seq !== b.seq
+          ? a.seq - b.seq
+          : a.eventId < b.eventId
+            ? -1
+            : a.eventId > b.eventId
+              ? 1
+              : 0,
+      );
   }
   /** The own formation row, by exact owner match ('' → undefined). */
-  ownFormation(_identity: string): StoreFormation | undefined {
-    throw new Error('bt-12: not implemented');
+  ownFormation(identity: string): StoreFormation | undefined {
+    const slot = this.#ownFormation;
+    return identity !== '' && slot !== undefined && slot.ownerIdentity === identity
+      ? slot
+      : undefined;
   }
 }
 

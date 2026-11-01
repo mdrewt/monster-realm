@@ -1713,4 +1713,50 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Assumption line under a pre-queued forecast; {unit} is the target's name and {tile} its
   // projected board square in chess notation (a letter and a number). One short phrase.
   'tactics.projected.assumes': (p) => `if ${p.unit} is still at ${p.tile}`,
+  // --- bt-12 (BT12.2/BT12.3/BT12.4/BT12.6): the deploy panel and the results panel ------------
+  // tactics/strings.ts is their only requester.
+  // @desc: Title of the wild pack confirm screen, where the player picks which monsters to send into
+  // a tactical battle. One short phrase.
+  'tactics.deploy.title': 'Choose your team',
+  // @desc: Accessible name of the list showing the remembered formation, slot by slot. One or two
+  // words.
+  'tactics.deploy.label': 'Formation',
+  // @desc: Text of a formation slot with no monster in it. One word.
+  'tactics.deploy.empty': 'Empty',
+  // @desc: Menu row that sends the shown formation into battle. One word (a verb).
+  'tactics.deploy.deploy': 'Deploy',
+  // @desc: Menu row that opens the formation editor; also the editor's title. Two words.
+  'tactics.deploy.edit': 'Edit formation',
+  // @desc: Status line while the deploy is being sent to the server. One word plus an ellipsis
+  // (U+2026).
+  'tactics.deploy.sending': 'Deploying…',
+  // @desc: Accessible name of the editor's candidate group (the monster the next A press places into
+  // a slot). Three short words.
+  'tactics.deploy.candidateLabel': 'Monster to place',
+  // @desc: Accessible name of the editor's previous-candidate button (the LB twin). Two words.
+  'tactics.deploy.prevMonster': 'Previous monster',
+  // @desc: Accessible name of the editor's next-candidate button (the RB twin). Two words.
+  'tactics.deploy.nextMonster': 'Next monster',
+  // @desc: Editor menu row that sends the edited formation into battle. One word.
+  'tactics.deploy.confirm': 'Confirm',
+  // @desc: Editor menu row that returns to the confirm screen, discarding the edits. One word.
+  'tactics.deploy.back': 'Back',
+  // @desc: Label of a formation slot; {n} is the slot number, 1-based. One word plus the number.
+  'tactics.deploy.slot': (p) => `Slot ${p.n}`,
+  // @desc: Accessible name of the results panel's list of rewards. One word.
+  'tactics.results.label': 'Rewards',
+  // @desc: The results panel's only line when nothing was earned. Two words.
+  'tactics.results.none': 'No rewards',
+  // @desc: The results panel's button that closes it at once (it also closes on its own after a
+  // few seconds). One word.
+  'tactics.results.continue': 'Continue',
+  // @desc: One results line per own monster; {name} is the monster's name, {xp} and {essence} the
+  // whole numbers it earned. Signs and units as in the English.
+  'tactics.results.monster': (p) => `${p.name}: +${p.xp} XP, +${p.essence} essence`,
+  // @desc: The results line for the player's gold; {amount} is a whole number. A sign, the number
+  // and the currency word.
+  'tactics.results.currency': (p) => `+${p.amount} gold`,
+  // @desc: The results line for a wild recruited during the battle; {name} is its species name. One
+  // short exclamation.
+  'tactics.results.recruited': (p) => `${p.name} joined your team!`,
 } satisfies Catalog);
