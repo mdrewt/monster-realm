@@ -951,6 +951,82 @@ describe('deploy panel: every string from the catalog (bt-12, BT12.6)', () => {
   });
 });
 
+// --- BT12.6: the cursor is heard (focus follows the menu) -------------------------------------------
+
+describe('deploy panel: focus (bt-12, BT12.6)', () => {
+  it('the deploy panel`s cursor is heard: once the shown panel`s deferred focus has landed, a D-pad move leaves focus on the menu listbox whose aria-activedescendant names the cursor row, opening the editor and cycling keep it there, a pointer click on a row or on next never strands focus on the page body, a hidden panel holds none, and a panel never shown takes no focus from outside [BT12-6-DEPLOY-FOCUS]', async () => {
+    // SOURCE: spec BT12.6 (the reachability sweep covers every new panel and row) and plan §3.8 (the
+    // menu is `div.tactics-menu[role=listbox][tabindex=0][aria-activedescendant]`, the
+    // tacticsBattle.ts pattern: the listbox holds focus and names the cursor row), as corrected by
+    // the implementation review. WRONG IMPL KILLED: a cursor that moves with no focus move (focus
+    // stays on the title, so a screen reader never hears the new row); a rebuild that destroys the
+    // focused listbox or row and strands focus on <body> inside an aria-modal dialog (a click on a
+    // row, or on next, rebuilds the menu); an aria-activedescendant that names a stale or missing
+    // row; a hidden panel that keeps focus; a panel never shown that grabs focus on a render.
+    const m = mount(VM3);
+    await tick();
+    const root = m.root();
+    const listbox = (): HTMLElement | null => root.querySelector<HTMLElement>('.tactics-menu');
+    ops(m.panel, DOWN);
+    expect(cursorKey(root), 'fixture: the cursor is on Edit formation').toBe('edit');
+    expect(listbox()?.getAttribute('role'), 'the menu is a listbox').toBe('listbox');
+    expect(listbox()?.getAttribute('tabindex'), 'a tab stop').toBe('0');
+    expect(document.activeElement, 'a D-pad move leaves focus on the menu listbox').toBe(listbox());
+    expect(listbox()?.getAttribute('aria-activedescendant'), 'which names the cursor row').toBe(
+      'tactics-deploy-row-edit',
+    );
+    expect(
+      root.querySelector('#tactics-deploy-row-edit'),
+      'and that row is in the panel',
+    ).not.toBeNull();
+
+    ops(m.panel, X);
+    expect(m.panel.mode, 'fixture: the editor is open').toBe('edit');
+    expect(document.activeElement, 'opening the editor keeps focus on the listbox').toBe(listbox());
+    expect(listbox()?.getAttribute('aria-activedescendant'), 'naming the editor`s cursor row').toBe(
+      'tactics-deploy-row-slot-0',
+    );
+    ops(m.panel, RB);
+    expect(document.activeElement, 'cycling the candidate keeps focus on the listbox').toBe(
+      listbox(),
+    );
+
+    ops(m.panel, B);
+    expect(m.panel.mode, 'fixture: back on the confirm screen').toBe('confirm');
+    click(root.querySelector('#tactics-deploy-row-edit'), 'the Edit formation row');
+    expect(m.panel.mode, 'fixture: the click opened the editor').toBe('edit');
+    expect(document.activeElement, 'a click on a row never strands focus on <body>').not.toBe(
+      document.body,
+    );
+    expect(document.activeElement, 'focus stays on the panel`s listbox').toBe(listbox());
+    click(root.querySelector('.tactics-deploy-next'), 'the next button');
+    expect(document.activeElement, 'a click on next never strands focus on <body>').not.toBe(
+      document.body,
+    );
+    expect(
+      root.contains(document.activeElement),
+      'focus stays inside the panel root after a click on next',
+    ).toBe(true);
+
+    m.panel.hide();
+    expect(root.contains(document.activeElement), 'a hidden panel holds no focus').toBe(false);
+
+    const outside = document.createElement('button');
+    outside.type = 'button';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'fixture: an outside control has focus').toBe(outside);
+    const quiet = mount(null);
+    quiet.panel.render(VM3);
+    quiet.panel.render({ battleId: BATTLE, candidates: [M1, M2, M3], formation: [M2, M1, M3] });
+    await tick();
+    expect(
+      document.activeElement,
+      'a panel never shown takes no focus from outside on a render',
+    ).toBe(outside);
+  });
+});
+
 // --- BT12.1: the battle frame switch keeps one dialog record --------------------------------------
 
 /** A faithful stand-in for the 1v1 BattleView's show / hide a11y behaviour (battleView.ts:402-415):
