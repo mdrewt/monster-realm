@@ -80,9 +80,11 @@ export function turnBarVM(input: TurnBarInput): TurnBarVM {
   }
 
   const ghosts: TurnChipVM[] = [];
+  const ghosted = new Set<number>();
   for (const id of input.nextInitiative) {
     const u = active(id);
-    if (u === null) continue;
+    if (u === null || ghosted.has(id)) continue;
+    ghosted.add(id);
     ghosts.push({
       unitId: id,
       speciesName: u.speciesName,
@@ -112,6 +114,7 @@ function paintChip(vm: TurnChipVM): HTMLElement {
   chip.className = `tactics-chip tactics-chip--${vm.state}`;
   if (vm.mine) chip.classList.add('tactics-chip--mine');
   chip.setAttribute('data-unit-id', String(vm.unitId));
+  if (vm.state === 'current') chip.setAttribute('aria-current', 'step');
   chip.textContent = vm.speciesName;
   if (vm.locked) {
     const lock = document.createElement('span');

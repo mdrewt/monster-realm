@@ -1508,9 +1508,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Battle-log line when a status condition fails to land; {unit} is the unit and {status}
   // the adjective from tactics.status.*. One short sentence.
   'tactics.ticker.statusBlocked': (p) => `${p.unit} resists being ${p.status}`,
-  // @desc: Battle-log line when the surge boosts a unit; {unit} is the unit and {amount} the bonus.
-  // One short sentence.
-  'tactics.ticker.surge': (p) => `${p.unit} surges (${p.amount})`,
+  // @desc: Battle-log line when the Surge (rising damage late in a PvP battle) hurts a unit; {unit}
+  // is the unit and {amount} the damage it takes. One short sentence.
+  'tactics.ticker.surge': (p) => `${p.unit} takes ${p.amount} Surge damage`,
   // @desc: Battle-log clause when a unit faints; {unit} is the unit. One short clause.
   'tactics.ticker.ko': (p) => `${p.unit} is knocked out`,
   // @desc: Battle-log line when a recruit attempt succeeds; {target} is the recruited monster. One
@@ -1537,7 +1537,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Battle-log line when a round ends; {round} is the round number counted from 1. One short
   // sentence.
   'tactics.ticker.roundEnded': (p) => `Round ${p.round} ends`,
-  // @desc: Banner shown when it is the player's unit's turn and its plan is not yet locked; {unit}
-  // is that unit's name. One short phrase.
-  'tactics.banner.turn': (p) => `Your turn: ${p.unit}`,
+  // @desc: Banner for the current unit's turn while its plan is not yet locked (an own unit or a
+  // human opponent's); {unit} is that unit's name. Neutral wording. One short phrase.
+  'tactics.banner.turn': (p) => `${p.unit}'s turn`,
 } satisfies Catalog);

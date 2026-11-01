@@ -147,6 +147,8 @@ export class Playback {
   skip(): Beat[] {
     const rest = this.#queue.map((q) => q.beat);
     this.#queue = [];
+    // The skipped beats' end must not delay the next beat: it starts at its enqueue time.
+    this.#tail = 0;
     return rest;
   }
 }

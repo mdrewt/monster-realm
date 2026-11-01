@@ -9,8 +9,8 @@
 // re-schedule the deferred focus and drag it off whatever the player Tabbed to); `hide()` calls
 // `closeOverlayA11y` every time, deliberately unguarded (it is a documented no-op with no record);
 // and the open is the LAST statement of the open path, after the display write. It reuses the
-// `battleView` overlay id: the tactical renderer REPLACES the legacy battle view while a tactical
-// row exists (BT12.1), so the two are never open together.
+// `battleView` overlay id, so bt-12 must guarantee the legacy BattleView is hidden before
+// TacticsBattle.show() and that the frame's dismiss handle targets the active view.
 //
 // Imperative shell over pure modules: the cursor memory, the selection, the danger toggle and the
 // Playback queue live here; everything drawn is rebuilt from the last view-model on every paint.
@@ -83,6 +83,7 @@ export class TacticsBattle implements BattleOpsView {
   readonly #playback: Playback;
 
   #visible = false;
+  #battleId: bigint | null = null;
   #vm: TacticsBattleVM | null = null;
   #memory: CursorMemory = new Map();
   #selected: number | null = null;
@@ -144,6 +145,7 @@ export class TacticsBattle implements BattleOpsView {
   }
 
   render(vm: TacticsBattleVM): void {
+    if (this.#battleId !== vm.battleId) this.#startBattle(vm.battleId);
     this.#vm = vm;
     this.#paint();
   }
@@ -151,8 +153,13 @@ export class TacticsBattle implements BattleOpsView {
   /** Every event is a ticker line NOW (whatever the motion mode); its beats queue for playback. */
   ingest(events: readonly EventPayload[]): void {
     if (events.length === 0) return;
-    for (const ev of events) this.#ticker.push(tickerLine(ev, this.#deps.names));
-    this.#playback.enqueue(planBeats(events, { reduceMotion: this.#deps.reduceMotion() }));
+    // Atomic: every line and every beat is computed BEFORE anything is committed, so an event the
+    // client cannot render throws with the ticker and the playback untouched.
+    const lines = events.map((ev) => tickerLine(ev, this.#deps.names));
+    const beats = planBeats(events, { reduceMotion: this.#deps.reduceMotion() });
+    for (const line of lines) this.#ticker.push(line);
+    // A hidden view plays nothing (the log above is still complete for when it returns).
+    if (this.#visible) this.#playback.enqueue(beats);
     this.#syncPlaying();
   }
 
@@ -241,6 +248,18 @@ export class TacticsBattle implements BattleOpsView {
     this.#paint();
   }
 
+  /** A different battle starts from scratch: nothing of the last one may leak into it. */
+  #startBattle(battleId: bigint): void {
+    this.#battleId = battleId;
+    this.#memory = new Map();
+    this.#selected = null;
+    this.#cursor = null;
+    this.#dangerOn = false;
+    this.#ticker.clear();
+    this.#playback.skip();
+    this.#syncPlaying();
+  }
+
   #syncPlaying(): void {
     this.#root.classList.toggle('tactics-battle--playing', this.#playback.playing());
   }
@@ -250,13 +269,12 @@ export class TacticsBattle implements BattleOpsView {
     if (vm === null) return;
     this.#root.classList.toggle('tactics--reduced', this.#deps.reduceMotion());
 
-    // Select the first own Active unit once, when nothing is selected yet.
-    if (this.#selected === null) {
+    // Nothing selected yet, or the selected unit is no longer an own Active one (KO'd, recruited,
+    // gone): select the first own Active unit, with its remembered (else current) tile.
+    if (this.selectedUnitId === null) {
       const first = vm.units.find(isOwnActive);
-      if (first !== undefined) {
-        this.#selected = first.unitId;
-        this.#cursor = cursorFor(this.#memory, first, vm.width, vm.height);
-      }
+      this.#selected = first?.unitId ?? null;
+      if (first !== undefined) this.#cursor = cursorFor(this.#memory, first, vm.width, vm.height);
     }
 
     renderBoard(

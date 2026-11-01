@@ -48,13 +48,10 @@ function haltReason(kind: HaltKind['tag']): string {
   }
 }
 
-/** A target's clauses: the hit (plus the knock-out when it fell) or the miss. */
-function targetClauses(attacker: string, hit: TargetHit, names: TickerNames): string[] {
-  const target = names.unit(hit.unit);
-  if (!hit.hit) return [s.tickerMissed(attacker, target)];
-  const out = [s.tickerHit(target, hit.damage)];
-  if (hit.ko) out.push(s.tickerKo(target));
-  return out;
+/** A target's clause: only a HIT is narrated here. A miss and a knock-out each arrive as their own
+ *  event (`Missed`, `Ko`), so rendering them in the Executed line would log them twice. */
+function targetClauses(hit: TargetHit, names: TickerNames): string[] {
+  return hit.hit ? [s.tickerHit(names.unit(hit.unit), hit.damage)] : [];
 }
 
 export function tickerLine(ev: EventPayload, names: TickerNames): string {
@@ -62,8 +59,7 @@ export function tickerLine(ev: EventPayload, names: TickerNames): string {
     case 'Executed': {
       const attacker = names.unit(ev.value.attacker);
       const clauses = [s.tickerExecuted(attacker, names.skill(ev.value.skillId))];
-      for (const result of ev.value.results)
-        clauses.push(...targetClauses(attacker, result, names));
+      for (const result of ev.value.results) clauses.push(...targetClauses(result, names));
       return clauses.join(SEPARATOR);
     }
     case 'Missed':
@@ -154,6 +150,8 @@ export class Ticker {
     this.#list = document.createElement('ul');
     this.#list.className = 'tactics-ticker';
     this.#list.setAttribute('aria-label', s.tickerLabel());
+    // A scrollable region a keyboard user can reach (no role: not a live region).
+    this.#list.setAttribute('tabindex', '0');
     parent.appendChild(this.#list);
   }
 
@@ -169,6 +167,14 @@ export class Ticker {
       this.#lines.shift();
       this.#list.firstElementChild?.remove();
     }
+    // Follow the newest line; only the ticker scrolls (the turn bar never does).
+    this.#list.scrollTop = this.#list.scrollHeight;
+  }
+
+  /** Drop every line (a new battle starts with an empty log). */
+  clear(): void {
+    this.#lines = [];
+    this.#list.replaceChildren();
   }
 
   lines(): readonly string[] {

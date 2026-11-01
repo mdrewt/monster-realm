@@ -1503,7 +1503,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'tactics.turnbar.surgeIn': (p) => `Surcharge dans ${p.n}`,
   // @desc: Turn-bar badge naming the round at which a wild battle forces a retreat; {round} is that
   // round number. A short phrase.
-  'tactics.turnbar.retreatAt': (p) => `Retraite au tour ${p.round}`,
+  'tactics.turnbar.retreatAt': (p) => `Retraite à la manche ${p.round}`,
   // @desc: Level label on a unit info box; {level} is the unit's level. Abbreviation plus number.
   'tactics.hud.level': (p) => `Niv.${p.level}`,
   // @desc: Hit-point line on a unit info box; {hp} is current and {max} the maximum hit points.
@@ -1548,9 +1548,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Battle-log line when a status condition fails to land; {unit} is the unit and {status}
   // the adjective from tactics.status.*. One short sentence.
   'tactics.ticker.statusBlocked': (p) => `${p.unit} résiste (${p.status})`,
-  // @desc: Battle-log line when the surge boosts a unit; {unit} is the unit and {amount} the bonus.
-  // One short sentence.
-  'tactics.ticker.surge': (p) => `${p.unit} se surpasse (${p.amount})`,
+  // @desc: Battle-log line when the Surge (rising damage late in a PvP battle) hurts a unit; {unit}
+  // is the unit and {amount} the damage it takes. One short sentence.
+  'tactics.ticker.surge': (p) => `${p.unit} subit ${p.amount} dégâts de Surcharge`,
   // @desc: Battle-log clause when a unit faints; {unit} is the unit. One short clause.
   'tactics.ticker.ko': (p) => `${p.unit} est mis K.O.`,
   // @desc: Battle-log line when a recruit attempt succeeds; {target} is the recruited monster. One
@@ -1565,7 +1565,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
     `${p.unit} gagne ${p.xp} XP, ${p.essence} essence et ${p.currency} or`,
   // @desc: Battle-log line when a unit moves; {unit} is the actor and {tiles} how many tiles it
   // moved. One short sentence.
-  'tactics.ticker.moved': (p) => `${p.unit} se déplace (cases : ${p.tiles})`,
+  'tactics.ticker.moved': (p) => `${p.unit} se déplace de ${p.tiles} case(s)`,
   // @desc: Battle-log line when a unit uses a bag item; {unit} is the actor, {item} the item name
   // and {target} the unit it was used on. One short sentence.
   'tactics.ticker.itemUsed': (p) => `${p.unit} utilise ${p.item} sur ${p.target}`,
@@ -1577,7 +1577,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Battle-log line when a round ends; {round} is the round number counted from 1. One short
   // sentence.
   'tactics.ticker.roundEnded': (p) => `Fin de la manche ${p.round}`,
-  // @desc: Banner shown when it is the player's unit's turn and its plan is not yet locked; {unit}
-  // is that unit's name. One short phrase.
-  'tactics.banner.turn': (p) => `À vous de jouer : ${p.unit}`,
+  // @desc: Banner for the current unit's turn while its plan is not yet locked (an own unit or a
+  // human opponent's); {unit} is that unit's name. Neutral wording. One short phrase.
+  'tactics.banner.turn': (p) => `Au tour de ${p.unit}`,
 } satisfies Catalog);
