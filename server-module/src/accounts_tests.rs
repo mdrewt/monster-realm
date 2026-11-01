@@ -855,12 +855,15 @@ fn data_lifecycle_partition_matches_spec_section3() {
     let expected_join_only = [
         ("battle_challenge_reaper_schedule", "battle_challenge"),
         ("battle_event", "battle"),
+        ("battle_gc_sched", "battle"),
         ("battle_secret", "battle"),
         ("battle_tactical", "battle"),
         ("battle_wild", "battle"),
         ("battle_wild_unit", "battle"),
         ("character", "player"),
         ("pvp_deadline_schedule", "battle"),
+        ("tactical_advance_sched", "battle"),
+        ("tactical_deadline_sched", "battle"),
         ("trade_offer_reaper_schedule", "trade_offer"),
     ];
     assert_eq!(
@@ -938,10 +941,11 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
     }
     assert_eq!(
         pairs.len(),
-        9,
-        "T3 non-vacuity: spec §3 names five JOIN-ONLY tables and bt-7 adds four (the tactical \
-         join tables, all swept via `battle`), so this scan must have nine parents to check. \
-         Zero ViaJoin entries would make every clause below vacuously true."
+        12,
+        "T3 non-vacuity: spec §3 names five JOIN-ONLY tables, bt-7 adds four (the tactical \
+         join tables) and bt-8 three (the tactical schedule tables), all swept via `battle`, \
+         so this scan must have twelve parents to check. Zero ViaJoin entries would make \
+         every clause below vacuously true."
     );
 
     for (table, parent) in &pairs {
@@ -2832,6 +2836,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::BattleEvent as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "battle_gc_sched",
+            <crate::tactics::BattleGcSched as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "battle_queue",
             <crate::schema::BattleQueue as SpacetimeType>::make_type(&mut ts),
         ),
@@ -2992,6 +3000,14 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::SpeciesRow as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "tactical_advance_sched",
+            <crate::tactics::TacticalAdvanceSched as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "tactical_deadline_sched",
+            <crate::tactics::TacticalDeadlineSched as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "trade_offer",
             <crate::schema::TradeOffer as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3103,12 +3119,12 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 53,
+        registry_len, 56,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 53 (20 ERASE + 5 ANONYMIZE + 9 JOIN-ONLY + 19 NOT-OWNED) — \
+         manifest carries exactly 56 (20 ERASE + 5 ANONYMIZE + 12 JOIN-ONLY + 19 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
-         bt-7's ten tactical tables. \
+         bt-7's ten tactical tables, plus bt-8's three tactical schedule tables. \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -3284,11 +3300,12 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
         );
     }
     assert_eq!(
-        population, 9,
+        population, 12,
         "[m22s6/x2-population] {population} manifest entries are classified ViaJoin; the live \
-         set is exactly 9 (character, battle_wild, pvp_deadline_schedule, \
-         battle_challenge_reaper_schedule, trade_offer_reaper_schedule, and bt-7's \
-         battle_tactical, battle_secret, battle_wild_unit, battle_event)."
+         set is exactly 12 (character, battle_wild, pvp_deadline_schedule, \
+         battle_challenge_reaper_schedule, trade_offer_reaper_schedule, bt-7's \
+         battle_tactical, battle_secret, battle_wild_unit, battle_event, and bt-8's \
+         tactical_deadline_sched, tactical_advance_sched, battle_gc_sched)."
     );
 }
 
@@ -4887,8 +4904,9 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        53,
-        "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables"
+        56,
+        "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
+         schedule tables"
     );
 }
 
@@ -5147,6 +5165,29 @@ mod acct_nh {
             r.wild_unit_id
         });
         let _ = fx.table_keyed::<BattleEvent, u64>("battle_event", "event_id", |r| r.event_id);
+        // bt-8: the schedule rows the cascade disarms by battle_id (W handles so the
+        // deletes reach the host; the erase step aborts on an unregistered index).
+        let _ = fx
+            .table_keyed::<crate::tactics::TacticalDeadlineSched, u64>(
+                "tactical_deadline_sched",
+                "battle_id",
+                |r| r.battle_id,
+            )
+            .writable();
+        let _ = fx
+            .table_keyed::<crate::tactics::TacticalAdvanceSched, u64>(
+                "tactical_advance_sched",
+                "battle_id",
+                |r| r.battle_id,
+            )
+            .writable();
+        let _ = fx
+            .table_keyed::<crate::tactics::BattleGcSched, u64>(
+                "battle_gc_sched",
+                "battle_id",
+                |r| r.battle_id,
+            )
+            .writable();
         let _ =
             fx.table::<BattleSummary>("battle_summary", "player_identity", |r| r.player_identity);
         let _ = fx.table::<BattleSummary>("battle_summary", "opponent_identity", |r| {
@@ -8165,8 +8206,9 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            53,
-            "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables"
+            56,
+            "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
+             bt-8's three schedule tables"
         );
         for table in [
             "battle_tactical",
