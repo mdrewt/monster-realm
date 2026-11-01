@@ -76,16 +76,63 @@ const EVENTS_RS = path.resolve(
   '../../../game-core/src/tactics/events.rs',
 );
 
-/** The Rust source with `//` comments (doc comments included) removed line by line. */
-function rustCode(): string {
-  return readFileSync(EVENTS_RS, 'utf8')
-    .split('\n')
-    .map((l) => {
-      const at = l.indexOf('//');
-      return at === -1 ? l : l.slice(0, at);
-    })
-    .join('\n');
+/** Rust source with `//` line comments (doc comments included) and nestable block comments removed;
+ *  string literals pass through untouched. */
+function stripRust(src: string): string {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === '/' && n === '/') {
+      while (i < src.length && src[i] !== '\n') i += 1;
+    } else if (c === '/' && n === '*') {
+      let depth = 1;
+      i += 2;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '/' && src[i + 1] === '*') {
+          depth += 1;
+          i += 2;
+        } else if (src[i] === '*' && src[i + 1] === '/') {
+          depth -= 1;
+          i += 2;
+        } else {
+          i += 1;
+        }
+      }
+    } else if (c === '"') {
+      out += c;
+      i += 1;
+      while (i < src.length && src[i] !== '"') {
+        if (src[i] === '\\') {
+          out += src[i];
+          i += 1;
+        }
+        out += src[i] ?? '';
+        i += 1;
+      }
+      out += '"';
+      i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
 }
+
+const rustCode = (): string => stripRust(readFileSync(EVENTS_RS, 'utf8'));
+
+/** `pub const NAME_CAP_MS: u32 = N;` -> N (underscored numerals read). */
+function parseCapConsts(code: string): Map<string, number> {
+  const consts = new Map<string, number>();
+  for (const m of code.matchAll(/pub const (\w+_CAP_MS): u32 = ([0-9_]+);/g)) {
+    consts.set(m[1], Number.parseInt(m[2].replaceAll('_', ''), 10));
+  }
+  return consts;
+}
+
+const countOf = (hay: string, needle: string): number => hay.split(needle).length - 1;
 
 const RUST_TO_CAPS: Readonly<Record<string, keyof typeof CAPS>> = {
   ACTION_CAP_MS: 'actionMs',
@@ -100,6 +147,9 @@ const RUST_TO_CAPS: Readonly<Record<string, keyof typeof CAPS>> = {
 function parseCapArms(code: string): Map<string, string> {
   const fnAt = code.indexOf('fn presentation_cap_ms');
   if (fnAt === -1) throw new Error('presentation_cap_ms not found in events.rs');
+  if (countOf(code, 'fn presentation_cap_ms') !== 1) {
+    throw new Error('presentation_cap_ms is declared more than once (comments stripped)');
+  }
   const matchAt = code.indexOf('match event', fnAt);
   const open = code.indexOf('{', matchAt);
   let depth = 1;
@@ -142,10 +192,11 @@ describe('presentation caps: the mirror of the Rust SSOT (BT10.5, A3)', () => {
     // the table; a zero-cap tag given a duration (Ko, Awards and Status would each stall the
     // queue); a non-zero tag given 0 (RoundEnded, BattleEnd); Moved ignoring its tile count.
     const code = rustCode();
-    const consts = new Map<string, number>();
-    for (const m of code.matchAll(/pub const (\w+_CAP_MS): u32 = ([0-9_]+);/g)) {
-      consts.set(m[1], Number.parseInt(m[2].replaceAll('_', ''), 10));
-    }
+    expect(
+      countOf(code, 'fn presentation_cap_ms'),
+      'presentation_cap_ms is declared exactly once in the comment-stripped source',
+    ).toBe(1);
+    const consts = parseCapConsts(code);
     expect([...consts.keys()].sort(), 'exactly the six cap consts').toEqual(
       Object.keys(RUST_TO_CAPS).sort(),
     );
@@ -179,6 +230,12 @@ describe('presentation caps: the mirror of the Rust SSOT (BT10.5, A3)', () => {
       ].sort(),
     );
 
+    // ROUND 2 (R10): the Moved arm is the tile-proportional, ceilinged one — read it, don't assume.
+    const movedArm = arms.get('Moved') ?? '';
+    for (const part of ['TILE_CAP_MS', 'tiles', '.min(MOVE_CAP_MS)']) {
+      expect(movedArm.includes(part), `the Moved arm "${movedArm}" mentions ${part}`).toBe(true);
+    }
+
     const rustValue = (tag: string): number => {
       const rhs = arms.get(tag) ?? '';
       if (rhs === '0') return 0;
@@ -196,6 +253,45 @@ describe('presentation caps: the mirror of the Rust SSOT (BT10.5, A3)', () => {
     expect(capMs(SAMPLE.RoundEnded), 'RoundEnded (the upkeep header)').toBe(1000);
     expect(capMs(SAMPLE.BattleStarted), 'BattleStarted').toBe(2000);
     expect(capMs(SAMPLE.BattleEnd), 'BattleEnd').toBe(3000);
+  });
+
+  it('BT10-5-CAPS-PARITY-TEETH: the Rust parser ignores a commented-out const and a commented-out presentation_cap_ms, and reads the real const and the real Moved arm', () => {
+    // WRONG IMPL KILLED (of the parity test itself, ROUND 2 R10): a parser that reads a const or
+    // a function out of a block or doc comment (a decoy FAKE_CAP_MS or a decoy first
+    // `fn presentation_cap_ms` would silently become the SSOT), and so lets the real table drift.
+    const planted = [
+      '/* pub const FAKE_CAP_MS: u32 = 1; */',
+      '// pub const FAKE2_CAP_MS: u32 = 2;',
+      '/// pub const FAKE3_CAP_MS: u32 = 3;',
+      '/* outer /* nested */ pub const FAKE4_CAP_MS: u32 = 4; */',
+      '/* fn presentation_cap_ms(event: &EventPayload) -> u32 {',
+      '    match event { EventPayload::Ko(_) => 99, } } */',
+      '// fn presentation_cap_ms(decoy)',
+      'pub const REAL_CAP_MS: u32 = 1_000;',
+      'pub fn presentation_cap_ms(event: &EventPayload) -> u32 {',
+      '    match event {',
+      '        EventPayload::Ko(_) => 0,',
+      '        EventPayload::Moved(m) => (TILE_CAP_MS * u32::from(m.tiles)).min(MOVE_CAP_MS),',
+      '    }',
+      '}',
+    ].join('\n');
+    const code = stripRust(planted);
+    expect([...parseCapConsts(code)], 'only the real const survives').toEqual([
+      ['REAL_CAP_MS', 1000],
+    ]);
+    expect(countOf(code, 'fn presentation_cap_ms'), 'only the real function survives').toBe(1);
+    const arms = parseCapArms(code);
+    expect(arms.get('Ko'), 'the real Ko arm, not the decoy 99').toBe('0');
+    expect(arms.get('Moved'), 'the real Moved arm').toBe(
+      '(TILE_CAP_MS * u32::from(m.tiles)).min(MOVE_CAP_MS)',
+    );
+    expect(
+      () => parseCapArms(stripRust(`${planted}\npub fn presentation_cap_ms() {}`)),
+      'a second real declaration is refused, not silently shadowed',
+    ).toThrow();
+    expect(stripRust('let s = "// not a comment"; // gone'), 'a // inside a string is kept').toBe(
+      'let s = "// not a comment"; ',
+    );
   });
 
   it('BT10-5-CAPS-MOVED: a move takes 100 ms per tile up to 400, counted from `tiles` and never from the coordinates', () => {
@@ -607,6 +703,46 @@ describe('Playback: the injected-clock queue (BT10.5, A10)', () => {
     expect(pb.playing(), 'the queue works after a skip').toBe(true);
     c.set(100_100);
     expect(ids(pb.tick()), 'and plays from the new enqueue time').toEqual([6]);
+  });
+
+  it("BT10-5-PLAY-SKIP-TAIL: a skip resets the queue tail — a beat enqueued after a skip starts at the enqueue time, not at the skipped beats' end", () => {
+    // WRONG IMPL KILLED (ROUND 2, R4): a skip that empties the queue but keeps the old tail, so
+    // the next beat is scheduled behind a 3000 ms beat that no longer exists (the player pressed
+    // B and then waits out the skipped battle-end banner before the next action plays).
+    const c = clock();
+    const pb = new Playback(c.now);
+    pb.enqueue([beat(1, 3000)]);
+    c.set(100);
+    expect(ids(pb.skip()), 'skip at t=100 returns the 3000 ms beat').toEqual([1]);
+    pb.enqueue([beat(2, 400)]);
+    expect(pb.playing(), 'the new beat is playing').toBe(true);
+    c.set(499);
+    expect(ids(pb.tick()), 't=499: the new beat started at 100, so it is not done').toEqual([]);
+    c.set(500);
+    expect(ids(pb.tick()), 't=500: 100 + 400, NOT 3000 + 400').toEqual([2]);
+    expect(pb.playing(), 'done').toBe(false);
+
+    // A skip of an EMPTY queue (right after a skip) leaves the tail reset too.
+    const again = new Playback(c.now);
+    c.set(0);
+    again.enqueue([beat(1, 3000)]);
+    c.set(100);
+    again.skip();
+    c.set(150);
+    expect(ids(again.skip()), 'a second skip on the empty queue').toEqual([]);
+    c.set(200);
+    again.enqueue([beat(3, 400)]);
+    c.set(599);
+    expect(ids(again.tick()), 't=599').toEqual([]);
+    c.set(600);
+    expect(ids(again.tick()), 't=600: started at 200').toEqual([3]);
+
+    // And a tail that has simply passed does not matter either (control).
+    const idle = new Playback(c.now);
+    c.set(1000);
+    idle.enqueue([beat(4, 100)]);
+    c.set(1100);
+    expect(ids(idle.tick()), 'control: a fresh queue').toEqual([4]);
   });
 
   it('BT10-5-PLAY-CLOCK: Playback reads only the injected clock — never Date.now, performance.now or a timer', () => {

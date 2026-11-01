@@ -224,6 +224,38 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
   });
 });
 
+describe('tactics strings: copy rules (bt-10 round 2)', () => {
+  it("BT10-5-STRINGS-COPY: the turn banner is neutral (it also shows for a human opponent's turn) and the Surge line says damage", () => {
+    // WRONG IMPL KILLED (ROUND 2, R2/R3): "Your turn: {unit}" shown over an OPPONENT's live turn
+    // (it reads as the player's), in either language; a Surge line that reads as a buff ("surges
+    // (+3)") when Surge is damage dealt to the unit.
+    const banner = (catalog: Record<string, unknown>, unit: string): string =>
+      (catalog['tactics.banner.turn'] as (p: Record<string, unknown>) => string)({ unit });
+    for (const unit of ['Sprigg', 'Rival Mon']) {
+      const en = banner(EN, unit);
+      const fr = banner(FR, unit);
+      expect(en.includes(unit), `en banner names ${unit}`).toBe(true);
+      expect(fr.includes(unit), `fr banner names ${unit}`).toBe(true);
+      for (const second of ['your', 'you ']) {
+        expect(en.toLowerCase().includes(second), `en banner has no "${second}"`).toBe(false);
+      }
+      for (const second of ['votre', 'ton tour']) {
+        expect(fr.toLowerCase().includes(second), `fr banner has no "${second}"`).toBe(false);
+      }
+    }
+    expect(banner(EN, 'Sprigg'), 'the exact neutral English').toBe("Sprigg's turn");
+
+    const surge = (catalog: Record<string, unknown>): string =>
+      (catalog['tactics.ticker.surge'] as (p: Record<string, unknown>) => string)({
+        unit: 'Sprigg',
+        amount: 3,
+      });
+    expect(surge(EN), 'the exact English Surge line').toBe('Sprigg takes 3 Surge damage');
+    expect(surge(EN).includes('surges'), 'no buff wording').toBe(false);
+    expect(surge(FR), 'a French line exists and differs').not.toBe(surge(EN));
+  });
+});
+
 // ---------------------------------------------------------------------------------------------
 // Source scans (A6)
 // ---------------------------------------------------------------------------------------------

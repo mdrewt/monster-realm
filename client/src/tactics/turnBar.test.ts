@@ -255,6 +255,25 @@ describe('turnBarVM: the chips (BT10.3, A5)', () => {
     ).toEqual([]);
   });
 
+  it('BT10-3-BAR-GHOST-DEDUPE: a unit listed twice in nextInitiative is ghosted once (first occurrence wins), like the chips', () => {
+    // WRONG IMPL KILLED (ROUND 2, R11): ghosts built without the seen-set the chips use, so a
+    // repeated id in the next round's order paints two ghost chips of one unit.
+    const vm = turnBarVM(input({ initiative: [1], nextInitiative: [3, 2, 3, 1, 2, 3] }));
+    expect(
+      vm.ghosts.map((g) => g.unitId),
+      'each unit once, in first-occurrence order',
+    ).toEqual([3, 2, 1]);
+    expect(
+      vm.ghosts.every((g) => g.state === 'ghost' && !g.locked),
+      'still ghosts, never locked',
+    ).toBe(true);
+    const dupWithDropped = turnBarVM(input({ nextInitiative: [5, 5, 99, 99, 6, 6] }));
+    expect(
+      dupWithDropped.ghosts.map((g) => g.unitId),
+      "KO'd and unknown ids stay dropped; the live one is not doubled",
+    ).toEqual([6]);
+  });
+
   it('BT10-3-BAR-BADGE: the surge badge is PvP only (in N rounds, then active from the start round), the retreat badge is wild only from round 25 and names the cap, and neither appears before its round', () => {
     // WRONG IMPL KILLED: the thresholds off by one (round 6 already showing, round 7 not); the
     // retreat cap hard-coded to 30 (the fixture's cap is 31); a wild battle showing a surge
@@ -429,6 +448,45 @@ describe('renderTurnBar: the DOM (BT10.3)', () => {
     expect(
       (parent.textContent ?? '').includes(en('tactics.turnbar.round', { round: 4 })),
       'the new round',
+    ).toBe(true);
+  });
+
+  it('BT10-3-BAR-ARIA-CURRENT: exactly the current chip carries aria-current="step" — no acted, pending or ghost chip does — and the attribute follows the turn on a re-render', () => {
+    // WRONG IMPL KILLED (ROUND 2, R12): a highlight that is colour/class only (invisible to a
+    // screen reader); aria-current on every chip or on the ghost of the current unit; the
+    // attribute left on the previous chip after the turn moved; aria-current="true" where the
+    // WAI-ARIA token for "the current step of a sequence" is "step".
+    const parent = mount();
+    const bar = (current: number | null): TurnBarVM =>
+      barVM({
+        chips: [1, 3, 2].map((id, i) =>
+          chip({
+            unitId: id,
+            state:
+              current === null
+                ? 'pending'
+                : i < current
+                  ? 'acted'
+                  : i === current
+                    ? 'current'
+                    : 'pending',
+          }),
+        ),
+        ghosts: [chip({ unitId: 1, state: 'ghost' })],
+      });
+    const currentOf = (): (string | null)[] =>
+      [...parent.querySelectorAll('.tactics-chip')].map((c) => c.getAttribute('aria-current'));
+    renderTurnBar(parent, bar(1));
+    expect(
+      currentOf(),
+      'chips acted/current/pending then the ghost: only the current is "step"',
+    ).toEqual([null, 'step', null, null]);
+    renderTurnBar(parent, bar(2));
+    expect(currentOf(), 'the attribute moved with the turn').toEqual([null, null, 'step', null]);
+    renderTurnBar(parent, bar(null));
+    expect(
+      currentOf().every((v) => v === null),
+      'no current chip, no aria-current',
     ).toBe(true);
   });
 

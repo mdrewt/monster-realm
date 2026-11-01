@@ -1648,9 +1648,10 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
   'tactics.ticker.surge': {
     inputA: { unit: 'Sprigg', amount: 3 },
-    outputA: 'Sprigg surges (3)',
+    // bt-10 round 2 (named intentional change): Surge is damage ("takes N Surge damage"), not a buff.
+    outputA: 'Sprigg takes 3 Surge damage',
     inputB: { unit: 'Kip', amount: 11 },
-    outputB: 'Kip surges (11)',
+    outputB: 'Kip takes 11 Surge damage',
   },
   'tactics.ticker.ko': {
     inputA: { unit: 'Sprigg' },
@@ -1708,9 +1709,11 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
   'tactics.banner.turn': {
     inputA: { unit: 'Sprigg' },
-    outputA: 'Your turn: Sprigg',
+    // bt-10 round 2 (named intentional change): the banner also shows for a human opponent's live
+    // turn, so its copy is neutral ("{unit}'s turn"), never "Your turn".
+    outputA: "Sprigg's turn",
     inputB: { unit: 'Kip' },
-    outputB: 'Your turn: Kip',
+    outputB: "Kip's turn",
   },
 };
 

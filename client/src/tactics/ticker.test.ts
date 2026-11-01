@@ -75,7 +75,7 @@ function target(o: Partial<TargetHit> & { readonly unit: number }): TargetHit {
 }
 
 describe('tickerLine: Executed (BT10.5, A4)', () => {
-  it('BT10-5-TICKER-EXECUTED: one line = the executed text, then each target as hit text (plus ko text when it fell) or missed text, joined by " — ", with no trailing separator for zero targets', () => {
+  it('BT10-5-TICKER-EXECUTED: one line = the executed text, then each HIT target as hit text, joined by " — "; misses and ko flags add nothing (they have their own events); zero hits give the executed text alone', () => {
     // WRONG IMPL KILLED: one ticker line per target (the batch must be ONE line); the ko text
     // dropped, or glued to the wrong target, or emitted for a miss; a miss narrated with the
     // target as the subject (missed takes the ATTACKER first); the damage of the first target
@@ -95,18 +95,30 @@ describe('tickerLine: Executed (BT10.5, A4)', () => {
         ],
       },
     };
+    // ROUND 2 (R1): the server emits a standalone `Missed` per missed target and a standalone `Ko`
+    // from the KO sweep, so the Executed line carries ONLY the executed text and the HIT clauses.
     const expected = [
       en('tactics.ticker.executed', { unit: 'unit#1', skill: 'skill#7' }),
       en('tactics.ticker.hit', { target: 'unit#2', damage: 12 }),
-      en('tactics.ticker.ko', { unit: 'unit#2' }),
-      en('tactics.ticker.missed', { unit: 'unit#1', target: 'unit#3' }),
       en('tactics.ticker.hit', { target: 'unit#4', damage: 7 }),
     ].join(SEP);
     const got = tickerLine(ev, kit.names);
-    expect(got, 'the exact composed line').toBe(expected);
+    expect(got, 'the exact composed line: executed, then the hits only').toBe(expected);
     expect(got.includes('\n'), 'one line').toBe(false);
+    expect(
+      got.includes('unit#3'),
+      'the missed target is not named (its own Missed event says so)',
+    ).toBe(false);
+    expect(
+      got.includes(en('tactics.ticker.ko', { unit: 'unit#2' })),
+      'no ko text (its own Ko event says so)',
+    ).toBe(false);
+    expect(
+      got.includes(en('tactics.ticker.missed', { unit: 'unit#1', target: 'unit#3' })),
+      'no missed text',
+    ).toBe(false);
     expect(kit.calls, 'unit names looked up by the right ids').toEqual(
-      expect.arrayContaining(['unit:1', 'unit:2', 'unit:3', 'unit:4', 'skill:7']),
+      expect.arrayContaining(['unit:1', 'unit:2', 'unit:4', 'skill:7']),
     );
     expect(
       kit.calls.some((c) => c.startsWith('item:')),
@@ -128,21 +140,31 @@ describe('tickerLine: Executed (BT10.5, A4)', () => {
       tag: 'Executed',
       value: { attacker: 5, skillId: 9, results: [target({ unit: 6, hit: false })] },
     };
-    expect(line(oneMiss), 'one miss').toBe(
-      [
-        en('tactics.ticker.executed', { unit: 'unit#5', skill: 'skill#9' }),
-        en('tactics.ticker.missed', { unit: 'unit#5', target: 'unit#6' }),
-      ].join(SEP),
+    expect(line(oneMiss), 'one miss adds nothing: the executed text alone').toBe(
+      en('tactics.ticker.executed', { unit: 'unit#5', skill: 'skill#9' }),
     );
     const koFirst: EventPayload = {
       tag: 'Executed',
       value: { attacker: 5, skillId: 9, results: [target({ unit: 6, damage: 30, ko: true })] },
     };
-    expect(line(koFirst), 'a single ko hit').toBe(
+    expect(line(koFirst), 'a single ko hit: the hit clause, no ko clause').toBe(
       [
         en('tactics.ticker.executed', { unit: 'unit#5', skill: 'skill#9' }),
         en('tactics.ticker.hit', { target: 'unit#6', damage: 30 }),
-        en('tactics.ticker.ko', { unit: 'unit#6' }),
+      ].join(SEP),
+    );
+    const missThenHit: EventPayload = {
+      tag: 'Executed',
+      value: {
+        attacker: 5,
+        skillId: 9,
+        results: [target({ unit: 6, hit: false }), target({ unit: 8, damage: 4 })],
+      },
+    };
+    expect(line(missThenHit), 'a leading miss does not leave a stray separator').toBe(
+      [
+        en('tactics.ticker.executed', { unit: 'unit#5', skill: 'skill#9' }),
+        en('tactics.ticker.hit', { target: 'unit#8', damage: 4 }),
       ].join(SEP),
     );
   });
@@ -464,5 +486,42 @@ describe('Ticker: the capped log (BT10.5)', () => {
     expect(el.firstElementChild?.textContent, 'the oldest dropped from the DOM too').toBe(
       'line 72',
     );
+  });
+
+  it('BT10-5-TICKER-AT: the list is a keyboard-focusable, labelled scroller (tabindex 0, aria-label = tactics.ticker.label) that keeps the newest line in view by scrolling ITSELF to the bottom', () => {
+    // WRONG IMPL KILLED (ROUND 2, R12): a scrollable log a keyboard user cannot reach (no
+    // tabindex) or that has no accessible name; a list that grows past its box and never
+    // follows the newest line (scrollTop never written); the scroll written to another element
+    // (the turn bar must never scroll: BT10-3-*-NO-RECENTRE) instead of the ticker's own.
+    const parent = mount();
+    const ticker = new Ticker(parent);
+    const el = tickerEl(parent);
+    expect(el.getAttribute('tabindex'), 'focusable by keyboard').toBe('0');
+    expect(el.getAttribute('aria-label'), 'named from the catalog').toBe(
+      en('tactics.ticker.label'),
+    );
+    for (const attr of ['aria-live', 'role']) {
+      expect(el.hasAttribute(attr), `still no ${attr}`).toBe(false);
+    }
+
+    // happy-dom lays nothing out: give THIS element a scrollHeight and record scrollTop writes.
+    const writes: number[] = [];
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 777 });
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => writes.at(-1) ?? 0,
+      set: (v: number) => {
+        writes.push(v);
+      },
+    });
+    for (let i = 1; i <= 60; i++) ticker.push(`line ${i}`);
+    expect(writes.length > 0, 'scrollTop was written while pushing').toBe(true);
+    expect(writes.at(-1), 'the last write is the list scrollHeight (the newest line in view)').toBe(
+      777,
+    );
+    const before = writes.length;
+    ticker.push('one more');
+    expect(writes.length > before, 'every push follows the newest line').toBe(true);
+    expect(writes.at(-1), 'and lands on the bottom').toBe(777);
   });
 });

@@ -407,13 +407,14 @@ describe('TacticsBattle: the cursor (BT10.6)', () => {
     k.shell.render(vmOf({ units: reordered, initiative: [2, 1], nextInitiative: [] }));
     expect(k.shell.selectedUnitId, 'and across a reordered unit list').toBe(2);
 
-    // The selected unit is gone: +1 -> first own Active, -1 -> last own Active (A9).
+    // The selected unit is KO'd (ROUND 2, R7: the render RESELECTS the first own Active unit, the
+    // same rule as the first render), so the next cycle steps from that unit and wraps normally.
     const order = [
       unit({ unitId: 6, x: 6, y: 4 }),
       unit({ unitId: 1, x: 1, y: 1 }),
       unit({ unitId: 2, x: 3, y: 2 }),
     ];
-    const gone = (dir: 1 | -1): number | null => {
+    const gone = (dir: 1 | -1): { afterRender: number | null; afterCycle: number | null } => {
       const g = make();
       g.shell.render(vmOf({ units: order, initiative: [6, 1, 2], nextInitiative: [] }));
       expect(g.shell.selectedUnitId, 'fixture: the first own Active is 6').toBe(6);
@@ -423,11 +424,18 @@ describe('TacticsBattle: the cursor (BT10.6)', () => {
         u.unitId === 1 ? { ...u, state: 'Fainted' as const, curHp: 0 } : u,
       );
       g.shell.render(vmOf({ units: ko, initiative: [6, 1, 2], nextInitiative: [] }));
+      const afterRender = g.shell.selectedUnitId;
       g.shell.cycleUnit(dir);
-      return g.shell.selectedUnitId;
+      return { afterRender, afterCycle: g.shell.selectedUnitId };
     };
-    expect(gone(1), 'selection gone, +1 -> the first own Active (not the neighbour)').toBe(6);
-    expect(gone(-1), 'selection gone, -1 -> the last own Active (not the neighbour)').toBe(2);
+    const plus = gone(1);
+    expect(plus.afterRender, "selection KO'd: the render reselects the FIRST own Active (6)").toBe(
+      6,
+    );
+    expect(plus.afterCycle, "then +1 steps from 6 to 2 (the KO'd unit 1 is skipped)").toBe(2);
+    const minus = gone(-1);
+    expect(minus.afterRender, 'same reselection whatever the later direction').toBe(6);
+    expect(minus.afterCycle, 'then -1 wraps from 6 to the last own Active (2)').toBe(2);
 
     // Nobody to select.
     const none = make();
@@ -740,11 +748,21 @@ describe('TacticsBattle: events, skip and motion (BT10.5)', () => {
             effectiveness: undefined,
             flank: false,
             guard: false,
+            ko: true,
+          },
+          {
+            unit: 4,
+            hit: false,
+            damage: 0,
+            effectiveness: undefined,
+            flank: false,
+            guard: false,
             ko: false,
           },
         ],
       },
     };
+    // ROUND 2 (R1): the miss and the ko have their own events, so this line shows the hit only.
     k.shell.ingest([executed]);
     k.shell.ingest([]);
     k.shell.ingest([{ tag: 'StoodGround', value: { unit: 3 } }]);
@@ -939,5 +957,285 @@ describe('TacticsBattle: events, skip and motion (BT10.5)', () => {
     expect(bannerShown(k.root), 'turnIdx past the order: hidden').toBe(false);
     k.shell.render(vmOf({ initiative: [5, 1, 2], turnIdx: 0 }));
     expect(bannerShown(k.root), "the current unit is KO'd: hidden").toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// ROUND 2 — playback wiring, per-battle state, reselection, atomic ingest, pointer memory
+// ---------------------------------------------------------------------------------------------
+
+const PLAYING = 'tactics-battle--playing';
+const isPlaying = (root: HTMLElement): boolean => root.classList.contains(PLAYING);
+const executed = (): EventPayload => ({
+  tag: 'Executed',
+  value: { attacker: 1, skillId: 7, results: [] },
+});
+
+describe('TacticsBattle: playback wiring (BT10.5, round 2)', () => {
+  it('BT10-5-SHELL-PLAYING: the root wears tactics-battle--playing exactly while a beat is in flight — set by ingest, cleared by the tick that ends it, by B and by hide() — and reduced motion plays instantly (read on every ingest)', () => {
+    // WRONG IMPL KILLED (ROUND 2, R5): a Playback that nothing observable follows (the class never
+    // set, so a B skip or a hide() could not be told from a no-op); a class that outlives its beat
+    // (399 ms is still playing, 400 is not); B that leaves the queue running; hide() that leaves
+    // it running; reduced motion that still plays a 400 ms beat; the reduceMotion flag cached at
+    // construction (the flip below must change the next ingest).
+    const k = make(false);
+    k.shell.render(vmOf());
+    expect(isPlaying(k.root), 'idle before any event').toBe(false);
+
+    k.shell.ingest([executed()]);
+    expect(isPlaying(k.root), 'a 400 ms action beat is playing right after ingest').toBe(true);
+    k.clock.t = 399;
+    k.shell.tick();
+    expect(isPlaying(k.root), 'still playing at +399').toBe(true);
+    k.clock.t = 400;
+    k.shell.tick();
+    expect(isPlaying(k.root), 'done at +400').toBe(false);
+
+    k.clock.t = 1000;
+    k.shell.ingest([executed()]);
+    expect(isPlaying(k.root), 'a second beat plays').toBe(true);
+    k.shell.applyBattleOp({ kind: 'back' });
+    expect(isPlaying(k.root), 'B mid-beat clears it at once').toBe(false);
+    k.clock.t = 100_000;
+    k.shell.tick();
+    expect(isPlaying(k.root), 'and a following tick leaves it clear').toBe(false);
+
+    k.shell.ingest([executed()]);
+    expect(isPlaying(k.root), 'a third beat plays').toBe(true);
+    k.shell.hide();
+    expect(isPlaying(k.root), 'hide() mid-beat clears it').toBe(false);
+    k.shell.show();
+    expect(isPlaying(k.root), 'and show() does not resurrect it').toBe(false);
+    k.clock.t = 200_000;
+    k.shell.tick();
+    expect(isPlaying(k.root), 'nor does a later tick').toBe(false);
+
+    // Reduced motion: every beat is 0 ms, so ONE tick at the same `now` finishes it.
+    const r = make(true);
+    r.shell.render(vmOf());
+    r.shell.ingest([executed()]);
+    r.shell.tick();
+    expect(isPlaying(r.root), 'reduced: one tick at the same now ends the beat').toBe(false);
+    r.motion.reduce = false;
+    r.shell.ingest([executed()]);
+    expect(
+      isPlaying(r.root),
+      'reduceMotion() flipped off is read on the next ingest: it plays',
+    ).toBe(true);
+    r.shell.tick();
+    expect(isPlaying(r.root), 'at the same now a 400 ms beat is not done').toBe(true);
+    r.clock.t = 400;
+    r.shell.tick();
+    expect(isPlaying(r.root), 'done at +400').toBe(false);
+    r.motion.reduce = true;
+    r.shell.ingest([executed()]);
+    r.shell.tick();
+    expect(isPlaying(r.root), 'flipped back on: instant again').toBe(false);
+  });
+
+  it('BT10-5-SHELL-HIDDEN-INGEST: an ingest while the view is hidden (never shown, or after hide) still fills the ticker but starts no playback', () => {
+    // WRONG IMPL KILLED (ROUND 2, R5): a hidden view queueing beats nobody sees, then dumping the
+    // backlog as a playing state the moment it is shown; ticker lines dropped while hidden (the
+    // log must be complete when the player returns).
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const shell = new TacticsBattle(parent, {
+      now: () => 0,
+      reduceMotion: () => false,
+      names: makeNames(),
+    });
+    const root = q(parent, '.tactics-battle');
+    shell.ingest([executed(), roundEnded(1)]);
+    expect(tickerTexts(root), 'never shown: the lines are there').toEqual([
+      en('tactics.ticker.executed', { unit: 'unit#1', skill: 'skill#7' }),
+      en('tactics.ticker.roundEnded', { round: 1 }),
+    ]);
+    expect(isPlaying(root), 'never shown: no playback').toBe(false);
+    shell.show();
+    expect(isPlaying(root), 'showing does not start the backlog').toBe(false);
+
+    const k = make(false);
+    k.shell.render(vmOf());
+    k.shell.hide();
+    k.shell.ingest([executed()]);
+    expect(tickerTexts(k.root), 'after hide: the line is there').toHaveLength(1);
+    expect(isPlaying(k.root), 'after hide: no playback').toBe(false);
+    k.shell.show();
+    expect(isPlaying(k.root), 'after show: still none').toBe(false);
+    k.shell.ingest([executed()]);
+    expect(isPlaying(k.root), 'a visible ingest plays again').toBe(true);
+  });
+
+  it('BT10-5-SHELL-INGEST-ATOMIC: an ingest holding an event the client cannot render throws and commits NOTHING — no ticker line, no playback — whichever position the bad event holds', () => {
+    // WRONG IMPL KILLED (ROUND 2, R8): lines pushed one by one until the forged event throws (the
+    // log keeps the first half of a batch and the playback never hears of it); the beats queued
+    // before the throw; a failed ingest that poisons the next valid one.
+    const forged = { tag: 'FutureThing', value: {} } as unknown as EventPayload;
+    const fresh = make(false);
+    fresh.shell.render(vmOf());
+    expect(() => fresh.shell.ingest([executed(), forged]), 'bad event last').toThrow();
+    expect(tickerTexts(fresh.root), 'nothing committed to the ticker').toEqual([]);
+    expect(isPlaying(fresh.root), 'nothing queued for playback').toBe(false);
+
+    const k = make(false);
+    k.shell.render(vmOf());
+    k.shell.ingest([roundEnded(1)]);
+    k.clock.t = 100_000;
+    k.shell.tick();
+    const base = tickerTexts(k.root);
+    expect(base, 'fixture: one committed line').toHaveLength(1);
+    expect(isPlaying(k.root), 'fixture: idle').toBe(false);
+
+    expect(() => k.shell.ingest([forged, executed()]), 'bad event first').toThrow();
+    expect(tickerTexts(k.root), 'bad first: ticker untouched').toEqual(base);
+    expect(isPlaying(k.root), 'bad first: no playback').toBe(false);
+    expect(
+      () => k.shell.ingest([executed(), roundEnded(2), forged, executed()]),
+      'bad in the middle',
+    ).toThrow();
+    expect(tickerTexts(k.root), 'bad in the middle: ticker untouched').toEqual(base);
+    expect(isPlaying(k.root), 'bad in the middle: no playback').toBe(false);
+
+    k.shell.ingest([roundEnded(3)]);
+    expect(tickerTexts(k.root), 'a valid ingest afterwards still works').toEqual([
+      ...base,
+      en('tactics.ticker.roundEnded', { round: 3 }),
+    ]);
+  });
+});
+
+describe('TacticsBattle: per-battle state and selection (BT10.6, round 2)', () => {
+  it('BT10-6-SHELL-NEW-BATTLE: rendering a different battleId resets the cursor memory, the selection, the ticker, the danger toggle and the playback, so a reused unit id starts on its NEW tile', () => {
+    // WRONG IMPL KILLED (ROUND 2, R6): the shell outliving a battle with its old state — unit 1's
+    // remembered (3,1) from battle 1 applied to a different unit 1 in battle 2 (the cursor lands
+    // on another monster's tile or off the new board); the stale selection (unit 2) kept; last
+    // battle's log still in the ticker; danger left on; a playback still running.
+    const k = make(false);
+    k.shell.render(vmOf({ battleId: 1n }));
+    move(k, 'Right');
+    move(k, 'Right');
+    expect(k.shell.cursor, 'fixture: unit 1 remembered (3,1)').toEqual({ x: 3, y: 1 });
+    k.shell.cycleUnit(1);
+    move(k, 'Right');
+    expect(k.shell.selectedUnitId, 'fixture: unit 2 selected').toBe(2);
+    expect(k.shell.cursor, 'fixture: unit 2 remembered (4,2)').toEqual({ x: 4, y: 2 });
+    k.shell.toggleDanger();
+    k.shell.ingest([executed(), roundEnded(1)]);
+    expect(tickerTexts(k.root), 'fixture: two lines').toHaveLength(2);
+    expect(isPlaying(k.root), 'fixture: playing').toBe(true);
+
+    const second: readonly TacticalUnit[] = [
+      unit({ unitId: 1, x: 0, y: 3, speciesName: 'Newleaf' }),
+      unit({ unitId: 2, x: 5, y: 4 }),
+      unit({ unitId: 7, x: 6, y: 0 }),
+      foe({ unitId: 8, x: 4, y: 4 }),
+    ];
+    k.shell.render(
+      vmOf({
+        battleId: 2n,
+        units: second,
+        initiative: [1, 8, 7, 2],
+        nextInitiative: [],
+        activeUnitId: 1,
+        overlays: overlays({ danger: [[{ x: 2, y: 2 }]] }),
+      }),
+    );
+    expect(k.shell.selectedUnitId, 'the first own Active of the NEW battle (not the stale 2)').toBe(
+      1,
+    );
+    expect(k.shell.cursor, "unit 1's tile in battle 2, not the remembered (3,1)").toEqual({
+      x: 0,
+      y: 3,
+    });
+    expect(cursorTiles(k.root), 'painted there').toEqual(['0,3']);
+    expect(tickerTexts(k.root), 'the ticker is cleared').toEqual([]);
+    expect(k.shell.dangerOn, 'danger is off').toBe(false);
+    expect(k.root.querySelectorAll('.tactics-tile--danger'), 'and not painted').toHaveLength(0);
+    expect(isPlaying(k.root), 'the playback is drained').toBe(false);
+
+    k.shell.cycleUnit(1);
+    expect(k.shell.selectedUnitId, 'cycle -> unit 2').toBe(2);
+    expect(k.shell.cursor, "unit 2's NEW tile, not its battle-1 memory (4,2)").toEqual({
+      x: 5,
+      y: 4,
+    });
+    k.shell.cycleUnit(1);
+    expect(k.shell.cursor, 'unit 7').toEqual({ x: 6, y: 0 });
+    k.shell.cycleUnit(1);
+    expect(k.shell.selectedUnitId, 'wrapped to unit 1').toBe(1);
+    expect(k.shell.cursor, 'unit 1 still on its battle-2 tile').toEqual({ x: 0, y: 3 });
+
+    // The new battle's own log and memory work from there.
+    k.shell.ingest([roundEnded(5)]);
+    expect(tickerTexts(k.root), 'battle 2 logs from zero').toEqual([
+      en('tactics.ticker.roundEnded', { round: 5 }),
+    ]);
+    k.shell.render(
+      vmOf({ battleId: 2n, units: second, initiative: [1, 8, 7, 2], nextInitiative: [] }),
+    );
+    expect(tickerTexts(k.root), 'the SAME battleId again keeps the log').toHaveLength(1);
+  });
+
+  it("BT10-6-SHELL-RESELECT-KO: when the selected unit is KO'd the next render reselects the first own Active unit with its remembered (else current) tile, and with no own Active unit left the selection is null without a throw", () => {
+    // WRONG IMPL KILLED (ROUND 2, R7): a selection that dies silently (selectedUnitId null and the
+    // cursor parked on a corpse while a live own unit waits); the reselected unit's cursor not
+    // restored from memory; a throw when the last own unit falls.
+    const trio: readonly TacticalUnit[] = [
+      unit({ unitId: 1, x: 1, y: 1 }),
+      unit({ unitId: 2, x: 3, y: 2 }),
+      foe({ unitId: 3, x: 5, y: 1 }),
+    ];
+    const withKo = (ids: readonly number[]): TacticalUnit[] =>
+      trio.map((u) => (ids.includes(u.unitId) ? { ...u, state: 'Fainted' as const, curHp: 0 } : u));
+    const base = { initiative: [1, 3, 2], nextInitiative: [] };
+
+    const a = make();
+    a.shell.render(vmOf({ ...base, units: trio }));
+    expect(a.shell.selectedUnitId, 'fixture: unit 1 selected').toBe(1);
+    a.shell.render(vmOf({ ...base, units: withKo([1]) }));
+    expect(a.shell.selectedUnitId, "unit 1 KO'd: unit 2 is selected").toBe(2);
+    expect(a.shell.cursor, "no memory: unit 2's current tile").toEqual({ x: 3, y: 2 });
+    expect(cursorTiles(a.root), 'painted on unit 2').toEqual(['3,2']);
+    a.shell.render(vmOf({ ...base, units: withKo([1]) }));
+    expect(a.shell.selectedUnitId, 'and it stays selected on later renders').toBe(2);
+
+    const b = make();
+    b.shell.render(vmOf({ ...base, units: trio }));
+    b.shell.cycleUnit(1);
+    move(b, 'Right');
+    expect(b.shell.cursor, 'fixture: unit 2 remembered (4,2)').toEqual({ x: 4, y: 2 });
+    b.shell.cycleUnit(-1);
+    expect(b.shell.selectedUnitId, 'fixture: back on unit 1').toBe(1);
+    b.shell.render(vmOf({ ...base, units: withKo([1]) }));
+    expect(b.shell.selectedUnitId, "unit 1 KO'd: unit 2").toBe(2);
+    expect(b.shell.cursor, "unit 2's REMEMBERED tile").toEqual({ x: 4, y: 2 });
+
+    const c = make();
+    c.shell.render(vmOf({ ...base, units: trio }));
+    expect(
+      () => c.shell.render(vmOf({ ...base, units: withKo([1, 2]) })),
+      'last own unit falls',
+    ).not.toThrow();
+    expect(c.shell.selectedUnitId, 'no own Active unit left: nothing selected').toBeNull();
+    expect(() => c.shell.cycleUnit(1), 'cycling with nobody does not throw').not.toThrow();
+    expect(() => move(c, 'Right'), 'moving the cursor with nobody does not throw').not.toThrow();
+    expect(c.shell.selectedUnitId, 'still nothing selected').toBeNull();
+  });
+
+  it("BT10-6-POINTER-MEMORY: a pointer click writes the selected unit's cursor memory, so cycling away and back returns to the clicked tile", () => {
+    // WRONG IMPL KILLED (ROUND 2, R9): a click that moves the cursor but not the memory (cycling
+    // to another unit and back snaps to the old D-pad tile): mouse and D-pad must be one path.
+    const k = make();
+    k.shell.render(vmOf());
+    expect(k.shell.selectedUnitId, 'fixture: unit 1 selected').toBe(1);
+    click(q(k.root, '.tactics-tile[data-x="4"][data-y="2"]'));
+    expect(k.shell.cursor, 'the click moved the cursor').toEqual({ x: 4, y: 2 });
+    k.shell.cycleUnit(1);
+    expect(k.shell.selectedUnitId, 'cycled to unit 2').toBe(2);
+    expect(k.shell.cursor, 'unit 2 has no memory: its own tile (3,2)').toEqual({ x: 3, y: 2 });
+    k.shell.cycleUnit(-1);
+    expect(k.shell.selectedUnitId, 'back on unit 1').toBe(1);
+    expect(k.shell.cursor, 'unit 1 remembered the CLICKED tile').toEqual({ x: 4, y: 2 });
+    expect(cursorTiles(k.root)).toEqual(['4,2']);
   });
 });
