@@ -526,7 +526,35 @@ export type MessageId =
   | 'tactics.dock.prevUnit'
   | 'tactics.dock.nextUnit'
   | 'tactics.reason.recruitFullAp'
-  | 'tactics.reason.fleeFullAp';
+  | 'tactics.reason.fleeFullAp'
+  // bt-11 (BT11.3/BT11.4/BT11.5): the plan strip's badges, AP-pip label and over-planned-bait note,
+  // the forecast panel's lines, the Projected style (client/src/tactics/strings.ts requests them).
+  | 'tactics.badge.firm'
+  | 'tactics.badge.provisional'
+  | 'tactics.badge.stale'
+  | 'tactics.forecast.label'
+  | 'tactics.forecast.miss'
+  | 'tactics.forecast.typeImmune'
+  | 'tactics.forecast.stab'
+  | 'tactics.forecast.lethal'
+  | 'tactics.forecast.lethalMax'
+  | 'tactics.forecast.firstStand'
+  | 'tactics.projected.label'
+  | 'tactics.projected.enemiesHold'
+  | 'tactics.badge.onlyHeld'
+  | 'tactics.chip.cost'
+  | 'tactics.forecast.vs'
+  | 'tactics.forecast.hit'
+  | 'tactics.forecast.damage'
+  | 'tactics.forecast.typeTimes'
+  | 'tactics.forecast.typeOver'
+  | 'tactics.forecast.flank'
+  | 'tactics.forecast.guard'
+  | 'tactics.forecast.status'
+  | 'tactics.forecast.recruit'
+  | 'tactics.forecast.recruitLines'
+  | 'tactics.forecast.bait'
+  | 'tactics.projected.assumes';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -774,6 +802,27 @@ export interface MessageParams {
   // bt-11: the two full-budget reasons; {ap} is the rules' fresh budget (never a literal).
   readonly 'tactics.reason.recruitFullAp': { readonly ap: number };
   readonly 'tactics.reason.fleeFullAp': { readonly ap: number };
+  // bt-11 (BT11.3/BT11.4/BT11.5): every number is the rules' answer carried verbatim; unit / item /
+  // status / tile are model data (a name, a resolved status word, an A1 tile) already resolved.
+  readonly 'tactics.badge.onlyHeld': { readonly n: number };
+  readonly 'tactics.chip.cost': { readonly ap: number };
+  readonly 'tactics.forecast.vs': { readonly unit: string };
+  readonly 'tactics.forecast.hit': { readonly pct: number };
+  readonly 'tactics.forecast.damage': { readonly min: number; readonly max: number };
+  readonly 'tactics.forecast.typeTimes': { readonly num: number };
+  readonly 'tactics.forecast.typeOver': { readonly num: number; readonly den: number };
+  readonly 'tactics.forecast.flank': { readonly num: number; readonly den: number };
+  readonly 'tactics.forecast.guard': { readonly num: number; readonly den: number };
+  readonly 'tactics.forecast.status': { readonly status: string };
+  readonly 'tactics.forecast.recruit': { readonly pct: number };
+  readonly 'tactics.forecast.recruitLines': {
+    readonly base: number;
+    readonly bait: number;
+    readonly weakened: number;
+    readonly pct: number;
+  };
+  readonly 'tactics.forecast.bait': { readonly item: string };
+  readonly 'tactics.projected.assumes': { readonly unit: string; readonly tile: string };
 }
 
 /** Keys resolved by `tf(key, params)`. */

@@ -28,10 +28,33 @@
 // each test (round-2 additions: v6c min/max read from `applied`; A18's KO clause; the status tied
 // to `hits`). Do NOT edit these tests to match a buggy implementation; correct them from the spec
 // only.
+//
+// bt-11 ROUND 4 (increment C; plan REV 5 A27 + REV 6 R6.4, NAMED INTENTIONAL CHANGE): the type line
+// is `{kind: 'type', effectiveness, num, den}` with `[num, den]` COPIED from `f.type_factor` (the
+// panel prints `forecast.typeTimes {num}` / `forecast.typeOver {num, den}` from it). Every
+// type-line pin below gains the two fields; the fixtures carry distinct pairs per effectiveness (SuperEffective [2,1],
+// NotVeryEffective [1,2], Immune [0,1]) and one row carries an unusual [3,2] so a view-model that
+// maps the effectiveness to a factor table instead of copying the rules' pair fails. RED REASON
+// (round 4): `forecastVM`'s type line carries no num / den yet.
 
 import { describe, expect, it } from 'vitest';
 import { type ForecastLine, forecastVM } from './forecast';
 import type { ForecastOut, PipelineTrace, RuleEffectiveness } from './wasm';
+
+/** Round 4: the rules' carried type multiplier per effectiveness (A27: over 10, reduced). */
+const TYPE_FACTOR: Readonly<Record<RuleEffectiveness, readonly [number, number]>> = {
+  SuperEffective: [2, 1],
+  NotVeryEffective: [1, 2],
+  Neutral: [1, 1],
+  Immune: [0, 1],
+};
+
+/** The expected type line (built through a variable so it type-checks against either shape of
+ *  `ForecastLine` while the round-4 field is being added). */
+function typeLine(effectiveness: RuleEffectiveness, num: number, den: number): ForecastLine {
+  const line = { kind: 'type' as const, effectiveness, num, den };
+  return line;
+}
 
 /** A hit trace whose d0..d3 are all different (so `min` must be d3, not d0 / d1 / d2). */
 function trace(o: Partial<PipelineTrace> = {}): PipelineTrace {
@@ -87,23 +110,28 @@ function out(o: Partial<ForecastOut> = {}): ForecastOut {
   };
 }
 
-/** A hit forecast at `eff` (both traces carry it, as `effectiveness = min.effectiveness`). */
+/** A hit forecast at `eff` (both traces carry it, as `effectiveness = min.effectiveness`); its
+ *  `type_factor` is the rules' pair for `eff` unless `o` overrides it (round 4). */
 function hitAt(eff: RuleEffectiveness, o: Partial<ForecastOut> = {}): ForecastOut {
   return out({
     effectiveness: eff,
     min: trace({ effectiveness: eff }),
     max: trace({ d0: 61, d1: 67, d2: 71, d3: 73, applied: 73, hp_after: 39, effectiveness: eff }),
+    type_factor: TYPE_FACTOR[eff],
     ...o,
   });
 }
 
 describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
-  it('BT11-7-FORECAST-VM-LINES: lines follow type, stab, flank, guard with the factors copied from the rules; Neutral has no type line, Immune only the type line, a miss none; min/max are d3 and the hit percent is copied', () => {
+  it('BT11-7-FORECAST-VM-LINES: lines follow type, stab, flank, guard with the factors copied from the rules — the type line carrying the rules` type_factor as num / den; Neutral has no type line, Immune only the type line, a miss none; min/max are d3 and the hit percent is copied', () => {
     // WRONG IMPL KILLED: a type line for Neutral; STAB/flank/Guard lines on an Immune hit (0 damage:
     // only the immunity is news); any line on a miss; the lines in another order; a flank or Guard
     // label that hard-codes 5/4 or 3/4 instead of reading flank_factor / guard_factor (the 7/3 + 2/9
     // rows); num and den swapped; min/max taken from d0 or d2 (or both from one trace); the hit
-    // percent recomputed (or the accuracy) instead of copied; `hits` from the max trace.
+    // percent recomputed (or the accuracy) instead of copied; `hits` from the max trace. Round 4
+    // (A27): a type line with no num / den; num / den looked up from the effectiveness (a ×2 / ×½
+    // table) instead of copied from type_factor (the [3,2] row); num and den swapped (the [2,1] and
+    // [1,2] rows).
 
     // Literal rows first, each aimed at ONE cheat.
     const all = forecastVM(
@@ -116,11 +144,15 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
       }),
     );
     expect(all.lines, 'every line, in the order type, stab, flank, guard, factors copied').toEqual([
-      { kind: 'type', effectiveness: 'SuperEffective' },
+      { kind: 'type', effectiveness: 'SuperEffective', num: 2, den: 1 },
       { kind: 'stab' },
       { kind: 'flank', num: 7, den: 3 },
       { kind: 'guard', num: 2, den: 9 },
     ]);
+    expect(
+      forecastVM(hitAt('SuperEffective', { type_factor: [3, 2] })).lines,
+      'round 4: an unusual type_factor [3,2] is copied as is, never looked up from the effectiveness',
+    ).toEqual([{ kind: 'type', effectiveness: 'SuperEffective', num: 3, den: 2 }]);
     expect(all.min, 'min is the min trace d3 (not d0 41, d1 43 or d2 47)').toBe(53);
     expect(all.max, 'max is the max trace d3 (not d0 61 or d2 71)').toBe(73);
     expect(all.hitPct, 'the hit percent is copied from hit_pct').toBe(89);
@@ -130,8 +162,11 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
     expect(neutral.lines, 'Neutral shows no type line').toEqual([{ kind: 'stab' }]);
 
     const nve = forecastVM(hitAt('NotVeryEffective', { guard: true }));
-    expect(nve.lines, 'NotVeryEffective shows its type line, then Guard (design 3/4)').toEqual([
-      { kind: 'type', effectiveness: 'NotVeryEffective' },
+    expect(
+      nve.lines,
+      'NotVeryEffective shows its type line ([1,2], den first would be [2,1]), then Guard (design 3/4)',
+    ).toEqual([
+      { kind: 'type', effectiveness: 'NotVeryEffective', num: 1, den: 2 },
       { kind: 'guard', num: 3, den: 4 },
     ]);
 
@@ -144,8 +179,8 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
         max: trace({ effectiveness: 'Immune', d0: 0, d1: 0, d2: 0, d3: 0, applied: 0 }),
       }),
     );
-    expect(immune.lines, 'Immune shows ONLY the type line').toEqual([
-      { kind: 'type', effectiveness: 'Immune' },
+    expect(immune.lines, 'Immune shows ONLY the type line, its factor [0,1]').toEqual([
+      { kind: 'type', effectiveness: 'Immune', num: 0, den: 1 },
     ]);
     expect([immune.min, immune.max], 'an Immune hit forecasts 0..0').toEqual([0, 0]);
 
@@ -217,10 +252,11 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
               guard_factor: [2, 9],
             });
             const want: ForecastLine[] = [];
+            const [num, den] = TYPE_FACTOR[eff];
             if (eff === 'Immune') {
-              want.push({ kind: 'type', effectiveness: 'Immune' });
+              want.push(typeLine('Immune', num, den));
             } else {
-              if (eff !== 'Neutral') want.push({ kind: 'type', effectiveness: eff });
+              if (eff !== 'Neutral') want.push(typeLine(eff, num, den));
               if (stab) want.push({ kind: 'stab' });
               if (flank) want.push({ kind: 'flank', num: 7, den: 3 });
               if (guard) want.push({ kind: 'guard', num: 2, den: 9 });

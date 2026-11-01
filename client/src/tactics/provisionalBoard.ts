@@ -1,8 +1,10 @@
 // tactics/provisionalBoard.ts — the PROVISIONAL board (BT11.5; plan REV 4 §R4.6 as superseded by
-// REV 6 R6.3): the live rows with this player's own READY and DRAFT plans applied in initiative order,
-// each wild's `ai::plan` applied in PvE, enemies frozen in PvP. Pure and rules-consuming: every
-// position comes from `rules.path`, every HP from `rules.forecast`, every wild plan from
-// `rules.aiPlan` — through the ONE `applyPlan` walk of draft.ts; no geometry or arithmetic here.
+// REV 6 R6.3 + REV 6.1 C3/C4 + REV 6.2 C19): the live rows with this player's own plans applied in
+// initiative order, each wild's `ai::plan` applied at its turn in PvE (asked of the board as it stands
+// then), enemies frozen in PvP. Pure and rules-consuming: every position comes from `rules.path`,
+// every HP from `rules.forecast`, every wild plan from `rules.aiPlan` — through the ONE `applyPlan`
+// walk of draft.ts; no geometry or arithmetic here.
+import { applyPlan } from './draft';
 import type { QueuedActionRule, RuleSide, RulesBoard, TacticsRules } from './wasm';
 
 export interface PlanInput {
@@ -19,6 +21,7 @@ export interface ProjectInput {
   readonly mySide: RuleSide;
   /** The turn order to walk: the rest of this round, then the next round. */
   readonly order: readonly number[];
+  /** One plan per unit (two for one unit is a programming error and throws). */
   readonly plans: readonly PlanInput[];
   /** Wilds whose live `Intent.block_pct` is 100 (asleep / frozen): they do not act. */
   readonly blocked: ReadonlySet<number>;
@@ -29,6 +32,35 @@ export interface ProjectInput {
   readonly upTo?: number;
 }
 
-export function project(_rules: TacticsRules, _live: RulesBoard, _o: ProjectInput): Projection {
-  throw new Error('bt-11: not implemented');
+/** Walk `o.order` once per unit, stopping before `upTo`: an own unit applies its plan; a wild (PvE)
+ *  applies the plan the rules give it on the board as it stands — unless asleep (`blocked`) or held
+ *  (`wilds: false`); any other enemy is frozen and, in PvP with an `upTo`, hidden. A unit absent or
+ *  no longer Active when its turn comes acts no more. `live` is never mutated. */
+export function project(rules: TacticsRules, live: RulesBoard, o: ProjectInput): Projection {
+  const plans = new Map<number, readonly QueuedActionRule[]>();
+  for (const p of o.plans) {
+    if (plans.has(p.unitId)) throw new Error(`project: two plans for unit ${p.unitId}`);
+    plans.set(p.unitId, p.actions);
+  }
+  const hidden = new Set<number>();
+  const walked = new Set<number>();
+  let board = live;
+  for (const id of o.order) {
+    if (id === o.upTo) break;
+    if (walked.has(id)) continue;
+    walked.add(id);
+    const row = board.units.find((u) => u.id === id);
+    if (row === undefined || row.state !== 'Active') continue;
+    if (row.side === o.mySide) {
+      const actions = plans.get(id);
+      if (actions !== undefined) board = applyPlan(rules, board, id, actions);
+    } else if (o.kind === 'wild' && row.wild_index !== null) {
+      // A blocked wild skips its turn; a held one (the danger board) stands where it is.
+      if (!o.blocked.has(id) && o.wilds)
+        board = applyPlan(rules, board, id, rules.aiPlan(board, id));
+    } else if (o.kind === 'pvp' && o.upTo !== undefined) {
+      hidden.add(id);
+    }
+  }
+  return { board, hidden };
 }

@@ -18,6 +18,13 @@
 // RED REASON: push / pop / isIrreversible / applyPlan / costEntries / toWire / isAlreadyActing throw
 // `bt-11: not implemented`; the `tactics.queue.tooLate` key is absent from both catalogs.
 //
+// bt-11 ROUND 4 (increment C, plan REV 6 R6.1 + REV 6.1 C16 + REV 6.2 C19): BT11-2-DRAFT-COST also
+// pins `applyAction`, the ONE step `applyPlan` folds and the strip / the projection share — null on
+// a refused Move or Skill (and for a unit not on the board), a new board on an accepted one, and the
+// SAME board object for Recruit / Flee / EndTurn / Item (a required pin: the strip chains boards
+// through it). Its `applyPlan` pins are unchanged. RED REASON (round 4): `applyAction` throws
+// `bt-11: not implemented`.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { describe, expect, it } from 'vitest';
@@ -25,6 +32,7 @@ import type { QueuedAction } from '../module_bindings/types';
 import { CATALOG_EN } from '../ui/i18n/catalog.en';
 import { CATALOG_FR } from '../ui/i18n/catalog.fr';
 import {
+  applyAction,
   applyPlan,
   costEntries,
   type Draft,
@@ -326,7 +334,7 @@ describe('draft: editing (BT11.2)', () => {
 // --- costing and applying -------------------------------------------------------------------------
 
 describe('draft: costing and applying (BT11.2, REV 5 A25)', () => {
-  it('BT11-2-DRAFT-COST: costEntries asks the rules for each Move`s disengage tax at its CHAINED start tile on the live board and takes a Skill`s tier from the kit; applyPlan moves the row only along an Ok path, sets each hit target`s HP and Fainted state from the rules` forecast at the caster`s moved tile, and halts the rest of the plan at the first refusal — never mutating the board', () => {
+  it('BT11-2-DRAFT-COST: costEntries asks the rules for each Move`s disengage tax at its CHAINED start tile on the live board and takes a Skill`s tier from the kit; applyPlan moves the row only along an Ok path, sets each hit target`s HP and Fainted state from the rules` forecast at the caster`s moved tile, and halts the rest of the plan at the first refusal — never mutating the board; applyAction, the one step it folds, answers null for a refused Move or Skill and for a unit not on the board, and the very same board for Recruit, Flee, End and Item', () => {
     // WRONG IMPL KILLED: the tax computed in TS (an adjacency test) or always judged at the unit's
     // own tile (the second Move must be taxed at the FIRST Move's destination: the fake says
     // untaxed there); `taxed` hard-coded; strides not copied from the action; the tier from the
@@ -497,6 +505,64 @@ describe('draft: costing and applying (BT11.2, REV 5 A25)', () => {
           `${JSON.stringify(action)} changes nothing`,
         ).toEqual(LIVE.units);
       }
+    }
+
+    // bt-11 round 4 (REV 6 R6.1 / REV 6.2 C19): applyAction, the ONE step. WRONG IMPL KILLED: a
+    // refused Move or Skill answered with the unchanged board instead of null (the strip could not
+    // tell a stale chip from a legal Recruit); a Skill applied although its bound unit is not in the
+    // hit set; a non-board kind answered with a COPY or null (the strip chains `?? board_i`, and a
+    // null would read as stale); the step mutating the board; a caster that is not on the board
+    // moved anyway (the fake path says Ok for (2,1)).
+    {
+      const { rules, calls } = fakeRules();
+      expect(applyAction(rules, LIVE, 5, MOVE_3_1), 'a refused Move (path Err) is null').toBeNull();
+      const moved = applyAction(rules, LIVE, 5, MOVE_2_1);
+      expect(moved, 'an accepted Move is a NEW board').not.toBe(LIVE);
+      expect(moved === null ? null : rowIn(moved, 5), 'the row at the destination').toEqual({
+        ...rowIn(LIVE, 5),
+        pos: c(2, 1),
+      });
+      expect(
+        moved === null ? null : moved.units.filter((u) => u.id !== 5),
+        'every other row as it was',
+      ).toEqual(LIVE.units.filter((u) => u.id !== 5));
+      expect(
+        callsOf(calls, 'path').map((x) => [x.args[1], x.args[2]]),
+        'one path question per Move',
+      ).toEqual([
+        [5, c(3, 1)],
+        [5, c(2, 1)],
+      ]);
+      const hit = applyAction(rules, LIVE, 5, SKILL_12_ON_31);
+      expect(
+        hit === null ? null : [rowIn(hit, 31).cur_hp, rowIn(hit, 31).state],
+        'a Skill: W31 at the forecast`s min.hp_after 37',
+      ).toEqual([37, 'Active']);
+      expect(
+        hit === null ? null : [rowIn(hit, 17).cur_hp, rowIn(hit, 17).state],
+        'and W17 (also hit) at 29, Fainted on kills_min',
+      ).toEqual([29, 'Fainted']);
+      expect(
+        applyAction(rules, LIVE, 99, MOVE_2_1),
+        'a unit that is not on the board: null (never a row invented at the destination)',
+      ).toBeNull();
+      for (const action of [
+        'EndTurn',
+        'Flee',
+        { Recruit: { target: 31, bait: 43 } },
+        { Item: { item_id: 7, target: 'SelfTarget' } },
+      ] as const satisfies readonly QueuedActionRule[]) {
+        expect(
+          applyAction(rules, LIVE, 5, action),
+          `${JSON.stringify(action)}: the SAME board object`,
+        ).toBe(LIVE);
+      }
+      expect(JSON.stringify(LIVE), 'the board is untouched by every step').toBe(LIVE_JSON);
+    }
+    for (const [label, targets] of refusals) {
+      const { rules, calls } = fakeRules({ targets });
+      expect(applyAction(rules, LIVE, 5, SKILL_12_ON_31), `applyAction, ${label}: null`).toBeNull();
+      expect(callsOf(calls, 'forecast'), `applyAction, ${label}: no forecast`).toEqual([]);
     }
   });
 });

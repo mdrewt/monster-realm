@@ -6,7 +6,13 @@ import type { ForecastOut, RuleEffectiveness, RuleStatusKind } from './wasm';
 
 export type Skull = 'none' | 'hollow' | 'full';
 export type ForecastLine =
-  | { readonly kind: 'type'; readonly effectiveness: RuleEffectiveness }
+  /** The carried type-chart multiplier as the rules reduce it: `num/den` (×2 = 2/1, ×½ = 1/2, Immune 0/1). */
+  | {
+      readonly kind: 'type';
+      readonly effectiveness: RuleEffectiveness;
+      readonly num: number;
+      readonly den: number;
+    }
   | { readonly kind: 'stab' }
   | { readonly kind: 'flank'; readonly num: number; readonly den: number }
   | { readonly kind: 'guard'; readonly num: number; readonly den: number };
@@ -32,7 +38,12 @@ export function forecastVM(f: ForecastOut): ForecastVM {
   const lines: ForecastLine[] = [];
   if (hits) {
     if (f.effectiveness !== null && f.effectiveness !== 'Neutral') {
-      lines.push({ kind: 'type', effectiveness: f.effectiveness });
+      lines.push({
+        kind: 'type',
+        effectiveness: f.effectiveness,
+        num: f.type_factor[0],
+        den: f.type_factor[1],
+      });
     }
     // An Immune hit deals 0: only the immunity is news.
     if (f.effectiveness !== 'Immune') {

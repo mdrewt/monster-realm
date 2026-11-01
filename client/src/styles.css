@@ -830,6 +830,91 @@
   outline-offset: -2px;
 }
 
+/* bt-11 increment C: the plan strip's AP pips and firm / provisional / stale badges (the glyph is a
+ * decorative ::before; the word lives in the badge's title and accessible name), the forecast panel,
+ * and the Projected style of a pre-queued forecast (a dashed border, the amber tilde, the label and
+ * the assumption line). No animation here: the reduced-motion block below must stay last. */
+.tactics-strip .tactics-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.tactics-strip .tactics-pips {
+  gap: 2px;
+}
+.tactics-strip .tactics-pip {
+  width: 6px;
+  height: 6px;
+}
+.tactics-badge::before {
+  font-weight: bold;
+}
+.tactics-badge--firm::before {
+  content: "\2713" / "";
+  color: #3c9;
+}
+.tactics-badge--provisional::before {
+  content: "~" / "";
+  color: #fc6;
+}
+.tactics-badge--stale::before {
+  content: "\2717" / "";
+  color: #f66;
+}
+.tactics-strip .tactics-chip:has(.tactics-badge--stale) {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+.tactics-chip-note {
+  color: #fc6;
+  font-size: 11px;
+  font-style: italic;
+}
+.tactics-forecast {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  padding: 4px 8px;
+  border: 1px solid #556;
+  border-radius: 3px;
+  background: #15151f;
+  font-size: 12px;
+}
+.tactics-forecast-line {
+  white-space: nowrap;
+}
+.tactics-forecast-line[data-line="vs"] {
+  font-weight: bold;
+}
+.tactics-tilde {
+  margin-right: 2px;
+  color: #fc6;
+}
+.tactics-skull::before {
+  content: "\1F480" / "";
+}
+/* The hollow skull differs by SHAPE (an outline), not by opacity alone. */
+.tactics-skull--hollow::before {
+  color: transparent;
+  -webkit-text-stroke: 1px #eee;
+}
+.tactics-projected {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px dashed #fc6;
+  border-radius: 3px;
+}
+.tactics-projected-label,
+.tactics-projected-assumes,
+.tactics-projected-enemies {
+  color: #fc6;
+  font-size: 11px;
+  font-style: italic;
+}
+
 /* Reduced motion. ORDER IS LOAD-BEARING: these follow the base rules above (equal specificity, so
  * source order decides). `none`, not `0.01ms`: nothing listens for transitionend/animationend.
  * Two channels: the OS preference (the media query) and the shell's own boolean (`.tactics--reduced`

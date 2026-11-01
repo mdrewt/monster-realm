@@ -22,6 +22,13 @@
 // follow the grown roster. RED REASON (round 3): the 28 keys are absent from both catalogs and from
 // messageIds.ts / strings.ts.
 //
+// bt-11 ROUND 4 (increment C, plan REV 6 R6.7 / REV 5 A39): the roster grows 88 → 114 (+12 plain,
+// +14 parameterised — the strip's badges, AP pips and `only N held` note, the forecast panel's
+// lines, the Projected style's label / assumption / enemies-hold lines). BT11-1-STRINGS-ROSTER pins
+// the exact 114 (named intentional change: was 88); the FR and RESOLVER tests follow the grown
+// roster. RED REASON (round 4): the 26 keys are absent from both catalogs, messageIds.ts and
+// strings.ts.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -147,11 +154,48 @@ const BT11_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.reason.fleeFullAp': ['ap'],
 };
 
-/** Every `tactics.*` key after bt-11 increment B: 57 plain, 31 parameterised = 88. */
-const PLAIN_KEYS: readonly string[] = [...BT10_PLAIN_KEYS, ...BT11_PLAIN_KEYS];
+/** bt-11 increment C (plan REV 6 R6.7): the strip's three badge words, the forecast panel's plain
+ *  lines and the Projected style's label and enemies-hold line — 12 plain keys. */
+const BT11C_PLAIN_KEYS: readonly string[] = [
+  'tactics.badge.firm',
+  'tactics.badge.provisional',
+  'tactics.badge.stale',
+  'tactics.forecast.label',
+  'tactics.forecast.miss',
+  'tactics.forecast.typeImmune',
+  'tactics.forecast.stab',
+  'tactics.forecast.lethal',
+  'tactics.forecast.lethalMax',
+  'tactics.forecast.firstStand',
+  'tactics.projected.label',
+  'tactics.projected.enemiesHold',
+];
+
+/** bt-11 increment C: the 14 parameterised keys and the exact fields each closure reads (R6.7:
+ *  unit / item / status / tile are strings, every other field a number). */
+const BT11C_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'tactics.badge.onlyHeld': ['n'],
+  'tactics.chip.cost': ['ap'],
+  'tactics.forecast.vs': ['unit'],
+  'tactics.forecast.hit': ['pct'],
+  'tactics.forecast.damage': ['min', 'max'],
+  'tactics.forecast.typeTimes': ['num'],
+  'tactics.forecast.typeOver': ['num', 'den'],
+  'tactics.forecast.flank': ['num', 'den'],
+  'tactics.forecast.guard': ['num', 'den'],
+  'tactics.forecast.status': ['status'],
+  'tactics.forecast.recruit': ['pct'],
+  'tactics.forecast.recruitLines': ['base', 'bait', 'weakened', 'pct'],
+  'tactics.forecast.bait': ['item'],
+  'tactics.projected.assumes': ['unit', 'tile'],
+};
+
+/** Every `tactics.*` key after bt-11 increment C: 69 plain, 45 parameterised = 114. */
+const PLAIN_KEYS: readonly string[] = [...BT10_PLAIN_KEYS, ...BT11_PLAIN_KEYS, ...BT11C_PLAIN_KEYS];
 const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT10_PARAM_FIELDS,
   ...BT11_PARAM_FIELDS,
+  ...BT11C_PARAM_FIELDS,
 };
 
 const PARAM_KEYS = Object.keys(PARAM_FIELDS);
@@ -160,6 +204,8 @@ const BT10_PARAM_KEYS = Object.keys(BT10_PARAM_FIELDS);
 const BT10_ROSTER = [...BT10_PLAIN_KEYS, ...BT10_PARAM_KEYS].sort();
 const BT11_PARAM_KEYS = Object.keys(BT11_PARAM_FIELDS);
 const BT11_ROSTER = [...BT11_PLAIN_KEYS, ...BT11_PARAM_KEYS].sort();
+const BT11C_PARAM_KEYS = Object.keys(BT11C_PARAM_FIELDS);
+const BT11C_ROSTER = [...BT11C_PLAIN_KEYS, ...BT11C_PARAM_KEYS].sort();
 
 /** The keys of `roster` whose catalog.en.ts entry line has no adjacent `// @desc:` of >= 10
  *  characters (or no entry line at all). */
@@ -212,8 +258,9 @@ function probe(fn: (p: Record<string, unknown>) => string): { out: string; field
 
 describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
   // bt-11 (named intentional change, plan REV 5 A39): the EXACT-roster pin moved to
-  // BT11-1-STRINGS-ROSTER below (88 keys); this test keeps bt-10's own claim — its 60 keys are still
-  // in both catalogs with the right shape, declared and described. Was: "exactly the 60".
+  // BT11-1-STRINGS-ROSTER below (88 keys; 114 since round 4); this test keeps bt-10's own claim —
+  // its 60 keys are still in both catalogs with the right shape, declared and described. Was:
+  // "exactly the 60".
   it('BT10-6-STRINGS-ROSTER: both catalogs still hold the 60 bt-10 tactics.* keys (31 plain, 29 parameterised), with the four status* keys instead of tactics.ticker.status, every one declared in messageIds.ts and every English entry carrying an adjacent @desc', () => {
     // WRONG IMPL KILLED: a key missing from one locale (t()/tf() throws in a French boot); the
     // dropped tactics.ticker.status left behind (A4); a parameterised key authored as a plain
@@ -268,26 +315,48 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     ).toEqual([]);
   });
 
-  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 88 tactics.* keys — bt-10`s 60 plus the command menu`s 26 plain and 2 parameterised keys — each new one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
-    // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam): a menu label, reason, dock or queue key missing
-    // from one locale (a French boot throws on opening the command menu); increment C's keys added
-    // early (badge.*, forecast.*, projected.*, chip.cost: dead keys while their requesters do not
-    // exist, catalogParity DEAD-KEY); a reason that takes no {ap} (the "6" baked into the text:
-    // R4.11 reads it from rules.freshBudget()); a parameterised key authored as plain or the
-    // reverse; a key outside the MessageId union / MessageParams table; an undescribed entry; and a
-    // stray tactics.* key nobody asked for.
-    expect(BT11_PLAIN_KEYS, 'fixture: 26 new plain keys').toHaveLength(26);
-    expect(BT11_PARAM_KEYS, 'fixture: 2 new parameterised keys').toHaveLength(2);
-    expect(PLAIN_KEYS, 'fixture: 57 plain keys in all').toHaveLength(57);
-    expect(PARAM_KEYS, 'fixture: 31 parameterised keys in all').toHaveLength(31);
-    expect(new Set(ROSTER).size, 'fixture: 88 keys, none listed twice').toBe(88);
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 114 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, and the strip / forecast / Projected 12 plain and 14 parameterised keys — each new one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+    // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam; round 4: REV 6 R6.7): a menu label, reason,
+    // dock or queue key missing from one locale (a French boot throws on opening the command menu);
+    // a badge word, a forecast line or a Projected line missing from one locale (a French boot
+    // throws on the first aim); a reason that takes no {ap} (the "6" baked into the text: R4.11
+    // reads it from rules.freshBudget()); a parameterised key authored as plain or the reverse (a
+    // `forecast.hit` with the percent concatenated by the caller; a `projected.label` closure); a
+    // key outside the MessageId union / MessageParams table; an undescribed entry; the dropped
+    // `forecast.typeSuper` / `typeResist` words kept (A27 replaced them with typeTimes / typeOver);
+    // the roster left at 88; and a stray tactics.* key nobody asked for.
+    expect(BT11_PLAIN_KEYS, 'fixture: 26 increment-B plain keys').toHaveLength(26);
+    expect(BT11_PARAM_KEYS, 'fixture: 2 increment-B parameterised keys').toHaveLength(2);
+    expect(BT11C_PLAIN_KEYS, 'fixture: 12 increment-C plain keys').toHaveLength(12);
+    expect(BT11C_PARAM_KEYS, 'fixture: 14 increment-C parameterised keys').toHaveLength(14);
+    expect(PLAIN_KEYS, 'fixture: 69 plain keys in all').toHaveLength(69);
+    expect(PARAM_KEYS, 'fixture: 45 parameterised keys in all').toHaveLength(45);
+    expect(new Set(ROSTER).size, 'fixture: 114 keys, none listed twice').toBe(114);
     expect(
       BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
-      'fixture: the new keys are new',
+      'fixture: the increment-B keys are new',
     ).toEqual([]);
+    expect(
+      BT11C_ROSTER.filter((k) => BT10_ROSTER.includes(k) || BT11_ROSTER.includes(k)),
+      'fixture: the increment-C keys are new',
+    ).toEqual([]);
+    for (const dropped of ['tactics.forecast.typeSuper', 'tactics.forecast.typeResist']) {
+      expect(Object.hasOwn(EN, dropped), `en ${dropped} was dropped by A27`).toBe(false);
+      expect(Object.hasOwn(FR, dropped), `fr ${dropped} was dropped by A27`).toBe(false);
+    }
 
-    expect(tacticsKeys(EN), 'the English catalog holds exactly the 88-key roster').toEqual(ROSTER);
-    expect(tacticsKeys(FR), 'the French catalog holds exactly the 88-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(EN), 'the English catalog holds exactly the 114-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(FR), 'the French catalog holds exactly the 114-key roster').toEqual(ROSTER);
+
+    for (const key of BT11C_PLAIN_KEYS) {
+      expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
+      expect(typeof FR[key], `fr ${key} is a plain string`).toBe('string');
+      expect((EN[key] as string).length > 0, `en ${key} is not empty`).toBe(true);
+    }
+    for (const key of BT11C_PARAM_KEYS) {
+      expect(typeof EN[key], `en ${key} is a closure`).toBe('function');
+      expect(typeof FR[key], `fr ${key} is a closure`).toBe('function');
+    }
 
     for (const key of BT11_PLAIN_KEYS) {
       expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
@@ -307,13 +376,13 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     }
 
     const ids = stripComments(readFileSync(path.join(I18N_DIR, 'messageIds.ts'), 'utf8'));
-    for (const key of BT11_ROSTER) {
+    for (const key of [...BT11_ROSTER, ...BT11C_ROSTER]) {
       expect(ids.includes(`| '${key}'`), `${key} is in the MessageId union`).toBe(true);
     }
-    for (const key of BT11_PARAM_KEYS) {
+    for (const key of [...BT11_PARAM_KEYS, ...BT11C_PARAM_KEYS]) {
       expect(ids.includes(`readonly '${key}':`), `${key} is in the MessageParams table`).toBe(true);
     }
-    for (const key of BT11_PLAIN_KEYS) {
+    for (const key of [...BT11_PLAIN_KEYS, ...BT11C_PLAIN_KEYS]) {
       expect(ids.includes(`readonly '${key}':`), `${key} is plain: not in MessageParams`).toBe(
         false,
       );
@@ -648,7 +717,7 @@ describe('tactics strings: the source scans (A6)', () => {
 });
 
 describe('tactics strings: strings.ts (BT10.6, A6)', () => {
-  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 88 tactics.* keys (bt-11: 60 + 28) are requested', () => {
+  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 114 tactics.* keys (bt-11: 60 + 28 + 26) are requested', () => {
     // WRONG IMPL KILLED: a dynamic key (`t(\`tactics.stance.${s}\`)` — PARITY-02's dynamic-key scan
     // refuses it, and a typo would only fail at runtime); an aliased import the scan cannot follow;
     // t() on a closure key or tf() on a plain key (the resolver throws); a catalog key nothing

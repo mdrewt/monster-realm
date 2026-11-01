@@ -75,21 +75,47 @@ function hitSet(
   return hit.Ok;
 }
 
-/** `board` with ONE action of `unitId` applied (the step `applyPlan` folds; REV 6 R6.1), or null when
- *  the rules refuse it now: a Move whose `rules.path` is Err, a Skill whose aim is refused or whose
- *  bound unit is not among the hits. Item / Recruit / Flee / EndTurn leave the same board object. */
+/** `board` with ONE action of `unitId` applied (the step `applyPlan` folds; REV 6 R6.1), or null
+ *  when the rules refuse it now: a Move whose `rules.path` is Err, a Skill whose aim is refused or
+ *  whose bound unit is not among the hits, or a unit that is not on the board. Item / Recruit /
+ *  Flee / EndTurn leave the same board object (their outcome is the server's roll). */
 export function applyAction(
-  _rules: TacticsRules,
-  _board: RulesBoard,
-  _unitId: number,
-  _action: QueuedActionRule,
+  rules: TacticsRules,
+  board: RulesBoard,
+  unitId: number,
+  action: QueuedActionRule,
 ): RulesBoard | null {
-  throw new Error('bt-11: not implemented');
+  const caster = rowOf(board, unitId);
+  if (caster === undefined) return null;
+  if (typeof action !== 'object') return board; // Flee / EndTurn: nothing on the board.
+  if ('Move' in action) {
+    const dest = { x: action.Move.x, y: action.Move.y };
+    if (!isOk(rules.path(board, unitId, dest))) return null;
+    return withRow(board, { ...caster, pos: dest });
+  }
+  if ('Skill' in action) {
+    const hits = hitSet(rules, board, caster, action.Skill.skill_id, action.Skill.target);
+    if (hits === null) return null;
+    const attacker = rules.unit(caster);
+    let out = board;
+    for (const id of hits) {
+      const row = rowOf(out, id);
+      if (row === undefined) continue;
+      const flank = rules.flank(out, unitId, id);
+      const f = rules.forecast(attacker, rules.unit(row), action.Skill.skill_id, flank);
+      out = withRow(out, {
+        ...row,
+        cur_hp: f.min.hp_after,
+        state: f.kills_min ? 'Fainted' : row.state,
+      });
+    }
+    return out;
+  }
+  return board; // Item / Recruit: nothing on the board.
 }
 
-/** The board with `unitId`'s `actions` applied in order (REV 5 A25): a Move puts the row on its
- *  destination when `rules.path` is Ok; a Skill sets each hit target's `cur_hp` to the forecast's
- *  minimum-roll `hp_after` (Fainted when `kills_min`); an Err halts the rest of the plan. */
+/** The board with `unitId`'s `actions` applied in order (REV 5 A25): the fold of `applyAction`,
+ *  halting at the first step the rules refuse (the board so far is returned). */
 export function applyPlan(
   rules: TacticsRules,
   board: RulesBoard,
@@ -98,30 +124,9 @@ export function applyPlan(
 ): RulesBoard {
   let out = board;
   for (const action of actions) {
-    const caster = rowOf(out, unitId);
-    if (caster === undefined) return out;
-    if (typeof action !== 'object') continue; // Flee / EndTurn: nothing on the board.
-    if ('Move' in action) {
-      const dest = { x: action.Move.x, y: action.Move.y };
-      if (!isOk(rules.path(out, unitId, dest))) return out;
-      out = withRow(out, { ...caster, pos: dest });
-    } else if ('Skill' in action) {
-      const hits = hitSet(rules, out, caster, action.Skill.skill_id, action.Skill.target);
-      if (hits === null) return out;
-      const attacker = rules.unit(caster);
-      for (const id of hits) {
-        const row = rowOf(out, id);
-        if (row === undefined) continue;
-        const flank = rules.flank(out, unitId, id);
-        const f = rules.forecast(attacker, rules.unit(row), action.Skill.skill_id, flank);
-        out = withRow(out, {
-          ...row,
-          cur_hp: f.min.hp_after,
-          state: f.kills_min ? 'Fainted' : row.state,
-        });
-      }
-    }
-    // Item / Recruit: nothing on the board (their outcome is the server's roll).
+    const next = applyAction(rules, out, unitId, action);
+    if (next === null) return out;
+    out = next;
   }
   return out;
 }
