@@ -3265,7 +3265,7 @@ fn a_tactical_ko_pays_exactly_what_the_one_v_one_funnel_pays_for_the_same_wild_b
     w.seed_monster(&m);
     let battle = one_v_one(
         950,
-        &[m.clone()],
+        std::slice::from_ref(&m),
         wild_battle_monster(wild_species, wild_level),
         BattleOutcome::SideAWins,
     );

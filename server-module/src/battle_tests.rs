@@ -2465,7 +2465,74 @@ struct BnWorld<'a> {
     players: Handle<'a, Player>,
 }
 
+/// bt-9: the 1v1 write-back's prior-terminal sweep now takes a swept anchor's tactical rows
+/// too (`tactics::sweep_swept_anchor`), so the host must know their `battle_id` indexes (and the
+/// schedule tables' primary keys the disarms delete by) even when no such row exists. Index-only
+/// registrations: the sweep reads and point-deletes, it never seeds or scans here.
+fn bn_register_tactical_tables(fx: &Fixture) {
+    let _ =
+        fx.table_keyed::<crate::schema::BattleTactical, u64>("battle_tactical", "battle_id", |r| {
+            r.battle_id
+        });
+    let _ =
+        fx.table_keyed::<crate::schema::BattleSummary, u64>("battle_summary", "battle_id", |r| {
+            r.battle_id
+        });
+    let _ = fx.table_keyed::<crate::schema::BattleEvent, u64>("battle_event", "battle_id", |r| {
+        r.battle_id
+    });
+    let _ = fx
+        .table_keyed::<crate::schema::BattleUnit, u64>("battle_unit", "battle_id", |r| r.battle_id);
+    let _ = fx.table_keyed::<crate::schema::BattleQueue, u64>("battle_queue", "battle_id", |r| {
+        r.battle_id
+    });
+    let _ = fx.table_keyed::<crate::schema::BattleClock, u64>("battle_clock", "battle_id", |r| {
+        r.battle_id
+    });
+    let _ = fx.table_keyed::<crate::schema::BattleSecret, u64>("battle_secret", "battle_id", |r| {
+        r.battle_id
+    });
+    let _ = fx.table_keyed::<crate::schema::BattleWildUnit, u64>(
+        "battle_wild_unit",
+        "battle_id",
+        |r| r.battle_id,
+    );
+    let _ = fx.table_keyed::<crate::schema::BattleDeploy, u64>("battle_deploy", "battle_id", |r| {
+        r.battle_id
+    });
+    let _ = fx.table_keyed::<crate::tactics::TacticalDeadlineSched, u64>(
+        "tactical_deadline_sched",
+        "battle_id",
+        |r| r.battle_id,
+    );
+    let _ = fx.table_keyed::<crate::tactics::TacticalDeadlineSched, u64>(
+        "tactical_deadline_sched",
+        "scheduled_id",
+        |r| r.scheduled_id,
+    );
+    let _ = fx.table_keyed::<crate::tactics::TacticalAdvanceSched, u64>(
+        "tactical_advance_sched",
+        "battle_id",
+        |r| r.battle_id,
+    );
+    let _ = fx.table_keyed::<crate::tactics::TacticalAdvanceSched, u64>(
+        "tactical_advance_sched",
+        "scheduled_id",
+        |r| r.scheduled_id,
+    );
+    let _ =
+        fx.table_keyed::<crate::tactics::BattleGcSched, u64>("battle_gc_sched", "battle_id", |r| {
+            r.battle_id
+        });
+    let _ = fx.table_keyed::<crate::tactics::BattleGcSched, u64>(
+        "battle_gc_sched",
+        "scheduled_id",
+        |r| r.scheduled_id,
+    );
+}
+
 fn bn_world(fx: &Fixture) -> BnWorld<'_> {
+    bn_register_tactical_tables(fx);
     let battles = fx
         .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
         .writable()

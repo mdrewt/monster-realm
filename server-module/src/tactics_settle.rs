@@ -17,17 +17,29 @@
 //! `battle_summary` (design §8.1) is ONE row per battle: inserted at the Active start,
 //! accumulated by every `store` step ([`step_delta`] → [`accumulate`]) and finalised here.
 //!
-//! Pure functions first (unit-tested without a host); the shell functions take `ctx`.
-//!
-//! bt-9 API freeze: every body below is neutral until the gating tests are red.
-#![allow(dead_code)] // bt-9 API freeze only — removed with the implementation.
+//! Pure functions first (unit-tested without a host); the shell functions take `ctx`. Nothing
+//! here panics or returns `Err` past `finish`: a scheduled or disconnect reducer that trapped
+//! would freeze the battle, so every helper failure is logged and the next step still runs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::schema::{Battle, BattleSummary, BattleTactical};
-use game_core::tactics::{Award, EventPayload, Ledger, StepResult, TacticalState};
-use game_core::BattleOutcome;
-use spacetimedb::ReducerContext;
+use crate::battle::{
+    apply_faint_penalties, credit_monster, day_epoch_utc, is_wild_win, sweep_prior_terminals,
+};
+use crate::economy::grant_currency;
+use crate::guards::json_escape;
+use crate::observability::mr_log;
+use crate::schema::{
+    battle, battle_clock, battle_event, battle_summary, battle_tactical, battle_unit, monster,
+    Battle, BattleEvent, BattleSummary, BattleTactical, SideRow,
+};
+use crate::tactics::{content_species, next_event_seq};
+use game_core::tactics::{
+    on_unit_defeated, pay, Award, AwardsEvent, EventPayload, HitEffectiveness, Ledger,
+    StatusChange, StepResult, TacticalState, UnitState,
+};
+use game_core::{base_stat_total, BattleOutcome, Xp};
+use spacetimedb::{ReducerContext, Table};
 
 /// The H1 proxy's threshold (‰): a battle whose FIRST recruit attempt saw the wild below it is
 /// `weaken_first`. `scripts/playtest-report.mjs` carries the same default (`weakenThresholdPermille`).
@@ -36,6 +48,10 @@ pub(crate) const WEAKEN_FIRST_PERMILLE: u16 = 500;
 /// The `Awards` line that carries the player's currency: no unit earns currency, and unit ids
 /// are `auto_inc` from 1 (`tactics::DEPLOY_WINDOW_UNIT` is the same "no unit" convention).
 pub(crate) const CURRENCY_AWARD_UNIT: u32 = 0;
+
+/// Buckets of the windows-per-unit-turn histogram a fresh row starts with: `0..=3`, the
+/// shipped `max_windows_per_turn`. [`apply_delta`] grows the vector past it if a tuning ever does.
+const HISTOGRAM_LEN: usize = 4;
 
 /// How a battle closes — and therefore what settles:
 ///
@@ -66,6 +82,8 @@ pub(crate) struct Fold {
     pub(crate) skipped_bst: Vec<u32>,
     /// Units `Fainted` on the final board with no `Ko` in the transcript (an audit finding).
     pub(crate) missing_ko: Vec<u32>,
+    /// `Ko` victims the reward rule refused (`RewardError`): uncredited, by construction never.
+    pub(crate) refused: Vec<u32>,
 }
 
 /// The turn-machine facts before a step that the summary's per-step delta needs.
@@ -106,48 +124,293 @@ impl StepDelta {
     }
 }
 
-/// The board as it stood when `fallen` had fallen and nothing else had: the final board with every
-/// unit NOT in `fallen` restored to conscious (`Active`, HP ≥ 1). Exact under P1's monotone
-/// consciousness (no heal, no revive).
-#[must_use]
-pub(crate) fn board_at(final_state: &TacticalState, fallen: &BTreeSet<u32>) -> TacticalState {
-    let _ = fallen;
-    final_state.clone()
+/// `histogram[bucket] += 1`, growing the vector to fit (never an index past the end).
+fn bump(histogram: &mut Vec<u32>, bucket: u8) {
+    let i = usize::from(bucket);
+    if histogram.len() <= i {
+        histogram.resize(i + 1, 0);
+    }
+    if let Some(slot) = histogram.get_mut(i) {
+        *slot = slot.saturating_add(1);
+    }
 }
 
-/// Fold the transcript into the reward ledger (module doc). `events` may arrive in any order; the
-/// fold sorts nothing — the caller passes them ascending `seq`. `bst_of(species_id)` is the
-/// victim species' base-stat total (content); `None` skips the KO (`Fold::skipped_bst`).
+/// The board as it stood when `fallen` had fallen and nothing else had: the final board with every
+/// unit NOT in `fallen` restored to conscious (`Active`, HP ≥ 1; a unit that never fell is left
+/// exactly as it ended). Exact under P1's monotone consciousness (no heal, no revive).
+#[must_use]
+pub(crate) fn board_at(final_state: &TacticalState, fallen: &BTreeSet<u32>) -> TacticalState {
+    let mut board = final_state.clone();
+    for unit in &mut board.units {
+        if fallen.contains(&unit.id) || unit.is_conscious() {
+            continue;
+        }
+        unit.state = UnitState::Active;
+        unit.cur_hp = unit.cur_hp.max(1);
+    }
+    board
+}
+
+/// Fold the transcript into the reward ledger (module doc). The caller passes `events` ascending
+/// `seq`. `bst_of(species_id)` is the victim species' base-stat total (content); `None` skips the
+/// KO (`Fold::skipped_bst`). The killer of a `Ko` is the attacker of the LAST opposite-side hit on
+/// the victim (`hit`, with damage or the KO itself) — the design names `on_unit_defeated(killer,
+/// victim)` and `Executed.attacker`, and is silent on tick/Surge deaths: "last hitter" is the
+/// marshaling of the transcript, never a reward amount or split (those stay in `rewards.rs`).
 #[must_use]
 pub(crate) fn ledger_of(
     events: &[EventPayload],
     final_state: &TacticalState,
     bst_of: &dyn Fn(u32) -> Option<u16>,
 ) -> Fold {
-    let _ = (events, final_state, bst_of);
-    Fold::default()
+    let mut fold = Fold::default();
+    let mut fallen: BTreeSet<u32> = BTreeSet::new();
+    let mut last_hitter: BTreeMap<u32, u32> = BTreeMap::new();
+    let side_of = |id: u32| final_state.unit(id).map(|u| u.side);
+    for event in events {
+        match event {
+            EventPayload::Executed(x) => {
+                let attacker_side = side_of(x.attacker);
+                for r in &x.results {
+                    let opposite = matches!(
+                        (side_of(r.unit), attacker_side),
+                        (Some(target), Some(attacker)) if target != attacker
+                    );
+                    if r.hit && (r.damage > 0 || r.ko) && opposite {
+                        last_hitter.insert(r.unit, x.attacker);
+                    }
+                }
+            }
+            EventPayload::Ko(k) => {
+                fallen.insert(k.unit);
+                let Some(&killer) = last_hitter.get(&k.unit) else {
+                    fold.unattributed.push(k.unit);
+                    continue;
+                };
+                let species = final_state.unit(k.unit).map(|u| u.kit.species_id);
+                let Some(bst) = species.and_then(bst_of) else {
+                    fold.skipped_bst.push(k.unit);
+                    continue;
+                };
+                let board = board_at(final_state, &fallen);
+                if on_unit_defeated(&mut fold.ledger, &board, killer, k.unit, bst).is_err() {
+                    fold.refused.push(k.unit);
+                }
+            }
+            EventPayload::RecruitResult(r) => {
+                if r.success {
+                    fallen.insert(r.target);
+                }
+            }
+            EventPayload::Missed(_)
+            | EventPayload::PlanHalted(_)
+            | EventPayload::QueueVoided(_)
+            | EventPayload::AutoPass(_)
+            | EventPayload::StoodGround(_)
+            | EventPayload::Status(_)
+            | EventPayload::Surge(_)
+            | EventPayload::Awards(_)
+            | EventPayload::Moved(_)
+            | EventPayload::ItemUsed(_)
+            | EventPayload::TurnEnded(_)
+            | EventPayload::RoundEnded(_)
+            | EventPayload::BattleStarted(_)
+            | EventPayload::BattleEnd(_) => {}
+        }
+    }
+    for unit in &final_state.units {
+        if unit.state == UnitState::Fainted && !fallen.contains(&unit.id) {
+            fold.missing_ko.push(unit.id);
+        }
+    }
+    fold
 }
 
 /// The `Awards` lines of what was ACTUALLY applied: one per credited monster (ascending unit;
 /// `essence` = the sum over pools) plus one [`CURRENCY_AWARD_UNIT`] line iff `currency > 0`.
 #[must_use]
 pub(crate) fn awards_events(applied: &[Award], currency: u64) -> Vec<EventPayload> {
-    let _ = (applied, currency);
-    Vec::new()
+    let mut lines: Vec<EventPayload> = applied
+        .iter()
+        .map(|award| {
+            EventPayload::Awards(AwardsEvent {
+                unit: award.unit,
+                xp: award.xp,
+                essence: award
+                    .essence
+                    .iter()
+                    .fold(0u32, |acc, &(_, n)| acc.saturating_add(n)),
+                currency: 0,
+            })
+        })
+        .collect();
+    if currency > 0 {
+        lines.push(EventPayload::Awards(AwardsEvent {
+            unit: CURRENCY_AWARD_UNIT,
+            xp: 0,
+            essence: 0,
+            currency,
+        }));
+    }
+    lines
 }
 
 /// What `out` adds to the summary, given the facts before the step and the player-owned unit ids.
+/// A player unit's `TurnEnded` (not `Status{Blocked}` this step) is `live` when it is the waiting
+/// unit's (bucket `prev.windows`) else pre-queued (bucket 0); a `BattleEnd` that cuts the waiting
+/// unit's turn counts it once; `PlanHalted` counts a PLAYER unit other than the waiting one (a
+/// pre-queued plan); hits and misses come from `TargetHit`s of both sides (the separate `Missed`
+/// adds nothing); a single-hit super-effective KO needs round > 1, a target at full HP at step start
+/// and no earlier damage this step (an `Executed` hit, a `Status{Tick}` or a `Surge`).
 #[must_use]
 pub(crate) fn step_delta(prev: &StepPrev, out: &StepResult, player_units: &[u32]) -> StepDelta {
-    let _ = (prev, out, player_units);
-    StepDelta::default()
+    let mut d = StepDelta::default();
+    let is_player = |unit: u32| player_units.contains(&unit);
+    let mut blocked: BTreeSet<u32> = BTreeSet::new();
+    let mut damaged: BTreeSet<u32> = BTreeSet::new();
+    let mut waiting_ended = false;
+    for event in &out.events {
+        match event {
+            EventPayload::Status(s) => match s.change {
+                StatusChange::Blocked => {
+                    blocked.insert(s.unit);
+                }
+                StatusChange::Tick => {
+                    if s.amount > 0 {
+                        damaged.insert(s.unit);
+                    }
+                }
+                StatusChange::Applied | StatusChange::Cured => {}
+            },
+            EventPayload::Surge(s) => {
+                damaged.insert(s.unit);
+            }
+            EventPayload::TurnEnded(t) => {
+                if !is_player(t.unit) || blocked.contains(&t.unit) {
+                    continue;
+                }
+                if Some(t.unit) == prev.waiting {
+                    waiting_ended = true;
+                    d.live = d.live.saturating_add(1);
+                    bump(&mut d.windows, prev.windows);
+                } else {
+                    d.prequeued = d.prequeued.saturating_add(1);
+                    bump(&mut d.windows, 0);
+                }
+            }
+            EventPayload::BattleEnd(_) => {
+                if prev.waiting.is_some() && !waiting_ended {
+                    waiting_ended = true;
+                    d.live = d.live.saturating_add(1);
+                    bump(&mut d.windows, prev.windows);
+                }
+            }
+            EventPayload::PlanHalted(h) => {
+                if is_player(h.unit) && Some(h.unit) != prev.waiting {
+                    d.halted = d.halted.saturating_add(1);
+                }
+            }
+            EventPayload::AutoPass(_) => d.autopasses = d.autopasses.saturating_add(1),
+            EventPayload::ItemUsed(_) => d.items = d.items.saturating_add(1),
+            EventPayload::RecruitResult(r) => {
+                d.recruit_attempts = d.recruit_attempts.saturating_add(1);
+                if r.success {
+                    d.recruit_successes = d.recruit_successes.saturating_add(1);
+                }
+            }
+            EventPayload::Executed(x) => {
+                for r in &x.results {
+                    if !r.hit {
+                        d.misses = d.misses.saturating_add(1);
+                        continue;
+                    }
+                    d.hits = d.hits.saturating_add(1);
+                    let single_hit = r.ko
+                        && out.round > 1
+                        && r.effectiveness == Some(HitEffectiveness::SuperEffective)
+                        && prev.full_hp.contains(&r.unit)
+                        && !damaged.contains(&r.unit);
+                    if single_hit {
+                        d.se_kos_after_r1 = d.se_kos_after_r1.saturating_add(1);
+                    }
+                    if r.damage > 0 {
+                        damaged.insert(r.unit);
+                    }
+                }
+            }
+            EventPayload::Missed(_)
+            | EventPayload::QueueVoided(_)
+            | EventPayload::StoodGround(_)
+            | EventPayload::Ko(_)
+            | EventPayload::Awards(_)
+            | EventPayload::Moved(_)
+            | EventPayload::RoundEnded(_)
+            | EventPayload::BattleStarted(_) => {}
+        }
+    }
+    d
 }
 
-/// `row` plus `delta`, saturating; the histogram grows to fit the largest bucket.
+/// `row` plus `delta`, saturating; the histogram grows to fit the largest bucket and keeps any
+/// longer tail it already had.
 #[must_use]
-pub(crate) fn apply_delta(row: BattleSummary, delta: &StepDelta) -> BattleSummary {
-    let _ = delta;
+pub(crate) fn apply_delta(mut row: BattleSummary, delta: &StepDelta) -> BattleSummary {
+    if row.windows_histogram.len() < delta.windows.len() {
+        row.windows_histogram.resize(delta.windows.len(), 0);
+    }
+    for (slot, add) in row.windows_histogram.iter_mut().zip(delta.windows.iter()) {
+        *slot = slot.saturating_add(*add);
+    }
+    row.unit_turns_prequeued = row.unit_turns_prequeued.saturating_add(delta.prequeued);
+    row.unit_turns_live = row.unit_turns_live.saturating_add(delta.live);
+    row.autopasses = row.autopasses.saturating_add(delta.autopasses);
+    row.halted_plans = row.halted_plans.saturating_add(delta.halted);
+    row.recruit_attempts = row.recruit_attempts.saturating_add(delta.recruit_attempts);
+    row.recruit_successes = row
+        .recruit_successes
+        .saturating_add(delta.recruit_successes);
+    row.items_used = row.items_used.saturating_add(delta.items);
+    row.hits = row.hits.saturating_add(delta.hits);
+    row.misses = row.misses.saturating_add(delta.misses);
+    row.se_kos_after_r1 = row.se_kos_after_r1.saturating_add(delta.se_kos_after_r1);
     row
+}
+
+/// A fresh summary row for `anchor`/`tactical`: `outcome: Ongoing` marks an unfinished battle.
+fn zero_row(anchor: &Battle, tactical: &BattleTactical) -> BattleSummary {
+    BattleSummary {
+        battle_id: anchor.battle_id,
+        player_identity: anchor.player_identity,
+        opponent_identity: anchor.opponent_identity,
+        kind: tactical.kind,
+        outcome: BattleOutcome::Ongoing,
+        rounds: 0,
+        wall_ms: 0,
+        idle_ms_a: 0,
+        idle_ms_b: 0,
+        windows_histogram: vec![0; HISTOGRAM_LEN],
+        autopasses: 0,
+        recruit_attempts: 0,
+        recruit_successes: 0,
+        weaken_first: false,
+        items_used: 0,
+        damage_dealt_a: 0,
+        damage_dealt_b: 0,
+        hits: 0,
+        misses: 0,
+        unit_turns_prequeued: 0,
+        unit_turns_live: 0,
+        halted_plans: 0,
+        se_kos_after_r1: 0,
+    }
+}
+
+/// The battle's summary row, inserted zeroed when absent (the given anchor and tactical rows).
+fn summary_row(ctx: &ReducerContext, anchor: &Battle, tactical: &BattleTactical) -> BattleSummary {
+    match ctx.db.battle_summary().battle_id().find(anchor.battle_id) {
+        Some(row) => row,
+        None => ctx.db.battle_summary().insert(zero_row(anchor, tactical)),
+    }
 }
 
 /// The battle's summary row, inserted zeroed (`outcome: Ongoing`) when absent. `None` when the
@@ -156,29 +419,200 @@ pub(crate) fn find_or_insert_summary(
     ctx: &ReducerContext,
     battle_id: u64,
 ) -> Option<BattleSummary> {
-    let _ = (ctx, battle_id);
-    None
+    if let Some(row) = ctx.db.battle_summary().battle_id().find(battle_id) {
+        return Some(row);
+    }
+    let anchor = ctx.db.battle().battle_id().find(battle_id)?;
+    let tactical = ctx.db.battle_tactical().battle_id().find(battle_id)?;
+    Some(ctx.db.battle_summary().insert(zero_row(&anchor, &tactical)))
 }
 
-/// Add one step's delta to the battle's summary row (a zero delta writes nothing).
+/// Add one step's delta to the battle's summary row (a zero delta writes nothing but the row's
+/// first insert).
 pub(crate) fn accumulate(
     ctx: &ReducerContext,
     anchor: &Battle,
     tactical: &BattleTactical,
     delta: &StepDelta,
 ) {
-    let _ = (ctx, anchor, tactical, delta);
+    let row = summary_row(ctx, anchor, tactical);
+    if delta.is_zero() {
+        return;
+    }
+    ctx.db
+        .battle_summary()
+        .battle_id()
+        .update(apply_delta(row, delta));
 }
 
 /// The recruit hook's one summary write: the battle's FIRST attempt decides `weaken_first`
-/// (`hp_permille < WEAKEN_FIRST_PERMILLE`); later attempts leave it alone.
+/// (`hp_permille < WEAKEN_FIRST_PERMILLE`); later attempts leave it alone (the hook also keeps a
+/// per-transaction flag, since the row's `recruit_attempts` advances only when the step stores).
 pub(crate) fn mark_first_recruit(ctx: &ReducerContext, battle_id: u64, hp_permille: u16) {
-    let _ = (ctx, battle_id, hp_permille);
+    let Some(row) = find_or_insert_summary(ctx, battle_id) else {
+        return;
+    };
+    if row.recruit_attempts > 0 {
+        return;
+    }
+    ctx.db.battle_summary().battle_id().update(BattleSummary {
+        weaken_first: hp_permille < WEAKEN_FIRST_PERMILLE,
+        ..row
+    });
+}
+
+/// Finalise a summary row: the outcome, the rounds the battle was Active for, the wall time, the
+/// idle time per side (the clock rows) and the attack damage per side (the tactical row).
+fn finalize(
+    ctx: &ReducerContext,
+    row: BattleSummary,
+    anchor: &Battle,
+    tactical: &BattleTactical,
+    was_active: bool,
+    now_ms: i64,
+) {
+    let (mut idle_a, mut idle_b) = (0u64, 0u64);
+    for clock in ctx.db.battle_clock().battle_id().filter(anchor.battle_id) {
+        match clock.side {
+            SideRow::A => idle_a = clock.idle_ms_total,
+            SideRow::B => idle_b = clock.idle_ms_total,
+        }
+    }
+    ctx.db.battle_summary().battle_id().update(BattleSummary {
+        outcome: anchor.state.outcome,
+        rounds: if was_active { tactical.round } else { 0 },
+        wall_ms: u64::try_from(now_ms.saturating_sub(anchor.created_at_ms)).unwrap_or(0),
+        idle_ms_a: idle_a,
+        idle_ms_b: idle_b,
+        damage_dealt_a: tactical.attack_damage_dealt_a,
+        damage_dealt_b: tactical.attack_damage_dealt_b,
+        ..row
+    });
+}
+
+fn settle_log(evt: &str, battle_id: u64, reason: &str) {
+    let escaped = json_escape(reason);
+    mr_log(
+        evt,
+        &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+    );
+}
+
+/// Pay the ledger (module doc): fold the transcript, `pay` against the final board, credit every
+/// conscious party member through the legacy per-monster credit, pay the currency, append the
+/// `Awards` lines for what was applied.
+fn pay_ledger(
+    ctx: &ReducerContext,
+    anchor: &Battle,
+    tactical: &BattleTactical,
+    state: &TacticalState,
+    now_ms: i64,
+) {
+    let battle_id = anchor.battle_id;
+    let mut rows: Vec<BattleEvent> = ctx
+        .db
+        .battle_event()
+        .battle_id()
+        .filter(battle_id)
+        .collect();
+    rows.sort_by_key(|e| e.seq);
+    let events: Vec<EventPayload> = rows.into_iter().map(|e| e.payload).collect();
+    let bst_of =
+        |species_id: u32| content_species(species_id).map(|s| base_stat_total(&s.base_stats));
+    let fold = ledger_of(&events, state, &bst_of);
+    for (what, units) in [
+        ("unattributed", &fold.unattributed),
+        ("skipped_bst", &fold.skipped_bst),
+        ("refused", &fold.refused),
+    ] {
+        if !units.is_empty() {
+            mr_log(
+                "tactical_ledger_skip",
+                &format!("\"battle_id\":{battle_id},\"{what}\":{units:?}"),
+            );
+        }
+    }
+    if !fold.missing_ko.is_empty() {
+        mr_log(
+            "tactical_ledger_mismatch",
+            &format!(
+                "\"battle_id\":{battle_id},\"fainted_without_ko\":{:?}",
+                fold.missing_ko
+            ),
+        );
+    }
+    let payout = pay(&fold.ledger, state);
+    let units: Vec<(u32, u64)> = ctx
+        .db
+        .battle_unit()
+        .battle_id()
+        .filter(battle_id)
+        .filter_map(|u| u.monster_id.map(|mid| (u.unit_id, mid)))
+        .collect();
+    let species_base = |species_id: u32| content_species(species_id).map(|s| s.base_stats);
+    let favorable = is_wild_win(anchor);
+    let today = day_epoch_utc(now_ms);
+    let mut applied: Vec<Award> = Vec::new();
+    // The legacy funnel's loop: every CONSCIOUS party member (deployed or benched), the ledger
+    // supplying its XP and essence instead of the 1v1 formula.
+    for (i, bm) in anchor.state.side_a.team.iter().enumerate() {
+        if bm.is_fainted() {
+            continue;
+        }
+        let Some(&mid) = anchor.party_monster_ids.get(i) else {
+            continue;
+        };
+        if ctx.db.monster().monster_id().find(mid).is_none() {
+            settle_log(
+                "tactical_settle_err",
+                battle_id,
+                &format!("monster {mid} is gone"),
+            );
+            continue;
+        }
+        let award = units
+            .iter()
+            .find(|&&(_, m)| m == mid)
+            .and_then(|&(unit, _)| payout.awards.iter().find(|a| a.unit == unit));
+        let xp = Xp::new(award.map_or(0, |a| a.xp));
+        let essence: Vec<(game_core::Affinity, u32)> =
+            award.map_or_else(Vec::new, |a| a.essence.clone());
+        match credit_monster(
+            ctx,
+            anchor.player_identity,
+            mid,
+            bm.max_hp,
+            &species_base,
+            Some(xp),
+            &essence,
+            favorable,
+            today,
+        ) {
+            Ok(()) => {
+                if let Some(award) = award {
+                    applied.push(award.clone());
+                }
+            }
+            Err(e) => settle_log("tactical_settle_err", battle_id, &e),
+        }
+    }
+    grant_currency(ctx, anchor.player_identity, payout.currency);
+    let mut seq = next_event_seq(ctx, battle_id);
+    for payload in awards_events(&applied, payout.currency) {
+        ctx.db.battle_event().insert(BattleEvent {
+            event_id: 0,
+            battle_id,
+            seq,
+            round: tactical.round,
+            payload,
+        });
+        seq = seq.saturating_add(1);
+    }
 }
 
 /// THE terminal settlement (module doc), called once by `tactics::finish` after the HP
-/// write-back and the anchor update. Never `Err`s, never panics: every helper failure is logged
-/// and the next step still runs.
+/// write-back and the anchor update, with the tactical row as finished. Never `Err`s, never
+/// panics: every helper failure is logged and the next step still runs.
 pub(crate) fn settle(
     ctx: &ReducerContext,
     anchor: &Battle,
@@ -188,19 +622,48 @@ pub(crate) fn settle(
     was_active: bool,
     now_ms: i64,
 ) {
-    let _ = (ctx, anchor, tactical, close, hp_ok, was_active, now_ms);
+    let battle_id = anchor.battle_id;
+    match close {
+        Close::Settled { state } => {
+            if hp_ok {
+                pay_ledger(ctx, anchor, tactical, state, now_ms);
+                if let Err(e) = apply_faint_penalties(ctx, anchor) {
+                    settle_log("tactical_settle_err", battle_id, &e);
+                }
+            } else {
+                settle_log(
+                    "tactical_settle_skipped",
+                    battle_id,
+                    "HP write-back failed: no rewards, no penalty",
+                );
+            }
+        }
+        Close::Deploying | Close::LegacyEnded => {}
+        Close::Fallback => {
+            if let Err(e) = apply_faint_penalties(ctx, anchor) {
+                settle_log("tactical_settle_err", battle_id, &e);
+            }
+        }
+    }
+    sweep_prior_terminals(ctx, anchor, Some(battle_id));
+    let row = summary_row(ctx, anchor, tactical);
+    finalize(ctx, row, anchor, tactical, was_active, now_ms);
 }
 
 /// A swept (prior-terminal) tactical battle whose summary is still `Ongoing` is finalised with
-/// its anchor's outcome: the rows that would have finalised it are going.
-pub(crate) fn finalize_swept_summary(
-    ctx: &ReducerContext,
-    battle_id: u64,
-    outcome: BattleOutcome,
-    rounds: u16,
-    now_ms: i64,
-) {
-    let _ = (ctx, battle_id, outcome, rounds, now_ms);
+/// its anchor's outcome before its rows go (the rows that would have finalised it are going).
+pub(crate) fn finalize_swept_summary(ctx: &ReducerContext, anchor: &Battle, now_ms: i64) {
+    let Some(row) = ctx.db.battle_summary().battle_id().find(anchor.battle_id) else {
+        return;
+    };
+    if row.outcome != BattleOutcome::Ongoing {
+        return;
+    }
+    let Some(tactical) = ctx.db.battle_tactical().battle_id().find(anchor.battle_id) else {
+        return;
+    };
+    let was_active = tactical.phase != game_core::tactics::Phase::Deploying;
+    finalize(ctx, row, anchor, &tactical, was_active, now_ms);
 }
 
 #[cfg(test)]

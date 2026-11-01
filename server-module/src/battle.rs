@@ -20,8 +20,8 @@ use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
 use crate::schema::{
-    battle, battle_wild, inventory, monster, skill_row, species_row, trade_offer, Battle,
-    BattleWild, Monster, SkillRow,
+    battle, battle_tactical, battle_wild, inventory, monster, skill_row, species_row, trade_offer,
+    Battle, BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
@@ -1143,9 +1143,18 @@ pub(crate) fn reject_if_tactical_anchor(
     reducer: &str,
     battle_id: u64,
 ) -> Result<(), String> {
-    // bt-9 API freeze: wired, not yet enforced.
-    let _ = (ctx, reducer, battle_id);
-    Ok(())
+    if ctx
+        .db
+        .battle_tactical()
+        .battle_id()
+        .find(battle_id)
+        .is_none()
+    {
+        return Ok(());
+    }
+    let e = "tactical battle: use the tactical reducers".to_string();
+    log_reject(reducer, ctx.sender(), &e);
+    Err(e)
 }
 
 /// GC the player's prior terminal `battle` rows and, for a real PvP opponent, theirs. `keep`
@@ -1155,16 +1164,15 @@ pub(crate) fn reject_if_tactical_anchor(
 /// terminal battle remains per player (the client's M8.7e keep-latest outcome frame).
 pub(crate) fn sweep_prior_terminals(ctx: &ReducerContext, battle: &Battle, keep: Option<u64>) {
     let player = battle.player_identity;
-    let old_terminal_ids: Vec<u64> = ctx
+    let old_terminals: Vec<Battle> = ctx
         .db
         .battle()
         .player_identity()
         .filter(player)
         .filter(|b| b.state.outcome != BattleOutcome::Ongoing && Some(b.battle_id) != keep)
-        .map(|b| b.battle_id)
         .collect();
-    for id in old_terminal_ids {
-        ctx.db.battle().battle_id().delete(id);
+    for old in &old_terminals {
+        crate::tactics::sweep_swept_anchor(ctx, old);
     }
     // Prior terminal battles where this player was the OPPONENT (PvP side-B GC). Wild and
     // self-battles have opponent == WILD_IDENTITY or == player; skip those to avoid
@@ -1172,12 +1180,11 @@ pub(crate) fn sweep_prior_terminals(ctx: &ReducerContext, battle: &Battle, keep:
     let opponent = battle.opponent_identity;
     if opponent != WILD_IDENTITY && opponent != player {
         let opp_battles = ctx.db.battle().opponent_identity().filter(opponent);
-        let old_opp_terminal_ids: Vec<u64> = opp_battles
+        let old_opp_terminals: Vec<Battle> = opp_battles
             .filter(|b| b.state.outcome != BattleOutcome::Ongoing && Some(b.battle_id) != keep)
-            .map(|b| b.battle_id)
             .collect();
-        for id in old_opp_terminal_ids {
-            ctx.db.battle().battle_id().delete(id);
+        for old in &old_opp_terminals {
+            crate::tactics::sweep_swept_anchor(ctx, old);
         }
     }
 }

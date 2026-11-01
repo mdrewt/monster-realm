@@ -17,8 +17,15 @@
 //! cannot be loaded is closed by [`fallback_close`], never left `Ongoing`); every
 //! refusal is an `Err` (never a clamp) that also goes through `guards::log_reject`.
 //!
-//! Build-phase limits (bt-9 owns the execution glue): `Item` and `Recruit` entries are
-//! refused at submit, the reward ledger is not paid and no `battle_summary` is written.
+//! Settlement (bt-9) lives in `tactics_settle`: `finish` hands it the close kind, and it pays
+//! the reward ledger folded from the transcript, applies the faint penalty, sweeps the player's
+//! prior terminal battles (their tactical rows included) and finalises the `battle_summary` row
+//! `store` accumulates every step. The recruit glue is the `Hooks` impl here: the bait's content
+//! row, the wild's seed row, its species and level are all resolved BEFORE the executor debits
+//! the bait (R-21r-a-CONTENTLOAD), the roll is game-core's (`recruit::resolve_recruit`, the
+//! private stream), the H1/H2 `playtest_event` row is written with the pre-roll HP, and a
+//! success rebuilds the wild through `taming::insert_recruited`. `Item` entries stay refused at
+//! submit and at pop: the item rule has no game-core home yet (R-bt-8-ITEMRULE).
 
 use std::sync::LazyLock;
 
@@ -35,6 +42,7 @@ use crate::inventory::consume_one;
 use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::observability::mr_log;
+use crate::playtest::{hp_permille, record_recruit_event};
 use crate::schema::{
     battle, battle_clock, battle_deploy, battle_event, battle_queue, battle_secret,
     battle_tactical, battle_unit, battle_wild_unit, character, inventory, monster, player,
@@ -42,24 +50,25 @@ use crate::schema::{
     BattleTactical, BattleUnit, BattleWildUnit, BudgetLastEntry, BudgetMoveSpend, DeployPick,
     Monster, MoveClassRow, PlayerFormation, SideRow, StanceRow,
 };
-use crate::tactics_settle::{self, Close, StepPrev};
+use crate::tactics_settle::{self, mark_first_recruit, Close, StepPrev};
+use crate::taming::insert_recruited;
 use crate::{CONTENT_VERSION, WILD_IDENTITY};
 use game_core::tactics::ai;
 use game_core::tactics::queue::is_player_owned;
 use game_core::tactics::resolve::UnitState;
 use game_core::tactics::types::{ActionKind, Phase, QueuedAction, TurnState, MAX_STORED_ENTRIES};
 use game_core::tactics::{
-    deploy_unit, generate_encounter, splitmix64, stride_for_base_speed, validate_tactics_content,
-    wild_seed, AdvancePin, BattleKind, BattleMapDef, BattleMapEntry, Cell, ClockState, EndHow,
-    Entry, EventPayload, ExpireError, HaltReason, Hooks, MoveClass, ReadyPlan, Rules, Side,
-    SpeciesTactics, Stance, StepResult, TacticalBattle, TacticalState, TacticalUnit,
-    TacticsRegistries, TacticsTuning, TacticsZoneDef, Tier, TurnBudget, UnitKit, Validated,
-    MAX_PACK,
+    deploy_unit, generate_encounter, recruit_preflight, resolve_recruit, splitmix64,
+    stride_for_base_speed, validate_tactics_content, wild_seed, AdvancePin, BattleKind,
+    BattleMapDef, BattleMapEntry, Cell, ClockState, EndHow, Entry, EventPayload, ExpireError,
+    HaltReason, Hooks, MoveClass, ReadyPlan, RecruitError, Rules, Side, SpeciesTactics, Stance,
+    StepResult, TacticalBattle, TacticalState, TacticalUnit, TacticsRegistries, TacticsTuning,
+    TacticsZoneDef, Tier, TurnBudget, UnitKit, Validated, MAX_PACK,
 };
 use game_core::{
     build_monster, load_encounters, load_items, load_skills, load_species, load_tactics_tuning,
     load_type_chart, load_zones, resolve_encounter, BattleMonster, BattleOutcome, BattleSide,
-    BattleState, EncounterTable, Level, Species, StatBlock, TypeChart,
+    BattleState, EncounterTable, ItemDef, Level, Species, StatBlock, TypeChart,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 
@@ -78,8 +87,9 @@ pub(crate) const BATTLE_SEED_SALT: u64 = 0x7A57_1C5B_A771_E5EE;
 const SPAWN_ROLL_SALT: u64 = 0x5BA7_0E5E_ED11_C0DE;
 /// A wild battle: side A is the player, side B the pack (design §2.2).
 const WILD_FORMAT: u8 = 0;
-/// The build-phase refusal of the entries bt-9 wires (design §5, §8.3 item rules).
-const NOT_UNTIL_BT9: &str = "items and recruit are not available until bt-9";
+/// Item entries are refused at submit: the item rule (range, Ally filter, cure match) has no
+/// game-core home yet (R-bt-8-ITEMRULE), and the shell restates no rule.
+const ITEMS_NOT_AVAILABLE: &str = "items are not available in tactical battles";
 
 // ===========================================================================
 // Scheduled tables (colocated with their reducers; PRIVATE)
@@ -212,6 +222,7 @@ struct TacticsContent {
     tuning: TacticsTuning,
     chart: TypeChart,
     species: Vec<Species>,
+    items: Vec<ItemDef>,
     kits: Vec<SpeciesTactics>,
     maps: &'static [BattleMapEntry],
     zones: &'static [TacticsZoneDef],
@@ -245,6 +256,7 @@ fn load_content() -> Result<TacticsContent, String> {
         tuning,
         chart: TypeChart::new(&relations),
         species,
+        items,
         kits,
         maps,
         zones: tactics_zones,
@@ -253,6 +265,11 @@ fn load_content() -> Result<TacticsContent, String> {
 }
 
 static CONTENT: LazyLock<Result<TacticsContent, String>> = LazyLock::new(load_content);
+
+/// The content species `species_id` (the settlement's BST and level-up base stats).
+pub(crate) fn content_species(species_id: u32) -> Option<&'static Species> {
+    content().ok().and_then(|c| c.species(species_id).ok())
+}
 
 fn content() -> Result<&'static TacticsContent, String> {
     (*CONTENT).as_ref().map_err(Clone::clone)
@@ -264,6 +281,15 @@ impl TacticsContent {
             .iter()
             .find(|s| s.id == id)
             .ok_or_else(|| format!("species {id} not in content"))
+    }
+
+    /// A bait's bonus (‰): `None` for an unknown item or one with no recruit function.
+    fn bait_bonus(&self, item_id: u32) -> Option<u16> {
+        self.items
+            .iter()
+            .find(|i| i.id == item_id)
+            .map(|i| i.recruit_bonus)
+            .filter(|&bonus| bonus > 0)
     }
 
     fn kit(&self, species_id: u32) -> Result<&SpeciesTactics, String> {
@@ -542,7 +568,7 @@ fn mirror_hp(anchor: &mut Battle, units: &[BattleUnit]) {
     }
 }
 
-fn next_event_seq(ctx: &ReducerContext, battle_id: u64) -> u32 {
+pub(crate) fn next_event_seq(ctx: &ReducerContext, battle_id: u64) -> u32 {
     ctx.db
         .battle_event()
         .battle_id()
@@ -955,27 +981,27 @@ fn fallback_close(
 /// its species, level and `battle_wild_unit` seed (bt-9) — read before the executor runs, so
 /// the hooks never query mid-step.
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // bt-9 API freeze: the recruit glue reads the last four fields.
 struct WildRef {
     unit_id: u32,
     stance: Stance,
     spawn: Cell,
     species_id: u32,
     level: u8,
-    wild_index: u8,
     /// `battle_wild_unit.individuality_seed` (`None` when the row is gone).
     seed: Option<u32>,
 }
 
 struct ShellHooks<'a> {
     ctx: &'a ReducerContext,
-    #[allow(dead_code)] // bt-9 API freeze: the recruit glue reads it.
     battle_id: u64,
     content: &'static TacticsContent,
     /// `(unit_id, owner)` for every unit row (a wild has no owner).
     owners: Vec<(u32, Option<Identity>)>,
     /// Every wild unit.
     wilds: Vec<WildRef>,
+    /// A recruit resolved in this transaction already (the battle's first attempt sets
+    /// `weaken_first`; the row's own count advances only when the step stores).
+    recruit_seen: bool,
 }
 
 /// The hooks over one battle's unit rows (a free fn: the gate census refuses an
@@ -1007,7 +1033,6 @@ fn shell_hooks<'a>(
                 spawn,
                 species_id: u.species_id,
                 level: u.level,
-                wild_index,
                 seed: seeds
                     .iter()
                     .find(|(i, _)| *i == wild_index)
@@ -1021,7 +1046,17 @@ fn shell_hooks<'a>(
         content,
         owners,
         wilds,
+        recruit_seen: false,
     }
+}
+
+/// Everything a recruit success needs of its target, resolved BEFORE the executor debits the
+/// bait (R-21r-a-CONTENTLOAD): the wild's row facts, its seed row, its content species and level.
+struct Recruitable {
+    species: &'static Species,
+    species_id: u32,
+    level: Level,
+    seed: u32,
 }
 
 impl ShellHooks<'_> {
@@ -1030,6 +1065,51 @@ impl ShellHooks<'_> {
             .iter()
             .find(|(id, _)| *id == unit)
             .and_then(|(_, owner)| *owner)
+    }
+
+    /// The target as a recruitable wild, or why it is not (`TargetGone`: no row facts, no seed
+    /// row, no content species, no legal level — the entry halts, nothing is debited).
+    fn recruitable(&self, target: u32) -> Result<Recruitable, HaltReason> {
+        let gone = HaltReason::TargetGone { id: target };
+        let wild = self
+            .wilds
+            .iter()
+            .find(|w| w.unit_id == target)
+            .ok_or(gone)?;
+        let seed = wild.seed.ok_or(gone)?;
+        let species = self.content.species(wild.species_id).map_err(|_| gone)?;
+        let level = Level::new(wild.level).map_err(|_| gone)?;
+        Ok(Recruitable {
+            species,
+            species_id: wild.species_id,
+            level,
+            seed,
+        })
+    }
+
+    /// The bait's bonus (‰) from content, or `ItemNotHeld` for an id that is not a bait at all
+    /// (an unknown item, or one with no recruit function): judged before any debit.
+    fn bait_bonus(&self, bait: Option<u32>) -> Result<u16, HaltReason> {
+        match bait {
+            None => Ok(0),
+            Some(item_id) => self
+                .content
+                .bait_bonus(item_id)
+                .ok_or(HaltReason::ItemNotHeld { item_id }),
+        }
+    }
+}
+
+/// `recruit_preflight`'s refusal as a halt reason: a bait outside the carried rule's domain reads
+/// as not held; a recruiter or target that is gone reads as the target gone.
+fn halt_of_recruit(error: RecruitError, bait: Option<u32>) -> HaltReason {
+    match error {
+        RecruitError::BaitBonus { .. } => HaltReason::ItemNotHeld {
+            item_id: bait.unwrap_or(0),
+        },
+        RecruitError::UnknownUnit { id } | RecruitError::TargetGone { id } => {
+            HaltReason::TargetGone { id }
+        }
     }
 }
 
@@ -1080,14 +1160,20 @@ impl Hooks for ShellHooks<'_> {
 
     fn validate_delegated(
         &self,
-        _state: &TacticalState,
-        _unit: u32,
+        state: &TacticalState,
+        unit: u32,
         validated: &Validated,
     ) -> Result<(), HaltReason> {
         match validated {
-            // bt-9 wires the item rules and the recruit glue; until then neither executes.
+            // The item rule (range, Ally filter, cure match) has no game-core home yet
+            // (R-bt-8-ITEMRULE): refused at pop as at submit.
             Validated::Item { .. } => Err(HaltReason::NotAllowed(ActionKind::Item)),
-            Validated::Recruit { .. } => Err(HaltReason::NotAllowed(ActionKind::Recruit)),
+            Validated::Recruit { target, bait, .. } => {
+                let bait_bonus = self.bait_bonus(*bait)?;
+                self.recruitable(*target)?;
+                recruit_preflight(state, unit, *target, bait_bonus)
+                    .map_err(|e| halt_of_recruit(e, *bait))
+            }
             Validated::Flee { .. }
             | Validated::Move { .. }
             | Validated::Skill { .. }
@@ -1097,13 +1183,66 @@ impl Hooks for ShellHooks<'_> {
 
     fn resolve_delegated(
         &mut self,
-        _state: &mut TacticalState,
-        _unit: u32,
-        _validated: &Validated,
+        state: &mut TacticalState,
+        unit: u32,
+        validated: &Validated,
     ) -> Vec<EventPayload> {
-        // A flee's bookkeeping is the shell's finish path (HP persists through the
-        // anchor); items and recruit never reach here in this build (refused above).
-        Vec::new()
+        let Validated::Recruit { target, bait, .. } = validated else {
+            // A flee's bookkeeping is the shell's finish path (HP persists through the anchor,
+            // the ledger pays at the finish); items never reach here (refused above).
+            return Vec::new();
+        };
+        let battle_id = self.battle_id;
+        // Everything below was validated before the debit; a miss here is an invariant fault.
+        let (Some(owner), Ok(bait_bonus), Ok(wild)) = (
+            self.owner_of(unit),
+            self.bait_bonus(*bait),
+            self.recruitable(*target),
+        ) else {
+            mr_log(
+                "tactical_recruit_resolve_err",
+                &format!("\"battle_id\":{battle_id},\"unit\":{unit},\"target\":{target}"),
+            );
+            return Vec::new();
+        };
+        // The H1 proxy reads the PRE-roll HP.
+        let hp = state
+            .unit(*target)
+            .map_or(0, |w| hp_permille(w.cur_hp, w.max_hp()));
+        let ev = match resolve_recruit(state, unit, *target, bait_bonus) {
+            Ok(ev) => ev,
+            Err(e) => {
+                let escaped = json_escape(&format!("{e:?}"));
+                mr_log(
+                    "tactical_recruit_resolve_err",
+                    &format!("\"battle_id\":{battle_id},\"unit\":{unit},\"reason\":\"{escaped}\""),
+                );
+                return Vec::new();
+            }
+        };
+        record_recruit_event(
+            self.ctx,
+            owner,
+            battle_id,
+            wild.species_id,
+            hp,
+            *bait,
+            ev.success,
+        );
+        if !self.recruit_seen {
+            self.recruit_seen = true;
+            mark_first_recruit(self.ctx, battle_id, hp);
+        }
+        if ev.success {
+            let inserted = insert_recruited(self.ctx, owner, wild.seed, wild.species, wild.level);
+            // Public coordinates only — never the seed or the genes (side-channel).
+            log::info!(
+                "{{\"evt\":\"tactical_recruit_success\",\"battle_id\":{battle_id},\"species_id\":{},\"monster_id\":{}}}",
+                wild.species_id,
+                inserted.monster_id
+            );
+        }
+        vec![EventPayload::RecruitResult(ev)]
     }
 }
 
@@ -1794,11 +1933,8 @@ pub fn submit_queue(
     if entries.len() > MAX_STORED_ENTRIES {
         return reject(NAME, me, "too many entries".to_string());
     }
-    if entries
-        .iter()
-        .any(|e| matches!(e, QueuedAction::Item(_) | QueuedAction::Recruit(_)))
-    {
-        return reject(NAME, me, format!("{NAME}: {NOT_UNTIL_BT9}"));
+    if entries.iter().any(|e| matches!(e, QueuedAction::Item(_))) {
+        return reject(NAME, me, format!("{NAME}: {ITEMS_NOT_AVAILABLE}"));
     }
     active_tactical(ctx, NAME, &anchor)?;
     let loaded = match load(ctx, battle_id) {
@@ -2116,6 +2252,16 @@ pub fn battle_gc(ctx: &ReducerContext, args: BattleGcSched) -> Result<(), String
     sweep_tactical_rows(ctx, battle_id, Some(args.scheduled_id), anchor.is_none());
     log::info!("{{\"evt\":\"tactical_battle_gc\",\"battle_id\":{battle_id}}}");
     Ok(())
+}
+
+/// A prior terminal anchor goes with everything that hung off it (R-bt-8-TACTICALSWEEP): its
+/// still-`Ongoing` summary is finalised first (the rows that would have done so are going), then
+/// the anchor, then the tactical rows. The legacy 1v1 funnel and the tactical settlement both
+/// sweep through here (`battle::sweep_prior_terminals`).
+pub(crate) fn sweep_swept_anchor(ctx: &ReducerContext, anchor: &Battle) {
+    tactics_settle::finalize_swept_summary(ctx, anchor, now_ms(ctx));
+    ctx.db.battle().battle_id().delete(anchor.battle_id);
+    sweep_tactical_rows(ctx, anchor.battle_id, None, true);
 }
 
 /// Delete a battle's per-battle rows — the GC roster (event, unit, queue, clock, secret,
