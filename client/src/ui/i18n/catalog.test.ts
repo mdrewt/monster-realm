@@ -525,6 +525,18 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { unit: 'Sprigg', tile: 'C4' },
     { unit: 'Mossback', tile: 'E2' },
   ],
+  // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6, plan REV 2b B8; the roster is
+  // 504 keys after it): +4 parameterised `tactics.*` keys — the deploy panel's slot label and the
+  // results panel's monster, gold and recruit lines. Every field differs between the two sets; the
+  // names are model data carried verbatim, `n` / `xp` / `essence` are numbers (0 XP in set B, so a
+  // falsy fallback shows), `amount` is a bigint past 2^53 in set B.
+  'tactics.deploy.slot': [{ n: 1 }, { n: 3 }],
+  'tactics.results.monster': [
+    { name: 'Sprigg', xp: 53, essence: 7 },
+    { name: 'Kip', xp: 0, essence: 11 },
+  ],
+  'tactics.results.currency': [{ amount: 123n }, { amount: 9_007_199_254_740_993n }],
+  'tactics.results.recruited': [{ name: 'Mossback' }, { name: 'Flameling' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -1103,6 +1115,27 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tactics.forecast.firstStand': 'Survives at 1 HP',
   'tactics.projected.label': `Projected ${EM_DASH} the board may change`,
   'tactics.projected.enemiesHold': 'assumes enemies hold',
+  // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6, plan REV 2b B8; 504 keys
+  // after it): +14 plain `tactics.*` keys — the deploy panel's title, formation label, empty slot,
+  // Deploy / Edit formation rows, sending line, the editor's candidate group, its prev / next
+  // buttons and Confirm / Back rows, and the results panel's list label, empty line and Continue
+  // button (tactics/strings.ts is their only requester); the 4 parameterised ones are in
+  // SAMPLE_PARAMS / EXPECTED_PARAM_OUTPUTS. The results TITLE reuses battle.outcome.* (no new key).
+  // U+2026 by code point.
+  'tactics.deploy.title': 'Choose your team',
+  'tactics.deploy.label': 'Formation',
+  'tactics.deploy.empty': 'Empty',
+  'tactics.deploy.deploy': 'Deploy',
+  'tactics.deploy.edit': 'Edit formation',
+  'tactics.deploy.sending': `Deploying${ELLIPSIS}`,
+  'tactics.deploy.candidateLabel': 'Monster to place',
+  'tactics.deploy.prevMonster': 'Previous monster',
+  'tactics.deploy.nextMonster': 'Next monster',
+  'tactics.deploy.confirm': 'Confirm',
+  'tactics.deploy.back': 'Back',
+  'tactics.results.label': 'Rewards',
+  'tactics.results.none': 'No rewards',
+  'tactics.results.continue': 'Continue',
 };
 
 interface ParamOutputSpec {
@@ -1917,9 +1950,38 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { unit: 'Mossback', tile: 'E2' },
     outputB: 'if Mossback is still at E2',
   },
+  // bt-12 increment A (BT12.2/BT12.4/BT12.6, plan REV 2b B8): the slot label is 1-based as given
+  // (the caller passes i + 1), the monster line reads "{name}: +{xp} XP, +{essence} essence", the
+  // gold line "+{amount} gold" (the word is gold, never coins; the bigint printed digit for digit),
+  // the recruit line "{name} joined your team!".
+  'tactics.deploy.slot': {
+    inputA: { n: 1 },
+    outputA: 'Slot 1',
+    inputB: { n: 3 },
+    outputB: 'Slot 3',
+  },
+  'tactics.results.monster': {
+    inputA: { name: 'Sprigg', xp: 53, essence: 7 },
+    outputA: 'Sprigg: +53 XP, +7 essence',
+    inputB: { name: 'Kip', xp: 0, essence: 11 },
+    outputB: 'Kip: +0 XP, +11 essence',
+  },
+  'tactics.results.currency': {
+    inputA: { amount: 123n },
+    outputA: '+123 gold',
+    inputB: { amount: 9_007_199_254_740_993n },
+    outputB: '+9007199254740993 gold',
+  },
+  'tactics.results.recruited': {
+    inputA: { name: 'Mossback' },
+    outputA: 'Mossback joined your team!',
+    inputB: { name: 'Flameling' },
+    outputB: 'Flameling joined your team!',
+  },
 };
 
-/** The full 486-key roster (bt-11 increment C: +26 `tactics.*` keys — 12 plain, 14 parameterised —
+/** The full 504-key roster (bt-12 increment A: +18 `tactics.*` keys — 14 plain, 4 parameterised —
+ *  over bt-11 increment C's 486-key roster; bt-11 increment C: +26 `tactics.*` keys — 12 plain, 14 parameterised —
  *  over increment B's roster; bt-11 increment B: +28 `tactics.*` keys — 26 plain, 2 parameterised —
  *  and +7 `chrome.chip.*` hint verbs over the 425-key roster below; bt-10: +60 `tactics.*` keys over the
  *  365-key roster below;
@@ -2024,7 +2086,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the bt-11 486-key roster (bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486, +tactics.menu/reason/queue/ghost/dock.*, +chrome.chip.*, +tactics.badge/chip/forecast/projected.*; bt-10: 365 → 425, +tactics.*), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the bt-12 504-key roster (bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504, +tactics.deploy/results.*; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486, +tactics.menu/reason/queue/ghost/dock.*, +chrome.chip.*, +tactics.badge/chip/forecast/projected.*; bt-10: 365 → 425, +tactics.*), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -2113,7 +2175,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 486 keys (bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486, +54 tactics.*, +7 chrome.chip.*; bt-10: 365 → 425, +tactics.*), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 504 keys (bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504, +18 tactics.*; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486, +54 tactics.*, +7 chrome.chip.*; bt-10: 365 → 425, +tactics.*), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
     // (a) roster is exactly the EXPECTED_KEYS roster (365 keys since qf-17: +2 parameterised,
@@ -2135,7 +2197,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // `tactics.*`, 7 `chrome.chip.*`) in EXPECTED_PLAIN, +2 parameterised `tactics.reason.*`.
     // bt-11 increment C (named intentional change, BT11.3/BT11.4/BT11.5, plan REV 6 R6.7): +12 plain
     // and +14 parameterised `tactics.*` = 486.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-11 roster is 486 keys').toHaveLength(486);
+    // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6, plan REV 2b B8): +14 plain
+    // and +4 parameterised `tactics.*` = 504.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-12 roster is 504 keys').toHaveLength(504);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -3191,8 +3255,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
     // bt-11 (named intentional change, BT11.1/BT11.6): +28 tactics.*, +7 chrome.chip.*; increment C
     // (BT11.3/BT11.4/BT11.5): +26 tactics.* = 486.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 486 keys').toBe(486);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(486);
+    // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6): +18 tactics.* = 504.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 504 keys').toBe(504);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(504);
   });
 });
 
@@ -3226,7 +3291,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 486 keys each (bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 504 keys each (bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -3295,8 +3360,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
     // bt-11 (named intentional change, BT11.1/BT11.6): +28 tactics.*, +7 chrome.chip.*; increment C
     // (BT11.3/BT11.4/BT11.5): +26 tactics.* = 486.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 486 keys').toBe(486);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(486);
+    // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6): +18 tactics.* = 504.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 504 keys').toBe(504);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(504);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3565,7 +3631,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 486 keys (bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 504 keys (bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3595,9 +3661,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
     // bt-11 (named intentional change, BT11.1/BT11.6): +28 tactics.*, +7 chrome.chip.*; increment C
     // (BT11.3/BT11.4/BT11.5): +26 tactics.* = 486.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 486 keys').toBe(486);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(486);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(486);
+    // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6): +18 tactics.* = 504.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 504 keys').toBe(504);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(504);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(504);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );

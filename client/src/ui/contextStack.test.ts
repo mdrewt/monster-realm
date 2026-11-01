@@ -26,11 +26,13 @@ import type { VButton } from '../input/buttons';
 import {
   battleButton,
   battleRefused,
+  battleRenderer,
   battleSafeCommand,
   COMMAND_BATTLE_POLICY,
   continuedBattleId,
   isBareBattle,
   OUTCOME_CONTINUE_GRACE_MS,
+  popPlayerFramesOverBattle,
 } from './battlePolicy';
 import {
   acceleratorsDenied,
@@ -2241,7 +2243,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     );
   });
 
-  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the fourteen safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
+  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the fifteen safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
     // WRONG IMPL KILLED: a refusal that is a no-op (the policy is never consulted: every row of
     // the refused list reads false); a policy that refuses everything (a battle's own attack, the
     // stack moves or dismissDialogue would die: Start over [battle, dialogue] must still
@@ -2266,6 +2268,9 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // are the battle's own actions, so both are safe: 14 safe, 25 refused, 39 kinds (were 12 / 25 /
     // 37). A `cancelQueue` refused at a battle base would make Clear plan dead exactly where it
     // exists.
+    // bt-12 (named intentional change, BT12.2, plan §3.6): the deploy panel's `deployUnits` (the
+    // confirmed deploy of a Deploying wild battle) is the battle's own action too: 15 safe, 25
+    // refused, 40 kinds (were 14 / 25 / 39).
     const big = 5n;
     const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['pop', { kind: 'pop' }],
@@ -2284,6 +2289,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
         { kind: 'submitQueue', battleId: big, unitId: 3, entries: [{ tag: 'EndTurn' }] },
       ],
       ['cancelQueue', { kind: 'cancelQueue', battleId: big, unitId: 3 }],
+      ['deployUnits', { kind: 'deployUnits', battleId: big, picks: [{ monsterId: 7n, slot: 0 }] }],
       ['dismissDialogue', { kind: 'dismissDialogue' }],
     ];
     const proposal = {
@@ -2319,16 +2325,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
-    expect(SAFE, 'ANTI-VACUITY: fourteen safe kinds').toHaveLength(14);
+    expect(SAFE, 'ANTI-VACUITY: fifteen safe kinds').toHaveLength(15);
     expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      39,
+      40,
     );
     expect(
       kindsOf(SAFE),
-      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too), the stack moves and dismissDialogue',
+      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too; bt-12: deployUnits), the stack moves and dismissDialogue',
     ).toEqual([
       'pop',
       'popToBase',
@@ -2343,10 +2349,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'pvpSwap',
       'submitQueue',
       'cancelQueue',
+      'deployUnits',
       'dismissDialogue',
     ]);
 
-    // The table itself is total over the 39 literal kinds and says exactly this.
+    // The table itself is total over the 40 literal kinds and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2423,6 +2430,191 @@ describe('context stack: battle semantics (ctl-6c)', () => {
         ).toBe(stack[0].kind === 'battle' && !battleSafeCommand(command));
       }
     }
+  });
+});
+
+// ==========================================================================================
+// bt-12 (BT12.1, BT12.2): which view owns the battle frame by tactical phase, and the deploy send
+// ==========================================================================================
+//
+// SOURCE OF TRUTH: spec BT12.1 ("WHILE a my_tactical_battle row exists THE tactical renderer SHALL
+// own the battleView frame ... B17 battle-never-hidden, with the 1v1 renderer otherwise") and BT12.2
+// ("A SHALL deploy ... through deploy_units"); plan memory/projects/monster-realm-bt-12-plan.md §3.6
+// (battleRenderer, deployUnits: 'safe'). RED REASON: battleRenderer throws `bt-12: not implemented`
+// on the API-freeze stub. BT12-2-POLICY-DEPLOY is GREEN at the freeze: the freeze already had to add
+// the `deployUnits` row to the total policy Record (a missing row is a compile error), so it pins
+// that row against a later regression rather than driving it.
+
+describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, BT12.2)', () => {
+  it('the battle frame renderer follows the tactical phase: no tactical row is the 1v1 view, Deploying is the deploy panel, Active is the tactical shell, Finished is the results panel, and an unknown phase still shows a battle [BT12-1-RENDERER-BY-PHASE]', () => {
+    // WRONG IMPL KILLED: a renderer keyed to the wrong phase (Deploying routed to the results panel,
+    // Finished to the deploy panel: two phases swapped); every phase routed to the 1v1 view (no
+    // tactical row ever owns the frame); a missing-row case that picks a tactical view (a legacy
+    // battle with no my_tactical_battle row would lose its only renderer); and an unknown phase (a
+    // future server variant arriving before a client regen) that throws or answers a hidden view
+    // instead of the 1v1 view (B17: a battle is never hidden).
+    expect(battleRenderer(undefined), 'no tactical row: the 1v1 view').toBe('legacy');
+    expect(battleRenderer('Deploying'), 'Deploying: the deploy panel').toBe('deploy');
+    expect(battleRenderer('Active'), 'Active: the tactical shell').toBe('tactical');
+    expect(battleRenderer('Finished'), 'Finished: the results panel').toBe('results');
+    let unknown: unknown = 'threw';
+    expect(() => {
+      unknown = battleRenderer('Surrendered' as never);
+    }, 'an unknown phase never throws').not.toThrow();
+    expect(unknown, 'an unknown phase still shows a battle: the 1v1 view (B17)').toBe('legacy');
+    expect(
+      new Set([
+        battleRenderer(undefined),
+        battleRenderer('Deploying'),
+        battleRenderer('Active'),
+        battleRenderer('Finished'),
+      ]).size,
+      'the four known answers are four different views',
+    ).toBe(4);
+  });
+
+  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds fifteen safe and twenty-five refused kinds, forty in all [BT12-2-POLICY-DEPLOY]', () => {
+    // WRONG IMPL KILLED: `deployUnits` classified `refuse` (the confirm screen's A, Start and the
+    // Edit formation editor's Confirm would all die at the one place they exist: a Deploying battle
+    // IS a battle base); a refusal keyed to the payload (empty picks, a bigint battle id past 2^53);
+    // and a table that grew a stray kind or lost one beside the new row (the 15 / 25 / 40 split).
+    const deploy: ScreenCommand = {
+      kind: 'deployUnits',
+      battleId: 9_007_199_254_740_993n,
+      picks: [
+        { monsterId: 9_007_199_254_740_995n, slot: 0 },
+        { monsterId: 9_007_199_254_740_997n, slot: 2 },
+      ],
+    };
+    const empty: ScreenCommand = { kind: 'deployUnits', battleId: 3n, picks: [] };
+    expect(COMMAND_BATTLE_POLICY.deployUnits, 'the policy row').toBe('safe');
+    expect(battleSafeCommand(deploy), 'battleSafeCommand reads it safe').toBe(true);
+    expect(battleSafeCommand(empty), 'whatever the picks').toBe(true);
+    const battleStacks: ReadonlyArray<readonly [string, Stack]> = [
+      ['a bare battle base (the confirm screen)', stackOf(battle('7'))],
+      ['a battle with a stamped menu above it', stackOf(battle('7'), stamped('menuView', '7'))],
+      ['a battle with help above it', stackOf(battle('7'), stamped('helpView', '7'))],
+    ];
+    for (const [name, stack] of battleStacks) {
+      expect(battleRefused(deepFrozen(stack), deploy), `${name}: not refused`).toBe(false);
+    }
+    const verdicts = Object.values(COMMAND_BATTLE_POLICY);
+    expect(
+      verdicts.filter((v) => v === 'safe'),
+      'fifteen safe kinds',
+    ).toHaveLength(15);
+    expect(
+      verdicts.filter((v) => v === 'refuse'),
+      'twenty-five refused kinds',
+    ).toHaveLength(25);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'forty kinds in all').toHaveLength(40);
+  });
+
+  it('the pop a battle-frame renderer switch makes keeps the server conversation: over a battle base every player frame (menu, help, box, a prompt, a text entry) goes and only the dialogue frames stay, as the same objects in their order, while a world-based stack comes back untouched and a bare battle base alone [BT12-1-POP-KEEPS-DIALOGUE]', () => {
+    // SOURCE: plan REV 2 A2 (a renderer switch under upper frames first pops to the battle base) as
+    // corrected by the implementation review: the client never ends a server conversation
+    // (contextStack.ts: a dialogue frame is server-owned), so the pop keeps it. Contract:
+    // `popPlayerFramesOverBattle(stack)` returns the base plus ONLY the upper `screen` frames whose
+    // id is `dialogueView`; a `world` base returns the SAME stack object. Prompts and text entries
+    // in the fixtures belong to player overlays (never to the dialogue: that shape is unspecified).
+    // WRONG IMPL KILLED: a plain popToBase (drops the dialogue: the client would end the player's
+    // conversation); a filter that keeps a player frame, or keys on the TOP frame only (a dialogue
+    // between two player frames is lost, or the frame above it kept); frames re-created instead of
+    // kept (identity); kept dialogues reordered; a world-based stack rebuilt or popped (an outcome
+    // over the world must not lose frames to a battle rule); the base dropped or replaced.
+    const B = battle('7');
+    const menu = stamped('menuView', '7');
+    const dialogue = screen('dialogueView');
+    const help = stamped('helpView', '7');
+    const between = deepFrozen(stackOf(B, menu, dialogue, help));
+    const out = popPlayerFramesOverBattle(between);
+    expect(out.length, 'a dialogue between two player frames: the base and the dialogue').toBe(2);
+    expect(out[0], 'the base, the same object').toBe(B);
+    expect(out[1], 'the dialogue, the same object').toBe(dialogue);
+    expect(between, 'the input stack is not changed').toEqual(stackOf(B, menu, dialogue, help));
+
+    const stampedDialogue = stamped('dialogueView', '7');
+    const mixed = deepFrozen(
+      stackOf(
+        B,
+        screen('boxView'),
+        prompt('pvpView'),
+        stampedDialogue,
+        textEntry('renameView'),
+        stamped('menuView', '7'),
+      ),
+    );
+    const mixedOut = popPlayerFramesOverBattle(mixed);
+    expect(mixedOut.length, 'box, a prompt, a text entry and a menu all go').toBe(2);
+    expect(mixedOut[1], 'only the stamped dialogue stays, by identity').toBe(stampedDialogue);
+
+    const first = screen('dialogueView');
+    const second = stamped('dialogueView', '7');
+    const two = popPlayerFramesOverBattle(deepFrozen(stackOf(B, first, help, second, menu)));
+    expect(two.length, 'two dialogue frames both stay').toBe(3);
+    expect(two[1], 'in their order: the lower one first').toBe(first);
+    expect(two[2], 'then the upper one').toBe(second);
+
+    const playersOnly = popPlayerFramesOverBattle(deepFrozen(stackOf(B, menu, help)));
+    expect(playersOnly.length, 'only player frames: the base alone').toBe(1);
+    expect(playersOnly[0], 'the same base').toBe(B);
+    const bare = popPlayerFramesOverBattle(deepFrozen(stackOf(B)));
+    expect(bare.length, 'a bare battle base is a one-frame stack').toBe(1);
+    expect(bare[0], 'holding the same base').toBe(B);
+
+    const world = deepFrozen(
+      stackOf(WORLD, screen('menuView'), screen('dialogueView'), screen('helpView')),
+    );
+    expect(popPlayerFramesOverBattle(world), 'a world base: the SAME stack, untouched').toBe(world);
+    const worldBare = deepFrozen(stackOf(WORLD));
+    expect(popPlayerFramesOverBattle(worldBare), 'a bare world: the same stack').toBe(worldBare);
+
+    // Any mix and order of upper frames over a battle base.
+    const PLAYER_IDS = FRAME_IDS.filter((id) => id !== 'dialogueView');
+    const frameArb: fc.Arbitrary<UpperFrame> = fc.oneof(
+      fc.constantFrom(...FRAME_IDS).map(screen),
+      fc.constantFrom(...FRAME_IDS).map((id) => stamped(id, '7')),
+      fc.constantFrom(...PLAYER_IDS).map(prompt),
+      fc.constantFrom(...PLAYER_IDS).map(textEntry),
+    );
+    // The frame arms above name the dialogue only ~1 frame in 40, so in about half the runs one
+    // more dialogue frame (a fresh screen or stamped one) is spliced in at a generated position:
+    // roughly 150 of 300 stacks then hold a dialogue, wherever it falls among the player frames.
+    const dialogueArb: fc.Arbitrary<UpperFrame> = fc
+      .boolean()
+      .map((isStamped) => (isStamped ? stamped('dialogueView', '7') : screen('dialogueView')));
+    const upperArb: fc.Arbitrary<UpperFrame[]> = fc
+      .tuple(fc.array(frameArb, { maxLength: 8 }), fc.boolean(), fc.nat(), dialogueArb)
+      .map(([frames, splice, at, extra]) =>
+        splice
+          ? [
+              ...frames.slice(0, at % (frames.length + 1)),
+              extra,
+              ...frames.slice(at % (frames.length + 1)),
+            ]
+          : frames,
+      );
+    let withDialogue = 0;
+    let withPlayer = 0;
+    fc.assert(
+      fc.property(upperArb, (upper) => {
+        const input = deepFrozen(stackOf(B, ...upper));
+        const got = popPlayerFramesOverBattle(input);
+        const kept = upper.filter((f) => f.kind === 'screen' && f.id === 'dialogueView');
+        expect(got.length, 'the base plus exactly the dialogue frames').toBe(1 + kept.length);
+        expect(got[0], 'the base, by identity').toBe(B);
+        for (const [i, frame] of kept.entries()) {
+          expect(got[i + 1], `dialogue ${i}: the same object, in order`).toBe(frame);
+        }
+        const overWorld = deepFrozen(stackOf(WORLD, ...upper));
+        expect(popPlayerFramesOverBattle(overWorld), 'over the world: untouched').toBe(overWorld);
+        if (kept.length > 0) withDialogue += 1;
+        if (upper.length > kept.length) withPlayer += 1;
+      }),
+      { numRuns: 300 },
+    );
+    expect(withDialogue, 'ANTI-VACUITY: many stacks held a dialogue').toBeGreaterThan(50);
+    expect(withPlayer, 'ANTI-VACUITY: many stacks held a player frame').toBeGreaterThan(100);
   });
 });
 

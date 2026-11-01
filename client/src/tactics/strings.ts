@@ -11,6 +11,7 @@ import { t, tf } from '../ui/i18n/resolver';
 import type { IntentKind, Stance, StatusTag } from './boardModel';
 import type { MenuRowId, ReasonCode } from './commandModel';
 import type { Badge } from './queueStrip';
+import type { ResultsOutcome } from './results';
 
 // --- region labels --------------------------------------------------------------------------
 
@@ -279,3 +280,44 @@ export const projectedLabel = (): string => t('tactics.projected.label');
 export const projectedAssumes = (unit: string, tile: string): string =>
   tf('tactics.projected.assumes', { unit, tile });
 export const projectedEnemiesHold = (): string => t('tactics.projected.enemiesHold');
+
+// --- the deploy panel (bt-12, BT12.2 / BT12.3) ----------------------------------------------------
+
+export const deployTitle = (): string => t('tactics.deploy.title');
+export const deployLabel = (): string => t('tactics.deploy.label');
+/** `n` is the 1-based slot number (the caller passes `i + 1`). */
+export const deploySlot = (n: number): string => tf('tactics.deploy.slot', { n });
+export const deployEmpty = (): string => t('tactics.deploy.empty');
+export const deployDeploy = (): string => t('tactics.deploy.deploy');
+export const deployEdit = (): string => t('tactics.deploy.edit');
+export const deploySending = (): string => t('tactics.deploy.sending');
+export const deployCandidateLabel = (): string => t('tactics.deploy.candidateLabel');
+export const deployPrevMonster = (): string => t('tactics.deploy.prevMonster');
+export const deployNextMonster = (): string => t('tactics.deploy.nextMonster');
+export const deployConfirm = (): string => t('tactics.deploy.confirm');
+export const deployBack = (): string => t('tactics.deploy.back');
+
+// --- the results panel (bt-12, BT12.4) --------------------------------------------------------------
+
+/** The panel's title: the shipped 1v1 outcome texts (never a fresh key). */
+export function resultsTitle(outcome: ResultsOutcome): string {
+  switch (outcome) {
+    case 'won':
+      return t('battle.outcome.victory');
+    case 'lost':
+      return t('battle.outcome.defeat');
+    case 'fled':
+      return t('battle.outcome.fled');
+    default:
+      return outcome satisfies never;
+  }
+}
+export const resultsLabel = (): string => t('tactics.results.label');
+export const resultsNone = (): string => t('tactics.results.none');
+export const resultsContinue = (): string => t('tactics.results.continue');
+export const resultsMonster = (name: string, xp: number, essence: number): string =>
+  tf('tactics.results.monster', { name, xp, essence });
+/** `amount` is the server's u64 (a bigint), printed digit for digit. */
+export const resultsCurrency = (amount: bigint): string =>
+  tf('tactics.results.currency', { amount });
+export const resultsRecruited = (name: string): string => tf('tactics.results.recruited', { name });

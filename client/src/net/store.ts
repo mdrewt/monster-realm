@@ -12,12 +12,14 @@
 // per-row callbacks, so the adapter coalesces them within a microtask and calls
 // `flushBatch` once per transaction burst.
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
+import type { EventPayload } from '../module_bindings/types';
 import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
+import type { QueuedActionRule, RuleSide, UnitRow } from '../tactics/wasm';
 // Type-only, therefore erased: no runtime import edge, no cycle. `AffinityName` is
 // derived from the SDK-boundary registry (contract A7); `TrustTierName` comes from the
 // eligibility port, which owns the hard-coded ascending TRUST_TIER_ORDER (A7/A8).
 import type { TrustTierName } from '../ui/evolutionModel';
-import type { AffinityName } from './rowConvert';
+import type { AffinityName, TacticalKindName, TacticalPhaseName } from './rowConvert';
 
 export type { AffinityName };
 
@@ -407,6 +409,81 @@ export interface StoreSpeciesRow {
 }
 
 /** A positional snapshot stamped with local receive time (remote interpolation). */
+
+// --- bt-12 (BT12.1): the seven tactical views, normalized -------------------------------------
+// API FREEZE (plan §3.2 + REV 2 A13): identities as hex strings, u64/i64 as bigint, unit-variant
+// enums as their names, the unit's rules-facing fields as the ONE bt-11 `UnitRow` join
+// (`unitRowOf`), queue entries in the wasm serde form, event payloads as the binding `EventPayload`
+// (the ticker, the presentation and the results panel all consume it). Type-only imports, erased.
+export type StoreTurnState =
+  | { readonly kind: 'NotActive' }
+  | { readonly kind: 'Waiting'; readonly unitId: number }
+  | { readonly kind: 'Advancing' };
+export type StoreTacticalBattle = {
+  readonly battleId: bigint;
+  readonly kind: TacticalKindName;
+  readonly format: number;
+  readonly mapId: number;
+  readonly contentVersion: number;
+  readonly phase: TacticalPhaseName;
+  readonly round: number;
+  readonly initiative: readonly number[];
+  readonly turnIdx: number;
+  readonly turnState: StoreTurnState;
+  readonly tiePrioritySide: RuleSide;
+  readonly pendingPadMs: number;
+  readonly attackDamageDealtA: number;
+  readonly attackDamageDealtB: number;
+};
+export type StoreBattleUnit = {
+  readonly unitId: number;
+  readonly battleId: bigint;
+  /** The owning player's hex identity; null for a wild. */
+  readonly owner: string | null;
+  readonly monsterId: bigint | null;
+  readonly affinity: AffinityName;
+  /** The rules port's row (side, slot, pos, hp, status, budget, guard, state, stance, wild_index). */
+  readonly row: UnitRow;
+};
+export type StoreBattleQueue = {
+  readonly unitId: number;
+  readonly battleId: bigint;
+  readonly owner: string;
+  readonly entries: readonly QueuedActionRule[];
+  readonly submittedAtMs: bigint;
+};
+export type StoreBattleDeploy = {
+  readonly deployId: bigint;
+  readonly battleId: bigint;
+  readonly owner: string;
+  readonly side: RuleSide;
+  readonly picks: readonly { readonly monsterId: bigint; readonly slot: number }[];
+  readonly locked: boolean;
+};
+export type StoreBattleClock = {
+  readonly clockId: bigint;
+  readonly battleId: bigint;
+  readonly side: RuleSide;
+  readonly player: string;
+  readonly windowSeq: number;
+  readonly windowOpenMs: bigint | null;
+  readonly deadlineMs: bigint | null;
+  readonly windowsThisUnitTurn: number;
+  readonly idleMsTotal: bigint;
+  readonly autopassCount: number;
+};
+export type StoreBattleEvent = {
+  readonly eventId: bigint;
+  readonly battleId: bigint;
+  readonly seq: number;
+  readonly round: number;
+  readonly payload: EventPayload;
+};
+export type StoreFormation = {
+  readonly ownerIdentity: string;
+  readonly monsterIds: readonly bigint[];
+};
+
 export interface Snapshot {
   readonly tileX: number;
   readonly tileY: number;
@@ -499,6 +576,16 @@ export class AuthoritativeStore {
    * @param stepMs - Server tick interval from wasm `step_ms()` export. When 0
    *   (default), burst detection and jitter estimation are disabled — existing
    *   tests that construct `new AuthoritativeStore()` are unaffected. */
+  // bt-12 (BT12.1): the seven tactical views (keys: battleId / unitId / unitId / deployId / clockId /
+  // eventId; the formation is the own Option-view slot).
+  #tacticalBattles = new Map<bigint, StoreTacticalBattle>();
+  #battleUnits = new Map<number, StoreBattleUnit>();
+  #battleQueues = new Map<number, StoreBattleQueue>();
+  #battleDeploys = new Map<bigint, StoreBattleDeploy>();
+  #battleClocks = new Map<bigint, StoreBattleClock>();
+  #battleEvents = new Map<bigint, StoreBattleEvent>();
+  #ownFormation: StoreFormation | undefined;
+
   constructor(stepMs = 0) {
     this.#stepMs = stepMs;
   }
@@ -883,6 +970,16 @@ export class AuthoritativeStore {
     // new identity); repopulated from the `my_pending_evolution_notices` view's initial
     // snapshot when the subscription re-applies.
     this.#ownEvolutionNotices = undefined;
+    // bt-12: the seven tactical views — cleared on disconnect so a previous identity's battle,
+    // plans, clocks, transcript, staging and remembered formation never surface to the next one;
+    // repopulated from the views' initial snapshot when the subscription re-applies.
+    this.#tacticalBattles.clear();
+    this.#battleUnits.clear();
+    this.#battleQueues.clear();
+    this.#battleDeploys.clear();
+    this.#battleClocks.clear();
+    this.#battleEvents.clear();
+    this.#ownFormation = undefined;
     this.#dirty = false;
   }
 
@@ -1361,6 +1458,99 @@ export class AuthoritativeStore {
   ownEvolutionNotices(identity: string): readonly StoreEvolutionReveal[] {
     const slot = this.#ownEvolutionNotices;
     return slot !== undefined && slot.ownerIdentity === identity ? slot.entries : [];
+  }
+
+  // --- bt-12 (BT12.1): the seven tactical views ----------------------------------------------
+  // Plan §3.2 + REV 2 A13. Each reconcile is AUTHORITATIVE (keep-set; an absent key is deleted) and
+  // sets #dirty only on a real `deepRowEq` change (every row nests fresh objects per flush); the
+  // formation is an Option-view slot (`rows[0]` wins, an empty list clears). Rows are replaced,
+  // never mutated: consumers hold references to published rows.
+  #reconcileKeyed<K, V>(map: Map<K, V>, rows: readonly V[], keyOf: (row: V) => K): void {
+    const keep = new Set<K>();
+    for (const row of rows) {
+      const key = keyOf(row);
+      keep.add(key);
+      const prev = map.get(key);
+      if (prev === undefined || !deepRowEq(prev, row)) {
+        map.set(key, row);
+        this.#dirty = true;
+      }
+    }
+    for (const key of [...map.keys()]) {
+      if (!keep.has(key)) {
+        map.delete(key);
+        this.#dirty = true;
+      }
+    }
+  }
+  reconcileTacticalBattlesFromView(rows: readonly StoreTacticalBattle[]): void {
+    this.#reconcileKeyed(this.#tacticalBattles, rows, (r) => r.battleId);
+  }
+  reconcileBattleUnitsFromView(rows: readonly StoreBattleUnit[]): void {
+    this.#reconcileKeyed(this.#battleUnits, rows, (r) => r.unitId);
+  }
+  reconcileBattleQueuesFromView(rows: readonly StoreBattleQueue[]): void {
+    this.#reconcileKeyed(this.#battleQueues, rows, (r) => r.unitId);
+  }
+  reconcileBattleDeploysFromView(rows: readonly StoreBattleDeploy[]): void {
+    this.#reconcileKeyed(this.#battleDeploys, rows, (r) => r.deployId);
+  }
+  reconcileBattleClocksFromView(rows: readonly StoreBattleClock[]): void {
+    this.#reconcileKeyed(this.#battleClocks, rows, (r) => r.clockId);
+  }
+  reconcileBattleEventsFromView(rows: readonly StoreBattleEvent[]): void {
+    this.#reconcileKeyed(this.#battleEvents, rows, (r) => r.eventId);
+  }
+  reconcileFormationFromView(rows: readonly StoreFormation[]): void {
+    const next = rows[0];
+    const prev = this.#ownFormation;
+    if (next === undefined ? prev !== undefined : prev === undefined || !deepRowEq(prev, next)) {
+      this.#ownFormation = next;
+      this.#dirty = true;
+    }
+  }
+  tacticalBattle(battleId: bigint): StoreTacticalBattle | undefined {
+    return this.#tacticalBattles.get(battleId);
+  }
+  /** Ascending unitId. */
+  battleUnits(battleId: bigint): readonly StoreBattleUnit[] {
+    return [...this.#battleUnits.values()]
+      .filter((u) => u.battleId === battleId)
+      .sort((a, b) => a.unitId - b.unitId);
+  }
+  /** `owner === identity` only ('' → none); ascending unitId. */
+  ownQueue(battleId: bigint, identity: string): readonly StoreBattleQueue[] {
+    if (identity === '') return [];
+    return [...this.#battleQueues.values()]
+      .filter((q) => q.battleId === battleId && q.owner === identity)
+      .sort((a, b) => a.unitId - b.unitId);
+  }
+  /** Ascending clockId. */
+  battleClocks(battleId: bigint): readonly StoreBattleClock[] {
+    return [...this.#battleClocks.values()]
+      .filter((c) => c.battleId === battleId)
+      .sort((a, b) => (a.clockId < b.clockId ? -1 : a.clockId > b.clockId ? 1 : 0));
+  }
+  /** Ascending seq, then eventId. */
+  battleEvents(battleId: bigint): readonly StoreBattleEvent[] {
+    return [...this.#battleEvents.values()]
+      .filter((e) => e.battleId === battleId)
+      .sort((a, b) =>
+        a.seq !== b.seq
+          ? a.seq - b.seq
+          : a.eventId < b.eventId
+            ? -1
+            : a.eventId > b.eventId
+              ? 1
+              : 0,
+      );
+  }
+  /** The own formation row, by exact owner match ('' → undefined). */
+  ownFormation(identity: string): StoreFormation | undefined {
+    const slot = this.#ownFormation;
+    return identity !== '' && slot !== undefined && slot.ownerIdentity === identity
+      ? slot
+      : undefined;
   }
 }
 

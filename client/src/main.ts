@@ -13,6 +13,10 @@
 // pixels.
 
 import { Identity } from 'spacetimedb';
+// bt-12: the tactics rules port is bound from the whole pkg namespace, LAZILY (`tacticsRules()`): the
+// test mocks of this module carry only the names main.ts imports by name, and `bindTacticsRules`
+// refuses a pkg missing a tactics export — so the bind happens on the first deploy render only.
+import * as wasmPkg from '../../client-wasm/pkg/client_wasm.js';
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
 // vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
 import {
@@ -64,7 +68,7 @@ import {
   rateLimitTick,
   resolveDevLogLevel,
 } from './net/devLog';
-import { AuthoritativeStore, ownPerspective } from './net/store';
+import { AuthoritativeStore, ownPerspective, type StoreMonsterPub } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
@@ -82,8 +86,12 @@ import { motionPreferenceFromWindow } from './render/motionPreference';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
+import { DeployPanel, type DeployVM, deployVM } from './tactics/deployPanel';
 import { isAlreadyActing } from './tactics/draft';
+import { CAPS } from './tactics/presentation';
+import { ResultsPanel, type ResultsVM, resultsVM } from './tactics/results';
 import { queueTooLate } from './tactics/strings';
+import { bindTacticsRules, type TacticsRules } from './tactics/wasm';
 import { t } from './ui/a11yCopy';
 import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
@@ -105,7 +113,17 @@ import {
   pvpSubmitPending,
   shouldSkipBattleRefresh,
 } from './ui/battleModel';
-import { battleButton, battleRefused, continuedBattleId, isBareBattle } from './ui/battlePolicy';
+import {
+  battleButton,
+  battleRefused,
+  battleRenderer,
+  continuedBattleId,
+  hideOtherBattleViews,
+  isBareBattle,
+  outcomeOnTop,
+  popPlayerFramesOverBattle,
+  shouldAutoContinue,
+} from './ui/battlePolicy';
 import type { BattleRewardsVM, BattleView } from './ui/battleView';
 import {
   buildBoxViewModel,
@@ -399,6 +417,36 @@ let hydratedSinceReconnect = false;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
+// bt-12 (BT12.1-BT12.4): the deploy panel (a Deploying wild battle) and the results panel (a Finished
+// one) share the `battleView` frame and overlay id with the 1v1 view. Both are constructed LAZILY, on
+// the first batch that routes to them (a second `battle-title` root under #app would collide with
+// every legacy test's and e2e's selector), on the mount `main()` keeps in `battleMount`.
+let deployPanel: DeployPanel | undefined;
+let resultsPanel: ResultsPanel | undefined;
+let battleMount: HTMLElement | undefined;
+let tacticsRulesPort: TacticsRules | null = null;
+/** The tactics rules port, bound on first use (see the `wasmPkg` import note). */
+const tacticsRules = (): TacticsRules => (tacticsRulesPort ??= bindTacticsRules(wasmPkg));
+/** The three views that can own the battle frame, in a fixed order (undefined until built). */
+const battleViews = (): readonly (BattleView | DeployPanel | ResultsPanel | undefined)[] => [
+  battleView,
+  deployPanel,
+  resultsPanel,
+];
+/** Whether any battle view shows: the `battleView` mirror probe. */
+const battleFrameShown = (): boolean => battleViews().some((v) => v?.visible === true);
+/** The `battleView` force-hide handle: every built view's own hide (each is idempotent). */
+const hideAllBattleViews = (): void => {
+  for (const v of battleViews()) v?.hide();
+};
+/** The view the screen host lends the battle adapter: the deploy panel while it shows, else the
+ *  1v1 view (the results panel takes no ops; its Continue is a click or the auto-advance). */
+const activeBattleView = (): BattleView | DeployPanel | undefined =>
+  deployPanel?.visible === true ? deployPanel : battleView;
+/** Whether the deploy panel's EDITOR owns Start and the hint verbs (REV 2 A6): at the confirm
+ *  screen Start opens the main menu as at any battle base, so Escape (Start's key) never deploys. */
+const deployEditorOwnsStart = (): boolean =>
+  deployPanel?.visible === true && deployPanel.mode === 'edit';
 let raisingView: RaisingView | undefined;
 let evolutionView: EvolutionView | undefined;
 let dialogueView: DialogueView | undefined;
@@ -460,15 +508,16 @@ let boundProposeTarget: string | null = null;
 // The three tables of the overlays the visibility mirror still sees (so-2): the server-owned
 // battle and dialogue (`MIRRORED_IDS`), which show themselves on server edges. A player frame's
 // probe, hide and view travel with its open instead (`openFrame`'s `FrameOpen`). Three small
-// tables, never merged into one registry: each row is intentionally the byte-identical thunk of its
-// own key, because main.ts is coverage-excluded and a copy-pasted sibling thunk
+// tables, never merged into one registry: each dialogue row is intentionally the byte-identical
+// thunk of its own key, because main.ts is coverage-excluded and a copy-pasted sibling thunk
 // (`battleView: () => dialogueView?.visible ?? false`) type-checks perfectly while reading,
-// hiding or lending the wrong overlay. Typed total over `MirroredId`, so a dropped row is a
-// COMPILE error.
+// hiding or lending the wrong overlay; the battle rows (bt-12) go through the ONE set of
+// battle-frame helpers above, since three views can own that frame. Typed total over
+// `MirroredId`, so a dropped row is a COMPILE error.
 
 // the probe table: whether each mirrored overlay is shown.
 const overlayProbes: Readonly<Record<MirroredId, () => boolean>> = {
-  battleView: () => battleView?.visible ?? false,
+  battleView: () => battleFrameShown(),
   dialogueView: () => dialogueView?.visible ?? false,
 };
 
@@ -476,7 +525,7 @@ const overlayProbes: Readonly<Record<MirroredId, () => boolean>> = {
 // `undefined` entry and must stay that way: hiding a live conversation client-side strands the
 // server `player_conversation` row. Only the stack's `close` commands reach it, through `hideFrame`.
 const overlayHandles: Readonly<Record<MirroredId, (() => void) | undefined>> = {
-  battleView: () => battleView?.hide(),
+  battleView: () => hideAllBattleViews(),
   dialogueView: undefined,
 };
 
@@ -493,6 +542,8 @@ const RECONNECT_RESETS: readonly (() => void)[] = [
   () => tradeView?.hide(),
   () => pvpView?.hide(),
   () => battleView?.hide(),
+  () => deployPanel?.hide(),
+  () => resultsPanel?.hide(),
   () => raisingView?.hide(),
   () => evolutionView?.hide(),
   () => leaderboardView?.hide(),
@@ -501,7 +552,7 @@ const RECONNECT_RESETS: readonly (() => void)[] = [
 // the view-lending table: each mirrored overlay's view instance, which the screen host hands to
 // that frame's adapter to paint after a step (CTL7C.2). Undefined until main() builds the views.
 const screenViews: Readonly<Record<MirroredId, () => unknown>> = {
-  battleView: () => battleView,
+  battleView: () => activeBattleView(),
   dialogueView: () => dialogueView,
 };
 
@@ -608,6 +659,9 @@ function runStackCommands(commands: readonly StackCommand[]): void {
 /** When the terminal outcome frame now on top was first mirrored (performance.now), else null:
  *  A continues it only after `OUTCOME_CONTINUE_GRACE_MS` (CTL6C.2). */
 let outcomeShownAtMs: number | null = null;
+/** The shown edge (`outcomeShownAtMs`) the results auto-advance already popped for, so the pop runs
+ *  once per edge (bt-12, BT12.4); null whenever the outcome is not on top, with the edge. */
+let autoContinuedAtMs: number | null = null;
 /** The reason of the last battle refusal written to the status line (CTL6C.3), until the base is
  *  the world again; else null. */
 let shownBattleRefusal: string | null = null;
@@ -638,11 +692,11 @@ function syncStack(): void {
     apply(edge);
     inputRouter.resetRepeat();
   }
-  const top = contextStack[contextStack.length - 1];
-  const outcomeUp =
-    contextStack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView';
-  if (!outcomeUp) outcomeShownAtMs = null;
-  else outcomeShownAtMs ??= performance.now();
+  const outcomeUp = outcomeOnTop(contextStack);
+  if (!outcomeUp) {
+    outcomeShownAtMs = null;
+    autoContinuedAtMs = null;
+  } else outcomeShownAtMs ??= performance.now();
   // The battle is over: its refusal reason is stale. Anything reported over it since stays.
   if (shownBattleRefusal !== null && contextStack[0].kind === 'world') {
     if (statusEl?.textContent === shownBattleRefusal) clearStatus();
@@ -1255,16 +1309,23 @@ function hintChips(
   notices: readonly Notice[],
   pending: readonly RequestNotice[],
 ): readonly HintChip[] {
-  return hintBar(stack, bindings, notices, {
-    target:
-      chip === null
-        ? null
-        : chip.kind === 'single'
-          ? interactVerb(chip.action)
-          : i18nT('chrome.chip.ok'),
-    sheetOpen: screenHost.sheetOpen,
-    requestWaiting: pending.length > 0,
-  });
+  return hintBar(
+    stack,
+    bindings,
+    notices,
+    {
+      target:
+        chip === null
+          ? null
+          : chip.kind === 'single'
+            ? interactVerb(chip.action)
+            : i18nT('chrome.chip.ok'),
+      sheetOpen: screenHost.sheetOpen,
+      requestWaiting: pending.length > 0,
+    },
+    // bt-12: the deploy editor's verbs (B back, LB / RB prev / next, Start submit) while it is open.
+    deployEditorOwnsStart() ? deployPanel?.hint() : undefined,
+  );
 }
 
 /** Options › Controls: seated at the open, so its rows paint then and not at the first button. */
@@ -1889,6 +1950,16 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
           }),
       );
     }
+    case 'deployUnits': {
+      // bt-12 (BT12.2): the confirmed deploy of a Deploying wild battle. The server validates every
+      // pick (owned, in the party, conscious, distinct, slot in range) and refuses with a reason,
+      // reported like every other rejection; empty picks are never sent.
+      const { battleId, picks } = command;
+      if (picks.length === 0) return Promise.resolve();
+      return sendGuarded('deploy-units', () =>
+        conn?.live()?.reducers.deployUnits({ battleId, picks: [...picks] }),
+      );
+    }
     case 'advanceDialogue': {
       const { choiceIdx } = command;
       // qf-6: the server refuses a reply chosen too far from the NPC, in another zone, or with the
@@ -2022,7 +2093,7 @@ function closeFrame(frame: UpperFrame): void {
     case 'battleView':
       // The terminal outcome continues: latch it so the next batch never re-pops it.
       dismissedBattleId = continuedBattleId(store.latestPlayerBattle(identity), dismissedBattleId);
-      battleView?.hide();
+      hideAllBattleViews();
       lastBattleVM = null;
       break;
     default:
@@ -2532,6 +2603,7 @@ const routeCtx = (): RouteContext => {
           contextStack,
           btn,
           outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
+          deployEditorOwnsStart(),
         ) ??
         screenHost.button(contextStack, btn, screenCtx, identity === '' ? undefined : worldPort);
       // The world sheet opening or closing is a frame edge for held input (B14): no walk or
@@ -2954,6 +3026,33 @@ function refreshBattle(): void {
   dismissedBattleId = r.dismissedBattleId;
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
+    // bt-12 (BT12.1): which view owns the frame follows the tactical row's phase. A Deploying wild
+    // battle shows the deploy panel, a Finished one the results panel; an Active one keeps the 1v1
+    // view until the continuation constructs the tactical shell (R-bt-12-TACTICSEXPORTS). A switch
+    // under a frame that sits over the battle base (Help, a conversation) first pops to the base:
+    // the three roots share one overlay a11y record, and closing a covered record then opening a
+    // fresh one would leave that frame inert (REV 2 A2). The open is the LAST statement of each arm.
+    const tacticalRow = store.tacticalBattle(r.action.battle.battleId);
+    const renderer = battleRenderer(tacticalRow?.phase);
+    const panel =
+      renderer === 'deploy' && tacticalRow !== undefined
+        ? buildDeployPanel(r.action.battle, tacticalRow.mapId)
+        : renderer === 'results'
+          ? buildResultsPanel(r.action.battle.battleId)
+          : null;
+    if (panel !== null) {
+      // The HIDDEN target is rendered first (no a11y state moves), so a render throw leaves the
+      // frame's current owner shown (B17); only then the switch: pop, hide the others, show.
+      if (panel.kind === 'deploy') panel.view.render(panel.vm);
+      else panel.view.render(panel.vm);
+      popOverBattleBeforeSwitch(panel.view);
+      hideOtherBattleViews(battleViews(), panel.view);
+      if (!panel.view.visible) panel.view.show();
+      lastBattleVM = null;
+      return;
+    }
+    popOverBattleBeforeSwitch(battleView);
+    hideOtherBattleViews(battleViews(), battleView);
     // What the battle drops was already closed by this batch's `reconcileStack` (SCREEN_POLICY).
     const inventory = store.ownInventory(identity);
     const itemDefs = store.itemDefs();
@@ -2983,10 +3082,105 @@ function refreshBattle(): void {
     if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
     battleView.refresh(vm, lastPayout);
     lastBattleVM = vm;
-  } else if (battleView.visible) {
-    battleView.hide();
+  } else if (battleFrameShown()) {
+    hideAllBattleViews();
     lastBattleVM = null;
   }
+}
+
+/** A renderer SWITCH (another battle view is visible and `target` is not) under frames that sit over
+ *  a battle base first pops every PLAYER frame through its own close path (REV 2 A2): the roots share
+ *  one overlay record. A suspended server conversation stays (the client never ends a dialogue), and
+ *  a battle's first show, with nothing visible yet, pops nothing. */
+function popOverBattleBeforeSwitch(target: { readonly visible: boolean }): void {
+  if (target.visible) return;
+  const switching = battleViews().some((v) => v !== undefined && v !== target && v.visible);
+  if (switching) applyStack(contextStack, popPlayerFramesOverBattle(contextStack));
+}
+
+/** The one name rule for an own monster: the nickname, else the species name, else `#id`. */
+function ownMonsterName(m: StoreMonsterPub): string {
+  return m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${m.monsterId}`);
+}
+
+/** The deploy slot count per map, read once per mapId through the rules port (a whole map
+ *  definition crosses the wasm boundary for one length). */
+const deploySlotCounts = new Map<number, number>();
+
+/** The deploy panel and its view model for the own-perspective anchor `battle` (bt-12, BT12.2 /
+ *  BT12.3): the anchor's party order joined with the own monster rows (a member with no own row is
+ *  dropped), the remembered formation and the map's spawn count. Builds the panel on first use. null
+ *  (reported once) when the rules port or the map cannot be read — the 1v1 view keeps the frame (B17). */
+function buildDeployPanel(
+  battle: { readonly battleId: bigint; readonly partyMonsterIds: readonly bigint[] },
+  mapId: number,
+): { readonly kind: 'deploy'; readonly view: DeployPanel; readonly vm: DeployVM } | null {
+  if (battleMount === undefined) return null;
+  try {
+    let slotCount = deploySlotCounts.get(mapId);
+    if (slotCount === undefined) {
+      slotCount = tacticsRules().map(mapId).spawn_a.length;
+      deploySlotCounts.set(mapId, slotCount);
+    }
+    const own = new Map(store.ownMonsters(identity).map((m) => [m.monsterId, m] as const));
+    const party = battle.partyMonsterIds.flatMap((id) => {
+      const m = own.get(id);
+      if (m === undefined) return [];
+      const row = {
+        monsterId: m.monsterId,
+        name: ownMonsterName(m),
+        level: m.level,
+        hp: m.currentHp,
+        maxHp: m.statHp,
+      };
+      return [row];
+    });
+    const vm = deployVM({
+      battleId: battle.battleId,
+      party,
+      remembered: store.ownFormation(identity)?.monsterIds ?? [],
+      slotCount,
+    });
+    deployPanel ??= new DeployPanel(battleMount, {
+      onDeploy: (battleId, picks) => dispatch({ kind: 'deployUnits', battleId, picks }),
+    });
+    return { kind: 'deploy', view: deployPanel, vm };
+  } catch (err) {
+    reportPaintError(err);
+    return null;
+  }
+}
+
+/** The results panel and its view model from the RAW anchor (bt-12, BT12.4): the raw side decides
+ *  won / lost, the transcript's Awards and RecruitResult lines are folded per unit. Builds the panel on
+ *  first use. null when the anchor is not terminal — the 1v1 view then keeps the frame. */
+function buildResultsPanel(
+  battleId: bigint,
+): { readonly kind: 'results'; readonly view: ResultsPanel; readonly vm: ResultsVM } | null {
+  if (battleMount === undefined) return null;
+  const raw = store.latestPlayerBattle(identity);
+  if (raw === undefined || raw.battleId !== battleId) return null;
+  const vm = resultsVM({
+    battleId,
+    outcome: raw.outcome,
+    mySide: raw.playerIdentity === identity ? 'A' : 'B',
+    units: store.battleUnits(battleId),
+    events: store.battleEvents(battleId),
+    monsterName: (monsterId) => {
+      const m = store.ownMonsters(identity).find((row) => row.monsterId === monsterId);
+      return m === undefined ? `#${monsterId}` : ownMonsterName(m);
+    },
+    speciesName: (speciesId) => store.species(speciesId)?.name ?? `#${speciesId}`,
+  });
+  if (vm === null) return null;
+  resultsPanel ??= new ResultsPanel(battleMount, {
+    // Continue: pop the outcome frame, only while it is the top frame over the world (the same
+    // predicate as A's continue); the pop latches the dismissed battle.
+    onContinue: () => {
+      if (outcomeOnTop(contextStack)) void dispatch({ kind: 'pop' });
+    },
+  });
+  return { kind: 'results', view: resultsPanel, vm };
 }
 // --- qf-17: the KO-win payout lines (QF17.1, QF17.2) ---------------------------------------
 // The server pays a win silently, in the ONE transaction that also flips the battle row terminal
@@ -3774,6 +3968,7 @@ async function main(): Promise<void> {
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
   if (mount !== null) {
+    battleMount = mount; // bt-12: the lazily built deploy / results panels mount here
     await renderer.init(mount, rawMap);
     // render/world.ts appends app.canvas to this same mount and puts
     // role="application"/tabindex="0" on it. It is out of this slice's touches:, so a
@@ -4192,6 +4387,16 @@ async function main(): Promise<void> {
         return;
       }
       const now = performance.now();
+      // bt-12 (BT12.4): the results auto-advance — the outcome frame has been on top for the
+      // presentation results cap and the results panel is what it shows: continue it, once per shown
+      // edge (a frame over it nulls the edge, so the countdown pauses and restarts when it resurfaces).
+      if (
+        shouldAutoContinue(outcomeShownAtMs, now, resultsPanel?.visible === true, CAPS.resultsMs) &&
+        autoContinuedAtMs !== outcomeShownAtMs
+      ) {
+        autoContinuedAtMs = outcomeShownAtMs;
+        void dispatch({ kind: 'pop' });
+      }
       // Menu auto-repeat: the router synthesizes the held D-pad's repeat edges on this clock.
       for (const effect of inputRouter.tick(routeCtx())) applyRouterEffect(effect);
       if (now - lastCareTickAtMs >= CARE_READINESS_TICK_MS && upperIds().includes('boxView')) {

@@ -1,10 +1,13 @@
 // ui/battlePolicy.ts — the battle base's own rules (ctl-6c), moved VERBATIM out of
-// contextStack.ts (C2a — a pure move, zero semantic change): which buttons the battle answers
+// contextStack.ts (C2a — a pure move, zero semantic change), plus the bt-12 battle-frame rules at the
+// bottom (which view owns the frame, the switch, the results countdown): which buttons the battle answers
 // before the top frame's adapter (`battleButton`, with the outcome-continue grace), which
 // screen commands a battle base refuses (`COMMAND_BATTLE_POLICY`, `battleSafeCommand`,
 // `battleRefused`), the bare-battle probe (`isBareBattle`) and the continued-outcome latch
 // (`continuedBattleId`). Pure — no DOM, SDK, module state or clock. The stack itself, its
 // transitions and SCREEN_POLICY stay in contextStack.ts.
+
+import type { TacticalPhaseName } from '../net/rowConvert';
 import type { Stack } from './contextStack';
 import type { NavInput } from './nav';
 import type { Command as ScreenCommand, ScreenResult } from './screens/types';
@@ -39,25 +42,36 @@ export function battleButton(
   outcomeAgeMs?: number,
   tactical = false,
 ): ScreenResult | undefined {
-  const top = stack[stack.length - 1];
   if (btn.button === 'Start' && isBareBattle(stack)) {
     // bt-11 (BT11.6): when the tactical shell owns the frame, Start is the battle adapter's (End
     // Turn / Guard on a live turn, Submit for a pre-queue); a held Start still acts once.
     if (btn.repeat) return 'consumed';
     return tactical ? undefined : { kind: 'openMenu' };
   }
-  if (
-    btn.button === 'A' &&
-    stack[0].kind === 'world' &&
-    top.kind === 'screen' &&
-    top.id === 'battleView'
-  ) {
+  if (btn.button === 'A' && outcomeOnTop(stack)) {
     if (btn.repeat || outcomeAgeMs === undefined || outcomeAgeMs < OUTCOME_CONTINUE_GRACE_MS) {
       return 'consumed';
     }
     return { kind: 'pop' };
   }
   return undefined;
+}
+
+/** The terminal outcome frame is the top frame over the world base: what A continues after the
+ *  grace, what the results panel's Continue and auto-advance pop (bt-12). */
+export function outcomeOnTop(stack: Stack): boolean {
+  const top = stack[stack.length - 1];
+  return stack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView';
+}
+
+/** The stack a battle-frame renderer switch under upper frames moves to (bt-12, REV 2 A2): every
+ *  PLAYER frame over the battle base is popped (the three battle roots share one overlay a11y record,
+ *  so a covered record closed and a fresh one opened would leave such a frame inert), while a server
+ *  conversation suspended over the base stays — the client never ends a dialogue (contextStack.ts). */
+export function popPlayerFramesOverBattle(stack: Stack): Stack {
+  const [base, ...upper] = stack;
+  if (base.kind !== 'battle') return stack;
+  return [base, ...upper.filter((f) => f.kind !== 'textEntry' && f.id === 'dialogueView')];
 }
 
 /** Which screen commands a battle base allows (CTL6C.3): the stack moves, the battle's own actions
@@ -95,6 +109,7 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   pvpSwap: 'safe',
   submitQueue: 'safe',
   cancelQueue: 'safe',
+  deployUnits: 'safe',
   advanceDialogue: 'refuse',
   dismissDialogue: 'safe',
   pickShop: 'refuse',
@@ -115,4 +130,80 @@ export function battleSafeCommand(command: ScreenCommand): boolean {
  *  battle-safe. */
 export function battleRefused(stack: Stack, command: ScreenCommand): boolean {
   return stack[0].kind === 'battle' && !battleSafeCommand(command);
+}
+
+// --- bt-12: which view owns the `battleView` frame, and the results countdown ------------------
+
+/** The view that owns the battle frame for a tactical phase: no tactical row → the 1v1 view;
+ *  Deploying → the deploy panel; Active → the tactical shell (the continuation; A keeps the 1v1 view
+ *  there); Finished → the results panel. Total over the phase names; an unknown phase still shows a
+ *  battle (B17). */
+export type BattleRenderer = 'legacy' | 'deploy' | 'tactical' | 'results';
+export function battleRenderer(phase: TacticalPhaseName | undefined): BattleRenderer {
+  switch (phase) {
+    case undefined:
+      return 'legacy';
+    case 'Deploying':
+      return 'deploy';
+    case 'Active':
+      return 'tactical';
+    case 'Finished':
+      return 'results';
+    default:
+      phase satisfies never;
+      return 'legacy';
+  }
+}
+
+/** What the battle views share: the 1v1 view, the deploy panel and the results panel. */
+export interface BattleViewLike {
+  readonly visible: boolean;
+  hide(): void;
+}
+/** Hide every VISIBLE view other than `keep` and return the ones hidden, in order. A HIDDEN view's
+ *  `hide()` must never run here: the three roots share the `battleView` overlay a11y record (keyed by
+ *  id), so it would tear down the shown root's dialog role and focus trap. */
+export function hideOtherBattleViews(
+  views: readonly (BattleViewLike | undefined)[],
+  keep: BattleViewLike | undefined,
+): BattleViewLike[] {
+  const hidden: BattleViewLike[] = [];
+  for (const view of views) {
+    if (view === undefined || view === keep || !view.visible) continue;
+    view.hide();
+    hidden.push(view);
+  }
+  return hidden;
+}
+
+/** The outcome frame has been the top frame for `capMs` (the presentation results cap) and the
+ *  results panel is what it shows: continue it. `outcomeShownAtMs` is null whenever the outcome is
+ *  not on top, so a frame over it pauses the countdown and it restarts when the outcome resurfaces. */
+export function shouldAutoContinue(
+  outcomeShownAtMs: number | null,
+  nowMs: number,
+  resultsShown: boolean,
+  capMs: number,
+): boolean {
+  return outcomeShownAtMs !== null && resultsShown && nowMs - outcomeShownAtMs >= capMs;
+}
+
+/** The bigint-safe structural compare the deploy and results panels skip a no-op paint with (a
+ *  `JSON.stringify` would throw on a bigint): plain data only — primitives, arrays and plain objects.
+ *  (store.ts keeps its own private `deepRowEq` for its rows; the ui layer must not import the net
+ *  layer's internals, so the two stay separate on purpose.) */
+export function structurallyEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x, i) => structurallyEqual(x, b[i]));
+  }
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  const rb = b as Record<string, unknown>;
+  return ka.every(
+    (k) => Object.hasOwn(rb, k) && structurallyEqual((a as Record<string, unknown>)[k], rb[k]),
+  );
 }

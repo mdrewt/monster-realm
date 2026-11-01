@@ -3,7 +3,7 @@
 // state and a `Command` (or `consumed` / `unhandled`); the shell keeps that state per frame
 // (`ScreenHost`, screens/index.ts) and main.ts runs every command through ONE exhaustive `dispatch`.
 import type { Bindings } from '../../input/bindings';
-import type { QueuedAction } from '../../module_bindings/types';
+import type { DeployPick, QueuedAction } from '../../module_bindings/types';
 import type { AuthoritativeStore } from '../../net/store';
 import type { LeaderboardView } from '../leaderboardView';
 import type { NavInput } from '../nav';
@@ -76,6 +76,13 @@ export type Command =
       readonly entries: readonly QueuedAction[];
     }
   | { readonly kind: 'cancelQueue'; readonly battleId: bigint; readonly unitId: number }
+  // bt-12 (BT12.2): the confirmed deploy of a Deploying wild battle (`deploy_units`), issued by the
+  // deploy panel through its deps. Empty picks are never sent.
+  | {
+      readonly kind: 'deployUnits';
+      readonly battleId: bigint;
+      readonly picks: readonly DeployPick[];
+    }
   // Dialogue. `pickShop` is the greet-then-shop choice: it ends the conversation, and the shop
   // opens on the first batch with no conversation.
   | { readonly kind: 'advanceDialogue'; readonly choiceIdx: number }

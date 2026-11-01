@@ -2,6 +2,10 @@
 // uxd2: fast-check is used by the AC-16 totality property at the foot of this file.
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
+// bt-12 (BT12.1): the queue converter is the exact inverse of the draft's wire form, and the unit
+// converter reuses the ONE bt-11 binding-row mapper — both are proven against the real functions.
+import { toWire } from '../tactics/draft';
+import { type QueuedActionRule, unitRowOf } from '../tactics/wasm';
 // EG4-5 (contract §B "Deleted: … SdkFusionRow, fusionRowToStore …"): the namespace
 // import is what lets the deletion tooth at the foot of the fusion section PROVE the
 // export is gone at runtime. A named `import { fusionRowToStore }` cannot express
@@ -9,24 +13,40 @@ import { describe, expect, it, vi } from 'vitest';
 // compile; the namespace object is the only runtime-inspectable surface.
 import * as rowConvertModule from './rowConvert';
 import {
+  // bt-12 (BT12.1): the seven tactical-view converters and the queue-entry inverse.
+  battleClockRowToStore,
+  battleDeployRowToStore,
+  battleEventRowToStore,
+  battleQueueRowToStore,
   battleRowToStore,
+  battleUnitRowToStore,
   characterRowToStore,
   // EG4 (contract §B): the evolution_path converter REPLACES fusionRowToStore, which
   // EG4-5 deletes outright together with SdkFusionRow.
   evolutionPathRowToStore,
+  formationRowToStore,
   inventoryRowToStore,
   itemRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
+  queuedActionToRule,
+  type SdkBattleClockRow,
+  type SdkBattleDeployRow,
+  type SdkBattleEventRow,
+  type SdkBattleQueueRow,
   type SdkBattleRow,
+  type SdkBattleUnitRow,
   type SdkEvolutionPathRow,
+  type SdkFormationRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkMonsterPubRow,
   type SdkSkillRowRow,
+  type SdkTacticalBattleRow,
   type SdkTradeOfferRow,
   skillRowToStore,
   speciesRowToStore,
+  tacticalBattleRowToStore,
   tradeOfferRowToStore,
 } from './rowConvert';
 
@@ -2446,6 +2466,20 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //     NpcInteraction — npcRowToStore: row.interaction.tag  // uxd2: registered — ADR-0161
 //     TrustTier      — monsterPubRowToStore: row.trustTier.tag;                  // EG4
 //                      evolutionPathRowToStore: row.minTrustTier?.tag
+//   bt-12 (named intentional change, BT12.1, plan §3.1): the seven tactical views' converters read
+//   ELEVEN more enums at the boundary, appended in this order:
+//     BattleKind     — tacticalBattleRowToStore: row.kind.tag
+//     Phase          — tacticalBattleRowToStore: row.phase.tag
+//     TurnState      — tacticalBattleRowToStore: row.turnState.tag (payload-carrying: Waiting(u32))
+//     SideRow        — tiePrioritySide / unit side / deploy side / clock side
+//     UnitState      — battleUnitRowToStore (through unitRowOf): row.state.tag
+//     StanceRow      — battleUnitRowToStore (through unitRowOf): row.stance?.tag
+//     BudgetLastEntry — battleUnitRowToStore (through unitRowOf): row.budgetLast?.tag
+//     StatusEffect   — battleUnitRowToStore (through unitRowOf): row.status?.tag, read
+//                      EXHAUSTIVELY (a `satisfies never` switch), so it is registered now
+//     QueuedAction   — battleQueueRowToStore: entries[i].tag
+//     ActionTarget   — battleQueueRowToStore: Skill / Item target.tag
+//     EventPayload   — battleEventRowToStore: row.payload.tag (the 17 event kinds)
 //
 //   Excluded (write-direction or non-.tag reads):
 //     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
@@ -2454,8 +2488,9 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //                      enum; the store field trainStat is string|null, not StatKind)
 //                      INCLUDED only as a boundary read — verify actual read sites
 //     MoveInput      — moveInputToWasm in convert.ts (not rowConvert.ts boundary)
-//     StatusEffect   — battleMonsterToStore: row.status?.tag read as bare string
-//                      (store.StoreStatusEffect.tag: string — no narrowTag needed)
+//     MoveClassRow   — battle_unit.movement is not stored (YAGNI, plan §3.1)
+//     (StatusEffect left this list in bt-12: battleMonsterToStore still reads it as a bare
+//      string, but the tactical unit path reads it exhaustively through unitRowOf.)
 //
 // NOTE: StatKind is read in itemRowToStore as row.trainStat?.tag → bare string
 //   (store field is `string | null`). It is a boundary read but the store field
@@ -2466,13 +2501,15 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //   TradeStatus, ChallengeStatus, BattleOutcome, Affinity,
 //   StatusKind, WeatherEffect, ActionState, Direction,
 //   NpcInteraction,                       // uxd2: NpcInteraction registered — ADR-0161
-//   TrustTier                             // EG4: monsterPubRowToStore reads
+//   TrustTier,                            // EG4: monsterPubRowToStore reads
 //                                         //   row.trustTier.tag and
 //                                         //   evolutionPathRowToStore reads
 //                                         //   row.minTrustTier?.tag (contract §A7/A8)
+//   BattleKind, Phase, TurnState, SideRow, UnitState, StanceRow, BudgetLastEntry,
+//   StatusEffect, QueuedAction, ActionTarget, EventPayload   // bt-12: the tactical views
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)', () => {
-  it('BITES: registry contains all TEN required boundary enum keys (EG4: +TrustTier)', () => {
+  it('BITES: registry contains all TWENTY-ONE required boundary enum keys (EG4: +TrustTier; bt-12: +11 tactical enums)', () => {
     // These are the enums whose .tag values cross the SDK→store boundary in rowConvert.ts.
     // Verified by reading each .tag access site in rowConvert.ts.
     // Kills: an impl that omits any boundary enum (eval cannot check an unregistered enum).
@@ -2496,6 +2533,18 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
       // way no other registry entry is (it is the ranking the trust gate
       // compares through).
       'TrustTier',
+      // bt-12 (named intentional change, BT12.1): the seven tactical views' boundary reads.
+      'BattleKind',
+      'Phase',
+      'TurnState',
+      'SideRow',
+      'UnitState',
+      'StanceRow',
+      'BudgetLastEntry',
+      'StatusEffect',
+      'QueuedAction',
+      'ActionTarget',
+      'EventPayload',
     ] as const;
     for (const key of requiredKeys) {
       expect(
@@ -2516,7 +2565,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     ).toBe(false);
   });
 
-  it('BITES: registry has EXACTLY 10 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
+  it('BITES: registry has EXACTLY 21 keys — no extra keys allowed (T4-6 exact-count pin; bt-12: was 10)', () => {
     // Exact-count gate: the required set is exactly the boundary-read enums listed
     // in the T4-6 comment above. No more, no less. This kills:
     //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
@@ -2528,11 +2577,12 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // that no additional keys were added.
     expect(
       Object.keys(HANDLED_ENUM_VARIANTS).length,
-      'HANDLED_ENUM_VARIANTS must have EXACTLY 10 keys: TradeStatus, ChallengeStatus, ' +
+      'HANDLED_ENUM_VARIANTS must have EXACTLY 21 keys: TradeStatus, ChallengeStatus, ' +
         'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction, ' +
-        'NpcInteraction, TrustTier. ' +
+        'NpcInteraction, TrustTier, BattleKind, Phase, TurnState, SideRow, UnitState, ' +
+        'StanceRow, BudgetLastEntry, StatusEffect, QueuedAction, ActionTarget, EventPayload. ' +
         `Got ${Object.keys(HANDLED_ENUM_VARIANTS).length} keys: ${Object.keys(HANDLED_ENUM_VARIANTS).sort().join(', ')}`,
-    ).toBe(10);
+    ).toBe(21);
   });
 
   it('★ BITES (EG4): TrustTier registry matches types.ts variants in DECLARATION order', () => {
@@ -4188,5 +4238,675 @@ describe('rowConvert: monsterPubRowToStore carries the care cooldown anchor (las
     // `lastCareAtMs` is no longer a bigint).
     const generatedRowIsAnSdkRow = (row: GeneratedTypes.MonsterPub): SdkMonsterPubRow => row;
     expect(typeof generatedRowIsAnSdkRow).toBe('function');
+  });
+});
+
+// =============================================================================
+// bt-12 (BT12.1): the seven tactical views -> store (plan §3.1 + REV 2 A8 + REV 2b B6)
+// =============================================================================
+//
+// SOURCE OF TRUTH: spec BT12.1 ("ingest them into the store with exhaustive typed unions"), plan
+// §3.1 / §3.2 (the converter names and the Store* shapes, the frozen stubs in rowConvert.ts /
+// store.ts), REV 2 A8 (an unknown tag in the tactical battle's turn state or in a queue entry drops
+// THAT row with one console.warn — never a throw, which would starve the view's other rows) and REV
+// 2b B6 (a zero keeps its zero; every bigint column a distinct value past 2^53; the draft's
+// `toWire` inverts the queue entries for every QueuedAction variant and both ActionTarget arms).
+// Each fixture uses pairwise-distinct primes for the numbers it reads back, so a field copied from
+// its neighbour shows. RED REASON: every converter throws `bt-12: not implemented` on the
+// API-freeze stub, and HANDLED_ENUM_VARIANTS still holds its 10 pre-bt-12 keys.
+
+/** 2^53; the bigint columns below sit at odd offsets past it (a Number() round trip moves them). */
+const BT12_P53 = 2n ** 53n;
+const BT12_U64_MAX = 2n ** 64n - 1n;
+const BT12_I64_MIN = -(2n ** 63n);
+const BT12_I64_MAX = 2n ** 63n - 1n;
+const BT12_OWNER = 'ab'.repeat(32);
+const bt12Owner = { toHexString: (): string => BT12_OWNER };
+
+/** Run `fn` with console.warn silenced; report what it returned and how many times it warned. */
+function bt12Warns<T>(fn: () => T): { readonly value: T; readonly warns: number } {
+  const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const value = fn();
+    return { value, warns: spy.mock.calls.length };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+function bt12SdkTactical(o: Partial<SdkTacticalBattleRow> = {}): SdkTacticalBattleRow {
+  return {
+    battleId: BT12_P53 + 1n,
+    kind: { tag: 'Wild' },
+    format: 3,
+    mapId: 7,
+    contentVersion: 11,
+    phase: { tag: 'Deploying' },
+    round: 13,
+    initiative: [17, 19, 23],
+    turnIdx: 2,
+    turnState: { tag: 'Waiting', value: 29 },
+    tiePrioritySide: { tag: 'B' },
+    pendingPadMs: 31,
+    attackDamageDealtA: 37,
+    attackDamageDealtB: 41,
+    ...o,
+  };
+}
+
+function bt12SdkUnit(o: Partial<SdkBattleUnitRow> = {}): SdkBattleUnitRow {
+  return {
+    unitId: 43,
+    battleId: BT12_P53 + 3n,
+    side: { tag: 'A' },
+    owner: bt12Owner,
+    slot: 2,
+    monsterId: BT12_P53 + 5n,
+    wildIndex: undefined,
+    speciesId: 47,
+    level: 53,
+    affinity: { tag: 'Plant' },
+    x: 5,
+    y: 7,
+    curHp: 59,
+    stats: { hp: 61, attack: 67, defense: 71, speed: 73, spAttack: 79, spDefense: 83 },
+    skillIds: [89, 97],
+    status: { tag: 'Sleep', value: 3 },
+    ap: 11,
+    stridesUsed: 13,
+    attacks: 17,
+    budgetLast: { tag: 'Move', value: { strides: 19, taxed: true } },
+    guard: true,
+    firstStand: false,
+    movement: { tag: 'Swim' },
+    stride: 23,
+    stance: { tag: 'Skittish' },
+    state: { tag: 'Fainted' },
+    ...o,
+  };
+}
+
+/** Every QueuedAction variant and both ActionTarget arms, with a Recruit bait of 0 and of None. */
+const BT12_WIRE: readonly GeneratedTypes.QueuedAction[] = [
+  { tag: 'Move', value: { x: 3, y: 5, strides: 2 } },
+  { tag: 'Skill', value: { skillId: 7, target: { tag: 'Unit', value: 11 } } },
+  { tag: 'Skill', value: { skillId: 13, target: { tag: 'SelfTarget' } } },
+  { tag: 'Item', value: { itemId: 17, target: { tag: 'Unit', value: 43 } } },
+  { tag: 'Item', value: { itemId: 19, target: { tag: 'SelfTarget' } } },
+  { tag: 'Recruit', value: { target: 23, bait: 0 } },
+  { tag: 'Recruit', value: { target: 29, bait: undefined } },
+  { tag: 'Recruit', value: { target: 31, bait: 37 } },
+  { tag: 'Flee' },
+  { tag: 'EndTurn' },
+];
+/** The same entries in the wasm serde form the store keeps (draft.ts `toWire`'s domain). */
+const BT12_RULES: readonly QueuedActionRule[] = [
+  { Move: { x: 3, y: 5, strides: 2 } },
+  { Skill: { skill_id: 7, target: { Unit: 11 } } },
+  { Skill: { skill_id: 13, target: 'SelfTarget' } },
+  { Item: { item_id: 17, target: { Unit: 43 } } },
+  { Item: { item_id: 19, target: 'SelfTarget' } },
+  { Recruit: { target: 23, bait: 0 } },
+  { Recruit: { target: 29, bait: null } },
+  { Recruit: { target: 31, bait: 37 } },
+  'Flee',
+  'EndTurn',
+];
+
+function bt12SdkQueue(o: Partial<SdkBattleQueueRow> = {}): SdkBattleQueueRow {
+  return {
+    unitId: 41,
+    battleId: BT12_P53 + 7n,
+    owner: bt12Owner,
+    entries: [...BT12_WIRE],
+    submittedAtMs: BT12_P53 + 9n,
+    ...o,
+  };
+}
+
+function bt12SdkClock(o: Partial<SdkBattleClockRow> = {}): SdkBattleClockRow {
+  return {
+    clockId: BT12_P53 + 19n,
+    battleId: BT12_P53 + 21n,
+    side: { tag: 'A' },
+    player: bt12Owner,
+    windowSeq: 3,
+    windowOpenMs: BT12_P53 + 23n,
+    deadlineMs: BT12_P53 + 25n,
+    windowsThisUnitTurn: 5,
+    idleMsTotal: BT12_U64_MAX,
+    autopassCount: 7,
+    ...o,
+  };
+}
+
+/** One payload of each of the 17 EventPayload kinds, in types.ts declaration order. */
+const BT12_PAYLOADS: readonly GeneratedTypes.EventPayload[] = [
+  {
+    tag: 'Executed',
+    value: {
+      attacker: 3,
+      skillId: 5,
+      results: [
+        {
+          unit: 7,
+          hit: true,
+          damage: 11,
+          effectiveness: { tag: 'SuperEffective' },
+          flank: true,
+          guard: false,
+          ko: false,
+        },
+      ],
+    },
+  },
+  { tag: 'Missed', value: { attacker: 3, target: 7 } },
+  { tag: 'PlanHalted', value: { unit: 3, idx: 2, reasonKind: { tag: 'TargetGone' } } },
+  { tag: 'QueueVoided', value: { unit: 3 } },
+  { tag: 'AutoPass', value: { unit: 3, strike: 2 } },
+  { tag: 'StoodGround', value: { unit: 3 } },
+  {
+    tag: 'Status',
+    value: { unit: 3, status: { tag: 'Sleep', value: 2 }, change: { tag: 'Applied' }, amount: 0 },
+  },
+  { tag: 'Surge', value: { round: 13, unit: 3, amount: 5 } },
+  { tag: 'Ko', value: { unit: 7 } },
+  { tag: 'RecruitResult', value: { unit: 3, target: 7, success: true, pct: 41 } },
+  { tag: 'Awards', value: { unit: 3, xp: 53, essence: 7, currency: BT12_P53 + 37n } },
+  { tag: 'Moved', value: { unit: 3, fromX: 1, fromY: 2, toX: 3, toY: 4, tiles: 2 } },
+  { tag: 'ItemUsed', value: { unit: 3, itemId: 19, target: 7 } },
+  { tag: 'TurnEnded', value: { unit: 3, guard: true, committed: false } },
+  { tag: 'RoundEnded', value: { round: 13 } },
+  { tag: 'BattleStarted', value: { round: 1 } },
+  { tag: 'BattleEnd', value: { outcome: { tag: 'SideAWins' }, how: { tag: 'SideEmpty' } } },
+];
+
+describe('rowConvert bt-12: the seven tactical views (BT12.1)', () => {
+  it('tacticalBattleRowToStore copies every column into its own field (the id a bigint past 2^53, the three unit enums as their names, the turn state as a kind with its unit), keeps a Waiting unit 0, passes an unknown kind through with a warning, and drops a row whose turn state has an unknown tag with one warning instead of throwing [BT12-1-CONVERT-TACTICAL]', () => {
+    // WRONG IMPL KILLED: a column read from its neighbour (round for turnIdx, mapId for format,
+    // attackDamageDealtA for B: every value is a distinct prime); `Number(row.battleId)` (2^53 + 1
+    // reads back as 2^53); a spread of the SDK row (enum objects leak into the store: the exact key
+    // set); Waiting's unit read with `|| null` or dropped (unit 0 is a real unit); the three
+    // TurnState arms collapsed into one; a throw on an unknown TurnState tag (the throw starves the
+    // flush of every other row, A8) or a row kept with a garbage turn state; and a unit-variant tag
+    // that throws instead of the narrowTag pass-through (fail-soft).
+    const out = tacticalBattleRowToStore(bt12SdkTactical());
+    expect(out, 'a well-formed row converts').not.toBeNull();
+    expect(out, 'every column in its own field').toEqual({
+      battleId: BT12_P53 + 1n,
+      kind: 'Wild',
+      format: 3,
+      mapId: 7,
+      contentVersion: 11,
+      phase: 'Deploying',
+      round: 13,
+      initiative: [17, 19, 23],
+      turnIdx: 2,
+      turnState: { kind: 'Waiting', unitId: 29 },
+      tiePrioritySide: 'B',
+      pendingPadMs: 31,
+      attackDamageDealtA: 37,
+      attackDamageDealtB: 41,
+    });
+    expect(Object.keys(out ?? {}).sort(), 'exactly the 14 store fields').toEqual(
+      [
+        'battleId',
+        'kind',
+        'format',
+        'mapId',
+        'contentVersion',
+        'phase',
+        'round',
+        'initiative',
+        'turnIdx',
+        'turnState',
+        'tiePrioritySide',
+        'pendingPadMs',
+        'attackDamageDealtA',
+        'attackDamageDealtB',
+      ].sort(),
+    );
+    expect(typeof out?.battleId, 'a u64 stays a bigint').toBe('bigint');
+
+    const turn = (turnState: SdkTacticalBattleRow['turnState']): unknown =>
+      tacticalBattleRowToStore(bt12SdkTactical({ turnState }))?.turnState;
+    expect(turn({ tag: 'NotActive' }), 'NotActive').toEqual({ kind: 'NotActive' });
+    expect(turn({ tag: 'Advancing' }), 'Advancing').toEqual({ kind: 'Advancing' });
+    expect(turn({ tag: 'Waiting', value: 0 }), 'Waiting on unit 0 keeps the 0').toEqual({
+      kind: 'Waiting',
+      unitId: 0,
+    });
+    expect(
+      tacticalBattleRowToStore(bt12SdkTactical({ phase: { tag: 'Active' } }))?.phase,
+      'Active',
+    ).toBe('Active');
+    expect(
+      tacticalBattleRowToStore(bt12SdkTactical({ phase: { tag: 'Finished' } }))?.phase,
+      'Finished',
+    ).toBe('Finished');
+    expect(tacticalBattleRowToStore(bt12SdkTactical({ kind: { tag: 'Pvp' } }))?.kind, 'Pvp').toBe(
+      'Pvp',
+    );
+    expect(
+      tacticalBattleRowToStore(bt12SdkTactical({ kind: { tag: 'Practice' } }))?.kind,
+      'Practice',
+    ).toBe('Practice');
+    expect(
+      tacticalBattleRowToStore(bt12SdkTactical({ tiePrioritySide: { tag: 'A' } }))?.tiePrioritySide,
+      'side A',
+    ).toBe('A');
+
+    const paused = bt12Warns(() =>
+      tacticalBattleRowToStore(
+        bt12SdkTactical({
+          turnState: { tag: 'Paused' } as unknown as SdkTacticalBattleRow['turnState'],
+        }),
+      ),
+    );
+    expect(paused.value, 'an unknown TurnState tag drops the row (null), never throws').toBeNull();
+    expect(paused.warns, 'with exactly one warning').toBe(1);
+    const raid = bt12Warns(() =>
+      tacticalBattleRowToStore(
+        bt12SdkTactical({ kind: { tag: 'Raid' } as unknown as SdkTacticalBattleRow['kind'] }),
+      ),
+    );
+    expect(raid.value?.kind, 'an unknown kind passes through raw (narrowTag, fail-soft)').toBe(
+      'Raid',
+    );
+    expect(raid.warns, 'and warns once').toBe(1);
+  });
+
+  it('battleUnitRowToStore keeps the unit id, battle, owner hex and monster id, the affinity name and, as `row`, exactly the bt-11 unitRowOf of the binding row; a wild has a null owner and monster and keeps wild index 0 [BT12-1-CONVERT-UNIT]', () => {
+    // WRONG IMPL KILLED: a second hand-written join instead of unitRowOf (any field it gets wrong —
+    // the stats renamed, the Sleep turns, the Move budget, the stance — differs from the real
+    // mapper's row); the battle id or monster id through Number() (both sit past 2^53); the owner
+    // left as the SDK identity object or read with `?.toHexString() || null`; a wild's missing
+    // owner or monster fabricated (0n, ''); wild index 0 read as null (`|| null`); a spread of
+    // the SDK row (the exact key set).
+    const sdk = bt12SdkUnit();
+    const out = battleUnitRowToStore(sdk);
+    const expectedRow = unitRowOf({ ...sdk, owner: undefined });
+    expect(out.row, 'row is unitRowOf(the binding row)').toEqual(expectedRow);
+    expect(out, 'every column in its own field').toEqual({
+      unitId: 43,
+      battleId: BT12_P53 + 3n,
+      owner: BT12_OWNER,
+      monsterId: BT12_P53 + 5n,
+      affinity: 'Plant',
+      row: expectedRow,
+    });
+    expect(Object.keys(out).sort(), 'exactly the 6 store fields').toEqual([
+      'affinity',
+      'battleId',
+      'monsterId',
+      'owner',
+      'row',
+      'unitId',
+    ]);
+    expect(out.row.status, 'fixture: the Sleep turns reached the row').toEqual({
+      Sleep: { turns_remaining: 3 },
+    });
+    expect(typeof out.monsterId, 'a u64 stays a bigint').toBe('bigint');
+
+    const wild = battleUnitRowToStore(
+      bt12SdkUnit({
+        unitId: 101,
+        side: { tag: 'B' },
+        owner: undefined,
+        monsterId: undefined,
+        wildIndex: 0,
+        status: undefined,
+        budgetLast: undefined,
+        stance: { tag: 'Territorial' },
+        state: { tag: 'Active' },
+      }),
+    );
+    expect(wild.owner, 'a wild has no owner: null, never ""').toBeNull();
+    expect(wild.monsterId, 'a wild has no monster: null, never 0n').toBeNull();
+    expect(wild.row.wild_index, 'wild index 0 is a real index').toBe(0);
+    expect(wild.row.side, 'side B').toBe('B');
+    expect(wild.row.status, 'no status: null').toBeNull();
+    expect(wild.row.budget.last, 'no budget entry: null').toBeNull();
+    expect(wild.row.stance, 'the stance name').toBe('Territorial');
+  });
+
+  it('battleQueueRowToStore keeps the unit, battle, owner hex and submit time (the i64 extremes exact) and turns every entry into the wasm serde form, a bait of 0 kept and a missing bait null, so that toWire gives the binding entries back for every variant and both target arms; an unknown action or target tag drops the row with one warning [BT12-1-CONVERT-QUEUE]', () => {
+    // WRONG IMPL KILLED: an entry whose fields are crossed (skill_id from the target, x from y);
+    // the Unit target's id dropped or the SelfTarget arm turned into `{ Unit: 0 }`; a bait of 0 read
+    // as null (`|| null`) or a missing bait kept as undefined (the serde form says null);
+    // queuedActionToRule and the converter disagreeing; a submit time through Number() (past 2^53)
+    // or clamped at the i64 ends; a throw on an unknown QueuedAction or ActionTarget tag (A8: the
+    // row is dropped, null, with one warning); and a spread of the SDK row (the exact key set).
+    expect(
+      BT12_WIRE.map((a) => a.tag),
+      'fixture: every QueuedAction variant',
+    ).toEqual([
+      'Move',
+      'Skill',
+      'Skill',
+      'Item',
+      'Item',
+      'Recruit',
+      'Recruit',
+      'Recruit',
+      'Flee',
+      'EndTurn',
+    ]);
+    const out = battleQueueRowToStore(bt12SdkQueue());
+    expect(out, 'a well-formed row converts').not.toBeNull();
+    expect(out?.entries, 'the wasm serde form, entry by entry').toEqual(BT12_RULES);
+    expect(out?.unitId, 'unit').toBe(41);
+    expect(out?.battleId, 'battle, past 2^53').toBe(BT12_P53 + 7n);
+    expect(out?.owner, 'the owner as its hex').toBe(BT12_OWNER);
+    expect(out?.submittedAtMs, 'the submit time, past 2^53').toBe(BT12_P53 + 9n);
+    expect(Object.keys(out ?? {}).sort(), 'exactly the 5 store fields').toEqual([
+      'battleId',
+      'entries',
+      'owner',
+      'submittedAtMs',
+      'unitId',
+    ]);
+    expect(
+      (out?.entries ?? []).find(
+        (e) => typeof e === 'object' && 'Recruit' in e && e.Recruit.target === 23,
+      ),
+      'a bait of 0 keeps its 0',
+    ).toEqual({ Recruit: { target: 23, bait: 0 } });
+    expect(BT12_WIRE.map(queuedActionToRule), 'queuedActionToRule entry by entry').toEqual(
+      BT12_RULES,
+    );
+    expect(toWire(out?.entries ?? []), 'toWire inverts the stored entries').toEqual(BT12_WIRE);
+    expect(toWire(BT12_WIRE.map(queuedActionToRule)), 'toWire inverts queuedActionToRule').toEqual(
+      BT12_WIRE,
+    );
+    for (const at of [BT12_I64_MIN, BT12_I64_MAX, 0n]) {
+      expect(
+        battleQueueRowToStore(bt12SdkQueue({ submittedAtMs: at }))?.submittedAtMs,
+        `submittedAtMs ${at} exactly`,
+      ).toBe(at);
+    }
+
+    const teleport = bt12Warns(() =>
+      battleQueueRowToStore(
+        bt12SdkQueue({
+          entries: [
+            { tag: 'EndTurn' },
+            { tag: 'Teleport', value: {} } as unknown as GeneratedTypes.QueuedAction,
+          ],
+        }),
+      ),
+    );
+    expect(teleport.value, 'an unknown QueuedAction tag drops the row').toBeNull();
+    expect(teleport.warns, 'with exactly one warning').toBe(1);
+    const everyone = bt12Warns(() =>
+      battleQueueRowToStore(
+        bt12SdkQueue({
+          entries: [
+            {
+              tag: 'Skill',
+              value: {
+                skillId: 7,
+                target: { tag: 'Everyone' } as unknown as GeneratedTypes.ActionTarget,
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    expect(everyone.value, 'an unknown ActionTarget tag drops the row').toBeNull();
+    expect(everyone.warns, 'with exactly one warning').toBe(1);
+  });
+
+  it('battleDeployRowToStore keeps the deploy id, battle, owner hex, side name, the picks in their own order with their slots (slot 0 included) and the locked flag [BT12-1-CONVERT-DEPLOY]', () => {
+    // WRONG IMPL KILLED: the deploy id and battle id swapped or through Number() (both past 2^53,
+    // distinct); the picks re-sorted by slot or deduplicated; a pick's monster id through Number()
+    // (2^53 + 15 and + 17 collide as numbers); slot 0 dropped; `locked` forced true or false (both
+    // values are read); the side left as the SDK enum object; a spread of the SDK row.
+    const sdk: SdkBattleDeployRow = {
+      deployId: BT12_P53 + 11n,
+      battleId: BT12_P53 + 13n,
+      owner: bt12Owner,
+      side: { tag: 'B' },
+      picks: [
+        { monsterId: BT12_P53 + 17n, slot: 2 },
+        { monsterId: BT12_P53 + 15n, slot: 0 },
+      ],
+      locked: true,
+    };
+    const out = battleDeployRowToStore(sdk);
+    expect(out, 'every column in its own field').toEqual({
+      deployId: BT12_P53 + 11n,
+      battleId: BT12_P53 + 13n,
+      owner: BT12_OWNER,
+      side: 'B',
+      picks: [
+        { monsterId: BT12_P53 + 17n, slot: 2 },
+        { monsterId: BT12_P53 + 15n, slot: 0 },
+      ],
+      locked: true,
+    });
+    expect(Object.keys(out).sort(), 'exactly the 6 store fields').toEqual([
+      'battleId',
+      'deployId',
+      'locked',
+      'owner',
+      'picks',
+      'side',
+    ]);
+    expect(
+      out.picks.map((p) => Object.keys(p).sort()),
+      'each pick is exactly a monster id and a slot',
+    ).toEqual([
+      ['monsterId', 'slot'],
+      ['monsterId', 'slot'],
+    ]);
+    const open = battleDeployRowToStore({ ...sdk, side: { tag: 'A' }, locked: false, picks: [] });
+    expect(open.locked, 'locked false is read').toBe(false);
+    expect(open.side, 'side A').toBe('A');
+    expect(open.picks, 'no picks: an empty list').toEqual([]);
+  });
+
+  it('battleClockRowToStore keeps every column, the absent window times null and a 0 window open time and deadline as 0n, the i64 extremes and the u64 idle total exact [BT12-1-CONVERT-CLOCK]', () => {
+    // WRONG IMPL KILLED: `windowOpenMs || null` / `deadlineMs || null` (0n is a real instant: B6);
+    // an absent Option fabricated to 0n; any of the five bigint columns through Number() (each sits
+    // past 2^53, the idle total at the u64 maximum); the window and deadline swapped; windowSeq,
+    // windowsThisUnitTurn and autopassCount crossed (distinct primes); the player left as the SDK
+    // identity; a spread of the SDK row.
+    const out = battleClockRowToStore(bt12SdkClock());
+    expect(out, 'every column in its own field').toEqual({
+      clockId: BT12_P53 + 19n,
+      battleId: BT12_P53 + 21n,
+      side: 'A',
+      player: BT12_OWNER,
+      windowSeq: 3,
+      windowOpenMs: BT12_P53 + 23n,
+      deadlineMs: BT12_P53 + 25n,
+      windowsThisUnitTurn: 5,
+      idleMsTotal: BT12_U64_MAX,
+      autopassCount: 7,
+    });
+    expect(Object.keys(out).sort(), 'exactly the 10 store fields').toEqual([
+      'autopassCount',
+      'battleId',
+      'clockId',
+      'deadlineMs',
+      'idleMsTotal',
+      'player',
+      'side',
+      'windowOpenMs',
+      'windowSeq',
+      'windowsThisUnitTurn',
+    ]);
+    const none = battleClockRowToStore(
+      bt12SdkClock({ windowOpenMs: undefined, deadlineMs: undefined }),
+    );
+    expect(none.windowOpenMs, 'no window open: null').toBeNull();
+    expect(none.deadlineMs, 'no deadline: null').toBeNull();
+    const zero = battleClockRowToStore(bt12SdkClock({ windowOpenMs: 0n, deadlineMs: 0n }));
+    expect(zero.windowOpenMs, 'a window opened at 0 keeps 0n').toBe(0n);
+    expect(zero.deadlineMs, 'a deadline at 0 keeps 0n').toBe(0n);
+    const ends = battleClockRowToStore(
+      bt12SdkClock({ windowOpenMs: BT12_I64_MIN, deadlineMs: BT12_I64_MAX, idleMsTotal: 0n }),
+    );
+    expect(ends.windowOpenMs, 'the i64 minimum exactly').toBe(BT12_I64_MIN);
+    expect(ends.deadlineMs, 'the i64 maximum exactly').toBe(BT12_I64_MAX);
+    expect(ends.idleMsTotal, 'an idle total of 0 keeps 0n').toBe(0n);
+    expect(battleClockRowToStore(bt12SdkClock({ side: { tag: 'B' } })).side, 'side B').toBe('B');
+  });
+
+  it('battleEventRowToStore keeps the event id, battle, seq and round and carries each of the 17 payload kinds unchanged, the Awards gold past 2^53 exact; an unknown payload tag passes through with one warning [BT12-1-CONVERT-EVENT]', () => {
+    // WRONG IMPL KILLED: a payload normalised or re-built so a field is lost (the Executed hit list,
+    // the Status sleep turns, the BattleEnd outcome and how); the Awards currency through Number();
+    // seq and round crossed (distinct primes); the event id and battle id swapped or through Number()
+    // (both past 2^53); a kind dropped by a switch that forgot it; a throw on an unknown payload tag
+    // (the narrowTag pass-through is fail-soft); a spread of the SDK row.
+    expect(
+      BT12_PAYLOADS.map((p) => p.tag),
+      'fixture: the 17 kinds in declaration order',
+    ).toEqual([
+      'Executed',
+      'Missed',
+      'PlanHalted',
+      'QueueVoided',
+      'AutoPass',
+      'StoodGround',
+      'Status',
+      'Surge',
+      'Ko',
+      'RecruitResult',
+      'Awards',
+      'Moved',
+      'ItemUsed',
+      'TurnEnded',
+      'RoundEnded',
+      'BattleStarted',
+      'BattleEnd',
+    ]);
+    for (const [i, payload] of BT12_PAYLOADS.entries()) {
+      const sdk: SdkBattleEventRow = {
+        eventId: BT12_P53 + 101n + BigInt(2 * i),
+        battleId: BT12_P53 + 29n,
+        seq: 11,
+        round: 13,
+        payload,
+      };
+      const out = battleEventRowToStore(sdk);
+      expect(out, `${payload.tag}: every column in its own field`).toEqual({
+        eventId: BT12_P53 + 101n + BigInt(2 * i),
+        battleId: BT12_P53 + 29n,
+        seq: 11,
+        round: 13,
+        payload,
+      });
+      expect(Object.keys(out).sort(), `${payload.tag}: exactly the 5 store fields`).toEqual([
+        'battleId',
+        'eventId',
+        'payload',
+        'round',
+        'seq',
+      ]);
+    }
+    const awards = battleEventRowToStore({
+      eventId: BT12_P53 + 27n,
+      battleId: BT12_P53 + 29n,
+      seq: 11,
+      round: 13,
+      payload: { tag: 'Awards', value: { unit: 0, xp: 0, essence: 0, currency: BT12_P53 + 37n } },
+    });
+    expect(
+      awards.payload.tag === 'Awards' ? awards.payload.value.currency : undefined,
+      'the Awards gold, past 2^53, exactly',
+    ).toBe(BT12_P53 + 37n);
+
+    const mystery = bt12Warns(() =>
+      battleEventRowToStore({
+        eventId: BT12_P53 + 99n,
+        battleId: BT12_P53 + 29n,
+        seq: 2,
+        round: 3,
+        payload: { tag: 'Mystery', value: {} } as unknown as GeneratedTypes.EventPayload,
+      }),
+    );
+    expect(
+      (mystery.value.payload as { tag: string }).tag,
+      'an unknown payload kind passes through raw',
+    ).toBe('Mystery');
+    expect(mystery.warns, 'with exactly one warning').toBe(1);
+  });
+
+  it('formationRowToStore keeps the owner hex and the remembered monster ids in their own order, each past 2^53 exactly, and an empty formation as an empty list [BT12-1-CONVERT-FORMATION]', () => {
+    // WRONG IMPL KILLED: the ids re-sorted or deduplicated through Number() (2^53 + 31, + 33 and +
+    // 35 are three distinct ids); the owner left as the SDK identity object; an empty row dropped
+    // (undefined) instead of an empty list; a spread of the SDK row.
+    const sdk: SdkFormationRow = {
+      ownerIdentity: bt12Owner,
+      monsterIds: [BT12_P53 + 35n, BT12_P53 + 31n, BT12_P53 + 33n],
+    };
+    const out = formationRowToStore(sdk);
+    expect(out, 'the owner hex and the ids in order').toEqual({
+      ownerIdentity: BT12_OWNER,
+      monsterIds: [BT12_P53 + 35n, BT12_P53 + 31n, BT12_P53 + 33n],
+    });
+    expect(Object.keys(out).sort(), 'exactly the 2 store fields').toEqual([
+      'monsterIds',
+      'ownerIdentity',
+    ]);
+    expect(
+      formationRowToStore({ ownerIdentity: bt12Owner, monsterIds: [] }).monsterIds,
+      'an empty formation is an empty list',
+    ).toEqual([]);
+  });
+
+  it('the boundary registry lists the 21 enums the converters read, the eleven tactical ones appended in declaration order with exactly their generated variants [BT12-1-REGISTRY]', () => {
+    // WRONG IMPL KILLED: a tactical enum left unregistered (a server-added variant would cross the
+    // boundary unnoticed: the per-key mirror below only checks what is registered); MoveClassRow
+    // registered (movement is not stored: YAGNI); an entry with a variant missing, extra or out
+    // of order (TurnState, UnitState and the 17 EventPayload kinds included); and the old ten
+    // reordered or dropped on the way.
+    expect(Object.keys(HANDLED_ENUM_VARIANTS), 'the 21 keys, in order').toEqual([
+      'TradeStatus',
+      'ChallengeStatus',
+      'BattleOutcome',
+      'Affinity',
+      'StatusKind',
+      'WeatherEffect',
+      'ActionState',
+      'Direction',
+      'NpcInteraction',
+      'TrustTier',
+      'BattleKind',
+      'Phase',
+      'TurnState',
+      'SideRow',
+      'UnitState',
+      'StanceRow',
+      'BudgetLastEntry',
+      'StatusEffect',
+      'QueuedAction',
+      'ActionTarget',
+      'EventPayload',
+    ]);
+    const registry = HANDLED_ENUM_VARIANTS as unknown as Record<string, readonly string[]>;
+    const expected: Readonly<Record<string, readonly string[]>> = {
+      BattleKind: ['Wild', 'Pvp', 'Practice'],
+      Phase: ['Deploying', 'Active', 'Finished'],
+      TurnState: ['NotActive', 'Waiting', 'Advancing'],
+      SideRow: ['A', 'B'],
+      UnitState: ['Active', 'Fainted', 'Recruited'],
+      StanceRow: ['Aggressive', 'Territorial', 'Skittish'],
+      BudgetLastEntry: ['Move', 'AttackLight', 'AttackHeavy', 'Item', 'Recruit', 'Flee', 'EndTurn'],
+      StatusEffect: ['Poison', 'Burn', 'Paralysis', 'Sleep', 'Freeze'],
+      QueuedAction: ['Move', 'Skill', 'Item', 'Recruit', 'Flee', 'EndTurn'],
+      ActionTarget: ['Unit', 'SelfTarget'],
+      EventPayload: BT12_PAYLOADS.map((p) => p.tag),
+    };
+    for (const [name, variants] of Object.entries(expected)) {
+      expect(registry[name] === undefined ? undefined : [...registry[name]], name).toEqual(
+        variants,
+      );
+    }
+    expect(Object.hasOwn(HANDLED_ENUM_VARIANTS, 'MoveClassRow'), 'MoveClassRow is not stored').toBe(
+      false,
+    );
   });
 });

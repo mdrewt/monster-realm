@@ -439,11 +439,13 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
   // qf-15 (QF15.1): the zone cue names the destination zone from the `zone_def` content table. It
   // is a REGULAR public table with a primary key (`zone_id`), so unlike the PK-less views above it
   // is fed row by row (heal_location_row's idiom) and onUpdate DOES fire.
-  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 23 in all [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
+  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 30 in all since bt-12 [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
     // WRONG IMPL KILLED: no subscription (the client never receives a zone name and the cue stays
     // silent forever); a second subscription call or a duplicate entry (the length pin); a query
     // for a table nobody named riding along (the length pin: 22 queries before qf-15, plus this
     // one); the table spelled differently (`zoneDef`, `zone_defs`).
+    // bt-12 (named intentional change, BT12.1): 23 → 30, the seven tactical views
+    // (BT12-1-SUBSCRIBE-SEVEN pins which seven).
     const opts = makeOpts();
     connect(opts);
     await settle();
@@ -454,7 +456,10 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
       queries.filter((q) => q === 'SELECT * FROM zone_def'),
       'zone_def is subscribed once',
     ).toHaveLength(1);
-    expect(queries, 'the 22 queries that were there, plus zone_def').toHaveLength(23);
+    expect(
+      queries,
+      'the 22 queries that were there, plus zone_def, plus (bt-12) the seven tactical views',
+    ).toHaveLength(30);
   });
 
   it('an inserted zone_def row stores its name by zone id, an update replaces it, a delete removes it, and each change flushes one batch [QF15-1-WIRE-ZONE-DEF]', async () => {
@@ -531,6 +536,454 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     first.onConnect?.(conn0(first), ID, 'stale-tok');
     expect(stored(sessionStorage)).not.toContain('stale-tok');
     expect(c.identity()).toBe('');
+  });
+});
+
+// =============================================================================================
+// bt-12 (BT12.1): the seven tactical views — subscribed, wired to the batcher, reconciled from the
+// SDK cache before the flush, one view's throw contained to that view.
+// =============================================================================================
+//
+// SOURCE OF TRUTH: spec BT12.1 ("WHEN the client connects, IT SHALL subscribe to my_tactical_battle,
+// my_battle_units, my_battle_queue, my_battle_deploy, my_battle_clock, my_battle_events and
+// my_formation, ingest them into the store"); plan §3.3 (the seven strings, the camelCase handles,
+// onInsert / onDelete -> batcher.schedule() and NO onUpdate, no per-row store write, seven GUARDED
+// reconciles after the inventory block and before flushBatch) and REV 2b B3 (the store is read
+// INSIDE a batch listener registered before the row callbacks fire; a 2-row then 1-row delivery
+// deletes; the FIRST view throwing on a malformed row never starves the LAST). The SDK cache is
+// `H.viewRows[<camelCase handle>]`. RED REASON: connection.ts subscribes none of the seven views,
+// registers no handler on them and reconciles none of them (and the store's tactical methods throw
+// `bt-12: not implemented` on the API-freeze stub).
+
+const BT12_ME = ID.toHexString();
+/** The seven camelCase table handles connection.ts reads (`conn.db.<handle>`), in plan order. */
+const BT12_HANDLES = [
+  'myTacticalBattle',
+  'myBattleUnits',
+  'myBattleQueue',
+  'myBattleDeploy',
+  'myBattleClock',
+  'myBattleEvents',
+  'myFormation',
+] as const;
+const BT12_QUERIES = [
+  'SELECT * FROM my_tactical_battle',
+  'SELECT * FROM my_battle_units',
+  'SELECT * FROM my_battle_queue',
+  'SELECT * FROM my_battle_deploy',
+  'SELECT * FROM my_battle_clock',
+  'SELECT * FROM my_battle_events',
+  'SELECT * FROM my_formation',
+] as const;
+/** The private tables behind the views: subscribing any of them errors the whole batch. */
+const BT12_PRIVATE_TABLES = [
+  'battle_tactical',
+  'battle_unit',
+  'battle_queue',
+  'battle_deploy',
+  'battle_clock',
+  'battle_event',
+  'player_formation',
+  'battle_wild_unit',
+  'battle_secret',
+  'battle_summary',
+  'tactical_deadline_sched',
+  'tactical_advance_sched',
+] as const;
+/** Two battle ids past 2^53. */
+const BT12_B = 9_007_199_254_740_993n;
+const BT12_B2 = 9_007_199_254_741_001n;
+
+// SDK-shaped rows (plain objects, as the generated bindings deliver them).
+const bt12Tactical = (battleId: bigint, mapId: number) => ({
+  battleId,
+  kind: { tag: 'Wild' },
+  format: 1,
+  mapId,
+  contentVersion: 1,
+  phase: { tag: 'Deploying' },
+  round: 0,
+  initiative: [],
+  turnIdx: 0,
+  turnState: { tag: 'NotActive' },
+  tiePrioritySide: { tag: 'A' },
+  pendingPadMs: 0,
+  attackDamageDealtA: 0,
+  attackDamageDealtB: 0,
+});
+const bt12Unit = (unitId: number) => ({
+  unitId,
+  battleId: BT12_B,
+  side: { tag: 'A' },
+  owner: ID,
+  slot: 0,
+  monsterId: 5n,
+  wildIndex: undefined,
+  speciesId: 1,
+  level: 5,
+  affinity: { tag: 'Plant' },
+  x: 1,
+  y: 1,
+  curHp: 20,
+  stats: { hp: 20, attack: 5, defense: 5, speed: 5, spAttack: 5, spDefense: 5 },
+  skillIds: [],
+  status: undefined,
+  ap: 6,
+  stridesUsed: 0,
+  attacks: 0,
+  budgetLast: undefined,
+  guard: false,
+  firstStand: false,
+  movement: { tag: 'Walk' },
+  stride: 3,
+  stance: undefined,
+  state: { tag: 'Active' },
+});
+const bt12Queue = (unitId: number) => ({
+  unitId,
+  battleId: BT12_B,
+  owner: ID,
+  entries: [{ tag: 'EndTurn' }],
+  submittedAtMs: 1n,
+});
+const bt12Deploy = (deployId: bigint) => ({
+  deployId,
+  battleId: BT12_B,
+  owner: ID,
+  side: { tag: 'A' },
+  picks: [{ monsterId: 5n, slot: 0 }],
+  locked: false,
+});
+const bt12Clock = (clockId: bigint) => ({
+  clockId,
+  battleId: BT12_B,
+  side: { tag: 'A' },
+  player: ID,
+  windowSeq: 1,
+  windowOpenMs: undefined,
+  deadlineMs: undefined,
+  windowsThisUnitTurn: 0,
+  idleMsTotal: 0n,
+  autopassCount: 0,
+});
+const bt12Event = (eventId: bigint, seq: number) => ({
+  eventId,
+  battleId: BT12_B,
+  seq,
+  round: 1,
+  payload: { tag: 'BattleStarted', value: { round: 1 } },
+});
+const bt12Formation = (monsterIds: bigint[]) => ({ ownerIdentity: ID, monsterIds });
+const bt12SdkMonster = {
+  speciesId: 1,
+  affinity: { tag: 'Plant' },
+  level: 5,
+  currentHp: 20,
+  maxHp: 20,
+  stats: { hp: 20, attack: 5, defense: 5, speed: 5, spAttack: 5, spDefense: 5 },
+  knownSkillIds: [1],
+  status: undefined,
+};
+const bt12SdkBattle = (battleId: bigint) => ({
+  battleId,
+  playerIdentity: ID,
+  opponentIdentity: { toHexString: () => '00'.repeat(32) },
+  state: {
+    sideA: { active: 0, team: [bt12SdkMonster] },
+    sideB: { active: 0, team: [bt12SdkMonster] },
+    outcome: { tag: 'Ongoing' },
+    turnNumber: 1,
+    weather: undefined,
+  },
+  partyMonsterIds: [5n],
+  opponentMonsterIds: [],
+  createdAtMs: 0n,
+});
+
+/** What the store shows for the six readable tactical views (the deploy map has no accessor). */
+function bt12Seen(store: AuthoritativeStore): Record<string, unknown> {
+  return {
+    tactical: [BT12_B, BT12_B2].filter((id) => store.tacticalBattle(id) !== undefined),
+    units: store.battleUnits(BT12_B).map((u) => u.unitId),
+    queues: store.ownQueue(BT12_B, BT12_ME).map((q) => q.unitId),
+    clocks: store.battleClocks(BT12_B).map((c) => c.clockId),
+    events: store.battleEvents(BT12_B).map((e) => e.eventId),
+    formation: store.ownFormation(BT12_ME)?.monsterIds ?? null,
+  };
+}
+
+/** Run every `event` handler registered on each named handle, as the SDK would: `(ctx, row)`. */
+function bt12Fire(event: 'insert' | 'delete', handles: readonly string[]): void {
+  for (const handle of handles) {
+    for (const cb of H.rowEvents[handle]?.[event] ?? []) cb({}, {});
+  }
+}
+
+/** Connect, build and land the onConnect (the subscription call) of the first build. */
+async function bt12Connect(): Promise<ReturnType<typeof makeOpts>> {
+  const opts = makeOpts();
+  connect(opts);
+  await settle();
+  H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+  await settle();
+  return opts;
+}
+
+describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 30 queries in all [BT12-1-SUBSCRIBE-SEVEN]', async () => {
+    // WRONG IMPL KILLED: a view left out (its rows never reach the client: the deploy panel or the
+    // results never show); a view subscribed twice (the length pin); the PRIVATE table subscribed
+    // instead of its view (`battle_unit`, `player_formation`: a private table errors the WHOLE
+    // batch and onApplied never fires — every session would hang); a view spelled differently
+    // (`my_battle_unit`, `myFormation`).
+    await bt12Connect();
+    const queries = H.builds[0].queries ?? [];
+    for (const query of BT12_QUERIES) {
+      expect(
+        queries.filter((q) => q === query),
+        `${query} is subscribed exactly once`,
+      ).toHaveLength(1);
+    }
+    expect(
+      queries.filter((q) => BT12_PRIVATE_TABLES.some((table) => q.endsWith(` ${table}`))),
+      'no private battle table is subscribed',
+    ).toEqual([]);
+    expect(queries, 'the 23 that were there, plus the seven').toHaveLength(30);
+  });
+
+  it('each tactical view registers an insert and a delete handler and never an update handler; a handler writes nothing to the store itself, and one insert or one delete is exactly one flushed batch that reconciles the view from the SDK cache [BT12-1-VIEW-HANDLERS]', async () => {
+    // WRONG IMPL KILLED: a handle spelled snake_case or misnamed (no handler on the camelCase
+    // accessor connection.ts must read); an onUpdate handler on a view (a PK-less view never fires
+    // one: wiring it implies a delivery guarantee the SDK does not make); no onDelete (a deleted row
+    // never schedules the flush, so the store keeps it); a handler that writes its row into the
+    // store (a view's insert+delete pair arrives unordered: the delete half would wipe the row the
+    // insert half wrote); a handler that never schedules the batcher; two flushes for one event.
+    const opts = await bt12Connect();
+    const flushed = vi.fn();
+    opts.store.onBatchApplied(flushed);
+    const rowsFor: Record<(typeof BT12_HANDLES)[number], unknown[]> = {
+      myTacticalBattle: [bt12Tactical(BT12_B, 7)],
+      myBattleUnits: [bt12Unit(3)],
+      myBattleQueue: [bt12Queue(3)],
+      myBattleDeploy: [bt12Deploy(13n)],
+      myBattleClock: [bt12Clock(19n)],
+      myBattleEvents: [bt12Event(29n, 1)],
+      myFormation: [bt12Formation([37n])],
+    };
+    /** Whether the store shows the handle's row (null: the deploy map has no accessor). */
+    const shows = (handle: (typeof BT12_HANDLES)[number]): boolean | null => {
+      const s = opts.store;
+      switch (handle) {
+        case 'myTacticalBattle':
+          return s.tacticalBattle(BT12_B) !== undefined;
+        case 'myBattleUnits':
+          return s.battleUnits(BT12_B).length > 0;
+        case 'myBattleQueue':
+          return s.ownQueue(BT12_B, BT12_ME).length > 0;
+        case 'myBattleDeploy':
+          return null;
+        case 'myBattleClock':
+          return s.battleClocks(BT12_B).length > 0;
+        case 'myBattleEvents':
+          return s.battleEvents(BT12_B).length > 0;
+        case 'myFormation':
+          return s.ownFormation(BT12_ME) !== undefined;
+        default:
+          return handle satisfies never;
+      }
+    };
+    for (const handle of BT12_HANDLES) {
+      const events = H.rowEvents[handle];
+      expect(
+        events,
+        `${handle}: connection.ts registered row handlers on conn.db.${handle}`,
+      ).toBeDefined();
+      if (events === undefined) continue;
+      expect(events.insert.length, `${handle}: an onInsert handler`).toBeGreaterThan(0);
+      expect(events.delete.length, `${handle}: an onDelete handler`).toBeGreaterThan(0);
+      expect(events.update.length, `${handle}: NO onUpdate handler on a view`).toBe(0);
+      const row = rowsFor[handle][0];
+
+      // The handler is handed a row while the SDK cache is still empty: it must write nothing.
+      H.viewRows[handle] = [];
+      flushed.mockClear();
+      for (const cb of events.insert) cb({}, row);
+      expect(shows(handle), `${handle}: the insert handler wrote nothing to the store`).not.toBe(
+        true,
+      );
+      await settle();
+      expect(
+        flushed.mock.calls.length,
+        `${handle}: an empty cache changes nothing, so the flush wakes nobody (no per-row write)`,
+      ).toBe(0);
+
+      // The row in the cache, one insert: exactly one flushed batch, and the row lands.
+      H.viewRows[handle] = rowsFor[handle];
+      flushed.mockClear();
+      for (const cb of events.insert) cb({}, row);
+      await settle();
+      expect(flushed.mock.calls.length, `${handle}: one insert, one flushed batch`).toBe(1);
+      if (shows(handle) !== null) {
+        expect(shows(handle), `${handle}: the cached row landed`).toBe(true);
+      }
+
+      // The cache emptied, one delete: exactly one flushed batch, and the row is gone.
+      H.viewRows[handle] = [];
+      flushed.mockClear();
+      for (const cb of events.delete) cb({}, row);
+      await settle();
+      expect(flushed.mock.calls.length, `${handle}: one delete, one flushed batch`).toBe(1);
+      if (shows(handle) !== null) {
+        expect(shows(handle), `${handle}: the deleted row is gone`).toBe(false);
+      }
+    }
+  });
+
+  it('the flush rebuilds every tactical view from the SDK cache BEFORE the batch listeners run: a listener registered first already reads the new rows, once per burst, and a 2-row then 1-row then empty cache leaves exactly 2, 1 and 0 rows [BT12-1-RECONCILE-FROM-CACHE]', async () => {
+    // WRONG IMPL KILLED: the reconciles placed AFTER flushBatch() (the listener — main.ts's
+    // refreshBattle — paints the PRE-burst store: the deploy panel opens one batch late or never);
+    // a reconcile run only on the first flush or only when its own handle fired; an upsert-only
+    // reconcile (the 2-then-1 delivery keeps the stale row: deletes are not only-when-empty); a
+    // flush per handle instead of one per burst (the listener runs seven times); the formation
+    // wired with the per-row my_account idiom (an empty cache keeps the old formation).
+    const opts = await bt12Connect();
+    const seen: Record<string, unknown>[] = [];
+    opts.store.onBatchApplied(() => {
+      seen.push(bt12Seen(opts.store));
+    });
+
+    H.viewRows.myTacticalBattle = [bt12Tactical(BT12_B, 7), bt12Tactical(BT12_B2, 11)];
+    H.viewRows.myBattleUnits = [bt12Unit(3), bt12Unit(5)];
+    H.viewRows.myBattleQueue = [bt12Queue(3), bt12Queue(5)];
+    H.viewRows.myBattleDeploy = [bt12Deploy(13n), bt12Deploy(17n)];
+    H.viewRows.myBattleClock = [bt12Clock(19n), bt12Clock(23n)];
+    H.viewRows.myBattleEvents = [bt12Event(29n, 1), bt12Event(31n, 2)];
+    H.viewRows.myFormation = [bt12Formation([37n, 41n])];
+    bt12Fire('insert', BT12_HANDLES);
+    await settle();
+    expect(seen, 'one burst of row callbacks is one flushed batch').toHaveLength(1);
+    expect(seen[0], 'inside the listener, every view already reads the cached rows').toEqual({
+      tactical: [BT12_B, BT12_B2],
+      units: [3, 5],
+      queues: [3, 5],
+      clocks: [19n, 23n],
+      events: [29n, 31n],
+      formation: [37n, 41n],
+    });
+
+    H.viewRows.myTacticalBattle = [bt12Tactical(BT12_B, 7)];
+    H.viewRows.myBattleUnits = [bt12Unit(3)];
+    H.viewRows.myBattleQueue = [bt12Queue(3)];
+    H.viewRows.myBattleDeploy = [bt12Deploy(13n)];
+    H.viewRows.myBattleClock = [bt12Clock(19n)];
+    H.viewRows.myBattleEvents = [bt12Event(29n, 1)];
+    H.viewRows.myFormation = [bt12Formation([41n])];
+    bt12Fire('delete', BT12_HANDLES);
+    await settle();
+    expect(seen, 'the second burst is the second batch').toHaveLength(2);
+    expect(seen[1], 'a row absent from the cache is deleted from every view').toEqual({
+      tactical: [BT12_B],
+      units: [3],
+      queues: [3],
+      clocks: [19n],
+      events: [29n],
+      formation: [41n],
+    });
+
+    for (const handle of BT12_HANDLES) H.viewRows[handle] = [];
+    bt12Fire('delete', BT12_HANDLES);
+    await settle();
+    expect(seen, 'the third burst is the third batch').toHaveLength(3);
+    expect(seen[2], 'an emptied cache empties every view and clears the formation').toEqual({
+      tactical: [],
+      units: [],
+      queues: [],
+      clocks: [],
+      events: [],
+      formation: null,
+    });
+  });
+
+  it('a malformed row that makes the FIRST tactical view`s converter throw is contained to that view: the other six (the formation, last, included), the monster, battle and inventory views all land, the batch still flushes and the throw is logged [BT12-1-RECONCILE-ISOLATED]', async () => {
+    // WRONG IMPL KILLED: the seven reconciles in ONE shared try (the first view's throw starves the
+    // other six: the formation never lands); the tactical reconciles placed inside the monster /
+    // battle try ahead of them (the battle view starves too); no guard at all (the throw escapes
+    // the batcher and no batch is ever delivered); a guard that swallows silently (no log line).
+    const opts = await bt12Connect();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const flushed = vi.fn();
+      opts.store.onBatchApplied(flushed);
+      const malformed = new Proxy(
+        {},
+        {
+          get: () => {
+            throw new Error('malformed my_tactical_battle row');
+          },
+        },
+      );
+      H.viewRows.myTacticalBattle = [malformed, bt12Tactical(BT12_B2, 11)];
+      H.viewRows.myBattleUnits = [bt12Unit(3)];
+      H.viewRows.myBattleQueue = [bt12Queue(3)];
+      H.viewRows.myBattleDeploy = [bt12Deploy(13n)];
+      H.viewRows.myBattleClock = [bt12Clock(19n)];
+      H.viewRows.myBattleEvents = [bt12Event(29n, 1)];
+      H.viewRows.myFormation = [bt12Formation([37n])];
+      H.viewRows.my_inventory = [{ invId: 43n, ownerIdentity: ID, itemId: 5, count: 3 }];
+      H.viewRows.myBattle = [bt12SdkBattle(47n)];
+      bt12Fire('insert', [...BT12_HANDLES, 'my_inventory']);
+      await settle();
+
+      expect(flushed, 'the batch is still delivered, once').toHaveBeenCalledTimes(1);
+      expect(
+        opts.store.ownFormation(BT12_ME)?.monsterIds,
+        'the LAST view (my_formation) still lands',
+      ).toEqual([37n]);
+      expect(
+        opts.store.battleUnits(BT12_B).map((u) => u.unitId),
+        'units land',
+      ).toEqual([3]);
+      expect(
+        opts.store.ownQueue(BT12_B, BT12_ME).map((q) => q.unitId),
+        'plans land',
+      ).toEqual([3]);
+      expect(
+        opts.store.battleClocks(BT12_B).map((c) => c.clockId),
+        'clocks land',
+      ).toEqual([19n]);
+      expect(
+        opts.store.battleEvents(BT12_B).map((e) => e.eventId),
+        'events land',
+      ).toEqual([29n]);
+      expect(opts.store.ownInventory(BT12_ME), 'the inventory view is intact').toEqual([
+        { invId: 43n, ownerIdentity: BT12_ME, itemId: 5, count: 3 },
+      ]);
+      expect(opts.store.ongoingBattle(BT12_ME)?.battleId, 'the battle view is intact').toBe(47n);
+      expect(
+        errors.mock.calls.some((call) => call[0] === '[net] view reconcile threw; flushing anyway'),
+        'the contained throw is logged',
+      ).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
 
