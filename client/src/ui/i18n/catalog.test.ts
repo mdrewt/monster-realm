@@ -483,6 +483,11 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   'tactics.ticker.guarded': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
   'tactics.ticker.roundEnded': [{ round: 8 }, { round: 25 }],
   'tactics.banner.turn': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
+  // bt-11 (named intentional change, BT11.1, plan REV 5 A39): 425 → 460, +2 parameterised
+  // `tactics.reason.*` keys — the command menu's full-budget reasons, whose `{ap}` is the rules'
+  // fresh budget (never a literal 6). The two sets differ (6 is the design ap_turn, 9 is not).
+  'tactics.reason.recruitFullAp': [{ ap: 6 }, { ap: 9 }],
+  'tactics.reason.fleeFullAp': [{ ap: 6 }, { ap: 9 }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -1006,6 +1011,44 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tactics.ticker.lost': 'You lost the battle',
   'tactics.ticker.fled': 'The battle ended: fled',
   'tactics.ticker.battleEnded': 'Battle over',
+  // bt-11 (named intentional change, BT11.1 / BT11.2 / BT11.3 / BT11.6, plan REV 5 A39): 425 → 460,
+  // +26 plain `tactics.*` keys (the command menu's rows and reasons, the queue strip's label, the
+  // Too-late notice, the ghost and the three dock buttons; tactics/strings.ts is their only
+  // requester) and +7 plain `chrome.chip.*` hint-bar verbs (ui/hintBarModel.ts requests them); the
+  // 2 parameterised reasons are in SAMPLE_PARAMS / EXPECTED_PARAM_OUTPUTS. U+2014 by code point.
+  'tactics.menu.label': 'Command menu',
+  'tactics.menu.move': 'Move',
+  'tactics.menu.skills': 'Skills',
+  'tactics.menu.item': 'Item',
+  'tactics.menu.recruit': 'Recruit',
+  'tactics.menu.flee': 'Flee',
+  'tactics.menu.endTurn': 'End Turn',
+  'tactics.menu.guard': 'Guard',
+  'tactics.menu.submit': 'Submit',
+  'tactics.menu.clearPlan': 'Clear plan',
+  'tactics.menu.clearYes': 'Yes, clear the plan',
+  'tactics.menu.clearNo': 'Keep the plan',
+  'tactics.menu.noBait': 'No bait',
+  'tactics.reason.outOfRange': 'Out of range',
+  'tactics.reason.partyFull': 'Party full',
+  'tactics.reason.unaffordable': 'Not enough AP',
+  'tactics.reason.strideCap': 'No strides left',
+  'tactics.reason.notAvailable': 'Not available yet',
+  'tactics.reason.planComplete': 'Plan complete',
+  'tactics.reason.boxedIn': 'No tile in reach',
+  'tactics.queue.label': 'Plan',
+  'tactics.queue.tooLate': `Too late ${EM_DASH} already acting`,
+  'tactics.ghost.label': 'Planned position',
+  'tactics.dock.danger': 'Danger overlay',
+  'tactics.dock.prevUnit': 'Previous unit',
+  'tactics.dock.nextUnit': 'Next unit',
+  'chrome.chip.danger': 'Danger',
+  'chrome.chip.prevUnit': 'Previous unit',
+  'chrome.chip.nextUnit': 'Next unit',
+  'chrome.chip.undo': 'Undo',
+  'chrome.chip.endTurn': 'End turn',
+  'chrome.chip.guard': 'Guard',
+  'chrome.chip.submit': 'Submit',
 };
 
 interface ParamOutputSpec {
@@ -1715,9 +1758,25 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { unit: 'Kip' },
     outputB: "Kip's turn",
   },
+  // bt-11 (named intentional change, BT11.1): the spec's own reason line ("Needs all 6 AP — start
+  // your turn adjacent") with the fresh budget's ap as a param; the flee reason is its first clause.
+  'tactics.reason.recruitFullAp': {
+    inputA: { ap: 6 },
+    outputA: `Needs all 6 AP ${EM_DASH} start your turn adjacent`,
+    inputB: { ap: 9 },
+    outputB: `Needs all 9 AP ${EM_DASH} start your turn adjacent`,
+  },
+  'tactics.reason.fleeFullAp': {
+    inputA: { ap: 6 },
+    outputA: 'Needs all 6 AP',
+    inputB: { ap: 9 },
+    outputB: 'Needs all 9 AP',
+  },
 };
 
-/** The full 425-key roster (bt-10: +60 `tactics.*` keys over the 365-key roster below;
+/** The full 460-key roster (bt-11: +28 `tactics.*` keys — 26 plain, 2 parameterised — and +7
+ *  `chrome.chip.*` hint verbs over the 425-key roster below; bt-10: +60 `tactics.*` keys over the
+ *  365-key roster below;
  *  qf-17: +`battle.rewards.{gold,xp}` over the 363-key roster below;
  *  qf-15: +`chrome.status.zoneEntered` over the 362-key roster below;
  *  qf-14: +`controls.accel.controls` over the 361-key roster below;
@@ -1819,7 +1878,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the bt-10 425-key roster (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the bt-11 460-key roster (bt-11, named intentional change, BT11.1/BT11.6: 425 → 460, +tactics.menu/reason/queue/ghost/dock.*, +chrome.chip.*; bt-10: 365 → 425, +tactics.*), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1908,7 +1967,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 425 keys (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 460 keys (bt-11, named intentional change, BT11.1/BT11.6: 425 → 460, +28 tactics.*, +7 chrome.chip.*; bt-10: 365 → 425, +tactics.*), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
     // (a) roster is exactly the EXPECTED_KEYS roster (365 keys since qf-17: +2 parameterised,
@@ -1926,7 +1985,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // +battle.rewards.xp. (qf-15 had taken 362 → 363, +`chrome.status.zoneEntered`.)
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +60 `tactics.*` keys (31 plain in
     // EXPECTED_PLAIN, 29 parameterised in SAMPLE_PARAMS).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-10 roster is 425 keys').toHaveLength(425);
+    // bt-11 (named intentional change, BT11.1/BT11.6, plan REV 5 A39): 425 → 460, +33 plain (26
+    // `tactics.*`, 7 `chrome.chip.*`) in EXPECTED_PLAIN, +2 parameterised `tactics.reason.*`.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-11 roster is 460 keys').toHaveLength(460);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2980,8 +3041,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp.
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
-    expect(Object.keys(en).length, 'the English catalog holds exactly 425 keys').toBe(425);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(425);
+    // bt-11 (named intentional change, BT11.1/BT11.6): 425 → 460, +28 tactics.*, +7 chrome.chip.*
+    expect(Object.keys(en).length, 'the English catalog holds exactly 460 keys').toBe(460);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(460);
   });
 });
 
@@ -3015,7 +3077,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 425 keys each (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 460 keys each (bt-11, named intentional change, BT11.1/BT11.6: 425 → 460; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -3082,8 +3144,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp.
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
-    expect(Object.keys(en).length, 'the English catalog holds exactly 425 keys').toBe(425);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(425);
+    // bt-11 (named intentional change, BT11.1/BT11.6): 425 → 460, +28 tactics.*, +7 chrome.chip.*
+    expect(Object.keys(en).length, 'the English catalog holds exactly 460 keys').toBe(460);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(460);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3352,7 +3415,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the 425-key one (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 460 keys (bt-11, named intentional change, BT11.1/BT11.6: 425 → 460; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3380,9 +3443,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp.
     // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
-    expect(Object.keys(en).length, 'the English catalog holds exactly 425 keys').toBe(425);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(425);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(425);
+    // bt-11 (named intentional change, BT11.1/BT11.6): 425 → 460, +28 tactics.*, +7 chrome.chip.*
+    expect(Object.keys(en).length, 'the English catalog holds exactly 460 keys').toBe(460);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(460);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(460);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );

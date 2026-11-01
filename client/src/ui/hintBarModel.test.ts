@@ -20,13 +20,18 @@
 //       screen / prompt frame: A(ok), B(back), Start(chrome.chip.close), Select(help)
 //       text entry on top    : A(ok), Start(chrome.chip.done)
 //     `badge` is false on every chip but Start.
+//   bt-11 (BT11.6, plan REV 4 §R4.9): a fifth argument `battle?: HintBattle` ({start, undo}, what
+//   only the tactical shell knows). Given at the BARE battle base: A(ok), B(chrome.chip.undo when
+//   `undo`, else chrome.chip.back), X(chrome.chip.danger), LB(chrome.chip.prevUnit),
+//   RB(chrome.chip.nextUnit), Start(chrome.chip.<endTurn|guard|submit>), Select(help). Absent: the
+//   legacy battle bar above, unchanged. A frame above the battle keeps its frame bar.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import type { VButton } from '../input/buttons';
 import { glyph } from '../input/glyphs';
 import type { Stack } from './contextStack';
-import { type HintChip, type HintWorld, hintBar } from './hintBarModel';
+import { type HintBattle, type HintChip, type HintWorld, hintBar } from './hintBarModel';
 import { setLocale, t } from './i18n/resolver';
 import type { Notice } from './noticeModel';
 
@@ -235,6 +240,92 @@ describe('hintBar: every other top of stack (ctl-13, CTL13.1)', () => {
     expect(hintBar(TYPING, DEFAULT_BINDINGS, NO_NOTICES)[1]?.verb).toBe(verb('chrome.chip.done'));
     setLocale('en');
     expect(hintBar(WORLD, DEFAULT_BINDINGS, NO_NOTICES)[1]?.verb, 'back to en').toBe('Help');
+  });
+});
+
+describe('hintBar: the tactical battle base (bt-11, BT11.6)', () => {
+  it('BT11-6-HINT-TACTICAL: given the tactical shell`s hint, the bare battle base shows A ok, B undo (a drafted chip to pop) or back, X danger, LB previous unit, RB next unit, Start end turn / guard / submit and Select help, each with its live keycap; without the hint the legacy three stay; a frame above the battle keeps its frame bar; and the verbs follow the locale', () => {
+    // WRONG IMPL KILLED: the hint ignored (the legacy A / Start menu / Select bar over a tactical
+    // battle: X, LB and RB are never advertised, BT11.6 "keyboard and pointer mirror it"); B always
+    // "Back" (the player is never told B pops a free chip) or always "Undo"; Start's verb fixed to
+    // one of the three (Guard shown when the rules say End Turn, Submit on a live turn); the chips in
+    // another order; keycaps hard-coded to the default keys (a remapped X still reads Space); the
+    // tactical chips leaking into a menu opened over the battle; verbs resolved once at import.
+    const cap = (button: VButton, table: Bindings = DEFAULT_BINDINGS): string => {
+      const code = table.buttons[button][0];
+      return code === undefined ? '' : glyph(code);
+    };
+    const bar = (battle: HintBattle, table: Bindings = DEFAULT_BINDINGS) =>
+      rows(hintBar(BATTLE, table, NO_NOTICES, undefined, battle));
+    const want = (bVerb: string, startVerb: string, table: Bindings = DEFAULT_BINDINGS) => [
+      ['A', cap('A', table), verb('chrome.chip.ok'), false],
+      ['B', cap('B', table), verb(bVerb), false],
+      ['X', cap('X', table), verb('chrome.chip.danger'), false],
+      ['LB', cap('LB', table), verb('chrome.chip.prevUnit'), false],
+      ['RB', cap('RB', table), verb('chrome.chip.nextUnit'), false],
+      ['Start', cap('Start', table), verb(startVerb), false],
+      ['Select', cap('Select', table), verb('chrome.chip.help'), false],
+    ];
+
+    const cases: ReadonlyArray<readonly [HintBattle, string, string]> = [
+      [{ start: 'endTurn', undo: false }, 'chrome.chip.back', 'chrome.chip.endTurn'],
+      [{ start: 'guard', undo: false }, 'chrome.chip.back', 'chrome.chip.guard'],
+      [{ start: 'submit', undo: false }, 'chrome.chip.back', 'chrome.chip.submit'],
+      [{ start: 'endTurn', undo: true }, 'chrome.chip.undo', 'chrome.chip.endTurn'],
+      [{ start: 'guard', undo: true }, 'chrome.chip.undo', 'chrome.chip.guard'],
+      [{ start: 'submit', undo: true }, 'chrome.chip.undo', 'chrome.chip.submit'],
+    ];
+    for (const [battle, bVerb, startVerb] of cases) {
+      const got = bar(battle);
+      expect(got, `tactical ${JSON.stringify(battle)}`).toEqual(want(bVerb, startVerb));
+    }
+
+    // Live keycaps: a remapped X / LB / B shows on the very next call.
+    const remapped: Bindings = {
+      ...DEFAULT_BINDINGS,
+      buttons: { ...DEFAULT_BINDINGS.buttons, X: ['KeyG'], LB: ['KeyZ', 'KeyQ'], B: ['KeyV'] },
+    };
+    const remappedBar = bar({ start: 'guard', undo: true }, remapped);
+    expect(remappedBar, 'the remapped keycaps').toEqual(
+      want('chrome.chip.undo', 'chrome.chip.guard', remapped),
+    );
+    expect(cap('X', remapped), 'fixture: the remap changes the X keycap').not.toBe(cap('X'));
+
+    // No hint: the legacy battle bar, unchanged.
+    expect(
+      rows(hintBar(BATTLE, DEFAULT_BINDINGS, NO_NOTICES)),
+      'no hint: the legacy three',
+    ).toEqual([
+      ['A', cap('A'), verb('chrome.chip.ok'), false],
+      ['Start', cap('Start'), verb('chrome.chip.menu'), false],
+      ['Select', cap('Select'), verb('chrome.chip.help'), false],
+    ]);
+    // A frame above the battle keeps its frame bar whatever the hint says.
+    expect(
+      hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES, undefined, {
+        start: 'submit',
+        undo: true,
+      }),
+      'a menu over the battle: the frame bar',
+    ).toEqual(hintBar(OVER_BATTLE_SCREEN, DEFAULT_BINDINGS, NO_NOTICES));
+
+    // ANTI-VACUITY: B's two verbs and Start's three are five different words.
+    const words = [
+      'chrome.chip.back',
+      'chrome.chip.undo',
+      'chrome.chip.endTurn',
+      'chrome.chip.guard',
+      'chrome.chip.submit',
+    ].map(verb);
+    expect(new Set(words).size, 'five distinct verbs').toBe(5);
+
+    // The verbs are read per call: a French boot reads French.
+    const enDanger = bar({ start: 'endTurn', undo: false })[2]?.[2];
+    setLocale('fr');
+    const frBar = bar({ start: 'endTurn', undo: false });
+    expect(frBar, 'fr: the French verbs').toEqual(want('chrome.chip.back', 'chrome.chip.endTurn'));
+    expect(frBar[2]?.[2], 'fr: the X verb is not the English one').not.toBe(enDanger);
+    setLocale('en');
   });
 });
 

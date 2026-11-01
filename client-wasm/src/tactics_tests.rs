@@ -1897,3 +1897,251 @@ fn bt11_state_of_refusals_a20() {
         "a dead selection: every selection set empty, got {out:?}"
     );
 }
+
+// ===========================================================================
+// bt-11 round 3 (increment B): the recruit-target rule (REV 5 A26) and the type factor (A27).
+// RED REASON: `recruit_targets_of` returns `Err("bt-11: not implemented")` and `forecast_of`'s
+// `type_factor` is the frozen placeholder `(0, 0)`.
+// ===========================================================================
+
+/// `recruit_targets_of(board, unit, budget)` is ONE rule chain (plan REV 5 A26): it lists exactly
+/// the candidates `t` for which the execution gate (`validate_at_pop`, queue.rs:630-658) accepts
+/// `Recruit{target: t, bait: None}` from `unit` with its budget replaced by `budget` and a recruit
+/// headroom of `true` (party headroom is the client's own `partyFull` flag) — for EVERY (unit,
+/// candidate) pair of three boards (adjacent, diagonal, far and KO'd wilds, an adjacent ally, the
+/// Wild and PvP kinds) under five budgets — in state `(side, slot)` order. A dead actor is data (an
+/// empty answer); an unknown unit is refused by id.
+///
+/// WRONG IMPL KILLED: adjacency restated (the diagonal wild 29 listed); the actor's ROW budget used
+/// instead of `budget` (every row here is idle: the fresh-budget answers would all be empty); the
+/// inert hooks (`recruit_headroom → false`: every answer empty); PvP, a wild actor, a player-owned or
+/// KO'd target answered; the answer in id or input order (ids 22 < 31 sit in slots 0 and 1, the input
+/// lists 31 first); a dead actor refused instead of answered; an unknown unit answered with [].
+#[test]
+fn bt11_recruit_targets_match_validate_at_pop() {
+    use game_core::tactics::{EventPayload, HaltReason, Hooks, RecruitAction, Validated};
+
+    /// `super::InertHooks` with the recruit headroom answered `true` (built here, not imported, so
+    /// the oracle does not share the shell's hooks).
+    struct HeadroomHooks;
+    impl Hooks for HeadroomHooks {
+        fn item_count(&self, _unit: u32, _item_id: u32) -> u32 {
+            0
+        }
+        fn take_item(&mut self, _unit: u32, _item_id: u32) -> bool {
+            false
+        }
+        fn recruit_headroom(&self, _unit: u32) -> bool {
+            true
+        }
+        fn plan_ai(&self, _state: &TacticalState, _unit: u32) -> Vec<QueuedAction> {
+            vec![QueuedAction::EndTurn]
+        }
+        fn validate_delegated(
+            &self,
+            _state: &TacticalState,
+            _unit: u32,
+            _validated: &Validated,
+        ) -> Result<(), HaltReason> {
+            Ok(())
+        }
+        fn resolve_delegated(
+            &mut self,
+            _state: &mut TacticalState,
+            _unit: u32,
+            _validated: &Validated,
+        ) -> Vec<EventPayload> {
+            Vec::new()
+        }
+    }
+
+    let l = live();
+    let wild = |id: u32, slot: u8, x: u8, y: u8, wild_index: u8| -> UnitRow {
+        let mut r = row(id, Side::B, slot, 3, x, y);
+        r.stance = Some(Stance::Aggressive);
+        r.wild_index = Some(wild_index);
+        r
+    };
+    // Board 1 (map 1, 7x7 Plain): the actor 5 at (3,3); wild 31 south (slot 1) and wild 22 east (slot
+    // 0) adjacent; wild 29 diagonal; wild 17 two tiles away; a KO'd wild 23 north; an ally 2 west.
+    let adjacent_units = vec![
+        row(5, Side::A, 0, 1, 3, 3),
+        row(2, Side::A, 1, 3, 2, 3),
+        wild(31, 1, 3, 4, 1),
+        wild(22, 0, 4, 3, 0),
+        wild(29, 2, 4, 4, 2),
+        wild(17, 3, 5, 3, 0),
+        fainted(wild(23, 4, 3, 2, 1)),
+    ];
+    let adjacent = board(1, adjacent_units.clone());
+    // Board 2: nobody adjacent (the actor in a corner, one wild far away).
+    let far = board(
+        1,
+        vec![row(5, Side::A, 0, 1, 0, 0), wild(31, 0, 6, 6, 0)],
+    );
+    // Board 3: board 1 under the PvP ruleset.
+    let pvp = BoardIn {
+        kind: BattleKind::Pvp,
+        map_id: 1,
+        units: adjacent_units,
+    };
+    let mv1 = Entry::Move {
+        strides: 1,
+        taxed: false,
+    };
+    let budgets = [
+        fresh(),
+        budget(5, 0, 0, None),
+        budget(4, 1, 0, Some(mv1)),
+        budget(0, 0, 0, None),
+        budget(6, 1, 0, Some(mv1)),
+    ];
+
+    let (mut pairs, mut listed, mut empty) = (0, 0, 0);
+    for b in [&adjacent, &far, &pvp] {
+        let st = state_for(&l, b);
+        for actor in &b.units {
+            for basis in budgets {
+                let mut with = st.clone();
+                if let Some(u) = with.unit_mut(actor.id) {
+                    u.budget = basis;
+                }
+                let want: Vec<u32> = with
+                    .units
+                    .iter()
+                    .map(|u| u.id)
+                    .filter(|&t| {
+                        let action = QueuedAction::Recruit(RecruitAction {
+                            target: t,
+                            bait: None,
+                        });
+                        validate_at_pop(&with, actor.id, &action, &HeadroomHooks, &T).is_ok()
+                    })
+                    .collect();
+                pairs += with.units.len();
+                let got = super::recruit_targets_of(b, actor.id, &basis).unwrap_or_else(|e| {
+                    panic!("unit {} on map {}: a known unit is answered: {e}", actor.id, b.map_id)
+                });
+                assert_eq!(
+                    got, want,
+                    "{:?} board, actor {}, budget {basis:?}: the execution gate's Recruit chain, in state order",
+                    b.kind, actor.id
+                );
+                if want.is_empty() {
+                    empty += 1;
+                } else {
+                    listed += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        super::recruit_targets_of(&adjacent, 5, &fresh()),
+        Ok(vec![22, 31]),
+        "the fixture's answer: both adjacent conscious wilds, slot order"
+    );
+    assert!(
+        pairs >= 150 && listed >= 1 && empty >= 40,
+        "ANTI-VACUITY: {pairs} pairs, {listed} non-empty and {empty} empty answers"
+    );
+    let err = super::recruit_targets_of(&adjacent, 9001, &fresh())
+        .expect_err("an unknown unit is refused");
+    assert!(err.contains("9001"), "the error names the unit: {err}");
+}
+
+/// `ForecastOut.type_factor` is the carried type-chart multiplier for (SKILL affinity → TARGET
+/// affinity), `chart.effectiveness` over 10 reduced (plan REV 5 A27): 0 → (0, 1), 5 → (1, 2),
+/// 10 → (1, 1), 20 → (2, 1) — over every pair the content chart lists, a neutral pair it does not,
+/// and an injected Immune pair (content has none) — and the forecast's `effectiveness` agrees with
+/// the min trace's and with the chart's class of that value.
+///
+/// WRONG IMPL KILLED: the frozen `(0, 0)`; the factor read from the attacker's KIT affinity (the
+/// attacker here is Earth whatever the skill); attacker and defender swapped (the chart is
+/// asymmetric: Fire → Plant 20, Plant → Fire 5); an unreduced `(20, 10)`; a factor restated from the
+/// `Effectiveness` class instead of read from the chart; Immune mapped to (0, 0) or (1, 1).
+#[test]
+fn bt11_type_factor_matches_chart() {
+    /// Plan A27's table (the only four values `TypeChart::effectiveness` emits, type_chart.rs:28-37).
+    fn factor_of(effectiveness: u8) -> (u8, u8) {
+        match effectiveness {
+            0 => (0, 1),
+            5 => (1, 2),
+            10 => (1, 1),
+            20 => (2, 1),
+            other => panic!("the chart emits only 0 / 5 / 10 / 20, got {other}"),
+        }
+    }
+    const ALL: [Affinity; 8] = [
+        Affinity::Fire,
+        Affinity::Water,
+        Affinity::Plant,
+        Affinity::Electric,
+        Affinity::Earth,
+        Affinity::Wind,
+        Affinity::Light,
+        Affinity::Dark,
+    ];
+    let relations = load_type_chart().expect("type_chart RON");
+    let chart = TypeChart::new(&relations);
+    let mut pairs: Vec<(Affinity, Affinity)> =
+        relations.iter().map(|r| (r.attacker, r.defender)).collect();
+    let neutral = ALL
+        .iter()
+        .flat_map(|&a| ALL.iter().map(move |&d| (a, d)))
+        .find(|&(a, d)| {
+            !relations
+                .iter()
+                .any(|r| r.attacker == a && r.defender == d)
+        })
+        .expect("a pair the chart does not list");
+    pairs.push(neutral);
+
+    let mut seen: Vec<u8> = Vec::new();
+    for (skill_affinity, target_affinity) in pairs {
+        let skill = lance(7, skill_affinity, 70, 100, None);
+        let mut attacker = fighter(1, Side::A, 0, Affinity::Earth);
+        attacker.kit.skills = vec![skill.clone()];
+        let target = fighter(2, Side::B, 1, target_affinity);
+        let f = super::forecast_of(&chart, &T, &attacker, &target, &skill, false)
+            .expect("valid units");
+        let e = chart.effectiveness(skill_affinity, target_affinity);
+        let label = format!("{skill_affinity:?} skill on a {target_affinity:?} target ({e})");
+        assert_eq!(f.type_factor, factor_of(e), "{label}: type_factor");
+        assert!(f.min.hit, "{label}: accuracy 100 hits");
+        assert_eq!(
+            f.effectiveness, f.min.effectiveness,
+            "{label}: effectiveness = min.effectiveness"
+        );
+        assert_eq!(
+            f.effectiveness,
+            Some(TypeChart::classify(e)),
+            "{label}: the chart's class of the same value"
+        );
+        seen.push(e);
+    }
+    for value in [5_u8, 10, 20] {
+        assert!(
+            seen.contains(&value),
+            "ANTI-VACUITY: the content pairs cover effectiveness {value}"
+        );
+    }
+
+    // Content has no Immune pair: inject one (plan A8's precedent).
+    let immune = TypeChart::new(&[TypeRelation {
+        attacker: Affinity::Fire,
+        defender: Affinity::Water,
+        effectiveness: 0,
+    }]);
+    let fire = lance(7, Affinity::Fire, 70, 100, None);
+    let mut attacker = fighter(1, Side::A, 0, Affinity::Earth);
+    attacker.kit.skills = vec![fire.clone()];
+    let water = fighter(2, Side::B, 1, Affinity::Water);
+    let f = super::forecast_of(&immune, &T, &attacker, &water, &fire, false)
+        .expect("valid units on the injected chart");
+    assert_eq!(f.type_factor, (0, 1), "Immune: (0, 1)");
+    assert_eq!(f.effectiveness, Some(Effectiveness::Immune), "the injected Immune pair");
+    let plant = fighter(2, Side::B, 1, Affinity::Plant);
+    let g = super::forecast_of(&immune, &T, &attacker, &plant, &fire, false)
+        .expect("valid units on the injected chart");
+    assert_eq!(g.type_factor, (1, 1), "a pair the injected chart does not list is neutral");
+}

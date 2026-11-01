@@ -75,7 +75,9 @@ const SLOW = { timeout: 120_000 };
 
 // --- the contract's names -------------------------------------------------------------------------
 
-/** The 13 `tactics_*` exports (`TacticsWasmExports`, wasm.ts) and the `TacticsRules` method each backs. */
+/** The 14 `tactics_*` exports (`TacticsWasmExports`, wasm.ts) and the `TacticsRules` method each
+ *  backs. bt-11 round 3 (named intentional change, plan REV 5 A26): +`tactics_recruit_targets`
+ *  (`recruitTargets`), bound after `tactics_ai_plan`. Was: 13. */
 const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof TacticsRules])[] = [
   ['tactics_map', 'map'],
   ['tactics_fresh_budget', 'freshBudget'],
@@ -87,6 +89,7 @@ const EXPORT_METHODS: readonly (readonly [keyof TacticsWasmExports, keyof Tactic
   ['tactics_forecast', 'forecast'],
   ['tactics_recruit_odds', 'recruitOdds'],
   ['tactics_ai_plan', 'aiPlan'],
+  ['tactics_recruit_targets', 'recruitTargets'],
   ['tactics_is_exhausted', 'isExhausted'],
   ['tactics_plan', 'plan'],
   ['tactics_overlays', 'overlays'],
@@ -655,7 +658,8 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
     // value accepted); a primitive clamped or wrapped (`x >>> 0`, `x & 0xffff`, Math.trunc) instead
     // of refused; an in-range boundary refused; a wasm error wrapped, retried or swallowed; a
     // forecast that sends a default skill or calls wasm for a skill outside the kit; disengage's
-    // `start` defaulted to a tile. Round 2: any ONE of the 14 integer parameters left unguarded
+    // `start` defaulted to a tile. Round 2: any ONE of the 15 integer parameters (bt-11 round 3:
+    // +recruitTargets' unit) left unguarded
     // (2**32 + 1 wraps to 1 — mutants h1*); a skill resolved from the TARGET's kit (h2c); any ONE
     // method that wraps, defaults or converts a thrown wasm value — e.g. `plan` returning
     // `{Err: e}` (h3*).
@@ -859,10 +863,11 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       ['recruitOdds(hp)', () => gp.recruitOdds(100, WRAPS, 0)],
       ['recruitOdds(baitBonus)', () => gp.recruitOdds(100, 1, WRAPS)],
       ['aiPlan(unit)', () => gp.aiPlan(blank, WRAPS)],
+      ['recruitTargets(unit)', () => gp.recruitTargets(blank, WRAPS, FRESH)],
       ['isExhausted(curHp)', () => gp.isExhausted(WRAPS, 4)],
       ['isExhausted(maxHp)', () => gp.isExhausted(1, WRAPS)],
     ];
-    expect(everyInteger, 'all 14 integer parameters of TacticsRules').toHaveLength(14);
+    expect(everyInteger, 'all 15 integer parameters of TacticsRules').toHaveLength(15);
     for (const [label, call] of everyInteger) {
       let caught: unknown;
       try {
@@ -900,6 +905,7 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       ['forecast', () => tp.forecast(attacker, target, 43, false)],
       ['recruitOdds', () => tp.recruitOdds(100, 20, 0)],
       ['aiPlan', () => tp.aiPlan(blank, 1)],
+      ['recruitTargets', () => tp.recruitTargets(blank, 1, FRESH)],
       ['isExhausted', () => tp.isExhausted(1, 4)],
       ['plan', () => tp.plan(FRESH, [])],
       ['overlays', () => tp.overlays(blank, q())],
@@ -2650,5 +2656,99 @@ describe('tactics overlay layer: computed by the wasm rules (BT10.4 via BT11.7)'
       SHIELD_S1,
     );
     expect(r.map(1).width, 'and the content is intact').toBe(7);
+  });
+});
+
+// --- bt-11 increment B: the recruit-target rule (plan REV 5 A26) ---------------------------------
+
+describe('tactics rules port: the recruit targets (BT11.1, REV 5 A26)', () => {
+  it('BT11-1-RULES-RECRUIT-TARGETS: recruitTargets(board, unit, budget) on the built pkg lists the conscious wilds adjacent to the unit in state order when the budget is full, and nothing with a partial or spent budget, in PvP, for a wild actor, beside a KO`d wild, a diagonal or a two-tile wild only; the budget handed in wins over the row`s; an unknown unit is refused by id and the instance keeps answering', () => {
+    // WRONG IMPL KILLED: adjacency restated in the shell (a diagonal or two-tile wild listed); the
+    // actor's ROW budget used instead of the one handed in (U's row is spent: ap 0); ap compared with
+    // `>=` some constant instead of the full-budget rule (ap 5, or 4 after a Move, listed); PvP not
+    // refused; a wild actor answered; a KO'd wild listed; the hooks' headroom left at the inert
+    // `false` (every answer empty — the fresh-budget row reds); the answer in input or id order
+    // instead of state (side, slot) order; an unknown unit answered with [] or a wasm trap.
+    const r = rules();
+    const wild = (
+      id: number,
+      slot: number,
+      at: readonly [number, number],
+      wildIndex: number,
+    ): Spec => ({ id, side: 'B', slot, species: 3, at, stance: 'Aggressive', wild: wildIndex });
+    // Map 1 (7x7 Plain): U (5) at (3,3) with a spent row budget; W1 (31) one tile south, W2 (17) two
+    // tiles east, W3 (29) diagonal; an ally (2) west.
+    const base: Spec[] = [
+      { id: 5, side: 'A', slot: 0, species: 1, at: [3, 3] },
+      { id: 2, side: 'A', slot: 1, species: 3, at: [2, 3] },
+      wild(31, 0, [3, 4], 0),
+      wild(17, 1, [5, 3], 1),
+      wild(29, 2, [4, 4], 2),
+    ];
+    const b = board(1, base);
+    // Fixture geometry (the scenario's own design, not a rule): W1 adjacent, W2 and W3 at two.
+    const dist = (p: Cell, t: Cell): number => Math.abs(p.x - t.x) + Math.abs(p.y - t.y);
+    const u = posOf(b, 5);
+    expect(dist(u, posOf(b, 31)), 'fixture: W1 is one tile from U').toBe(1);
+    expect(dist(u, posOf(b, 17)), 'fixture: W2 is two tiles from U').toBe(2);
+    expect(dist(u, posOf(b, 29)), 'fixture: W3 is diagonal (two tiles) from U').toBe(2);
+    expect(rowOf(b, 5).budget, 'fixture: U`s ROW budget is spent (ap 0)').toStrictEqual(IDLE);
+    expect(
+      isOk(r.plan(r.freshBudget(), ['Recruit'])),
+      'cross-check: the fresh budget affords a Recruit',
+    ).toBe(true);
+    expect(isOk(r.plan(apOnly(5), ['Recruit'])), 'cross-check: ap 5 does not').toBe(false);
+
+    expect(r.recruitTargets(b, 5, r.freshBudget()), 'the fresh budget: [W1]').toEqual([31]);
+    expect(r.recruitTargets(b, 5, FRESH), 'the literal fresh budget: [W1]').toEqual([31]);
+    expect(r.recruitTargets(b, 5, apOnly(5)), 'ap 5: not the full budget').toEqual([]);
+    expect(
+      r.recruitTargets(b, 5, {
+        ap: 4,
+        strides_used: 1,
+        attacks: 0,
+        last: { Move: { strides: 1, taxed: false } },
+      }),
+      'after a Move this turn',
+    ).toEqual([]);
+    expect(r.recruitTargets(b, 5, IDLE), 'a spent budget').toEqual([]);
+
+    // The budget handed in wins over the row's, both ways.
+    const freshRow = board(
+      1,
+      base.map((s) => (s.id === 5 ? { ...s, budget: FRESH } : s)),
+    );
+    expect(
+      r.recruitTargets(freshRow, 5, apOnly(5)),
+      'a fresh ROW, an ap-5 budget: nothing',
+    ).toEqual([]);
+    expect(r.recruitTargets(freshRow, 5, FRESH), 'a fresh row and budget: [W1]').toEqual([31]);
+
+    expect(r.recruitTargets({ ...b, kind: 'Pvp' }, 5, FRESH), 'PvP refuses Recruit').toEqual([]);
+    expect(r.recruitTargets(b, 31, FRESH), 'a wild actor recruits nobody').toEqual([]);
+    expect(r.recruitTargets(b, 2, FRESH), 'the ally has no adjacent wild').toEqual([]);
+    const ko = board(
+      1,
+      base.map((s) => (s.id === 31 ? fainted(s) : s)),
+    );
+    expect(r.recruitTargets(ko, 5, FRESH), 'W1 KO`d: nothing').toEqual([]);
+    const noneAdjacent = board(
+      1,
+      base.filter((s) => s.id !== 31),
+    );
+    expect(r.recruitTargets(noneAdjacent, 5, FRESH), 'no wild adjacent: nothing').toEqual([]);
+
+    // Three adjacent wilds: the answer is the state (side, slot) order — not the input order
+    // (41, 37, 43) nor the id order (37, 41, 43).
+    const ring = board(1, [
+      { id: 5, side: 'A', slot: 0, species: 1, at: [3, 3] },
+      wild(41, 2, [3, 2], 0),
+      wild(37, 1, [4, 3], 1),
+      wild(43, 0, [2, 3], 2),
+    ]);
+    expect(r.recruitTargets(ring, 5, FRESH), 'state order').toEqual([43, 37, 41]);
+
+    rejects('recruitTargets(absent unit 9001)', () => r.recruitTargets(b, 9001, FRESH), '9001');
+    expect(r.recruitTargets(b, 5, FRESH), 'a later valid call still answers').toEqual([31]);
   });
 });

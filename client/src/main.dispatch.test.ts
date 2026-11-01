@@ -67,8 +67,9 @@ import type {
   StoreMonsterPub,
   StoreNpcRow,
 } from './net/store';
-// Read ONLY by the battle case's closing anti-vacuity cross-check (that its literal refuse list
-// covers every kind the policy refuses); the expected split itself is the test's own transcription.
+// Read ONLY by the battle case's closing anti-vacuity cross-checks (that its literal refuse list
+// covers every kind the policy refuses, and — bt-11 — that its literal safe roster covers every kind
+// the policy allows); the expected split itself is the test's own transcription.
 import { COMMAND_BATTLE_POLICY } from './ui/battlePolicy';
 // Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
 import { OVERLAY_IDS } from './ui/overlayRegistry';
@@ -1473,6 +1474,46 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       [...new Set([...refused, ...Object.keys(noViewCallback)])].sort(),
       'every refused kind is driven here or named as having no view callback',
     ).toEqual(policyRefused);
+
+    // bt-11 (named intentional change, BT11.2 / BT11.3, plan REV 4 §R4.10): the battle-safe roster
+    // grows by the tactical shell's `submitQueue` and `cancelQueue`. Neither has a view constructor
+    // callback until BT12.1 wires the shell (the shell reaches them through its deps), so the safe
+    // side of the cross-check names them here, beside the stack moves; the battle actions the view
+    // callbacks drive above stay the seven.
+    const safeNoViewCallback: Readonly<Record<string, string>> = {
+      submitQueue:
+        'no view constructor callback until BT12.1: TacticsBattle`s onSubmitQueue dep sends it ' +
+        '(tactics/tacticsBattle.test.ts BT11-2-SHELL-COMMIT proves the shell side)',
+      cancelQueue:
+        'no view constructor callback until BT12.1: TacticsBattle`s onCancelQueue dep sends it ' +
+        '(tactics/tacticsBattle.test.ts BT11-3-SHELL-CLEAR proves the shell side)',
+    };
+    const stackMoves = ['pop', 'popToBase', 'openMenu', 'toggleHelp', 'dismissDialogue'];
+    expect(COMMAND_BATTLE_POLICY.submitQueue, 'submitQueue is battle-safe').toBe('safe');
+    expect(COMMAND_BATTLE_POLICY.cancelQueue, 'cancelQueue is battle-safe').toBe('safe');
+    const driven = rows.filter((r) => r.atBattle === 'safe').map((r) => r.kind);
+    expect(
+      [...driven, ...Object.keys(safeNoViewCallback)],
+      'the battle-safe actions: the seven view-driven ones, then the two tactical ones',
+    ).toEqual([
+      'attack',
+      'flee',
+      'swap',
+      'recruit',
+      'useItem',
+      'pvpAttack',
+      'pvpSwap',
+      'submitQueue',
+      'cancelQueue',
+    ]);
+    const policySafe = Object.entries(COMMAND_BATTLE_POLICY)
+      .filter(([, verdict]) => verdict === 'safe')
+      .map(([kind]) => kind)
+      .sort();
+    expect(
+      [...new Set([...driven, ...Object.keys(safeNoViewCallback), ...stackMoves])].sort(),
+      'every battle-safe kind is driven here, named as having no view callback, or a stack move',
+    ).toEqual(policySafe);
   });
 });
 

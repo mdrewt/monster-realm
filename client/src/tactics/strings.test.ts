@@ -15,6 +15,13 @@
 // stubs and bite the moment an implementation writes a forbidden sink); BT10-6-SCAN-TEETH proves each
 // needle fires on a planted fixture.
 //
+// bt-11 ROUND 3 (increment B, plan REV 5 A39): the roster grows 60 → 88 (+26 plain, +2
+// parameterised — the command menu, its reasons, the queue label, the Too-late notice, the ghost
+// and the dock buttons). BT11-1-STRINGS-ROSTER pins the exact 88; BT10-6-STRINGS-ROSTER keeps
+// bt-10's own 60 (named intentional change: it no longer pins "exactly"); the FR and RESOLVER tests
+// follow the grown roster. RED REASON (round 3): the 28 keys are absent from both catalogs and from
+// messageIds.ts / strings.ts.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -35,8 +42,8 @@ const hole = (inner: string): string => `$${'{'}${inner}}`;
 const EN = CATALOG_EN as unknown as Record<string, unknown>;
 const FR = CATALOG_FR as unknown as Record<string, unknown>;
 
-/** The 31 plain `tactics.*` keys. */
-const PLAIN_KEYS: readonly string[] = [
+/** The 31 plain `tactics.*` keys bt-10 added. */
+const BT10_PLAIN_KEYS: readonly string[] = [
   'tactics.board.label',
   'tactics.dock.label',
   'tactics.ticker.label',
@@ -70,8 +77,8 @@ const PLAIN_KEYS: readonly string[] = [
   'tactics.ticker.battleEnded',
 ];
 
-/** The 29 parameterised `tactics.*` keys and the exact fields each closure reads. */
-const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+/** The 29 parameterised `tactics.*` keys bt-10 added and the exact fields each closure reads. */
+const BT10_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.turnbar.round': ['round'],
   'tactics.turnbar.surgeIn': ['n'],
   'tactics.turnbar.retreatAt': ['round'],
@@ -103,8 +110,83 @@ const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.banner.turn': ['unit'],
 };
 
+/** bt-11 increment B (plan REV 5 A39): the command menu, its reasons, the queue strip label, the
+ *  Too-late notice, the ghost and the three dock buttons — 26 plain keys. */
+const BT11_PLAIN_KEYS: readonly string[] = [
+  'tactics.menu.label',
+  'tactics.menu.move',
+  'tactics.menu.skills',
+  'tactics.menu.item',
+  'tactics.menu.recruit',
+  'tactics.menu.flee',
+  'tactics.menu.endTurn',
+  'tactics.menu.guard',
+  'tactics.menu.submit',
+  'tactics.menu.clearPlan',
+  'tactics.menu.clearYes',
+  'tactics.menu.clearNo',
+  'tactics.menu.noBait',
+  'tactics.reason.outOfRange',
+  'tactics.reason.partyFull',
+  'tactics.reason.unaffordable',
+  'tactics.reason.strideCap',
+  'tactics.reason.notAvailable',
+  'tactics.reason.planComplete',
+  'tactics.reason.boxedIn',
+  'tactics.queue.label',
+  'tactics.queue.tooLate',
+  'tactics.ghost.label',
+  'tactics.dock.danger',
+  'tactics.dock.prevUnit',
+  'tactics.dock.nextUnit',
+];
+
+/** bt-11 increment B: the two full-budget reasons, each reading the fresh budget's `{ap}`. */
+const BT11_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'tactics.reason.recruitFullAp': ['ap'],
+  'tactics.reason.fleeFullAp': ['ap'],
+};
+
+/** Every `tactics.*` key after bt-11 increment B: 57 plain, 31 parameterised = 88. */
+const PLAIN_KEYS: readonly string[] = [...BT10_PLAIN_KEYS, ...BT11_PLAIN_KEYS];
+const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  ...BT10_PARAM_FIELDS,
+  ...BT11_PARAM_FIELDS,
+};
+
 const PARAM_KEYS = Object.keys(PARAM_FIELDS);
 const ROSTER = [...PLAIN_KEYS, ...PARAM_KEYS].sort();
+const BT10_PARAM_KEYS = Object.keys(BT10_PARAM_FIELDS);
+const BT10_ROSTER = [...BT10_PLAIN_KEYS, ...BT10_PARAM_KEYS].sort();
+const BT11_PARAM_KEYS = Object.keys(BT11_PARAM_FIELDS);
+const BT11_ROSTER = [...BT11_PLAIN_KEYS, ...BT11_PARAM_KEYS].sort();
+
+/** The keys of `roster` whose catalog.en.ts entry line has no adjacent `// @desc:` of >= 10
+ *  characters (or no entry line at all). */
+function missingDescs(roster: readonly string[]): string[] {
+  const lines = readFileSync(path.join(I18N_DIR, 'catalog.en.ts'), 'utf8').split('\n');
+  const missing: string[] = [];
+  for (const key of roster) {
+    const at = lines.findIndex((l) => l.trim().startsWith(`'${key}':`));
+    if (at === -1) {
+      missing.push(`${key} (no entry line)`);
+      continue;
+    }
+    let described = false;
+    for (let j = at - 1; j >= 0; j--) {
+      const c = lines[j].trim();
+      if (!c.startsWith('//')) break;
+      if (
+        c.startsWith('// @desc:') &&
+        c.slice('// @desc:'.length).replace(/\s/g, '').length >= 10
+      ) {
+        described = true;
+      }
+    }
+    if (!described) missing.push(key);
+  }
+  return missing;
+}
 
 const tacticsKeys = (catalog: Record<string, unknown>): string[] =>
   Object.keys(catalog)
@@ -129,70 +211,115 @@ function probe(fn: (p: Record<string, unknown>) => string): { out: string; field
 }
 
 describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
-  it('BT10-6-STRINGS-ROSTER: both catalogs hold exactly the 60 tactics.* keys (31 plain, 29 parameterised), with the four status* keys instead of tactics.ticker.status, every key declared in messageIds.ts and every English entry carrying an adjacent @desc', () => {
+  // bt-11 (named intentional change, plan REV 5 A39): the EXACT-roster pin moved to
+  // BT11-1-STRINGS-ROSTER below (88 keys); this test keeps bt-10's own claim — its 60 keys are still
+  // in both catalogs with the right shape, declared and described. Was: "exactly the 60".
+  it('BT10-6-STRINGS-ROSTER: both catalogs still hold the 60 bt-10 tactics.* keys (31 plain, 29 parameterised), with the four status* keys instead of tactics.ticker.status, every one declared in messageIds.ts and every English entry carrying an adjacent @desc', () => {
     // WRONG IMPL KILLED: a key missing from one locale (t()/tf() throws in a French boot); the
     // dropped tactics.ticker.status left behind (A4); a parameterised key authored as a plain
     // string (or the reverse); a key in the catalog but not in the MessageId union / the
     // MessageParams table (the typed seam bypassed); an entry with no @desc (translators get no
-    // context); a stray extra key nobody asked for.
-    expect(PLAIN_KEYS, 'fixture: 31 plain keys').toHaveLength(31);
-    expect(PARAM_KEYS, 'fixture: 29 parameterised keys').toHaveLength(29);
-    expect(new Set(ROSTER).size, 'fixture: no key listed twice').toBe(60);
+    // context); a bt-10 key lost while the bt-11 keys were added.
+    expect(BT10_PLAIN_KEYS, 'fixture: 31 plain keys').toHaveLength(31);
+    expect(BT10_PARAM_KEYS, 'fixture: 29 parameterised keys').toHaveLength(29);
+    expect(new Set(BT10_ROSTER).size, 'fixture: no key listed twice').toBe(60);
 
-    expect(tacticsKeys(EN), 'the English catalog holds exactly the roster').toEqual(ROSTER);
-    expect(tacticsKeys(FR), 'the French catalog holds exactly the roster').toEqual(ROSTER);
+    const en = new Set(tacticsKeys(EN));
+    const fr = new Set(tacticsKeys(FR));
+    expect(
+      BT10_ROSTER.filter((k) => !en.has(k)),
+      'no bt-10 key is missing from the English catalog',
+    ).toEqual([]);
+    expect(
+      BT10_ROSTER.filter((k) => !fr.has(k)),
+      'no bt-10 key is missing from the French catalog',
+    ).toEqual([]);
     expect(
       Object.hasOwn(EN, 'tactics.ticker.status'),
       'tactics.ticker.status was replaced (A4)',
     ).toBe(false);
     expect(Object.hasOwn(FR, 'tactics.ticker.status'), 'and in French').toBe(false);
 
-    for (const key of PLAIN_KEYS) {
+    for (const key of BT10_PLAIN_KEYS) {
       expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
       expect(typeof FR[key], `fr ${key} is a plain string`).toBe('string');
       expect((EN[key] as string).length > 0, `en ${key} is not empty`).toBe(true);
     }
-    for (const key of PARAM_KEYS) {
+    for (const key of BT10_PARAM_KEYS) {
       expect(typeof EN[key], `en ${key} is a closure`).toBe('function');
       expect(typeof FR[key], `fr ${key} is a closure`).toBe('function');
     }
 
     const ids = stripComments(readFileSync(path.join(I18N_DIR, 'messageIds.ts'), 'utf8'));
-    for (const key of ROSTER) {
+    for (const key of BT10_ROSTER) {
       expect(ids.includes(`| '${key}'`), `${key} is in the MessageId union`).toBe(true);
     }
-    for (const key of PARAM_KEYS) {
+    for (const key of BT10_PARAM_KEYS) {
       expect(ids.includes(`readonly '${key}':`), `${key} is in the MessageParams table`).toBe(true);
     }
-    for (const key of PLAIN_KEYS) {
+    for (const key of BT10_PLAIN_KEYS) {
       expect(ids.includes(`readonly '${key}':`), `${key} is plain: not in MessageParams`).toBe(
         false,
       );
     }
+    expect(
+      missingDescs(BT10_ROSTER),
+      'every bt-10 tactics.* entry has an adjacent // @desc: of >= 10 characters',
+    ).toEqual([]);
+  });
 
-    const lines = readFileSync(path.join(I18N_DIR, 'catalog.en.ts'), 'utf8').split('\n');
-    const missingDesc: string[] = [];
-    for (const key of ROSTER) {
-      const at = lines.findIndex((l) => l.trim().startsWith(`'${key}':`));
-      if (at === -1) {
-        missingDesc.push(`${key} (no entry line)`);
-        continue;
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 88 tactics.* keys — bt-10`s 60 plus the command menu`s 26 plain and 2 parameterised keys — each new one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+    // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam): a menu label, reason, dock or queue key missing
+    // from one locale (a French boot throws on opening the command menu); increment C's keys added
+    // early (badge.*, forecast.*, projected.*, chip.cost: dead keys while their requesters do not
+    // exist, catalogParity DEAD-KEY); a reason that takes no {ap} (the "6" baked into the text:
+    // R4.11 reads it from rules.freshBudget()); a parameterised key authored as plain or the
+    // reverse; a key outside the MessageId union / MessageParams table; an undescribed entry; and a
+    // stray tactics.* key nobody asked for.
+    expect(BT11_PLAIN_KEYS, 'fixture: 26 new plain keys').toHaveLength(26);
+    expect(BT11_PARAM_KEYS, 'fixture: 2 new parameterised keys').toHaveLength(2);
+    expect(PLAIN_KEYS, 'fixture: 57 plain keys in all').toHaveLength(57);
+    expect(PARAM_KEYS, 'fixture: 31 parameterised keys in all').toHaveLength(31);
+    expect(new Set(ROSTER).size, 'fixture: 88 keys, none listed twice').toBe(88);
+    expect(
+      BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
+      'fixture: the new keys are new',
+    ).toEqual([]);
+
+    expect(tacticsKeys(EN), 'the English catalog holds exactly the 88-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(FR), 'the French catalog holds exactly the 88-key roster').toEqual(ROSTER);
+
+    for (const key of BT11_PLAIN_KEYS) {
+      expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
+      expect(typeof FR[key], `fr ${key} is a plain string`).toBe('string');
+      expect((EN[key] as string).length > 0, `en ${key} is not empty`).toBe(true);
+    }
+    for (const key of BT11_PARAM_KEYS) {
+      expect(typeof EN[key], `en ${key} is a closure`).toBe('function');
+      expect(typeof FR[key], `fr ${key} is a closure`).toBe('function');
+      for (const ap of [7, 13]) {
+        const enLine = (EN[key] as (p: Record<string, unknown>) => string)({ ap });
+        const frLine = (FR[key] as (p: Record<string, unknown>) => string)({ ap });
+        expect(enLine.includes(String(ap)), `en ${key} prints {ap} = ${ap}`).toBe(true);
+        expect(frLine.includes(String(ap)), `fr ${key} prints {ap} = ${ap}`).toBe(true);
+        expect(enLine.includes('6'), `en ${key} bakes in no literal 6 (ap ${ap})`).toBe(false);
       }
-      let described = false;
-      for (let j = at - 1; j >= 0; j--) {
-        const c = lines[j].trim();
-        if (!c.startsWith('//')) break;
-        if (
-          c.startsWith('// @desc:') &&
-          c.slice('// @desc:'.length).replace(/\s/g, '').length >= 10
-        ) {
-          described = true;
-        }
-      }
-      if (!described) missingDesc.push(key);
+    }
+
+    const ids = stripComments(readFileSync(path.join(I18N_DIR, 'messageIds.ts'), 'utf8'));
+    for (const key of BT11_ROSTER) {
+      expect(ids.includes(`| '${key}'`), `${key} is in the MessageId union`).toBe(true);
+    }
+    for (const key of BT11_PARAM_KEYS) {
+      expect(ids.includes(`readonly '${key}':`), `${key} is in the MessageParams table`).toBe(true);
+    }
+    for (const key of BT11_PLAIN_KEYS) {
+      expect(ids.includes(`readonly '${key}':`), `${key} is plain: not in MessageParams`).toBe(
+        false,
+      );
     }
     expect(
-      missingDesc,
+      missingDescs(ROSTER),
       'every tactics.* entry has an adjacent // @desc: of >= 10 characters',
     ).toEqual([]);
   });
@@ -446,6 +573,9 @@ describe('tactics strings: the source scans (A6)', () => {
       'ticker.ts',
       'presentation.ts',
       'tacticsBattle.ts',
+      // bt-11 increment B: the command-menu model and the draft (codes only, never text).
+      'commandModel.ts',
+      'draft.ts',
     ]) {
       expect(TACTICS_FILES, `${required} is among the scanned files`).toContain(required);
     }
@@ -518,7 +648,7 @@ describe('tactics strings: the source scans (A6)', () => {
 });
 
 describe('tactics strings: strings.ts (BT10.6, A6)', () => {
-  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 60 tactics.* keys are requested', () => {
+  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 88 tactics.* keys (bt-11: 60 + 28) are requested', () => {
     // WRONG IMPL KILLED: a dynamic key (`t(\`tactics.stance.${s}\`)` — PARITY-02's dynamic-key scan
     // refuses it, and a typo would only fail at runtime); an aliased import the scan cannot follow;
     // t() on a closure key or tf() on a plain key (the resolver throws); a catalog key nothing

@@ -2168,7 +2168,80 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     }
   });
 
-  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the twelve safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
+  it('BT11-6-START-TACTICAL: when the tactical shell owns the battle, Start at a bare battle base is left to the battle adapter (End Turn / Guard / Submit) while a held Start is still swallowed; with the flag false or omitted Start opens the menu exactly as before; every other button and the outcome A-continue rule are unchanged by the flag', () => {
+    // WRONG IMPL KILLED (plan REV 4 §R4.9): the `tactical` flag ignored (Start opens the main menu
+    // over the tactical battle, so End Turn / Submit never reach the shell, BT11.6); the flag
+    // inverted (the legacy battle's Start stops opening the menu, CTL6C.1); a held Start under the
+    // flag handed to the adapter (undefined) instead of swallowed; the flag widened to a battle with
+    // a frame above it (Start there must stay the frame's: undefined either way); the flag leaking
+    // into the outcome frame's A grace (a mashed Enter would skip the result).
+    const bare = deepFrozen(stackOf(battle('7')));
+    expect(
+      battleButton(bare, press('Start'), undefined, true),
+      'tactical: Start is the adapter`s',
+    ).toBe(undefined);
+    expect(
+      battleButton(bare, press('Start', true), undefined, true),
+      'tactical: a held Start is swallowed',
+    ).toBe('consumed');
+    expect(battleButton(bare, press('Start')), 'legacy (omitted): Start opens the menu').toEqual({
+      kind: 'openMenu',
+    });
+    expect(
+      battleButton(bare, press('Start'), undefined, false),
+      'legacy (false): Start opens the menu',
+    ).toEqual({ kind: 'openMenu' });
+    expect(battleButton(bare, press('Start', true)), 'legacy: a held Start is swallowed').toBe(
+      'consumed',
+    );
+    expect(
+      battleButton(bare, press('Start', true), undefined, false),
+      'legacy (false): a held Start is swallowed',
+    ).toBe('consumed');
+
+    // Every other button at the bare base is the adapter's whatever the flag says.
+    let others = 0;
+    for (const button of ALL_BUTTONS.filter((b) => b !== 'Start')) {
+      for (const tactical of [false, true]) {
+        expect(
+          battleButton(bare, press(button), undefined, tactical),
+          `${button} at a bare battle (tactical ${tactical})`,
+        ).toBe(undefined);
+        others += 1;
+      }
+    }
+    expect(others, 'ANTI-VACUITY: every other button, both flag values').toBe(
+      2 * (ALL_BUTTONS.length - 1),
+    );
+    expect(others, 'ANTI-VACUITY: the whole pad').toBeGreaterThanOrEqual(22);
+
+    // A frame above the battle: Start is that frame's in both modes.
+    const withMenu = deepFrozen(stackOf(battle('7'), screen('menuView')));
+    expect(
+      battleButton(withMenu, press('Start'), undefined, true),
+      'tactical, a frame above: not the rule`s',
+    ).toBe(undefined);
+    expect(battleButton(withMenu, press('Start')), 'legacy, a frame above: not the rule`s').toBe(
+      undefined,
+    );
+
+    // The outcome frame's A-continue grace is untouched by the flag.
+    const outcome = deepFrozen(stackOf(WORLD, screen('battleView')));
+    expect(battleButton(outcome, press('A'), 500, true), 'tactical: A at 500 ms continues').toEqual(
+      { kind: 'pop' },
+    );
+    expect(battleButton(outcome, press('A'), 399, true), 'tactical: A at 399 ms waits').toBe(
+      'consumed',
+    );
+    expect(battleButton(outcome, press('A', true), 500, true), 'tactical: a held A waits').toBe(
+      'consumed',
+    );
+    expect(battleButton(outcome, press('Start'), 500, true), 'tactical: Start on the outcome').toBe(
+      undefined,
+    );
+  });
+
+  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the fourteen safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
     // WRONG IMPL KILLED: a refusal that is a no-op (the policy is never consulted: every row of
     // the refused list reads false); a policy that refuses everything (a battle's own attack, the
     // stack moves or dismissDialogue would die: Start over [battle, dialogue] must still
@@ -2176,7 +2249,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // stack[0] (a menu above the battle, a suspended dialogue or a stack-only battle base must still
     // refuse); one that refuses at a world base or over an outcome frame (the world would lose
     // care, shop, trade and challenge); a table with a stray or missing kind (a new Command arm
-    // must classify itself: here the literal 37 kinds are the whole table); a single row moved
+    // must classify itself: here the literal 39 kinds are the whole table); a single row moved
     // from refuse to safe (each of the named rows below is its own sample); and a battleSafeCommand
     // that disagrees with the table or with battleRefused (two readers of one policy drifting
     // apart: the shell's early return and the stack rule would then refuse different commands).
@@ -2188,6 +2261,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // ctl-7d (named intentional change, CTL7D.3 / CTL7D.5): `buy` and `sell` carry a `qty`, and
     // the new `pickShop` arm (the greet-then-shop pick) joins the refused list: 12 safe, 25
     // refused, 37 kinds (were 12 / 24 / 36).
+    // bt-11 (named intentional change, BT11.2 / BT11.3, plan REV 4 §R4.10): the tactical shell's
+    // `submitQueue` (a unit's plan to `submit_queue`) and `cancelQueue` (the confirmed Clear plan)
+    // are the battle's own actions, so both are safe: 14 safe, 25 refused, 39 kinds (were 12 / 25 /
+    // 37). A `cancelQueue` refused at a battle base would make Clear plan dead exactly where it
+    // exists.
     const big = 5n;
     const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['pop', { kind: 'pop' }],
@@ -2201,6 +2279,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['useItem', { kind: 'useItem', battleId: big, itemId: 3 }],
       ['pvpAttack', { kind: 'pvpAttack', battleId: big, skillId: 1 }],
       ['pvpSwap', { kind: 'pvpSwap', battleId: big, teamIndex: 1 }],
+      [
+        'submitQueue',
+        { kind: 'submitQueue', battleId: big, unitId: 3, entries: [{ tag: 'EndTurn' }] },
+      ],
+      ['cancelQueue', { kind: 'cancelQueue', battleId: big, unitId: 3 }],
       ['dismissDialogue', { kind: 'dismissDialogue' }],
     ];
     const proposal = {
@@ -2236,16 +2319,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
-    expect(SAFE, 'ANTI-VACUITY: twelve safe kinds').toHaveLength(12);
+    expect(SAFE, 'ANTI-VACUITY: fourteen safe kinds').toHaveLength(14);
     expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      37,
+      39,
     );
     expect(
       kindsOf(SAFE),
-      'the safe kinds are exactly the battle`s own actions, the stack moves and dismissDialogue',
+      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too), the stack moves and dismissDialogue',
     ).toEqual([
       'pop',
       'popToBase',
@@ -2258,10 +2341,12 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'useItem',
       'pvpAttack',
       'pvpSwap',
+      'submitQueue',
+      'cancelQueue',
       'dismissDialogue',
     ]);
 
-    // The table itself is total over the 37 literal kinds and says exactly this.
+    // The table itself is total over the 39 literal kinds and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );

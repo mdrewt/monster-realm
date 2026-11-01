@@ -80,6 +80,9 @@ function out(o: Partial<ForecastOut> = {}): ForecastOut {
     status_blocked: false,
     flank_factor: [5, 4],
     guard_factor: [3, 4],
+    // bt-11 REV 5 A27 (round 3): the new ForecastOut field, present so the fixture type-checks. Any
+    // pair: the view-model's use of it (the type line's ×num/den) is pinned in round 4.
+    type_factor: [1, 1],
     ...o,
   };
 }
