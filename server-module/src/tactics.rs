@@ -316,6 +316,31 @@ impl TacticsContent {
 // Hydration — rows ⇄ `TacticalBattle`
 // ===========================================================================
 
+/// The schedule row currently firing, if any — spared by the bulk disarms (the runtime
+/// deletes the fired row itself). Tagged per table: each table has its own id sequence.
+#[derive(Clone, Copy)]
+enum Except {
+    None,
+    Deadline(u64),
+    Advance(u64),
+}
+
+impl Except {
+    fn deadline(self) -> Option<u64> {
+        match self {
+            Except::Deadline(id) => Some(id),
+            Except::None | Except::Advance(_) => None,
+        }
+    }
+
+    fn advance(self) -> Option<u64> {
+        match self {
+            Except::Advance(id) => Some(id),
+            Except::None | Except::Deadline(_) => None,
+        }
+    }
+}
+
 /// The turn state and round before a step (what `store` arms an advance row against).
 #[derive(Clone, Copy)]
 struct Prev {
@@ -595,7 +620,7 @@ fn store(
     out: &StepResult,
     prev: Prev,
     now_ms: i64,
-    except: Option<u64>,
+    except: Except,
 ) {
     let Loaded {
         mut anchor,
@@ -752,7 +777,7 @@ fn finish(
     mut tactical: BattleTactical,
     persist_hp: bool,
     now_ms: i64,
-    except: Option<u64>,
+    except: Except,
 ) {
     if tactical.phase == Phase::Finished {
         return;
@@ -776,18 +801,15 @@ fn finish(
     ctx.db.battle_tactical().battle_id().update(tactical);
     ctx.db.battle_queue().battle_id().delete(battle_id);
     ctx.db.battle_deploy().battle_id().delete(battle_id);
-    disarm_deadlines(ctx, battle_id, except);
-    disarm_advances(ctx, battle_id, except);
+    disarm_deadlines(ctx, battle_id, except.deadline());
+    disarm_advances(ctx, battle_id, except.advance());
     arm_gc(ctx, battle_id, now_ms.saturating_add(GC_DELAY_MS));
 }
 
-/// Close a Deploying battle as `Fled` with nothing persisted (design §3.3, §3.7).
-fn close_deploying(
-    ctx: &ReducerContext,
-    tactical: BattleTactical,
-    now_ms: i64,
-    except: Option<u64>,
-) {
+/// Close a battle as `Fled` with NO HP write: a Deploying battle (design §3.3, §3.7) or an
+/// Active tactical row whose anchor a legacy reducer already ended (its own write-back ran;
+/// writing the units' older HP would heal or revive — security audit MED-1).
+fn close_without_hp(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64, except: Except) {
     let anchor = ctx
         .db
         .battle()
@@ -810,7 +832,7 @@ fn fallback_close(
     tactical: BattleTactical,
     reason: &str,
     now_ms: i64,
-    except: Option<u64>,
+    except: Except,
 ) {
     let battle_id = tactical.battle_id;
     let escaped = json_escape(reason);
@@ -830,6 +852,15 @@ fn fallback_close(
             let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
                 continue;
             };
+            if Some(m.owner_identity) != unit.owner {
+                // Traded away since the unit row was written: never write HP into
+                // another player's monster (the `write_back_party_hp` contract).
+                mr_log(
+                    "tactical_fallback_owner_mismatch",
+                    &format!("\"battle_id\":{battle_id},\"monster_id\":{mid}"),
+                );
+                continue;
+            }
             m.current_hp = unit.cur_hp.min(m.stat_hp);
             if let Err(e) = update_monster_synced(ctx, m) {
                 let escaped = json_escape(&e);
@@ -840,7 +871,7 @@ fn fallback_close(
             }
         }
     }
-    close_deploying(ctx, tactical, now_ms, except);
+    close_without_hp(ctx, tactical, now_ms, except);
 }
 
 // ===========================================================================
@@ -1018,7 +1049,7 @@ fn materialize(
         .find(battle_id)
         .ok_or_else(|| format!("battle {battle_id} has no secret row"))?;
     // Validate every pick before the first write.
-    let mut staged: Vec<(Monster, DeployPick)> = Vec::with_capacity(picks.len());
+    let mut staged: Vec<(Monster, DeployPick, UnitKit)> = Vec::with_capacity(picks.len());
     for pick in picks {
         let m = ctx
             .db
@@ -1038,8 +1069,8 @@ fn materialize(
         if usize::from(pick.slot) >= map.spawn_a.len() {
             return Err(format!("slot {} out of range", pick.slot));
         }
-        content.unit_kit(m.species_id, m.level, monster_stats(&m))?;
-        staged.push((m, *pick));
+        let kit = content.unit_kit(m.species_id, m.level, monster_stats(&m))?;
+        staged.push((m, *pick, kit));
     }
     let mut wild_rows: Vec<BattleWildUnit> = ctx
         .db
@@ -1067,11 +1098,32 @@ fn materialize(
             })?;
         wild_staged.push((w, kit, stance, pos));
     }
+    // Dry run with placeholder ids: every per-unit and set check (`deploy_unit`,
+    // `TacticalState::new`) runs BEFORE the first write, so a refusal leaves the store
+    // untouched (the native host has no rollback).
+    let mut dry: Vec<TacticalUnit> = Vec::new();
+    for (i, (m, pick, kit)) in staged.iter().enumerate() {
+        let id = u32::MAX.saturating_sub(u32::try_from(i).unwrap_or(u32::MAX));
+        let pos = map.spawn_a[usize::from(pick.slot)];
+        dry.push(
+            deploy_unit(id, Side::A, pick.slot, pos, kit.clone(), m.current_hp)
+                .map_err(|e| format!("deploy: {e:?}"))?,
+        );
+    }
+    for (j, (w, kit, _, pos)) in wild_staged.iter().enumerate() {
+        let id = u32::MAX.saturating_sub(u32::try_from(staged.len() + j).unwrap_or(u32::MAX));
+        dry.push(
+            deploy_unit(id, Side::B, w.wild_index, *pos, kit.clone(), kit.stats.hp)
+                .map_err(|e| format!("deploy: {e:?}"))?,
+        );
+    }
+    TacticalState::new(tactical.kind, secret.seed, map, dry)
+        .map_err(|e| format!("deploy: {e:?}"))?;
     // Writes: units (ids come from the insert), then the rules state.
     let mut units: Vec<TacticalUnit> = Vec::new();
     let mut rows: Vec<BattleUnit> = Vec::new();
-    for (m, pick) in &staged {
-        let kit = content.unit_kit(m.species_id, m.level, monster_stats(m))?;
+    for (m, pick, kit) in &staged {
+        let kit = kit.clone();
         let pos = map.spawn_a[usize::from(pick.slot)];
         let row = ctx.db.battle_unit().insert(BattleUnit {
             unit_id: 0,
@@ -1147,7 +1199,7 @@ fn materialize(
         .map_err(|e| format!("deploy: {e:?}"))?;
     let mut tb = TacticalBattle::new(battle_id, state);
     // The remembered formation follows every confirmed deploy (design §3.3).
-    let formation: Vec<u64> = staged.iter().map(|(m, _)| m.monster_id).collect();
+    let formation: Vec<u64> = staged.iter().map(|(m, _, _)| m.monster_id).collect();
     if ctx
         .db
         .player_formation()
@@ -1204,7 +1256,7 @@ fn materialize(
             round: 1,
         },
         now_ms,
-        None,
+        Except::None,
     );
     Ok(())
 }
@@ -1343,7 +1395,10 @@ pub(crate) fn start_wild_tactical(
     }
     let side_a = BattleSide::with_lead(team_a)
         .ok_or_else(|| "party has no conscious monster".to_string())?;
-    let (_, wild0_species, wild0_level, wild0_seed) = wilds[0];
+    let (_, wild0_species, wild0_level, wild0_seed) = wilds
+        .first()
+        .copied()
+        .ok_or_else(|| "encounter: empty pack".to_string())?;
     let wild0 = content.species(wild0_species)?;
     let wild0_inst = build_monster(wild0_seed, wild0, Level::new(wild0_level)?);
     let side_b = BattleSide::with_lead(vec![BattleMonster {
@@ -1678,7 +1733,7 @@ pub fn submit_queue(
         &out,
         prev,
         now,
-        None,
+        Except::None,
     );
     Ok(())
 }
@@ -1706,7 +1761,14 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
     if let Err(e) = loaded.tb.cancel_queue(side, unit_id) {
         return reject(NAME, me, format!("{NAME}: {e:?}"));
     }
-    store(ctx, loaded, &StepResult::default(), prev, now_ms(ctx), None);
+    store(
+        ctx,
+        loaded,
+        &StepResult::default(),
+        prev,
+        now_ms(ctx),
+        Except::None,
+    );
     Ok(())
 }
 
@@ -1756,7 +1818,7 @@ pub fn tactical_deadline_fire(
         return Err("tactical_deadline_fire is scheduler-only".to_string());
     }
     let battle_id = args.battle_id;
-    let except = Some(args.scheduled_id);
+    let except = Except::Deadline(args.scheduled_id);
     let now = now_ms(ctx);
     let Some(tactical) = ctx.db.battle_tactical().battle_id().find(battle_id) else {
         return Ok(());
@@ -1765,7 +1827,7 @@ pub fn tactical_deadline_fire(
         Phase::Finished => return Ok(()),
         Phase::Deploying => {
             if args.unit_id == DEPLOY_WINDOW_UNIT {
-                close_deploying(ctx, tactical, now, except);
+                close_without_hp(ctx, tactical, now, except);
             }
             return Ok(());
         }
@@ -1781,13 +1843,7 @@ pub fn tactical_deadline_fire(
         .find(battle_id)
         .is_some_and(|a| a.state.outcome == BattleOutcome::Ongoing);
     if !anchor_live {
-        fallback_close(
-            ctx,
-            tactical,
-            "anchor terminal while tactical active",
-            now,
-            except,
-        );
+        close_without_hp(ctx, tactical, now, except);
         return Ok(());
     }
     let loaded = match load(ctx, battle_id) {
@@ -1823,7 +1879,7 @@ pub fn tactical_deadline_fire(
         Err(_) => return Ok(()),
     };
     drop(hooks);
-    disarm_deadlines(ctx, battle_id, except);
+    disarm_deadlines(ctx, battle_id, except.deadline());
     store(
         ctx,
         Loaded {
@@ -1848,7 +1904,7 @@ pub fn tactical_advance(ctx: &ReducerContext, args: TacticalAdvanceSched) -> Res
         return Err("tactical_advance is scheduler-only".to_string());
     }
     let battle_id = args.battle_id;
-    let except = Some(args.scheduled_id);
+    let except = Except::Advance(args.scheduled_id);
     let now = now_ms(ctx);
     let Some(tactical) = ctx.db.battle_tactical().battle_id().find(battle_id) else {
         return Ok(());
@@ -1863,13 +1919,7 @@ pub fn tactical_advance(ctx: &ReducerContext, args: TacticalAdvanceSched) -> Res
         .find(battle_id)
         .is_some_and(|a| a.state.outcome == BattleOutcome::Ongoing);
     if !anchor_live {
-        fallback_close(
-            ctx,
-            tactical,
-            "anchor terminal while tactical active",
-            now,
-            except,
-        );
+        close_without_hp(ctx, tactical, now, except);
         return Ok(());
     }
     let loaded = match load(ctx, battle_id) {
@@ -1991,7 +2041,7 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
         match tactical.phase {
             Phase::Finished => continue,
             Phase::Deploying => {
-                close_deploying(ctx, tactical, now, None);
+                close_without_hp(ctx, tactical, now, Except::None);
                 continue;
             }
             Phase::Active => {}
@@ -1999,7 +2049,7 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
         let loaded = match load(ctx, battle_id) {
             Ok(l) => l,
             Err(e) => {
-                fallback_close(ctx, tactical, &e, now, None);
+                fallback_close(ctx, tactical, &e, now, Except::None);
                 continue;
             }
         };
@@ -2014,7 +2064,7 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
         let out = match tb.conclude(BattleOutcome::Fled, EndHow::AutoFlee) {
             Ok(out) => out,
             Err(_) => {
-                fallback_close(ctx, tactical, "conclude refused", now, None);
+                fallback_close(ctx, tactical, "conclude refused", now, Except::None);
                 continue;
             }
         };
@@ -2030,7 +2080,7 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
             &out,
             prev,
             now,
-            None,
+            Except::None,
         );
     }
 }
