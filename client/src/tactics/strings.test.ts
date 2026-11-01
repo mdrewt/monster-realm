@@ -29,15 +29,25 @@
 // roster. RED REASON (round 4): the 26 keys are absent from both catalogs, messageIds.ts and
 // strings.ts.
 //
+// bt-12 (increment A, plan REV 2 A5 + REV 2b B8): the roster grows 114 → 132 (+14 plain, +4
+// parameterised — the deploy panel and the results panel; the results TITLE reuses the shipped
+// `battle.outcome.*` keys, so no `results.won/lost/fled` key exists). NAMED INTENTIONAL CHANGE:
+// BT11-1-STRINGS-ROSTER pins the exact 132 (was 114; plain 69 → 83, parameterised 45 → 49) and the FR
+// and RESOLVER tests follow the grown roster. BT12-6-STRINGS-ROSTER reads NO file text: it calls the
+// 18 new strings.ts functions (plus `resultsTitle`) under English and French. RED REASON (bt-12): the
+// 18 keys are absent from both catalogs, messageIds.ts and strings.ts.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { stripComments } from '../../test-util/stripComments';
 import { CATALOG_EN } from '../ui/i18n/catalog.en';
 import { CATALOG_FR } from '../ui/i18n/catalog.fr';
+import { setLocale } from '../ui/i18n/resolver';
+import * as s from './strings';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const I18N_DIR = path.resolve(HERE, '..', 'ui', 'i18n');
@@ -190,12 +200,49 @@ const BT11C_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.projected.assumes': ['unit', 'tile'],
 };
 
-/** Every `tactics.*` key after bt-11 increment C: 69 plain, 45 parameterised = 114. */
-const PLAIN_KEYS: readonly string[] = [...BT10_PLAIN_KEYS, ...BT11_PLAIN_KEYS, ...BT11C_PLAIN_KEYS];
+/** bt-12 (plan REV 2b B8): the deploy panel's title, formation label, empty slot, the Deploy / Edit
+ *  formation rows, the sending line, the editor's candidate group and its prev / next buttons, its
+ *  Confirm / Back rows, and the results panel's list label, empty line and Continue button — 14 plain
+ *  keys. */
+const BT12_PLAIN_KEYS: readonly string[] = [
+  'tactics.deploy.title',
+  'tactics.deploy.label',
+  'tactics.deploy.empty',
+  'tactics.deploy.deploy',
+  'tactics.deploy.edit',
+  'tactics.deploy.sending',
+  'tactics.deploy.candidateLabel',
+  'tactics.deploy.prevMonster',
+  'tactics.deploy.nextMonster',
+  'tactics.deploy.confirm',
+  'tactics.deploy.back',
+  'tactics.results.label',
+  'tactics.results.none',
+  'tactics.results.continue',
+];
+
+/** bt-12: the 4 parameterised keys and the exact fields each closure reads (B8: `n`, `xp` and
+ *  `essence` are numbers, `amount` a bigint, `name` a string). */
+const BT12_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'tactics.deploy.slot': ['n'],
+  'tactics.results.monster': ['name', 'xp', 'essence'],
+  'tactics.results.currency': ['amount'],
+  'tactics.results.recruited': ['name'],
+};
+
+/** Every `tactics.*` key after bt-12 increment A: 83 plain, 49 parameterised = 132 (bt-11
+ *  increment C's 69 + 45 = 114, named intentional change). */
+const PLAIN_KEYS: readonly string[] = [
+  ...BT10_PLAIN_KEYS,
+  ...BT11_PLAIN_KEYS,
+  ...BT11C_PLAIN_KEYS,
+  ...BT12_PLAIN_KEYS,
+];
 const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT10_PARAM_FIELDS,
   ...BT11_PARAM_FIELDS,
   ...BT11C_PARAM_FIELDS,
+  ...BT12_PARAM_FIELDS,
 };
 
 const PARAM_KEYS = Object.keys(PARAM_FIELDS);
@@ -315,7 +362,7 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     ).toEqual([]);
   });
 
-  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 114 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, and the strip / forecast / Projected 12 plain and 14 parameterised keys — each new one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 132 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, and (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
     // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam; round 4: REV 6 R6.7): a menu label, reason,
     // dock or queue key missing from one locale (a French boot throws on opening the command menu);
     // a badge word, a forecast line or a Projected line missing from one locale (a French boot
@@ -329,9 +376,10 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     expect(BT11_PARAM_KEYS, 'fixture: 2 increment-B parameterised keys').toHaveLength(2);
     expect(BT11C_PLAIN_KEYS, 'fixture: 12 increment-C plain keys').toHaveLength(12);
     expect(BT11C_PARAM_KEYS, 'fixture: 14 increment-C parameterised keys').toHaveLength(14);
-    expect(PLAIN_KEYS, 'fixture: 69 plain keys in all').toHaveLength(69);
-    expect(PARAM_KEYS, 'fixture: 45 parameterised keys in all').toHaveLength(45);
-    expect(new Set(ROSTER).size, 'fixture: 114 keys, none listed twice').toBe(114);
+    // bt-12 (named intentional change): 69 → 83 plain, 45 → 49 parameterised, 114 → 132.
+    expect(PLAIN_KEYS, 'fixture: 83 plain keys in all').toHaveLength(83);
+    expect(PARAM_KEYS, 'fixture: 49 parameterised keys in all').toHaveLength(49);
+    expect(new Set(ROSTER).size, 'fixture: 132 keys, none listed twice').toBe(132);
     expect(
       BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
       'fixture: the increment-B keys are new',
@@ -345,8 +393,8 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
       expect(Object.hasOwn(FR, dropped), `fr ${dropped} was dropped by A27`).toBe(false);
     }
 
-    expect(tacticsKeys(EN), 'the English catalog holds exactly the 114-key roster').toEqual(ROSTER);
-    expect(tacticsKeys(FR), 'the French catalog holds exactly the 114-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(EN), 'the English catalog holds exactly the 132-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(FR), 'the French catalog holds exactly the 132-key roster').toEqual(ROSTER);
 
     for (const key of BT11C_PLAIN_KEYS) {
       expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
@@ -717,7 +765,7 @@ describe('tactics strings: the source scans (A6)', () => {
 });
 
 describe('tactics strings: strings.ts (BT10.6, A6)', () => {
-  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 114 tactics.* keys (bt-11: 60 + 28 + 26) are requested', () => {
+  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 132 tactics.* keys (bt-12: 60 + 28 + 26 + 18) are requested', () => {
     // WRONG IMPL KILLED: a dynamic key (`t(\`tactics.stance.${s}\`)` — PARITY-02's dynamic-key scan
     // refuses it, and a typo would only fail at runtime); an aliased import the scan cannot follow;
     // t() on a closure key or tf() on a plain key (the resolver throws); a catalog key nothing
@@ -784,5 +832,143 @@ describe('tactics strings: strings.ts (BT10.6, A6)', () => {
       resolverUse("import { x } from './other';").imported,
       'another module is not the resolver',
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// bt-12: the deploy and results panels' strings.ts functions (BT12.6, plan REV 2 A5 / REV 2b B8).
+// No file text is read: every function is CALLED, under English and under French. A function is
+// looked up on the module namespace by name, so a missing one is a failed expect (a named import
+// of an absent export would be a link error that reds the whole file).
+// ---------------------------------------------------------------------------------------------
+
+/** U+2026 HORIZONTAL ELLIPSIS, by code point (never a pasted glyph). */
+const ELLIPSIS = String.fromCharCode(0x2026);
+/** 2^53 + 1: the first integer a JS number cannot hold (a `Number()` on the way prints ...992). */
+const PAST_2_53 = 9_007_199_254_740_993n;
+
+describe('tactics strings: the deploy and results panels (bt-12, BT12.6)', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('the deploy and results strings.ts functions resolve their exact English, a different French, and print every parameter they take, the gold amount past 2^53 digit for digit; the results title is the shipped battle outcome text of each of the three outcomes [BT12-6-STRINGS-ROSTER]', () => {
+    // WRONG IMPL KILLED (plan REV 2 A5, REV 2b B8): a function missing from strings.ts (the panel
+    // would have to write its own literal); a function that resolves a sibling's key (Deploy for
+    // Confirm, Back for Edit formation); the deploy title read from `battle.title` (the 1v1 view's
+    // "Battle"); a slot label that bakes in its number or reads it 0-based; a results line that drops
+    // or swaps xp and essence; a currency line run through Number() (2^53 + 1 prints ...992) or
+    // worded "coins" (the catalog's word is gold); a results title from a fresh key instead of the
+    // shipped battle.outcome.* texts (the French would not be theirs); the English copied into the
+    // French catalog; and a French closure that drops a parameter.
+    const EN_CAT = CATALOG_EN as unknown as Record<string, unknown>;
+    const FR_CAT = CATALOG_FR as unknown as Record<string, unknown>;
+    const fns = s as unknown as Record<string, unknown>;
+    /** strings.ts's `name`, called with `args`; a missing export fails here, by name. */
+    const call = (name: string, ...args: unknown[]): string => {
+      const fn = fns[name];
+      expect(typeof fn, `strings.ts exports ${name}()`).toBe('function');
+      const out = (fn as (...a: unknown[]) => unknown)(...args);
+      expect(typeof out, `${name}() returns a string`).toBe('string');
+      return out as string;
+    };
+    const PLAIN: ReadonlyArray<readonly [string, string]> = [
+      ['deployTitle', 'Choose your team'],
+      ['deployLabel', 'Formation'],
+      ['deployEmpty', 'Empty'],
+      ['deployDeploy', 'Deploy'],
+      ['deployEdit', 'Edit formation'],
+      ['deploySending', `Deploying${ELLIPSIS}`],
+      ['deployCandidateLabel', 'Monster to place'],
+      ['deployPrevMonster', 'Previous monster'],
+      ['deployNextMonster', 'Next monster'],
+      ['deployConfirm', 'Confirm'],
+      ['deployBack', 'Back'],
+      ['resultsLabel', 'Rewards'],
+      ['resultsNone', 'No rewards'],
+      ['resultsContinue', 'Continue'],
+    ];
+    expect(PLAIN, 'fixture: the 14 plain functions').toHaveLength(14);
+    const TITLES: ReadonlyArray<readonly [string, string, string]> = [
+      ['won', 'battle.outcome.victory', 'Victory!'],
+      ['lost', 'battle.outcome.defeat', 'Defeat...'],
+      ['fled', 'battle.outcome.fled', 'Got away safely!'],
+    ];
+
+    // --- English: the exact text ---------------------------------------------------------------
+    setLocale('en');
+    const en = new Map<string, string>();
+    for (const [name, text] of PLAIN) {
+      const out = call(name);
+      expect(out, `en ${name}()`).toBe(text);
+      en.set(name, out);
+    }
+    expect(en.get('deployTitle'), 'the deploy title is not the battle frame`s title').not.toBe(
+      EN_CAT['battle.title'],
+    );
+    expect(call('deploySlot', 1), 'en deploySlot(1): the first slot is Slot 1').toBe('Slot 1');
+    expect(call('deploySlot', 13), 'en deploySlot(13): the number is read').toBe('Slot 13');
+    expect(call('resultsMonster', 'Sprigg', 53, 7), 'en resultsMonster').toBe(
+      'Sprigg: +53 XP, +7 essence',
+    );
+    expect(call('resultsMonster', 'Kip', 0, 11), 'en resultsMonster, zero XP printed').toBe(
+      'Kip: +0 XP, +11 essence',
+    );
+    expect(call('resultsCurrency', PAST_2_53), 'en resultsCurrency past 2^53, in gold').toBe(
+      '+9007199254740993 gold',
+    );
+    expect(call('resultsCurrency', 7n), 'en resultsCurrency, a small amount').toBe('+7 gold');
+    expect(call('resultsRecruited', 'Mossback'), 'en resultsRecruited').toBe(
+      'Mossback joined your team!',
+    );
+    for (const [outcome, key, text] of TITLES) {
+      const out = call('resultsTitle', outcome);
+      expect(out, `en resultsTitle('${outcome}')`).toBe(text);
+      expect(out, `en resultsTitle('${outcome}') is the shipped ${key} text`).toBe(EN_CAT[key]);
+    }
+
+    // --- French: a translation, every parameter printed ---------------------------------------
+    setLocale('fr');
+    for (const [name] of PLAIN) {
+      const out = call(name);
+      expect(out.length > 0, `fr ${name}() is not empty`).toBe(true);
+      expect(out, `fr ${name}() is a translation, not the English`).not.toBe(en.get(name));
+    }
+    expect(call('deployLabel'), 'fr deployLabel(): the plan`s French (B8)').toBe(
+      'Ordre de bataille',
+    );
+    const frSlot = call('deploySlot', 13);
+    expect(frSlot.includes('13'), `fr deploySlot(13) prints 13: ${frSlot}`).toBe(true);
+    expect(frSlot, 'fr deploySlot is not the English line').not.toBe('Slot 13');
+    const frMonster = call('resultsMonster', 'Sprigg', 53, 7);
+    for (const field of ['Sprigg', '53', '7']) {
+      expect(frMonster.includes(field), `fr resultsMonster prints ${field}: ${frMonster}`).toBe(
+        true,
+      );
+    }
+    expect(frMonster, 'fr resultsMonster is not the English line').not.toBe(
+      'Sprigg: +53 XP, +7 essence',
+    );
+    const frCurrency = call('resultsCurrency', PAST_2_53);
+    expect(
+      frCurrency.includes('9007199254740993'),
+      `fr resultsCurrency prints the amount digit for digit: ${frCurrency}`,
+    ).toBe(true);
+    expect(frCurrency, 'fr resultsCurrency is not the English line').not.toBe(
+      '+9007199254740993 gold',
+    );
+    const frRecruited = call('resultsRecruited', 'Mossback');
+    expect(
+      frRecruited.includes('Mossback'),
+      `fr resultsRecruited prints the name: ${frRecruited}`,
+    ).toBe(true);
+    expect(frRecruited, 'fr resultsRecruited is not the English line').not.toBe(
+      'Mossback joined your team!',
+    );
+    for (const [outcome, key, text] of TITLES) {
+      const out = call('resultsTitle', outcome);
+      expect(out, `fr resultsTitle('${outcome}') is the shipped French ${key}`).toBe(FR_CAT[key]);
+      expect(out, `fr resultsTitle('${outcome}') is not the English`).not.toBe(text);
+    }
   });
 });

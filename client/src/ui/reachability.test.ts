@@ -60,6 +60,9 @@ import type {
   StoreSpeciesRow,
   StoreTradeOffer,
 } from '../net/store';
+// bt-12 (BT12.6): the deploy and results panels join the reachability sweep.
+import { type DeployMonster, DeployPanel, type DeployVM } from '../tactics/deployPanel';
+import { ResultsPanel } from '../tactics/results';
 import type { BagVm } from './bagModel';
 import { type BaitItem, type BattleViewModel, buildBattleViewModel } from './battleModel';
 import { BattleView } from './battleView';
@@ -89,6 +92,7 @@ import { buildPvpChallengeViewModel, type PvpChallengeViewModel } from './pvpMod
 import { PvpView, type PvpViewCallbacks } from './pvpView';
 import type { RaisingViewModel } from './raisingModel';
 import { RaisingView } from './raisingView';
+import type { BattleOp } from './screens/battleScreen';
 import { baseButton } from './screens/index';
 import { type MainMenuState, mainMenuStep, openMainMenu } from './screens/mainMenuScreen';
 import { type MonstersPaint, monstersScreen } from './screens/monstersScreen';
@@ -3128,5 +3132,240 @@ describe('no e2e still names a retired control (qf-8, QF8.3)', () => {
       return hits.map((needle) => `${file.slice(dir.length)}: ${needle}`);
     });
     expect(found, 'references to a retired control in the e2e files').toEqual([]);
+  });
+});
+
+// ---- bt-12 (BT12.6): the deploy and results panels ----
+//
+// SOURCE OF TRUTH: spec BT12.6 ("THE reachability sweep SHALL cover every new panel and row"); plan
+// §3.4 (the deploy panel's input model: D-pad + A over the rows, LB / RB over the candidates, a click
+// on a row moves the cursor there and activates it, a click on `.tactics-deploy-prev` / `-next`
+// cycles) and §3.8 (row ids `tactics-deploy-row-<key>`, the results panel's Continue button). The
+// REAL panels are rendered and driven through their own `applyBattleOp` and DOM. RED REASON: both
+// panel constructors throw `bt-12: not implemented` on the API-freeze stubs.
+
+const BT12R_BATTLE = 9_007_199_254_740_993n;
+const bt12rMonster = (
+  monsterId: bigint,
+  name: string,
+  level: number,
+  hp: number,
+  maxHp: number,
+): DeployMonster => ({ monsterId, name, level, hp, maxHp });
+const BT12R_SPRIGG = bt12rMonster(9_007_199_254_740_995n, 'Sprigg', 7, 23, 29);
+const BT12R_CINDER = bt12rMonster(9_007_199_254_740_997n, 'Cindertail', 11, 31, 37);
+const BT12R_MOSS = bt12rMonster(9_007_199_254_740_999n, 'Mossback', 13, 41, 43);
+/** Three candidates, two of them placed: the third slot is empty. */
+const BT12R_VM: DeployVM = {
+  battleId: BT12R_BATTLE,
+  candidates: [BT12R_SPRIGG, BT12R_CINDER, BT12R_MOSS],
+  formation: [BT12R_SPRIGG, BT12R_CINDER, null],
+};
+const BT12R_DOWN: BattleOp = { kind: 'move', dir: 'Down' };
+const BT12R_UP: BattleOp = { kind: 'move', dir: 'Up' };
+const BT12R_A: BattleOp = { kind: 'activate' };
+const BT12R_LB: BattleOp = { kind: 'cycle', dir: -1 };
+const BT12R_RB: BattleOp = { kind: 'cycle', dir: 1 };
+
+/** A macrotask: settled promises' continuations and the overlay's deferred focus have run. */
+const bt12rTick = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
+/** A shown DeployPanel on a fresh host, recording each send. */
+function bt12rDeploy(): {
+  readonly panel: DeployPanel;
+  readonly root: HTMLElement;
+  readonly sends: unknown[];
+  readonly rows: () => string[];
+  readonly cursor: () => string | null;
+  readonly candidate: () => string | null;
+  readonly click: (selector: string) => void;
+} {
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const sends: unknown[] = [];
+  const panel = new DeployPanel(host, {
+    onDeploy: (battleId, picks) => {
+      sends.push({ battleId, picks: picks.map((p) => ({ monsterId: p.monsterId, slot: p.slot })) });
+      return Promise.resolve();
+    },
+  });
+  panel.render(BT12R_VM);
+  panel.show();
+  const root = host.querySelector<HTMLElement>('.tactics-deploy');
+  if (root === null) throw new Error('the deploy panel built no .tactics-deploy root');
+  return {
+    panel,
+    root,
+    sends,
+    rows: () =>
+      [...root.querySelectorAll('.tactics-menu [role="option"]')].map(
+        (el) => el.getAttribute('data-row') ?? '',
+      ),
+    cursor: () =>
+      root
+        .querySelector('.tactics-menu [role="option"][aria-selected="true"]')
+        ?.getAttribute('data-row') ?? null,
+    candidate: () =>
+      root.querySelector('.tactics-deploy-candidate .tactics-deploy-name')?.textContent ?? null,
+    click: (selector) => {
+      const target = root.querySelector(selector);
+      expect(target, `precondition: ${selector} is painted`).not.toBeNull();
+      target?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    },
+  };
+}
+
+describe('the deploy and results panels are reachable (bt-12, BT12.6)', () => {
+  it('every confirm row and every editor row of the deploy panel is reached by D-pad presses within one lap and pressed by A, every candidate is reached by LB and by RB within one lap, and every row and the previous / next buttons have a working pointer route [BT12-6-REACH-DEPLOY]', () => {
+    // WRONG IMPL KILLED: a row the cursor skips (unreachable by the controller); a cursor that
+    // stops at the ends without wrapping in the confirm screen (Up from Deploy reaches nothing); a
+    // candidate LB or RB never reaches; a row with no click route or no id (a pointer player cannot
+    // edit or deploy); prev / next buttons that do nothing on a click.
+    const d = bt12rDeploy();
+    try {
+      /** Press `op` one lap long, recording the presses at which each row first held the cursor. */
+      const lap = (op: BattleOp): Map<string, number> => {
+        const reached = new Map<string, number>([[d.cursor() ?? '', 0]]);
+        const n = d.rows().length;
+        for (let press = 1; press <= n; press += 1) {
+          d.panel.applyBattleOp(op);
+          const key = d.cursor();
+          if (key !== null && !reached.has(key)) reached.set(key, press);
+        }
+        return reached;
+      };
+      expect(d.rows(), 'the confirm screen`s rows').toEqual(['deploy', 'edit']);
+      for (const op of [BT12R_DOWN, BT12R_UP]) {
+        const reached = lap(op);
+        expect([...reached.keys()].sort(), 'every confirm row is reached in one lap').toEqual([
+          'deploy',
+          'edit',
+        ]);
+      }
+      for (let i = 0; i < 2 && d.cursor() !== 'edit'; i += 1) d.panel.applyBattleOp(BT12R_DOWN);
+      d.panel.applyBattleOp(BT12R_A);
+      expect(d.panel.mode, 'A on Edit formation opens the editor').toBe('edit');
+      const editorRows = d.rows();
+      expect(editorRows, 'the editor`s rows').toEqual([
+        'slot-0',
+        'slot-1',
+        'slot-2',
+        'confirm',
+        'back',
+      ]);
+      const reached = lap(BT12R_DOWN);
+      expect([...reached.keys()].sort(), 'every editor row is reached by Down').toEqual(
+        [...editorRows].sort(),
+      );
+      expect(
+        Math.max(...reached.values()),
+        'each within one lap of the five rows',
+      ).toBeLessThanOrEqual(editorRows.length - 1);
+      for (const op of [BT12R_RB, BT12R_LB]) {
+        const seen = new Set<string | null>([d.candidate()]);
+        for (let press = 1; press < 3; press += 1) {
+          d.panel.applyBattleOp(op);
+          seen.add(d.candidate());
+        }
+        expect(seen, 'every candidate within two presses').toEqual(
+          new Set(['Sprigg', 'Cindertail', 'Mossback']),
+        );
+      }
+      for (let i = 0; i < editorRows.length && d.cursor() !== 'slot-2'; i += 1) {
+        d.panel.applyBattleOp(BT12R_DOWN);
+      }
+      d.panel.applyBattleOp(BT12R_A);
+      expect(
+        d.root.querySelector('[data-row="slot-2"] .tactics-deploy-name')?.textContent ?? null,
+        'A on the empty third slot places the candidate',
+      ).not.toBeNull();
+      for (let i = 0; i < editorRows.length && d.cursor() !== 'confirm'; i += 1) {
+        d.panel.applyBattleOp(BT12R_DOWN);
+      }
+      d.panel.applyBattleOp(BT12R_A);
+      expect(d.sends, 'A on Confirm sends').toHaveLength(1);
+    } finally {
+      d.panel.hide();
+    }
+
+    const p = bt12rDeploy();
+    try {
+      p.click('#tactics-deploy-row-edit');
+      expect(p.panel.mode, 'a click on Edit formation opens the editor').toBe('edit');
+      const before = p.candidate();
+      p.click('.tactics-deploy-next');
+      expect(p.candidate(), 'a click on next cycles the candidate').not.toBe(before);
+      p.click('.tactics-deploy-prev');
+      expect(p.candidate(), 'a click on previous cycles it back').toBe(before);
+      for (const key of ['slot-0', 'slot-1', 'slot-2']) {
+        p.click(`#tactics-deploy-row-${key}`);
+        expect(p.cursor(), `a click on ${key} moves the cursor there`).toBe(key);
+      }
+      p.click('#tactics-deploy-row-back');
+      expect(p.panel.mode, 'a click on Back leaves the editor').toBe('confirm');
+      p.click('#tactics-deploy-row-edit');
+      p.click('#tactics-deploy-row-confirm');
+      expect(p.sends, 'a click on Confirm sends').toHaveLength(1);
+    } finally {
+      p.panel.hide();
+    }
+
+    const q = bt12rDeploy();
+    try {
+      q.click('#tactics-deploy-row-deploy');
+      expect(q.sends, 'a click on Deploy sends').toHaveLength(1);
+    } finally {
+      q.panel.hide();
+    }
+  });
+
+  it('the results panel`s Continue is reachable inside its dialog`s focus trap (the one tab stop, from the title the dialog opens on) and a click on it continues exactly once [BT12-6-REACH-RESULTS]', async () => {
+    // WRONG IMPL KILLED: Continue built as a div or a tabindex=-1 element (no keyboard stop in the
+    // trap: Tab cannot reach it); the title made a tab stop instead of the script-only anchor; a
+    // second tab stop (Tab lands elsewhere); a Continue whose click continues twice or never.
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let continued = 0;
+    const panel = new ResultsPanel(host, {
+      onContinue: () => {
+        continued += 1;
+      },
+    });
+    try {
+      panel.render({
+        battleId: BT12R_BATTLE,
+        outcome: 'won',
+        monsters: [{ unitId: 3, name: 'Sprigg', xp: 53, essence: 7 }],
+        recruits: [],
+        currency: 7n,
+      });
+      panel.show();
+      await bt12rTick();
+      const root = host.querySelector<HTMLElement>('.tactics-results');
+      const title = root?.querySelector<HTMLElement>('[data-testid="battle-title"]') ?? null;
+      const button = root?.querySelector<HTMLElement>('button.tactics-results-continue') ?? null;
+      expect(button, 'precondition: Continue is painted').not.toBeNull();
+      expect(document.activeElement, 'the dialog opens on its title').toBe(title);
+      title?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+      );
+      expect(document.activeElement, 'Tab reaches Continue inside the trap').toBe(button);
+      button?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(document.activeElement, 'Continue is the trap`s only stop').toBe(button);
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      expect(continued, 'one click, one continue').toBe(1);
+    } finally {
+      panel.hide();
+    }
   });
 });

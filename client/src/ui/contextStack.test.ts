@@ -26,6 +26,7 @@ import type { VButton } from '../input/buttons';
 import {
   battleButton,
   battleRefused,
+  battleRenderer,
   battleSafeCommand,
   COMMAND_BATTLE_POLICY,
   continuedBattleId,
@@ -2241,7 +2242,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     );
   });
 
-  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the fourteen safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
+  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the fifteen safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
     // WRONG IMPL KILLED: a refusal that is a no-op (the policy is never consulted: every row of
     // the refused list reads false); a policy that refuses everything (a battle's own attack, the
     // stack moves or dismissDialogue would die: Start over [battle, dialogue] must still
@@ -2266,6 +2267,9 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // are the battle's own actions, so both are safe: 14 safe, 25 refused, 39 kinds (were 12 / 25 /
     // 37). A `cancelQueue` refused at a battle base would make Clear plan dead exactly where it
     // exists.
+    // bt-12 (named intentional change, BT12.2, plan §3.6): the deploy panel's `deployUnits` (the
+    // confirmed deploy of a Deploying wild battle) is the battle's own action too: 15 safe, 25
+    // refused, 40 kinds (were 14 / 25 / 39).
     const big = 5n;
     const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['pop', { kind: 'pop' }],
@@ -2284,6 +2288,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
         { kind: 'submitQueue', battleId: big, unitId: 3, entries: [{ tag: 'EndTurn' }] },
       ],
       ['cancelQueue', { kind: 'cancelQueue', battleId: big, unitId: 3 }],
+      ['deployUnits', { kind: 'deployUnits', battleId: big, picks: [{ monsterId: 7n, slot: 0 }] }],
       ['dismissDialogue', { kind: 'dismissDialogue' }],
     ];
     const proposal = {
@@ -2319,16 +2324,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
-    expect(SAFE, 'ANTI-VACUITY: fourteen safe kinds').toHaveLength(14);
+    expect(SAFE, 'ANTI-VACUITY: fifteen safe kinds').toHaveLength(15);
     expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      39,
+      40,
     );
     expect(
       kindsOf(SAFE),
-      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too), the stack moves and dismissDialogue',
+      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too; bt-12: deployUnits), the stack moves and dismissDialogue',
     ).toEqual([
       'pop',
       'popToBase',
@@ -2343,10 +2348,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'pvpSwap',
       'submitQueue',
       'cancelQueue',
+      'deployUnits',
       'dismissDialogue',
     ]);
 
-    // The table itself is total over the 39 literal kinds and says exactly this.
+    // The table itself is total over the 40 literal kinds and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2423,6 +2429,84 @@ describe('context stack: battle semantics (ctl-6c)', () => {
         ).toBe(stack[0].kind === 'battle' && !battleSafeCommand(command));
       }
     }
+  });
+});
+
+// ==========================================================================================
+// bt-12 (BT12.1, BT12.2): which view owns the battle frame by tactical phase, and the deploy send
+// ==========================================================================================
+//
+// SOURCE OF TRUTH: spec BT12.1 ("WHILE a my_tactical_battle row exists THE tactical renderer SHALL
+// own the battleView frame ... B17 battle-never-hidden, with the 1v1 renderer otherwise") and BT12.2
+// ("A SHALL deploy ... through deploy_units"); plan memory/projects/monster-realm-bt-12-plan.md §3.6
+// (battleRenderer, deployUnits: 'safe'). RED REASON: battleRenderer throws `bt-12: not implemented`
+// on the API-freeze stub. BT12-2-POLICY-DEPLOY is GREEN at the freeze: the freeze already had to add
+// the `deployUnits` row to the total policy Record (a missing row is a compile error), so it pins
+// that row against a later regression rather than driving it.
+
+describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, BT12.2)', () => {
+  it('the battle frame renderer follows the tactical phase: no tactical row is the 1v1 view, Deploying is the deploy panel, Active is the tactical shell, Finished is the results panel, and an unknown phase still shows a battle [BT12-1-RENDERER-BY-PHASE]', () => {
+    // WRONG IMPL KILLED: a renderer keyed to the wrong phase (Deploying routed to the results panel,
+    // Finished to the deploy panel: two phases swapped); every phase routed to the 1v1 view (no
+    // tactical row ever owns the frame); a missing-row case that picks a tactical view (a legacy
+    // battle with no my_tactical_battle row would lose its only renderer); and an unknown phase (a
+    // future server variant arriving before a client regen) that throws or answers a hidden view
+    // instead of the 1v1 view (B17: a battle is never hidden).
+    expect(battleRenderer(undefined), 'no tactical row: the 1v1 view').toBe('legacy');
+    expect(battleRenderer('Deploying'), 'Deploying: the deploy panel').toBe('deploy');
+    expect(battleRenderer('Active'), 'Active: the tactical shell').toBe('tactical');
+    expect(battleRenderer('Finished'), 'Finished: the results panel').toBe('results');
+    let unknown: unknown = 'threw';
+    expect(() => {
+      unknown = battleRenderer('Surrendered' as never);
+    }, 'an unknown phase never throws').not.toThrow();
+    expect(unknown, 'an unknown phase still shows a battle: the 1v1 view (B17)').toBe('legacy');
+    expect(
+      new Set([
+        battleRenderer(undefined),
+        battleRenderer('Deploying'),
+        battleRenderer('Active'),
+        battleRenderer('Finished'),
+      ]).size,
+      'the four known answers are four different views',
+    ).toBe(4);
+  });
+
+  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds fifteen safe and twenty-five refused kinds, forty in all [BT12-2-POLICY-DEPLOY]', () => {
+    // WRONG IMPL KILLED: `deployUnits` classified `refuse` (the confirm screen's A, Start and the
+    // Edit formation editor's Confirm would all die at the one place they exist: a Deploying battle
+    // IS a battle base); a refusal keyed to the payload (empty picks, a bigint battle id past 2^53);
+    // and a table that grew a stray kind or lost one beside the new row (the 15 / 25 / 40 split).
+    const deploy: ScreenCommand = {
+      kind: 'deployUnits',
+      battleId: 9_007_199_254_740_993n,
+      picks: [
+        { monsterId: 9_007_199_254_740_995n, slot: 0 },
+        { monsterId: 9_007_199_254_740_997n, slot: 2 },
+      ],
+    };
+    const empty: ScreenCommand = { kind: 'deployUnits', battleId: 3n, picks: [] };
+    expect(COMMAND_BATTLE_POLICY.deployUnits, 'the policy row').toBe('safe');
+    expect(battleSafeCommand(deploy), 'battleSafeCommand reads it safe').toBe(true);
+    expect(battleSafeCommand(empty), 'whatever the picks').toBe(true);
+    const battleStacks: ReadonlyArray<readonly [string, Stack]> = [
+      ['a bare battle base (the confirm screen)', stackOf(battle('7'))],
+      ['a battle with a stamped menu above it', stackOf(battle('7'), stamped('menuView', '7'))],
+      ['a battle with help above it', stackOf(battle('7'), stamped('helpView', '7'))],
+    ];
+    for (const [name, stack] of battleStacks) {
+      expect(battleRefused(deepFrozen(stack), deploy), `${name}: not refused`).toBe(false);
+    }
+    const verdicts = Object.values(COMMAND_BATTLE_POLICY);
+    expect(
+      verdicts.filter((v) => v === 'safe'),
+      'fifteen safe kinds',
+    ).toHaveLength(15);
+    expect(
+      verdicts.filter((v) => v === 'refuse'),
+      'twenty-five refused kinds',
+    ).toHaveLength(25);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'forty kinds in all').toHaveLength(40);
   });
 });
 

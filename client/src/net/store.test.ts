@@ -28,8 +28,14 @@ import {
   // fixtures against THIS one, so the compiler is actually looking at the shipped shape.
   type StoreHealLocationRow as RealStoreHealLocationRow,
   type StoreBattle,
+  // bt-12 (BT12.1): the seven tactical views' store rows.
+  type StoreBattleClock,
+  type StoreBattleDeploy,
+  type StoreBattleEvent,
   type StoreBattleMonster,
+  type StoreBattleQueue,
   type StoreBattleSide,
+  type StoreBattleUnit,
   type StoreCharacter,
   // EG4 (contract §B): the essence-graph path row, keyed in the store by `pathId` (A1).
   type StoreEvolutionPath,
@@ -47,6 +53,7 @@ import {
   type StoreShopRow,
   type StoreSkillRow,
   type StoreSpeciesRow,
+  type StoreTacticalBattle,
   type StoreTradeOffer,
   // ux2: owner-scoped wallet slot — see the ux2 block at the end of this file.
   type StoreWallet,
@@ -5669,5 +5676,499 @@ describe('AuthoritativeStore qf-15: zone names (zone_def content)', () => {
     s.removeZoneName(1);
     s.flushBatch();
     expect(cb, 'a remove of a stored id marks the batch dirty').toHaveBeenCalledTimes(2);
+  });
+});
+
+// =============================================================================
+// bt-12 (BT12.1, BT12.3): the seven tactical views in the store (plan §3.2 + REV 2 A13 + REV 2b B6)
+//
+// CONTRACT UNDER TEST (the API-freeze stubs in store.ts): seven `reconcile…FromView(rows)` — each
+// AUTHORITATIVE (an absent key is deleted) and dirtying the batch only on a real `deepRowEq` change,
+// the formation an Option-view SLOT (`rows[0]` wins, an empty list clears) — and the accessors
+// `tacticalBattle`, `battleUnits` (ascending unitId), `ownQueue` (owner === identity, ascending
+// unitId), `battleClocks` (ascending clockId), `battleEvents` (ascending seq, then eventId) and
+// `ownFormation` (exact owner). `ownDeploy` was DROPPED (A13): the deploy map is observed through
+// its batch signal. `reset()` clears all seven. Battle ids 2^53 and 2^53 + 1 are two DIFFERENT
+// battles that a Number()-keyed map would collide. RED REASON: every reconcile and accessor throws
+// `bt-12: not implemented` on the stub.
+// =============================================================================
+
+const BT12S_ME = 'ab'.repeat(32);
+const BT12S_OTHER = 'cd'.repeat(32);
+const BT12S_B1 = 9_007_199_254_740_992n;
+const BT12S_B2 = 9_007_199_254_740_993n;
+const BT12S_M1 = 9_007_199_254_740_995n;
+const BT12S_M2 = 9_007_199_254_740_997n;
+const BT12S_M3 = 9_007_199_254_740_999n;
+
+function bt12sTactical(
+  battleId: bigint,
+  o: Partial<StoreTacticalBattle> = {},
+): StoreTacticalBattle {
+  return {
+    battleId,
+    kind: 'Wild',
+    format: 1,
+    mapId: 3,
+    contentVersion: 1,
+    phase: 'Active',
+    round: 2,
+    initiative: [3, 5],
+    turnIdx: 0,
+    turnState: { kind: 'Waiting', unitId: 3 },
+    tiePrioritySide: 'A',
+    pendingPadMs: 0,
+    attackDamageDealtA: 0,
+    attackDamageDealtB: 0,
+    ...o,
+  };
+}
+
+function bt12sUnit(unitId: number, battleId: bigint, x = 1): StoreBattleUnit {
+  return {
+    unitId,
+    battleId,
+    owner: BT12S_ME,
+    monsterId: BT12S_M1,
+    affinity: 'Plant',
+    row: {
+      id: unitId,
+      side: 'A',
+      slot: 0,
+      species_id: 1,
+      level: 5,
+      stats: { hp: 20, attack: 5, defense: 5, speed: 5, sp_attack: 5, sp_defense: 5 },
+      pos: { x, y: 0 },
+      cur_hp: 20,
+      status: null,
+      budget: { ap: 6, strides_used: 0, attacks: 0, last: null },
+      guard: false,
+      first_stand: false,
+      state: 'Active',
+      stance: null,
+      wild_index: null,
+    },
+  };
+}
+
+function bt12sQueue(
+  unitId: number,
+  battleId: bigint,
+  owner: string,
+  entries: StoreBattleQueue['entries'] = ['EndTurn'],
+): StoreBattleQueue {
+  return { unitId, battleId, owner, entries, submittedAtMs: 1_000n };
+}
+
+function bt12sDeploy(deployId: bigint, battleId: bigint, slot = 0): StoreBattleDeploy {
+  return {
+    deployId,
+    battleId,
+    owner: BT12S_ME,
+    side: 'A',
+    picks: [{ monsterId: BT12S_M1, slot }],
+    locked: false,
+  };
+}
+
+function bt12sClock(
+  clockId: bigint,
+  battleId: bigint,
+  windowOpenMs: bigint | null = null,
+): StoreBattleClock {
+  return {
+    clockId,
+    battleId,
+    side: 'A',
+    player: BT12S_ME,
+    windowSeq: 1,
+    windowOpenMs,
+    deadlineMs: null,
+    windowsThisUnitTurn: 0,
+    idleMsTotal: 0n,
+    autopassCount: 0,
+  };
+}
+
+function bt12sEvent(eventId: bigint, battleId: bigint, seq: number, xp = 5): StoreBattleEvent {
+  return {
+    eventId,
+    battleId,
+    seq,
+    round: 1,
+    payload: { tag: 'Awards', value: { unit: 3, xp, essence: 2, currency: 0n } },
+  };
+}
+
+/** Arm a listener, run `mutate`, flush, and report how many batch signals it produced. */
+function bt12sWakes(s: AuthoritativeStore, mutate: () => void): number {
+  const cb = vi.fn();
+  const off = s.onBatchApplied(cb);
+  mutate();
+  s.flushBatch();
+  off();
+  return cb.mock.calls.length;
+}
+
+/** One authoritative-reconcile walk over a view: first delivery, an equal re-delivery of FRESH
+ *  objects, a nested change, a dropped row, an empty view. `read` (absent for the deploy map, which
+ *  has no accessor since A13) fingerprints what the accessor shows. */
+function bt12sAuthoritative<R>(c: {
+  readonly name: string;
+  readonly deliver: (s: AuthoritativeStore, rows: readonly R[]) => void;
+  readonly a: () => R;
+  readonly b: () => R;
+  readonly bChanged: () => R;
+  readonly read?: (s: AuthoritativeStore) => unknown;
+  readonly two?: unknown;
+  readonly changed?: unknown;
+  readonly one?: unknown;
+  readonly none?: unknown;
+}): void {
+  const s = new AuthoritativeStore();
+  const at = (label: 'two' | 'changed' | 'one' | 'none'): void => {
+    if (c.read === undefined) return;
+    const want = { two: c.two, changed: c.changed, one: c.one, none: c.none }[label];
+    expect(c.read(s), `${c.name}: the accessor after the ${label} delivery`).toEqual(want);
+  };
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [c.a(), c.b()])),
+    `${c.name}: a first delivery wakes`,
+  ).toBe(1);
+  at('two');
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [c.a(), c.b()])),
+    `${c.name}: an equal re-delivery of fresh objects wakes nobody (deep compare)`,
+  ).toBe(0);
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [c.a(), c.bChanged()])),
+    `${c.name}: a changed NESTED field wakes`,
+  ).toBe(1);
+  at('changed');
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [c.a()])),
+    `${c.name}: a row absent from the delivery is deleted, and that wakes`,
+  ).toBe(1);
+  at('one');
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [c.a()])),
+    `${c.name}: the same one-row delivery again wakes nobody`,
+  ).toBe(0);
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [])),
+    `${c.name}: an empty view deletes the rest`,
+  ).toBe(1);
+  at('none');
+  expect(
+    bt12sWakes(s, () => c.deliver(s, [])),
+    `${c.name}: empty again wakes nobody`,
+  ).toBe(0);
+}
+
+describe('AuthoritativeStore bt-12: the tactical views (BT12.1, BT12.3)', () => {
+  it('every tactical-view reconcile is authoritative and wakes the batch only on a real change: a new row, a nested field, a deleted row and an emptied view each wake once, an equal re-delivery of fresh objects wakes nobody [BT12-1-STORE-RECONCILE]', () => {
+    // WRONG IMPL KILLED: an upsert-only reconcile (a row the server deleted lingers: the 2-then-1
+    // delivery wakes nobody and the accessor still shows it); an `if (rows.length === 0) return`
+    // guard (an emptied view keeps its rows); a reference or `shallowRowEq` compare (the nested
+    // turn state, unit position, queue entry, deploy pick and event payload are fresh objects every
+    // flush, so an unchanged burst would wake every listener: the render storm); an over-suppressing
+    // compare that keys on the id alone (the nested change never wakes); a reconcile with no dirty
+    // mark at all.
+    bt12sAuthoritative<StoreTacticalBattle>({
+      name: 'tactical battles',
+      deliver: (s, rows) => s.reconcileTacticalBattlesFromView(rows),
+      a: () => bt12sTactical(BT12S_B1),
+      b: () => bt12sTactical(BT12S_B2),
+      bChanged: () => bt12sTactical(BT12S_B2, { turnState: { kind: 'Waiting', unitId: 5 } }),
+      read: (s) => [s.tacticalBattle(BT12S_B1)?.turnState, s.tacticalBattle(BT12S_B2)?.turnState],
+      two: [
+        { kind: 'Waiting', unitId: 3 },
+        { kind: 'Waiting', unitId: 3 },
+      ],
+      changed: [
+        { kind: 'Waiting', unitId: 3 },
+        { kind: 'Waiting', unitId: 5 },
+      ],
+      one: [{ kind: 'Waiting', unitId: 3 }, undefined],
+      none: [undefined, undefined],
+    });
+    bt12sAuthoritative<StoreBattleUnit>({
+      name: 'battle units',
+      deliver: (s, rows) => s.reconcileBattleUnitsFromView(rows),
+      a: () => bt12sUnit(3, BT12S_B1, 1),
+      b: () => bt12sUnit(5, BT12S_B1, 2),
+      bChanged: () => bt12sUnit(5, BT12S_B1, 7),
+      read: (s) => s.battleUnits(BT12S_B1).map((u) => [u.unitId, u.row.pos.x]),
+      two: [
+        [3, 1],
+        [5, 2],
+      ],
+      changed: [
+        [3, 1],
+        [5, 7],
+      ],
+      one: [[3, 1]],
+      none: [],
+    });
+    bt12sAuthoritative<StoreBattleQueue>({
+      name: 'battle queues',
+      deliver: (s, rows) => s.reconcileBattleQueuesFromView(rows),
+      a: () => bt12sQueue(3, BT12S_B1, BT12S_ME),
+      b: () => bt12sQueue(5, BT12S_B1, BT12S_ME, [{ Move: { x: 1, y: 2, strides: 1 } }]),
+      bChanged: () => bt12sQueue(5, BT12S_B1, BT12S_ME, [{ Move: { x: 1, y: 2, strides: 2 } }]),
+      read: (s) => s.ownQueue(BT12S_B1, BT12S_ME).map((q) => [q.unitId, q.entries]),
+      two: [
+        [3, ['EndTurn']],
+        [5, [{ Move: { x: 1, y: 2, strides: 1 } }]],
+      ],
+      changed: [
+        [3, ['EndTurn']],
+        [5, [{ Move: { x: 1, y: 2, strides: 2 } }]],
+      ],
+      one: [[3, ['EndTurn']]],
+      none: [],
+    });
+    bt12sAuthoritative<StoreBattleDeploy>({
+      name: 'battle deploys',
+      deliver: (s, rows) => s.reconcileBattleDeploysFromView(rows),
+      a: () => bt12sDeploy(11n, BT12S_B1),
+      b: () => bt12sDeploy(13n, BT12S_B1, 0),
+      bChanged: () => bt12sDeploy(13n, BT12S_B1, 1),
+    });
+    bt12sAuthoritative<StoreBattleClock>({
+      name: 'battle clocks',
+      deliver: (s, rows) => s.reconcileBattleClocksFromView(rows),
+      a: () => bt12sClock(17n, BT12S_B1),
+      b: () => bt12sClock(19n, BT12S_B1, 100n),
+      bChanged: () => bt12sClock(19n, BT12S_B1, 200n),
+      read: (s) => s.battleClocks(BT12S_B1).map((c) => [c.clockId, c.windowOpenMs]),
+      two: [
+        [17n, null],
+        [19n, 100n],
+      ],
+      changed: [
+        [17n, null],
+        [19n, 200n],
+      ],
+      one: [[17n, null]],
+      none: [],
+    });
+    bt12sAuthoritative<StoreBattleEvent>({
+      name: 'battle events',
+      deliver: (s, rows) => s.reconcileBattleEventsFromView(rows),
+      a: () => bt12sEvent(23n, BT12S_B1, 2, 5),
+      b: () => bt12sEvent(29n, BT12S_B1, 3, 7),
+      bChanged: () => bt12sEvent(29n, BT12S_B1, 3, 11),
+      read: (s) =>
+        s
+          .battleEvents(BT12S_B1)
+          .map((e) => [e.eventId, e.payload.tag === 'Awards' ? e.payload.value.xp : null]),
+      two: [
+        [23n, 5],
+        [29n, 7],
+      ],
+      changed: [
+        [23n, 5],
+        [29n, 11],
+      ],
+      one: [[23n, 5]],
+      none: [],
+    });
+  });
+
+  it('the tactical accessors scope by battle (2^53 and 2^53 + 1 are two battles), filter the queue by exact owner, and sort units and queues by unit id, clocks by clock id and events by seq then event id [BT12-1-STORE-ACCESSORS]', () => {
+    // WRONG IMPL KILLED: a Number()-keyed map (battles 2^53 and 2^53 + 1 collide: one overwrites the
+    // other); an accessor that ignores the battle id (another battle's units, queues, clocks or
+    // events leak in); an ownQueue that ignores the owner (another player's plans show as ours), or
+    // matches '' or a case-folded id; insertion order instead of the documented sort; events sorted
+    // by event id (the fixture's event-id order differs from its seq order) or with no tiebreak.
+    const s = new AuthoritativeStore();
+    s.reconcileTacticalBattlesFromView([
+      bt12sTactical(BT12S_B1, { mapId: 3 }),
+      bt12sTactical(BT12S_B2, { mapId: 5 }),
+    ]);
+    expect(s.tacticalBattle(BT12S_B1)?.mapId, 'battle 2^53 keeps its own row').toBe(3);
+    expect(s.tacticalBattle(BT12S_B2)?.mapId, 'battle 2^53 + 1 keeps its own row').toBe(5);
+    expect(s.tacticalBattle(7n), 'an unknown battle').toBeUndefined();
+
+    s.reconcileBattleUnitsFromView([
+      bt12sUnit(7, BT12S_B1),
+      bt12sUnit(2, BT12S_B1),
+      bt12sUnit(5, BT12S_B1),
+      bt12sUnit(3, BT12S_B2),
+    ]);
+    expect(
+      s.battleUnits(BT12S_B1).map((u) => u.unitId),
+      'battle 2^53`s units, ascending unit id',
+    ).toEqual([2, 5, 7]);
+    expect(
+      s.battleUnits(BT12S_B2).map((u) => u.unitId),
+      'battle 2^53 + 1`s unit',
+    ).toEqual([3]);
+    expect(s.battleUnits(11n), 'an unknown battle has no units').toEqual([]);
+
+    s.reconcileBattleQueuesFromView([
+      bt12sQueue(7, BT12S_B1, BT12S_ME),
+      bt12sQueue(2, BT12S_B1, BT12S_ME),
+      bt12sQueue(5, BT12S_B1, BT12S_OTHER),
+      bt12sQueue(3, BT12S_B2, BT12S_ME),
+    ]);
+    expect(
+      s.ownQueue(BT12S_B1, BT12S_ME).map((q) => q.unitId),
+      'my plans in battle 2^53, ascending unit id',
+    ).toEqual([2, 7]);
+    expect(
+      s.ownQueue(BT12S_B1, BT12S_OTHER).map((q) => q.unitId),
+      'the other player`s plan is theirs alone',
+    ).toEqual([5]);
+    expect(
+      s.ownQueue(BT12S_B2, BT12S_ME).map((q) => q.unitId),
+      'my plan in 2^53 + 1',
+    ).toEqual([3]);
+    expect(s.ownQueue(BT12S_B1, ''), 'the empty identity owns nothing').toEqual([]);
+    expect(s.ownQueue(BT12S_B1, BT12S_ME.toUpperCase()), 'an exact owner match').toEqual([]);
+
+    s.reconcileBattleClocksFromView([
+      bt12sClock(13n, BT12S_B1),
+      bt12sClock(11n, BT12S_B1),
+      bt12sClock(17n, BT12S_B2),
+    ]);
+    expect(
+      s.battleClocks(BT12S_B1).map((c) => c.clockId),
+      'battle 2^53`s clocks, ascending clock id',
+    ).toEqual([11n, 13n]);
+    expect(
+      s.battleClocks(BT12S_B2).map((c) => c.clockId),
+      'battle 2^53 + 1`s clock',
+    ).toEqual([17n]);
+
+    s.reconcileBattleEventsFromView([
+      bt12sEvent(11n, BT12S_B1, 3),
+      bt12sEvent(5n, BT12S_B1, 7),
+      bt12sEvent(23n, BT12S_B1, 2),
+      bt12sEvent(17n, BT12S_B1, 3),
+      bt12sEvent(2n, BT12S_B2, 9),
+    ]);
+    expect(
+      s.battleEvents(BT12S_B1).map((e) => e.eventId),
+      'by seq (2, 3, 3, 7), the seq-3 tie by event id — never by event id alone (5, 11, 17, 23)',
+    ).toEqual([23n, 11n, 17n, 5n]);
+    expect(
+      s.battleEvents(BT12S_B2).map((e) => e.eventId),
+      'battle 2^53 + 1`s event',
+    ).toEqual([2n]);
+  });
+
+  it('reset() clears all seven tactical views: every accessor reads empty, and the deploy map and the formation slot take their old rows back as new [BT12-1-STORE-RESET]', () => {
+    // WRONG IMPL KILLED: a reset() that forgets one of the seven (a reconnect, possibly as another
+    // identity, would keep the previous session's battle, plans, clocks, transcript, deploy or
+    // remembered formation); a reset that drops the batch listeners (the loop dies).
+    const s = new AuthoritativeStore();
+    s.reconcileTacticalBattlesFromView([bt12sTactical(BT12S_B1)]);
+    s.reconcileBattleUnitsFromView([bt12sUnit(3, BT12S_B1)]);
+    s.reconcileBattleQueuesFromView([bt12sQueue(3, BT12S_B1, BT12S_ME)]);
+    s.reconcileBattleDeploysFromView([bt12sDeploy(11n, BT12S_B1)]);
+    s.reconcileBattleClocksFromView([bt12sClock(17n, BT12S_B1)]);
+    s.reconcileBattleEventsFromView([bt12sEvent(23n, BT12S_B1, 2)]);
+    s.reconcileFormationFromView([{ ownerIdentity: BT12S_ME, monsterIds: [BT12S_M1] }]);
+    s.flushBatch();
+    expect(
+      bt12sWakes(s, () => s.reconcileBattleDeploysFromView([bt12sDeploy(11n, BT12S_B1)])),
+      'control: the deploy row is held, so its re-delivery wakes nobody',
+    ).toBe(0);
+    expect(
+      bt12sWakes(s, () =>
+        s.reconcileFormationFromView([{ ownerIdentity: BT12S_ME, monsterIds: [BT12S_M1] }]),
+      ),
+      'control: the formation is held',
+    ).toBe(0);
+
+    s.reset();
+
+    expect(s.tacticalBattle(BT12S_B1), 'the tactical battle is gone').toBeUndefined();
+    expect(s.battleUnits(BT12S_B1), 'the units are gone').toEqual([]);
+    expect(s.ownQueue(BT12S_B1, BT12S_ME), 'the plans are gone').toEqual([]);
+    expect(s.battleClocks(BT12S_B1), 'the clocks are gone').toEqual([]);
+    expect(s.battleEvents(BT12S_B1), 'the transcript is gone').toEqual([]);
+    expect(s.ownFormation(BT12S_ME), 'the remembered formation is gone').toBeUndefined();
+    expect(
+      bt12sWakes(s, () => s.reconcileBattleDeploysFromView([bt12sDeploy(11n, BT12S_B1)])),
+      'the deploy map was cleared: the same row is new again (and the listener survived)',
+    ).toBe(1);
+    expect(
+      bt12sWakes(s, () =>
+        s.reconcileFormationFromView([{ ownerIdentity: BT12S_ME, monsterIds: [BT12S_M1] }]),
+      ),
+      'the formation slot was cleared: the same row is new again',
+    ).toBe(1);
+  });
+
+  it('the remembered formation is a slot: a delivery sets it, an update replaces it whole, an equal one wakes nobody, an empty view clears it, the first row wins, and another owner`s row is never mine [BT12-3-FORMATION-SLOT]', () => {
+    // WRONG IMPL KILLED: an insert-only slot (a confirmed deploy's new formation never replaces the
+    // old one: BT12.3's "SHALL update"); a merge or append (the old ids linger); an `if
+    // (rows.length === 0) return` guard (a withdrawn row stays); a reference compare (every flush
+    // wakes); a slot returned whatever the owner (a reconnect as another identity reads the previous
+    // player's formation), or matched on '' or a case-folded id; the LAST row winning; and an empty
+    // id list read as "no row".
+    const s = new AuthoritativeStore();
+    expect(s.ownFormation(BT12S_ME), 'nothing before the first delivery').toBeUndefined();
+    expect(
+      bt12sWakes(s, () =>
+        s.reconcileFormationFromView([
+          { ownerIdentity: BT12S_ME, monsterIds: [BT12S_M3, BT12S_M1, BT12S_M2] },
+        ]),
+      ),
+      'the first row wakes',
+    ).toBe(1);
+    expect(s.ownFormation(BT12S_ME), 'the remembered ids, in their order').toEqual({
+      ownerIdentity: BT12S_ME,
+      monsterIds: [BT12S_M3, BT12S_M1, BT12S_M2],
+    });
+    expect(
+      bt12sWakes(s, () =>
+        s.reconcileFormationFromView([
+          { ownerIdentity: BT12S_ME, monsterIds: [BT12S_M3, BT12S_M1, BT12S_M2] },
+        ]),
+      ),
+      'an equal re-delivery wakes nobody',
+    ).toBe(0);
+    expect(
+      bt12sWakes(s, () =>
+        s.reconcileFormationFromView([
+          { ownerIdentity: BT12S_ME, monsterIds: [BT12S_M2, BT12S_M3] },
+        ]),
+      ),
+      'an update wakes',
+    ).toBe(1);
+    expect(s.ownFormation(BT12S_ME)?.monsterIds, 'and replaces the ids whole').toEqual([
+      BT12S_M2,
+      BT12S_M3,
+    ]);
+    expect(
+      bt12sWakes(s, () => s.reconcileFormationFromView([])),
+      'an empty view clears the slot, and that wakes',
+    ).toBe(1);
+    expect(s.ownFormation(BT12S_ME), 'cleared').toBeUndefined();
+    expect(
+      bt12sWakes(s, () => s.reconcileFormationFromView([])),
+      'clearing an empty slot wakes nobody',
+    ).toBe(0);
+
+    s.reconcileFormationFromView([{ ownerIdentity: BT12S_OTHER, monsterIds: [BT12S_M1] }]);
+    expect(s.ownFormation(BT12S_ME), 'another owner`s row is never mine').toBeUndefined();
+    expect(s.ownFormation(BT12S_OTHER)?.monsterIds, 'it is theirs').toEqual([BT12S_M1]);
+    expect(s.ownFormation(''), 'the empty identity owns nothing').toBeUndefined();
+    expect(s.ownFormation(BT12S_OTHER.toUpperCase()), 'an exact owner match').toBeUndefined();
+
+    s.reconcileFormationFromView([
+      { ownerIdentity: BT12S_ME, monsterIds: [BT12S_M1] },
+      { ownerIdentity: BT12S_ME, monsterIds: [BT12S_M2] },
+    ]);
+    expect(s.ownFormation(BT12S_ME)?.monsterIds, 'rows[0] wins').toEqual([BT12S_M1]);
+    s.reconcileFormationFromView([{ ownerIdentity: BT12S_ME, monsterIds: [] }]);
+    expect(
+      s.ownFormation(BT12S_ME)?.monsterIds,
+      'a row with no ids is a real row: an empty list, not undefined',
+    ).toEqual([]);
   });
 });

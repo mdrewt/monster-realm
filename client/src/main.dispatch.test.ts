@@ -66,11 +66,16 @@ import type {
   StoreItemRow,
   StoreMonsterPub,
   StoreNpcRow,
+  StoreTacticalBattle,
 } from './net/store';
+// bt-12: the results cap the auto-advance waits for (the presentation constitution's, never a
+// literal 3000 here either).
+import { CAPS } from './tactics/presentation';
 // Read ONLY by the battle case's closing anti-vacuity cross-checks (that its literal refuse list
 // covers every kind the policy refuses, and — bt-11 — that its literal safe roster covers every kind
-// the policy allows); the expected split itself is the test's own transcription.
-import { COMMAND_BATTLE_POLICY } from './ui/battlePolicy';
+// the policy allows); the expected split itself is the test's own transcription. bt-12: the A-grace
+// constant the BT12-4-BOOT-RESULTS case presses around.
+import { COMMAND_BATTLE_POLICY, OUTCOME_CONTINUE_GRACE_MS } from './ui/battlePolicy';
 // Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
 import { OVERLAY_IDS } from './ui/overlayRegistry';
 import type { SocialFrameView, SocialPanelId } from './ui/screens/types';
@@ -186,12 +191,58 @@ vi.mock('./ui/privacyView', () => ({ PrivacyView: H.makeStub('PrivacyView') }));
 vi.mock('./ui/renameView', () => ({ RenameView: H.makeStub('RenameView') }));
 vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub('TradeProposeView') }));
 
+// bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
+// map the stub gives TWO spawn cells (every other map has the shipped three), so a deploy slot count
+// taken from anywhere but the tactical row's own map shows.
+const T12 = vi.hoisted(() => ({ mapCalls: [] as number[], twoSpawnMap: 17 }));
+
 // wasm pkg: every name main.ts imports. The party size (3), the box sentinel (255) and the
 // per-side trade cap (37) are distinct so a handler argument or a constant read from the wrong
 // export shows.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
-  wasmPkgIdentityMoveMock({ interact: (...args: unknown[]) => H.interact(...args) }),
-);
+// bt-12 (named intentional change, plan §5 / REV 2b B1): this file's OWN factory gains the 14
+// `tactics_*` exports the rules port binds (`bindTacticsRules` refuses a pkg missing any), so the
+// lazily bound port works in the BT12 cases below; `tactics_map` answers 3 `spawn_a` cells (2 on map
+// 17) and records the map asked for; the others answer minimal shapes nothing in increment A reads.
+// The shared test-util harness is not edited.
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
+  ...wasmPkgIdentityMoveMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+  tactics_map: (mapId: number) => {
+    T12.mapCalls.push(mapId);
+    const spawnA = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ];
+    return {
+      width: 7,
+      height: 5,
+      tiles: [],
+      spawn_a: mapId === T12.twoSpawnMap ? spawnA.slice(0, 2) : spawnA,
+      spawn_b: [],
+    };
+  },
+  tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
+  tactics_unit: (row: unknown) => row,
+  tactics_targets: () => ({ Ok: [] }),
+  tactics_path: () => ({ Err: 'Unreachable' }),
+  tactics_disengage: () => ({ Ok: false }),
+  tactics_flank: () => false,
+  tactics_forecast: () => ({}),
+  tactics_recruit_odds: () => ({ Err: { UnknownUnit: { id: 0 } } }),
+  tactics_ai_plan: () => [],
+  tactics_recruit_targets: () => [],
+  tactics_is_exhausted: () => false,
+  tactics_plan: () => ({ Err: 'ZeroStrides' }),
+  tactics_overlays: () => ({
+    reach1: [],
+    reach2: [],
+    range: [],
+    aoe: [],
+    danger: [],
+    shield: [],
+    intents: [],
+  }),
+}));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once (or when the test's gate opens).
@@ -1487,6 +1538,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       cancelQueue:
         'no view constructor callback until BT12.1: TacticsBattle`s onCancelQueue dep sends it ' +
         '(tactics/tacticsBattle.test.ts BT11-3-SHELL-CLEAR proves the shell side)',
+      // bt-12 (named intentional change, BT12.2): the deploy panel's confirmed deploy.
+      deployUnits:
+        'no view constructor callback: DeployPanel`s onDeploy dep dispatches it ' +
+        '(BT12-2-BOOT-DEPLOY in this file proves it)',
     };
     const stackMoves = ['pop', 'popToBase', 'openMenu', 'toggleHelp', 'dismissDialogue'];
     expect(COMMAND_BATTLE_POLICY.submitQueue, 'submitQueue is battle-safe').toBe('safe');
@@ -1494,7 +1549,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     const driven = rows.filter((r) => r.atBattle === 'safe').map((r) => r.kind);
     expect(
       [...driven, ...Object.keys(safeNoViewCallback)],
-      'the battle-safe actions: the seven view-driven ones, then the two tactical ones',
+      'the battle-safe actions: the seven view-driven ones, then the three tactical ones',
     ).toEqual([
       'attack',
       'flee',
@@ -1505,6 +1560,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       'pvpSwap',
       'submitQueue',
       'cancelQueue',
+      'deployUnits',
     ]);
     const policySafe = Object.entries(COMMAND_BATTLE_POLICY)
       .filter(([, verdict]) => verdict === 'safe')
@@ -4727,12 +4783,17 @@ describe('main.ts source shape (so-2)', () => {
     expect(checked, 'ANTI-VACUITY: two bodies x eight needles').toBe(16);
   });
 
-  it('SO2-6-SHAPE: overlayProbes, overlayHandles and screenViews are three separate const declarations whose literals have exactly the keys battleView and dialogueView, each row the byte-identical thunk of its own key, with the dialogue handle the one undefined', () => {
+  it('SO2-6-SHAPE: overlayProbes, overlayHandles and screenViews are three separate const declarations whose literals have exactly the keys battleView and dialogueView, each dialogueView row the byte-identical thunk of its own key, with the dialogue handle the one undefined', () => {
     // WRONG IMPL KILLED: an 18-row table left in place (today's shape), a table that kept a player
     // row (a view the mirror would again see), one that lost the dialogue or battle row, a sibling
     // thunk copy-pasted onto the wrong key (`battleView: () => dialogueView?.visible ?? false`), a
     // dialogue handle that hides a live conversation (it strands the server row), and three tables
     // merged into one registry (or two declared from a third).
+    // bt-12 (named intentional change, plan REV 2 A1): the battleView VALUE clause is dropped — the
+    // three battle rows now route through the battle-view helpers (the frame is shown by the 1v1
+    // view, the deploy panel or the results panel), and their behaviour is proven at runtime by
+    // BT12-1-BOOT-FRAME-OWNER (the probe and the handle) and BT12-2-BOOT-DEPLOY (the lending). The key
+    // roster, the dialogueView rows and the three-declarations check stay.
     const lines = so2MainLines();
     const tables = [
       {
@@ -4759,10 +4820,520 @@ describe('main.ts source shape (so-2)', () => {
         `${table.header}: exactly the two mirrored keys`,
       ).toEqual(['battleView', 'dialogueView']);
       for (const [key, value] of rows) {
+        if (key === 'battleView') continue;
         expect(value, `${table.header}: the ${key} row`).toBe(table.value(key));
       }
     }
     const starts = tables.map((t) => lines.findIndex((l) => l.startsWith(t.header)));
     expect(new Set(starts).size, 'three declarations in three different places').toBe(3);
+  });
+});
+
+// ==========================================================================================
+// bt-12 (BT12.1 - BT12.4): the deploy and results panels own the battle frame by phase
+// ==========================================================================================
+//
+// SOURCE OF TRUTH: spec BT12.1 (WHILE a my_tactical_battle row exists the tactical renderer owns
+// the battleView frame — B17 battle-never-hidden — with the 1v1 renderer otherwise), BT12.2 (no
+// deploy panel for a pack of 1; A deploys the remembered formation; Start confirms the editor
+// through deploy_units), BT12.3 (a confirmed deploy's new my_formation row is what the next deploy
+// sends) and BT12.4 (the results auto-advance after the cap and are skippable). Plan §3.7 (main.ts
+// wiring) as amended by REV 2 A2 (a renderer switch under a frame first pops to the battle base), A6
+// (confirm-mode Start opens the menu, edit-mode Start is the panel's), A7 (the countdown is
+// `shouldAutoContinue` on the frame clock; a frame over the outcome pauses it) and REV 2b B1 (the
+// 1v1 view here is a FAITHFUL stand-in: this file mocks ./ui/battleView with a DOM-less stub, so
+// after boot each case gives the recorded instance a real root and the real view's show / hide a11y
+// behaviour), B2 (the updated formation is a non-party-order permutation; picks compared exactly)
+// and B12 (Help on top pauses the countdown, closing it resumes it, exactly one pop).
+//
+// Tactical rows reach the store the way the connection's flush delivers them: the store's own
+// `reconcile…FromView` then a batch (`server(t)` flushes). Keys: A Enter, B Backspace, Start KeyM,
+// Select KeyR, Down ArrowDown, RB PageDown. RED REASON: the store's tactical reconciles throw
+// `bt-12: not implemented` on the API-freeze stub, and main.ts routes no tactical phase.
+
+interface Bt12Legacy {
+  readonly root: HTMLElement;
+  readonly title: HTMLElement;
+  readonly refreshes: unknown[];
+  readonly hides: () => number;
+}
+
+/** After boot, give the recorded BattleView stub the 1v1 view's real frame behaviour (REV 2b B1):
+ *  a root under #app holding the battle-title anchor; refresh(vm) shows on a non-null vm; show()
+ *  displays the root and opens the shared `battleView` a11y record on the hidden-to-shown edge;
+ *  hide() hides it and closes the record UNGUARDED (battleView.ts:402-415). The a11y module is the
+ *  instance the booted main.ts runs on (imported after the module reset). */
+async function bt12Legacy(): Promise<Bt12Legacy> {
+  const a11y = await import('./ui/overlayA11y');
+  const stub = H.views.BattleView as unknown as
+    | {
+        visible: boolean;
+        show: () => void;
+        hide: () => void;
+        refresh: (vm: unknown, ...rest: unknown[]) => void;
+      }
+    | undefined;
+  if (stub === undefined) throw new Error('BattleView was never constructed by main.ts');
+  const view = stub;
+  const app = document.getElementById('app');
+  if (app === null) throw new Error('#app is not in the document');
+  const root = document.createElement('div');
+  root.style.display = 'none';
+  const title = document.createElement('h2');
+  title.setAttribute('data-testid', 'battle-title');
+  title.setAttribute('tabindex', '-1');
+  root.appendChild(title);
+  app.appendChild(root);
+  const refreshes: unknown[] = [];
+  let hides = 0;
+  view.show = () => {
+    const was = view.visible;
+    root.style.display = 'flex';
+    view.visible = true;
+    if (!was) a11y.openOverlayA11y('battleView', root);
+  };
+  view.hide = () => {
+    hides += 1;
+    root.style.display = 'none';
+    view.visible = false;
+    a11y.closeOverlayA11y('battleView', null);
+  };
+  view.refresh = (vm: unknown) => {
+    refreshes.push(vm);
+    if (vm !== null && vm !== undefined) view.show();
+  };
+  return { root, title, refreshes, hides: () => hides };
+}
+
+/** Not hidden: no `hidden` attribute and no inline display:none on the element or an ancestor. */
+function bt12Displayed(el: Element): boolean {
+  for (let node: Element | null = el; node !== null; node = node.parentElement) {
+    if (node instanceof HTMLElement && (node.hidden || node.style.display === 'none')) return false;
+  }
+  return true;
+}
+/** Every displayed battle-title anchor under #app (the 1v1 view's and the panels'). */
+const bt12Titles = (): Element[] =>
+  [...document.querySelectorAll('#app [data-testid="battle-title"]')].filter(bt12Displayed);
+/** Every displayed root claiming aria-modal="true", anywhere in the document. */
+const bt12ModalRoots = (): Element[] =>
+  [...document.querySelectorAll('[aria-modal="true"]')].filter(bt12Displayed);
+const bt12Root = (cls: 'tactics-deploy' | 'tactics-results'): HTMLElement | null =>
+  document.querySelector<HTMLElement>(`#app .${cls}`);
+const bt12Shown = (cls: 'tactics-deploy' | 'tactics-results'): boolean => {
+  const root = bt12Root(cls);
+  return root !== null && bt12Displayed(root);
+};
+/** The stack as frame names: the base's kind, then each upper frame's id. */
+const bt12Frames = (): string[] =>
+  stackNow().map((f) => {
+    const entry = f as { readonly kind: string; readonly id?: string; readonly owner?: string };
+    return entry.id ?? entry.owner ?? entry.kind;
+  });
+/** The deploy_units sends so far, as reducer argument objects. */
+const bt12Sends = (): unknown[] =>
+  H.calls.filter((c) => c.name === 'deployUnits').map((c) => c.args);
+const bt12Pick = (monsterId: bigint, slot: number) => ({ monsterId, slot });
+
+function bt12Tactical(
+  battleId: bigint,
+  phase: StoreTacticalBattle['phase'],
+  mapId = 13,
+): StoreTacticalBattle {
+  return {
+    battleId,
+    kind: 'Wild',
+    format: 1,
+    mapId,
+    contentVersion: 1,
+    phase,
+    round: phase === 'Deploying' ? 0 : 1,
+    initiative: [],
+    turnIdx: 0,
+    turnState: { kind: 'NotActive' },
+    tiePrioritySide: 'A',
+    pendingPadMs: 0,
+    attackDamageDealtA: 0,
+    attackDamageDealtB: 0,
+  };
+}
+/** The battle anchor (the 1v1 row the tactical battle rides on) with `party` as its party order. */
+function bt12Anchor(battleId: bigint, outcome: string, party: readonly bigint[]): StoreBattle {
+  return { ...battleRow(battleId, outcome), partyMonsterIds: [...party] };
+}
+/** An own monster named `m<id>` at `partySlot`, with `hp` of 29 HP (0: fainted). */
+function bt12Monster(monsterId: bigint, partySlot: number, hp = 23): StoreMonsterPub {
+  return { ...monster(monsterId, partySlot), currentHp: hp, statHp: 29 };
+}
+
+describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT12.4)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('the battle frame has exactly one owner at every step: the 1v1 view with no tactical row, the deploy panel while Deploying (an identical batch keeps its dialog role), the 1v1 view once Active (a Help frame over the Deploying base is popped first), and the results panel once Finished — one displayed battle title and one aria-modal root each time [BT12-1-BOOT-FRAME-OWNER]', async () => {
+    // WRONG IMPL KILLED (R1, R2, R6, A2): the deploy panel shown beside the 1v1 view (two titles,
+    // two modal roots); a battle base with nothing shown (B17); the hidden 1v1 view hidden again on
+    // an identical batch (its unguarded close strips the deploy root's dialog role, R1); the 1v1 view
+    // refreshed (re-shown) while the panel owns the frame; a slot count not read off the tactical
+    // row's map; a panel constructed eagerly for a legacy battle (a second battle-title for every
+    // legacy flow, R6); a renderer switch under Help that leaves Help inert over a re-opened root
+    // (A2); a Finished battle that keeps the 1v1 outcome instead of the results panel.
+    await bootReady();
+    server(1000);
+    const legacy = await bt12Legacy();
+    T12.mapCalls.length = 0;
+    const B = 9_007_199_254_741_009n;
+    const LEAD = 9_007_199_254_741_013n;
+    const SECOND = 9_007_199_254_741_015n;
+    const party = [LEAD, SECOND];
+    opts.store.upsertMonster(bt12Monster(LEAD, 0));
+    opts.store.upsertMonster(bt12Monster(SECOND, 1));
+    const owner = (step: string, title: Element | null, root: Element): void => {
+      const titles = bt12Titles();
+      expect(titles.length, `${step}: exactly one displayed battle title under #app`).toBe(1);
+      expect(titles[0] === title, `${step}: and it is the owner's`).toBe(true);
+      const modal = bt12ModalRoots();
+      expect(modal.length, `${step}: exactly one displayed aria-modal root`).toBe(1);
+      expect(modal[0] === root, `${step}: and it is the owner's root`).toBe(true);
+    };
+
+    opts.store.upsertBattle(bt12Anchor(B, 'Ongoing', party));
+    server(1100);
+    expect(legacy.refreshes.length, 'no tactical row: the 1v1 view is refreshed').toBeGreaterThan(
+      0,
+    );
+    owner('no tactical row', legacy.title, legacy.root);
+    expect(bt12Root('tactics-deploy'), 'no deploy panel is built for a 1v1 battle (R6)').toBeNull();
+    expect(bt12Root('tactics-results'), 'nor a results panel').toBeNull();
+
+    const refreshed = legacy.refreshes.length;
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Deploying')]);
+    server(1200);
+    const deploy = bt12Root('tactics-deploy');
+    expect(deploy, 'Deploying: the deploy panel is built under #app').not.toBeNull();
+    if (deploy === null) return;
+    const deployTitle = deploy.querySelector('[data-testid="battle-title"]');
+    owner('Deploying', deployTitle, deploy);
+    expect(deploy.getAttribute('role'), 'Deploying: the deploy root is the dialog').toBe('dialog');
+    expect(legacy.root.getAttribute('role'), 'and the 1v1 root is not').toBeNull();
+    expect(
+      legacy.refreshes.length,
+      'the 1v1 view is not refreshed while the deploy panel owns the frame',
+    ).toBe(refreshed);
+    expect(T12.mapCalls, 'the slot count is read off the tactical row`s own map (13)').toContain(
+      13,
+    );
+    expect(stackNow(), 'the panel is the battle base`s own presentation, not a frame').toEqual([
+      { kind: 'battle', battleId: String(B) },
+    ]);
+
+    const hidesBefore = legacy.hides();
+    server(1300);
+    expect(
+      deploy.getAttribute('role'),
+      'an identical batch: the deploy root keeps the dialog',
+    ).toBe('dialog');
+    expect(deploy.getAttribute('aria-modal'), 'and aria-modal').toBe('true');
+    expect(legacy.hides(), 'the hidden 1v1 view is never hidden again').toBe(hidesBefore);
+    owner('a second identical Deploying batch', deployTitle, deploy);
+
+    press('KeyR', 1400);
+    expect(bt12Frames(), 'precondition: Help is open over the Deploying base').toEqual([
+      'battle',
+      'helpView',
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Active')]);
+    server(1500);
+    expect(stackNow(), 'the switch first popped what sat over the battle base (A2)').toEqual([
+      { kind: 'battle', battleId: String(B) },
+    ]);
+    const help = document.getElementById('help-overlay');
+    expect(help !== null && bt12Displayed(help), 'Help is hidden').toBe(false);
+    owner('Active (the 1v1 interim)', legacy.title, legacy.root);
+    expect(deploy.getAttribute('role'), 'the deploy root holds no dialog').toBeNull();
+    expect(bt12Displayed(deploy), 'and is hidden').toBe(false);
+
+    opts.store.upsertBattle(bt12Anchor(B, 'SideAWins', party));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Finished')]);
+    server(1600);
+    const results = bt12Root('tactics-results');
+    expect(results, 'Finished: the results panel is built under #app').not.toBeNull();
+    if (results === null) return;
+    owner('Finished', results.querySelector('[data-testid="battle-title"]'), results);
+    expect(results.getAttribute('role'), 'the results root is the dialog').toBe('dialog');
+    expect(legacy.root.getAttribute('role'), 'the 1v1 root holds none').toBeNull();
+    expect(bt12Displayed(legacy.root), 'and is hidden').toBe(false);
+    expect(bt12Frames(), 'the outcome frame over the world').toEqual(['world', 'battleView']);
+  });
+
+  it('at a bare Deploying battle A sends deploy_units once with the remembered formation resolved against the anchor`s party (fainted and stranger skipped), Start at the confirm screen opens the main menu and sends nothing, and in the editor Start is the panel`s: it sends the edited picks and no menu opens [BT12-2-BOOT-DEPLOY]', async () => {
+    // WRONG IMPL KILLED (R2, A6): ops lent to the dead 1v1 view while the panel is shown (A reaches
+    // no deploy: `screenViews.battleView` must lend the panel); the dispatch arm missing or sending
+    // a different reducer or argument shape; empty picks sent; the party read in partySlot order
+    // instead of the anchor's party order (they differ here); the remembered formation ignored; a
+    // fainted or stranger id sent; `battleButton`'s tactical flag left false in the editor (Start
+    // opens the menu instead of submitting) or set at the confirm screen (Start dead there).
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const B = 9_007_199_254_741_017n;
+    const P1 = 9_007_199_254_741_019n;
+    const P2 = 9_007_199_254_741_021n;
+    const P3 = 9_007_199_254_741_023n;
+    const P4 = 9_007_199_254_741_025n;
+    const STRANGER = 9_007_199_254_741_099n;
+    opts.store.upsertMonster(bt12Monster(P1, 2));
+    opts.store.upsertMonster(bt12Monster(P2, 0, 0));
+    opts.store.upsertMonster(bt12Monster(P3, 3));
+    opts.store.upsertMonster(bt12Monster(P4, 1));
+    opts.store.reconcileFormationFromView([
+      { ownerIdentity: H.identity, monsterIds: [P4, P2, STRANGER, P1] },
+    ]);
+    opts.store.upsertBattle(bt12Anchor(B, 'Ongoing', [P1, P2, P3, P4]));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Deploying')]);
+    server(1100);
+    expect(bt12Shown('tactics-deploy'), 'precondition: the deploy panel is shown').toBe(true);
+    expect(bt12Frames(), 'precondition: a bare battle base').toEqual(['battle']);
+
+    H.calls = [];
+    press('Enter', 1200);
+    await flush();
+    const first = {
+      battleId: B,
+      picks: [bt12Pick(P4, 0), bt12Pick(P1, 1), bt12Pick(P3, 2)],
+    };
+    expect(
+      bt12Sends(),
+      'A sends deployUnits once: the remembered conscious ids, then the party in its order',
+    ).toEqual([first]);
+
+    press('KeyM', 1300);
+    expect(bt12Frames(), 'Start at the confirm screen opens the main menu (CTL6C.1, A6)').toEqual([
+      'battle',
+      'menuView',
+    ]);
+    expect(bt12Sends(), 'and sends nothing').toHaveLength(1);
+    press('Backspace', 1400);
+    expect(bt12Frames(), 'B closes the menu').toEqual(['battle']);
+
+    press('ArrowDown', 1500);
+    press('Enter', 1600);
+    expect(
+      bt12Root('tactics-deploy')?.querySelector('.tactics-deploy-candidate'),
+      'Down and A on Edit formation opened the editor',
+    ).not.toBeNull();
+    press('PageDown', 1700);
+    press('Enter', 1800);
+    press('KeyM', 1900);
+    await flush();
+    expect(bt12Frames(), 'Start in the editor is the panel`s: no menu opens').toEqual(['battle']);
+    expect(bt12Sends(), 'Start sends the edited picks (RB wrapped to the first candidate)').toEqual(
+      [first, { battleId: B, picks: [bt12Pick(P1, 0), bt12Pick(P4, 1), bt12Pick(P3, 2)] }],
+    );
+  });
+
+  it('a battle first seen Active (a pack of 1, deployed server-side) never shows a deploy panel: the 1v1 view keeps the frame, A sends no deploy and the rules port is never asked for a map, through to its results [BT12-2-BOOT-PACK1-NO-PANEL]', async () => {
+    // WRONG IMPL KILLED: a deploy panel shown for any tactical row (a pack of 1 is auto-deployed,
+    // BT12.2); a battle with nothing shown (B17); a rules port bound or asked at boot or on a
+    // non-deploy render (R7: the bind is lazy, on the first deploy render only).
+    await bootReady();
+    server(1000);
+    const legacy = await bt12Legacy();
+    T12.mapCalls.length = 0;
+    const B = 9_007_199_254_741_027n;
+    const P = 9_007_199_254_741_029n;
+    opts.store.upsertMonster(bt12Monster(P, 0));
+    opts.store.upsertBattle(bt12Anchor(B, 'Ongoing', [P]));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Active')]);
+    server(1100);
+    expect(bt12Shown('tactics-deploy'), 'first seen Active: no deploy panel').toBe(false);
+    expect(bt12Displayed(legacy.root), 'the battle is shown (B17): the 1v1 view').toBe(true);
+    server(1200);
+    expect(bt12Shown('tactics-deploy'), 'a later Active batch: still none').toBe(false);
+    H.calls = [];
+    press('Enter', 1300);
+    await flush();
+    expect(bt12Sends(), 'A sends no deploy').toEqual([]);
+    opts.store.upsertBattle(bt12Anchor(B, 'SideAWins', [P]));
+    opts.store.reconcileTacticalBattlesFromView([bt12Tactical(B, 'Finished')]);
+    server(1400);
+    expect(bt12Shown('tactics-results'), 'its results show').toBe(true);
+    expect(bt12Shown('tactics-deploy'), 'and no deploy panel ever did').toBe(false);
+    expect(T12.mapCalls, 'the rules port was never asked for a map').toEqual([]);
+  });
+
+  it('after a confirmed deploy, the new my_formation row (an order that is not the party`s) is what the next Deploying battle`s A sends, slot by slot, and a two-spawn map takes its first two [BT12-3-BOOT-FORMATION-UPDATE]', async () => {
+    // WRONG IMPL KILLED (B2): the remembered formation cached from the first battle or never read
+    // (the second deploy re-sends party order); the formation read from the deploy picks instead of
+    // my_formation; picks re-sorted into party order; a slot count hard-coded to 3 (the two-spawn
+    // map would send three picks the server refuses).
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const PA = 9_007_199_254_741_031n;
+    const PB = 9_007_199_254_741_033n;
+    const PC = 9_007_199_254_741_035n;
+    const PD = 9_007_199_254_741_037n;
+    const PARTY = [PA, PB, PC, PD];
+    for (const [slot, id] of PARTY.entries()) opts.store.upsertMonster(bt12Monster(id, slot));
+    const B1 = 9_007_199_254_741_039n;
+    const B2 = 9_007_199_254_741_041n;
+    const B3 = 9_007_199_254_741_043n;
+    const deployAndSend = (battleId: bigint, mapId: number, t: number): void => {
+      opts.store.upsertBattle(bt12Anchor(battleId, 'Ongoing', PARTY));
+      opts.store.reconcileTacticalBattlesFromView([bt12Tactical(battleId, 'Deploying', mapId)]);
+      server(t);
+      expect(bt12Shown('tactics-deploy'), `battle ${battleId}: the deploy panel is shown`).toBe(
+        true,
+      );
+      H.calls = [];
+      press('Enter', t + 50);
+    };
+    const end = (battleId: bigint, t: number): void => {
+      opts.store.reconcileTacticalBattlesFromView([bt12Tactical(battleId, 'Active')]);
+      server(t);
+      opts.store.removeBattle(battleId);
+      opts.store.reconcileTacticalBattlesFromView([]);
+      server(t + 50);
+      expect(bt12Frames(), `battle ${battleId} is gone: the world again`).toEqual(['world']);
+    };
+
+    deployAndSend(B1, 13, 1100);
+    await flush();
+    expect(bt12Sends(), 'no memory yet: party order').toEqual([
+      { battleId: B1, picks: [bt12Pick(PA, 0), bt12Pick(PB, 1), bt12Pick(PC, 2)] },
+    ]);
+    end(B1, 1200);
+
+    opts.store.reconcileFormationFromView([
+      { ownerIdentity: H.identity, monsterIds: [PC, PA, PD] },
+    ]);
+    server(1300);
+    deployAndSend(B2, 13, 1400);
+    await flush();
+    expect(bt12Sends(), 'the next deploy sends the UPDATED formation, slot by slot').toEqual([
+      { battleId: B2, picks: [bt12Pick(PC, 0), bt12Pick(PA, 1), bt12Pick(PD, 2)] },
+    ]);
+    end(B2, 1500);
+
+    deployAndSend(B3, T12.twoSpawnMap, 1600);
+    await flush();
+    expect(bt12Sends(), 'a two-spawn map takes the formation`s first two').toEqual([
+      { battleId: B3, picks: [bt12Pick(PC, 0), bt12Pick(PA, 1)] },
+    ]);
+  });
+
+  it('a Finished battle`s results continue on their own once the outcome frame has been on top for the results cap, exactly once and never re-shown; A after the grace and B continue at once; a Help frame opened over the outcome pauses the countdown and closing it restarts it [BT12-4-BOOT-RESULTS]', async () => {
+    // WRONG IMPL KILLED (A7, B12, R9): no auto-advance; an advance before the cap, or on a wall
+    // clock instead of the frame clock; a pop on every frame past the cap (the world base would
+    // lose frames) or a batch that re-shows the dismissed results; a countdown that runs under Help
+    // and pops Help or the outcome from under it (R2); a countdown that resumes the OLD shown edge
+    // after Help closes instead of restarting; A or B no longer continuing the results.
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const P = 9_007_199_254_741_045n;
+    opts.store.upsertMonster(bt12Monster(P, 0));
+    /** Battle `id` seen Ongoing + Active at `t`, then won + Finished at `t + 100`: the shown edge. */
+    const finish = (id: bigint, t: number): number => {
+      opts.store.upsertBattle(bt12Anchor(id, 'Ongoing', [P]));
+      opts.store.reconcileTacticalBattlesFromView([bt12Tactical(id, 'Active')]);
+      server(t);
+      opts.store.upsertBattle(bt12Anchor(id, 'SideAWins', [P]));
+      opts.store.reconcileTacticalBattlesFromView([bt12Tactical(id, 'Finished')]);
+      server(t + 100);
+      expect(bt12Frames(), `battle ${id}: the outcome frame is on the stack`).toEqual([
+        'world',
+        'battleView',
+      ]);
+      expect(bt12Shown('tactics-results'), `battle ${id}: showing the results panel`).toBe(true);
+      return t + 100;
+    };
+    const clear = (id: bigint, t: number): void => {
+      opts.store.removeBattle(id);
+      opts.store.reconcileTacticalBattlesFromView([]);
+      server(t);
+    };
+    const CAP = CAPS.resultsMs;
+
+    const B1 = 9_007_199_254_741_047n;
+    const shown = finish(B1, 1100);
+    frame(shown + CAP - 1);
+    await flush();
+    expect(bt12Frames(), 'one ms before the cap: still up').toEqual(['world', 'battleView']);
+    frame(shown + CAP);
+    await flush();
+    expect(bt12Frames(), 'at the cap: the outcome frame is popped').toEqual(['world']);
+    expect(bt12Shown('tactics-results'), 'and the results panel hidden').toBe(false);
+    frame(shown + 2 * CAP);
+    await flush();
+    server(shown + 2 * CAP + 50);
+    expect(bt12Frames(), 'a later frame and batch neither re-show it nor pop again').toEqual([
+      'world',
+    ]);
+    expect(bt12Shown('tactics-results'), 'the results stay dismissed').toBe(false);
+    clear(B1, shown + 2 * CAP + 100);
+
+    const B2 = 9_007_199_254_741_049n;
+    const shown2 = finish(B2, 20_000);
+    press('Enter', shown2 + OUTCOME_CONTINUE_GRACE_MS - 1);
+    await flush();
+    expect(bt12Frames(), 'A inside the grace is swallowed').toEqual(['world', 'battleView']);
+    press('Enter', shown2 + OUTCOME_CONTINUE_GRACE_MS + 1);
+    await flush();
+    expect(bt12Frames(), 'A after the grace continues at once, long before the cap').toEqual([
+      'world',
+    ]);
+    clear(B2, shown2 + 1_000);
+
+    const B3 = 9_007_199_254_741_051n;
+    const shown3 = finish(B3, 30_000);
+    press('Backspace', shown3 + 7);
+    await flush();
+    expect(bt12Frames(), 'B continues at once').toEqual(['world']);
+    clear(B3, shown3 + 1_000);
+
+    const B4 = 9_007_199_254_741_053n;
+    const shown4 = finish(B4, 40_000);
+    press('KeyR', shown4 + 11);
+    expect(bt12Frames(), 'precondition: Help is open over the outcome').toEqual([
+      'world',
+      'battleView',
+      'helpView',
+    ]);
+    frame(shown4 + CAP + 13);
+    await flush();
+    expect(bt12Frames(), 'Help on top pauses the countdown: nothing is popped').toEqual([
+      'world',
+      'battleView',
+      'helpView',
+    ]);
+    const reopened = shown4 + CAP + 17;
+    press('KeyR', reopened);
+    expect(bt12Frames(), 'Help closed: the outcome is on top again').toEqual([
+      'world',
+      'battleView',
+    ]);
+    frame(reopened + CAP - 10);
+    await flush();
+    expect(
+      bt12Frames(),
+      'the countdown restarted when the outcome resurfaced (the old edge is long past)',
+    ).toEqual(['world', 'battleView']);
+    frame(reopened + CAP + 10);
+    await flush();
+    expect(bt12Frames(), 'and continues it once the cap passes again, once').toEqual(['world']);
   });
 });
