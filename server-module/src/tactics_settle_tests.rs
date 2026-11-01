@@ -24,7 +24,8 @@ use crate::native_host_tests::{fixture, Fixture};
 use crate::playtest::{build_playtest_event, hp_permille, PlaytestEvent};
 use crate::schema::{
     Battle, BattleClock, BattleEvent, BattleSecret, BattleSummary, BattleTactical, BattleUnit,
-    BattleWildUnit, Inventory, Monster, MoveClassRow, SideRow, SpeciesRow,
+    BattleWild, BattleWildUnit, Inventory, ItemRow, Monster, MoveClassRow, SideRow, SpeciesRow,
+    TypeRelationRow,
 };
 use crate::tactics::tactics_tests::{
     a, advance_args, at, b, changed, deadline_args, deploy, deploying_pair, enc, fire_advance,
@@ -3669,5 +3670,584 @@ fn a_halted_recruit_attempt_writes_no_playtest_row_bt9_7() {
     assert!(
         playtest_rows(&w, live.id).is_empty(),
         "an attempt that never resolved is no attempt"
+    );
+}
+
+// ===========================================================================
+// BT13.2 — the tactical `playtest_event` kind-1 row is exactly what the real 1v1 reducer writes
+//
+// BT9.7 pins the tactical row against `build_playtest_event` — the very helper both paths share, so
+// a mutant in it (or in `hp_permille`) moves the oracle with the code. These tests pin both paths
+// against LITERALS and against each other: the 1v1 side is the shipped `taming::attempt_recruit`
+// reducer on the same native host, its roll steered by a clock probe (`T0 + k * 7_919`, as
+// `taming_tests` does) with the written `success` as a PRECONDITION and an independent
+// observation (a monster minted / the battle still going) beside it.
+// ===========================================================================
+
+/// The wild's HP on both paths: 20 of 30 is 666 per mille (floor; a round-half-up mutant says 667).
+const BT13_WILD_MAX: u16 = 30;
+const BT13_WILD_CUR: u16 = 20;
+/// The 1v1 world's battle id.
+const BT13_BATTLE: u64 = 7;
+
+/// `(identity, kind, species_id, hp_permille, bait_item_id, success)`: the columns
+/// `scripts/playtest-report.mjs` groups (identity, species) and computes (hp, bait, success) from.
+type Bt13Row = (Identity, u16, u32, u16, u32, bool);
+
+fn bt13_row(e: &PlaytestEvent) -> Bt13Row {
+    (
+        e.identity,
+        e.kind,
+        e.species_id,
+        e.hp_permille,
+        e.bait_item_id,
+        e.success,
+    )
+}
+
+/// The WHOLE `playtest_event` table in insertion order (never the battle-filtered helper).
+fn bt13_table(w: &World<'_>) -> Vec<PlaytestEvent> {
+    let mut rows = w.playtests.rows();
+    rows.sort_by_key(|e| e.event_id);
+    rows
+}
+
+/// What one path left behind, read off the store after its attempt.
+struct Bt13Run {
+    table: Vec<PlaytestEvent>,
+    /// Monsters minted for the player (a recruit success).
+    minted: usize,
+    /// The player's bait stock after the attempt (it started at 2).
+    bait_left: u32,
+    outcome: BattleOutcome,
+    /// The id of the battle the path played (the tactical anchor's, or the 1v1 helper's literal).
+    battle_id: u64,
+}
+
+/// The first encounter seed on `map_id` whose forced `pack` wilds satisfy `ok` (their species in
+/// slot order), found by really starting battles — each probe is a fresh fixture, dropped before
+/// the next, so call this BEFORE building the test's own fixture. Probes at most 300 map hits,
+/// then `None`.
+fn bt13_try_find_seed(map_id: u32, pack: u8, ok: impl Fn(&[u32]) -> bool) -> Option<u64> {
+    let zone = game_core::tactics::load_tactics_zones()
+        .expect("tactics zone content loads")
+        .into_iter()
+        .find(|z| z.zone_id == 0)
+        .expect("zone 0 has a tactics zone row");
+    let mut tried = 0;
+    for seed in 1..100_000u64 {
+        let idx = game_core::tactics::pick_map_index(zone.battle_map_pool.len(), seed)
+            .expect("zone 0 has a map pool");
+        if zone.battle_map_pool[idx] != map_id {
+            continue;
+        }
+        if tried >= 300 {
+            return None;
+        }
+        tried += 1;
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &PAIR);
+        let id = start(&fx, a(), seed, Some(pack), T0);
+        // The wild rows exist from the start (a pack >= 2 has no unit rows until it deploys).
+        let species: Vec<u32> = w.wild_units_of(id).iter().map(|u| u.species_id).collect();
+        if ok(&species) {
+            return Some(seed);
+        }
+    }
+    None
+}
+
+fn bt13_find_seed(map_id: u32, pack: u8, ok: impl Fn(&[u32]) -> bool) -> u64 {
+    bt13_try_find_seed(map_id, pack, ok).unwrap_or_else(|| {
+        panic!("no seed fields {pack} wild(s) on map {map_id} as the test needs")
+    })
+}
+
+/// A pack-1 wild whose species is neither party monster's (u1 acts in most tests, u2 in the
+/// pre-queued one), so a row that recorded an actor's species instead of the target's cannot hide.
+fn bt13_pack_one_seed() -> u64 {
+    bt13_find_seed(1, 1, |species| {
+        species.len() == 1 && species[0] != PAIR[0].1 && species[0] != PAIR[1].1
+    })
+}
+
+/// A started pack-1 `live_pair` world on `seed` (the helper `live_pair` fixes the seed).
+fn bt13_live(fx: &Fixture, w: &World<'_>, seed: u64) -> Live {
+    w.join(a(), 1);
+    w.seed_party(a(), &PAIR);
+    let id = start(fx, a(), seed, Some(1), T0);
+    let players = w.side_units(id, SideRow::A);
+    let wilds = w.side_units(id, SideRow::B);
+    assert_eq!(
+        (players.len(), wilds.len()),
+        (2, 1),
+        "a pack-1 start fields the whole PAIR and one wild"
+    );
+    let live = Live {
+        id,
+        u1: players[0].unit_id,
+        u2: players[1].unit_id,
+        wild: wilds[0].unit_id,
+    };
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(live.u1),
+        "PRECONDITION: the fastest party member holds the first window"
+    );
+    live
+}
+
+/// The wild at 20 of 30 HP.
+fn bt13_weaken(w: &World<'_>, wild: u32) {
+    w.edit_unit(wild, |u| {
+        u.stats.hp = BT13_WILD_MAX;
+        u.cur_hp = BT13_WILD_CUR;
+    });
+}
+
+/// One tactical recruit attempt by the waiting unit on a wild seated next to it, the roll steered
+/// to `success`. Returns the run and the wild's species (read off its unit row).
+fn bt13_tactical_attempt(seed: u64, bait: Option<u32>, success: bool) -> (Bt13Run, u32) {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = bt13_live(&fx, &w, seed);
+    seat_adjacent(&w, live.u1, live.wild);
+    give(&w, 1, 2);
+    bt13_weaken(&w, live.wild);
+    let species = w.unit(live.wild).species_id;
+    let pct = odds_pct(&w, live.wild, bait);
+    force_recruit(&w, live.id, pct, success);
+    submit(
+        &fx,
+        a(),
+        T0 + 20_000,
+        live.id,
+        live.u1,
+        vec![recruit(live.wild, bait)],
+    )
+    .expect("the tactical attempt is accepted");
+    let run = Bt13Run {
+        table: bt13_table(&w),
+        minted: new_monsters(&w).len(),
+        bait_left: held(&w, 1),
+        outcome: outcome(&w, live.id),
+        battle_id: live.id,
+    };
+    (run, species)
+}
+
+/// The 1v1 anchor: the party's lead against a skill-less wild at 20 of 30 HP (so a failed roll
+/// changes nothing but the turn counter, as in `taming_tests`).
+fn bt13_one_v_one_battle(species: u32) -> Battle {
+    let lead = party_monster(a(), PAIR[0]);
+    let wild = BattleMonster {
+        species_id: species,
+        affinity: affinity_of(species),
+        level: 4,
+        current_hp: BT13_WILD_CUR,
+        max_hp: BT13_WILD_MAX,
+        stats: StatBlock {
+            hp: BT13_WILD_MAX,
+            ..TOKEN
+        },
+        known_skill_ids: Vec::new(),
+        status: None,
+    };
+    Battle {
+        battle_id: BT13_BATTLE,
+        player_identity: a(),
+        opponent_identity: crate::WILD_IDENTITY,
+        state: BattleState {
+            side_a: BattleSide::with_lead(vec![battle_monster_of(&lead)])
+                .expect("a conscious lead"),
+            side_b: BattleSide::with_lead(vec![wild]).expect("a conscious wild"),
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 3,
+            weather: None,
+        },
+        party_monster_ids: vec![lead.monster_id],
+        opponent_monster_ids: Vec::new(),
+        created_at_ms: T0,
+    }
+}
+
+/// One run of the SHIPPED 1v1 `attempt_recruit` at the clock `T0 + k * 7_919`, on a fresh world.
+fn bt13_one_v_one_attempt(species: u32, bait: Option<u32>, k: i64) -> Bt13Run {
+    let fx = fixture();
+    let w = world(&fx);
+    let items = fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id);
+    items.seed(&ItemRow {
+        id: 1,
+        name: "Lure Berry".to_string(),
+        description: String::new(),
+        recruit_bonus: bait_bonus(1),
+        train_stat: None,
+        train_amount: 0,
+        sell_price: 0,
+        cure_status: None,
+    });
+    let species_rows = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+    for s in game_core::load_species().expect("species content loads") {
+        species_rows.seed(&species_row_of(&s));
+    }
+    // The failure arm reads the type chart from its rows (empty: a skill-less wild never uses it).
+    let _ = fx
+        .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+        .scannable();
+    w.seed_monster(&party_monster(a(), PAIR[0]));
+    give(&w, 1, 2);
+    w.battles.seed(&bt13_one_v_one_battle(species));
+    w.battle_wilds.seed(&BattleWild {
+        battle_id: BT13_BATTLE,
+        wild_species_id: species,
+        wild_level: 4,
+        individuality_seed: 0xBEEF,
+    });
+    let got = fx.run_as_at(a(), at(T0 + k * 7_919), |ctx| {
+        crate::taming::attempt_recruit(ctx, BT13_BATTLE, bait)
+    });
+    assert_eq!(got, Ok(()), "clock {k}: the 1v1 attempt is accepted");
+    Bt13Run {
+        table: bt13_table(&w),
+        minted: new_monsters(&w).len(),
+        bait_left: held(&w, 1),
+        outcome: outcome(&w, BT13_BATTLE),
+        battle_id: BT13_BATTLE,
+    }
+}
+
+/// The first clock on the `T0 + k * 7_919` grid whose 1v1 roll comes out `success`, as a run.
+fn bt13_one_v_one_probe(species: u32, bait: Option<u32>, success: bool) -> Bt13Run {
+    for k in 0..64 {
+        let run = bt13_one_v_one_attempt(species, bait, k);
+        if run.table.len() == 1 && run.table[0].success == success {
+            return run;
+        }
+    }
+    panic!("no clock in 0..64 rolls a 1v1 recruit with success == {success} and bait {bait:?}");
+}
+
+/// Tactical vs 1v1 at the same wild (20 / 30 HP), the same bait and the same wanted result: the
+/// full row tuple is equal across the paths and equal to literals.
+fn bt13_assert_parity(bait: Option<u32>, success: bool) {
+    let seed = bt13_pack_one_seed();
+    let (tactical, species) = bt13_tactical_attempt(seed, bait, success);
+    let one = bt13_one_v_one_probe(species, bait, success);
+    assert!(
+        species != 0 && species != PAIR[0].1 && species != PAIR[1].1,
+        "PRECONDITION: the wild's species ({species}) is neither 0 nor a party monster's"
+    );
+    let bait_literal: u32 = if bait.is_some() { 1 } else { 0 };
+    // Literals: the player, kind 1, the wild's species, 20/30 -> 666 (floor), the bait id or 0.
+    let want: Bt13Row = (a(), 1, species, 666, bait_literal, success);
+    for (label, run) in [("tactical", &tactical), ("1v1", &one)] {
+        assert_eq!(
+            run.table.len(),
+            1,
+            "{label}: exactly one row in the WHOLE playtest_event table"
+        );
+        assert_eq!(
+            bt13_row(&run.table[0]),
+            want,
+            "{label}: (identity, kind, species, hp_permille, bait, success) against the literals"
+        );
+        assert_eq!(
+            run.table[0].battle_id, run.battle_id,
+            "{label}: the row names the battle that was played (tactical: the live anchor id; \
+             1v1: the helper's battle id literal)"
+        );
+        assert_eq!(
+            run.bait_left,
+            if bait.is_some() { 1 } else { 2 },
+            "{label}: the bait stock moved iff a bait was named"
+        );
+        if success {
+            assert_eq!(run.minted, 1, "{label}: PRECONDITION: a monster was minted");
+            assert_eq!(
+                run.outcome,
+                BattleOutcome::SideAWins,
+                "{label}: PRECONDITION: the recruit ended the battle in a win"
+            );
+        } else {
+            assert_eq!(run.minted, 0, "{label}: PRECONDITION: nothing was minted");
+            assert_eq!(
+                run.outcome,
+                BattleOutcome::Ongoing,
+                "{label}: PRECONDITION: the battle goes on"
+            );
+        }
+    }
+    // Cross-path equality is the loop above: both rows equal the same literals (transitive).
+}
+
+#[test]
+fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_success_with_bait_bt13_2() {
+    bt13_assert_parity(Some(1), true);
+}
+
+#[test]
+fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_failure_with_bait_bt13_2() {
+    bt13_assert_parity(Some(1), false);
+}
+
+#[test]
+fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_success_without_bait_bt13_2() {
+    bt13_assert_parity(None, true);
+}
+
+#[test]
+fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_failure_without_bait_bt13_2() {
+    bt13_assert_parity(None, false);
+}
+
+/// A failure then a success in later transactions: the whole table holds one row, then two, in
+/// order, both under the report's group key `(identity, species_id)`.
+#[test]
+fn two_tactical_attempts_write_two_ordered_rows_under_one_report_group_key_bt13_2() {
+    let seed = bt13_pack_one_seed();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = bt13_live(&fx, &w, seed);
+    seat_between(&w, &live);
+    give(&w, 1, 2);
+    bt13_weaken(&w, live.wild);
+    let species = w.unit(live.wild).species_id;
+    let pct = odds_pct(&w, live.wild, None);
+    force_recruit(&w, live.id, pct, false);
+    submit(
+        &fx,
+        a(),
+        T0 + 20_000,
+        live.id,
+        live.u1,
+        vec![recruit(live.wild, None)],
+    )
+    .expect("u1's attempt is accepted");
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.u2),
+        "PRECONDITION: the failed attempt leaves the battle on, with u2's window open"
+    );
+    let first = bt13_table(&w);
+    assert_eq!(first.len(), 1, "one attempt, one row in the whole table");
+
+    // A second, weaker sighting: 10 of 30 HP is 333 per mille.
+    w.edit_unit(live.wild, |u| u.cur_hp = 10);
+    let pct = odds_pct(&w, live.wild, Some(1));
+    force_recruit(&w, live.id, pct, true);
+    submit(
+        &fx,
+        a(),
+        T0 + 30_000,
+        live.id,
+        live.u2,
+        vec![recruit(live.wild, Some(1))],
+    )
+    .expect("u2's attempt in a later transaction is accepted");
+    let table = bt13_table(&w);
+    assert_eq!(table.len(), 2, "two attempts, two rows in the whole table");
+    assert!(
+        table[0].event_id < table[1].event_id,
+        "the rows are in attempt order"
+    );
+    let rows: Vec<Bt13Row> = table.iter().map(bt13_row).collect();
+    assert_eq!(
+        rows,
+        vec![
+            (a(), 1, species, 666, 0, false),
+            (a(), 1, species, 333, 1, true)
+        ],
+        "the failure at 666 without bait, then the success at 333 with bait 1"
+    );
+    // Both rows share the report's group key (identity, species_id): implied by the literal
+    // equality above (same `a()`, same `species` in both tuples).
+    assert!(
+        table.iter().all(|e| e.battle_id == live.id),
+        "both rows name the live battle"
+    );
+}
+
+/// A recruit pre-queued by u2 resolves when u1's end-turn pops it: exactly one row in the whole
+/// table (not zero — the pop path records — and not two).
+#[test]
+fn a_pre_queued_recruit_resolving_at_pop_writes_exactly_one_row_bt13_2() {
+    let seed = bt13_pack_one_seed();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = bt13_live(&fx, &w, seed);
+    seat_between(&w, &live);
+    give(&w, 1, 2);
+    bt13_weaken(&w, live.wild);
+    let species = w.unit(live.wild).species_id;
+    submit(
+        &fx,
+        a(),
+        T0 + 10_000,
+        live.id,
+        live.u2,
+        vec![recruit(live.wild, Some(1))],
+    )
+    .expect("a pre-queued recruit is stored");
+    assert!(
+        bt13_table(&w).is_empty(),
+        "a stored plan has resolved nothing: no row yet"
+    );
+    let pct = odds_pct(&w, live.wild, Some(1));
+    force_recruit(&w, live.id, pct, false);
+    submit(
+        &fx,
+        a(),
+        T0 + 20_000,
+        live.id,
+        live.u1,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("u1 ends its turn: u2's plan pops");
+    assert!(
+        halts(&w, live.id).is_empty(),
+        "PRECONDITION: the plan resolved, it did not halt"
+    );
+    assert_eq!(
+        recruit_results(&w, live.id).len(),
+        1,
+        "PRECONDITION: exactly one recruit resolved"
+    );
+    let table = bt13_table(&w);
+    assert_eq!(table.len(), 1, "one resolved attempt, one row, whole table");
+    assert_eq!(
+        bt13_row(&table[0]),
+        (a(), 1, species, 666, 1, false),
+        "the pop-time row carries the pre-roll HP, the bait and the result"
+    );
+    assert_eq!(
+        table[0].battle_id, live.id,
+        "the pop-time row names the live battle"
+    );
+}
+
+/// The server must roll the recruit at the BAIT odds, not merely record the bait. With bait 1 the
+/// roll is steered into the window `[pct_no_bait, pct_bait)`: it succeeds iff the roll used the
+/// bait odds, so a server that rolled at the no-bait odds (while still recording bait 1) fails
+/// here. A roll below both thresholds — what the plain steering above usually lands on — cannot
+/// tell the two apart.
+#[test]
+fn the_recruit_roll_uses_the_bait_odds_not_just_the_recorded_bait_bt13_2() {
+    let seed = bt13_pack_one_seed();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = bt13_live(&fx, &w, seed);
+    seat_adjacent(&w, live.u1, live.wild);
+    give(&w, 1, 2);
+    bt13_weaken(&w, live.wild);
+    let species = w.unit(live.wild).species_id;
+    let pct_no_bait = odds_pct(&w, live.wild, None);
+    let pct_bait = odds_pct(&w, live.wild, Some(1));
+    assert!(
+        pct_no_bait < pct_bait,
+        "PRECONDITION: the bait widens the odds ({pct_no_bait} < {pct_bait})"
+    );
+    let (lo, hi) = (u64::from(pct_no_bait), u64::from(pct_bait));
+    steer(&w, live.id, 1, |_, roll| {
+        lo <= roll % 100 && roll % 100 < hi
+    });
+    submit(
+        &fx,
+        a(),
+        T0 + 20_000,
+        live.id,
+        live.u1,
+        vec![recruit(live.wild, Some(1))],
+    )
+    .expect("the attempt is accepted");
+    let results = recruit_results(&w, live.id);
+    assert_eq!(
+        results.len(),
+        1,
+        "PRECONDITION: exactly one recruit resolved"
+    );
+    assert_eq!(
+        (results[0].success, results[0].pct),
+        (true, pct_bait),
+        "the roll succeeds in the window only if it was judged against the bait odds"
+    );
+    let table = bt13_table(&w);
+    assert_eq!(table.len(), 1, "one attempt, one row, whole table");
+    assert_eq!(
+        bt13_row(&table[0]),
+        (a(), 1, species, 666, 1, true),
+        "the row says success with bait 1"
+    );
+}
+
+/// A two-species pack, the SECOND wild recruited: its row names that wild's species and HP, not
+/// the first wild's and not the actor's.
+#[test]
+fn recruiting_the_second_wild_of_a_two_species_pack_records_that_wilds_species_and_hp_bt13_2() {
+    let actor_species = PAIR[0].1;
+    let seed = bt13_find_seed(4, 2, |s| {
+        s.len() == 2 && s[0] != s[1] && s[1] != actor_species
+    });
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    w.seed_party(a(), &PAIR);
+    let id = start(&fx, a(), seed, Some(2), T0);
+    deploy(&fx, a(), T0 + 1_000, id, vec![pick(11, 0), pick(12, 1)]).expect("the pair deploys");
+    let players = w.side_units(id, SideRow::A);
+    let wilds = w.side_units(id, SideRow::B);
+    assert_eq!(
+        (players.len(), wilds.len()),
+        (2, 2),
+        "PRECONDITION: two a side"
+    );
+    let (u1, first, second) = (players[0].unit_id, wilds[0].clone(), wilds[1].clone());
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(u1),
+        "PRECONDITION: monster 11 holds the first window"
+    );
+    assert_ne!(
+        first.species_id, second.species_id,
+        "PRECONDITION: the pack has two species"
+    );
+    seat_adjacent(&w, u1, second.unit_id);
+    give(&w, 1, 2);
+    bt13_weaken(&w, second.unit_id);
+    let seen = |unit: &crate::schema::BattleUnit| hp_permille(unit.cur_hp, unit.stats.hp);
+    assert_eq!(
+        seen(&w.unit(second.unit_id)),
+        666,
+        "PRECONDITION: the target sits at 666 per mille"
+    );
+    assert!(
+        seen(&w.unit(u1)) != 666 && seen(&w.unit(first.unit_id)) != 666,
+        "PRECONDITION: neither the actor nor the first wild is at the target's HP"
+    );
+    let pct = odds_pct(&w, second.unit_id, Some(1));
+    force_recruit(&w, id, pct, true);
+    submit(
+        &fx,
+        a(),
+        T0 + 20_000,
+        id,
+        u1,
+        vec![recruit(second.unit_id, Some(1))],
+    )
+    .expect("the attempt on the second wild is accepted");
+    let table = bt13_table(&w);
+    assert_eq!(table.len(), 1, "one attempt, one row, whole table");
+    assert_eq!(
+        bt13_row(&table[0]),
+        (a(), 1, second.species_id, 666, 1, true),
+        "the row names the TARGET wild's species and HP"
+    );
+    assert_eq!(table[0].battle_id, id, "the row names the live battle");
+    let minted = new_monsters(&w);
+    assert_eq!(
+        minted.iter().map(|m| m.species_id).collect::<Vec<u32>>(),
+        vec![second.species_id],
+        "the monster minted is the second wild's species (the row and the recruit agree)"
     );
 }
