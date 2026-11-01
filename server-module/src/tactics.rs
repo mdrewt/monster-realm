@@ -1761,10 +1761,17 @@ pub(crate) fn start_wild_tactical(
             battle_id,
             DEPLOY_WINDOW_UNIT,
             0,
-            now.saturating_add(i64::from(content.tuning.pve_deploy_ms)),
+            deploy_deadline_ms(now, &content.tuning),
         );
     }
     Ok(battle_id)
+}
+
+/// The Deploying window's deadline (bt-12 B, BT12.2): `now + pve_deploy_ms` — the ONE instant both
+/// the deploy-deadline schedule row and the side-A clock's `deadline_ms` carry, so the client's
+/// "Still there?" countdown reads the same deadline in Deploying as in a turn window.
+pub(crate) fn deploy_deadline_ms(now_ms: i64, tuning: &TacticsTuning) -> i64 {
+    now_ms.saturating_add(i64::from(tuning.pve_deploy_ms))
 }
 
 // ===========================================================================

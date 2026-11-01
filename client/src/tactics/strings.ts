@@ -296,6 +296,13 @@ export const deployPrevMonster = (): string => t('tactics.deploy.prevMonster');
 export const deployNextMonster = (): string => t('tactics.deploy.nextMonster');
 export const deployConfirm = (): string => t('tactics.deploy.confirm');
 export const deployBack = (): string => t('tactics.deploy.back');
+/** bt-12 B: the confirm screen's wild composition list. */
+export const deployWilds = (): string => t('tactics.deploy.wilds');
+
+// --- the "Still there?" countdown (bt-12 B, BT12.2) --------------------------------------------------
+
+/** `s` is the whole seconds left of the PvE window's last minute (1..60). */
+export const stillThere = (s: number): string => tf('tactics.clock.stillThere', { s });
 
 // --- the results panel (bt-12, BT12.4) --------------------------------------------------------------
 

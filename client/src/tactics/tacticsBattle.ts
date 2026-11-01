@@ -420,6 +420,25 @@ export class TacticsBattle implements BattleOpsView {
     this.#syncPlaying();
   }
 
+  /** The "Still there?" countdown (bt-12 B, BT12.2): `n` seconds paints one `.tactics-countdown` line in
+   *  the field after the banner, the same value writes nothing, null removes it; `#commit` never touches
+   *  it; `hide()` and a new battle clear it. Driven by main.ts's frame pump on the wall clock. */
+  setCountdown(seconds: number | null): void {
+    void seconds;
+  }
+
+  /** Forget the battle (bt-12 B): the next `render` re-initialises as for a new battle — the cursor
+   *  memory, the selection, the cursor, the danger toggle, the mode, the drafts, the in-flight keys, the
+   *  ticker and the playback are cleared. main.ts calls it on a reconnect, so a submit the dropped link
+   *  lost never leaves a unit's turn locked. */
+  reset(): void {}
+
+  /** A submit the server REFUSED (bt-12 B): the unit's in-flight key is released so the player's next
+   *  commit for the same turn goes out; repaints. main.ts wires it to the dispatch arm's rejection. */
+  release(unitId: number): void {
+    void unitId;
+  }
+
   get dangerOn(): boolean {
     return this.#dangerOn;
   }

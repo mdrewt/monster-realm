@@ -1579,6 +1579,69 @@ pub fn tactics_overlays(board: JsValue, q: JsValue) -> Result<JsValue, JsValue> 
     to_js(&overlays_of(&board, &q).map_err(js_err)?)
 }
 
+// --- bt-12 (BT12.1 / BT12.2): the tuning the client shows, the next round's initiative ------------
+
+/// The tuning the tactical client shows and sizes by (R-bt-12-TACTICSEXPORTS): the Surge start and
+/// the wild round cap (the turn bar's badges) and the pack cap (the deploy panel's slot count is
+/// `min(max_pack, spawn_a.len())`, the server's own cap). Read from the loaded content, never copied.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TacticsTuningOut {
+    pub surge_start_round: u16,
+    pub wild_round_cap: u16,
+    pub max_pack: u8,
+}
+
+/// `TacticsTuningOut` of one tuning (pure; `tuning_out` applies it to the loaded content).
+#[must_use]
+pub fn tuning_out_of(tuning: &TacticsTuning) -> TacticsTuningOut {
+    let _ = tuning;
+    todo!("bt-12: tuning_out_of")
+}
+
+/// The loaded tuning as the client reads it.
+///
+/// # Errors
+/// Content failed to load.
+pub fn tuning_out() -> Result<TacticsTuningOut, String> {
+    Ok(tuning_out_of(&tactics_content()?.tuning))
+}
+
+/// The NEXT round's initiative over `board`'s conscious units — `initiative::order` under the side
+/// that holds tie priority after `this_round_priority`'s round (`priority_for_round` from that side:
+/// design §2.2 alternation, by game-core's rule, never a restated flip).
+///
+/// # Errors
+/// A malformed board (`state_of`).
+pub fn next_initiative_of(board: &BoardIn, this_round_priority: Side) -> Result<Vec<u32>, String> {
+    let _ = (board, this_round_priority);
+    todo!("bt-12: next_initiative_of")
+}
+
+/// `TacticsTuningOut` of the loaded content.
+///
+/// # Errors
+/// Content failed to load.
+#[wasm_bindgen]
+pub fn tactics_tuning() -> Result<JsValue, JsValue> {
+    to_js(&tuning_out().map_err(js_err)?)
+}
+
+/// The next round's initiative for `board` given the side holding tie priority THIS round.
+///
+/// # Errors
+/// A malformed board, an undeserialisable side.
+#[wasm_bindgen]
+pub fn tactics_next_initiative(
+    board: JsValue,
+    this_round_priority: JsValue,
+) -> Result<JsValue, JsValue> {
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
+    let side: Side = serde_wasm_bindgen::from_value(this_round_priority)
+        .map_err(|e| js_err(format!("this_round_priority: {e}")))?;
+    to_js(&next_initiative_of(&board, side).map_err(js_err)?)
+}
+
 #[cfg(test)]
 mod tactics_tests;
 

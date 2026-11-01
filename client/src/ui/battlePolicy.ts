@@ -207,3 +207,17 @@ export function structurallyEqual(a: unknown, b: unknown): boolean {
     (k) => Object.hasOwn(rb, k) && structurallyEqual((a as Record<string, unknown>)[k], rb[k]),
   );
 }
+
+// --- bt-12 (BT12.2): the "Still there?" countdown ---------------------------------------------------
+
+/** The countdown shows for the last `STILL_THERE_LEAD_MS` of a PvE window — the design's "240 s into" a
+ *  300 s window, restated against the server's deadline. A presentation constant: no rule reads it. */
+export const STILL_THERE_LEAD_MS = 60_000;
+
+/** The whole seconds the countdown shows (1..60), or null: no deadline, more than the lead left, or
+ *  the deadline passed. `deadlineMs` is the server's epoch instant; `wallNowMs` the client's wall clock. */
+export function stillThereSeconds(deadlineMs: bigint | null, wallNowMs: number): number | null {
+  void deadlineMs;
+  void wallNowMs;
+  throw new Error('bt-12: stillThereSeconds not implemented');
+}

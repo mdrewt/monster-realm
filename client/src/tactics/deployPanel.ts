@@ -12,7 +12,7 @@
 // nothing). Every paint is compute-then-write; a structurally equal VM writes no DOM.
 import type { DeployPick } from '../module_bindings/types';
 import { structurallyEqual } from '../ui/battlePolicy';
-import type { HintBattle } from '../ui/hintBarModel';
+import type { HintDeploy } from '../ui/hintBarModel';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
 import type { BattleOp, BattleOpsView } from '../ui/screens/battleScreen';
 import * as s from './strings';
@@ -56,6 +56,12 @@ export function resolveFormation(
   return out;
 }
 
+/** One wild of the pack as the confirm screen lists it (bt-12 B, BT12.2: the anchor's `sideB.team`). */
+export interface DeployWild {
+  readonly speciesId: number;
+  readonly name: string;
+  readonly level: number;
+}
 export interface DeployInput {
   readonly battleId: bigint;
   /** The anchor's `partyMonsterIds` order joined with the own monster rows (a member with no own
@@ -63,8 +69,10 @@ export interface DeployInput {
   readonly party: readonly DeployMonster[];
   /** `store.ownFormation(identity)?.monsterIds ?? []`. */
   readonly remembered: readonly bigint[];
-  /** `rules.map(mapId).spawn_a.length` — never a literal. */
+  /** `min(tuning.max_pack, rules.map(mapId).spawn_a.length)` — never a literal. */
   readonly slotCount: number;
+  /** The pack in `wild_index` order — the anchor's `sideB.team` (the server seats every wild there). */
+  readonly wilds: readonly DeployWild[];
 }
 export interface DeployVM {
   readonly battleId: bigint;
@@ -72,6 +80,8 @@ export interface DeployVM {
   readonly candidates: readonly DeployMonster[];
   /** Length `slotCount`; slot i holds `resolveFormation(...)[i]`'s monster, else null. */
   readonly formation: readonly (DeployMonster | null)[];
+  /** The pack, in order (the composition list of the confirm screen). */
+  readonly wilds: readonly DeployWild[];
 }
 export function deployVM(input: DeployInput): DeployVM {
   const candidates = input.party.filter((m) => m.hp > 0);
@@ -85,7 +95,8 @@ export function deployVM(input: DeployInput): DeployVM {
     const id = resolved[i];
     formation.push(id === undefined ? null : (candidates.find((m) => m.monsterId === id) ?? null));
   }
-  return { battleId: input.battleId, candidates, formation };
+  // bt-12 API freeze: the composition list lands with the implementation.
+  return { battleId: input.battleId, candidates, formation, wilds: [] };
 }
 /** The filled slots as `deploy_units` picks, ascending slot (a sparse assignment keeps its slot numbers). */
 export function picksOf(slots: readonly (DeployMonster | null)[]): DeployPick[] {
@@ -210,9 +221,16 @@ export class DeployPanel implements BattleOpsView {
     closeOverlayA11y('battleView', null);
   }
 
-  /** The hint bar's verbs while the EDITOR is open: `{ start: 'submit', undo: false }`. */
-  hint(): HintBattle {
-    return { start: 'submit', undo: false };
+  /** Which screen the hint bar describes (bt-12 B): the confirm screen or the editor. */
+  hint(): HintDeploy {
+    // bt-12 API freeze: the mode-aware answer lands with the implementation.
+    return { deploy: 'confirm' };
+  }
+
+  /** The "Still there?" countdown (BT12.2): `n` seconds paints one `.tactics-countdown` line as the root's
+   *  last child, the same value writes nothing, null removes it. Driven by main.ts's frame pump. */
+  setCountdown(seconds: number | null): void {
+    void seconds;
   }
 
   applyBattleOp(op: BattleOp): void {

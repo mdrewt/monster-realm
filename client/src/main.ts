@@ -91,7 +91,7 @@ import { isAlreadyActing } from './tactics/draft';
 import { CAPS } from './tactics/presentation';
 import { ResultsPanel, type ResultsVM, resultsVM } from './tactics/results';
 import { queueTooLate } from './tactics/strings';
-import { bindTacticsRules, type TacticsRules } from './tactics/wasm';
+import { bindTacticsRules, type TacticsClientRules } from './tactics/wasm';
 import { t } from './ui/a11yCopy';
 import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
@@ -424,9 +424,9 @@ let battleView: BattleView | undefined;
 let deployPanel: DeployPanel | undefined;
 let resultsPanel: ResultsPanel | undefined;
 let battleMount: HTMLElement | undefined;
-let tacticsRulesPort: TacticsRules | null = null;
+let tacticsRulesPort: TacticsClientRules | null = null;
 /** The tactics rules port, bound on first use (see the `wasmPkg` import note). */
-const tacticsRules = (): TacticsRules => (tacticsRulesPort ??= bindTacticsRules(wasmPkg));
+const tacticsRules = (): TacticsClientRules => (tacticsRulesPort ??= bindTacticsRules(wasmPkg));
 /** The three views that can own the battle frame, in a fixed order (undefined until built). */
 const battleViews = (): readonly (BattleView | DeployPanel | ResultsPanel | undefined)[] => [
   battleView,
@@ -3112,7 +3112,13 @@ const deploySlotCounts = new Map<number, number>();
  *  dropped), the remembered formation and the map's spawn count. Builds the panel on first use. null
  *  (reported once) when the rules port or the map cannot be read — the 1v1 view keeps the frame (B17). */
 function buildDeployPanel(
-  battle: { readonly battleId: bigint; readonly partyMonsterIds: readonly bigint[] },
+  battle: {
+    readonly battleId: bigint;
+    readonly partyMonsterIds: readonly bigint[];
+    readonly sideB: {
+      readonly team: readonly { readonly speciesId: number; readonly level: number }[];
+    };
+  },
   mapId: number,
 ): { readonly kind: 'deploy'; readonly view: DeployPanel; readonly vm: DeployVM } | null {
   if (battleMount === undefined) return null;
@@ -3140,6 +3146,12 @@ function buildDeployPanel(
       party,
       remembered: store.ownFormation(identity)?.monsterIds ?? [],
       slotCount,
+      // The pack (bt-12 B): the server seats every wild in the anchor's side B at the start.
+      wilds: battle.sideB.team.map((w) => ({
+        speciesId: w.speciesId,
+        name: store.species(w.speciesId)?.name ?? `#${w.speciesId}`,
+        level: w.level,
+      })),
     });
     deployPanel ??= new DeployPanel(battleMount, {
       onDeploy: (battleId, picks) => dispatch({ kind: 'deployUnits', battleId, picks }),
@@ -3852,12 +3864,46 @@ const mrPvpHook = {
   },
 };
 
+// bt-12 (BT12.5): the tactical e2e's READ-ONLY hook — the local player's tactical battle as the store
+// holds it (own rows only: never a seed, never the opponent's plan) and the own monsters' HP. No
+// reducer reaches through it; every battle action in the e2e is a virtual button. Fingerprinted by
+// scripts/verify-build-hooks.mjs beside the other three.
+const mrTacticsHook = {
+  battle(): null | {
+    battleId: string;
+    phase: string;
+    round: number;
+    turnIdx: number;
+    initiative: number[];
+    activeUnitId: number | null;
+    owner: 'legacy' | 'deploy' | 'tactical' | 'results' | null;
+    events: number;
+    deadlineMs: string | null;
+    units: {
+      unitId: number;
+      side: 'A' | 'B';
+      mine: boolean;
+      x: number;
+      y: number;
+      curHp: number;
+      maxHp: number;
+      state: string;
+    }[];
+  } {
+    return null;
+  },
+  ownMonsters(): { monsterId: string; currentHp: number; maxHp: number; partySlot: number }[] {
+    return [];
+  },
+};
+
 // D-17.5-E: DEV-only test hooks. Only the window ASSIGNMENTS are gated —
 // the hook consts above stay top-level (still referenced here, so no unused-var lint).
 if (import.meta.env.DEV) {
   (window as unknown as { __game: typeof snapshot }).__game = snapshot;
   (window as unknown as { __mrTrade: typeof mrTradeHook }).__mrTrade = mrTradeHook;
   (window as unknown as { __mrPvp: typeof mrPvpHook }).__mrPvp = mrPvpHook;
+  (window as unknown as { __mrTactics: typeof mrTacticsHook }).__mrTactics = mrTacticsHook;
 }
 
 // the build stamp is UNGATED — present in the production playtest build,

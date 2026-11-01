@@ -14,7 +14,8 @@
 // fields, `null` for `None`. They are the RULES' view of a unit (`RulesUnit` = `TacticalUnit`), not
 // the board view-model's (`boardModel.ts` `TacticalUnit`).
 import type { BattleUnit } from '../module_bindings/types';
-import type { IntentKind, OverlaySets, Tile } from './boardModel';
+import type { StoreTurnState } from '../net/store';
+import type { IntentKind, OverlaySets, StatusTag, Tile } from './boardModel';
 
 // --- serde mirrors -----------------------------------------------------------------------------
 
@@ -273,6 +274,16 @@ export interface TacticsWasmExports {
   tactics_is_exhausted(curHp: number, maxHp: number): boolean;
   tactics_plan(start: unknown, entries: unknown): unknown;
   tactics_overlays(board: unknown, q: unknown): unknown;
+  tactics_tuning(): unknown;
+  tactics_next_initiative(board: unknown, thisRoundPriority: unknown): unknown;
+}
+
+/** bt-12: the tuning the client shows and sizes by (`tactics_tuning()`): the Surge start and the wild
+ *  round cap (the turn bar), the pack cap (the deploy slot count is `min(max_pack, spawn_a.length)`). */
+export interface TacticsTuning {
+  readonly surge_start_round: number;
+  readonly wild_round_cap: number;
+  readonly max_pack: number;
 }
 
 /** The rules as the tactical client asks them. Synchronous once bound; throws on malformed input. */
@@ -302,6 +313,17 @@ export interface TacticsRules {
   overlays(board: RulesBoard, q: OverlayQuery): OverlaysOut;
 }
 
+/** bt-12 (BT12.1): what main.ts's view-model builder asks beyond the shell's port — the tuning the shell
+ *  shows and the next round's initiative. A separate extension so the shell's deps (and every fake
+ *  `TacticsRules` in the pure models' tests) stay the port the shell actually calls. */
+export interface TacticsClientRules extends TacticsRules {
+  /** The loaded tuning's client-facing fields. */
+  tuning(): TacticsTuning;
+  /** The NEXT round's initiative over `board`'s conscious units, given the side that holds tie priority
+   *  THIS round (`battle_tactical.tie_priority_side`): game-core's alternation, never a flip here. */
+  nextInitiative(board: RulesBoard, thisRoundPriority: RuleSide): number[];
+}
+
 /** The `tactics_*` exports the port binds, in the order `bindTacticsRules` checks them. */
 const EXPORT_NAMES = [
   'tactics_map',
@@ -318,6 +340,8 @@ const EXPORT_NAMES = [
   'tactics_is_exhausted',
   'tactics_plan',
   'tactics_overlays',
+  'tactics_tuning',
+  'tactics_next_initiative',
 ] as const satisfies readonly (keyof TacticsWasmExports)[];
 
 const U16_MAX = 0xffff;
@@ -332,7 +356,7 @@ function int(label: string, value: number, max: number): number {
 }
 
 /** Bind the port to a pkg namespace. Throws naming the first `tactics_*` export that is not a function. */
-export function bindTacticsRules(pkg: TacticsWasmExports): TacticsRules {
+export function bindTacticsRules(pkg: TacticsWasmExports): TacticsClientRules {
   const exports = pkg as unknown as Record<string, unknown>;
   for (const name of EXPORT_NAMES) {
     if (typeof exports[name] !== 'function') {
@@ -385,7 +409,38 @@ export function bindTacticsRules(pkg: TacticsWasmExports): TacticsRules {
       pkg.tactics_is_exhausted(int('curHp', curHp, U16_MAX), int('maxHp', maxHp, U16_MAX)),
     plan: (start, entries) => pkg.tactics_plan(start, entries) as RuleResult<PlanOut, EconomyError>,
     overlays: (board, q) => pkg.tactics_overlays(board, q) as OverlaysOut,
+    tuning: () => pkg.tactics_tuning() as TacticsTuning,
+    nextInitiative: (board, thisRoundPriority) =>
+      pkg.tactics_next_initiative(board, thisRoundPriority) as number[],
   };
+}
+
+// --- bt-12 (BT12.1): the store → shell view-model mappers (pure; main.ts assembles the VM) ----------
+
+/** The shell's battle kind: Wild → `wild`; Pvp AND Practice → `pvp` (Practice uses the PvP ruleset and
+ *  both sides are the player's — R-bt-11-PRACTICEKIND). Exhaustive. */
+export function shellKind(kind: RuleBattleKind): 'wild' | 'pvp' {
+  void kind;
+  throw new Error('bt-12: shellKind not implemented');
+}
+
+/** The current initiative unit of either side: `Waiting(U)` → U; `Advancing` → the initiative entry at
+ *  `turnIdx` (the unit executing or about to), else null; `NotActive` → null. */
+export function activeUnitOf(
+  turnState: StoreTurnState,
+  initiative: readonly number[],
+  turnIdx: number,
+): number | null {
+  void turnState;
+  void initiative;
+  void turnIdx;
+  throw new Error('bt-12: activeUnitOf not implemented');
+}
+
+/** The board view's status tag of a rules status (`{ Sleep: … }` → `'Sleep'`); null stays null. */
+export function statusTagOf(status: RuleStatusEffect | null): StatusTag | null {
+  void status;
+  throw new Error('bt-12: statusTagOf not implemented');
 }
 
 const has = (action: QueuedActionRule, tag: 'Skill' | 'Move'): boolean =>

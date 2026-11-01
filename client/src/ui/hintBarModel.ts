@@ -51,13 +51,23 @@ export interface HintBattle {
   readonly undo: boolean;
 }
 
+/** What only the deploy panel knows (bt-12, BT12.2 / R-bt-12-DEPLOYHINT): which of its two screens is
+ *  up. `confirm`: A deploys, X opens the editor, Start opens the menu; `edit`: A assigns, B backs out,
+ *  LB / RB cycle the candidates, Start submits. */
+export interface HintDeploy {
+  readonly deploy: 'confirm' | 'edit';
+}
+
 export function hintBar(
   stack: Stack,
   bindings: Bindings,
   notices: readonly Notice[],
   world: HintWorld = NO_WORLD,
-  battle?: HintBattle,
+  battleOrDeploy?: HintBattle | HintDeploy,
 ): readonly HintChip[] {
+  // bt-12 API freeze: the deploy chips land with the implementation.
+  const battle =
+    battleOrDeploy !== undefined && 'deploy' in battleOrDeploy ? undefined : battleOrDeploy;
   const chip = (button: VButton, verb: string, badge = false): HintChip => {
     const code = bindings.buttons[button][0];
     return { button, keycap: code === undefined ? '' : glyph(code), verb, badge };
