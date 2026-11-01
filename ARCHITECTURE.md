@@ -138,6 +138,7 @@ writes:
 | `movement` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, scheduled `movement_tick` |
 | `battle` | `start_battle`, `submit_attack`, `swap_active`, `use_battle_item`, `flee` (+ dev-only `start_wild_battle`) |
 | `taming` | `attempt_recruit` (+ dev-only `grant_bait`) |
+| `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc` (+ dev-only `dev_start_tactical_wild`; `start_wild_tactical` is the one writer of a new tactical battle, called from the dev reducer until bt-16 wires the grass path) |
 | `raising` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `heal_party` |
 | `evolution` | `evolve`, `ack_evolution_notices` |
 | `monster_mgmt` | `set_nickname`, `set_party_slot` |
@@ -171,9 +172,12 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
   a JWT from an allowed issuer, creates or updates the caller's `account` row.
   Connections without an account are accepted.
 - `on_disconnect` deletes that connection's session row. If the identity has no
-  other live connection, it resolves the identity's trades, PvP battles, wild battles
-  and challenges (`resolve_all_live_interactions`), then deletes the conversation,
-  character and player rows.
+  other live connection, it resolves the identity's tactical battles (first — an
+  Active wild battle auto-flees with its damaged HP persisted and its READY rows
+  discarded, a Deploying one closes as `Fled` with nothing persisted, and the anchor
+  stays terminal so the legacy wild resolver skips it), then its trades, PvP battles,
+  legacy wild battles and challenges (`resolve_all_live_interactions`), then deletes
+  the conversation, character and player rows.
 
 ### Movement
 
@@ -272,7 +276,27 @@ body is the whole security boundary.
   policy (Erase, Anonymize, ViaJoin, NotOwned), a written basis, and an `exportable`
   flag. A test in `accounts_tests.rs` compares it with the generated module
   definition's table set, so a table missing from it or listed but gone fails. The tactical tables are swept by `schema::erase_tactical_rows` (by
-  `battle_id`, before the `battle` anchor is tombstoned) and none is exportable.
+  `battle_id`, before the `battle` anchor is tombstoned — the three tactical schedule
+  tables included) and none is exportable. A finished tactical battle's event, unit,
+  queue, clock, secret, wild-unit and staging rows are deleted 24 h later by the
+  scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive.
+
+**Tactical battles (`tactics.rs`, M-battle-tactics bt-8).** The server is a shell over
+`game_core::tactics::queue::TacticalBattle`: a reducer hydrates the bt-7 rows into the
+engine, hands it one input (`start`, `advance`, `submit_queue`, `cancel_queue`, `expire`
+or `conclude`), writes every row back and arms or disarms the schedule rows the step asks
+for. A clock window arms one `tactical_deadline_sched` row pinned by `(battle_id, unit_id,
+window_seq)` at the clock's own deadline (a stale or premature fire changes nothing; a
+premature one re-arms); a round that completes without player input leaves the battle
+`Advancing` with one zero-delay `tactical_advance_sched` row pinned by `(battle_id, round)`;
+the Deploying window rides the deadline table with `unit_id 0`, `window_seq 0` and closes
+the battle as `Fled` with no HP write. Every step mirrors the deployed units' HP into the
+anchor's legacy side-A team, so the one write-back primitive (`battle::write_back_party_hp`)
+persists damaged HP at every terminal, and a battle whose rows can no longer be loaded
+(content drift) is closed by a fallback that writes unit HP straight to the monster rows —
+the scheduled reducers never leave a tactical battle `Ongoing`. Content (kits, maps,
+tuning, the type chart, encounter tables) is the game-core embedded registry parsed once
+per process; `Item` and `Recruit` entries are refused until bt-9 wires their glue.
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned

@@ -316,6 +316,20 @@ impl TacticsContent {
 // Hydration — rows ⇄ `TacticalBattle`
 // ===========================================================================
 
+/// The turn state and round before a step (what `store` arms an advance row against).
+#[derive(Clone, Copy)]
+struct Prev {
+    turn: TurnState,
+    round: u16,
+}
+
+fn prev_of(tb: &TacticalBattle) -> Prev {
+    Prev {
+        turn: tb.turn_state,
+        round: tb.state.round,
+    }
+}
+
 /// A tactical battle composed from its rows for one transaction.
 struct Loaded {
     anchor: Battle,
@@ -571,13 +585,15 @@ fn disarm_gcs(ctx: &ReducerContext, battle_id: u64, except: Option<u64>) {
 
 /// Write one step back: the anchor HP mirror, the tactical row, the secret, every unit,
 /// the READY rows (reconciled), the side-A clock, the events, then the schedule rows the
-/// step asks for. `prev_turn` is the turn state before the step (an advance row is armed
-/// only on the transition into `Advancing`). A finished battle goes through [`finish`].
+/// step asks for. `prev` is the turn state and round before the step: an advance row is
+/// armed only when the step ended in `Advancing` AND moved the boundary (it entered
+/// `Advancing`, or a fired advance ran a whole round into the next boundary) — a pre-queue
+/// or cancel during `Advancing` arms nothing. A finished battle goes through [`finish`].
 fn store(
     ctx: &ReducerContext,
     loaded: Loaded,
     out: &StepResult,
-    prev_turn: TurnState,
+    prev: Prev,
     now_ms: i64,
     except: Option<u64>,
 ) {
@@ -619,8 +635,10 @@ fn store(
         anchor.state.outcome = tb.state.outcome;
     }
     ctx.db.battle().battle_id().update(anchor.clone());
-    // The tactical row.
-    tactical.phase = tb.phase();
+    // The tactical row (`finish` flips the phase itself; its idempotency reads it).
+    if !finished {
+        tactical.phase = tb.phase();
+    }
     tactical.round = tb.state.round;
     tactical.initiative = tb.state.initiative.clone();
     tactical.turn_idx = tb.turn_idx();
@@ -716,7 +734,8 @@ fn store(
     if let (TurnState::Waiting(unit), Some(window)) = (tb.turn_state, out.window) {
         arm_deadline(ctx, battle_id, unit, window.seq, window.deadline_ms);
     }
-    if tb.turn_state == TurnState::Advancing && prev_turn != TurnState::Advancing {
+    let crossed = prev.turn != TurnState::Advancing || tb.state.round != prev.round;
+    if tb.turn_state == TurnState::Advancing && crossed {
         if let Some(pin) = tb.advance_pin() {
             arm_advance(ctx, pin, now_ms);
         }
@@ -798,7 +817,7 @@ fn fallback_close(
     mr_log(
         "tactical_fallback_close",
         &format!(
-            "\"battle_id\":{battle_id},\"phase\":\"{:?}\",\"reason\":\"{escaped}\"",
+            "\"battle_id\":{battle_id},\"tactical_phase\":\"{:?}\",\"reason\":\"{escaped}\"",
             tactical.phase
         ),
     );
@@ -1180,7 +1199,10 @@ fn materialize(
             tb,
         },
         &out,
-        TurnState::NotActive,
+        Prev {
+            turn: TurnState::NotActive,
+            round: 1,
+        },
         now_ms,
         None,
     );
@@ -1631,7 +1653,7 @@ pub fn submit_queue(
         mut tb,
     } = loaded;
     let now = now_ms(ctx);
-    let prev_turn = tb.turn_state;
+    let prev = prev_of(&tb);
     let prev_clock = tb.clocks[side_index(side)];
     let rules = content.rules();
     let mut hooks = shell_hooks(ctx, &units, map, content);
@@ -1654,7 +1676,7 @@ pub fn submit_queue(
             tb,
         },
         &out,
-        prev_turn,
+        prev,
         now,
         None,
     );
@@ -1680,18 +1702,11 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
     let Some(side) = side_of_sender(&anchor, me) else {
         return reject(NAME, me, "not owner".to_string());
     };
-    let prev_turn = loaded.tb.turn_state;
+    let prev = prev_of(&loaded.tb);
     if let Err(e) = loaded.tb.cancel_queue(side, unit_id) {
         return reject(NAME, me, format!("{NAME}: {e:?}"));
     }
-    store(
-        ctx,
-        loaded,
-        &StepResult::default(),
-        prev_turn,
-        now_ms(ctx),
-        None,
-    );
+    store(ctx, loaded, &StepResult::default(), prev, now_ms(ctx), None);
     Ok(())
 }
 
@@ -1796,7 +1811,7 @@ pub fn tactical_deadline_fire(
         map,
         mut tb,
     } = loaded;
-    let prev_turn = tb.turn_state;
+    let prev = prev_of(&tb);
     let rules = content.rules();
     let mut hooks = shell_hooks(ctx, &units, map, content);
     let out = match tb.expire(now, args.unit_id, args.window_seq, &rules, &mut hooks) {
@@ -1819,7 +1834,7 @@ pub fn tactical_deadline_fire(
             tb,
         },
         &out,
-        prev_turn,
+        prev,
         now,
         except,
     );
@@ -1878,7 +1893,7 @@ pub fn tactical_advance(ctx: &ReducerContext, args: TacticalAdvanceSched) -> Res
         map,
         mut tb,
     } = loaded;
-    let prev_turn = tb.turn_state;
+    let prev = prev_of(&tb);
     let pin = AdvancePin {
         battle_id,
         round: args.round,
@@ -1899,7 +1914,7 @@ pub fn tactical_advance(ctx: &ReducerContext, args: TacticalAdvanceSched) -> Res
             tb,
         },
         &out,
-        prev_turn,
+        prev,
         now,
         except,
     );
@@ -1995,7 +2010,7 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
             map,
             mut tb,
         } = loaded;
-        let prev_turn = tb.turn_state;
+        let prev = prev_of(&tb);
         let out = match tb.conclude(BattleOutcome::Fled, EndHow::AutoFlee) {
             Ok(out) => out,
             Err(_) => {
@@ -2013,9 +2028,13 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
                 tb,
             },
             &out,
-            prev_turn,
+            prev,
             now,
             None,
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tactics_tests.rs"]
+mod tactics_tests;
