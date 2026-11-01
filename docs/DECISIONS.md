@@ -424,6 +424,33 @@ scripting); trusting a client-sent tile (a Skill re-aims at its bound unit, a Mo
 wiring a rule into the executor except through `Hooks`. Accepted reveals: `reason_kind` names
 the failure kind of the first discarded entry, and `QueueVoided` shows that a plan existed.
 
+## Tactical settlement derives the reward ledger from the transcript
+
+**Decision.** A tactical battle's rewards (design §7) are settled once, at its finish, by
+`server-module/src/tactics_settle.rs`: the persisted `battle_event` transcript is folded into
+game-core's `rewards::on_unit_defeated` — each `Ko` credited to the attacker of the last
+opposite-side hit on the victim, against the final board with the units not yet fallen restored —
+and `rewards::pay` is applied through the 1v1 funnel's own per-monster credit
+(`battle::credit_monster`) over the whole conscious party, with one `Awards` line per paid monster
+(ascending unit) and one `unit 0` line for the player's currency appended after `BattleEnd`. The
+win-only credits (daily trust-favorable, Quality Time, the evolution check) need a defeated wild,
+so a recruit-only win pays nothing. `battle_summary` is one row per battle, inserted at the Active
+start (`outcome == Ongoing` until finished) and accumulated every step. The 1v1 reducers refuse a
+tactical anchor (`battle::reject_if_tactical_anchor`).
+
+**Why.** Nothing in game-core calls the KO hook, and the shell sees the board only between
+transactions, so the KO moment is observable only through the transcript; consciousness is
+monotone in P1 (no heal or revive), which makes the reconstruction exact. Reusing the 1v1 credit
+keeps one write-back funnel and the carried trust/Quality-Time scope. The summary's
+windows-per-unit-turn and pre-queued/live counts are not derivable from events, so they accumulate
+per step. One anchor, one payout path: a 1v1 turn on a tactical anchor would pay twice.
+
+**Rules out.** A second ledger store or a per-KO reward write mid-battle; recomputing the killer or
+the split on the client (bt-12 renders the `Awards` lines as they are); a `check_headroom` for
+recruits (no monster-storage rule exists; the predicate is "the unit has an owner"); paying the win
+credits on a recruit-only win. Moving the fold and the attribution into game-core
+(`tactics::rewards`) is R-bt-9-LEDGERHOME, due with the first slice that adds a heal or revive.
+
 ## Tactical rule conventions carried from bt-2
 
 **Decision.** In a wild battle side A is the player: only it is player-owned

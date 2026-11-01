@@ -960,7 +960,8 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 /// ongoing battle.
 ///
 /// Guard order (reject-not-clamp; decision always before irreversible spend):
-/// 1. require_owner — caller must own the battle.
+/// 1. require_owner — caller must own the battle; then `reject_if_tactical_anchor` (bt-9: a
+///    tactical battle's items go through its own queue, never this reducer).
 /// 2. outcome == Ongoing — items cannot be used in terminal battles.
 /// 3. Load `ItemDef` from content (`cure_status` also lives on `item_row` for
 ///    client classification, but the reducer reads the
@@ -1212,6 +1213,13 @@ pub(crate) fn apply_faint_penalties(ctx: &ReducerContext, battle: &Battle) -> Re
         let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
             continue;
         };
+        if m.owner_identity != battle.player_identity {
+            // The write-back's abort contract, at this site too (the 1v1 funnel never gets
+            // here on an owner change; the tactical fallback close can).
+            return Err(format!(
+                "apply_faint_penalties: ownership changed mid-battle for monster {mid} — aborted"
+            ));
+        }
         m.trust_unfavorable_count = m.trust_unfavorable_count.saturating_add(1);
         update_monster_synced(ctx, m)?;
     }

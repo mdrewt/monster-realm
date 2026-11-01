@@ -321,9 +321,7 @@ level are resolved before the executor debits the bait, the roll is game-core's
 (`recruit::resolve_recruit`, the private stream), the H1/H2 `playtest_event` row is written
 with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
 `Item` entries stay refused (no game-core rule home yet). The 1v1 reducers refuse a tactical
-anchor (`battle::reject_if_tactical_anchor`): one anchor, one payout path. Content (kits, maps,
-tuning, the type chart, encounter tables) is the game-core embedded registry parsed once
-per process; `Item` and `Recruit` entries are refused until bt-9 wires their glue.
+anchor (`battle::reject_if_tactical_anchor`): one anchor, one payout path. 
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned

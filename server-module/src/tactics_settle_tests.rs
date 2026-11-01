@@ -134,6 +134,19 @@ fn pools(m: &Monster) -> [u32; 8] {
     AFFINITIES.map(|affinity| pool(m, affinity))
 }
 
+/// The win-only credits `credit_monster` pays when `favorable`: the daily trust-favorable credit
+/// (count + its day anchor) and every Quality-Time accumulator.
+fn win_credits(m: &Monster) -> (u32, u32, u32, u32, u32, i64) {
+    (
+        m.trust_favorable_count,
+        m.trust_favorable_battle_day_epoch,
+        m.quality_time_ticks_total,
+        m.quality_time_accum_ms,
+        m.quality_time_window_ms,
+        m.quality_time_window_start_ms,
+    )
+}
+
 /// `(xp, level)` after gaining `gained` XP, by the carried rule.
 fn after_gain(xp: u32, gained: u32) -> (u32, u8) {
     let (xp, level, _) = apply_xp_gain(Xp::new(xp), Xp::new(gained));
@@ -1653,6 +1666,7 @@ fn a_wild_win_credits_the_daily_trust_to_every_conscious_party_member_deployed_o
         .iter()
         .map(|&mid| w.monster(mid).trust_favorable_count)
         .collect();
+    let bench = w.monster(14);
     ko_submit(&fx, &w, &live, T0 + 25_000);
     let after: Vec<u32> = party
         .iter()
@@ -1662,6 +1676,12 @@ fn a_wild_win_credits_the_daily_trust_to_every_conscious_party_member_deployed_o
     assert_eq!(
         after, want,
         "the carried win-only daily trust credit reaches the whole conscious party"
+    );
+    let m14 = w.monster(14);
+    assert_eq!(
+        (m14.xp, m14.level, pools(&m14)),
+        (bench.xp, bench.level, pools(&bench)),
+        "the benched member gets the trust credit only: it earned no ledger XP and no essence"
     );
 }
 
@@ -1739,6 +1759,15 @@ fn a_recruit_win_pays_the_earlier_ko_and_never_the_recruited_wild_bt9_1() {
         "PRECONDITION: the last wild recruited ends the battle"
     );
     assert_ko_paid(&w, &s, "recruit win");
+    // The counter-pin of the recruit-only case below: here a wild WAS defeated, so the win's
+    // daily trust credit applies to both conscious members (the KO step itself paid nothing).
+    for (mid, before) in [(11u64, &s.m11), (12, &s.m12)] {
+        assert_eq!(
+            w.monster(mid).trust_favorable_count,
+            before.trust_favorable_count + 1,
+            "monster {mid}: a won battle that defeated a wild credits the daily trust"
+        );
+    }
 }
 
 #[test]
@@ -1750,10 +1779,17 @@ fn a_recruit_win_with_no_ko_pays_nobody_anything_bt9_1() {
     let pct = odds_pct(&w, live.wild, None);
     force_recruit(&w, live.id, pct, true);
     let (m11, m12) = (w.monster(11), w.monster(12));
+    let t = T0 + 20_000;
+    let today = crate::battle::day_epoch_utc(t);
+    assert!(
+        today > m11.trust_favorable_battle_day_epoch
+            && today > m12.trust_favorable_battle_day_epoch,
+        "PRECONDITION: today's trust credit is still open for both, so a wrongly paid one shows"
+    );
     submit(
         &fx,
         a(),
-        T0 + 20_000,
+        t,
         live.id,
         live.u1,
         vec![recruit(live.wild, None)],
@@ -1777,6 +1813,134 @@ fn a_recruit_win_with_no_ko_pays_nobody_anything_bt9_1() {
         awards_after_end(&w, live.id).is_empty(),
         "no Awards line for a recruit"
     );
+    // A recruit is not a KO: the battle defeated no wild, so the win-only credits (the daily
+    // trust-favorable credit and Quality Time) are not paid either.
+    for (mid, before) in [(11u64, &m11), (12, &m12)] {
+        assert_eq!(
+            win_credits(&w.monster(mid)),
+            win_credits(before),
+            "monster {mid}: a recruit-only win pays no trust-favorable credit and no Quality Time"
+        );
+    }
+}
+
+/// The `Awards` lines ascend by unit id whatever the deploy order. Picks reversed: monster 12 is
+/// deployed first (its unit gets the LOWER id) while the anchor's party still lists monster 11
+/// first. Monster 11's unit (the faster) KOs a wild, monster 12's unit flees: both earned, and the
+/// lines must list the lower unit id first — not the party order.
+#[test]
+fn awards_lines_ascend_by_unit_id_whatever_the_deploy_order_bt9_1() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pair(&fx, &w);
+    deploy(&fx, a(), T0 + 1_000, id, vec![pick(12, 0), pick(11, 1)])
+        .expect("the pair deploys, picks reversed");
+    let players = w.side_units(id, SideRow::A);
+    let unit_of = |mid: u64| {
+        players
+            .iter()
+            .find(|u| u.monster_id == Some(mid))
+            .map(|u| u.unit_id)
+            .unwrap_or_else(|| panic!("monster {mid} is deployed"))
+    };
+    let (killer, mate) = (unit_of(11), unit_of(12));
+    assert!(
+        mate < killer,
+        "PRECONDITION: monster 12's unit (deployed first) has the lower unit id"
+    );
+    assert_eq!(
+        w.anchor(id).expect("the anchor exists").party_monster_ids,
+        vec![11, 12],
+        "PRECONDITION: the anchor's party still lists monster 11 first"
+    );
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(killer),
+        "PRECONDITION: monster 11's unit (the faster) holds the first window"
+    );
+    // `ko_scene`'s board with the two party units' ids reversed: the killer stands where u1 stood.
+    let (k_at, m_at) = (w.unit(killer), w.unit(mate));
+    w.edit_unit(killer, |u| {
+        u.x = m_at.x;
+        u.y = m_at.y;
+    });
+    w.edit_unit(mate, |u| {
+        u.x = k_at.x;
+        u.y = k_at.y;
+    });
+    let dead = w.side_units(id, SideRow::B)[0].unit_id;
+    seat_in_light_range(&w, killer, dead);
+    w.edit_unit(dead, |u| {
+        u.cur_hp = 1;
+        u.first_stand = false;
+    });
+    let k_row = w.unit(killer);
+    force_hit(&w, id, k_row.skill_ids[0]);
+    let t = T0 + 20_000;
+    submit(
+        &fx,
+        a(),
+        t,
+        id,
+        killer,
+        vec![light(&k_row, dead), QueuedAction::EndTurn],
+    )
+    .expect("Light then EndTurn");
+    assert_eq!(
+        w.unit(dead).state,
+        UnitState::Fainted,
+        "PRECONDITION: the Light KO'd the wild"
+    );
+    let tac = w.tactical(id);
+    assert_eq!(
+        (tac.phase, tac.turn_state),
+        (Phase::Active, TurnState::Waiting(mate)),
+        "PRECONDITION: the battle goes on and monster 12's unit holds the window"
+    );
+    let state = loaded(&fx, id, t).state;
+    let mut ledger = Ledger::default();
+    on_unit_defeated(
+        &mut ledger,
+        &state,
+        killer,
+        dead,
+        bst(w.unit(dead).species_id),
+    )
+    .expect("the KO is creditable");
+    let mut want: Vec<AwardsEvent> = pay(&ledger, &state)
+        .awards
+        .iter()
+        .map(|aw| AwardsEvent {
+            unit: aw.unit,
+            xp: aw.xp,
+            essence: aw.essence.iter().map(|(_, n)| *n).sum(),
+            currency: 0,
+        })
+        .collect();
+    want.sort_by_key(|x| x.unit);
+    assert_eq!(
+        want.iter().map(|x| x.unit).collect::<Vec<u32>>(),
+        vec![mate, killer],
+        "non-vacuous: the killer and its side-mate both earn"
+    );
+    submit(&fx, a(), t + 10_000, id, mate, vec![QueuedAction::Flee])
+        .expect("monster 12's unit flees with its full budget");
+    assert_eq!(
+        outcome(&w, id),
+        BattleOutcome::Fled,
+        "PRECONDITION: the battle fled"
+    );
+    let got: Vec<AwardsEvent> = awards_after_end(&w, id)
+        .into_iter()
+        .map(|(_, x)| x)
+        .filter(|x| x.unit != CURRENCY_AWARD_UNIT)
+        .collect();
+    assert_eq!(
+        got.iter().map(|x| x.unit).collect::<Vec<u32>>(),
+        vec![mate, killer],
+        "the Awards lines ascend by unit id (monster 12's unit first), never the party's order"
+    );
+    assert_eq!(got, want, "each line is its unit's ledger award");
 }
 
 #[test]
@@ -3176,6 +3340,117 @@ fn only_the_first_of_two_recruit_attempts_in_one_step_decides_weaken_first_bt9_5
         (2, 0, false),
         "the battle's FIRST attempt was at full HP"
     );
+}
+
+/// The first attempt decides across TRANSACTIONS too: u1 fails at full HP in one submit, u2 tries
+/// the same wild at a quarter HP in a later submit — the stored row's attempt count, not a
+/// per-transaction flag alone, keeps the second attempt from re-deciding `weaken_first`.
+#[test]
+fn a_weakened_attempt_in_a_later_step_never_overrides_a_full_hp_first_attempt_bt9_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seat_between(&w, &live);
+    let wild = w.unit(live.wild);
+    let first_hp = hp_permille(wild.cur_hp, wild.stats.hp);
+    assert!(
+        first_hp >= WEAKEN_FIRST_PERMILLE,
+        "PRECONDITION: the first attempt sees a healthy wild"
+    );
+    let pct = odds_pct(&w, live.wild, None);
+    force_recruit(&w, live.id, pct, false);
+    submit(
+        &fx,
+        a(),
+        T0 + 20_000,
+        live.id,
+        live.u1,
+        vec![recruit(live.wild, None)],
+    )
+    .expect("u1's attempt at full HP is accepted");
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.u2),
+        "PRECONDITION: u2 holds the next window"
+    );
+    let first = summary(&w, live.id);
+    assert_eq!(
+        (first.recruit_attempts, first.weaken_first),
+        (1, false),
+        "PRECONDITION: the first step stored its attempt"
+    );
+    w.edit_unit(live.wild, |u| u.cur_hp = (u.stats.hp / 4).max(1));
+    let weak = w.unit(live.wild);
+    let second_hp = hp_permille(weak.cur_hp, weak.stats.hp);
+    assert!(
+        second_hp < WEAKEN_FIRST_PERMILLE,
+        "PRECONDITION: the second attempt sees a weakened wild"
+    );
+    let pct = odds_pct(&w, live.wild, None);
+    force_recruit(&w, live.id, pct, false);
+    submit(
+        &fx,
+        a(),
+        T0 + 30_000,
+        live.id,
+        live.u2,
+        vec![recruit(live.wild, None)],
+    )
+    .expect("u2's attempt in a later transaction is accepted");
+    let rows: Vec<u16> = playtest_rows(&w, live.id)
+        .iter()
+        .map(|e| e.hp_permille)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![first_hp, second_hp],
+        "non-vacuous: both attempts resolved, each at the HP it saw"
+    );
+    let s = summary(&w, live.id);
+    assert_eq!(
+        (s.weaken_first, s.recruit_attempts, s.recruit_successes),
+        (false, 2, 0),
+        "the battle's first attempt (full HP) decided; a later step's weakened attempt does not"
+    );
+}
+
+/// The threshold is strict: exactly half HP (500 per mille) at the battle's first attempt is NOT
+/// weaken-first; 499 per mille is.
+#[test]
+fn weaken_first_needs_strictly_less_than_half_hp_at_the_first_attempt_bt9_5() {
+    for (cur_hp, want) in [(500u16, false), (499, true)] {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pair(&fx, &w);
+        seat_adjacent(&w, live.u1, live.wild);
+        w.edit_unit(live.wild, |u| {
+            u.stats.hp = 1_000;
+            u.cur_hp = cur_hp;
+        });
+        let wild = w.unit(live.wild);
+        let seen = hp_permille(wild.cur_hp, wild.stats.hp);
+        assert_eq!(
+            seen, cur_hp,
+            "PRECONDITION: {cur_hp} of 1000 HP is {cur_hp} per mille"
+        );
+        let pct = odds_pct(&w, live.wild, None);
+        force_recruit(&w, live.id, pct, false);
+        submit(
+            &fx,
+            a(),
+            T0 + 20_000,
+            live.id,
+            live.u1,
+            vec![recruit(live.wild, None)],
+        )
+        .expect("the attempt is accepted");
+        let s = summary(&w, live.id);
+        assert_eq!(
+            (s.weaken_first, s.recruit_attempts),
+            (want, 1),
+            "{seen} per mille at the first attempt: weaken_first iff below {WEAKEN_FIRST_PERMILLE}"
+        );
+    }
 }
 
 // ===========================================================================

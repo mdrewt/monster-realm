@@ -34,6 +34,7 @@ use crate::schema::{
     Battle, BattleEvent, BattleSummary, BattleTactical, SideRow,
 };
 use crate::tactics::{content_species, next_event_seq};
+use game_core::tactics::queue::is_player_owned;
 use game_core::tactics::{
     on_unit_defeated, pay, Award, AwardsEvent, EventPayload, HitEffectiveness, Ledger,
     StatusChange, StepResult, TacticalState, UnitState,
@@ -154,7 +155,7 @@ pub(crate) fn board_at(final_state: &TacticalState, fallen: &BTreeSet<u32>) -> T
 /// Fold the transcript into the reward ledger (module doc). The caller passes `events` ascending
 /// `seq`. `bst_of(species_id)` is the victim species' base-stat total (content); `None` skips the
 /// KO (`Fold::skipped_bst`). The killer of a `Ko` is the attacker of the LAST opposite-side hit on
-/// the victim (`hit`, with damage or the KO itself) — the design names `on_unit_defeated(killer,
+/// the victim (any `hit`, a status-only one included) — the design names `on_unit_defeated(killer,
 /// victim)` and `Executed.attacker`, and is silent on tick/Surge deaths: "last hitter" is the
 /// marshaling of the transcript, never a reward amount or split (those stay in `rewards.rs`).
 #[must_use]
@@ -176,7 +177,7 @@ pub(crate) fn ledger_of(
                         (side_of(r.unit), attacker_side),
                         (Some(target), Some(attacker)) if target != attacker
                     );
-                    if r.hit && (r.damage > 0 || r.ko) && opposite {
+                    if r.hit && opposite {
                         last_hitter.insert(r.unit, x.attacker);
                     }
                 }
@@ -226,8 +227,11 @@ pub(crate) fn ledger_of(
     fold
 }
 
-/// The `Awards` lines of what was ACTUALLY applied: one per credited monster (ascending unit;
-/// `essence` = the sum over pools) plus one [`CURRENCY_AWARD_UNIT`] line iff `currency > 0`.
+/// The `Awards` lines of the credits that were applied: one per credited monster (in the order
+/// given — the caller sorts by unit; `essence` = the sum over pools) plus one
+/// [`CURRENCY_AWARD_UNIT`] line iff `currency > 0`.
+/// The amounts are the ledger's — what was earned; a pool at `ESSENCE_SOFT_CAP`, a monster at
+/// the XP ceiling or a wallet at `MAX_BALANCE` keeps less, and the line does not say so.
 #[must_use]
 pub(crate) fn awards_events(applied: &[Award], currency: u64) -> Vec<EventPayload> {
     let mut lines: Vec<EventPayload> = applied
@@ -424,7 +428,7 @@ pub(crate) fn find_or_insert_summary(
     }
     let anchor = ctx.db.battle().battle_id().find(battle_id)?;
     let tactical = ctx.db.battle_tactical().battle_id().find(battle_id)?;
-    Some(ctx.db.battle_summary().insert(zero_row(&anchor, &tactical)))
+    Some(summary_row(ctx, &anchor, &tactical))
 }
 
 /// Add one step's delta to the battle's summary row (a zero delta writes nothing but the row's
@@ -469,7 +473,7 @@ fn finalize(
     anchor: &Battle,
     tactical: &BattleTactical,
     was_active: bool,
-    now_ms: i64,
+    wall_ms: u64,
 ) {
     let (mut idle_a, mut idle_b) = (0u64, 0u64);
     for clock in ctx.db.battle_clock().battle_id().filter(anchor.battle_id) {
@@ -481,7 +485,7 @@ fn finalize(
     ctx.db.battle_summary().battle_id().update(BattleSummary {
         outcome: anchor.state.outcome,
         rounds: if was_active { tactical.round } else { 0 },
-        wall_ms: u64::try_from(now_ms.saturating_sub(anchor.created_at_ms)).unwrap_or(0),
+        wall_ms,
         idle_ms_a: idle_a,
         idle_ms_b: idle_b,
         damage_dealt_a: tactical.attack_damage_dealt_a,
@@ -550,11 +554,19 @@ fn pay_ledger(
         .filter_map(|u| u.monster_id.map(|mid| (u.unit_id, mid)))
         .collect();
     let species_base = |species_id: u32| content_species(species_id).map(|s| s.base_stats);
-    let favorable = is_wild_win(anchor);
+    // The win-only credits (daily trust-favorable, Quality Time, the evolution check) need a
+    // wild actually DEFEATED: a recruit-only win pays nothing (BT9.1), as the 1v1 recruit
+    // success never paid them.
+    let wild_defeated = state
+        .units
+        .iter()
+        .any(|u| !is_player_owned(state.kind, u.side) && u.state == UnitState::Fainted);
+    let favorable = is_wild_win(anchor) && wild_defeated;
     let today = day_epoch_utc(now_ms);
     let mut applied: Vec<Award> = Vec::new();
     // The legacy funnel's loop: every CONSCIOUS party member (deployed or benched), the ledger
-    // supplying its XP and essence instead of the 1v1 formula.
+    // supplying its XP and essence instead of the 1v1 formula; a member with nothing to credit
+    // (no award, no win credit) is left untouched.
     for (i, bm) in anchor.state.side_a.team.iter().enumerate() {
         if bm.is_fainted() {
             continue;
@@ -562,6 +574,13 @@ fn pay_ledger(
         let Some(&mid) = anchor.party_monster_ids.get(i) else {
             continue;
         };
+        let award = units
+            .iter()
+            .find(|&&(_, m)| m == mid)
+            .and_then(|&(unit, _)| payout.awards.iter().find(|a| a.unit == unit));
+        if award.is_none() && !favorable {
+            continue;
+        }
         if ctx.db.monster().monster_id().find(mid).is_none() {
             settle_log(
                 "tactical_settle_err",
@@ -570,10 +589,6 @@ fn pay_ledger(
             );
             continue;
         }
-        let award = units
-            .iter()
-            .find(|&&(_, m)| m == mid)
-            .and_then(|&(unit, _)| payout.awards.iter().find(|a| a.unit == unit));
         let xp = Xp::new(award.map_or(0, |a| a.xp));
         let essence: Vec<(game_core::Affinity, u32)> =
             award.map_or_else(Vec::new, |a| a.essence.clone());
@@ -597,6 +612,7 @@ fn pay_ledger(
         }
     }
     grant_currency(ctx, anchor.player_identity, payout.currency);
+    applied.sort_by_key(|a| a.unit);
     let mut seq = next_event_seq(ctx, battle_id);
     for payload in awards_events(&applied, payout.currency) {
         ctx.db.battle_event().insert(BattleEvent {
@@ -640,6 +656,19 @@ pub(crate) fn settle(
         }
         Close::Deploying | Close::LegacyEnded => {}
         Close::Fallback => {
+            let any_ko = ctx
+                .db
+                .battle_event()
+                .battle_id()
+                .filter(battle_id)
+                .any(|e| matches!(e.payload, EventPayload::Ko(_)));
+            if any_ko {
+                settle_log(
+                    "tactical_settle_skipped",
+                    battle_id,
+                    "board unloadable: the ledger's KOs are forfeited",
+                );
+            }
             if let Err(e) = apply_faint_penalties(ctx, anchor) {
                 settle_log("tactical_settle_err", battle_id, &e);
             }
@@ -647,12 +676,15 @@ pub(crate) fn settle(
     }
     sweep_prior_terminals(ctx, anchor, Some(battle_id));
     let row = summary_row(ctx, anchor, tactical);
-    finalize(ctx, row, anchor, tactical, was_active, now_ms);
+    let wall_ms = u64::try_from(now_ms.saturating_sub(anchor.created_at_ms)).unwrap_or(0);
+    finalize(ctx, row, anchor, tactical, was_active, wall_ms);
 }
 
 /// A swept (prior-terminal) tactical battle whose summary is still `Ongoing` is finalised with
 /// its anchor's outcome before its rows go (the rows that would have finalised it are going).
-pub(crate) fn finalize_swept_summary(ctx: &ReducerContext, anchor: &Battle, now_ms: i64) {
+/// Its end time is unknown — a legacy reducer ended the anchor without this funnel — so
+/// `wall_ms` stays 0 (bt-13's pacing gate filters on it).
+pub(crate) fn finalize_swept_summary(ctx: &ReducerContext, anchor: &Battle) {
     let Some(row) = ctx.db.battle_summary().battle_id().find(anchor.battle_id) else {
         return;
     };
@@ -663,7 +695,7 @@ pub(crate) fn finalize_swept_summary(ctx: &ReducerContext, anchor: &Battle, now_
         return;
     };
     let was_active = tactical.phase != game_core::tactics::Phase::Deploying;
-    finalize(ctx, row, anchor, &tactical, was_active, now_ms);
+    finalize(ctx, row, anchor, &tactical, was_active, 0);
 }
 
 #[cfg(test)]

@@ -2885,11 +2885,17 @@ fn unloadable_battle_falls_back_to_a_fled_close_with_unit_hp_persisted_bt8_5() {
     }
 }
 
+/// What every legacy 1v1 reducer returns on a tactical anchor (`reject_if_tactical_anchor`).
+const TACTICAL_REFUSAL: &str = "tactical battle: use the tactical reducers";
+
 /// Retargeted by bt-9 (the plan's RT-1, under BT9.1 "paid once"; was
 /// `legacy_flee_on_a_tactical_anchor_persists_the_mirrored_tactical_hp_bt8_5`): a 1v1 reducer
 /// may not act on a tactical anchor at all — a legacy turn would run the 1v1 funnel's own payout
-/// beside the ledger's. Each one refuses before any write: no monster, wallet, anchor or
-/// tactical row moves. `flee` goes first: at the freeze it still ends the battle (the red).
+/// beside the ledger's. Each one refuses with the guard's own error before any write: no monster,
+/// wallet, anchor or tactical row moves. Every call would SUCCEED without the guard — the lead
+/// carries the Poison item 3 cures (so `use_battle_item` is not stopped by its own "no matching
+/// status" check), monster 12 is a conscious swap target, the skill is in the lead's moveset — so
+/// each exact-error assertion bites on its own reducer's guard.
 #[test]
 fn legacy_one_v_one_reducers_refuse_a_tactical_anchor_and_write_nothing_bt9_1() {
     let fx = fixture();
@@ -2901,18 +2907,33 @@ fn legacy_one_v_one_reducers_refuse_a_tactical_anchor_and_write_nothing_bt9_1() 
         item_id: 3,
         count: 2,
     });
-    let skill = w.anchor(live.id).expect("anchor").state.side_a.team[0]
+    assert!(
+        game_core::load_items()
+            .expect("item content loads")
+            .iter()
+            .find(|i| i.id == 3)
+            .and_then(|i| i.cure_status)
+            .is_some_and(|cure| cure.matches(&game_core::StatusEffect::Poison)),
+        "PRECONDITION: item 3 cures Poison"
+    );
+    let mut anchor = w.anchor(live.id).expect("anchor");
+    assert_eq!(
+        anchor.state.side_a.active, 0,
+        "PRECONDITION: the anchor's lead is team[0]"
+    );
+    anchor.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
+    assert_eq!(w.battles.remove(live.id), 1, "the anchor edited in place");
+    w.battles.seed(&anchor);
+    let skill = anchor.state.side_a.team[0]
         .known_skill_ids
         .first()
         .copied()
         .expect("the lead knows a skill");
+    let refused: Result<(), String> = Err(TACTICAL_REFUSAL.to_string());
     let before = w.snapshot();
     let t = T0 + 40_000;
     let flee = fx.run_as_at(a(), at(t), |ctx| crate::battle::flee(ctx, live.id));
-    assert!(
-        flee.is_err(),
-        "flee on a tactical anchor is refused, got {flee:?}"
-    );
+    assert_eq!(flee, refused, "flee on a tactical anchor is refused");
     assert_eq!(
         changed(&before, &w.snapshot()),
         none(),
@@ -2921,16 +2942,19 @@ fn legacy_one_v_one_reducers_refuse_a_tactical_anchor_and_write_nothing_bt9_1() 
     let item = fx.run_as_at(a(), at(t), |ctx| {
         crate::battle::use_battle_item(ctx, live.id, 3)
     });
-    assert!(item.is_err(), "use_battle_item is refused, got {item:?}");
+    assert_eq!(
+        item, refused,
+        "use_battle_item is refused although the lead's Poison is curable"
+    );
     assert_eq!(
         changed(&before, &w.snapshot()),
         none(),
-        "use_battle_item writes nothing"
+        "use_battle_item writes nothing (no debit, no cure)"
     );
     let swap = fx.run_as_at(a(), at(t), |ctx| {
         crate::battle::swap_active(ctx, live.id, 1)
     });
-    assert!(swap.is_err(), "swap_active is refused, got {swap:?}");
+    assert_eq!(swap, refused, "swap_active is refused");
     assert_eq!(
         changed(&before, &w.snapshot()),
         none(),
@@ -2939,11 +2963,89 @@ fn legacy_one_v_one_reducers_refuse_a_tactical_anchor_and_write_nothing_bt9_1() 
     let attack = fx.run_as_at(a(), at(t), |ctx| {
         crate::battle::submit_attack(ctx, live.id, skill)
     });
-    assert!(attack.is_err(), "submit_attack is refused, got {attack:?}");
+    assert_eq!(attack, refused, "submit_attack is refused");
     assert_eq!(
         changed(&before, &w.snapshot()),
         none(),
         "submit_attack writes nothing"
+    );
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::Ongoing,
+        "the tactical battle is still the tactical reducers' to finish"
+    );
+}
+
+/// RT-1 covers the fifth legacy reducer: `taming::attempt_recruit` on a tactical anchor is refused
+/// with the guard's error and writes nothing, EVEN when a `battle_wild` row exists for the anchor
+/// (its own "not a wild battle" refusal is then no protection). The fixture makes the unguarded
+/// path go all the way: a sure-hit bait row (bonus 1000 — `recruit_chance` clamps, so any
+/// `ctx.random()` draw recruits), a held stack of 2, and the content species rows its success arm
+/// reads. Without the guard the bait is debited, a playtest row written and the wild recruited.
+#[test]
+fn legacy_attempt_recruit_refuses_a_tactical_anchor_even_with_a_battle_wild_row_bt9_1() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let items = fx.table_keyed::<crate::schema::ItemRow, u32>("item_row", "id", |r| r.id);
+    items.seed(&crate::schema::ItemRow {
+        id: 1,
+        name: "bait".to_string(),
+        description: String::new(),
+        recruit_bonus: 1_000,
+        train_stat: None,
+        train_amount: 0,
+        sell_price: 0,
+        cure_status: None,
+    });
+    let species_rows =
+        fx.table_keyed::<crate::schema::SpeciesRow, u32>("species_row", "id", |r| r.id);
+    for s in &game_core::load_species().expect("species content loads") {
+        species_rows.seed(&crate::schema::SpeciesRow {
+            id: s.id,
+            name: s.name.clone(),
+            base_hp: s.base_stats.hp,
+            base_attack: s.base_stats.attack,
+            base_defense: s.base_stats.defense,
+            base_speed: s.base_stats.speed,
+            base_sp_attack: s.base_stats.sp_attack,
+            base_sp_defense: s.base_stats.sp_defense,
+            affinity: s.affinity,
+            learnable_skill_ids: s.learnable_skill_ids.clone(),
+            ability: s.ability,
+            tier: s.tier,
+        });
+    }
+    w.inventory.seed(&Inventory {
+        inv_id: 501,
+        owner_identity: a(),
+        item_id: 1,
+        count: 2,
+    });
+    assert!(
+        w.battle_wilds.rows().is_empty(),
+        "PRECONDITION: a tactical start writes no battle_wild row of its own"
+    );
+    let wild = w.wild_units_of(live.id)[0].clone();
+    w.battle_wilds.seed(&BattleWild {
+        battle_id: live.id,
+        wild_species_id: wild.species_id,
+        wild_level: wild.level,
+        individuality_seed: wild.individuality_seed,
+    });
+    let before = w.snapshot();
+    let got = fx.run_as_at(a(), at(T0 + 40_000), |ctx| {
+        crate::taming::attempt_recruit(ctx, live.id, Some(1))
+    });
+    assert_eq!(
+        got,
+        Err(TACTICAL_REFUSAL.to_string()),
+        "attempt_recruit on a tactical anchor is refused by the guard"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "no bait debited, no playtest row, no recruit, no anchor change"
     );
     assert_eq!(
         w.anchor(live.id).expect("anchor").state.outcome,

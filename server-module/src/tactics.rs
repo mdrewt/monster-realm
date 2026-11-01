@@ -2259,7 +2259,7 @@ pub fn battle_gc(ctx: &ReducerContext, args: BattleGcSched) -> Result<(), String
 /// the anchor, then the tactical rows. The legacy 1v1 funnel and the tactical settlement both
 /// sweep through here (`battle::sweep_prior_terminals`).
 pub(crate) fn sweep_swept_anchor(ctx: &ReducerContext, anchor: &Battle) {
-    tactics_settle::finalize_swept_summary(ctx, anchor, now_ms(ctx));
+    tactics_settle::finalize_swept_summary(ctx, anchor);
     ctx.db.battle().battle_id().delete(anchor.battle_id);
     sweep_tactical_rows(ctx, anchor.battle_id, None, true);
 }

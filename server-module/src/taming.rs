@@ -6,7 +6,7 @@
 //! never a client argument; bait is classified by data (the item's
 //! `recruit_bonus`), consumed BEFORE the roll.
 
-use crate::battle::{write_back_battle_results, write_back_party_hp};
+use crate::battle::{reject_if_tactical_anchor, write_back_battle_results, write_back_party_hp};
 use crate::guards::{escrowed_item_qty, log_reject};
 // `grant_item` is dev-gated (its only caller `grant_bait` is too — an ungated
 // import would be an unused-import warning in the non-dev build);
@@ -24,8 +24,8 @@ use crate::schema::{
 use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
 use game_core::{
-    build_monster, recruit_chance, BattleOutcome, BattleStatusStore, Level, StatusVariance,
-    TurnVariance, RECRUIT_BASE_RATE,
+    recruit_chance, BattleOutcome, BattleStatusStore, Level, StatusVariance, TurnVariance,
+    RECRUIT_BASE_RATE,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -60,6 +60,8 @@ pub fn attempt_recruit(
         log_reject("attempt_recruit", me, &e);
         return Err(e);
     }
+    // A tactical battle recruits through its own queue (bt-9): never this 1v1 path.
+    reject_if_tactical_anchor(ctx, "attempt_recruit", battle_id)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("attempt_recruit", me, &e);
@@ -298,7 +300,7 @@ pub(crate) fn insert_recruited(
     species: &game_core::Species,
     level: Level,
 ) -> Monster {
-    let inst = build_monster(seed, species, level);
+    let inst = game_core::tactics::rebuild_recruited(seed, species, level);
     let row = monster_from_instance(owner, &inst, PARTY_SLOT_NONE);
     let inserted = ctx.db.monster().insert(row);
     let pub_row = pub_from_monster(&inserted, species.tier);
