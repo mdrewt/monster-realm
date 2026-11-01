@@ -1,4 +1,4 @@
-// tactics/forecast.parity.test.ts — bt-11 RED tests for the forecast export (BT11.7: "a vitest SHALL
+// tactics/forecast.parity.test.ts — bt-11 gating tests for the forecast export (BT11.7: "a vitest SHALL
 // assert the forecast output equals the golden fixture"): `rules.forecast(attacker, target, skillId,
 // flank)` through the BUILT client-wasm pkg, against the shared fixture's `Pipeline` cases and
 // against game-core's own `damage_pipeline` (the `tactics_golden` Pipeline kind) on generated units.
@@ -26,8 +26,10 @@
 // attackers carry `skills: []`; each case's skill is put into the attacker's kit before the call
 // (damage_pipeline never reads kit.skills).
 //
-// RED REASON: `bindTacticsRules` throws `bt-11: not implemented` (and `forecast_of` returns
-// `Err("bt-11: not implemented")`), so every test reds on its first forecast.
+// HOW THE TESTS ARE PROVEN: written red against the API-freeze stubs (`bindTacticsRules` threw `bt-11:
+// not implemented`, `forecast_of` returned `Err`), now green against the implementation; their
+// bite is the WRONG IMPL KILLED note of each test. (The ForecastOut fields asserted here are the
+// rules' facts; A18's "no status on a KO" is a view-model rule, pinned in forecast.test.ts.)
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { readFileSync } from 'node:fs';

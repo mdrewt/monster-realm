@@ -1,4 +1,4 @@
-// tactics/wasm.test.ts — bt-11 RED tests for the rules PORT (BT11.7) and the overlay port it
+// tactics/wasm.test.ts — bt-11 gating tests for the rules PORT (BT11.7) and the overlay port it
 // re-closes (bt-10's deferred BT10.4): `bindTacticsRules(pkg)` over the BUILT client-wasm pkg, the
 // serde shapes it hands back, the binding-row adapter `unitRowOf`, `overlaySets` / `intentKind`,
 // and the overlay layer. Every rule answer is checked against game-core's own `tactics_golden`
@@ -6,9 +6,10 @@
 // a TypeScript re-implementation of a rule.
 //
 // SOURCE OF TRUTH: specs/monster-realm-v2/M-battle-tactics.spec.md BT11.7 + BT10.4 and the bt-11
-// plan (memory/projects/monster-realm-bt-11-plan.md) §4 as amended by REV 2 A1–A17 (the amendments
-// win). The stubs in wasm.ts and the `// --- Tactics rules (bt-11) ---` region of
-// client-wasm/src/lib.rs ARE the contract: every call below goes through those names and shapes.
+// plan (memory/projects/monster-realm-bt-11-plan.md) §4 as amended by REV 2 A1–A17 and REV 3
+// A18–A21 (the amendments win). The exported names and shapes of wasm.ts and of the
+// `// --- Tactics rules (bt-11) ---` region of client-wasm/src/lib.rs are the contract: every call
+// below goes through them.
 //
 // HOW THE EXPECTED VALUES ARE BUILT:
 // - Content facts are pinned literals transcribed from the RON with file:line citations
@@ -25,10 +26,12 @@
 //   the disengage predicate for shield). Every scenario count is pinned and every Ok / Err kind a
 //   tag must cover is asserted present in the GOLDEN answers (non-vacuity).
 //
-// RED REASON: `bindTacticsRules`, `unitRowOf`, `overlaySets` and `intentKind` throw `bt-11: not
-// implemented`, and every lib.rs inner fn the exports call returns `Err("bt-11: not implemented")`.
-// Each test reds on its first call into the port; RULES-BIND also reds on a pkg older than the
-// sources (A15).
+// HOW THE TESTS ARE PROVEN: written red against the API-freeze stubs (every port call threw `bt-11:
+// not implemented`), now green against the implementation. Their bite is the WRONG IMPL KILLED note
+// above each test: each names the hand-written wrong implementations (and the round-2 red-team
+// mutants: h1 integer guards, h2c foreign skill, h3 error identity, h5 overlaySets, h9l Sleep 0,
+// b8 / m10b / x5 overlay refusals) that fail a DIFFERENT assertion of that test. RULES-BIND also
+// reds on a pkg older than the sources (A15) — run `just wasm` first.
 //
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
@@ -652,7 +655,10 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
     // value accepted); a primitive clamped or wrapped (`x >>> 0`, `x & 0xffff`, Math.trunc) instead
     // of refused; an in-range boundary refused; a wasm error wrapped, retried or swallowed; a
     // forecast that sends a default skill or calls wasm for a skill outside the kit; disengage's
-    // `start` defaulted to a tile.
+    // `start` defaulted to a tile. Round 2: any ONE of the 14 integer parameters left unguarded
+    // (2**32 + 1 wraps to 1 — mutants h1*); a skill resolved from the TARGET's kit (h2c); any ONE
+    // method that wraps, defaults or converts a thrown wasm value — e.g. `plan` returning
+    // `{Err: e}` (h3*).
     const built = statSync(path.join(ROOT, 'client-wasm/pkg/client_wasm_bg.wasm')).mtimeMs;
     const newestSrc = Math.max(
       newestMtime(path.join(ROOT, 'client-wasm/src')),
@@ -809,6 +815,20 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
     }
     expect(outside, 'a skill id outside the attacker kit throws').toBe(true);
     expect(fk.calls, 'and never reaches wasm').toHaveLength(1);
+    const targetOnly: RulesUnit = {
+      ...target,
+      kit: { ...target.kit, skills: [...target.kit.skills, { ...lance, skill_id: 77 }] },
+    };
+    let foreign = false;
+    try {
+      fp.forecast(attacker, targetOnly, 77, false);
+    } catch {
+      foreign = true;
+    }
+    expect(foreign, 'a skill only the TARGET knows is not the attacker skill: it throws').toBe(
+      true,
+    );
+    expect(fk.calls, 'and never reaches wasm either').toHaveLength(1);
 
     fp.disengage(blank, 3);
     fp.disengage(blank, 3, c(1, 2));
@@ -818,6 +838,91 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       'no start: the mover tile (null/undefined, never a default tile)',
     ).toBe(true);
     expect(starts[1], 'an explicit start travels as given').toEqual(c(1, 2));
+
+    // Every integer parameter, one at a time: 2**32 + 1 is 1 after `>>> 0` (and after `& 0xffff`),
+    // so a missing guard forwards a plausible 1 instead of refusing. The forecast attacker carries
+    // a skill 1, so a wrapped skill id would even resolve.
+    const WRAPS = 2 ** 32 + 1;
+    const guarded = fakePkg();
+    const gp = bindTacticsRules(guarded.pkg);
+    const withOne: RulesUnit = { ...attacker, kit: { ...attacker.kit, skills: [EMBER, lance] } };
+    const everyInteger: readonly (readonly [string, () => unknown])[] = [
+      ['map(mapId)', () => gp.map(WRAPS)],
+      ['targets(caster)', () => gp.targets(blank, WRAPS, 1, c(0, 0))],
+      ['targets(skillId)', () => gp.targets(blank, 1, WRAPS, c(0, 0))],
+      ['path(mover)', () => gp.path(blank, WRAPS, c(0, 0))],
+      ['disengage(mover)', () => gp.disengage(blank, WRAPS)],
+      ['flank(attacker)', () => gp.flank(blank, WRAPS, 2)],
+      ['flank(target)', () => gp.flank(blank, 1, WRAPS)],
+      ['forecast(skillId)', () => gp.forecast(withOne, target, WRAPS, false)],
+      ['recruitOdds(maxHp)', () => gp.recruitOdds(WRAPS, 1, 0)],
+      ['recruitOdds(hp)', () => gp.recruitOdds(100, WRAPS, 0)],
+      ['recruitOdds(baitBonus)', () => gp.recruitOdds(100, 1, WRAPS)],
+      ['aiPlan(unit)', () => gp.aiPlan(blank, WRAPS)],
+      ['isExhausted(curHp)', () => gp.isExhausted(WRAPS, 4)],
+      ['isExhausted(maxHp)', () => gp.isExhausted(1, WRAPS)],
+    ];
+    expect(everyInteger, 'all 14 integer parameters of TacticsRules').toHaveLength(14);
+    for (const [label, call] of everyInteger) {
+      let caught: unknown;
+      try {
+        call();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught instanceof RangeError, `${label} = 2**32 + 1: a RangeError`).toBe(true);
+    }
+    expect(guarded.calls, 'no wrapped integer reached wasm').toEqual([]);
+
+    // Every method rethrows the wasm error VALUE itself (a plain object here: no `instanceof
+    // Error` filter may re-wrap it), and `plan` never turns it into a rule refusal.
+    const sentinel = { refused: 'by wasm' };
+    const allThrow = fakePkg(
+      Object.fromEntries(
+        EXPORT_METHODS.map(([name]) => [
+          name,
+          () => {
+            throw sentinel;
+          },
+        ]),
+      ),
+    );
+    const tp = bindTacticsRules(allThrow.pkg);
+    const sample = row({ id: 1, side: 'A', slot: 0, species: 1, at: [0, 0] });
+    const everyMethod: readonly (readonly [keyof TacticsRules, () => unknown])[] = [
+      ['map', () => tp.map(1)],
+      ['freshBudget', () => tp.freshBudget()],
+      ['unit', () => tp.unit(sample)],
+      ['targets', () => tp.targets(blank, 1, 1, c(0, 0))],
+      ['path', () => tp.path(blank, 1, c(0, 0))],
+      ['disengage', () => tp.disengage(blank, 1)],
+      ['flank', () => tp.flank(blank, 1, 2)],
+      ['forecast', () => tp.forecast(attacker, target, 43, false)],
+      ['recruitOdds', () => tp.recruitOdds(100, 20, 0)],
+      ['aiPlan', () => tp.aiPlan(blank, 1)],
+      ['isExhausted', () => tp.isExhausted(1, 4)],
+      ['plan', () => tp.plan(FRESH, [])],
+      ['overlays', () => tp.overlays(blank, q())],
+    ];
+    expect(
+      everyMethod.map(([m]) => m),
+      'every TacticsRules method, in export order',
+    ).toEqual(EXPORT_METHODS.map(([, m]) => m));
+    for (const [method, call] of everyMethod) {
+      let got: unknown = 'returned normally';
+      try {
+        got = call();
+      } catch (err) {
+        got = err;
+      }
+      expect(got, `${method}: the thrown wasm value itself, never wrapped or returned`).toBe(
+        sentinel,
+      );
+    }
+    expect(
+      allThrow.calls.map((x) => x.name),
+      'each method called its own export exactly once (no retry, no fallback export)',
+    ).toEqual(EXPORT_METHODS.map(([name]) => name));
   });
 
   it('BT11-7-RULES-MAP: map(id) is the content battle map for ids 1..8 (map 1 is the 7x7 Open Field); an unknown id is refused by id and the instance keeps answering', () => {
@@ -1006,7 +1111,8 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
     // losing taxed); Sleep's turns dropped; a unit tag passed as `{tag}` instead of the serde
     // string; `wildIndex 0` turned into null (`||`); undefined options left undefined instead of
     // null; binding-only fields (battleId, owner, skillIds, movement, stride, affinity) leaking into
-    // the UnitRow; the kit joined from the row's skillIds / movement / stride instead of content.
+    // the UnitRow; the kit joined from the row's skillIds / movement / stride instead of content;
+    // a Sleep with 0 turns left read as no status (round-2 mutant h9l).
     const bindingRow = (o: Record<string, unknown> = {}): BattleUnit =>
       ({
         unitId: 61,
@@ -1097,9 +1203,12 @@ describe('tactics rules port: binding and the plain exports (BT11.7)', () => {
       [{ tag: 'Burn' }, 'Burn'],
       [{ tag: 'Paralysis' }, 'Paralysis'],
       [{ tag: 'Sleep', value: 2 }, { Sleep: { turns_remaining: 2 } }],
+      // A falsy payload is still a Sleep (a `value ? ... : null` / `value || ...` mapping drops it).
+      [{ tag: 'Sleep', value: 0 }, { Sleep: { turns_remaining: 0 } }],
       [{ tag: 'Freeze' }, 'Freeze'],
       [undefined, null],
     ];
+    expect(statuses, 'all 5 StatusEffect tags, Sleep 0, and none').toHaveLength(7);
     for (const [tag, status] of statuses) {
       expect(
         unitRowOf(bindingRow({ status: tag })).status,
@@ -2052,7 +2161,7 @@ describe('tactics overlay layer: computed by the wasm rules (BT10.4 via BT11.7)'
       const r = rules();
       // The fainted B unit at (0,0) is >= 7 from both living B Walkers (species 3, stride 2: reach
       // <= 6) and >= 12 from both A units (species 1, stride 3: reach <= 9), so its tile is outside
-      // every zone for either viewer — the board does not depend on how a dead occupant is probed.
+      // every zone for either viewer. A corpse INSIDE a zone is board D3 below.
       const D1 = board(4, [
         { id: 21, side: 'B', slot: 2, species: 3, at: [6, 1] },
         {
@@ -2105,7 +2214,21 @@ describe('tactics overlay layer: computed by the wasm rules (BT10.4 via BT11.7)'
       }
       expect(checked, 'ANTI-VACUITY: the 13 tiles within 2 of (3,4)').toBe(13);
       expect(burst, 'the probe-sweep oracle').toEqual(dangerOracle(D2, 'A'));
-      for (const list of [...forA, ...forB, ...burst]) {
+
+      // A corpse occupies nothing (movement.rs:159-163, geometry.rs:185): the probe stands on the
+      // dead A unit's tile (3,4) beside the live melee enemy at (3,3), so the tile is threatened.
+      const D3 = board(1, [
+        { id: 1, side: 'A', slot: 0, species: 1, at: [0, 6] },
+        fainted({ id: 2, side: 'A', slot: 1, species: 1, at: [3, 4] }),
+        { id: 11, side: 'B', slot: 0, species: 1, at: [3, 3] },
+      ]);
+      const corpse = r.overlays(D3, q()).danger;
+      expect(
+        corpse.map((list) => list.some((t) => same(t, c(3, 4)))),
+        "the corpse's tile is threatened (round-2 mutant b2 used the dead unit as the probe)",
+      ).toEqual([true]);
+      expect(corpse, 'the probe-sweep oracle').toEqual(dangerOracle(D3, 'A'));
+      for (const list of [...forA, ...forB, ...burst, ...corpse]) {
         expect(isRowMajor(list), 'each list row-major and de-duplicated').toBe(true);
       }
     },
@@ -2329,6 +2452,53 @@ describe('tactics overlay layer: computed by the wasm rules (BT10.4 via BT11.7)'
       'the unit ids of the intents',
     ).toEqual([11, 12]);
 
+    // A hand-built DTO, independent of the pkg (round-2 mutants h5*): distinct range and aoe tiles,
+    // an EMPTY danger list between two non-empty ones (one deliberately not row-major: the port
+    // copies, it never re-sorts), a blocked attacker and a moving wild.
+    const dto: OverlaysOut = {
+      reach1: [c(1, 1), c(2, 1)],
+      reach2: [c(3, 1)],
+      range: [c(4, 2), c(5, 2)],
+      aoe: [c(5, 3)],
+      danger: [[c(0, 5)], [], [c(6, 6), c(6, 5)]],
+      shield: [c(2, 2)],
+      intents: [
+        {
+          unit: 5,
+          plan: [{ Skill: { skill_id: 2, target: { Unit: 1 } } }, 'EndTurn'],
+          exhausted: true,
+          block_pct: 100,
+        },
+        {
+          unit: 6,
+          plan: [{ Move: { x: 1, y: 1, strides: 1 } }, 'EndTurn'],
+          exhausted: false,
+          block_pct: 25,
+        },
+      ],
+    };
+    const dtoSets = overlaySets(dto);
+    expect(
+      [dtoSets.reach1, dtoSets.reach2, dtoSets.range, dtoSets.aoe, dtoSets.shield],
+      'each set from its own field (range is not aoe, reach1 is not reach2)',
+    ).toEqual([[c(1, 1), c(2, 1)], [c(3, 1)], [c(4, 2), c(5, 2)], [c(5, 3)], [c(2, 2)]]);
+    expect(dtoSets.danger, 'three lists, the empty one kept in its place, order kept').toEqual([
+      [c(0, 5)],
+      [],
+      [c(6, 6), c(6, 5)],
+    ]);
+    expect(
+      dtoSets.intents,
+      'exactly {unitId, kind}: an attack plan blocked 100 % holds; a move at 25 % moves',
+    ).toStrictEqual([
+      { unitId: 5, kind: 'hold' },
+      { unitId: 6, kind: 'move' },
+    ]);
+    expect(dtoSets.reach1, 'a copied array, not the DTO array').not.toBe(dto.reach1);
+    expect(dtoSets.reach1[0], 'a copied tile, not the DTO tile').not.toBe(dto.reach1[0]);
+    expect(dtoSets.danger[2], 'a copied danger list').not.toBe(dto.danger[2]);
+    expect(dtoSets.danger[2][1], 'a copied danger tile').not.toBe(dto.danger[2][1]);
+
     const vmUnits: BoardUnitVM[] = I1.units.map((u) => ({
       unitId: u.id,
       side: u.side,
@@ -2380,7 +2550,11 @@ describe('tactics overlay layer: computed by the wasm rules (BT10.4 via BT11.7)'
     // WRONG IMPL KILLED: an unknown selection answered with empty sets; an unknown map defaulted
     // to map 1; duplicate ids de-duplicated silently; a panic (RuntimeError: unreachable) for any
     // of them; aiPlan planning for a player unit or defaulting a missing stance; a poisoned
-    // instance after a refusal.
+    // instance after a refusal. Round 2 + A20: a query skill outside the selected kit answered
+    // with empty sets (b8); a wild_index past spawn_b clamped or defaulted (m10b); a stance-less
+    // wild planned by overlays with a default stance (x5); a duplicate (side, slot) or a real unit
+    // carrying the probe id u32::MAX accepted; a conscious selection standing off the map answered
+    // with sets (while a DEAD one still answers with empty sets).
     const r = rules();
     const dup = board(1, [
       { id: 7777, side: 'A', slot: 0, species: 1, at: [1, 1] },
@@ -2409,6 +2583,69 @@ describe('tactics overlay layer: computed by the wasm rules (BT10.4 via BT11.7)'
       units: [...S1.units, { ...rowOf(S1, 11), id: 99, side: 'C' }],
     } as unknown as RulesBoard;
     rejects('overlays(side C)', () => r.overlays(badSide, q()), /\S/);
+
+    const lancer = board(1, [
+      { id: 1, side: 'A', slot: 0, species: 2, at: [3, 3] },
+      { id: 11, side: 'B', slot: 0, species: 3, at: [3, 5] },
+    ]);
+    rejects(
+      'overlays(skill 99999 outside the selected kit)',
+      () => r.overlays(lancer, q({ selected: 1, skill_id: 99_999 })),
+      '99999',
+    );
+    // Every content map has exactly three spawn_b slots (map.rs:16, battle_maps/000-core.ron).
+    const index3 = board(1, [
+      { id: 1, side: 'A', slot: 0, species: 1, at: [3, 1] },
+      { id: 11, side: 'B', slot: 0, species: 1, at: [3, 5], stance: 'Aggressive', wild: 3 },
+    ]);
+    rejects(
+      'overlays(wild_index 3 on a 3-spawn map)',
+      () => r.overlays(index3, q()),
+      /wild_index 3/,
+    );
+    rejects('aiPlan(wild_index 3 on a 3-spawn map)', () => r.aiPlan(index3, 11), /wild_index 3/);
+    rejects(
+      'overlays(wild 4444 without a stance): the reason',
+      () => r.overlays(wilds, q()),
+      /stance/,
+    );
+    rejects('overlays(wild 4444 without a stance): the unit', () => r.overlays(wilds, q()), '4444');
+    const probeId = board(1, [
+      { id: 4_294_967_295, side: 'A', slot: 0, species: 1, at: [1, 1] },
+      { id: 11, side: 'B', slot: 0, species: 1, at: [5, 5] },
+    ]);
+    rejects(
+      'overlays(a real unit with the probe id u32::MAX)',
+      () => r.overlays(probeId, q()),
+      '4294967295',
+    );
+    // Units 7 and 63 share (A, slot 7): a message naming the slot or the ids both say 7.
+    const sameSlot = board(1, [
+      { id: 7, side: 'A', slot: 7, species: 1, at: [1, 1] },
+      { id: 63, side: 'A', slot: 7, species: 3, at: [2, 1] },
+      { id: 11, side: 'B', slot: 0, species: 1, at: [5, 5] },
+    ]);
+    rejects('overlays(duplicate (A, slot 7))', () => r.overlays(sameSlot, q()), /\b7\b/);
+    rejects('path(duplicate (A, slot 7))', () => r.path(sameSlot, 7, c(1, 2)), /\b7\b/);
+    const offBoard = board(1, [
+      { id: 8181, side: 'A', slot: 0, species: 1, at: [9, 9] },
+      { id: 11, side: 'B', slot: 0, species: 1, at: [5, 5] },
+    ]);
+    rejects(
+      'overlays(conscious selection 8181 standing off the map at (9,9))',
+      () => r.overlays(offBoard, q({ selected: 8181 })),
+      '8181',
+    );
+    const deadOffBoard = board(1, [
+      fainted({ id: 8181, side: 'A', slot: 0, species: 1, at: [9, 9] }),
+      { id: 11, side: 'B', slot: 0, species: 1, at: [5, 5] },
+    ]);
+    const deadOut = r.overlays(deadOffBoard, q({ selected: 8181, skill_id: 1, aim: c(5, 5) }));
+    expect(
+      [deadOut.reach1, deadOut.reach2, deadOut.range, deadOut.aoe, deadOut.shield],
+      'a DEAD selection off the map is data: empty selection sets (A20)',
+    ).toEqual([[], [], [], [], []]);
+
     expect(r.overlays(S1, q({ selected: 1 })).shield, 'the instance still answers').toEqual(
       SHIELD_S1,
     );

@@ -3,9 +3,9 @@
 //! host and its marshaling in `client/src/tactics/wasm.test.ts` against the built pkg.
 //!
 //! SOURCE OF TRUTH: spec BT11.7 (+ bt-10's deferred BT10.4) and the bt-11 plan §4 as amended by
-//! REV 2 A1–A17 (memory/projects/monster-realm-bt-11-plan.md). The stubs in the
-//! `// --- Tactics rules (bt-11) ---` region of lib.rs ARE the contract: every call below goes
-//! through their names and shapes.
+//! REV 2 A1–A17 and REV 3 A18–A21 (memory/projects/monster-realm-bt-11-plan.md). The names and
+//! shapes of the `// --- Tactics rules (bt-11) ---` region of lib.rs are the contract: every call
+//! below goes through them.
 //!
 //! HOW THE EXPECTED VALUES ARE BUILT: from game-core directly, never from what the shell prints —
 //! the content join from `build_kits` / `load_species` (the server's `unit_of_row`,
@@ -16,22 +16,28 @@
 //! the plan from `spend` / `plan_cost` / `guard_granted` (economy.rs:136-203), and the status
 //! clause from `resolve_attack` itself (resolve.rs:603).
 //!
-//! RED REASON: every inner fn of the region the tests call returns `Err("bt-11: not implemented")`,
-//! so each test reds on its first `expect`. ONE test is green at the stub by design:
-//! `bt11_variance_consts` pins the frozen `FORECAST_VARIANCE_*` constants to the carried
-//! `draw_rolls` range (they are part of the API freeze, not the implementation).
+//! HOW THE TESTS ARE PROVEN: written red against the API-freeze stubs (every inner fn returned
+//! `Err("bt-11: not implemented")`; only `bt11_variance_consts`, which pins the frozen
+//! `FORECAST_VARIANCE_*` constants to the carried `draw_rolls` range, was green there by design),
+//! now green against the implementation. Their bite is each test's WRONG IMPL KILLED note; the
+//! round-2 tests below `bt11_status_blocked_matches_resolve` each name the red-team mutant they
+//! kill (m18 spawn from the unit's tile, b2 corpse as probe, a3 tax dropped, c2 own standing tile
+//! dropped, d10 restated factors, d16 unvalidated tuning, the STAB and recruit desync guards, A20).
 //!
 //! Names start `bt11_` (the BT11.7 CHECK filters `test(/bt11_/)`). Do NOT edit these tests to match
 //! a buggy implementation; correct them from the spec only.
 
 use game_core::tactics::{
-    build_kits, damage_pipeline, disengage_taxed, draw_rolls, guard_granted, load_battle_maps,
-    load_tactics_skills, load_tactics_species, load_tactics_tuning, plan_cost, resolve_attack,
-    spend, target_set, validate_at_pop, BattleKind, BattleMapEntry, BoardUnit, Cell, Entry,
-    FfFilter, MoveAction, MoveClass, Origin, QueuedAction, RollPair, Shape, Side, SkillGeometry,
-    SkillTactics, SpeciesTactics, Stance, TacticalEvent, TacticalState, TacticalUnit,
-    TacticsTuning, Terrain, Tier, TurnBudget, TurnEndCause, UnitKit, UnitState,
+    build_kits, damage_pipeline, disengage_taxed, draw_rolls, guard_granted, is_exhausted,
+    load_battle_maps, load_tactics_skills, load_tactics_species, load_tactics_tuning, plan_cost,
+    recruit_odds, resolve_attack, spend, target_set, validate_at_pop, BattleKind, BattleMapEntry,
+    BoardUnit, Cell, Entry, FfFilter, MoveAction, MoveClass, Origin, QueuedAction, RecruitOdds,
+    RollPair, Shape, Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance, TacticalEvent,
+    TacticalState, TacticalUnit, TacticsTuning, Terrain, Tier, TurnBudget, TurnEndCause, UnitKit,
+    UnitState,
 };
+// The wild planner, named apart from `super::plan_of` and the economy's `plan_cost`.
+use game_core::tactics::plan as wild_plan;
 use game_core::{
     accuracy_check, load_skills, load_species, load_type_chart, Affinity, BattleOutcome,
     Effectiveness, Species, StatBlock, StatusEffect, StatusKind, TypeChart, TypeRelation,
@@ -1393,7 +1399,7 @@ fn bt11_danger_probe_burst() {
     // The fainted B unit sits at (0,0): >= 7 tiles from both living B Walkers (species 3, stride
     // 2: standing <= 4 + range <= 2, or <= 2 + range 3 — at most 6) and >= 12 from both A units
     // (species 1, stride 3: standing <= 6 + range <= 3 — at most 9), so for EITHER viewer its tile
-    // is outside every threat zone, whatever "empty" means for a dead occupant.
+    // is outside every threat zone. A corpse INSIDE a zone: `bt11_danger_probes_a_corpse_tile`.
     let mixed = board(
         4,
         vec![
@@ -1472,4 +1478,422 @@ fn bt11_status_blocked_matches_resolve() {
         rows += 1;
     }
     assert_eq!(rows, 4, "ANTI-VACUITY: every row ran");
+}
+
+// ===========================================================================
+// Round 2 — the red-team gaps (each test names the mutant it kills)
+// ===========================================================================
+
+/// A Territorial wild is leashed to `spawn_b[wild_index]` (plan A7; ai.rs:78-79), not to the tile
+/// it happens to stand on. Species 3 at (0,4) with spawn (1,5): every leash tile is >= 4 from the
+/// player at (0,0) — beyond Vine Whip (1..2) and Razor Leaf (2..3) — so it holds; leashed to (0,4)
+/// itself it could step to (0,3) and Razor Leaf the player.
+///
+/// WRONG IMPL KILLED: the spawn taken from the unit's own tile (red-team m18 planned Move + Skill);
+/// spawn_a instead of spawn_b; the intent chip planned from a different spawn than `ai_plan_of`.
+#[test]
+fn bt11_territorial_wild_plans_from_spawn_b() {
+    let l = live();
+    let mut wild = row(13, Side::B, 0, 3, 0, 4);
+    wild.stance = Some(Stance::Territorial);
+    wild.wild_index = Some(0);
+    let b = board(1, vec![row(1, Side::A, 0, 1, 0, 0), wild]);
+    let st = state_for(&l, &b);
+    let spawn = l
+        .maps
+        .iter()
+        .find(|m| m.id == 1)
+        .expect("map 1")
+        .map
+        .spawn_b[0];
+    assert_eq!(
+        spawn,
+        Cell { x: 1, y: 5 },
+        "map 1 spawn_b[0] (battle_maps/000-core.ron:25)"
+    );
+    let want = wild_plan(&st, 13, Stance::Territorial, spawn, &T);
+    assert_eq!(
+        want,
+        vec![QueuedAction::EndTurn],
+        "leashed to (1,5) nothing is in reach: hold"
+    );
+    let from_own_tile = wild_plan(&st, 13, Stance::Territorial, Cell { x: 0, y: 4 }, &T);
+    assert_ne!(
+        from_own_tile, want,
+        "ANTI-VACUITY: leashed to its own tile the wild would attack"
+    );
+    assert_eq!(
+        super::ai_plan_of(&b, 13),
+        Ok(want.clone()),
+        "ai_plan_of plans from spawn_b[wild_index]"
+    );
+    let out = super::overlays_of(&b, &query(Side::A, None, fresh())).expect("a valid board");
+    let intent = out
+        .intents
+        .iter()
+        .find(|i| i.unit == 13)
+        .expect("the conscious wild has an intent");
+    assert_eq!(
+        intent.plan, want,
+        "the intent chip plans from spawn_b[wild_index] too"
+    );
+}
+
+/// A corpse occupies nothing (dead units never block, occupy or get hit: movement.rs:159-163,
+/// geometry.rs:185), so the A4 probe stands on a dead unit's tile like on an empty one: the tile of
+/// the fainted A unit beside a live melee enemy is threatened.
+///
+/// WRONG IMPL KILLED: the dead unit taken as the tile's occupant (red-team b2: its id never comes
+/// back from `target_set`, so the tile vanished from danger).
+#[test]
+fn bt11_danger_probes_a_corpse_tile() {
+    let l = live();
+    let b = board(
+        1,
+        vec![
+            row(1, Side::A, 0, 1, 0, 6),
+            fainted(row(2, Side::A, 1, 1, 3, 4)),
+            row(11, Side::B, 0, 1, 3, 3),
+        ],
+    );
+    let out = super::overlays_of(&b, &query(Side::A, None, fresh())).expect("a valid board");
+    assert_eq!(out.danger.len(), 1, "one conscious enemy, one list");
+    assert!(
+        out.danger[0].contains(&Cell { x: 3, y: 4 }),
+        "the corpse's tile (3,4), beside Fire Fang's reach, is threatened: {:?}",
+        out.danger[0]
+    );
+    assert_eq!(
+        out.danger,
+        danger_oracle(&state_for(&l, &b), Side::A),
+        "the probe-sweep oracle"
+    );
+}
+
+/// The enemy's Move entries carry the disengage tax of its own tile (plan A4 `Move{s, taxed_e}`):
+/// species 3 at (3,4) beside an A unit pays +1 per Move, so Move{2} + a Light (5 + 2) and Move{1}
+/// + the Heavy (3 + 4) no longer fit 6 AP — the zone shrinks against the same enemy untaxed.
+///
+/// WRONG IMPL KILLED: the tax dropped from the feasibility entries (red-team a3: 47 tiles instead
+/// of 34); the tax judged at the standing tile instead of the enemy's own tile.
+#[test]
+fn bt11_danger_charges_the_disengage_tax() {
+    let l = live();
+    let taxed = board(
+        1,
+        vec![row(1, Side::A, 0, 1, 3, 3), row(11, Side::B, 0, 3, 3, 4)],
+    );
+    let free = board(
+        1,
+        vec![row(1, Side::A, 0, 1, 0, 0), row(11, Side::B, 0, 3, 3, 4)],
+    );
+    let dt = super::overlays_of(&taxed, &query(Side::A, None, fresh()))
+        .expect("a valid board")
+        .danger;
+    let df = super::overlays_of(&free, &query(Side::A, None, fresh()))
+        .expect("a valid board")
+        .danger;
+    assert_eq!(
+        dt,
+        danger_oracle(&state_for(&l, &taxed), Side::A),
+        "taxed: the probe-sweep oracle"
+    );
+    assert_eq!(
+        df,
+        danger_oracle(&state_for(&l, &free), Side::A),
+        "untaxed: the probe-sweep oracle"
+    );
+    assert!(
+        dt[0].len() < df[0].len(),
+        "the tax shrinks the zone: {} taxed vs {} untaxed",
+        dt[0].len(),
+        df[0].len()
+    );
+}
+
+/// The enemy's own tile is a standing tile (`s = 0`, plan A4): boxed in by two A units it cannot
+/// move at all, yet it still threatens from where it stands.
+///
+/// WRONG IMPL KILLED: standing tiles drawn only from Move destinations (red-team c2: 0 tiles).
+#[test]
+fn bt11_danger_keeps_the_standing_tile() {
+    let l = live();
+    let boxed = board(
+        1,
+        vec![
+            row(1, Side::A, 0, 1, 1, 0),
+            row(2, Side::A, 1, 1, 0, 1),
+            row(11, Side::B, 0, 1, 0, 0),
+        ],
+    );
+    let out = super::overlays_of(&boxed, &query(Side::A, None, fresh())).expect("a valid board");
+    assert_eq!(out.danger.len(), 1, "one conscious enemy, one list");
+    assert!(
+        out.danger[0].contains(&Cell { x: 1, y: 0 })
+            && out.danger[0].contains(&Cell { x: 0, y: 1 }),
+        "Fire Fang from (0,0) threatens both boxing units: {:?}",
+        out.danger[0]
+    );
+    assert_eq!(
+        out.danger,
+        danger_oracle(&state_for(&l, &boxed), Side::A),
+        "the probe-sweep oracle"
+    );
+}
+
+/// STAB over all 64 (attacker affinity x skill affinity) pairs, against the carried pipeline: on an
+/// all-Neutral chart the attacker's affinity enters `calc_damage` ONLY through the STAB term
+/// (combat/damage.rs:69-73), so `stab` holds exactly when the attacker's d0 beats the same
+/// attacker's d0 with an affinity that does not match the skill.
+///
+/// WRONG IMPL KILLED: stab hard-coded; stab from the target's affinity; stab from the attacker's
+/// species instead of its kit affinity; the comparison inverted.
+#[test]
+fn bt11_stab_matches_the_pipeline() {
+    const ALL: [Affinity; 8] = [
+        Affinity::Fire,
+        Affinity::Water,
+        Affinity::Plant,
+        Affinity::Electric,
+        Affinity::Earth,
+        Affinity::Wind,
+        Affinity::Light,
+        Affinity::Dark,
+    ];
+    let neutral = TypeChart::new(&[]);
+    let rolls = RollPair {
+        accuracy: 0,
+        variance: 100,
+    };
+    let mut stabs = 0;
+    let mut pairs = 0;
+    for attacker_affinity in ALL {
+        for skill_affinity in ALL {
+            let skill = lance(7, skill_affinity, 70, 100, None);
+            let mut attacker = fighter(1, Side::A, 0, attacker_affinity);
+            attacker.kit.skills = vec![skill.clone()];
+            let target = fighter(2, Side::B, 1, Affinity::Earth);
+            let f = super::forecast_of(&neutral, &T, &attacker, &target, &skill, false)
+                .expect("valid units");
+            let mut other = attacker.clone();
+            other.kit.affinity = if skill_affinity == Affinity::Fire {
+                Affinity::Water
+            } else {
+                Affinity::Fire
+            };
+            let d0 = damage_pipeline(&attacker, &target, &skill, &neutral, false, rolls, &T).d0;
+            let off = damage_pipeline(&other, &target, &skill, &neutral, false, rolls, &T).d0;
+            let label = format!("attacker {attacker_affinity:?}, skill {skill_affinity:?}");
+            assert_eq!(
+                f.stab,
+                d0 > off,
+                "{label}: stab == the pipeline's STAB bonus"
+            );
+            assert_eq!(
+                f.stab,
+                attacker_affinity == skill_affinity,
+                "{label}: stab == same affinity"
+            );
+            stabs += usize::from(f.stab);
+            pairs += 1;
+        }
+    }
+    assert_eq!(
+        (pairs, stabs),
+        (64, 8),
+        "64 pairs, the 8 matching ones STAB"
+    );
+}
+
+/// `forecast_of` reads the tuning it is GIVEN (A8 / the factors so no label restates a constant):
+/// flank 7/3 and Guard 2/5 come back as the factors and shape both traces; a tuning no rule can run
+/// on is refused (`TacticsTuning::validate`, plan §4.1), never divided by.
+///
+/// The danger half of the red-team's c1 (EndTurn dropped from the feasibility entries) is NOT
+/// testable here: `overlays_of` reads the loaded tuning, whose `end_turn_cost` is 0 (DESIGN), so the
+/// mutant is equivalent under every reachable tuning.
+///
+/// WRONG IMPL KILLED: the factors restated as 5/4 and 3/4 (red-team d10); the content tuning used
+/// instead of the parameter; a zero denominator accepted (red-team d16).
+#[test]
+fn bt11_forecast_reads_the_given_tuning() {
+    let chart = content_chart();
+    let custom = TacticsTuning {
+        end_turn_cost: 5,
+        flank_num: 7,
+        flank_den: 3,
+        guard_num: 2,
+        guard_den: 5,
+        ..T
+    };
+    let skill = lance(7, Affinity::Fire, 70, 100, None);
+    let mut attacker = fighter(1, Side::A, 0, Affinity::Fire);
+    attacker.kit.skills = vec![skill.clone()];
+    let mut target = fighter(2, Side::B, 1, Affinity::Plant);
+    target.guard = true;
+    let f = super::forecast_of(&chart, &custom, &attacker, &target, &skill, true)
+        .expect("valid units and a usable tuning");
+    assert_eq!(f.flank_factor, (7, 3), "the given flank factor");
+    assert_eq!(f.guard_factor, (2, 5), "the given Guard factor");
+    for (trace, variance) in [(&f.min, 85_u8), (&f.max, 100)] {
+        let want = damage_pipeline(
+            &attacker,
+            &target,
+            &skill,
+            &chart,
+            true,
+            RollPair {
+                accuracy: 0,
+                variance,
+            },
+            &custom,
+        );
+        assert_eq!(
+            *trace, want,
+            "variance {variance}: the pipeline at the given tuning"
+        );
+    }
+
+    let mut unguarded = target.clone();
+    unguarded.guard = false;
+    for (name, bad) in [
+        ("ZeroGuardDen", TacticsTuning { guard_den: 0, ..T }),
+        ("ZeroFlankDen", TacticsTuning { flank_den: 0, ..T }),
+    ] {
+        let err = super::forecast_of(&chart, &bad, &attacker, &unguarded, &skill, false)
+            .expect_err("an unusable tuning is refused, never divided by");
+        assert!(
+            err.contains(name) || err.to_lowercase().contains("tuning"),
+            "{name}: the error names the tuning: {err}"
+        );
+    }
+}
+
+/// The two plain passthroughs agree with game-core (the desync guard): `recruit_odds_of` with
+/// `recruit::recruit_odds` over a sweep (Ok and Err rows, max 0, hp over max), and the
+/// `tactics_is_exhausted` export with `ai::is_exhausted` on both sides of its boundaries.
+///
+/// WRONG IMPL KILLED: odds restated in the shell (quantized differently, the bait line uncapped);
+/// the bait cap clamped; an Exhausted rule with `<=` or u16 overflow.
+#[test]
+fn bt11_recruit_and_exhausted_match_game_core() {
+    assert_eq!(
+        super::recruit_odds_of(100, 20, 150),
+        Ok(RecruitOdds {
+            pct: 63,
+            base: 8,
+            bait: 15,
+            weakened: 40
+        }),
+        "the design example (recruit.rs:58)"
+    );
+    let mut rows = 0;
+    for &(max_hp, hp) in &[
+        (100_u16, 20_u16),
+        (100, 100),
+        (100, 1),
+        (1, 1),
+        (7, 3),
+        (255, 254),
+        (1000, 250),
+        (65_535, 1),
+        (0, 0),
+        (50, 80),
+    ] {
+        for &bait in &[0_u16, 150, 1000, 1001] {
+            assert_eq!(
+                super::recruit_odds_of(max_hp, hp, bait),
+                recruit_odds(max_hp, hp, bait),
+                "recruit_odds({max_hp}, {hp}, {bait})"
+            );
+            rows += 1;
+        }
+    }
+    assert_eq!(rows, 40, "ANTI-VACUITY: the whole sweep ran");
+    for &(cur, max) in &[
+        (24_u16, 100_u16),
+        (25, 100),
+        (0, 1),
+        (1, 0),
+        (0, 0),
+        (1, 4),
+        (1, 5),
+        (16_383, 65_535),
+        (16_384, 65_535),
+        (65_535, 65_535),
+    ] {
+        assert_eq!(
+            super::tactics_is_exhausted(cur, max),
+            is_exhausted(cur, max),
+            "is_exhausted({cur}, {max})"
+        );
+    }
+}
+
+/// Plan A20: `state_of` refuses a duplicate `(side, slot)` (the sort key) and a real unit carrying
+/// the probe id `u32::MAX`, naming them; a CONSCIOUS selection standing off the map is refused by
+/// `overlays_of` (the tax predicate's OutOfBounds, A10), naming the unit, while a DEAD one off the
+/// map still yields empty selection sets.
+///
+/// WRONG IMPL KILLED: a duplicate slot accepted (the order then depends on the input); a real unit
+/// mistaken for the probe (its tile hit by every sweep); an off-board selection answered with sets
+/// (or a dead one thrown).
+#[test]
+fn bt11_state_of_refusals_a20() {
+    // Unit 7 and unit 63 share (A, slot 7): a message naming the slot or the ids both say 7.
+    let same_slot = board(
+        1,
+        vec![
+            row(7, Side::A, 7, 1, 1, 1),
+            row(63, Side::A, 7, 3, 2, 1),
+            row(11, Side::B, 0, 1, 5, 5),
+        ],
+    );
+    let err = super::state_of(&same_slot).expect_err("a duplicate (side, slot) is refused");
+    assert!(err.contains('7'), "the error names the slot / ids: {err}");
+    let err = super::overlays_of(&same_slot, &query(Side::A, None, fresh()))
+        .expect_err("overlays refuse it too");
+    assert!(err.contains('7'), "the error names the slot / ids: {err}");
+
+    let probe_id = board(
+        1,
+        vec![
+            row(u32::MAX, Side::A, 0, 1, 1, 1),
+            row(11, Side::B, 0, 1, 5, 5),
+        ],
+    );
+    let err = super::state_of(&probe_id).expect_err("a real unit with the probe id is refused");
+    assert!(err.contains("4294967295"), "the error names the id: {err}");
+
+    let off_board = board(
+        1,
+        vec![row(8181, Side::A, 0, 1, 9, 9), row(11, Side::B, 0, 1, 5, 5)],
+    );
+    let err = super::overlays_of(&off_board, &query(Side::A, Some(8181), fresh()))
+        .expect_err("a conscious selection off the map is refused");
+    assert!(err.contains("8181"), "the error names the unit: {err}");
+
+    let dead_off_board = board(
+        1,
+        vec![
+            fainted(row(8181, Side::A, 0, 1, 9, 9)),
+            row(11, Side::B, 0, 1, 5, 5),
+        ],
+    );
+    let q = OverlayQuery {
+        viewer: Side::A,
+        selected: Some(8181),
+        skill_id: Some(1),
+        aim: Some(Cell { x: 5, y: 5 }),
+        budget: fresh(),
+    };
+    let out = super::overlays_of(&dead_off_board, &q).expect("a dead selection is data");
+    assert!(
+        out.reach1.is_empty()
+            && out.reach2.is_empty()
+            && out.range.is_empty()
+            && out.aoe.is_empty()
+            && out.shield.is_empty(),
+        "a dead selection: every selection set empty, got {out:?}"
+    );
 }

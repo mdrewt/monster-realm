@@ -1,17 +1,21 @@
-// tactics/forecast.test.ts — bt-11 RED tests for the pure forecast view-model (BT11.7): which line
-// items the panel shows (type, STAB, flank, Guard), the skull, the First-Stand marker, the status
-// that may apply, and the numbers copied from the rules' `ForecastOut`.
+// tactics/forecast.test.ts — bt-11 gating tests for the pure forecast view-model (BT11.7): which
+// line items the panel shows (type, STAB, flank, Guard), the skull, the First-Stand marker, the
+// status that may apply, and the numbers copied from the rules' `ForecastOut`.
 //
 // SOURCE OF TRUTH: specs/monster-realm-v2/M-battle-tactics.spec.md BT11.7 (design §2.4 / §9.3) and
-// the bt-11 plan (memory/projects/monster-realm-bt-11-plan.md) §4.4 as amended by REV 2 A13:
-//   - hits = f.min.hit; hitPct = f.hit_pct; min / max = f.min.d3 / f.max.d3;
+// the bt-11 plan (memory/projects/monster-realm-bt-11-plan.md) §4.4 as amended by REV 2 A13 and
+// REV 3 A18:
+//   - hits = f.min.hit; hitPct = f.hit_pct; min / max = f.min.d3 / f.max.d3 (the pipeline's d3,
+//     never `applied`, which First-Stand clamps);
 //   - lines in the order type, stab, flank, guard; the type line `{kind:'type', effectiveness}` only
 //     when the effectiveness is not Neutral (the enum is combat/types.rs:200); `{kind:'stab'}`;
 //     `{kind:'flank', num, den}` from `f.flank_factor`; `{kind:'guard', num, den}` from
 //     `f.guard_factor`; NO lines on a miss; ONLY the type line on Immune;
 //   - skull: kills_min → 'full', else kills_max → 'hollow', else 'none';
-//   - firstStand = first_stand_saves; status = status_blocked ? null : status.
-// The stub in forecast.ts IS the contract: every call goes through `forecastVM`.
+//   - firstStand = first_stand_saves; status = (status_blocked || kills_min) ? null : status (A18:
+//     when every roll KOs, the resolver's `!ko` clause never lets a status land, resolve.rs:675);
+//     the status does not depend on `hits` (it is the status the skill may apply ON a hit).
+// The exported `forecastVM` is the contract: every call goes through it.
 //
 // HOW THE INPUTS ARE BUILT: hand-made `ForecastOut` values (pure, no wasm). Every number is a
 // distinct prime and the d0..d3 of each trace differ, so a value copied from the wrong field
@@ -19,8 +23,11 @@
 // Two factor pairs are used (5/4 + 3/4 and 7/3 + 2/9) so a label that hard-codes the design's
 // numbers instead of reading `flank_factor` / `guard_factor` fails.
 //
-// RED REASON: `forecastVM` throws `bt-11: not implemented`.
-// Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
+// HOW THE TESTS ARE PROVEN: written red against the API-freeze stub (`forecastVM` threw `bt-11: not
+// implemented`), now green against the implementation; their bite is the WRONG IMPL KILLED note of
+// each test (round-2 additions: v6c min/max read from `applied`; A18's KO clause; the status tied
+// to `hits`). Do NOT edit these tests to match a buggy implementation; correct them from the spec
+// only.
 
 import { describe, expect, it } from 'vitest';
 import { type ForecastLine, forecastVM } from './forecast';
@@ -159,6 +166,33 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
       { kind: 'flank', num: 5, den: 4 },
     ]);
 
+    // First-Stand clamps `applied` (13 HP target: d3 30 applies 12, resolve.rs:549-551); the panel
+    // shows the pipeline damage d3, not what the clamp let through (round-2 mutant v6c).
+    const stood = forecastVM(
+      hitAt('Neutral', {
+        min: trace({
+          d0: 29,
+          d1: 30,
+          d2: 30,
+          d3: 30,
+          applied: 12,
+          hp_after: 1,
+          stood_ground: true,
+        }),
+        max: trace({
+          d0: 35,
+          d1: 37,
+          d2: 37,
+          d3: 37,
+          applied: 12,
+          hp_after: 1,
+          stood_ground: true,
+        }),
+        first_stand_saves: true,
+      }),
+    );
+    expect([stood.min, stood.max], 'min/max are d3 (30, 37), never applied (12)').toEqual([30, 37]);
+
     // The whole table: effectiveness x stab x flank x guard, with the unusual factors.
     const EFFS: readonly RuleEffectiveness[] = [
       'SuperEffective',
@@ -210,7 +244,8 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
     // for kills_min alone; a skull from first_stand_saves; firstStand hard-coded or read from a
     // trace's stood_ground; a status shown although status_blocked; a status dropped when not
     // blocked; the status read from something else than `status`; `hits` from the max trace or
-    // from hit_pct > 0.
+    // from hit_pct > 0. Round 2 (A18): a status shown although the min roll already KOs; the KO
+    // clause read from kills_max (a max-only KO must still show it); the status hidden on a miss.
     const skulls: readonly (readonly [boolean, boolean, string])[] = [
       [true, true, 'full'],
       [true, false, 'full'],
@@ -255,6 +290,42 @@ describe('forecastVM: the line items and the numbers (BT11.7, A13)', () => {
         `status ${String(status)} blocked=${blocked}`,
       ).toBe(want);
     }
+
+    // A18: a status never lands on a KO (resolve.rs:675 `!ko`), so when even the min roll KOs the
+    // panel shows none; a KO only at the max roll leaves the min roll's status possible.
+    const onKo: readonly (readonly [boolean, boolean, boolean, ForecastOut['status']])[] = [
+      [true, true, false, null],
+      [true, false, false, null],
+      [false, true, false, 'Poison'],
+      [false, false, false, 'Poison'],
+      [true, true, true, null],
+    ];
+    for (const [killsMin, killsMax, blocked, want] of onKo) {
+      expect(
+        forecastVM(
+          out({
+            status: 'Poison',
+            status_blocked: blocked,
+            kills_min: killsMin,
+            kills_max: killsMax,
+          }),
+        ).status,
+        `Poison, kills_min=${killsMin} kills_max=${killsMax} blocked=${blocked}`,
+      ).toBe(want);
+    }
+    expect(
+      forecastVM(
+        out({
+          hit_pct: 0,
+          effectiveness: null,
+          min: missTrace(80),
+          max: missTrace(80),
+          status: 'Poison',
+          status_blocked: false,
+        }),
+      ).status,
+      'a miss forecast still names the status the skill applies on a hit (not tied to hits)',
+    ).toBe('Poison');
 
     const halfMiss = forecastVM(out({ min: missTrace(80), hit_pct: 1 }));
     expect(halfMiss.hits, 'hits is min.hit (false here), not hit_pct > 0 or max.hit').toBe(false);
