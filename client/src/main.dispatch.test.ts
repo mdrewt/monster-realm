@@ -5235,12 +5235,20 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     ]);
   });
 
-  it('a Finished battle`s results continue on their own once the outcome frame has been on top for the results cap, exactly once and never re-shown; A after the grace and B continue at once; a Help frame opened over the outcome pauses the countdown and closing it restarts it [BT12-4-BOOT-RESULTS]', async () => {
+  it('a Finished battle`s results continue on their own once the outcome frame has been on top for the results cap, exactly once and never re-shown; A after the grace and B continue at once; a server conversation mirrored over the outcome pauses the countdown and its end restarts it [BT12-4-BOOT-RESULTS]', async () => {
     // WRONG IMPL KILLED (A7, B12, R9): no auto-advance; an advance before the cap, or on a wall
     // clock instead of the frame clock; a pop on every frame past the cap (the world base would
-    // lose frames) or a batch that re-shows the dismissed results; a countdown that runs under Help
-    // and pops Help or the outcome from under it (R2); a countdown that resumes the OLD shown edge
-    // after Help closes instead of restarting; A or B no longer continuing the results.
+    // lose frames) or a batch that re-shows the dismissed results; a countdown that runs under a
+    // frame covering the outcome and pops that frame or the outcome from under it (R2); a countdown
+    // that resumes the OLD shown edge once the cover goes instead of restarting; A or B no longer
+    // continuing the results.
+    // Correction (coordinator, from the code: REV 2 A7 "a frame over the outcome pauses the
+    // countdown and it restarts when the outcome resurfaces"): the cover was Help via Select, which
+    // can never open over the outcome (battleView is EXCLUSIVE_TOP in ui/overlayRegistry.ts, and
+    // toggleHelp opens only at a bare battle base or on an `allow` verdict). The cover is now the
+    // server-owned conversation, the one frame that CAN sit above the outcome: the dialogue view in
+    // this file is the REAL one, rendered from the store's conversation row every batch, so the
+    // conversation is started and ended through the store (an NPC row and a conversation row).
     await bootReady();
     server(1000);
     await bt12Legacy();
@@ -5306,34 +5314,36 @@ describe('bt-12: the deploy and results panels own the battle frame (BT12.1 - BT
     clear(B3, shown3 + 1_000);
 
     const B4 = 9_007_199_254_741_053n;
+    placeNpc(GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }, 39_000);
     const shown4 = finish(B4, 40_000);
-    press('KeyR', shown4 + 11);
-    expect(bt12Frames(), 'precondition: Help is open over the outcome').toEqual([
-      'world',
-      'battleView',
-      'helpView',
-    ]);
+    startConversation(shown4 + 11);
+    expect(
+      bt12Frames(),
+      'precondition: the server conversation is mirrored over the outcome',
+    ).toEqual(['world', 'battleView', 'dialogueView']);
     frame(shown4 + CAP + 13);
     await flush();
-    expect(bt12Frames(), 'Help on top pauses the countdown: nothing is popped').toEqual([
+    expect(
+      bt12Frames(),
+      'a frame over the outcome pauses the countdown: nothing is popped past the cap',
+    ).toEqual(['world', 'battleView', 'dialogueView']);
+    const closedAt = shown4 + CAP + 17;
+    endConversation(closedAt);
+    expect(bt12Frames(), 'the conversation ended: the outcome is on top again').toEqual([
       'world',
       'battleView',
-      'helpView',
     ]);
-    const reopened = shown4 + CAP + 17;
-    press('KeyR', reopened);
-    expect(bt12Frames(), 'Help closed: the outcome is on top again').toEqual([
-      'world',
-      'battleView',
-    ]);
-    frame(reopened + CAP - 10);
+    frame(closedAt + CAP - 1);
     await flush();
     expect(
       bt12Frames(),
       'the countdown restarted when the outcome resurfaced (the old edge is long past)',
     ).toEqual(['world', 'battleView']);
-    frame(reopened + CAP + 10);
+    frame(closedAt + CAP);
     await flush();
-    expect(bt12Frames(), 'and continues it once the cap passes again, once').toEqual(['world']);
+    expect(bt12Frames(), 'and continues it at the cap from that moment').toEqual(['world']);
+    frame(closedAt + 2 * CAP);
+    await flush();
+    expect(bt12Frames(), 'exactly once').toEqual(['world']);
   });
 });
