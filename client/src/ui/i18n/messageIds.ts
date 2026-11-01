@@ -427,7 +427,68 @@ export type MessageId =
   | 'dialogue.ended.npcGone'
   // qf-6 (QF6.4): the status line acknowledging a completed quest, with and without gold.
   | 'quest.complete.reward'
-  | 'quest.complete.done';
+  | 'quest.complete.done'
+  // bt-10 (BT10.6): the tactical client's text (client/src/tactics/strings.ts is their only requester).
+  | 'tactics.board.label'
+  | 'tactics.dock.label'
+  | 'tactics.ticker.label'
+  | 'tactics.turnbar.label'
+  | 'tactics.turnbar.locked'
+  | 'tactics.turnbar.surgeActive'
+  | 'tactics.hud.guard'
+  | 'tactics.hud.firstStand'
+  | 'tactics.stance.aggressive'
+  | 'tactics.stance.territorial'
+  | 'tactics.stance.skittish'
+  | 'tactics.status.poison'
+  | 'tactics.status.burn'
+  | 'tactics.status.paralysis'
+  | 'tactics.status.sleep'
+  | 'tactics.status.freeze'
+  | 'tactics.intent.attack'
+  | 'tactics.intent.move'
+  | 'tactics.intent.hold'
+  | 'tactics.halt.targetGone'
+  | 'tactics.halt.outOfReach'
+  | 'tactics.halt.cannotAct'
+  | 'tactics.halt.itemNotHeld'
+  | 'tactics.halt.unaffordable'
+  | 'tactics.halt.partyFull'
+  | 'tactics.halt.notAllowed'
+  | 'tactics.ticker.battleStarted'
+  | 'tactics.ticker.won'
+  | 'tactics.ticker.lost'
+  | 'tactics.ticker.fled'
+  | 'tactics.ticker.battleEnded'
+  | 'tactics.turnbar.round'
+  | 'tactics.turnbar.surgeIn'
+  | 'tactics.turnbar.retreatAt'
+  | 'tactics.hud.level'
+  | 'tactics.hud.hp'
+  | 'tactics.hud.ap'
+  | 'tactics.hud.role'
+  | 'tactics.ticker.executed'
+  | 'tactics.ticker.hit'
+  | 'tactics.ticker.missed'
+  | 'tactics.ticker.halted'
+  | 'tactics.ticker.voided'
+  | 'tactics.ticker.autoPass'
+  | 'tactics.ticker.stoodGround'
+  | 'tactics.ticker.statusApplied'
+  | 'tactics.ticker.statusTick'
+  | 'tactics.ticker.statusCured'
+  | 'tactics.ticker.statusBlocked'
+  | 'tactics.ticker.surge'
+  | 'tactics.ticker.ko'
+  | 'tactics.ticker.recruitOk'
+  | 'tactics.ticker.recruitFail'
+  | 'tactics.ticker.awards'
+  | 'tactics.ticker.moved'
+  | 'tactics.ticker.itemUsed'
+  | 'tactics.ticker.turnEnded'
+  | 'tactics.ticker.guarded'
+  | 'tactics.ticker.roundEnded'
+  | 'tactics.banner.turn';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -628,6 +689,50 @@ export interface MessageParams {
   readonly 'quest.complete.reward': { readonly name: string; readonly amount: bigint };
   readonly 'quest.complete.done': { readonly name: string };
   readonly 'social.players.walkUp': { readonly name: string };
+  // bt-10: the tactical client's parameterised lines. Names, status words and halt reasons are
+  // catalog text or model data resolved by the caller; `currency` is a bigint, every other count a number.
+  readonly 'tactics.turnbar.round': { readonly round: number };
+  readonly 'tactics.turnbar.surgeIn': { readonly n: number };
+  readonly 'tactics.turnbar.retreatAt': { readonly round: number };
+  readonly 'tactics.hud.level': { readonly level: number };
+  readonly 'tactics.hud.hp': { readonly hp: number; readonly max: number };
+  readonly 'tactics.hud.ap': { readonly ap: number; readonly max: number };
+  readonly 'tactics.hud.role': { readonly role: string };
+  readonly 'tactics.ticker.executed': { readonly unit: string; readonly skill: string };
+  readonly 'tactics.ticker.hit': { readonly target: string; readonly damage: number };
+  readonly 'tactics.ticker.missed': { readonly unit: string; readonly target: string };
+  readonly 'tactics.ticker.halted': { readonly unit: string; readonly reason: string };
+  readonly 'tactics.ticker.voided': { readonly unit: string };
+  readonly 'tactics.ticker.autoPass': { readonly unit: string; readonly strike: number };
+  readonly 'tactics.ticker.stoodGround': { readonly unit: string };
+  readonly 'tactics.ticker.statusApplied': { readonly unit: string; readonly status: string };
+  readonly 'tactics.ticker.statusTick': {
+    readonly unit: string;
+    readonly status: string;
+    readonly amount: number;
+  };
+  readonly 'tactics.ticker.statusCured': { readonly unit: string; readonly status: string };
+  readonly 'tactics.ticker.statusBlocked': { readonly unit: string; readonly status: string };
+  readonly 'tactics.ticker.surge': { readonly unit: string; readonly amount: number };
+  readonly 'tactics.ticker.ko': { readonly unit: string };
+  readonly 'tactics.ticker.recruitOk': { readonly target: string };
+  readonly 'tactics.ticker.recruitFail': { readonly target: string; readonly pct: number };
+  readonly 'tactics.ticker.awards': {
+    readonly unit: string;
+    readonly xp: number;
+    readonly essence: number;
+    readonly currency: bigint;
+  };
+  readonly 'tactics.ticker.moved': { readonly unit: string; readonly tiles: number };
+  readonly 'tactics.ticker.itemUsed': {
+    readonly unit: string;
+    readonly item: string;
+    readonly target: string;
+  };
+  readonly 'tactics.ticker.turnEnded': { readonly unit: string };
+  readonly 'tactics.ticker.guarded': { readonly unit: string };
+  readonly 'tactics.ticker.roundEnded': { readonly round: number };
+  readonly 'tactics.banner.turn': { readonly unit: string };
 }
 
 /** Keys resolved by `tf(key, params)`. */

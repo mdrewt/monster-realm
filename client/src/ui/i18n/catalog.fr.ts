@@ -1421,4 +1421,163 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // content id shown verbatim (as in the Journal). One short line.
   // main.ts (the quest-completion batch listener)
   'quest.complete.done': (p) => `Quête terminée : ${p.name}.`,
+  // bt-10 (BT10.5/BT10.6): the tactical client's text (tactics/strings.ts is the only requester).
+  // @desc: Accessible name of the tactical battle board (the grid of tiles and units). One or two
+  // words.
+  'tactics.board.label': 'Champ de bataille',
+  // @desc: Accessible name of the tactical battle's bottom command band. One word.
+  'tactics.dock.label': 'Commandes',
+  // @desc: Accessible name of the tactical battle's running list of event lines. One or two words.
+  'tactics.ticker.label': 'Journal de combat',
+  // @desc: Accessible name of the strip of unit chips that shows who acts next. One or two words.
+  'tactics.turnbar.label': 'Ordre des tours',
+  // @desc: Label on a turn-bar chip whose unit has already locked its plan for the round. One or
+  // two words.
+  'tactics.turnbar.locked': 'Plan verrouillé',
+  // @desc: Turn-bar badge shown while the player-versus-player surge (rising damage) is in effect.
+  // One word.
+  'tactics.turnbar.surgeActive': 'Surcharge !',
+  // @desc: Chip on a unit info box: the unit is guarding this round. One word.
+  'tactics.hud.guard': 'Garde',
+  // @desc: Chip on a unit info box: the unit still holds its one-time first-stand protection. Two
+  // words.
+  'tactics.hud.firstStand': 'Premier rempart',
+  // @desc: A wild monster's AI stance: it attacks on sight. One word.
+  'tactics.stance.aggressive': 'Agressif',
+  // @desc: A wild monster's AI stance: it defends its area but does not chase. A short phrase.
+  'tactics.stance.territorial': 'Garde son territoire',
+  // @desc: A wild monster's AI stance: it keeps away and flees. One word.
+  'tactics.stance.skittish': 'Craintif',
+  // @desc: A status condition shown as an adjective on a unit: poison. One word.
+  'tactics.status.poison': 'Empoisonné',
+  // @desc: A status condition shown as an adjective on a unit: burn. One word.
+  'tactics.status.burn': 'Brûlé',
+  // @desc: A status condition shown as an adjective on a unit: paralysis. One word.
+  'tactics.status.paralysis': 'Paralysé',
+  // @desc: A status condition shown as an adjective on a unit: sleep. One word.
+  'tactics.status.sleep': 'Endormi',
+  // @desc: A status condition shown as an adjective on a unit: freeze. One word.
+  'tactics.status.freeze': 'Gelé',
+  // @desc: Marker over an enemy unit showing it plans to attack next. One word.
+  'tactics.intent.attack': 'Attaque',
+  // @desc: Marker over an enemy unit showing it plans to move next. One word.
+  'tactics.intent.move': 'Déplacement',
+  // @desc: Marker over an enemy unit showing it plans to hold its position next. One word.
+  'tactics.intent.hold': 'Attente',
+  // @desc: Reason a queued plan stopped: its target is no longer there. Lower-case, inserted after
+  // a colon in the halted line.
+  'tactics.halt.targetGone': 'cible disparue',
+  // @desc: Reason a queued plan stopped: the target is too far or unreachable. Lower-case, inserted
+  // after a colon in the halted line.
+  'tactics.halt.outOfReach': 'hors de portée',
+  // @desc: Reason a queued plan stopped: the unit can no longer act. Lower-case, inserted after a
+  // colon in the halted line.
+  'tactics.halt.cannotAct': 'action impossible',
+  // @desc: Reason a queued plan stopped: the item is not in the bag. Lower-case, inserted after a
+  // colon in the halted line.
+  'tactics.halt.itemNotHeld': 'objet non possédé',
+  // @desc: Reason a queued plan stopped: not enough action points or resources. Lower-case,
+  // inserted after a colon in the halted line.
+  'tactics.halt.unaffordable': 'trop coûteux',
+  // @desc: Reason a recruit stopped: there is no room in the party. Lower-case, inserted after a
+  // colon in the halted line.
+  'tactics.halt.partyFull': 'équipe pleine',
+  // @desc: Reason a queued plan stopped: the action is not allowed here. Lower-case, inserted after
+  // a colon in the halted line.
+  'tactics.halt.notAllowed': 'non autorisé',
+  // @desc: Battle-log line when a tactical battle starts. One short sentence.
+  'tactics.ticker.battleStarted': 'Le combat commence',
+  // @desc: Battle-log line when the player's side wins. One short sentence.
+  'tactics.ticker.won': 'Vous avez gagné le combat',
+  // @desc: Battle-log line when the player's side loses. One short sentence.
+  'tactics.ticker.lost': 'Vous avez perdu le combat',
+  // @desc: Battle-log line when the battle ends because a side fled. One short sentence.
+  'tactics.ticker.fled': 'Le combat s’est terminé : fuite',
+  // @desc: Battle-log line when the battle ends with no winner recorded. Two words.
+  'tactics.ticker.battleEnded': 'Combat terminé',
+  // @desc: Turn-bar heading with the current round; {round} is the round number counted from 1. Two
+  // words.
+  'tactics.turnbar.round': (p) => `Manche ${p.round}`,
+  // @desc: Turn-bar badge counting down the rounds until the surge begins; {n} is the number of
+  // rounds left. A short phrase.
+  'tactics.turnbar.surgeIn': (p) => `Surcharge dans ${p.n}`,
+  // @desc: Turn-bar badge naming the round at which a wild battle forces a retreat; {round} is that
+  // round number. A short phrase.
+  'tactics.turnbar.retreatAt': (p) => `Retraite à la manche ${p.round}`,
+  // @desc: Level label on a unit info box; {level} is the unit's level. Abbreviation plus number.
+  'tactics.hud.level': (p) => `Niv.${p.level}`,
+  // @desc: Hit-point line on a unit info box; {hp} is current and {max} the maximum hit points.
+  // Abbreviation plus fraction.
+  'tactics.hud.hp': (p) => `PV ${p.hp}/${p.max}`,
+  // @desc: Action-point line on the active unit's info box; {ap} is points left and {max} the pool
+  // size. Abbreviation plus fraction.
+  'tactics.hud.ap': (p) => `PA ${p.ap}/${p.max}`,
+  // @desc: Role chip on a unit info box; {role} is the unit's role name, carried verbatim from game
+  // data. A short label.
+  'tactics.hud.role': (p) => `Rôle : ${p.role}`,
+  // @desc: Battle-log line when a unit uses a skill; {unit} is the actor and {skill} the skill
+  // name. One short sentence.
+  'tactics.ticker.executed': (p) => `${p.unit} utilise ${p.skill}`,
+  // @desc: Battle-log clause for a hit; {target} is the unit hit and {damage} the damage dealt. One
+  // short clause.
+  'tactics.ticker.hit': (p) => `${p.target} subit ${p.damage} dégâts`,
+  // @desc: Battle-log clause for a miss; {unit} is the attacker and {target} the unit it missed.
+  // One short clause.
+  'tactics.ticker.missed': (p) => `${p.unit} rate ${p.target}`,
+  // @desc: Battle-log line when a unit's queued plan stops; {unit} is the actor and {reason} is a
+  // lower-case reason text from the tactics.halt.* keys. One short sentence.
+  'tactics.ticker.halted': (p) => `${p.unit} s’arrête : ${p.reason}`,
+  // @desc: Battle-log line when a unit's queued plan is discarded; {unit} is the actor. One short
+  // sentence.
+  'tactics.ticker.voided': (p) => `${p.unit} perd son plan en attente`,
+  // @desc: Battle-log line when a unit is passed automatically for not acting in time; {unit} is
+  // the actor and {strike} how many such misses it has. One short sentence.
+  'tactics.ticker.autoPass': (p) => `${p.unit} passe (échec ${p.strike})`,
+  // @desc: Battle-log line when a unit holds its position instead of moving; {unit} is the actor.
+  // One short sentence.
+  'tactics.ticker.stoodGround': (p) => `${p.unit} tient bon`,
+  // @desc: Battle-log line when a status condition lands; {unit} is the unit and {status} the
+  // adjective from tactics.status.*. One short sentence.
+  'tactics.ticker.statusApplied': (p) => `${p.unit} est maintenant ${p.status}`,
+  // @desc: Battle-log line for status damage at the end of a round; {unit} is the unit, {amount}
+  // the damage, {status} the adjective from tactics.status.*. One short sentence.
+  'tactics.ticker.statusTick': (p) => `${p.unit} subit ${p.amount} dégâts (${p.status})`,
+  // @desc: Battle-log line when a status condition ends; {unit} is the unit and {status} the
+  // adjective from tactics.status.*. One short sentence.
+  'tactics.ticker.statusCured': (p) => `${p.unit} n’est plus ${p.status}`,
+  // @desc: Battle-log line when a status condition fails to land; {unit} is the unit and {status}
+  // the adjective from tactics.status.*. One short sentence.
+  'tactics.ticker.statusBlocked': (p) => `${p.unit} résiste (${p.status})`,
+  // @desc: Battle-log line when the Surge (rising damage late in a PvP battle) hurts a unit; {unit}
+  // is the unit and {amount} the damage it takes. One short sentence.
+  'tactics.ticker.surge': (p) => `${p.unit} subit ${p.amount} dégâts de Surcharge`,
+  // @desc: Battle-log clause when a unit faints; {unit} is the unit. One short clause.
+  'tactics.ticker.ko': (p) => `${p.unit} est mis K.O.`,
+  // @desc: Battle-log line when a recruit attempt succeeds; {target} is the recruited monster. One
+  // short sentence.
+  'tactics.ticker.recruitOk': (p) => `${p.target} rejoint votre équipe`,
+  // @desc: Battle-log line when a recruit attempt fails; {target} is the monster and {pct} the
+  // percent chance it had. One short sentence.
+  'tactics.ticker.recruitFail': (p) => `Échec du recrutement de ${p.target} (${p.pct}%)`,
+  // @desc: Battle-log line for a unit's end-of-battle rewards; {unit} is the unit, {xp} experience,
+  // {essence} essence and {currency} gold. One short sentence.
+  'tactics.ticker.awards': (p) =>
+    `${p.unit} gagne ${p.xp} XP, ${p.essence} essence et ${p.currency} or`,
+  // @desc: Battle-log line when a unit moves; {unit} is the actor and {tiles} how many tiles it
+  // moved. One short sentence.
+  'tactics.ticker.moved': (p) => `${p.unit} se déplace de ${p.tiles} case(s)`,
+  // @desc: Battle-log line when a unit uses a bag item; {unit} is the actor, {item} the item name
+  // and {target} the unit it was used on. One short sentence.
+  'tactics.ticker.itemUsed': (p) => `${p.unit} utilise ${p.item} sur ${p.target}`,
+  // @desc: Battle-log line when a unit ends its turn; {unit} is the unit. One short sentence.
+  'tactics.ticker.turnEnded': (p) => `${p.unit} termine son tour`,
+  // @desc: Battle-log line when a unit ends its turn guarding; {unit} is the unit. One short
+  // sentence.
+  'tactics.ticker.guarded': (p) => `${p.unit} se met en garde`,
+  // @desc: Battle-log line when a round ends; {round} is the round number counted from 1. One short
+  // sentence.
+  'tactics.ticker.roundEnded': (p) => `Fin de la manche ${p.round}`,
+  // @desc: Banner for the current unit's turn while its plan is not yet locked (an own unit or a
+  // human opponent's); {unit} is that unit's name. Neutral wording. One short phrase.
+  'tactics.banner.turn': (p) => `Au tour de ${p.unit}`,
 } satisfies Catalog);

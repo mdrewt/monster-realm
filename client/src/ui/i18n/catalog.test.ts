@@ -402,6 +402,87 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'Sparky', amount: 12 },
     { name: 'Bolt', amount: 3 },
   ],
+  // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +29 parameterised `tactics.*` keys
+  // (the turn bar's round / surge / retreat badges, the HUD's level / hp / ap / role lines, the
+  // ticker's per-event lines and the turn banner). Every field differs between the two sets; names
+  // and reason texts are model data carried verbatim, `currency` is a bigint (past 2^53 in set B).
+  'tactics.turnbar.round': [{ round: 3 }, { round: 12 }],
+  'tactics.turnbar.surgeIn': [{ n: 2 }, { n: 1 }],
+  'tactics.turnbar.retreatAt': [{ round: 31 }, { round: 40 }],
+  'tactics.hud.level': [{ level: 7 }, { level: 30 }],
+  'tactics.hud.hp': [
+    { hp: 8, max: 20 },
+    { hp: 0, max: 9 },
+  ],
+  'tactics.hud.ap': [
+    { ap: 4, max: 6 },
+    { ap: 1, max: 8 },
+  ],
+  'tactics.hud.role': [{ role: 'Tank' }, { role: 'Healer' }],
+  'tactics.ticker.executed': [
+    { unit: 'Sprigg', skill: 'Vine Lash' },
+    { unit: 'Mossback', skill: 'Ember Jab' },
+  ],
+  'tactics.ticker.hit': [
+    { target: 'Mossback', damage: 12 },
+    { target: 'Sprigg', damage: 1 },
+  ],
+  'tactics.ticker.missed': [
+    { unit: 'Sprigg', target: 'Mossback' },
+    { unit: 'Flameling', target: 'Kip' },
+  ],
+  'tactics.ticker.halted': [
+    { unit: 'Sprigg', reason: 'out of reach' },
+    { unit: 'Kip', reason: 'target gone' },
+  ],
+  'tactics.ticker.voided': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
+  'tactics.ticker.autoPass': [
+    { unit: 'Sprigg', strike: 2 },
+    { unit: 'Kip', strike: 3 },
+  ],
+  'tactics.ticker.stoodGround': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
+  'tactics.ticker.statusApplied': [
+    { unit: 'Sprigg', status: 'Poisoned' },
+    { unit: 'Kip', status: 'Frozen' },
+  ],
+  'tactics.ticker.statusTick': [
+    { unit: 'Sprigg', status: 'Burned', amount: 5 },
+    { unit: 'Kip', status: 'Poisoned', amount: 12 },
+  ],
+  'tactics.ticker.statusCured': [
+    { unit: 'Sprigg', status: 'Poisoned' },
+    { unit: 'Kip', status: 'Asleep' },
+  ],
+  'tactics.ticker.statusBlocked': [
+    { unit: 'Sprigg', status: 'Paralyzed' },
+    { unit: 'Kip', status: 'Frozen' },
+  ],
+  'tactics.ticker.surge': [
+    { unit: 'Sprigg', amount: 3 },
+    { unit: 'Kip', amount: 11 },
+  ],
+  'tactics.ticker.ko': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
+  'tactics.ticker.recruitOk': [{ target: 'Mossback' }, { target: 'Flameling' }],
+  'tactics.ticker.recruitFail': [
+    { target: 'Mossback', pct: 42 },
+    { target: 'Flameling', pct: 7 },
+  ],
+  'tactics.ticker.awards': [
+    { unit: 'Sprigg', xp: 55, essence: 6, currency: 123n },
+    { unit: 'Kip', xp: 0, essence: 12, currency: 9_007_199_254_740_993n },
+  ],
+  'tactics.ticker.moved': [
+    { unit: 'Sprigg', tiles: 3 },
+    { unit: 'Kip', tiles: 1 },
+  ],
+  'tactics.ticker.itemUsed': [
+    { unit: 'Sprigg', item: 'Herb', target: 'Kip' },
+    { unit: 'Mossback', item: 'Tonic', target: 'Flameling' },
+  ],
+  'tactics.ticker.turnEnded': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
+  'tactics.ticker.guarded': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
+  'tactics.ticker.roundEnded': [{ round: 8 }, { round: 25 }],
+  'tactics.banner.turn': [{ unit: 'Sprigg' }, { unit: 'Kip' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -889,6 +970,42 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'dialogue.ended.walkedAway': 'Conversation ended: you moved too far away.',
   'dialogue.ended.leftZone': 'Conversation ended: you left the area.',
   'dialogue.ended.npcGone': 'Conversation ended: they are no longer here.',
+  // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +60 `tactics.*` keys — these 31 plain
+  // ones (tactics/strings.ts is their only requester) and the 29 parameterised ones in SAMPLE_PARAMS /
+  // EXPECTED_PARAM_OUTPUTS. The English texts are chosen so each differs from its French twin
+  // (tactics/strings.test.ts asserts fr != en for every key): status words are adjectives
+  // ("Poisoned"), the territorial stance is spelled out ("Holds its turf").
+  'tactics.board.label': 'Battlefield',
+  'tactics.dock.label': 'Commands',
+  'tactics.ticker.label': 'Battle log',
+  'tactics.turnbar.label': 'Turn order',
+  'tactics.turnbar.locked': 'Plan locked',
+  'tactics.turnbar.surgeActive': 'Surge!',
+  'tactics.hud.guard': 'Guard',
+  'tactics.hud.firstStand': 'First Stand',
+  'tactics.stance.aggressive': 'Aggressive',
+  'tactics.stance.territorial': 'Holds its turf',
+  'tactics.stance.skittish': 'Skittish',
+  'tactics.status.poison': 'Poisoned',
+  'tactics.status.burn': 'Burned',
+  'tactics.status.paralysis': 'Paralyzed',
+  'tactics.status.sleep': 'Asleep',
+  'tactics.status.freeze': 'Frozen',
+  'tactics.intent.attack': 'Attack',
+  'tactics.intent.move': 'Move',
+  'tactics.intent.hold': 'Hold',
+  'tactics.halt.targetGone': 'target gone',
+  'tactics.halt.outOfReach': 'out of reach',
+  'tactics.halt.cannotAct': 'cannot act',
+  'tactics.halt.itemNotHeld': 'item not held',
+  'tactics.halt.unaffordable': 'cannot afford it',
+  'tactics.halt.partyFull': 'party full',
+  'tactics.halt.notAllowed': 'not allowed',
+  'tactics.ticker.battleStarted': 'The battle begins',
+  'tactics.ticker.won': 'You won the battle',
+  'tactics.ticker.lost': 'You lost the battle',
+  'tactics.ticker.fled': 'The battle ended: fled',
+  'tactics.ticker.battleEnded': 'Battle over',
 };
 
 interface ParamOutputSpec {
@@ -1418,9 +1535,190 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Bolt', amount: 3 },
     outputB: 'Bolt +3 XP',
   },
+  // bt-10 (BT10.5/BT10.6): the tactical client's parameterised lines. Names, reason texts and status
+  // words are model data (a catalog text resolved by the caller) and sit once, verbatim, in the line;
+  // the numbers are bare digits (no locale grouping); the bigint currency keeps every digit.
+  'tactics.turnbar.round': {
+    inputA: { round: 3 },
+    outputA: 'Round 3',
+    inputB: { round: 12 },
+    outputB: 'Round 12',
+  },
+  'tactics.turnbar.surgeIn': {
+    inputA: { n: 2 },
+    outputA: 'Surge in 2',
+    inputB: { n: 1 },
+    outputB: 'Surge in 1',
+  },
+  'tactics.turnbar.retreatAt': {
+    inputA: { round: 31 },
+    outputA: 'Retreat at 31',
+    inputB: { round: 40 },
+    outputB: 'Retreat at 40',
+  },
+  'tactics.hud.level': {
+    inputA: { level: 7 },
+    outputA: 'Lv.7',
+    inputB: { level: 30 },
+    outputB: 'Lv.30',
+  },
+  'tactics.hud.hp': {
+    inputA: { hp: 8, max: 20 },
+    outputA: 'HP 8/20',
+    inputB: { hp: 0, max: 9 },
+    outputB: 'HP 0/9',
+  },
+  'tactics.hud.ap': {
+    inputA: { ap: 4, max: 6 },
+    outputA: 'AP 4/6',
+    inputB: { ap: 1, max: 8 },
+    outputB: 'AP 1/8',
+  },
+  'tactics.hud.role': {
+    inputA: { role: 'Tank' },
+    outputA: 'Role: Tank',
+    inputB: { role: 'Healer' },
+    outputB: 'Role: Healer',
+  },
+  'tactics.ticker.executed': {
+    inputA: { unit: 'Sprigg', skill: 'Vine Lash' },
+    outputA: 'Sprigg uses Vine Lash',
+    inputB: { unit: 'Mossback', skill: 'Ember Jab' },
+    outputB: 'Mossback uses Ember Jab',
+  },
+  'tactics.ticker.hit': {
+    inputA: { target: 'Mossback', damage: 12 },
+    outputA: 'Mossback takes 12 damage',
+    inputB: { target: 'Sprigg', damage: 1 },
+    outputB: 'Sprigg takes 1 damage',
+  },
+  'tactics.ticker.missed': {
+    inputA: { unit: 'Sprigg', target: 'Mossback' },
+    outputA: 'Sprigg misses Mossback',
+    inputB: { unit: 'Flameling', target: 'Kip' },
+    outputB: 'Flameling misses Kip',
+  },
+  'tactics.ticker.halted': {
+    inputA: { unit: 'Sprigg', reason: 'out of reach' },
+    outputA: 'Sprigg stops: out of reach',
+    inputB: { unit: 'Kip', reason: 'target gone' },
+    outputB: 'Kip stops: target gone',
+  },
+  'tactics.ticker.voided': {
+    inputA: { unit: 'Sprigg' },
+    outputA: 'Sprigg loses the queued plan',
+    inputB: { unit: 'Kip' },
+    outputB: 'Kip loses the queued plan',
+  },
+  'tactics.ticker.autoPass': {
+    inputA: { unit: 'Sprigg', strike: 2 },
+    outputA: 'Sprigg passes (strike 2)',
+    inputB: { unit: 'Kip', strike: 3 },
+    outputB: 'Kip passes (strike 3)',
+  },
+  'tactics.ticker.stoodGround': {
+    inputA: { unit: 'Sprigg' },
+    outputA: 'Sprigg stands its ground',
+    inputB: { unit: 'Kip' },
+    outputB: 'Kip stands its ground',
+  },
+  'tactics.ticker.statusApplied': {
+    inputA: { unit: 'Sprigg', status: 'Poisoned' },
+    outputA: 'Sprigg is now Poisoned',
+    inputB: { unit: 'Kip', status: 'Frozen' },
+    outputB: 'Kip is now Frozen',
+  },
+  'tactics.ticker.statusTick': {
+    inputA: { unit: 'Sprigg', status: 'Burned', amount: 5 },
+    outputA: 'Sprigg takes 5 damage while Burned',
+    inputB: { unit: 'Kip', status: 'Poisoned', amount: 12 },
+    outputB: 'Kip takes 12 damage while Poisoned',
+  },
+  'tactics.ticker.statusCured': {
+    inputA: { unit: 'Sprigg', status: 'Poisoned' },
+    outputA: 'Sprigg is no longer Poisoned',
+    inputB: { unit: 'Kip', status: 'Asleep' },
+    outputB: 'Kip is no longer Asleep',
+  },
+  'tactics.ticker.statusBlocked': {
+    inputA: { unit: 'Sprigg', status: 'Paralyzed' },
+    outputA: 'Sprigg resists being Paralyzed',
+    inputB: { unit: 'Kip', status: 'Frozen' },
+    outputB: 'Kip resists being Frozen',
+  },
+  'tactics.ticker.surge': {
+    inputA: { unit: 'Sprigg', amount: 3 },
+    // bt-10 round 2 (named intentional change): Surge is damage ("takes N Surge damage"), not a buff.
+    outputA: 'Sprigg takes 3 Surge damage',
+    inputB: { unit: 'Kip', amount: 11 },
+    outputB: 'Kip takes 11 Surge damage',
+  },
+  'tactics.ticker.ko': {
+    inputA: { unit: 'Sprigg' },
+    outputA: 'Sprigg is knocked out',
+    inputB: { unit: 'Kip' },
+    outputB: 'Kip is knocked out',
+  },
+  'tactics.ticker.recruitOk': {
+    inputA: { target: 'Mossback' },
+    outputA: 'Mossback joins your team',
+    inputB: { target: 'Flameling' },
+    outputB: 'Flameling joins your team',
+  },
+  'tactics.ticker.recruitFail': {
+    inputA: { target: 'Mossback', pct: 42 },
+    outputA: 'Recruiting Mossback failed (42%)',
+    inputB: { target: 'Flameling', pct: 7 },
+    outputB: 'Recruiting Flameling failed (7%)',
+  },
+  'tactics.ticker.awards': {
+    inputA: { unit: 'Sprigg', xp: 55, essence: 6, currency: 123n },
+    outputA: 'Sprigg earns 55 XP, 6 essence and 123 gold',
+    inputB: { unit: 'Kip', xp: 0, essence: 12, currency: 9_007_199_254_740_993n },
+    outputB: 'Kip earns 0 XP, 12 essence and 9007199254740993 gold',
+  },
+  'tactics.ticker.moved': {
+    inputA: { unit: 'Sprigg', tiles: 3 },
+    outputA: 'Sprigg moves (tiles: 3)',
+    inputB: { unit: 'Kip', tiles: 1 },
+    outputB: 'Kip moves (tiles: 1)',
+  },
+  'tactics.ticker.itemUsed': {
+    inputA: { unit: 'Sprigg', item: 'Herb', target: 'Kip' },
+    outputA: 'Sprigg uses Herb on Kip',
+    inputB: { unit: 'Mossback', item: 'Tonic', target: 'Flameling' },
+    outputB: 'Mossback uses Tonic on Flameling',
+  },
+  'tactics.ticker.turnEnded': {
+    inputA: { unit: 'Sprigg' },
+    outputA: 'Sprigg ends the turn',
+    inputB: { unit: 'Kip' },
+    outputB: 'Kip ends the turn',
+  },
+  'tactics.ticker.guarded': {
+    inputA: { unit: 'Sprigg' },
+    outputA: 'Sprigg guards',
+    inputB: { unit: 'Kip' },
+    outputB: 'Kip guards',
+  },
+  'tactics.ticker.roundEnded': {
+    inputA: { round: 8 },
+    outputA: 'Round 8 ends',
+    inputB: { round: 25 },
+    outputB: 'Round 25 ends',
+  },
+  'tactics.banner.turn': {
+    inputA: { unit: 'Sprigg' },
+    // bt-10 round 2 (named intentional change): the banner also shows for a human opponent's live
+    // turn, so its copy is neutral ("{unit}'s turn"), never "Your turn".
+    outputA: "Sprigg's turn",
+    inputB: { unit: 'Kip' },
+    outputB: "Kip's turn",
+  },
 };
 
-/** The full 365-key roster (qf-17: +`battle.rewards.{gold,xp}` over the 363-key roster below;
+/** The full 425-key roster (bt-10: +60 `tactics.*` keys over the 365-key roster below;
+ *  qf-17: +`battle.rewards.{gold,xp}` over the 363-key roster below;
  *  qf-15: +`chrome.status.zoneEntered` over the 362-key roster below;
  *  qf-14: +`controls.accel.controls` over the 361-key roster below;
  *  qf-7c: -`battle.action.flee` over the 362-key roster below;
@@ -1521,7 +1819,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-17 365-key roster (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the bt-10 425-key roster (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1610,7 +1908,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 365 keys (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 425 keys (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
     // (a) roster is exactly the EXPECTED_KEYS roster (365 keys since qf-17: +2 parameterised,
@@ -1626,7 +1924,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp. (qf-15 had taken 362 → 363, +`chrome.status.zoneEntered`.)
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-17 roster is 365 keys').toHaveLength(365);
+    // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +60 `tactics.*` keys (31 plain in
+    // EXPECTED_PLAIN, 29 parameterised in SAMPLE_PARAMS).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-10 roster is 425 keys').toHaveLength(425);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2679,8 +2979,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 365 keys').toBe(365);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(365);
+    // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
+    expect(Object.keys(en).length, 'the English catalog holds exactly 425 keys').toBe(425);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(425);
   });
 });
 
@@ -2714,7 +3015,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 365 keys each (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp) [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 425 keys each (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -2780,8 +3081,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 365 keys').toBe(365);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(365);
+    // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
+    expect(Object.keys(en).length, 'the English catalog holds exactly 425 keys').toBe(425);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(425);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3050,7 +3352,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the 365-key one (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp) [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the 425-key one (bt-10, named intentional change, BT10.5/BT10.6: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3077,9 +3379,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
     // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
     // +battle.rewards.xp.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 365 keys').toBe(365);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(365);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(365);
+    // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +tactics.*
+    expect(Object.keys(en).length, 'the English catalog holds exactly 425 keys').toBe(425);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(425);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(425);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
