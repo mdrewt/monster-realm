@@ -3317,3 +3317,399 @@ fn worst_case_round_runs_in_one_transaction_within_the_chain_bound_bt8_7() {
         .collect();
     assert_eq!(next, vec![3], "one boundary row for round 3");
 }
+
+// ===========================================================================
+// Round 2 — the security-audit fixes: no-HP close of a legacy-ended anchor, the fallback
+// close's owner check, the per-table firing-row exception, the deploy dry run, the reject log
+// ===========================================================================
+
+impl World<'_> {
+    /// Rewrite monster `id`'s private row in place and re-derive its projection from it (the
+    /// dual write a legacy write-back, a trade or a corrupt row would have left behind).
+    fn edit_monster(&self, id: u64, f: impl FnOnce(&mut Monster)) {
+        let mut m = self.monster(id);
+        let tier = self.monster_pub(id).tier;
+        assert_eq!(self.monsters.remove(id), 1, "monster {id} edited in place");
+        assert_eq!(self.pubs.remove(id), 1, "monster_pub {id} edited in place");
+        f(&mut m);
+        self.pubs.seed(&pub_from_monster(&m, tier));
+        self.monsters.seed(&m);
+    }
+}
+
+/// Turn a live battle into a CONSISTENT round-2 boundary: every budget idle, no window open,
+/// no deadline row, `Advancing` into round 2 (tie priority alternates to side B).
+fn seed_round_two_boundary(w: &World<'_>, id: u64) {
+    for u in w.units_of(id) {
+        w.edit_unit(u.unit_id, rest);
+    }
+    w.edit_tactical(id, |t| {
+        t.round = 2;
+        t.turn_state = TurnState::Advancing;
+        t.turn_idx = 0;
+        t.tie_priority_side = SideRow::B;
+        t.pending_pad_ms = 0;
+    });
+    w.edit_clock(id, |c| {
+        c.window_open_ms = None;
+        c.deadline_ms = None;
+        c.windows_this_unit_turn = 0;
+    });
+    for row in w.deadlines_of(id) {
+        assert_eq!(w.deadlines.remove(row.scheduled_id), 1);
+    }
+}
+
+/// A legacy reducer (`submit_attack` on the anchor) ended the battle as a loss and ran its own
+/// write-back: monster 11 fainted on its rows and in the anchor's team, while the tactical row
+/// is still Active and u1's unit row still holds the older, higher HP.
+fn legacy_lost_anchor(w: &World<'_>, live: &Live) {
+    let mut anchor = w.anchor(live.id).expect("anchor");
+    anchor.state.outcome = BattleOutcome::SideBWins;
+    anchor.state.side_a.team[0].current_hp = 0;
+    assert_eq!(w.battles.remove(live.id), 1);
+    w.battles.seed(&anchor);
+    w.edit_monster(11, |m| m.current_hp = 0);
+    assert_eq!(
+        w.tactical(live.id).phase,
+        Phase::Active,
+        "PRECONDITION: the tactical row is still Active"
+    );
+    assert_eq!(
+        w.unit(live.u1).cur_hp,
+        300,
+        "PRECONDITION: the unit row holds the higher HP a wrong close would write back"
+    );
+}
+
+/// The tactical side is closed, exactly one GC row is armed 24 h after `now`, and no deadline
+/// or advance row of the battle survives except the FIRING row of its own table (which the
+/// runtime deletes itself after the reducer returns).
+fn assert_closed_sparing(
+    w: &World<'_>,
+    id: u64,
+    now: i64,
+    firing_deadline: Option<u64>,
+    firing_advance: Option<u64>,
+) {
+    let t = w.tactical(id);
+    assert_eq!(
+        (t.phase, t.turn_state),
+        (Phase::Finished, TurnState::NotActive)
+    );
+    let deadlines: Vec<u64> = w
+        .deadlines_of(id)
+        .iter()
+        .map(|r| r.scheduled_id)
+        .filter(|&sid| Some(sid) != firing_deadline)
+        .collect();
+    assert!(
+        deadlines.is_empty(),
+        "every deadline row but the firing one is swept: {deadlines:?}"
+    );
+    let advances: Vec<u64> = w
+        .advances_of(id)
+        .iter()
+        .map(|r| r.scheduled_id)
+        .filter(|&sid| Some(sid) != firing_advance)
+        .collect();
+    assert!(
+        advances.is_empty(),
+        "every advance row but the firing one is swept: {advances:?}"
+    );
+    let gcs: Vec<ScheduleAt> = w.gcs_of(id).iter().map(|r| r.scheduled_at).collect();
+    assert_eq!(gcs, vec![time(now + GC_DELAY_MS)], "exactly one GC row");
+}
+
+#[test]
+fn deadline_fire_after_a_legacy_reducer_ended_the_anchor_closes_without_reviving_hp_bt8_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let window = w.only_deadline(live.id);
+    let deadline = w.clock(live.id).deadline_ms.expect("an open window");
+    legacy_lost_anchor(&w, &live);
+    w.deadlines.seed(&TacticalDeadlineSched {
+        scheduled_id: 9_501,
+        scheduled_at: time(deadline + 50),
+        battle_id: live.id,
+        unit_id: live.u2,
+        window_seq: 0,
+    });
+    w.advances.seed(&TacticalAdvanceSched {
+        scheduled_id: 9_502,
+        scheduled_at: time(deadline),
+        battle_id: live.id,
+        round: 2,
+    });
+    let anchor = enc(&w.anchor(live.id).expect("anchor"));
+    let party = (row_set(&w.monsters.rows()), row_set(&w.pubs.rows()));
+
+    assert_eq!(fire_deadline(&fx, deadline, deadline_args(&window)), Ok(()));
+
+    assert_eq!(
+        w.monster(11).current_hp,
+        0,
+        "the fire must not revive the monster the legacy write-back left fainted"
+    );
+    assert_eq!(
+        (row_set(&w.monsters.rows()), row_set(&w.pubs.rows())),
+        party,
+        "this close writes no HP at all"
+    );
+    let after = w.anchor(live.id).expect("the anchor survives");
+    assert_eq!(
+        after.state.outcome,
+        BattleOutcome::SideBWins,
+        "the legacy outcome is kept, never overwritten with Fled"
+    );
+    assert_eq!(enc(&after), anchor, "the anchor row is untouched");
+    assert_closed_sparing(&w, live.id, deadline, Some(window.scheduled_id), None);
+}
+
+#[test]
+fn advance_fire_after_a_legacy_reducer_ended_the_anchor_closes_without_reviving_hp_bt8_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seed_round_two_boundary(&w, live.id);
+    let t = T0 + 50_000;
+    let boundary = TacticalAdvanceSched {
+        scheduled_id: 9_601,
+        scheduled_at: time(t),
+        battle_id: live.id,
+        round: 2,
+    };
+    w.advances.seed(&advance_args(&boundary));
+    w.advances.seed(&TacticalAdvanceSched {
+        scheduled_id: 9_602,
+        scheduled_at: time(t),
+        battle_id: live.id,
+        round: 2,
+    });
+    // A stale deadline row whose id equals the firing ADVANCE row's (each table has its own
+    // id sequence): it is not the firing row, so it must go.
+    w.deadlines.seed(&TacticalDeadlineSched {
+        scheduled_id: 9_601,
+        scheduled_at: time(t),
+        battle_id: live.id,
+        unit_id: live.u1,
+        window_seq: 1,
+    });
+    legacy_lost_anchor(&w, &live);
+    let anchor = enc(&w.anchor(live.id).expect("anchor"));
+    let party = (row_set(&w.monsters.rows()), row_set(&w.pubs.rows()));
+
+    assert_eq!(fire_advance(&fx, t, boundary), Ok(()));
+
+    assert_eq!(
+        w.monster(11).current_hp,
+        0,
+        "the fire must not revive the monster the legacy write-back left fainted"
+    );
+    assert_eq!(
+        (row_set(&w.monsters.rows()), row_set(&w.pubs.rows())),
+        party,
+        "this close writes no HP at all"
+    );
+    let after = w.anchor(live.id).expect("the anchor survives");
+    assert_eq!(
+        after.state.outcome,
+        BattleOutcome::SideBWins,
+        "the legacy outcome is kept, never overwritten with Fled"
+    );
+    assert_eq!(enc(&after), anchor, "the anchor row is untouched");
+    assert_closed_sparing(&w, live.id, t, None, Some(9_601));
+}
+
+#[test]
+fn fallback_close_never_writes_hp_into_a_monster_traded_away_mid_battle_bt8_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    w.edit_unit(live.u1, |u| u.cur_hp = 170);
+    w.edit_unit(live.u2, |u| u.cur_hp = 150);
+    w.edit_monster(12, |m| m.owner_identity = b());
+    w.edit_tactical(live.id, |t| t.content_version = crate::CONTENT_VERSION + 1);
+    let traded = (enc(&w.monster(12)), enc(&w.monster_pub(12)));
+    let t2 = T0 + 7_000;
+
+    super::resolve_tactical_on_disconnect(&fx.ctx_at(at(t2)), a());
+
+    assert_eq!(
+        (enc(&w.monster(12)), enc(&w.monster_pub(12))),
+        traded,
+        "a monster now owned by someone else never receives the unit's HP"
+    );
+    assert_eq!(
+        (w.monster(11).current_hp, w.monster_pub(11).current_hp),
+        (170, 170),
+        "the still-owned deployed monster's HP IS persisted"
+    );
+    let anchor = w
+        .anchor(live.id)
+        .expect("the anchor is updated, never deleted");
+    assert_eq!(anchor.state.outcome, BattleOutcome::Fled);
+    assert_eq!(w.tactical(live.id).phase, Phase::Finished);
+    let gcs: Vec<ScheduleAt> = w.gcs_of(live.id).iter().map(|r| r.scheduled_at).collect();
+    assert_eq!(gcs, vec![time(t2 + GC_DELAY_MS)], "exactly one GC row");
+}
+
+#[test]
+fn finish_spares_only_the_firing_row_of_its_own_schedule_table_bt8_3() {
+    // Deadline path: an AutoFlee expiry. The extra ADVANCE row deliberately carries the firing
+    // deadline row's id — sparing by a bare id would keep it.
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pair(&fx, &w);
+        let window = w.only_deadline(live.id);
+        let deadline = w.clock(live.id).deadline_ms.expect("an open window");
+        w.advances.seed(&TacticalAdvanceSched {
+            scheduled_id: window.scheduled_id,
+            scheduled_at: time(deadline),
+            battle_id: live.id,
+            round: 2,
+        });
+        w.deadlines.seed(&TacticalDeadlineSched {
+            scheduled_id: window.scheduled_id + 1_000,
+            scheduled_at: time(deadline + 50),
+            battle_id: live.id,
+            unit_id: live.u2,
+            window_seq: 0,
+        });
+        assert_eq!(fire_deadline(&fx, deadline, deadline_args(&window)), Ok(()));
+        assert_eq!(
+            w.anchor(live.id).expect("anchor").state.outcome,
+            BattleOutcome::Fled,
+            "the wild expiry auto-fled"
+        );
+        assert!(
+            w.advances_of(live.id).is_empty(),
+            "the extra advance row goes even though its id equals the firing deadline row's"
+        );
+        assert_closed_sparing(&w, live.id, deadline, Some(window.scheduled_id), None);
+    }
+    // Advance path: the fired round runs u1's READY Flee and finishes the battle. The extra
+    // DEADLINE row carries the firing advance row's id.
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pair(&fx, &w);
+        seed_round_two_boundary(&w, live.id);
+        let t1 = T0 + 50_000;
+        submit(&fx, a(), t1, live.id, live.u1, vec![QueuedAction::Flee])
+            .expect("a Flee pre-queued during Advancing");
+        let boundary = TacticalAdvanceSched {
+            scheduled_id: 9_701,
+            scheduled_at: time(t1),
+            battle_id: live.id,
+            round: 2,
+        };
+        w.advances.seed(&advance_args(&boundary));
+        w.advances.seed(&TacticalAdvanceSched {
+            scheduled_id: 9_702,
+            scheduled_at: time(t1),
+            battle_id: live.id,
+            round: 2,
+        });
+        w.deadlines.seed(&TacticalDeadlineSched {
+            scheduled_id: 9_701,
+            scheduled_at: time(t1),
+            battle_id: live.id,
+            unit_id: live.u1,
+            window_seq: 1,
+        });
+        let t2 = T0 + 51_000;
+        assert_eq!(fire_advance(&fx, t2, boundary), Ok(()));
+        assert_eq!(
+            w.anchor(live.id).expect("anchor").state.outcome,
+            BattleOutcome::Fled,
+            "the fired round executed u1's READY Flee"
+        );
+        assert!(
+            w.deadlines_of(live.id).is_empty(),
+            "the deadline row goes even though its id equals the firing advance row's"
+        );
+        assert_closed_sparing(&w, live.id, t2, None, Some(9_701));
+    }
+}
+
+#[test]
+fn deploy_units_refuses_a_pick_the_rules_reject_before_inserting_any_unit_bt8_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pair(&fx, &w);
+    // Monster 12's row passes every reducer-level pick check (owned, in the party, conscious,
+    // free) but the rules refuse it (`deploy_unit`: 0 defense). It is the SECOND pick, so a
+    // shell that inserts as it goes would already have written monster 11's unit row.
+    w.edit_monster(12, |m| m.stat_defense = 0);
+    let before = w.snapshot();
+    let err = deploy(&fx, a(), T0 + 1_000, id, vec![pick(11, 0), pick(12, 1)])
+        .expect_err("a pick the rules refuse is refused");
+    assert!(
+        err.starts_with("deploy: ZeroDefense"),
+        "the rules' own typed refusal, got {err:?}"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "the dry run refuses before the first battle_unit insert"
+    );
+    assert_eq!(w.tactical(id).phase, Phase::Deploying);
+}
+
+/// Every `log` record of this test PROCESS as `(target, line)`. NEXTEST-ONLY, like
+/// `taming_tests.rs`'s `TmLogSink`: one logger may be installed per process, so plain
+/// `cargo test` (one process for every test) fails all but the first installer.
+struct RejectLogSink(std::sync::Mutex<Vec<(String, String)>>);
+
+impl log::Log for RejectLogSink {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((record.target().to_string(), record.args().to_string()));
+    }
+    fn flush(&self) {}
+}
+
+static REJECT_LOGS: RejectLogSink = RejectLogSink(std::sync::Mutex::new(Vec::new()));
+
+#[test]
+fn submit_queue_refusal_emits_one_structured_reject_log_line_bt8_1() {
+    log::set_logger(&REJECT_LOGS).expect("no logger installed in this test process (nextest)");
+    log::set_max_level(log::LevelFilter::Info);
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let stranger = b();
+    let got = submit(
+        &fx,
+        stranger,
+        T0 + 1_000,
+        live.id,
+        live.u2,
+        vec![QueuedAction::EndTurn],
+    );
+    assert_eq!(got, Err("not owner".to_string()));
+    let rejects: Vec<(String, String)> = REJECT_LOGS
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, line)| line.contains("\"evt\":\"reject\""))
+        .cloned()
+        .collect();
+    let want = format!(
+        "{{\"evt\":\"reject\",\"reducer\":\"submit_queue\",\"sender\":\"{stranger}\",\"reason\":\"not owner\"}}"
+    );
+    assert_eq!(
+        rejects,
+        vec![("monster_realm_module::guards".to_string(), want)],
+        "the refusal is logged exactly once through guards::log_reject"
+    );
+}
