@@ -489,6 +489,494 @@ pub fn tactics_golden(cases: JsValue) -> Result<JsValue, JsValue> {
     Ok(results.serialize(&serializer)?)
 }
 
+// ---------------------------------------------------------------------------
+// --- Tactics rules (bt-11) ---------------------------------------------------
+// ---------------------------------------------------------------------------
+//
+// The client's view of the tactical rules (BT11.7, the bt-10 overlay port BT10.4): every export
+// below converts a JS value, calls game-core's `tactics::*` and converts the answer back. No rule
+// lives here — the shell only joins compile-time content (the server's `unit_of_row` join), loops
+// tiles / units / skills over game-core calls and copies trace fields into booleans. The ONE
+// restated predicate (`stab`, the carried `combat/damage.rs` STAB test) is flagged at its site.
+//
+// Error policy (plan A10): a malformed INPUT — an undeserialisable value, an unknown map / species /
+// unit / skill id, duplicate unit ids, a unit that fails `validate_unit`, an unusable tuning — is a
+// thrown JS error. A rule's own refusal for a unit that exists (a dead mover, an out-of-range aim,
+// an unaffordable entry) is DATA: the rule's `Result` serialised as `{Ok}` / `{Err}`.
+//
+// Serde shapes are game-core's (externally tagged enums, snake_case fields, exactly as
+// `game-core/tests/fixtures/tactics_golden.json` spells them). Every output number fits a u32.
+
+use serde::{Deserialize, Serialize};
+
+use game_core::tactics::{
+    BattleKind, BattleMapDef, BattleMapEntry, Cell, EconomyError, Entry, EventPayload,
+    GeometryError, HaltReason, Hooks, Path, PathError, PipelineTrace, QueuedAction, RecruitError,
+    RecruitOdds, Side, SkillTactics, SpeciesTactics, Stance, TacticalState, TacticalUnit,
+    TacticsTuning, TurnBudget, UnitState, Validated,
+};
+use game_core::{Effectiveness, Species, StatBlock, StatusEffect, StatusKind, TypeChart};
+
+/// The forecast's two variance draws (design §9.3 "variance 85 and 100"): the carried
+/// `draw_rolls` range is `85 + roll % 16`, so these are its minimum and maximum (host-tested).
+pub const FORECAST_VARIANCE_MIN: u8 = 85;
+pub const FORECAST_VARIANCE_MAX: u8 = 100;
+
+/// One `battle_unit` row as the client holds it — the fields the rules read (server-module
+/// `tactics.rs::unit_of_row` reads exactly these), plus the wild join inputs.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct UnitRow {
+    pub id: u32,
+    pub side: Side,
+    pub slot: u8,
+    pub species_id: u32,
+    pub level: u8,
+    pub stats: StatBlock,
+    pub pos: Cell,
+    pub cur_hp: u16,
+    pub status: Option<StatusEffect>,
+    pub budget: TurnBudget,
+    pub guard: bool,
+    pub first_stand: bool,
+    pub state: UnitState,
+    /// The wild's stance (`battle_unit.stance`); `None` for a player's unit.
+    pub stance: Option<Stance>,
+    /// The wild's index into the map's `spawn_b` (`battle_unit.wild_index`); `None` for a player's unit.
+    pub wild_index: Option<u8>,
+}
+
+/// A battle as the client holds it: the content map and its unit rows (joined here).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct BoardIn {
+    pub kind: BattleKind,
+    pub map_id: u32,
+    pub units: Vec<UnitRow>,
+}
+
+/// What the overlay layer asks (plan §4.2 + A2): `budget` is the basis the reach is costed from —
+/// the selected unit's live row budget on its own turn, `tactics_fresh_budget()` for a pre-queue.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct OverlayQuery {
+    pub viewer: Side,
+    pub selected: Option<u32>,
+    pub skill_id: Option<u32>,
+    pub aim: Option<Cell>,
+    pub budget: TurnBudget,
+}
+
+/// One wild's telegraph: its `ai::plan` on this board, the Exhausted flag and how many of the 100
+/// turn-skip rolls would block its turn (`status_blocks_turn`; 0 / 25 / 100 at the carried rule).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Intent {
+    pub unit: u32,
+    pub plan: Vec<QueuedAction>,
+    pub exhausted: bool,
+    pub block_pct: u8,
+}
+
+/// The overlay tile sets (bt-10 `OverlaySets`, computed): every list is row-major `(y, x)`
+/// ascending and de-duplicated; `danger` holds one list per conscious enemy in unit order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OverlaysOut {
+    pub reach1: Vec<Cell>,
+    pub reach2: Vec<Cell>,
+    pub range: Vec<Cell>,
+    pub aoe: Vec<Cell>,
+    pub danger: Vec<Vec<Cell>>,
+    pub shield: Vec<Cell>,
+    pub intents: Vec<Intent>,
+}
+
+/// The forecast (design §2.4 / §9.3): the §2.4 pipeline at the first hitting accuracy roll and the
+/// two variance extremes, with the line-item facts the panel shows. `flank_factor` / `guard_factor`
+/// are the tuning's `(num, den)` so no label restates a constant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ForecastOut {
+    pub hit_pct: u8,
+    pub stab: bool,
+    pub flank: bool,
+    pub guard: bool,
+    pub effectiveness: Option<Effectiveness>,
+    pub min: PipelineTrace,
+    pub max: PipelineTrace,
+    pub kills_min: bool,
+    pub kills_max: bool,
+    pub first_stand_saves: bool,
+    pub status: Option<StatusKind>,
+    pub status_blocked: bool,
+    pub flank_factor: (u8, u8),
+    pub guard_factor: (u8, u8),
+}
+
+/// A draft costed in order (`economy::spend` per entry): the per-entry charges, their total, the
+/// budget left and whether an `EndTurn` now would grant Guard (`economy::guard_granted`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PlanOut {
+    pub costs: Vec<u8>,
+    pub total: u8,
+    pub remaining: TurnBudget,
+    pub guard_on_end: bool,
+}
+
+/// The compile-time tactical content the rules read, loaded once per wasm instance (the server's
+/// `tactics.rs::load_content`, minus the server-only registries).
+pub struct TacticsContent {
+    pub tuning: TacticsTuning,
+    pub chart: TypeChart,
+    pub species: Vec<Species>,
+    pub kits: Vec<SpeciesTactics>,
+    pub maps: Vec<BattleMapEntry>,
+}
+
+/// `queue::Hooks` for the execution gate when only its own checks matter (a Move's path, tax
+/// and cost): every delegated question answers "nothing held / no headroom / no plan / fine".
+pub struct InertHooks;
+
+impl Hooks for InertHooks {
+    fn item_count(&self, _unit: u32, _item_id: u32) -> u32 {
+        0
+    }
+    fn take_item(&mut self, _unit: u32, _item_id: u32) -> bool {
+        false
+    }
+    fn recruit_headroom(&self, _unit: u32) -> bool {
+        false
+    }
+    fn plan_ai(&self, _state: &TacticalState, _unit: u32) -> Vec<QueuedAction> {
+        vec![QueuedAction::EndTurn]
+    }
+    fn validate_delegated(
+        &self,
+        _state: &TacticalState,
+        _unit: u32,
+        _validated: &Validated,
+    ) -> Result<(), HaltReason> {
+        Ok(())
+    }
+    fn resolve_delegated(
+        &mut self,
+        _state: &mut TacticalState,
+        _unit: u32,
+        _validated: &Validated,
+    ) -> Vec<EventPayload> {
+        Vec::new()
+    }
+}
+
+const BT11_TODO: &str = "bt-11: not implemented";
+
+/// The loaded content, or why it failed to load (cached either way).
+///
+/// # Errors
+/// The first registry that fails to parse / join.
+pub fn tactics_content() -> Result<&'static TacticsContent, String> {
+    Err(BT11_TODO.to_owned())
+}
+
+/// The content battle map `map_id`.
+///
+/// # Errors
+/// Unknown id.
+pub fn map_of(map_id: u32) -> Result<&'static BattleMapDef, String> {
+    let _ = map_id;
+    Err(BT11_TODO.to_owned())
+}
+
+/// `TurnBudget::fresh` at the loaded tuning.
+///
+/// # Errors
+/// Content failed to load.
+pub fn fresh_budget() -> Result<TurnBudget, String> {
+    Err(BT11_TODO.to_owned())
+}
+
+/// The server's `unit_of_row` join: the kit from species × level × the row's stats.
+///
+/// # Errors
+/// Unknown species / kit.
+pub fn unit_of_row(row: &UnitRow) -> Result<TacticalUnit, String> {
+    let _ = row;
+    Err(BT11_TODO.to_owned())
+}
+
+/// The rules state for a client board, field by field (never `TacticalState::new`): units joined
+/// and sorted `(side, slot)`, seed / action_seq 0, round 1, `Ongoing`.
+///
+/// # Errors
+/// Unknown map, a row that fails to join, duplicate unit ids.
+pub fn state_of(board: &BoardIn) -> Result<TacticalState, String> {
+    let _ = board;
+    Err(BT11_TODO.to_owned())
+}
+
+/// `geometry::target_set` for the caster's kit skill `skill_id` aimed at `aim`.
+///
+/// # Errors
+/// Outer: malformed board, unknown caster or skill. Inner: the rule's answer.
+pub fn targets_of(
+    board: &BoardIn,
+    caster: u32,
+    skill_id: u32,
+    aim: Cell,
+) -> Result<Result<Vec<u32>, GeometryError>, String> {
+    let _ = (board, caster, skill_id, aim);
+    Err(BT11_TODO.to_owned())
+}
+
+/// `movement::find_path` from the mover's tile.
+///
+/// # Errors
+/// Outer: malformed board, unknown mover. Inner: the rule's answer.
+pub fn path_of(board: &BoardIn, mover: u32, dest: Cell) -> Result<Result<Path, PathError>, String> {
+    let _ = (board, mover, dest);
+    Err(BT11_TODO.to_owned())
+}
+
+/// `movement::disengage_taxed` at `start` (the mover's own tile when `None`).
+///
+/// # Errors
+/// Outer: malformed board, unknown mover. Inner: the rule's answer.
+pub fn disengage_of(
+    board: &BoardIn,
+    mover: u32,
+    start: Option<Cell>,
+) -> Result<Result<bool, PathError>, String> {
+    let _ = (board, mover, start);
+    Err(BT11_TODO.to_owned())
+}
+
+/// `geometry::is_flanked` on the pre-attack board.
+///
+/// # Errors
+/// Malformed board, unknown ids.
+pub fn flank_of(board: &BoardIn, attacker: u32, target: u32) -> Result<bool, String> {
+    let _ = (board, attacker, target);
+    Err(BT11_TODO.to_owned())
+}
+
+/// The forecast (plan §4.1 + A8).
+///
+/// # Errors
+/// An unusable tuning, a unit that fails `validate_unit`.
+pub fn forecast_of(
+    chart: &TypeChart,
+    t: &TacticsTuning,
+    attacker: &TacticalUnit,
+    target: &TacticalUnit,
+    skill: &SkillTactics,
+    flank: bool,
+) -> Result<ForecastOut, String> {
+    let _ = (chart, t, attacker, target, skill, flank);
+    Err(BT11_TODO.to_owned())
+}
+
+/// `recruit::recruit_odds`.
+///
+/// # Errors
+/// The rule's (`BaitBonus`).
+pub fn recruit_odds_of(max_hp: u16, hp: u16, bait_bonus: u16) -> Result<RecruitOdds, RecruitError> {
+    let _ = (max_hp, hp, bait_bonus);
+    Err(RecruitError::BaitBonus {
+        bait_bonus: u16::MAX,
+    })
+}
+
+/// `ai::plan` for the wild `unit` (stance and spawn from its row).
+///
+/// # Errors
+/// Malformed board, unknown unit, a unit that is not a wild.
+pub fn ai_plan_of(board: &BoardIn, unit: u32) -> Result<Vec<QueuedAction>, String> {
+    let _ = (board, unit);
+    Err(BT11_TODO.to_owned())
+}
+
+/// A draft costed from `start` (plan §4).
+///
+/// # Errors
+/// Outer: content failed to load. Inner: the first entry that cannot be spent.
+pub fn plan_of(
+    start: &TurnBudget,
+    entries: &[Entry],
+) -> Result<Result<PlanOut, EconomyError>, String> {
+    let _ = (start, entries);
+    Err(BT11_TODO.to_owned())
+}
+
+/// The overlay layer (plan §4.2 + A3–A7).
+///
+/// # Errors
+/// Malformed board, unknown selected unit.
+pub fn overlays_of(board: &BoardIn, q: &OverlayQuery) -> Result<OverlaysOut, String> {
+    let _ = (board, q);
+    Err(BT11_TODO.to_owned())
+}
+
+// ---- the wasm wrappers: marshal, call, marshal back ----
+
+fn js_err(msg: String) -> JsValue {
+    JsError::new(&msg).into()
+}
+
+fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    value.serialize(&serializer).map_err(Into::into)
+}
+
+/// The content battle map `map_id` (`BattleMapDef`: width, height, tiles, spawns).
+///
+/// # Errors
+/// Unknown id.
+#[wasm_bindgen]
+pub fn tactics_map(map_id: u32) -> Result<JsValue, JsValue> {
+    to_js(map_of(map_id).map_err(js_err)?)
+}
+
+/// `TurnBudget::fresh` at the loaded tuning — the pre-queue costing basis.
+///
+/// # Errors
+/// Content failed to load.
+#[wasm_bindgen]
+pub fn tactics_fresh_budget() -> Result<JsValue, JsValue> {
+    to_js(&fresh_budget().map_err(js_err)?)
+}
+
+/// A `battle_unit` row joined into the rules' `TacticalUnit` (the server's `unit_of_row`).
+///
+/// # Errors
+/// An undeserialisable row, an unknown species / kit.
+#[wasm_bindgen]
+pub fn tactics_unit(row: JsValue) -> Result<JsValue, JsValue> {
+    let row: UnitRow = serde_wasm_bindgen::from_value(row)?;
+    to_js(&unit_of_row(&row).map_err(js_err)?)
+}
+
+/// `target_set` for the caster's kit skill aimed at `aim`: `{Ok: [unit ids]}` or `{Err: GeometryError}`.
+///
+/// # Errors
+/// A malformed board, an unknown caster or skill.
+#[wasm_bindgen]
+pub fn tactics_targets(
+    board: JsValue,
+    caster: u32,
+    skill_id: u32,
+    aim: JsValue,
+) -> Result<JsValue, JsValue> {
+    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    let aim: Cell = serde_wasm_bindgen::from_value(aim)?;
+    to_js(&targets_of(&board, caster, skill_id, aim).map_err(js_err)?)
+}
+
+/// `find_path` from the mover's tile: `{Ok: Path}` or `{Err: PathError}`.
+///
+/// # Errors
+/// A malformed board, an unknown mover.
+#[wasm_bindgen]
+pub fn tactics_path(board: JsValue, mover: u32, dest: JsValue) -> Result<JsValue, JsValue> {
+    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    let dest: Cell = serde_wasm_bindgen::from_value(dest)?;
+    to_js(&path_of(&board, mover, dest).map_err(js_err)?)
+}
+
+/// `disengage_taxed` at the mover's tile (or at `start` when given): `{Ok: bool}` or `{Err: PathError}`.
+///
+/// # Errors
+/// A malformed board, an unknown mover.
+#[wasm_bindgen]
+pub fn tactics_disengage(board: JsValue, mover: u32, start: JsValue) -> Result<JsValue, JsValue> {
+    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    let start: Option<Cell> = serde_wasm_bindgen::from_value(start)?;
+    to_js(&disengage_of(&board, mover, start).map_err(js_err)?)
+}
+
+/// `is_flanked(attacker, target.pos)` on the pre-attack board.
+///
+/// # Errors
+/// A malformed board, unknown ids.
+#[wasm_bindgen]
+pub fn tactics_flank(board: JsValue, attacker: u32, target: u32) -> Result<JsValue, JsValue> {
+    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    to_js(&flank_of(&board, attacker, target).map_err(js_err)?)
+}
+
+/// The forecast for `skill` from `attacker` on `target` (both joined `TacticalUnit`s), flank as
+/// `tactics_flank` answered on the same board.
+///
+/// # Errors
+/// Undeserialisable units, a unit that fails `validate_unit`, an unusable tuning.
+#[wasm_bindgen]
+pub fn tactics_forecast(
+    attacker: JsValue,
+    target: JsValue,
+    skill: JsValue,
+    flank: bool,
+) -> Result<JsValue, JsValue> {
+    let attacker: TacticalUnit = serde_wasm_bindgen::from_value(attacker)?;
+    let target: TacticalUnit = serde_wasm_bindgen::from_value(target)?;
+    let skill: SkillTactics = serde_wasm_bindgen::from_value(skill)?;
+    let content = tactics_content().map_err(js_err)?;
+    to_js(
+        &forecast_of(
+            &content.chart,
+            &content.tuning,
+            &attacker,
+            &target,
+            &skill,
+            flank,
+        )
+        .map_err(js_err)?,
+    )
+}
+
+/// `recruit_odds`: `{Ok: RecruitOdds}` or `{Err: RecruitError}`.
+///
+/// # Errors
+/// Serialisation only.
+#[wasm_bindgen]
+pub fn tactics_recruit_odds(max_hp: u16, hp: u16, bait_bonus: u16) -> Result<JsValue, JsValue> {
+    to_js(&recruit_odds_of(max_hp, hp, bait_bonus))
+}
+
+/// `ai::plan` for the wild `unit` (stance and spawn from its row; seed-free).
+///
+/// # Errors
+/// A malformed board, an unknown unit, a unit that is not a wild.
+#[wasm_bindgen]
+pub fn tactics_ai_plan(board: JsValue, unit: u32) -> Result<JsValue, JsValue> {
+    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    to_js(&ai_plan_of(&board, unit).map_err(js_err)?)
+}
+
+/// `ai::is_exhausted` — the Exhausted icon's rule (R-bt-4-CHIPLABEL).
+#[wasm_bindgen]
+pub fn tactics_is_exhausted(cur_hp: u16, max_hp: u16) -> bool {
+    game_core::tactics::is_exhausted(cur_hp, max_hp)
+}
+
+/// A draft costed in order from `start`: `{Ok: PlanOut}` or `{Err: EconomyError}`.
+///
+/// # Errors
+/// Undeserialisable inputs, content failed to load.
+#[wasm_bindgen]
+pub fn tactics_plan(start: JsValue, entries: JsValue) -> Result<JsValue, JsValue> {
+    let start: TurnBudget = serde_wasm_bindgen::from_value(start)?;
+    let entries: Vec<Entry> = serde_wasm_bindgen::from_value(entries)?;
+    to_js(&plan_of(&start, &entries).map_err(js_err)?)
+}
+
+/// The overlay layer for `board` under `q` (plan §4.2).
+///
+/// # Errors
+/// A malformed board, an unknown selected unit.
+#[wasm_bindgen]
+pub fn tactics_overlays(board: JsValue, q: JsValue) -> Result<JsValue, JsValue> {
+    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    let q: OverlayQuery = serde_wasm_bindgen::from_value(q)?;
+    to_js(&overlays_of(&board, &q).map_err(js_err)?)
+}
+
+#[cfg(test)]
+mod tactics_tests;
+
 /// Install a browser panic hook so a Rust panic surfaces as a readable
 /// `console.error` instead of an opaque `unreachable`. Runs once on module init.
 #[wasm_bindgen(start)]
