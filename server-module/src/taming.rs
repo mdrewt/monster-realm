@@ -6,7 +6,7 @@
 //! never a client argument; bait is classified by data (the item's
 //! `recruit_bonus`), consumed BEFORE the roll.
 
-use crate::battle::{write_back_battle_results, write_back_party_hp};
+use crate::battle::{reject_if_tactical_anchor, write_back_battle_results, write_back_party_hp};
 use crate::guards::{escrowed_item_qty, log_reject};
 // `grant_item` is dev-gated (its only caller `grant_bait` is too — an ungated
 // import would be an unused-import warning in the non-dev build);
@@ -19,14 +19,15 @@ use crate::marshal::{
 };
 use crate::schema::{
     battle, battle_wild, inventory, item_row, monster, monster_pub, species_row, trade_offer,
+    Monster,
 };
 use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
 use game_core::{
-    build_monster, recruit_chance, BattleOutcome, BattleStatusStore, Level, StatusVariance,
-    TurnVariance, RECRUIT_BASE_RATE,
+    recruit_chance, BattleOutcome, BattleStatusStore, Level, StatusVariance, TurnVariance,
+    RECRUIT_BASE_RATE,
 };
-use spacetimedb::{ReducerContext, Table};
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Attempt to recruit the wild monster in a wild battle. The
 /// roll is injected (`ctx.random()`), never a client argument. Optional `bait`
@@ -59,6 +60,8 @@ pub fn attempt_recruit(
         log_reject("attempt_recruit", me, &e);
         return Err(e);
     }
+    // A tactical battle recruits through its own queue (bt-9): never this 1v1 path.
+    reject_if_tactical_anchor(ctx, "attempt_recruit", battle_id)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("attempt_recruit", me, &e);
@@ -150,16 +153,13 @@ pub fn attempt_recruit(
             .ok_or_else(|| format!("wild species {} not found", bw.wild_species_id))?;
         let species_core = species_from_row(&species_row)
             .map_err(|e| format!("species_from_row failed for {}: {e}", bw.wild_species_id))?;
-        let inst = build_monster(
+        let inserted = insert_recruited(
+            ctx,
+            me,
             bw.individuality_seed,
             &species_core,
             Level::new(bw.wild_level)?,
         );
-        let row = monster_from_instance(me, &inst, PARTY_SLOT_NONE);
-        let inserted = ctx.db.monster().insert(row);
-        // FRESH tier: creation site — the species row is in hand.
-        let pub_row = pub_from_monster(&inserted, species_row.tier);
-        ctx.db.monster_pub().insert(pub_row);
 
         battle.state.outcome = BattleOutcome::SideAWins;
         // NO XP on recruit: do NOT swap for write_back_battle_results.
@@ -286,6 +286,26 @@ pub fn attempt_recruit(
     ctx.db.battle().battle_id().update(battle);
     log::info!("{{\"evt\":\"recruit_fail\",\"battle_id\":{battle_id}}}");
     Ok(())
+}
+
+/// The recruit grant primitive (M8d; shared with the tactical recruit glue — bt-9): the EXACT
+/// wild rebuilt from its individuality `seed` at `level` through the carried `build_monster`
+/// (same IVs and nature, full HP, the level's base XP, no essence), dropped in the box
+/// (`PARTY_SLOT_NONE`) with its `monster_pub` projection (FRESH tier = the species' tier).
+/// Returns the inserted row. Never logs the seed.
+pub(crate) fn insert_recruited(
+    ctx: &ReducerContext,
+    owner: Identity,
+    seed: u32,
+    species: &game_core::Species,
+    level: Level,
+) -> Monster {
+    let inst = game_core::tactics::rebuild_recruited(seed, species, level);
+    let row = monster_from_instance(owner, &inst, PARTY_SLOT_NONE);
+    let inserted = ctx.db.monster().insert(row);
+    let pub_row = pub_from_monster(&inserted, species.tier);
+    ctx.db.monster_pub().insert(pub_row);
+    inserted
 }
 
 /// DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender()`; no

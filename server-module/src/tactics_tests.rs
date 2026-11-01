@@ -25,11 +25,13 @@ use super::{
 use crate::accounts::{new_account_row, requested_deletion};
 use crate::marshal::{encounter_rows_from_table, monster_from_instance, pub_from_monster};
 use crate::native_host_tests::{fixture, Fixture, Handle};
+use crate::playtest::PlaytestEvent;
 use crate::schema::{
     Account, Battle, BattleClock, BattleDeploy, BattleEvent, BattleQueue, BattleSecret,
     BattleSummary, BattleTactical, BattleUnit, BattleWild, BattleWildUnit, Character, Config,
-    DeployPick, EncounterRow, Inventory, Monster, MonsterPub, MoveClassRow, Player,
-    PlayerConversation, PlayerFormation, PlayerSession, SideRow, StanceRow, TradeOffer,
+    DeployPick, EncounterRow, EvolutionPathRow, Inventory, Monster, MonsterPub, MoveClassRow,
+    Player, PlayerConversation, PlayerFormation, PlayerSession, PlayerWallet, SideRow, StanceRow,
+    TradeOffer,
 };
 use game_core::tactics::{
     load_battle_maps, load_tactics_species, load_tactics_tuning, load_tactics_zones,
@@ -50,44 +52,43 @@ use spacetimedb::{ConnectionId, Identity, ScheduleAt, Timestamp};
 // Constants, identities, content
 // ===========================================================================
 
-const T0: i64 = 1_750_000_000_000;
+pub(crate) const T0: i64 = 1_750_000_000_000;
 /// Spec BT3.9: the PvE idle window AND the PvE deploy window are 300 000 ms.
-const PVE_WINDOW_MS: i64 = 300_000;
+pub(crate) const PVE_WINDOW_MS: i64 = 300_000;
 /// Spec BT8.6: the battle GC fires 24 h after the finish.
-const DAY_MS: i64 = 86_400_000;
-const BT9_ONLY: &str = "submit_queue: items and recruit are not available until bt-9";
+pub(crate) const DAY_MS: i64 = 86_400_000;
 const CONN_A: u128 = 0xA1;
 const CONN_A2: u128 = 0xA2;
 
 /// `(monster_id, species_id, party_slot, stat_speed)`.
-type Spec = (u64, u32, u8, u16);
-const PAIR: [Spec; 2] = [(11, 1, 0, 200), (12, 3, 1, 190)];
+pub(crate) type Spec = (u64, u32, u8, u16);
+pub(crate) const PAIR: [Spec; 2] = [(11, 1, 0, 200), (12, 3, 1, 190)];
 /// Species 3 / 2 / 3: the kits carrying the Diamond-r1 Heavy (skill 6).
 const TRIO: [Spec; 3] = [(11, 3, 0, 200), (12, 2, 1, 190), (13, 3, 2, 180)];
-const QUAD: [Spec; 4] = [
+pub(crate) const QUAD: [Spec; 4] = [
     (11, 1, 0, 200),
     (12, 3, 1, 190),
     (13, 2, 2, 180),
     (14, 1, 3, 170),
 ];
 
-fn a() -> Identity {
+pub(crate) fn a() -> Identity {
     Identity::from_byte_array([0xA1; 32])
 }
-fn b() -> Identity {
+pub(crate) fn b() -> Identity {
     Identity::from_byte_array([0xB2; 32])
 }
-fn module() -> Identity {
+pub(crate) fn module() -> Identity {
     Identity::from_byte_array([0x5C; 32])
 }
-fn at(ms: i64) -> Timestamp {
+pub(crate) fn at(ms: i64) -> Timestamp {
     Timestamp::from_micros_since_unix_epoch(ms * 1000)
 }
-fn time(ms: i64) -> ScheduleAt {
+pub(crate) fn time(ms: i64) -> ScheduleAt {
     ScheduleAt::Time(at(ms))
 }
 
-fn species_def(id: u32) -> Species {
+pub(crate) fn species_def(id: u32) -> Species {
     game_core::load_species()
         .expect("species content loads")
         .into_iter()
@@ -103,7 +104,7 @@ fn sidecar(species_id: u32) -> TacticsSpeciesDef {
         .unwrap_or_else(|| panic!("species {species_id} has a tactics sidecar row"))
 }
 
-fn map_def(map_id: u32) -> BattleMapDef {
+pub(crate) fn map_def(map_id: u32) -> BattleMapDef {
     load_battle_maps()
         .expect("battle map content loads")
         .into_iter()
@@ -137,7 +138,7 @@ fn zone0_band(species_id: u32) -> (u8, u8) {
 
 /// The first encounter seed whose map pick lands `map_id` (and whose natural pack roll is
 /// `rolled_pack`, when given) — chosen with game-core's own rules, never a guessed constant.
-fn seed_for(map_id: u32, rolled_pack: Option<u8>) -> u64 {
+pub(crate) fn seed_for(map_id: u32, rolled_pack: Option<u8>) -> u64 {
     let zone = zone0();
     (1..100_000u64)
         .find(|&s| {
@@ -167,7 +168,7 @@ fn stance_row(stance: Stance) -> StanceRow {
 }
 
 /// A sturdy, fast level-5 party monster built through the shipped constructors.
-fn party_monster(owner: Identity, (id, species_id, slot, speed): Spec) -> Monster {
+pub(crate) fn party_monster(owner: Identity, (id, species_id, slot, speed): Spec) -> Monster {
     let species = species_def(species_id);
     let seed = u32::try_from(id).expect("fixture monster ids are small");
     let inst = game_core::build_monster(seed, &species, Level::new(5).expect("5 is a level"));
@@ -192,7 +193,7 @@ fn stats_of(m: &Monster) -> StatBlock {
     }
 }
 
-fn offer(
+pub(crate) fn offer(
     trade_id: u64,
     initiator: Identity,
     counterparty: Identity,
@@ -216,7 +217,7 @@ fn offer(
 }
 
 /// The unit's Light (kit slot 0) bound to `target`.
-fn light(u: &BattleUnit, target: u32) -> QueuedAction {
+pub(crate) fn light(u: &BattleUnit, target: u32) -> QueuedAction {
     QueuedAction::Skill(SkillAction {
         skill_id: u.skill_ids[0],
         target: ActionTarget::Unit(target),
@@ -236,12 +237,12 @@ fn step(x: u8, y: u8) -> QueuedAction {
     QueuedAction::Move(MoveAction { x, y, strides: 1 })
 }
 
-fn pick(monster_id: u64, slot: u8) -> DeployPick {
+pub(crate) fn pick(monster_id: u64, slot: u8) -> DeployPick {
     DeployPick { monster_id, slot }
 }
 
 /// Between-rounds budget: idle, no Guard, First-Stand spent.
-fn rest(u: &mut BattleUnit) {
+pub(crate) fn rest(u: &mut BattleUnit) {
     u.ap = 0;
     u.strides_used = 0;
     u.attacks = 0;
@@ -256,7 +257,7 @@ fn rest(u: &mut BattleUnit) {
 // ===========================================================================
 
 /// `start_wild_tactical` as the grass path would call it (sender = the module).
-fn start(fx: &Fixture, player: Identity, seed: u64, pack: Option<u8>, now: i64) -> u64 {
+pub(crate) fn start(fx: &Fixture, player: Identity, seed: u64, pack: Option<u8>, now: i64) -> u64 {
     fx.run_as_at(module(), at(now), |ctx| {
         super::start_wild_tactical(ctx, player, seed, pack)
     })
@@ -268,7 +269,7 @@ fn start(fx: &Fixture, player: Identity, seed: u64, pack: Option<u8>, now: i64) 
     })
 }
 
-fn submit(
+pub(crate) fn submit(
     fx: &Fixture,
     who: Identity,
     now: i64,
@@ -287,7 +288,7 @@ fn cancel(fx: &Fixture, who: Identity, now: i64, battle_id: u64, unit: u32) -> R
     })
 }
 
-fn deploy(
+pub(crate) fn deploy(
     fx: &Fixture,
     who: Identity,
     now: i64,
@@ -299,13 +300,21 @@ fn deploy(
     })
 }
 
-fn fire_deadline(fx: &Fixture, now: i64, args: TacticalDeadlineSched) -> Result<(), String> {
+pub(crate) fn fire_deadline(
+    fx: &Fixture,
+    now: i64,
+    args: TacticalDeadlineSched,
+) -> Result<(), String> {
     fx.run_as_at(module(), at(now), |ctx| {
         super::tactical_deadline_fire(ctx, args)
     })
 }
 
-fn fire_advance(fx: &Fixture, now: i64, args: TacticalAdvanceSched) -> Result<(), String> {
+pub(crate) fn fire_advance(
+    fx: &Fixture,
+    now: i64,
+    args: TacticalAdvanceSched,
+) -> Result<(), String> {
     fx.run_as_at(module(), at(now), |ctx| super::tactical_advance(ctx, args))
 }
 
@@ -313,7 +322,7 @@ fn fire_gc(fx: &Fixture, now: i64, args: BattleGcSched) -> Result<(), String> {
     fx.run_as_at(module(), at(now), |ctx| super::battle_gc(ctx, args))
 }
 
-fn deadline_args(r: &TacticalDeadlineSched) -> TacticalDeadlineSched {
+pub(crate) fn deadline_args(r: &TacticalDeadlineSched) -> TacticalDeadlineSched {
     TacticalDeadlineSched {
         scheduled_id: r.scheduled_id,
         scheduled_at: r.scheduled_at,
@@ -323,7 +332,7 @@ fn deadline_args(r: &TacticalDeadlineSched) -> TacticalDeadlineSched {
     }
 }
 
-fn advance_args(r: &TacticalAdvanceSched) -> TacticalAdvanceSched {
+pub(crate) fn advance_args(r: &TacticalAdvanceSched) -> TacticalAdvanceSched {
     TacticalAdvanceSched {
         scheduled_id: r.scheduled_id,
         scheduled_at: r.scheduled_at,
@@ -344,20 +353,20 @@ fn gc_args(r: &BattleGcSched) -> BattleGcSched {
 // Snapshots (order-insensitive: each table is the sorted set of its BSATN rows)
 // ===========================================================================
 
-type Snap = Vec<(&'static str, Vec<Vec<u8>>)>;
+pub(crate) type Snap = Vec<(&'static str, Vec<Vec<u8>>)>;
 
-fn enc<T: spacetimedb::Serialize>(value: &T) -> Vec<u8> {
+pub(crate) fn enc<T: spacetimedb::Serialize>(value: &T) -> Vec<u8> {
     to_vec(value).expect("a row BSATN-encodes")
 }
 
-fn row_set<R: spacetimedb::Serialize>(rows: &[R]) -> Vec<Vec<u8>> {
+pub(crate) fn row_set<R: spacetimedb::Serialize>(rows: &[R]) -> Vec<Vec<u8>> {
     let mut set: Vec<Vec<u8>> = rows.iter().map(enc).collect();
     set.sort();
     set
 }
 
 /// The names of the tables whose row sets differ.
-fn changed(before: &Snap, after: &Snap) -> Vec<&'static str> {
+pub(crate) fn changed(before: &Snap, after: &Snap) -> Vec<&'static str> {
     assert_eq!(before.len(), after.len(), "snapshots cover the same tables");
     before
         .iter()
@@ -367,7 +376,7 @@ fn changed(before: &Snap, after: &Snap) -> Vec<&'static str> {
         .collect()
 }
 
-fn none() -> Vec<&'static str> {
+pub(crate) fn none() -> Vec<&'static str> {
     Vec::new()
 }
 
@@ -375,36 +384,40 @@ fn none() -> Vec<&'static str> {
 // The world: every index the shell reads or writes, registered up front
 // ===========================================================================
 
-struct World<'a> {
-    battles: Handle<'a, Battle, u64>,
-    battle_wilds: Handle<'a, BattleWild, u64>,
-    monsters: Handle<'a, Monster, u64>,
-    pubs: Handle<'a, MonsterPub, u64>,
-    inventory: Handle<'a, Inventory, u64>,
-    offers: Handle<'a, TradeOffer, u64>,
-    accounts: Handle<'a, Account>,
-    configs: Handle<'a, Config, u32>,
-    players: Handle<'a, Player>,
-    characters: Handle<'a, Character, u64>,
-    sessions: Handle<'a, PlayerSession>,
-    conversations: Handle<'a, PlayerConversation>,
-    encounters: Handle<'a, EncounterRow, u32>,
-    tacticals: Handle<'a, BattleTactical, u64>,
-    units: Handle<'a, BattleUnit, u32>,
-    queues: Handle<'a, BattleQueue, u32>,
-    deploys: Handle<'a, BattleDeploy, u64>,
-    clocks: Handle<'a, BattleClock, u64>,
-    secrets: Handle<'a, BattleSecret, u64>,
-    wild_units: Handle<'a, BattleWildUnit, u64>,
-    events: Handle<'a, BattleEvent, u64>,
-    summaries: Handle<'a, BattleSummary, u64>,
-    formations: Handle<'a, PlayerFormation>,
-    deadlines: Handle<'a, TacticalDeadlineSched, u64>,
-    advances: Handle<'a, TacticalAdvanceSched, u64>,
-    gcs: Handle<'a, BattleGcSched, u64>,
+pub(crate) struct World<'a> {
+    pub(crate) battles: Handle<'a, Battle, u64>,
+    pub(crate) battle_wilds: Handle<'a, BattleWild, u64>,
+    pub(crate) monsters: Handle<'a, Monster, u64>,
+    pub(crate) pubs: Handle<'a, MonsterPub, u64>,
+    pub(crate) inventory: Handle<'a, Inventory, u64>,
+    pub(crate) offers: Handle<'a, TradeOffer, u64>,
+    pub(crate) accounts: Handle<'a, Account>,
+    pub(crate) configs: Handle<'a, Config, u32>,
+    pub(crate) players: Handle<'a, Player>,
+    pub(crate) characters: Handle<'a, Character, u64>,
+    pub(crate) sessions: Handle<'a, PlayerSession>,
+    pub(crate) conversations: Handle<'a, PlayerConversation>,
+    pub(crate) encounters: Handle<'a, EncounterRow, u32>,
+    pub(crate) tacticals: Handle<'a, BattleTactical, u64>,
+    pub(crate) units: Handle<'a, BattleUnit, u32>,
+    pub(crate) queues: Handle<'a, BattleQueue, u32>,
+    pub(crate) deploys: Handle<'a, BattleDeploy, u64>,
+    pub(crate) clocks: Handle<'a, BattleClock, u64>,
+    pub(crate) secrets: Handle<'a, BattleSecret, u64>,
+    pub(crate) wild_units: Handle<'a, BattleWildUnit, u64>,
+    pub(crate) events: Handle<'a, BattleEvent, u64>,
+    pub(crate) summaries: Handle<'a, BattleSummary, u64>,
+    pub(crate) formations: Handle<'a, PlayerFormation>,
+    pub(crate) deadlines: Handle<'a, TacticalDeadlineSched, u64>,
+    pub(crate) advances: Handle<'a, TacticalAdvanceSched, u64>,
+    pub(crate) gcs: Handle<'a, BattleGcSched, u64>,
+    /// bt-9: the settlement's currency faucet writes it (`economy::grant_currency`).
+    pub(crate) wallets: Handle<'a, PlayerWallet>,
+    /// bt-9: the tactical recruit glue's H1/H2 row (`playtest::record_recruit_event`).
+    pub(crate) playtests: Handle<'a, PlaytestEvent, u64>,
 }
 
-fn world(fx: &Fixture) -> World<'_> {
+pub(crate) fn world(fx: &Fixture) -> World<'_> {
     fx.set_database_identity(module());
     // Secondary indexes first (the World handle below is each table's primary key).
     let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
@@ -440,6 +453,9 @@ fn world(fx: &Fixture) -> World<'_> {
             r.battle_id
         });
     let _ = fx.table_keyed::<BattleGcSched, u64>("battle_gc_sched", "battle_id", |r| r.battle_id);
+    // bt-9: the settlement's evolution check reads the edges out of a species (none seeded).
+    let _ = fx
+        .table_keyed::<EvolutionPathRow, u32>("evolution_path", "from_species", |r| r.from_species);
     let w = World {
         battles: fx
             .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
@@ -453,7 +469,9 @@ fn world(fx: &Fixture) -> World<'_> {
         monsters: fx
             .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
             .writable()
-            .unique(),
+            .unique()
+            // bt-9: a tactical recruit inserts the rebuilt monster (auto_inc id).
+            .auto_inc(|r| r.monster_id, |r, id| r.monster_id = id),
         pubs: fx
             .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
             .writable()
@@ -572,6 +590,16 @@ fn world(fx: &Fixture) -> World<'_> {
             .scannable()
             .unique()
             .auto_inc(|r| r.scheduled_id, |r, id| r.scheduled_id = id),
+        wallets: fx
+            .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+            .writable()
+            .unique(),
+        playtests: fx
+            .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.event_id, |r, id| r.event_id = id),
     };
     w.configs.seed(&Config {
         id: 0,
@@ -586,7 +614,7 @@ fn world(fx: &Fixture) -> World<'_> {
 
 impl World<'_> {
     /// A joined player standing in zone 0.
-    fn join(&self, who: Identity, entity_id: u64) {
+    pub(crate) fn join(&self, who: Identity, entity_id: u64) {
         self.players.seed(&Player {
             identity: who,
             entity_id,
@@ -607,18 +635,18 @@ impl World<'_> {
         });
     }
 
-    fn seed_monster(&self, m: &Monster) {
+    pub(crate) fn seed_monster(&self, m: &Monster) {
         self.pubs.seed(&pub_from_monster(m, 0));
         self.monsters.seed(m);
     }
 
-    fn seed_party(&self, owner: Identity, specs: &[Spec]) {
+    pub(crate) fn seed_party(&self, owner: Identity, specs: &[Spec]) {
         for &spec in specs {
             self.seed_monster(&party_monster(owner, spec));
         }
     }
 
-    fn snapshot(&self) -> Snap {
+    pub(crate) fn snapshot(&self) -> Snap {
         vec![
             ("battle", row_set(&self.battles.rows())),
             ("battle_wild", row_set(&self.battle_wilds.rows())),
@@ -646,26 +674,28 @@ impl World<'_> {
             ("tactical_deadline_sched", row_set(&self.deadlines.rows())),
             ("tactical_advance_sched", row_set(&self.advances.rows())),
             ("battle_gc_sched", row_set(&self.gcs.rows())),
+            ("player_wallet", row_set(&self.wallets.rows())),
+            ("playtest_event", row_set(&self.playtests.rows())),
         ]
     }
 
-    fn anchor(&self, id: u64) -> Option<Battle> {
+    pub(crate) fn anchor(&self, id: u64) -> Option<Battle> {
         self.battles.rows().into_iter().find(|r| r.battle_id == id)
     }
 
-    fn try_tactical(&self, id: u64) -> Option<BattleTactical> {
+    pub(crate) fn try_tactical(&self, id: u64) -> Option<BattleTactical> {
         self.tacticals
             .rows()
             .into_iter()
             .find(|r| r.battle_id == id)
     }
 
-    fn tactical(&self, id: u64) -> BattleTactical {
+    pub(crate) fn tactical(&self, id: u64) -> BattleTactical {
         self.try_tactical(id)
             .unwrap_or_else(|| panic!("battle {id} has a battle_tactical row"))
     }
 
-    fn secret(&self, id: u64) -> BattleSecret {
+    pub(crate) fn secret(&self, id: u64) -> BattleSecret {
         self.secrets
             .rows()
             .into_iter()
@@ -674,7 +704,7 @@ impl World<'_> {
     }
 
     /// The battle's ONE side-A clock row.
-    fn clock(&self, id: u64) -> BattleClock {
+    pub(crate) fn clock(&self, id: u64) -> BattleClock {
         let mut rows: Vec<BattleClock> = self
             .clocks
             .rows()
@@ -689,7 +719,7 @@ impl World<'_> {
         rows.remove(0)
     }
 
-    fn unit(&self, unit_id: u32) -> BattleUnit {
+    pub(crate) fn unit(&self, unit_id: u32) -> BattleUnit {
         self.units
             .rows()
             .into_iter()
@@ -697,7 +727,7 @@ impl World<'_> {
             .unwrap_or_else(|| panic!("battle_unit {unit_id} exists"))
     }
 
-    fn units_of(&self, id: u64) -> Vec<BattleUnit> {
+    pub(crate) fn units_of(&self, id: u64) -> Vec<BattleUnit> {
         self.units
             .rows()
             .into_iter()
@@ -706,7 +736,7 @@ impl World<'_> {
     }
 
     /// One side's units in slot order.
-    fn side_units(&self, id: u64, side: SideRow) -> Vec<BattleUnit> {
+    pub(crate) fn side_units(&self, id: u64, side: SideRow) -> Vec<BattleUnit> {
         let mut rows: Vec<BattleUnit> = self
             .units_of(id)
             .into_iter()
@@ -716,7 +746,7 @@ impl World<'_> {
         rows
     }
 
-    fn queues_of(&self, id: u64) -> Vec<BattleQueue> {
+    pub(crate) fn queues_of(&self, id: u64) -> Vec<BattleQueue> {
         self.queues
             .rows()
             .into_iter()
@@ -732,7 +762,7 @@ impl World<'_> {
             .collect()
     }
 
-    fn wild_units_of(&self, id: u64) -> Vec<BattleWildUnit> {
+    pub(crate) fn wild_units_of(&self, id: u64) -> Vec<BattleWildUnit> {
         let mut rows: Vec<BattleWildUnit> = self
             .wild_units
             .rows()
@@ -743,7 +773,7 @@ impl World<'_> {
         rows
     }
 
-    fn deadlines_of(&self, id: u64) -> Vec<TacticalDeadlineSched> {
+    pub(crate) fn deadlines_of(&self, id: u64) -> Vec<TacticalDeadlineSched> {
         self.deadlines
             .rows()
             .into_iter()
@@ -751,7 +781,7 @@ impl World<'_> {
             .collect()
     }
 
-    fn only_deadline(&self, id: u64) -> TacticalDeadlineSched {
+    pub(crate) fn only_deadline(&self, id: u64) -> TacticalDeadlineSched {
         let mut rows = self.deadlines_of(id);
         assert_eq!(rows.len(), 1, "battle {id}: exactly one deadline row");
         rows.remove(0)
@@ -765,7 +795,7 @@ impl World<'_> {
             .collect()
     }
 
-    fn gcs_of(&self, id: u64) -> Vec<BattleGcSched> {
+    pub(crate) fn gcs_of(&self, id: u64) -> Vec<BattleGcSched> {
         self.gcs
             .rows()
             .into_iter()
@@ -774,7 +804,7 @@ impl World<'_> {
     }
 
     /// The battle's transcript in `seq` order.
-    fn events_of(&self, id: u64) -> Vec<BattleEvent> {
+    pub(crate) fn events_of(&self, id: u64) -> Vec<BattleEvent> {
         let mut rows: Vec<BattleEvent> = self
             .events
             .rows()
@@ -785,7 +815,7 @@ impl World<'_> {
         rows
     }
 
-    fn monster(&self, id: u64) -> Monster {
+    pub(crate) fn monster(&self, id: u64) -> Monster {
         self.monsters
             .rows()
             .into_iter()
@@ -793,7 +823,7 @@ impl World<'_> {
             .unwrap_or_else(|| panic!("monster {id} exists"))
     }
 
-    fn monster_pub(&self, id: u64) -> MonsterPub {
+    pub(crate) fn monster_pub(&self, id: u64) -> MonsterPub {
         self.pubs
             .rows()
             .into_iter()
@@ -810,7 +840,7 @@ impl World<'_> {
     }
 
     /// Row counts of every per-battle table the 24 h GC sweeps.
-    fn per_battle(&self, id: u64) -> Vec<(&'static str, usize)> {
+    pub(crate) fn per_battle(&self, id: u64) -> Vec<(&'static str, usize)> {
         vec![
             ("battle_event", self.events_of(id).len()),
             ("battle_unit", self.units_of(id).len()),
@@ -838,7 +868,7 @@ impl World<'_> {
         ]
     }
 
-    fn edit_unit(&self, unit_id: u32, f: impl FnOnce(&mut BattleUnit)) {
+    pub(crate) fn edit_unit(&self, unit_id: u32, f: impl FnOnce(&mut BattleUnit)) {
         let mut row = self.unit(unit_id);
         assert_eq!(
             self.units.remove(unit_id),
@@ -849,7 +879,7 @@ impl World<'_> {
         self.units.seed(&row);
     }
 
-    fn edit_tactical(&self, id: u64, f: impl FnOnce(&mut BattleTactical)) {
+    pub(crate) fn edit_tactical(&self, id: u64, f: impl FnOnce(&mut BattleTactical)) {
         let mut row = self.tactical(id);
         assert_eq!(
             self.tacticals.remove(id),
@@ -860,7 +890,7 @@ impl World<'_> {
         self.tacticals.seed(&row);
     }
 
-    fn edit_clock(&self, id: u64, f: impl FnOnce(&mut BattleClock)) {
+    pub(crate) fn edit_clock(&self, id: u64, f: impl FnOnce(&mut BattleClock)) {
         let mut row = self.clock(id);
         assert_eq!(
             self.clocks.remove(row.clock_id),
@@ -878,14 +908,14 @@ impl World<'_> {
 
 /// A pack-1 battle on map 1 for A's `PAIR`, started at `T0`: `u1` (the faster) holds the first
 /// window, `u2` has not started its turn, the wild has not acted.
-struct Live {
-    id: u64,
-    u1: u32,
-    u2: u32,
-    wild: u32,
+pub(crate) struct Live {
+    pub(crate) id: u64,
+    pub(crate) u1: u32,
+    pub(crate) u2: u32,
+    pub(crate) wild: u32,
 }
 
-fn live_pair(fx: &Fixture, w: &World<'_>) -> Live {
+pub(crate) fn live_pair(fx: &Fixture, w: &World<'_>) -> Live {
     w.join(a(), 1);
     w.seed_party(a(), &PAIR);
     let id = start(fx, a(), seed_for(1, Some(1)), None, T0);
@@ -911,7 +941,7 @@ fn live_pair(fx: &Fixture, w: &World<'_>) -> Live {
 }
 
 /// A forced pack-2 battle on map 4 for A's `PAIR`, Deploying since `T0`.
-fn deploying_pair(fx: &Fixture, w: &World<'_>) -> u64 {
+pub(crate) fn deploying_pair(fx: &Fixture, w: &World<'_>) -> u64 {
     w.join(a(), 1);
     w.seed_party(a(), &PAIR);
     let id = start(fx, a(), seed_for(4, None), Some(2), T0);
@@ -924,7 +954,7 @@ fn deploying_pair(fx: &Fixture, w: &World<'_>) -> u64 {
 }
 
 /// Seat `target` two tiles south of `attacker` (every shipped Light reaches distance 2).
-fn seat_in_light_range(w: &World<'_>, attacker: u32, target: u32) {
+pub(crate) fn seat_in_light_range(w: &World<'_>, attacker: u32, target: u32) {
     let from = w.unit(attacker);
     w.edit_unit(target, |t| {
         t.x = from.x;
@@ -989,7 +1019,7 @@ fn engine_step(
     want
 }
 
-fn loaded(fx: &Fixture, id: u64, now: i64) -> TacticalBattle {
+pub(crate) fn loaded(fx: &Fixture, id: u64, now: i64) -> TacticalBattle {
     super::load(&fx.ctx_at(at(now)), id)
         .unwrap_or_else(|e| panic!("load({id}) refused: {e}"))
         .tb
@@ -1167,8 +1197,11 @@ fn submit_queue_refuses_more_than_four_entries_bt8_1() {
     assert_eq!(changed(&before, &w.snapshot()), none());
 }
 
+/// Re-pinned by bt-9 (spec BT9.2): Recruit became legal, so only `Item` entries are still refused
+/// at submit (R-bt-8-ITEMRULE); a LIVE Recruit is judged by the engine's own gate (a wild that is
+/// not adjacent is the typed `NotAdjacent`), a pre-queued one is stored and judged at pop.
 #[test]
-fn submit_queue_refuses_item_and_recruit_entries_until_bt9_bt8_1() {
+fn submit_queue_refuses_items_and_a_far_live_recruit_but_stores_a_prequeued_one_bt8_1() {
     let fx = fixture();
     let w = world(&fx);
     let live = live_pair(&fx, &w);
@@ -1181,18 +1214,45 @@ fn submit_queue_refuses_item_and_recruit_entries_until_bt9_bt8_1() {
         bait: None,
     });
     let before = w.snapshot();
-    for (label, unit, entries) in [
-        ("live Item", live.u1, vec![item]),
-        ("pre-queued Recruit", live.u2, vec![recruit]),
-    ] {
-        let got = submit(&fx, a(), T0 + 1_000, live.id, unit, entries);
-        assert_eq!(got, Err(BT9_ONLY.to_string()), "{label}");
+    for (label, unit) in [("live Item", live.u1), ("pre-queued Item", live.u2)] {
+        let got = submit(&fx, a(), T0 + 1_000, live.id, unit, vec![item]);
+        assert!(
+            got.is_err(),
+            "{label}: items stay refused at submit, got {got:?}"
+        );
         assert_eq!(
             changed(&before, &w.snapshot()),
             none(),
             "{label}: nothing stored"
         );
     }
+    let got = submit(&fx, a(), T0 + 1_000, live.id, live.u1, vec![recruit]);
+    assert_eq!(
+        got,
+        Err(format!(
+            "submit_queue: InvalidNow {{ reason: NotAdjacent {{ target: {} }} }}",
+            live.wild
+        )),
+        "a live Recruit of a wild four tiles away is the engine's typed refusal"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "a refused live Recruit writes nothing"
+    );
+    submit(&fx, a(), T0 + 1_000, live.id, live.u2, vec![recruit])
+        .expect("a pre-queued Recruit is legal (adjacency is judged at pop)");
+    assert_eq!(changed(&before, &w.snapshot()), vec!["battle_queue"]);
+    let stored: Vec<(u32, Vec<QueuedAction>)> = w
+        .queues_of(live.id)
+        .into_iter()
+        .map(|q| (q.unit_id, q.entries))
+        .collect();
+    assert_eq!(
+        stored,
+        vec![(live.u2, vec![recruit, QueuedAction::EndTurn])],
+        "the stored plan is the Recruit plus the appended EndTurn"
+    );
 }
 
 #[test]
@@ -2825,48 +2885,227 @@ fn unloadable_battle_falls_back_to_a_fled_close_with_unit_hp_persisted_bt8_5() {
     }
 }
 
+/// What every legacy 1v1 reducer returns on a tactical anchor (`reject_if_tactical_anchor`).
+const TACTICAL_REFUSAL: &str = "tactical battle: use the tactical reducers";
+
+/// Retargeted by bt-9 (the plan's RT-1, under BT9.1 "paid once"; was
+/// `legacy_flee_on_a_tactical_anchor_persists_the_mirrored_tactical_hp_bt8_5`): a 1v1 reducer
+/// may not act on a tactical anchor at all — a legacy turn would run the 1v1 funnel's own payout
+/// beside the ledger's. Each one refuses with the guard's own error before any write: no monster,
+/// wallet, anchor or tactical row moves. Every call would SUCCEED without the guard — the lead
+/// carries the Poison item 3 cures (so `use_battle_item` is not stopped by its own "no matching
+/// status" check), monster 12 is a conscious swap target, the skill is in the lead's moveset — so
+/// each exact-error assertion bites on its own reducer's guard.
 #[test]
-fn legacy_flee_on_a_tactical_anchor_persists_the_mirrored_tactical_hp_bt8_5() {
+fn legacy_one_v_one_reducers_refuse_a_tactical_anchor_and_write_nothing_bt9_1() {
     let fx = fixture();
     let w = world(&fx);
     let live = live_pair(&fx, &w);
-    w.edit_unit(live.u1, |u| u.cur_hp = 140);
-    seat_in_light_range(&w, live.u1, live.wild);
-    let u1 = w.unit(live.u1);
-    submit(
-        &fx,
-        a(),
-        T0 + 30_000,
-        live.id,
-        live.u1,
-        vec![light(&u1, live.wild)],
-    )
-    .expect("a live Light keeps the battle going");
-    let anchor = w.anchor(live.id).expect("anchor");
-    assert_eq!(
-        anchor.state.side_a.team[0].current_hp, 140,
-        "every store mirrors the deployed units' HP onto the anchor"
-    );
-
-    let flee = fx.run_as_at(a(), at(T0 + 40_000), |ctx| {
-        crate::battle::flee(ctx, live.id)
+    w.inventory.seed(&Inventory {
+        inv_id: 501,
+        owner_identity: a(),
+        item_id: 3,
+        count: 2,
     });
-    assert_eq!(flee, Ok(()));
-    assert_eq!(
-        w.monster(11).current_hp,
-        140,
-        "the legacy flee persists the tactical HP, never the pre-battle HP"
+    assert!(
+        game_core::load_items()
+            .expect("item content loads")
+            .iter()
+            .find(|i| i.id == 3)
+            .and_then(|i| i.cure_status)
+            .is_some_and(|cure| cure.matches(&game_core::StatusEffect::Poison)),
+        "PRECONDITION: item 3 cures Poison"
     );
-    let window = w.only_deadline(live.id);
-    let deadline = w.clock(live.id).deadline_ms.expect("an open window");
-    assert_eq!(fire_deadline(&fx, deadline, deadline_args(&window)), Ok(()));
+    let mut anchor = w.anchor(live.id).expect("anchor");
     assert_eq!(
-        w.tactical(live.id).phase,
-        Phase::Finished,
-        "the fire closes the tactical side of a battle the legacy reducer ended"
+        anchor.state.side_a.active, 0,
+        "PRECONDITION: the anchor's lead is team[0]"
     );
-    assert_eq!(w.monster(11).current_hp, 140);
-    assert_eq!(w.gcs_of(live.id).len(), 1);
+    anchor.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
+    assert_eq!(w.battles.remove(live.id), 1, "the anchor edited in place");
+    w.battles.seed(&anchor);
+    let skill = anchor.state.side_a.team[0]
+        .known_skill_ids
+        .first()
+        .copied()
+        .expect("the lead knows a skill");
+    let refused: Result<(), String> = Err(TACTICAL_REFUSAL.to_string());
+    let before = w.snapshot();
+    let t = T0 + 40_000;
+    let flee = fx.run_as_at(a(), at(t), |ctx| crate::battle::flee(ctx, live.id));
+    assert_eq!(flee, refused, "flee on a tactical anchor is refused");
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "flee writes nothing"
+    );
+    let item = fx.run_as_at(a(), at(t), |ctx| {
+        crate::battle::use_battle_item(ctx, live.id, 3)
+    });
+    assert_eq!(
+        item, refused,
+        "use_battle_item is refused although the lead's Poison is curable"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "use_battle_item writes nothing (no debit, no cure)"
+    );
+    let swap = fx.run_as_at(a(), at(t), |ctx| {
+        crate::battle::swap_active(ctx, live.id, 1)
+    });
+    assert_eq!(swap, refused, "swap_active is refused");
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "swap_active writes nothing"
+    );
+    let attack = fx.run_as_at(a(), at(t), |ctx| {
+        crate::battle::submit_attack(ctx, live.id, skill)
+    });
+    assert_eq!(attack, refused, "submit_attack is refused");
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "submit_attack writes nothing"
+    );
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::Ongoing,
+        "the tactical battle is still the tactical reducers' to finish"
+    );
+}
+
+/// RT-1 covers the fifth legacy reducer: `taming::attempt_recruit` on a tactical anchor is refused
+/// with the guard's error and writes nothing, EVEN when a `battle_wild` row exists for the anchor
+/// (its own "not a wild battle" refusal is then no protection). The fixture makes the unguarded
+/// path go all the way: a sure-hit bait row (bonus 1000 — `recruit_chance` clamps, so any
+/// `ctx.random()` draw recruits), a held stack of 2, and the content species rows its success arm
+/// reads. Without the guard the bait is debited, a playtest row written and the wild recruited.
+#[test]
+fn legacy_attempt_recruit_refuses_a_tactical_anchor_even_with_a_battle_wild_row_bt9_1() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let items = fx.table_keyed::<crate::schema::ItemRow, u32>("item_row", "id", |r| r.id);
+    items.seed(&crate::schema::ItemRow {
+        id: 1,
+        name: "bait".to_string(),
+        description: String::new(),
+        recruit_bonus: 1_000,
+        train_stat: None,
+        train_amount: 0,
+        sell_price: 0,
+        cure_status: None,
+    });
+    let species_rows =
+        fx.table_keyed::<crate::schema::SpeciesRow, u32>("species_row", "id", |r| r.id);
+    for s in &game_core::load_species().expect("species content loads") {
+        species_rows.seed(&crate::schema::SpeciesRow {
+            id: s.id,
+            name: s.name.clone(),
+            base_hp: s.base_stats.hp,
+            base_attack: s.base_stats.attack,
+            base_defense: s.base_stats.defense,
+            base_speed: s.base_stats.speed,
+            base_sp_attack: s.base_stats.sp_attack,
+            base_sp_defense: s.base_stats.sp_defense,
+            affinity: s.affinity,
+            learnable_skill_ids: s.learnable_skill_ids.clone(),
+            ability: s.ability,
+            tier: s.tier,
+        });
+    }
+    w.inventory.seed(&Inventory {
+        inv_id: 501,
+        owner_identity: a(),
+        item_id: 1,
+        count: 2,
+    });
+    assert!(
+        w.battle_wilds.rows().is_empty(),
+        "PRECONDITION: a tactical start writes no battle_wild row of its own"
+    );
+    let wild = w.wild_units_of(live.id)[0].clone();
+    w.battle_wilds.seed(&BattleWild {
+        battle_id: live.id,
+        wild_species_id: wild.species_id,
+        wild_level: wild.level,
+        individuality_seed: wild.individuality_seed,
+    });
+    let before = w.snapshot();
+    let got = fx.run_as_at(a(), at(T0 + 40_000), |ctx| {
+        crate::taming::attempt_recruit(ctx, live.id, Some(1))
+    });
+    assert_eq!(
+        got,
+        Err(TACTICAL_REFUSAL.to_string()),
+        "attempt_recruit on a tactical anchor is refused by the guard"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "no bait debited, no playtest row, no recruit, no anchor change"
+    );
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::Ongoing,
+        "the tactical battle is still the tactical reducers' to finish"
+    );
+}
+
+/// BT9.1 "paid once": `finish` re-reads the STORED tactical row, so a caller holding a stale
+/// Active copy (and the final board) cannot settle a battle a second time. The first finish
+/// must have paid (the red at the freeze), the second must change nothing.
+#[test]
+fn a_stale_active_copy_finished_again_after_the_settlement_pays_nothing_more_bt9_1() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seat_in_light_range(&w, live.u1, live.wild);
+    w.edit_unit(live.wild, |u| {
+        u.cur_hp = 1;
+        u.first_stand = false;
+    });
+    let stale = w.tactical(live.id);
+    assert_eq!(
+        stale.phase,
+        Phase::Active,
+        "PRECONDITION: the copy is Active"
+    );
+    // The same step as `battle_won_inside_a_live_submit_..._bt8_6` (its roll lands).
+    let t1 = T0 + 25_000;
+    let u1 = w.unit(live.u1);
+    submit(&fx, a(), t1, live.id, live.u1, vec![light(&u1, live.wild)])
+        .expect("the KO submit is accepted");
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::SideAWins,
+        "PRECONDITION: the KO won the battle"
+    );
+    let paid: u64 = w.wallets.rows().iter().map(|r| r.balance).sum();
+    assert!(
+        paid > 0,
+        "the real finish paid the ledger's currency, got {paid}"
+    );
+    let state = loaded(&fx, live.id, t1).state;
+    let anchor = w.anchor(live.id).expect("anchor");
+    let before = w.snapshot();
+    fx.run_as_at(module(), at(t1 + 1), |ctx| {
+        super::finish(
+            ctx,
+            Some(anchor),
+            stale,
+            crate::tactics_settle::Close::Settled { state: &state },
+            t1 + 1,
+            super::Except::None,
+        );
+    });
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "a second finish pays, penalises, sweeps and summarises nothing"
+    );
 }
 
 // ===========================================================================
@@ -2943,8 +3182,9 @@ fn voluntary_flee_entry_ends_the_battle_fled_persists_hp_and_arms_gc_bt8_6() {
     )));
 }
 
-/// A battle A fled at `T0 + 30_000`, plus a seeded summary, stray per-battle rows the GC must
-/// also take, and a bystander battle's event. Returns `(battle_id, the GC row, flee time)`.
+/// A battle A fled at `T0 + 30_000` (whose finish wrote its own summary row — bt-9, BT9.5), plus
+/// stray per-battle rows the GC must also take, and a bystander battle's event. Returns
+/// `(battle_id, the GC row, flee time)`.
 fn fled_battle_with_strays(fx: &Fixture, w: &World<'_>) -> (u64, BattleGcSched, i64) {
     let live = live_pair(fx, w);
     let t1 = T0 + 30_000;
@@ -2952,31 +3192,13 @@ fn fled_battle_with_strays(fx: &Fixture, w: &World<'_>) -> (u64, BattleGcSched, 
     let mut gcs = w.gcs_of(live.id);
     assert_eq!(gcs.len(), 1, "the finish armed one GC row");
     let gc = gcs.remove(0);
-    w.summaries.seed(&BattleSummary {
-        battle_id: live.id,
-        player_identity: a(),
-        opponent_identity: crate::WILD_IDENTITY,
-        kind: BattleKind::Wild,
-        outcome: BattleOutcome::Fled,
-        rounds: 1,
-        wall_ms: 30_000,
-        idle_ms_a: 0,
-        idle_ms_b: 0,
-        windows_histogram: Vec::new(),
-        autopasses: 0,
-        recruit_attempts: 0,
-        recruit_successes: 0,
-        weaken_first: false,
-        items_used: 0,
-        damage_dealt_a: 0,
-        damage_dealt_b: 0,
-        hits: 0,
-        misses: 0,
-        unit_turns_prequeued: 0,
-        unit_turns_live: 0,
-        halted_plans: 0,
-        se_kos_after_r1: 0,
-    });
+    assert!(
+        w.summaries
+            .rows()
+            .iter()
+            .any(|s| s.battle_id == live.id && s.outcome == BattleOutcome::Fled),
+        "non-vacuous: the finish wrote the battle's real summary row (finalised Fled)"
+    );
     w.queues.seed(&BattleQueue {
         unit_id: 9_999,
         battle_id: live.id,
@@ -3326,7 +3548,7 @@ fn worst_case_round_runs_in_one_transaction_within_the_chain_bound_bt8_7() {
 impl World<'_> {
     /// Rewrite monster `id`'s private row in place and re-derive its projection from it (the
     /// dual write a legacy write-back, a trade or a corrupt row would have left behind).
-    fn edit_monster(&self, id: u64, f: impl FnOnce(&mut Monster)) {
+    pub(crate) fn edit_monster(&self, id: u64, f: impl FnOnce(&mut Monster)) {
         let mut m = self.monster(id);
         let tier = self.monster_pub(id).tier;
         assert_eq!(self.monsters.remove(id), 1, "monster {id} edited in place");
@@ -3363,7 +3585,7 @@ fn seed_round_two_boundary(w: &World<'_>, id: u64) {
 /// A legacy reducer (`submit_attack` on the anchor) ended the battle as a loss and ran its own
 /// write-back: monster 11 fainted on its rows and in the anchor's team, while the tactical row
 /// is still Active and u1's unit row still holds the older, higher HP.
-fn legacy_lost_anchor(w: &World<'_>, live: &Live) {
+pub(crate) fn legacy_lost_anchor(w: &World<'_>, live: &Live) {
     let mut anchor = w.anchor(live.id).expect("anchor");
     anchor.state.outcome = BattleOutcome::SideBWins;
     anchor.state.side_a.team[0].current_hp = 0;

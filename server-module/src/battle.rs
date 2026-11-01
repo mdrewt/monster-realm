@@ -20,8 +20,8 @@ use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
 use crate::schema::{
-    battle, battle_wild, inventory, monster, skill_row, species_row, trade_offer, Battle,
-    BattleWild, Monster, SkillRow,
+    battle, battle_tactical, battle_wild, inventory, monster, skill_row, species_row, trade_offer,
+    Battle, BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
@@ -616,6 +616,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         .find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
     require_owner(ctx, "submit_attack", battle.player_identity)?;
+    reject_if_tactical_anchor(ctx, "submit_attack", battle_id)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("submit_attack", me, &e);
@@ -780,6 +781,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         .find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
     require_owner(ctx, "swap_active", battle.player_identity)?;
+    reject_if_tactical_anchor(ctx, "swap_active", battle_id)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("swap_active", me, &e);
@@ -922,6 +924,7 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
         .find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
     require_owner(ctx, "flee", battle.player_identity)?;
+    reject_if_tactical_anchor(ctx, "flee", battle_id)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("flee", me, &e);
@@ -957,7 +960,8 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 /// ongoing battle.
 ///
 /// Guard order (reject-not-clamp; decision always before irreversible spend):
-/// 1. require_owner — caller must own the battle.
+/// 1. require_owner — caller must own the battle; then `reject_if_tactical_anchor` (bt-9: a
+///    tactical battle's items go through its own queue, never this reducer).
 /// 2. outcome == Ongoing — items cannot be used in terminal battles.
 /// 3. Load `ItemDef` from content (`cure_status` also lives on `item_row` for
 ///    client classification, but the reducer reads the
@@ -980,6 +984,7 @@ pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Re
 
     // Guard 1: ownership.
     require_owner(ctx, "use_battle_item", battle.player_identity)?;
+    reject_if_tactical_anchor(ctx, "use_battle_item", battle_id)?;
 
     // Guard 2: battle must be ongoing.
     if battle.state.outcome != BattleOutcome::Ongoing {
@@ -1125,114 +1130,273 @@ pub(crate) fn is_wild_battle(b: &Battle) -> bool {
     b.opponent_identity == WILD_IDENTITY
 }
 
-/// After a battle ends (win/loss), write HP back to all party monsters and
-/// grant XP to the winner's team.
+/// Is `b` a WON wild battle? The one predicate behind every win-only wild credit
+/// (trust-favorable, Quality Time) — shared by the 1v1 funnel and the tactical settlement.
+pub(crate) fn is_wild_win(b: &Battle) -> bool {
+    is_wild_battle(b) && b.state.outcome == BattleOutcome::SideAWins
+}
+
+/// A 1v1 reducer may not act on a TACTICAL anchor (M-battle-tactics bt-9): the tactical path
+/// owns its turns, its terminal and its payout, and a 1v1 turn on the same anchor would pay the
+/// legacy rewards for a wild the ledger also credits (R-bt-8-LEGACYREDUCERS).
+pub(crate) fn reject_if_tactical_anchor(
+    ctx: &ReducerContext,
+    reducer: &str,
+    battle_id: u64,
+) -> Result<(), String> {
+    if ctx
+        .db
+        .battle_tactical()
+        .battle_id()
+        .find(battle_id)
+        .is_none()
+    {
+        return Ok(());
+    }
+    let e = "tactical battle: use the tactical reducers".to_string();
+    log_reject(reducer, ctx.sender(), &e);
+    Err(e)
+}
+
+/// GC the player's prior terminal `battle` rows and, for a real PvP opponent, theirs. `keep`
+/// spares one row: the tactical finish has ALREADY written its own anchor terminal when it
+/// sweeps, the 1v1 callers have not (their in-flight row is still `Ongoing` here — see the
+/// ordering note in `write_back_battle_results`). After the mutating caller's update, exactly one
+/// terminal battle remains per player (the client's M8.7e keep-latest outcome frame).
+pub(crate) fn sweep_prior_terminals(ctx: &ReducerContext, battle: &Battle, keep: Option<u64>) {
+    let player = battle.player_identity;
+    let old_terminals: Vec<Battle> = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(player)
+        .filter(|b| b.state.outcome != BattleOutcome::Ongoing && Some(b.battle_id) != keep)
+        .collect();
+    for old in &old_terminals {
+        crate::tactics::sweep_swept_anchor(ctx, old);
+    }
+    // Prior terminal battles where this player was the OPPONENT (PvP side-B GC). Wild and
+    // self-battles have opponent == WILD_IDENTITY or == player; skip those to avoid
+    // double-deleting the rows just swept above.
+    let opponent = battle.opponent_identity;
+    if opponent != WILD_IDENTITY && opponent != player {
+        let opp_battles = ctx.db.battle().opponent_identity().filter(opponent);
+        let old_opp_terminals: Vec<Battle> = opp_battles
+            .filter(|b| b.state.outcome != BattleOutcome::Ongoing && Some(b.battle_id) != keep)
+            .collect();
+        for old in &old_opp_terminals {
+            crate::tactics::sweep_swept_anchor(ctx, old);
+        }
+    }
+}
+
+/// The wild-battle faint penalty: one `trust_unfavorable_count` per fainted side-A member, on
+/// ANY outcome — loss, flee, disconnect and (bt-9) a tactical recruit success alike
+/// (R-21r-a-FAINTPENALTY). Positional over `side_a.team` ⨯ `party_monster_ids`, so it asserts
+/// the coupling itself. Wild battles only (practice and PvP are exempt from every battle credit).
+pub(crate) fn apply_faint_penalties(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    if !is_wild_battle(battle) {
+        return Ok(());
+    }
+    check_team_coupling(
+        battle.state.side_a.team.len(),
+        battle.party_monster_ids.len(),
+    )?;
+    for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+        if !bm.is_fainted() {
+            continue;
+        }
+        // Can't fail: check_team_coupling asserted same lengths above.
+        let Some(&mid) = battle.party_monster_ids.get(i) else {
+            continue;
+        };
+        let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
+            continue;
+        };
+        if m.owner_identity != battle.player_identity {
+            // The write-back's abort contract, at this site too (the 1v1 funnel never gets
+            // here on an owner change; the tactical fallback close can).
+            return Err(format!(
+                "apply_faint_penalties: ownership changed mid-battle for monster {mid} — aborted"
+            ));
+        }
+        m.trust_unfavorable_count = m.trust_unfavorable_count.saturating_add(1);
+        update_monster_synced(ctx, m)?;
+    }
+    Ok(())
+}
+
+/// One monster's battle credit — the 1v1 win block's per-winner body, shared with the tactical
+/// settlement (bt-9): essence per pool, the daily trust-favorable credit when `favorable` (a won
+/// wild battle), XP (`None` = a corrupt level skipped it, logged) with the level-up stat recompute
+/// from `species_base(m.species_id)` and the max-HP heal against `old_max_hp` (the battle-time
+/// max, so growth heals exactly its own gain), then the dual write, Quality Time when `favorable`
+/// and the unconditional evolution check. A monster that is gone is skipped; one whose owner is
+/// no longer `owner` is refused (the write-back's abort contract, at the credit site too).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn credit_monster(
+    ctx: &ReducerContext,
+    owner: Identity,
+    mid: u64,
+    old_max_hp: u16,
+    species_base: &dyn Fn(u32) -> Option<StatBlock>,
+    xp: Option<game_core::Xp>,
+    essence: &[(game_core::Affinity, u32)],
+    favorable: bool,
+    today: u32,
+) -> Result<(), String> {
+    let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
+        return Ok(());
+    };
+    if m.owner_identity != owner {
+        return Err(format!(
+            "credit_monster: ownership changed mid-battle for monster {mid} — aborted"
+        ));
+    }
+    // Essence is typed by the DEFEATED species' affinity and sized by the shared reward
+    // rule ("go fight the type you need").
+    for &(affinity, amount) in essence {
+        grant_essence(&mut m, affinity, amount);
+    }
+    // Trust-favorable: at most once per monster per UTC day, strict `>` so a clock rewind is
+    // a bounded lockout, never a re-credit.
+    if favorable && today > m.trust_favorable_battle_day_epoch {
+        m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
+        m.trust_favorable_battle_day_epoch = today;
+    }
+    match xp {
+        Some(xp_gained) => {
+            let current_xp = game_core::Xp::new(m.xp);
+            let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
+            m.xp = new_xp.value();
+            m.level = new_level.as_u8();
+            if leveled_up {
+                // Recompute derived stats on level-up. Stat-recompute failures are logged and
+                // skipped (XP/level already written above); `level_up_healed_hp` remains the SSOT.
+                if let Some(base) = species_base(m.species_id) {
+                    'stat_recompute: {
+                        let ivs = match game_core::IVs::new(
+                            m.iv_hp,
+                            m.iv_attack,
+                            m.iv_defense,
+                            m.iv_speed,
+                            m.iv_sp_attack,
+                            m.iv_sp_defense,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let escaped = crate::guards::json_escape(&e);
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {escaped}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
+                        let evs = match game_core::EVs::new(
+                            m.ev_hp,
+                            m.ev_attack,
+                            m.ev_defense,
+                            m.ev_speed,
+                            m.ev_sp_attack,
+                            m.ev_sp_defense,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let escaped = crate::guards::json_escape(&e);
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {escaped}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
+                        let nature = game_core::Nature::new(m.nature_kind);
+                        let lvl = match game_core::Level::new(m.level) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                let escaped = crate::guards::json_escape(&e);
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {escaped}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
+                        let derived = game_core::derive_stats(&base, &ivs, &evs, &nature, lvl);
+                        m.stat_hp = derived.hp;
+                        m.stat_attack = derived.attack;
+                        m.stat_defense = derived.defense;
+                        m.stat_speed = derived.speed;
+                        m.stat_sp_attack = derived.sp_attack;
+                        m.stat_sp_defense = derived.sp_defense;
+                        // Heal the HP gained from the max-HP growth on level-up (SSOT:
+                        // game_core owns the heal rule).
+                        m.current_hp = level_up_healed_hp(m.current_hp, old_max_hp, derived.hp);
+                    }
+                }
+            }
+        }
+        None => {
+            // Corrupt winner level: XP skipped, nothing else.
+            log::error!("{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid}}}");
+        }
+    }
+    update_monster_synced(ctx, m)?;
+    // (fresh-find, after this monster's own write): Quality Time is wild-gated like the other
+    // credits; the auto-evolution check is UNCONDITIONAL and LAST — the level can change on
+    // practice/PvP wins too.
+    if favorable {
+        accrue_quality_time(ctx, mid);
+    }
+    check_and_evolve(ctx, mid);
+    Ok(())
+}
+
+/// After a 1v1 battle ends (win/loss/flee), write HP back to all party monsters and
+/// grant XP to the winner's team — the composition of the extracted helpers above
+/// (`sweep_prior_terminals`, `apply_faint_penalties`, `credit_monster`), which the
+/// tactical settlement (`tactics_settle`) shares.
 pub(crate) fn write_back_battle_results(
     ctx: &ReducerContext,
     battle: &Battle,
 ) -> Result<(), String> {
-    // Positional coupling invariant: side_a.team[i] pairs with
-    // party_monster_ids[i]. Assert it up front (Err, never panic) so the XP loop
-    // below can index by position safely. The same assertion also lives in
-    // write_back_party_hp, which guards the recruit-success path that calls that
-    // helper WITHOUT going through this function.
+    // Positional coupling invariant: side_a.team[i] pairs with party_monster_ids[i]. Assert it
+    // up front (Err, never panic) so the loops below can index by position safely. The same
+    // assertion also lives in write_back_party_hp and apply_faint_penalties.
     check_team_coupling(
         battle.state.side_a.team.len(),
         battle.party_monster_ids.len(),
     )?;
 
-    // Both GC steps run BEFORE the fallible `write_back_party_hp`.
-    // PvE callers log-and-commit instead of aborting, so a
-    // persistent invariant violation would otherwise leak one orphaned
-    // `battle_wild` row and one permanently-retained terminal `battle` row per
-    // battle, unbounded, still delivered to its participants via the
-    // `my_battle` view. Both are pure GC of OTHER rows: neither reads anything
-    // `write_back_party_hp` writes, and `write_back_party_hp` does not read
-    // `battle_wild`, so the hoist is behaviour-preserving on the success path.
-    // `check_team_coupling` stays first — it is the fail-loud precondition that
-    // makes the positional indexing below safe, and irreversible deletes must not
-    // run on behalf of a battle whose invariant is already violated.
+    // Both GC steps run BEFORE the fallible `write_back_party_hp`: PvE callers log-and-commit
+    // instead of aborting, so a persistent invariant violation would otherwise leak one orphaned
+    // `battle_wild` row and one permanently-retained terminal `battle` row per battle, unbounded,
+    // still delivered to its participants via the `my_battle` view. Both are pure GC of OTHER
+    // rows. `check_team_coupling` stays first — irreversible deletes must not run on behalf of a
+    // battle whose invariant is already violated.
 
-    // GC the private wild-individuality row on ANY terminal outcome (no-op for
-    // PvP battles with no `battle_wild` row; cleans wild battles that end via
-    // loss/flee/win without a recruit attempt).
+    // GC the private wild-individuality row on ANY terminal outcome (no-op for PvP battles with
+    // no `battle_wild` row).
     ctx.db.battle_wild().battle_id().delete(battle.battle_id);
 
-    // GC prior terminal battles for this player.
-    // Ordering invariant: the current battle's DB row is still Ongoing at this
-    // call site — every mutating caller (submit_attack, swap_active, flee,
-    // taming::attempt_recruit, pvp::settle_pvp_battle) calls update() AFTER
-    // write_back_battle_results returns, and the disconnect caller
-    // (resolve_wild_battle_on_disconnect) delete()s the row AFTER,
-    // so the in-flight row is still Ongoing in the DB here either way. Running
-    // before the HP write preserves that precondition a fortiori.
-    // Filtering outcome != Ongoing therefore only targets prior terminals, never
-    // the in-flight battle. After the mutating caller's update(), exactly one
-    // terminal battle remains per player, preserving the client's M8.7e outcome
-    // frame (keep-latest-per-player); the disconnect caller then deletes the row
-    // (no frame — a disconnected client has nothing to observe).
-    let player = battle.player_identity;
-    let old_terminal_ids: Vec<u64> = ctx
-        .db
-        .battle()
-        .player_identity()
-        .filter(player)
-        .filter(|b| b.state.outcome != BattleOutcome::Ongoing)
-        .map(|b| b.battle_id)
-        .collect();
-    for id in old_terminal_ids {
-        ctx.db.battle().battle_id().delete(id);
-    }
+    // Ordering invariant: the current battle's DB row is still Ongoing at this call site — every
+    // mutating caller (submit_attack, swap_active, flee, taming::attempt_recruit,
+    // pvp::settle_pvp_battle) calls update() AFTER this returns, and the disconnect caller
+    // (resolve_wild_battle_on_disconnect) delete()s the row AFTER, so `keep: None` never
+    // targets the in-flight battle.
+    sweep_prior_terminals(ctx, battle, None);
 
-    // GC prior terminal battles where this player was the OPPONENT (PvP side-B GC).
-    // Wild and self-battles have opponent == WILD_IDENTITY or == player;
-    // skip those to avoid double-deleting the row just swept above.
-    let opponent = battle.opponent_identity;
-    if opponent != WILD_IDENTITY && opponent != player {
-        let opp_battles = ctx.db.battle().opponent_identity().filter(opponent);
-        let old_opp_terminal_ids: Vec<u64> = opp_battles
-            .filter(|b| b.state.outcome != BattleOutcome::Ongoing)
-            .map(|b| b.battle_id)
-            .collect();
-        for id in old_opp_terminal_ids {
-            ctx.db.battle().battle_id().delete(id);
-        }
-    }
-
-    // Write back HP for player's team (HP-only; the XP block below is separate).
-    // Runs AFTER both GC steps above — it is the first fallible
-    // statement whose Err would otherwise skip them.
+    // Write back HP for player's team (HP-only; the credits below are separate). The first
+    // fallible statement whose Err would otherwise skip the GC above.
     write_back_party_hp(ctx, battle)?;
 
-    // faint penalties: WILD battles only, per fainted party
-    // member, on ANY outcome — its own pass BEFORE the win block, because that
-    // block runs only on SideAWins and early-returns on corrupt loser data,
-    // while faints must credit on a loss, a flee and the disconnect write-back.
-    if is_wild_battle(battle) {
-        for (i, bm) in battle.state.side_a.team.iter().enumerate() {
-            if !bm.is_fainted() {
-                continue;
-            }
-            // Can't fail: check_team_coupling asserted same lengths above.
-            let Some(&mid) = battle.party_monster_ids.get(i) else {
-                continue;
-            };
-            let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
-                continue;
-            };
-            m.trust_unfavorable_count = m.trust_unfavorable_count.saturating_add(1);
-            update_monster_synced(ctx, m)?;
-        }
-    }
+    // Faint penalties: WILD battles only, per fainted party member, on ANY outcome — its own
+    // pass BEFORE the win block, which runs only on SideAWins.
+    apply_faint_penalties(ctx, battle)?;
 
-    // Grant XP if the player won (log-and-continue on parse failures —
-    // one corrupt row must not make a battle unwinnable; mirrors movement_tick
-    // per-character philosophy).
-    // Only side-A (challenger/player_identity) wins are handled here.
+    // Grant XP if the player won (log-and-continue on parse failures — one corrupt row must not
+    // make a battle unwinnable). Only side-A (challenger/player_identity) wins are handled here.
     if battle.state.outcome == BattleOutcome::SideAWins {
-        // Find the loser's species base stat total for the XP formula.
-        // On missing species: log and skip the entire XP section — without the
-        // BST no per-monster XP can be computed. The battle still resolves.
+        // Find the loser's species base stat total for the XP formula. On missing species: log
+        // and skip the entire XP section — without the BST no per-monster XP can be computed.
         let loser_active = battle.state.side_b.active_monster();
         let Some(loser_species) = ctx.db.species_row().id().find(loser_active.species_id) else {
             log::error!(
@@ -1243,17 +1407,15 @@ pub(crate) fn write_back_battle_results(
             return Ok(());
         };
         let bst = loser_base_stat_total(&loser_species);
-        // Currency reward is independent of the XP formula — grant it as soon as
-        // bst is known so a corrupt loser_level (which only affects XP) does not
-        // silently drop the reward (review finding RT-WB-CURRENCY-01).
-        grant_currency(ctx, player, battle_currency_reward(bst));
-        // loser_lvl is loop-invariant — parse once here so a corrupt loser level
-        // skips the entire XP section (not N×log once per winner monster).
+        // Currency reward is independent of the XP formula — grant it as soon as bst is known so
+        // a corrupt loser_level (which only affects XP) does not silently drop the reward
+        // (review finding RT-WB-CURRENCY-01).
+        grant_currency(ctx, battle.player_identity, battle_currency_reward(bst));
+        // loser_lvl is loop-invariant — parse once here so a corrupt loser level skips the
+        // entire XP section (not N×log once per winner monster).
         let loser_lvl = match game_core::Level::new(loser_active.level) {
             Ok(l) => l,
             Err(e) => {
-                // Validator error text may contain quotes —
-                // escape before interpolating into the hand-built JSON line.
                 let escaped = crate::guards::json_escape(&e);
                 log::error!(
                     "{{\"evt\":\"xp_skip_loser_level\",\"battle_id\":{},\"loser_species_id\":{},\"reason\":\"{escaped}\"}}",
@@ -1264,14 +1426,26 @@ pub(crate) fn write_back_battle_results(
             }
         };
 
-        // Practice = self-vs-self sandbox battle. A real PvP opponent
-        // is a different identity, so this correctly returns false for PvP wins.
+        // Practice = self-vs-self sandbox battle. A real PvP opponent is a different identity,
+        // so this correctly returns false for PvP wins.
         let is_practice = battle.player_identity == battle.opponent_identity;
-
-        // The win credits are WILD-gated (practice AND PvP exempt) and
-        // computed once per write-back.
-        let wild_win = is_wild_battle(battle);
+        // The win credits are WILD-gated (practice AND PvP exempt) and computed once.
+        let wild_win = is_wild_win(battle);
         let today = day_epoch_utc(now_ms(ctx));
+        let species_base = |species_id: u32| -> Option<StatBlock> {
+            ctx.db
+                .species_row()
+                .id()
+                .find(species_id)
+                .map(|species| StatBlock {
+                    hp: species.base_hp,
+                    attack: species.base_attack,
+                    defense: species.base_defense,
+                    speed: species.base_speed,
+                    sp_attack: species.base_sp_attack,
+                    sp_defense: species.base_sp_defense,
+                })
+        };
 
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
@@ -1282,120 +1456,29 @@ pub(crate) fn write_back_battle_results(
             let &mid = battle.party_monster_ids.get(i).ok_or_else(|| {
                 format!("write_back_battle_results: party_monster_ids index {i} out of range")
             })?;
-            let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
-                continue;
-            };
-
-            // wild-win credits, INDEPENDENT of the winner-level parse
-            // below (a corrupt winner level skips XP ONLY, never essence/Trust
-            // — neither uses the winner's level).
-            if wild_win {
-                // Essence is typed by the DEFEATED species' affinity and sized
-                // by the shared reward rule ("go fight the type you need").
-                grant_essence(&mut m, loser_species.affinity, essence_battle_reward(bst));
-                // Trust-favorable: at most once per monster per UTC day, strict
-                // `>` so a clock rewind is a bounded lockout, never a re-credit.
-                if today > m.trust_favorable_battle_day_epoch {
-                    m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
-                    m.trust_favorable_battle_day_epoch = today;
-                }
-            }
-
-            // Parse winner level — a corrupt level skips the XP block ONLY; the
-            // credits above and the dual-write below still happen.
-            if let Ok(winner_lvl) = game_core::Level::new(bm.level) {
-                let base_xp = battle_xp_reward(winner_lvl, bst, loser_lvl);
-                let xp_gained = game_core::practice_xp_reward(base_xp, is_practice);
-                let current_xp = game_core::Xp::new(m.xp);
-                let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
-                m.xp = new_xp.value();
-                m.level = new_level.as_u8();
-
-                if leveled_up {
-                    // Recompute derived stats on level-up. Stat-recompute failures are
-                    // logged and skipped (XP/level already written above); `level_up_healed_hp`
-                    // remains the SSOT.
-                    if let Some(species) = ctx.db.species_row().id().find(m.species_id) {
-                        let base = StatBlock {
-                            hp: species.base_hp,
-                            attack: species.base_attack,
-                            defense: species.base_defense,
-                            speed: species.base_speed,
-                            sp_attack: species.base_sp_attack,
-                            sp_defense: species.base_sp_defense,
-                        };
-                        'stat_recompute: {
-                            let ivs = match game_core::IVs::new(
-                                m.iv_hp,
-                                m.iv_attack,
-                                m.iv_defense,
-                                m.iv_speed,
-                                m.iv_sp_attack,
-                                m.iv_sp_defense,
-                            ) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    let escaped = crate::guards::json_escape(&e);
-                                    log::error!(
-                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {escaped}\"}}",
-                                    );
-                                    break 'stat_recompute;
-                                }
-                            };
-                            let evs = match game_core::EVs::new(
-                                m.ev_hp,
-                                m.ev_attack,
-                                m.ev_defense,
-                                m.ev_speed,
-                                m.ev_sp_attack,
-                                m.ev_sp_defense,
-                            ) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    let escaped = crate::guards::json_escape(&e);
-                                    log::error!(
-                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {escaped}\"}}",
-                                    );
-                                    break 'stat_recompute;
-                                }
-                            };
-                            let nature = game_core::Nature::new(m.nature_kind);
-                            let lvl = match game_core::Level::new(m.level) {
-                                Ok(l) => l,
-                                Err(e) => {
-                                    let escaped = crate::guards::json_escape(&e);
-                                    log::error!(
-                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {escaped}\"}}",
-                                    );
-                                    break 'stat_recompute;
-                                }
-                            };
-                            let derived = game_core::derive_stats(&base, &ivs, &evs, &nature, lvl);
-                            m.stat_hp = derived.hp;
-                            m.stat_attack = derived.attack;
-                            m.stat_defense = derived.defense;
-                            m.stat_speed = derived.speed;
-                            m.stat_sp_attack = derived.sp_attack;
-                            m.stat_sp_defense = derived.sp_defense;
-                            // Heal the HP gained from the max-HP growth on level-up
-                            // (SSOT: game_core owns the heal rule).
-                            m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
-                        }
-                    }
-                }
+            let essence: Vec<(game_core::Affinity, u32)> = if wild_win {
+                vec![(loser_species.affinity, essence_battle_reward(bst))]
             } else {
-                // Corrupt winner level: XP skipped, nothing else.
-                log::error!("{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid}}}");
-            }
-            update_monster_synced(ctx, m)?;
-            // (fresh-find, after this monster's own write):
-            // Quality Time is wild-gated like the other credits; the
-            // auto-evolution check is UNCONDITIONAL and LAST — the level can
-            // change on practice/PvP wins too.
-            if wild_win {
-                accrue_quality_time(ctx, mid);
-            }
-            check_and_evolve(ctx, mid);
+                Vec::new()
+            };
+            // A corrupt winner level skips the XP ONLY; the credits above still happen.
+            let xp = game_core::Level::new(bm.level).ok().map(|winner_lvl| {
+                game_core::practice_xp_reward(
+                    battle_xp_reward(winner_lvl, bst, loser_lvl),
+                    is_practice,
+                )
+            });
+            credit_monster(
+                ctx,
+                battle.player_identity,
+                mid,
+                bm.max_hp,
+                &species_base,
+                xp,
+                &essence,
+                wild_win,
+                today,
+            )?;
         }
     }
 

@@ -139,6 +139,7 @@ writes:
 | `battle` | `start_battle`, `submit_attack`, `swap_active`, `use_battle_item`, `flee` (+ dev-only `start_wild_battle`) |
 | `taming` | `attempt_recruit` (+ dev-only `grant_bait`) |
 | `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc` (+ dev-only `dev_start_tactical_wild`; `start_wild_tactical` is the one writer of a new tactical battle, called from the dev reducer until bt-16 wires the grass path) |
+| `tactics_settle` | no reducers: the one terminal settlement `tactics::finish` calls (reward ledger, faint penalty, prior-terminal sweep, `battle_summary`) |
 | `raising` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `heal_party` |
 | `evolution` | `evolve`, `ack_evolution_notices` |
 | `monster_mgmt` | `set_nickname`, `set_party_slot` |
@@ -279,9 +280,11 @@ body is the whole security boundary.
   `battle_id`, before the `battle` anchor is tombstoned — the three tactical schedule
   tables included) and none is exportable. A finished tactical battle's event, unit,
   queue, clock, secret, wild-unit and staging rows are deleted 24 h later by the
-  scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive.
+  scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive. A
+  player's PRIOR terminal anchors are swept at every battle end (1v1 or tactical) with
+  their tactical rows; only their `battle_summary` rows survive, finalised.
 
-**Tactical battles (`tactics.rs`, M-battle-tactics bt-8).** The server is a shell over
+**Tactical battles (`tactics.rs` + `tactics_settle.rs`, M-battle-tactics bt-8/bt-9).** The server is a shell over
 `game_core::tactics::queue::TacticalBattle`: a reducer hydrates the bt-7 rows into the
 engine, hands it one input (`start`, `advance`, `submit_queue`, `cancel_queue`, `expire`
 or `conclude`), writes every row back and arms or disarms the schedule rows the step asks
@@ -296,9 +299,29 @@ persists damaged HP at every tactical terminal; a battle whose rows can no longe
 (content drift) is closed by a fallback that writes each unit's HP to its monster row only
 while that monster still belongs to the unit's owner, and a tactical row whose anchor a
 legacy reducer already ended closes with no HP write at all (that reducer's own write-back
-ran) — the scheduled reducers never leave a tactical battle `Ongoing`. Content (kits, maps,
-tuning, the type chart, encounter tables) is the game-core embedded registry parsed once
-per process; `Item` and `Recruit` entries are refused until bt-9 wires their glue.
+ran) — the scheduled reducers never leave a tactical battle `Ongoing`. Every close goes
+through one `finish`, idempotent against the stored row, which hands `tactics_settle::settle`
+the close kind. Settlement (design §7): the reward ledger is a fold of the persisted
+transcript — each `Ko` is credited through `game_core::tactics::rewards::on_unit_defeated` to
+the attacker of the last opposite-side hit on the victim, against the board as it stood at
+that moment (the final board with the units not yet fallen restored: consciousness is
+monotone, nothing heals mid-battle); `rewards::pay` pays only the units conscious at the end,
+on every terminal path alike, through the 1v1 funnel's own per-monster credit
+(`battle::credit_monster`) over the whole conscious party, so the win-only trust-favorable
+credit, Quality Time and the evolution check keep their carried scope; the currency goes to
+the wallet; one `Awards` line per paid monster plus one `unit 0` line for the currency is
+appended after `BattleEnd`. The faint penalty (`battle::apply_faint_penalties`) and the
+prior-terminal sweep run from the same place, so a recruit success penalises and sweeps like
+every other end. `battle_summary` is one row per battle: inserted at the Active start,
+accumulated every step (windows per unit-turn, pre-queued vs live turns, halted pre-queued
+plans, hits/misses, recruit attempts, items, autopasses, single-hit super-effective KOs after
+round 1) and finalised at the end (`outcome == Ongoing` marks an unfinished battle). The
+recruit glue is the `Hooks` impl: the bait's content row, the wild's seed row, species and
+level are resolved before the executor debits the bait, the roll is game-core's
+(`recruit::resolve_recruit`, the private stream), the H1/H2 `playtest_event` row is written
+with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
+`Item` entries stay refused (no game-core rule home yet). The 1v1 reducers refuse a tactical
+anchor (`battle::reject_if_tactical_anchor`): one anchor, one payout path. 
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned

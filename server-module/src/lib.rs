@@ -41,6 +41,7 @@ mod raising;
 mod ranking;
 mod schema;
 mod tactics;
+mod tactics_settle;
 mod taming;
 mod trading;
 
