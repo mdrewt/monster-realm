@@ -9,6 +9,7 @@
 // never as catalog text.
 import { t, tf } from '../ui/i18n/resolver';
 import type { IntentKind, Stance, StatusTag } from './boardModel';
+import type { MenuRowId, ReasonCode } from './commandModel';
 
 // --- region labels --------------------------------------------------------------------------
 
@@ -141,3 +142,80 @@ export const tickerRoundEnded = (round: number): string =>
 // --- banner ----------------------------------------------------------------------------------
 
 export const bannerTurn = (unit: string): string => tf('tactics.banner.turn', { unit });
+
+// --- command menu (bt-11, BT11.1) -------------------------------------------------------------
+
+export const menuLabel = (): string => t('tactics.menu.label');
+export const menuMove = (): string => t('tactics.menu.move');
+export const menuSkills = (): string => t('tactics.menu.skills');
+export const menuItem = (): string => t('tactics.menu.item');
+export const menuRecruit = (): string => t('tactics.menu.recruit');
+export const menuFlee = (): string => t('tactics.menu.flee');
+export const menuEndTurn = (): string => t('tactics.menu.endTurn');
+export const menuGuard = (): string => t('tactics.menu.guard');
+export const menuSubmit = (): string => t('tactics.menu.submit');
+export const menuClearPlan = (): string => t('tactics.menu.clearPlan');
+export const menuClearYes = (): string => t('tactics.menu.clearYes');
+export const menuClearNo = (): string => t('tactics.menu.clearNo');
+export const menuNoBait = (): string => t('tactics.menu.noBait');
+
+/** The label of a root row; the End row reads Guard or End Turn per `endLabel`. */
+export function menuRowLabel(id: MenuRowId, end: 'endTurn' | 'guard'): string {
+  switch (id) {
+    case 'move':
+      return menuMove();
+    case 'skills':
+      return menuSkills();
+    case 'item':
+      return menuItem();
+    case 'recruit':
+      return menuRecruit();
+    case 'flee':
+      return menuFlee();
+    case 'end':
+      return end === 'guard' ? menuGuard() : menuEndTurn();
+    case 'submit':
+      return menuSubmit();
+    case 'clear':
+      return menuClearPlan();
+    default:
+      return id satisfies never;
+  }
+}
+
+/** The one-line reason a row is greyed; `ap` is the rules' fresh budget (the two full-budget
+ *  reasons print it). */
+export function reasonLabel(code: ReasonCode, ap: number): string {
+  switch (code) {
+    case 'recruitFullAp':
+      return tf('tactics.reason.recruitFullAp', { ap });
+    case 'fleeFullAp':
+      return tf('tactics.reason.fleeFullAp', { ap });
+    case 'outOfRange':
+      return t('tactics.reason.outOfRange');
+    case 'partyFull':
+      return t('tactics.reason.partyFull');
+    case 'unaffordable':
+      return t('tactics.reason.unaffordable');
+    case 'strideCap':
+      return t('tactics.reason.strideCap');
+    case 'boxedIn':
+      return t('tactics.reason.boxedIn');
+    case 'notAvailable':
+      return t('tactics.reason.notAvailable');
+    case 'planComplete':
+      return t('tactics.reason.planComplete');
+    default:
+      return code satisfies never;
+  }
+}
+
+// --- plan strip, ghost, dock (bt-11, BT11.2 / BT11.3 / BT11.6) ------------------------------
+
+export const queueLabel = (): string => t('tactics.queue.label');
+/** The status notice for the cancel race (`cancel_queue` → `AlreadyActing`). */
+export const queueTooLate = (): string => t('tactics.queue.tooLate');
+export const ghostLabel = (): string => t('tactics.ghost.label');
+export const dockDanger = (): string => t('tactics.dock.danger');
+export const dockPrevUnit = (): string => t('tactics.dock.prevUnit');
+export const dockNextUnit = (): string => t('tactics.dock.nextUnit');

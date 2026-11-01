@@ -31,6 +31,14 @@ export type MessageId =
   | 'chrome.chip.view'
   | 'chrome.chip.dismiss'
   | 'chrome.chip.done'
+  // bt-11 (BT11.6): the tactical battle's hint-bar verbs (ui/hintBarModel.ts, given the shell's hint).
+  | 'chrome.chip.danger'
+  | 'chrome.chip.prevUnit'
+  | 'chrome.chip.nextUnit'
+  | 'chrome.chip.undo'
+  | 'chrome.chip.endTurn'
+  | 'chrome.chip.guard'
+  | 'chrome.chip.submit'
   | 'chrome.badge.request'
   | 'notice.sheet.accept'
   | 'notice.sheet.decline'
@@ -488,7 +496,37 @@ export type MessageId =
   | 'tactics.ticker.turnEnded'
   | 'tactics.ticker.guarded'
   | 'tactics.ticker.roundEnded'
-  | 'tactics.banner.turn';
+  | 'tactics.banner.turn'
+  // bt-11 (BT11.1/BT11.2/BT11.6): the command menu, its reasons, the plan strip, the ghost and the
+  // dock buttons (client/src/tactics/strings.ts is their only requester).
+  | 'tactics.menu.label'
+  | 'tactics.menu.move'
+  | 'tactics.menu.skills'
+  | 'tactics.menu.item'
+  | 'tactics.menu.recruit'
+  | 'tactics.menu.flee'
+  | 'tactics.menu.endTurn'
+  | 'tactics.menu.guard'
+  | 'tactics.menu.submit'
+  | 'tactics.menu.clearPlan'
+  | 'tactics.menu.clearYes'
+  | 'tactics.menu.clearNo'
+  | 'tactics.menu.noBait'
+  | 'tactics.reason.outOfRange'
+  | 'tactics.reason.partyFull'
+  | 'tactics.reason.unaffordable'
+  | 'tactics.reason.strideCap'
+  | 'tactics.reason.notAvailable'
+  | 'tactics.reason.planComplete'
+  | 'tactics.reason.boxedIn'
+  | 'tactics.queue.label'
+  | 'tactics.queue.tooLate'
+  | 'tactics.ghost.label'
+  | 'tactics.dock.danger'
+  | 'tactics.dock.prevUnit'
+  | 'tactics.dock.nextUnit'
+  | 'tactics.reason.recruitFullAp'
+  | 'tactics.reason.fleeFullAp';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -733,6 +771,9 @@ export interface MessageParams {
   readonly 'tactics.ticker.guarded': { readonly unit: string };
   readonly 'tactics.ticker.roundEnded': { readonly round: number };
   readonly 'tactics.banner.turn': { readonly unit: string };
+  // bt-11: the two full-budget reasons; {ap} is the rules' fresh budget (never a literal).
+  readonly 'tactics.reason.recruitFullAp': { readonly ap: number };
+  readonly 'tactics.reason.fleeFullAp': { readonly ap: number };
 }
 
 /** Keys resolved by `tf(key, params)`. */

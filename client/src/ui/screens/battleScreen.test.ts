@@ -5,8 +5,14 @@
  * BARE battle base. It keeps NO cursor of its own: the battle view owns the cursor (which list,
  * which row), so an adapter only turns a button into a ONE-SHOT op token (`{kind:'move', dir}` /
  * `{kind:'activate'}` / `{kind:'back'}`, a fresh object per press) that its paint hands to the
- * view (`view.applyBattleOp(op)`). Start, Select and B-at-the-base are the usual base answers:
- * main.ts's battleButton answers Start first in production, so the adapter only swallows it.
+ * view (`view.applyBattleOp(op)`). Select and B-at-the-base are the usual base answers.
+ *
+ * bt-11 (named intentional change, BT11.6 / plan REV 4 §R4.9): the tactical controller map adds
+ * three tokens — X is the danger toggle (`{kind:'danger'}`), LB / RB cycle own units
+ * (`{kind:'cycle', dir:-1|1}`) and Start is End Turn / Guard / Submit (`{kind:'start'}`; main.ts's
+ * `battleButton(..., tactical)` leaves Start to the adapter when the tactical shell owns the frame).
+ * Y stays the page's; a held X / LB / RB / Start is swallowed with no token. Were: X, LB, RB
+ * unhandled and Start swallowed with no token.
  *
  * One case (its tag is the title's first word): the whole key table, fresh and repeat, from a fresh
  * state and from a state still carrying a stale token (a step's op is the NEW token or null, never
@@ -57,37 +63,44 @@ const FRESH: Readonly<Record<VButton, Expected>> = {
   Right: move('Right'),
   A: { result: 'consumed', op: { kind: 'activate' } },
   B: { result: 'consumed', op: { kind: 'back' } },
-  X: UNHANDLED,
+  // bt-11 (BT11.6): X toggles the danger overlay, LB / RB cycle own units, Start is the tactical
+  // End Turn / Guard / Submit; Y stays the page's.
+  X: { result: 'consumed', op: { kind: 'danger' } },
   Y: UNHANDLED,
-  LB: UNHANDLED,
-  RB: UNHANDLED,
-  Start: SWALLOWED,
+  LB: { result: 'consumed', op: { kind: 'cycle', dir: -1 } },
+  RB: { result: 'consumed', op: { kind: 'cycle', dir: 1 } },
+  Start: { result: 'consumed', op: { kind: 'start' } },
   Select: { result: { kind: 'toggleHelp' }, op: null },
 };
 
 /** A synthesized auto-repeat, per button: a held arrow still walks the cursor, and every button
- *  that acts on a press is swallowed on a repeat. */
+ *  that acts on a press is swallowed on a repeat (a held X / LB / RB / Start acts once). */
 const REPEAT: Readonly<Record<VButton, Expected>> = {
   ...FRESH,
   A: SWALLOWED,
   B: SWALLOWED,
+  X: SWALLOWED,
+  LB: SWALLOWED,
+  RB: SWALLOWED,
   Start: SWALLOWED,
   Select: SWALLOWED,
 };
 
 describe('the battle adapter (ctl-8i)', () => {
-  it('CTL8I-1-ADAPTER-KEYS: the adapter is nav-capable, ignores the context and starts with no token; every button answers the table, fresh and repeat, from a fresh state and from a stale one; every step returns a NEW state holding the new token or null; and paint applies a token once and a null token never', () => {
+  it('CTL8I-1-ADAPTER-KEYS: the adapter is nav-capable, ignores the context and starts with no token; every button answers the table (X danger, LB / RB cycle, Start start, Y the page`s), fresh and repeat, from a fresh state and from a stale one; every step returns a NEW state holding the new token or null; and paint applies a token once and a null token never', () => {
     // WRONG IMPL KILLED: an adapter not marked nav (the router would keep the D-pad for the page,
     // and the battle would stay Tab and mouse only); one that reads the store or the context; an A
     // or B that acts on a repeat (a held Enter would press twice, a held Backspace would back out
     // twice); an arrow that is ignored on a repeat (a held arrow could not walk the grid) or that
-    // acts; a Left or Right that is unhandled (the arrows would scroll the page); an X, Y, LB or
-    // RB that is swallowed (the page and the legacy ladder own them); a Start that opens or pops
-    // (main.ts's battleButton opens the menu; the adapter must not double it); a Select that is
-    // not help; a state that keeps the previous token (the host paints after EVERY step, so a
-    // later button would re-apply an old op); one token object reused for every press (the view
-    // dedupes by identity, so the second Down would be dropped); and a state object reused across
-    // steps (the host compares nothing, but the contract is a new state per step).
+    // acts; a Left or Right that is unhandled (the arrows would scroll the page); bt-11: an X, LB,
+    // RB or Start left unhandled or swallowed with no token (the danger toggle, unit cycling and
+    // End Turn would be pointer-only, BT11.6), LB and RB swapped (dir -1 is the PREVIOUS unit), a
+    // held X / LB / RB / Start that acts again (a held Q would spin through the units), and a Y
+    // that is swallowed (the page keeps it); a Select that is not help; a state that keeps the
+    // previous token (the host paints after EVERY step, so a later button would re-apply an old
+    // op); one token object reused for every press (the view dedupes by identity, so the second
+    // Down would be dropped); and a state object reused across steps (the host compares nothing,
+    // but the contract is a new state per step).
     expect([...Object.keys(FRESH)].sort(), 'the table covers every button').toEqual(
       [...VBUTTONS].sort(),
     );
@@ -135,6 +148,13 @@ describe('the battle adapter (ctl-8i)', () => {
     const back1 = adapter.onButton(vm, fresh, nav('B'));
     const back2 = adapter.onButton(vm, back1.state, nav('B'));
     expect(back2.state.op, 'a new back object').not.toBe(back1.state.op);
+    const rb1 = adapter.onButton(vm, fresh, nav('RB'));
+    const rb2 = adapter.onButton(vm, rb1.state, nav('RB'));
+    expect(rb2.state.op, 'the second RB').toEqual({ kind: 'cycle', dir: 1 });
+    expect(rb2.state.op, 'a new cycle object').not.toBe(rb1.state.op);
+    const start1 = adapter.onButton(vm, fresh, nav('Start'));
+    const start2 = adapter.onButton(vm, start1.state, nav('Start'));
+    expect(start2.state.op, 'a new start object').not.toBe(start1.state.op);
 
     // paint hands the token to the view, as the very object, once; no token, no call.
     expect(typeof adapter.paint, 'the adapter paints').toBe('function');
@@ -150,10 +170,11 @@ describe('the battle adapter (ctl-8i)', () => {
     expect(seen, 'the token reaches the view once').toHaveLength(1);
     expect(seen[0], 'the very token object').toBe(act1.state.op);
 
-    // The host paints after every step: after an A the next step (an unhandled LB) holds no token,
-    // so painting it applies nothing, and the old A is not applied again.
+    // The host paints after every step: after an A the next step (an unhandled Y — bt-11: LB is a
+    // cycle token now) holds no token, so painting it applies nothing, and the old A is not
+    // applied again.
     const afterA = adapter.onButton(vm, fresh, nav('A'));
-    const afterLb = adapter.onButton(vm, afterA.state, nav('LB'));
+    const afterY = adapter.onButton(vm, afterA.state, nav('Y'));
     const painted: BattleOp[] = [];
     const recorder: BattleOpsView = {
       applyBattleOp(op) {
@@ -161,7 +182,7 @@ describe('the battle adapter (ctl-8i)', () => {
       },
     };
     adapter.paint?.(recorder, vm, afterA.state);
-    adapter.paint?.(recorder, vm, afterLb.state);
+    adapter.paint?.(recorder, vm, afterY.state);
     expect(painted, 'only the A was applied, once').toEqual([{ kind: 'activate' }]);
   });
 });

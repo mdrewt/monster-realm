@@ -30,11 +30,33 @@ export interface HintWorld {
 
 const NO_WORLD: HintWorld = { target: null, sheetOpen: false, requestWaiting: false };
 
+/** Start's verb in a tactical battle (a literal `switch`: catalog keys are never built). */
+function startVerb(start: HintBattle['start']): string {
+  switch (start) {
+    case 'endTurn':
+      return t('chrome.chip.endTurn');
+    case 'guard':
+      return t('chrome.chip.guard');
+    case 'submit':
+      return t('chrome.chip.submit');
+    default:
+      return start satisfies never;
+  }
+}
+
+/** What only the tactical battle shell knows (bt-11, BT11.6): what Start does for the selected unit
+ *  and whether B undoes a drafted chip. Absent at a legacy battle. */
+export interface HintBattle {
+  readonly start: 'endTurn' | 'guard' | 'submit';
+  readonly undo: boolean;
+}
+
 export function hintBar(
   stack: Stack,
   bindings: Bindings,
   notices: readonly Notice[],
   world: HintWorld = NO_WORLD,
+  battle?: HintBattle,
 ): readonly HintChip[] {
   const chip = (button: VButton, verb: string, badge = false): HintChip => {
     const code = bindings.buttons[button][0];
@@ -62,6 +84,19 @@ export function hintBar(
       return chips;
     }
     case 'battle':
+      // bt-11 (BT11.6): the tactical shell's map — B undoes a drafted chip or backs out, X toggles
+      // the danger overlay, LB / RB cycle own units, Start ends the turn / guards / submits.
+      if (battle !== undefined) {
+        return [
+          chip('A', t('chrome.chip.ok')),
+          chip('B', battle.undo ? t('chrome.chip.undo') : t('chrome.chip.back')),
+          chip('X', t('chrome.chip.danger')),
+          chip('LB', t('chrome.chip.prevUnit')),
+          chip('RB', t('chrome.chip.nextUnit')),
+          chip('Start', startVerb(battle.start)),
+          select(),
+        ];
+      }
       return [chip('A', t('chrome.chip.ok')), start(), select()];
     case 'screen':
     case 'prompt':

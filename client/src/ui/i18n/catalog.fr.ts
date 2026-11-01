@@ -79,6 +79,28 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Hint-bar chip verb for Start while typing in a text field: stop typing. One short
   // word. hintBarModel.ts (#hint-bar)
   'chrome.chip.done': 'Terminé',
+  // bt-11 (BT11.6): the tactical battle's hint-bar verbs (ui/hintBarModel.ts, given the shell's hint).
+  // @desc: Verb on the X button chip in the hint bar during a tactical battle: toggles the purple
+  // danger overlay (every enemy's attackable tiles). One short word.
+  'chrome.chip.danger': 'Menace',
+  // @desc: Verb on the LB button chip in the hint bar during a tactical battle: selects the
+  // previous one of the player's units. Two short words.
+  'chrome.chip.prevUnit': 'Unité préc.',
+  // @desc: Verb on the RB button chip in the hint bar during a tactical battle: selects the next
+  // one of the player's units. Two short words.
+  'chrome.chip.nextUnit': 'Unité suiv.',
+  // @desc: Verb on the B button chip in the hint bar during a tactical battle while a planned
+  // step can be taken back for free. One short word.
+  'chrome.chip.undo': 'Annuler',
+  // @desc: Verb on the Start button chip during a tactical battle on the player's live turn when
+  // ending it grants no Guard. Two short words.
+  'chrome.chip.endTurn': 'Fin du tour',
+  // @desc: Verb on the Start button chip during a tactical battle on the player's live turn when
+  // ending it grants Guard (reduced damage until the next turn). One short word.
+  'chrome.chip.guard': 'Garde',
+  // @desc: Verb on the Start button chip during a tactical battle while the player pre-plans a
+  // unit's next turn: sends the plan. One short word.
+  'chrome.chip.submit': 'Envoyer',
   // @desc: Badge beside the Start chip and the Social menu row while a trade or challenge request
   // waits for an answer. One short word. hintBar.ts, menuModel.ts
   'chrome.badge.request': 'Nouveau',
@@ -1580,4 +1602,83 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Banner for the current unit's turn while its plan is not yet locked (an own unit or a
   // human opponent's); {unit} is that unit's name. Neutral wording. One short phrase.
   'tactics.banner.turn': (p) => `Au tour de ${p.unit}`,
+  // bt-11 (BT11.1/BT11.2/BT11.6): the command menu, its reasons, the plan strip, the ghost and the
+  // dock buttons (tactics/strings.ts is the only requester).
+  // @desc: Accessible name of the tactical battle's command menu (the list of actions a unit can
+  // take). Two short words.
+  'tactics.menu.label': 'Menu des commandes',
+  // @desc: Command-menu row and plan chip: move the unit to a tile. One short word.
+  'tactics.menu.move': 'Déplacer',
+  // @desc: Command-menu row opening the unit's list of attack skills. One short word.
+  'tactics.menu.skills': 'Compétences',
+  // @desc: Command-menu row for using an item (greyed in this phase of the game). One short word.
+  'tactics.menu.item': 'Objet',
+  // @desc: Command-menu row and plan chip: try to recruit an adjacent wild monster. One short
+  // word.
+  'tactics.menu.recruit': 'Recruter',
+  // @desc: Command-menu row and plan chip: leave the wild battle. One short word.
+  'tactics.menu.flee': 'Fuir',
+  // @desc: Command-menu row and plan chip: end the unit's turn without Guard. Two short words.
+  'tactics.menu.endTurn': 'Fin du tour',
+  // @desc: Command-menu row label replacing End Turn when ending the turn now grants Guard
+  // (reduced damage until the next turn). One short word.
+  'tactics.menu.guard': 'Garde',
+  // @desc: Command-menu row while pre-planning a unit's next turn: sends the planned steps. One
+  // short word.
+  'tactics.menu.submit': 'Envoyer',
+  // @desc: Command-menu row that opens a confirmation to discard a unit's already-sent plan. Two
+  // short words.
+  'tactics.menu.clearPlan': 'Effacer le plan',
+  // @desc: Confirmation row that discards the unit's sent plan. One short sentence.
+  'tactics.menu.clearYes': 'Oui, effacer le plan',
+  // @desc: Confirmation row that keeps the unit's sent plan and closes the menu. One short
+  // phrase.
+  'tactics.menu.clearNo': 'Garder le plan',
+  // @desc: Bait sub-list row: attempt the recruit without a bait item. Two short words.
+  'tactics.menu.noBait': 'Sans appât',
+  // @desc: Reason shown on a greyed skill row: no target can be hit from here. One short phrase.
+  'tactics.reason.outOfRange': 'Hors de portée',
+  // @desc: Reason shown on the greyed Recruit row: the party has no room for a recruit. Two short
+  // words.
+  'tactics.reason.partyFull': 'Équipe au complet',
+  // @desc: Reason shown on a greyed row: the unit lacks the action points (AP) it costs. One
+  // short phrase.
+  'tactics.reason.unaffordable': 'Pas assez de PA',
+  // @desc: Reason shown on the greyed Move row: the unit has already moved its two strides this
+  // turn. One short phrase.
+  'tactics.reason.strideCap': 'Plus de foulées',
+  // @desc: Reason shown on the greyed Item row: items cannot be used in tactical battles in this
+  // phase. One short phrase.
+  'tactics.reason.notAvailable': 'Pas encore disponible',
+  // @desc: Reason shown on greyed rows once the planned turn ends with End Turn, Recruit or Flee.
+  // Two short words.
+  'tactics.reason.planComplete': 'Plan terminé',
+  // @desc: Reason shown on the greyed Move row: a stride is affordable but no tile can be
+  // reached. One short phrase.
+  'tactics.reason.boxedIn': 'Aucune case à portée',
+  // @desc: Accessible name of the strip of planned steps (chips) for the selected unit. One short
+  // word.
+  'tactics.queue.label': 'Plan d’action',
+  // @desc: Status notice when the player clears a sent plan after the unit's turn has already
+  // begun. One short line; the dash is U+2014.
+  'tactics.queue.tooLate': 'Trop tard — déjà en action',
+  // @desc: Accessible name of the translucent sprite drawn where a planned move ends. Two short
+  // words.
+  'tactics.ghost.label': 'Position prévue',
+  // @desc: Accessible name of the command-dock button that toggles the purple danger overlay (the
+  // pointer twin of the X button). Two short words.
+  'tactics.dock.danger': 'Zone de danger',
+  // @desc: Accessible name of the command-dock button selecting the previous own unit (the
+  // pointer twin of LB). Two short words.
+  'tactics.dock.prevUnit': 'Unité précédente',
+  // @desc: Accessible name of the command-dock button selecting the next own unit (the pointer
+  // twin of RB). Two short words.
+  'tactics.dock.nextUnit': 'Unité suivante',
+  // @desc: Reason shown on the greyed Recruit row: recruiting needs the unit's whole action-point
+  // budget AND an adjacent wild, so the turn must start next to one; {ap} is the full budget. One
+  // short line; the dash is U+2014.
+  'tactics.reason.recruitFullAp': (p) => `Il faut les ${p.ap} PA — commencez le tour adjacent`,
+  // @desc: Reason shown on the greyed Flee row: fleeing needs the unit's whole action-point
+  // budget; {ap} is the full budget. One short phrase.
+  'tactics.reason.fleeFullAp': (p) => `Il faut les ${p.ap} PA`,
 } satisfies Catalog);
