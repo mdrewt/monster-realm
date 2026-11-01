@@ -862,7 +862,7 @@
   color: #f66;
 }
 .tactics-strip .tactics-chip:has(.tactics-badge--stale) {
-  opacity: 0.6;
+  color: #aab;
   text-decoration: line-through;
 }
 .tactics-chip-note {

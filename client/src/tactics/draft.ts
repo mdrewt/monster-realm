@@ -4,15 +4,15 @@
 // Pure: data copies and `TacticsRules` calls only — no AP, HP, distance or range arithmetic; a Move
 // lands where the rules' path lands, a hit target keeps the HP the rules' forecast leaves it.
 import type { QueuedAction } from '../module_bindings/types';
-import type {
-  ActionTarget,
-  Entry,
-  QueuedActionRule,
-  RuleResult,
-  RulesBoard,
-  RulesUnit,
-  TacticsRules,
-  UnitRow,
+import {
+  type ActionTarget,
+  type Entry,
+  isOk,
+  type QueuedActionRule,
+  type RulesBoard,
+  type RulesUnit,
+  type TacticsRules,
+  type UnitRow,
 } from './wasm';
 
 export interface Draft {
@@ -40,14 +40,12 @@ export function isIrreversible(action: QueuedActionRule): boolean {
   return !(typeof action === 'object' && 'Move' in action);
 }
 
-const isOk = <T, E>(r: RuleResult<T, E>): r is { readonly Ok: T } => 'Ok' in r;
-
 function rowOf(board: RulesBoard, id: number): UnitRow | undefined {
   return board.units.find((u) => u.id === id);
 }
 
 /** `board` with `row` replaced by `next` (a new board; the input is never mutated). */
-function withRow(board: RulesBoard, next: UnitRow): RulesBoard {
+export function withRow(board: RulesBoard, next: UnitRow): RulesBoard {
   return { ...board, units: board.units.map((u) => (u.id === next.id ? next : u)) };
 }
 
@@ -101,7 +99,10 @@ export function applyAction(
     for (const id of hits) {
       const row = rowOf(out, id);
       if (row === undefined) continue;
-      const flank = rules.flank(out, unitId, id);
+      // Flank is judged on the PRE-attack board for every target of the hit set, as game-core
+      // resolves it (resolve.rs builds the board once; a flanker KO'd earlier in the same AoE
+      // still counts) — never on the board the earlier hits already changed.
+      const flank = rules.flank(board, unitId, id);
       const f = rules.forecast(attacker, rules.unit(row), action.Skill.skill_id, flank);
       out = withRow(out, {
         ...row,

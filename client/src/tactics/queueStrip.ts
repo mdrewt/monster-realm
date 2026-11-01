@@ -5,13 +5,13 @@
 // `only N held` note of an over-planned bait. Pure: data and `TacticsRules` calls only — no AP sum,
 // no adjacency or range test, no text (tactics/strings.ts resolves the words).
 import { applyAction, costEntries } from './draft';
-import type {
-  QueuedActionRule,
-  RuleResult,
-  RulesBoard,
-  RulesUnit,
-  TacticsRules,
-  TurnBudget,
+import {
+  isOk,
+  type QueuedActionRule,
+  type RulesBoard,
+  type RulesUnit,
+  type TacticsRules,
+  type TurnBudget,
 } from './wasm';
 
 export type Badge = 'firm' | 'provisional' | 'stale';
@@ -48,8 +48,6 @@ export interface StripInput {
   /** Baits planned by item id across this unit's shown plan and every other own unit's plan. */
   readonly baitPlanned: ReadonlyMap<number, number>;
 }
-
-const isOk = <T, E>(r: RuleResult<T, E>): r is { readonly Ok: T } => 'Ok' in r;
 
 /** The held count of an over-planned bait (planned more often than held), else null. */
 function onlyHeldOf(

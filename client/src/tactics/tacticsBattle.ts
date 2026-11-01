@@ -57,7 +57,7 @@ import {
   type SkillAim,
   skillRows,
 } from './commandModel';
-import { applyPlan, type Draft, emptyDraft, pop, push, toWire } from './draft';
+import { applyPlan, type Draft, emptyDraft, pop, push, toWire, withRow } from './draft';
 import { forecastVM } from './forecast';
 import { type InfoBoxesVM, infoBoxes, renderInfoBoxes } from './hud';
 import { Playback, planBeats, showsTurnBanner } from './presentation';
@@ -69,6 +69,7 @@ import { renderTurnBar, type TurnBarVM, turnBarVM } from './turnBar';
 import {
   type ActionTarget,
   type Cell,
+  isBlocked,
   type OverlayQuery,
   type OverlaysOut,
   overlaySets,
@@ -156,6 +157,8 @@ interface StripChipVM {
   readonly action: string;
   readonly label: string;
   readonly cost: number | null;
+  /** The pips' accessible name (resolved here, A30), or null when no pips are drawn. */
+  readonly costLabel: string | null;
   readonly badge: Badge;
   readonly badgeWord: string;
   readonly note: string | null;
@@ -202,16 +205,13 @@ interface Planning {
   /** The budget the draft leaves (the start budget when it is empty or refused). */
   readonly budget: TurnBudget;
   readonly draftedAp: number;
-  /** The projection up to this unit's turn with its own live row: the strip's legality board. */
-  readonly actBoard: RulesBoard;
-  /** `actBoard` with the draft applied: skill aims and the forecast are seated on it. */
+  /** The projection up to this unit's turn with its own live row, then its draft: skill aims and
+   *  the forecast are seated on it (the strip's legality chain starts from the same projection). */
   readonly aimBoard: RulesBoard;
   /** PvP: the enemies that act before this unit (their plans are secret). */
   readonly hidden: ReadonlySet<number>;
-  /** The plan the strip shows (the draft, else the READY row) and its model. */
-  readonly shown: readonly QueuedActionRule[];
+  /** The model of the plan the strip shows (the draft, else the READY row). */
   readonly strip: StripVM;
-  readonly inputs: ProjectInputs;
 }
 /** A whole frame, computed before any DOM write. */
 interface Frame {
@@ -248,11 +248,6 @@ const inflightKey = (vm: TacticsBattleVM): string => `${vm.battleId}:${vm.round}
 /** A unit's planning mode: live on its own waiting turn without a READY row, else pre-queue (A28). */
 const modeOf = (vm: TacticsBattleVM, unitId: number): 'live' | 'prequeue' =>
   vm.activeUnitId === unitId && !vm.readyPlans.has(unitId) ? 'live' : 'prequeue';
-/** `board` with `row` in place of the row of the same id (a new board). */
-const withRow = (board: RulesBoard, row: UnitRow): RulesBoard => ({
-  ...board,
-  units: board.units.map((u) => (u.id === row.id ? row : u)),
-});
 /** A tile in A1 notation (column letter, 1-based row) — display formatting, not a rule. */
 const a1 = (tile: Cell): string => String.fromCharCode(0x41 + tile.x) + String(tile.y + 1);
 /** U+007E and U+2014 as code points (the Projected prefix and the hidden-number line). */
@@ -277,6 +272,13 @@ const NO_OVERLAYS: OverlaysOut = {
   shield: [],
   intents: [],
 };
+/** A panel-line writer: a numeric line (hit, damage, a factor, the odds) leads with the Projected
+ *  tilde on a pre-queued aim; `numeric` overrides the id's default (an Immune word, a dash). */
+const panelLine =
+  (lines: PanelLine[], mode: 'live' | 'prequeue') =>
+  (id: string, text: string, numeric: boolean = NUMERIC_LINES.has(id)): void => {
+    lines.push({ id, text, tilde: mode === 'prequeue' && numeric, skull: null });
+  };
 
 /** The chip label of one planned action (every word from the catalog or the names dependency). */
 function chipLabel(action: QueuedActionRule, names: TickerNames): string {
@@ -943,7 +945,7 @@ export class TacticsBattle implements BattleOpsView {
       }
     }
     const live = rules.overlays(vm.board, this.#nullQuery());
-    const blocked = new Set(live.intents.filter((i) => i.block_pct >= 100).map((i) => i.unit));
+    const blocked = new Set(live.intents.filter((i) => isBlocked(i.block_pct)).map((i) => i.unit));
     const baitHeld = new Map(vm.baits.map((b) => [b.itemId, b.count]));
     return { order, plans, blocked, baitHeld, baitPlanned };
   }
@@ -1035,12 +1037,9 @@ export class TacticsBattle implements BattleOpsView {
       ghost,
       budget,
       draftedAp,
-      actBoard,
       aimBoard,
       hidden: upTo.hidden,
-      shown,
       strip,
-      inputs,
     };
   }
 
@@ -1130,7 +1129,9 @@ export class TacticsBattle implements BattleOpsView {
       const u = vm.units.find((x) => x.unitId === id);
       if (u === undefined || !isOwnActive(u)) this.#drafts.delete(id);
     }
-    // A READY row acknowledges the round-trip: the next submit (a replacement) may go (C18).
+    // A READY row acknowledges the round-trip: the next submit (a replacement) may go (C18). When
+    // the row being replaced is still present this re-arms at once, so only the FIRST send of a
+    // turn is guarded against a double press — game-core replaces the plan, so a repeat is harmless.
     for (const id of [...this.#inflight.keys()]) {
       if (vm.readyPlans.has(id)) this.#inflight.delete(id);
     }
@@ -1145,6 +1146,7 @@ export class TacticsBattle implements BattleOpsView {
       mode: this.#mode,
       lastActive: this.#lastActive,
       drafts: new Map(this.#drafts),
+      inflight: new Map(this.#inflight),
       vm: this.#vm,
     };
     this.#vm = vm;
@@ -1157,6 +1159,7 @@ export class TacticsBattle implements BattleOpsView {
       this.#mode = saved.mode;
       this.#lastActive = saved.lastActive;
       this.#drafts = saved.drafts;
+      this.#inflight = saved.inflight;
       this.#vm = saved.vm;
       throw err;
     }
@@ -1296,6 +1299,7 @@ export class TacticsBattle implements BattleOpsView {
               action: chipAction(ch.action),
               label: chipLabel(ch.action, names),
               cost: ch.cost,
+              costLabel: ch.cost !== null && ch.cost > 0 ? s.chipCost(ch.cost) : null,
               badge: ch.badge,
               badgeWord: s.badgeLabel(ch.badge),
               note: ch.onlyHeld === null ? null : s.badgeOnlyHeld(ch.onlyHeld),
@@ -1362,14 +1366,7 @@ export class TacticsBattle implements BattleOpsView {
       targetId === undefined ? undefined : p.aimBoard.units.find((u) => u.id === targetId);
     const projectedTarget = targetId !== undefined && targetRow !== undefined;
     const lines: PanelLine[] = [];
-    const line = (id: string, text: string): void => {
-      lines.push({
-        id,
-        text,
-        tilde: p.mode === 'prequeue' && NUMERIC_LINES.has(id) && text !== EM_DASH,
-        skull: null,
-      });
-    };
+    const line = panelLine(lines, p.mode);
     if (projectedTarget && attackerRow !== undefined) {
       const f = rules.forecast(
         rules.unit(attackerRow),
@@ -1382,19 +1379,16 @@ export class TacticsBattle implements BattleOpsView {
       if (!fv.hits) line('miss', s.forecastMiss());
       else if (p.hidden.has(targetId)) {
         line('hit', s.forecastHit(fv.hitPct));
-        line('damage', EM_DASH);
+        line('damage', EM_DASH, false); // a secret plan: no number, so no tilde
       } else {
         line('hit', s.forecastHit(fv.hitPct));
         line('damage', s.forecastDamage(fv.min, fv.max));
         for (const item of fv.lines) {
           switch (item.kind) {
             case 'type':
-              line(
-                'type',
-                item.effectiveness === 'Immune'
-                  ? s.forecastTypeImmune()
-                  : s.forecastType(item.num, item.den),
-              );
+              // Immune prints a word, not a factor: no tilde (R6.6).
+              if (item.effectiveness === 'Immune') line('type', s.forecastTypeImmune(), false);
+              else line('type', s.forecastType(item.num, item.den));
               break;
             case 'stab':
               line('stab', s.forecastStab());
@@ -1442,9 +1436,7 @@ export class TacticsBattle implements BattleOpsView {
     const rules = this.#rulesPort();
     const names = this.#deps.names;
     const lines: PanelLine[] = [];
-    const line = (id: string, text: string): void => {
-      lines.push({ id, text, tilde: p.mode === 'prequeue' && NUMERIC_LINES.has(id), skull: null });
-    };
+    const line = panelLine(lines, p.mode);
     const targetRow = p.ctx.costBoard.units.find((u) => u.id === targetId);
     let target: { readonly id: number; readonly tile: Cell } | null = null;
     if (targetRow !== undefined) {
@@ -1565,10 +1557,10 @@ export class TacticsBattle implements BattleOpsView {
       const label = span('tactics-chip-label');
       label.textContent = chip.label;
       c.appendChild(label);
-      if (chip.cost !== null && chip.cost > 0) {
+      if (chip.cost !== null && chip.cost > 0 && chip.costLabel !== null) {
         const pips = span('tactics-pips');
         pips.setAttribute('role', 'group');
-        pips.setAttribute('aria-label', s.chipCost(chip.cost));
+        pips.setAttribute('aria-label', chip.costLabel);
         for (let i = 0; i < chip.cost; i++) pips.appendChild(span('tactics-pip tactics-pip--full'));
         c.appendChild(pips);
       }

@@ -3,18 +3,18 @@
 // is a `TacticsRules` call — no AP sum, range check or adjacency test lives here. The boards it reads
 // are the shell's (REV 5 A24): the COST board (the live rows with this unit's own draft applied) for
 // movement, costing and recruit targets, the AIM board for skill aims.
-import type {
-  ActionTarget,
-  Cell,
-  EconomyError,
-  Entry,
-  QueuedActionRule,
-  RuleResult,
-  RulesBoard,
-  RulesUnit,
-  RuleTier,
-  TacticsRules,
-  TurnBudget,
+import {
+  type ActionTarget,
+  type Cell,
+  type EconomyError,
+  type Entry,
+  isOk,
+  type QueuedActionRule,
+  type RulesBoard,
+  type RulesUnit,
+  type RuleTier,
+  type TacticsRules,
+  type TurnBudget,
 } from './wasm';
 
 export type MenuRowId =
@@ -72,8 +72,6 @@ export interface MenuContext {
   readonly partyFull: boolean;
   readonly hasReady: boolean;
 }
-
-const isOk = <T, E>(r: RuleResult<T, E>): r is { readonly Ok: T } => 'Ok' in r;
 
 /** Whether the rules spend `entries` from the ctx budget. */
 const affordable = (ctx: MenuContext, entries: readonly Entry[]): boolean =>
