@@ -27,6 +27,30 @@ export interface ForecastVM {
 }
 
 export function forecastVM(f: ForecastOut): ForecastVM {
-  void f;
-  throw new Error('bt-11: not implemented');
+  const hits = f.min.hit;
+  const lines: ForecastLine[] = [];
+  if (hits) {
+    if (f.effectiveness !== null && f.effectiveness !== 'Neutral') {
+      lines.push({ kind: 'type', effectiveness: f.effectiveness });
+    }
+    // An Immune hit deals 0: only the immunity is news.
+    if (f.effectiveness !== 'Immune') {
+      if (f.stab) lines.push({ kind: 'stab' });
+      if (f.flank) lines.push({ kind: 'flank', num: f.flank_factor[0], den: f.flank_factor[1] });
+      if (f.guard) lines.push({ kind: 'guard', num: f.guard_factor[0], den: f.guard_factor[1] });
+    }
+  }
+  let skull: Skull = 'none';
+  if (f.kills_min) skull = 'full';
+  else if (f.kills_max) skull = 'hollow';
+  return {
+    hits,
+    hitPct: f.hit_pct,
+    min: f.min.d3,
+    max: f.max.d3,
+    lines,
+    skull,
+    firstStand: f.first_stand_saves,
+    status: f.status_blocked ? null : f.status,
+  };
 }

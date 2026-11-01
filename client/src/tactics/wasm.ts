@@ -14,7 +14,7 @@
 // fields, `null` for `None`. They are the RULES' view of a unit (`RulesUnit` = `TacticalUnit`), not
 // the board view-model's (`boardModel.ts` `TacticalUnit`).
 import type { BattleUnit } from '../module_bindings/types';
-import type { IntentKind, OverlaySets } from './boardModel';
+import type { IntentKind, OverlaySets, Tile } from './boardModel';
 
 // --- serde mirrors -----------------------------------------------------------------------------
 
@@ -294,27 +294,178 @@ export interface TacticsRules {
   overlays(board: RulesBoard, q: OverlayQuery): OverlaysOut;
 }
 
+/** The `tactics_*` exports the port binds, in the order `bindTacticsRules` checks them. */
+const EXPORT_NAMES = [
+  'tactics_map',
+  'tactics_fresh_budget',
+  'tactics_unit',
+  'tactics_targets',
+  'tactics_path',
+  'tactics_disengage',
+  'tactics_flank',
+  'tactics_forecast',
+  'tactics_recruit_odds',
+  'tactics_ai_plan',
+  'tactics_is_exhausted',
+  'tactics_plan',
+  'tactics_overlays',
+] as const satisfies readonly (keyof TacticsWasmExports)[];
+
+const U16_MAX = 0xffff;
+const U32_MAX = 0xffff_ffff;
+
+/** A wasm-bindgen integer parameter wraps silently: refuse anything that is not an integer in range. */
+function int(label: string, value: number, max: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > max) {
+    throw new RangeError(`${label}: ${String(value)} is not an integer in 0..=${max}`);
+  }
+  return value;
+}
+
 /** Bind the port to a pkg namespace. Throws naming the first `tactics_*` export that is not a function. */
 export function bindTacticsRules(pkg: TacticsWasmExports): TacticsRules {
-  void pkg;
-  throw new Error('bt-11: not implemented');
+  const exports = pkg as unknown as Record<string, unknown>;
+  for (const name of EXPORT_NAMES) {
+    if (typeof exports[name] !== 'function') {
+      throw new Error(`client-wasm pkg exports no ${name}() — the pkg is stale, run \`just wasm\``);
+    }
+  }
+  return {
+    map: (mapId) => pkg.tactics_map(int('mapId', mapId, U32_MAX)) as BattleMapDef,
+    freshBudget: () => pkg.tactics_fresh_budget() as TurnBudget,
+    unit: (row) => pkg.tactics_unit(row) as RulesUnit,
+    targets: (board, caster, skillId, aim) =>
+      pkg.tactics_targets(
+        board,
+        int('caster', caster, U32_MAX),
+        int('skillId', skillId, U32_MAX),
+        aim,
+      ) as RuleResult<number[], GeometryError>,
+    path: (board, mover, dest) =>
+      pkg.tactics_path(board, int('mover', mover, U32_MAX), dest) as RuleResult<Path, PathError>,
+    disengage: (board, mover, start) =>
+      pkg.tactics_disengage(board, int('mover', mover, U32_MAX), start ?? null) as RuleResult<
+        boolean,
+        PathError
+      >,
+    flank: (board, attacker, target) =>
+      pkg.tactics_flank(
+        board,
+        int('attacker', attacker, U32_MAX),
+        int('target', target, U32_MAX),
+      ) as boolean,
+    forecast: (attacker, target, skillId, flank) => {
+      int('skillId', skillId, U32_MAX);
+      const skill = attacker.kit.skills.find((k) => k.skill_id === skillId);
+      if (skill === undefined) {
+        throw new Error(`unit ${attacker.id} has no skill ${skillId} in its kit`);
+      }
+      return pkg.tactics_forecast(attacker, target, skill, flank) as ForecastOut;
+    },
+    recruitOdds: (maxHp, hp, baitBonus) =>
+      pkg.tactics_recruit_odds(
+        int('maxHp', maxHp, U16_MAX),
+        int('hp', hp, U16_MAX),
+        int('baitBonus', baitBonus, U16_MAX),
+      ) as RuleResult<RecruitOdds, RecruitError>,
+    aiPlan: (board, unit) =>
+      pkg.tactics_ai_plan(board, int('unit', unit, U32_MAX)) as QueuedActionRule[],
+    isExhausted: (curHp, maxHp) =>
+      pkg.tactics_is_exhausted(int('curHp', curHp, U16_MAX), int('maxHp', maxHp, U16_MAX)),
+    plan: (start, entries) => pkg.tactics_plan(start, entries) as RuleResult<PlanOut, EconomyError>,
+    overlays: (board, q) => pkg.tactics_overlays(board, q) as OverlaysOut,
+  };
 }
+
+const has = (action: QueuedActionRule, tag: 'Skill' | 'Move'): boolean =>
+  typeof action === 'object' && tag in action;
 
 /** The chip kind of a wild's plan: a blocked turn is a hold; else any Skill is an attack, else any Move a move. */
 export function intentKind(plan: readonly QueuedActionRule[], blockPct: number): IntentKind {
-  void plan;
-  void blockPct;
-  throw new Error('bt-11: not implemented');
+  if (blockPct >= 100) return 'hold';
+  if (plan.some((a) => has(a, 'Skill'))) return 'attack';
+  if (plan.some((a) => has(a, 'Move'))) return 'move';
+  return 'hold';
 }
+
+const copyTiles = (tiles: readonly Cell[]): Tile[] => tiles.map((t) => ({ x: t.x, y: t.y }));
 
 /** The computed overlays as bt-10's `OverlaySets` port (tiles copied, intents classified). */
 export function overlaySets(out: OverlaysOut): OverlaySets {
-  void out;
-  throw new Error('bt-11: not implemented');
+  return {
+    reach1: copyTiles(out.reach1),
+    reach2: copyTiles(out.reach2),
+    range: copyTiles(out.range),
+    aoe: copyTiles(out.aoe),
+    danger: out.danger.map(copyTiles),
+    shield: copyTiles(out.shield),
+    intents: out.intents.map((i) => ({ unitId: i.unit, kind: intentKind(i.plan, i.block_pct) })),
+  };
+}
+
+function statusOf(status: BattleUnit['status']): RuleStatusEffect | null {
+  if (status === undefined) return null;
+  switch (status.tag) {
+    case 'Sleep':
+      return { Sleep: { turns_remaining: status.value } };
+    case 'Poison':
+    case 'Burn':
+    case 'Paralysis':
+    case 'Freeze':
+      return status.tag;
+    default:
+      return status satisfies never;
+  }
+}
+
+function lastOf(last: BattleUnit['budgetLast']): Entry | null {
+  if (last === undefined) return null;
+  switch (last.tag) {
+    case 'Move':
+      return { Move: { strides: last.value.strides, taxed: last.value.taxed } };
+    case 'AttackLight':
+      return { Attack: 'Light' };
+    case 'AttackHeavy':
+      return { Attack: 'Heavy' };
+    case 'Item':
+    case 'Recruit':
+    case 'Flee':
+    case 'EndTurn':
+      return last.tag;
+    default:
+      return last satisfies never;
+  }
 }
 
 /** A `my_battle_units` binding row as the port's `UnitRow` (tags → serde forms, stats renamed). */
 export function unitRowOf(row: BattleUnit): UnitRow {
-  void row;
-  throw new Error('bt-11: not implemented');
+  return {
+    id: row.unitId,
+    side: row.side.tag,
+    slot: row.slot,
+    species_id: row.speciesId,
+    level: row.level,
+    stats: {
+      hp: row.stats.hp,
+      attack: row.stats.attack,
+      defense: row.stats.defense,
+      speed: row.stats.speed,
+      sp_attack: row.stats.spAttack,
+      sp_defense: row.stats.spDefense,
+    },
+    pos: { x: row.x, y: row.y },
+    cur_hp: row.curHp,
+    status: statusOf(row.status),
+    budget: {
+      ap: row.ap,
+      strides_used: row.stridesUsed,
+      attacks: row.attacks,
+      last: lastOf(row.budgetLast),
+    },
+    guard: row.guard,
+    first_stand: row.firstStand,
+    state: row.state.tag,
+    stance: row.stance?.tag ?? null,
+    wild_index: row.wildIndex ?? null,
+  };
 }
