@@ -764,6 +764,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'input/glyphs.ts',
       'main.ts',
+      // bt-10 (named intentional change, BT10.6): the tactical client's ONE resolver importer; every
+      // other tactics/*.ts module takes its text from it (tactics/strings.test.ts scans for that).
+      'tactics/strings.ts',
       'ui/battleView.ts',
       'ui/boxView.ts',
       'ui/careAction.ts',
