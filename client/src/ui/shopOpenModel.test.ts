@@ -396,6 +396,12 @@ describe('shopOpenModel: the pure deferred-shop-open core (ctl-3)', () => {
         .map((conversationPresent): ShopOpenEvent => ({ kind: 'batch', conversationPresent })),
       fc.constant<ShopOpenEvent>({ kind: 'reconnect' }),
     );
+    // Fixed seed: fast-check's default seed is random, and the ANTI-VACUITY floors below are
+    // counts over the generated runs. `opens` is scarce (arrays cap at 10 events by default;
+    // ~21 opens per 300 runs, 7 to 38 across seeds), so an unseeded run fell below `opens > 10`
+    // about 1 run in 200 (master red, 2026-11-01). The seed makes the counters deterministic; at
+    // fast-check 4.10.2 it gives sends 333, blocked 126, opens 24. If an upgrade moves a count
+    // below its floor, re-measure and pick another seed; never lower a floor.
     let sends = 0;
     let blocked = 0;
     let opens = 0;
@@ -431,7 +437,7 @@ describe('shopOpenModel: the pure deferred-shop-open core (ctl-3)', () => {
           state = step.state;
         }
       }),
-      { numRuns: 300 },
+      { numRuns: 300, seed: 20261101 },
     );
     expect(sends, 'ANTI-VACUITY: many sends were generated').toBeGreaterThan(100);
     expect(
