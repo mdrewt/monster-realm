@@ -12,6 +12,7 @@
 //! Cross-module `ctx.db.<table>()` callers must import the generated snake_case
 //! accessor trait (e.g. `use crate::schema::config;`).
 
+use crate::tactics::{battle_gc_sched, tactical_advance_sched, tactical_deadline_sched};
 use game_core::{
     ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
     StatusKind, TrustTier,
@@ -1363,10 +1364,10 @@ fn my_formation(ctx: &spacetimedb::ViewContext) -> Option<PlayerFormation> {
 
 // --- tactical tables: cascade + claim-flow helpers (bt-7) ----
 //
-// The tactical tables have no domain module until bt-8 lands `tactics.rs`, and
-// `accounts.rs` writes only its own tables (its WRITE-ISOLATION header), so the
-// three helpers the accounts paths delegate to live HERE, beside the tables
-// they write. bt-8 may re-home them with the reducers.
+// The tactical reducers live in `tactics.rs` (bt-8); `accounts.rs` writes only
+// its own tables (its WRITE-ISOLATION header), so the three helpers the
+// accounts paths delegate to stay HERE, beside the tables they write — the
+// cascade also disarms the schedule rows `tactics.rs` arms.
 
 /// True if `identity` owns a `player_formation` row (a REKEY-policy table, so
 /// it counts as game data for `accounts::account_has_game_data`).
@@ -1485,6 +1486,10 @@ pub(crate) fn erase_tactical_rows(ctx: &ReducerContext, owner: Identity) {
         ctx.db.battle_queue().battle_id().delete(id);
         ctx.db.battle_deploy().battle_id().delete(id);
         ctx.db.battle_clock().battle_id().delete(id);
+        // bt-8: the battle's schedule rows go with it (every one is ViaJoin(battle)).
+        ctx.db.tactical_deadline_sched().battle_id().delete(id);
+        ctx.db.tactical_advance_sched().battle_id().delete(id);
+        ctx.db.battle_gc_sched().battle_id().delete(id);
     }
     // (3) Owner-keyed defence in depth.
     ctx.db.battle_queue().owner().delete(owner);
@@ -1870,6 +1875,24 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "battle_event",
         policy: DeletionPolicy::ViaJoin("battle"),
         basis: "no Identity column; the execution transcript keyed by battle id, swept via the owning battle row ahead of the 24 h GC",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "tactical_deadline_sched",
+        policy: DeletionPolicy::ViaJoin("battle"),
+        basis: "no Identity column; one-shot clock-window deadline rows keyed by battle id, disarmed with the owning battle row",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "tactical_advance_sched",
+        policy: DeletionPolicy::ViaJoin("battle"),
+        basis: "no Identity column; zero-delay round-boundary continuation rows keyed by battle id, disarmed with the owning battle row",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "battle_gc_sched",
+        policy: DeletionPolicy::ViaJoin("battle"),
+        basis: "no Identity column; the 24 h sweep schedule keyed by battle id, disarmed with the owning battle row",
         exportable: false,
     },
     // --- NOT-OWNED: no per-player data; the basis is the mandatory reason. ---

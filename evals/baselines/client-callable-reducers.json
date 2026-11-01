@@ -24,6 +24,10 @@
     "cancel_challenge": [
       "challenge_id: u64()"
     ],
+    "cancel_queue": [
+      "battle_id: u64()",
+      "unit_id: u32()"
+    ],
     "cancel_trade": [
       "trade_id: u64()"
     ],
@@ -51,6 +55,10 @@
       "challenge_id: u64()"
     ],
     "delete_account": [],
+    "deploy_units": [
+      "battle_id: u64()",
+      "picks: array(DeployPick)"
+    ],
     "dismiss_dialogue": [],
     "enqueue_move": [
       "input: MoveInput",
@@ -121,6 +129,11 @@
     "submit_pvp_action": [
       "battle_id: u64()",
       "action: PvpAction"
+    ],
+    "submit_queue": [
+      "battle_id: u64()",
+      "unit_id: u32()",
+      "entries: array(QueuedAction)"
     ],
     "swap_active": [
       "battle_id: u64()",

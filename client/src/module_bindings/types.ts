@@ -176,6 +176,13 @@ export const BattleEvent = __t.object("BattleEvent", {
 });
 export type BattleEvent = __Infer<typeof BattleEvent>;
 
+export const BattleGcSched = __t.object("BattleGcSched", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  battleId: __t.u64(),
+});
+export type BattleGcSched = __Infer<typeof BattleGcSched>;
+
 // The tagged union or sum type for the algebraic type `BattleKind`.
 export const BattleKind = __t.enum("BattleKind", {
   Wild: __t.unit(),
@@ -1203,6 +1210,23 @@ export const SurgeEvent = __t.object("SurgeEvent", {
   amount: __t.u16(),
 });
 export type SurgeEvent = __Infer<typeof SurgeEvent>;
+
+export const TacticalAdvanceSched = __t.object("TacticalAdvanceSched", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  battleId: __t.u64(),
+  round: __t.u16(),
+});
+export type TacticalAdvanceSched = __Infer<typeof TacticalAdvanceSched>;
+
+export const TacticalDeadlineSched = __t.object("TacticalDeadlineSched", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  battleId: __t.u64(),
+  unitId: __t.u32(),
+  windowSeq: __t.u32(),
+});
+export type TacticalDeadlineSched = __Infer<typeof TacticalDeadlineSched>;
 
 export const TargetHit = __t.object("TargetHit", {
   unit: __t.u32(),

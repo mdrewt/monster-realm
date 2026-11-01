@@ -1221,6 +1221,12 @@ unsafe extern "C" {
     fn register_table_battle_summary();
     #[link_name = "__preinit__20_register_describer_player_formation"]
     fn register_table_player_formation();
+    #[link_name = "__preinit__20_register_describer_tactical_deadline_sched"]
+    fn register_table_tactical_deadline_sched();
+    #[link_name = "__preinit__20_register_describer_tactical_advance_sched"]
+    fn register_table_tactical_advance_sched();
+    #[link_name = "__preinit__20_register_describer_battle_gc_sched"]
+    fn register_table_battle_gc_sched();
     /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1235,7 +1241,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 53] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 56] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1289,6 +1295,9 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 53] = [
     register_table_battle_event,
     register_table_battle_summary,
     register_table_player_formation,
+    register_table_tactical_deadline_sched,
+    register_table_tactical_advance_sched,
+    register_table_battle_gc_sched,
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.

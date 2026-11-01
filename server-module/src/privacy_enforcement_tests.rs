@@ -1376,6 +1376,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "raising",
     "ranking",
     "schema",
+    "tactics",
     "taming",
     "trading",
 ];
@@ -1384,12 +1385,15 @@ const EXPECTED_LIFECYCLE: &[&str] = &["init", "on_connect", "on_disconnect"];
 
 const EXPECTED_SCHEDULED: &[&str] = &[
     "battle_challenge_reaper",
+    "battle_gc",
     "export_bundle_reaper",
     "guest_claim_reaper",
     "movement_tick",
     "mr_heartbeat",
     "playtest_reaper",
     "pvp_deadline_reaper",
+    "tactical_advance",
+    "tactical_deadline_fire",
     "trade_offer_reaper",
 ];
 
@@ -1401,11 +1405,14 @@ const EXPECTED_GATED: &[&str] = &[
     "advance_dialogue",
     "attempt_recruit",
     "buy",
+    "cancel_queue",
     "care",
     "challenge_pvp",
     "clear_queue",
     "complete_guest_claim",
     "consume_crystalized_essence",
+    "deploy_units",
+    "dev_start_tactical_wild",
     "dismiss_dialogue",
     "enqueue_move",
     "essence_train",
@@ -1422,6 +1429,7 @@ const EXPECTED_GATED: &[&str] = &[
     "set_profile_name",
     "start_battle",
     "start_wild_battle",
+    "submit_queue",
     "talk",
     "train",
 ];
@@ -1781,7 +1789,7 @@ fn rb45_real_crate_matches_the_rosters() {
         "the corpus is lib.rs plus its bare mods"
     );
 
-    for name in ["grant_bait", "start_wild_battle"] {
+    for name in ["grant_bait", "start_wild_battle", "dev_start_tactical_wild"] {
         assert!(
             matches!(verdict_of(&report, name), census::Verdict::Gated { .. }),
             "{name} is gated today and is scanned even though its cfg hides it"

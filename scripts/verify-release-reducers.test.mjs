@@ -8,8 +8,12 @@ import {
   parseReducerNames,
 } from './verify-release-reducers.mjs';
 
-test('the forbidden set is exactly the two dev_reducers-gated reducers', () => {
-  assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), ['grant_bait', 'start_wild_battle']);
+test('the forbidden set is exactly the three dev_reducers-gated reducers', () => {
+  assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), [
+    'dev_start_tactical_wild',
+    'grant_bait',
+    'start_wild_battle',
+  ]);
 });
 
 test('parseReducerNames fails loud on empty, malformed, reducer-less and zero-reducer output', () => {
@@ -44,6 +48,11 @@ test('findForbiddenReducers flags each forbidden reducer by exact name only', ()
   );
   assert.ok(
     findForbiddenReducers(['grant_bait', 'buy'], FORBIDDEN_REDUCERS).includes('grant_bait'),
+  );
+  assert.ok(
+    findForbiddenReducers(['dev_start_tactical_wild', 'buy'], FORBIDDEN_REDUCERS).includes(
+      'dev_start_tactical_wild',
+    ),
   );
   assert.deepEqual(
     findForbiddenReducers(

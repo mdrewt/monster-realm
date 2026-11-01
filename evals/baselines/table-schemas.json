@@ -1491,5 +1491,71 @@
     "unique": [],
     "indexes": [],
     "scheduled": null
+  },
+  "tactical_deadline_sched": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "battle_id": "u64",
+      "unit_id": "u32",
+      "window_seq": "u32"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "battle_id",
+      "unit_id",
+      "window_seq"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": "tactical_deadline_fire"
+  },
+  "tactical_advance_sched": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "battle_id": "u64",
+      "round": "u16"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "battle_id",
+      "round"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": "tactical_advance"
+  },
+  "battle_gc_sched": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "battle_id": "u64"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "battle_id"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": "battle_gc"
   }
 }

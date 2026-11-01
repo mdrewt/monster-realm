@@ -40,6 +40,7 @@ mod pvp;
 mod raising;
 mod ranking;
 mod schema;
+mod tactics;
 mod taming;
 mod trading;
 
@@ -215,11 +216,16 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
     accounts::provision_or_touch_account(ctx)
 }
 
-/// Force-resolve every live interaction for `identity` — the four resolver
-/// calls verbatim, in the original `on_disconnect` order.
+/// Force-resolve every live interaction for `identity` — the tactical resolver
+/// (bt-8) first, then the four legacy resolver calls verbatim, in the original
+/// `on_disconnect` order.
 /// Shared by BOTH `on_disconnect` and the deletion cascade
-/// (`accounts::account_deletion_reaper`), so a future fifth resolver added to
-/// this bundle is picked up by both callers automatically. The bundle is the
+/// (`accounts::account_deletion_reaper`), so a resolver added to this bundle
+/// is picked up by both callers automatically. The tactical resolver runs
+/// FIRST because `battle::resolve_wild_battle_on_disconnect` DELETES an
+/// `Ongoing` wild anchor: the tactical path must leave the anchor terminal
+/// (`Fled`, HP persisted, READY rows voided, GC armed) before the legacy
+/// resolver looks, or the tactical rows are orphaned (R-bt-7-BT8ORPHANS). The bundle is the
 /// DISPATCH list, never a table-census-derived wrapper set — a census-derived
 /// list silently drops the wild-battle resolve (no reaper covers wild rows)
 /// and soft-locks the abandoned battle forever. Performs no row write itself;
@@ -231,6 +237,7 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 /// challenge-cancel is order-immaterial vs the other three (disjoint row
 /// classes).
 pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Identity) {
+    tactics::resolve_tactical_on_disconnect(ctx, identity);
     trading::cancel_trades_on_disconnect(ctx, identity);
     pvp::forfeit_on_disconnect(ctx, identity);
     battle::resolve_wild_battle_on_disconnect(ctx, identity);

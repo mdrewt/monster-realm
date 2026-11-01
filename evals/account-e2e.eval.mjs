@@ -120,21 +120,25 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 43-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 56-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED — an entry beyond the cap
-// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). The seven
-// `(until bt-8)` rows are bt-7's schema-only tactical tables: their columns are
-// enums, Vecs or Options (not DML-expressible on this CLI) and their only
-// organic writers are bt-8's reducers — bt-8 MUST seed them through those
-// reducers and retire these rows (grep "until bt-8").
+// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). The
+// `(until bt-16)` rows are the tactical tables whose columns are enums, Vecs,
+// Options or ScheduleAt (not DML-expressible on this CLI) and whose organic
+// writers are the tactical reducers: this module is built WITHOUT
+// `dev_reducers` and `spacetime call` cannot act as the subject, so they become
+// organic when bt-16 flips the live encounter path and retargets the
+// S9-wild-live scenario (R-bt-8-E2EVACUITY; grep "until bt-16"). Two rows are
+// permanent: a wild deploy never writes a `battle_deploy` staging row (PvP's
+// secret deploy does, bt-14), and `tactical_advance_sched` fires with zero delay.
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
@@ -150,34 +154,46 @@ export const S9_VACUITY_ALLOWLIST = [
   ],
   [
     'battle_tactical',
-    'enum columns (kind, phase, turn_state) are not DML-expressible; the organic writer is bt-8 start_wild_tactical (until bt-8)',
+    'enum columns (kind, phase, turn_state) are not DML-expressible; the organic writer is tactics::start_wild_tactical, reachable here only after the bt-16 live-path flip (until bt-16)',
   ],
   [
     'battle_unit',
-    'enum and Vec columns (affinity, status, state, skill_ids) are not DML-expressible; the organic writer is bt-8 deploy materialisation (until bt-8)',
+    'enum and Vec columns (affinity, status, state, skill_ids) are not DML-expressible; the organic writer is the tactical deploy materialisation, reachable here only after the bt-16 live-path flip (until bt-16)',
   ],
   [
     'battle_queue',
-    'Vec<QueuedAction> is not DML-expressible; the organic writer is bt-8 submit_queue (until bt-8)',
+    'Vec<QueuedAction> is not DML-expressible; the organic writer is submit_queue on a live tactical battle, reachable here only after the bt-16 live-path flip (until bt-16)',
   ],
   [
     'battle_deploy',
-    'Vec<DeployPick> is not DML-expressible; the organic writer is bt-8 deploy_units (until bt-8)',
+    'Vec<DeployPick> is not DML-expressible, and a wild battle never holds a battle_deploy row: deploy_units materialises the picks directly and the staging row is PvP secret-deploy state (bt-14)',
   ],
   [
     'battle_clock',
-    'Option<i64> columns are not DML-expressible; the organic writer is bt-8 window arming (until bt-8)',
+    'Option<i64> columns are not DML-expressible; the organic writer is the tactical clock on a live battle, reachable here only after the bt-16 live-path flip (until bt-16)',
   ],
   [
     'battle_event',
-    'the EventPayload enum column is not DML-expressible; the organic writer is bt-8 execution (until bt-8)',
+    'the EventPayload enum column is not DML-expressible; the organic writer is tactical execution on a live battle, reachable here only after the bt-16 live-path flip (until bt-16)',
   ],
   [
     'player_formation',
-    'Vec<u64> is not DML-expressible; the organic writer is bt-12 formation editing via a bt-8 reducer (until bt-8)',
+    'Vec<u64> is not DML-expressible; the organic writer is the tactical deploy (formation upsert), reachable here only after the bt-16 live-path flip (until bt-16)',
+  ],
+  [
+    'tactical_deadline_sched',
+    'ScheduleAt is not DML-expressible; a deadline row exists only while a live tactical battle waits on a player, reachable here only after the bt-16 live-path flip (until bt-16)',
+  ],
+  [
+    'tactical_advance_sched',
+    'ScheduleAt is not DML-expressible, and the row is consumed by its own zero-delay fire inside the chain, so no snapshot can observe one',
+  ],
+  [
+    'battle_gc_sched',
+    'ScheduleAt is not DML-expressible; a GC row exists only for a finished tactical battle, reachable here only after the bt-16 live-path flip (until bt-16)',
   ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 10;
+export const S9_VACUITY_ALLOWLIST_CAP = 13;
 // Erase-policy identity columns that are `Option<Identity>` (a sum type): the
 // snapshot counts them by battle reachability, never by an identity WHERE.
 export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
@@ -1129,9 +1145,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 53) {
+  if (!Array.isArray(entries) || entries.length !== 56) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 53',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 56',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1361,7 +1377,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 53 classified entries',
+    reason: 'cascade truth held over 56 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -2398,7 +2414,16 @@ async function runLivePhase() {
         (await cnt(
           'SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.battle1Id,
         ));
-      for (const t of ['battle_tactical', 'battle_secret', 'battle_wild_unit', 'battle_event']) {
+      for (const t of [
+        'battle_tactical',
+        'battle_secret',
+        'battle_wild_unit',
+        'battle_event',
+        // bt-8: the three schedule tables are ViaJoin(battle) too (battle_id column).
+        'tactical_deadline_sched',
+        'tactical_advance_sched',
+        'battle_gc_sched',
+      ]) {
         viaJoin[t] = await tacticalReach(t);
       }
       let chalSched = 0;

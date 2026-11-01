@@ -41,6 +41,7 @@ import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import BuyReducer from "./buy_reducer";
 import CancelAccountDeletionReducer from "./cancel_account_deletion_reducer";
 import CancelChallengeReducer from "./cancel_challenge_reducer";
+import CancelQueueReducer from "./cancel_queue_reducer";
 import CancelTradeReducer from "./cancel_trade_reducer";
 import CareReducer from "./care_reducer";
 import ChallengePvpReducer from "./challenge_pvp_reducer";
@@ -50,6 +51,7 @@ import ConfirmTradeReducer from "./confirm_trade_reducer";
 import ConsumeCrystalizedEssenceReducer from "./consume_crystalized_essence_reducer";
 import DeclineChallengeReducer from "./decline_challenge_reducer";
 import DeleteAccountReducer from "./delete_account_reducer";
+import DeployUnitsReducer from "./deploy_units_reducer";
 import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EssenceTrainReducer from "./essence_train_reducer";
@@ -69,6 +71,7 @@ import StartBattleReducer from "./start_battle_reducer";
 import StartGuestClaimReducer from "./start_guest_claim_reducer";
 import SubmitAttackReducer from "./submit_attack_reducer";
 import SubmitPvpActionReducer from "./submit_pvp_action_reducer";
+import SubmitQueueReducer from "./submit_queue_reducer";
 import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 import TalkReducer from "./talk_reducer";
@@ -455,6 +458,7 @@ const reducersSchema = __reducers(
   __reducerSchema("buy", BuyReducer),
   __reducerSchema("cancel_account_deletion", CancelAccountDeletionReducer),
   __reducerSchema("cancel_challenge", CancelChallengeReducer),
+  __reducerSchema("cancel_queue", CancelQueueReducer),
   __reducerSchema("cancel_trade", CancelTradeReducer),
   __reducerSchema("care", CareReducer),
   __reducerSchema("challenge_pvp", ChallengePvpReducer),
@@ -464,6 +468,7 @@ const reducersSchema = __reducers(
   __reducerSchema("consume_crystalized_essence", ConsumeCrystalizedEssenceReducer),
   __reducerSchema("decline_challenge", DeclineChallengeReducer),
   __reducerSchema("delete_account", DeleteAccountReducer),
+  __reducerSchema("deploy_units", DeployUnitsReducer),
   __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("essence_train", EssenceTrainReducer),
@@ -483,6 +488,7 @@ const reducersSchema = __reducers(
   __reducerSchema("start_guest_claim", StartGuestClaimReducer),
   __reducerSchema("submit_attack", SubmitAttackReducer),
   __reducerSchema("submit_pvp_action", SubmitPvpActionReducer),
+  __reducerSchema("submit_queue", SubmitQueueReducer),
   __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
   __reducerSchema("talk", TalkReducer),
