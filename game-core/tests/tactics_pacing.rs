@@ -31,21 +31,22 @@
 //!   overridden (power, accuracy, geometry, status stay content). Every attack in the fight is
 //!   NEUTRAL on the real type chart in both directions; the wild side never has STAB; the player
 //!   side has none in the NoStab mix and STAB on both skills in the Stab mix.
-//! - The 8x8 map's closest opposing spawns are 6 apart (the design's table assumes 5); the report
-//!   says so and the test only requires >= 4.
+//! - The closest opposing spawn distance of each map is MEASURED and printed in the report line
+//!   (the design's 8x8 table assumes 5); the test only requires >= 4.
 //! - The recruit cell's no-overkill rule (a Heavy aimed at a wild under half HP is replaced by the
 //!   Light when the Light can hit the same target from the same tile) applies to that cell ONLY;
 //!   the kill cells play the planner's plan unchanged.
 //!
+//! - The bounds above are the BUDGET; the `GOLDEN` table below is the CHANGE DETECTOR (the bounds
+//!   are one-sided, so a faster-or-slower rule that stays under them would otherwise pass).
+//!
 //! Run with `--no-capture` to read the per-cell report lines.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::print_stdout,
-    clippy::too_many_lines,
-    clippy::cast_precision_loss
+    clippy::too_many_lines
 )]
 
 use std::sync::OnceLock;
@@ -233,6 +234,10 @@ struct Scenario {
     recruit: bool,
     /// The design §10 pessimistic column plus one (the median bound).
     bound: u16,
+    /// Whether the cross-cell test demands strictly fewer player attacks per wild KO under STAB.
+    /// Only the plain 1v1 cell: the recruit cell is excluded because its wilds are weakened and
+    /// recruited rather than killed (KOs are rare by design), and 3v3 mixes several KOs per fight.
+    strict_stab: bool,
 }
 
 const ONE_V_ONE: Scenario = Scenario {
@@ -242,6 +247,7 @@ const ONE_V_ONE: Scenario = Scenario {
     per_side: 1,
     recruit: false,
     bound: 7,
+    strict_stab: true,
 };
 const RECRUIT: Scenario = Scenario {
     name: "wild 1v1 recruit 7x7",
@@ -250,6 +256,7 @@ const RECRUIT: Scenario = Scenario {
     per_side: 1,
     recruit: true,
     bound: 8,
+    strict_stab: false,
 };
 const THREE_V_THREE: Scenario = Scenario {
     name: "wild 3v3 8x8",
@@ -258,7 +265,128 @@ const THREE_V_THREE: Scenario = Scenario {
     per_side: 3,
     recruit: false,
     bound: 7,
+    strict_stab: false,
 };
+
+/// The golden pacing snapshot of one cell over seeds 1..=32.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Golden {
+    /// Sum of the final round over the fights.
+    rounds: u32,
+    /// Sum of the unit-turns (see the conventions above).
+    unit_turns: u32,
+    /// Fights the player (side A) won.
+    wins: u32,
+    /// Sum of the final side-A HP over every unit and fight.
+    a_hp: u32,
+    /// Sum of the final side-B HP over every unit and fight.
+    b_hp: u32,
+    /// Recruit attempts (0 outside the recruit cells).
+    attempts: u32,
+    /// Recruit successes (0 outside the recruit cells).
+    successes: u32,
+}
+
+/// GOLDEN PACING SNAPSHOT, one row per cell, asserted EXACTLY. A rule or tuning change that moves
+/// pacing must re-run this gate with --no-capture and re-record these, and update the spec build
+/// note — the bounds above are the budget, this table is the change detector. A mismatch prints
+/// the measured row in Rust syntax, ready to paste.
+const GOLDEN: [(&str, Mix, Golden); 6] = [
+    (
+        "wild 1v1 7x7",
+        Mix::NoStab,
+        Golden {
+            rounds: 136,
+            unit_turns: 244,
+            wins: 12,
+            a_hp: 56,
+            b_hp: 158,
+            attempts: 0,
+            successes: 0,
+        },
+    ),
+    (
+        "wild 1v1 7x7",
+        Mix::Stab,
+        Golden {
+            rounds: 106,
+            unit_turns: 186,
+            wins: 28,
+            a_hp: 589,
+            b_hp: 17,
+            attempts: 0,
+            successes: 0,
+        },
+    ),
+    (
+        "wild 1v1 recruit 7x7",
+        Mix::NoStab,
+        Golden {
+            rounds: 136,
+            unit_turns: 248,
+            wins: 8,
+            a_hp: 36,
+            b_hp: 290,
+            attempts: 16,
+            successes: 8,
+        },
+    ),
+    (
+        "wild 1v1 recruit 7x7",
+        Mix::Stab,
+        Golden {
+            rounds: 113,
+            unit_turns: 202,
+            wins: 25,
+            a_hp: 454,
+            b_hp: 174,
+            attempts: 36,
+            successes: 25,
+        },
+    ),
+    (
+        "wild 3v3 8x8",
+        Mix::NoStab,
+        Golden {
+            rounds: 183,
+            unit_turns: 648,
+            wins: 10,
+            a_hp: 83,
+            b_hp: 773,
+            attempts: 0,
+            successes: 0,
+        },
+    ),
+    (
+        "wild 3v3 8x8",
+        Mix::Stab,
+        Golden {
+            rounds: 155,
+            unit_turns: 562,
+            wins: 25,
+            a_hp: 997,
+            b_hp: 101,
+            attempts: 0,
+            successes: 0,
+        },
+    ),
+];
+
+/// The snapshot of a cell's reports.
+fn measure(reports: &[FightReport]) -> Golden {
+    let sum = |f: &dyn Fn(&FightReport) -> u32| reports.iter().map(f).sum::<u32>();
+    Golden {
+        rounds: sum(&|r| u32::from(r.rounds)),
+        unit_turns: sum(&|r| r.unit_turns),
+        wins: sum(&|r| u32::from(r.outcome == BattleOutcome::SideAWins)),
+        a_hp: sum(&|r| r.final_hp_a),
+        b_hp: sum(&|r| r.final_hp_b),
+        attempts: sum(&|r| u32::try_from(r.attempts.len()).expect("a few attempts")),
+        successes: sum(&|r| {
+            u32::try_from(r.attempts.iter().filter(|a| a.success).count()).expect("a few attempts")
+        }),
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Case {
@@ -267,8 +395,9 @@ struct Case {
 }
 
 /// The map is the size and spacing the scenario claims, and the STAB mix is what it says it is on
-/// the real chart and the built kits (a precondition, not an assumption).
-fn assert_preconditions(c: &Content, case: Case) {
+/// the real chart and the built kits (a precondition, not an assumption). Returns the measured
+/// closest opposing spawn distance (the report line prints it).
+fn assert_preconditions(c: &Content, case: Case) -> u16 {
     let entry = c.map(case.scenario.map_id);
     assert!(!entry.pvp, "{}: a PvE map", case.scenario.name);
     assert_eq!(
@@ -335,6 +464,7 @@ fn assert_preconditions(c: &Content, case: Case) {
             s.skill_id
         );
     }
+    closest
 }
 
 // ===========================================================================
@@ -349,6 +479,10 @@ struct Attempt {
     hp_permille: u32,
     pct: u8,
     expected_pct: u8,
+    /// `recruit_odds(max, hp, 150).pct - recruit_odds(max, hp, 0).pct`: the bait's own line item
+    /// (design §5, floor(150 / 10) = 15). Independent of `expected_pct`, which reuses the
+    /// function under test.
+    bait_gain: i16,
     success: bool,
 }
 
@@ -445,6 +579,15 @@ impl Hooks for PacingHooks<'_> {
             expected_pct: recruit_odds(max_hp, cur_hp, bonus)
                 .expect("the bait is in range")
                 .pct,
+            bait_gain: i16::from(
+                recruit_odds(max_hp, cur_hp, BAIT_BONUS)
+                    .expect("the bait is in range")
+                    .pct,
+            ) - i16::from(
+                recruit_odds(max_hp, cur_hp, 0)
+                    .expect("no bait is in range")
+                    .pct,
+            ),
             success: event.success,
         });
         vec![EventPayload::RecruitResult(event)]
@@ -545,8 +688,13 @@ struct FightReport {
     outcome: BattleOutcome,
     rounds: u16,
     unit_turns: u32,
+    /// `TurnEnded` events (the unit-turns before the mid-turn correction).
+    turn_ended: u32,
     /// Final `cur_hp` of every unit in `(side, slot)` order.
     final_hp: Vec<u16>,
+    /// Sum of the final side-A / side-B `cur_hp`.
+    final_hp_a: u32,
+    final_hp_b: u32,
     a_attacks: u32,
     b_attacks: u32,
     b_kos: u32,
@@ -734,7 +882,20 @@ fn simulate(c: &Content, case: Case, seed: u64) -> FightReport {
         outcome: state.outcome,
         rounds: state.round,
         unit_turns: turn_ended + u32::from(!final_step_has_round_end),
+        turn_ended,
         final_hp: state.units.iter().map(|u| u.cur_hp).collect(),
+        final_hp_a: state
+            .units
+            .iter()
+            .filter(|u| u.side == Side::A)
+            .map(|u| u32::from(u.cur_hp))
+            .sum(),
+        final_hp_b: state
+            .units
+            .iter()
+            .filter(|u| u.side == Side::B)
+            .map(|u| u32::from(u.cur_hp))
+            .sum(),
         a_attacks,
         b_attacks,
         b_kos,
@@ -792,7 +953,7 @@ fn check_cell(case: Case) -> Vec<FightReport> {
     let c = content();
     let sc = case.scenario;
     let label = format!("{} / {:?}", sc.name, case.mix);
-    assert_preconditions(c, case);
+    let closest = assert_preconditions(c, case);
     let reports = run_cell(c, case);
     let n = reports.len();
     assert_eq!(n, SEEDS.clone().count(), "{label}: one report per seed");
@@ -808,6 +969,15 @@ fn check_cell(case: Case) -> Vec<FightReport> {
             r.non_neutral_hits, 0,
             "{label} seed {}: every hit is neutral (STAB is the only lever)",
             r.seed
+        );
+        // Structural pin independent of the snapshot: every crossed round boundary had its units'
+        // turns ended (a rule that stopped emitting `TurnEnded` fails here).
+        assert!(
+            r.turn_ended + 1 >= u32::from(r.rounds),
+            "{label} seed {}: {} TurnEnded events over {} rounds",
+            r.seed,
+            r.turn_ended,
+            r.rounds
         );
     }
 
@@ -894,6 +1064,11 @@ fn check_cell(case: Case) -> Vec<FightReport> {
                 "{label}: the roll's pct is recruit_odds(max, hp, 150).pct at {} / {} HP",
                 a.cur_hp, a.max_hp
             );
+            assert_eq!(
+                a.bait_gain, 15,
+                "{label}: bait 150 adds floor(150 / 10) = 15 points over no bait at {} / {} HP",
+                a.cur_hp, a.max_hp
+            );
         }
     } else {
         assert!(
@@ -919,13 +1094,26 @@ fn check_cell(case: Case) -> Vec<FightReport> {
     println!(
         "bt13 pacing | {label} | level {} hp {} | rounds median {med} p90 {p90_rounds} max {max} \
          (bound {}) | unit-turns median {med_turns} | player wins {wins}/{n} | recruit attempts {} \
-         success {}/{}",
+         success {}/{} | closest opposing spawns {closest}",
         c.level,
         c.stats.hp,
         sc.bound,
         attempts.len(),
         successes,
         attempts.len()
+    );
+
+    // 7. The golden snapshot (the change detector; the bounds above are the budget).
+    let measured = measure(&reports);
+    let (_, _, golden) = GOLDEN
+        .iter()
+        .find(|(name, mix, _)| *name == sc.name && *mix == case.mix)
+        .unwrap_or_else(|| panic!("{label}: no GOLDEN row"));
+    assert_eq!(
+        &measured, golden,
+        "{label}: the pacing snapshot moved. If the change is intended, re-record this row in \
+         GOLDEN and update the spec build note. Measured:\n    (\"{}\", Mix::{:?}, {measured:?}),",
+        sc.name, case.mix
     );
     reports
 }
@@ -1019,7 +1207,7 @@ fn stab_never_slows_a_scenario_and_speeds_up_the_1v1_kill_bt13_1() {
             stab.median_rounds,
             plain.median_rounds
         );
-        if scenario.name == ONE_V_ONE.name {
+        if scenario.strict_stab {
             assert!(
                 plain.wild_kos > 0 && stab.wild_kos > 0,
                 "{}: both mixes must KO a wild for the per-KO comparison to mean anything",
