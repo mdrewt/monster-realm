@@ -1,8 +1,8 @@
-// tactics/tacticsBattle.ts — the tactical battle SHELL (BT10.1, BT10.3-BT10.6; bt-11: BT11.1,
-// BT11.2, BT11.3's pre-queue, BT11.6): composes the turn bar, the board, the per-side info boxes,
-// the ticker, the turn banner and the dock (the command menu, the plan strip, the pointer twins of
-// X / LB / RB) into one constructed overlay root, and implements `BattleOpsView` (the D-pad / A / B /
-// X / LB / RB / Start contract).
+// tactics/tacticsBattle.ts — the tactical battle SHELL (BT10.1, BT10.3-BT10.6; bt-11: BT11.1-BT11.6):
+// composes the turn bar, the board, the per-side info boxes, the ticker, the turn banner and the dock
+// (the command menu, the plan strip with its AP pips and badges, the forecast panel in its Projected
+// wrapper, the pointer twins of X / LB / RB) into one constructed overlay root, and implements
+// `BattleOpsView` (the D-pad / A / B / X / LB / RB / Start contract).
 //
 // Overlay a11y wiring: this view is a CONSTRUCTED shell, exactly like ui/battleView.ts, and follows
 // that file's header. Its root is `document.createElement`'d here and appended into the parent it
@@ -17,11 +17,19 @@
 // Imperative shell over pure modules: the cursor memory, the selection, the danger toggle, the
 // Playback queue, the per-unit DRAFTS, the menu / aim MODE and the in-flight commit keys live here;
 // everything drawn is rebuilt from the last view-model on every paint. It owns no game rule: every
-// band, target, cost, label and recruit target comes out of `deps.rules()` (the wasm port, bound
-// lazily) through the pure models (commandModel.ts, draft.ts); it reads time only through
-// `deps.now`, and reads reduced motion through `deps.reduceMotion()` on every render/ingest (never
-// cached). A frame is computed in full — every rules call — BEFORE the DOM is written, so a rules
-// throw leaves the previous frame intact and propagates (the atomic-ingest precedent).
+// band, target, cost, label, recruit target, forecast number and projected position comes out of
+// `deps.rules()` (the wasm port, bound lazily) through the pure models (commandModel.ts, draft.ts,
+// queueStrip.ts, provisionalBoard.ts, forecast.ts); it reads time only through `deps.now`, and reads
+// reduced motion through `deps.reduceMotion()` on every render/ingest (never cached). A frame is
+// computed in full — every rules call — BEFORE the DOM is written, so a rules throw leaves the
+// previous frame intact and propagates (the atomic-ingest precedent); every input op is atomic too:
+// a throw anywhere in it restores the shell state the op started from (REV 6.2 C17).
+//
+// Three boards per paint (plan REV 5 A24 + REV 6.1 C1/C6/C10): the COST board (the live rows with the
+// planning unit's own draft applied) costs its steps, bands and recruit targets; the AIM board (the
+// projection up to the unit's turn — own plans and, in PvE, each wild's plan applied in initiative
+// order — with the unit's own live row and then its draft) seats its skill aims and its forecast; the
+// DANGER board (the live rows with every own plan applied, every enemy held) feeds danger and intents.
 import type { EventPayload, QueuedAction } from '../module_bindings/types';
 import type { HintBattle } from '../ui/hintBarModel';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
@@ -33,7 +41,6 @@ import {
   cursorFor,
   type Dir,
   moveCursor,
-  type OverlaySets,
   spriteSlug,
   type TacticalUnit,
   type Tile,
@@ -45,20 +52,26 @@ import {
   type MenuContext,
   type MenuRow,
   menuRows,
+  moveBand,
   recruitTargets,
   type SkillAim,
   skillRows,
 } from './commandModel';
-import { applyPlan, costEntries, type Draft, emptyDraft, pop, push, toWire } from './draft';
+import { applyPlan, type Draft, emptyDraft, pop, push, toWire, withRow } from './draft';
+import { forecastVM } from './forecast';
 import { type InfoBoxesVM, infoBoxes, renderInfoBoxes } from './hud';
 import { Playback, planBeats, showsTurnBanner } from './presentation';
+import { type PlanInput, project } from './provisionalBoard';
+import { type Badge, type StripVM, stripVM } from './queueStrip';
 import * as s from './strings';
 import { Ticker, type TickerNames, tickerLine } from './ticker';
 import { renderTurnBar, type TurnBarVM, turnBarVM } from './turnBar';
 import {
   type ActionTarget,
   type Cell,
+  isBlocked,
   type OverlayQuery,
+  type OverlaysOut,
   overlaySets,
   type QueuedActionRule,
   type RulesBoard,
@@ -139,9 +152,45 @@ interface MenuRowVM {
   readonly enabled: boolean;
   readonly sub: boolean;
 }
+/** One painted strip chip: its label, the rules' cost, the badge and its word, the bait note. */
 interface StripChipVM {
   readonly action: string;
   readonly label: string;
+  readonly cost: number | null;
+  /** The pips' accessible name (resolved here, A30), or null when no pips are drawn. */
+  readonly costLabel: string | null;
+  readonly badge: Badge;
+  readonly badgeWord: string;
+  readonly note: string | null;
+}
+/** One painted forecast line: its text (resolved), whether it leads with the Projected tilde, and
+ *  the skull it holds instead of text. */
+interface PanelLine {
+  readonly id: string;
+  readonly text: string;
+  readonly tilde: boolean;
+  readonly skull: { readonly kind: 'full' | 'hollow'; readonly label: string } | null;
+}
+interface PanelVM {
+  readonly label: string;
+  readonly lines: readonly PanelLine[];
+  /** The Projected wrapper (a pre-queued aim), or null on a live turn. */
+  readonly projected: {
+    readonly label: string;
+    readonly assumes: string | null;
+    readonly enemies: string | null;
+  } | null;
+}
+/** What every own unit plans and what the board holds, computed once per paint (REV 6.1 C12). */
+interface ProjectInputs {
+  /** The rest of this round, then the next: the turns the projection walks. */
+  readonly order: readonly number[];
+  /** One plan per own Active unit: its mode-valid draft, else its READY row (A28). */
+  readonly plans: readonly PlanInput[];
+  /** The wilds whose live `block_pct` is 100 (asleep / frozen): they do not act. */
+  readonly blocked: ReadonlySet<number>;
+  readonly baitHeld: ReadonlyMap<number, number>;
+  readonly baitPlanned: ReadonlyMap<number, number>;
 }
 /** What the planning unit's frame knows, computed once per paint from the rules. */
 interface Planning {
@@ -156,6 +205,13 @@ interface Planning {
   /** The budget the draft leaves (the start budget when it is empty or refused). */
   readonly budget: TurnBudget;
   readonly draftedAp: number;
+  /** The projection up to this unit's turn with its own live row, then its draft: skill aims and
+   *  the forecast are seated on it (the strip's legality chain starts from the same projection). */
+  readonly aimBoard: RulesBoard;
+  /** PvP: the enemies that act before this unit (their plans are secret). */
+  readonly hidden: ReadonlySet<number>;
+  /** The model of the plan the strip shows (the draft, else the READY row). */
+  readonly strip: StripVM;
 }
 /** A whole frame, computed before any DOM write. */
 interface Frame {
@@ -173,6 +229,7 @@ interface Frame {
   readonly banner: string | null;
   readonly menu: { readonly rows: readonly MenuRowVM[]; readonly index: number } | null;
   readonly strip: { readonly chips: readonly StripChipVM[]; readonly locked: boolean };
+  readonly panel: PanelVM | null;
   readonly hint: HintBattle;
   readonly reduced: boolean;
 }
@@ -188,6 +245,40 @@ const sameTile = (a: Cell, b: Cell): boolean => a.x === b.x && a.y === b.y;
 const aimKeyOf = (target: ActionTarget): string =>
   target === 'SelfTarget' ? 'self' : `u:${target.Unit}`;
 const inflightKey = (vm: TacticsBattleVM): string => `${vm.battleId}:${vm.round}:${vm.turnIdx}`;
+/** A unit's planning mode: live on its own waiting turn without a READY row, else pre-queue (A28). */
+const modeOf = (vm: TacticsBattleVM, unitId: number): 'live' | 'prequeue' =>
+  vm.activeUnitId === unitId && !vm.readyPlans.has(unitId) ? 'live' : 'prequeue';
+/** A tile in A1 notation (column letter, 1-based row) — display formatting, not a rule. */
+const a1 = (tile: Cell): string => String.fromCharCode(0x41 + tile.x) + String(tile.y + 1);
+/** U+007E and U+2014 as code points (the Projected prefix and the hidden-number line). */
+const TILDE = String.fromCharCode(0x7e);
+const EM_DASH = String.fromCharCode(0x2014);
+const NUMERIC_LINES: ReadonlySet<string> = new Set([
+  'hit',
+  'damage',
+  'type',
+  'flank',
+  'guard',
+  'recruit',
+  'recruitLines',
+]);
+/** An empty overlays answer (the parts a query did not run). */
+const NO_OVERLAYS: OverlaysOut = {
+  reach1: [],
+  reach2: [],
+  range: [],
+  aoe: [],
+  danger: [],
+  shield: [],
+  intents: [],
+};
+/** A panel-line writer: a numeric line (hit, damage, a factor, the odds) leads with the Projected
+ *  tilde on a pre-queued aim; `numeric` overrides the id's default (an Immune word, a dash). */
+const panelLine =
+  (lines: PanelLine[], mode: 'live' | 'prequeue') =>
+  (id: string, text: string, numeric: boolean = NUMERIC_LINES.has(id)): void => {
+    lines.push({ id, text, tilde: mode === 'prequeue' && numeric, skull: null });
+  };
 
 /** The chip label of one planned action (every word from the catalog or the names dependency). */
 function chipLabel(action: QueuedActionRule, names: TickerNames): string {
@@ -350,52 +441,85 @@ export class TacticsBattle implements BattleOpsView {
   }
 
   toggleDanger(): void {
-    this.#dangerOn = !this.#dangerOn;
-    this.#paint();
+    this.#atomic(() => {
+      this.#dangerOn = !this.#dangerOn;
+      this.#paint();
+    });
   }
 
   /** Select the next (+1) / previous (-1) own Active unit in input order, wrapping; closes any
    *  open menu or aim (the next A is that unit's). */
   cycleUnit(dir: -1 | 1): void {
-    const vm = this.#vm;
-    if (vm === null) return;
-    const own = vm.units.filter(isOwnActive);
-    if (own.length === 0) return;
-    const at = own.findIndex((u) => u.unitId === this.#selected);
-    const next =
-      at === -1
-        ? (own[dir > 0 ? 0 : own.length - 1] as TacticalUnit)
-        : (own[(at + dir + own.length) % own.length] as TacticalUnit);
-    this.#select(next, vm);
-    this.#paint();
+    this.#atomic(() => {
+      const vm = this.#vm;
+      if (vm === null) return;
+      const own = vm.units.filter(isOwnActive);
+      if (own.length === 0) return;
+      const at = own.findIndex((u) => u.unitId === this.#selected);
+      const next =
+        at === -1
+          ? (own[dir > 0 ? 0 : own.length - 1] as TacticalUnit)
+          : (own[(at + dir + own.length) % own.length] as TacticalUnit);
+      this.#select(next, vm);
+      this.#paint();
+    });
   }
 
   applyBattleOp(op: BattleOp): void {
-    switch (op.kind) {
-      case 'move':
-        this.#move(op.dir);
-        return;
-      case 'back':
-        this.#back();
-        return;
-      case 'activate':
-        this.#activate();
-        return;
-      case 'danger':
-        this.toggleDanger();
-        return;
-      case 'cycle':
-        this.cycleUnit(op.dir);
-        return;
-      case 'start':
-        this.#start();
-        return;
-      default:
-        op satisfies never;
-    }
+    this.#atomic(() => {
+      switch (op.kind) {
+        case 'move':
+          this.#move(op.dir);
+          return;
+        case 'back':
+          this.#back();
+          return;
+        case 'activate':
+          this.#activate();
+          return;
+        case 'danger':
+          this.toggleDanger();
+          return;
+        case 'cycle':
+          this.cycleUnit(op.dir);
+          return;
+        case 'start':
+          this.#start();
+          return;
+        default:
+          op satisfies never;
+      }
+    });
   }
 
   // --- input ---------------------------------------------------------------------------------
+
+  /** Every input op runs here (REV 6.2 C17): a throw anywhere in it — a rules call, the paint, a
+   *  throwing submit sink — restores the shell state the op started from and propagates. The
+   *  in-flight keys are NOT restored: a plan that was sent stays sent. */
+  #atomic<T>(fn: () => T): T {
+    const saved = {
+      mode: this.#mode,
+      cursor: this.#cursor,
+      selected: this.#selected,
+      memory: this.#memory,
+      dangerOn: this.#dangerOn,
+      drafts: new Map(this.#drafts),
+      lastActive: this.#lastActive,
+    };
+    try {
+      return fn();
+    } catch (err) {
+      this.#mode = saved.mode;
+      this.#cursor = saved.cursor;
+      this.#selected = saved.selected;
+      this.#memory = saved.memory;
+      this.#dangerOn = saved.dangerOn;
+      this.#drafts = saved.drafts;
+      this.#lastActive = saved.lastActive;
+      throw err;
+    }
+  }
 
   #select(unit: TacticalUnit, vm: TacticsBattleVM): void {
     this.#selected = unit.unitId;
@@ -570,7 +694,11 @@ export class TacticsBattle implements BattleOpsView {
         break;
       }
       case 'clear':
-        if (row.key === 'clearYes') this.#deps.onCancelQueue(vm.battleId, p.unitId);
+        if (row.key === 'clearYes') {
+          this.#deps.onCancelQueue(vm.battleId, p.unitId);
+          // The sent plan is gone: the next submit for this unit is a new round-trip (C18).
+          this.#inflight.delete(p.unitId);
+        }
         this.#mode = IDLE;
         break;
       default:
@@ -617,7 +745,7 @@ export class TacticsBattle implements BattleOpsView {
     if (vm === null || at === null) return;
     const p = this.#planning(vm);
     if (p === null) return;
-    const band = this.#overlays(vm, p, null, null);
+    const band = moveBand(p.ctx);
     let strides = 0;
     if (band.reach1.some((t) => sameTile(t, at))) strides = 1;
     else if (band.reach2.some((t) => sameTile(t, at))) strides = 2;
@@ -696,8 +824,14 @@ export class TacticsBattle implements BattleOpsView {
   }
 
   /** Pointer mirror of the D-pad: the cursor goes to the clicked tile; in an aim a legal tile
-   *  confirms; at rest an own unit's tile selects it and opens its menu. */
+   *  confirms (a skill aim also answers a click on the target's LIVE tile, where its sprite is
+   *  drawn — the aim itself sits on the projected one); at rest an own unit's tile selects it and
+   *  opens its menu. Atomic like every op. */
   #pointTo(tile: Tile): void {
+    this.#atomic(() => this.#pointToInner(tile));
+  }
+
+  #pointToInner(tile: Tile): void {
     const vm = this.#vm;
     if (vm === null) return;
     const mode = this.#mode;
@@ -711,7 +845,15 @@ export class TacticsBattle implements BattleOpsView {
       const p = this.#planning(vm);
       if (p !== null) {
         if (mode.kind === 'aimSkill') {
-          const aim = this.#skillAims(p, mode.skillId).find((a) => sameTile(a.aim, tile));
+          const liveTileOf = (target: ActionTarget): Tile | null => {
+            if (target === 'SelfTarget') return null;
+            const u = vm.units.find((x) => x.unitId === target.Unit);
+            return u === undefined ? null : { x: u.x, y: u.y };
+          };
+          const aim = this.#skillAims(p, mode.skillId).find((a) => {
+            const live = liveTileOf(a.target);
+            return sameTile(a.aim, tile) || (live !== null && sameTile(live, tile));
+          });
           if (aim !== undefined) {
             this.#mode = { ...mode, aimKey: aimKeyOf(aim.target) };
             this.#confirmAim();
@@ -776,8 +918,51 @@ export class TacticsBattle implements BattleOpsView {
     return this.#rules;
   }
 
+  /** The mode-valid draft of `unitId` (a draft made in the other mode is dropped, A28). */
+  #draftOf(unitId: number, mode: 'live' | 'prequeue'): Draft {
+    const held = this.#drafts.get(unitId);
+    return held === undefined || held.mode !== mode ? emptyDraft(unitId) : held.draft;
+  }
+
+  /** The projection's inputs, once per paint (REV 6.1 C9/C12): the turn order, one plan per own
+   *  Active unit (the draft replaces the READY row), the asleep wilds read from the LIVE board's
+   *  intents (never a board a draft already changed, C6), and the bait counts over those plans. */
+  #projectInputs(vm: TacticsBattleVM): ProjectInputs {
+    const rules = this.#rulesPort();
+    const order = [...vm.initiative.slice(vm.turnIdx), ...vm.nextInitiative];
+    const plans: PlanInput[] = [];
+    const baitPlanned = new Map<number, number>();
+    for (const u of vm.units) {
+      if (!isOwnActive(u)) continue;
+      const draft = this.#draftOf(u.unitId, modeOf(vm, u.unitId)).actions;
+      const actions = draft.length > 0 ? draft : (vm.readyPlans.get(u.unitId) ?? []);
+      if (actions.length === 0) continue;
+      plans.push({ unitId: u.unitId, actions });
+      for (const a of actions) {
+        if (typeof a === 'object' && 'Recruit' in a && a.Recruit.bait !== null) {
+          baitPlanned.set(a.Recruit.bait, (baitPlanned.get(a.Recruit.bait) ?? 0) + 1);
+        }
+      }
+    }
+    const live = rules.overlays(vm.board, this.#nullQuery());
+    const blocked = new Set(live.intents.filter((i) => isBlocked(i.block_pct)).map((i) => i.unit));
+    const baitHeld = new Map(vm.baits.map((b) => [b.itemId, b.count]));
+    return { order, plans, blocked, baitHeld, baitPlanned };
+  }
+
+  /** The query for danger and intents (no selection): the fresh budget is its unused basis. */
+  #nullQuery(): OverlayQuery {
+    return {
+      viewer: this.#deps.names.mySide,
+      selected: null,
+      skill_id: null,
+      aim: null,
+      budget: this.#rulesPort().freshBudget(),
+    };
+  }
+
   /** Everything the frame knows about the selected unit's plan, or null without a selection. */
-  #planning(vm: TacticsBattleVM): Planning | null {
+  #planning(vm: TacticsBattleVM, inputs: ProjectInputs = this.#projectInputs(vm)): Planning | null {
     const id = this.selectedUnitId;
     if (id === null) return null;
     const row = vm.board.units.find((u) => u.id === id);
@@ -785,21 +970,44 @@ export class TacticsBattle implements BattleOpsView {
     if (row === undefined || view === undefined) return null;
     const rules = this.#rulesPort();
     const hasReady = vm.readyPlans.has(id);
-    const mode: 'live' | 'prequeue' = vm.activeUnitId === id && !hasReady ? 'live' : 'prequeue';
-    const held = this.#drafts.get(id);
-    const draft = held === undefined || held.mode !== mode ? emptyDraft(id) : held.draft;
+    const mode = modeOf(vm, id);
+    const draft = this.#draftOf(id, mode);
     const startBudget = mode === 'live' ? row.budget : rules.freshBudget();
     const live = rules.unit(row);
-    let budget = startBudget;
-    let draftedAp = 0;
-    if (draft.actions.length > 0) {
-      const plan = rules.plan(startBudget, costEntries(rules, vm.board, live, draft.actions));
-      if ('Ok' in plan) {
-        budget = plan.Ok.remaining;
-        draftedAp = plan.Ok.total;
-      }
-    }
+    // The cost board: the live rows with this unit's own draft (bands, costs, recruit targets).
     const costBoard = applyPlan(rules, vm.board, id, draft.actions);
+    // The act / aim board: the projection up to this unit's turn, the unit itself at its LIVE row
+    // (an enemy plan that would KO it must not grey its menu, C10), then its draft.
+    const upTo = project(rules, vm.board, {
+      kind: vm.kind,
+      mySide: this.#deps.names.mySide,
+      order: inputs.order,
+      plans: inputs.plans,
+      blocked: inputs.blocked,
+      wilds: true,
+      upTo: id,
+    });
+    const actBoard = withRow(upTo.board, row);
+    const aimBoard = applyPlan(rules, actBoard, id, draft.actions);
+    const shown: readonly QueuedActionRule[] =
+      draft.actions.length > 0 ? draft.actions : (vm.readyPlans.get(id) ?? []);
+    const strip = stripVM({
+      rules,
+      liveBoard: vm.board,
+      actBoard,
+      unit: live,
+      startBudget,
+      actions: shown,
+      mode,
+      partyFull: vm.partyFull,
+      baitHeld: inputs.baitHeld,
+      baitPlanned: inputs.baitPlanned,
+    });
+    // The menu budget and the HUD's drafted spend come from the DRAFT only (C2): a READY row that
+    // the next action would replace never feeds them.
+    const drafted = draft.actions.length > 0;
+    const budget = drafted ? (strip.remaining ?? startBudget) : startBudget;
+    const draftedAp = drafted ? (strip.total ?? 0) : 0;
     const projected = costBoard.units.find((u) => u.id === id) as UnitRow;
     const unit: RulesUnit = rules.unit(projected);
     const ctx: MenuContext = {
@@ -807,7 +1015,7 @@ export class TacticsBattle implements BattleOpsView {
       mode,
       rules,
       costBoard,
-      aimBoard: costBoard,
+      aimBoard,
       unit,
       budget,
       actions: draft.actions,
@@ -829,6 +1037,9 @@ export class TacticsBattle implements BattleOpsView {
       ghost,
       budget,
       draftedAp,
+      aimBoard,
+      hidden: upTo.hidden,
+      strip,
     };
   }
 
@@ -845,25 +1056,6 @@ export class TacticsBattle implements BattleOpsView {
     const targets = recruitTargets(p.ctx);
     if (targets.length === 0) return null;
     return targets.includes(mode.targetId) ? mode.targetId : (targets[0] as number);
-  }
-
-  /** The rules' overlays for the frame: the selected unit's band and shield on the cost board with
-   *  the draft's remaining budget, the aiming skill / tile for range and aoe, danger and intents. */
-  #overlays(
-    vm: TacticsBattleVM,
-    p: Planning | null,
-    skillId: number | null,
-    aim: Cell | null,
-  ): OverlaySets {
-    const rules = this.#rulesPort();
-    const q: OverlayQuery = {
-      viewer: this.#deps.names.mySide,
-      selected: p?.unitId ?? null,
-      skill_id: skillId,
-      aim,
-      budget: p?.budget ?? rules.freshBudget(),
-    };
-    return overlaySets(rules.overlays(p?.ctx.costBoard ?? vm.board, q));
   }
 
   /** The rows of one menu level, labels and reasons resolved. */
@@ -937,44 +1129,52 @@ export class TacticsBattle implements BattleOpsView {
       const u = vm.units.find((x) => x.unitId === id);
       if (u === undefined || !isOwnActive(u)) this.#drafts.delete(id);
     }
+    // A READY row acknowledges the round-trip: the next submit (a replacement) may go (C18). When
+    // the row being replaced is still present this re-arms at once, so only the FIRST send of a
+    // turn is guarded against a double press — game-core replaces the plan, so a repeat is harmless.
+    for (const id of [...this.#inflight.keys()]) {
+      if (vm.readyPlans.has(id)) this.#inflight.delete(id);
+    }
   }
 
-  /** The frame for `vm` under the current state (every rules call happens here). */
+  /** The frame for `vm` under the current state, with the selection reconciled first (A28 / A30):
+   *  computed on a COPY of the mutable selection so a throw below leaves the shell untouched. */
   #compute(vm: TacticsBattleVM): Frame {
-    // Reconcile on a COPY of the mutable selection so a throw below leaves the shell untouched.
     const saved = {
       selected: this.#selected,
       cursor: this.#cursor,
       mode: this.#mode,
       lastActive: this.#lastActive,
       drafts: new Map(this.#drafts),
+      inflight: new Map(this.#inflight),
       vm: this.#vm,
     };
     this.#vm = vm;
     try {
       this.#reconcile(vm);
-      const frame = this.#frame(vm);
-      return frame;
+      return this.#frame(vm);
     } catch (err) {
       this.#selected = saved.selected;
       this.#cursor = saved.cursor;
       this.#mode = saved.mode;
       this.#lastActive = saved.lastActive;
       this.#drafts = saved.drafts;
+      this.#inflight = saved.inflight;
       this.#vm = saved.vm;
       throw err;
     }
   }
 
+  /** Every rules call of a frame happens here; the DOM is written only by `#commit`. */
   #frame(vm: TacticsBattleVM): Frame {
-    const p = this.#planning(vm);
+    const rules = this.#rulesPort();
+    const inputs = this.#projectInputs(vm);
+    const p = this.#planning(vm, inputs);
     let mode = this.#mode;
     if (p === null) mode = IDLE;
     // Revalidate the mode against the live lists (A30).
-    let aiming: { readonly skillId: number | null; readonly aim: Cell | null } = {
-      skillId: null,
-      aim: null,
-    };
+    let aim: SkillAim | null = null;
+    let recruitTarget: number | null = null;
     let cursor = this.#cursor;
     if (p !== null) {
       if (mode.kind === 'menu') {
@@ -983,11 +1183,10 @@ export class TacticsBattle implements BattleOpsView {
           mode = mode.level === 'root' ? IDLE : { kind: 'menu', level: 'root', index: 0 };
         else if (mode.index >= rows.length) mode = { ...mode, index: 0 };
       } else if (mode.kind === 'aimSkill') {
-        const aim = this.#currentAim(p, mode);
+        aim = this.#currentAim(p, mode);
         if (aim === null) mode = { kind: 'menu', level: 'skills', index: 0 };
         else {
           mode = { ...mode, aimKey: aimKeyOf(aim.target) };
-          aiming = { skillId: mode.skillId, aim: aim.aim };
           cursor = aim.aim;
         }
       } else if (mode.kind === 'aimRecruit') {
@@ -996,12 +1195,44 @@ export class TacticsBattle implements BattleOpsView {
         if (target === null) mode = { kind: 'menu', level: 'bait', index: 0 };
         else {
           mode = { ...mode, targetId: target, bait };
+          recruitTarget = target;
           const row = p.ctx.costBoard.units.find((u) => u.id === target);
           if (row !== undefined) cursor = row.pos;
         }
       }
     }
-    const overlays = this.#overlays(vm, p, aiming.skillId, aiming.aim);
+
+    // The overlays (A24 / C6): reach and shield on the cost board with the draft's remaining budget;
+    // range and aoe on the aim board while a skill is aimed; danger and intents on the danger board
+    // (every own plan applied, every enemy held at its live tile).
+    const viewer = this.#deps.names.mySide;
+    const dangerBoard = project(rules, vm.board, {
+      kind: vm.kind,
+      mySide: viewer,
+      order: inputs.order,
+      plans: inputs.plans,
+      blocked: inputs.blocked,
+      wilds: false,
+    }).board;
+    const dangerOut = rules.overlays(dangerBoard, this.#nullQuery());
+    let reachOut: OverlaysOut = NO_OVERLAYS;
+    let aimOut: OverlaysOut = NO_OVERLAYS;
+    if (p !== null) {
+      const base = { viewer, selected: p.unitId, budget: p.budget };
+      reachOut = rules.overlays(p.ctx.costBoard, { ...base, skill_id: null, aim: null });
+      if (mode.kind === 'aimSkill' && aim !== null) {
+        aimOut = rules.overlays(p.aimBoard, { ...base, skill_id: mode.skillId, aim: aim.aim });
+      }
+    }
+    const overlays = overlaySets({
+      reach1: reachOut.reach1,
+      reach2: reachOut.reach2,
+      shield: reachOut.shield,
+      range: aimOut.range,
+      aoe: aimOut.aoe,
+      danger: dangerOut.danger,
+      intents: dangerOut.intents,
+    });
     const board = buildBoard({
       width: vm.width,
       height: vm.height,
@@ -1059,16 +1290,28 @@ export class TacticsBattle implements BattleOpsView {
       p !== null && mode.kind === 'menu'
         ? { rows: this.#menuRows(p, mode.level), index: mode.index }
         : null;
-    const shown: readonly QueuedActionRule[] =
-      p === null
-        ? []
-        : p.draft.actions.length > 0
-          ? p.draft.actions
-          : (vm.readyPlans.get(p.unitId) ?? []);
+    const names = this.#deps.names;
     const strip = {
-      chips: shown.map((a) => ({ action: chipAction(a), label: chipLabel(a, this.#deps.names) })),
+      chips:
+        p === null
+          ? []
+          : p.strip.chips.map((ch) => ({
+              action: chipAction(ch.action),
+              label: chipLabel(ch.action, names),
+              cost: ch.cost,
+              costLabel: ch.cost !== null && ch.cost > 0 ? s.chipCost(ch.cost) : null,
+              badge: ch.badge,
+              badgeWord: s.badgeLabel(ch.badge),
+              note: ch.onlyHeld === null ? null : s.badgeOnlyHeld(ch.onlyHeld),
+            })),
       locked: p !== null && p.hasReady && p.draft.actions.length === 0,
     };
+    let panel: PanelVM | null = null;
+    if (p !== null && mode.kind === 'aimSkill' && aim !== null) {
+      panel = this.#skillPanel(vm, p, mode.skillId, aim);
+    } else if (p !== null && mode.kind === 'aimRecruit' && recruitTarget !== null) {
+      panel = this.#recruitPanel(vm, p, recruitTarget, mode.bait);
+    }
     const hint: HintBattle =
       p === null
         ? { start: 'endTurn', undo: false }
@@ -1087,9 +1330,131 @@ export class TacticsBattle implements BattleOpsView {
       banner,
       menu,
       strip,
+      panel,
       hint,
       reduced: this.#deps.reduceMotion(),
     };
+  }
+
+  /** The Projected wrapper of a pre-queued aim (A31): the label, the assumption about the aimed
+   *  target's tile, and in PvP the enemies-hold caveat. Null on a live turn. */
+  #projectedOf(
+    vm: TacticsBattleVM,
+    p: Planning,
+    target: { readonly id: number; readonly tile: Cell } | null,
+  ): PanelVM['projected'] {
+    if (p.mode !== 'prequeue') return null;
+    return {
+      label: s.projectedLabel(),
+      assumes:
+        target === null
+          ? null
+          : s.projectedAssumes(this.#deps.names.unit(target.id), a1(target.tile)),
+      enemies: vm.kind === 'pvp' ? s.projectedEnemiesHold() : null,
+    };
+  }
+
+  /** The forecast panel of a skill aim: the rules' forecast of the attacker at its drafted tile on
+   *  the AIM board against the aimed target there (a Burst: its first hit), shaped by `forecastVM`;
+   *  a hidden PvP target prints its hit line and a dash. */
+  #skillPanel(vm: TacticsBattleVM, p: Planning, skillId: number, aim: SkillAim): PanelVM {
+    const rules = this.#rulesPort();
+    const names = this.#deps.names;
+    const targetId = aim.target === 'SelfTarget' ? aim.hits[0] : aim.target.Unit;
+    const attackerRow = p.aimBoard.units.find((u) => u.id === p.unitId);
+    const targetRow =
+      targetId === undefined ? undefined : p.aimBoard.units.find((u) => u.id === targetId);
+    const projectedTarget = targetId !== undefined && targetRow !== undefined;
+    const lines: PanelLine[] = [];
+    const line = panelLine(lines, p.mode);
+    if (projectedTarget && attackerRow !== undefined) {
+      const f = rules.forecast(
+        rules.unit(attackerRow),
+        rules.unit(targetRow),
+        skillId,
+        rules.flank(p.aimBoard, p.unitId, targetId),
+      );
+      const fv = forecastVM(f);
+      line('vs', s.forecastVs(names.unit(targetId)));
+      if (!fv.hits) line('miss', s.forecastMiss());
+      else if (p.hidden.has(targetId)) {
+        line('hit', s.forecastHit(fv.hitPct));
+        line('damage', EM_DASH, false); // a secret plan: no number, so no tilde
+      } else {
+        line('hit', s.forecastHit(fv.hitPct));
+        line('damage', s.forecastDamage(fv.min, fv.max));
+        for (const item of fv.lines) {
+          switch (item.kind) {
+            case 'type':
+              // Immune prints a word, not a factor: no tilde (R6.6).
+              if (item.effectiveness === 'Immune') line('type', s.forecastTypeImmune(), false);
+              else line('type', s.forecastType(item.num, item.den));
+              break;
+            case 'stab':
+              line('stab', s.forecastStab());
+              break;
+            case 'flank':
+              line('flank', s.forecastFlank(item.num, item.den));
+              break;
+            case 'guard':
+              line('guard', s.forecastGuard(item.num, item.den));
+              break;
+            default:
+              item satisfies never;
+          }
+        }
+        if (fv.skull !== 'none') {
+          lines.push({
+            id: 'skull',
+            text: '',
+            tilde: false,
+            skull: {
+              kind: fv.skull,
+              label: fv.skull === 'full' ? s.forecastLethal() : s.forecastLethalMax(),
+            },
+          });
+        }
+        if (fv.firstStand) line('firstStand', s.forecastFirstStand());
+        if (fv.status !== null) line('status', s.forecastStatus(s.statusLabel(fv.status)));
+      }
+    }
+    return {
+      label: s.forecastLabel(),
+      lines,
+      projected: this.#projectedOf(
+        vm,
+        p,
+        projectedTarget ? { id: targetId, tile: targetRow.pos } : null,
+      ),
+    };
+  }
+
+  /** The forecast panel of a recruit aim: the rules' odds for the target as it stands on the COST
+   *  board (recruit needs adjacency now, C11) with the chosen bait's bonus; the line items are the
+   *  rules' four fields as given. */
+  #recruitPanel(vm: TacticsBattleVM, p: Planning, targetId: number, bait: number | null): PanelVM {
+    const rules = this.#rulesPort();
+    const names = this.#deps.names;
+    const lines: PanelLine[] = [];
+    const line = panelLine(lines, p.mode);
+    const targetRow = p.ctx.costBoard.units.find((u) => u.id === targetId);
+    let target: { readonly id: number; readonly tile: Cell } | null = null;
+    if (targetRow !== undefined) {
+      target = { id: targetId, tile: targetRow.pos };
+      const t = rules.unit(targetRow);
+      const held = vm.baits.find((b) => b.itemId === bait);
+      const odds = rules.recruitOdds(t.kit.stats.hp, t.cur_hp, held?.bonus ?? 0);
+      line('vs', s.forecastVs(names.unit(targetId)));
+      if ('Ok' in odds) {
+        line('recruit', s.forecastRecruit(odds.Ok.pct));
+        line(
+          'recruitLines',
+          s.forecastRecruitLines(odds.Ok.base, odds.Ok.bait, odds.Ok.weakened, odds.Ok.pct),
+        );
+      }
+      line('bait', s.forecastBait(held === undefined ? s.menuNoBait() : held.name));
+    }
+    return { label: s.forecastLabel(), lines, projected: this.#projectedOf(vm, p, target) };
   }
 
   /** Recompute and repaint from the current vm (after an op). */
@@ -1154,24 +1519,14 @@ export class TacticsBattle implements BattleOpsView {
       button('tactics-dock-next', s.dockNextUnit(), () => this.cycleUnit(1)),
     );
 
-    const strip = div('tactics-strip');
-    strip.setAttribute('aria-label', s.queueLabel());
-    if (frame.strip.locked) strip.classList.add('tactics-strip--locked');
-    for (const chip of frame.strip.chips) {
-      const el = document.createElement('span');
-      el.className = 'tactics-chip';
-      el.setAttribute('data-action', chip.action);
-      el.textContent = chip.label;
-      strip.appendChild(el);
-    }
-
     const children: HTMLElement[] = [buttons];
     let menuEl: HTMLElement | null = null;
     if (frame.menu !== null) {
       menuEl = this.#paintMenu(frame.menu);
       children.push(menuEl);
     }
-    children.push(strip);
+    children.push(this.#paintStrip(frame.strip));
+    if (frame.panel !== null) children.push(this.#paintPanel(frame.panel));
     dock.replaceChildren(...children);
 
     // Focus: the listbox while a menu is open (A36), the title anchor when it closes. Only on the
@@ -1183,6 +1538,92 @@ export class TacticsBattle implements BattleOpsView {
       this.#menuOpen = false;
       this.#titleEl.focus({ preventScroll: true });
     }
+  }
+
+  /** The plan strip: one chip per step — its label, the rules' AP cost as pips (none for a null or
+   *  zero cost), its badge (the word in title and name; the glyph is CSS) and the bait note. */
+  #paintStrip(strip: Frame['strip']): HTMLElement {
+    const el = div('tactics-strip');
+    el.setAttribute('aria-label', s.queueLabel());
+    if (strip.locked) el.classList.add('tactics-strip--locked');
+    const span = (className: string): HTMLSpanElement => {
+      const x = document.createElement('span');
+      x.className = className;
+      return x;
+    };
+    for (const chip of strip.chips) {
+      const c = span('tactics-chip');
+      c.setAttribute('data-action', chip.action);
+      const label = span('tactics-chip-label');
+      label.textContent = chip.label;
+      c.appendChild(label);
+      if (chip.cost !== null && chip.cost > 0 && chip.costLabel !== null) {
+        const pips = span('tactics-pips');
+        pips.setAttribute('role', 'group');
+        pips.setAttribute('aria-label', chip.costLabel);
+        for (let i = 0; i < chip.cost; i++) pips.appendChild(span('tactics-pip tactics-pip--full'));
+        c.appendChild(pips);
+      }
+      const badge = span(`tactics-badge tactics-badge--${chip.badge}`);
+      badge.setAttribute('role', 'img');
+      badge.setAttribute('title', chip.badgeWord);
+      badge.setAttribute('aria-label', chip.badgeWord);
+      c.appendChild(badge);
+      if (chip.note !== null) {
+        const note = span('tactics-chip-note');
+        note.textContent = chip.note;
+        c.appendChild(note);
+      }
+      el.appendChild(c);
+    }
+    return el;
+  }
+
+  /** The forecast panel, wrapped in the Projected frame on a pre-queued aim: each numeric line
+   *  leads with its own tilde node, a skull line holds the skull image, a hidden number is a dash. */
+  #paintPanel(panel: PanelVM): HTMLElement {
+    const el = div('tactics-forecast');
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-label', panel.label);
+    for (const line of panel.lines) {
+      const row = document.createElement('span');
+      row.className = 'tactics-forecast-line';
+      row.setAttribute('data-line', line.id);
+      if (line.tilde) {
+        const tilde = document.createElement('span');
+        tilde.className = 'tactics-tilde';
+        tilde.setAttribute('aria-hidden', 'true');
+        tilde.textContent = TILDE;
+        row.appendChild(tilde);
+      }
+      if (line.skull !== null) {
+        const skull = document.createElement('span');
+        skull.className = `tactics-skull tactics-skull--${line.skull.kind}`;
+        skull.setAttribute('role', 'img');
+        skull.setAttribute('aria-label', line.skull.label);
+        row.appendChild(skull);
+      } else {
+        row.appendChild(document.createTextNode(line.text));
+      }
+      el.appendChild(row);
+    }
+    if (panel.projected === null) return el;
+    const wrap = div('tactics-projected');
+    const text = (className: string, value: string): HTMLSpanElement => {
+      const x = document.createElement('span');
+      x.className = className;
+      x.textContent = value;
+      return x;
+    };
+    wrap.appendChild(text('tactics-projected-label', panel.projected.label));
+    wrap.appendChild(el);
+    if (panel.projected.assumes !== null) {
+      wrap.appendChild(text('tactics-projected-assumes', panel.projected.assumes));
+    }
+    if (panel.projected.enemies !== null) {
+      wrap.appendChild(text('tactics-projected-enemies', panel.projected.enemies));
+    }
+    return wrap;
   }
 
   #paintMenu(menu: NonNullable<Frame['menu']>): HTMLElement {
@@ -1211,9 +1652,11 @@ export class TacticsBattle implements BattleOpsView {
         el.appendChild(reason);
       }
       el.addEventListener('click', () => {
-        if (this.#mode.kind !== 'menu') return;
-        this.#mode = { ...this.#mode, index: i };
-        this.#chooseRow(i);
+        this.#atomic(() => {
+          if (this.#mode.kind !== 'menu') return;
+          this.#mode = { ...this.#mode, index: i };
+          this.#chooseRow(i);
+        });
       });
       if (i === menu.index) list.setAttribute('aria-activedescendant', el.id);
       list.appendChild(el);

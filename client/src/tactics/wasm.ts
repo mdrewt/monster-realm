@@ -19,6 +19,8 @@ import type { IntentKind, OverlaySets, Tile } from './boardModel';
 // --- serde mirrors -----------------------------------------------------------------------------
 
 export type RuleResult<T, E> = { readonly Ok: T } | { readonly Err: E };
+/** The Ok arm of a rules answer (one definition for every consumer). */
+export const isOk = <T, E>(r: RuleResult<T, E>): r is { readonly Ok: T } => 'Ok' in r;
 export interface Cell {
   readonly x: number;
   readonly y: number;
@@ -389,9 +391,12 @@ export function bindTacticsRules(pkg: TacticsWasmExports): TacticsRules {
 const has = (action: QueuedActionRule, tag: 'Skill' | 'Move'): boolean =>
   typeof action === 'object' && tag in action;
 
+/** A wild whose every turn-skip roll blocks (Sleep / Freeze: `block_pct` 100) does not act. */
+export const isBlocked = (blockPct: number): boolean => blockPct >= 100;
+
 /** The chip kind of a wild's plan: a blocked turn is a hold; else any Skill is an attack, else any Move a move. */
 export function intentKind(plan: readonly QueuedActionRule[], blockPct: number): IntentKind {
-  if (blockPct >= 100) return 'hold';
+  if (isBlocked(blockPct)) return 'hold';
   if (plan.some((a) => has(a, 'Skill'))) return 'attack';
   if (plan.some((a) => has(a, 'Move'))) return 'move';
   return 'hold';

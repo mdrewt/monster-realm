@@ -1681,4 +1681,76 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Reason shown on the greyed Flee row: fleeing needs the unit's whole action-point
   // budget; {ap} is the full budget. One short phrase.
   'tactics.reason.fleeFullAp': (p) => `Il faut les ${p.ap} PA`,
+  // @desc: Word of the plan strip's badge on a step certain to execute as planned (a live-turn step,
+  // End Turn or Flee). One short word; its glyph is a check mark.
+  'tactics.badge.firm': 'Ferme',
+  // @desc: Word of the plan strip's badge on a pre-queued step that holds only if the board stays as
+  // projected. One short word; its glyph is a tilde.
+  'tactics.badge.provisional': 'Provisoire',
+  // @desc: Word of the plan strip's badge on a step the rules would now refuse (its target gone, its
+  // path blocked, the plan unaffordable). One short word; its glyph is a cross.
+  'tactics.badge.stale': 'Périmé',
+  // @desc: Accessible name of the forecast panel shown while the player aims a skill or a recruit
+  // attempt. One short word.
+  'tactics.forecast.label': 'Prévision',
+  // @desc: Forecast line when the aimed skill cannot hit the target at any accuracy roll. One short
+  // phrase.
+  'tactics.forecast.miss': 'Ne peut pas toucher',
+  // @desc: Forecast line item when the target's type takes no damage from the skill's type. Two
+  // short words.
+  'tactics.forecast.typeImmune': 'Aucun effet',
+  // @desc: Forecast line item for the same-type attack bonus (the skill shares the attacker's type).
+  // The acronym STAB or a short phrase.
+  'tactics.forecast.stab': 'Bonus d’affinité',
+  // @desc: Accessible name of the full skull: the minimum damage roll knocks the target out. One
+  // short word.
+  'tactics.forecast.lethal': 'Létal',
+  // @desc: Accessible name of the hollow skull: only the maximum damage roll knocks the target out.
+  // One short phrase.
+  'tactics.forecast.lethalMax': 'Létal au jet maximal',
+  // @desc: Forecast line when the target's First Stand would catch the blow and leave it at 1 HP.
+  // One short phrase.
+  'tactics.forecast.firstStand': 'Survit à 1 PV',
+  // @desc: Label over a pre-queued forecast: its numbers are projected from planned moves and may
+  // change before the unit acts. One short line; the dash is U+2014.
+  'tactics.projected.label': 'Projeté — le plateau peut changer',
+  // @desc: Caveat under a pre-queued forecast in a player-versus-player battle: the projection
+  // assumes the enemy units do not move. One short phrase.
+  'tactics.projected.enemiesHold': 'suppose que les ennemis restent en place',
+  // @desc: Note on a plan-strip Recruit step whose bait is planned more often than the bag holds;
+  // {n} is how many the player holds. One short phrase.
+  'tactics.badge.onlyHeld': (p) => `seulement ${p.n} en stock`,
+  // @desc: Accessible name of a plan-strip step's action-point pips; {ap} is the step's cost in
+  // action points. A number and the unit.
+  'tactics.chip.cost': (p) => `${p.ap} PA`,
+  // @desc: First forecast line naming the aimed target; {unit} is the target's name. Two short words.
+  'tactics.forecast.vs': (p) => `contre ${p.unit}`,
+  // @desc: Forecast line with the chance to hit; {pct} is a whole percentage. One short phrase.
+  'tactics.forecast.hit': (p) => `Touche ${p.pct} %`,
+  // @desc: Forecast line with the damage range; {min} and {max} are hit points, the dash is U+2013.
+  // One short phrase.
+  'tactics.forecast.damage': (p) => `${p.min}–${p.max} dégâts`,
+  // @desc: Forecast line item for a whole-number type multiplier; {num} is the multiplier. The sign is
+  // U+00D7.
+  'tactics.forecast.typeTimes': (p) => `Affinité ×${p.num}`,
+  // @desc: Forecast line item for a fractional type multiplier; {num} over {den}. The sign is U+00D7.
+  'tactics.forecast.typeOver': (p) => `Affinité ×${p.num}/${p.den}`,
+  // @desc: Forecast line item for the flanking multiplier; {num} over {den}. The sign is U+00D7.
+  'tactics.forecast.flank': (p) => `Flanc ×${p.num}/${p.den}`,
+  // @desc: Forecast line item for the target's Guard multiplier; {num} over {den}. The sign is U+00D7.
+  'tactics.forecast.guard': (p) => `Garde ×${p.num}/${p.den}`,
+  // @desc: Forecast line for the status the skill may inflict; {status} is the status word already
+  // translated. One short phrase.
+  'tactics.forecast.status': (p) => `Peut infliger ${p.status}`,
+  // @desc: Forecast line with the recruit chance; {pct} is a whole percentage. One short phrase.
+  'tactics.forecast.recruit': (p) => `Recrutement ${p.pct} %`,
+  // @desc: Forecast line item summing the recruit chance: {base} the species base, {bait} the bait's
+  // share, {weakened} the low-health share, {pct} the total. Numbers and signs only.
+  'tactics.forecast.recruitLines': (p) => `${p.base} + ${p.bait} + ${p.weakened} = ${p.pct} %`,
+  // @desc: Forecast line naming the bait chosen for the recruit attempt; {item} is the item's name
+  // or the no-bait label. One short phrase.
+  'tactics.forecast.bait': (p) => `Appât : ${p.item}`,
+  // @desc: Assumption line under a pre-queued forecast; {unit} is the target's name and {tile} its
+  // projected board square in chess notation (a letter and a number). One short phrase.
+  'tactics.projected.assumes': (p) => `si ${p.unit} est toujours en ${p.tile}`,
 } satisfies Catalog);

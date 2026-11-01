@@ -10,6 +10,7 @@
 import { t, tf } from '../ui/i18n/resolver';
 import type { IntentKind, Stance, StatusTag } from './boardModel';
 import type { MenuRowId, ReasonCode } from './commandModel';
+import type { Badge } from './queueStrip';
 
 // --- region labels --------------------------------------------------------------------------
 
@@ -219,3 +220,62 @@ export const ghostLabel = (): string => t('tactics.ghost.label');
 export const dockDanger = (): string => t('tactics.dock.danger');
 export const dockPrevUnit = (): string => t('tactics.dock.prevUnit');
 export const dockNextUnit = (): string => t('tactics.dock.nextUnit');
+
+// --- plan strip badges and pips (bt-11, BT11.3) ----------------------------------------------
+
+/** The badge's word (its title and accessible name; the glyph is CSS). */
+export function badgeLabel(badge: Badge): string {
+  switch (badge) {
+    case 'firm':
+      return t('tactics.badge.firm');
+    case 'provisional':
+      return t('tactics.badge.provisional');
+    case 'stale':
+      return t('tactics.badge.stale');
+    default:
+      return badge satisfies never;
+  }
+}
+export const badgeOnlyHeld = (n: number): string => tf('tactics.badge.onlyHeld', { n });
+export const chipCost = (ap: number): string => tf('tactics.chip.cost', { ap });
+
+// --- forecast panel (bt-11, BT11.4) ------------------------------------------------------------
+
+export const forecastLabel = (): string => t('tactics.forecast.label');
+export const forecastVs = (unit: string): string => tf('tactics.forecast.vs', { unit });
+export const forecastHit = (pct: number): string => tf('tactics.forecast.hit', { pct });
+export const forecastDamage = (min: number, max: number): string =>
+  tf('tactics.forecast.damage', { min, max });
+export const forecastMiss = (): string => t('tactics.forecast.miss');
+/** The type-chart multiplier as the rules reduce it: a whole number prints ×N, else ×N/D. */
+export const forecastType = (num: number, den: number): string =>
+  den === 1
+    ? tf('tactics.forecast.typeTimes', { num })
+    : tf('tactics.forecast.typeOver', { num, den });
+export const forecastTypeImmune = (): string => t('tactics.forecast.typeImmune');
+export const forecastStab = (): string => t('tactics.forecast.stab');
+export const forecastFlank = (num: number, den: number): string =>
+  tf('tactics.forecast.flank', { num, den });
+export const forecastGuard = (num: number, den: number): string =>
+  tf('tactics.forecast.guard', { num, den });
+export const forecastLethal = (): string => t('tactics.forecast.lethal');
+export const forecastLethalMax = (): string => t('tactics.forecast.lethalMax');
+export const forecastFirstStand = (): string => t('tactics.forecast.firstStand');
+/** `status` is already resolved (`statusLabel`). */
+export const forecastStatus = (status: string): string => tf('tactics.forecast.status', { status });
+export const forecastRecruit = (pct: number): string => tf('tactics.forecast.recruit', { pct });
+export const forecastRecruitLines = (
+  base: number,
+  bait: number,
+  weakened: number,
+  pct: number,
+): string => tf('tactics.forecast.recruitLines', { base, bait, weakened, pct });
+export const forecastBait = (item: string): string => tf('tactics.forecast.bait', { item });
+
+// --- the Projected style (bt-11, BT11.5) -------------------------------------------------------
+
+export const projectedLabel = (): string => t('tactics.projected.label');
+/** `tile` is the A1 notation the shell formats (a letter and a 1-based row). */
+export const projectedAssumes = (unit: string, tile: string): string =>
+  tf('tactics.projected.assumes', { unit, tile });
+export const projectedEnemiesHold = (): string => t('tactics.projected.enemiesHold');

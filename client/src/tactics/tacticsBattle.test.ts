@@ -58,6 +58,31 @@
 // menu; the overlays are never asked of the rules), and the new catalog keys are absent.
 // Strings are asserted through CATALOG_EN / CATALOG_FR. Do NOT edit these tests to match a buggy
 // implementation; correct them from the spec only.
+//
+// bt-11 ROUND 4 (increment C: the strip's AP pips / badges / `only N held` note, the forecast panel,
+// the provisional board's Projected style; spec BT11.3 / BT11.4 / BT11.5; plan REV 6 R6.5 / R6.6 as
+// amended by REV 6.1 C1–C16 and REV 6.2 C17–C20). DOM CONTRACT PINNED HERE (R6.6 + C5 + C7): a
+// strip chip `span.tactics-chip[data-action]` holds, in order, `span.tactics-chip-label` (the
+// label), `span.tactics-pips[role=group][aria-label = tactics.chip.cost {ap}]` with exactly `cost`
+// `span.tactics-pip.tactics-pip--full` (ABSENT for a null or 0 cost), `span.tactics-badge
+// .tactics-badge--firm|provisional|stale[role=img]` whose title AND aria-label are the badge word
+// and which holds no text, and, for an over-planned bait, `span.tactics-chip-note` (`only N held`).
+// The forecast panel is `div.tactics-forecast[role=group][aria-label = tactics.forecast.label]`,
+// present only while aiming, AFTER `.tactics-strip` in the dock, holding
+// `span.tactics-forecast-line[data-line]` lines (vs / miss / hit / damage / type / stab / flank /
+// guard / skull / firstStand / status; vs / recruit / recruitLines / bait); a pre-queued aim wraps
+// it in `div.tactics-projected` > [`.tactics-projected-label`, `.tactics-forecast`,
+// `.tactics-projected-assumes`, PvP: `.tactics-projected-enemies`] and leads each NUMERIC line with
+// its own `span.tactics-tilde[aria-hidden=true]` (U+007E); a PvP enemy that acts before the unit
+// prints `[vs, hit, damage = U+2014]`. NAMED INTENTIONAL CHANGES to the shared fake: the plan's
+// per-entry charges are 5 / 11 / 0 (was 5 / 11 / 13: a real EndTurn costs 0, so the pips-absent rule
+// is exercised); the `targets` stand-in refuses a caster that is not Active (C10's self-KO case);
+// the script grows `aiPlan`, `forecastFor` (by TARGET id), `recruitOddsFor`, `flank`, `pathRefused`,
+// `intents` (a list or a function of the board asked) and the C17 throw switches — their defaults
+// answer exactly as before, so every bt-10 / round-3 test reads the same answers. RED REASON (round
+// 4): no pips / badge / note / panel / wrapper element exists, the panel never asks `forecast` /
+// `recruitOdds`, the shell never projects, the in-flight key never re-arms on a READY row, and the 26
+// new catalog keys are absent.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EventPayload, QueuedAction } from '../module_bindings/types';
@@ -79,12 +104,16 @@ import type {
   Entry,
   ForecastOut,
   GeometryError,
+  Intent,
   OverlayQuery,
   OverlaysOut,
   PipelineTrace,
   PlanOut,
   QueuedActionRule,
+  RecruitOdds,
+  RuleEffectiveness,
   RuleResult,
+  RuleStatusKind,
   RulesBoard,
   RulesUnit,
   SkillTactics,
@@ -164,8 +193,10 @@ const REMAINING: TurnBudget = {
   attacks: 0,
   last: { Move: { strides: 1, taxed: false } },
 };
-/** The fake plan's per-entry charges: distinct primes. */
-const COSTS: readonly number[] = [5, 11, 13];
+/** The fake plan's per-entry charges: distinct primes, then 0 (bt-11 round 4, named intentional
+ *  change, REV 6.2 C20: a real EndTurn costs 0, so a third chip — the READY row's End — exercises
+ *  the "no pips for a 0 cost" rule; was 13). */
+const COSTS: readonly number[] = [5, 11, 0];
 
 /** Skill 11: Light, a Caster-origin Burst (SelfTarget). Skill 12: Heavy, a TargetUnit Single. */
 const S11: SkillTactics = {
@@ -258,7 +289,9 @@ const FORECAST: ForecastOut = {
 };
 
 /** A geometry-free stand-in for the rules' target sets: skill 11 at the caster's own tile hits every
- *  conscious unit of the other side; skill 12 hits the conscious enemy standing on the aim. */
+ *  conscious unit of the other side; skill 12 hits the conscious enemy standing on the aim. bt-11
+ *  round 4 (named intentional change, REV 6.1 C10): a caster that is not Active on the board asked
+ *  aims at nothing (no bt-10 / round-3 test aims with a KO'd caster). */
 function shellTargets(
   board: RulesBoard,
   caster: number,
@@ -266,7 +299,7 @@ function shellTargets(
   aim: Cell,
 ): RuleResult<number[], GeometryError> {
   const me = board.units.find((u) => u.id === caster);
-  if (me === undefined) return { Err: { UnknownCaster: caster } };
+  if (me === undefined || me.state !== 'Active') return { Err: { UnknownCaster: caster } };
   const foes = board.units.filter((u) => u.side !== me.side && u.state === 'Active');
   if (skillId === 11) {
     return aim.x === me.pos.x && aim.y === me.pos.y
@@ -296,7 +329,30 @@ interface ShellScript {
   recruitTargets: readonly number[];
   /** When set, every overlays() call throws it. */
   overlaysThrow: Error | null;
+  /** bt-11 round 4: each wild's `aiPlan` answer by unit id (default ['EndTurn']). */
+  aiPlan: ReadonlyMap<number, readonly QueuedActionRule[]>;
+  /** The `forecast` answer by TARGET id (default FORECAST). */
+  forecastFor: ReadonlyMap<number, ForecastOut>;
+  /** The `recruitOdds` answer by `oddsKey(maxHp, hp, baitBonus)` (default the round-3 answer). */
+  recruitOddsFor: ReadonlyMap<string, RecruitOdds>;
+  /** What `flank()` answers (default false). */
+  flank: boolean;
+  /** Canonical destinations `path()` refuses with DestOccupied. */
+  pathRefused: Set<string>;
+  /** The intents of every `overlays` answer: a list, or a function of the board asked. */
+  intents: readonly Intent[] | ((board: RulesBoard) => readonly Intent[]);
+  /** When set, every forecast() / recruitOdds() call throws it (REV 6.2 C17). */
+  forecastThrow: Error | null;
+  recruitOddsThrow: Error | null;
 }
+
+/** The `recruitOddsFor` key of one recruitOdds question. */
+const oddsKey = (maxHp: number, hp: number, baitBonus: number): string =>
+  `${maxHp}/${hp}/${baitBonus}`;
+/** The round-3 recruitOdds answer (any unscripted question). */
+const B_ODDS: RecruitOdds = { pct: 41, base: 8, bait: 0, weakened: 33 };
+/** A wild's default plan: hold. */
+const END_ONLY: readonly QueuedActionRule[] = ['EndTurn'];
 
 interface Fake {
   readonly rules: TacticsRules;
@@ -323,8 +379,9 @@ function planAnswer(
   };
 }
 
-function overlaysAnswer(script: ShellScript, q: OverlayQuery): OverlaysOut {
+function overlaysAnswer(script: ShellScript, board: RulesBoard, q: OverlayQuery): OverlaysOut {
   const selected = q.selected !== null;
+  const intents = typeof script.intents === 'function' ? script.intents(board) : script.intents;
   return {
     reach1: selected ? script.reach1 : [],
     reach2: selected ? script.reach2 : [],
@@ -332,7 +389,7 @@ function overlaysAnswer(script: ShellScript, q: OverlayQuery): OverlaysOut {
     aoe: [],
     danger: script.danger,
     shield: [],
-    intents: [],
+    intents,
   };
 }
 
@@ -347,6 +404,14 @@ function fakeRules(): Fake {
     refused: new Set<string>(),
     recruitTargets: [],
     overlaysThrow: null,
+    aiPlan: new Map<number, readonly QueuedActionRule[]>(),
+    forecastFor: new Map<number, ForecastOut>(),
+    recruitOddsFor: new Map<string, RecruitOdds>(),
+    flank: false,
+    pathRefused: new Set<string>(),
+    intents: [],
+    forecastThrow: null,
+    recruitOddsThrow: null,
   };
   const rec = (name: string, args: readonly unknown[]): void => {
     calls.push({ name, args });
@@ -370,6 +435,7 @@ function fakeRules(): Fake {
     },
     path: (board, mover, dest) => {
       rec('path', [board, mover, dest]);
+      if (script.pathRefused.has(canon(dest))) return { Err: 'DestOccupied' };
       return { Ok: { steps: [dest], cost: 3 } };
     },
     disengage: (board, mover, start) => {
@@ -378,19 +444,21 @@ function fakeRules(): Fake {
     },
     flank: (board, attacker, target) => {
       rec('flank', [board, attacker, target]);
-      return false;
+      return script.flank;
     },
     forecast: (attacker, target, skillId, flank) => {
       rec('forecast', [attacker, target, skillId, flank]);
-      return FORECAST;
+      if (script.forecastThrow !== null) throw script.forecastThrow;
+      return script.forecastFor.get(target.id) ?? FORECAST;
     },
     recruitOdds: (maxHp, hp, baitBonus) => {
       rec('recruitOdds', [maxHp, hp, baitBonus]);
-      return { Ok: { pct: 41, base: 8, bait: 0, weakened: 33 } };
+      if (script.recruitOddsThrow !== null) throw script.recruitOddsThrow;
+      return { Ok: script.recruitOddsFor.get(oddsKey(maxHp, hp, baitBonus)) ?? B_ODDS };
     },
     aiPlan: (board, unit) => {
       rec('aiPlan', [board, unit]);
-      return ['EndTurn'];
+      return [...(script.aiPlan.get(unit) ?? END_ONLY)];
     },
     recruitTargets: (board, unit, budget) => {
       rec('recruitTargets', [board, unit, budget]);
@@ -407,7 +475,7 @@ function fakeRules(): Fake {
     overlays: (board, q) => {
       rec('overlays', [board, q]);
       if (script.overlaysThrow !== null) throw script.overlaysThrow;
-      return overlaysAnswer(script, q);
+      return overlaysAnswer(script, board, q);
     },
   };
   return { rules, calls, script };
@@ -1859,6 +1927,256 @@ function draftMove(k: Kit, from: Cell, to: Cell, label: string): void {
 const callsSince = (k: Kit, mark: number, name: string): Call[] =>
   k.fake.calls.slice(mark).filter((x) => x.name === name);
 
+// --- bt-11 round 4: the strip's chips, the forecast panel, the Projected wrapper ---------------
+
+/** U+007E TILDE (the Projected prefix) and U+2014 EM DASH (a hidden number), by code point. */
+const TILDE = String.fromCharCode(0x7e);
+const EM_DASH = String.fromCharCode(0x2014);
+
+/** Every recorded call of `name` (the whole kit, not since a mark). */
+const callsOf = (calls: readonly Call[], name: string): Call[] =>
+  calls.filter((x) => x.name === name);
+
+/** A row of a rules board by id. */
+function boardRow(b: RulesBoard, id: number): UnitRow {
+  const r = b.units.find((u) => u.id === id);
+  if (r === undefined) throw new Error(`no unit ${id} on the board`);
+  return r;
+}
+const tileOf = (b: unknown, id: number): string => canon(boardRow(b as RulesBoard, id).pos);
+
+/** One forecast, every printed number a role-distinct prime; d0..d2, applied and the HPs are other
+ *  primes the panel must never print. */
+interface FcSpec {
+  readonly hit: number;
+  readonly min: number;
+  readonly max: number;
+  readonly minAfter: number;
+  readonly maxAfter: number;
+  readonly eff?: RuleEffectiveness;
+  readonly type?: readonly [number, number];
+  readonly stab?: boolean;
+  readonly flank?: boolean;
+  readonly guard?: boolean;
+  readonly killsMin?: boolean;
+  readonly killsMax?: boolean;
+  readonly firstStand?: boolean;
+  readonly status?: RuleStatusKind | null;
+  readonly miss?: boolean;
+}
+function fcTrace(
+  hit: boolean,
+  d3: number,
+  hpAfter: number,
+  eff: RuleEffectiveness | null,
+): PipelineTrace {
+  return {
+    hit,
+    d0: hit ? 151 : 0,
+    d1: hit ? 157 : 0,
+    d2: hit ? 163 : 0,
+    d3: hit ? d3 : 0,
+    effectiveness: eff,
+    applied: hit ? 167 : 0,
+    hp_after: hpAfter,
+    stood_ground: false,
+  };
+}
+function fc(s: FcSpec): ForecastOut {
+  const hit = s.miss !== true;
+  const eff: RuleEffectiveness | null = hit ? (s.eff ?? 'Neutral') : null;
+  return {
+    hit_pct: s.hit,
+    stab: s.stab ?? false,
+    flank: s.flank ?? false,
+    guard: s.guard ?? false,
+    effectiveness: eff,
+    min: fcTrace(hit, s.min, s.minAfter, eff),
+    max: fcTrace(hit, s.max, s.maxAfter, eff),
+    kills_min: s.killsMin ?? false,
+    kills_max: s.killsMax ?? false,
+    first_stand_saves: s.firstStand ?? false,
+    status: s.status ?? null,
+    status_blocked: false,
+    flank_factor: [7, 5],
+    guard_factor: [11, 13],
+    type_factor: s.type ?? [1, 1],
+  };
+}
+/** Target 3: hit 59, d3 37..41, an unusual type factor 3/2, STAB, flank 7/5, Guard 11/13, Poison. */
+const SPEC_T3: FcSpec = {
+  hit: 59,
+  min: 37,
+  max: 41,
+  minAfter: 29,
+  maxAfter: 17,
+  eff: 'SuperEffective',
+  type: [3, 2],
+  stab: true,
+  flank: true,
+  guard: true,
+  status: 'Poison',
+};
+const T3 = fc(SPEC_T3);
+/** Target 4: hit 47, d3 101..103, Neutral, only the max roll kills (a hollow skull). */
+const T4 = fc({ hit: 47, min: 101, max: 103, minAfter: 107, maxAfter: 109, killsMax: true });
+/** Target 1 (a wild's attack in a projection): its min roll leaves unit 1 at 2 HP. */
+const T1 = fc({ hit: 131, min: 137, max: 139, minAfter: 2, maxAfter: 1 });
+/** The hidden / unprinted numbers of T3 (they must never reach a hidden line or any line). */
+const T3_UNPRINTED = ['29', '17', '151', '157', '163', '167'];
+
+/** recruitOdds answers whose line items do NOT sum to the percent (the panel prints the rules'
+ *  fields, never a TypeScript sum): unit 3 with no bait / with the bonus-150 bait, unit 4 with it.
+ *  The base is 13 (not the design's 8), so a base literal is caught. */
+const R3_0: RecruitOdds = { pct: 37, base: 13, bait: 0, weakened: 23 };
+const R3_150: RecruitOdds = { pct: 67, base: 13, bait: 19, weakened: 29 };
+const R4_150: RecruitOdds = { pct: 31, base: 13, bait: 19, weakened: 11 };
+
+/** T3's panel lines on unit 3: [data-line, text without the tilde]. */
+const t3Lines = (): string[][] => [
+  ['vs', en('tactics.forecast.vs', { unit: 'unit#3' })],
+  ['hit', en('tactics.forecast.hit', { pct: 59 })],
+  ['damage', en('tactics.forecast.damage', { min: 37, max: 41 })],
+  ['type', en('tactics.forecast.typeOver', { num: 3, den: 2 })],
+  ['stab', en('tactics.forecast.stab')],
+  ['flank', en('tactics.forecast.flank', { num: 7, den: 5 })],
+  ['guard', en('tactics.forecast.guard', { num: 11, den: 13 })],
+  ['status', en('tactics.forecast.status', { status: en('tactics.status.poison') })],
+];
+/** T4's panel lines on unit 4 (the skull line holds no text). */
+const t4Lines = (): string[][] => [
+  ['vs', en('tactics.forecast.vs', { unit: 'unit#4' })],
+  ['hit', en('tactics.forecast.hit', { pct: 47 })],
+  ['damage', en('tactics.forecast.damage', { min: 101, max: 103 })],
+  ['skull', ''],
+];
+
+const panelOf = (root: HTMLElement): HTMLElement | null =>
+  root.querySelector<HTMLElement>('.tactics-dock .tactics-forecast');
+const thePanel = (root: HTMLElement): HTMLElement => q(root, '.tactics-dock .tactics-forecast');
+const linesOf = (panel: Element): HTMLElement[] => [
+  ...panel.querySelectorAll<HTMLElement>('.tactics-forecast-line'),
+];
+const lineIds = (panel: Element): string[] =>
+  linesOf(panel).map((l) => l.getAttribute('data-line') ?? '');
+/** A line's text with its tilde node removed. */
+function lineText(line: Element): string {
+  const copy = line.cloneNode(true) as Element;
+  for (const t of copy.querySelectorAll('.tactics-tilde')) t.remove();
+  return (copy.textContent ?? '').trim();
+}
+const lineEntries = (panel: Element): string[][] =>
+  linesOf(panel).map((l) => [l.getAttribute('data-line') ?? '', lineText(l)]);
+const lineOf = (panel: Element, id: string): HTMLElement =>
+  q(panel, `.tactics-forecast-line[data-line="${id}"]`);
+
+/** The Projected wrapper's children, by role, in order. */
+const WRAP_PARTS = [
+  'tactics-projected-label',
+  'tactics-forecast',
+  'tactics-projected-assumes',
+  'tactics-projected-enemies',
+];
+const wrapParts = (wrap: Element): string[] =>
+  [...wrap.children].map((ch) => WRAP_PARTS.find((p) => ch.classList.contains(p)) ?? ch.className);
+const textOf = (root: ParentNode, selector: string): string | null =>
+  root.querySelector(selector)?.textContent?.trim() ?? null;
+
+/** A strip chip's children, by role, in order. */
+const CHIP_PARTS = ['tactics-chip-label', 'tactics-pips', 'tactics-badge', 'tactics-chip-note'];
+const chipParts = (chip: Element): string[] =>
+  [...chip.children].map((ch) => CHIP_PARTS.find((p) => ch.classList.contains(p)) ?? ch.className);
+const BADGES = ['firm', 'provisional', 'stale'] as const;
+type BadgeWord = (typeof BADGES)[number];
+/** The badge states a chip's badge element wears. */
+const badgeStates = (chip: Element): string[] => {
+  const badge = chip.querySelector('.tactics-badge');
+  return badge === null
+    ? []
+    : BADGES.filter((b) => badge.classList.contains(`tactics-badge--${b}`));
+};
+
+/** Pins one strip chip (R6.6 + C5): label, pips (absent for a null / 0 cost), badge, note. */
+function expectChip(
+  chip: HTMLElement | undefined,
+  want: {
+    readonly label: string;
+    readonly cost: number | null;
+    readonly badge: BadgeWord;
+    readonly note?: string;
+  },
+  label: string,
+): void {
+  expect(chip, `${label}: the chip is painted`).toBeDefined();
+  const el = chip as HTMLElement;
+  const costed = want.cost !== null && want.cost > 0;
+  expect(
+    chipParts(el),
+    `${label}: label, ${costed ? 'pips, ' : 'no pips (a null / 0 cost), '}badge${want.note === undefined ? '' : ', note'}`,
+  ).toEqual([
+    'tactics-chip-label',
+    ...(costed ? ['tactics-pips'] : []),
+    'tactics-badge',
+    ...(want.note === undefined ? [] : ['tactics-chip-note']),
+  ]);
+  expect(textOf(el, '.tactics-chip-label'), `${label}: the label`).toBe(want.label);
+  if (costed) {
+    const pips = q(el, '.tactics-pips');
+    expect(pips.getAttribute('role'), `${label}: the pips are a group`).toBe('group');
+    expect(pips.getAttribute('aria-label'), `${label}: labelled chip.cost over the cost`).toBe(
+      en('tactics.chip.cost', { ap: want.cost }),
+    );
+    expect(pips.children.length, `${label}: exactly ${want.cost} pips`).toBe(want.cost);
+    expect(
+      pips.querySelectorAll('.tactics-pip.tactics-pip--full').length,
+      `${label}: every pip full`,
+    ).toBe(want.cost);
+  }
+  expect(badgeStates(el), `${label}: the badge is ${want.badge} (and nothing else)`).toEqual([
+    want.badge,
+  ]);
+  const badge = q(el, '.tactics-badge');
+  const word = en(`tactics.badge.${want.badge}`);
+  expect(badge.getAttribute('role'), `${label}: the badge is an img`).toBe('img');
+  expect(
+    [badge.getAttribute('title'), badge.getAttribute('aria-label')],
+    `${label}: title AND aria-label are badge.${want.badge}`,
+  ).toEqual([word, word]);
+  expect((badge.textContent ?? '').trim(), `${label}: the badge holds no text`).toBe('');
+  if (want.note === undefined) {
+    expect((el.textContent ?? '').trim(), `${label}: the chip reads its label alone`).toBe(
+      want.label,
+    );
+  } else {
+    expect(textOf(el, '.tactics-chip-note'), `${label}: the note`).toBe(want.note);
+  }
+}
+
+/** Names the panel prints that carry digits of their own (unit#3, ...), removed before a digit scan. */
+const NAMES_WITH_DIGITS = ['unit#1', 'unit#2', 'unit#3', 'unit#4'];
+/** Every digit run of every text node under `el`, the names removed first. */
+function digitRuns(el: Element): string[] {
+  const out: string[] = [];
+  const walk = (n: Node): void => {
+    if (n.nodeType === Node.TEXT_NODE) {
+      let t = n.textContent ?? '';
+      for (const name of NAMES_WITH_DIGITS) t = t.split(name).join(' ');
+      out.push(...(t.match(/\d+/g) ?? []));
+      return;
+    }
+    for (const ch of n.childNodes) walk(ch);
+  };
+  walk(el);
+  return out;
+}
+
+/** Open unit `at`'s menu, then Skills, then skill `id`: the skill aim. */
+function aimSkill(k: Kit, at: Cell, id: number, label: string): void {
+  openMenuAt(k, at, label);
+  choose(k, 'skills');
+  choose(k, `skill:${id}`);
+}
+
 describe('TacticsBattle: the command menu (BT11.1)', () => {
   it('BT11-1-SHELL-MENU: A on the selected own unit opens a labelled, focused listbox of the catalog`s rows — the greyed ones aria-disabled with their reason, the cursor row aria-selected and active — that Down / Up walk (wrapping) and B closes; A on an empty tile or a foe opens nothing; the End row reads Guard exactly when the rules grant it', () => {
     // WRONG IMPL KILLED: a menu with a hard-coded or English label (the catalog's menu.label /
@@ -1978,11 +2296,12 @@ describe('TacticsBattle: the command menu (BT11.1)', () => {
     expect(rowLabel(menuRow(k.root, 'end')), 'no Guard: End Turn').toBe(en('tactics.menu.endTurn'));
   });
 
-  it('BT11-1-SHELL-TEXT-FROM-CATALOG: painted in French, every text node, aria-label and title in the dock — the menu rows and their reasons, the Skills sub-list, the strip and its chip, the dock buttons — is a French catalog value, a name from the names dependency, a digit string or a glyph, and none is an English catalog word', () => {
+  it('BT11-1-SHELL-TEXT-FROM-CATALOG: painted in French, every text node, aria-label and title in the dock — the menu rows and their reasons, the Skills sub-list, the strip and its chip with its AP pips and its badge, the dock buttons — is a French catalog value, a name from the names dependency, a digit string or a glyph, and none is an English catalog word', () => {
     // WRONG IMPL KILLED: a literal word in the dock (`el('button', 'c', 'Move')`, a hard-coded
     // "Skills" or "Danger") that the strings.test.ts source scan cannot see (built by concatenation
     // or in a helper); a label resolved once at construction (the French boot would read English);
-    // a reason or a chip label read from the English catalog.
+    // a reason or a chip label read from the English catalog. Round 4: the pips' group label or the
+    // badge word read from the English catalog, or a literal "AP" / "Firm" written beside them.
     setLocale('fr');
     const FRC = CATALOG_FR as unknown as Record<string, unknown>;
     const k = make();
@@ -2004,6 +2323,13 @@ describe('TacticsBattle: the command menu (BT11.1)', () => {
         allowed.add((fn as (p: Record<string, unknown>) => string)({ ap: FRESH.ap }));
       }
     }
+    // Round 4: the live Move chip's pips are labelled chip.cost over its prefix cost (5 AP).
+    const chipCost = FRC['tactics.chip.cost'];
+    const frCost =
+      typeof chipCost === 'function'
+        ? (chipCost as (p: Record<string, unknown>) => string)({ ap: COSTS[0] })
+        : 'tactics.chip.cost is missing from the French catalog';
+    allowed.add(frCost);
     for (const id of [1, 2, 3, 4]) allowed.add(`unit#${id}`);
     for (const id of [11, 12]) allowed.add(`skill#${id}`);
     allowed.add(`item#${BAIT.itemId}`);
@@ -2027,9 +2353,14 @@ describe('TacticsBattle: the command menu (BT11.1)', () => {
       'tactics.reason.notAvailable',
       'tactics.dock.danger',
       'tactics.menu.move',
+      // Round 4: the live Move chip is firm (its badge's title / aria-label).
+      'tactics.badge.firm',
     ]) {
       expect(rootTexts, `ANTI-VACUITY: the root frame shows fr ${key}`).toContain(FRC[key]);
     }
+    expect(rootTexts, 'ANTI-VACUITY: the Move chip`s pips read fr chip.cost {ap: 5}').toContain(
+      frCost,
+    );
     expect(skillTexts, 'ANTI-VACUITY: the sub-list names skill 12').toContain('skill#12');
   });
 
@@ -2102,8 +2433,8 @@ describe('TacticsBattle: the command menu (BT11.1)', () => {
   });
 });
 
-/** Every text node, aria-label and title inside the dock, trimmed, non-empty. */
-function dockTexts(root: HTMLElement): string[] {
+/** Every text node, aria-label and title inside `el`, trimmed, non-empty. */
+function nodeTexts(el: Element): string[] {
   const out: string[] = [];
   const walk = (n: Node): void => {
     if (n.nodeType === Node.TEXT_NODE) {
@@ -2119,8 +2450,13 @@ function dockTexts(root: HTMLElement): string[] {
     }
     for (const child of n.childNodes) walk(child);
   };
-  walk(q(root, '.tactics-dock'));
+  walk(el);
   return out;
+}
+
+/** Every text node, aria-label and title inside the dock, trimmed, non-empty. */
+function dockTexts(root: HTMLElement): string[] {
+  return nodeTexts(q(root, '.tactics-dock'));
 }
 
 describe('TacticsBattle: the live draft (BT11.2)', () => {
@@ -2411,11 +2747,18 @@ describe('TacticsBattle: the live draft (BT11.2)', () => {
 });
 
 describe('TacticsBattle: the pre-queue (BT11.3)', () => {
-  it('BT11-3-SHELL-PREQUEUE: RB to the second own unit during a foe`s turn plans a pre-queue with the same menu, costed from the rules` fresh budget; a Move and a Skill only append chips; Start submits exactly the draft (no EndTurn added) and a later READY row locks the strip with its chips and no undo', () => {
+  it('BT11-3-SHELL-PREQUEUE: RB to the second own unit during a foe`s turn plans a pre-queue with the same menu, costed from the rules` fresh budget; a Move and a Skill only append chips, each with the rules` AP pips and a provisional badge; Start submits exactly the draft (no EndTurn added) and a later READY row locks the strip with its chips (the End firm, no pips for its 0 AP) and no undo, its badges re-evaluated on every render; the READY-only unit is still costed from the fresh budget, a replacing draft submits again, and an over-planned bait reads only N held', () => {
     // WRONG IMPL KILLED: a pre-queue costed from the unit's (spent) row budget instead of
     // rules.freshBudget(); a pre-queue Skill that submits at once (live semantics); EndTurn appended
     // by the client (the server appends it); Start that sends nothing, or sends twice; the READY row
-    // not shown, not locked, or undoable by B.
+    // not shown, not locked, or undoable by B. Round 4 (R6.6 / C2 / C5 / C9 / C18 / C20): pips
+    // counted in TypeScript or from one whole-plan call (the Skill chip must show 11, the rules'
+    // prefix charge); an empty pips group for a 0-cost End; a badge with text, or a title without
+    // the matching aria-label; a pre-queued chip shown firm; a sticky badge (target 3 KO'd and
+    // back must go stale and recover); the READY row's remaining fed back into the menu budget or
+    // the HUD's drafted pips; an in-flight key that only a new turn re-arms (the replacing draft's
+    // Start swallowed); `only N held` counting only this unit's plan, not the READY row or the DRAFT
+    // of another unit.
     const k = make();
     k.shell.render(tacVm('wild', { activeUnitId: 3, turnIdx: 1 }));
     expect(k.shell.selectedUnitId, 'a foe`s turn leaves the first own unit selected').toBe(1);
@@ -2453,6 +2796,12 @@ describe('TacticsBattle: the pre-queue (BT11.3)', () => {
     pressA(k);
     expect(stripActions(k.root), 'a Move chip').toEqual(['Move']);
     expect(k.sent, 'nothing sent').toEqual([]);
+    const MOVE_LABEL = en('tactics.menu.move');
+    expectChip(
+      stripChips(k.root)[0],
+      { label: MOVE_LABEL, cost: 5, badge: 'provisional' },
+      'the pre-queued Move: 5 pips (the rules` charge), provisional',
+    );
 
     openMenuAt(k, c(3, 2), 'pre-queue');
     choose(k, 'skills');
@@ -2461,6 +2810,16 @@ describe('TacticsBattle: the pre-queue (BT11.3)', () => {
     expect(stripActions(k.root), 'the Skill is APPENDED').toEqual(['Move', 'Skill']);
     expect(k.sent, 'nothing sent before Start').toEqual([]);
     expect(menuOf(k.root), 'closed to idle').toBeNull();
+    expectChip(
+      stripChips(k.root)[0],
+      { label: MOVE_LABEL, cost: 5, badge: 'provisional' },
+      'the Move chip, after the Skill',
+    );
+    expectChip(
+      stripChips(k.root)[1],
+      { label: 'skill#12', cost: 11, badge: 'provisional' },
+      'the Skill chip: 11 pips (its prefix charge), provisional',
+    );
 
     pressStart(k);
     expect(k.sent, 'Start submits exactly the draft').toEqual([
@@ -2471,19 +2830,163 @@ describe('TacticsBattle: the pre-queue (BT11.3)', () => {
       { Skill: { skill_id: 12, target: { Unit: 3 } } },
       'EndTurn',
     ];
-    k.shell.render(
-      tacVm('wild', { activeUnitId: 3, turnIdx: 1, readyPlans: readyOf([[2, readyRow]]) }),
-    );
+    const readyVm = (units: readonly TacticalUnit[] = tacUnits('wild')): TacticsBattleVM =>
+      tacVm('wild', { units, activeUnitId: 3, turnIdx: 1, readyPlans: readyOf([[2, readyRow]]) });
+    k.shell.render(readyVm());
     expect(k.shell.selectedUnitId, 'still unit 2').toBe(2);
     expect(k.root.querySelector('.tactics-strip--locked'), 'the strip locks').not.toBeNull();
     expect(stripActions(k.root), 'showing the READY row').toEqual(['Move', 'Skill', 'EndTurn']);
     expect(k.shell.hint().undo, 'a READY row is not B-undoable').toBe(false);
+    const locked = stripChips(k.root);
+    expectChip(locked[0], { label: MOVE_LABEL, cost: 5, badge: 'provisional' }, 'READY: the Move');
+    expectChip(
+      locked[1],
+      { label: 'skill#12', cost: 11, badge: 'provisional' },
+      'READY: the Skill',
+    );
+    expectChip(
+      locked[2],
+      { label: en('tactics.menu.endTurn'), cost: 0, badge: 'firm' },
+      'READY: the End is firm and, costing 0 AP, has no pips group',
+    );
+
+    // Re-evaluated on every subscription update (C20): wild 3 KO'd, then back.
+    const ko3 = tacUnits('wild').map((u) =>
+      u.unitId === 3 ? { ...u, state: 'Fainted' as const, curHp: 0 } : u,
+    );
+    k.shell.render(readyVm(ko3));
+    expect(
+      stripChips(k.root).map(badgeStates),
+      'wild 3 KO`d: the Skill on it and the End after it go stale, the Move does not',
+    ).toEqual([['provisional'], ['stale'], ['stale']]);
+    k.shell.render(readyVm());
+    expect(
+      stripChips(k.root).map(badgeStates),
+      'wild 3 back: the badges recover (no sticky state)',
+    ).toEqual([['provisional'], ['provisional'], ['firm']]);
+
+    // C2: a READY-only unit's menu is costed from the fresh budget, never the READY row's remaining.
+    const markReady = k.fake.calls.length;
+    openMenuAt(k, c(3, 2), 'READY menu');
+    menuTo(k, 'move');
+    pressA(k);
+    const readyPlansAsked = callsSince(k, markReady, 'plan');
+    expect(
+      readyPlansAsked.some((x) => canon(x.args[0]) === canon(REMAINING)),
+      'no plan question is costed from the READY row`s remaining budget',
+    ).toBe(false);
+    const readyBand = callsSince(k, markReady, 'overlays')
+      .map((x) => x.args[1] as OverlayQuery)
+      .filter((x) => x.selected === 2);
+    expect(readyBand.length > 0, 'fixture: the Move band is asked for unit 2').toBe(true);
+    expect(
+      readyBand.every((x) => canon(x.budget) === canon(FRESH)),
+      'and the band is asked with the fresh budget',
+    ).toBe(true);
+    pressB(k);
+    pressB(k);
+    expect(menuOf(k.root), 'fixture: back to idle').toBeNull();
+
+    // C18: a replacing draft over the READY row submits again in the same turn.
+    draftMove(k, c(3, 2), c(2, 1), 'replacing draft');
+    expect(stripActions(k.root), 'the replacing draft shows').toEqual(['Move']);
+    expect(k.root.querySelector('.tactics-strip--locked'), 'unlocked').toBeNull();
+    pressStart(k);
+    expect(
+      k.sent,
+      'Start sends the replacing draft: a SECOND submit (the READY row re-armed it)',
+    ).toEqual([
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_3_1, W_SKILL_12_ON_3] },
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_2_1] },
+    ]);
+
+    // C2: the HUD of a READY-only unit on its own turn shows no drafted spend.
+    const h = make();
+    const ap6 = tacUnits('wild').map((u) => (u.unitId === 2 ? { ...u, ap: 6 } : u));
+    h.shell.render(
+      tacVm('wild', {
+        units: ap6,
+        activeUnitId: 2,
+        turnIdx: 2,
+        readyPlans: readyOf([[2, readyRow]]),
+      }),
+    );
+    expect(h.shell.selectedUnitId, 'fixture: the READY unit 2 is the active one').toBe(2);
+    const hudPips = '.tactics-info-row[data-unit-id="2"] .tactics-pips .tactics-pip';
+    expect(h.root.querySelectorAll(hudPips), 'fixture: its HUD shows the AP pips').toHaveLength(6);
+    expect(
+      h.root.querySelectorAll('.tactics-info-row[data-unit-id="2"] .tactics-pip--drafted'),
+      'a READY-only unit shows no drafted pip (its strip total is not a draft)',
+    ).toHaveLength(0);
+
+    // The over-planned bait (C9): unit 2 plans bait 43 (READY row, then a DRAFT), unit 1 plans it
+    // again; the bag holds one, then two.
+    const R_BAIT_43: QueuedActionRule = { Recruit: { target: 3, bait: 43 } };
+    const RECRUIT_LABEL = en('tactics.menu.recruit');
+    const recruitWithBait = (kit: Kit, at: Cell, label: string): void => {
+      openMenuAt(kit, at, label);
+      choose(kit, 'recruit');
+      choose(kit, 'bait:43');
+      pressA(kit);
+    };
+    for (const held of [1, 2]) {
+      const n = make();
+      n.fake.script.recruitTargets = [3];
+      n.shell.render(
+        tacVm('wild', {
+          activeUnitId: 3,
+          turnIdx: 1,
+          baits: [{ ...BAIT, count: held }],
+          readyPlans: readyOf([[2, [R_BAIT_43]]]),
+        }),
+      );
+      expect(n.shell.selectedUnitId, `held ${held}: fixture: unit 1 pre-queues`).toBe(1);
+      recruitWithBait(n, c(1, 1), `held ${held}`);
+      expect(stripActions(n.root), `held ${held}: fixture: unit 1's Recruit chip`).toEqual([
+        'Recruit',
+      ]);
+      expectChip(
+        stripChips(n.root)[0],
+        held === 1
+          ? {
+              label: RECRUIT_LABEL,
+              cost: 5,
+              badge: 'provisional',
+              note: en('tactics.badge.onlyHeld', { n: 1 }),
+            }
+          : { label: RECRUIT_LABEL, cost: 5, badge: 'provisional' },
+        held === 1
+          ? 'bait 43 planned twice (unit 2`s READY row and this chip), held once: only 1 held'
+          : 'held twice: no note',
+      );
+    }
+    const dv = make();
+    dv.fake.script.recruitTargets = [3];
+    dv.shell.render(tacVm('wild', { activeUnitId: 3, turnIdx: 1, baits: [{ ...BAIT, count: 1 }] }));
+    pressCycle(dv, 1);
+    recruitWithBait(dv, c(3, 2), 'unit 2 drafts bait 43');
+    expect(stripActions(dv.root), 'fixture: unit 2`s DRAFT holds the Recruit').toEqual(['Recruit']);
+    pressCycle(dv, -1);
+    expect(dv.shell.selectedUnitId, 'fixture: back on unit 1').toBe(1);
+    recruitWithBait(dv, c(1, 1), 'unit 1 plans bait 43 too');
+    expectChip(
+      stripChips(dv.root)[0],
+      {
+        label: RECRUIT_LABEL,
+        cost: 5,
+        badge: 'provisional',
+        note: en('tactics.badge.onlyHeld', { n: 1 }),
+      },
+      'another unit`s DRAFT counts toward the bait plan too: only 1 held',
+    );
   });
 
-  it('BT11-3-SHELL-CLEAR: a pre-queue unit with a READY row and no draft offers Clear plan, which opens a Yes / No confirm; Yes calls cancel_queue once and closes, No closes and sends nothing, B at the confirm returns to the root menu', () => {
+  it('BT11-3-SHELL-CLEAR: a pre-queue unit with a READY row and no draft offers Clear plan, which opens a Yes / No confirm; Yes calls cancel_queue once and closes, No closes and sends nothing, B at the confirm returns to the root menu; and after a submitted plan is cleared, a re-plan`s Start sends again in the same turn', () => {
     // WRONG IMPL KILLED: Clear that cancels without a confirm (no hold edge exists, so the confirm
     // IS the safety); Yes sending twice or to the wrong unit; No that cancels; B that closes the
-    // whole menu instead of stepping back; a Clear that submits.
+    // whole menu instead of stepping back; a Clear that submits. Round 4 (REV 6.2 C18): an
+    // in-flight key that only a new turn re-arms (the shipped round-3 behaviour: the re-plan after a
+    // Clear could never be sent this turn).
     const k = make();
     k.shell.render(
       tacVm('wild', {
@@ -2523,6 +3026,853 @@ describe('TacticsBattle: the pre-queue (BT11.3)', () => {
     expect(rowIds(k.root), 'with its Clear row').toContain('clear');
     expect(k.cancels, 'still one cancel').toHaveLength(1);
     expect(k.sent, 'Clear never submits').toEqual([]);
+
+    // C18: submit, the READY row arrives, Clear -> Yes, the row is gone, re-plan, Start sends again.
+    const r = make();
+    const turn = { activeUnitId: 3, turnIdx: 1 } as const;
+    r.shell.render(tacVm('wild', turn));
+    r.shell.cycleUnit(1);
+    draftMove(r, c(3, 2), c(3, 1), 'the first plan');
+    pressStart(r);
+    const first = { battleId: 1n, unitId: 2, entries: [W_MOVE_3_1] };
+    expect(r.sent, 'fixture: the first plan is submitted').toEqual([first]);
+    r.shell.render(
+      tacVm('wild', {
+        ...turn,
+        readyPlans: readyOf([[2, [{ Move: { x: 3, y: 1, strides: 2 } }]]]),
+      }),
+    );
+    openMenuAt(r, c(3, 2), 'clear the READY row');
+    choose(r, 'clear');
+    choose(r, 'clearYes');
+    expect(r.cancels, 'fixture: cancel_queue for unit 2').toEqual([{ battleId: 1n, unitId: 2 }]);
+    r.shell.render(tacVm('wild', turn));
+    draftMove(r, c(3, 2), c(2, 1), 're-plan');
+    expect(stripActions(r.root), 'fixture: the re-planned Move').toEqual(['Move']);
+    pressStart(r);
+    expect(r.sent, 'the re-plan`s Start is a SECOND submit in the same turn').toEqual([
+      first,
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_2_1] },
+    ]);
+  });
+});
+
+describe('TacticsBattle: the forecast panel (BT11.4)', () => {
+  it('BT11-4-PANEL-ATTACK: aiming a skill on a live turn shows ONE labelled forecast panel after the strip — vs, hit, damage, the type / STAB / flank / Guard items, the skull, First Stand and the status, each the catalog line over the rules` forecast for the aimed target from the attacker`s (drafted) tile — re-asked when the aim moves, gone on B, only vs and miss on a miss, solid (no tilde, no Projected wrapper); a Burst forecasts its first hit; a sprite click re-aims and confirms; and an aim whose forecast throws leaves the frame and the menu untouched', () => {
+    // WRONG IMPL KILLED: a panel painted from the cost board's LIVE row after a drafted Move (the
+    // attacker must be at (2,1)); numbers from the rows or from a stale previous answer (the panel
+    // must follow the aim to unit 4's own numbers); the flank defaulted instead of the rules'
+    // answer; a panel left up after B or painted while the menu is open; a type line from the
+    // effectiveness word instead of type_factor (3/2, 2, 1/2, Immune); STAB / flank / Guard on an
+    // Immune hit; a status line on a miss or on a min-roll KO; the skulls swapped; the Burst's
+    // forecast on another unit than its first hit; a sprite click that only moves the cursor;
+    // a non-atomic op (C17): the mode advanced to the aim although its paint threw.
+    const k = make();
+    k.fake.script.flank = true;
+    k.fake.script.forecastFor = new Map([
+      [3, T3],
+      [4, T4],
+    ]);
+    const vm = tacVm('wild');
+    k.shell.render(vm);
+    expect(panelOf(k.root), 'idle: no forecast panel').toBeNull();
+    openMenuAt(k, c(1, 1), 'attack');
+    expect(panelOf(k.root), 'the menu open: no panel').toBeNull();
+    choose(k, 'skills');
+    expect(panelOf(k.root), 'the Skills sub-list: no panel').toBeNull();
+    const mark = k.fake.calls.length;
+    choose(k, 'skill:12');
+    expect(k.shell.cursor, 'fixture: the aim is seated on wild 3').toEqual(c(5, 1));
+    const panels = k.root.querySelectorAll<HTMLElement>('.tactics-forecast');
+    expect(panels, 'aiming: ONE forecast panel').toHaveLength(1);
+    const panel = panels[0] as HTMLElement;
+    expect(panel.closest('.tactics-dock'), 'in the dock').not.toBeNull();
+    expect(panel.getAttribute('role'), 'a group').toBe('group');
+    expect(panel.getAttribute('aria-label'), 'labelled forecast.label').toBe(
+      en('tactics.forecast.label'),
+    );
+    expect(precedes(q(k.root, '.tactics-strip'), panel), 'placed after the strip').toBe(true);
+    expect(lineIds(panel), 'the lines in order for T3').toEqual([
+      'vs',
+      'hit',
+      'damage',
+      'type',
+      'stab',
+      'flank',
+      'guard',
+      'status',
+    ]);
+    expect(lineEntries(panel), 'each line the catalog closure over the rules` answer').toEqual(
+      t3Lines(),
+    );
+    expect(
+      k.root.querySelector('.tactics-projected'),
+      'a live turn: no Projected wrapper',
+    ).toBeNull();
+    expect(k.root.querySelectorAll('.tactics-tilde'), 'a live turn: no tilde').toHaveLength(0);
+    const asked = callsSince(k, mark, 'forecast');
+    expect(asked.length > 0, 'the panel asks the rules').toBe(true);
+    expect(
+      asked.every((x) => (x.args[1] as RulesUnit).id === 3),
+      'every forecast while aiming at 3 is about 3',
+    ).toBe(true);
+    expect(
+      asked.at(-1)?.args,
+      'forecast(rules.unit(1`s row), rules.unit(3`s row), 12, the rules` flank)',
+    ).toEqual([joinRow(boardRow(vm.board, 1)), joinRow(boardRow(vm.board, 3)), 12, true]);
+
+    const mark4 = k.fake.calls.length;
+    move(k, 'Down');
+    expect(k.shell.cursor, 'fixture: Down moves the aim to wild 4').toEqual(c(5, 3));
+    const panel4 = thePanel(k.root);
+    expect(lineEntries(panel4), 'the panel is re-asked for 4: its own numbers').toEqual(t4Lines());
+    const skull = q(lineOf(panel4, 'skull'), '.tactics-skull');
+    expect(
+      [
+        skull.classList.contains('tactics-skull--hollow'),
+        skull.classList.contains('tactics-skull--full'),
+      ],
+      'only the max roll kills: the hollow skull',
+    ).toEqual([true, false]);
+    expect(
+      [skull.getAttribute('role'), skull.getAttribute('aria-label')],
+      'an img labelled forecast.lethalMax',
+    ).toEqual(['img', en('tactics.forecast.lethalMax')]);
+    const asked4 = callsSince(k, mark4, 'forecast');
+    expect(
+      asked4.length > 0 && asked4.every((x) => (x.args[1] as RulesUnit).id === 4),
+      'and every forecast since is about 4',
+    ).toBe(true);
+
+    pressB(k);
+    expect(panelOf(k.root), 'B: the panel is gone').toBeNull();
+    expect(rowIds(k.root), 'back on the Skills sub-list').toEqual(['skill:11', 'skill:12']);
+    const mark11 = k.fake.calls.length;
+    choose(k, 'skill:11');
+    expect(
+      lineEntries(thePanel(k.root))[0],
+      'the Caster Burst forecasts its first hit, wild 3',
+    ).toEqual(['vs', en('tactics.forecast.vs', { unit: 'unit#3' })]);
+    expect(
+      callsSince(k, mark11, 'forecast').at(-1)?.args.slice(1, 3),
+      'forecast(attacker, rules.unit(3`s row), 11, flank)',
+    ).toEqual([joinRow(boardRow(vm.board, 3)), 11]);
+    pressB(k);
+    choose(k, 'skill:12');
+
+    // The same aim, a re-scripted answer, a re-render: the panel follows the rules every paint.
+    const variant = (f: ForecastOut, label: string): HTMLElement => {
+      k.fake.script.forecastFor = new Map([[3, f]]);
+      k.shell.render(tacVm('wild'));
+      expect(k.shell.cursor, `${label}: fixture: still aiming at wild 3`).toEqual(c(5, 1));
+      return thePanel(k.root);
+    };
+    const miss = variant(
+      fc({ hit: 0, min: 0, max: 0, minAfter: 10, maxAfter: 10, miss: true, status: 'Poison' }),
+      'miss',
+    );
+    expect(lineEntries(miss), 'a miss: exactly vs and miss, no status line').toEqual([
+      ['vs', en('tactics.forecast.vs', { unit: 'unit#3' })],
+      ['miss', en('tactics.forecast.miss')],
+    ]);
+    const lethal = variant(
+      fc({ ...SPEC_T3, killsMin: true, killsMax: true, minAfter: 0, maxAfter: 0 }),
+      'lethal',
+    );
+    expect(lineIds(lethal), 'kills_min: the skull, and no status (a KO never lands one)').toEqual([
+      'vs',
+      'hit',
+      'damage',
+      'type',
+      'stab',
+      'flank',
+      'guard',
+      'skull',
+    ]);
+    const full = q(lineOf(lethal, 'skull'), '.tactics-skull');
+    expect(
+      [
+        full.classList.contains('tactics-skull--full'),
+        full.classList.contains('tactics-skull--hollow'),
+        full.getAttribute('role'),
+        full.getAttribute('aria-label'),
+      ],
+      'the full skull, an img labelled forecast.lethal',
+    ).toEqual([true, false, 'img', en('tactics.forecast.lethal')]);
+    const stand = variant(
+      fc({ hit: 59, min: 37, max: 41, minAfter: 29, maxAfter: 17, firstStand: true }),
+      'first stand',
+    );
+    expect(
+      lineEntries(stand).slice(3),
+      'Neutral, no flags: then the First-Stand line only',
+    ).toEqual([['firstStand', en('tactics.forecast.firstStand')]]);
+    const neither = variant(fc({ hit: 59, min: 37, max: 41, minAfter: 29, maxAfter: 17 }), 'none');
+    expect(lineIds(neither), 'no kill, no status: no skull, no status line').toEqual([
+      'vs',
+      'hit',
+      'damage',
+    ]);
+    const TYPES: readonly (readonly [RuleEffectiveness, readonly [number, number], string])[] = [
+      ['SuperEffective', [2, 1], en('tactics.forecast.typeTimes', { num: 2 })],
+      ['NotVeryEffective', [1, 2], en('tactics.forecast.typeOver', { num: 1, den: 2 })],
+    ];
+    for (const [eff, type, text] of TYPES) {
+      const typed = variant(
+        fc({ hit: 59, min: 37, max: 41, minAfter: 29, maxAfter: 17, eff, type }),
+        `${eff} [${type.join(',')}]`,
+      );
+      expect(lineEntries(typed).slice(3), `${eff}: the type line from type_factor`).toEqual([
+        ['type', text],
+      ]);
+    }
+    const immune = variant(
+      fc({
+        hit: 59,
+        min: 0,
+        max: 0,
+        minAfter: 10,
+        maxAfter: 10,
+        eff: 'Immune',
+        type: [0, 1],
+        stab: true,
+        flank: true,
+        guard: true,
+      }),
+      'Immune',
+    );
+    expect(lineEntries(immune).slice(3), 'Immune: No effect, and no STAB / flank / Guard').toEqual([
+      ['type', en('tactics.forecast.typeImmune')],
+    ]);
+
+    // A click on wild 4's sprite (its live tile) while aiming at 3: re-aim at 4 and confirm.
+    variant(T3, 'restored');
+    click(q(k.root, '.tactics-unit[data-unit-id="4"] .tactics-sprite'));
+    expect(k.sent, 'the click re-aims at 4 and confirms: ONE submit of skill 12 on 4').toEqual([
+      {
+        battleId: 1n,
+        unitId: 1,
+        entries: [{ tag: 'Skill', value: { skillId: 12, target: { tag: 'Unit', value: 4 } } }],
+      },
+    ]);
+
+    // After a drafted Move the attacker is forecast from its DRAFTED tile.
+    const d = make();
+    d.fake.script.forecastFor = new Map([[3, T3]]);
+    d.shell.render(tacVm('wild'));
+    draftMove(d, c(1, 1), c(2, 1), 'drafted');
+    const markD = d.fake.calls.length;
+    aimSkill(d, c(1, 1), 12, 'drafted');
+    expect(
+      callsSince(d, markD, 'forecast').at(-1)?.args[0],
+      'the attacker is rules.unit(unit 1`s row at its drafted (2,1)), never its live tile',
+    ).toEqual(joinRow({ ...boardRow(vm.board, 1), pos: c(2, 1) }));
+
+    // REV 6.2 C17: entering an aim whose forecast throws changes nothing.
+    const a = make();
+    a.shell.render(tacVm('wild'));
+    openMenuAt(a, c(1, 1), 'atomic');
+    choose(a, 'skills');
+    menuTo(a, 'skill:12');
+    const before = a.root.outerHTML;
+    const boom = new Error('fake forecast: refused');
+    a.fake.script.forecastThrow = boom;
+    expect(
+      thrown(() => pressA(a)),
+      'choosing skill:12 throws the rules error',
+    ).toBe(boom);
+    expect(a.root.outerHTML, 'the frame is byte-identical').toBe(before);
+    a.fake.script.forecastThrow = null;
+    move(a, 'Down');
+    expect(selectedRowId(a.root), 'still the Skills sub-list: Down walks (wraps) its rows').toBe(
+      'skill:11',
+    );
+    expect(panelOf(a.root), 'and no panel exists').toBeNull();
+
+    const r = make();
+    r.fake.script.recruitTargets = [3];
+    r.shell.render(tacVm('wild'));
+    openMenuAt(r, c(1, 1), 'atomic recruit');
+    choose(r, 'recruit');
+    menuTo(r, 'bait:none');
+    const beforeR = r.root.outerHTML;
+    const boomR = new Error('fake recruitOdds: refused');
+    r.fake.script.recruitOddsThrow = boomR;
+    expect(
+      thrown(() => pressA(r)),
+      'choosing bait:none throws the rules error',
+    ).toBe(boomR);
+    expect(r.root.outerHTML, 'the frame is byte-identical').toBe(beforeR);
+    r.fake.script.recruitOddsThrow = null;
+    move(r, 'Down');
+    expect(selectedRowId(r.root), 'still the bait sub-list: Down walks its rows').toBe('bait:43');
+    expect(panelOf(r.root), 'and no panel exists').toBeNull();
+  });
+
+  it('BT11-4-PANEL-RECRUIT: aiming a Recruit shows vs, the rules` recruit percent, its line items as the rules give them and the bait — re-asked of recruitOdds with the target`s max HP and HP and the bait`s bonus whenever the bait (Left / Right) or the target (Up / Down) changes', () => {
+    // WRONG IMPL KILLED: odds computed in TypeScript (a pct from the permille bonus, a base-8
+    // literal, a sum of the line items: 13 + 0 + 23 is 36, the rules say 37); the bait bonus not
+    // passed (bonus 150 for Lure Berry); the panel not re-asked on a bait or target change (unit 4
+    // has its own HP 101 / 113 and its own answer); the bait line hard-coded or naming the item id.
+    const units = tacUnits('wild').map((u) => {
+      if (u.unitId === 3) return { ...u, maxHp: 97, curHp: 59 };
+      if (u.unitId === 4) return { ...u, maxHp: 113, curHp: 101 };
+      return u;
+    });
+    const k = make();
+    k.fake.script.recruitTargets = [3, 4];
+    k.fake.script.recruitOddsFor = new Map([
+      [oddsKey(97, 59, 0), R3_0],
+      [oddsKey(97, 59, BAIT.bonus), R3_150],
+      [oddsKey(113, 101, BAIT.bonus), R4_150],
+    ]);
+    k.shell.render(tacVm('wild', { units }));
+    openMenuAt(k, c(1, 1), 'recruit');
+    choose(k, 'recruit');
+    expect(panelOf(k.root), 'the bait sub-list: no panel').toBeNull();
+    const mark = k.fake.calls.length;
+    choose(k, 'bait:none');
+    expect(k.shell.cursor, 'fixture: the recruit aim on wild 3').toEqual(c(5, 1));
+    const panel = thePanel(k.root);
+    expect([panel.getAttribute('role'), panel.getAttribute('aria-label')], 'the panel').toEqual([
+      'group',
+      en('tactics.forecast.label'),
+    ]);
+    expect(lineIds(panel), 'vs, recruit, recruitLines, bait').toEqual([
+      'vs',
+      'recruit',
+      'recruitLines',
+      'bait',
+    ]);
+    expect(lineEntries(panel), 'no bait: the rules` answer for (97, 59, 0)').toEqual([
+      ['vs', en('tactics.forecast.vs', { unit: 'unit#3' })],
+      ['recruit', en('tactics.forecast.recruit', { pct: 37 })],
+      [
+        'recruitLines',
+        en('tactics.forecast.recruitLines', { base: 13, bait: 0, weakened: 23, pct: 37 }),
+      ],
+      ['bait', en('tactics.forecast.bait', { item: en('tactics.menu.noBait') })],
+    ]);
+    const odds = callsSince(k, mark, 'recruitOdds');
+    expect(
+      odds.length > 0 && odds.every((x) => canon(x.args) === canon([97, 59, 0])),
+      'recruitOdds(3`s max HP 97, its HP 59, bonus 0)',
+    ).toBe(true);
+    expect(k.root.querySelectorAll('.tactics-tilde'), 'a live turn: no tilde').toHaveLength(0);
+    expect(k.root.querySelector('.tactics-projected'), 'and no Projected wrapper').toBeNull();
+
+    const markBait = k.fake.calls.length;
+    move(k, 'Right');
+    expect(
+      lineEntries(thePanel(k.root)),
+      'Right: bait 43 (Lure Berry), the bonus-150 answer',
+    ).toEqual([
+      ['vs', en('tactics.forecast.vs', { unit: 'unit#3' })],
+      ['recruit', en('tactics.forecast.recruit', { pct: 67 })],
+      [
+        'recruitLines',
+        en('tactics.forecast.recruitLines', { base: 13, bait: 19, weakened: 29, pct: 67 }),
+      ],
+      ['bait', en('tactics.forecast.bait', { item: BAIT.name })],
+    ]);
+    const oddsBait = callsSince(k, markBait, 'recruitOdds');
+    expect(
+      oddsBait.length > 0 && oddsBait.every((x) => canon(x.args) === canon([97, 59, BAIT.bonus])),
+      're-asked with the bait`s bonus 150',
+    ).toBe(true);
+
+    const markTarget = k.fake.calls.length;
+    move(k, 'Down');
+    expect(k.shell.cursor, 'fixture: Down moves the recruit aim to wild 4').toEqual(c(5, 3));
+    expect(lineEntries(thePanel(k.root)), 'unit 4: its own answer, the bait kept').toEqual([
+      ['vs', en('tactics.forecast.vs', { unit: 'unit#4' })],
+      ['recruit', en('tactics.forecast.recruit', { pct: 31 })],
+      [
+        'recruitLines',
+        en('tactics.forecast.recruitLines', { base: 13, bait: 19, weakened: 11, pct: 31 }),
+      ],
+      ['bait', en('tactics.forecast.bait', { item: BAIT.name })],
+    ]);
+    const oddsTarget = callsSince(k, markTarget, 'recruitOdds');
+    expect(
+      oddsTarget.length > 0 &&
+        oddsTarget.every((x) => canon(x.args) === canon([113, 101, BAIT.bonus])),
+      're-asked with unit 4`s max HP 113 and HP 101',
+    ).toBe(true);
+  });
+
+  it('BT11-4-PANEL-FROM-RULES: every number printed in the forecast panel — of an attack aim and of a recruit aim — is one the rules answered for that aim (the hit percent, the d3 pair, the factors; the four odds fields), never a difference, a sum, a design constant, the skill`s accuracy or an HP read off the rows', () => {
+    // WRONG IMPL KILLED: any TypeScript arithmetic or literal in the panel — the damage spread
+    // 41 - 37 = 4, the design flank 5/4 or Guard 3/4, skill 12's accuracy 79 as the hit percent, a
+    // row HP (10), an unprinted trace field (29, 17, 151..167), the summed odds 36 or a base-8 literal.
+    const k = make();
+    k.fake.script.flank = true;
+    k.fake.script.forecastFor = new Map([[3, T3]]);
+    k.fake.script.recruitTargets = [3];
+    k.fake.script.recruitOddsFor = new Map([[oddsKey(10, 10, 0), R3_0]]);
+    k.shell.render(tacVm('wild'));
+    aimSkill(k, c(1, 1), 12, 'from rules');
+    const attack = digitRuns(thePanel(k.root));
+    const ATTACK_NUMBERS = new Set(['59', '37', '41', '3', '2', '7', '5', '11', '13']);
+    expect(
+      attack.length,
+      'ANTI-VACUITY: the attack panel prints its numbers',
+    ).toBeGreaterThanOrEqual(9);
+    for (const run of attack) {
+      expect(
+        ATTACK_NUMBERS.has(run),
+        `"${run}" is one of the rules' numbers for this forecast`,
+      ).toBe(true);
+    }
+    for (const banned of ['4', '79', '10', ...T3_UNPRINTED]) {
+      expect(attack.includes(banned), `never ${banned}`).toBe(false);
+    }
+    expect(
+      callsOf(k.fake.calls, 'forecast').length > 0,
+      'the forecast was asked of the rules',
+    ).toBe(true);
+
+    pressB(k);
+    pressB(k);
+    choose(k, 'recruit');
+    choose(k, 'bait:none');
+    const recruit = digitRuns(thePanel(k.root));
+    const RECRUIT_NUMBERS = new Set(['37', '13', '0', '23']);
+    expect(
+      recruit.length,
+      'ANTI-VACUITY: the recruit panel prints its numbers',
+    ).toBeGreaterThanOrEqual(5);
+    for (const run of recruit) {
+      expect(RECRUIT_NUMBERS.has(run), `"${run}" is one of the rules' odds fields`).toBe(true);
+    }
+    for (const banned of ['36', '8', '10']) {
+      expect(recruit.includes(banned), `never ${banned}`).toBe(false);
+    }
+    expect(
+      callsOf(k.fake.calls, 'recruitOdds').length > 0,
+      'the odds were asked of the rules',
+    ).toBe(true);
+  });
+});
+
+describe('TacticsBattle: the Projected style (BT11.5)', () => {
+  it('BT11-5-SHELL-PROJECTED: a pre-queued unit aims and is forecast on the projection up to its turn — a wild that acts first stands where its plan takes it (unless asleep, read from the live board) with its attack applied — while the danger read holds every enemy at its live tile with own READY or, instead, DRAFT plans applied, and the sprites stay live; the panel sits in a Projected wrapper with the label, the A1 assumption line and, in PvP, the enemies-hold line, each numeric line led by its own tilde node; a PvP enemy that acts first prints hit and a dash; a live aim is solid; a sprite click confirms at the projected tile; and the planning unit keeps its live row', () => {
+    // WRONG IMPL KILLED: the forecast and the aims on the cost board (wild 3 at its live (5,1)
+    // although its plan moves it before unit 2's turn); the projection's wild attack not applied
+    // (unit 1 at 10 HP instead of 2); danger / intents on the projection (C6: wild 3 at (4,1) in the
+    // danger query) or without own READY / DRAFT moves; the READY row applied beside the same
+    // unit's draft (wild 3's HP drops to the READY Skill's 23 although the draft replaced it); the
+    // wrapper keyed on anything but the pre-queue mode (a live aim wrapped, or a pre-queued one
+    // solid); the tilde concatenated into the catalog text or set on a non-numeric line; the A1
+    // tile computed off by one; a hidden PvP target still printing its damage, type or status, or
+    // its numbers left in the markup; aiPlan asked in PvP; `blocked` read from the cost or danger
+    // board (a wild the draft KOs would lose its asleep mark and be planned); a click on the live
+    // sprite ignored because the aim sits on the projected tile (C11); the planning unit KO'd by
+    // the projection greying its own menu (C10).
+    const W3_PLAN: readonly QueuedActionRule[] = [
+      { Move: { x: 4, y: 1, strides: 1 } },
+      { Skill: { skill_id: 12, target: { Unit: 1 } } },
+    ];
+    const prequeue = { activeUnitId: 3, turnIdx: 1 } as const;
+    const scriptA = (kit: Kit): void => {
+      kit.fake.script.aiPlan = new Map<number, readonly QueuedActionRule[]>([[3, W3_PLAN]]);
+      kit.fake.script.forecastFor = new Map([
+        [1, T1],
+        [3, T3],
+        [4, T4],
+      ]);
+    };
+    /** RB to unit 2 and aim skill 12 (the first aim: unit 3). */
+    const aimFrom2 = (kit: Kit, label: string): void => {
+      pressCycle(kit, 1);
+      expect(kit.shell.selectedUnitId, `${label}: fixture: RB to unit 2 (pre-queue)`).toBe(2);
+      aimSkill(kit, c(3, 2), 12, label);
+    };
+    const NUMERIC = new Set(['hit', 'damage', 'type', 'flank', 'guard', 'recruit', 'recruitLines']);
+    /** Each numeric line leads with ONE aria-hidden tilde node; every other line (and a dash) none. */
+    const expectTildes = (panel: Element, label: string): void => {
+      for (const line of linesOf(panel)) {
+        const id = line.getAttribute('data-line') ?? '';
+        const tildes = line.querySelectorAll('.tactics-tilde');
+        const numeric = NUMERIC.has(id) && lineText(line) !== EM_DASH;
+        expect(
+          tildes.length,
+          `${label} ${id}: ${numeric ? 'ONE tilde node' : 'no tilde on a non-numeric or dashed line'}`,
+        ).toBe(numeric ? 1 : 0);
+        if (!numeric) continue;
+        const first = line.firstChild;
+        expect(
+          first instanceof HTMLElement && first.classList.contains('tactics-tilde'),
+          `${label} ${id}: its FIRST child is the tilde node`,
+        ).toBe(true);
+        const tilde = tildes[0] as HTMLElement;
+        expect(
+          [tilde.getAttribute('aria-hidden'), tilde.textContent],
+          `${label} ${id}: aria-hidden, text U+007E`,
+        ).toEqual(['true', TILDE]);
+      }
+    };
+    const nullQueries = (kit: Kit, mark: number): Call[] =>
+      callsSince(kit, mark, 'overlays').filter(
+        (x) => (x.args[1] as OverlayQuery).selected === null,
+      );
+
+    // (A) PvE, wild 3's turn: its plan moves it to (4,1) and strikes unit 1 before unit 2 plans.
+    const a = make();
+    scriptA(a);
+    const vmA = tacVm('wild', prequeue);
+    a.shell.render(vmA);
+    const markA = a.fake.calls.length;
+    aimFrom2(a, '(A)');
+    expect(a.shell.cursor, '(A) the aim is seated on wild 3 where its plan takes it').toEqual(
+      c(4, 1),
+    );
+    const aims2 = callsSince(a, markA, 'targets').filter((x) => x.args[1] === 2);
+    expect(aims2.length > 0, '(A) fixture: unit 2`s aims are asked of the rules').toBe(true);
+    expect(
+      aims2.every((x) => tileOf(x.args[0], 3) === canon(c(4, 1))),
+      '(A) every aim question for caster 2 is asked of the AIM board: wild 3 at (4,1)',
+    ).toBe(true);
+    expect(
+      aims2.every((x) => boardRow(x.args[0] as RulesBoard, 1).cur_hp === 2),
+      '(A) with the wild`s attack applied: unit 1 at its min.hp_after 2',
+    ).toBe(true);
+    const fc2 = callsSince(a, markA, 'forecast').filter((x) => (x.args[0] as RulesUnit).id === 2);
+    expect(
+      fc2.length > 0 &&
+        fc2.every(
+          (x) =>
+            (x.args[1] as RulesUnit).id === 3 &&
+            canon((x.args[1] as RulesUnit).pos) === canon(c(4, 1)),
+        ),
+      '(A) unit 2`s forecast is on wild 3 at its projected (4,1)',
+    ).toBe(true);
+    const dangerA = nullQueries(a, markA);
+    expect(dangerA.length > 0, '(A) fixture: the danger / intents query runs').toBe(true);
+    expect(
+      dangerA.every((x) => tileOf(x.args[0], 3) === canon(c(5, 1))),
+      '(A) every danger / intents query holds wild 3 at its LIVE (5,1), never the projection',
+    ).toBe(true);
+    expect(
+      gridCell(q(a.root, '.tactics-unit[data-unit-id="3"]')),
+      '(A) wild 3`s sprite stays on its live tile',
+    ).toEqual(['6', '2']);
+    const wrap = q(a.root, '.tactics-dock .tactics-projected');
+    expect(
+      wrapParts(wrap),
+      '(A) the wrapper: label, panel, assumption (PvE: no enemies line)',
+    ).toEqual(['tactics-projected-label', 'tactics-forecast', 'tactics-projected-assumes']);
+    expect(textOf(wrap, '.tactics-projected-label'), '(A) projected.label').toBe(
+      en('tactics.projected.label'),
+    );
+    expect(
+      textOf(wrap, '.tactics-projected-assumes'),
+      '(A) projected.assumes: wild 3 at E2, (4,1) in A1 notation',
+    ).toBe(en('tactics.projected.assumes', { unit: 'unit#3', tile: 'E2' }));
+    const panelA = q(wrap, '.tactics-forecast');
+    expect(lineIds(panelA), '(A) the T3 lines').toEqual([
+      'vs',
+      'hit',
+      'damage',
+      'type',
+      'stab',
+      'flank',
+      'guard',
+      'status',
+    ]);
+    expect(
+      lineEntries(panelA),
+      '(A) each line, its tilde node removed, is exactly the catalog string',
+    ).toEqual(t3Lines());
+    expectTildes(panelA, '(A)');
+    const dockA = dockTexts(a.root);
+    expect(dockA, '(A) the tilde is a text of its own').toContain(TILDE);
+    expect(dockA, '(A) and the catalog hit line is another').toContain(
+      en('tactics.forecast.hit', { pct: 59 }),
+    );
+    expect(
+      dockA.some((t) => t.includes(TILDE) && t !== TILDE),
+      '(A) the tilde is never concatenated into a text',
+    ).toBe(false);
+    move(a, 'Down');
+    expect(a.shell.cursor, '(A) fixture: Down aims at wild 4').toEqual(c(5, 3));
+    click(q(a.root, '.tactics-unit[data-unit-id="3"] .tactics-sprite'));
+    expect(
+      stripActions(a.root),
+      '(A) a click on wild 3`s sprite (its live tile) re-aims at 3 and confirms: appended',
+    ).toEqual(['Skill']);
+    expect(a.sent, '(A) pre-queued: nothing sent yet').toEqual([]);
+    pressStart(a);
+    expect(a.sent, '(A) the appended Skill is bound to wild 3').toEqual([
+      { battleId: 1n, unitId: 2, entries: [W_SKILL_12_ON_3] },
+    ]);
+
+    // (A, fr) The wrapper's texts in French (C16).
+    setLocale('fr');
+    const FRC = CATALOG_FR as unknown as Record<string, unknown>;
+    const fr = make();
+    scriptA(fr);
+    fr.shell.render(vmA);
+    aimFrom2(fr, '(A, fr)');
+    const frTexts = nodeTexts(q(fr.root, '.tactics-dock .tactics-projected'));
+    setLocale('en');
+    const closure = (
+      cat: Record<string, unknown>,
+      key: string,
+      params: Record<string, unknown>,
+    ): string => {
+      const fn = cat[key];
+      return typeof fn === 'function'
+        ? (fn as (p: Record<string, unknown>) => string)(params)
+        : `${key} is missing`;
+    };
+    const PARAMS: readonly (readonly [string, Record<string, unknown>])[] = [
+      ['tactics.forecast.vs', { unit: 'unit#3' }],
+      ['tactics.forecast.hit', { pct: 59 }],
+      ['tactics.forecast.damage', { min: 37, max: 41 }],
+      ['tactics.forecast.typeOver', { num: 3, den: 2 }],
+      ['tactics.forecast.flank', { num: 7, den: 5 }],
+      ['tactics.forecast.guard', { num: 11, den: 13 }],
+      ['tactics.projected.assumes', { unit: 'unit#3', tile: 'E2' }],
+    ];
+    const frAllowed = new Set<string>([TILDE]);
+    for (const v of Object.values(FRC)) if (typeof v === 'string') frAllowed.add(v);
+    for (const [key, params] of PARAMS) frAllowed.add(closure(FRC, key, params));
+    frAllowed.add(
+      closure(FRC, 'tactics.forecast.status', { status: FRC['tactics.status.poison'] }),
+    );
+    const english = [
+      ...Object.entries(EN)
+        .filter(([key, v]) => typeof v === 'string' && v !== FRC[key])
+        .map(([, v]) => v as string),
+      ...PARAMS.map(([key, params]) => closure(EN, key, params)),
+    ];
+    expect(
+      frTexts.length,
+      '(A, fr) ANTI-VACUITY: the wrapper painted its texts',
+    ).toBeGreaterThanOrEqual(10);
+    for (const t of frTexts) {
+      expect(
+        frAllowed.has(t),
+        `(A, fr) "${t}" is a French catalog value or closure, or the tilde`,
+      ).toBe(true);
+      expect(english.includes(t), `(A, fr) "${t}" is not English`).toBe(false);
+    }
+
+    // (A, asleep) The same, wild 3 blocked (block_pct 100 on the live board): it never acts.
+    const b = make();
+    scriptA(b);
+    b.fake.script.intents = [{ unit: 3, plan: W3_PLAN, exhausted: false, block_pct: 100 }];
+    b.shell.render(vmA);
+    aimFrom2(b, '(A, asleep)');
+    expect(b.shell.cursor, '(A, asleep) wild 3 holds: the aim on its live (5,1)').toEqual(c(5, 1));
+    expect(
+      textOf(b.root, '.tactics-dock .tactics-projected-assumes'),
+      '(A, asleep) the assumption names F2',
+    ).toBe(en('tactics.projected.assumes', { unit: 'unit#3', tile: 'F2' }));
+    expect(
+      callsOf(b.fake.calls, 'targets')
+        .filter((x) => x.args[1] === 2)
+        .every((x) => tileOf(x.args[0], 3) === canon(c(5, 1))),
+      '(A, asleep) every aim question for caster 2 holds wild 3 at (5,1)',
+    ).toBe(true);
+    expect(
+      callsOf(b.fake.calls, 'aiPlan').filter((x) => x.args[1] === 3),
+      '(A, asleep) the blocked wild is never asked for a plan',
+    ).toEqual([]);
+
+    // (B) PvP: units 3 / 4 are the opponent's; 3 acts before 2 with a secret plan, 4 after.
+    const p = make();
+    scriptA(p);
+    p.shell.render(tacVm('pvp', prequeue));
+    aimFrom2(p, '(B)');
+    expect(p.shell.cursor, '(B) fixture: the aim on unit 3, frozen at (5,1)').toEqual(c(5, 1));
+    expect(callsOf(p.fake.calls, 'aiPlan'), '(B) PvP: aiPlan is never asked').toEqual([]);
+    const wrapP = q(p.root, '.tactics-dock .tactics-projected');
+    expect(wrapParts(wrapP), '(B) the wrapper ends with the enemies-hold line').toEqual([
+      'tactics-projected-label',
+      'tactics-forecast',
+      'tactics-projected-assumes',
+      'tactics-projected-enemies',
+    ]);
+    expect(textOf(wrapP, '.tactics-projected-enemies'), '(B) projected.enemiesHold').toBe(
+      en('tactics.projected.enemiesHold'),
+    );
+    expect(textOf(wrapP, '.tactics-projected-assumes'), '(B) unit 3 assumed at F2').toBe(
+      en('tactics.projected.assumes', { unit: 'unit#3', tile: 'F2' }),
+    );
+    const panelP = q(wrapP, '.tactics-forecast');
+    expect(
+      lineEntries(panelP),
+      '(B) a hidden target: exactly vs, hit and a damage line that is only U+2014',
+    ).toEqual([
+      ['vs', en('tactics.forecast.vs', { unit: 'unit#3' })],
+      ['hit', en('tactics.forecast.hit', { pct: 59 })],
+      ['damage', EM_DASH],
+    ]);
+    expectTildes(panelP, '(B)');
+    const markup: readonly string[] = wrapP.outerHTML.match(/\d+/g) ?? [];
+    for (const hidden of ['37', '41', ...T3_UNPRINTED]) {
+      expect(
+        markup.includes(hidden),
+        `(B) the hidden ${hidden} appears nowhere in the wrapper`,
+      ).toBe(false);
+    }
+    move(p, 'Down');
+    expect(p.shell.cursor, '(B) fixture: Down aims at unit 4').toEqual(c(5, 3));
+    const panelP4 = thePanel(p.root);
+    expect(lineEntries(panelP4), '(B) unit 4 acts after 2: its forecast in full').toEqual(
+      t4Lines(),
+    );
+    expectTildes(panelP4, '(B, unit 4)');
+
+    // (C) A live aim renders solid: no wrapper, no tilde, no assumption.
+    const l = make();
+    l.fake.script.forecastFor = new Map([[3, T3]]);
+    l.shell.render(tacVm('wild'));
+    aimSkill(l, c(1, 1), 12, '(C)');
+    expect(thePanel(l.root).closest('.tactics-projected'), '(C) a live aim: no wrapper').toBeNull();
+    expect(
+      [
+        l.root.querySelectorAll('.tactics-tilde').length,
+        l.root.querySelectorAll('.tactics-projected-assumes').length,
+      ],
+      '(C) no tilde and no assumption line',
+    ).toEqual([0, 0]);
+
+    // (D) Unit 1's READY row, then a DRAFT over it, on the danger board.
+    const dd = make();
+    dd.shell.render(
+      tacVm('wild', {
+        ...prequeue,
+        readyPlans: readyOf([
+          [
+            1,
+            [
+              { Move: { x: 2, y: 1, strides: 1 } },
+              { Skill: { skill_id: 12, target: { Unit: 3 } } },
+              'EndTurn',
+            ],
+          ],
+        ]),
+      }),
+    );
+    const markD = dd.fake.calls.length;
+    aimFrom2(dd, '(D)');
+    const dangerD = nullQueries(dd, markD);
+    expect(
+      dangerD.some(
+        (x) =>
+          tileOf(x.args[0], 1) === canon(c(2, 1)) &&
+          boardRow(x.args[0] as RulesBoard, 3).cur_hp === FORECAST.min.hp_after,
+      ),
+      '(D) the danger board carries unit 1`s READY row: at (2,1), its Skill on 3 applied',
+    ).toBe(true);
+    pressCycle(dd, -1);
+    expect(dd.shell.selectedUnitId, '(D) fixture: back on unit 1').toBe(1);
+    draftMove(dd, c(1, 1), c(3, 1), '(D) unit 1 drafts over its READY row');
+    expect(stripActions(dd.root), '(D) fixture: unit 1`s draft').toEqual(['Move']);
+    const markD2 = dd.fake.calls.length;
+    aimFrom2(dd, '(D, drafted)');
+    const dangerD2 = nullQueries(dd, markD2);
+    expect(
+      dangerD2.some((x) => tileOf(x.args[0], 1) === canon(c(3, 1))),
+      '(D) with a draft the danger board uses the DRAFT: unit 1 at (3,1)',
+    ).toBe(true);
+    expect(
+      dangerD2.some(
+        (x) =>
+          tileOf(x.args[0], 1) === canon(c(2, 1)) ||
+          boardRow(x.args[0] as RulesBoard, 3).cur_hp !== 10,
+      ),
+      '(D) never the READY row beside it: no (2,1), no READY Skill on wild 3',
+    ).toBe(false);
+
+    // (D, asleep) Unit 2 drafts a KO of wild 3; wild 3 is asleep on the LIVE board.
+    const z = make();
+    const BLOCK = new Map([[3, 100]]);
+    z.fake.script.intents = (board) =>
+      board.units
+        .filter((u) => u.wild_index !== null && u.state === 'Active')
+        .map(
+          (u): Intent => ({
+            unit: u.id,
+            plan: END_ONLY,
+            exhausted: false,
+            block_pct: BLOCK.get(u.id) ?? 0,
+          }),
+        );
+    z.fake.script.aiPlan = new Map<number, readonly QueuedActionRule[]>([[3, W3_PLAN]]);
+    z.fake.script.forecastFor = new Map([
+      [3, fc({ ...SPEC_T3, killsMin: true, killsMax: true, minAfter: 0, maxAfter: 0 })],
+    ]);
+    z.shell.render(tacVm('wild', prequeue));
+    aimFrom2(z, '(D, asleep)');
+    pressA(z);
+    expect(
+      stripActions(z.root),
+      '(D, asleep) fixture: unit 2 drafts Skill 12 on wild 3 (KO`d on its cost board)',
+    ).toEqual(['Skill']);
+    openMenuAt(z, c(3, 2), '(D, asleep) another frame');
+    pressB(z);
+    expect(
+      callsOf(z.fake.calls, 'aiPlan').filter((x) => x.args[1] === 3),
+      '(D, asleep) wild 3 is read asleep from the LIVE board and never planned',
+    ).toEqual([]);
+
+    // (E) Wild 3's plan KOs unit 2 before its turn: unit 2 keeps its live row on the aim board.
+    const e = make();
+    e.fake.script.aiPlan = new Map<number, readonly QueuedActionRule[]>([
+      [3, [{ Skill: { skill_id: 12, target: { Unit: 2 } } }]],
+    ]);
+    e.fake.script.forecastFor = new Map([
+      [
+        2,
+        fc({
+          hit: 131,
+          min: 137,
+          max: 139,
+          minAfter: 0,
+          maxAfter: 0,
+          killsMin: true,
+          killsMax: true,
+        }),
+      ],
+    ]);
+    e.shell.render(tacVm('wild', prequeue));
+    pressCycle(e, 1);
+    openMenuAt(e, c(3, 2), '(E)');
+    expect(
+      menuRow(e.root, 'skills').getAttribute('aria-disabled'),
+      '(E) its Skills row stays enabled',
+    ).not.toBe('true');
+    choose(e, 'skills');
+    expect(
+      menuRow(e.root, 'skill:12').getAttribute('aria-disabled'),
+      '(E) and skill 12 is offered enabled',
+    ).not.toBe('true');
+
+    // (F) C7: a Caster-origin aim that hits nobody (every enemy KO'd) — PvP, pre-queued: the
+    // wrapper holds the label, the panel with its label and NO line, no assumption, the enemies line.
+    const ko34 = tacUnits('pvp').map((u) =>
+      u.unitId === 3 || u.unitId === 4 ? { ...u, state: 'Fainted' as const, curHp: 0 } : u,
+    );
+    const g = make();
+    g.shell.render(tacVm('pvp', { units: ko34, activeUnitId: null, turnIdx: 1 }));
+    pressCycle(g, 1);
+    expect(g.shell.selectedUnitId, '(F) fixture: unit 2 pre-queues').toBe(2);
+    aimSkill(g, c(3, 2), 11, '(F)');
+    const wrapF = q(g.root, '.tactics-dock .tactics-projected');
+    expect(wrapParts(wrapF), '(F) label, panel, enemies-hold — no assumption line').toEqual([
+      'tactics-projected-label',
+      'tactics-forecast',
+      'tactics-projected-enemies',
+    ]);
+    const panelF = q(wrapF, '.tactics-forecast');
+    expect(panelF.getAttribute('aria-label'), '(F) the panel keeps its label').toBe(
+      en('tactics.forecast.label'),
+    );
+    expect(lineIds(panelF), '(F) and holds no line').toEqual([]);
   });
 });
 
