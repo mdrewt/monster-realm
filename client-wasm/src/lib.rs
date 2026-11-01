@@ -496,8 +496,10 @@ pub fn tactics_golden(cases: JsValue) -> Result<JsValue, JsValue> {
 // The client's view of the tactical rules (BT11.7, the bt-10 overlay port BT10.4): every export
 // below converts a JS value, calls game-core's `tactics::*` and converts the answer back. No rule
 // lives here — the shell only joins compile-time content (the server's `unit_of_row` join), loops
-// tiles / units / skills over game-core calls and copies trace fields into booleans. The ONE
-// restated predicate (`stab`, the carried `combat/damage.rs` STAB test) is flagged at its site.
+// tiles / units / skills over game-core calls and copies trace fields into booleans. The TWO
+// restated predicates (`stab`, the carried `combat/damage.rs` STAB test, and `status_blocked`, the
+// resolver's status preconditions) are flagged at their sites and differentially tested against
+// `damage_pipeline` / `resolve_attack` in `tactics_tests.rs`.
 //
 // Error policy (plan A10): a malformed INPUT — an undeserialisable value, an unknown map / species /
 // unit / skill id, duplicate unit ids, a unit that fails `validate_unit`, an unusable tuning — is a
@@ -513,11 +515,11 @@ use game_core::tactics::{
     build_kits, damage_pipeline, disengage_taxed, find_path, guard_granted, is_exhausted,
     is_flanked, load_battle_maps, load_tactics_skills, load_tactics_species, load_tactics_tuning,
     plan as ai_plan, plan_cost, recruit_odds, spend, status_blocks_turn, target_set,
-    validate_at_pop, validate_unit, BattleKind, BattleMapDef, BattleMapEntry, Board, BoardUnit,
-    Cell, EconomyError, Entry, EventPayload, GeometryError, HaltReason, Hooks, MoveAction,
-    MoveClass, Path, PathError, PipelineTrace, QueuedAction, RecruitError, RecruitOdds, RollPair,
-    Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance, TacticalState, TacticalUnit,
-    TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState, Validated,
+    validate_at_pop, validate_battle_maps, validate_unit, BattleKind, BattleMapDef, BattleMapEntry,
+    Board, BoardUnit, Cell, EconomyError, Entry, EventPayload, GeometryError, HaltReason, Hooks,
+    MoveAction, MoveClass, Path, PathError, PipelineTrace, QueuedAction, RecruitError, RecruitOdds,
+    RollPair, Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance, TacticalState,
+    TacticalUnit, TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState, Validated,
 };
 use game_core::{
     accuracy_check, load_skills, load_species, load_type_chart, BattleOutcome, Effectiveness,
@@ -528,6 +530,9 @@ use game_core::{
 /// `draw_rolls` range is `85 + roll % 16`, so these are its minimum and maximum (host-tested).
 pub const FORECAST_VARIANCE_MIN: u8 = 85;
 pub const FORECAST_VARIANCE_MAX: u8 = 100;
+
+/// The probe unit's id (plan A4): `u32::MAX`, which `state_of` refuses on a real row.
+pub const PROBE_ID: u32 = u32::MAX;
 
 /// One `battle_unit` row as the client holds it — the fields the rules read (server-module
 /// `tactics.rs::unit_of_row` reads exactly these), plus the wild join inputs.
@@ -682,6 +687,8 @@ fn load_tactics_content() -> Result<TacticsContent, String> {
     let tuning = load_tactics_tuning().map_err(|e| format!("tactics content: tuning: {e:?}"))?;
     let relations = load_type_chart().map_err(|e| format!("tactics content: type chart: {e}"))?;
     let maps = load_battle_maps().map_err(|e| format!("tactics content: battle maps: {e}"))?;
+    // The grids below index `tiles[y * width + x]`: a map that fails the validator never loads.
+    validate_battle_maps(&maps).map_err(|e| format!("tactics content: battle maps: {e:?}"))?;
     Ok(TacticsContent {
         tuning,
         chart: TypeChart::new(&relations),
@@ -785,7 +792,8 @@ fn opponent(side: Side) -> Side {
 /// joined units sorted `(side, slot)` (the server's order), seed / action_seq 0, round 1, `Ongoing`.
 ///
 /// # Errors
-/// Unknown map, a row that fails to join, duplicate unit ids.
+/// Unknown map, a row that fails to join, duplicate unit ids, a duplicate `(side, slot)` (the
+/// sort key: the order would depend on the input), the probe sentinel id on a real row.
 pub fn state_of(board: &BoardIn) -> Result<TacticalState, String> {
     let map = map_of(board.map_id)?;
     let mut units = Vec::with_capacity(board.units.len());
@@ -793,8 +801,20 @@ pub fn state_of(board: &BoardIn) -> Result<TacticalState, String> {
         units.push(unit_of_row(row)?);
     }
     for (i, unit) in units.iter().enumerate() {
+        if unit.id == PROBE_ID {
+            return Err(format!("unit id {} is reserved for the probe", unit.id));
+        }
         if units[..i].iter().any(|u| u.id == unit.id) {
             return Err(format!("duplicate unit id {}", unit.id));
+        }
+        if let Some(twin) = units[..i]
+            .iter()
+            .find(|u| u.side == unit.side && u.slot == unit.slot)
+        {
+            return Err(format!(
+                "duplicate slot {} on side {:?} (units {} and {})",
+                unit.slot, unit.side, twin.id, unit.id
+            ));
         }
     }
     units.sort_by_key(|u| (side_index(u.side), u.slot));
@@ -1001,21 +1021,23 @@ pub fn plan_of(
     entries: &[Entry],
 ) -> Result<Result<PlanOut, EconomyError>, String> {
     let t = &tactics_content()?.tuning;
+    // The total and the refusal are the rule's own (`plan_cost`); `spend` on a copy only yields the
+    // per-entry charges and the budget left, which the rule computes but does not return.
+    let total = match plan_cost(start, entries, t) {
+        Ok(total) => total,
+        Err(err) => return Ok(Err(err)),
+    };
     let mut remaining = *start;
     let mut costs = Vec::with_capacity(entries.len());
-    let mut total: u16 = 0;
     for entry in entries {
         match spend(&mut remaining, *entry, t) {
-            Ok(charged) => {
-                costs.push(charged);
-                total += u16::from(charged);
-            }
+            Ok(charged) => costs.push(charged),
             Err(err) => return Ok(Err(err)),
         }
     }
     Ok(Ok(PlanOut {
         costs,
-        total: u8::try_from(total).unwrap_or(u8::MAX),
+        total,
         guard_on_end: guard_granted(TurnEndCause::EndTurn, &remaining, t),
         remaining,
     }))
@@ -1089,22 +1111,27 @@ fn probe_sweep(
     aim_of: impl Fn(Cell) -> Cell,
 ) -> Vec<bool> {
     let mut hit = vec![false; board.terrain.len()];
+    // One board with the probe appended, moved from tile to tile (not a clone per tile).
+    let mut with_probe = board.clone();
+    with_probe.units.push(BoardUnit {
+        id: PROBE_ID,
+        side: opponent(caster_side),
+        pos: Cell { x: 0, y: 0 },
+        alive: true,
+        class: MoveClass::Walk,
+    });
+    let probe = with_probe.units.len() - 1;
     for c in every_tile(state) {
-        let mut probed = board.clone();
-        let id = match probed.units.iter().find(|u| u.alive && u.pos == c) {
-            Some(occupant) => occupant.id,
+        let hits = match board.units.iter().find(|u| u.alive && u.pos == c) {
+            Some(occupant) => target_set(geometry, caster, aim_of(c), board)
+                .is_ok_and(|ids| ids.contains(&occupant.id)),
             None => {
-                probed.units.push(BoardUnit {
-                    id: u32::MAX,
-                    side: opponent(caster_side),
-                    pos: c,
-                    alive: true,
-                    class: MoveClass::Walk,
-                });
-                u32::MAX
+                with_probe.units[probe].pos = c;
+                target_set(geometry, caster, aim_of(c), &with_probe)
+                    .is_ok_and(|ids| ids.contains(&PROBE_ID))
             }
         };
-        if target_set(geometry, caster, aim_of(c), &probed).is_ok_and(|ids| ids.contains(&id)) {
+        if hits {
             hit[tile_index(state, c)] = true;
         }
     }
@@ -1188,6 +1215,12 @@ pub fn overlays_of(board: &BoardIn, q: &OverlayQuery) -> Result<OverlaysOut, Str
     };
     if let Some(sel) = q.selected {
         let selected = unit_in(&state, sel, "selected unit")?.clone();
+        // A dead selection is the rule's business (every gate refuses it: empty sets); a conscious
+        // one standing off the map is a malformed input (A10), surfaced by the tax predicate.
+        if selected.is_conscious() {
+            disengage_taxed(&rules_board, sel, selected.pos)
+                .map_err(|err| format!("selected unit {sel}: disengage: {err:?}"))?;
+        }
         let least = least_strides(&with_budget(&state, sel, q.budget), sel, t);
         let (mut r1, mut r2) = (vec![false; n], vec![false; n]);
         for (i, s) in least.into_iter().enumerate() {
@@ -1299,7 +1332,8 @@ pub fn tactics_fresh_budget() -> Result<JsValue, JsValue> {
 /// An undeserialisable row, an unknown species / kit.
 #[wasm_bindgen]
 pub fn tactics_unit(row: JsValue) -> Result<JsValue, JsValue> {
-    let row: UnitRow = serde_wasm_bindgen::from_value(row)?;
+    let row: UnitRow =
+        serde_wasm_bindgen::from_value(row).map_err(|e| js_err(format!("row: {e}")))?;
     to_js(&unit_of_row(&row).map_err(js_err)?)
 }
 
@@ -1314,8 +1348,9 @@ pub fn tactics_targets(
     skill_id: u32,
     aim: JsValue,
 ) -> Result<JsValue, JsValue> {
-    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
-    let aim: Cell = serde_wasm_bindgen::from_value(aim)?;
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
+    let aim: Cell = serde_wasm_bindgen::from_value(aim).map_err(|e| js_err(format!("aim: {e}")))?;
     to_js(&targets_of(&board, caster, skill_id, aim).map_err(js_err)?)
 }
 
@@ -1325,8 +1360,10 @@ pub fn tactics_targets(
 /// A malformed board, an unknown mover.
 #[wasm_bindgen]
 pub fn tactics_path(board: JsValue, mover: u32, dest: JsValue) -> Result<JsValue, JsValue> {
-    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
-    let dest: Cell = serde_wasm_bindgen::from_value(dest)?;
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
+    let dest: Cell =
+        serde_wasm_bindgen::from_value(dest).map_err(|e| js_err(format!("dest: {e}")))?;
     to_js(&path_of(&board, mover, dest).map_err(js_err)?)
 }
 
@@ -1336,8 +1373,10 @@ pub fn tactics_path(board: JsValue, mover: u32, dest: JsValue) -> Result<JsValue
 /// A malformed board, an unknown mover.
 #[wasm_bindgen]
 pub fn tactics_disengage(board: JsValue, mover: u32, start: JsValue) -> Result<JsValue, JsValue> {
-    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
-    let start: Option<Cell> = serde_wasm_bindgen::from_value(start)?;
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
+    let start: Option<Cell> =
+        serde_wasm_bindgen::from_value(start).map_err(|e| js_err(format!("start: {e}")))?;
     to_js(&disengage_of(&board, mover, start).map_err(js_err)?)
 }
 
@@ -1347,7 +1386,8 @@ pub fn tactics_disengage(board: JsValue, mover: u32, start: JsValue) -> Result<J
 /// A malformed board, unknown ids.
 #[wasm_bindgen]
 pub fn tactics_flank(board: JsValue, attacker: u32, target: u32) -> Result<JsValue, JsValue> {
-    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
     to_js(&flank_of(&board, attacker, target).map_err(js_err)?)
 }
 
@@ -1363,9 +1403,12 @@ pub fn tactics_forecast(
     skill: JsValue,
     flank: bool,
 ) -> Result<JsValue, JsValue> {
-    let attacker: TacticalUnit = serde_wasm_bindgen::from_value(attacker)?;
-    let target: TacticalUnit = serde_wasm_bindgen::from_value(target)?;
-    let skill: SkillTactics = serde_wasm_bindgen::from_value(skill)?;
+    let attacker: TacticalUnit =
+        serde_wasm_bindgen::from_value(attacker).map_err(|e| js_err(format!("attacker: {e}")))?;
+    let target: TacticalUnit =
+        serde_wasm_bindgen::from_value(target).map_err(|e| js_err(format!("target: {e}")))?;
+    let skill: SkillTactics =
+        serde_wasm_bindgen::from_value(skill).map_err(|e| js_err(format!("skill: {e}")))?;
     let content = tactics_content().map_err(js_err)?;
     to_js(
         &forecast_of(
@@ -1395,7 +1438,8 @@ pub fn tactics_recruit_odds(max_hp: u16, hp: u16, bait_bonus: u16) -> Result<JsV
 /// A malformed board, an unknown unit, a unit that is not a wild.
 #[wasm_bindgen]
 pub fn tactics_ai_plan(board: JsValue, unit: u32) -> Result<JsValue, JsValue> {
-    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
     to_js(&ai_plan_of(&board, unit).map_err(js_err)?)
 }
 
@@ -1411,8 +1455,10 @@ pub fn tactics_is_exhausted(cur_hp: u16, max_hp: u16) -> bool {
 /// Undeserialisable inputs, content failed to load.
 #[wasm_bindgen]
 pub fn tactics_plan(start: JsValue, entries: JsValue) -> Result<JsValue, JsValue> {
-    let start: TurnBudget = serde_wasm_bindgen::from_value(start)?;
-    let entries: Vec<Entry> = serde_wasm_bindgen::from_value(entries)?;
+    let start: TurnBudget =
+        serde_wasm_bindgen::from_value(start).map_err(|e| js_err(format!("start: {e}")))?;
+    let entries: Vec<Entry> =
+        serde_wasm_bindgen::from_value(entries).map_err(|e| js_err(format!("entries: {e}")))?;
     to_js(&plan_of(&start, &entries).map_err(js_err)?)
 }
 
@@ -1422,8 +1468,10 @@ pub fn tactics_plan(start: JsValue, entries: JsValue) -> Result<JsValue, JsValue
 /// A malformed board, an unknown selected unit.
 #[wasm_bindgen]
 pub fn tactics_overlays(board: JsValue, q: JsValue) -> Result<JsValue, JsValue> {
-    let board: BoardIn = serde_wasm_bindgen::from_value(board)?;
-    let q: OverlayQuery = serde_wasm_bindgen::from_value(q)?;
+    let board: BoardIn =
+        serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
+    let q: OverlayQuery =
+        serde_wasm_bindgen::from_value(q).map_err(|e| js_err(format!("q: {e}")))?;
     to_js(&overlays_of(&board, &q).map_err(js_err)?)
 }
 

@@ -22,7 +22,8 @@ export interface ForecastVM {
   readonly skull: Skull;
   /** "survives at 1 HP": First-Stand catches the roll. */
   readonly firstStand: boolean;
-  /** The status the skill may apply on a hit, or null when the target cannot take one. */
+  /** The status the skill may apply on a hit, or null when the target cannot take one (already
+   *  statused, immune, or KO'd by every roll). */
   readonly status: RuleStatusKind | null;
 }
 
@@ -51,6 +52,8 @@ export function forecastVM(f: ForecastOut): ForecastVM {
     lines,
     skull,
     firstStand: f.first_stand_saves,
-    status: f.status_blocked ? null : f.status,
+    // A status lands only on a hit that does not KO (resolve_attack's `!ko`): when the minimum
+    // roll already kills, every roll does, so no status can ever apply.
+    status: f.status_blocked || f.kills_min ? null : f.status,
   };
 }
