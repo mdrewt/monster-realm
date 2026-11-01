@@ -1377,6 +1377,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "ranking",
     "schema",
     "tactics",
+    "tactics_settle",
     "taming",
     "trading",
 ];

@@ -42,8 +42,10 @@ use crate::schema::{
     BattleTactical, BattleUnit, BattleWildUnit, BudgetLastEntry, BudgetMoveSpend, DeployPick,
     Monster, MoveClassRow, PlayerFormation, SideRow, StanceRow,
 };
+use crate::tactics_settle::{self, Close, StepPrev};
 use crate::{CONTENT_VERSION, WILD_IDENTITY};
 use game_core::tactics::ai;
+use game_core::tactics::queue::is_player_owned;
 use game_core::tactics::resolve::UnitState;
 use game_core::tactics::types::{ActionKind, Phase, QueuedAction, TurnState, MAX_STORED_ENTRIES};
 use game_core::tactics::{
@@ -345,17 +347,30 @@ impl Except {
     }
 }
 
-/// The turn state and round before a step (what `store` arms an advance row against).
-#[derive(Clone, Copy)]
+/// The turn-machine facts before a step: what `store` arms an advance row against, and what
+/// the summary's per-step delta needs (bt-9).
+#[derive(Clone)]
 struct Prev {
     turn: TurnState,
     round: u16,
+    /// Windows opened so far in the waiting unit's turn (`clocks[0]`).
+    windows: u8,
+    /// Units at full HP before the step (the single-hit KO telemetry).
+    full_hp: Vec<u32>,
 }
 
 fn prev_of(tb: &TacticalBattle) -> Prev {
     Prev {
         turn: tb.turn_state,
         round: tb.state.round,
+        windows: tb.clocks[0].windows_this_unit_turn,
+        full_hp: tb
+            .state
+            .units
+            .iter()
+            .filter(|u| u.cur_hp == u.max_hp())
+            .map(|u| u.id)
+            .collect(),
     }
 }
 
@@ -756,8 +771,31 @@ fn store(
         });
         seq = seq.saturating_add(1);
     }
+    // The summary's per-step delta (bt-9): a zero delta writes nothing.
+    let player_units: Vec<u32> = written
+        .iter()
+        .filter(|u| is_player_owned(tb.state.kind, side_of_row(u.side)))
+        .map(|u| u.unit_id)
+        .collect();
+    let step_prev = StepPrev {
+        waiting: match prev.turn {
+            TurnState::Waiting(unit) => Some(unit),
+            TurnState::NotActive | TurnState::Advancing => None,
+        },
+        windows: prev.windows,
+        full_hp: prev.full_hp.clone(),
+    };
+    let delta = tactics_settle::step_delta(&step_prev, out, &player_units);
+    tactics_settle::accumulate(ctx, &anchor, &tactical, &delta);
     if finished {
-        finish(ctx, Some(anchor), tactical, true, now_ms, except);
+        finish(
+            ctx,
+            Some(anchor),
+            tactical,
+            Close::Settled { state: &tb.state },
+            now_ms,
+            except,
+        );
         return;
     }
     if let (TurnState::Waiting(unit), Some(window)) = (tb.turn_state, out.window) {
@@ -771,49 +809,80 @@ fn store(
     }
 }
 
-/// THE terminal funnel, idempotent: a battle already `Finished` is left alone. Persists
-/// damaged HP through the existing primitive when asked (the anchor already mirrors the
-/// units), writes the anchor's outcome, closes the tactical row, drops READY and staging
-/// rows, disarms every schedule row but `except`, and arms the 24 h GC.
+/// THE terminal funnel, idempotent against the stored ROW (a caller's stale Active copy must
+/// not settle twice). For a `Settled` close it persists damaged HP through the existing
+/// primitive (the anchor already mirrors the units); it writes the anchor's outcome, closes the
+/// tactical row, drops READY and staging rows, disarms every schedule row but `except`, runs
+/// the one settlement (`tactics_settle::settle`, per the `Close` kind) and arms the 24 h GC.
 fn finish(
     ctx: &ReducerContext,
     anchor: Option<Battle>,
     mut tactical: BattleTactical,
-    persist_hp: bool,
+    close: Close<'_>,
     now_ms: i64,
     except: Except,
 ) {
-    if tactical.phase == Phase::Finished {
+    let battle_id = tactical.battle_id;
+    let stored_finished = ctx
+        .db
+        .battle_tactical()
+        .battle_id()
+        .find(battle_id)
+        .is_some_and(|t| t.phase == Phase::Finished);
+    if tactical.phase == Phase::Finished || stored_finished {
         return;
     }
-    let battle_id = tactical.battle_id;
-    if let Some(anchor) = anchor {
-        if persist_hp {
-            if let Err(e) = write_back_party_hp(ctx, &anchor) {
-                let escaped = json_escape(&e);
-                mr_log(
-                    "tactical_writeback_err",
-                    &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
-                );
+    let was_active = tactical.phase == Phase::Active;
+    let mut hp_ok = false;
+    if let Some(anchor) = &anchor {
+        if matches!(close, Close::Settled { .. }) {
+            match write_back_party_hp(ctx, anchor) {
+                Ok(()) => hp_ok = true,
+                Err(e) => {
+                    let escaped = json_escape(&e);
+                    mr_log(
+                        "tactical_writeback_err",
+                        &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+                    );
+                }
             }
         }
-        ctx.db.battle().battle_id().update(anchor);
+        ctx.db.battle().battle_id().update(anchor.clone());
     }
     tactical.phase = Phase::Finished;
     tactical.turn_state = TurnState::NotActive;
     tactical.turn_idx = 0;
-    ctx.db.battle_tactical().battle_id().update(tactical);
+    ctx.db
+        .battle_tactical()
+        .battle_id()
+        .update(tactical.clone());
     ctx.db.battle_queue().battle_id().delete(battle_id);
     ctx.db.battle_deploy().battle_id().delete(battle_id);
     disarm_deadlines(ctx, battle_id, except.deadline());
     disarm_advances(ctx, battle_id, except.advance());
+    match &anchor {
+        Some(anchor) => {
+            tactics_settle::settle(ctx, anchor, &tactical, &close, hp_ok, was_active, now_ms);
+        }
+        None => mr_log(
+            "tactical_settle_skipped",
+            &format!("\"battle_id\":{battle_id},\"reason\":\"no anchor\""),
+        ),
+    }
     arm_gc(ctx, battle_id, now_ms.saturating_add(GC_DELAY_MS));
 }
 
-/// Close a battle as `Fled` with NO HP write: a Deploying battle (design §3.3, §3.7) or an
+/// Close a battle as `Fled` with NO HP write: a Deploying battle (design §3.3, §3.7), an
 /// Active tactical row whose anchor a legacy reducer already ended (its own write-back ran;
-/// writing the units' older HP would heal or revive — security audit MED-1).
-fn close_without_hp(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64, except: Except) {
+/// writing the units' older HP would heal or revive — security audit MED-1), or the fallback of
+/// an unloadable battle. `close` says which, so the settlement knows what still applies.
+fn close_without_hp(
+    ctx: &ReducerContext,
+    tactical: BattleTactical,
+    now_ms: i64,
+    except: Except,
+    close: Close<'_>,
+) {
     let anchor = ctx
         .db
         .battle()
@@ -825,7 +894,7 @@ fn close_without_hp(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64,
             }
             a
         });
-    finish(ctx, anchor, tactical, false, now_ms, except);
+    finish(ctx, anchor, tactical, close, now_ms, except);
 }
 
 /// The never-fail close of a battle that cannot be loaded (content drift, a missing row):
@@ -875,41 +944,80 @@ fn fallback_close(
             }
         }
     }
-    close_without_hp(ctx, tactical, now_ms, except);
+    close_without_hp(ctx, tactical, now_ms, except, Close::Fallback);
 }
 
 // ===========================================================================
 // Hooks — the executor's seam, implemented over rows and game-core rules.
 // ===========================================================================
 
+/// What the planner and the recruit glue need of a wild unit: its stance and spawn (bt-8),
+/// its species, level and `battle_wild_unit` seed (bt-9) — read before the executor runs, so
+/// the hooks never query mid-step.
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // bt-9 API freeze: the recruit glue reads the last four fields.
+struct WildRef {
+    unit_id: u32,
+    stance: Stance,
+    spawn: Cell,
+    species_id: u32,
+    level: u8,
+    wild_index: u8,
+    /// `battle_wild_unit.individuality_seed` (`None` when the row is gone).
+    seed: Option<u32>,
+}
+
 struct ShellHooks<'a> {
     ctx: &'a ReducerContext,
+    #[allow(dead_code)] // bt-9 API freeze: the recruit glue reads it.
+    battle_id: u64,
     content: &'static TacticsContent,
     /// `(unit_id, owner)` for every unit row (a wild has no owner).
     owners: Vec<(u32, Option<Identity>)>,
-    /// `(unit_id, stance, spawn tile)` for every wild unit.
-    wilds: Vec<(u32, Stance, Cell)>,
+    /// Every wild unit.
+    wilds: Vec<WildRef>,
 }
 
 /// The hooks over one battle's unit rows (a free fn: the gate census refuses an
 /// impl-block signature that names the reducer context).
 fn shell_hooks<'a>(
     ctx: &'a ReducerContext,
+    battle_id: u64,
     units: &[BattleUnit],
     map: &BattleMapDef,
     content: &'static TacticsContent,
 ) -> ShellHooks<'a> {
     let owners = units.iter().map(|u| (u.unit_id, u.owner)).collect();
+    let seeds: Vec<(u8, u32)> = ctx
+        .db
+        .battle_wild_unit()
+        .battle_id()
+        .filter(battle_id)
+        .map(|w| (w.wild_index, w.individuality_seed))
+        .collect();
     let wilds = units
         .iter()
         .filter_map(|u| {
             let stance = u.stance?;
-            let spawn = map.spawn_b.get(usize::from(u.wild_index?)).copied()?;
-            Some((u.unit_id, stance_of_row(stance), spawn))
+            let wild_index = u.wild_index?;
+            let spawn = map.spawn_b.get(usize::from(wild_index)).copied()?;
+            Some(WildRef {
+                unit_id: u.unit_id,
+                stance: stance_of_row(stance),
+                spawn,
+                species_id: u.species_id,
+                level: u.level,
+                wild_index,
+                seed: seeds
+                    .iter()
+                    .find(|(i, _)| *i == wild_index)
+                    .map(|(_, seed)| *seed),
+            })
         })
         .collect();
     ShellHooks {
         ctx,
+        battle_id,
         content,
         owners,
         wilds,
@@ -964,8 +1072,8 @@ impl Hooks for ShellHooks<'_> {
     }
 
     fn plan_ai(&self, state: &TacticalState, unit: u32) -> Vec<QueuedAction> {
-        match self.wilds.iter().find(|(id, _, _)| *id == unit) {
-            Some(&(_, stance, spawn)) => ai::plan(state, unit, stance, spawn, &self.content.tuning),
+        match self.wilds.iter().find(|w| w.unit_id == unit) {
+            Some(w) => ai::plan(state, unit, w.stance, w.spawn, &self.content.tuning),
             None => vec![QueuedAction::EndTurn],
         }
     }
@@ -1238,7 +1346,8 @@ fn materialize(
         ctx.db.tactical_deadline_sched().scheduled_id().delete(id);
     }
     let rules = content.rules();
-    let mut hooks = shell_hooks(ctx, &rows, map, content);
+    let prev = prev_of(&tb);
+    let mut hooks = shell_hooks(ctx, battle_id, &rows, map, content);
     let out = tb
         .start(now_ms, &rules, &mut hooks)
         .map_err(|e| format!("start: {e:?}"))?;
@@ -1255,10 +1364,7 @@ fn materialize(
             tb,
         },
         &out,
-        Prev {
-            turn: TurnState::NotActive,
-            round: 1,
-        },
+        prev,
         now_ms,
         Except::None,
     );
@@ -1720,7 +1826,7 @@ pub fn submit_queue(
     let prev = prev_of(&tb);
     let prev_clock = tb.clocks[side_index(side)];
     let rules = content.rules();
-    let mut hooks = shell_hooks(ctx, &units, map, content);
+    let mut hooks = shell_hooks(ctx, battle_id, &units, map, content);
     let out = match tb.submit_queue(now, side, unit_id, entries, &rules, &mut hooks) {
         Ok(out) => out,
         Err(e) => return reject(NAME, me, format!("{NAME}: {e:?}")),
@@ -1836,7 +1942,7 @@ pub fn tactical_deadline_fire(
         Phase::Finished => return Ok(()),
         Phase::Deploying => {
             if args.unit_id == DEPLOY_WINDOW_UNIT {
-                close_without_hp(ctx, tactical, now, except);
+                close_without_hp(ctx, tactical, now, except, Close::Deploying);
             }
             return Ok(());
         }
@@ -1852,7 +1958,7 @@ pub fn tactical_deadline_fire(
         .find(battle_id)
         .is_some_and(|a| a.state.outcome == BattleOutcome::Ongoing);
     if !anchor_live {
-        close_without_hp(ctx, tactical, now, except);
+        close_without_hp(ctx, tactical, now, except, Close::LegacyEnded);
         return Ok(());
     }
     let loaded = match load(ctx, battle_id) {
@@ -1878,7 +1984,7 @@ pub fn tactical_deadline_fire(
     } = loaded;
     let prev = prev_of(&tb);
     let rules = content.rules();
-    let mut hooks = shell_hooks(ctx, &units, map, content);
+    let mut hooks = shell_hooks(ctx, battle_id, &units, map, content);
     let out = match tb.expire(now, args.unit_id, args.window_seq, &rules, &mut hooks) {
         Ok(out) => out,
         Err(ExpireError::NotDue { deadline_ms }) => {
@@ -1928,7 +2034,7 @@ pub fn tactical_advance(ctx: &ReducerContext, args: TacticalAdvanceSched) -> Res
         .find(battle_id)
         .is_some_and(|a| a.state.outcome == BattleOutcome::Ongoing);
     if !anchor_live {
-        close_without_hp(ctx, tactical, now, except);
+        close_without_hp(ctx, tactical, now, except, Close::LegacyEnded);
         return Ok(());
     }
     let loaded = match load(ctx, battle_id) {
@@ -1958,7 +2064,7 @@ pub fn tactical_advance(ctx: &ReducerContext, args: TacticalAdvanceSched) -> Res
         round: args.round,
     };
     let rules = content.rules();
-    let mut hooks = shell_hooks(ctx, &units, map, content);
+    let mut hooks = shell_hooks(ctx, battle_id, &units, map, content);
     let Ok(out) = tb.advance(now, pin, &rules, &mut hooks) else {
         return Ok(());
     };
@@ -2007,6 +2113,22 @@ pub fn battle_gc(ctx: &ReducerContext, args: BattleGcSched) -> Result<(), String
     if tactical.phase != Phase::Finished && !anchor_terminal {
         return Ok(());
     }
+    sweep_tactical_rows(ctx, battle_id, Some(args.scheduled_id), anchor.is_none());
+    log::info!("{{\"evt\":\"tactical_battle_gc\",\"battle_id\":{battle_id}}}");
+    Ok(())
+}
+
+/// Delete a battle's per-battle rows — the GC roster (event, unit, queue, clock, secret,
+/// wild-unit, staging) and every schedule row but `keep_gc` (a firing GC row the runtime
+/// deletes itself); `drop_tactical` takes the `battle_tactical` row too (an anchor-less or swept
+/// battle has no reader left). `battle_summary` always survives (telemetry). Shared by `battle_gc`
+/// and the prior-terminal sweep (`battle::sweep_prior_terminals`, R-bt-8-TACTICALSWEEP).
+pub(crate) fn sweep_tactical_rows(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    keep_gc: Option<u64>,
+    drop_tactical: bool,
+) {
     ctx.db.battle_event().battle_id().delete(battle_id);
     ctx.db.battle_unit().battle_id().delete(battle_id);
     ctx.db.battle_queue().battle_id().delete(battle_id);
@@ -2016,12 +2138,10 @@ pub fn battle_gc(ctx: &ReducerContext, args: BattleGcSched) -> Result<(), String
     ctx.db.battle_deploy().battle_id().delete(battle_id);
     disarm_deadlines(ctx, battle_id, None);
     disarm_advances(ctx, battle_id, None);
-    disarm_gcs(ctx, battle_id, Some(args.scheduled_id));
-    if anchor.is_none() {
+    disarm_gcs(ctx, battle_id, keep_gc);
+    if drop_tactical {
         ctx.db.battle_tactical().battle_id().delete(battle_id);
     }
-    log::info!("{{\"evt\":\"tactical_battle_gc\",\"battle_id\":{battle_id}}}");
-    Ok(())
 }
 
 // ===========================================================================
@@ -2050,7 +2170,7 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
         match tactical.phase {
             Phase::Finished => continue,
             Phase::Deploying => {
-                close_without_hp(ctx, tactical, now, Except::None);
+                close_without_hp(ctx, tactical, now, Except::None, Close::Deploying);
                 continue;
             }
             Phase::Active => {}
@@ -2096,4 +2216,4 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
 
 #[cfg(test)]
 #[path = "tactics_tests.rs"]
-mod tactics_tests;
+pub(crate) mod tactics_tests;
