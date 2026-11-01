@@ -28,7 +28,8 @@ export function isBareBattle(stack: Stack): boolean {
 export const OUTCOME_CONTINUE_GRACE_MS = 400;
 
 /** The battle's own button rules, asked before the top frame's adapter; `undefined` leaves the
- *  button to it. Start at the bare battle base opens the main menu over the battle (CTL6C.1). A on
+ *  button to it. Start at the bare battle base opens the main menu over the battle (CTL6C.1) —
+ *  unless `tactical` (the tactical shell owns the frame, bt-11), when the adapter keeps it. A on
  *  a terminal outcome continues it once it has been up `OUTCOME_CONTINUE_GRACE_MS` (`outcomeAgeMs`,
  *  undefined while none is shown) by popping only the outcome frame, as B does, so a conversation
  *  suspended beneath it survives (CTL6C.2). A held key acts once. */
@@ -38,12 +39,12 @@ export function battleButton(
   outcomeAgeMs?: number,
   tactical = false,
 ): ScreenResult | undefined {
-  // bt-11 API freeze: `tactical` (the tactical shell owns the frame) leaves Start at a bare battle
-  // base to the battle adapter (End Turn / Guard / Submit) — not implemented yet.
-  void tactical;
   const top = stack[stack.length - 1];
   if (btn.button === 'Start' && isBareBattle(stack)) {
-    return btn.repeat ? 'consumed' : { kind: 'openMenu' };
+    // bt-11 (BT11.6): when the tactical shell owns the frame, Start is the battle adapter's (End
+    // Turn / Guard on a live turn, Submit for a pre-queue); a held Start still acts once.
+    if (btn.repeat) return 'consumed';
+    return tactical ? undefined : { kind: 'openMenu' };
   }
   if (
     btn.button === 'A' &&

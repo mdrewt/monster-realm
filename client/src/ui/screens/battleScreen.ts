@@ -6,8 +6,9 @@
 // battle base (screens/index.ts) and the outcome frame keeps the legacy adapter. The cursor lives
 // in the view: its rows are re-rendered on every batch and the mouse and Tab move it too, so a press
 // is a one-shot op TOKEN (a new object each press, the profileScreen precedent) and every step's
-// state holds the new token or null, so a later paint never re-applies an old one. Start never gets
-// here in play: main.ts's `battleButton` opens the main menu over a bare battle first.
+// state holds the new token or null, so a later paint never re-applies an old one. At a LEGACY
+// battle Start never gets here in play: main.ts's `battleButton` opens the main menu first; the
+// tactical shell (bt-11) leaves Start to this adapter (End Turn / Guard / Submit).
 import type { CursorDir } from '../battleModel';
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
@@ -51,11 +52,23 @@ export const battleScreen: ScreenAdapter<null, BattleScreenState, BattleOpsView>
         return done('consumed', btn.repeat ? null : { kind: 'activate' });
       case 'B':
         return done('consumed', btn.repeat ? null : { kind: 'back' });
-      // As at the bare base (baseButton): Start does nothing here, Select toggles help.
+      // bt-11 (BT11.6): X toggles the danger overlay, LB / RB cycle the player's units. (The
+      // input router still swallows X before any screen is asked — R-bt-11-ROUTERX; the dock's
+      // Danger button is the working pointer path until it routes X here.)
+      case 'X':
+        return done('consumed', btn.repeat ? null : { kind: 'danger' });
+      case 'LB':
+        return done('consumed', btn.repeat ? null : { kind: 'cycle', dir: -1 });
+      case 'RB':
+        return done('consumed', btn.repeat ? null : { kind: 'cycle', dir: 1 });
+      // Start: End Turn / Guard on a live turn, Submit for a pre-queue. main.ts's `battleButton`
+      // answers Start first at a LEGACY battle (the main menu), so this op reaches only the
+      // tactical shell. Select toggles help, as at the bare base.
       case 'Start':
-        return done('consumed');
+        return done('consumed', btn.repeat ? null : { kind: 'start' });
       case 'Select':
         return done(btn.repeat ? 'consumed' : { kind: 'toggleHelp' });
+      // Y stays the page's (the design's Hold-Y gesture is the confirmed Clear plan row).
       default:
         return done('unhandled');
     }

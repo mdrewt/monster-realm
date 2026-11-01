@@ -517,9 +517,10 @@ use game_core::tactics::{
     plan as ai_plan, plan_cost, recruit_odds, spend, status_blocks_turn, target_set,
     validate_at_pop, validate_battle_maps, validate_unit, BattleKind, BattleMapDef, BattleMapEntry,
     Board, BoardUnit, Cell, EconomyError, Entry, EventPayload, GeometryError, HaltReason, Hooks,
-    MoveAction, MoveClass, Path, PathError, PipelineTrace, QueuedAction, RecruitError, RecruitOdds,
-    RollPair, Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance, TacticalState,
-    TacticalUnit, TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState, Validated,
+    MoveAction, MoveClass, Path, PathError, PipelineTrace, QueuedAction, RecruitAction,
+    RecruitError, RecruitOdds, RollPair, Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance,
+    TacticalState, TacticalUnit, TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState,
+    Validated,
 };
 use game_core::{
     accuracy_check, load_skills, load_species, load_type_chart, BattleOutcome, Effectiveness,
@@ -675,6 +676,42 @@ impl Hooks for InertHooks {
         _validated: &Validated,
     ) -> Vec<EventPayload> {
         Vec::new()
+    }
+}
+
+/// `InertHooks` with the recruit headroom answered `true`: the Recruit-target question (REV 5
+/// A26) asks the gate about adjacency, the budget, the ruleset and the target's kind; party
+/// headroom is the client's own `partyFull` flag, applied by the menu model.
+struct HeadroomHooks;
+
+impl Hooks for HeadroomHooks {
+    fn item_count(&self, unit: u32, item_id: u32) -> u32 {
+        InertHooks.item_count(unit, item_id)
+    }
+    fn take_item(&mut self, unit: u32, item_id: u32) -> bool {
+        InertHooks.take_item(unit, item_id)
+    }
+    fn recruit_headroom(&self, _unit: u32) -> bool {
+        true
+    }
+    fn plan_ai(&self, state: &TacticalState, unit: u32) -> Vec<QueuedAction> {
+        InertHooks.plan_ai(state, unit)
+    }
+    fn validate_delegated(
+        &self,
+        state: &TacticalState,
+        unit: u32,
+        validated: &Validated,
+    ) -> Result<(), HaltReason> {
+        InertHooks.validate_delegated(state, unit, validated)
+    }
+    fn resolve_delegated(
+        &mut self,
+        state: &mut TacticalState,
+        unit: u32,
+        validated: &Validated,
+    ) -> Vec<EventPayload> {
+        InertHooks.resolve_delegated(state, unit, validated)
     }
 }
 
@@ -967,8 +1004,13 @@ pub fn forecast_of(
         status_blocked,
         flank_factor: (t.flank_num, t.flank_den),
         guard_factor: (t.guard_num, t.guard_den),
-        // bt-11 REV 5 A27: not implemented yet (the continuation's host test pins it).
-        type_factor: (0, 0),
+        type_factor: {
+            // The carried chart value (0 / 5 / 10 / 20 per 10), reduced so the panel can print
+            // ×2 / ×1/2 without restating the chart (REV 5 A27).
+            let raw = chart.effectiveness(skill.affinity, target.kit.affinity);
+            let g = gcd(raw, 10);
+            (raw / g, 10 / g)
+        },
         min,
         max,
     })
@@ -1024,9 +1066,36 @@ pub fn ai_plan_of(board: &BoardIn, unit: u32) -> Result<Vec<QueuedAction>, Strin
 ///
 /// # Errors
 /// Content failed to load, a malformed board, an unknown `unit`.
-pub fn recruit_targets_of(board: &BoardIn, unit: u32, budget: &TurnBudget) -> Result<Vec<u32>, String> {
-    let _ = (board, unit, budget);
-    Err("bt-11: not implemented".to_string())
+pub fn recruit_targets_of(
+    board: &BoardIn,
+    unit: u32,
+    budget: &TurnBudget,
+) -> Result<Vec<u32>, String> {
+    let content = tactics_content()?;
+    let state = state_of(board)?;
+    if state.unit(unit).is_none() {
+        return Err(format!("unit {unit} not in the battle"));
+    }
+    let with = with_budget(&state, unit, *budget);
+    Ok(with
+        .units
+        .iter()
+        .map(|u| u.id)
+        .filter(|&target| {
+            let action = QueuedAction::Recruit(RecruitAction { target, bait: None });
+            validate_at_pop(&with, unit, &action, &HeadroomHooks, &content.tuning).is_ok()
+        })
+        .collect())
+}
+
+/// The greatest common divisor (for the reduced type factor); `gcd(0, n) == n`.
+const fn gcd(mut a: u8, mut b: u8) -> u8 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
 }
 
 /// A draft costed in order from `start`: `economy::spend` per entry on a copy (the charges and
@@ -1466,7 +1535,11 @@ pub fn tactics_ai_plan(board: JsValue, unit: u32) -> Result<JsValue, JsValue> {
 /// # Errors
 /// Undeserialisable inputs, an unknown unit, content failed to load.
 #[wasm_bindgen]
-pub fn tactics_recruit_targets(board: JsValue, unit: u32, budget: JsValue) -> Result<JsValue, JsValue> {
+pub fn tactics_recruit_targets(
+    board: JsValue,
+    unit: u32,
+    budget: JsValue,
+) -> Result<JsValue, JsValue> {
     let board: BoardIn =
         serde_wasm_bindgen::from_value(board).map_err(|e| js_err(format!("board: {e}")))?;
     let budget: TurnBudget =

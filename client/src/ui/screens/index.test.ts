@@ -405,6 +405,11 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
   // (still swallowed: main.ts's battleButton opens the menu before the host is asked), Select
   // (help) and B (swallowed) answer as before; X, Y, LB and RB stay unhandled. Was: the host's
   // answers were exactly BATTLE_TABLE's.
+  // bt-11 (named intentional change, BT11.6, plan REV 4 §R4.9 / REV 5 A22): the battle adapter now
+  // answers X (a `danger` op), LB / RB (`cycle` ops) and Start (a `start` op, painted into the lent
+  // view; main.ts's battleButton still opens the menu first at a legacy battle) as consumed; only Y
+  // stays the page's. `baseButton(battle)` itself (BATTLE_TABLE) is unchanged. Was: X, LB and RB
+  // unhandled, Start swallowed with no op.
   const BATTLE_HOST_TABLE: Record<VButton, ScreenResult> = {
     ...BATTLE_TABLE,
     Up: 'consumed',
@@ -412,6 +417,10 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
     Left: 'consumed',
     Right: 'consumed',
     A: 'consumed',
+    X: 'consumed',
+    LB: 'consumed',
+    RB: 'consumed',
+    Start: 'consumed',
   };
 
   it('CTL6B-2-WORLD-START-OPENS-MENU: at the world base Start opens the menu, Select toggles help, B is swallowed and everything else is the page`s', () => {
@@ -430,10 +439,12 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
     }
   });
 
-  it('CTL6B-2-BATTLE-START-INERT: at a battle base Start is swallowed and opens nothing, while Select still toggles help and B is swallowed', () => {
+  it('CTL6B-2-BATTLE-START-INERT: at a battle base Start opens nothing at the base rule (the host hands it, X, LB and RB to the battle adapter as consumed ops), while Select still toggles help, B is swallowed and Y stays the page`s', () => {
     // WRONG IMPL KILLED (B17): a Start at a battle base that opens the menu (ctl-6c's job), pops,
     // or falls through to the ladder (which would hide the battle); a battle base that treats B as
-    // the page's; a Select that is lost; and a battle base that consults an adapter.
+    // the page's; a Select that is lost; and a battle base that consults an adapter. bt-11 (BT11.6):
+    // a host that leaves X / LB / RB to the page at a bare battle (the danger toggle and unit cycling
+    // would be pointer-only), or that swallows Y.
     for (const button of VBUTTONS) {
       expect(baseButton(battle('7'), nav(button)), `baseButton ${button}`).toEqual(
         BATTLE_TABLE[button],

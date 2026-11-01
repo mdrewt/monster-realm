@@ -82,6 +82,8 @@ import { motionPreferenceFromWindow } from './render/motionPreference';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
+import { isAlreadyActing } from './tactics/draft';
+import { queueTooLate } from './tactics/strings';
 import { t } from './ui/a11yCopy';
 import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
@@ -1874,9 +1876,17 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       );
     }
     case 'cancelQueue': {
+      // The cancel race (design §2.3): a row consumed at TurnStart answers `AlreadyActing`, which
+      // is a notice ("Too late — already acting"), not an error; every other refusal is reported.
       const { battleId, unitId } = command;
       return sendGuarded('cancel-queue', () =>
-        conn?.live()?.reducers.cancelQueue({ battleId, unitId }),
+        conn
+          ?.live()
+          ?.reducers.cancelQueue({ battleId, unitId })
+          ?.catch((err: unknown) => {
+            if (!isAlreadyActing(err)) throw err;
+            showNotice(queueTooLate());
+          }),
       );
     }
     case 'advanceDialogue': {

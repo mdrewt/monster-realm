@@ -1975,10 +1975,7 @@ fn bt11_recruit_targets_match_validate_at_pop() {
     ];
     let adjacent = board(1, adjacent_units.clone());
     // Board 2: nobody adjacent (the actor in a corner, one wild far away).
-    let far = board(
-        1,
-        vec![row(5, Side::A, 0, 1, 0, 0), wild(31, 0, 6, 6, 0)],
-    );
+    let far = board(1, vec![row(5, Side::A, 0, 1, 0, 0), wild(31, 0, 6, 6, 0)]);
     // Board 3: board 1 under the PvP ruleset.
     let pvp = BoardIn {
         kind: BattleKind::Pvp,
@@ -2020,7 +2017,10 @@ fn bt11_recruit_targets_match_validate_at_pop() {
                     .collect();
                 pairs += with.units.len();
                 let got = super::recruit_targets_of(b, actor.id, &basis).unwrap_or_else(|e| {
-                    panic!("unit {} on map {}: a known unit is answered: {e}", actor.id, b.map_id)
+                    panic!(
+                        "unit {} on map {}: a known unit is answered: {e}",
+                        actor.id, b.map_id
+                    )
                 });
                 assert_eq!(
                     got, want,
@@ -2088,11 +2088,7 @@ fn bt11_type_factor_matches_chart() {
     let neutral = ALL
         .iter()
         .flat_map(|&a| ALL.iter().map(move |&d| (a, d)))
-        .find(|&(a, d)| {
-            !relations
-                .iter()
-                .any(|r| r.attacker == a && r.defender == d)
-        })
+        .find(|&(a, d)| !relations.iter().any(|r| r.attacker == a && r.defender == d))
         .expect("a pair the chart does not list");
     pairs.push(neutral);
 
@@ -2102,8 +2098,8 @@ fn bt11_type_factor_matches_chart() {
         let mut attacker = fighter(1, Side::A, 0, Affinity::Earth);
         attacker.kit.skills = vec![skill.clone()];
         let target = fighter(2, Side::B, 1, target_affinity);
-        let f = super::forecast_of(&chart, &T, &attacker, &target, &skill, false)
-            .expect("valid units");
+        let f =
+            super::forecast_of(&chart, &T, &attacker, &target, &skill, false).expect("valid units");
         let e = chart.effectiveness(skill_affinity, target_affinity);
         let label = format!("{skill_affinity:?} skill on a {target_affinity:?} target ({e})");
         assert_eq!(f.type_factor, factor_of(e), "{label}: type_factor");
@@ -2139,9 +2135,17 @@ fn bt11_type_factor_matches_chart() {
     let f = super::forecast_of(&immune, &T, &attacker, &water, &fire, false)
         .expect("valid units on the injected chart");
     assert_eq!(f.type_factor, (0, 1), "Immune: (0, 1)");
-    assert_eq!(f.effectiveness, Some(Effectiveness::Immune), "the injected Immune pair");
+    assert_eq!(
+        f.effectiveness,
+        Some(Effectiveness::Immune),
+        "the injected Immune pair"
+    );
     let plant = fighter(2, Side::B, 1, Affinity::Plant);
     let g = super::forecast_of(&immune, &T, &attacker, &plant, &fire, false)
         .expect("valid units on the injected chart");
-    assert_eq!(g.type_factor, (1, 1), "a pair the injected chart does not list is neutral");
+    assert_eq!(
+        g.type_factor,
+        (1, 1),
+        "a pair the injected chart does not list is neutral"
+    );
 }

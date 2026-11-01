@@ -731,9 +731,103 @@
 }
 .tactics-dock {
   flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: flex-start;
   min-height: 56px;
+  padding: 4px 8px;
   border-top: 2px solid #556;
   background: #0d0d16;
+}
+/* bt-11: the command dock's parts — the pointer twins of X / LB / RB, the hierarchical command menu
+ * (a listbox of button rows; a greyed row keeps its one-line reason), the plan strip (one chip per
+ * drafted or sent step) and the ghost sprite at a planned Move's destination. */
+.tactics-dock-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tactics-dock-buttons button {
+  padding: 2px 8px;
+  border: 1px solid #556;
+  border-radius: 3px;
+  background: #2a2a3a;
+  color: #eee;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tactics-dock-buttons button[aria-pressed="true"] {
+  border-color: #c7f;
+  background: #4a2a5a;
+}
+.tactics-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid #556;
+  border-radius: 3px;
+  background: #15151f;
+}
+.tactics-menu:focus {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+.tactics-menu-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: #eee;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.tactics-menu-row[aria-selected="true"] {
+  border-color: #fff;
+  background: #44445a;
+}
+.tactics-menu-row[aria-disabled="true"] {
+  color: #889;
+  cursor: default;
+}
+.tactics-menu-row[data-sub="true"] .tactics-menu-label::after {
+  content: " \25B8";
+}
+.tactics-reason {
+  color: #aab;
+  font-size: 11px;
+  font-style: italic;
+}
+.tactics-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 22px;
+  padding: 2px 0;
+}
+.tactics-strip--locked .tactics-chip {
+  border-style: double;
+  opacity: 0.8;
+}
+.tactics-ghost {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.55;
+  pointer-events: none;
+}
+.tactics-ghost .tactics-sprite {
+  outline: 2px dashed #fff;
+  outline-offset: -2px;
 }
 
 /* Reduced motion. ORDER IS LOAD-BEARING: these follow the base rules above (equal specificity, so
