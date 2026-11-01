@@ -320,5 +320,4 @@ export const resultsMonster = (name: string, xp: number, essence: number): strin
 /** `amount` is the server's u64 (a bigint), printed digit for digit. */
 export const resultsCurrency = (amount: bigint): string =>
   tf('tactics.results.currency', { amount });
-export const resultsRecruited = (name: string): string =>
-  tf('tactics.results.recruited', { name });
+export const resultsRecruited = (name: string): string => tf('tactics.results.recruited', { name });
