@@ -115,6 +115,7 @@ export const BattleChallenge = __t.object("BattleChallenge", {
     return ChallengeStatus;
   },
   createdAtMs: __t.i64(),
+  format: __t.u8(),
 });
 export type BattleChallenge = __Infer<typeof BattleChallenge>;
 
@@ -294,6 +295,10 @@ export const BattleSummary = __t.object("BattleSummary", {
   unitTurnsLive: __t.u16(),
   haltedPlans: __t.u16(),
   seKosAfterR1: __t.u16(),
+  kosAfterR1: __t.u16(),
+  get endHow() {
+    return __t.option(EndHow);
+  },
 });
 export type BattleSummary = __Infer<typeof BattleSummary>;
 

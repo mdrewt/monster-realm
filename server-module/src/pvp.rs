@@ -20,13 +20,16 @@
 //!   `scheduled(pvp_deadline_reaper)` cohabitation rule.
 //! - `settle_pvp_battle` is the single decisive-commit funnel: every terminal
 //!   PvP outcome (both-submit, deadline forfeit, disconnect forfeit) commits
-//!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`.
+//!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`. A
+//!   TACTICAL PvP battle (bt-14: forfeit, disconnect, the 4th auto-pass, Surge,
+//!   adjudication) commits through it too, from `tactics::finish`, in
+//!   `SideAWriteBack::HpOnly` mode — HP only; the tactical settlement pays.
 //!   One named exception: the deletion cascade's forced-terminal fallback
 //!   (`battle::anonymize_battles`) commits `SideAWins`/`SideBWins`
 //!   outside this funnel, without rating, HP, XP, currency or evolution
 //!   write-back and without the `battle_action` sweep.
 
-use crate::battle::write_back_battle_results;
+use crate::battle::{reject_if_tactical_anchor, write_back_battle_results, write_back_party_hp};
 use crate::content_cache::cached_skills;
 use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
@@ -36,8 +39,8 @@ use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms};
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, monster, player, skill_row, species_row, trade_offer,
-    Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
+    battle, battle_action, battle_challenge, battle_tactical, monster, player, skill_row,
+    species_row, trade_offer, Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
 };
 use crate::WILD_IDENTITY;
 use game_core::{
@@ -237,6 +240,16 @@ fn has_active_incoming_challenge(ctx: &ReducerContext, identity: Identity) -> bo
 
 /// Build a team of `BattleMonster`s from `party_ids` owned by `owner`.
 /// Validates each monster: exists, owned, party-slotted, not in trade.
+/// bt-14 (BT14.1): the party-size format a challenge opens, derived from the challenger's
+/// party pick — `min(party_len, MAX_PACK)` (ranked plays 3v3 by picking 3; casual 1–3). Pure.
+pub(crate) fn challenge_format(party_len: usize) -> u8 {
+    u8::try_from(party_len.min(usize::from(PVP_FORMAT_MAX))).unwrap_or(PVP_FORMAT_MAX)
+}
+
+/// The PvP format cap (design §6.1: ranked plays 3v3, casual picks 1–3). Equal to the wild pack
+/// cap `MAX_PACK` at the design's numbers, but a separate rule — never aliased to it.
+pub(crate) const PVP_FORMAT_MAX: u8 = 3;
+
 /// Also returns the per-slot ability ids (parallel to the team vec).
 fn build_pvp_team(
     ctx: &ReducerContext,
@@ -378,7 +391,19 @@ fn apply_pvp_forfeit(
     forfeited_side: SideId,
 ) -> Result<(), String> {
     battle.state.outcome = pvp_forfeit_outcome(forfeited_side);
-    settle_pvp_battle(ctx, battle)
+    settle_pvp_battle(ctx, battle, SideAWriteBack::Legacy1v1).map(|_| ())
+}
+
+/// Which side-A write-back the decisive commit runs (bt-14). A 1v1 anchor pays the legacy credits
+/// (`write_back_battle_results`: HP, the faint penalty, XP and currency on a side-A win, the
+/// prior-terminal sweep). A TACTICAL anchor writes HP only (`write_back_party_hp`): the tactical
+/// settlement (`tactics_settle`) owns its rewards (essence to the killer, both sides, no XP, no
+/// currency), its penalties and its sweep — `write_back_battle_results`' side-A XP and currency
+/// are exactly the M16a asymmetry design §7 removes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SideAWriteBack {
+    Legacy1v1,
+    HpOnly,
 }
 
 /// Check if both PvP participants have submitted actions for the current turn.
@@ -517,7 +542,7 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
     if battle.state.outcome != BattleOutcome::Ongoing {
         // Terminal: delegate the entire commit sequence to the settle funnel
         // — the ordering invariants live there.
-        settle_pvp_battle(ctx, battle)?;
+        settle_pvp_battle(ctx, battle, SideAWriteBack::Legacy1v1)?;
     } else {
         // Reschedule the deadline for the new turn (turn_number was incremented by resolve_full_turn).
         schedule_deadline(ctx, battle_id, battle.state.turn_number);
@@ -548,49 +573,63 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 /// - The rating rides the just-committed outcome and is
 ///   infallible by construction — no error posture needed.
 /// - The stale `battle_action` sweep runs last (hoisted from the forfeit path).
-fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String> {
+pub(crate) fn settle_pvp_battle(
+    ctx: &ReducerContext,
+    battle: Battle,
+    side_a: SideAWriteBack,
+) -> Result<bool, String> {
     let battle_id = battle.battle_id;
 
-    // write_back_battle_results first — battle row is still Ongoing in DB so its
-    // GC sweep does not delete the current row.
-    if let Err(e) = write_back_battle_results(ctx, &battle) {
-        // `e` is error text that may contain quotes — escape
-        // before interpolating into the hand-built JSON line.
-        let escaped = crate::guards::json_escape(&e);
-        log::error!(
-            "{{\"evt\":\"pvp_settle_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{escaped}\"}}",
-        );
-    }
+    // Side A first. A 1v1 anchor is still Ongoing in the DB here, so the legacy write-back's
+    // prior-terminal sweep cannot take it; a TACTICAL anchor arrives already terminal
+    // (`tactics::store` wrote the outcome) and takes the HP-only write-back, which sweeps nothing.
+    let side_a_ok = match side_a {
+        SideAWriteBack::Legacy1v1 => write_back_battle_results(ctx, &battle),
+        SideAWriteBack::HpOnly => write_back_party_hp(ctx, &battle),
+    };
+    let side_a_ok = match side_a_ok {
+        Ok(()) => true,
+        Err(e) => {
+            // `e` is error text that may contain quotes — escape before interpolating.
+            let escaped = crate::guards::json_escape(&e);
+            log::error!(
+                "{{\"evt\":\"pvp_settle_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{escaped}\"}}",
+            );
+            false
+        }
+    };
 
-    // Commit terminal outcome AFTER write_back_battle_results and
-    // BEFORE write_back_party_hp_pvp_side_b. The clone is
-    // load-bearing: `update` consumes a row by value, and `battle` is still
-    // borrowed afterwards by apply_pvp_rating and write_back_party_hp_pvp_side_b.
+    // Commit the terminal outcome AFTER the side-A write-back and BEFORE
+    // write_back_party_hp_pvp_side_b. The clone is load-bearing: `update` consumes a row by
+    // value, and `battle` is still borrowed afterwards by apply_pvp_rating and the side-B write-back.
     ctx.db.battle().battle_id().update(battle.clone());
 
-    // Ranked-ladder rating on the just-committed outcome (
-    // no-op for wild/practice battles and non-decisive outcomes).
+    // Ranked-ladder rating on the just-committed outcome (no-op for wild/practice battles and
+    // non-decisive outcomes). THE ONLY CALLER.
     ranking::apply_pvp_rating(ctx, &battle);
 
-    // Side-B HP write-back. Log-and-continue: outcome already committed.
-    if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
-        let escaped = crate::guards::json_escape(&e);
-        log::error!(
-            "{{\"evt\":\"pvp_settle_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{escaped}\"}}",
-        );
-    }
+    // Side-B HP write-back. Log-and-continue: the outcome is already committed.
+    let side_b_ok = match write_back_party_hp_pvp_side_b(ctx, &battle) {
+        Ok(()) => true,
+        Err(e) => {
+            let escaped = crate::guards::json_escape(&e);
+            log::error!(
+                "{{\"evt\":\"pvp_settle_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{escaped}\"}}",
+            );
+            false
+        }
+    };
 
-    // Sweep any stale battle_action rows for this battle (collect-then-mutate).
-    // No-op on the resolve path: the current turn's actions were deleted before
-    // resolution, and SpacetimeDB within-transaction deletes are immediately
-    // visible, so this re-reads an empty set.
+    // Sweep any stale battle_action rows for this battle (collect-then-mutate). No-op on the
+    // resolve path (the turn's actions were deleted before resolution) and for a tactical anchor
+    // (which never holds one).
     let stale_actions = ctx.db.battle_action().battle_id().filter(battle_id);
     let stale_actions: Vec<BattleAction> = stale_actions.collect();
     for action in stale_actions {
         ctx.db.battle_action().delete(action);
     }
 
-    Ok(())
+    Ok(side_a_ok && side_b_ok)
 }
 
 /// Write back HP for side B (opponent party) after a PvP battle ends.
@@ -634,6 +673,19 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 /// still-armed deadline settles the battle later; on the cascade path step 6c
 /// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal.
 pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
+    /// An Ongoing 1v1 PvP anchor. A tactical anchor (bt-14) is
+    /// `tactics::resolve_tactical_on_disconnect`'s, which runs first and leaves it terminal; it
+    /// must never route through the 1v1 credits.
+    fn is_live_legacy_pvp(ctx: &ReducerContext, b: &Battle) -> bool {
+        b.state.outcome == BattleOutcome::Ongoing
+            && b.opponent_identity != WILD_IDENTITY
+            && ctx
+                .db
+                .battle_tactical()
+                .battle_id()
+                .find(b.battle_id)
+                .is_none()
+    }
     // Collect battle_ids first (collect-then-mutate discipline — never mutate
     // a SpacetimeDB table while iterating over it).
 
@@ -643,9 +695,7 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
         .battle()
         .player_identity()
         .filter(disconnected)
-        .filter(|b| {
-            b.state.outcome == BattleOutcome::Ongoing && b.opponent_identity != WILD_IDENTITY
-        })
+        .filter(|b| is_live_legacy_pvp(ctx, b))
         .map(|b| b.battle_id)
         .collect();
 
@@ -655,9 +705,7 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
         .battle()
         .opponent_identity()
         .filter(disconnected)
-        .filter(|b| {
-            b.state.outcome == BattleOutcome::Ongoing && b.opponent_identity != WILD_IDENTITY
-        })
+        .filter(|b| is_live_legacy_pvp(ctx, b))
         .map(|b| b.battle_id)
         .collect();
 
@@ -924,7 +972,8 @@ pub fn challenge_pvp(
         .inspect_err(|e| log_reject("challenge_pvp", me, e))?;
     }
 
-    // Guard 8 (irreversible): insert the challenge row.
+    // Guard 8 (irreversible): insert the challenge row (`format` from the pick, BT14.1).
+    let format = challenge_format(party_ids.len());
     let challenge = ctx.db.battle_challenge().insert(BattleChallenge {
         challenge_id: 0,
         challenger: me,
@@ -932,6 +981,7 @@ pub fn challenge_pvp(
         challenger_party_ids: party_ids,
         status: ChallengeStatus::Pending,
         created_at_ms: now_ms(ctx),
+        format,
     });
 
     // Guard 9: arm the TTL reaper (post-insert — the auto_inc challenge_id only
@@ -1172,6 +1222,11 @@ pub fn submit_pvp_action(
 
     // Guard 2: participation check — returns SideId.
     let my_side = require_pvp_participant(ctx, "submit_pvp_action", &battle)?;
+
+    // Guard 2a (bt-14): a TACTICAL anchor is run by the tactical reducers — a 1v1 pick on it
+    // would resolve a turn on `anchor.state` and settle (rate) a battle the tactical rows still
+    // run. After the participation check, so a stranger learns nothing about the battle's kind.
+    reject_if_tactical_anchor(ctx, "submit_pvp_action", battle_id)?;
 
     // Guard 3: PvP only.
     if battle.opponent_identity == WILD_IDENTITY {

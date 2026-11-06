@@ -8,8 +8,10 @@ import {
   parseReducerNames,
 } from './verify-release-reducers.mjs';
 
-test('the forbidden set is exactly the three dev_reducers-gated reducers', () => {
+test('the forbidden set is exactly the four dev_reducers-gated reducers', () => {
+  // bt-14 (BT14.2): the PvP build-phase entrypoint joins the release ban.
   assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), [
+    'dev_start_tactical_pvp',
     'dev_start_tactical_wild',
     'grant_bait',
     'start_wild_battle',
@@ -52,6 +54,11 @@ test('findForbiddenReducers flags each forbidden reducer by exact name only', ()
   assert.ok(
     findForbiddenReducers(['dev_start_tactical_wild', 'buy'], FORBIDDEN_REDUCERS).includes(
       'dev_start_tactical_wild',
+    ),
+  );
+  assert.ok(
+    findForbiddenReducers(['dev_start_tactical_pvp', 'buy'], FORBIDDEN_REDUCERS).includes(
+      'dev_start_tactical_pvp',
     ),
   );
   assert.deepEqual(

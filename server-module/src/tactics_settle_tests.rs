@@ -33,6 +33,10 @@ use crate::tactics::tactics_tests::{
     party_monster, pick, rest, seat_in_light_range, seed_for, species_def, start, submit, time,
     world, Live, World, DAY_MS, PAIR, PVE_WINDOW_MS, QUAD, T0,
 };
+use crate::tactics::tactics_tests::{
+    c, deploying_pvp, live_pvp, pvp_boundary, pvp_seed, row_set, seat_in_clear_lane, start_pvp,
+    B_PAIR, CONN_B,
+};
 use crate::tactics::{BattleGcSched, TacticalAdvanceSched, TacticalDeadlineSched};
 use game_core::currency::essence_battle_reward;
 use game_core::tactics::{
@@ -1357,6 +1361,8 @@ fn zero_summary(battle_id: u64, player: Identity, outcome: BattleOutcome) -> Bat
         unit_turns_live: 0,
         halted_plans: 0,
         se_kos_after_r1: 0,
+        kos_after_r1: 0,
+        end_how: None,
     }
 }
 
@@ -2973,6 +2979,7 @@ fn apply_delta_saturates_every_counter_and_grows_the_histogram_to_any_bucket_bt9
         hits: 9,
         misses: 4,
         se_kos_after_r1: 1,
+        kos_after_r1: 0,
     };
     let got = apply_delta(row, &delta);
     assert_eq!(got.battle_id, 42);
@@ -4249,5 +4256,813 @@ fn recruiting_the_second_wild_of_a_two_species_pack_records_that_wilds_species_a
         minted.iter().map(|m| m.species_id).collect::<Vec<u32>>(),
         vec![second.species_id],
         "the monster minted is the second wild's species (the row and the recruit agree)"
+    );
+}
+
+// ===========================================================================
+// bt-14 — PvP endings and the PvP settle (spec M-battle-tactics BT14.5, BT14.6)
+// ===========================================================================
+//
+// SOURCE OF TRUTH: spec §bt-14 BT14.5 / BT14.6, design §6.1 / §6.4 / §7, the plan's §1 contract
+// as amended by REV 2 (memory/projects/monster-realm-bt-14-plan.md). Names end `_bt14_N`. RED REASON
+// at the API freeze: `start_pvp_tactical` refuses, so every PvP scenario stops at its start; `forfeit`
+// refuses "forfeit: unimplemented"; `step_delta` / `apply_delta` ignore `kos_after_r1`; an
+// anchor-less finish leaves its summary `Ongoing`.
+//
+// Ratings are read against the carried rule exactly as `pvp_tests`'
+// `nh_forfeit_on_disconnect_settles_both_roles_and_rates_once` reads them: a first rated game between
+// two fresh players is `compute_rating_update(INITIAL_RATING, INITIAL_RATING)` — (winner, loser).
+
+/// The carried M17 rating of a first rated game: `(winner, loser)`.
+fn first_game_ratings() -> (i32, i32) {
+    game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING)
+}
+
+fn forfeit(fx: &Fixture, who: Identity, now: i64, id: u64) -> Result<(), String> {
+    fx.run_as_at(who, at(now), |ctx| crate::tactics::forfeit(ctx, id))
+}
+
+/// The battle's `BattleEnd` payloads.
+fn battle_ends(w: &World<'_>, id: u64) -> Vec<BattleEndEvent> {
+    w.events_of(id)
+        .into_iter()
+        .filter_map(|e| match e.payload {
+            EventPayload::BattleEnd(x) => Some(x),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `unit` holds a READY row that was voided (`QueueVoided`) and never ran (no `TurnEnded`, no
+/// `Executed`, no `Moved` naming it), and no READY row of the battle is left.
+fn assert_voided_unexecuted(w: &World<'_>, id: u64, unit: u32, label: &str) {
+    let events = w.events_of(id);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(&e.payload, EventPayload::QueueVoided(v) if v.unit == unit)),
+        "{label}: unit {unit}'s READY row is voided"
+    );
+    assert!(
+        !events.iter().any(|e| match &e.payload {
+            EventPayload::TurnEnded(t) => t.unit == unit,
+            EventPayload::Executed(x) => x.attacker == unit,
+            EventPayload::Moved(m) => m.unit == unit,
+            _ => false,
+        }),
+        "{label}: unit {unit}'s READY row never executes"
+    );
+    assert!(
+        w.queues_of(id).is_empty(),
+        "{label}: every READY row is deleted"
+    );
+}
+
+/// `pools(m)` with `add` more essence in the `affinity` pool.
+fn pools_plus(m: &Monster, affinity: Affinity, add: u32) -> [u32; 8] {
+    let mut out = pools(m);
+    let i = AFFINITIES
+        .iter()
+        .position(|&x| x == affinity)
+        .expect("every affinity has a pool");
+    out[i] += add;
+    out
+}
+
+/// `attacker` KOs `victim` with its Light (`[Light, EndTurn]`, sent by `who`): the two seated in a
+/// clear lane, the victim at 1 HP with First-Stand spent, no Guard and soft defences, the accuracy
+/// roll steered to land.
+fn pvp_ko(fx: &Fixture, w: &World<'_>, id: u64, who: Identity, attacker: u32, victim: u32, t: i64) {
+    seat_in_clear_lane(w, id, attacker, victim);
+    w.edit_unit(victim, |u| {
+        u.cur_hp = 1;
+        u.first_stand = false;
+        u.guard = false;
+        u.stats.defense = 10;
+        u.stats.sp_defense = 10;
+    });
+    let row = w.unit(attacker);
+    force_hit(w, id, row.skill_ids[0]);
+    submit(
+        fx,
+        who,
+        t,
+        id,
+        attacker,
+        vec![light(&row, victim), QueuedAction::EndTurn],
+    )
+    .expect("the KO submit is accepted");
+    assert_eq!(
+        w.unit(victim).state,
+        UnitState::Fainted,
+        "PRECONDITION: the Light KO'd unit {victim}"
+    );
+}
+
+/// Fire a round-boundary advance for `round` at `t` (seeded as the runtime would hold it).
+fn run_round(fx: &Fixture, w: &World<'_>, id: u64, round: u16, t: i64) {
+    let row = TacticalAdvanceSched {
+        scheduled_id: 7_301,
+        scheduled_at: time(t),
+        battle_id: id,
+        round,
+    };
+    w.advances.seed(&advance_args(&row));
+    fire_advance(fx, t, row).expect("the boundary fire is Ok");
+}
+
+// ---------------------------------------------------------------------------
+// BT14.5 — forfeit, disconnect, Surge, adjudication: one funnel, `end_how` recorded
+// ---------------------------------------------------------------------------
+
+/// `forfeit` refuses, writing nothing: a stranger ("not owner"), a missing battle, a WILD battle
+/// ("not a PvP battle": Flee is the wild exit), a Deploying PvP battle ("battle is not active", for
+/// either participant).
+///
+/// WRONG IMPL KILLED: the freeze ("forfeit: unimplemented" everywhere); a participant check that
+/// admits any identity; a forfeit of a wild battle (a free AutoFlee the clock was meant to own); a
+/// rated "forfeit" of a battle nobody has deployed into.
+#[test]
+fn forfeit_refuses_a_stranger_a_wild_battle_and_a_deploying_battle_bt14_5() {
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+        w.join(c(), 3);
+        let before = w.snapshot();
+        assert_eq!(
+            forfeit(&fx, c(), T0 + 9_000, live.id),
+            Err("not owner".to_string())
+        );
+        assert_eq!(
+            forfeit(&fx, a(), T0 + 9_000, 4_242),
+            Err("battle not found".to_string())
+        );
+        assert_eq!(changed(&before, &w.snapshot()), none());
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pair(&fx, &w);
+        let before = w.snapshot();
+        assert_eq!(
+            forfeit(&fx, a(), T0 + 9_000, live.id),
+            Err("not a PvP battle".to_string())
+        );
+        assert_eq!(changed(&before, &w.snapshot()), none());
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+        let before = w.snapshot();
+        for who in [a(), b()] {
+            assert_eq!(
+                forfeit(&fx, who, T0 + 9_000, id),
+                Err("battle is not active".to_string()),
+                "{who}"
+            );
+        }
+        assert_eq!(changed(&before, &w.snapshot()), none());
+    }
+}
+
+/// A's forfeit of an Active PvP battle: the opponent wins through the one funnel — anchor
+/// `SideBWins`, `BattleEnd{SideBWins, Forfeit}` (no `Awards` before it), A's READY row voided and
+/// deleted, never executed, BOTH sides' unit HP written into their monster rows, the summary
+/// finalised `SideBWins` with `end_how = Forfeit`, ratings moved once, the GC armed and no deadline
+/// left. A second forfeit (by either player) is "battle is not ongoing" and moves nothing again.
+///
+/// WRONG IMPL KILLED: the freeze; a forfeit mapped to the forfeiter's own side; a forfeit that
+/// executes READY rows; side B's HP never written back (or written into side A's monsters); the
+/// summary left without its `end_how`; a forfeit that bypasses `settle_pvp_battle` (unrated) or rates
+/// on every call.
+#[test]
+fn forfeit_by_side_a_ends_side_b_wins_voids_ready_rows_writes_both_sides_hp_and_rates_once_bt14_5()
+{
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    submit(
+        &fx,
+        a(),
+        T0 + 8_000,
+        live.id,
+        live.a[1],
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("A pre-queues its second unit");
+    w.edit_unit(live.a[0], |u| u.cur_hp = 123);
+    w.edit_unit(live.b[0], |u| u.cur_hp = 77);
+    let t = T0 + 9_000;
+    assert_eq!(forfeit(&fx, a(), t, live.id), Ok(()));
+    assert_eq!(outcome(&w, live.id), BattleOutcome::SideBWins);
+    assert_eq!(w.tactical(live.id).phase, Phase::Finished);
+    assert_eq!(
+        battle_ends(&w, live.id),
+        vec![BattleEndEvent {
+            outcome: BattleOutcome::SideBWins,
+            how: EndHow::Forfeit
+        }]
+    );
+    assert!(
+        awards_after_end(&w, live.id).is_empty(),
+        "no KO: no Awards line"
+    );
+    assert_voided_unexecuted(&w, live.id, live.a[1], "forfeit");
+    for (mid, hp) in [(11u64, 123u16), (12, 300), (21, 77), (22, 300)] {
+        assert_eq!(
+            (w.monster(mid).current_hp, w.monster_pub(mid).current_hp),
+            (hp, hp),
+            "monster {mid}: its unit's HP is written back"
+        );
+    }
+    let s = summary(&w, live.id);
+    assert_eq!(
+        (s.kind, s.outcome, s.end_how),
+        (
+            BattleKind::Pvp,
+            BattleOutcome::SideBWins,
+            Some(EndHow::Forfeit)
+        )
+    );
+    let (win, lose) = first_game_ratings();
+    assert_eq!(w.profile(b()), Some((win, 1, 0)));
+    assert_eq!(w.profile(a()), Some((lose, 0, 1)));
+    let gcs: Vec<spacetimedb::ScheduleAt> =
+        w.gcs_of(live.id).iter().map(|r| r.scheduled_at).collect();
+    assert_eq!(gcs, vec![time(t + DAY_MS)], "exactly one GC row");
+    assert!(w.deadlines_of(live.id).is_empty(), "no window outlives it");
+    let before = w.snapshot();
+    for who in [a(), b()] {
+        assert_eq!(
+            forfeit(&fx, who, t + 1_000, live.id),
+            Err("battle is not ongoing".to_string()),
+            "{who}: a finished battle cannot be forfeited again"
+        );
+    }
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "nothing moves again: rated once"
+    );
+}
+
+/// B's forfeit maps to `SideAWins` (the forfeiter's OPPONENT wins), and A is the rated winner.
+///
+/// WRONG IMPL KILLED: a forfeit outcome hard-wired to `SideBWins` (side A's mapping reused); the
+/// sender's side read off `player_identity` only.
+#[test]
+fn forfeit_by_side_b_ends_side_a_wins_and_rates_side_a_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    assert_eq!(forfeit(&fx, b(), T0 + 9_000, live.id), Ok(()));
+    assert_eq!(outcome(&w, live.id), BattleOutcome::SideAWins);
+    assert_eq!(
+        battle_ends(&w, live.id),
+        vec![BattleEndEvent {
+            outcome: BattleOutcome::SideAWins,
+            how: EndHow::Forfeit
+        }]
+    );
+    let (win, lose) = first_game_ratings();
+    assert_eq!(w.profile(a()), Some((win, 1, 0)));
+    assert_eq!(w.profile(b()), Some((lose, 0, 1)));
+}
+
+/// B's disconnect on an Active PvP battle is B's forfeit: A wins, rated; B's READY row deleted, never
+/// executed. A third identity's disconnect changes nothing, and the carried
+/// `pvp::forfeit_on_disconnect` that runs after it settles (rates) nothing a second time.
+///
+/// WRONG IMPL KILLED: the freeze (the resolver only knows wild anchors: the PvP battle stays live
+/// until the legacy forfeit settles it through the 1v1 write-back); a PvP disconnect auto-fled
+/// (`Fled`, unrated); the opponent-role anchor not found (only `player_identity` scanned); a second
+/// rating through the legacy path.
+#[test]
+fn a_disconnect_of_side_b_on_an_active_pvp_battle_forfeits_like_the_reducer_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    submit(
+        &fx,
+        b(),
+        T0 + 8_000,
+        live.id,
+        live.b[0],
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("B pre-queues its first unit");
+    w.join(c(), 3);
+    let before = w.snapshot();
+    crate::tactics::resolve_tactical_on_disconnect(&fx.ctx_at(at(T0 + 8_500)), c());
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "a stranger's disconnect touches nothing"
+    );
+    let t = T0 + 9_000;
+    crate::tactics::resolve_tactical_on_disconnect(&fx.ctx_at(at(t)), b());
+    assert_eq!(outcome(&w, live.id), BattleOutcome::SideAWins);
+    assert_eq!(w.tactical(live.id).phase, Phase::Finished);
+    assert_eq!(
+        battle_ends(&w, live.id),
+        vec![BattleEndEvent {
+            outcome: BattleOutcome::SideAWins,
+            how: EndHow::Forfeit
+        }]
+    );
+    assert_voided_unexecuted(&w, live.id, live.b[0], "disconnect");
+    let (win, lose) = first_game_ratings();
+    assert_eq!(w.profile(a()), Some((win, 1, 0)));
+    assert_eq!(w.profile(b()), Some((lose, 0, 1)));
+    assert_eq!(summary(&w, live.id).end_how, Some(EndHow::Forfeit));
+    let after = w.snapshot();
+    crate::pvp::forfeit_on_disconnect(&fx.ctx_at(at(t + 1_000)), b());
+    crate::tactics::resolve_tactical_on_disconnect(&fx.ctx_at(at(t + 2_000)), b());
+    assert_eq!(
+        changed(&after, &w.snapshot()),
+        none(),
+        "already terminal: no second settle, no second rating"
+    );
+}
+
+/// A disconnect during Deploying cancels the battle with NO rating change: anchor `Fled`, phase
+/// Finished, staging rows gone, no unit, no monster row touched, the summary `Fled` with no
+/// `end_how` (no `BattleEnd` was ever emitted), both players released.
+///
+/// WRONG IMPL KILLED: a Deploying disconnect rated as a forfeit (a player who never saw the board
+/// loses rating); the opponent-role Deploying anchor left live; staging rows left behind.
+#[test]
+fn a_disconnect_during_deploying_cancels_the_pvp_battle_unrated_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(11, 0), pick(12, 1)]).expect("A locks");
+    let party = (row_set(&w.monsters.rows()), row_set(&w.pubs.rows()));
+    let t = T0 + 10_000;
+    crate::tactics::resolve_tactical_on_disconnect(&fx.ctx_at(at(t)), b());
+    assert_eq!(outcome(&w, id), BattleOutcome::Fled);
+    assert_eq!(w.tactical(id).phase, Phase::Finished);
+    assert!(w.deploys_of(id).is_empty(), "the staging rows are gone");
+    assert!(w.units_of(id).is_empty(), "nothing was revealed");
+    assert!(w.profiles.rows().is_empty(), "a cancel rates nobody");
+    assert_eq!(
+        (row_set(&w.monsters.rows()), row_set(&w.pubs.rows())),
+        party,
+        "a Deploying close writes no monster row"
+    );
+    let s = summary(&w, id);
+    assert_eq!((s.outcome, s.end_how), (BattleOutcome::Fled, None));
+    for who in [a(), b()] {
+        assert!(!crate::guards::is_in_ongoing_battle(&fx.ctx(), who));
+    }
+}
+
+/// The lib.rs `on_disconnect` bundle reaches the tactical PvP forfeit: B's LAST session leaving ends
+/// the battle `SideAWins` by `Forfeit`, rated.
+///
+/// WRONG IMPL KILLED: a resolver wired into `resolve_tactical_on_disconnect` but never reached from
+/// `on_disconnect` (or reached only after the legacy forfeit already settled the anchor 1v1).
+#[test]
+fn on_disconnect_of_the_last_session_reaches_the_tactical_pvp_forfeit_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    w.sessions.seed(&crate::schema::PlayerSession {
+        connection_id: spacetimedb::ConnectionId::from_u128(CONN_B),
+        identity: b(),
+    });
+    fx.run_as_conn_at(b(), CONN_B, None, at(T0 + 9_000), crate::on_disconnect);
+    assert_eq!(outcome(&w, live.id), BattleOutcome::SideAWins);
+    assert_eq!(
+        battle_ends(&w, live.id),
+        vec![BattleEndEvent {
+            outcome: BattleOutcome::SideAWins,
+            how: EndHow::Forfeit
+        }]
+    );
+    let (win, lose) = first_game_ratings();
+    assert_eq!(w.profile(a()), Some((win, 1, 0)));
+    assert_eq!(w.profile(b()), Some((lose, 0, 1)));
+}
+
+/// Surge (PvP only): round 9's upkeep takes `max(1, max_hp * 5 * (9 - 8) / 100)` from EVERY living
+/// unit of both sides — 15 of 300 — as one `Surge{round 9}` event each.
+///
+/// WRONG IMPL KILLED: a PvP battle hydrated as `Wild` (no Surge, the match never terminates); Surge
+/// on one side only; the PvE round cap.
+#[test]
+fn surge_from_round_nine_strikes_every_living_pvp_unit_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let all: Vec<u32> = live.a.iter().chain(&live.b).copied().collect();
+    pvp_boundary(&w, live.id, 9, &all);
+    let t = T0 + 50_000;
+    for (who, units) in [(a(), &live.a), (b(), &live.b)] {
+        for &unit in units {
+            submit(&fx, who, t, live.id, unit, vec![QueuedAction::EndTurn])
+                .expect("a pre-queue at the boundary");
+        }
+    }
+    run_round(&fx, &w, live.id, 9, t);
+    let want = u16::try_from(300u32 * 5 / 100).expect("small");
+    assert_eq!(want, 15, "PRECONDITION: 5% of 300");
+    let mut surges: Vec<(u32, u16, u16)> = w
+        .events_of(live.id)
+        .into_iter()
+        .filter_map(|e| match e.payload {
+            EventPayload::Surge(s) => Some((s.unit, s.round, s.amount)),
+            _ => None,
+        })
+        .collect();
+    surges.sort_unstable();
+    let mut expected: Vec<(u32, u16, u16)> = all.iter().map(|&u| (u, 9, want)).collect();
+    expected.sort_unstable();
+    assert_eq!(surges, expected, "one Surge per living unit of both sides");
+    for &unit in &all {
+        assert_eq!(
+            w.unit(unit).cur_hp,
+            300 - want,
+            "unit {unit} lost the Surge"
+        );
+    }
+}
+
+/// Both sides emptied by the same upkeep step (Surge kills all four) end by the adjudication tuple:
+/// A's units stood at 10 of 300 (3% each) and B's at 1 (0%), so A wins on HP percent —
+/// `BattleEnd{SideAWins, AdjudicatedHpPercent}` — never `Fled` or a draw; the result is rated, and the
+/// summary records the reason (`end_how`) and the four KOs after round 1 (`kos_after_r1`).
+///
+/// WRONG IMPL KILLED: a mutual wipe closed as `Fled` / left `Ongoing`; the adjudication reason not
+/// recorded in `battle_summary`; `kos_after_r1` not counted (both sides' KOs in rounds > 1); an
+/// unrated adjudicated win.
+#[test]
+fn a_mutual_surge_wipe_is_adjudicated_rated_and_recorded_in_the_summary_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let all: Vec<u32> = live.a.iter().chain(&live.b).copied().collect();
+    pvp_boundary(&w, live.id, 9, &all);
+    for &unit in &live.a {
+        w.edit_unit(unit, |u| u.cur_hp = 10);
+    }
+    for &unit in &live.b {
+        w.edit_unit(unit, |u| u.cur_hp = 1);
+    }
+    let t = T0 + 50_000;
+    for (who, units) in [(a(), &live.a), (b(), &live.b)] {
+        for &unit in units {
+            submit(&fx, who, t, live.id, unit, vec![QueuedAction::EndTurn])
+                .expect("a pre-queue at the boundary");
+        }
+    }
+    run_round(&fx, &w, live.id, 9, t);
+    assert_eq!(
+        battle_ends(&w, live.id),
+        vec![BattleEndEvent {
+            outcome: BattleOutcome::SideAWins,
+            how: EndHow::AdjudicatedHpPercent
+        }],
+        "A held more HP percent at the start of the step"
+    );
+    for &unit in &all {
+        assert_eq!(
+            w.unit(unit).state,
+            UnitState::Fainted,
+            "PRECONDITION: unit {unit} fell to the Surge"
+        );
+    }
+    assert_eq!(outcome(&w, live.id), BattleOutcome::SideAWins);
+    let s = summary(&w, live.id);
+    assert_eq!(
+        (s.outcome, s.end_how, s.kos_after_r1),
+        (
+            BattleOutcome::SideAWins,
+            Some(EndHow::AdjudicatedHpPercent),
+            4
+        ),
+        "the summary carries the adjudication reason and the denominator"
+    );
+    let (win, lose) = first_game_ratings();
+    assert_eq!(w.profile(a()), Some((win, 1, 0)));
+    assert_eq!(w.profile(b()), Some((lose, 0, 1)));
+    for mid in [11u64, 12, 21, 22] {
+        assert_eq!(
+            w.monster(mid).current_hp,
+            0,
+            "monster {mid}: HP written back"
+        );
+    }
+}
+
+/// A wild battle never Surges: round 9's upkeep on a `live_pair` runs (RoundEnded{9}) with no Surge.
+///
+/// WRONG IMPL KILLED: a shell that hydrates every battle under the PvP ruleset.
+#[test]
+fn a_wild_battle_never_surges_bt14_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    boundary(&w, live.id, 9, &[live.u1, live.u2, live.wild]);
+    let t = T0 + 50_000;
+    for unit in [live.u1, live.u2] {
+        submit(&fx, a(), t, live.id, unit, vec![QueuedAction::EndTurn])
+            .expect("a pre-queue at the boundary");
+    }
+    run_round(&fx, &w, live.id, 9, t);
+    let events = w.events_of(live.id);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(&e.payload, EventPayload::RoundEnded(r) if r.round == 9)),
+        "non-vacuous: round 9's upkeep ran"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(&e.payload, EventPayload::Surge(_))),
+        "a wild battle never Surges"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT14.6 — the settle mapping: rating unchanged, no XP, no currency, symmetric essence, Practice
+// ---------------------------------------------------------------------------
+
+/// A PvP settle with a KO each way: each KILLER's monster gains `essence_battle_reward(victim BST)`
+/// in the VICTIM's affinity pool — A's killer and B's killer alike — and nothing else is paid: no
+/// monster's XP or level moves, no wallet is credited, no `Awards` line carries XP or currency. The
+/// rating is the carried M17 update.
+///
+/// WRONG IMPL KILLED: the 1v1 `write_back_battle_results` reused for a tactical anchor (side-A XP +
+/// currency on a win, side B paid nothing — the M16a asymmetry); the ledger paid for side A only;
+/// essence into the killer's own affinity; XP from the wild split; a second rating caller.
+#[test]
+fn a_pvp_settle_pays_each_killer_the_victims_essence_and_no_xp_or_currency_bt14_6() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let before: Vec<Monster> = [11u64, 12, 21, 22].iter().map(|&m| w.monster(m)).collect();
+    // A's 11 KOs B's 22, A's 12 passes, B's 21 KOs A's 12.
+    pvp_ko(&fx, &w, live.id, a(), live.a[0], live.b[1], T0 + 10_000);
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.a[1])
+    );
+    submit(
+        &fx,
+        a(),
+        T0 + 12_000,
+        live.id,
+        live.a[1],
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("A's second unit ends its turn");
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.b[0])
+    );
+    pvp_ko(&fx, &w, live.id, b(), live.b[0], live.a[1], T0 + 14_000);
+    assert_eq!(forfeit(&fx, a(), T0 + 20_000, live.id), Ok(()));
+    assert_eq!(outcome(&w, live.id), BattleOutcome::SideBWins);
+
+    let (ess_22, ess_12) = (essence_battle_reward(bst(1)), essence_battle_reward(bst(3)));
+    assert!(ess_22 > 0 && ess_12 > 0, "non-vacuous: a KO pays essence");
+    let after: Vec<Monster> = [11u64, 12, 21, 22].iter().map(|&m| w.monster(m)).collect();
+    assert_eq!(
+        pools(&after[0]),
+        pools_plus(&before[0], affinity_of(1), ess_22),
+        "A's killer (11) gains the victim's (22, species 1) essence in its affinity"
+    );
+    assert_eq!(
+        pools(&after[2]),
+        pools_plus(&before[2], affinity_of(3), ess_12),
+        "B's killer (21) gains the victim's (12, species 3) essence symmetrically"
+    );
+    for i in [1usize, 3] {
+        assert_eq!(
+            pools(&after[i]),
+            pools(&before[i]),
+            "monster {} killed nobody: no essence",
+            after[i].monster_id
+        );
+    }
+    for (b4, now) in before.iter().zip(&after) {
+        assert_eq!(
+            (now.xp, now.level),
+            (b4.xp, b4.level),
+            "monster {}: no XP in PvP",
+            now.monster_id
+        );
+    }
+    assert!(
+        w.wallets.rows().iter().all(|r| r.balance == 0),
+        "no currency for either player"
+    );
+    let lines: Vec<AwardsEvent> = awards_after_end(&w, live.id)
+        .into_iter()
+        .map(|(_, x)| x)
+        .collect();
+    assert!(
+        lines.iter().all(|x| x.xp == 0 && x.currency == 0),
+        "no Awards line carries XP or currency: {lines:?}"
+    );
+    let mut paid: Vec<(u32, u32)> = lines
+        .iter()
+        .filter(|x| x.unit != CURRENCY_AWARD_UNIT)
+        .map(|x| (x.unit, x.essence))
+        .collect();
+    paid.sort_unstable();
+    let mut want = vec![(live.a[0], ess_22), (live.b[0], ess_12)];
+    want.sort_unstable();
+    assert_eq!(paid, want, "one essence line per killer, both sides");
+    let (win, lose) = first_game_ratings();
+    assert_eq!(w.profile(b()), Some((win, 1, 0)));
+    assert_eq!(w.profile(a()), Some((lose, 0, 1)));
+}
+
+/// Practice (self vs self, disjoint side lists) settles under the PvP ruleset with no rating and no
+/// rewards — no essence even for a KO, no XP, no currency, no `Awards` line — while the HP of BOTH
+/// lists is still written back. Both stagings come from the one player (side A, then side B).
+///
+/// WRONG IMPL KILLED: a Practice battle rated (`is_ranked_pvp` bypassed); the PvP essence paid in
+/// Practice; side B's list never written back (a self-battle that heals one half of the party); the
+/// second stage call refused as "already locked".
+#[test]
+fn a_practice_settle_rates_and_rewards_nothing_but_writes_back_both_lists_hp_bt14_6() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    w.seed_party(a(), &QUAD);
+    let id = start_pvp(&fx, a(), &[11, 12], a(), &[13, 14], 2, pvp_seed(7), T0);
+    assert_eq!(w.tactical(id).kind, BattleKind::Practice);
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(11, 0), pick(12, 1)]).expect("side A staged");
+    deploy(&fx, a(), T0 + 3_000, id, vec![pick(13, 0), pick(14, 1)])
+        .expect("side B staged: the reveal");
+    let side = |s: SideRow| -> Vec<u32> { w.side_units(id, s).iter().map(|u| u.unit_id).collect() };
+    let (ua, ub) = (side(SideRow::A), side(SideRow::B));
+    assert_eq!(
+        (ua.len(), ub.len()),
+        (2, 2),
+        "PRECONDITION: both sides deployed"
+    );
+    let before: Vec<Monster> = [11u64, 12, 13, 14].iter().map(|&m| w.monster(m)).collect();
+    pvp_ko(&fx, &w, id, a(), ua[0], ub[1], T0 + 10_000);
+    w.edit_unit(ua[1], |u| u.cur_hp = 111);
+    w.edit_unit(ub[0], |u| u.cur_hp = 99);
+    assert_eq!(forfeit(&fx, a(), T0 + 20_000, id), Ok(()));
+    assert_ne!(
+        outcome(&w, id),
+        BattleOutcome::Ongoing,
+        "PRECONDITION: ended"
+    );
+    assert!(w.profiles.rows().is_empty(), "Practice never rates");
+    assert!(
+        !w.events_of(id)
+            .iter()
+            .any(|e| matches!(&e.payload, EventPayload::Awards(_))),
+        "Practice pays no Awards line"
+    );
+    assert!(
+        w.wallets.rows().iter().all(|r| r.balance == 0),
+        "no currency"
+    );
+    for (b4, mid) in before.iter().zip([11u64, 12, 13, 14]) {
+        let now = w.monster(mid);
+        assert_eq!(
+            (now.xp, now.level, pools(&now)),
+            (b4.xp, b4.level, pools(b4)),
+            "monster {mid}: no XP, no essence in Practice"
+        );
+    }
+    for (mid, hp) in [(11u64, 300u16), (12, 111), (13, 99), (14, 0)] {
+        assert_eq!(
+            w.monster(mid).current_hp,
+            hp,
+            "monster {mid}: both lists' HP is written back"
+        );
+    }
+    assert_eq!(summary(&w, id).kind, BattleKind::Practice);
+}
+
+/// Recruit and Flee are refused at the submit gate under the PvP ruleset — live (the waiting unit)
+/// and pre-queued, for either player — with the engine's typed `NotInPvp`, writing nothing.
+///
+/// WRONG IMPL KILLED: a PvP battle hydrated as `Wild` (a Flee ends a rated match as `Fled`; a Recruit
+/// steals the opponent's monster).
+#[test]
+fn recruit_and_flee_are_refused_at_the_pvp_submit_gate_live_and_prequeued_bt14_6() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let before = w.snapshot();
+    let cases: [(&str, Identity, u32); 3] = [
+        ("A live", a(), live.a[0]),
+        ("A pre-queued", a(), live.a[1]),
+        ("B pre-queued", b(), live.b[0]),
+    ];
+    for (label, who, unit) in cases {
+        let foe = if who == a() { live.b[0] } else { live.a[0] };
+        for (entry, want) in [
+            (QueuedAction::Flee, "submit_queue: NotInPvp(Flee)"),
+            (recruit(foe, None), "submit_queue: NotInPvp(Recruit)"),
+        ] {
+            assert_eq!(
+                submit(&fx, who, T0 + 9_000, live.id, unit, vec![entry]),
+                Err(want.to_string()),
+                "{label}"
+            );
+            assert_eq!(
+                changed(&before, &w.snapshot()),
+                none(),
+                "{label}: nothing written"
+            );
+        }
+    }
+}
+
+/// `step_delta` counts `kos_after_r1` — every `Ko` of either side in a round after the first — and
+/// `apply_delta` adds it, saturating.
+///
+/// WRONG IMPL KILLED: the freeze (the counter never counted); round 1 counted; only player-side or
+/// only super-effective KOs counted (that is `se_kos_after_r1`); a wrapping add.
+#[test]
+fn step_delta_counts_kos_after_round_one_and_apply_delta_saturates_them_bt14_6() {
+    let kos = |round: u16, events: Vec<EventPayload>| {
+        step_delta(&prev(Some(P1), 1, &[]), &step_of(round, events), &PLAYERS).kos_after_r1
+    };
+    assert_eq!(
+        kos(
+            2,
+            vec![
+                hit(P1, WILD, 50, true),
+                ko(WILD),
+                hit(WILD, P2, 50, true),
+                ko(P2)
+            ]
+        ),
+        2,
+        "round 2: both sides' KOs"
+    );
+    assert_eq!(
+        kos(3, vec![ko(WILD)]),
+        1,
+        "a KO with no hit (a tick) counts"
+    );
+    assert_eq!(
+        kos(1, vec![hit(P1, WILD, 50, true), ko(WILD)]),
+        0,
+        "never in round 1"
+    );
+    assert_eq!(kos(4, vec![hit(P1, WILD, 5, false)]), 0, "no KO, no count");
+    let mut row = zero_summary(42, a(), BattleOutcome::Ongoing);
+    row.kos_after_r1 = 3;
+    let got = apply_delta(
+        row,
+        &StepDelta {
+            kos_after_r1: 2,
+            ..StepDelta::default()
+        },
+    );
+    assert_eq!(got.kos_after_r1, 5, "added");
+    let mut row = zero_summary(42, a(), BattleOutcome::Ongoing);
+    row.kos_after_r1 = u16::MAX - 1;
+    let got = apply_delta(
+        row,
+        &StepDelta {
+            kos_after_r1: 5,
+            ..StepDelta::default()
+        },
+    );
+    assert_eq!(got.kos_after_r1, u16::MAX, "saturating");
+}
+
+/// An anchor-less finish (the anchor already gone when a deadline fires) finalises the battle's
+/// summary row `Fled` — never left `Ongoing` — with its rounds, no wall time and no `end_how`.
+///
+/// WRONG IMPL KILLED: the freeze (`finalize_orphan_summary` a no-op: the row reads `Ongoing` for
+/// ever and poisons the H1/H2 telemetry).
+#[test]
+fn an_anchorless_finish_finalises_its_summary_as_fled_bt14_6() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    assert_eq!(
+        summary(&w, live.id).outcome,
+        BattleOutcome::Ongoing,
+        "PRECONDITION: the Active start wrote the summary row"
+    );
+    let window = w.only_deadline(live.id);
+    let deadline = w.clock(live.id).deadline_ms.expect("an open window");
+    assert_eq!(w.battles.remove(live.id), 1, "the anchor is gone");
+    assert_eq!(fire_deadline(&fx, deadline, deadline_args(&window)), Ok(()));
+    assert_eq!(w.tactical(live.id).phase, Phase::Finished);
+    let s = summary(&w, live.id);
+    assert_eq!(
+        (s.outcome, s.rounds, s.wall_ms, s.end_how),
+        (BattleOutcome::Fled, w.tactical(live.id).round, 0, None),
+        "finalised Fled, never Ongoing"
     );
 }

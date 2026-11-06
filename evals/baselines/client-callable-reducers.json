@@ -75,6 +75,9 @@
     "flee": [
       "battle_id: u64()"
     ],
+    "forfeit": [
+      "battle_id: u64()"
+    ],
     "heal_party": [
       "location_id: u32()"
     ],

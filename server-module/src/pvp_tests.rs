@@ -370,6 +370,7 @@ fn pv_challenge(id: u64, challenger: PvId, target: PvId, status: PvStatus) -> Pv
         challenger_party_ids: vec![11],
         status,
         created_at_ms: PV_T0,
+        format: 0,
     }
 }
 
@@ -1798,4 +1799,89 @@ fn nh_second_pick_resolves_the_turn_and_a_decisive_turn_settles() {
         "a settled battle arms no further deadline"
     );
     assert!(w.action_ids().is_empty(), "both picks consumed");
+}
+
+// ===========================================================================
+// bt-14 (spec M-battle-tactics BT14.1) — the challenge `format` and the per-side deploy count.
+//
+// RED REASON at the API freeze: `challenge_format` and `tactics::pvp_deploy_count` are stubs that
+// answer 0, and `challenge_pvp` writes the column's default 0 instead of the derived format.
+// ===========================================================================
+
+/// The party-size format a challenge opens is the challenger's party pick capped at 3 (ranked 3v3 is
+/// a pick of 3; a casual pick of 1 or 2 is that format; a longer party still plays 3).
+///
+/// WRONG IMPL KILLED: the stub (always 0); the uncapped `party_len as u8` (4 -> 4, 6 -> 6); a fixed
+/// 3 (1 -> 3); a cap at the wrong bound (2 or 4).
+#[test]
+fn challenge_format_is_the_challenger_party_pick_capped_at_three_bt14_1() {
+    let table: [(usize, u8); 6] = [(1, 1), (2, 2), (3, 3), (4, 3), (5, 3), (6, 3)];
+    for (party_len, want) in table {
+        assert_eq!(
+            super::challenge_format(party_len),
+            want,
+            "a challenger party of {party_len} opens format {want}"
+        );
+    }
+}
+
+/// Each side deploys exactly `format` monsters, or all it has if it has fewer conscious ones.
+///
+/// WRONG IMPL KILLED: the stub (0); `format` alone (3, 2 -> 3); `conscious` alone (1, 3 -> 3); a
+/// `max` instead of a `min`; a floor of 1 for a side with nothing left (2, 0 -> 1).
+#[test]
+fn pvp_deploy_count_is_the_format_or_every_conscious_monster_if_fewer_bt14_1() {
+    let table: [(u8, usize, usize); 7] = [
+        (3, 3, 3),
+        (3, 2, 2),
+        (1, 3, 1),
+        (2, 3, 2),
+        (2, 0, 0),
+        (3, 6, 3),
+        (1, 1, 1),
+    ];
+    for (format, conscious, want) in table {
+        assert_eq!(
+            crate::tactics::pvp_deploy_count(format, conscious),
+            want,
+            "format {format} with {conscious} conscious deploys {want}"
+        );
+    }
+}
+
+/// `challenge_pvp` stamps the inserted row with `format == challenge_format(party size)`, read off
+/// the ROW the reducer inserted (no signature change: the client already sends its party pick).
+/// Driven for party picks of 1, 2, 3 and 4 monsters, each in a fresh world.
+///
+/// WRONG IMPL KILLED: the API freeze (the defaulted column stays 0); a format derived from the
+/// TARGET or from a constant; an uncapped party length (a pick of 4 writing 4).
+#[test]
+fn challenge_pvp_writes_the_derived_format_into_the_inserted_challenge_bt14_1() {
+    for (party_len, want) in [(1u64, 1u8), (2, 2), (3, 3), (4, 3)] {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        let party: Vec<u64> = (0..party_len).map(|i| 11 + i).collect();
+        for (slot, &mid) in party.iter().enumerate() {
+            w.monster(mid, pv_a(), u8::try_from(slot).expect("a small slot"));
+        }
+        let got = fx.run_as_at(pv_a(), pv_at(PV_T0), |ctx| {
+            super::challenge_pvp(ctx, pv_b(), party.clone())
+        });
+        let gate = super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
+            .map_err(str::to_string);
+        assert_eq!(
+            got, gate,
+            "party of {party_len}: a guest pair's outcome is exactly the ranked gate's verdict"
+        );
+        if gate.is_err() {
+            return;
+        }
+        let rows = w.challenges.rows();
+        assert_eq!(rows.len(), 1, "party of {party_len}: exactly one challenge");
+        assert_eq!(
+            (rows[0].challenger_party_ids.clone(), rows[0].format),
+            (party.clone(), want),
+            "party of {party_len}: the challenge opens format {want}"
+        );
+    }
 }
