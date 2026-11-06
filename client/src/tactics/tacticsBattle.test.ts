@@ -4230,3 +4230,142 @@ describe('TacticsBattle: reset, release and the countdown (bt-12 B)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// bt-12 B (BT12.5): a live commit that leaves the turn open re-arms when its execution lands
+// ---------------------------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH: spec BT12.5 (move + attack with the forecast, weaken over several turns, then
+// recruit) and the bt-12 increment B round-3 contract, measured live 2026-11-05: on a LIVE turn
+// game-core executes the plan at once and writes no plan row (queue.rs `submit_queue`); a plan that
+// does not end the turn leaves the unit `Waiting` with the rest of its budget. A live send re-arms
+// when the unit's OWN row budget in `vm.board.units` (ap / strides_used / attacks) differs from the
+// budget the shell sent it under; a render with the same key and the same budget keeps it held. The
+// READY-row re-arm (C18), a new turn key, `release` and `reset` are unchanged. RED REASON: only a
+// READY row or a new turn key re-arms the in-flight key, so the Start after the landed attack is
+// swallowed ((c) and (f) read one send, not two).
+
+describe('TacticsBattle: a live turn goes on after a commit (bt-12 B, BT12.5)', () => {
+  it('on a live turn a commit that leaves the turn open re-arms the unit once its execution lands (its OWN row budget moved, same turn key), and only then: before any render, after a render with the same budget, when only the target`s HP or another unit`s budget moved, a Start is swallowed [BT12-5-SHELL-LIVE-REARM]', () => {
+    // WRONG IMPL KILLED: the current guard (only a READY row or a new turn key re-arms; a live turn
+    // writes no row, so a live attack locks the rest of the turn, End Turn, a second commit and
+    // Flee, until the window expires: measured live, the unit sat Waiting at ap 2): (c) and (f); a
+    // re-arm on ANY render, or on a fresh but equal VM / budget object (the double press sends
+    // twice): (b); a re-arm keyed on the target's HP instead of the actor's budget: (b2) moves the
+    // HP alone and must hold, (c) then moves the budget alone and must send; a re-arm on another
+    // unit's budget: (e); the active unit's row read for every held unit: (g); a snapshot taken at
+    // the first render after the send instead of at the send (the landed budget is normally the
+    // FIRST render after a commit): (f); a comparison against the turn's opening budget instead of
+    // the last send's (the re-armed End Turn would go out twice): (d).
+    /** Unit 1's row budget as vmOf() opens its live turn: nothing spent. */
+    const OPEN: TurnBudget = { ap: 6, strides_used: 0, attacks: 0, last: null };
+    /** The same row once the server executed the attack: ap 2 (as measured live), one attack, the
+     *  turn still open; every other field identical. */
+    const STRUCK: TurnBudget = { ap: 2, strides_used: 0, attacks: 1, last: null };
+    /** `vm` with unit `id`'s row budget replaced and its view-model ap kept in step; nothing else. */
+    const withBudget = (vm: TacticsBattleVM, id: number, budget: TurnBudget): TacticsBattleVM => ({
+      ...vm,
+      units: vm.units.map((u) => (u.unitId === id ? { ...u, ap: budget.ap } : u)),
+      board: {
+        ...vm.board,
+        units: vm.board.units.map((r) => (r.id === id ? { ...r, budget } : r)),
+      },
+    });
+    /** Unit 3 (the skill's target) hit down to 4 HP; its board row is derived, so the two agree. */
+    const hit = UNITS.map((u) => (u.unitId === 3 ? { ...u, curHp: 4 } : u));
+    /** The attack has landed: the target hit AND unit 1's budget spent; same round and turn index. */
+    const landed = (): TacticsBattleVM => withBudget(vmOf({ units: hit }), 1, STRUCK);
+    const END_1 = { battleId: 1n, unitId: 1, entries: [W_END] };
+    const commitSkill = (kit: Kit, label: string): void => {
+      aimSkill(kit, c(1, 1), 12, label);
+      expect(kit.sent, `${label}: aiming sends nothing`).toEqual([]);
+      pressA(kit);
+      expect(kit.sent, `${label}: A on the aim commits skill 12 on unit 3 alone, once`).toEqual([
+        { battleId: 1n, unitId: 1, entries: [W_SKILL_12_ON_3] },
+      ]);
+    };
+
+    expect(boardRow(vmOf().board, 1).budget, 'fixture: unit 1 opens its turn unspent').toEqual(
+      OPEN,
+    );
+    expect(
+      { ...boardRow(landed().board, 1), budget: OPEN },
+      'fixture: the landed row of unit 1 differs from the open one in its budget alone',
+    ).toEqual(boardRow(vmOf().board, 1));
+    expect(
+      [landed().battleId, landed().round, landed().turnIdx, landed().activeUnitId],
+      'fixture: the landed VM is the same battle, round, turn index and active unit',
+    ).toEqual([1n, 1, 0, 1]);
+    expect(boardRow(vmOf({ units: hit }).board, 3).cur_hp, 'fixture: the target`s row').toBe(4);
+
+    const k = make();
+    k.shell.render(vmOf());
+    expect(k.shell.selectedUnitId, 'fixture: unit 1 waits live and is selected').toBe(1);
+    commitSkill(k, 'live');
+
+    pressStart(k);
+    expect(k.sent, '(a) Start before any render: swallowed').toHaveLength(1);
+    k.shell.render(vmOf());
+    pressStart(k);
+    expect(
+      k.sent,
+      '(b) a render with the same turn key and the same budget: still swallowed',
+    ).toHaveLength(1);
+    k.shell.render(vmOf({ units: hit }));
+    pressStart(k);
+    expect(
+      k.sent,
+      '(b2) only the target`s HP moved, not unit 1`s budget: still swallowed',
+    ).toHaveLength(1);
+
+    k.shell.render(landed());
+    pressStart(k);
+    expect(
+      k.sent,
+      '(c) unit 1`s own row budget moved on the same turn key: Start goes out',
+    ).toHaveLength(2);
+    expect(k.sent[1], '(c) and ends unit 1`s turn').toEqual(END_1);
+    pressStart(k);
+    expect(k.sent, '(d) the re-armed send is in flight again').toHaveLength(2);
+    k.shell.render(landed());
+    pressStart(k);
+    expect(
+      k.sent,
+      '(d) a render with the budget the last send went under keeps it held',
+    ).toHaveLength(2);
+    k.shell.render(withBudget(landed(), 2, { ap: 2, strides_used: 1, attacks: 1, last: null }));
+    pressStart(k);
+    expect(k.sent, '(e) unit 2`s budget moved, not unit 1`s: unit 1 stays held').toHaveLength(2);
+
+    // (f) The production path: the landed budget arrives in the FIRST render after the commit.
+    const f = make();
+    f.shell.render(vmOf());
+    commitSkill(f, '(f)');
+    f.shell.render(landed());
+    pressStart(f);
+    expect(
+      f.sent.at(-1),
+      '(f) the first render after the send carries the landed budget: Start goes out',
+    ).toEqual(END_1);
+    expect(f.sent, '(f) the skill, then the End Turn').toHaveLength(2);
+
+    // (g) The HELD unit's own row: unit 2's pre-queue stays held when unit 1's budget moves.
+    const g = make();
+    g.shell.render(vmOf());
+    g.shell.cycleUnit(1);
+    expect(g.shell.selectedUnitId, '(g) fixture: unit 2 pre-queues').toBe(2);
+    draftMove(g, c(3, 2), c(3, 1), '(g)');
+    pressStart(g);
+    expect(g.sent, '(g) fixture: unit 2`s pre-queue goes out').toEqual([
+      { battleId: 1n, unitId: 2, entries: [W_MOVE_3_1] },
+    ]);
+    g.shell.render(withBudget(vmOf(), 1, STRUCK));
+    expect(g.shell.selectedUnitId, '(g) fixture: unit 2 is still selected').toBe(2);
+    draftMove(g, c(3, 2), c(3, 1), '(g) again');
+    pressStart(g);
+    expect(
+      g.sent,
+      '(g) the active unit`s budget moved, not unit 2`s: unit 2 stays held',
+    ).toHaveLength(1);
+  });
+});

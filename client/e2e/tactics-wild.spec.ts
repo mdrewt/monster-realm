@@ -32,11 +32,12 @@ import {
 // column) grew the party — the recorded BT12.5 interpretation.
 //
 // SEEDING (owner SQL + `spacetime call`, the encounter-battle / menu-flow precedents; dev reducers are
-// not page-callable): the starter is made sturdy (300 HP, 250 defences) so no wild can KO it, and its
-// attack is 1 so a Light hit never KOs a weakened wild; bait (item 1) is inserted into its bag. The
-// bait is the only recruit lever the UI has: recruit odds are 80‰ base + up to 500‰ for missing HP +
-// 150‰ bait, so a weakened wild is recruited on roughly 60-70 % of attempts; MAX_RECRUIT_ATTEMPTS
-// and MAX_BATTLES bound the retries (P(all fail) < 1 %).
+// not page-callable): the starter is made sturdy (300 HP, 250 defences) so no wild can KO it; bait
+// (item 1) is inserted into its bag. An attack is committed only when the FORECAST's max damage is
+// below the wild's HP (the shell's own numbers, read off the panel), so no hit ever KOs; the recruit
+// is attempted adjacent once the wild is weak or the next hit would KO it. Recruit odds are 80‰ base +
+// up to 500‰ for missing HP + 150‰ bait (roughly 50-70 % per attempt); MAX_OWN_TURNS and MAX_BATTLES
+// bound the retries.
 //
 // Every battle action is a key press (`pressButton`): the shell's menu, bands, aims and Start; the
 // DEV `__mrTactics` hook and the DOM are read, never written. No click: a focused button owns Space.
@@ -44,13 +45,14 @@ import {
 
 const SEED_HP = 300;
 const SEED_DEFENSE = 250;
-const SEED_ATTACK = 1;
 const BAIT_ITEM_ID = 1;
 const BAIT_SEED = 9;
 /** The wild is recruited (not hit again) at or under this share of its max HP. */
 const WEAK_PCT = 45;
-/** Battle-1 restarts (a KO'd wild, a timed-out loop) before the test gives up. */
-const MAX_BATTLES = 4;
+/** Battle-1 restarts (a KO'd wild, a kiting wild, a timed-out loop) before the test gives up. */
+const MAX_BATTLES = 5;
+/** Battle-2 restarts (a pack that never lands a hit) before the test gives up. */
+const MAX_FLEE_BATTLES = 3;
 /** Own turns per battle before it is abandoned (Flee) and restarted. */
 const MAX_OWN_TURNS = 16;
 /** The longest one wait for the next own turn may take (the AI's turns plus the presentation pad). */
@@ -182,8 +184,19 @@ function sides(t: TacticsSnap): {
   return { me, wild };
 }
 
+/** Lets a playing beat sequence drain (B is the skip key while one plays; idle with no draft it is
+ *  a no-op), so the next press is an input and not a skip. */
+async function settle(p: Page): Promise<void> {
+  const playing = p.locator(`${TACTICS.shell}.tactics-battle--playing`);
+  if ((await playing.count()) > 0) {
+    await pressButton(p, 'B');
+    await expect(playing, 'B drained the playback').toHaveCount(0, { timeout: 5_000 });
+  }
+}
+
 /** Opens the active own unit's command menu: the cursor on its tile, then A. */
 async function openMenu(p: Page, me: Tile): Promise<void> {
+  await settle(p);
   await dpadCursorTo(p, me);
   await pressButton(p, 'A');
   await expect(p.locator('.tactics-menu'), 'A on the own unit opens its menu').toHaveCount(1, {
@@ -191,10 +204,14 @@ async function openMenu(p: Page, me: Tile): Promise<void> {
   });
 }
 
-/** Move: the band tile nearest the wild, confirmed with A (a drafted, reversible Move). */
+/** Move: the band tile nearest the wild, confirmed with A (a drafted, reversible Move — its ghost
+ *  appears on the destination; the selected unit's reach band stays painted in every mode). */
 async function draftMoveToward(p: Page, wild: Tile): Promise<boolean> {
   await menuCursorTo(p, 'move');
   await pressButton(p, 'A');
+  await expect(p.locator('.tactics-menu'), 'the Move aim replaces the menu').toHaveCount(0, {
+    timeout: 5_000,
+  });
   await expect(p.locator(TACTICS.bandTile).first(), 'the Move aim paints a band').toBeVisible({
     timeout: 5_000,
   });
@@ -208,32 +225,58 @@ async function draftMoveToward(p: Page, wild: Tile): Promise<boolean> {
   }
   await dpadCursorTo(p, dest);
   await pressButton(p, 'A');
-  await expect(p.locator(TACTICS.bandTile), 'A on a band tile drafts the Move').toHaveCount(0, {
-    timeout: 5_000,
-  });
+  await expect(
+    p.locator(TACTICS.ghost),
+    'A on a band tile drafts the Move (its ghost)',
+  ).toHaveCount(1, { timeout: 5_000 });
   return true;
 }
 
-/** Skills → the first offered skill → the forecast panel is up → A commits the whole draft. */
-async function attackWithForecast(p: Page): Promise<string> {
+/** Skills → the first offered skill → the forecast panel (hit %, min–max damage) → A commits the
+ *  whole draft when the forecast's MAX damage leaves the wild standing. Returns what happened:
+ *  `attacked`; `kills` (the hit could KO: backed out to the root menu, nothing sent); `none` (no
+ *  skill offered or no target in range: backed out to the root menu). The root menu must be open. */
+async function tryAttackWithForecast(
+  p: Page,
+  wildHp: number,
+): Promise<'attacked' | 'kills' | 'none'> {
   await menuCursorTo(p, 'skills');
   await pressButton(p, 'A');
   const skill = p
     .locator('.tactics-menu-row[data-row^="skill:"]:not([aria-disabled="true"])')
     .first();
-  await expect(skill, 'the Skills sub-list offers a skill').toBeVisible({ timeout: 5_000 });
+  const offered = await skill
+    .waitFor({ state: 'visible', timeout: 3_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!offered) {
+    await pressButton(p, 'B'); // the skills list → the root menu
+    return 'none';
+  }
   const key = await skill.getAttribute('data-row');
-  if (key === null) throw new Error('attackWithForecast: a skill row without a key');
+  if (key === null) throw new Error('tryAttackWithForecast: a skill row without a key');
   await menuCursorTo(p, key);
   await pressButton(p, 'A');
   const forecast = p.locator(TACTICS.forecast);
-  await expect(forecast, 'aiming the skill shows the forecast panel').toHaveCount(1, {
-    timeout: 5_000,
-  });
+  const aimed = await forecast
+    .waitFor({ state: 'visible', timeout: 3_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!aimed) {
+    await pressButton(p, 'B'); // no target in range: the list stays → the root menu
+    return 'none';
+  }
   const text = (await forecast.textContent()) ?? '';
   expect(text, 'the forecast carries a hit percentage').toMatch(/\d+ ?%/);
+  const damage = /(\d+)[\u2013-](\d+) damage/.exec(text);
+  const max = damage === null ? null : Number(damage[2]);
+  if (max === null || max >= wildHp) {
+    await pressButton(p, 'B'); // the aim → the skills list
+    await pressButton(p, 'B'); // → the root menu
+    return 'kills';
+  }
   await pressButton(p, 'A'); // commits [draft…, Skill] on a live turn
-  return text;
+  return 'attacked';
 }
 
 /** Recruit → the bait row → the aim (the forecast with the odds) → A. Returns false when the Recruit
@@ -264,11 +307,28 @@ async function throughResults(p: Page, label: string): Promise<void> {
   await expect(p.locator(TACTICS.results), `${label}: the results panel closed`).toBeHidden();
 }
 
+/** How many attacks were committed with the forecast up, across the whole test. */
+let forecastAttacks = 0;
+
+/** A live commit executes at once and the turn CONTINUES with the remaining budget: waits for the
+ *  battle's event count to grow past `events` (the executed plan landed in the store). */
+async function waitExecuted(p: Page, events: number): Promise<void> {
+  await p.waitForFunction(
+    (n: number) => {
+      const hook = (window as unknown as { __mrTactics?: { battle(): TacticsSnap | null } })
+        .__mrTactics;
+      const t = hook?.battle() ?? null;
+      return t !== null && (t.events > n || t.phase === 'Finished');
+    },
+    events,
+    { timeout: TURN_WAIT_MS },
+  );
+}
+
 /** Battle 1's live-turn loop. Resolves true when the wild was recruited, false when the battle
  *  ended or stalled without a recruit (the caller restarts). */
 async function fightToRecruit(p: Page): Promise<boolean> {
   let last: string | null = null;
-  let forecasts = 0;
   for (let turn = 0; turn < MAX_OWN_TURNS; turn += 1) {
     const t = await waitOwnTurnOrEnd(p, last);
     if (t.phase === 'Finished')
@@ -276,29 +336,36 @@ async function fightToRecruit(p: Page): Promise<boolean> {
     last = turnKey(t);
     const { me, wild } = sides(t);
     await openMenu(p, me);
-    const adjacent = manhattan(me, wild) === 1;
-    const weak = wild.curHp * 100 <= wild.maxHp * WEAK_PCT;
-    if (adjacent && weak) {
-      if (await recruitWithBait(p)) continue;
-    }
-    if (manhattan(me, wild) <= 2 && !weak) {
-      await attackWithForecast(p);
-      forecasts += 1;
+    if (manhattan(me, wild) === 1) {
+      const weak = wild.curHp * 100 <= wild.maxHp * WEAK_PCT;
+      // Recruit and Flee cost the whole budget: each is the FIRST and only action of a turn.
+      if (weak && (await recruitWithBait(p))) continue;
+      const hit = await tryAttackWithForecast(p, wild.curHp);
+      if (hit === 'attacked') {
+        forecastAttacks += 1;
+        // The attack executed on the live turn; the turn is still ours: end it (the shell re-arms
+        // once the unit's spent budget lands).
+        await waitExecuted(p, t.events);
+        await settle(p);
+        await pressButton(p, 'Start');
+        continue;
+      }
+      // The next hit could KO it: it is weak enough to recruit, whatever WEAK_PCT says.
+      if (hit === 'kills' && (await recruitWithBait(p))) continue;
+      await pressButton(p, 'Start'); // nothing to do adjacent this turn: EndTurn
       continue;
     }
-    // Out of reach (or weak but not adjacent): step toward it, then end the turn.
+    // Out of reach: step toward it (a drafted, reversible Move), then end the turn.
     const drafted = await draftMoveToward(p, wild);
-    if (!drafted) {
-      await pressButton(p, 'B');
-    }
+    if (!drafted) await pressButton(p, 'B'); // the Move aim had no band tile: leave the menu
     await pressButton(p, 'Start'); // the live draft plus EndTurn
   }
-  expect(forecasts, 'at least one attack was forecast').toBeGreaterThan(0);
   return false;
 }
 
-/** Flee on a fresh own turn (the whole budget), once the wild has damaged us. */
-async function takeAHitThenFlee(p: Page, baseline: Map<string, number>): Promise<void> {
+/** Flee on a fresh own turn (the whole budget) once a wild has damaged us: true. False when no wild
+ *  landed a hit within MAX_OWN_TURNS (the battle is then abandoned with a Flee anyway). */
+async function takeAHitThenFlee(p: Page, baseline: Map<string, number>): Promise<boolean> {
   let last: string | null = null;
   for (let turn = 0; turn < MAX_OWN_TURNS; turn += 1) {
     const t = await waitOwnTurnOrEnd(p, last);
@@ -309,15 +376,15 @@ async function takeAHitThenFlee(p: Page, baseline: Map<string, number>): Promise
       (u) => u.mine && u.curHp < (baseline.get(String(u.unitId)) ?? u.maxHp),
     );
     await openMenu(p, me);
-    if (hurt) {
+    if (hurt || turn === MAX_OWN_TURNS - 1) {
       await menuCursorTo(p, 'flee');
       await pressButton(p, 'A');
-      return;
+      return hurt;
     }
     if (manhattan(me, wild) > 1) await draftMoveToward(p, wild);
     await pressButton(p, 'Start');
   }
-  throw new Error(`takeAHitThenFlee: no wild hit us in ${MAX_OWN_TURNS} own turns`);
+  return false;
 }
 
 test.describe
@@ -359,21 +426,20 @@ test.describe
           ['current_hp', SEED_HP],
           ['stat_defense', SEED_DEFENSE],
           ['stat_sp_defense', SEED_DEFENSE],
-          ['stat_attack', SEED_ATTACK],
         ] as const) {
           ownerSql(`UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${starterId}`, 'seed');
         }
       }
       const row = sqlRows(
         ownerSql(
-          `SELECT monster_id, stat_hp, stat_attack FROM monster WHERE monster_id = ${starterId}`,
+          `SELECT monster_id, stat_hp, stat_defense FROM monster WHERE monster_id = ${starterId}`,
           'seed',
         ),
         'seed',
       ).find((r) => r.monster_id === starterId);
       expect(Number(row?.stat_hp), 'the starter row reads back the HP seed').toBe(SEED_HP);
-      expect(Number(row?.stat_attack), 'the starter row reads back the attack seed').toBe(
-        SEED_ATTACK,
+      expect(Number(row?.stat_defense), 'the starter row reads back the defence seed').toBe(
+        SEED_DEFENSE,
       );
       ownerSql(
         `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${normId(identity)}, ${BAIT_ITEM_ID}, ${BAIT_SEED})`,
@@ -389,7 +455,7 @@ test.describe
     });
 
     test('BT12-5-WILD-RECRUIT: a pack of one starts straight into the tactical shell (no deploy panel); by menu, bands, aims and Start alone the starter closes in, attacks with the forecast up, weakens the wild and recruits it adjacent; the results panel lists the recruit and the world returns', async () => {
-      test.setTimeout(240_000);
+      test.setTimeout(480_000);
       await closeAll(page);
       let recruited = false;
       for (let battle = 0; battle < MAX_BATTLES && !recruited; battle += 1) {
@@ -416,6 +482,10 @@ test.describe
       }
       expect(recruited, `a wild was recruited within ${MAX_BATTLES} battles`).toBe(true);
       expect(
+        forecastAttacks,
+        'at least one attack was committed with the forecast up',
+      ).toBeGreaterThan(0);
+      expect(
         await page.evaluate(() => (window as unknown as Win).__mrDeploySeen ?? 0),
         'a pack of one never showed the deploy panel',
       ).toBe(0);
@@ -425,7 +495,7 @@ test.describe
     });
 
     test('BT12-5-WILD-FLEE: with the recruit in the party a pack of two shows the deploy confirm listing both wilds; X opens the editor and B backs out; A deploys the remembered formation into the shell; after the pack damages us, Flee ends the battle fled and the lower HP persists on the monster row', async () => {
-      test.setTimeout(240_000);
+      test.setTimeout(420_000);
       const own = await readOwnMonsters(page);
       const recruit = own.find((m) => m.monsterId !== starterId);
       if (recruit === undefined) throw new Error('no recruit to field');
@@ -446,44 +516,47 @@ test.describe
         .toBe(2);
       const before = new Map((await readOwnMonsters(page)).map((m) => [m.monsterId, m.currentHp]));
 
-      devStartWild(identity, 2, 'pack of two');
-      const deploy = page.locator(TACTICS.deploy);
-      await expect(deploy, 'the deploy confirm screen shows').toBeVisible({ timeout: 20_000 });
-      await expect(page.locator(TACTICS.wildRow), 'the pack is listed').toHaveCount(2);
-      await expect(page.locator(`${TACTICS.deploy} [data-row="deploy"]`)).toHaveAttribute(
-        'aria-selected',
-        'true',
-      );
-      await pressButton(page, 'X');
-      await expect(
-        page.locator(`${TACTICS.deploy} [data-row="slot-0"]`),
-        'X opens the editor',
-      ).toHaveCount(1, {
-        timeout: 5_000,
-      });
-      await pressButton(page, 'B');
-      await expect(
-        page.locator(`${TACTICS.deploy} [data-row="edit"]`),
-        'B backs out to the confirm screen',
-      ).toHaveAttribute('aria-selected', 'true', { timeout: 5_000 });
-      await pressButton(page, 'Up');
-      await expect(page.locator(`${TACTICS.deploy} [data-row="deploy"]`)).toHaveAttribute(
-        'aria-selected',
-        'true',
-      );
-      await pressButton(page, 'A');
-      await expect(page.locator(TACTICS.shell), 'A deploys into the shell').toBeVisible({
-        timeout: 20_000,
-      });
-      await expect(deploy).toBeHidden();
-      const t = await readTactics(page);
-      expect(t?.units.filter((u) => u.mine).length, 'both party monsters are fielded').toBe(2);
+      // A pack that never lands a hit (two wilds kiting out of range) is fled and restarted.
+      let hurt = false;
+      for (let attempt = 0; attempt < MAX_FLEE_BATTLES && !hurt; attempt += 1) {
+        devStartWild(identity, 2, `pack of two ${attempt}`);
+        const deploy = page.locator(TACTICS.deploy);
+        await expect(deploy, 'the deploy confirm screen shows').toBeVisible({ timeout: 20_000 });
+        await expect(page.locator(TACTICS.wildRow), 'the pack is listed').toHaveCount(2);
+        await expect(page.locator(`${TACTICS.deploy} [data-row="deploy"]`)).toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        await pressButton(page, 'X');
+        await expect(
+          page.locator(`${TACTICS.deploy} [data-row="slot-0"]`),
+          'X opens the editor',
+        ).toHaveCount(1, { timeout: 5_000 });
+        await pressButton(page, 'B');
+        await expect(
+          page.locator(`${TACTICS.deploy} [data-row="edit"]`),
+          'B backs out to the confirm screen',
+        ).toHaveAttribute('aria-selected', 'true', { timeout: 5_000 });
+        await pressButton(page, 'Up');
+        await expect(page.locator(`${TACTICS.deploy} [data-row="deploy"]`)).toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        await pressButton(page, 'A');
+        await expect(page.locator(TACTICS.shell), 'A deploys into the shell').toBeVisible({
+          timeout: 20_000,
+        });
+        await expect(deploy).toBeHidden();
+        const t = await readTactics(page);
+        expect(t?.units.filter((u) => u.mine).length, 'both party monsters are fielded').toBe(2);
 
-      // The unit → monster HP baseline: every own unit starts at its monster's current HP.
-      const unitBaseline = new Map<string, number>();
-      for (const u of t?.units ?? []) if (u.mine) unitBaseline.set(String(u.unitId), u.curHp);
-      await takeAHitThenFlee(page, unitBaseline);
-      await throughResults(page, 'pack of two');
+        // The unit → HP baseline: every own unit starts at its monster's current HP.
+        const unitBaseline = new Map<string, number>();
+        for (const u of t?.units ?? []) if (u.mine) unitBaseline.set(String(u.unitId), u.curHp);
+        hurt = await takeAHitThenFlee(page, unitBaseline);
+        await throughResults(page, `pack of two ${attempt}`);
+      }
+      expect(hurt, `a wild landed a hit within ${MAX_FLEE_BATTLES} pack battles`).toBe(true);
 
       const after = await readOwnMonsters(page);
       const damaged = after.filter((m) => m.currentHp < (before.get(m.monsterId) ?? 0));

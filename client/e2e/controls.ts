@@ -704,7 +704,8 @@ type TacticsWindow = Window & {
 export const readTactics = (page: Page): Promise<TacticsSnap | null> =>
   page.evaluate(() => {
     const hook = (window as unknown as TacticsWindow).__mrTactics;
-    if (hook === undefined) throw new Error('readTactics: window.__mrTactics is missing (DEV only)');
+    if (hook === undefined)
+      throw new Error('readTactics: window.__mrTactics is missing (DEV only)');
     return hook.battle();
   });
 
@@ -724,6 +725,7 @@ export const TACTICS = {
   cursorTile: '.tactics-tile--cursor',
   bandTile: '.tactics-tile--reach1, .tactics-tile--reach2',
   forecast: '.tactics-forecast',
+  ghost: '.tactics-ghost',
   wildRow: '.tactics-deploy-wild',
 } as const;
 
@@ -743,7 +745,10 @@ export async function readBandTiles(page: Page): Promise<Tile[]> {
   const tiles = await page.locator(TACTICS.bandTile).all();
   const out: Tile[] = [];
   for (const t of tiles) {
-    out.push({ x: Number(await t.getAttribute('data-x')), y: Number(await t.getAttribute('data-y')) });
+    out.push({
+      x: Number(await t.getAttribute('data-x')),
+      y: Number(await t.getAttribute('data-y')),
+    });
   }
   return out;
 }
@@ -761,10 +766,13 @@ export async function dpadCursorTo(page: Page, to: Tile, maxPresses = 24): Promi
       at.x < to.x ? 'Right' : at.x > to.x ? 'Left' : at.y < to.y ? 'Down' : 'Up';
     await pressButton(page, button);
     await expect
-      .poll(async () => {
-        const now = await readCursorTile(page);
-        return `${now.x},${now.y}`;
-      }, { timeout: 2_000 })
+      .poll(
+        async () => {
+          const now = await readCursorTile(page);
+          return `${now.x},${now.y}`;
+        },
+        { timeout: 2_000 },
+      )
       .not.toBe(`${at.x},${at.y}`)
       .catch(() => undefined);
   }
