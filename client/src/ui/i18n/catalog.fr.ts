@@ -1825,4 +1825,41 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The results line for a wild recruited during the battle; {name} is its species name. One
   // short exclamation.
   'tactics.results.recruited': (p) => `${p.name} rejoint votre équipe !`,
+  // @desc: Accessible name of the strip under the turn bar that names both PvP players with their
+  // strike pips. One word.
+  'tactics.players.label': 'Joueurs',
+  // @desc: Root menu row that gives up the PvP match (a confirm follows). One word.
+  'tactics.menu.forfeit': 'Abandonner',
+  // @desc: Confirmation row that forfeits the PvP match: the player loses it at once. One short
+  // sentence.
+  'tactics.menu.forfeitYes': 'Oui, abandonner le match',
+  // @desc: Confirmation row that keeps the PvP match going and closes the menu. One short phrase.
+  'tactics.menu.forfeitNo': 'Continuer le combat',
+  // @desc: Results line: the battle was adjudicated on the sides' remaining HP share. One short
+  // phrase.
+  'tactics.results.endHow.adjudicatedHpPercent': 'Décidé aux PV restants',
+  // @desc: Results line: the battle was adjudicated on the number of conscious monsters. One short
+  // phrase.
+  'tactics.results.endHow.adjudicatedConscious': 'Décidé aux monstres conscients',
+  // @desc: Results line: the battle was adjudicated on the attack damage dealt over the match. One
+  // short phrase.
+  'tactics.results.endHow.adjudicatedDamageDealt': 'Décidé aux dégâts infligés',
+  // @desc: Results line: the battle was adjudicated by the deterministic coin (every other step
+  // tied). One short phrase.
+  'tactics.results.endHow.adjudicatedCoin': 'Décidé à pile ou face',
+  // @desc: Results line: the battle ended because a player forfeited (the menu row or a
+  // disconnect). One short phrase.
+  'tactics.results.endHow.forfeit': 'Terminé par abandon',
+  // @desc: Accessible name of the clock ring on the waiting unit's turn-bar chip; {s} is the whole
+  // seconds left in the window. The number, the unit symbol and one word.
+  'tactics.clock.ring': (p) => `${p.s} s restantes`,
+  // @desc: Accessible name of a player's strike pips; {name} is the player's name, {n} the strikes
+  // taken so far and {max} the strikes that forfeit. The name, a colon, then the count.
+  'tactics.clock.strikes': (p) => `${p.name} : ${p.n} prises sur ${p.max}`,
+  // @desc: Results line for the PvP rating change; {before} and {after} are whole ratings, {delta}
+  // is the signed difference (a sign is always printed). An arrow between the two ratings.
+  'tactics.results.rating': (p) => `Classement ${p.before} → ${p.after} (${p.delta})`,
+  // @desc: Results line for a first rated game (no rating stood before it); {after} is the new whole
+  // rating. One word and the number.
+  'tactics.results.ratingNew': (p) => `Classement ${p.after}`,
 } satisfies Catalog);

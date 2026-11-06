@@ -3347,6 +3347,9 @@ describe('the deploy and results panels are reachable (bt-12, BT12.6)', () => {
         monsters: [{ unitId: 3, name: 'Sprigg', xp: 53, essence: 7 }],
         recruits: [],
         currency: 7n,
+        // bt-15 increment B (type-only fixture update): the rating and reason lines, absent here.
+        rating: null,
+        endHow: null,
       });
       panel.show();
       await bt12rTick();

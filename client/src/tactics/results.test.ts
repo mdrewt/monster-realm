@@ -28,6 +28,20 @@
  * RED REASON: `resultsVM`, `ResultsPanel` and `shouldAutoContinue` throw `bt-12: not implemented` on
  * the API-freeze stubs, and the `tactics.results.*` catalog keys are absent.
  *
+ * bt-15 INCREMENT B (spec §bt-15 BT15.3 "THE Finished phase SHALL show the rating change and the
+ * adjudication reason when one applied"; plan memory/projects/monster-realm-bt-15-plan.md REV 3 §1
+ * BT15.3c as amended by §8 REV 3.1 H1; the tester brief's API freeze). DOM CONTRACT PINNED HERE: the
+ * list's lines, in order, are `li[data-line=endHow]` (the LAST BattleEnd's reason, when it is one of
+ * the four Adjudicated* tuples or Forfeit), the monster lines, the recruit lines, the gold line
+ * (> 0n) and `li[data-line=rating]` (`tactics.results.rating {before, after, delta}` with a SIGNED
+ * delta, or `tactics.results.ratingNew {after}` when `before` is null); the `none` line only when
+ * there is no line at all. `ResultsInput.rating` is carried to `ResultsVM.rating`; `ResultsVM.endHow`
+ * is an `EndHowReason | null`. NAMED INTENTIONAL CHANGE: `input()` passes `rating: null` and the
+ * `VM` constant carries `rating: null, endHow: null` (both fields are required by the freeze), so the
+ * bt-12 cases read exactly what they read before. RED REASON: `resultsVM` returns neither field and
+ * the panel paints neither line; the `tactics.results.rating` / `ratingNew` / `endHow.*` keys are
+ * absent.
+ *
  * Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
  */
 import { afterEach, describe, expect, it } from 'vitest';
@@ -38,7 +52,13 @@ import { CATALOG_EN } from '../ui/i18n/catalog.en';
 import { CATALOG_FR } from '../ui/i18n/catalog.fr';
 import { setLocale } from '../ui/i18n/resolver';
 import { closeOverlayA11y } from '../ui/overlayA11y';
-import { type ResultsInput, ResultsPanel, type ResultsVM, resultsVM } from './results';
+import {
+  type EndHowReason,
+  type ResultsInput,
+  ResultsPanel,
+  type ResultsVM,
+  resultsVM,
+} from './results';
 import type { RuleSide, UnitRow } from './wasm';
 
 // --- fixtures -----------------------------------------------------------------------------------
@@ -164,6 +184,8 @@ const input = (o: Partial<ResultsInput> = {}): ResultsInput => ({
   events: lineEvents(),
   monsterName,
   speciesName,
+  // bt-15 B (named intentional change): the freeze's required rating, none for these cases.
+  rating: null,
   ...o,
 });
 
@@ -224,6 +246,9 @@ const VM: ResultsVM = {
   ],
   recruits: [{ unitId: 7, name: 'Duskling' }],
   currency: GOLD_TOTAL,
+  // bt-15 B (named intentional change): the freeze's two required fields, empty here.
+  rating: null,
+  endHow: null,
 };
 
 afterEach(() => {
@@ -506,5 +531,196 @@ describe('results: every string from the catalog (bt-12, BT12.6)', () => {
       expect(root.hasAttribute('aria-live'), `${locale}: no live region on the root`).toBe(false);
       m.panel.hide();
     }
+  });
+});
+
+// --- bt-15 increment B (BT15.3): the adjudication reason and the rating change -------------------
+
+/** U+2192 RIGHTWARDS ARROW (the rating line), U+00E9 e acute, U+00E0 a grave and U+00E2 a
+ *  circumflex (the French reasons), by code point. */
+const ARROW = String.fromCharCode(0x2192);
+const E_ACUTE = String.fromCharCode(0x00e9);
+const A_GRAVE = String.fromCharCode(0x00e0);
+const A_CIRCUMFLEX = String.fromCharCode(0x00e2);
+
+type EndHowTag =
+  | 'SideEmpty'
+  | 'AdjudicatedHpPercent'
+  | 'AdjudicatedConscious'
+  | 'AdjudicatedDamageDealt'
+  | 'AdjudicatedCoin'
+  | 'FixedOrder'
+  | 'RoundCap'
+  | 'Forfeit'
+  | 'Fled'
+  | 'AutoFlee';
+
+/** A BattleEnd transcript event: `how` its EndHow tag, the outcome side B's win by default. */
+const battleEnd = (
+  seq: number,
+  how: EndHowTag,
+  outcome: 'SideAWins' | 'SideBWins' | 'Fled' = 'SideBWins',
+): StoreBattleEvent =>
+  ev(seq, {
+    tag: 'BattleEnd',
+    value: { outcome: { tag: outcome }, how: { tag: how } },
+  } as EventPayload);
+
+/** The panel's lines by `data-line` (any li under the list carrying one). */
+const dataLines = (root: HTMLElement): (string | null)[] =>
+  [...root.querySelectorAll('ul.tactics-results-list > li[data-line]')].map((li) =>
+    li.getAttribute('data-line'),
+  );
+const lineText = (root: HTMLElement, kind: string): string | null =>
+  root.querySelector(`ul.tactics-results-list > li[data-line="${kind}"]`)?.textContent ?? null;
+
+/** The five reasons the panel names: EndHow tag, the VM's reason, its exact English and French. */
+const REASONS: ReadonlyArray<readonly [EndHowTag, EndHowReason, string, string]> = [
+  [
+    'AdjudicatedHpPercent',
+    'adjudicatedHpPercent',
+    'Decided on remaining HP',
+    `D${E_ACUTE}cid${E_ACUTE} aux PV restants`,
+  ],
+  [
+    'AdjudicatedConscious',
+    'adjudicatedConscious',
+    'Decided on conscious monsters',
+    `D${E_ACUTE}cid${E_ACUTE} aux monstres conscients`,
+  ],
+  [
+    'AdjudicatedDamageDealt',
+    'adjudicatedDamageDealt',
+    'Decided on damage dealt',
+    `D${E_ACUTE}cid${E_ACUTE} aux d${E_ACUTE}g${A_CIRCUMFLEX}ts inflig${E_ACUTE}s`,
+  ],
+  [
+    'AdjudicatedCoin',
+    'adjudicatedCoin',
+    'Decided by the coin',
+    `D${E_ACUTE}cid${E_ACUTE} ${A_GRAVE} pile ou face`,
+  ],
+  ['Forfeit', 'forfeit', 'Ended by forfeit', `Termin${E_ACUTE} par abandon`],
+];
+/** The EndHow tags whose ending the outcome title already says: no reason line. */
+const UNNAMED: readonly EndHowTag[] = ['SideEmpty', 'FixedOrder', 'RoundCap', 'Fled', 'AutoFlee'];
+
+describe('results: the adjudication reason and the rating change (bt-15 B, BT15.3)', () => {
+  it('resultsVM reads the reason off the LAST BattleEnd event — the four adjudications and a forfeit are named, a side emptied, the fixed order, the round cap, a flight and an auto-flee are not — and carries the rating it is given [BT15-3]', () => {
+    // WRONG IMPL KILLED: the FIRST BattleEnd read (a transcript can carry two: the last wins); the
+    // reason taken from the outcome instead of `how`; a reason named for SideEmpty / RoundCap /
+    // Fled / AutoFlee / FixedOrder (the title already says it: plan §5); an Adjudicated* tag mapped
+    // to a sibling's reason; the rating dropped, recomputed or defaulted (the VM carries main.ts's
+    // frozen result as is, a null before included).
+    for (const [tag, reason] of REASONS) {
+      const vm = resultsVM(input({ events: [...lineEvents().slice(0, 10), battleEnd(12, tag)] }));
+      expect(vm?.endHow, `${tag}: ${reason}`).toBe(reason);
+    }
+    for (const tag of UNNAMED) {
+      const vm = resultsVM(input({ events: [battleEnd(1, tag)] }));
+      expect(vm?.endHow, `${tag}: no reason`).toBeNull();
+    }
+    expect(resultsVM(input({ events: [] }))?.endHow, 'no BattleEnd: no reason').toBeNull();
+    expect(
+      resultsVM(input({ events: [battleEnd(1, 'Forfeit'), battleEnd(2, 'AdjudicatedCoin')] }))
+        ?.endHow,
+      'two BattleEnd events: the LAST names the reason',
+    ).toBe('adjudicatedCoin');
+    expect(
+      resultsVM(input({ events: [battleEnd(1, 'AdjudicatedCoin'), battleEnd(2, 'SideEmpty')] }))
+        ?.endHow,
+      'the last one names none: no reason',
+    ).toBeNull();
+
+    expect(
+      resultsVM(input({ rating: { before: 1000, after: 984 } }))?.rating,
+      'the rating is carried as given',
+    ).toEqual({ before: 1000, after: 984 });
+    expect(
+      resultsVM(input({ rating: { before: null, after: 1016 } }))?.rating,
+      'a first rated game: a null before',
+    ).toEqual({ before: null, after: 1016 });
+    expect(resultsVM(input())?.rating, 'no rating: null').toBeNull();
+  });
+
+  it('the panel leads with the reason line and ends with the rating line — reason, monsters, recruits, gold, rating — the rating signed from before to after or the first-game form, each exactly its text in English; no rating line without a rating; the none line only when there is no line at all; an equal re-render keeps the Continue node [BT15-3]', () => {
+    // WRONG IMPL KILLED: the reason or the rating appended in another order (after Continue, before
+    // the gold); a delta printed unsigned ("16"), as a minus-less "+-16", or "0" instead of "+0"; a
+    // first-game rating printed as "null → 1016" or "Rating 0 → 1016 (+1016)"; a rating line for a
+    // null rating; the none line shown beside a rating or reason line (or a blank list with
+    // neither); a reason in the wrong sibling's words; a list rebuilt on an equal VM.
+    const full: ResultsVM = { ...VM, endHow: 'forfeit', rating: { before: 1000, after: 984 } };
+    const m = mountPanel(full);
+    expect(dataLines(m.root), 'reason, monsters, recruit, gold, rating').toEqual([
+      'endHow',
+      'monster',
+      'monster',
+      'recruit',
+      'currency',
+      'rating',
+    ]);
+    expect(lineText(m.root, 'endHow'), 'the forfeit line').toBe('Ended by forfeit');
+    expect(lineText(m.root, 'rating'), 'a loss of 16').toBe(`Rating 1000 ${ARROW} 984 (-16)`);
+    const button = m.root.querySelector('button.tactics-results-continue');
+    const first = m.root.querySelector('ul.tactics-results-list > li');
+    expect([button !== null, first !== null], 'fixture: the nodes exist').toEqual([true, true]);
+    m.panel.render(structuredClone(full));
+    expect(
+      m.root.querySelector('button.tactics-results-continue') === button,
+      'an equal VM keeps the Continue node',
+    ).toBe(true);
+    expect(
+      m.root.querySelector('ul.tactics-results-list > li') === first,
+      'and the first line node',
+    ).toBe(true);
+
+    const ratingOf = (rating: ResultsVM['rating']): string | null => {
+      m.panel.render({ ...VM, rating });
+      return lineText(m.root, 'rating');
+    };
+    expect(ratingOf({ before: 1000, after: 1016 }), 'a gain of 16').toBe(
+      `Rating 1000 ${ARROW} 1016 (+16)`,
+    );
+    expect(ratingOf({ before: 1000, after: 1000 }), 'no change').toBe(
+      `Rating 1000 ${ARROW} 1000 (+0)`,
+    );
+    expect(ratingOf({ before: 1523, after: 1500 }), 'a loss of 23').toBe(
+      `Rating 1523 ${ARROW} 1500 (-23)`,
+    );
+    expect(ratingOf({ before: null, after: 1016 }), 'a first rated game').toBe('Rating 1016');
+    expect(ratingOf(null), 'no rating: no line').toBeNull();
+
+    for (const [tag, reason, text] of REASONS) {
+      m.panel.render({ ...VM, endHow: reason });
+      expect(lineText(m.root, 'endHow'), `${tag}: its English line`).toBe(text);
+      expect(dataLines(m.root)[0], `${tag}: the reason leads`).toBe('endHow');
+    }
+
+    const empty: ResultsVM = { ...VM, monsters: [], recruits: [], currency: 0n };
+    m.panel.render({ ...empty, rating: { before: 1000, after: 984 } });
+    expect(dataLines(m.root), 'a rating alone: no none line').toEqual(['rating']);
+    m.panel.render({ ...empty, endHow: 'adjudicatedCoin' });
+    expect(dataLines(m.root), 'a reason alone: no none line').toEqual(['endHow']);
+    m.panel.render(empty);
+    expect(dataLines(m.root), 'nothing: the none line').toEqual(['none']);
+  });
+
+  it('in French the reason and the rating lines are their French catalog text, each a translation of the English [BT15-3]', () => {
+    // WRONG IMPL KILLED: a line resolved once in English (a French boot reads English); a French
+    // entry left as the English copy; a decomposed or missing accent; the arrow or the sign lost.
+    setLocale('fr');
+    const m = mountPanel({ ...VM, endHow: 'forfeit', rating: { before: 1000, after: 984 } });
+    expect(lineText(m.root, 'endHow'), 'fr forfeit').toBe(`Termin${E_ACUTE} par abandon`);
+    expect(lineText(m.root, 'rating'), 'fr rating').toBe(`Classement 1000 ${ARROW} 984 (-16)`);
+    m.panel.render({ ...VM, rating: { before: null, after: 1016 } });
+    expect(lineText(m.root, 'rating'), 'fr first rated game').toBe('Classement 1016');
+    for (const [tag, reason, text, frText] of REASONS) {
+      m.panel.render({ ...VM, endHow: reason });
+      expect(lineText(m.root, 'endHow'), `${tag}: its French line`).toBe(frText);
+      expect(frText, `${tag}: a translation`).not.toBe(text);
+    }
+    expect(cat(FR, 'tactics.results.ratingNew', { after: 1016 }), 'the catalog agrees').toBe(
+      'Classement 1016',
+    );
   });
 });

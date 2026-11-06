@@ -83,6 +83,21 @@
 // 4): no pips / badge / note / panel / wrapper element exists, the panel never asks `forecast` /
 // `recruitOdds`, the shell never projects, the in-flight key never re-arms on a READY row, and the 26
 // new catalog keys are absent.
+//
+// bt-15 INCREMENT B (spec §bt-15 BT15.2 / BT15.3 / BT15.5; plan memory/projects/monster-realm-bt-15-
+// plan.md REV 3 §1 + §8 REV 3.1; the tester brief's API freeze). DOM CONTRACT PINNED HERE: the root's
+// bands are h2.tactics-title, .tactics-turnbar, div.tactics-players, .tactics-field, .tactics-ticker,
+// .tactics-dock (dock last); `setClock(vm)` paints the ring (`.tactics-clock-ring`) on the CURRENT
+// chip of the bar and the players strip, a later render re-applies the ring only while its unit is
+// still the current chip, `hide()` and a new battleId clear both, an equal view writes nothing. The
+// menu's LAST root row in a pvp shell is `button.tactics-menu-row[data-row=forfeit][data-sub=true]`
+// (never greyed); A on it opens the confirm level `[data-row=forfeitYes]`, `[data-row=forfeitNo]`
+// with the cursor on No; A on No closes the menu, Up + A on Yes calls `deps.onForfeit(battleId)` once
+// and closes, B at the confirm returns to the root at index 0. NAMED INTENTIONAL CHANGE: `depsOf()`
+// adds the REQUIRED `onForfeit` dep (a recorder into `forfeits`) and `make()` exposes it on the kit.
+// RED REASON: `setClock` / `onForfeit` / the `forfeit` row and level do not exist, the clock DOM is
+// not painted, and the `tactics.menu.forfeit*` / `tactics.players.label` / `tactics.clock.*` keys are
+// absent.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EventPayload, QueuedAction } from '../module_bindings/types';
@@ -91,6 +106,7 @@ import { CATALOG_FR } from '../ui/i18n/catalog.fr';
 import { setLocale } from '../ui/i18n/resolver';
 import type { BattleOp } from '../ui/screens/battleScreen';
 import type { Side, TacticalUnit } from './boardModel';
+import type { ClockVM } from './clock';
 import {
   type BaitOption,
   TacticsBattle,
@@ -587,15 +603,20 @@ interface DepsOpts {
   readonly sent?: Sent[];
   readonly cancels?: Cancel[];
   readonly failSubmit?: { on: boolean };
+  /** bt-15 increment B: the battle ids `onForfeit` was called with, oldest first. */
+  readonly forfeits?: bigint[];
 }
 
 /** The shell's deps: the fake rules (lazily handed out, as main.ts will), recording submit / cancel
- *  sinks (a submit records first, then throws while `failSubmit.on`). */
+ *  sinks (a submit records first, then throws while `failSubmit.on`). bt-15 increment B (named
+ *  intentional change, BT15.3): `onForfeit` is a REQUIRED dep of the freeze, so every shell gets a
+ *  recorder pushing the battle id into `forfeits`. */
 function depsOf(o: DepsOpts = {}): TacticsBattleDeps {
   const fake = o.fake ?? fakeRules();
   const sent = o.sent ?? [];
   const cancels = o.cancels ?? [];
   const fail = o.failSubmit ?? { on: false };
+  const forfeits = o.forfeits ?? [];
   return {
     now: o.now ?? (() => 0),
     reduceMotion: o.reduceMotion ?? (() => false),
@@ -607,6 +628,9 @@ function depsOf(o: DepsOpts = {}): TacticsBattleDeps {
     },
     onCancelQueue: (battleId, unitId) => {
       cancels.push({ battleId, unitId });
+    },
+    onForfeit: (battleId) => {
+      forfeits.push(battleId);
     },
   };
 }
@@ -621,6 +645,8 @@ interface Kit {
   readonly sent: Sent[];
   readonly cancels: Cancel[];
   readonly failSubmit: { on: boolean };
+  /** bt-15 increment B: every `onForfeit(battleId)` the shell made. */
+  readonly forfeits: bigint[];
 }
 
 /** A constructed, shown shell on a fresh parent. */
@@ -632,6 +658,7 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
   const sent: Sent[] = [];
   const cancels: Cancel[] = [];
   const failSubmit = { on: false };
+  const forfeits: bigint[] = [];
   const shell = new TacticsBattle(
     parent,
     depsOf({
@@ -642,12 +669,13 @@ function make(reduce = false, mySide: Side = 'A', fake: Fake = fakeRules()): Kit
       sent,
       cancels,
       failSubmit,
+      forfeits,
     }),
   );
   shell.show();
   const root = parent.querySelector<HTMLElement>('.tactics-battle');
   if (root === null) throw new Error('the shell painted no .tactics-battle root');
-  return { parent, shell, root, clock, motion, fake, sent, cancels, failSubmit };
+  return { parent, shell, root, clock, motion, fake, sent, cancels, failSubmit, forfeits };
 }
 
 function q<E extends Element = HTMLElement>(root: ParentNode, selector: string): E {
@@ -4367,5 +4395,331 @@ describe('TacticsBattle: a live turn goes on after a commit (bt-12 B, BT12.5)', 
       g.sent,
       '(g) the active unit`s budget moved, not unit 2`s: unit 2 stays held',
     ).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// bt-15 increment B (BT15.2): the PvP clock ring and the players strip on the shell
+// ---------------------------------------------------------------------------------------------
+//
+// The clock view is a LITERAL `ClockVM` (the pure `clockVM` is proven in clock.test.ts): the shell's
+// job is where it paints it and how long it keeps it. The current chip is unit 2 at turnIdx 2 (never
+// initiative[0]); the next-round ghosts carry unit 2 too.
+
+/** The ring the pump would hand the shell for unit `unitId` (side A unless given). */
+const clockOn = (unitId: number, side: Side = 'A'): ClockVM => ({
+  ring: { unitId, side, secondsLeft: 23, fraction: 0.77, band: 'ok' },
+  players: [
+    { side: 'A', mine: true, name: 'Quill', strikes: 1 },
+    { side: 'B', mine: false, name: 'Marrow', strikes: 3 },
+  ],
+});
+/** Where each `.tactics-clock-ring` in the root sits: its chip's unit id, `ghost:<id>`, or `loose`. */
+const ringHomes = (root: HTMLElement): string[] =>
+  [...root.querySelectorAll<HTMLElement>('.tactics-clock-ring')].map((r) => {
+    const chip = r.parentElement;
+    if (chip === null || !chip.classList.contains('tactics-chip')) return 'loose';
+    const id = chip.getAttribute('data-unit-id') ?? '?';
+    return chip.classList.contains('tactics-chip--ghost') ? `ghost:${id}` : id;
+  });
+const playersOf = (root: HTMLElement): HTMLElement => q(root, '.tactics-players');
+/** The strip's entries as `side:name:hits`. */
+const stripEntries = (root: HTMLElement): string[] =>
+  [...playersOf(root).querySelectorAll<HTMLElement>('.tactics-player')].map(
+    (p) =>
+      `${p.getAttribute('data-side')}:${p.querySelector('.tactics-player-name')?.textContent ?? ''}:${p.querySelectorAll('.tactics-strike--hit').length}`,
+  );
+/** The strip is cleared: no children and hidden. */
+const stripCleared = (root: HTMLElement): boolean => {
+  const strip = playersOf(root);
+  return strip.children.length === 0 && strip.hidden === true;
+};
+
+describe('TacticsBattle: the PvP clock ring and the players strip (bt-15 B, BT15.2)', () => {
+  it('setClock paints the ring on the current unit`s chip and a players strip between the turn bar and the field (the dock still last); a render with the same current unit keeps the ring, one whose current chip moved drops it until the next setClock; an equal view writes nothing; hide() and a new battle clear both [BT15-2]', () => {
+    // WRONG IMPL KILLED: a ring painted once and wiped by the next `#commit` (renderTurnBar rebuilds
+    // the chips: the ring must be re-applied); a ring re-applied onto a chip that is no longer the
+    // current one (a stale ring on the unit that just acted: plan REV 3.1 M (b)); the strip inside
+    // the turn bar (the e2e byte-identity oracle strips only the ring), after the field or as the
+    // last band (BT10-1: the dock stays last); an equal view rewriting the ring every frame (the
+    // pump calls setClock per frame); hide() or a new battleId leaving the old battle's ring or
+    // players up (a reused unit id would wear it).
+    const k = make();
+    const vm = tacVm('pvp', { activeUnitId: 2, turnIdx: 2 });
+    k.shell.render(vm);
+    expect(ringHomes(k.root), 'no ring before setClock').toEqual([]);
+    k.shell.setClock(clockOn(2));
+    expect(ringHomes(k.root), 'one ring, on unit 2`s chip (not its ghost, not chip 1)').toEqual([
+      '2',
+    ]);
+    const ring = q(k.root, '.tactics-clock-ring');
+    expect(ring.closest('.tactics-turnbar'), 'inside the turn bar').not.toBeNull();
+    expect(
+      [ring.getAttribute('data-band'), ring.getAttribute('data-fraction')],
+      'painted from the view',
+    ).toEqual(['ok', '77']);
+    expect(k.root.querySelectorAll('.tactics-players'), 'one players strip').toHaveLength(1);
+    const strip = playersOf(k.root);
+    const turnbar = q(k.root, '.tactics-turnbar');
+    expect(strip.tagName, 'a div').toBe('DIV');
+    expect(turnbar.contains(strip), 'the strip is not inside the turn bar').toBe(false);
+    expect(precedes(turnbar, strip), 'below the turn bar').toBe(true);
+    expect(precedes(strip, q(k.root, '.tactics-field')), 'above the field').toBe(true);
+    expect(k.root.lastElementChild, 'the dock is still the last band').toBe(
+      q(k.root, '.tactics-dock'),
+    );
+    expect(stripEntries(k.root), 'both players, names and hits').toEqual([
+      'A:Quill:1',
+      'B:Marrow:3',
+    ]);
+
+    k.shell.render(tacVm('pvp', { activeUnitId: 2, turnIdx: 2, round: 2 }));
+    expect(ringHomes(k.root), 'a render with the same current unit keeps the ring').toEqual(['2']);
+    k.shell.render(tacVm('pvp', { activeUnitId: 4, turnIdx: 3, round: 2 }));
+    expect(ringHomes(k.root), 'the current chip moved to 4: the stale ring is dropped').toEqual([]);
+    expect(stripEntries(k.root), 'the strip stays').toEqual(['A:Quill:1', 'B:Marrow:3']);
+    k.shell.setClock(clockOn(4, 'B'));
+    expect(ringHomes(k.root), 'the next setClock paints it on 4').toEqual(['4']);
+
+    const painted = q(k.root, '.tactics-clock-ring');
+    painted.setAttribute('aria-label', 'sentinel');
+    const firstPlayer = playersOf(k.root).children[0];
+    k.shell.setClock(structuredClone(clockOn(4, 'B')));
+    expect(q(k.root, '.tactics-clock-ring'), 'an equal view: the same ring node').toBe(painted);
+    expect(painted.getAttribute('aria-label'), 'and nothing rewritten on it').toBe('sentinel');
+    expect(playersOf(k.root).children[0], 'nor on the strip').toBe(firstPlayer);
+
+    k.shell.hide();
+    expect(ringHomes(k.root), 'hide(): no ring').toEqual([]);
+    expect(stripCleared(k.root), 'hide(): the strip is emptied and hidden').toBe(true);
+    k.shell.show();
+    k.shell.render(tacVm('pvp', { activeUnitId: 4, turnIdx: 3, round: 3 }));
+    expect(ringHomes(k.root), 'a render after hide() paints no remembered ring').toEqual([]);
+    k.shell.setClock(clockOn(4, 'B'));
+    expect(ringHomes(k.root), 'the same view after hide() paints again').toEqual(['4']);
+
+    k.shell.render(tacVm('pvp', { battleId: 2n, activeUnitId: 4, turnIdx: 3 }));
+    expect(ringHomes(k.root), 'a new battle: no ring').toEqual([]);
+    expect(stripCleared(k.root), 'a new battle: the strip is cleared').toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// bt-15 increment B (BT15.3, BT15.5): the Forfeit row and its confirm; the Surge badge wiring
+// ---------------------------------------------------------------------------------------------
+
+describe('TacticsBattle: Forfeit and the Surge badge (bt-15 B, BT15.3 / BT15.5)', () => {
+  it('in a player battle the command menu ends with a Forfeit row that opens a Yes / Keep fighting confirm with the cursor on Keep fighting; A on it closes the menu and forfeits nothing (a render meanwhile keeps the cursor there), Up then A forfeits THIS battle once and closes, and B at the confirm returns to the root; a wild battle has no Forfeit row [BT15-3]', () => {
+    // WRONG IMPL KILLED: no forfeit row (BT15.3 "a confirm row SHALL precede the forfeit call");
+    // the forfeit sent from the root row with no confirm; a confirm that opens on Yes (a mashed A
+    // forfeits: plan §5 "the confirm opens on NO"); A on No forfeiting, or Yes forfeiting twice or
+    // a hard-coded battle id; the confirm sending a submit or a cancel; B closing the whole menu
+    // instead of stepping back to the root; a render that resets the confirm's cursor to Yes; a
+    // Forfeit row in a wild battle (the reducer refuses a non-PvP battle).
+    const k = make();
+    const vm = tacVm('pvp', { battleId: 7n });
+    k.shell.render(vm);
+    openMenuAt(k, c(1, 1), 'pvp live');
+    expect(rowIds(k.root), 'the live PvP rows, Forfeit last').toEqual([
+      'move',
+      'skills',
+      'item',
+      'end',
+      'forfeit',
+    ]);
+    const forfeit = menuRow(k.root, 'forfeit');
+    expect(rowLabel(forfeit), 'labelled menu.forfeit').toBe(en('tactics.menu.forfeit'));
+    expect(forfeit.getAttribute('aria-disabled') === 'true', 'enabled').toBe(false);
+    expect(rowReason(forfeit), 'no reason').toBeNull();
+    expect(forfeit.getAttribute('data-sub'), 'it opens a confirm').toBe('true');
+
+    menuTo(k, 'forfeit');
+    pressA(k);
+    expect(rowIds(k.root), 'the confirm: Yes, then Keep fighting').toEqual([
+      'forfeitYes',
+      'forfeitNo',
+    ]);
+    expect(rowLabel(menuRow(k.root, 'forfeitYes')), 'menu.forfeitYes').toBe(
+      en('tactics.menu.forfeitYes'),
+    );
+    expect(rowLabel(menuRow(k.root, 'forfeitNo')), 'menu.forfeitNo').toBe(
+      en('tactics.menu.forfeitNo'),
+    );
+    expect(selectedRowId(k.root), 'the cursor opens on Keep fighting').toBe('forfeitNo');
+    expect(
+      menuOf(k.root)?.getAttribute('aria-activedescendant'),
+      'and the listbox names it active',
+    ).toBe(menuRow(k.root, 'forfeitNo').id);
+    expect(k.forfeits, 'nothing forfeited at the confirm').toEqual([]);
+    k.shell.render(vm);
+    expect(selectedRowId(k.root), 'a render while the confirm is open keeps it on No').toBe(
+      'forfeitNo',
+    );
+    pressA(k);
+    expect(menuOf(k.root), 'A on Keep fighting closes the menu').toBeNull();
+    expect(k.forfeits, 'and forfeits nothing').toEqual([]);
+
+    openMenuAt(k, c(1, 1), 'pvp live again');
+    choose(k, 'forfeit');
+    move(k, 'Up');
+    expect(selectedRowId(k.root), 'Up: Yes').toBe('forfeitYes');
+    pressA(k);
+    expect(k.forfeits, 'Yes forfeits battle 7, once').toEqual([7n]);
+    expect(menuOf(k.root), 'and closes the menu').toBeNull();
+    expect([k.sent, k.cancels], 'no submit and no cancel').toEqual([[], []]);
+
+    openMenuAt(k, c(1, 1), 'pvp live, B at the confirm');
+    choose(k, 'forfeit');
+    pressB(k);
+    expect(rowIds(k.root), 'B at the confirm: the root menu again').toContain('forfeit');
+    expect(selectedRowId(k.root), 'at its first row').toBe('move');
+    expect(k.forfeits, 'still one forfeit').toEqual([7n]);
+
+    for (const [label, wildVm] of [
+      ['wild live', tacVm('wild')],
+      ['wild pre-queue', tacVm('wild', { activeUnitId: 3, turnIdx: 1 })],
+    ] as const) {
+      const w = make();
+      w.shell.render(wildVm);
+      openMenuAt(w, c(1, 1), label);
+      expect(rowIds(w.root).includes('forfeit'), `${label}: no Forfeit row`).toBe(false);
+    }
+  });
+
+  it('the Forfeit row is the last root row of a player battle`s pre-queue menu too — after Submit, after Clear plan beside a READY row — and stays enabled once a drafted End Turn closes the plan and greys every action row [BT15-3]', () => {
+    // WRONG IMPL KILLED: the row offered on a live turn only (BT15.3: an own unit's menu opens in
+    // pre-queue mode while the opponent acts: plan REV 3.1 M "forfeit reachability"); the row
+    // inserted before Submit or Clear; the row greyed by the closed plan (the `row()` rule greys
+    // every action row once the plan is closed; Forfeit follows the literal submit / clear rows).
+    const p = make();
+    p.shell.render(tacVm('pvp', { activeUnitId: 3, turnIdx: 1 }));
+    expect(p.shell.selectedUnitId, 'fixture: unit 1 plans a pre-queue').toBe(1);
+    openMenuAt(p, c(1, 1), 'pvp pre-queue');
+    expect(rowIds(p.root), 'Submit, then Forfeit last').toEqual([
+      'move',
+      'skills',
+      'item',
+      'end',
+      'submit',
+      'forfeit',
+    ]);
+    choose(p, 'end');
+    expect(stripActions(p.root), 'fixture: a drafted End Turn closes the plan').toEqual([
+      'EndTurn',
+    ]);
+    openMenuAt(p, c(1, 1), 'pvp pre-queue, plan closed');
+    expect(rowIds(p.root).at(-1), 'Forfeit is still last').toBe('forfeit');
+    expect(
+      [menuRow(p.root, 'move').getAttribute('aria-disabled'), rowReason(menuRow(p.root, 'move'))],
+      'fixture: the action rows are greyed Plan complete',
+    ).toEqual(['true', en('tactics.reason.planComplete')]);
+    const forfeit = menuRow(p.root, 'forfeit');
+    expect(forfeit.getAttribute('aria-disabled') === 'true', 'Forfeit stays enabled').toBe(false);
+    expect([rowReason(forfeit), forfeit.getAttribute('data-sub')], 'no reason, a confirm').toEqual([
+      null,
+      'true',
+    ]);
+
+    const r = make();
+    r.shell.render(
+      tacVm('pvp', { activeUnitId: 3, turnIdx: 1, readyPlans: readyOf([[1, ['EndTurn']]]) }),
+    );
+    openMenuAt(r, c(1, 1), 'pvp pre-queue with a READY row');
+    expect(rowIds(r.root), 'Submit, Clear plan, then Forfeit').toEqual([
+      'move',
+      'skills',
+      'item',
+      'end',
+      'submit',
+      'clear',
+      'forfeit',
+    ]);
+  });
+
+  it('the Forfeit row and both confirm rows are button options of the menu listbox that the D-pad alone reaches: Down from End (live) or Submit (pre-queue) lands on Forfeit, Down again wraps to Move, Up from Move lands on Forfeit, and Up / Down walk the two confirm rows [BT15-5]', () => {
+    // WRONG IMPL KILLED: a Forfeit control outside the listbox (a dock button reachable by pointer
+    // only); the row skipped by the D-pad walk or the wrap; confirm rows painted as divs, with the
+    // `disabled` attribute, without ids, or not reachable by Up / Down.
+    const k = make();
+    k.shell.render(tacVm('pvp'));
+    openMenuAt(k, c(1, 1), 'live');
+    expect(menuOf(k.root)?.getAttribute('role'), 'the menu listbox').toBe('listbox');
+    menuTo(k, 'end');
+    move(k, 'Down');
+    expect(selectedRowId(k.root), 'Down from End: Forfeit').toBe('forfeit');
+    // The dock (and its listbox node) is rebuilt on every paint: re-query after the moves.
+    const listbox = menuOf(k.root) as HTMLElement;
+    expect(listbox.getAttribute('role'), 'still the menu listbox').toBe('listbox');
+    const row = menuRow(k.root, 'forfeit');
+    expect(
+      [row.tagName, row.getAttribute('role'), row.hasAttribute('disabled'), listbox.contains(row)],
+      'a button option inside the listbox, never disabled',
+    ).toEqual(['BUTTON', 'option', false, true]);
+    expect(row.id !== '' && listbox.getAttribute('aria-activedescendant') === row.id).toBe(true);
+    move(k, 'Down');
+    expect(selectedRowId(k.root), 'Down from Forfeit wraps to Move').toBe('move');
+    move(k, 'Up');
+    expect(selectedRowId(k.root), 'Up from Move: Forfeit').toBe('forfeit');
+    pressA(k);
+    const confirm = menuOf(k.root) as HTMLElement;
+    const rows = menuRowEls(k.root);
+    expect(
+      rows.map((r) => [
+        r.tagName,
+        r.getAttribute('role'),
+        r.hasAttribute('disabled'),
+        confirm.contains(r),
+      ]),
+      'both confirm rows are button options of the listbox',
+    ).toEqual([
+      ['BUTTON', 'option', false, true],
+      ['BUTTON', 'option', false, true],
+    ]);
+    expect(new Set(rows.map((r) => r.id)).size, 'two distinct ids').toBe(2);
+    expect(
+      rows.every((r) => r.id !== ''),
+      'no empty id',
+    ).toBe(true);
+    move(k, 'Up');
+    expect(selectedRowId(k.root), 'Up: Yes').toBe('forfeitYes');
+    move(k, 'Down');
+    expect(selectedRowId(k.root), 'Down: Keep fighting').toBe('forfeitNo');
+    expect(k.forfeits, 'walking forfeits nothing').toEqual([]);
+
+    const p = make();
+    p.shell.render(tacVm('pvp', { activeUnitId: 3, turnIdx: 1 }));
+    openMenuAt(p, c(1, 1), 'pre-queue');
+    menuTo(p, 'submit');
+    move(p, 'Down');
+    expect(selectedRowId(p.root), 'Down from Submit: Forfeit').toBe('forfeit');
+  });
+
+  it('the shell wires the turn bar`s Surge badge for a player battle: "Surge in N" from round 7 counted to the VM`s Surge round, "Surge!" from it, nothing before round 7 and nothing for a wild battle at round 7 [BT15-3]', () => {
+    // WRONG IMPL KILLED: the shell passing kind 'wild' (or no kind) to the bar for a PvP battle (no
+    // badge); the Surge round hard-coded to the design's 9 instead of the VM's (11 below); the
+    // badge shown from round 1. (Practice runs the PvP ruleset and reaches the shell as kind 'pvp':
+    // the BOOT case BT12-1-BOOT-ACTIVE-SHELL pins that mapping; this case pins the shell's wiring.)
+    // NOTE: turnBar.ts already ships the rule (BT10-3-BAR-BADGE); this is the BT15.3 shell-level
+    // wiring case, expected to pass on the current tree.
+    const badge = (vm: TacticsBattleVM): string => {
+      const k = make();
+      k.shell.render(vm);
+      return q(k.root, '.tactics-turnbar-badge').textContent ?? '';
+    };
+    expect(badge(tacVm('pvp', { round: 7 })), 'round 7 of 9: Surge in 2').toBe(
+      en('tactics.turnbar.surgeIn', { n: 2 }),
+    );
+    expect(badge(tacVm('pvp', { round: 8 })), 'round 8: Surge in 1').toBe(
+      en('tactics.turnbar.surgeIn', { n: 1 }),
+    );
+    expect(badge(tacVm('pvp', { round: 9 })), 'round 9: Surge!').toBe(
+      en('tactics.turnbar.surgeActive'),
+    );
+    expect(
+      badge(tacVm('pvp', { round: 7, surgeStartRound: 11 })),
+      'the VM`s Surge round 11: Surge in 4',
+    ).toBe(en('tactics.turnbar.surgeIn', { n: 4 }));
+    expect(badge(tacVm('pvp', { round: 6 })), 'round 6: no badge yet').toBe('');
+    expect(badge(tacVm('wild', { round: 7 })), 'a wild battle at round 7: no badge').toBe('');
   });
 });

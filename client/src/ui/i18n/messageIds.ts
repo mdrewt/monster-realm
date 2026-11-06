@@ -570,6 +570,19 @@ export type MessageId =
   | 'tactics.results.monster'
   | 'tactics.results.currency'
   | 'tactics.results.recruited'
+  | 'tactics.players.label'
+  | 'tactics.clock.ring'
+  | 'tactics.clock.strikes'
+  | 'tactics.menu.forfeit'
+  | 'tactics.menu.forfeitYes'
+  | 'tactics.menu.forfeitNo'
+  | 'tactics.results.rating'
+  | 'tactics.results.ratingNew'
+  | 'tactics.results.endHow.adjudicatedHpPercent'
+  | 'tactics.results.endHow.adjudicatedConscious'
+  | 'tactics.results.endHow.adjudicatedDamageDealt'
+  | 'tactics.results.endHow.adjudicatedCoin'
+  | 'tactics.results.endHow.forfeit'
   | 'tactics.badge.onlyHeld'
   | 'tactics.chip.cost'
   | 'tactics.forecast.vs'
@@ -864,6 +877,20 @@ export interface MessageParams {
   };
   readonly 'tactics.results.currency': { readonly amount: bigint };
   readonly 'tactics.results.recruited': { readonly name: string };
+  // bt-15 increment B: the clock ring's seconds, a player's strike pips, and the rating lines (the
+  // delta is pre-formatted SIGNED text: `+16` / `-16` / `+0`).
+  readonly 'tactics.clock.ring': { readonly s: number };
+  readonly 'tactics.clock.strikes': {
+    readonly name: string;
+    readonly n: number;
+    readonly max: number;
+  };
+  readonly 'tactics.results.rating': {
+    readonly before: number;
+    readonly after: number;
+    readonly delta: string;
+  };
+  readonly 'tactics.results.ratingNew': { readonly after: number };
 }
 
 /** Keys resolved by `tf(key, params)`. */

@@ -1152,6 +1152,57 @@
 .tactics-results-continue {
   align-self: flex-start;
 }
+/* bt-15 increment B (BT15.2): the PvP clock ring on the waiting unit's chip (a conic gradient driven
+   by `--clock-fraction`, no animation: the frame pump rewrites the property as the window drains) and
+   the strike-pip strip under the turn bar. The reduced-motion block below must stay last. */
+.tactics-clock-ring {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
+  vertical-align: middle;
+  border-radius: 50%;
+  --clock-color: #3c9;
+  background: conic-gradient(var(--clock-color) calc(var(--clock-fraction, 0) * 360deg), #333 0);
+}
+.tactics-clock-ring[data-band="amber"] {
+  --clock-color: #fc6;
+}
+.tactics-clock-ring[data-band="red"] {
+  --clock-color: #f66;
+}
+.tactics-players {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 16px;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: #15151f;
+}
+.tactics-players[hidden] {
+  display: none;
+}
+.tactics-player {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tactics-player[data-mine="true"] .tactics-player-name {
+  color: #3c9;
+}
+.tactics-strikes {
+  display: inline-flex;
+  gap: 3px;
+}
+.tactics-strike {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: #444;
+}
+.tactics-strike--hit {
+  background: #f66;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .mr-longpress-ring {

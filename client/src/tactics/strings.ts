@@ -11,7 +11,7 @@ import { t, tf } from '../ui/i18n/resolver';
 import type { IntentKind, Stance, StatusTag } from './boardModel';
 import type { MenuRowId, ReasonCode } from './commandModel';
 import type { Badge } from './queueStrip';
-import type { ResultsOutcome } from './results';
+import type { EndHowReason, ResultsOutcome } from './results';
 
 // --- region labels --------------------------------------------------------------------------
 
@@ -180,6 +180,8 @@ export function menuRowLabel(id: MenuRowId, end: 'endTurn' | 'guard'): string {
       return menuSubmit();
     case 'clear':
       return menuClearPlan();
+    case 'forfeit':
+      return menuForfeit();
     default:
       return id satisfies never;
   }
@@ -328,3 +330,46 @@ export const resultsMonster = (name: string, xp: number, essence: number): strin
 export const resultsCurrency = (amount: bigint): string =>
   tf('tactics.results.currency', { amount });
 export const resultsRecruited = (name: string): string => tf('tactics.results.recruited', { name });
+
+// --- the PvP clock ring and strike pips (bt-15 increment B, BT15.2) --------------------------------
+
+export const playersLabel = (): string => t('tactics.players.label');
+/** `s` is the whole seconds left of the waiting unit's window (the ring's accessible name). */
+export const clockRing = (s: number): string => tf('tactics.clock.ring', { s });
+/** `name` is the player's name as the public `player` row spells it; `n` of `max` strikes. */
+export const clockStrikes = (name: string, n: number, max: number): string =>
+  tf('tactics.clock.strikes', { name, n, max });
+
+// --- the forfeit row and its confirm (bt-15 increment B, BT15.3) -----------------------------------
+
+export const menuForfeit = (): string => t('tactics.menu.forfeit');
+export const menuForfeitYes = (): string => t('tactics.menu.forfeitYes');
+export const menuForfeitNo = (): string => t('tactics.menu.forfeitNo');
+
+// --- the results panel's rating and adjudication lines (bt-15 increment B, BT15.3) ----------------
+
+/** The rating change: `delta` is printed SIGNED (`+16` / `-16` / `+0`); the numbers are the server's. */
+export const resultsRating = (before: number, after: number): string => {
+  const delta = after - before;
+  return tf('tactics.results.rating', { before, after, delta: `${delta < 0 ? '' : '+'}${delta}` });
+};
+/** A first rated game: no rating stood before it, so only the new one prints. */
+export const resultsRatingNew = (after: number): string =>
+  tf('tactics.results.ratingNew', { after });
+/** Why the battle ended when a reason applied (the adjudication tuple's step, or a forfeit). */
+export function resultsEndHow(reason: EndHowReason): string {
+  switch (reason) {
+    case 'adjudicatedHpPercent':
+      return t('tactics.results.endHow.adjudicatedHpPercent');
+    case 'adjudicatedConscious':
+      return t('tactics.results.endHow.adjudicatedConscious');
+    case 'adjudicatedDamageDealt':
+      return t('tactics.results.endHow.adjudicatedDamageDealt');
+    case 'adjudicatedCoin':
+      return t('tactics.results.endHow.adjudicatedCoin');
+    case 'forfeit':
+      return t('tactics.results.endHow.forfeit');
+    default:
+      return reason satisfies never;
+  }
+}

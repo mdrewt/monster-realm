@@ -78,6 +78,9 @@ export type Command =
       readonly entries: readonly QueuedAction[];
     }
   | { readonly kind: 'cancelQueue'; readonly battleId: bigint; readonly unitId: number }
+  // bt-15 (BT15.3): the confirmed Forfeit row of a PvP tactical battle (`forfeit`: not a queue
+  // entry, 0 AP; the server maps it to a loss through the settle funnel). Issued by the shell's deps.
+  | { readonly kind: 'forfeit'; readonly battleId: bigint }
   // bt-12 (BT12.2): the confirmed deploy of a Deploying wild battle (`deploy_units`), issued by the
   // deploy panel through its deps. Empty picks are never sent.
   | {

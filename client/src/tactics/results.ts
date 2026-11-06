@@ -1,10 +1,14 @@
 // tactics/results.ts — the Finished-phase results panel (bt-12: BT12.4): the per-monster XP and
 // essence lines, the recruits, the player's gold total and the outcome, folded from the transcript's
 // `Awards` / `RecruitResult` events; skippable (Continue) and auto-advanced by main.ts through
-// `shouldAutoContinue` (ui/battlePolicy.ts) on the frame clock — this panel keeps no clock. A
+// `shouldAutoContinue` (ui/battlePolicy.ts) on the frame clock — this panel keeps no clock. bt-15
+// increment B (BT15.3): the adjudication reason read off the transcript's LAST `BattleEnd` event (`how`)
+// leads the list, and the PvP rating change the shell hands in (`ResultsInput.rating`: the before it
+// snapshotted, the after from the profile) closes it; both lines are absent when none applied. A
 // constructed overlay root on the shared `battleView` overlay id (the ui/battleView.ts header's a11y
 // wiring; main.ts keeps the battle views mutually exclusive). Compute-then-write: an equal VM writes
 // no DOM, so a focused Continue keeps its focus across a batch; the list and the button are built once.
+import type { EndHow } from '../module_bindings/types';
 import type { StoreBattleEvent, StoreBattleUnit } from '../net/store';
 import { structurallyEqual } from '../ui/battlePolicy';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
@@ -12,6 +16,14 @@ import * as s from './strings';
 import type { RuleSide } from './wasm';
 
 export type ResultsOutcome = 'won' | 'lost' | 'fled';
+/** Why the battle ended when a reason worth a line applied: the adjudication tuple's deciding step
+ *  (design §6.4) or a forfeit. `SideEmpty`, the round cap and a flight print nothing — the title says it. */
+export type EndHowReason =
+  | 'adjudicatedHpPercent'
+  | 'adjudicatedConscious'
+  | 'adjudicatedDamageDealt'
+  | 'adjudicatedCoin'
+  | 'forfeit';
 
 export interface ResultsInput {
   readonly battleId: bigint;
@@ -23,6 +35,9 @@ export interface ResultsInput {
   readonly events: readonly StoreBattleEvent[];
   readonly monsterName: (monsterId: bigint) => string;
   readonly speciesName: (speciesId: number) => string;
+  /** bt-15: the PvP rating change (`before` null for a first rated game); null when none applies
+   *  (wild, practice, an unrated end, no baseline seen) — the shell decides (`ratingChange`). */
+  readonly rating: { readonly before: number | null; readonly after: number } | null;
 }
 export interface ResultsVM {
   readonly battleId: bigint;
@@ -38,6 +53,34 @@ export interface ResultsVM {
   readonly recruits: readonly { readonly unitId: number; readonly name: string }[];
   /** The bigint SUM of `currency` over every `Awards` event (never a unit-0 lookup). */
   readonly currency: bigint;
+  /** bt-15: the rating line's numbers, carried from the input unchanged. */
+  readonly rating: { readonly before: number | null; readonly after: number } | null;
+  /** bt-15: the reason line, from the LAST `BattleEnd` event; null when no reason applies. */
+  readonly endHow: EndHowReason | null;
+}
+
+/** The results line a `BattleEnd.how` earns, or null (an exhaustive map: a new variant must decide). */
+function endHowReason(how: EndHow): EndHowReason | null {
+  switch (how.tag) {
+    case 'AdjudicatedHpPercent':
+      return 'adjudicatedHpPercent';
+    case 'AdjudicatedConscious':
+      return 'adjudicatedConscious';
+    case 'AdjudicatedDamageDealt':
+      return 'adjudicatedDamageDealt';
+    case 'AdjudicatedCoin':
+      return 'adjudicatedCoin';
+    case 'Forfeit':
+      return 'forfeit';
+    case 'SideEmpty':
+    case 'FixedOrder':
+    case 'RoundCap':
+    case 'Fled':
+    case 'AutoFlee':
+      return null;
+    default:
+      return how satisfies never;
+  }
 }
 
 function outcomeFor(outcome: string, mySide: RuleSide): ResultsOutcome | null {
@@ -66,6 +109,7 @@ export function resultsVM(input: ResultsInput): ResultsVM | null {
   const monsters: ResultsVM['monsters'][number][] = [];
   const recruits: ResultsVM['recruits'][number][] = [];
   let currency = 0n;
+  let endHow: EndHowReason | null = null;
   for (const ev of input.events) {
     const payload = ev.payload;
     switch (payload.tag) {
@@ -103,7 +147,10 @@ export function resultsVM(input: ResultsInput): ResultsVM | null {
       case 'TurnEnded':
       case 'RoundEnded':
       case 'BattleStarted':
+        break;
       case 'BattleEnd':
+        // The last one wins (a transcript holds one; a re-emitted end supersedes).
+        endHow = endHowReason(payload.value.how);
         break;
       default:
         // An event kind this client does not know is not a results line (never a throw).
@@ -111,7 +158,15 @@ export function resultsVM(input: ResultsInput): ResultsVM | null {
         break;
     }
   }
-  return { battleId: input.battleId, outcome, monsters, recruits, currency };
+  return {
+    battleId: input.battleId,
+    outcome,
+    monsters,
+    recruits,
+    currency,
+    rating: input.rating,
+    endHow,
+  };
 }
 
 export interface ResultsPanelDeps {
@@ -119,7 +174,10 @@ export interface ResultsPanelDeps {
   readonly onContinue: () => void;
 }
 
-function line(kind: 'monster' | 'recruit' | 'currency' | 'none', text: string): HTMLElement {
+function line(
+  kind: 'endHow' | 'monster' | 'recruit' | 'currency' | 'rating' | 'none',
+  text: string,
+): HTMLElement {
   const li = document.createElement('li');
   li.className = 'tactics-results-line';
   li.setAttribute('data-line', kind);
@@ -183,11 +241,21 @@ export class ResultsPanel {
     if (vm === null) return;
     this.#titleEl.textContent = s.resultsTitle(vm.outcome);
     this.#listEl.setAttribute('aria-label', s.resultsLabel());
-    const lines: HTMLElement[] = [
+    const lines: HTMLElement[] = [];
+    if (vm.endHow !== null) lines.push(line('endHow', s.resultsEndHow(vm.endHow)));
+    lines.push(
       ...vm.monsters.map((m) => line('monster', s.resultsMonster(m.name, m.xp, m.essence))),
       ...vm.recruits.map((r) => line('recruit', s.resultsRecruited(r.name))),
-    ];
+    );
     if (vm.currency > 0n) lines.push(line('currency', s.resultsCurrency(vm.currency)));
+    const rating = vm.rating;
+    if (rating !== null) {
+      const text =
+        rating.before === null
+          ? s.resultsRatingNew(rating.after)
+          : s.resultsRating(rating.before, rating.after);
+      lines.push(line('rating', text));
+    }
     if (lines.length === 0) lines.push(line('none', s.resultsNone()));
     this.#listEl.replaceChildren(...lines);
     this.#continueEl.textContent = s.resultsContinue();

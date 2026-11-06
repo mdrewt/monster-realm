@@ -1360,6 +1360,9 @@ describe('the battle frame switch (bt-12, BT12.1)', () => {
       monsters: [],
       recruits: [],
       currency: 0n,
+      // bt-15 increment B (type-only fixture update): the rating and reason lines, absent here.
+      rating: null,
+      endHow: null,
     };
 
     expect(switchTo(deploy), 'to the deploy panel: nothing is visible, nothing hidden').toEqual([]);
