@@ -448,7 +448,10 @@ fn clock_of_row(row: &BattleClock) -> ClockState {
     ClockState {
         window_seq: row.window_seq,
         window_open_ms: row.window_open_ms,
-        deadline_ms: row.deadline_ms,
+        // The engine's clock holds a deadline only while a window is open. A Deploying row carries
+        // the deploy deadline with no open window (bt-12 B, for the client's countdown); nothing
+        // loads a Deploying battle today, but a future reader must never see a half-open window.
+        deadline_ms: row.window_open_ms.and(row.deadline_ms),
         windows_this_unit_turn: row.windows_this_unit_turn,
         idle_ms_total: row.idle_ms_total,
         autopass_count: row.autopass_count,
@@ -1783,11 +1786,15 @@ fn wild_anchor_monster(
     })
 }
 
-/// The Deploying window's deadline (bt-12 B, BT12.2): `now + pve_deploy_ms` — the ONE instant both
-/// the deploy-deadline schedule row and the side-A clock's `deadline_ms` carry, so the client's
-/// "Still there?" countdown reads the same deadline in Deploying as in a turn window.
+/// The Deploying window's deadline (bt-12 B, BT12.2): `now` plus game-core's deploy budget for a
+/// wild battle (`clock::deploy_budget_ms`: the tuning's `pve_deploy_ms`) — the ONE instant both the
+/// deploy-deadline schedule row and the side-A clock's `deadline_ms` carry, so the client's "Still
+/// there?" countdown reads the same deadline in Deploying as in a turn window.
 pub(crate) fn deploy_deadline_ms(now_ms: i64, tuning: &TacticsTuning) -> i64 {
-    now_ms.saturating_add(i64::from(tuning.pve_deploy_ms))
+    now_ms.saturating_add(i64::from(game_core::tactics::clock::deploy_budget_ms(
+        BattleKind::Wild,
+        tuning,
+    )))
 }
 
 // ===========================================================================
