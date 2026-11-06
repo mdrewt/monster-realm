@@ -4220,3 +4220,521 @@ fn submit_queue_refusal_emits_one_structured_reject_log_line_bt8_1() {
         "the refusal is logged exactly once through guards::log_reject"
     );
 }
+
+// ===========================================================================
+// mut-W3 — mutation-gate tests: what `store` persists, the wild turn through `ShellHooks`, the
+// firing-row exception, and the pure helpers/guards a stepped scenario never discriminates
+// ===========================================================================
+
+/// A pack-1 battle on map 1 whose party is species 10 (Toxic Sting Light, skill 11), 1 and 3:
+/// `u1` holds the first window; the wild (species 2, Territorial) stands two tiles south of it.
+fn poison_trio(fx: &Fixture, w: &World<'_>) -> (u64, [u32; 3], u32) {
+    w.join(a(), 1);
+    w.seed_party(a(), &[(11, 10, 0, 200), (12, 1, 1, 190), (13, 3, 2, 180)]);
+    let id = start(fx, a(), seed_for(1, Some(1)), None, T0);
+    let party: Vec<u32> = w
+        .side_units(id, SideRow::A)
+        .iter()
+        .map(|u| u.unit_id)
+        .collect();
+    let party: [u32; 3] = party
+        .try_into()
+        .expect("a pack-1 start fields the whole trio");
+    let wild = w.side_units(id, SideRow::B)[0].unit_id;
+    assert_eq!(w.tactical(id).turn_state, TurnState::Waiting(party[0]));
+    seat_in_light_range(w, party[0], wild);
+    (id, party, wild)
+}
+
+/// `(unit_id, entries, submitted_at_ms)` of every READY row of the battle, by unit.
+fn ready_rows(w: &World<'_>, id: u64) -> Vec<(u32, Vec<QueuedAction>, i64)> {
+    let mut rows: Vec<_> = w
+        .queues_of(id)
+        .into_iter()
+        .map(|q| (q.unit_id, q.entries, q.submitted_at_ms))
+        .collect();
+    rows.sort_by_key(|r| r.0);
+    rows
+}
+
+/// Every column `store` writes back from a stepped battle lands in the rows, with the values the
+/// scenario's own inputs dictate (all expected values are literals): a pre-queue stamps its
+/// time, a changed plan replaces entries AND stamp, an identical resubmit keeps the old stamp;
+/// a live Toxic Sting persists the status; a live Move persists x, y and strides; a committed
+/// End with AP left persists Guard.
+#[test]
+fn store_persists_every_stepped_unit_and_queue_column_with_literal_values_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let (id, [u1, u2, u3], wild) = poison_trio(&fx, &w);
+    let (t1, t2, t3, t4, t5, t6) = (
+        T0 + 1_000,
+        T0 + 2_000,
+        T0 + 3_000,
+        T0 + 4_000,
+        T0 + 5_000,
+        T0 + 6_000,
+    );
+    let end = QueuedAction::EndTurn;
+
+    // Pre-queues: two READY rows (so a wrong-row lookup finds a stranger's plan).
+    submit(&fx, a(), t1, id, u2, vec![step(3, 2)]).expect("pre-queue u2");
+    submit(&fx, a(), t1, id, u3, vec![end]).expect("pre-queue u3");
+    assert_eq!(
+        ready_rows(&w, id),
+        vec![(u2, vec![step(3, 2), end], t1), (u3, vec![end], t1)],
+        "inserted: the plan plus the appended End, stamped with the submit time"
+    );
+    // A changed plan replaces the entries and bumps the stamp ...
+    submit(&fx, a(), t2, id, u2, vec![end]).expect("replace u2's plan");
+    assert_eq!(
+        ready_rows(&w, id),
+        vec![(u2, vec![end], t2), (u3, vec![end], t1)],
+        "changed plan: new entries, new stamp; the other row untouched"
+    );
+    // ... an identical resubmit keeps the old stamp.
+    submit(&fx, a(), t3, id, u2, vec![end]).expect("resubmit u2's plan");
+    assert_eq!(
+        ready_rows(&w, id),
+        vec![(u2, vec![end], t2), (u3, vec![end], t1)],
+        "identical plan: nothing moves, the stamp stays t2"
+    );
+
+    // u1's two live Moves, east then south: position and strides land in the row (AP 2 of 6 left).
+    submit(&fx, a(), t4, id, u1, vec![step(2, 1)]).expect("live Move east");
+    submit(&fx, a(), t5, id, u1, vec![step(2, 2)]).expect("live Move south");
+    let moved = w.unit(u1);
+    assert_eq!(
+        (moved.x, moved.y, moved.strides_used, moved.ap, moved.guard),
+        (2, 2, 2, 2, false),
+        "u1 stands on (2, 2) having spent two strides; no Guard mid-turn"
+    );
+
+    // u1's last 2 AP: a Toxic Sting (the wild is two tiles away). The wild's row carries Poison
+    // and the lost HP (20 - 4 for the sting - 2 for the end-of-round Poison tick). The spent turn ends: u2 and u3 then execute their READY End
+    // with AP to spare (Guard granted), and the wild takes its turn.
+    let light_u1 = light(&w.unit(u1), wild);
+    submit(&fx, a(), t6, id, u1, vec![light_u1]).expect("live Toxic Sting");
+    let hit = w.unit(wild);
+    assert_eq!(
+        (hit.status, hit.cur_hp),
+        (Some(game_core::StatusEffect::Poison), 14),
+        "the status the attack applied is persisted"
+    );
+    assert_eq!(
+        (w.unit(u1).guard, w.unit(u2).guard, w.unit(u3).guard),
+        (false, true, true),
+        "u1 attacked (no Guard); u2 and u3 ended with 6 AP unspent (Guard)"
+    );
+    assert!(w.queues_of(id).is_empty(), "the READY rows were consumed");
+}
+
+/// The wild's turn runs through `ShellHooks::plan_ai`: after the party ends, the wild (a
+/// Territorial species-2 two tiles from `u1`) attacks. Party HP is 300 with 250 defences, so
+/// every landed hit costs exactly the 1-HP floor.
+#[test]
+fn the_wild_attacks_through_shell_hooks_plan_ai_after_the_party_ends_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seat_in_light_range(&w, live.u1, live.wild);
+    let party_hp = |w: &World<'_>| w.unit(live.u1).cur_hp + w.unit(live.u2).cur_hp;
+    assert_eq!(party_hp(&w), 600, "PRECONDITION: the party is unhurt");
+    submit(
+        &fx,
+        a(),
+        T0 + 1_000,
+        live.id,
+        live.u2,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("pre-queue u2's End");
+    submit(
+        &fx,
+        a(),
+        T0 + 2_000,
+        live.id,
+        live.u1,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("u1 ends live");
+
+    let wild_attacks = w
+        .events_of(live.id)
+        .into_iter()
+        .filter(|e| matches!(&e.payload, EventPayload::Executed(x) if x.attacker == live.wild))
+        .count();
+    assert_eq!(wild_attacks, 1, "the wild took its one attack");
+    assert!(
+        party_hp(&w) < 600,
+        "the wild's hit landed on the party: {}",
+        party_hp(&w)
+    );
+}
+
+/// A pre-queued Recruit is admitted only for a unit whose `battle_unit` row names an owner
+/// (`ShellHooks::recruit_headroom` over `owner_of`): the owned `u2` is accepted; `u3`, whose
+/// owner column is cleared (a consistent row edit), is refused `NoHeadroom` and nothing is
+/// written.
+#[test]
+fn a_recruit_needs_a_unit_row_with_an_owner_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let (id, [_, u2, u3], wild) = poison_trio(&fx, &w);
+    w.edit_unit(u3, |u| u.owner = None);
+    let recruit = QueuedAction::Recruit(RecruitAction {
+        target: wild,
+        bait: None,
+    });
+
+    let before = w.snapshot();
+    assert_eq!(
+        submit(&fx, a(), T0 + 1_000, id, u3, vec![recruit]),
+        Err("submit_queue: NoHeadroom".to_string()),
+        "no owner row, no headroom"
+    );
+    assert_eq!(changed(&before, &w.snapshot()), none());
+
+    submit(&fx, a(), T0 + 1_000, id, u2, vec![recruit]).expect("the owned unit has headroom");
+    assert_eq!(
+        ready_rows(&w, id),
+        vec![(u2, vec![recruit, QueuedAction::EndTurn], T0 + 1_000)]
+    );
+}
+
+/// READY rows are keyed by an owner: a plan the engine accepts for a unit whose row names no
+/// owner is not stored, while an owned unit's plan beside it is.
+#[test]
+fn a_plan_for_a_unit_without_an_owner_row_is_not_stored_as_a_ready_row_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let (id, [_, u2, u3], _) = poison_trio(&fx, &w);
+    w.edit_unit(u3, |u| u.owner = None);
+    let end = QueuedAction::EndTurn;
+    submit(&fx, a(), T0 + 1_000, id, u3, vec![end]).expect("the engine accepts the plan");
+    assert_eq!(ready_rows(&w, id), vec![], "no owner, no READY row");
+    submit(&fx, a(), T0 + 2_000, id, u2, vec![end]).expect("pre-queue u2");
+    assert_eq!(ready_rows(&w, id), vec![(u2, vec![end], T0 + 2_000)]);
+}
+
+/// An expired PvP-ruleset window is an auto-pass strike on the side-A clock row, and the
+/// firing deadline row is the one deadline row the module leaves alone (the runtime deletes
+/// it): the stale window row goes, the next unit's window is armed. The firing row carries an
+/// id no other row has.
+#[test]
+fn an_expired_pvp_window_persists_the_strike_and_spares_only_the_firing_deadline_row_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    w.edit_tactical(live.id, |t| t.kind = BattleKind::Practice);
+    let stale = w.only_deadline(live.id);
+    let deadline = w.clock(live.id).deadline_ms.expect("an open window");
+    let firing = TacticalDeadlineSched {
+        scheduled_id: 9_901,
+        ..deadline_args(&stale)
+    };
+    w.deadlines.seed(&firing);
+    assert_eq!(w.clock(live.id).autopass_count, 0, "PRECONDITION");
+
+    assert_eq!(fire_deadline(&fx, deadline, deadline_args(&firing)), Ok(()));
+
+    assert_eq!(
+        w.clock(live.id).autopass_count,
+        1,
+        "the first expiry is strike 1"
+    );
+    assert_eq!(w.tactical(live.id).turn_state, TurnState::Waiting(live.u2));
+    let mut rows: Vec<(u64, u32, u32)> = w
+        .deadlines_of(live.id)
+        .iter()
+        .map(|r| (r.scheduled_id, r.unit_id, r.window_seq))
+        .collect();
+    rows.sort_unstable();
+    assert_eq!(
+        rows.len(),
+        2,
+        "the firing row and u2's fresh window: {rows:?}"
+    );
+    assert!(
+        rows.contains(&(9_901, live.u1, stale.window_seq)),
+        "the firing row survives: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|&(sid, unit, _)| sid != 9_901 && unit == live.u2),
+        "u2's window is armed under a fresh id: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|&(sid, _, _)| sid != stale.scheduled_id),
+        "the stale window row is gone: {rows:?}"
+    );
+}
+
+/// A fired round boundary that finishes the battle leaves exactly the firing ADVANCE row of the
+/// battle standing; every other advance row is swept.
+#[test]
+fn a_finishing_advance_fire_leaves_exactly_its_own_advance_row_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seed_round_two_boundary(&w, live.id);
+    let t1 = T0 + 50_000;
+    submit(&fx, a(), t1, live.id, live.u1, vec![QueuedAction::Flee])
+        .expect("a Flee pre-queued during Advancing");
+    let boundary = TacticalAdvanceSched {
+        scheduled_id: 9_701,
+        scheduled_at: time(t1),
+        battle_id: live.id,
+        round: 2,
+    };
+    w.advances.seed(&advance_args(&boundary));
+    w.advances.seed(&TacticalAdvanceSched {
+        scheduled_id: 9_702,
+        ..advance_args(&boundary)
+    });
+
+    assert_eq!(fire_advance(&fx, t1 + 1_000, boundary), Ok(()));
+
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::Fled,
+        "the fired round executed the READY Flee"
+    );
+    let left: Vec<u64> = w
+        .advances_of(live.id)
+        .iter()
+        .map(|r| r.scheduled_id)
+        .collect();
+    assert_eq!(left, vec![9_701], "only the firing advance row is left");
+}
+
+// --- pure helpers and guards, asserted directly with literal oracles ---------------------------
+
+#[test]
+fn side_index_is_a_zero_and_b_one_mutw3() {
+    assert_eq!(super::side_index(Side::A), 0);
+    assert_eq!(super::side_index(Side::B), 1);
+}
+
+/// Who the sender is on an anchor: the player is A, a real opponent is B, a stranger is nobody,
+/// the wild sentinel is never a sender, and a practice battle naming one identity twice is A.
+#[test]
+fn side_of_sender_resolves_player_opponent_stranger_wild_and_practice_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let wild_anchor = w.anchor(live.id).expect("anchor");
+    assert_eq!(wild_anchor.opponent_identity, crate::WILD_IDENTITY);
+    let c = Identity::from_byte_array([0xC3; 32]);
+
+    assert_eq!(super::side_of_sender(&wild_anchor, a()), Some(Side::A));
+    assert_eq!(super::side_of_sender(&wild_anchor, b()), None, "a stranger");
+    assert_eq!(
+        super::side_of_sender(&wild_anchor, crate::WILD_IDENTITY),
+        None,
+        "the wild sentinel never acts as a sender"
+    );
+
+    let mut pvp = wild_anchor.clone();
+    pvp.opponent_identity = b();
+    assert_eq!(super::side_of_sender(&pvp, a()), Some(Side::A));
+    assert_eq!(super::side_of_sender(&pvp, b()), Some(Side::B));
+    assert_eq!(super::side_of_sender(&pvp, c), None, "a third identity");
+
+    let mut practice = wild_anchor;
+    practice.opponent_identity = a();
+    assert_eq!(super::side_of_sender(&practice, a()), Some(Side::A));
+    assert_eq!(super::side_of_sender(&practice, b()), None);
+}
+
+/// `prev_of` lists exactly the units at full HP (the single-hit KO telemetry's baseline).
+#[test]
+fn prev_of_lists_only_the_units_at_full_hp_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let mut tb = loaded(&fx, live.id, T0);
+    for u in &mut tb.state.units {
+        if u.id == live.u2 {
+            u.cur_hp -= 1;
+        }
+    }
+    let mut full = super::prev_of(&tb).full_hp;
+    full.sort_unstable();
+    assert_eq!(
+        full,
+        vec![live.u1, live.wild],
+        "u2 is hurt, the others are full"
+    );
+}
+
+#[test]
+fn tactics_content_zone_finds_the_zone_with_that_id_mutw3() {
+    let content = super::content().expect("tactics content loads");
+    let zones = load_tactics_zones().expect("tactics zone content loads");
+    assert!(
+        zones.len() >= 2,
+        "PRECONDITION: more than one zone to pick between"
+    );
+    for z in &zones {
+        assert_eq!(
+            content
+                .zone(z.zone_id)
+                .expect("a content zone resolves")
+                .zone_id,
+            z.zone_id
+        );
+    }
+    assert_eq!(
+        content.zone(u32::MAX).err(),
+        Some(format!("no tactics zone for zone {}", u32::MAX))
+    );
+}
+
+/// A stored plan may hold exactly `MAX_STORED_ENTRIES` (3 actions + End): the bound is
+/// inclusive, one more is refused.
+#[test]
+fn submit_queue_accepts_exactly_the_stored_entry_cap_and_refuses_one_more_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    let four = vec![
+        step(3, 2),
+        light(&w.unit(live.u2), live.wild),
+        step(3, 3),
+        QueuedAction::EndTurn,
+    ];
+    submit(&fx, a(), T0 + 1_000, live.id, live.u2, four.clone())
+        .expect("four entries (move, Light, move: 6 AP, plus End) are within the cap");
+    assert_eq!(
+        ready_rows(&w, live.id),
+        vec![(live.u2, four.clone(), T0 + 1_000)]
+    );
+
+    let mut five = four;
+    five.push(QueuedAction::EndTurn);
+    assert_eq!(
+        submit(&fx, a(), T0 + 2_000, live.id, live.u2, five),
+        Err("too many entries".to_string())
+    );
+}
+
+/// The default formation deploys only conscious monsters: a fainted party member is left out.
+#[test]
+fn the_default_formation_leaves_a_fainted_party_member_out_mutw3() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    let mut fainted = party_monster(a(), (11, 1, 0, 200));
+    fainted.current_hp = 0;
+    w.seed_monster(&fainted);
+    w.seed_party(a(), &[(12, 3, 1, 190), (13, 2, 2, 180)]);
+    let id = start(&fx, a(), seed_for(1, Some(1)), None, T0);
+    let deployed: Vec<Option<u64>> = w
+        .side_units(id, SideRow::A)
+        .iter()
+        .map(|u| u.monster_id)
+        .collect();
+    assert_eq!(
+        deployed,
+        vec![Some(12), Some(13)],
+        "the conscious monsters, in party order"
+    );
+}
+
+/// The 24 h sweep keeps a battle while its tactical row is unfinished AND its anchor is
+/// ongoing, and sweeps in every other combination.
+#[test]
+fn battle_gc_sweeps_unless_the_battle_is_both_unfinished_and_ongoing_mutw3() {
+    for (phase, outcome, swept) in [
+        (Phase::Active, BattleOutcome::Ongoing, false),
+        (Phase::Active, BattleOutcome::SideBWins, true),
+        (Phase::Finished, BattleOutcome::Ongoing, true),
+        (Phase::Finished, BattleOutcome::SideBWins, true),
+    ] {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pair(&fx, &w);
+        w.edit_tactical(live.id, |t| t.phase = phase);
+        let mut anchor = w.anchor(live.id).expect("anchor");
+        anchor.state.outcome = outcome;
+        assert_eq!(w.battles.remove(live.id), 1);
+        w.battles.seed(&anchor);
+        let gc = BattleGcSched {
+            scheduled_id: 9_801,
+            scheduled_at: time(T0 + 10_000),
+            battle_id: live.id,
+        };
+        assert_eq!(fire_gc(&fx, T0 + 10_000, gc), Ok(()));
+        assert_eq!(
+            w.units_of(live.id).is_empty(),
+            swept,
+            "phase {phase:?}, outcome {outcome:?}: swept == {swept}"
+        );
+    }
+}
+
+/// The per-wild species/level roll is seeded from the individuality seed mixed with the spawn
+/// salt: pinned for 12 wilds against values derived outside the module (splitmix64 of
+/// `wild_seed ^ 0x5BA70E5EED11C0DE`, high word, rolled through game-core's `resolve_encounter`
+/// on zone 0's always-trigger table at lead level 5).
+#[test]
+fn the_spawn_roll_seed_mix_pins_the_wild_species_and_levels_of_known_encounters_mutw3() {
+    let cases: [(u64, [(u32, u8); 3]); 4] = [
+        (0xDEAD_BEEF, [(2, 3), (3, 4), (3, 7)]),
+        (0x0123_4567_89AB_CDEF, [(1, 4), (2, 3), (1, 6)]),
+        (7777, [(3, 6), (1, 4), (1, 4)]),
+        (0xFEED_FACE_0000_0010, [(2, 3), (2, 7), (1, 7)]),
+    ];
+    for (encounter_seed, want) in cases {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &TRIO);
+        let id = start(&fx, a(), encounter_seed, Some(3), T0);
+        let got: Vec<(u32, u8)> = w
+            .wild_units_of(id)
+            .iter()
+            .map(|x| (x.species_id, x.level))
+            .collect();
+        assert_eq!(got, want, "encounter seed {encounter_seed:#x}");
+    }
+}
+
+/// `dev_start_tactical_wild` (compiled only under `--features dev_reducers`, like the crate's
+/// other dev-reducer test): the player may start their own battle and the module owner may
+/// start anyone's; a stranger is refused `not owner` with the world untouched.
+#[cfg(feature = "dev_reducers")]
+#[test]
+fn dev_start_tactical_wild_admits_only_the_player_and_the_module_owner_mutw3() {
+    let call = |fx: &Fixture, who: Identity| {
+        fx.run_as_at(who, at(T0), |ctx| {
+            super::dev_start_tactical_wild(ctx, a(), Some(1))
+        })
+    };
+
+    // A stranger: refused, nothing written. Then the module owner (the publisher) starts the
+    // player's battle. (One fixture per scope: `fixture()` holds a process-wide lock.)
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &PAIR);
+        let before = w.snapshot();
+        assert_eq!(call(&fx, b()), Err("not owner".to_string()));
+        assert_eq!(changed(&before, &w.snapshot()), none());
+
+        assert_eq!(call(&fx, module()), Ok(()));
+        assert_eq!(w.battles.rows().len(), 1, "the owner started a battle");
+        assert_eq!(w.battles.rows()[0].player_identity, a());
+    }
+    // The player starts their own.
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &PAIR);
+        assert_eq!(call(&fx, a()), Ok(()));
+        assert_eq!(w.battles.rows().len(), 1, "the player started their own");
+    }
+}
