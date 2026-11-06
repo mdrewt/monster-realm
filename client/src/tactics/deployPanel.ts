@@ -13,7 +13,6 @@
 import type { DeployPick } from '../module_bindings/types';
 import { structurallyEqual } from '../ui/battlePolicy';
 import type { HintDeploy } from '../ui/hintBarModel';
-import { LIVE_REGION_ID } from '../ui/liveRegion';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
 import type { BattleOp, BattleOpsView } from '../ui/screens/battleScreen';
 import * as s from './strings';
@@ -140,6 +139,9 @@ export class DeployPanel implements BattleOpsView {
   readonly #deps: DeployPanelDeps;
   readonly #root: HTMLElement;
   readonly #titleEl: HTMLElement;
+  /** Every repaint rewrites THIS container's children, never the root's: the root also holds what
+   *  the overlay a11y open adopts into it (ui/liveRegion.ts), which a root rebuild would detach. */
+  readonly #bodyEl: HTMLElement;
 
   #visible = false;
   #vm: DeployVM | null = null;
@@ -165,7 +167,8 @@ export class DeployPanel implements BattleOpsView {
     this.#titleEl = el('h2', 'tactics-title');
     this.#titleEl.setAttribute('data-testid', 'battle-title');
     this.#titleEl.setAttribute('tabindex', '-1');
-    this.#root.appendChild(this.#titleEl);
+    this.#bodyEl = el('div', 'tactics-deploy-body');
+    this.#root.append(this.#titleEl, this.#bodyEl);
     parent.appendChild(this.#root);
   }
 
@@ -220,18 +223,11 @@ export class DeployPanel implements BattleOpsView {
     this.#cursor = 'deploy';
     this.#candidate = null;
     this.#assignment = [];
+    this.#countdownEl?.remove();
     this.#countdownEl = null;
     this.#countdownValue = null;
-    this.#root.replaceChildren(this.#titleEl, ...this.#adoptedLiveRegion());
+    this.#bodyEl.replaceChildren();
     closeOverlayA11y('battleView', null);
-  }
-
-  /** The live region `openOverlayA11y` adopted into this root, if it is here: every rebuild of the
-   *  root's children keeps it (a detached region would silence every announcement — the "Still
-   *  there?" one included — until the panel hides). */
-  #adoptedLiveRegion(): HTMLElement[] {
-    const live = document.getElementById(LIVE_REGION_ID);
-    return live !== null && live.parentElement === this.#root ? [live] : [];
   }
 
   /** Which screen the hint bar describes (bt-12 B): the confirm screen or the editor. */
@@ -508,9 +504,9 @@ export class DeployPanel implements BattleOpsView {
     // a button the pointer pressed) or stranded on <body>. The rebuild destroyed any focused row.
     const active = document.activeElement;
     const focusWasOurs = active === null || active === document.body || this.#root.contains(active);
-    // The countdown line stays the root's LAST child across every repaint (the pump owns its text).
-    if (this.#countdownEl !== null) parts.push(this.#countdownEl);
-    this.#root.replaceChildren(this.#titleEl, ...this.#adoptedLiveRegion(), ...parts);
+    // Only the body is rebuilt: the title, the countdown line (the root's LAST child, the pump owns
+    // its text) and whatever the a11y open adopted into the root stay where they are.
+    this.#bodyEl.replaceChildren(...parts);
     // The cursor must be heard and a click must not strand focus (the tacticsBattle.ts rule): while
     // shown, focus the listbox so its aria-activedescendant announces the cursor row.
     if (this.#visible && focusWasOurs) menu.focus({ preventScroll: true });
