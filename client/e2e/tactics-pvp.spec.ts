@@ -47,6 +47,12 @@ import {
 //
 // TIMING: the PvP turn window is read off the LIVE clock rows (owner SQL over `battle_clock`:
 // `deadline_ms - window_open_ms`), never a copied constant; the bounds below are slack on top of it.
+// Who moves first is NOT fixed: each join rolls its starter's IVs + nature, and initiative orders by
+// effective speed, base speed, then a per-round priority side (game-core `initiative.rs`). Three
+// regimes: B strictly faster (B first every round); a tie (round 1 by a coin flip on the battle seed,
+// alternating each round); A strictly faster (A first every round). T2 therefore ends A's live turn
+// when A opens round 1, pre-queues in round 1's first B window in every regime, and checks the
+// lock chip in whichever state A's chip is then in (pending -> one lock, acted -> none).
 //
 // HOOKS READ (DEV, API freeze): `__mrPvp.challengeFormats()`, `__mrPvp.battleById(id)`,
 // `__mrPvp.declineChallenge(id)` (B declines T1's challenge: the decline UI is not under test here),
@@ -453,7 +459,11 @@ test.describe
       // countdown on a PvP deploy panel); a deploy completed by the 45 s auto-fill instead of the
       // buttons (Active later than 5 s before the deadline); an AFK rule that strikes the ACTIVE
       // player (strikes.A > 0) or forfeits after a number of strikes other than four, or on the
-      // wrong unit; a forfeit that awards the AFK side.
+      // wrong unit; a forfeit that awards the AFK side. The pre-queue oracle is order-independent
+      // (the header's TIMING regimes): a pre-queue the server never acknowledges (A's own
+      // `my_battle_queue` row is not exactly [A, A's unit]); a lock chip painted on an acted own chip
+      // or missing on a pending one (exact count: B-first -> pending -> 1, A-first -> acted -> 0,
+      // BT10-3-BAR-LOCK); a strike on A or a missing strike climb on any polled Active snapshot.
       test.setTimeout(600_000);
       const starterA = (await snap(pageA)).ownMonsters[0];
       const starterB = (await snap(pageB)).ownMonsters[0];
@@ -578,31 +588,99 @@ test.describe
       if (unitA === undefined || unitB === undefined) throw new Error('one unit per side expected');
       const windowMs = await liveWindowMs(battleId, 'T2 window');
 
-      // When B's unit is active, A pre-queues a non-empty [EndTurn] draft and submits it.
-      let t = await readTactics(pageA);
-      if (t !== null && activeUnit(t)?.unitId === unitA.unitId && t.turnState === 'Waiting') {
-        await settle(pageA);
-        await pressButton(pageA, 'Start'); // A's live turn: End Turn
+      // Round 1 opens. When A's unit moves first (regimes: A faster, or a tie won by A), A ends its
+      // live turn (Start = End Turn) so the pre-queue lands in round 1's first B window. A press
+      // the shell swallowed is pressed again (at most 3 presses): a repeat under the same turn key
+      // is ignored by the client's send guard, so it can never become a second End Turn.
+      let liveEndTurns = 0;
+      const opener = await waitTactics(
+        pageA,
+        (x) => x.phase === 'Active' && x.turnState === 'Waiting',
+        PHASE_MS,
+        'round 1 opens with a unit waiting',
+      );
+      if (activeUnit(opener)?.unitId === unitA.unitId) {
+        const openerKey = turnKey(opener);
+        for (;;) {
+          if (liveEndTurns === 3) {
+            throw new Error(
+              `A's round-1 Start (End Turn) was swallowed: ${liveEndTurns} presses never moved the turn off A's unit (${openerKey})`,
+            );
+          }
+          await settle(pageA);
+          await pressButton(pageA, 'Start'); // A's live turn: End Turn
+          liveEndTurns += 1;
+          const moved = await expect
+            .poll(
+              async () => {
+                const x = await readTactics(pageA);
+                return x !== null && (turnKey(x) !== openerKey || x.activeUnitId !== unitA.unitId);
+              },
+              { message: 'A`s End Turn moves the turn on', timeout: 5_000 },
+            )
+            .toBe(true)
+            .then(
+              () => true,
+              () => false,
+            );
+          if (moved) break;
+        }
       }
-      t = await waitTactics(
+      // When B's unit is active, A pre-queues a non-empty [EndTurn] draft and submits it.
+      const t = await waitTactics(
         pageA,
         (x) => x.phase === 'Active' && x.turnState === 'Waiting' && x.activeUnitId === unitB.unitId,
         windowMs + TURN_SLACK_MS,
         'B`s unit becomes the active one',
       );
+      // A's chip is pending only when B moved first this round; after A's End Turn it is acted.
+      const aPending = t.initiative.indexOf(unitA.unitId) > t.turnIdx;
       const turnbarB = pageB.locator('.tactics-turnbar');
       await expect(turnbarB, 'B paints a turn bar').toHaveCount(1);
+      await expect(
+        pageB.locator(`${TACTICS.shell}.tactics-battle--playing`),
+        'B`s playback drained before the turn bar is captured',
+      ).toHaveCount(0, { timeout: 10_000 });
       const turnbarBefore = await turnbarB.innerHTML();
       await armRowProbe(pageB);
       const me = t.units.find((u) => u.unitId === unitA.unitId) as Tile;
       await openMenu(pageA, me);
       await menuCursorTo(pageA, 'end');
       await pressButton(pageA, 'A'); // appends the EndTurn chip
+      const beforeSubmit = await readTactics(pageA);
+      expect(
+        beforeSubmit === null
+          ? 'no battle'
+          : `unit ${beforeSubmit.activeUnitId} at ${turnKey(beforeSubmit)}`,
+        'B`s window expired during A`s menu presses — the Start would have been a LIVE End Turn, not a pre-queue',
+      ).toBe(`unit ${unitB.unitId} at ${turnKey(t)}`);
       await pressButton(pageA, 'Start'); // Submit the pre-queue
+      // The server acknowledges the pre-queue with A's OWN READY row (the mirror of B's negative
+      // `queues` oracle below), whatever the initiative order.
+      await expect
+        .poll(
+          async () => {
+            const s = await readSecrecy(pageA);
+            return s.queues.map((q) => [normId(q.owner) === normId(s.me), q.unitId]);
+          },
+          {
+            message: 'the server acknowledges A`s pre-queue with A`s own READY queue row',
+            timeout: LOCK_ACK_MS,
+          },
+        )
+        .toEqual([[true, unitA.unitId]]);
       await expect(
         pageA.locator('.tactics-chip-lock'),
-        'A shows its committed pre-queue',
-      ).not.toHaveCount(0, { timeout: LOCK_ACK_MS });
+        'A`s lock chip follows its own chip state: pending -> exactly one lock, acted -> none (a lock paints only on a mine + READY + non-acted chip, BT10-3-BAR-LOCK)',
+      ).toHaveCount(aPending ? 1 : 0);
+      const firstMover = activeA.initiative[0] === unitA.unitId ? 'A' : 'B';
+      console.log(
+        `[BT15-4-ORDER] round-1 first mover: ${firstMover}; live End Turns before the pre-queue: ${liveEndTurns}; A\`s chip at the pre-queue: ${aPending ? 'pending' : 'acted'}`,
+      );
+      expect(
+        firstMover === 'A',
+        'the first mover letter attests the path taken (A first ⇔ a live End Turn was pressed)',
+      ).toBe(liveEndTurns > 0);
       await pageB.waitForTimeout(SECRECY_SETTLE_MS);
       expect((await readSecrecy(pageB)).queues, 'B holds no queue row').toEqual([]);
       expect((await readRowProbe(pageB)).queue, 'B received no queue row callback').toBe(0);
@@ -623,23 +701,33 @@ test.describe
       const afkBound = AFK_STRIKES * (windowMs + TURN_SLACK_MS) + windowMs + 60_000;
       const afkStart = Date.now();
       let last: string | null = null;
+      // The strike maxima fold over EVERY polled Active snapshot (never the Finished one, which
+      // would satisfy the climb trivially): in some initiative orders A has no own turn while B
+      // stands on three strikes, but the poll sees it during B's last window.
       let maxStrikesB = 0;
+      let maxStrikesA = 0;
       for (;;) {
         expect(Date.now() - afkStart, 'the AFK forfeit within its bound').toBeLessThan(afkBound);
         const snapA = await waitTactics(
           pageA,
-          (x) =>
-            x.phase === 'Finished' ||
-            (x.phase === 'Active' &&
-              x.turnState === 'Waiting' &&
-              x.activeUnitId === unitA.unitId &&
-              turnKey(x) !== last),
-          2 * windowMs + TURN_SLACK_MS,
+          (x) => {
+            if (x.phase === 'Active') {
+              maxStrikesA = Math.max(maxStrikesA, x.strikes.A);
+              maxStrikesB = Math.max(maxStrikesB, x.strikes.B);
+            }
+            return (
+              x.phase === 'Finished' ||
+              (x.phase === 'Active' &&
+                x.turnState === 'Waiting' &&
+                x.activeUnitId === unitA.unitId &&
+                turnKey(x) !== last)
+            );
+          },
+          2 * (windowMs + TURN_SLACK_MS),
           'A`s next own turn or the finish',
         );
         if (snapA.phase === 'Finished') break;
         expect(snapA.strikes.A, 'A acts every turn: never struck').toBe(0);
-        maxStrikesB = Math.max(maxStrikesB, snapA.strikes.B);
         last = turnKey(snapA);
         await settle(pageA);
         await pressButton(pageA, 'Start'); // End Turn (or a no-op when the READY plan ran)
@@ -657,6 +745,7 @@ test.describe
       expect(maxStrikesB, 'B`s strikes climbed on the clock rows').toBeGreaterThanOrEqual(
         AFK_STRIKES - 1,
       );
+      expect(maxStrikesA, 'A was never struck on any polled snapshot').toBe(0);
       expect(elapsed, 'at least three full windows passed').toBeGreaterThanOrEqual(
         (AFK_STRIKES - 1) * windowMs,
       );
