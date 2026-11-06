@@ -669,11 +669,12 @@ test.describe
         ),
         'the AFK side B forfeits: side A wins',
       ).toBe('SideAWins');
-      await throughResults(pageA, 'T2 A');
-      await throughResults(pageB, 'T2 B');
+      // Both panels auto-advance after the results cap: walk the two pages through CONCURRENTLY, so
+      // neither page's panel closes while the other is being watched.
+      await Promise.all([throughResults(pageA, 'T2 A'), throughResults(pageB, 'T2 B')]);
     });
 
-    test('BT15-4-PRIVATE-TABLES: from a fresh page of B`s browser (same identity, a new connection) the server refuses ad-hoc subscriptions to battle_deploy, battle_queue and battle_secret, while my_battle_deploy is applied [BT15-4]', async () => {
+    test('BT15-4-PRIVATE-TABLES: from a fresh page of B`s browser (a new connection and a new anonymous identity) the server refuses ad-hoc subscriptions to battle_deploy, battle_queue and battle_secret, while my_battle_deploy is applied [BT15-4]', async () => {
       // WRONG IMPL KILLED: a private table made public (a client could read the opponent's deploy,
       // queue or secret by subscribing to it directly — the exact leak the views exist to close);
       // a probe that reports 'error' for everything (the positive control my_battle_deploy must be
@@ -683,15 +684,20 @@ test.describe
       try {
         await probe.goto('/');
         await ready(probe);
-        expect(normId((await snap(probe)).identity), 'the same identity as B').toBe(normId(idB));
+        // A fresh page joins as a NEW anonymous identity (the client stores no token); the
+        // private-table refusal holds for every client, so the oracle needs no particular identity.
+        const who = normId((await snap(probe)).identity);
         const sub = (sql: string): Promise<'applied' | 'error'> =>
           probe.evaluate((q) => (window as unknown as Win).__mrTactics.probeSubscribe(q), sql);
         for (const table of ['battle_deploy', 'battle_queue', 'battle_secret']) {
-          expect(await sub(`SELECT * FROM ${table}`), `${table} is refused`).toBe('error');
+          expect(await sub(`SELECT * FROM ${table}`), `${table} is refused (client ${who})`).toBe(
+            'error',
+          );
         }
-        expect(await sub('SELECT * FROM my_battle_deploy'), 'positive control: the view').toBe(
-          'applied',
-        );
+        expect(
+          await sub('SELECT * FROM my_battle_deploy'),
+          `positive control: the view (client ${who})`,
+        ).toBe('applied');
       } finally {
         await probe.close();
       }
