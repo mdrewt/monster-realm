@@ -43,7 +43,16 @@ import {
 // real oracle (two Flamelings would share a species name) with a positive control on A's page.
 //
 // ORDER: T1 (the pick), T2 (secrecy + AFK forfeit), T4 (the server refuses private tables to B —
-// needs B's browser alive), T3 (disconnect: closes browser B). `test.describe.serial`.
+// needs B's browser alive), T5 (bt-15 B: the Forfeit confirm), T3 (disconnect: closes browser B).
+// `test.describe.serial`.
+//
+// bt-15 INCREMENT B (BT15.2, BT15.3; plan REV 3.1 §8 "the e2e ring oracle"): T2 additionally pins,
+// while B's unit waits, exactly one `.tactics-clock-ring` on BOTH pages, on the chip whose
+// `data-unit-id` is `readTactics().activeUnitId`, and the two-player `.tactics-players` strip; during
+// the AFK run A's page shows at least one hit strike pip by B's name. NAMED INTENTIONAL CHANGE: T2's
+// byte-identity samples of B's turn bar are normalised on the page (a clone with every
+// `.tactics-clock-ring` removed: the ring repaints per frame) — the compare stays exact. T5 forfeits
+// through the confirm. RED REASON: no ring, no strip, no Forfeit row on the tree before increment B.
 //
 // TIMING: the PvP turn window is read off the LIVE clock rows (owner SQL over `battle_clock`:
 // `deadline_ms - window_open_ms`), never a copied constant; the bounds below are slack on top of it.
@@ -83,6 +92,19 @@ const DISCONNECT_FINISH_MS = 20_000;
 /** Active must arrive at least this long before the deploy deadline: the 45 s auto-fill must never
  *  be what completes the deploy. */
 const DEADLINE_MARGIN_MS = 5_000;
+/** bt-15 B: how long the clock ring / the players strip may take to paint after the turn reaches a
+ *  page (one rAF pump frame plus a batch). */
+const CLOCK_PAINT_MS = 5_000;
+/** bt-15 B (T5): the whole forfeit test's budget. */
+const FORFEIT_TEST_MS = 150_000;
+/** bt-15 B (T5): how long the battle is watched after Keep fighting to prove it stays Active. */
+const FORFEIT_HOLD_MS = 2_000;
+/** bt-15 B (T5): how long Yes may take to finish the battle on both pages. */
+const FORFEIT_FINISH_MS = 10_000;
+/** bt-15 B (T5): how long a confirm row's cursor may take to paint after a press. */
+const MENU_ACK_MS = 5_000;
+/** U+2192 RIGHTWARDS ARROW (the results rating line), by code point. */
+const ARROW = String.fromCharCode(0x2192);
 
 interface GameSnap {
   identity: string;
@@ -375,6 +397,32 @@ async function startPvp(
   return { battleId: ta.battleId, deployDeadline };
 }
 
+/** bt-15 B: the turn bar's innerHTML with every `.tactics-clock-ring` removed, read in ONE page-side
+ *  evaluate on a clone (the ring repaints on the frame clock; everything else must be byte-identical).
+ *  Fails when the page paints no single turn bar. */
+const ringlessTurnbar = (p: Page): Promise<string> =>
+  p.evaluate(() => {
+    const bars = document.querySelectorAll('.tactics-turnbar');
+    if (bars.length !== 1) throw new Error(`ringlessTurnbar: ${bars.length} turn bars`);
+    const clone = (bars[0] as Element).cloneNode(true) as Element;
+    for (const ring of clone.querySelectorAll('.tactics-clock-ring')) ring.remove();
+    return clone.innerHTML;
+  });
+
+/** bt-15 B: where the page's clock ring sits — the `data-unit-id` of the (non-ghost) turn-bar chip
+ *  holding the ONE ring in the document, else a description of what is wrong. */
+const ringChip = (p: Page): Promise<string> =>
+  p.evaluate(() => {
+    const rings = [...document.querySelectorAll('.tactics-clock-ring')];
+    if (rings.length !== 1) return `${rings.length} rings`;
+    const chip = rings[0]?.closest('.tactics-chip');
+    if (chip === null || chip === undefined || chip.closest('.tactics-turnbar') === null) {
+      return 'not on a turn-bar chip';
+    }
+    if (chip.classList.contains('tactics-chip--ghost')) return 'on a ghost chip';
+    return chip.getAttribute('data-unit-id') ?? 'a chip without an id';
+  });
+
 /** A random letters-only nickname (a distinct marker per run). */
 const nick = (prefix: string): string =>
   `${prefix}${Array.from({ length: 8 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join('')}`;
@@ -662,7 +710,26 @@ test.describe
         pageB.locator(`${TACTICS.shell}.tactics-battle--playing`),
         'B`s playback drained before the turn bar is captured',
       ).toHaveCount(0, { timeout: 10_000 });
-      const turnbarBefore = await turnbarB.innerHTML();
+      // bt-15 B (BT15.2): while B's unit waits, BOTH pages show exactly one clock ring, on the
+      // waiting unit's own chip, and the two-player strip.
+      for (const [who, p] of [
+        ['A', pageA],
+        ['B', pageB],
+      ] as const) {
+        await expect
+          .poll(() => ringChip(p), {
+            message: `${who}: the one clock ring sits on the waiting unit ${t.activeUnitId}'s chip`,
+            timeout: CLOCK_PAINT_MS,
+          })
+          .toBe(String(t.activeUnitId));
+        await expect(
+          p.locator('.tactics-players .tactics-player'),
+          `${who}: the strip names both players`,
+        ).toHaveCount(2, { timeout: CLOCK_PAINT_MS });
+      }
+      // bt-15 B (named intentional change): the byte-identity samples are the bar WITHOUT its clock
+      // ring (per-frame state), normalised on the page in one evaluate.
+      const turnbarBefore = await ringlessTurnbar(pageB);
       await armRowProbe(pageB);
       const me = t.units.find((u) => u.unitId === unitA.unitId) as Tile;
       await openMenu(pageA, me);
@@ -715,8 +782,8 @@ test.describe
         'B shows no pre-commit indicator',
       ).toHaveCount(0);
       expect(
-        await turnbarB.innerHTML(),
-        'B`s turn bar is byte-identical across A`s pre-queue',
+        await ringlessTurnbar(pageB),
+        'B`s turn bar (its clock ring removed) is byte-identical across A`s pre-queue',
       ).toBe(turnbarBefore);
       expect(
         (await pageB.evaluate(() => document.documentElement.outerHTML)).includes(nickA),
@@ -732,6 +799,11 @@ test.describe
       // stands on three strikes, but the poll sees it during B's last window.
       let maxStrikesB = 0;
       let maxStrikesA = 0;
+      // bt-15 B (BT15.2): the most hit strike pips A's page showed by B's name on any poll.
+      const maxHitPipsB = 0;
+      const hitPipsB = pageA.locator(
+        `.tactics-players .tactics-player[data-side="${unitB.side}"] .tactics-strike--hit`,
+      );
       for (;;) {
         expect(Date.now() - afkStart, 'the AFK forfeit within its bound').toBeLessThan(afkBound);
         const snapA = await waitTactics(
@@ -754,6 +826,7 @@ test.describe
         );
         if (snapA.phase === 'Finished') break;
         expect(snapA.strikes.A, 'A acts every turn: never struck').toBe(0);
+        maxHitPipsB = Math.max(maxHitPipsB, await hitPipsB.count());
         last = turnKey(snapA);
         await endTurnLive(pageA, turnKey(snapA), unitA.unitId, 'AFK loop');
       }
@@ -771,6 +844,10 @@ test.describe
         AFK_STRIKES - 1,
       );
       expect(maxStrikesA, 'A was never struck on any polled snapshot').toBe(0);
+      expect(
+        maxHitPipsB,
+        'A`s page showed at least one hit strike pip by B`s name during the AFK run (BT15.2)',
+      ).toBeGreaterThanOrEqual(1);
       expect(elapsed, 'at least three full windows passed').toBeGreaterThanOrEqual(
         (AFK_STRIKES - 1) * windowMs,
       );
@@ -815,6 +892,107 @@ test.describe
       } finally {
         await probe.close();
       }
+    });
+
+    test('BT15-3-E2E-FORFEIT: A opens Forfeit on its own unit, the confirm opens on Keep fighting, Keep fighting keeps the battle Active, then Yes finishes it on both pages within 10 s — A`s results name the forfeit and show a rating line, B`s title is the victory [BT15-3]', async () => {
+      // WRONG IMPL KILLED: no Forfeit row in the live / pre-queue menu; a forfeit sent with no
+      // confirm, or by Keep fighting (the battle Finishes inside the hold); a confirm that opens on
+      // Yes; a Yes that never reaches the server (no Finished within 10 s) or forfeits the WRONG
+      // side (B's title would be the defeat); a results panel without the reason or the rating line.
+      test.setTimeout(FORFEIT_TEST_MS);
+      const { battleId } = await startPvp(pageA, pageB, 'T5');
+      await deployByButtons(pageA, 'T5 A deploys');
+      await deployByButtons(pageB, 'T5 B deploys');
+      const activeA = await waitTactics(
+        pageA,
+        (t) => t.phase === 'Active' && t.battleId === battleId,
+        PHASE_MS,
+        'T5: A reaches Active',
+      );
+      await waitTactics(pageB, (t) => t.phase === 'Active', PHASE_MS, 'T5: B reaches Active');
+      const unitA = activeA.units.find((u) => u.mine);
+      if (unitA === undefined) throw new Error('T5: A has no unit');
+      // Who moves first is not fixed (the header's TIMING regimes): A's menu opens in live or in
+      // pre-queue mode alike, and both offer Forfeit. Printed so every run records its path.
+      const opener = await waitTactics(
+        pageA,
+        (x) => x.phase === 'Active' && x.turnState === 'Waiting',
+        PHASE_MS,
+        'T5: a unit waits',
+      );
+      console.log(
+        `[BT15-3-ORDER] first mover: ${opener.activeUnitId === unitA.unitId ? 'A (live menu)' : 'B (pre-queue menu)'}; initiative ${opener.initiative.join(',')}`,
+      );
+      const me = opener.units.find((u) => u.unitId === unitA.unitId) as Tile;
+      const noSelected = pageA.locator(`${TACTICS.menuRow('forfeitNo')}[aria-selected="true"]`);
+      const yesSelected = pageA.locator(`${TACTICS.menuRow('forfeitYes')}[aria-selected="true"]`);
+
+      await openMenu(pageA, me);
+      await menuCursorTo(pageA, 'forfeit');
+      await pressButton(pageA, 'A');
+      await expect(noSelected, 'the confirm opens on Keep fighting').toHaveCount(1, {
+        timeout: MENU_ACK_MS,
+      });
+      await expect(pageA.locator(TACTICS.menuRow('forfeitYes')), 'and offers Yes').toHaveCount(1);
+      await pressButton(pageA, 'A');
+      await expect(pageA.locator('.tactics-menu'), 'Keep fighting closes the menu').toHaveCount(0, {
+        timeout: MENU_ACK_MS,
+      });
+      await pageA.waitForTimeout(FORFEIT_HOLD_MS);
+      expect(
+        (await readTactics(pageA))?.phase,
+        'Keep fighting forfeits nothing: still Active after the hold',
+      ).toBe('Active');
+
+      await openMenu(pageA, me);
+      await menuCursorTo(pageA, 'forfeit');
+      await pressButton(pageA, 'A');
+      await expect(noSelected, 'the reopened confirm is on Keep fighting again').toHaveCount(1, {
+        timeout: MENU_ACK_MS,
+      });
+      await pressButton(pageA, 'Up');
+      await expect(yesSelected, 'Up: Yes').toHaveCount(1, { timeout: MENU_ACK_MS });
+      await pressButton(pageA, 'A');
+      await waitTactics(
+        pageA,
+        (t) => t.battleId === battleId && t.phase === 'Finished' && t.owner === 'results',
+        FORFEIT_FINISH_MS,
+        'T5: A sees the battle Finished, its results panel shown',
+      );
+      await waitTactics(
+        pageB,
+        (t) => t.battleId === battleId && t.phase === 'Finished',
+        FORFEIT_FINISH_MS,
+        'T5: B sees the battle Finished',
+      );
+      expect(
+        await pageA.evaluate(
+          (id) => (window as unknown as Win).__mrPvp.battleById(id)?.outcome,
+          battleId,
+        ),
+        'A forfeited: side B wins',
+      ).toBe('SideBWins');
+      await expect(
+        pageA.locator(`${TACTICS.results} .tactics-results-list li[data-line="endHow"]`),
+        'A`s results name the forfeit',
+      ).toHaveText('Ended by forfeit');
+      // The rating line: "Rating N" on a first rated game, "Rating B → N (±d)" once rated before
+      // (T2's AFK forfeit may already have rated both accounts) — either form, on both pages.
+      const ratingLine = new RegExp(`^Rating \\d+( ${ARROW} \\d+ \\([+-]\\d+\\))?$`);
+      for (const [who, p] of [
+        ['A', pageA],
+        ['B', pageB],
+      ] as const) {
+        await expect(
+          p.locator(`${TACTICS.results} .tactics-results-list li[data-line="rating"]`),
+          `${who}: a rating line`,
+        ).toHaveText(ratingLine);
+      }
+      await expect(
+        pageB.locator(`${TACTICS.results} h2.tactics-title`),
+        'B`s title is the victory',
+      ).toHaveText('Victory!');
+      await Promise.all([throughResults(pageA, 'T5 A'), throughResults(pageB, 'T5 B')]);
     });
 
     test('BT15-4-DISCONNECT: closing B`s only connection mid-battle finishes it for A within 20 s with side A winning and no AutoPass strike [BT15-4]', async () => {

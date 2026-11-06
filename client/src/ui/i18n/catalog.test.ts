@@ -546,6 +546,22 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // key — a party-size row of the Challenge pick ("3 vs 3"); `n` is a whole number 1..3 and differs
   // between the two sets.
   'interact.challenge.size': [{ n: 3 }, { n: 1 }],
+  // bt-15 increment B (named intentional change, BT15.2/BT15.3/BT15.5; 525 keys after it): +4
+  // parameterised `tactics.*` keys — the clock ring's seconds, a player's strikes line, the rating
+  // change and the first-game rating. Every field differs between the two sets: `s` / `n` / `max` /
+  // `before` / `after` are bare numbers (n 0 in set B, so a falsy fallback shows; max 5 in set B, so
+  // a literal 4 shows), `name` is a player name and `delta` the caller's SIGNED string, carried
+  // verbatim.
+  'tactics.clock.ring': [{ s: 29 }, { s: 4 }],
+  'tactics.clock.strikes': [
+    { name: 'Marrow', n: 3, max: 4 },
+    { name: 'Quill', n: 0, max: 5 },
+  ],
+  'tactics.results.rating': [
+    { before: 1000, after: 984, delta: '-16' },
+    { before: 1493, after: 1509, delta: '+16' },
+  ],
+  'tactics.results.ratingNew': [{ after: 1016 }, { after: 987 }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -1156,6 +1172,19 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.chip.assign': 'Assign',
   'chrome.chip.prevMonster': 'Prev monster',
   'chrome.chip.nextMonster': 'Next monster',
+  // bt-15 increment B (named intentional change, BT15.2/BT15.3/BT15.5, plan REV 3.1; 525 keys after
+  // it): +9 plain `tactics.*` keys — the players strip's label, the Forfeit row and its two confirm
+  // rows, and the five results reasons (tactics/strings.ts is their only requester); the 4
+  // parameterised ones are in SAMPLE_PARAMS / EXPECTED_PARAM_OUTPUTS. Text from the API freeze.
+  'tactics.players.label': 'Players',
+  'tactics.menu.forfeit': 'Forfeit',
+  'tactics.menu.forfeitYes': 'Yes, forfeit the match',
+  'tactics.menu.forfeitNo': 'Keep fighting',
+  'tactics.results.endHow.adjudicatedHpPercent': 'Decided on remaining HP',
+  'tactics.results.endHow.adjudicatedConscious': 'Decided on conscious monsters',
+  'tactics.results.endHow.adjudicatedDamageDealt': 'Decided on damage dealt',
+  'tactics.results.endHow.adjudicatedCoin': 'Decided by the coin',
+  'tactics.results.endHow.forfeit': 'Ended by forfeit',
 };
 
 interface ParamOutputSpec {
@@ -1174,6 +1203,8 @@ const TIMES_SIGN = String.fromCharCode(0x00d7);
 const MIDDLE_DOT = String.fromCharCode(0x00b7);
 /** bt-11 increment C's damage range dash: U+2013 EN DASH, by code point (never the ASCII hyphen). */
 const EN_DASH = String.fromCharCode(0x2013);
+/** bt-15 increment B's rating arrow: U+2192 RIGHTWARDS ARROW, by code point. */
+const BT15_ARROW = String.fromCharCode(0x2192);
 
 /** Every parameterised MessageId's expected output for BOTH `SAMPLE_PARAMS` sets
  *  — pins the EXACT output string (plan R6), which as a consequence also pins
@@ -2012,6 +2043,32 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { n: 1 },
     outputB: '1 vs 1',
   },
+  // bt-15 increment B (BT15.2/BT15.3, API freeze): "{s} s left"; "{name}: {n} of {max} strikes";
+  // "Rating {before} → {after} ({delta})" with the caller's signed delta; "Rating {after}".
+  'tactics.clock.ring': {
+    inputA: { s: 29 },
+    outputA: '29 s left',
+    inputB: { s: 4 },
+    outputB: '4 s left',
+  },
+  'tactics.clock.strikes': {
+    inputA: { name: 'Marrow', n: 3, max: 4 },
+    outputA: 'Marrow: 3 of 4 strikes',
+    inputB: { name: 'Quill', n: 0, max: 5 },
+    outputB: 'Quill: 0 of 5 strikes',
+  },
+  'tactics.results.rating': {
+    inputA: { before: 1000, after: 984, delta: '-16' },
+    outputA: `Rating 1000 ${BT15_ARROW} 984 (-16)`,
+    inputB: { before: 1493, after: 1509, delta: '+16' },
+    outputB: `Rating 1493 ${BT15_ARROW} 1509 (+16)`,
+  },
+  'tactics.results.ratingNew': {
+    inputA: { after: 1016 },
+    outputA: 'Rating 1016',
+    inputB: { after: 987 },
+    outputB: 'Rating 987',
+  },
 };
 
 /** The full 511-key roster (bt-12 increment B: +2 `tactics.*` keys — `tactics.deploy.wilds` plain,
@@ -2239,7 +2296,10 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // 5 `chrome.chip.*`) in EXPECTED_PLAIN and +1 parameterised `tactics.clock.stillThere` = 511.
     // bt-15 increment A (named intentional change, BT15.1/BT15.5): +1 parameterised
     // `interact.challenge.size` (the Challenge pick's size rows) = 512.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-15 roster is 512 keys').toHaveLength(512);
+    // bt-15 increment B (named intentional change, BT15.2/BT15.3/BT15.5): +9 plain and +4
+    // parameterised `tactics.*` keys (the players label, the forfeit rows, the results reasons; the
+    // clock ring, the strikes line, the rating lines) = 525.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-15 roster is 525 keys').toHaveLength(525);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -3301,8 +3361,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // assign, prevMonster, nextMonster) = 511.
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 512 keys').toBe(512);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(512);
+    // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 525 keys').toBe(525);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(525);
   });
 });
 
@@ -3411,8 +3472,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // assign, prevMonster, nextMonster) = 511.
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 512 keys').toBe(512);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(512);
+    // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 525 keys').toBe(525);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(525);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3717,9 +3779,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // assign, prevMonster, nextMonster) = 511.
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 512 keys').toBe(512);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(512);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(512);
+    // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 525 keys').toBe(525);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(525);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(525);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4018,6 +4081,78 @@ describe('bt-15: the Challenge pick`s size row in both catalogs', () => {
       );
     } finally {
       setLocale('en');
+    }
+  });
+});
+
+// =============================================================================
+// bt-15 increment B (BT15.2, BT15.3, BT15.5): the 13 clock / forfeit / results keys in BOTH catalogs.
+// The English text is pinned above (EXPECTED_PLAIN / EXPECTED_PARAM_OUTPUTS); here every French byte
+// is typed from the API freeze (accents and the U+00A0 before the strikes colon by code point), each
+// closure fed the English sample sets. None is read off the catalog under test.
+// RED REASON: the 13 keys exist in neither catalog.
+// =============================================================================
+
+describe('bt-15 B: the clock, forfeit and results keys in both catalogs', () => {
+  it('the 9 plain keys and the 4 closures carry their exact French text, each a translation of its English, the strikes colon set off by a U+00A0, the rating keeping the arrow and the signed delta [BT15-5]', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() / tf() throws in a French boot: the confirm
+    // row, the strip or the results line goes blank); a French entry left as the English copy or
+    // swapped with a sibling (Oui / Continuer, two reasons); a decomposed or missing accent; a
+    // breaking space (or none) before the French strikes colon; a closure that drops, repeats or
+    // re-signs a param (the delta is the caller's string); the English closures not pinned (CAT-01
+    // above pins them; this case re-reads two of them so a mis-keyed sample shows here too).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const FR_PLAIN: Record<string, string> = {
+      'tactics.players.label': 'Joueurs',
+      'tactics.menu.forfeit': 'Abandonner',
+      'tactics.menu.forfeitYes': 'Oui, abandonner le match',
+      'tactics.menu.forfeitNo': 'Continuer le combat',
+      'tactics.results.endHow.adjudicatedHpPercent': `D${E_ACUTE}cid${E_ACUTE} aux PV restants`,
+      'tactics.results.endHow.adjudicatedConscious': `D${E_ACUTE}cid${E_ACUTE} aux monstres conscients`,
+      'tactics.results.endHow.adjudicatedDamageDealt': `D${E_ACUTE}cid${E_ACUTE} aux d${E_ACUTE}g${A_CIRCUMFLEX}ts inflig${E_ACUTE}s`,
+      'tactics.results.endHow.adjudicatedCoin': `D${E_ACUTE}cid${E_ACUTE} ${A_GRAVE} pile ou face`,
+      'tactics.results.endHow.forfeit': `Termin${E_ACUTE} par abandon`,
+    };
+    const FR_PARAMS: Record<string, readonly [string, string]> = {
+      'tactics.clock.ring': ['29 s restantes', '4 s restantes'],
+      'tactics.clock.strikes': [
+        `Marrow${NO_BREAK_SPACE}: 3 prises sur 4`,
+        `Quill${NO_BREAK_SPACE}: 0 prises sur 5`,
+      ],
+      'tactics.results.rating': [
+        `Classement 1000 ${BT15_ARROW} 984 (-16)`,
+        `Classement 1493 ${BT15_ARROW} 1509 (+16)`,
+      ],
+      'tactics.results.ratingNew': ['Classement 1016', 'Classement 987'],
+    };
+    for (const [key, expected] of Object.entries(FR_PLAIN)) {
+      expect(typeof EXPECTED_PLAIN[key], `fixture: ${key} has an English pin`).toBe('string');
+      expect(en[key], `en ${key}: its exact text`).toBe(EXPECTED_PLAIN[key]);
+      expect(typeof fr[key], `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr[key], `fr ${key}: the exact French text`).toBe(expected);
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+    }
+    for (const [key, [frA, frB]] of Object.entries(FR_PARAMS)) {
+      const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
+      expect(typeof en[key], `en ${key} must be a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} must be a closure`).toBe('function');
+      const enFn = en[key] as (p: Record<string, unknown>) => string;
+      const frFn = fr[key] as (p: Record<string, unknown>) => string;
+      expect(enFn(spec.inputA), `en ${key}(sample A)`).toBe(spec.outputA);
+      expect(enFn(spec.inputB), `en ${key}(sample B)`).toBe(spec.outputB);
+      expect(frFn(spec.inputA), `fr ${key}(sample A)`).toBe(frA);
+      expect(frFn(spec.inputB), `fr ${key}(sample B)`).toBe(frB);
+      expect(frA, `${key}: a translation, not the English line`).not.toBe(spec.outputA);
+      expect(frA, `${key}: the two sample sets differ`).not.toBe(frB);
+    }
+    expect(
+      Object.keys(FR_PLAIN).length + Object.keys(FR_PARAMS).length,
+      'ANTI-VACUITY: all 13 bt-15 B keys are pinned in both catalogs',
+    ).toBe(13);
+    for (const key of [...Object.keys(FR_PLAIN), ...Object.keys(FR_PARAMS)]) {
+      expect(EXPECTED_KEYS.includes(key), `the pinned roster lists ${key}`).toBe(true);
     }
   });
 });

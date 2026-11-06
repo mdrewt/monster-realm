@@ -19,6 +19,12 @@
 //
 // RED REASON: every export of commandModel.ts throws `bt-11: not implemented`.
 //
+// bt-15 INCREMENT B (spec §bt-15 BT15.3; plan memory/projects/monster-realm-bt-15-plan.md REV 3 §1
+// BT15.3a; the tester brief's API freeze): `MenuRowId` gains `'forfeit'`; for `ctx.kind === 'pvp'`
+// the LAST root row is `{ id: 'forfeit', enabled: true, reason: null, sub: true }` in live and
+// pre-queue, even when the plan is closed; never for 'wild'. NAMED INTENTIONAL CHANGE: BT11-1-MENU-
+// PVP's two pvp rosters end with `forfeit`. RED REASON: `menuRows` offers no forfeit row.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { describe, expect, it } from 'vitest';
@@ -614,11 +620,15 @@ describe('commandModel: a player battle (BT11.1)', () => {
     const pvpAim: RulesBoard = { ...AIM_BOARD, kind: 'Pvp' };
     const { rules, calls } = fakeRules();
     const live = menuRows(ctxOf({ kind: 'pvp', rules, costBoard: pvpCost, aimBoard: pvpAim }));
+    // bt-15 increment B (named intentional change, BT15.3): a player battle's root menu now ends
+    // with the always-enabled Forfeit row (the [BT15-3] case below pins it); every other row and
+    // the order are unchanged.
     expect(triples(live), 'live PvP').toEqual([
       ['move', true, null],
       ['skills', true, null],
       ['item', false, 'notAvailable'],
       ['end', true, null],
+      ['forfeit', true, null],
     ]);
     const ready = menuRows(
       ctxOf({
@@ -632,8 +642,8 @@ describe('commandModel: a player battle (BT11.1)', () => {
     );
     expect(
       ready.map((r) => r.id),
-      'pre-queue PvP with a READY row',
-    ).toEqual(['move', 'skills', 'item', 'end', 'submit', 'clear']);
+      'pre-queue PvP with a READY row (bt-15 B, named intentional change: Forfeit last)',
+    ).toEqual(['move', 'skills', 'item', 'end', 'submit', 'clear', 'forfeit']);
     expect(callsOf(calls, 'recruitTargets'), 'no recruit targets asked in PvP').toEqual([]);
     const asked = callsOf(calls, 'plan').map((p) => canon(p.args[1]));
     expect(asked.includes(K_RECRUIT), 'no Recruit plan asked in PvP').toBe(false);
@@ -643,6 +653,75 @@ describe('commandModel: a player battle (BT11.1)', () => {
       wild.map((r) => r.id),
       'control: the same ctx in a wild battle keeps both',
     ).toEqual(['move', 'skills', 'item', 'recruit', 'flee', 'end']);
+  });
+
+  it('in a player battle the LAST root row is Forfeit — enabled, with no reason, opening a confirm — live and pre-queue, with or without a READY row, and still enabled after a terminal action closes the plan; a wild battle never offers it [BT15-3]', () => {
+    // WRONG IMPL KILLED (bt-15 B, BT15.3; plan REV 3 §1 BT15.3a): no Forfeit row; the row offered
+    // in a wild battle (the forfeit reducer refuses a non-PvP battle); the row put anywhere but last
+    // (before Submit or Clear); the row run through `row()` (the closed plan greys it: Plan complete,
+    // so a player who drafted End Turn could no longer forfeit); a row that acts at once (`sub`
+    // false: no confirm level would be entered); a reason on an enabled row.
+    const pvpCost: RulesBoard = { ...COST_BOARD, kind: 'Pvp' };
+    const pvpAim: RulesBoard = { ...AIM_BOARD, kind: 'Pvp' };
+    const FORFEIT: MenuRow = { id: 'forfeit', enabled: true, reason: null, sub: true };
+    const cases: ReadonlyArray<readonly [string, Partial<MenuContext>, readonly string[]]> = [
+      ['live', {}, ['move', 'skills', 'item', 'end', 'forfeit']],
+      [
+        'live, a terminal End Turn drafted',
+        { actions: ['EndTurn'], budget: REMAINING },
+        ['move', 'skills', 'item', 'end', 'forfeit'],
+      ],
+      [
+        'pre-queue, no READY row',
+        { mode: 'prequeue', budget: FRESH },
+        ['move', 'skills', 'item', 'end', 'submit', 'forfeit'],
+      ],
+      [
+        'pre-queue, a READY row and no draft',
+        { mode: 'prequeue', budget: FRESH, hasReady: true },
+        ['move', 'skills', 'item', 'end', 'submit', 'clear', 'forfeit'],
+      ],
+      [
+        'pre-queue, the plan closed by a drafted End Turn',
+        {
+          mode: 'prequeue',
+          budget: REMAINING,
+          hasReady: true,
+          actions: [MOVE_ACTION, 'EndTurn'],
+        },
+        ['move', 'skills', 'item', 'end', 'submit', 'forfeit'],
+      ],
+    ];
+    for (const [label, o, ids] of cases) {
+      const rows = menuRows(ctxOf({ kind: 'pvp', costBoard: pvpCost, aimBoard: pvpAim, ...o }));
+      expect(
+        rows.map((r) => r.id),
+        `${label}: the rows, Forfeit last`,
+      ).toEqual(ids);
+      expect(rows.at(-1), `${label}: Forfeit is enabled, reasonless and opens a confirm`).toEqual(
+        FORFEIT,
+      );
+      const wild = menuRows(ctxOf(o));
+      expect(
+        wild.some((r) => r.id === 'forfeit'),
+        `${label}: the same ctx in a wild battle offers no Forfeit`,
+      ).toBe(false);
+    }
+    const closed = menuRows(
+      ctxOf({
+        kind: 'pvp',
+        costBoard: pvpCost,
+        aimBoard: pvpAim,
+        mode: 'prequeue',
+        budget: REMAINING,
+        hasReady: true,
+        actions: [MOVE_ACTION, 'EndTurn'],
+      }),
+    );
+    expect(
+      [rowOf(closed, 'move').enabled, rowOf(closed, 'move').reason],
+      'fixture: the closed plan greys the action rows',
+    ).toEqual([false, 'planComplete']);
   });
 });
 

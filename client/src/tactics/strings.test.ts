@@ -37,6 +37,15 @@
 // 18 new strings.ts functions (plus `resultsTitle`) under English and French. RED REASON (bt-12): the
 // 18 keys are absent from both catalogs, messageIds.ts and strings.ts.
 //
+// bt-15 increment B (spec §bt-15 BT15.2 / BT15.3 / BT15.5; plan REV 3.1; the tester brief's API
+// freeze): the roster grows 134 → 147 (+9 plain: the players label, the Forfeit row and its confirm
+// rows, the five results reasons; +4 parameterised: the ring's seconds, a player's strikes, the
+// rating change with a SIGNED delta string, the first-game rating). NAMED INTENTIONAL CHANGE:
+// BT11-1-STRINGS-ROSTER pins the exact 147 (plain 84 → 93, parameterised 50 → 54) and the FR and
+// RESOLVER tests follow the grown roster. BT15-5 below CALLS the new strings.ts functions under
+// English and French (no file text read). RED REASON: the 13 keys are absent from both catalogs and
+// the functions from strings.ts.
+//
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -238,15 +247,42 @@ const BT12B_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   'tactics.clock.stillThere': ['s'],
 };
 
-/** Every `tactics.*` key after bt-12 increment B: 84 plain, 50 parameterised = 134 (NAMED
- *  INTENTIONAL CHANGE, plan §2.9: increment A's 83 + 49 = 132, +`tactics.deploy.wilds` and
- *  +`tactics.clock.stillThere`; bt-11 increment C's 69 + 45 = 114 before that). */
+/** bt-15 increment B (BT15.2 / BT15.3, plan REV 3.1): the players strip's label, the Forfeit row and
+ *  its two confirm rows, and the five adjudication / forfeit reasons of the results panel — 9 plain
+ *  keys. */
+const BT15B_PLAIN_KEYS: readonly string[] = [
+  'tactics.players.label',
+  'tactics.menu.forfeit',
+  'tactics.menu.forfeitYes',
+  'tactics.menu.forfeitNo',
+  'tactics.results.endHow.adjudicatedHpPercent',
+  'tactics.results.endHow.adjudicatedConscious',
+  'tactics.results.endHow.adjudicatedDamageDealt',
+  'tactics.results.endHow.adjudicatedCoin',
+  'tactics.results.endHow.forfeit',
+];
+
+/** bt-15 increment B: the ring's seconds, a player's strikes line, the rating change (a SIGNED
+ *  `delta` string) and the first-game rating — 4 parameterised keys. */
+const BT15B_PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'tactics.clock.ring': ['s'],
+  'tactics.clock.strikes': ['name', 'n', 'max'],
+  'tactics.results.rating': ['before', 'after', 'delta'],
+  'tactics.results.ratingNew': ['after'],
+};
+
+/** Every `tactics.*` key after bt-15 increment B: 93 plain, 54 parameterised = 147 (NAMED
+ *  INTENTIONAL CHANGE, bt-15 increment B, BT15.2/BT15.3/BT15.5: 84 + 50 = 134, +9 plain, +4
+ *  parameterised; bt-12 increment B's 84 + 50 = 134 before that: increment A's 83 + 49 = 132,
+ *  +`tactics.deploy.wilds` and +`tactics.clock.stillThere`; bt-11 increment C's 69 + 45 = 114 before
+ *  that). */
 const PLAIN_KEYS: readonly string[] = [
   ...BT10_PLAIN_KEYS,
   ...BT11_PLAIN_KEYS,
   ...BT11C_PLAIN_KEYS,
   ...BT12_PLAIN_KEYS,
   ...BT12B_PLAIN_KEYS,
+  ...BT15B_PLAIN_KEYS,
 ];
 const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT10_PARAM_FIELDS,
@@ -254,6 +290,7 @@ const PARAM_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...BT11C_PARAM_FIELDS,
   ...BT12_PARAM_FIELDS,
   ...BT12B_PARAM_FIELDS,
+  ...BT15B_PARAM_FIELDS,
 };
 
 const PARAM_KEYS = Object.keys(PARAM_FIELDS);
@@ -373,7 +410,7 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     ).toEqual([]);
   });
 
-  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 134 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, and (bt-12 increment B) the wild-pack label and the Still-there countdown — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
+  it('BT11-1-STRINGS-ROSTER: both catalogs hold exactly the 147 tactics.* keys — bt-10`s 60, the command menu`s 26 plain and 2 parameterised keys, the strip / forecast / Projected 12 plain and 14 parameterised keys, (bt-12) the deploy / results panels` 14 plain and 4 parameterised keys, (bt-12 increment B) the wild-pack label and the Still-there countdown, and (bt-15 increment B, named intentional change: 134 → 147) the clock / forfeit / results 9 plain and 4 parameterised keys — each bt-11 one the right shape, declared in messageIds.ts and carrying an adjacent @desc, and the two full-budget reasons print their {ap}', () => {
     // WRONG IMPL KILLED (plan REV 5 A39 / A23 seam; round 4: REV 6 R6.7): a menu label, reason,
     // dock or queue key missing from one locale (a French boot throws on opening the command menu);
     // a badge word, a forecast line or a Projected line missing from one locale (a French boot
@@ -390,9 +427,16 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
     // bt-12 (named intentional change): 69 → 83 plain, 45 → 49 parameterised, 114 → 132.
     // bt-12 increment B (named intentional change, plan §2.9): 83 → 84 plain (+tactics.deploy.wilds),
     // 49 → 50 parameterised (+tactics.clock.stillThere), 132 → 134.
-    expect(PLAIN_KEYS, 'fixture: 84 plain keys in all').toHaveLength(84);
-    expect(PARAM_KEYS, 'fixture: 50 parameterised keys in all').toHaveLength(50);
-    expect(new Set(ROSTER).size, 'fixture: 134 keys, none listed twice').toBe(134);
+    // bt-15 increment B (named intentional change, BT15.2/BT15.3/BT15.5): 84 → 93 plain (+players
+    // label, +3 forfeit rows, +5 results reasons), 50 → 54 parameterised (+clock.ring,
+    // +clock.strikes, +results.rating, +results.ratingNew), 134 → 147.
+    expect(BT15B_PLAIN_KEYS, 'fixture: 9 bt-15 B plain keys').toHaveLength(9);
+    expect(Object.keys(BT15B_PARAM_FIELDS), 'fixture: 4 bt-15 B parameterised keys').toHaveLength(
+      4,
+    );
+    expect(PLAIN_KEYS, 'fixture: 93 plain keys in all').toHaveLength(93);
+    expect(PARAM_KEYS, 'fixture: 54 parameterised keys in all').toHaveLength(54);
+    expect(new Set(ROSTER).size, 'fixture: 147 keys, none listed twice').toBe(147);
     expect(
       BT11_ROSTER.filter((k) => BT10_ROSTER.includes(k)),
       'fixture: the increment-B keys are new',
@@ -406,8 +450,8 @@ describe('tactics strings: the catalog (BT10.6, A4, A8)', () => {
       expect(Object.hasOwn(FR, dropped), `fr ${dropped} was dropped by A27`).toBe(false);
     }
 
-    expect(tacticsKeys(EN), 'the English catalog holds exactly the 134-key roster').toEqual(ROSTER);
-    expect(tacticsKeys(FR), 'the French catalog holds exactly the 134-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(EN), 'the English catalog holds exactly the 147-key roster').toEqual(ROSTER);
+    expect(tacticsKeys(FR), 'the French catalog holds exactly the 147-key roster').toEqual(ROSTER);
 
     for (const key of BT11C_PLAIN_KEYS) {
       expect(typeof EN[key], `en ${key} is a plain string`).toBe('string');
@@ -778,7 +822,7 @@ describe('tactics strings: the source scans (A6)', () => {
 });
 
 describe('tactics strings: strings.ts (BT10.6, A6)', () => {
-  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 134 tactics.* keys (bt-12 increment B: 60 + 28 + 26 + 18 + 2) are requested', () => {
+  it('BT10-6-STRINGS-RESOLVER: strings.ts imports t/tf from the resolver unaliased, every t()/tf() first argument is a string literal, plain keys go through t and parameterised keys through tf, and all 147 tactics.* keys (bt-15 increment B, named intentional change: 60 + 28 + 26 + 18 + 2 + 13) are requested', () => {
     // WRONG IMPL KILLED: a dynamic key (`t(\`tactics.stance.${s}\`)` — PARITY-02's dynamic-key scan
     // refuses it, and a typo would only fail at runtime); an aliased import the scan cannot follow;
     // t() on a closure key or tf() on a plain key (the resolver throws); a catalog key nothing
@@ -1049,5 +1093,111 @@ describe('tactics strings: the wild-pack label and the Still-there countdown (bt
 
     setLocale('en');
     expect(call('deployWilds'), 'back to English at the next call').toBe('Wild pack');
+  });
+});
+
+/** U+2192 RIGHTWARDS ARROW (the rating line), U+00E9 e acute and U+00E2 a circumflex, by code point
+ *  (A_GRAVE and NBSP are declared above). */
+const ARROW = String.fromCharCode(0x2192);
+const E_ACUTE = String.fromCharCode(0x00e9);
+const A_CIRCUMFLEX = String.fromCharCode(0x00e2);
+
+describe('tactics strings: the clock, the forfeit confirm and the results rating (bt-15 B, BT15.5)', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('the bt-15 B strings.ts functions resolve their exact English and a differing French — the players label, the ring`s seconds, a player`s strikes, the Forfeit row (also through menuRowLabel) and its confirm rows, the rating change with a signed delta, the first-game rating and the five reasons — printing every parameter they take [BT15-5]', () => {
+    // WRONG IMPL KILLED: a function missing from strings.ts (a tactics module would write its own
+    // literal: SCAN-LIVE); a function resolving a sibling's key (Yes for No, Keep fighting for
+    // Forfeit, the conscious reason for the HP one); `menuRowLabel('forfeit', …)` falling through
+    // the exhaustive switch; the delta unsigned ("16"), sign-doubled ("+-16"), or computed after
+    // instead of after minus before ("+984"); a zero delta printed "0" or "-0" (it is "+0"); a
+    // strikes line that drops the name, n or max (n 0 and max 5 below catch a falsy fallback and a
+    // literal 4); seconds padded; the English copied into the French catalog; a French colon off its
+    // U+00A0; a function resolved once at import (the locale switch would not show).
+    const fns = s as unknown as Record<string, unknown>;
+    const call = (name: string, ...args: unknown[]): string => {
+      const fn = fns[name];
+      expect(typeof fn, `strings.ts exports ${name}()`).toBe('function');
+      const out = (fn as (...a: unknown[]) => unknown)(...args);
+      expect(typeof out, `${name}() returns a string`).toBe('string');
+      return out as string;
+    };
+    /** [function, args, English, French]: every line the bt-15 B functions print. */
+    const LINES: ReadonlyArray<readonly [string, readonly unknown[], string, string]> = [
+      ['playersLabel', [], 'Players', 'Joueurs'],
+      ['clockRing', [29], '29 s left', '29 s restantes'],
+      ['clockRing', [4], '4 s left', '4 s restantes'],
+      ['clockStrikes', ['Marrow', 3, 4], 'Marrow: 3 of 4 strikes', `Marrow${NBSP}: 3 prises sur 4`],
+      ['clockStrikes', ['Quill', 0, 5], 'Quill: 0 of 5 strikes', `Quill${NBSP}: 0 prises sur 5`],
+      ['menuForfeit', [], 'Forfeit', 'Abandonner'],
+      ['menuForfeitYes', [], 'Yes, forfeit the match', 'Oui, abandonner le match'],
+      ['menuForfeitNo', [], 'Keep fighting', 'Continuer le combat'],
+      ['menuRowLabel', ['forfeit', 'endTurn'], 'Forfeit', 'Abandonner'],
+      ['menuRowLabel', ['forfeit', 'guard'], 'Forfeit', 'Abandonner'],
+      [
+        'resultsRating',
+        [1000, 984],
+        `Rating 1000 ${ARROW} 984 (-16)`,
+        `Classement 1000 ${ARROW} 984 (-16)`,
+      ],
+      [
+        'resultsRating',
+        [1000, 1016],
+        `Rating 1000 ${ARROW} 1016 (+16)`,
+        `Classement 1000 ${ARROW} 1016 (+16)`,
+      ],
+      [
+        'resultsRating',
+        [1000, 1000],
+        `Rating 1000 ${ARROW} 1000 (+0)`,
+        `Classement 1000 ${ARROW} 1000 (+0)`,
+      ],
+      [
+        'resultsRating',
+        [1523, 1500],
+        `Rating 1523 ${ARROW} 1500 (-23)`,
+        `Classement 1523 ${ARROW} 1500 (-23)`,
+      ],
+      ['resultsRatingNew', [1016], 'Rating 1016', 'Classement 1016'],
+      [
+        'resultsEndHow',
+        ['adjudicatedHpPercent'],
+        'Decided on remaining HP',
+        `D${E_ACUTE}cid${E_ACUTE} aux PV restants`,
+      ],
+      [
+        'resultsEndHow',
+        ['adjudicatedConscious'],
+        'Decided on conscious monsters',
+        `D${E_ACUTE}cid${E_ACUTE} aux monstres conscients`,
+      ],
+      [
+        'resultsEndHow',
+        ['adjudicatedDamageDealt'],
+        'Decided on damage dealt',
+        `D${E_ACUTE}cid${E_ACUTE} aux d${E_ACUTE}g${A_CIRCUMFLEX}ts inflig${E_ACUTE}s`,
+      ],
+      [
+        'resultsEndHow',
+        ['adjudicatedCoin'],
+        'Decided by the coin',
+        `D${E_ACUTE}cid${E_ACUTE} ${A_GRAVE} pile ou face`,
+      ],
+      ['resultsEndHow', ['forfeit'], 'Ended by forfeit', `Termin${E_ACUTE} par abandon`],
+    ];
+    setLocale('en');
+    for (const [name, args, enText] of LINES) {
+      expect(call(name, ...args), `en ${name}(${args.join(', ')})`).toBe(enText);
+    }
+    setLocale('fr');
+    for (const [name, args, enText, frText] of LINES) {
+      const out = call(name, ...args);
+      expect(out, `fr ${name}(${args.join(', ')})`).toBe(frText);
+      expect(out, `fr ${name}(${args.join(', ')}) is a translation`).not.toBe(enText);
+    }
+    setLocale('en');
+    expect(call('clockRing', 4), 'back to English at the next call').toBe('4 s left');
   });
 });

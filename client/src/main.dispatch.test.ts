@@ -1611,14 +1611,20 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       deployUnits:
         'no view constructor callback: DeployPanel`s onDeploy dep dispatches it ' +
         '(BT12-2-BOOT-DEPLOY in this file proves it)',
+      // bt-15 increment B (named intentional change, BT15.3): the tactical shell's confirmed
+      // Forfeit. A battle-safe action (the player forfeits FROM the battle base).
+      forfeit:
+        'no view constructor callback: TacticsBattle`s onForfeit dep dispatches it (the bt-15 B ' +
+        'BOOT forfeit case in this file drives the shell to Yes and reads the reducer call)',
     };
     const stackMoves = ['pop', 'popToBase', 'openMenu', 'toggleHelp', 'dismissDialogue'];
     expect(COMMAND_BATTLE_POLICY.submitQueue, 'submitQueue is battle-safe').toBe('safe');
     expect(COMMAND_BATTLE_POLICY.cancelQueue, 'cancelQueue is battle-safe').toBe('safe');
+    expect(COMMAND_BATTLE_POLICY.forfeit, 'forfeit is battle-safe (bt-15 B)').toBe('safe');
     const driven = rows.filter((r) => r.atBattle === 'safe').map((r) => r.kind);
     expect(
       [...driven, ...Object.keys(safeNoViewCallback)],
-      'the battle-safe actions: the seven view-driven ones, then the three tactical ones',
+      'the battle-safe actions: the seven view-driven ones, then the four tactical ones',
     ).toEqual([
       'attack',
       'flee',
@@ -1630,6 +1636,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       'submitQueue',
       'cancelQueue',
       'deployUnits',
+      'forfeit',
     ]);
     const policySafe = Object.entries(COMMAND_BATTLE_POLICY)
       .filter(([, verdict]) => verdict === 'safe')
@@ -6692,5 +6699,436 @@ describe('bt-15: the sized challenge and the PvP deploy panel (BT15.1)', {
         ?.getAttribute('data-row'),
       'the cursor still moves (D-pad reachable)',
     ).toBe('edit');
+  });
+});
+
+// --- bt-15 increment B (BT15.2, BT15.3): the clock pump, the forfeit and the rating line, booted ---
+//
+// SOURCE OF TRUTH: spec §bt-15 BT15.2 (the ring on the waiting unit's portrait, visible to both
+// players, refilling on every accepted submit, amber at 10 s, red at 5 s; strike pips by each
+// player's name) and BT15.3 (a confirm row precedes the forfeit call; the Finished phase shows the
+// rating change and the adjudication reason); plan memory/projects/monster-realm-bt-15-plan.md REV 3
+// §1 + §8 REV 3.1 (H1 the per-battle rating baseline frozen at the first Finished build; the pump
+// beside pumpStillThere feeding `setClock(clockVM(...))` on every frame from the WALL clock; the name
+// fallback `store.player(id)?.name ?? store.profile(id)?.name ?? ''`); the tester brief's API freeze
+// (`{ kind: 'forfeit', battleId }` → `reducers.forfeit({ battleId })`, battle-safe).
+//
+// The local player is side A of every PvP battle here (`bt12bAnchor(..., H.identity,
+// OTHER_IDENTITY)`); the rival's player row is named "Marrow", the own one "P" (`server()`). The
+// waiting unit is never initiative[0]. Keys: A Enter, B Backspace, Down ArrowDown, Up ArrowUp. RED
+// REASON: no `forfeit` dispatch arm / Command kind, no forfeit row in the shell, no clock pump (no
+// `.tactics-clock-ring`, no `.tactics-players` entries), no rating baseline and no reason / rating
+// line on the results panel.
+
+/** U+2192 RIGHTWARDS ARROW (the rating line), by code point. */
+const BT15B_ARROW = String.fromCharCode(0x2192);
+const BT15B_RIVAL_NAME = 'Marrow';
+
+/** The four units of a PvP battle: 41 (1,1) and 43 (1,3) mine on side A, 52 (5,1) and 54 (5,3) the
+ *  rival's on side B. */
+function bt15bUnits(battleId: bigint, mineA: bigint, mineB: bigint): StoreBattleUnit[] {
+  return [
+    bt12bUnit(battleId, 41, {
+      owner: H.identity,
+      monsterId: mineA,
+      side: 'A',
+      slot: 0,
+      x: 1,
+      y: 1,
+    }),
+    bt12bUnit(battleId, 43, {
+      owner: H.identity,
+      monsterId: mineB,
+      side: 'A',
+      slot: 1,
+      x: 1,
+      y: 3,
+    }),
+    bt12bUnit(battleId, 52, {
+      owner: OTHER_IDENTITY,
+      monsterId: battleId + 91n,
+      side: 'B',
+      slot: 0,
+      x: 5,
+      y: 1,
+    }),
+    bt12bUnit(battleId, 54, {
+      owner: OTHER_IDENTITY,
+      monsterId: battleId + 93n,
+      side: 'B',
+      slot: 1,
+      x: 5,
+      y: 3,
+    }),
+  ];
+}
+
+/** The Active PvP row with unit `waiting` up at `turnIdx` of [41, 52, 43, 54]. */
+const bt15bRow = (battleId: bigint, waiting: number, turnIdx: number): StoreTacticalBattle =>
+  bt12bTactical(battleId, 'Pvp', {
+    initiative: [41, 52, 43, 54],
+    turnIdx,
+    turnState: { kind: 'Waiting', unitId: waiting },
+    tiePrioritySide: 'B',
+  });
+
+/** One side's `my_battle_clock` row; `open` / `deadline` are epoch ms (null: none). */
+function bt15bClock(
+  battleId: bigint,
+  side: 'A' | 'B',
+  open: number | null,
+  deadline: number | null,
+  autopassCount: number,
+): StoreBattleClock {
+  return {
+    clockId: battleId * 2n + (side === 'A' ? 1n : 2n),
+    battleId,
+    side,
+    player: side === 'A' ? H.identity : OTHER_IDENTITY,
+    windowSeq: 3,
+    windowOpenMs: open === null ? null : BigInt(open),
+    deadlineMs: deadline === null ? null : BigInt(deadline),
+    windowsThisUnitTurn: 1,
+    idleMsTotal: 0n,
+    autopassCount,
+  };
+}
+
+/** A BattleEnd transcript row. */
+function bt15bEnd(
+  battleId: bigint,
+  seq: number,
+  outcome: 'SideAWins' | 'SideBWins' | 'Fled',
+  how: 'Forfeit' | 'SideEmpty' | 'Fled',
+): StoreBattleEvent {
+  return {
+    eventId: battleId * 100n + BigInt(seq),
+    battleId,
+    seq,
+    round: 3,
+    payload: { tag: 'BattleEnd', value: { outcome: { tag: outcome }, how: { tag: how } } },
+  } as StoreBattleEvent;
+}
+
+/** The own profile row (the leaderboard's public `profile`). */
+const bt15bProfile = (rating: number, losses: number) => ({
+  identity: H.identity,
+  name: 'P',
+  rating,
+  wins: 5,
+  losses,
+});
+
+/** The shown results panel's lines as [data-line, text]. */
+const bt15bLines = (): (string | null)[][] =>
+  [
+    ...(bt12Root('tactics-results')?.querySelectorAll('ul.tactics-results-list > li[data-line]') ??
+      []),
+  ].map((li) => [li.getAttribute('data-line'), li.textContent]);
+
+/** The forfeit reducer calls so far, as argument objects. */
+const bt15bForfeits = (): unknown[] =>
+  H.calls.filter((c) => c.name === 'forfeit').map((c) => c.args);
+
+describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15.3)', {
+  sequential: true,
+}, () => {
+  const saved = { nextInit: T12.nextInit };
+  afterEach(() => {
+    T12.nextInit = saved.nextInit;
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('a forfeit Command sends exactly the forfeit reducer with exactly its battle id — ids past 2^53 and differing only above it — once per Command [BT15-3]', async () => {
+    // WRONG IMPL KILLED: no `forfeit` dispatch arm (the Command reaches nothing); a different
+    // reducer (flee, cancelQueue) or argument shape (`{ id }`, the id through Number(): the two ids
+    // below collapse); a forfeit sent twice per Command.
+    await bootReady();
+    server(1000);
+    const F1 = 2n ** 60n + 301n;
+    const F2 = F1 + 2n ** 53n;
+    const issue: { command: unknown } = { command: { kind: 'forfeit', battleId: F1 } };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1010);
+    H.calls = [];
+    const down = await pageUp(1100);
+    expect(down.defaultPrevented, 'the routed press is consumed').toBe(true);
+    expect(H.calls, 'forfeit({ battleId: F1 }), once').toEqual([
+      { name: 'forfeit', args: { battleId: F1 } },
+    ]);
+    issue.command = { kind: 'forfeit', battleId: F2 };
+    H.calls = [];
+    await pageUp(1200);
+    expect(H.calls, 'forfeit({ battleId: F2 }): the id is carried exactly').toEqual([
+      { name: 'forfeit', args: { battleId: F2 } },
+    ]);
+  });
+
+  it('in a booted PvP battle A on the own waiting unit opens its menu, Down alone reaches Forfeit, A opens the confirm on Keep fighting and sends nothing, Up and A send the forfeit reducer once with the battle`s id and close the menu, and no submit_queue goes out [BT15-3]', async () => {
+    // WRONG IMPL KILLED: `tacticsShellDeps()` without `onForfeit` (the shell's Yes reaches nothing);
+    // an onForfeit that sends another battle's id or the anchor's party; the forfeit sent at the
+    // first A (no confirm) or on Keep fighting; a forfeit that also submits an End Turn; a battle
+    // policy that refuses `forfeit` at the battle base (the shell is ON the battle base).
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const B = 2n ** 60n + 311n;
+    const [P1, P2] = [B + 2n, B + 4n];
+    opts.store.upsertMonster(bt12Monster(P1, 0));
+    opts.store.upsertMonster(bt12Monster(P2, 1));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileBattleUnitsFromView(bt15bUnits(B, P1, P2));
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(B, 43, 2)]);
+    server(1100);
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'fixture: the shell is shown').toBe(true);
+    if (shell === null) return;
+    const selected = (): string | null =>
+      shell
+        .querySelector('.tactics-menu .tactics-menu-row[aria-selected="true"]')
+        ?.getAttribute('data-row') ?? null;
+    let t = 1200;
+    const key = (code: string): void => {
+      t += 20;
+      press(code, t);
+    };
+    H.calls = [];
+    key('Enter');
+    expect(
+      shell.querySelector('.tactics-menu'),
+      'A on the waiting own unit opens its menu',
+    ).not.toBeNull();
+    for (let i = 0; i < 8 && selected() !== 'forfeit'; i += 1) key('ArrowDown');
+    expect(selected(), 'Down alone reaches Forfeit').toBe('forfeit');
+    key('Enter');
+    await flush();
+    expect(selected(), 'the confirm opens on Keep fighting').toBe('forfeitNo');
+    expect(bt15bForfeits(), 'nothing sent at the confirm').toEqual([]);
+    key('ArrowUp');
+    expect(selected(), 'Up: Yes').toBe('forfeitYes');
+    key('Enter');
+    await flush();
+    expect(bt15bForfeits(), 'forfeit({ battleId }) once, this battle`s id').toEqual([
+      { battleId: B },
+    ]);
+    expect(shell.querySelector('.tactics-menu'), 'the menu closed').toBeNull();
+    expect(bt12bSubmits(), 'and no submit_queue went out').toEqual([]);
+  });
+
+  it('a PvP battle seen Active with an own rating of 1000 that finishes lost by forfeit at 984 shows "Ended by forfeit" first and "Rating 1000 → 984 (-16)" last, frozen against a later profile write; a wild battle`s results show neither line whatever the profile does, and a PvP flight shows no rating line [BT15-3]', async () => {
+    // WRONG IMPL KILLED (REV 3.1 H1): the BEFORE read at the results build (the settle writes the
+    // profile in the same batch as the terminal anchor: it would read 984 → 984); the live
+    // `lastOwnRating` baseline (re-baselined by its own listener); the result recomputed per batch
+    // (999 after a later write); a rating line for a wild battle (never rated) or for a PvP
+    // `Fled` (never rated: "(+0)" would be WRONG); the reason read off the outcome or the FIRST
+    // BattleEnd; the lines out of order.
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    let t = 1000;
+    const at = (): number => {
+      t += 100;
+      return t;
+    };
+    const continueAndClear = async (battleId: bigint, label: string): Promise<void> => {
+      press('Backspace', at());
+      await flush();
+      opts.store.removeBattle(battleId);
+      opts.store.reconcileTacticalBattlesFromView([]);
+      opts.store.reconcileBattleUnitsFromView([]);
+      opts.store.reconcileBattleEventsFromView([]);
+      server(at());
+      expect(bt12Frames(), `${label}: back at the world`).toEqual(['world']);
+    };
+
+    // (1) PvP, lost by forfeit: 1000 at the Active sighting, 984 written with the terminal batch.
+    const B = 2n ** 60n + 321n;
+    const [P1, P2] = [B + 2n, B + 4n];
+    opts.store.upsertMonster(bt12Monster(P1, 0));
+    opts.store.upsertMonster(bt12Monster(P2, 1));
+    opts.store.upsertProfile(bt15bProfile(1000, 2));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileBattleUnitsFromView(bt15bUnits(B, P1, P2));
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(B, 52, 1)]);
+    server(at());
+    expect(
+      bt12bShell() !== null && bt12Displayed(bt12bShell() as HTMLElement),
+      'fixture: Active',
+    ).toBe(true);
+    opts.store.upsertProfile(bt15bProfile(984, 3));
+    opts.store.upsertBattle(bt12bAnchor(B, 'SideBWins', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileTacticalBattlesFromView([{ ...bt15bRow(B, 52, 1), phase: 'Finished' }]);
+    opts.store.reconcileBattleEventsFromView([bt15bEnd(B, 0, 'SideBWins', 'Forfeit')]);
+    server(at());
+    expect(bt12Shown('tactics-results'), 'Finished: the results panel').toBe(true);
+    expect(
+      bt12Root('tactics-results')?.querySelector('h2.tactics-title')?.textContent,
+      'side A lost: the defeat title',
+    ).toBe(i18n.t('battle.outcome.defeat'));
+    const LOST = [
+      ['endHow', 'Ended by forfeit'],
+      ['rating', `Rating 1000 ${BT15B_ARROW} 984 (-16)`],
+    ];
+    expect(bt15bLines(), 'the reason first, the rating last (no rewards here)').toEqual(LOST);
+    opts.store.upsertProfile(bt15bProfile(999, 3));
+    server(at());
+    expect(bt15bLines(), 'a later profile write leaves the line frozen').toEqual(LOST);
+    await continueAndClear(B, '(1)');
+
+    // (2) A wild battle won by a side emptied: never rated, whatever the profile row does.
+    const W = 2n ** 60n + 331n;
+    opts.store.upsertBattle(bt12bAnchor(W, 'Ongoing', [P1]));
+    opts.store.reconcileBattleUnitsFromView([
+      bt12bUnit(W, 61, { owner: H.identity, monsterId: P1, side: 'A', slot: 0, x: 1, y: 1 }),
+      bt12bUnit(W, 62, { owner: null, monsterId: null, side: 'B', slot: 0, x: 5, y: 4, wild: 0 }),
+    ]);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(W, 'Wild', {
+        initiative: [62, 61],
+        turnIdx: 1,
+        turnState: { kind: 'Waiting', unitId: 61 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    server(at());
+    opts.store.upsertProfile(bt15bProfile(1013, 3));
+    opts.store.upsertBattle(bt12bAnchor(W, 'SideAWins', [P1]));
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(W, 'Wild', {
+        initiative: [62, 61],
+        turnIdx: 1,
+        turnState: { kind: 'NotActive' },
+        tiePrioritySide: 'A',
+        phase: 'Finished',
+      }),
+    ]);
+    opts.store.reconcileBattleEventsFromView([bt15bEnd(W, 0, 'SideAWins', 'SideEmpty')]);
+    server(at());
+    expect(bt12Shown('tactics-results'), 'fixture: the wild results').toBe(true);
+    expect(bt15bLines(), 'a wild finish: no reason, no rating, the none line').toEqual([
+      ['none', i18n.t('tactics.results.none')],
+    ]);
+    await continueAndClear(W, '(2)');
+
+    // (3) A PvP flight: a baseline exists (1013) but a flight is never rated.
+    const F = 2n ** 60n + 341n;
+    opts.store.upsertBattle(bt12bAnchor(F, 'Ongoing', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileBattleUnitsFromView(bt15bUnits(F, P1, P2));
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(F, 52, 1)]);
+    server(at());
+    opts.store.upsertBattle(bt12bAnchor(F, 'Fled', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileTacticalBattlesFromView([{ ...bt15bRow(F, 52, 1), phase: 'Finished' }]);
+    opts.store.reconcileBattleEventsFromView([bt15bEnd(F, 0, 'Fled', 'Fled')]);
+    server(at());
+    expect(bt12Shown('tactics-results'), 'fixture: the flight`s results').toBe(true);
+    expect(bt15bLines(), 'a PvP flight: no rating line (and no reason)').toEqual([
+      ['none', i18n.t('tactics.results.none')],
+    ]);
+  });
+
+  it('the clock pump paints the ring on the WAITING unit`s chip on the next frame of the wall clock — ok, then refilled to a full window by a new open, amber at 9 s, red at 4 s, moved to the next waiting unit — with exactly one ring, never on a ghost, and a players strip naming both players with their strikes [BT15-2]', async () => {
+    // WRONG IMPL KILLED: no pump (the ring never appears: BT15.2); a pump fed by store batches only
+    // (the ring would freeze between batches: here only frames run); `performance.now` read instead
+    // of the wall clock (the two are stubbed apart, the fraction would be nonsense); the ring on
+    // initiative[0] (41), on the active unit's ghost, or on the side of the local player instead of
+    // the waiting unit's; a refill rule in TS (the fraction must jump back to 100 with the new row);
+    // the ring left on 52 after the turn moved; names from the profile only, the identity, or the
+    // local player twice; strikes read off one row for both players.
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const wall = { t: 1_750_000_000_000 };
+    vi.spyOn(Date, 'now').mockImplementation(() => wall.t);
+    let t = 1000;
+    const tick = (wallMs: number): void => {
+      wall.t = wallMs;
+      t += 50;
+      frame(t);
+    };
+    const W0 = wall.t;
+    const batch = (): void => {
+      t += 50;
+      server(t);
+    };
+    T12.nextInit = () => [52, 41, 54, 43];
+    opts.store.upsertPlayer({
+      identity: OTHER_IDENTITY,
+      entityId: 99n,
+      name: BT15B_RIVAL_NAME,
+      online: true,
+      lastInputSeq: 0n,
+    });
+    const B = 2n ** 60n + 351n;
+    const [P1, P2] = [B + 2n, B + 4n];
+    opts.store.upsertMonster(bt12Monster(P1, 0));
+    opts.store.upsertMonster(bt12Monster(P2, 1));
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', [P1, P2], H.identity, OTHER_IDENTITY));
+    opts.store.reconcileBattleUnitsFromView(bt15bUnits(B, P1, P2));
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(B, 52, 1)]);
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(B, 'A', null, null, 1),
+      bt15bClock(B, 'B', W0, W0 + 30_000, 3),
+    ]);
+    batch();
+    const shell = bt12bShell();
+    expect(shell !== null && bt12Displayed(shell), 'fixture: the shell is shown').toBe(true);
+    if (shell === null) return;
+    /** Every ring in the document as `<unit id>:<band>:<fraction>` (`ghost:` / `loose` marks). */
+    const ringsNow = (): string[] =>
+      [...document.querySelectorAll<HTMLElement>('.tactics-clock-ring')].map((r) => {
+        const chip = r.parentElement;
+        if (chip === null || !chip.classList.contains('tactics-chip')) return 'loose';
+        const id = chip.getAttribute('data-unit-id') ?? '?';
+        const where = chip.classList.contains('tactics-chip--ghost') ? `ghost:${id}` : id;
+        return `${where}:${r.getAttribute('data-band')}:${r.getAttribute('data-fraction')}`;
+      });
+
+    tick(W0 + 12_000);
+    expect(ringsNow(), '18 s of 30 left: one ring on unit 52 (B waits), ok, 60').toEqual([
+      '52:ok:60',
+    ]);
+    expect(
+      shell.querySelector('.tactics-clock-ring')?.closest('.tactics-turnbar'),
+      'inside the shell`s turn bar',
+    ).not.toBeNull();
+    expect(
+      [...shell.querySelectorAll<HTMLElement>('.tactics-players .tactics-player')].map(
+        (p) =>
+          `${p.getAttribute('data-side')}:${p.querySelector('.tactics-player-name')?.textContent}:${p.getAttribute('data-mine')}:${p.querySelectorAll('.tactics-strike--hit').length}`,
+      ),
+      'the strip: A is me ("P", 1 strike), B the rival (3 strikes)',
+    ).toEqual(['A:P:true:1', `B:${BT15B_RIVAL_NAME}:false:3`]);
+
+    // B's submit is accepted: the server opens a NEW window (a later open, a later deadline).
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(B, 'A', null, null, 1),
+      bt15bClock(B, 'B', W0 + 12_000, W0 + 42_000, 3),
+    ]);
+    batch();
+    tick(W0 + 12_000);
+    expect(ringsNow(), 'the refill: a full window again').toEqual(['52:ok:100']);
+    tick(W0 + 33_000);
+    expect(ringsNow(), '9 s left: amber').toEqual(['52:amber:30']);
+    tick(W0 + 38_000);
+    expect(ringsNow(), '4 s left: red').toEqual(['52:red:13']);
+
+    // The turn moves to my unit 43 (turnIdx 2): A's window opens, B's closes.
+    opts.store.reconcileTacticalBattlesFromView([bt15bRow(B, 43, 2)]);
+    opts.store.reconcileBattleClocksFromView([
+      bt15bClock(B, 'A', W0 + 40_000, W0 + 70_000, 1),
+      bt15bClock(B, 'B', null, null, 3),
+    ]);
+    batch();
+    tick(W0 + 45_000);
+    expect(ringsNow(), 'the ring moved to unit 43 and left 52').toEqual(['43:ok:83']);
   });
 });
