@@ -27,6 +27,8 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo nextest run --workspace
+    # The dev-reducer tests are compiled out of the default build, so they only run with the feature.
+    cargo nextest run -p monster-realm-module --features dev_reducers
     cargo test --doc --workspace
     door() {
         local label=$1 want=$2 floor=$3 out pass fail
@@ -160,22 +162,48 @@ mutate-core shard="":
         exit 1
     fi
 
-# Server-module survivor-count ratchet; the crate is `monster-realm-module`.
-# Cap rebaselined by the Phase-3 mutants triage (RC-mutate-server): full run at 428314e = 1151
-# mutants, 31 missed (29 accepted, one MUT-server-* ledger row per file, + 2 stale-build flakes),
-# 1 timeout (evolution.rs check_and_evolve `+=` -> `*=`, counted as caught); cap = 31 + 3 headroom.
-#
-# Unsharded (`shard` empty) it runs and enforces the cap. The nightly runs it as a matrix of `k/n`
-# shards to fit the 6 h job cap (1532 mutants): a shard only RUNS and reports its survivors, and
-# `mutate-server-ratchet` sums every shard's missed.txt against the cap.
-mutate-server cap="34" shard="":
+# Local pre-push check: mutate only the code COMMITTED since `base` (game-core + server-module);
+# uncommitted edits are not seen.
+# Empty diff = nothing to mutate. Same exit triage as mutate-core (0 ok, 2 missed, 3 timeouts).
+mutate-diff base="origin/master":
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{cap}}" in
-        ''|*[!0-9]*) echo "mutate-server: cap '{{cap}}' is not a non-negative integer" >&2; exit 64;;
-    esac
+    diff_file=$(mktemp)
+    trap 'rm -f "$diff_file"' EXIT
+    git diff "{{base}}...HEAD" -- game-core server-module > "$diff_file"
+    [ -s "$diff_file" ] || { echo "mutate-diff: no game-core/server-module changes vs {{base}}"; exit 0; }
+    ulimit -v 8000000 2>/dev/null || true
+    status=0
+    cargo mutants -p game-core -p monster-realm-module --test-tool nextest --in-diff "$diff_file" || status=$?
+    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+        echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
+        exit "$status"
+    fi
+    # Judge by missed.txt, not the exit code alone: exit 3 (timeouts) can accompany missed mutants.
+    if [ -s mutants.out/missed.txt ]; then
+        cat mutants.out/missed.txt >&2
+        echo "mutate-diff: $(grep -c '' mutants.out/missed.txt) missed mutant(s) in the diff" >&2
+        exit 1
+    fi
+
+# Server-module mutation gate, zero tolerance like game-core: a surviving mutant is either killed by
+# a test or, if provably equivalent / log-only, excluded in .cargo/mutants.toml with the proof.
+# There is no survivor budget to creep. The crate is `monster-realm-module`.
+#
+# Unsharded (`shard` empty) it runs the whole crate. The nightly runs a matrix of `k/n` shards to
+# fit the 6 h job cap (~1500 mutants); every shard is its own zero-tolerance verdict, like mutate-core.
+mutate-server shard="":
+    #!/usr/bin/env bash
+    set -euo pipefail
     [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-server: shard '{{shard}}' is not k/n" >&2; exit 64; }
     shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
+    # Same runaway-allocation backstop as mutate-core (protects the 16 GB runner).
+    ulimit -v 8000000 2>/dev/null || true
+    # dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0 into GITHUB_ENV and cargo-mutants rebuilds
+    # once per mutant. Incremental cuts the server build per mutant from ~20 s to ~5 s (measured,
+    # same verdicts); game-core already rebuilds in ~0.5 s per mutant, so it is left alone.
+    export CARGO_INCREMENTAL=1
+    echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     status=0
     cargo mutants -p monster-realm-module --test-tool nextest ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts (a hang is a detection, so they count as
@@ -187,37 +215,14 @@ mutate-server cap="34" shard="":
     # Not redundant with set -e: without the file, missed="" and the `-gt` test below errors
     # inside an if-condition, which set -e exempts — a vacuous green.
     if [ ! -f mutants.out/missed.txt ]; then
-        echo "mutate-server: mutants.out/missed.txt absent — cannot verify the survivor count" >&2
+        echo "mutate-server: mutants.out/missed.txt absent — cannot verify zero-missed" >&2
         exit 1
     fi
     missed=$(grep -c '' mutants.out/missed.txt || true)
-    if [ -n "{{shard}}" ]; then
-        echo "surviving mutants in shard {{shard}}: $missed (the cap is enforced over all shards by mutate-server-ratchet)"
-        exit 0
-    fi
-    echo "surviving mutants: $missed (cap {{cap}})"
-    if [ "$missed" -gt "{{cap}}" ]; then
-        echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated" >&2
-        exit 1
-    fi
-
-# Sum the survivors of every shard's downloaded `missed.txt` (<dir>/*/missed.txt) against the cap.
-# Fails if there are no shard files or fewer than `shards` of them: a shard that never reported
-# must not read as zero survivors (the vacuous-green trap the unsharded recipe also guards).
-mutate-server-ratchet dir cap="34" shards="8":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{cap}}{{shards}}" in ''|*[!0-9]*) echo "mutate-server-ratchet: cap/shards must be integers" >&2; exit 64;; esac
-    files=$(find "{{dir}}" -name missed.txt | sort)
-    n=$(printf '%s\n' "$files" | grep -c . || true)
-    if [ "$n" -ne "{{shards}}" ]; then
-        echo "mutate-server-ratchet: found $n missed.txt under {{dir}}, expected {{shards}} — a shard did not report" >&2
-        exit 1
-    fi
-    missed=$(printf '%s\n' "$files" | xargs cat | grep -c '' || true)
-    echo "surviving mutants across {{shards}} shards: $missed (cap {{cap}})"
-    if [ "$missed" -gt "{{cap}}" ]; then
-        echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated" >&2
+    echo "mutate-server: missed=$missed (zero-tolerance${shard_args[*]:+, shard {{shard}}})"
+    if [ "$missed" -gt 0 ]; then
+        cat mutants.out/missed.txt >&2
+        echo "server-module mutation gate: $missed surviving mutant(s) — zero-tolerance" >&2
         exit 1
     fi
 

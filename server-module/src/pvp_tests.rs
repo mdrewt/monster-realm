@@ -1467,6 +1467,34 @@ fn nh_forfeit_on_disconnect_settles_both_roles_and_rates_once() {
     );
 }
 
+/// `forfeit_on_disconnect` never settles a WILD battle as PvP, on either role pass: the
+/// opponent-index pass must keep its own `opponent_identity != WILD_IDENTITY` guard. A wild row
+/// names `WILD_IDENTITY` as its opponent, so that pass is only ever handed one when the identity
+/// being disconnected IS the sentinel; the row must then stay `Ongoing`, with nothing written.
+/// kills: the opponent-pass filter `&&` -> `||` (the loop's own outcome re-check masks it for a
+/// settled row, but not for an Ongoing wild row).
+#[test]
+fn forfeit_on_disconnect_leaves_an_ongoing_wild_battle_alone_on_the_opponent_pass() {
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    w.battles.seed(&pv_battle(
+        902,
+        pv_a(),
+        PV_WILD,
+        PvOutcome::Ongoing,
+        &[30],
+        &[30],
+    ));
+    let before = w.snapshot();
+    super::forfeit_on_disconnect(&fx.ctx(), PV_WILD);
+    assert_eq!(
+        w.battle(902).map(|b| b.state.outcome),
+        Some(PvOutcome::Ongoing),
+        "a wild battle is never forfeited as PvP"
+    );
+    assert_eq!(w.snapshot(), before, "nothing is written for a wild row");
+}
+
 /// EV-pvp-deadline-disconnect (challenges): `cancel_challenges_on_disconnect` deletes
 /// the leaver's OUTGOING pending challenges and their reapers and keeps incoming ones
 /// (the challenger may reconnect). ST-pvp_tests#reducer-guards (erase): `erase_pvp_rows`

@@ -2500,6 +2500,87 @@ mod nh_sync {
             );
         }
     }
+
+    struct CsLogSink(std::sync::Mutex<Vec<String>>);
+    impl log::Log for CsLogSink {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+    static CS_LOGS: CsLogSink = CsLogSink(std::sync::Mutex::new(Vec::new()));
+
+    fn stranded_char(zone: u32) -> Character {
+        Character {
+            entity_id: 9_001,
+            zone_id: zone,
+            tile_x: 0,
+            tile_y: 0,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+        }
+    }
+
+    fn zone_warns() -> Vec<String> {
+        CS_LOGS
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("zone_def_removed_with_characters"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn stale_zone_without_characters_does_not_warn() {
+        log::set_logger(&CS_LOGS).expect("nextest");
+        log::set_max_level(log::LevelFilter::Info);
+        let fx = fixture();
+        let w = world(&fx);
+        seed_config(&w, 0);
+        w.zones.seed(&ZoneDefRow {
+            zone_id: 7_777,
+            name: "gone".into(),
+            width: 4,
+            height: 4,
+        });
+        sync(&fx);
+        assert!(zone_warns().is_empty(), "{:?}", zone_warns());
+    }
+
+    #[test]
+    fn stale_zone_with_a_character_warns_once() {
+        log::set_logger(&CS_LOGS).expect("nextest");
+        log::set_max_level(log::LevelFilter::Info);
+        let fx = fixture();
+        let w = world(&fx);
+        seed_config(&w, 0);
+        w.zones.seed(&ZoneDefRow {
+            zone_id: 7_777,
+            name: "gone".into(),
+            width: 4,
+            height: 4,
+        });
+        fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .writable()
+            .scannable()
+            .unique()
+            .seed(&stranded_char(7_777));
+        sync(&fx);
+        let warns = zone_warns();
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(warns[0].contains("\"characters\":1"), "{warns:?}");
+    }
 }
 
 // ===========================================================================

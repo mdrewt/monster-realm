@@ -226,3 +226,71 @@ fn nh_my_inventory_view_returns_only_the_senders_rows() {
         "the owner's view is unchanged by a stranger's row"
     );
 }
+
+/// `grant_item` onto a stack that is already AT or OVER the cap is a complete
+/// no-op: it neither shrinks the stack nor touches the datastore at all.
+///
+/// The `inventory` table is deliberately NOT marked `writable`, and in this host
+/// an insert or update on a non-writable table aborts the test process. So the
+/// only way this test finishes is if `grant_item` issued no write whatsoever for
+/// the full stack (count == cap) and the over-cap stack (count > cap). The control
+/// `grant_item_onto_a_stack_one_below_cap_clamps_to_cap` proves the cap boundary
+/// is exact.
+///
+/// kills: the existing-stack guard `count < MAX_ITEM_STACK` loosened to `<=`
+/// (a redundant identical-row update at exactly the cap, which the host aborts).
+#[test]
+fn grant_item_onto_an_at_or_over_cap_stack_performs_no_write() {
+    use game_core::MAX_ITEM_STACK;
+    let fx = fixture();
+    let me = Identity::from_byte_array([41u8; 32]);
+    const FULL: u32 = 910;
+    const OVER: u32 = 911;
+    let stacks = fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity);
+    let stack = |inv_id: u64, item_id: u32, count: u32| Inventory {
+        inv_id,
+        owner_identity: me,
+        item_id,
+        count,
+    };
+    stacks.seed(&stack(1, FULL, MAX_ITEM_STACK));
+    stacks.seed(&stack(2, OVER, MAX_ITEM_STACK + 7));
+
+    let ctx = fx.ctx();
+    crate::inventory::grant_item(&ctx, me, FULL, 1);
+    crate::inventory::grant_item(&ctx, me, OVER, 5);
+
+    let mut counts: Vec<(u32, u32)> = stacks.rows().iter().map(|r| (r.item_id, r.count)).collect();
+    counts.sort_unstable();
+    assert_eq!(
+        counts,
+        vec![(FULL, MAX_ITEM_STACK), (OVER, MAX_ITEM_STACK + 7)],
+        "a full / over-cap stack is neither grown nor shrunk"
+    );
+}
+
+/// Control for the test above: a stack one below the cap DOES take a write and
+/// clamps at the cap, so the no-write result above is the cap boundary and not a
+/// `grant_item` that never writes an existing stack.
+#[test]
+fn grant_item_onto_a_stack_one_below_cap_clamps_to_cap() {
+    use game_core::MAX_ITEM_STACK;
+    let fx = fixture();
+    let me = Identity::from_byte_array([42u8; 32]);
+    const ITEM: u32 = 912;
+    let stacks = fx
+        .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+        .writable();
+    let _by_id = fx
+        .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+    stacks.seed(&Inventory {
+        inv_id: 1,
+        owner_identity: me,
+        item_id: ITEM,
+        count: MAX_ITEM_STACK - 1,
+    });
+    crate::inventory::grant_item(&fx.ctx(), me, ITEM, 5);
+    let counts: Vec<u32> = stacks.rows().iter().map(|r| r.count).collect();
+    assert_eq!(counts, vec![MAX_ITEM_STACK]);
+}

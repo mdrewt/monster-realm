@@ -2063,3 +2063,88 @@ const fn manifest_is_wellformed(entries: &[DataLifecycleEntry]) -> bool {
 }
 
 const _: () = assert!(manifest_is_wellformed(DATA_LIFECYCLE_MANIFEST));
+
+#[cfg(test)]
+mod tests {
+    use super::{manifest_is_wellformed, DataLifecycleEntry, DeletionPolicy};
+
+    fn entry(
+        table: &'static str,
+        policy: DeletionPolicy,
+        basis: &'static str,
+    ) -> DataLifecycleEntry {
+        DataLifecycleEntry {
+            table,
+            policy,
+            basis,
+            exportable: false,
+        }
+    }
+
+    fn good() -> DataLifecycleEntry {
+        entry("t", DeletionPolicy::NotOwned, "why")
+    }
+
+    /// `manifest_is_wellformed` is a `const fn`, so it can be driven at runtime
+    /// with hand-built slices. The compile-time assert only ever sees the real
+    /// (well-formed) manifest, which leaves every rejecting branch unexercised.
+    #[test]
+    fn manifest_is_wellformed_accepts_good_and_rejects_each_defect() {
+        // Accepts: one entry per policy, in a multi-entry slice.
+        assert!(manifest_is_wellformed(&[good()]));
+        assert!(manifest_is_wellformed(&[
+            entry("a", DeletionPolicy::Erase, "b"),
+            entry("c", DeletionPolicy::Anonymize, "d"),
+            entry("e", DeletionPolicy::ViaJoin("a"), "f"),
+            good(),
+        ]));
+
+        // An empty manifest classifies nothing: rejected.
+        assert!(!manifest_is_wellformed(&[]));
+
+        // Each single defect alone, as the ONLY entry.
+        assert!(!manifest_is_wellformed(&[entry(
+            "",
+            DeletionPolicy::Erase,
+            "why"
+        )]));
+        assert!(!manifest_is_wellformed(&[entry(
+            "t",
+            DeletionPolicy::Erase,
+            ""
+        )]));
+        assert!(!manifest_is_wellformed(&[entry(
+            "t",
+            DeletionPolicy::ViaJoin(""),
+            "why"
+        )]));
+        assert!(!manifest_is_wellformed(&[entry(
+            "",
+            DeletionPolicy::Erase,
+            ""
+        )]));
+
+        // The defect in the LAST position of a multi-entry slice: the loop must
+        // visit every entry, not stop early.
+        assert!(!manifest_is_wellformed(&[
+            good(),
+            good(),
+            entry("", DeletionPolicy::Erase, "why")
+        ]));
+        assert!(!manifest_is_wellformed(&[
+            good(),
+            good(),
+            entry("t", DeletionPolicy::Erase, "")
+        ]));
+        assert!(!manifest_is_wellformed(&[
+            good(),
+            good(),
+            entry("t", DeletionPolicy::ViaJoin(""), "why")
+        ]));
+        // ... and in the FIRST position.
+        assert!(!manifest_is_wellformed(&[
+            entry("", DeletionPolicy::Erase, "why"),
+            good()
+        ]));
+    }
+}

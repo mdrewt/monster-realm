@@ -1000,6 +1000,147 @@ mod nh {
         }
     }
 
+    /// The `begin_encounter` failure arms of `movement_tick` charge the `begin_encounter_error`
+    /// rate limiter by REASON: a deletion-gated walker (a routine refusal) and an
+    /// all-fainted party (routine gameplay) consume NEITHER the limiter window NOR its
+    /// suppressed counter, while any other failure (here: the lead's species row is missing) does.
+    /// Observed through the limiter's own contract: prime it at `t`, run one tick inside the
+    /// window, then ask again one hour later; the answer is the number of checks suppressed in
+    /// between (a literal: 0 when the tick never touched it, 1 when it counted once).
+    ///
+    /// kills: the `e == REJECT_DELETION_GATED` skip inverted (the gated walker is charged, the
+    /// fault is skipped) and the `e != NO_CONSCIOUS_MONSTER_REASON` filter inverted (the fainted
+    /// party is charged, the fault is skipped).
+    #[test]
+    fn nh_movement_tick_encounter_failures_charge_the_error_limiter_by_reason_only() {
+        use crate::schema::{Account, BattleWild, EncounterEntryRow, EncounterRow, SkillRow};
+        use game_core::TilePos;
+        let zone = 0u32;
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(zone, zone_maps).expect("zone 0 map");
+        let plain = |p: TilePos| map.is_walkable(p) && !map.is_grass(p) && map.warp_at(p).is_none();
+        let (start, dir) = (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }))
+            .filter(|&p| plain(p))
+            .find_map(|p| {
+                [
+                    Direction::North,
+                    Direction::South,
+                    Direction::East,
+                    Direction::West,
+                ]
+                .into_iter()
+                .find(|&d| {
+                    let n = p.step(d);
+                    map.is_walkable(n) && map.is_grass(n) && map.warp_at(n).is_none()
+                })
+                .map(|d| (p, d))
+            })
+            .expect("zone 0 has a grass approach tile");
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        // (label, a unique base time per scenario, gated, lead hp, lead species, suppressed).
+        type Scenario = (&'static str, i64, bool, u16, u32, Option<u32>);
+        let scenarios: [Scenario; 3] = [
+            (
+                "deletion-gated walker",
+                T0 + 100_000_000,
+                true,
+                40,
+                1,
+                Some(0),
+            ),
+            ("all-fainted party", T0 + 200_000_000, false, 0, 1, Some(0)),
+            (
+                "missing lead species",
+                T0 + 300_000_000,
+                false,
+                40,
+                99,
+                Some(1),
+            ),
+        ];
+        for (label, t, gated, hp, species_id, want) in scenarios {
+            let fx = fixture();
+            let w = world(&fx);
+            let _battles = fx
+                .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
+                .writable()
+                .unique()
+                .auto_inc(|r| r.battle_id, |r, v| r.battle_id = v);
+            let _wilds = fx
+                .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
+                .writable()
+                .unique();
+            fx.table_keyed::<SkillRow, u32>("skill_row", "id", |r| r.id)
+                .scannable()
+                .seed(&SkillRow {
+                    id: 1,
+                    name: "s".to_string(),
+                    affinity: Affinity::Fire,
+                    power: 40,
+                    accuracy: 100,
+                    pp: 25,
+                });
+            fx.table_keyed::<EncounterRow, u32>("encounter", "zone_id", |r| r.zone_id)
+                .seed(&EncounterRow {
+                    zone_id: zone,
+                    encounter_rate: 1000,
+                    entries: vec![EncounterEntryRow {
+                        species_id: 1,
+                        weight: 1,
+                        min_level: 1,
+                        max_level: 100,
+                    }],
+                });
+            let accounts = fx.table::<Account>("account", "identity", |r| r.identity);
+            if gated {
+                accounts.seed(&crate::accounts::requested_deletion(
+                    crate::accounts::new_account_row(a(), String::new(), 0),
+                    1,
+                ));
+            }
+            w.join(
+                a(),
+                1,
+                Character {
+                    zone_id: zone,
+                    tile_x: start.x,
+                    tile_y: start.y,
+                    ..character(1, vec![MoveInput::Step(dir)], ActionState::Idle)
+                },
+            );
+            w.seed_monster(&Monster {
+                current_hp: hp,
+                species_id,
+                ..monster(11, a(), 0)
+            });
+            let limiter = &crate::movement::BEGIN_ENCOUNTER_ERR_LIMITER;
+            let window = crate::movement::ENCOUNTER_ERR_WINDOW_MS;
+            assert!(limiter.check(t, window).is_some(), "{label}: primed");
+            let sched = MovementTickSchedule {
+                id: 1,
+                zone_id: zone,
+                scheduled_at: ScheduleAt::Time(at(t + 1)),
+            };
+            assert_eq!(
+                fx.run_as_at(module, at(t + 1), |ctx| movement_tick(ctx, sched)),
+                Ok(()),
+                "{label}"
+            );
+            let moved = w.character(1);
+            assert_eq!(
+                (moved.tile_x, moved.tile_y),
+                (start.step(dir).x, start.step(dir).y),
+                "{label}: the step onto grass was applied"
+            );
+            assert_eq!(
+                limiter.check(t + 3_600_000, window),
+                want,
+                "{label}: checks suppressed by the tick"
+            );
+        }
+    }
+
     /// NPC wander runs on the SERVER tick counter `now / STEP_MS`, gated by the
     /// game-core cadence (QF5.2): for a run of tick times, a wandering NPC at home
     /// ends each tick exactly where `npc_step_due(NPC, tick)`, `game_core::npc_decide`
