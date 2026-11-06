@@ -217,7 +217,6 @@ impl Fixture {
     /// WRITE syscalls (insert / update / delete) the generated code made against `table` (its
     /// `accessor` name) since the fixture or the last [`Fixture::reset_writes`]. Counts CALLS, so a
     /// byte-identical `update` counts — that is exactly what a subscriber would be told about.
-    #[allow(dead_code)] // bt-14 API freeze: the secrecy tests land next
     pub(crate) fn writes_to(&self, table: &str) -> u32 {
         let mut h = host();
         let id = h.table_id(table);
@@ -225,7 +224,6 @@ impl Fixture {
     }
 
     /// Zero every table's write count (mark the start of the transaction under test).
-    #[allow(dead_code)] // bt-14 API freeze: the secrecy tests land next
     pub(crate) fn reset_writes(&self) {
         host().writes.clear();
     }

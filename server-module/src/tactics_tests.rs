@@ -5034,7 +5034,9 @@ fn pvp_start_opens_deploying_with_two_clocks_two_staging_rows_and_a_45_second_wi
         (splitmix64(seed ^ BATTLE_SEED_SALT), 0)
     );
 
-    let clocks: Vec<(SideRow, Identity, (u32, Option<i64>, Option<i64>, u8, u8))> = w
+    // (side, player, clock_window(..)) — a local alias keeps clippy's type_complexity quiet.
+    type ClockSeat = (SideRow, Identity, (u32, Option<i64>, Option<i64>, u8, u8));
+    let clocks: Vec<ClockSeat> = w
         .clocks_of(id)
         .iter()
         .map(|c| (c.side, c.player, clock_window(c)))

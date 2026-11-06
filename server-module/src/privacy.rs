@@ -840,7 +840,7 @@ fn json_battle_challenge(row: &BattleChallenge) -> String {
         challenger_party_ids,
         status,
         created_at_ms,
-        format: _,
+        format,
     } = row;
     let mut out = String::new();
     let mut first = true;
@@ -857,6 +857,9 @@ fn json_battle_challenge(row: &BattleChallenge) -> String {
     json_challenge_status_into(&mut out, status);
     json_field_into(&mut out, &mut first, stringify!(created_at_ms));
     json_i64_into(&mut out, *created_at_ms);
+    // bt-14: the appended party-size format is exported (a plain integer, nothing to redact).
+    json_field_into(&mut out, &mut first, stringify!(format));
+    json_u8_into(&mut out, *format);
     out.push('}');
     out
 }

@@ -27,28 +27,30 @@
 //! success rebuilds the wild through `taming::insert_recruited`. `Item` entries stay refused at
 //! submit and at pop: the item rule has no game-core home yet (R-bt-8-ITEMRULE).
 
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use crate::battle::{is_ongoing_wild_battle, lead_party, lead_party_ids, write_back_party_hp};
+use crate::battle::{lead_party, lead_party_ids, write_back_party_hp};
 use crate::content_cache::{
     cached_battle_maps, cached_tactics_items, cached_tactics_skills, cached_tactics_species,
     cached_tactics_zones,
 };
 use crate::guards::{
-    check_party_size, escrowed_item_qty, is_in_ongoing_battle, json_escape, log_reject,
-    reject_if_monster_in_trade, require_subject_not_deleting,
+    check_monster_in_party, check_party_size, escrowed_item_qty, is_in_ongoing_battle, json_escape,
+    log_reject, reject_if_monster_in_trade, require_subject_not_deleting,
 };
 use crate::inventory::consume_one;
 use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::observability::mr_log;
 use crate::playtest::{hp_permille, record_recruit_event};
+use crate::pvp::{challenge_format, SideAWriteBack, PVP_FORMAT_MAX};
 use crate::schema::{
     battle, battle_clock, battle_deploy, battle_event, battle_queue, battle_secret,
     battle_tactical, battle_unit, battle_wild_unit, character, inventory, monster, player,
-    player_formation, trade_offer, Battle, BattleClock, BattleEvent, BattleQueue, BattleSecret,
-    BattleTactical, BattleUnit, BattleWildUnit, BudgetLastEntry, BudgetMoveSpend, DeployPick,
-    Monster, MoveClassRow, PlayerFormation, SideRow, StanceRow,
+    player_formation, trade_offer, Battle, BattleClock, BattleDeploy, BattleEvent, BattleQueue,
+    BattleSecret, BattleTactical, BattleUnit, BattleWildUnit, BudgetLastEntry, BudgetMoveSpend,
+    DeployPick, Monster, MoveClassRow, PlayerFormation, SideRow, StanceRow,
 };
 use crate::tactics_settle::{self, mark_first_recruit, Close, StepPrev};
 use crate::taming::insert_recruited;
@@ -67,8 +69,9 @@ use game_core::tactics::{
 };
 use game_core::{
     build_monster, load_encounters, load_items, load_skills, load_species, load_tactics_tuning,
-    load_type_chart, load_zones, resolve_encounter, BattleMonster, BattleOutcome, BattleSide,
-    BattleState, EncounterTable, ItemDef, Level, Species, StatBlock, TypeChart,
+    load_type_chart, load_zones, pvp_forfeit_outcome, resolve_encounter, BattleMonster,
+    BattleOutcome, BattleSide, BattleState, EncounterTable, ItemDef, Level, SideId, Species,
+    StatBlock, TypeChart,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 
@@ -382,7 +385,7 @@ impl Except {
 struct Prev {
     turn: TurnState,
     round: u16,
-    /// Windows opened so far in the waiting unit's turn (`clocks[0]`).
+    /// Windows opened so far in the waiting unit's turn (its side's clock).
     windows: u8,
     /// Units at full HP before the step (the single-hit KO telemetry).
     full_hp: Vec<u32>,
@@ -392,7 +395,15 @@ fn prev_of(tb: &TacticalBattle) -> Prev {
     Prev {
         turn: tb.turn_state,
         round: tb.state.round,
-        windows: tb.clocks[0].windows_this_unit_turn,
+        windows: match tb.turn_state {
+            TurnState::Waiting(unit) => {
+                tb.state
+                    .unit(unit)
+                    .map_or(tb.clocks[0], |u| tb.clocks[side_index(u.side)])
+                    .windows_this_unit_turn
+            }
+            TurnState::NotActive | TurnState::Advancing => tb.clocks[0].windows_this_unit_turn,
+        },
         full_hp: tb
             .state
             .units
@@ -497,13 +508,25 @@ fn load(ctx: &ReducerContext, battle_id: u64) -> Result<Loaded, String> {
     for row in &rows {
         units.push(unit_of_row(row, content)?);
     }
-    let clock_a = ctx
+    let clock_rows: Vec<BattleClock> = ctx
         .db
         .battle_clock()
         .battle_id()
         .filter(battle_id)
+        .collect();
+    let clock_a = clock_rows
+        .iter()
         .find(|c| c.side == SideRow::A)
         .ok_or_else(|| format!("battle {battle_id} has no side-A clock row"))?;
+    // A wild side never runs a clock; under the PvP ruleset side B's row is as load-bearing as
+    // A's (its windows, idle time and strikes live there).
+    let clock_b = match clock_rows.iter().find(|c| c.side == SideRow::B) {
+        Some(row) => clock_of_row(row),
+        None if tactical.kind.uses_pvp_rules() => {
+            return Err(format!("battle {battle_id} has no side-B clock row"))
+        }
+        None => ClockState::default(),
+    };
     let mut plans: Vec<ReadyPlan> = ctx
         .db
         .battle_queue()
@@ -538,7 +561,7 @@ fn load(ctx: &ReducerContext, battle_id: u64) -> Result<Loaded, String> {
         state,
         plans,
         turn_state: tactical.turn_state,
-        clocks: [clock_of_row(&clock_a), ClockState::default()],
+        clocks: [clock_of_row(clock_a), clock_b],
         pending_pad_ms: tactical.pending_pad_ms,
     };
     Ok(Loaded {
@@ -550,16 +573,23 @@ fn load(ctx: &ReducerContext, battle_id: u64) -> Result<Loaded, String> {
     })
 }
 
-/// Copy every deployed unit's HP into the anchor's legacy side-A team (by `monster_id`),
-/// so the one write-back primitive and every legacy reader see the tactical truth.
+/// Copy every deployed unit's HP into the anchor's legacy teams (side A by `party_monster_ids`,
+/// side B by `opponent_monster_ids`), so the write-back primitives and every legacy reader see the
+/// tactical truth.
 fn mirror_hp(anchor: &mut Battle, units: &[BattleUnit]) {
     for unit in units {
         let Some(mid) = unit.monster_id else {
             continue;
         };
-        match anchor.party_monster_ids.iter().position(|&m| m == mid) {
+        // Each side mirrors into its own anchor team by its own id list (disjoint by construction,
+        // Practice included — `start_pvp_tactical` refuses a monster on both sides).
+        let (ids, team) = match unit.side {
+            SideRow::A => (&anchor.party_monster_ids, &mut anchor.state.side_a.team),
+            SideRow::B => (&anchor.opponent_monster_ids, &mut anchor.state.side_b.team),
+        };
+        match ids.iter().position(|&m| m == mid) {
             Some(i) => {
-                if let Some(bm) = anchor.state.side_a.team.get_mut(i) {
+                if let Some(bm) = team.get_mut(i) {
                     bm.current_hp = unit.cur_hp;
                 }
             }
@@ -688,6 +718,7 @@ fn store(
             written.push(row);
             continue;
         };
+        let before = row.clone();
         let next = BattleUnit {
             x: u.pos.x,
             y: u.pos.y,
@@ -702,16 +733,25 @@ fn store(
             state: u.state,
             ..row
         };
-        ctx.db.battle_unit().unit_id().update(next.clone());
+        if next != before {
+            ctx.db.battle_unit().unit_id().update(next.clone());
+        }
         written.push(next);
     }
+    // Rows are written only when they MOVED: an unchanged update still reaches every subscriber,
+    // and under the PvP ruleset that subscriber is the opponent — a pre-queue or a cancel must
+    // leave nothing participant-visible behind (design §6.3, BT14.4).
+    let anchor_before = anchor.clone();
     mirror_hp(&mut anchor, &written);
     let finished = tb.phase() == Phase::Finished;
     if finished {
         anchor.state.outcome = tb.state.outcome;
     }
-    ctx.db.battle().battle_id().update(anchor.clone());
+    if anchor != anchor_before {
+        ctx.db.battle().battle_id().update(anchor.clone());
+    }
     // The tactical row (`finish` flips the phase itself; its idempotency reads it).
+    let tactical_before = tactical.clone();
     if !finished {
         tactical.phase = tb.phase();
     }
@@ -723,15 +763,20 @@ fn store(
     tactical.pending_pad_ms = tb.pending_pad_ms;
     tactical.attack_damage_dealt_a = tb.state.attack_damage_dealt[0];
     tactical.attack_damage_dealt_b = tb.state.attack_damage_dealt[1];
-    ctx.db
-        .battle_tactical()
-        .battle_id()
-        .update(tactical.clone());
-    ctx.db.battle_secret().battle_id().update(BattleSecret {
+    if tactical != tactical_before {
+        ctx.db
+            .battle_tactical()
+            .battle_id()
+            .update(tactical.clone());
+    }
+    let secret = BattleSecret {
         battle_id,
         seed: tb.state.seed,
         action_seq: tb.state.action_seq,
-    });
+    };
+    if ctx.db.battle_secret().battle_id().find(battle_id) != Some(secret.clone()) {
+        ctx.db.battle_secret().battle_id().update(secret);
+    }
     // READY rows: upsert the plans, drop the rest; an unchanged plan keeps its stamp.
     let existing: Vec<BattleQueue> = ctx
         .db
@@ -772,16 +817,18 @@ fn store(
             ctx.db.battle_queue().unit_id().delete(q.unit_id);
         }
     }
-    // The side-A clock (a wild side never runs one).
-    if let Some(row) = ctx
+    // Every clock row the battle holds — one per side under the PvP ruleset; a wild side never
+    // runs one — each written only when it moved.
+    let clock_rows: Vec<BattleClock> = ctx
         .db
         .battle_clock()
         .battle_id()
         .filter(battle_id)
-        .find(|c| c.side == SideRow::A)
-    {
-        let c = tb.clocks[0];
-        ctx.db.battle_clock().clock_id().update(BattleClock {
+        .collect();
+    for row in clock_rows {
+        let c = tb.clocks[side_index(side_of_row(row.side))];
+        let before = row.clone();
+        let next = BattleClock {
             window_seq: c.window_seq,
             window_open_ms: c.window_open_ms,
             deadline_ms: c.deadline_ms,
@@ -789,7 +836,10 @@ fn store(
             idle_ms_total: c.idle_ms_total,
             autopass_count: c.autopass_count,
             ..row
-        });
+        };
+        if next != before {
+            ctx.db.battle_clock().clock_id().update(next);
+        }
     }
     // The transcript.
     let mut seq = next_event_seq(ctx, battle_id);
@@ -867,19 +917,40 @@ fn finish(
     let was_active = tactical.phase == Phase::Active;
     let mut hp_ok = false;
     if let Some(anchor) = &anchor {
-        if matches!(close, Close::Settled { .. }) {
-            match write_back_party_hp(ctx, anchor) {
-                Ok(()) => hp_ok = true,
-                Err(e) => {
-                    let escaped = json_escape(&e);
-                    mr_log(
-                        "tactical_writeback_err",
-                        &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
-                    );
+        match close {
+            // A PvP-ruleset finish (bt-14, BT14.5) commits through THE PvP decisive-commit
+            // funnel: both sides' HP, the anchor update, the rating (its only caller), the legacy
+            // sweep; `hp_ok` is the funnel's word on both write-backs (the wild rule carried: no
+            // rewards and no penalty on a failed write-back).
+            Close::Settled { .. } if tactical.kind.uses_pvp_rules() => {
+                match crate::pvp::settle_pvp_battle(ctx, anchor.clone(), SideAWriteBack::HpOnly) {
+                    Ok(ok) => hp_ok = ok,
+                    Err(e) => {
+                        let escaped = json_escape(&e);
+                        mr_log(
+                            "tactical_writeback_err",
+                            &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+                        );
+                    }
                 }
             }
+            Close::Settled { .. } => {
+                match write_back_party_hp(ctx, anchor) {
+                    Ok(()) => hp_ok = true,
+                    Err(e) => {
+                        let escaped = json_escape(&e);
+                        mr_log(
+                            "tactical_writeback_err",
+                            &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+                        );
+                    }
+                }
+                ctx.db.battle().battle_id().update(anchor.clone());
+            }
+            Close::Deploying | Close::LegacyEnded | Close::Fallback => {
+                ctx.db.battle().battle_id().update(anchor.clone());
+            }
         }
-        ctx.db.battle().battle_id().update(anchor.clone());
     }
     tactical.phase = Phase::Finished;
     tactical.turn_state = TurnState::NotActive;
@@ -901,7 +972,7 @@ fn finish(
                 "tactical_settle_skipped",
                 &format!("\"battle_id\":{battle_id},\"reason\":\"no anchor\""),
             );
-            tactics_settle::finalize_orphan_summary(ctx, &tactical, now_ms);
+            tactics_settle::finalize_orphan_summary(ctx, &tactical, was_active);
         }
     }
     arm_gc(ctx, battle_id, now_ms.saturating_add(GC_DELAY_MS));
@@ -1289,15 +1360,139 @@ fn resolve_formation(remembered: &[u64], party_in_order: &[(u64, bool)], cap: us
     out
 }
 
-/// Materialise the player's picks and the wild pack into `battle_unit` rows, build the
-/// rules state and run the battle's first step. The Deploying deadline row goes BEFORE the
-/// start so the first real window's row survives.
+/// Side B of a materialisation: the wild pack (`battle_wild_unit`) or the opponent's picks.
+#[derive(Clone, Copy)]
+enum SideB<'a> {
+    Wild,
+    Picks(&'a [DeployPick]),
+}
+
+/// One side's picks validated against its owner's live rows — the monster exists, is `owner`'s,
+/// is in the side's party list, is conscious, its slot is a spawn of that side, it is not in an
+/// open trade — each with its monster row and kit. Nothing is written.
+fn stage_side(
+    ctx: &ReducerContext,
+    content: &'static TacticsContent,
+    spawns: usize,
+    owner: Identity,
+    party: &[u64],
+    picks: &[DeployPick],
+) -> Result<Vec<(Monster, DeployPick, UnitKit)>, String> {
+    let mut staged = Vec::with_capacity(picks.len());
+    for pick in picks {
+        let m = ctx
+            .db
+            .monster()
+            .monster_id()
+            .find(pick.monster_id)
+            .ok_or_else(|| format!("monster {} not owned by player", pick.monster_id))?;
+        if m.owner_identity != owner {
+            return Err(format!("monster {} not owned by player", pick.monster_id));
+        }
+        if !party.contains(&pick.monster_id) {
+            return Err(format!("monster {} not in party", pick.monster_id));
+        }
+        if m.current_hp == 0 {
+            return Err(format!("monster {} is fainted", pick.monster_id));
+        }
+        if usize::from(pick.slot) >= spawns {
+            return Err(format!("slot {} out of range", pick.slot));
+        }
+        reject_if_monster_in_trade(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(owner)
+                .chain(ctx.db.trade_offer().counterparty().filter(owner)),
+            pick.monster_id,
+        )?;
+        let kit = content.unit_kit(m.species_id, m.level, monster_stats(&m))?;
+        staged.push((m, *pick, kit));
+    }
+    Ok(staged)
+}
+
+/// Insert one deployed party monster as a `battle_unit` row of `side` at `pos` (full budget state
+/// is the engine's at `deploy_unit`; the row mirrors it).
+#[allow(clippy::too_many_arguments)]
+fn insert_party_unit(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    side: SideRow,
+    owner: Identity,
+    m: &Monster,
+    pick: DeployPick,
+    kit: &UnitKit,
+    pos: Cell,
+) -> BattleUnit {
+    ctx.db.battle_unit().insert(BattleUnit {
+        unit_id: 0,
+        battle_id,
+        side,
+        owner: Some(owner),
+        slot: pick.slot,
+        monster_id: Some(m.monster_id),
+        wild_index: None,
+        species_id: m.species_id,
+        level: m.level,
+        affinity: kit.affinity,
+        x: pos.x,
+        y: pos.y,
+        cur_hp: m.current_hp,
+        stats: kit.stats,
+        skill_ids: kit.skills.iter().map(|s| s.skill_id).collect(),
+        status: None,
+        ap: 0,
+        strides_used: 0,
+        attacks: 0,
+        budget_last: None,
+        guard: false,
+        first_stand: true,
+        movement: class_row(kit.class),
+        stride: stride_for_base_speed(kit.base_speed),
+        stance: None,
+        state: UnitState::Active,
+    })
+}
+
+/// Remember `owner`'s confirmed deploy (design §3.3: the formation follows every confirmed deploy).
+fn remember_formation(ctx: &ReducerContext, owner: Identity, monster_ids: Vec<u64>) {
+    if ctx
+        .db
+        .player_formation()
+        .owner_identity()
+        .find(owner)
+        .is_some()
+    {
+        ctx.db
+            .player_formation()
+            .owner_identity()
+            .update(PlayerFormation {
+                owner_identity: owner,
+                monster_ids,
+            });
+    } else {
+        ctx.db.player_formation().insert(PlayerFormation {
+            owner_identity: owner,
+            monster_ids,
+        });
+    }
+}
+
+/// Materialise side A's picks and side B (the wild pack, or the opponent's picks — bt-14's
+/// reveal-by-copy, both sides in ONE transaction) into `battle_unit` rows, build the rules state
+/// and run the battle's first step. Every fallible check runs BEFORE the first write (a dry run
+/// with placeholder ids); the calls after the writes repeat validated inputs and cannot refuse.
+/// The Deploying deadline rows go BEFORE the start so the first real window's row survives;
+/// `except` spares a deploy row that is firing right now (the runtime deletes it itself).
 fn materialize(
     ctx: &ReducerContext,
     anchor: Battle,
     tactical: BattleTactical,
-    picks: &[DeployPick],
+    picks_a: &[DeployPick],
+    side_b: SideB<'_>,
     now_ms: i64,
+    except: Except,
 ) -> Result<(), String> {
     let battle_id = anchor.battle_id;
     let content = content()?;
@@ -1309,35 +1504,34 @@ fn materialize(
         .find(battle_id)
         .ok_or_else(|| format!("battle {battle_id} has no secret row"))?;
     // Validate every pick before the first write.
-    let mut staged: Vec<(Monster, DeployPick, UnitKit)> = Vec::with_capacity(picks.len());
-    for pick in picks {
-        let m = ctx
+    let staged = stage_side(
+        ctx,
+        content,
+        map.spawn_a.len(),
+        anchor.player_identity,
+        &anchor.party_monster_ids,
+        picks_a,
+    )?;
+    let staged_b = match side_b {
+        SideB::Picks(picks) => stage_side(
+            ctx,
+            content,
+            map.spawn_b.len(),
+            anchor.opponent_identity,
+            &anchor.opponent_monster_ids,
+            picks,
+        )?,
+        SideB::Wild => Vec::new(),
+    };
+    let mut wild_rows: Vec<BattleWildUnit> = match side_b {
+        SideB::Wild => ctx
             .db
-            .monster()
-            .monster_id()
-            .find(pick.monster_id)
-            .ok_or_else(|| format!("monster {} not owned by player", pick.monster_id))?;
-        if m.owner_identity != anchor.player_identity {
-            return Err(format!("monster {} not owned by player", pick.monster_id));
-        }
-        if !anchor.party_monster_ids.contains(&pick.monster_id) {
-            return Err(format!("monster {} not in party", pick.monster_id));
-        }
-        if m.current_hp == 0 {
-            return Err(format!("monster {} is fainted", pick.monster_id));
-        }
-        if usize::from(pick.slot) >= map.spawn_a.len() {
-            return Err(format!("slot {} out of range", pick.slot));
-        }
-        let kit = content.unit_kit(m.species_id, m.level, monster_stats(&m))?;
-        staged.push((m, *pick, kit));
-    }
-    let mut wild_rows: Vec<BattleWildUnit> = ctx
-        .db
-        .battle_wild_unit()
-        .battle_id()
-        .filter(battle_id)
-        .collect();
+            .battle_wild_unit()
+            .battle_id()
+            .filter(battle_id)
+            .collect(),
+        SideB::Picks(_) => Vec::new(),
+    };
     wild_rows.sort_by_key(|w| w.wild_index);
     let mut wild_staged = Vec::with_capacity(wild_rows.len());
     for w in &wild_rows {
@@ -1362,19 +1556,46 @@ fn materialize(
     // `TacticalState::new`) runs BEFORE the first write, so a refusal leaves the store
     // untouched (the native host has no rollback).
     let mut dry: Vec<TacticalUnit> = Vec::new();
+    let placeholder = |n: usize| u32::MAX.saturating_sub(u32::try_from(n).unwrap_or(u32::MAX));
     for (i, (m, pick, kit)) in staged.iter().enumerate() {
-        let id = u32::MAX.saturating_sub(u32::try_from(i).unwrap_or(u32::MAX));
         let pos = map.spawn_a[usize::from(pick.slot)];
         dry.push(
-            deploy_unit(id, Side::A, pick.slot, pos, kit.clone(), m.current_hp)
-                .map_err(|e| format!("deploy: {e:?}"))?,
+            deploy_unit(
+                placeholder(i),
+                Side::A,
+                pick.slot,
+                pos,
+                kit.clone(),
+                m.current_hp,
+            )
+            .map_err(|e| format!("deploy: {e:?}"))?,
+        );
+    }
+    for (j, (m, pick, kit)) in staged_b.iter().enumerate() {
+        let pos = map.spawn_b[usize::from(pick.slot)];
+        dry.push(
+            deploy_unit(
+                placeholder(staged.len() + j),
+                Side::B,
+                pick.slot,
+                pos,
+                kit.clone(),
+                m.current_hp,
+            )
+            .map_err(|e| format!("deploy: {e:?}"))?,
         );
     }
     for (j, (w, kit, _, pos)) in wild_staged.iter().enumerate() {
-        let id = u32::MAX.saturating_sub(u32::try_from(staged.len() + j).unwrap_or(u32::MAX));
         dry.push(
-            deploy_unit(id, Side::B, w.wild_index, *pos, kit.clone(), kit.stats.hp)
-                .map_err(|e| format!("deploy: {e:?}"))?,
+            deploy_unit(
+                placeholder(staged.len() + staged_b.len() + j),
+                Side::B,
+                w.wild_index,
+                *pos,
+                kit.clone(),
+                kit.stats.hp,
+            )
+            .map_err(|e| format!("deploy: {e:?}"))?,
         );
     }
     TacticalState::new(tactical.kind, secret.seed, map, dry)
@@ -1383,39 +1604,52 @@ fn materialize(
     let mut units: Vec<TacticalUnit> = Vec::new();
     let mut rows: Vec<BattleUnit> = Vec::new();
     for (m, pick, kit) in &staged {
-        let kit = kit.clone();
         let pos = map.spawn_a[usize::from(pick.slot)];
-        let row = ctx.db.battle_unit().insert(BattleUnit {
-            unit_id: 0,
+        let row = insert_party_unit(
+            ctx,
             battle_id,
-            side: SideRow::A,
-            owner: Some(anchor.player_identity),
-            slot: pick.slot,
-            monster_id: Some(m.monster_id),
-            wild_index: None,
-            species_id: m.species_id,
-            level: m.level,
-            affinity: kit.affinity,
-            x: pos.x,
-            y: pos.y,
-            cur_hp: m.current_hp,
-            stats: kit.stats,
-            skill_ids: kit.skills.iter().map(|s| s.skill_id).collect(),
-            status: None,
-            ap: 0,
-            strides_used: 0,
-            attacks: 0,
-            budget_last: None,
-            guard: false,
-            first_stand: true,
-            movement: class_row(kit.class),
-            stride: stride_for_base_speed(kit.base_speed),
-            stance: None,
-            state: UnitState::Active,
-        });
+            SideRow::A,
+            anchor.player_identity,
+            m,
+            *pick,
+            kit,
+            pos,
+        );
         units.push(
-            deploy_unit(row.unit_id, Side::A, pick.slot, pos, kit, m.current_hp)
-                .map_err(|e| format!("deploy: {e:?}"))?,
+            deploy_unit(
+                row.unit_id,
+                Side::A,
+                pick.slot,
+                pos,
+                kit.clone(),
+                m.current_hp,
+            )
+            .map_err(|e| format!("deploy: {e:?}"))?,
+        );
+        rows.push(row);
+    }
+    for (m, pick, kit) in &staged_b {
+        let pos = map.spawn_b[usize::from(pick.slot)];
+        let row = insert_party_unit(
+            ctx,
+            battle_id,
+            SideRow::B,
+            anchor.opponent_identity,
+            m,
+            *pick,
+            kit,
+            pos,
+        );
+        units.push(
+            deploy_unit(
+                row.unit_id,
+                Side::B,
+                pick.slot,
+                pos,
+                kit.clone(),
+                m.current_hp,
+            )
+            .map_err(|e| format!("deploy: {e:?}"))?,
         );
         rows.push(row);
     }
@@ -1458,30 +1692,23 @@ fn materialize(
     let state = TacticalState::new(tactical.kind, secret.seed, map, units)
         .map_err(|e| format!("deploy: {e:?}"))?;
     let mut tb = TacticalBattle::new(battle_id, state);
-    // The remembered formation follows every confirmed deploy (design §3.3).
-    let formation: Vec<u64> = staged.iter().map(|(m, _, _)| m.monster_id).collect();
-    if ctx
-        .db
-        .player_formation()
-        .owner_identity()
-        .find(anchor.player_identity)
-        .is_some()
-    {
-        ctx.db
-            .player_formation()
-            .owner_identity()
-            .update(PlayerFormation {
-                owner_identity: anchor.player_identity,
-                monster_ids: formation,
-            });
-    } else {
-        ctx.db.player_formation().insert(PlayerFormation {
-            owner_identity: anchor.player_identity,
-            monster_ids: formation,
-        });
+    // The remembered formation follows every confirmed deploy (design §3.3) — each picking owner's;
+    // in Practice (one owner on both sides) side A's picks are what is remembered.
+    remember_formation(
+        ctx,
+        anchor.player_identity,
+        staged.iter().map(|(m, _, _)| m.monster_id).collect(),
+    );
+    if !staged_b.is_empty() && anchor.opponent_identity != anchor.player_identity {
+        remember_formation(
+            ctx,
+            anchor.opponent_identity,
+            staged_b.iter().map(|(m, _, _)| m.monster_id).collect(),
+        );
     }
     ctx.db.battle_deploy().battle_id().delete(battle_id);
-    // The Deploying window's row goes before the start arms the first real window.
+    // The Deploying window's row goes before the start arms the first real window (the firing
+    // row, if this IS the deploy expiry, is the runtime's to delete).
     let deploy_rows: Vec<u64> = ctx
         .db
         .tactical_deadline_sched()
@@ -1489,6 +1716,7 @@ fn materialize(
         .filter(battle_id)
         .filter(|r| r.unit_id == DEPLOY_WINDOW_UNIT)
         .map(|r| r.scheduled_id)
+        .filter(|id| Some(*id) != except.deadline())
         .collect();
     for id in deploy_rows {
         ctx.db.tactical_deadline_sched().scheduled_id().delete(id);
@@ -1514,7 +1742,7 @@ fn materialize(
         &out,
         prev,
         now_ms,
-        Except::None,
+        except,
     );
     Ok(())
 }
@@ -1762,7 +1990,15 @@ pub(crate) fn start_wild_tactical(
                 slot: u8::try_from(slot).unwrap_or(u8::MAX),
             })
             .collect();
-        materialize(ctx, anchor, tactical, &picks, now)?;
+        materialize(
+            ctx,
+            anchor,
+            tactical,
+            &picks,
+            SideB::Wild,
+            now,
+            Except::None,
+        )?;
     } else if let Some(deadline) = deploy_deadline {
         arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deadline);
     }
@@ -1794,26 +2030,60 @@ fn wild_anchor_monster(
 
 /// The PvP map for `seed` (bt-14, BT14.2): the `pvp: true` maps in content order, index
 /// `splitmix64(seed ^ PVP_MAP_SALT) % n`; `None` when content has no PvP map. Pure.
-#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
 pub(crate) fn pvp_map_id(maps: &[BattleMapEntry], seed: u64) -> Option<u32> {
-    let _ = (maps, seed ^ PVP_MAP_SALT);
-    None
+    let pool: Vec<u32> = maps.iter().filter(|m| m.pvp).map(|m| m.id).collect();
+    let n = u64::try_from(pool.len()).ok().filter(|&n| n > 0)?;
+    let idx = usize::try_from(splitmix64(seed ^ PVP_MAP_SALT) % n).ok()?;
+    pool.get(idx).copied()
 }
 
 /// How many monsters one side of a PvP battle deploys (bt-14, BT14.1): exactly `format`, or all
 /// it has if fewer conscious. Pure.
-#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
 pub(crate) fn pvp_deploy_count(format: u8, conscious: usize) -> usize {
-    let _ = (format, conscious);
-    0
+    usize::from(format).min(conscious)
+}
+
+/// One side's party of a PvP battle, validated against the live rows: every id exists, is
+/// `owner`'s, is party-slotted and is not in an open trade. Nothing is written.
+fn load_side_party(
+    ctx: &ReducerContext,
+    owner: Identity,
+    ids: &[u64],
+) -> Result<Vec<Monster>, String> {
+    let mut party = Vec::with_capacity(ids.len());
+    for &mid in ids {
+        let m = ctx
+            .db
+            .monster()
+            .monster_id()
+            .find(mid)
+            .ok_or_else(|| format!("monster {mid} not found"))?;
+        if m.owner_identity != owner {
+            return Err(format!("monster {mid} not owned by caller"));
+        }
+        check_monster_in_party(m.party_slot).map_err(|e| format!("monster {mid} {e}"))?;
+        reject_if_monster_in_trade(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(owner)
+                .chain(ctx.db.trade_offer().counterparty().filter(owner)),
+            mid,
+        )?;
+        party.push(m);
+    }
+    Ok(party)
 }
 
 /// Start a PvP (or Practice, when `challenger == opponent`) tactical battle (bt-14, BT14.2): the
 /// anchor `battle` row (Ongoing, both parties), `battle_tactical` (Deploying), `battle_secret`,
-/// one `battle_clock` row per side and one owner-only `battle_deploy` staging row per side, plus
-/// the 45 s deploy window row. Nothing is written before the last guard (reject, never clamp).
+/// one `battle_clock` row per side (both on the deploy deadline) and one owner-only
+/// `battle_deploy` staging row per side (empty, unlocked), plus the 45 s deploy window row.
+/// Nothing is written before the last guard (reject, never clamp). The two side lists must be
+/// DISJOINT (Practice splits one party): every per-side rule then works over its own list.
 /// Reached only through the cfg-gated `dev_start_tactical_pvp` until bt-16 flips the
-/// challenge-accept path.
+/// challenge-accept path; EVERY caller must draw `seed` from `ctx.random()` — the public `map_id`
+/// derives from it.
 #[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
 pub(crate) fn start_pvp_tactical(
     ctx: &ReducerContext,
@@ -1824,9 +2094,128 @@ pub(crate) fn start_pvp_tactical(
     format: u8,
     seed: u64,
 ) -> Result<u64, String> {
-    let _ = (ctx, challenger, challenger_party, opponent, opponent_party);
-    let _ = (pvp_map_id(&[], seed), pvp_deploy_count(format, 0));
-    Err("start_pvp_tactical: unimplemented".to_string())
+    if format == 0 || format > PVP_FORMAT_MAX {
+        return Err("format must be 1..=3".to_string());
+    }
+    require_subject_not_deleting(ctx, challenger)?;
+    require_subject_not_deleting(ctx, opponent)?;
+    check_party_size(challenger_party.len())?;
+    check_party_size(opponent_party.len())?;
+    for party in [challenger_party, opponent_party] {
+        for (i, mid) in party.iter().enumerate() {
+            if party[..i].contains(mid) {
+                return Err(format!("duplicate monster_id {mid} in party"));
+            }
+        }
+    }
+    if challenger_party.iter().any(|m| opponent_party.contains(m)) {
+        return Err("a monster cannot be on both sides".to_string());
+    }
+    if is_in_ongoing_battle(ctx, challenger) {
+        return Err("already in an ongoing battle".to_string());
+    }
+    if challenger != opponent && is_in_ongoing_battle(ctx, opponent) {
+        return Err("opponent is already in an ongoing battle".to_string());
+    }
+    let content = content()?;
+    let party_a = load_side_party(ctx, challenger, challenger_party)?;
+    let party_b = load_side_party(ctx, opponent, opponent_party)?;
+    if !party_a.iter().any(|m| m.current_hp > 0) {
+        return Err("challenger party has no conscious monster".to_string());
+    }
+    if !party_b.iter().any(|m| m.current_hp > 0) {
+        return Err("opponent party has no conscious monster".to_string());
+    }
+    let map_id =
+        pvp_map_id(content.maps, seed).ok_or_else(|| "no PvP map in content".to_string())?;
+    let kind = if challenger == opponent {
+        BattleKind::Practice
+    } else {
+        BattleKind::Pvp
+    };
+    let mut team_a = Vec::with_capacity(party_a.len());
+    for m in &party_a {
+        team_a.push(anchor_monster(m, content.species(m.species_id)?));
+    }
+    let mut team_b = Vec::with_capacity(party_b.len());
+    for m in &party_b {
+        team_b.push(anchor_monster(m, content.species(m.species_id)?));
+    }
+    // Both sides hold a conscious monster (checked above), so both leads seat.
+    let side_a = BattleSide::with_lead(team_a)
+        .ok_or_else(|| "challenger party has no conscious monster".to_string())?;
+    let side_b = BattleSide::with_lead(team_b)
+        .ok_or_else(|| "opponent party has no conscious monster".to_string())?;
+    let now = now_ms(ctx);
+    let deploy_deadline = now.saturating_add(i64::from(
+        game_core::tactics::clock::deploy_budget_ms(kind, &content.tuning),
+    ));
+    let anchor = ctx.db.battle().insert(Battle {
+        battle_id: 0,
+        player_identity: challenger,
+        opponent_identity: opponent,
+        state: BattleState {
+            side_a,
+            side_b,
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 0,
+            weather: None,
+        },
+        party_monster_ids: challenger_party.to_vec(),
+        opponent_monster_ids: opponent_party.to_vec(),
+        created_at_ms: now,
+    });
+    let battle_id = anchor.battle_id;
+    ctx.db.battle_tactical().insert(BattleTactical {
+        battle_id,
+        kind,
+        format,
+        map_id,
+        content_version: CONTENT_VERSION,
+        phase: Phase::Deploying,
+        round: 1,
+        initiative: Vec::new(),
+        turn_idx: 0,
+        turn_state: TurnState::NotActive,
+        tie_priority_side: SideRow::A,
+        pending_pad_ms: 0,
+        attack_damage_dealt_a: 0,
+        attack_damage_dealt_b: 0,
+    });
+    ctx.db.battle_secret().insert(BattleSecret {
+        battle_id,
+        seed: splitmix64(seed ^ BATTLE_SEED_SALT),
+        action_seq: 0,
+    });
+    for (side, player) in [(SideRow::A, challenger), (SideRow::B, opponent)] {
+        // Both clocks carry the deploy deadline (the client's countdown source, bt-12 B) and no
+        // open window; the first turn window opens at the reveal.
+        ctx.db.battle_clock().insert(BattleClock {
+            clock_id: 0,
+            battle_id,
+            side,
+            player,
+            window_seq: 0,
+            window_open_ms: None,
+            deadline_ms: Some(deploy_deadline),
+            windows_this_unit_turn: 0,
+            idle_ms_total: 0,
+            autopass_count: 0,
+        });
+        ctx.db.battle_deploy().insert(BattleDeploy {
+            deploy_id: 0,
+            battle_id,
+            owner: player,
+            side,
+            picks: Vec::new(),
+            locked: false,
+        });
+    }
+    arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deploy_deadline);
+    log::info!(
+        "{{\"evt\":\"tactical_pvp_start\",\"battle_id\":{battle_id},\"map_id\":{map_id},\"format\":{format},\"kind\":\"{kind:?}\"}}"
+    );
+    Ok(battle_id)
 }
 
 /// The Deploying window's deadline (bt-12 B, BT12.2): `now` plus game-core's deploy budget for a
@@ -1844,17 +2233,22 @@ pub(crate) fn deploy_deadline_ms(now_ms: i64, tuning: &TacticsTuning) -> i64 {
 // Client reducers
 // ===========================================================================
 
-/// The anchor + owner preamble every client reducer shares, BEFORE any tactical row is
-/// read (no phase or kit detail reaches a non-owner). The deletion gate follows it at
+/// The anchor + participant preamble every client reducer shares, BEFORE any tactical row is
+/// read (no phase or kit detail reaches a non-participant). A participant is the anchor's player
+/// or its real opponent (bt-14); a stranger is "not owner". The deletion gate follows it at
 /// depth 0 in each reducer body (the gate census reads that level).
-fn owned_anchor(ctx: &ReducerContext, reducer: &str, battle_id: u64) -> Result<Battle, String> {
+fn participant_anchor(
+    ctx: &ReducerContext,
+    reducer: &str,
+    battle_id: u64,
+) -> Result<Battle, String> {
     let me = ctx.sender();
     let Some(anchor) = ctx.db.battle().battle_id().find(battle_id) else {
         let e = "battle not found".to_string();
         log_reject(reducer, me, &e);
         return Err(e);
     };
-    if anchor.player_identity != me {
+    if side_of_sender(&anchor, me).is_none() {
         let e = "not owner".to_string();
         log_reject(reducer, me, &e);
         return Err(e);
@@ -1877,6 +2271,26 @@ fn side_of_sender(anchor: &Battle, sender: Identity) -> Option<Side> {
     } else {
         None
     }
+}
+
+/// The side a sender acts for on `unit`: its anchor side, except in a Practice battle (one
+/// identity on both sides), where it is the unit row's own side when the sender owns the unit.
+fn sender_side(anchor: &Battle, sender: Identity, unit: Option<&BattleUnit>) -> Option<Side> {
+    if anchor.player_identity == sender && anchor.opponent_identity == sender {
+        return unit
+            .filter(|u| u.owner == Some(sender))
+            .map(|u| side_of_row(u.side));
+    }
+    side_of_sender(anchor, sender)
+}
+
+/// The forfeiting side's opponent wins — the carried 1v1 mapping (`game_core::pvp_forfeit_outcome`),
+/// never restated.
+fn opponent_wins(forfeiter: Side) -> BattleOutcome {
+    pvp_forfeit_outcome(match forfeiter {
+        Side::A => SideId::SideA,
+        Side::B => SideId::SideB,
+    })
 }
 
 fn active_tactical(
@@ -1913,7 +2327,7 @@ pub fn deploy_units(
 ) -> Result<(), String> {
     const NAME: &str = "deploy_units";
     let me = ctx.sender();
-    let anchor = owned_anchor(ctx, NAME, battle_id)?;
+    let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
     if anchor.state.outcome != BattleOutcome::Ongoing {
         return reject(NAME, me, "battle is not ongoing".to_string());
@@ -1934,6 +2348,10 @@ pub fn deploy_units(
     };
     if picks.is_empty() {
         return reject(NAME, me, "no picks".to_string());
+    }
+    if tactical.kind.uses_pvp_rules() {
+        return stage_pvp(ctx, NAME, me, &anchor, &tactical, map, &picks)
+            .inspect_err(|e| log_reject(NAME, me, e));
     }
     if picks.len() > usize::from(MAX_PACK).min(map.spawn_a.len()) {
         return reject(NAME, me, "too many picks".to_string());
@@ -1987,7 +2405,136 @@ pub fn deploy_units(
             return reject(NAME, me, e);
         }
     }
-    materialize(ctx, anchor, tactical, &picks, now_ms(ctx)).inspect_err(|e| log_reject(NAME, me, e))
+    materialize(
+        ctx,
+        anchor,
+        tactical,
+        &picks,
+        SideB::Wild,
+        now_ms(ctx),
+        Except::None,
+    )
+    .inspect_err(|e| log_reject(NAME, me, e))
+}
+
+/// The PvP secret deploy (bt-14, BT14.2; design §3.3): the sender's picks go to ITS owner-only
+/// `battle_deploy` row, locked — exactly `pvp_deploy_count(format, its conscious members)` of
+/// them (BT14.1), each owned, in its side's party list, conscious, not in trade, on a spawn of
+/// its side (reject, never clamp). In Practice the one owner stages side A, then side B, and a
+/// monster staged on one side is unavailable to the other. When BOTH rows are locked this call
+/// copies both stagings into `battle_unit` rows and starts the battle: the reveal-by-copy.
+/// Otherwise nothing participant-visible is written.
+fn stage_pvp(
+    ctx: &ReducerContext,
+    reducer: &str,
+    me: Identity,
+    anchor: &Battle,
+    tactical: &BattleTactical,
+    map: &BattleMapDef,
+    picks: &[DeployPick],
+) -> Result<(), String> {
+    let mut rows: Vec<BattleDeploy> = ctx
+        .db
+        .battle_deploy()
+        .battle_id()
+        .filter(anchor.battle_id)
+        .collect();
+    rows.sort_by_key(|d| d.side as u8);
+    let practice = anchor.player_identity == anchor.opponent_identity;
+    let mine = if practice {
+        rows.iter().find(|d| !d.locked)
+    } else {
+        rows.iter().find(|d| d.owner == me)
+    };
+    let Some(mine) = mine else {
+        return Err("already locked".to_string());
+    };
+    if mine.locked {
+        return Err("already locked".to_string());
+    }
+    let side = side_of_row(mine.side);
+    let (party, spawns) = match side {
+        Side::A => (&anchor.party_monster_ids, map.spawn_a.len()),
+        Side::B => (&anchor.opponent_monster_ids, map.spawn_b.len()),
+    };
+    let staged_elsewhere: Vec<u64> = rows
+        .iter()
+        .filter(|d| d.deploy_id != mine.deploy_id)
+        .flat_map(|d| d.picks.iter().map(|p| p.monster_id))
+        .collect();
+    let conscious = party
+        .iter()
+        .filter(|mid| !staged_elsewhere.contains(mid))
+        .filter(|&&mid| {
+            ctx.db
+                .monster()
+                .monster_id()
+                .find(mid)
+                .is_some_and(|m| m.owner_identity == me && m.current_hp > 0)
+        })
+        .count();
+    let need = pvp_deploy_count(tactical.format, conscious);
+    if picks.len() != need {
+        return Err(format!("deploy exactly {need} monsters"));
+    }
+    for (i, pick) in picks.iter().enumerate() {
+        if picks[..i].iter().any(|p| p.monster_id == pick.monster_id) {
+            return Err(format!("duplicate monster_id {}", pick.monster_id));
+        }
+        if picks[..i].iter().any(|p| p.slot == pick.slot) {
+            return Err(format!("duplicate slot {}", pick.slot));
+        }
+        if staged_elsewhere.contains(&pick.monster_id) {
+            return Err(format!(
+                "monster {} is staged on the other side",
+                pick.monster_id
+            ));
+        }
+    }
+    let content = content()?;
+    stage_side(ctx, content, spawns, me, party, picks)?;
+    ctx.db.battle_deploy().deploy_id().update(BattleDeploy {
+        picks: picks.to_vec(),
+        locked: true,
+        ..mine.clone()
+    });
+    let locked: Vec<(Side, Vec<DeployPick>)> = rows
+        .iter()
+        .map(|d| {
+            let picks = if d.deploy_id == mine.deploy_id {
+                picks.to_vec()
+            } else {
+                d.picks.clone()
+            };
+            (side_of_row(d.side), picks)
+        })
+        .collect();
+    let all_locked = rows
+        .iter()
+        .all(|d| d.locked || d.deploy_id == mine.deploy_id);
+    if !all_locked || locked.len() != 2 {
+        return Ok(());
+    }
+    let picks_a = locked
+        .iter()
+        .find(|(s, _)| *s == Side::A)
+        .map(|(_, p)| p.clone())
+        .unwrap_or_default();
+    let picks_b = locked
+        .iter()
+        .find(|(s, _)| *s == Side::B)
+        .map(|(_, p)| p.clone())
+        .unwrap_or_default();
+    let _ = reducer;
+    materialize(
+        ctx,
+        anchor.clone(),
+        tactical.clone(),
+        &picks_a,
+        SideB::Picks(&picks_b),
+        now_ms(ctx),
+        Except::None,
+    )
 }
 
 /// Submit a plan for one of the sender's units: a pre-queue (stored READY) or, for the
@@ -2001,7 +2548,7 @@ pub fn submit_queue(
 ) -> Result<(), String> {
     const NAME: &str = "submit_queue";
     let me = ctx.sender();
-    let anchor = owned_anchor(ctx, NAME, battle_id)?;
+    let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
     if entries.len() > MAX_STORED_ENTRIES {
         return reject(NAME, me, "too many entries".to_string());
@@ -2017,7 +2564,8 @@ pub fn submit_queue(
     if loaded.tb.state.unit(unit_id).is_none() {
         return reject(NAME, me, format!("unit {unit_id} not in battle"));
     }
-    let Some(side) = side_of_sender(&anchor, me) else {
+    let unit_row = loaded.units.iter().find(|u| u.unit_id == unit_id);
+    let Some(side) = sender_side(&anchor, me, unit_row) else {
         return reject(NAME, me, "not owner".to_string());
     };
     let content = match content() {
@@ -2068,7 +2616,7 @@ pub fn submit_queue(
 pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Result<(), String> {
     const NAME: &str = "cancel_queue";
     let me = ctx.sender();
-    let anchor = owned_anchor(ctx, NAME, battle_id)?;
+    let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
     active_tactical(ctx, NAME, &anchor)?;
     let mut loaded = match load(ctx, battle_id) {
@@ -2078,7 +2626,8 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
     if loaded.tb.state.unit(unit_id).is_none() {
         return reject(NAME, me, format!("unit {unit_id} not in battle"));
     }
-    let Some(side) = side_of_sender(&anchor, me) else {
+    let unit_row = loaded.units.iter().find(|u| u.unit_id == unit_id);
+    let Some(side) = sender_side(&anchor, me, unit_row) else {
         return reject(NAME, me, "not owner".to_string());
     };
     let prev = prev_of(&loaded.tb);
@@ -2098,15 +2647,147 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
 
 /// Forfeit the sender's PvP tactical battle (bt-14, BT14.5; design §6.4): a client-confirmed
 /// reducer, not a queue entry, 0 AP — the opponent wins through the one terminal funnel
-/// (`conclude(.., EndHow::Forfeit)` → `finish` → `pvp::settle_pvp_battle`). READY rows are voided,
-/// never executed. A wild battle has Flee instead; a Deploying battle is not forfeitable.
+/// (`conclude(.., EndHow::Forfeit)` → `store` → `finish` → `pvp::settle_pvp_battle`). READY rows
+/// are voided, never executed. A wild battle has Flee instead ("not a PvP battle"); a Deploying
+/// battle is not forfeitable ("battle is not active": nothing is revealed yet and the 45 s window
+/// ends it); in Practice the one owner forfeits side A.
 #[spacetimedb::reducer]
 pub fn forfeit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     const NAME: &str = "forfeit";
     let me = ctx.sender();
-    let anchor = owned_anchor(ctx, NAME, battle_id)?;
+    let anchor = participant_anchor(ctx, NAME, battle_id)?;
     crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
-    reject(NAME, me, format!("{NAME}: unimplemented"))
+    if anchor.state.outcome != BattleOutcome::Ongoing {
+        return reject(NAME, me, "battle is not ongoing".to_string());
+    }
+    let Some(tactical) = ctx.db.battle_tactical().battle_id().find(battle_id) else {
+        return reject(NAME, me, "not a tactical battle".to_string());
+    };
+    if !tactical.kind.uses_pvp_rules() {
+        return reject(NAME, me, "not a PvP battle".to_string());
+    }
+    if tactical.phase != Phase::Active {
+        return reject(NAME, me, "battle is not active".to_string());
+    }
+    let Some(side) = side_of_sender(&anchor, me) else {
+        return reject(NAME, me, "not owner".to_string());
+    };
+    let loaded = match load(ctx, battle_id) {
+        Ok(l) => l,
+        Err(e) => return reject(NAME, me, e),
+    };
+    let Loaded {
+        anchor,
+        tactical,
+        units,
+        map,
+        mut tb,
+    } = loaded;
+    let now = now_ms(ctx);
+    let prev = prev_of(&tb);
+    let out = match tb.conclude(opponent_wins(side), EndHow::Forfeit) {
+        Ok(out) => out,
+        Err(e) => return reject(NAME, me, format!("{NAME}: {e:?}")),
+    };
+    store(
+        ctx,
+        Loaded {
+            anchor,
+            tactical,
+            units,
+            map,
+            tb,
+        },
+        &out,
+        prev,
+        now,
+        Except::None,
+    );
+    Ok(())
+}
+
+/// The PvP deploy window expired (bt-14, BT14.2; design §3.3): every side that has not locked is
+/// auto-filled with its remembered formation, else its first conscious monsters in slot order
+/// (never a monster the other side staged — Practice shares one owner), capped at the format; then
+/// ONE copy reveals both sides. A side with nothing to field cancels the battle (`Fled`, unrated).
+/// Not a strike: no clock moves.
+fn expire_pvp_deploy(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64, except: Except) {
+    let battle_id = tactical.battle_id;
+    let Some(anchor) = ctx.db.battle().battle_id().find(battle_id) else {
+        close_without_hp(ctx, tactical, now_ms, except, Close::Deploying);
+        return;
+    };
+    let mut rows: Vec<BattleDeploy> = ctx
+        .db
+        .battle_deploy()
+        .battle_id()
+        .filter(battle_id)
+        .collect();
+    rows.sort_by_key(|d| d.side as u8);
+    let mut taken: Vec<u64> = rows
+        .iter()
+        .flat_map(|d| d.picks.iter().map(|p| p.monster_id))
+        .collect();
+    let mut sides: [Vec<DeployPick>; 2] = [Vec::new(), Vec::new()];
+    for side in [Side::A, Side::B] {
+        let picks = match rows.iter().find(|d| side_of_row(d.side) == side) {
+            Some(d) if d.locked => d.picks.clone(),
+            _ => {
+                let (owner, party) = match side {
+                    Side::A => (anchor.player_identity, &anchor.party_monster_ids),
+                    Side::B => (anchor.opponent_identity, &anchor.opponent_monster_ids),
+                };
+                let party_in_order: Vec<(u64, bool)> = party
+                    .iter()
+                    .filter(|mid| !taken.contains(mid))
+                    .map(|&mid| {
+                        let conscious = ctx
+                            .db
+                            .monster()
+                            .monster_id()
+                            .find(mid)
+                            .is_some_and(|m| m.owner_identity == owner && m.current_hp > 0);
+                        (mid, conscious)
+                    })
+                    .collect();
+                let remembered: Vec<u64> = ctx
+                    .db
+                    .player_formation()
+                    .owner_identity()
+                    .find(owner)
+                    .map(|f| f.monster_ids)
+                    .unwrap_or_default();
+                let chosen =
+                    resolve_formation(&remembered, &party_in_order, usize::from(tactical.format));
+                taken.extend(chosen.iter().copied());
+                chosen
+                    .into_iter()
+                    .enumerate()
+                    .map(|(slot, monster_id)| DeployPick {
+                        monster_id,
+                        slot: u8::try_from(slot).unwrap_or(u8::MAX),
+                    })
+                    .collect()
+            }
+        };
+        if picks.is_empty() {
+            close_without_hp(ctx, tactical, now_ms, except, Close::Deploying);
+            return;
+        }
+        sides[side_index(side)] = picks;
+    }
+    let [picks_a, picks_b] = sides;
+    if let Err(e) = materialize(
+        ctx,
+        anchor,
+        tactical.clone(),
+        &picks_a,
+        SideB::Picks(&picks_b),
+        now_ms,
+        except,
+    ) {
+        fallback_close(ctx, tactical, &e, now_ms, except);
+    }
 }
 
 /// DEV/TEST entrypoint for the build phase (the live challenge-accept path flips in bt-16):
@@ -2156,7 +2837,7 @@ pub fn dev_start_tactical_pvp(
         };
         (party_a, party_b)
     };
-    let format = format.unwrap_or_else(|| crate::pvp::challenge_format(party_a.len()));
+    let format = format.unwrap_or_else(|| challenge_format(party_a.len()));
     let seed: u64 = ctx.random();
     start_pvp_tactical(ctx, challenger, &party_a, opponent, &party_b, format, seed)
         .map(|_| ())
@@ -2217,7 +2898,24 @@ pub fn tactical_deadline_fire(
     match tactical.phase {
         Phase::Finished => return Ok(()),
         Phase::Deploying => {
-            if args.unit_id == DEPLOY_WINDOW_UNIT {
+            if args.unit_id != DEPLOY_WINDOW_UNIT {
+                return Ok(());
+            }
+            if tactical.kind.uses_pvp_rules() {
+                // A premature fire re-arms at the clock's deploy deadline (every clock row of the
+                // battle carries it), as `NotDue` does for a turn window.
+                let deadline = ctx
+                    .db
+                    .battle_clock()
+                    .battle_id()
+                    .filter(battle_id)
+                    .find_map(|c| c.deadline_ms);
+                if let Some(deadline) = deadline.filter(|&d| now < d) {
+                    arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deadline);
+                    return Ok(());
+                }
+                expire_pvp_deploy(ctx, tactical, now, except);
+            } else {
                 close_without_hp(ctx, tactical, now, except, Close::Deploying);
             }
             return Ok(());
@@ -2434,22 +3132,36 @@ pub(crate) fn sweep_tactical_rows(
 // Disconnect / forced-terminal resolver
 // ===========================================================================
 
-/// Resolve every Ongoing wild tactical battle of `identity` (design §3.7 disconnect):
-/// an Active battle auto-flees — damaged HP persists, READY rows are discarded unexecuted
-/// — and a Deploying battle closes as `Fled` with nothing persisted. The anchor stays
-/// (terminal), so the legacy wild resolver that runs after this skips it. Runs FIRST in
+/// Resolve every Ongoing TACTICAL battle of `identity`, either role (design §3.7 and §6.4
+/// disconnect): an Active wild battle auto-flees — damaged HP persists, READY rows are discarded
+/// unexecuted; an Active PvP or Practice battle is the leaver's forfeit (the opponent wins, rated
+/// through `pvp::settle_pvp_battle`, READY rows deleted not executed); a Deploying battle closes as
+/// `Fled` with nothing persisted and no rating change. The anchor stays (terminal), so the legacy
+/// wild and PvP resolvers that run after this skip it. Runs FIRST in
 /// `crate::resolve_all_live_interactions`.
 pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Identity) {
-    let ids: Vec<u64> = ctx
+    // Both roles, each id once (a Practice anchor names the identity twice).
+    let mut ids: BTreeSet<u64> = ctx
         .db
         .battle()
         .player_identity()
         .filter(identity)
-        .filter(|b| is_ongoing_wild_battle(b, identity))
+        .filter(|b| b.state.outcome == BattleOutcome::Ongoing)
         .map(|b| b.battle_id)
         .collect();
+    ids.extend(
+        ctx.db
+            .battle()
+            .opponent_identity()
+            .filter(identity)
+            .filter(|b| {
+                b.state.outcome == BattleOutcome::Ongoing && b.opponent_identity != WILD_IDENTITY
+            })
+            .map(|b| b.battle_id),
+    );
     let now = now_ms(ctx);
     for battle_id in ids {
+        // A 1v1 anchor (no tactical row) is the legacy resolvers' to end.
         let Some(tactical) = ctx.db.battle_tactical().battle_id().find(battle_id) else {
             continue;
         };
@@ -2476,7 +3188,15 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
             mut tb,
         } = loaded;
         let prev = prev_of(&tb);
-        let out = match tb.conclude(BattleOutcome::Fled, EndHow::AutoFlee) {
+        // A wild battle auto-flees; under the PvP ruleset the leaver forfeits (design §6.4 — the
+        // carried immediate `forfeit_on_disconnect`, keyed on the last session by the caller).
+        let (outcome, how) = if tb.state.kind.uses_pvp_rules() {
+            let side = side_of_sender(&anchor, identity).unwrap_or(Side::A);
+            (opponent_wins(side), EndHow::Forfeit)
+        } else {
+            (BattleOutcome::Fled, EndHow::AutoFlee)
+        };
+        let out = match tb.conclude(outcome, how) {
             Ok(out) => out,
             Err(_) => {
                 fallback_close(ctx, tactical, "conclude refused", now, Except::None);

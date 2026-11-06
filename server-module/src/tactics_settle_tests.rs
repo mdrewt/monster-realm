@@ -4667,7 +4667,7 @@ fn surge_from_round_nine_strikes_every_living_pvp_unit_bt14_5() {
         }
     }
     run_round(&fx, &w, live.id, 9, t);
-    let want = u16::try_from((300u32 * 5 / 100).max(1)).expect("small");
+    let want = u16::try_from(300u32 * 5 / 100).expect("small");
     assert_eq!(want, 15, "PRECONDITION: 5% of 300");
     let mut surges: Vec<(u32, u16, u16)> = w
         .events_of(live.id)
