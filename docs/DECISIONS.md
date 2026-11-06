@@ -169,7 +169,7 @@ them), and `player_quest`.
 
 ## Tactical battle privacy is structural, and tactical rows are not exportable
 
-**Decision.** The ten tactical tables (`server-module/src/schema.rs`, M-battle-tactics
+**Decision.** The tactical tables (`server-module/src/schema.rs`, M-battle-tactics
 bt-7) are all private. Both participants read `battle_tactical`, `battle_unit`,
 `battle_event` and `battle_clock` through views that join through the `battle` anchor's
 two identity indexes (`my_tactical_battle`, `my_battle_units`, `my_battle_events`,
@@ -177,7 +177,7 @@ two identity indexes (`my_tactical_battle`, `my_battle_units`, `my_battle_events
 `player_formation` rows (`my_battle_queue`, `my_battle_deploy`, `my_formation`); and
 `battle_secret` (the seed), `battle_wild_unit` (wild individuality seeds) and
 `battle_summary` (telemetry) have no view at all. `battle_unit` carries no queue or
-ready field. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
+ready field. Deploy is reveal-by-copy: each side's picks go to its own owner-only `battle_deploy` row (`locked`, written in `tactics::stage_pvp`). The second lock, or the 45 s window's auto-fill in `tactics::expire_pvp_deploy` (`pvp_deploy_ms`, `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which copies both stagings into `battle_unit` rows and flips the phase in one transaction. No unit row exists before that, so the only participant-visible deploy fact is the phase flip. `battle_clock` holds one row per side (a PvP battle holds two; a Practice battle's two name one player), and both participants read both through `my_battle_clock`: the opponent's window and strike count are match state, not a secret. `tactics::store` writes a row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible. Forfeit is a client-confirmed reducer (`tactics::forfeit`), not a queue entry, and costs 0 AP. Forfeit, disconnect, the 4th auto-pass, Surge and adjudication all reach `tactics::finish` as `Close::Settled`, which settles through `pvp::settle_pvp_battle` in `SideAWriteBack::HpOnly` mode. That is the one caller of `ranking::apply_pvp_rating`; the tactical settlement pays essence to both sides, with no XP and no currency. Practice rates and pays nothing. The legacy `submit_pvp_action` refuses a tactical anchor. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
 the cascade step (`schema::erase_tactical_rows`, beside the tables it writes) collects
 the battle ids from every row that still names the identity (the `battle` anchor chain,
 the clock, queue, deploy and summary identity columns, and a scan of `battle_unit`),
@@ -199,14 +199,14 @@ already reads through `my_formation`) are kept out of the export bundle by the s
 (BT7.4); whether a player's export should include them is an open spec question.
 `battle_unit.owner` is `Option<Identity>` (a wild unit has none, and a
 future two-ally side is just more rows), which no index can key, so unit rows are reached
-through the battle they belong to.
+through the battle they belong to. Accepted reveals, stated as such: the legacy `my_battle` anchor (`schema.rs`) returns the whole `Battle` row, so from Deploying on both participants see the opponent's roster (species, level, stats, known skills in `state.side_b.team`, filled at `tactics.rs` `start_pvp_tactical`); slots and positions stay secret until the copy, and the anchor shape is the cutover's to retire. `QueueVoided{unit}` after a KO, turn-skip or battle end shows that a plan existed (see "Queued actions halt-and-return").
 
 **Rules out.** A ready or queued flag on `battle_unit`; a view over `battle_secret`,
 `battle_wild_unit` or `battle_summary`; a view taking an identity argument; adding an
 exporter for a tactical table; an owner-keyed-only cascade step for `battle_unit` (it
 would miss wild units and could never be indexed); a cascade that finds tactical rows
 only through the `battle` anchor (the reaper's first step can delete an ongoing wild
-anchor before the sweep runs); `u8` codes for game-core enums in a row.
+anchor before the sweep runs); `u8` codes for game-core enums in a row. Also ruled out: a lock flag on `battle_tactical` or a lock mirror on `battle_unit`; writing one side's units at its own lock (`materialize` runs only once both are locked, `tactics.rs` `stage_pvp`); routing a tactical anchor through `battle::write_back_battle_results` (its side-A XP and currency grant, `battle.rs`, are the M16a asymmetry that design §7 removes); a second `apply_pvp_rating` caller.
 
 ## Bounded client prediction
 

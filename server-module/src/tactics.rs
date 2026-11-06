@@ -690,8 +690,8 @@ fn disarm_gcs(ctx: &ReducerContext, battle_id: u64, except: Option<u64>) {
 }
 
 /// Write one step back: the anchor HP mirror, the tactical row, the secret, every unit,
-/// the READY rows (reconciled), the side-A clock, the events, then the schedule rows the
-/// step asks for. `prev` is the turn state and round before the step: an advance row is
+/// the READY rows (reconciled), every clock row, the events, then the schedule rows the
+/// step asks for — each row only when it moved. `prev` is the turn state and round before the step: an advance row is
 /// armed only when the step ended in `Advancing` AND moved the boundary (it entered
 /// `Advancing`, or a fired advance ran a whole round into the next boundary) — a pre-queue
 /// or cancel during `Advancing` arms nothing. A finished battle goes through [`finish`].
@@ -892,10 +892,13 @@ fn store(
 }
 
 /// THE terminal funnel, idempotent against the stored ROW (a caller's stale Active copy must
-/// not settle twice). For a `Settled` close it persists damaged HP through the existing
-/// primitive (the anchor already mirrors the units); it writes the anchor's outcome, closes the
-/// tactical row, drops READY and staging rows, disarms every schedule row but `except`, runs
-/// the one settlement (`tactics_settle::settle`, per the `Close` kind) and arms the 24 h GC.
+/// not settle twice). For a `Settled` close it persists damaged HP (the anchor already mirrors
+/// the units): a wild battle through `write_back_party_hp`, a PvP-ruleset battle through the PvP
+/// decisive-commit funnel `pvp::settle_pvp_battle` (both sides' HP, the anchor update, the rating
+/// — bt-14); it writes the anchor's outcome, closes the tactical row, drops READY and staging
+/// rows, disarms every schedule row but `except`, runs the one settlement
+/// (`tactics_settle::settle`, per the `Close` kind) and arms the 24 h GC. `hp_ok` gates the
+/// settlement's rewards and penalty (no rewards on a failed write-back, either side).
 fn finish(
     ctx: &ReducerContext,
     anchor: Option<Battle>,
@@ -923,6 +926,8 @@ fn finish(
             // sweep; `hp_ok` is the funnel's word on both write-backs (the wild rule carried: no
             // rewards and no penalty on a failed write-back).
             Close::Settled { .. } if tactical.kind.uses_pvp_rules() => {
+                // The funnel reports the write-backs as `Ok(both_ok)` and keeps the `Result`
+                // shape for its 1v1 callers; an `Err` is not produced today.
                 match crate::pvp::settle_pvp_battle(ctx, anchor.clone(), SideAWriteBack::HpOnly) {
                     Ok(ok) => hp_ok = ok,
                     Err(e) => {
@@ -1004,7 +1009,7 @@ fn close_without_hp(
 }
 
 /// The never-fail close of a battle that cannot be loaded (content drift, a missing row):
-/// every side-A unit's HP goes straight to its monster row, the anchor becomes `Fled`
+/// every deployed party unit's HP (both sides) goes straight to its monster row, the anchor becomes `Fled`
 /// (never deleted), the tactical side closes and the GC is armed. Logged once.
 fn fallback_close(
     ctx: &ReducerContext,
@@ -1022,6 +1027,11 @@ fn fallback_close(
             tactical.phase
         ),
     );
+    if tactical.phase == Phase::Deploying {
+        // Nothing was legitimately deployed: a unit row here is a reveal that failed mid-way
+        // (the scheduled path commits what it wrote) and must not stay readable for 24 h.
+        ctx.db.battle_unit().battle_id().delete(battle_id);
+    }
     if tactical.phase == Phase::Active {
         let units: Vec<BattleUnit> = ctx.db.battle_unit().battle_id().filter(battle_id).collect();
         for unit in units {
@@ -2350,7 +2360,7 @@ pub fn deploy_units(
         return reject(NAME, me, "no picks".to_string());
     }
     if tactical.kind.uses_pvp_rules() {
-        return stage_pvp(ctx, NAME, me, &anchor, &tactical, map, &picks)
+        return stage_pvp(ctx, me, &anchor, &tactical, map, &picks)
             .inspect_err(|e| log_reject(NAME, me, e));
     }
     if picks.len() > usize::from(MAX_PACK).min(map.spawn_a.len()) {
@@ -2420,13 +2430,13 @@ pub fn deploy_units(
 /// The PvP secret deploy (bt-14, BT14.2; design §3.3): the sender's picks go to ITS owner-only
 /// `battle_deploy` row, locked — exactly `pvp_deploy_count(format, its conscious members)` of
 /// them (BT14.1), each owned, in its side's party list, conscious, not in trade, on a spawn of
-/// its side (reject, never clamp). In Practice the one owner stages side A, then side B, and a
-/// monster staged on one side is unavailable to the other. When BOTH rows are locked this call
-/// copies both stagings into `battle_unit` rows and starts the battle: the reveal-by-copy.
-/// Otherwise nothing participant-visible is written.
+/// its side (reject, never clamp). In Practice the one owner stages side A, then side B (the two
+/// lists are disjoint, so a monster belongs to exactly one side). When BOTH rows are locked this
+/// call copies both stagings into `battle_unit` rows and starts the battle: the reveal-by-copy.
+/// Otherwise nothing participant-visible is written, and no refusal text depends on the
+/// opponent's row.
 fn stage_pvp(
     ctx: &ReducerContext,
-    reducer: &str,
     me: Identity,
     anchor: &Battle,
     tactical: &BattleTactical,
@@ -2453,18 +2463,18 @@ fn stage_pvp(
         return Err("already locked".to_string());
     }
     let side = side_of_row(mine.side);
+    // The side's OWN list only. The two lists are disjoint by construction (`start_pvp_tactical`),
+    // so nothing here ever reads the other side's staging: a pick naming the opponent's monster
+    // fails `stage_side`'s ownership check with the same text whether or not it is locked — the
+    // refusal must never be an oracle on the opponent's row.
     let (party, spawns) = match side {
         Side::A => (&anchor.party_monster_ids, map.spawn_a.len()),
         Side::B => (&anchor.opponent_monster_ids, map.spawn_b.len()),
     };
-    let staged_elsewhere: Vec<u64> = rows
-        .iter()
-        .filter(|d| d.deploy_id != mine.deploy_id)
-        .flat_map(|d| d.picks.iter().map(|p| p.monster_id))
-        .collect();
+    // Trades are not a reduction: a monster in an open trade never enters a party list
+    // (`start_pvp_tactical` refuses it), and the Ongoing anchor blocks new trades for both owners.
     let conscious = party
         .iter()
-        .filter(|mid| !staged_elsewhere.contains(mid))
         .filter(|&&mid| {
             ctx.db
                 .monster()
@@ -2484,12 +2494,6 @@ fn stage_pvp(
         if picks[..i].iter().any(|p| p.slot == pick.slot) {
             return Err(format!("duplicate slot {}", pick.slot));
         }
-        if staged_elsewhere.contains(&pick.monster_id) {
-            return Err(format!(
-                "monster {} is staged on the other side",
-                pick.monster_id
-            ));
-        }
     }
     let content = content()?;
     stage_side(ctx, content, spawns, me, party, picks)?;
@@ -2498,34 +2502,17 @@ fn stage_pvp(
         locked: true,
         ..mine.clone()
     });
-    let locked: Vec<(Side, Vec<DeployPick>)> = rows
-        .iter()
-        .map(|d| {
-            let picks = if d.deploy_id == mine.deploy_id {
-                picks.to_vec()
-            } else {
-                d.picks.clone()
-            };
-            (side_of_row(d.side), picks)
-        })
-        .collect();
-    let all_locked = rows
-        .iter()
-        .all(|d| d.locked || d.deploy_id == mine.deploy_id);
-    if !all_locked || locked.len() != 2 {
+    // The reveal: once the other row is locked too (this row's lock is the update above).
+    let other = rows.iter().find(|d| d.deploy_id != mine.deploy_id);
+    let Some(other) = other.filter(|d| d.locked) else {
         return Ok(());
-    }
-    let picks_a = locked
-        .iter()
-        .find(|(s, _)| *s == Side::A)
-        .map(|(_, p)| p.clone())
-        .unwrap_or_default();
-    let picks_b = locked
-        .iter()
-        .find(|(s, _)| *s == Side::B)
-        .map(|(_, p)| p.clone())
-        .unwrap_or_default();
-    let _ = reducer;
+    };
+    let (picks_a, picks_b) = match side {
+        Side::A => (picks.to_vec(), other.picks.clone()),
+        Side::B => (other.picks.clone(), picks.to_vec()),
+    };
+    // A refusal here concerns the OTHER side's rows (this side was just validated) or the board
+    // as a set: the detail is logged, never returned to this caller.
     materialize(
         ctx,
         anchor.clone(),
@@ -2535,6 +2522,17 @@ fn stage_pvp(
         now_ms(ctx),
         Except::None,
     )
+    .map_err(|e| {
+        let escaped = json_escape(&e);
+        mr_log(
+            "tactical_pvp_reveal_err",
+            &format!(
+                "\"battle_id\":{},\"reason\":\"{escaped}\"",
+                anchor.battle_id
+            ),
+        );
+        "deploy failed".to_string()
+    })
 }
 
 /// Submit a plan for one of the sender's units: a pre-queue (stored READY) or, for the
@@ -2707,9 +2705,8 @@ pub fn forfeit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 }
 
 /// The PvP deploy window expired (bt-14, BT14.2; design §3.3): every side that has not locked is
-/// auto-filled with its remembered formation, else its first conscious monsters in slot order
-/// (never a monster the other side staged — Practice shares one owner), capped at the format; then
-/// ONE copy reveals both sides. A side with nothing to field cancels the battle (`Fled`, unrated).
+/// auto-filled from its own list — the remembered formation, else the first conscious monsters in
+/// slot order — capped at the format; then ONE copy reveals both sides. A side with nothing to field cancels the battle (`Fled`, unrated).
 /// Not a strike: no clock moves.
 fn expire_pvp_deploy(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64, except: Except) {
     let battle_id = tactical.battle_id;
@@ -2724,10 +2721,6 @@ fn expire_pvp_deploy(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64
         .filter(battle_id)
         .collect();
     rows.sort_by_key(|d| d.side as u8);
-    let mut taken: Vec<u64> = rows
-        .iter()
-        .flat_map(|d| d.picks.iter().map(|p| p.monster_id))
-        .collect();
     let mut sides: [Vec<DeployPick>; 2] = [Vec::new(), Vec::new()];
     for side in [Side::A, Side::B] {
         let picks = match rows.iter().find(|d| side_of_row(d.side) == side) {
@@ -2737,9 +2730,9 @@ fn expire_pvp_deploy(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64
                     Side::A => (anchor.player_identity, &anchor.party_monster_ids),
                     Side::B => (anchor.opponent_identity, &anchor.opponent_monster_ids),
                 };
+                // The side's own (disjoint) list: remembered formation first, then slot order.
                 let party_in_order: Vec<(u64, bool)> = party
                     .iter()
-                    .filter(|mid| !taken.contains(mid))
                     .map(|&mid| {
                         let conscious = ctx
                             .db
@@ -2759,7 +2752,6 @@ fn expire_pvp_deploy(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64
                     .unwrap_or_default();
                 let chosen =
                     resolve_formation(&remembered, &party_in_order, usize::from(tactical.format));
-                taken.extend(chosen.iter().copied());
                 chosen
                     .into_iter()
                     .enumerate()
@@ -3191,7 +3183,17 @@ pub(crate) fn resolve_tactical_on_disconnect(ctx: &ReducerContext, identity: Ide
         // A wild battle auto-flees; under the PvP ruleset the leaver forfeits (design §6.4 — the
         // carried immediate `forfeit_on_disconnect`, keyed on the last session by the caller).
         let (outcome, how) = if tb.state.kind.uses_pvp_rules() {
-            let side = side_of_sender(&anchor, identity).unwrap_or(Side::A);
+            // The ids above were selected by this identity's role, so a side always resolves.
+            let Some(side) = side_of_sender(&anchor, identity) else {
+                fallback_close(
+                    ctx,
+                    tactical,
+                    "leaver is not a participant",
+                    now,
+                    Except::None,
+                );
+                continue;
+            };
             (opponent_wins(side), EndHow::Forfeit)
         } else {
             (BattleOutcome::Fled, EndHow::AutoFlee)

@@ -673,6 +673,19 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 /// still-armed deadline settles the battle later; on the cascade path step 6c
 /// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal.
 pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
+    /// An Ongoing 1v1 PvP anchor. A tactical anchor (bt-14) is
+    /// `tactics::resolve_tactical_on_disconnect`'s, which runs first and leaves it terminal; it
+    /// must never route through the 1v1 credits.
+    fn is_live_legacy_pvp(ctx: &ReducerContext, b: &Battle) -> bool {
+        b.state.outcome == BattleOutcome::Ongoing
+            && b.opponent_identity != WILD_IDENTITY
+            && ctx
+                .db
+                .battle_tactical()
+                .battle_id()
+                .find(b.battle_id)
+                .is_none()
+    }
     // Collect battle_ids first (collect-then-mutate discipline — never mutate
     // a SpacetimeDB table while iterating over it).
 
@@ -682,18 +695,7 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
         .battle()
         .player_identity()
         .filter(disconnected)
-        .filter(|b| {
-            // A tactical anchor (bt-14) is `tactics::resolve_tactical_on_disconnect`'s, which
-            // runs first and leaves it terminal; never route one through the 1v1 credits.
-            b.state.outcome == BattleOutcome::Ongoing
-                && b.opponent_identity != WILD_IDENTITY
-                && ctx
-                    .db
-                    .battle_tactical()
-                    .battle_id()
-                    .find(b.battle_id)
-                    .is_none()
-        })
+        .filter(|b| is_live_legacy_pvp(ctx, b))
         .map(|b| b.battle_id)
         .collect();
 
@@ -703,18 +705,7 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
         .battle()
         .opponent_identity()
         .filter(disconnected)
-        .filter(|b| {
-            // A tactical anchor (bt-14) is `tactics::resolve_tactical_on_disconnect`'s, which
-            // runs first and leaves it terminal; never route one through the 1v1 credits.
-            b.state.outcome == BattleOutcome::Ongoing
-                && b.opponent_identity != WILD_IDENTITY
-                && ctx
-                    .db
-                    .battle_tactical()
-                    .battle_id()
-                    .find(b.battle_id)
-                    .is_none()
-        })
+        .filter(|b| is_live_legacy_pvp(ctx, b))
         .map(|b| b.battle_id)
         .collect();
 
@@ -1229,13 +1220,13 @@ pub fn submit_pvp_action(
         e
     })?;
 
-    // Guard 1a (bt-14): a TACTICAL anchor is run by the tactical reducers — a 1v1 pick on it
-    // would resolve a turn on `anchor.state` and settle (rate) a battle the tactical rows still
-    // run. Before the participation check: the refusal names no side.
-    reject_if_tactical_anchor(ctx, "submit_pvp_action", battle_id)?;
-
     // Guard 2: participation check — returns SideId.
     let my_side = require_pvp_participant(ctx, "submit_pvp_action", &battle)?;
+
+    // Guard 2a (bt-14): a TACTICAL anchor is run by the tactical reducers — a 1v1 pick on it
+    // would resolve a turn on `anchor.state` and settle (rate) a battle the tactical rows still
+    // run. After the participation check, so a stranger learns nothing about the battle's kind.
+    reject_if_tactical_anchor(ctx, "submit_pvp_action", battle_id)?;
 
     // Guard 3: PvP only.
     if battle.opponent_identity == WILD_IDENTITY {

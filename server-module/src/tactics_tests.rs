@@ -6165,3 +6165,42 @@ fn legacy_submit_pvp_action_refuses_a_tactical_pvp_anchor_for_both_participants_
         assert!(actions.rows().is_empty(), "{who}: no battle_action row");
     }
 }
+
+/// A's `deploy_units` naming one of B's monsters is refused with the SAME ownership text whether B
+/// has already LOCKED that monster or not — the refusal is no oracle on the opponent's secret
+/// staging (a refused call rolls back, so a probe would be free) — and writes nothing.
+///
+/// RED REASON: the GREEN artifact at e2effbb8 answered "monster 21 is staged on the other side" for
+/// the locked probe, but "monster 23 not owned by player" for the unlocked one.
+///
+/// WRONG IMPL KILLED: any cross-side staging check that runs before the ownership check; any error
+/// text that depends on the opponent's staging row.
+#[test]
+fn a_probe_with_the_opponents_locked_monster_gets_the_unowned_refusal_bt14_4() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_TRIO, 2);
+    deploy(&fx, b(), T0 + 1_000, id, vec![pick(21, 0), pick(22, 1)]).expect("B locks 21 and 22");
+    let before = w.snapshot();
+    let mut errors: Vec<String> = Vec::new();
+    for (label, probe) in [("B's LOCKED monster", 21u64), ("B's UNLOCKED monster", 23)] {
+        let got = deploy(&fx, a(), T0 + 2_000, id, vec![pick(probe, 0), pick(11, 1)]);
+        assert_eq!(
+            got,
+            Err(format!("monster {probe} not owned by player")),
+            "{label}: the plain ownership refusal, whatever the opponent staged"
+        );
+        if let Err(e) = got {
+            errors.push(e);
+        }
+    }
+    assert!(
+        errors.iter().all(|e| !e.contains("staged")),
+        "no refusal mentions the opponent's staging: {errors:?}"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "neither probe writes anything"
+    );
+}
