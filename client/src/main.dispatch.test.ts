@@ -7033,6 +7033,8 @@ describe('bt-15 B: the clock pump, the forfeit and the rating line (BT15.2, BT15
     expect(bt15bLines(), 'a PvP flight: no rating line (and no reason)').toEqual([
       ['none', i18n.t('tactics.results.none')],
     ]);
+    // A battle FIRST seen already Finished is not pinned: decideBattleOverlay (battleModel.ts:491-494)
+    // pre-dismisses it (no frame, no results panel), so noteRatingBaseline's Finished guard is belt-and-braces.
   });
 
   it('the clock pump paints the ring on the WAITING unit`s chip on the next frame of the wall clock — ok, then refilled to a full window by a new open, amber at 9 s, red at 4 s, moved to the next waiting unit — with exactly one ring, never on a ghost, and a players strip naming both players with their strikes [BT15-2]', async () => {

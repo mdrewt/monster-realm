@@ -3619,7 +3619,9 @@ function pumpClock(wallNowMs: number): void {
     clockVM({
       kind: shellKind(row.kind),
       clocks: store.battleClocks(row.battleId),
-      activeUnitId: activeUnitOf(row.turnState, row.initiative, row.turnIdx),
+      // WHILE the battle waits on a unit (BT15.2): `Waiting(U)` only — never the `Advancing` gap
+      // between chained transactions (its window is closed; `activeUnitOf` maps it to initiative[turnIdx]).
+      activeUnitId: row.turnState.kind === 'Waiting' ? row.turnState.unitId : null,
       units: store.battleUnits(row.battleId).map((u) => ({ unitId: u.unitId, side: u.row.side })),
       mySide: shown.mySide,
       playerName: (id) => store.player(id)?.name ?? store.profile(id)?.name ?? '',

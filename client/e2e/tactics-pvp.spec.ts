@@ -730,6 +730,11 @@ test.describe
       // bt-15 B (named intentional change): the byte-identity samples are the bar WITHOUT its clock
       // ring (per-frame state), normalised on the page in one evaluate.
       const turnbarBefore = await ringlessTurnbar(pageB);
+      // bt-15 B: B's ring chip and players strip before A's pre-queue (re-read after it below).
+      const ringChipBefore = await ringChip(pageB);
+      const playersStripB = pageB.locator('.tactics-players');
+      await expect(playersStripB, 'B paints one players strip').toHaveCount(1);
+      const playersBefore = await playersStripB.innerHTML();
       await armRowProbe(pageB);
       const me = t.units.find((u) => u.unitId === unitA.unitId) as Tile;
       await openMenu(pageA, me);
@@ -785,6 +790,19 @@ test.describe
         await ringlessTurnbar(pageB),
         'B`s turn bar (its clock ring removed) is byte-identical across A`s pre-queue',
       ).toBe(turnbarBefore);
+      // bt-15 B: the ring and the strip do not react to the opponent's pre-queue either — the ring
+      // stays on the same chip and the players strip is byte-identical.
+      expect(
+        await ringChip(pageB),
+        'B`s clock ring is still on the same chip after A`s pre-queue',
+      ).toBe(ringChipBefore);
+      expect(ringChipBefore, 'fixture: the ring was on the waiting unit').toBe(
+        String(t.activeUnitId),
+      );
+      expect(
+        await playersStripB.innerHTML(),
+        'B`s players strip is byte-identical across A`s pre-queue',
+      ).toBe(playersBefore);
       expect(
         (await pageB.evaluate(() => document.documentElement.outerHTML)).includes(nickA),
         'still no A monster in B`s document',
@@ -979,14 +997,22 @@ test.describe
       // The rating line: "Rating N" on a first rated game, "Rating B → N (±d)" once rated before
       // (T2's AFK forfeit may already have rated both accounts) — either form, on both pages.
       const ratingLine = new RegExp(`^Rating \\d+( ${ARROW} \\d+ \\([+-]\\d+\\))?$`);
-      for (const [who, p] of [
-        ['A', pageA],
-        ['B', pageB],
+      const deltaForm = new RegExp(`^Rating (\\d+) ${ARROW} (\\d+) \\(([+-])(\\d+)\\)$`);
+      for (const [who, p, sign] of [
+        ['A', pageA, -1],
+        ['B', pageB, 1],
       ] as const) {
-        await expect(
-          p.locator(`${TACTICS.results} .tactics-results-list li[data-line="rating"]`),
-          `${who}: a rating line`,
-        ).toHaveText(ratingLine);
+        const line = p.locator(`${TACTICS.results} .tactics-results-list li[data-line="rating"]`);
+        await expect(line, `${who}: a rating line`).toHaveText(ratingLine);
+        const m = deltaForm.exec(((await line.textContent()) ?? '').trim());
+        if (m === null) continue; // the first-game form `Rating N`: accepted as is
+        const [before, after, mark, size] = [Number(m[1]), Number(m[2]), m[3], Number(m[4])];
+        const delta = (mark === '-' ? -1 : 1) * size;
+        expect(delta, `${who}: the printed delta is after minus before`).toBe(after - before);
+        expect(
+          Math.sign(delta),
+          `${who}: ${sign < 0 ? 'the forfeiter loses rating' : 'the winner gains rating'}`,
+        ).toBe(sign);
       }
       await expect(
         pageB.locator(`${TACTICS.results} h2.tactics-title`),
