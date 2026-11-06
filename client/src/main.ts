@@ -4153,6 +4153,7 @@ const mrTacticsHook = {
     turnIdx: number;
     initiative: number[];
     activeUnitId: number | null;
+    turnState: 'NotActive' | 'Waiting' | 'Advancing';
     owner: 'legacy' | 'deploy' | 'tactical' | 'results' | null;
     events: number;
     deadlineMs: string | null;
@@ -4178,6 +4179,7 @@ const mrTacticsHook = {
       turnIdx: row.turnIdx,
       initiative: [...row.initiative],
       activeUnitId: activeUnitOf(row.turnState, row.initiative, row.turnIdx),
+      turnState: row.turnState.kind,
       owner:
         tacticsBattle?.visible === true
           ? 'tactical'

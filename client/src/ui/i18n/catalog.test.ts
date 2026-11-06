@@ -3282,8 +3282,12 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // bt-11 (named intentional change, BT11.1/BT11.6): +28 tactics.*, +7 chrome.chip.*; increment C
     // (BT11.3/BT11.4/BT11.5): +26 tactics.* = 486.
     // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6): +18 tactics.* = 504.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 504 keys').toBe(504);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(504);
+    // bt-12 increment B (named intentional change, BT12.2/BT12.6): +2 tactics.*
+    // (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation,
+    // assign, prevMonster, nextMonster) = 511.
+    // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 511 keys').toBe(511);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(511);
   });
 });
 
@@ -3317,7 +3321,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 504 keys each (bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 511 keys each (bt-12 increment B, named intentional change, BT12.2/BT12.6: 504 → 511, +2 tactics.* (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation, assign, prevMonster, nextMonster); bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -3387,8 +3391,12 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // bt-11 (named intentional change, BT11.1/BT11.6): +28 tactics.*, +7 chrome.chip.*; increment C
     // (BT11.3/BT11.4/BT11.5): +26 tactics.* = 486.
     // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6): +18 tactics.* = 504.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 504 keys').toBe(504);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(504);
+    // bt-12 increment B (named intentional change, BT12.2/BT12.6): +2 tactics.*
+    // (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation,
+    // assign, prevMonster, nextMonster) = 511.
+    // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 511 keys').toBe(511);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(511);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3657,7 +3665,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 504 keys (bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 511 keys (bt-12 increment B, named intentional change, BT12.2/BT12.6: 504 → 511, +2 tactics.* (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation, assign, prevMonster, nextMonster); bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3688,9 +3696,13 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // bt-11 (named intentional change, BT11.1/BT11.6): +28 tactics.*, +7 chrome.chip.*; increment C
     // (BT11.3/BT11.4/BT11.5): +26 tactics.* = 486.
     // bt-12 increment A (named intentional change, BT12.2/BT12.4/BT12.6): +18 tactics.* = 504.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 504 keys').toBe(504);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(504);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(504);
+    // bt-12 increment B (named intentional change, BT12.2/BT12.6): +2 tactics.*
+    // (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation,
+    // assign, prevMonster, nextMonster) = 511.
+    // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 511 keys').toBe(511);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(511);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(511);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
