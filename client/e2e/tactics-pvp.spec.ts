@@ -50,9 +50,8 @@ import {
 // Who moves first is NOT fixed: each join rolls its starter's IVs + nature, and initiative orders by
 // effective speed, base speed, then a per-round priority side (game-core `initiative.rs`). Three
 // regimes: B strictly faster (B first every round); a tie (round 1 by a coin flip on the battle seed,
-// alternating each round); A strictly faster (A first every round). T2 therefore ends A's live turn
-// when A opens round 1, pre-queues in round 1's first B window in every regime, and checks the
-// lock chip in whichever state A's chip is then in (pending -> one lock, acted -> none).
+// alternating each round); A strictly faster (A first every round). T2 pre-queues in round 1's first
+// B window in every regime, so its lock oracle is two-state (pending -> one lock, acted -> none).
 //
 // HOOKS READ (DEV, API freeze): `__mrPvp.challengeFormats()`, `__mrPvp.battleById(id)`,
 // `__mrPvp.declineChallenge(id)` (B declines T1's challenge: the decline UI is not under test here),
@@ -274,8 +273,6 @@ async function waitTactics(
   return seen;
 }
 
-const activeUnit = (t: TacticsSnap): TacticsSnap['units'][number] | undefined =>
-  t.units.find((u) => u.unitId === t.activeUnitId);
 const turnKey = (t: TacticsSnap): string => `${t.battleId}:${t.round}:${t.turnIdx}`;
 
 /** Lets a playing beat sequence drain (B skips it), so the next press is an input. */
@@ -285,6 +282,38 @@ async function settle(p: Page): Promise<void> {
     await pressButton(p, 'B');
     await expect(playing, 'B drained the playback').toHaveCount(0, { timeout: 5_000 });
   }
+}
+
+/** Ends the own unit's LIVE turn (Start = End Turn) and verifies it took: the turn key moved or
+ *  another unit is active. A swallowed press is pressed again (at most 3 presses); before each
+ *  re-press the turn is re-read, so a late-landing press never becomes a press into another turn.
+ *  Returns the presses spent. */
+async function endTurnLive(
+  p: Page,
+  fromKey: string,
+  unitId: number,
+  label: string,
+): Promise<number> {
+  const moved = (x: TacticsSnap | null): boolean =>
+    x !== null && (turnKey(x) !== fromKey || x.activeUnitId !== unitId);
+  let lastErr: unknown = null;
+  for (let presses = 1; presses <= 3; presses += 1) {
+    if (presses > 1 && moved(await readTactics(p))) return presses - 1;
+    await settle(p);
+    await pressButton(p, 'Start');
+    try {
+      await expect
+        .poll(async () => moved(await readTactics(p)), {
+          message: `${label}: the End Turn moves the turn on`,
+          timeout: 5_000,
+        })
+        .toBe(true);
+      return presses;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(`${label}: Start (End Turn) swallowed 3× under ${fromKey}: ${String(lastErr)}`);
 }
 
 /** Opens the own unit's command menu: the cursor on its tile, then A. */
@@ -589,9 +618,10 @@ test.describe
       const windowMs = await liveWindowMs(battleId, 'T2 window');
 
       // Round 1 opens. When A's unit moves first (regimes: A faster, or a tie won by A), A ends its
-      // live turn (Start = End Turn) so the pre-queue lands in round 1's first B window. A press
-      // the shell swallowed is pressed again (at most 3 presses): a repeat under the same turn key
-      // is ignored by the client's send guard, so it can never become a second End Turn.
+      // live turn (Start = End Turn, verified by `endTurnLive`) so the pre-queue lands in round 1's
+      // first B window.
+      // The opener spends part of A's own live window: a swallowed press that reached A's window
+      // expiry would strike A, caught by `maxStrikesA` below (with a misleading symptom).
       let liveEndTurns = 0;
       const opener = await waitTactics(
         pageA,
@@ -599,32 +629,8 @@ test.describe
         PHASE_MS,
         'round 1 opens with a unit waiting',
       );
-      if (activeUnit(opener)?.unitId === unitA.unitId) {
-        const openerKey = turnKey(opener);
-        for (;;) {
-          if (liveEndTurns === 3) {
-            throw new Error(
-              `A's round-1 Start (End Turn) was swallowed: ${liveEndTurns} presses never moved the turn off A's unit (${openerKey})`,
-            );
-          }
-          await settle(pageA);
-          await pressButton(pageA, 'Start'); // A's live turn: End Turn
-          liveEndTurns += 1;
-          const moved = await expect
-            .poll(
-              async () => {
-                const x = await readTactics(pageA);
-                return x !== null && (turnKey(x) !== openerKey || x.activeUnitId !== unitA.unitId);
-              },
-              { message: 'A`s End Turn moves the turn on', timeout: 5_000 },
-            )
-            .toBe(true)
-            .then(
-              () => true,
-              () => false,
-            );
-          if (moved) break;
-        }
+      if (opener.activeUnitId === unitA.unitId) {
+        liveEndTurns = await endTurnLive(pageA, turnKey(opener), unitA.unitId, 'round-1 opener');
       }
       // When B's unit is active, A pre-queues a non-empty [EndTurn] draft and submits it.
       const t = await waitTactics(
@@ -635,8 +641,23 @@ test.describe
       );
       // A's chip is pending only when B moved first this round; after A's End Turn it is acted.
       const aPending = t.initiative.indexOf(unitA.unitId) > t.turnIdx;
+      // Printed before any later oracle can fail, so every run records which path it took.
+      const firstMover = activeA.initiative[0] === unitA.unitId ? 'A' : 'B';
+      console.log(
+        `[BT15-4-ORDER] round-1 first mover: ${firstMover}; live End Turns before the pre-queue: ${liveEndTurns}; A\`s chip at the pre-queue: ${aPending ? 'pending' : 'acted'}`,
+      );
+      expect(
+        { liveEndTurn: liveEndTurns > 0, aPending },
+        'the first-mover letter attests the path taken: A first -> a live End Turn and an acted chip; B first -> no End Turn and a pending chip',
+      ).toEqual({ liveEndTurn: firstMover === 'A', aPending: firstMover === 'B' });
       const turnbarB = pageB.locator('.tactics-turnbar');
       await expect(turnbarB, 'B paints a turn bar').toHaveCount(1);
+      await waitTactics(
+        pageB,
+        (x) => x.turnState === 'Waiting' && turnKey(x) === turnKey(t),
+        LOCK_ACK_MS,
+        'B`s page reaches the same turn as A`s',
+      );
       await expect(
         pageB.locator(`${TACTICS.shell}.tactics-battle--playing`),
         'B`s playback drained before the turn bar is captured',
@@ -669,18 +690,23 @@ test.describe
           },
         )
         .toEqual([[true, unitA.unitId]]);
+      // The cache row can be visible one frame before the rAF render loop repaints the bar.
+      await pageA.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      await expect(
+        pageA.locator(
+          `.tactics-turnbar .tactics-chip--mine.tactics-chip--${aPending ? 'pending' : 'acted'}`,
+        ),
+        'the bar paints A`s own chip in the state aPending was derived from',
+      ).toHaveCount(1);
       await expect(
         pageA.locator('.tactics-chip-lock'),
-        'A`s lock chip follows its own chip state: pending -> exactly one lock, acted -> none (a lock paints only on a mine + READY + non-acted chip, BT10-3-BAR-LOCK)',
+        'A`s lock follows its chip: pending -> exactly one, acted -> none (BT10-3-BAR-LOCK)',
       ).toHaveCount(aPending ? 1 : 0);
-      const firstMover = activeA.initiative[0] === unitA.unitId ? 'A' : 'B';
-      console.log(
-        `[BT15-4-ORDER] round-1 first mover: ${firstMover}; live End Turns before the pre-queue: ${liveEndTurns}; A\`s chip at the pre-queue: ${aPending ? 'pending' : 'acted'}`,
-      );
-      expect(
-        firstMover === 'A',
-        'the first mover letter attests the path taken (A first ⇔ a live End Turn was pressed)',
-      ).toBe(liveEndTurns > 0);
       await pageB.waitForTimeout(SECRECY_SETTLE_MS);
       expect((await readSecrecy(pageB)).queues, 'B holds no queue row').toEqual([]);
       expect((await readRowProbe(pageB)).queue, 'B received no queue row callback').toBe(0);
@@ -729,8 +755,7 @@ test.describe
         if (snapA.phase === 'Finished') break;
         expect(snapA.strikes.A, 'A acts every turn: never struck').toBe(0);
         last = turnKey(snapA);
-        await settle(pageA);
-        await pressButton(pageA, 'Start'); // End Turn (or a no-op when the READY plan ran)
+        await endTurnLive(pageA, turnKey(snapA), unitA.unitId, 'AFK loop');
       }
       const elapsed = Date.now() - afkStart;
       const tags = await readEventTags(pageA);
