@@ -6176,7 +6176,8 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     opts.store.reconcileTacticalBattlesFromView([{ ...zRow, phase: 'Finished' }]);
     t += 50;
     server(t);
-    press('Backspace', (t += 50));
+    t += 50;
+    press('Backspace', t);
     await flush();
     opts.store.removeBattle(Z);
     opts.store.reconcileTacticalBattlesFromView([]);
