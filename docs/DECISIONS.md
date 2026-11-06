@@ -764,6 +764,10 @@ server conversation suspended over the battle base stays) or that demotes a visi
 report survivors and a final `mutation-server` job sums them against the cap
 (`just mutate-server-ratchet`), failing if any shard did not succeed or report. Four guaranteed-hang
 `tiled_import` mutants are excluded in `.cargo/mutants.toml`.
+The mutation recipes export `CARGO_INCREMENTAL=1` (CI's `dtolnay/rust-toolchain` sets it to 0 and
+cargo-mutants rebuilds once per mutant; same verdicts, about 4x faster server rebuilds), and
+`mutate-server` carries the same 8 GB `ulimit -v` backstop as `mutate-core`. `just mutate-diff`
+mutates only the changed lines locally.
 
 **Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled at
 GitHub's 6 h cap. Sharding keeps every mutant under test with no verdict change; the only new

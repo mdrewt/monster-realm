@@ -124,6 +124,12 @@ coverage: wasm
     cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version') && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary
 
 mutate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0 into GITHUB_ENV and cargo-mutants rebuilds
+    # once per mutant, so incremental is ~4s vs ~12s per mutant (verdicts are identical).
+    export CARGO_INCREMENTAL=1
+    echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     cargo mutants --workspace
 
 # game-core mutation gate, zero tolerance: any missed mutant fails; timeouts are
@@ -142,6 +148,10 @@ mutate-core shard="":
     # aborts the test (= caught) instead of taking the machine down. The unmutated build + full
     # test run fits in 8 GB. `|| true`: platforms without `ulimit -v` simply run uncapped.
     ulimit -v 8000000 2>/dev/null || true
+    # dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0 into GITHUB_ENV and cargo-mutants rebuilds
+    # once per mutant, so incremental is ~4s vs ~12s per mutant (verdicts are identical).
+    export CARGO_INCREMENTAL=1
+    echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     status=0
     cargo mutants -p game-core ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts. Anything else is not a mutation verdict.
@@ -160,6 +170,28 @@ mutate-core shard="":
         exit 1
     fi
 
+# Local pre-push check: mutate only the code changed vs `base` (game-core + server-module).
+# Empty diff = nothing to mutate. Same exit triage as mutate-core (0 ok, 2 missed, 3 timeouts).
+mutate-diff base="origin/master":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    diff_file=$(mktemp)
+    trap 'rm -f "$diff_file"' EXIT
+    git diff "{{base}}...HEAD" -- game-core server-module > "$diff_file"
+    [ -s "$diff_file" ] || { echo "mutate-diff: no game-core/server-module changes vs {{base}}"; exit 0; }
+    ulimit -v 8000000 2>/dev/null || true
+    # dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0 into GITHUB_ENV and cargo-mutants rebuilds
+    # once per mutant, so incremental is ~4s vs ~12s per mutant (verdicts are identical).
+    export CARGO_INCREMENTAL=1
+    echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
+    status=0
+    cargo mutants -p game-core -p monster-realm-module --test-tool nextest --in-diff "$diff_file" || status=$?
+    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+        echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
+        exit "$status"
+    fi
+    [ "$status" -ne 2 ] || { echo "mutate-diff: missed mutants — see mutants.out/missed.txt" >&2; exit 1; }
+
 # Server-module survivor-count ratchet; the crate is `monster-realm-module`.
 # Cap rebaselined by the Phase-3 mutants triage (RC-mutate-server): full run at 428314e = 1151
 # mutants, 31 missed (29 accepted, one MUT-server-* ledger row per file, + 2 stale-build flakes),
@@ -176,6 +208,12 @@ mutate-server cap="34" shard="":
     esac
     [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-server: shard '{{shard}}' is not k/n" >&2; exit 64; }
     shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
+    # Same runaway-allocation backstop as mutate-core (protects the 16 GB runner).
+    ulimit -v 8000000 2>/dev/null || true
+    # dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0 into GITHUB_ENV and cargo-mutants rebuilds
+    # once per mutant, so incremental is ~4s vs ~12s per mutant (verdicts are identical).
+    export CARGO_INCREMENTAL=1
+    echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     status=0
     cargo mutants -p monster-realm-module --test-tool nextest ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts (a hang is a detection, so they count as

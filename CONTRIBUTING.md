@@ -47,3 +47,8 @@ in `docs/debloat/ledger.ndjson`. The cap is then that full-run missed count plus
 headroom of max(3, 5%). A
 `smoke-republish` failure means publishing over live data would fail or lose data, so
 fix it before the next publish.
+
+To check a change before pushing, `just mutate-diff` mutates only the `game-core` /
+`server-module` lines changed against `origin/master` (pass another base, e.g. `just mutate-diff
+HEAD~1`; an empty diff exits 0 without building). While killing survivors in one file,
+`cargo mutants -p <crate> -f <file> --iterate` re-tests only the mutants the previous run missed.
