@@ -839,6 +839,11 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // (`quest.complete.{reward,done}`, each through its own literal `tf` call).
     // qf-15 (named intentional change, QF15.1): main.ts gains 1 literal key, the zone cue
     // `chrome.status.zoneEntered` (one literal `tf` call in `switchZone` after a real zone change).
+    // bt-15 (named intentional change, BT15.1): the Challenge confirm is no longer Yes / No — it is
+    // the party-size pick (`challengeLayout`: one `size-<n>` row per offered size, then No), so
+    // `prompt.yes` LEAVES main.ts (the Options / Controls confirms that still show Yes resolve it in
+    // their own modules) and `interact.challenge.size` JOINS it (one literal `tf` call naming each
+    // size row, `{ n }`). `prompt.no` stays: the pick's last row is No.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -853,6 +858,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'dialogue.ended.leftZone', // qf-6: a refused advance ends the conversation, and says why
       'dialogue.ended.npcGone',
       'dialogue.ended.walkedAway',
+      'interact.challenge.size', // bt-15: a party-size row of the Challenge pick ("2 vs 2")
       'interact.chip', // ctl-10a: the world chip, one actionable entry
       'interact.choose', // ctl-10a: the world chip, a choice
       'interact.confirm.challenge', // ctl-10b: the Challenge confirm question
@@ -869,8 +875,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'notice.sheet.accept', // ctl-13: the request sheet's rows
       'notice.sheet.decline',
       'notice.sheet.view',
-      'prompt.no', // ctl-10b: the Challenge confirm's No row
-      'prompt.yes', // ctl-10b: the Challenge confirm's Yes row
+      'prompt.no', // ctl-10b: the Challenge confirm's No row (bt-15: the size pick's No row)
       'quest.complete.done', // qf-6: a completed quest with no gold moved
       'quest.complete.reward', // qf-6: a completed quest and the gold it paid
       'raising.feedback.cared',

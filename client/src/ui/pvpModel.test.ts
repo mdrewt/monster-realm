@@ -1,179 +1,111 @@
-// pvpModel.test.ts — unit tests for buildPvpChallengeViewModel.
+// ui/pvpModel.test.ts — bt-15 increment A RED gating tests: the pure party-size pick model (BT15.1).
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-battle-tactics.spec.md §bt-15 BT15.1 ("THE confirm flow
+//   SHALL let the challenger pick 1-3 party monsters"); memory/projects/monster-realm-bt-15-plan.md §2
+//   BT15.1a + §6 (M2, M4, L) and the tester brief's API freeze.
+//
+// RED REASON: client/src/ui/pvpModel.ts does not exist yet (module-not-found at collection).
+//
+// CONTRACT:
+//   PVP_FORMAT_MAX = 3 (the disclosed mirror of server pvp.rs PVP_FORMAT_MAX)
+//   consciousPartyIds(monsters, excluded, partySlotNone) -> bigint[]
+//     party-slotted (partySlot !== partySlotNone) AND currentHp > 0 AND not in `excluded`, in
+//     ASCENDING partySlot order (never input order).
+//   challengeSizes(eligible) -> number[]
+//     [min(PVP_FORMAT_MAX, eligible), ..., 1] DESCENDING; [] when eligible <= 0.
+//
+// Every monster id sits past 2^53 (a Number()-keyed compare collides neighbours); the fixture mixes
+// out-of-order slots, a boxed row, a fainted row and an excluded (in-trade) row, so "the first N of
+// the input" and "every party row" both die.
+//
+// Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
+
 import { describe, expect, it } from 'vitest';
-import type { StoreBattleChallenge, StorePlayer } from '../net/store';
-import { buildPvpChallengeViewModel, incomingChallenge, outgoingChallenge } from './pvpModel';
+import { challengeSizes, consciousPartyIds, type PartyPickRow, PVP_FORMAT_MAX } from './pvpModel';
 
-const ME = 'aabbcc';
-const OTHER_A = '111111';
-const OTHER_B = '222222';
+/** The boxed sentinel the fixture uses (main.ts passes the bindings' PARTY_SLOT_NONE). */
+const NONE = 255;
 
-function makePlayer(identity: string, name: string, online = true): StorePlayer {
-  return { identity, entityId: 1n, name, online, lastInputSeq: 0n };
-}
-
-function makeChallenge(
-  challengeId: bigint,
-  challenger: string,
-  target: string,
-  status: string,
-): StoreBattleChallenge {
-  return { challengeId, challenger, target, challengerPartyIds: [], status, createdAtMs: 0n };
-}
-
-const PLAYERS: StorePlayer[] = [
-  makePlayer(ME, 'Me'),
-  makePlayer(OTHER_A, 'Alice'),
-  makePlayer(OTHER_B, 'Bob'),
-];
-
-describe('buildPvpChallengeViewModel', () => {
-  it('returns null incoming and outgoing when no challenges', () => {
-    const vm = buildPvpChallengeViewModel([], ME, PLAYERS);
-    expect(vm.incoming).toBeNull();
-    expect(vm.outgoing).toBeNull();
-    expect(vm.challengeablePlayers.map((p) => p.identity)).toContain(OTHER_A);
-    expect(vm.challengeablePlayers.map((p) => p.identity)).toContain(OTHER_B);
-    // self never appears in challengeable list
-    expect(vm.challengeablePlayers.map((p) => p.identity)).not.toContain(ME);
-  });
-
-  it('surfaces incoming challenge targeting this player', () => {
-    const c = makeChallenge(1n, OTHER_A, ME, 'Pending');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    expect(vm.incoming).not.toBeNull();
-    expect(vm.incoming?.challengeId).toBe(1n);
-    expect(vm.incoming?.challengerName).toBe('Alice');
-  });
-
-  it('does not surface incoming challenge targeting a different player', () => {
-    const c = makeChallenge(1n, ME, OTHER_A, 'Pending');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    expect(vm.incoming).toBeNull();
-  });
-
-  it('surfaces the most-recent outgoing challenge by highest challengeId', () => {
-    const c1 = makeChallenge(1n, ME, OTHER_A, 'Pending');
-    const c2 = makeChallenge(5n, ME, OTHER_B, 'Pending');
-    const vm = buildPvpChallengeViewModel([c1, c2], ME, PLAYERS);
-    expect(vm.outgoing?.challengeId).toBe(5n);
-    expect(vm.outgoing?.targetName).toBe('Bob');
-  });
-
-  it('excludes players already in a Pending challenge from challengeable list', () => {
-    const c = makeChallenge(1n, OTHER_A, OTHER_B, 'Pending');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    expect(vm.challengeablePlayers.map((p) => p.identity)).not.toContain(OTHER_A);
-    expect(vm.challengeablePlayers.map((p) => p.identity)).not.toContain(OTHER_B);
-  });
-
-  it('excludes offline players from challengeable list', () => {
-    const players: StorePlayer[] = [
-      makePlayer(ME, 'Me'),
-      makePlayer(OTHER_A, 'Alice', false), // offline
-      makePlayer(OTHER_B, 'Bob'),
-    ];
-    const vm = buildPvpChallengeViewModel([], ME, players);
-    expect(vm.challengeablePlayers.map((p) => p.identity)).not.toContain(OTHER_A);
-    expect(vm.challengeablePlayers.map((p) => p.identity)).toContain(OTHER_B);
-  });
-
-  it('falls back to truncated identity hex when name is not in player list', () => {
-    const c = makeChallenge(1n, 'deadbeef1234', ME, 'Pending');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    // No player row for 'deadbeef1234' → name falls back to first 8 chars
-    expect(vm.incoming?.challengerName).toBe('deadbeef');
-  });
-
-  // RT-PVP-01: terminal-outgoing auto-show invariant.
-  //
-  // pvpView.refresh treats vm.outgoing !== null as "hasActive" and calls this.show().
-  // If the model returns a non-null outgoing with a terminal status (Declined /
-  // Accepted / Cancelled), the overlay auto-shows with an EMPTY outgoing section and
-  // the challengeable player list visible — a phantom pop-up that the user cannot
-  // explain.  The fix MUST be in the model: only return outgoing when status is
-  // 'Pending' (matching pvpView.#renderOutgoing's own filter).
-  it('RT-PVP-01: outgoing with Declined status must not be returned by the model (phantom-show guard)', () => {
-    const c = makeChallenge(3n, ME, OTHER_A, 'Declined');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    // A Declined challenge is terminal; the model must treat it as absent so the view
-    // cannot auto-show based on a non-null outgoing field.
-    expect(vm.outgoing).toBeNull();
-  });
-
-  it('RT-PVP-01: outgoing with Cancelled status must not be returned by the model', () => {
-    const c = makeChallenge(3n, ME, OTHER_A, 'Cancelled');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    expect(vm.outgoing).toBeNull();
-  });
-
-  it('RT-PVP-01: outgoing with Accepted status must not be returned by the model', () => {
-    const c = makeChallenge(3n, ME, OTHER_A, 'Accepted');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    expect(vm.outgoing).toBeNull();
-  });
-
-  // RT-PVP-01: also verify the counterpart — Pending outgoing IS returned.
-  it('RT-PVP-01: outgoing with Pending status is returned (baseline)', () => {
-    const c = makeChallenge(3n, ME, OTHER_A, 'Pending');
-    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
-    expect(vm.outgoing).not.toBeNull();
-    expect(vm.outgoing?.status).toBe('Pending');
-  });
+const row = (monsterId: bigint, partySlot: number, currentHp: number): PartyPickRow => ({
+  monsterId,
+  partySlot,
+  currentHp,
 });
 
-// ctl-8d: the Social frame's Challenges rows and the pvp root select through the same two
-// selectors, so a Social row is always the block the root shows.
-describe('ctl-8d: the challenge selectors', () => {
-  it('ctl-8d: with two Pending challenges targeting the viewer, incoming is the one with the LOWEST challengeId (the oldest), whatever the store order', () => {
-    // WRONG IMPL KILLED: the pre-ctl-8d rule (the first Pending row in store order: the newer one
-    // when it is stored first), and the newest request. The Social Challenges row is the oldest
-    // request, and A there must act on the block the pvp root shows.
-    const older = makeChallenge(4n, OTHER_A, ME, 'Pending');
-    const newer = makeChallenge(9n, OTHER_B, ME, 'Pending');
-    for (const rows of [
-      [newer, older],
-      [older, newer],
-    ]) {
-      const vm = buildPvpChallengeViewModel(rows, ME, PLAYERS);
-      expect(vm.incoming?.challengeId, 'the lowest challengeId').toBe(4n);
-      expect(vm.incoming?.challengerName, 'its challenger').toBe('Alice');
-    }
+const S0 = 9_007_199_254_740_993n;
+const S1 = 9_007_199_254_740_995n;
+const S2 = 9_007_199_254_740_997n;
+const S3 = 9_007_199_254_740_999n;
+const BOXED = 9_007_199_254_741_001n;
+const FAINTED = 9_007_199_254_741_003n;
+const TRADED = 9_007_199_254_741_005n;
+
+describe('pvpModel: the conscious, untraded party in slot order (bt-15, BT15.1)', () => {
+  it('consciousPartyIds keeps exactly the party-slotted, conscious, not-excluded monsters in ascending party slot, whatever the input order, ids past 2^53 kept apart [BT15-1]', () => {
+    // WRONG IMPL KILLED: the input (store) order instead of slot order (the fixture's input order
+    // 2, 0, 3, 1 differs from it); a fainted monster kept (`currentHp >= 0`), or a 1-HP one dropped
+    // (`> 1`); a boxed monster kept (the partySlotNone row); the in-trade monster kept (`excluded`
+    // ignored); `ownPartyIds()` as is (every party slot, fainted and traded included); a Set keyed on
+    // Number(id) (neighbouring ids past 2^53 collide and one is lost or wrongly excluded).
+    const input: readonly PartyPickRow[] = [
+      row(S2, 2, 17),
+      row(BOXED, NONE, 40),
+      row(S0, 0, 23),
+      row(FAINTED, 4, 0),
+      row(S3, 3, 1),
+      row(TRADED, 5, 31),
+      row(S1, 1, 29),
+    ];
+    expect(consciousPartyIds(input, new Set([TRADED]), NONE), 'slot order 0, 1, 2, 3').toEqual([
+      S0,
+      S1,
+      S2,
+      S3,
+    ]);
+    expect(
+      consciousPartyIds(input, new Set(), NONE),
+      'nothing excluded: the in-trade monster takes its slot (5)',
+    ).toEqual([S0, S1, S2, S3, TRADED]);
+    expect(
+      consciousPartyIds(input, new Set([S1, TRADED]), NONE),
+      'two excluded: the rest keep slot order',
+    ).toEqual([S0, S2, S3]);
+    // The neighbour of an excluded id past 2^53 is NOT excluded (Number(S0) === Number(S0 + 1n)).
+    expect(
+      consciousPartyIds([row(S0, 1, 5), row(S0 + 1n, 0, 5)], new Set([S0]), NONE),
+      'an id past 2^53 and its neighbour are two monsters',
+    ).toEqual([S0 + 1n]);
+    expect(consciousPartyIds([], new Set(), NONE), 'no monster, no id').toEqual([]);
+    expect(
+      consciousPartyIds([row(FAINTED, 0, 0), row(BOXED, NONE, 9)], new Set(), NONE),
+      'only a fainted and a boxed monster: nobody',
+    ).toEqual([]);
+    // The sentinel is the caller's: a different partySlotNone changes who is boxed.
+    expect(
+      consciousPartyIds([row(S1, 7, 5), row(S0, 0, 5)], new Set(), 7),
+      'partySlotNone 7: slot 7 is the box',
+    ).toEqual([S0]);
+    expect(PVP_FORMAT_MAX, 'fixture sanity: the mirror is three').toBe(3);
   });
 
-  it('ctl-8d: incomingChallenge is the raw oldest Pending challenge targeting the viewer and outgoingChallenge the raw newest Pending one the viewer sent, never a third party`s or a non-Pending row, each undefined when there is none, and the view model shows exactly those two', () => {
-    // WRONG IMPL KILLED: a selector without the target / challenger check (the third party's
-    // challenge has the lowest id), without the Pending check (the Declined request and the
-    // Cancelled outgoing one each have the id the rule would otherwise pick), with the id order
-    // reversed, or a view model that selects by another rule than its selectors.
-    const rows = [
-      makeChallenge(1n, OTHER_A, OTHER_B, 'Pending'),
-      makeChallenge(2n, OTHER_A, ME, 'Declined'),
-      makeChallenge(9n, OTHER_B, ME, 'Pending'),
-      makeChallenge(4n, OTHER_A, ME, 'Pending'),
-      makeChallenge(7n, ME, OTHER_A, 'Pending'),
-      makeChallenge(5n, ME, OTHER_B, 'Pending'),
-      makeChallenge(8n, ME, OTHER_B, 'Cancelled'),
+  it('challengeSizes offers min(3, eligible) down to 1, largest first, and nothing for no eligible monster; PVP_FORMAT_MAX is 3 [BT15-1]', () => {
+    // WRONG IMPL KILLED: ascending sizes (the default first row would be "1 vs 1", not the largest);
+    // a cap of 6 (MAX_PARTY_SIZE) instead of the format max; a cap ignored (five eligible offer five
+    // sizes); `[1]` for zero eligible (a pick the server refuses: party size 0); a negative count
+    // that throws or offers rows; an off-by-one that drops the 1.
+    expect(PVP_FORMAT_MAX, 'the server pvp.rs PVP_FORMAT_MAX mirror').toBe(3);
+    const cases: readonly (readonly [number, readonly number[]])[] = [
+      [6, [3, 2, 1]],
+      [5, [3, 2, 1]],
+      [4, [3, 2, 1]],
+      [3, [3, 2, 1]],
+      [2, [2, 1]],
+      [1, [1]],
+      [0, []],
+      [-1, []],
     ];
-    expect(incomingChallenge(rows, ME), 'the oldest request').toEqual(
-      makeChallenge(4n, OTHER_A, ME, 'Pending'),
-    );
-    expect(outgoingChallenge(rows, ME), 'the newest Pending outgoing').toEqual(
-      makeChallenge(7n, ME, OTHER_A, 'Pending'),
-    );
-    const vm = buildPvpChallengeViewModel(rows, ME, PLAYERS);
-    expect(vm.incoming?.challengeId, 'the view model shows the same request').toBe(4n);
-    expect(vm.outgoing?.challengeId, 'and the same outgoing challenge').toBe(7n);
-
-    expect(incomingChallenge([], ME), 'no rows').toBeUndefined();
-    expect(outgoingChallenge([], ME), 'no rows').toBeUndefined();
-    const notMine = [makeChallenge(1n, OTHER_A, OTHER_B, 'Pending')];
-    expect(incomingChallenge(notMine, ME), 'only a third party`s').toBeUndefined();
-    expect(outgoingChallenge(notMine, ME), 'only a third party`s').toBeUndefined();
-    const settled = [
-      makeChallenge(2n, OTHER_A, ME, 'Declined'),
-      makeChallenge(8n, ME, OTHER_B, 'Cancelled'),
-    ];
-    expect(incomingChallenge(settled, ME), 'only a non-Pending request').toBeUndefined();
-    expect(outgoingChallenge(settled, ME), 'only a non-Pending outgoing').toBeUndefined();
+    for (const [eligible, want] of cases) {
+      expect(challengeSizes(eligible), `${eligible} eligible`).toEqual(want);
+    }
   });
 });

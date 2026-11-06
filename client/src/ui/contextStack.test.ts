@@ -30,6 +30,7 @@ import {
   battleSafeCommand,
   COMMAND_BATTLE_POLICY,
   continuedBattleId,
+  countdownDeadline,
   isBareBattle,
   OUTCOME_CONTINUE_GRACE_MS,
   popPlayerFramesOverBattle,
@@ -2313,7 +2314,8 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['confirmTrade', { kind: 'confirmTrade', tradeId: big }],
       ['cancelTrade', { kind: 'cancelTrade', tradeId: big }],
       ['proposeTrade', { kind: 'proposeTrade', args: proposal }],
-      ['challenge', { kind: 'challenge', targetIdentity: 'cd'.repeat(32) }],
+      // bt-15 (named intentional change, BT15.1): the challenge Command carries the picked party size.
+      ['challenge', { kind: 'challenge', targetIdentity: 'cd'.repeat(32), partySize: 2 }],
       ['challenge Accept: acceptChallenge', { kind: 'acceptChallenge', challengeId: big }],
       ['declineChallenge', { kind: 'declineChallenge', challengeId: big }],
       ['cancelChallenge', { kind: 'cancelChallenge', challengeId: big }],
@@ -4207,5 +4209,40 @@ describe('battle policy: the "Still there?" countdown (bt-12 B, BT12.2)', () => 
     expect(stillThereSeconds(2n ** 32n + 5_000n, 2 ** 32), 'a deadline past 2^32, 5 s ahead').toBe(
       5,
     );
+  });
+});
+
+describe('battle policy: which deadline the countdown follows (bt-15, BT15.1)', () => {
+  it('countdownDeadline follows the own deadline for a Wild battle always and for a Pvp / Practice battle only while the deploy panel shows; an Active PvP turn (no deploy panel) follows none even with a live deadline; no own deadline is none; a deadline past 2^53 is returned exactly [BT15-1]', () => {
+    // WRONG IMPL KILLED: the bt-12 Wild-only rule (BT15.1 "SHALL show the 45 s deploy countdown"
+    // for PvP would never paint); a rule that follows every kind always (an Active PvP turn would
+    // show "Still there?" over the turn clock: the PvP window is 30 s, inside the 60 s lead); the
+    // deployShown flag read inverted; Practice treated as Wild or forgotten (it is PvP-ruled:
+    // shellKind maps it to 'pvp'); a null own deadline turned into 0n (every wall clock is past
+    // it); a deadline round-tripped through Number (2^53 + 1 loses its last bit).
+    const OWN = 2n ** 53n + 1n;
+    const cases: readonly (readonly [
+      'Wild' | 'Pvp' | 'Practice',
+      boolean,
+      bigint | null,
+      bigint | null,
+    ])[] = [
+      ['Wild', false, OWN, OWN],
+      ['Wild', true, OWN, OWN],
+      ['Pvp', true, OWN, OWN],
+      ['Practice', true, OWN, OWN],
+      ['Pvp', false, OWN, null],
+      ['Practice', false, OWN, null],
+      ['Wild', false, null, null],
+      ['Wild', true, null, null],
+      ['Pvp', true, null, null],
+      ['Practice', true, null, null],
+    ];
+    for (const [kind, deployShown, own, want] of cases) {
+      expect(
+        countdownDeadline(kind, deployShown, own),
+        `${kind}, deploy panel ${deployShown ? 'shown' : 'not shown'}, own ${own === null ? 'none' : 'live'}`,
+      ).toBe(want);
+    }
   });
 });

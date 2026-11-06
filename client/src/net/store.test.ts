@@ -6172,3 +6172,65 @@ describe('AuthoritativeStore bt-12: the tactical views (BT12.1, BT12.3)', () => 
     ).toEqual([]);
   });
 });
+
+// =============================================================================
+// bt-15 increment A (BT15.1 "lock on confirm"): the deploy rows get a getter, `battleDeploys(battleId)`
+// (ascending deployId, that battle's rows only), so main.ts reads the own row's `locked` flag — the
+// server's lock, which survives a reload and a second tab. RED REASON: `battleDeploys` does not exist
+// on AuthoritativeStore (TypeError: not a function).
+// =============================================================================
+
+describe('AuthoritativeStore bt-15: the deploy rows getter (BT15.1)', () => {
+  it('battleDeploys(battleId) returns that battle`s deploy rows in ascending deployId (2^53 and 2^53 + 1 are two battles), every owner`s row with its locked flag, [] for an unknown battle, and follows the authoritative reconcile [BT15-1]', () => {
+    // WRONG IMPL KILLED: insertion order instead of deployId order (the fixture's delivery order
+    // 29, 11, 23 differs from it); a getter that ignores the battle id (battle 2^53 + 1's row leaks
+    // into 2^53's: a Number()-keyed compare collides them); an owner filter baked in (the getter is
+    // "the battle's rows"; main.ts picks its own by owner); `locked` dropped or defaulted; undefined
+    // instead of [] for an unknown battle (main.ts's `.some(...)` would throw); a getter that reads a
+    // stale copy (a row the reconcile deleted, or a lock it flipped, still shows).
+    const s = new AuthoritativeStore();
+    expect(s.battleDeploys(BT12S_B1), 'nothing before the first delivery').toEqual([]);
+    const mine = (deployId: bigint, battleId: bigint, locked: boolean): StoreBattleDeploy => ({
+      ...bt12sDeploy(deployId, battleId),
+      locked,
+    });
+    const theirs = (deployId: bigint, battleId: bigint): StoreBattleDeploy => ({
+      ...bt12sDeploy(deployId, battleId, 1),
+      owner: BT12S_OTHER,
+      side: 'B',
+    });
+    s.reconcileBattleDeploysFromView([
+      mine(29n, BT12S_B1, true),
+      theirs(11n, BT12S_B1),
+      mine(17n, BT12S_B2, false),
+      theirs(23n, BT12S_B1),
+    ]);
+    expect(
+      s.battleDeploys(BT12S_B1).map((d) => [d.deployId, d.owner, d.locked]),
+      'battle 2^53`s rows, ascending deploy id, every owner',
+    ).toEqual([
+      [11n, BT12S_OTHER, false],
+      [23n, BT12S_OTHER, false],
+      [29n, BT12S_ME, true],
+    ]);
+    expect(
+      s.battleDeploys(BT12S_B2).map((d) => [d.deployId, d.locked]),
+      'battle 2^53 + 1`s own row',
+    ).toEqual([[17n, false]]);
+    expect(s.battleDeploys(BT12S_B1)[2]?.picks, 'the picks ride along').toEqual([
+      { monsterId: BT12S_M1, slot: 0 },
+    ]);
+    expect(s.battleDeploys(7n), 'an unknown battle has no rows').toEqual([]);
+
+    // The reconcile is authoritative: a flipped lock shows, a deleted row goes.
+    s.reconcileBattleDeploysFromView([mine(29n, BT12S_B1, false), mine(17n, BT12S_B2, true)]);
+    expect(
+      s.battleDeploys(BT12S_B1).map((d) => [d.deployId, d.locked]),
+      'the other rows were deleted and the own lock flipped',
+    ).toEqual([[29n, false]]);
+    expect(s.battleDeploys(BT12S_B2).map((d) => d.locked)).toEqual([true]);
+    s.reconcileBattleDeploysFromView([]);
+    expect(s.battleDeploys(BT12S_B1), 'an emptied view: none').toEqual([]);
+    expect(s.battleDeploys(BT12S_B2)).toEqual([]);
+  });
+});

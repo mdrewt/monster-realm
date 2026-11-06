@@ -17,10 +17,19 @@
 //     run); repeat A swallowed; B / Start close without a run; anything else leaves it unchanged.
 //
 // Candidates are plain data built here; the real marshalling is interactModel.test.ts's.
+//
+// bt-15 increment A (BT15.1, BT15.5; plan memory/projects/monster-realm-bt-15-plan.md §2 + §6 M2):
+//   the Challenge confirm becomes the party-size pick. `sheetStep(s, btn, current, sizes?)`: A on a
+//   Challenge row with sizes opens `challengeLayout(sizes)` (rows `size-<n>`..., then `no`) on its
+//   FIRST row; with no sizes the sheet closes and nothing runs. A on `size-<n>` returns
+//   `{ state: null, run: <live action>, partySize: n }` only while the LIVE `sizes` still offer n.
+//   RED REASON (bt-15): `challengeLayout` / `sizeOfRow` are not exported and `sheetStep` ignores
+//   `sizes` (A on a Challenge row opens the legacy Yes / No confirm).
 
 import { describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
 import {
+  challengeLayout,
   confirmLayout,
   openSheet,
   pickerEntries,
@@ -28,6 +37,7 @@ import {
   type SheetState,
   sheetEntries,
   sheetStep,
+  sizeOfRow,
 } from './actionSheetModel';
 import type { InteractCandidate } from './interactModel';
 import type { NavInput, NavLayout } from './nav';
@@ -309,146 +319,233 @@ describe('player rows (ctl-10b, CTL10B.1)', () => {
     if (down === null) throw new Error('fixture: Down keeps the sheet open');
     return { sheet: down, rowKey: 'player:13|challenge' };
   };
-  const confirmKeys = (): string[] => {
-    const raw: unknown = confirmLayout;
-    const layout = (typeof raw === 'function' ? (raw as () => NavLayout)() : raw) as NavLayout;
-    return layout.kind === 'list' ? layout.items.map((i) => i.key) : [];
-  };
-  const enter = (cands: readonly InteractCandidate[]): SheetState => {
+  /** The keys of a list layout, in order. */
+  const layoutKeys = (layout: NavLayout): string[] =>
+    layout.kind === 'list' ? layout.items.map((i) => i.key) : [];
+  /** The party sizes the confirm offers in the tests below (three conscious party monsters). */
+  const SIZES: readonly number[] = [3, 2, 1];
+  const enter = (
+    cands: readonly InteractCandidate[],
+    sizes: readonly number[] = SIZES,
+  ): SheetState => {
     const { sheet } = onChallengeRow(cands);
-    const r = sheetStep(sheet, nav('A'), cands);
+    const r = sheetStep(sheet, nav('A'), cands, sizes);
     if (r.state === null || r.state.confirm === null) throw new Error('fixture: A enters confirm');
     return r.state;
   };
 
-  it('CTL10B-1-CHALLENGE-CONFIRM: A on a Challenge row runs nothing and enters a confirm on Yes; A on Yes runs the challenge exactly once and closes (over A,A,A,A one run); Down then A (No) returns to the rows with the row cursor kept and runs nothing; B returns to the rows; Start closes; a held A on Yes runs nothing; a held B is ignored; a Trade row runs at once', () => {
-    // WRONG IMPL KILLED: a Challenge row that runs on the first A (the confirm is the whole point:
-    // an accidental A challenges someone); a confirm that opens on No; A on Yes that leaves the
-    // confirm open or runs twice (a double reducer call); A on No that runs or closes everything;
-    // a row cursor reset by the confirm round trip (Down/A/No would land on Trade); B in confirm
-    // that closes the sheet or runs; Start that does not close; a held Enter on Yes that runs (a
-    // second challenge); a held B that backs out twice (confirm, then rows, then closed); a Trade
-    // row that asks for a confirm (Trade has the wizard's Review as its confirm); a Left/Right/Y
-    // that moves Yes/No or runs; confirmLayout that is not exactly [yes, no].
+  // NAMED INTENTIONAL CHANGE (bt-15, BT15.1): the Challenge confirm is no longer Yes / No. It is
+  // the party-size pick: one `size-<n>` row per size the LIVE party offers (largest first, the
+  // default), then No (`challengeLayout`). `confirmLayout` stays Yes / No for Options / Controls.
+  // Was: CTL10B-1-CHALLENGE-CONFIRM (A on Yes ran the challenge).
+  it('CTL10B-1-CHALLENGE-CONFIRM (bt-15): A on a Challenge row runs nothing and opens the size pick on its largest size: rows size-3, size-2, size-1, No, the sizes kept on the confirm; Down / Up walk every row and wrap, a repeat clamps; No and B return to the rows with the row cursor kept; Start closes; held A / B / Start and other buttons change nothing; a Trade row runs at once; confirmLayout is still Yes / No [BT15-1 BT15-5]', () => {
+    // WRONG IMPL KILLED: the legacy Yes / No layout kept for a Challenge (no way to pick a size);
+    // a pick that opens on No or on the SMALLEST size (the default must be the largest N); sizes
+    // listed ascending; a pick whose rows are not keyed `size-<n>` (the shell cannot label them);
+    // a Down / Up that does not wrap on a fresh edge (a D-pad player cannot reach No from the top
+    // with Up) or that wraps on a repeat; a confirm that drops its sizes (the shell renders the
+    // rows from `confirm.sizes`); a confirm whose sizes follow a later step's live sizes (the rows
+    // would jump under the cursor); No or B that close everything or reset the row cursor (Down /
+    // A / No would land on Trade); a held A that picks; a Trade row that asks; a modified
+    // confirmLayout (the Options and Controls confirms would lose Yes).
+    expect(layoutKeys(confirmLayout), 'confirmLayout is untouched: Yes / No').toEqual([
+      'yes',
+      'no',
+    ]);
+    expect(layoutKeys(challengeLayout(SIZES)), 'three sizes, largest first, then No').toEqual([
+      'size-3',
+      'size-2',
+      'size-1',
+      'no',
+    ]);
+    expect(layoutKeys(challengeLayout([2, 1])), 'two sizes').toEqual(['size-2', 'size-1', 'no']);
+    expect(layoutKeys(challengeLayout([1])), 'one size').toEqual(['size-1', 'no']);
+    expect(sizeOfRow('size-3'), 'a size row names its size').toBe(3);
+    expect(sizeOfRow('size-2')).toBe(2);
+    expect(sizeOfRow('size-1')).toBe(1);
+    expect(sizeOfRow('no'), 'No is not a size').toBeNull();
+    expect(sizeOfRow('yes'), 'nor is Yes').toBeNull();
+    expect(sizeOfRow('size-'), 'garbage is not a size').toBeNull();
+    expect(sizeOfRow('size-x')).toBeNull();
+    expect(sizeOfRow('player:13|challenge')).toBeNull();
+
     const cands = [onlinePlayer(13n, RIVAL)];
     const { sheet: onRow, rowKey } = onChallengeRow(cands);
     expect(onRow.nav.item, 'fixture: the cursor is on the Challenge row').toBe(rowKey);
-    expect(confirmKeys(), 'the confirm is a Yes / No list').toEqual(['yes', 'no']);
 
     // Trade runs at once, with no confirm.
     const opened = openSheet(pickerEntries(cands)) as SheetState;
-    const trade = sheetStep(opened, nav('A'), cands);
+    const trade = sheetStep(opened, nav('A'), cands, SIZES);
     expect(trade.state, 'Trade closes the sheet').toBeNull();
     expect(trade.run, 'Trade runs with the live identity, no confirm').toEqual({
       kind: 'trade',
       playerIdentity: RIVAL,
     });
+    expect(trade.partySize, 'a Trade carries no party size').toBeUndefined();
 
-    // The first A on Challenge: no run, a confirm on Yes, the rows untouched.
-    const first = sheetStep(onRow, nav('A'), cands);
+    // The first A on Challenge: no run, the size pick on its largest size, the rows untouched.
+    const first = sheetStep(onRow, nav('A'), cands, SIZES);
     expect(first.run, 'the first A only asks').toBeUndefined();
+    expect(first.partySize, 'and picks no size').toBeUndefined();
     const inConfirm = first.state;
     expect(inConfirm, 'the sheet stays open').not.toBeNull();
-    expect(inConfirm?.confirm, 'a confirm is open').not.toBeNull();
     expect(inConfirm?.confirm?.key).toBe(rowKey);
-    expect(inConfirm?.confirm?.nav.item, 'Yes is the default').toBe('yes');
+    expect(inConfirm?.confirm?.nav.item, 'the largest size is the default').toBe('size-3');
+    expect(inConfirm?.confirm?.sizes, 'the confirm keeps the sizes it opened with').toEqual([
+      3, 2, 1,
+    ]);
     expect(inConfirm?.nav.item, 'the row cursor is kept underneath').toBe(rowKey);
     expect(inConfirm?.entries).toEqual(onRow.entries);
-    // A fresh sheet (and every non-confirm state) carries no confirm.
     expect(opened.confirm, 'a freshly opened sheet has no confirm').toBeNull();
-    expect(onRow.confirm).toBeNull();
+    const c = inConfirm as SheetState;
 
-    // A on Yes: exactly one challenge, then closed.
-    const yes = sheetStep(inConfirm as SheetState, nav('A'), cands);
-    expect(yes.state, 'closes').toBeNull();
-    expect(yes.run, 'the challenge').toEqual({ kind: 'challenge', playerIdentity: RIVAL });
+    // Down walks every row and wraps; Up wraps from the top to No.
+    const walk: string[] = [];
+    let at: SheetState = c;
+    for (let i = 0; i < 4; i++) {
+      const r = sheetStep(at, nav('Down'), cands, SIZES);
+      expect(r.run, `Down ${i + 1} runs nothing`).toBeUndefined();
+      if (r.state === null) throw new Error('Down closed the pick');
+      at = r.state;
+      walk.push(at.confirm?.nav.item ?? 'closed');
+    }
+    expect(walk, 'Down: size-2, size-1, No, then wraps to size-3').toEqual([
+      'size-2',
+      'size-1',
+      'no',
+      'size-3',
+    ]);
+    expect(at.nav.item, 'the row cursor never moved').toBe(rowKey);
+    expect(sheetStep(c, nav('Up'), cands, SIZES).state?.confirm?.nav.item, 'Up wraps').toBe('no');
+    expect(
+      sheetStep(c, nav('Up', true), cands, SIZES).state?.confirm?.nav.item,
+      'a repeat Up clamps on the largest size',
+    ).toBe('size-3');
+    const onNo = sheetStep(
+      sheetStep(c, nav('Up'), cands, SIZES).state as SheetState,
+      nav('Down', true),
+      cands,
+      SIZES,
+    );
+    expect(onNo.state?.confirm?.nav.item, 'a repeat Down clamps on No').toBe('no');
+    // The rows are the sizes the pick OPENED with: a later step's live sizes do not rewrite them.
+    const later = sheetStep(c, nav('Down'), cands, [2, 1]);
+    expect(later.state?.confirm?.sizes, 'the confirm`s sizes are frozen at open').toEqual([
+      3, 2, 1,
+    ]);
 
-    // A, A, A, A threaded through the stepper: exactly one run, and it ends closed.
-    let state: SheetState | null = onRow;
+    // No (Up, A) returns to the rows with the cursor kept; a re-entry starts on the largest again.
+    const no = sheetStep(
+      sheetStep(c, nav('Up'), cands, SIZES).state as SheetState,
+      nav('A'),
+      cands,
+      SIZES,
+    );
+    expect(no.run, 'A on No runs nothing').toBeUndefined();
+    expect(no.partySize).toBeUndefined();
+    expect(no.state, 'A on No keeps the sheet open on the rows').not.toBeNull();
+    expect(no.state?.confirm, 'the pick is gone').toBeNull();
+    expect(no.state?.nav.item, 'the row cursor is kept').toBe(rowKey);
+    const again = sheetStep(no.state as SheetState, nav('A'), cands, SIZES);
+    expect(again.state?.confirm?.nav.item, 'a re-entered pick starts on the largest').toBe(
+      'size-3',
+    );
+
+    // B returns to the rows (cursor kept); Start closes.
+    const back = sheetStep(c, nav('B'), cands, SIZES);
+    expect(back.run).toBeUndefined();
+    expect(back.state, 'B from the pick leaves the sheet open').not.toBeNull();
+    expect(back.state?.confirm).toBeNull();
+    expect(back.state?.nav.item).toBe(rowKey);
+    const start = sheetStep(c, nav('Start'), cands, SIZES);
+    expect(start.state, 'Start closes from the pick').toBeNull();
+    expect(start.run).toBeUndefined();
+
+    // Held A / B / Start and every other button leave the pick as it was.
+    for (const button of ['A', 'B', 'Start'] as const) {
+      const held = sheetStep(c, nav(button, true), cands, SIZES);
+      expect(held.run, `held ${button} runs nothing`).toBeUndefined();
+      expect(held.partySize, `held ${button} picks nothing`).toBeUndefined();
+      expect(held.state, `held ${button} changes nothing`).toEqual(c);
+    }
+    const heldB = sheetStep(onRow, nav('B', true), cands, SIZES);
+    expect(heldB.state, 'a held B on the rows is ignored').toEqual(onRow);
+    for (const button of ['Left', 'Right', 'X', 'Y', 'LB', 'RB', 'Select'] as const) {
+      const r = sheetStep(c, nav(button), cands, SIZES);
+      expect(r.run, `${button} runs nothing`).toBeUndefined();
+      expect(r.state, `${button} changes nothing`).toEqual(c);
+    }
+
+    // Two sizes: the pick opens on size-2.
+    expect(enter(cands, [2, 1]).confirm?.nav.item, 'two offered: the default is 2').toBe('size-2');
+  });
+
+  // NAMED INTENTIONAL CHANGE (bt-15, BT15.1): a picked size runs the LIVE challenge with that
+  // `partySize`, only while the LIVE sizes still offer it. Was: CTL10B-1-CONFIRM-STALE (Yes).
+  it('CTL10B-1-CONFIRM-STALE (bt-15): A on a size row runs the LIVE challenge once with that party size — 3 on the default row, 2 one Down, 1 two Downs; the live identity wins over the one at entry; a size the live party no longer offers, a vanished row, or no size at all closes and runs nothing [BT15-1]', () => {
+    // WRONG IMPL KILLED: the size read off the cursor INDEX (index + 1 gives 1 on the default
+    // "3 vs 3" row; index gives 0) or always the largest (`sizes[0]`: the size-2 pick would send 3)
+    // or always the smallest; a pick that honours the FROZEN sizes over the live ones (a monster
+    // fainted between open and A, so "3 vs 3" would ask the server for a party it cannot field); a
+    // confirm that stores the action at entry (the swapped player gets the challenge); one that
+    // skips revalidation (a player who walked away is challenged); a pick that runs twice over A, A;
+    // a Challenge row that opens a pick with only No when nobody is eligible (a dead question).
+    const cands = [onlinePlayer(13n, RIVAL)];
+    const entered = enter(cands);
+    expect(entered.confirm?.nav.item, 'fixture: on the largest size').toBe('size-3');
+    const down = (s: SheetState, n: number): SheetState => {
+      let out = s;
+      for (let i = 0; i < n; i++)
+        out = sheetStep(out, nav('Down'), cands, SIZES).state as SheetState;
+      return out;
+    };
+
+    for (const [downs, size] of [
+      [0, 3],
+      [1, 2],
+      [2, 1],
+    ] as const) {
+      const r = sheetStep(down(entered, downs), nav('A'), cands, SIZES);
+      expect(r.state, `size ${size}: closes`).toBeNull();
+      expect(r.run, `size ${size}: the live challenge`).toEqual({
+        kind: 'challenge',
+        playerIdentity: RIVAL,
+      });
+      expect(r.partySize, `${downs} Down(s): party size ${size}`).toBe(size);
+    }
+
+    // A, A, A threaded: one run.
+    let state: SheetState | null = entered;
     let runs = 0;
-    for (let i = 0; i < 4 && state !== null; i++) {
-      const r: { state: SheetState | null; run?: unknown } = sheetStep(state, nav('A'), cands);
+    for (let i = 0; i < 3 && state !== null; i++) {
+      const r = sheetStep(state, nav('A'), cands, SIZES);
       if (r.run !== undefined) runs += 1;
       state = r.state;
     }
-    expect(runs, 'exactly one challenge over A,A,A,A').toBe(1);
-    expect(state, 'and the sheet is closed').toBeNull();
+    expect(runs, 'exactly one challenge over A, A, A').toBe(1);
 
-    // Down then A (No): back to the rows, cursor kept, nothing run; the next entry is on Yes again.
-    const onNo = sheetStep(inConfirm as SheetState, nav('Down'), cands);
-    expect(onNo.run).toBeUndefined();
-    expect(onNo.state?.confirm?.nav.item, 'Down moves to No').toBe('no');
-    expect(onNo.state?.nav.item, 'the row cursor is not moved by the confirm').toBe(rowKey);
-    const no = sheetStep(onNo.state as SheetState, nav('A'), cands);
-    expect(no.run, 'A on No runs nothing').toBeUndefined();
-    expect(no.state, 'A on No keeps the sheet open on the rows').not.toBeNull();
-    expect(no.state?.confirm, 'the confirm is gone').toBeNull();
-    expect(no.state?.nav.item, 'the row cursor is kept').toBe(rowKey);
-    const again = sheetStep(no.state as SheetState, nav('A'), cands);
-    expect(again.state?.confirm?.nav.item, 'a re-entered confirm starts on Yes again').toBe('yes');
-
-    // Up wraps from Yes to No (fresh); a repeat clamps at the ends.
-    expect(sheetStep(inConfirm as SheetState, nav('Up'), cands).state?.confirm?.nav.item).toBe(
-      'no',
-    );
-    expect(
-      sheetStep(inConfirm as SheetState, nav('Up', true), cands).state?.confirm?.nav.item,
-      'a repeat Up clamps on Yes',
-    ).toBe('yes');
-    expect(
-      sheetStep(inConfirm as SheetState, nav('Down', true), cands).state?.confirm?.nav.item,
-      'a repeat Down still moves inside',
-    ).toBe('no');
-
-    // B returns to the rows (cursor kept); Start closes.
-    const back = sheetStep(inConfirm as SheetState, nav('B'), cands);
-    expect(back.run).toBeUndefined();
-    expect(back.state, 'B from the confirm leaves the sheet open').not.toBeNull();
-    expect(back.state?.confirm).toBeNull();
-    expect(back.state?.nav.item).toBe(rowKey);
-    const start = sheetStep(inConfirm as SheetState, nav('Start'), cands);
-    expect(start.state, 'Start closes from the confirm').toBeNull();
-    expect(start.run).toBeUndefined();
-
-    // A held A on Yes, a held B and a held Start are all ignored: the state is unchanged.
-    for (const button of ['A', 'B', 'Start'] as const) {
-      const held = sheetStep(inConfirm as SheetState, nav(button, true), cands);
-      expect(held.run, `held ${button} runs nothing`).toBeUndefined();
-      expect(held.state, `held ${button} changes nothing`).toEqual(inConfirm);
-    }
-    // ... also on the rows: a held B does not close the picker.
-    const heldB = sheetStep(onRow, nav('B', true), cands);
-    expect(heldB.state, 'a held B on the rows is ignored').toEqual(onRow);
-
-    // Everything else leaves the confirm as it was.
-    for (const button of ['Left', 'Right', 'X', 'Y', 'LB', 'RB', 'Select'] as const) {
-      const r = sheetStep(inConfirm as SheetState, nav(button), cands);
-      expect(r.run, `${button} runs nothing`).toBeUndefined();
-      expect(r.state, `${button} changes nothing`).toEqual(inConfirm);
-    }
-  });
-
-  it('CTL10B-1-CONFIRM-STALE: between entering the confirm and Yes, a `current` where the same key carries a DIFFERENT identity runs the LIVE identity; a `current` without the row closes and runs nothing', () => {
-    // WRONG IMPL KILLED: a confirm that stores the action at entry and runs it on Yes (the player
-    // swapped under the cursor, so the challenge would go to the person who WAS there, not the one
-    // the player is facing); one that skips revalidation entirely (a player who walked away still
-    // gets challenged); one that compares by candidate object identity (every batch rebuilds them,
-    // so Yes would never run); and one that, on a vanished row, stays open or runs the stored action.
-    const entered = enter([onlinePlayer(13n, RIVAL)]);
-    expect(entered.confirm?.nav.item).toBe('yes');
-
-    const swapped = sheetStep(entered, nav('A'), [onlinePlayer(13n, SWAPPED)]);
-    expect(swapped.state, 'closes').toBeNull();
-    expect(swapped.run, 'the live identity, not the one at entry').toEqual({
+    // The live identity, not the one at entry.
+    const swapped = sheetStep(down(entered, 1), nav('A'), [onlinePlayer(13n, SWAPPED)], SIZES);
+    expect(swapped.run, 'the live identity').toEqual({
       kind: 'challenge',
       playerIdentity: SWAPPED,
     });
+    expect(swapped.partySize).toBe(2);
 
-    const same = sheetStep(entered, nav('A'), [onlinePlayer(13n, RIVAL)]);
-    expect(same.run, 'a rebuilt candidate with the same identity still runs').toEqual({
+    // The live party shrank to two: "3 vs 3" is no longer offered, "2 vs 2" still is.
+    const shrunk = sheetStep(entered, nav('A'), cands, [2, 1]);
+    expect(shrunk.state, 'a size no longer offered closes').toBeNull();
+    expect(shrunk.run, 'and runs nothing').toBeUndefined();
+    expect(shrunk.partySize).toBeUndefined();
+    const stillTwo = sheetStep(down(entered, 1), nav('A'), cands, [2, 1]);
+    expect(stillTwo.run, 'a size still offered runs').toEqual({
       kind: 'challenge',
       playerIdentity: RIVAL,
     });
+    expect(stillTwo.partySize).toBe(2);
+    const noneLeft = sheetStep(down(entered, 2), nav('A'), cands, []);
+    expect(noneLeft.state, 'nobody eligible any more: closes').toBeNull();
+    expect(noneLeft.run).toBeUndefined();
 
     // The row is gone: a different player, nobody, or the player now only offers Trade (busy).
     for (const current of [
@@ -456,9 +553,22 @@ describe('player rows (ctl-10b, CTL10B.1)', () => {
       [],
       [{ ...onlinePlayer(13n, RIVAL), actions: [onlinePlayer(13n, RIVAL).actions[0]] }],
     ] as InteractCandidate[][]) {
-      const gone = sheetStep(entered, nav('A'), current);
+      const gone = sheetStep(entered, nav('A'), current, SIZES);
       expect(gone.state, 'closes').toBeNull();
       expect(gone.run, 'nothing runs for a row that is gone').toBeUndefined();
+      expect(gone.partySize).toBeUndefined();
+    }
+
+    // Nobody eligible when A lands on the Challenge row: the sheet closes, no pick opens.
+    const { sheet: onRow } = onChallengeRow(cands);
+    for (const sizes of [[], undefined] as const) {
+      const r =
+        sizes === undefined
+          ? sheetStep(onRow, nav('A'), cands)
+          : sheetStep(onRow, nav('A'), cands, sizes);
+      expect(r.state, `sizes ${String(sizes)}: the sheet closes`).toBeNull();
+      expect(r.run, 'nothing runs').toBeUndefined();
+      expect(r.partySize).toBeUndefined();
     }
   });
 });

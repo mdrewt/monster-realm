@@ -29,6 +29,7 @@ import { describe, expect, it } from 'vitest';
 import { stripComments } from '../../../test-util/stripComments';
 import { CATALOG_EN } from './catalog.en';
 import { CATALOG_FR } from './catalog.fr';
+import { setLocale, tf } from './resolver';
 
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_EN_PATH = path.join(I18N_DIR, 'catalog.en.ts');
@@ -541,6 +542,10 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // parameterised key — the "Still there?" countdown; `s` is a whole-second number (1..60) and
   // differs between the two sets.
   'tactics.clock.stillThere': [{ s: 42 }, { s: 7 }],
+  // bt-15 increment A (named intentional change, BT15.1/BT15.5; 512 keys after it): +1 parameterised
+  // key — a party-size row of the Challenge pick ("3 vs 3"); `n` is a whole number 1..3 and differs
+  // between the two sets.
+  'interact.challenge.size': [{ n: 3 }, { n: 1 }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -2000,6 +2005,13 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { s: 7 },
     outputB: 'Still there? 7 s',
   },
+  // bt-15 increment A (BT15.1, API freeze): "{n} vs {n}" — the bare number on both sides.
+  'interact.challenge.size': {
+    inputA: { n: 3 },
+    outputA: '3 vs 3',
+    inputB: { n: 1 },
+    outputB: '1 vs 1',
+  },
 };
 
 /** The full 511-key roster (bt-12 increment B: +2 `tactics.*` keys — `tactics.deploy.wilds` plain,
@@ -2225,7 +2237,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // and +4 parameterised `tactics.*` = 504.
     // bt-12 increment B (named intentional change, BT12.2/BT12.6, plan §2.9): +6 plain (1 `tactics.*`,
     // 5 `chrome.chip.*`) in EXPECTED_PLAIN and +1 parameterised `tactics.clock.stillThere` = 511.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-12 roster is 511 keys').toHaveLength(511);
+    // bt-15 increment A (named intentional change, BT15.1/BT15.5): +1 parameterised
+    // `interact.challenge.size` (the Challenge pick's size rows) = 512.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-15 roster is 512 keys').toHaveLength(512);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -3286,8 +3300,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation,
     // assign, prevMonster, nextMonster) = 511.
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 511 keys').toBe(511);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(511);
+    // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 512 keys').toBe(512);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(512);
   });
 });
 
@@ -3395,8 +3410,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation,
     // assign, prevMonster, nextMonster) = 511.
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 511 keys').toBe(511);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(511);
+    // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 512 keys').toBe(512);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(512);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3700,9 +3716,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation,
     // assign, prevMonster, nextMonster) = 511.
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 511 keys').toBe(511);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(511);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(511);
+    // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 512 keys').toBe(512);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(512);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(512);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -3954,5 +3971,53 @@ describe('qf-17: the KO-win payout lines in both catalogs', () => {
     expect(spec, 'the English output pins exist').toBeDefined();
     expect(spec.outputA).toBe(SPARKY[1]);
     expect(spec.outputB).toBe(BOLT[1]);
+  });
+});
+
+// =============================================================================
+// bt-15 increment A (BT15.1, BT15.5): the Challenge pick's size row in BOTH catalogs, read through
+// the resolver main.ts uses (`tf('interact.challenge.size', { n })`). Every expected byte is typed
+// here from the API freeze (en "{n} vs {n}", fr "{n} contre {n}"); none is read off the catalog.
+// RED REASON: the key does not exist yet — `tf` throws "no entry for key" in both locales.
+// =============================================================================
+
+describe('bt-15: the Challenge pick`s size row in both catalogs', () => {
+  it('tf(`interact.challenge.size`, { n }) renders "n vs n" in English and "n contre n" in French, the number printed twice, the two locales differing, for differing n [BT15-5]', () => {
+    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the pick shows no
+    // rows); a French value left as the English copy; a plain string where the size must be
+    // interpolated (every row reads the same, so "1 vs 1" and "3 vs 3" cannot be told apart); a
+    // closure that prints n once ("vs 2"), hard-codes a size, or reads a different param name; and
+    // a row text that is the legacy Yes (`prompt.yes`).
+    try {
+      const rows: (readonly [number, string, string])[] = [
+        [2, '2 vs 2', '2 contre 2'],
+        [3, '3 vs 3', '3 contre 3'],
+        [1, '1 vs 1', '1 contre 1'],
+      ];
+      for (const [n, enLine, frLine] of rows) {
+        setLocale('en');
+        const en = tf('interact.challenge.size', { n });
+        setLocale('fr');
+        const fr = tf('interact.challenge.size', { n });
+        expect(en, `en, n = ${n}`).toBe(enLine);
+        expect(fr, `fr, n = ${n}`).toBe(frLine);
+        expect(fr, `n = ${n}: a translation, not the English row`).not.toBe(en);
+        expect(en.split(String(n)).length - 1, `en prints ${n} twice`).toBe(2);
+        expect(fr.split(String(n)).length - 1, `fr prints ${n} twice`).toBe(2);
+      }
+      setLocale('en');
+      expect(tf('interact.challenge.size', { n: 2 }), 'the sizes change the row').not.toBe(
+        tf('interact.challenge.size', { n: 3 }),
+      );
+      expect(
+        tf('interact.challenge.size', { n: 1 }),
+        'a size row is never the legacy Yes',
+      ).not.toBe((CATALOG_EN as Record<string, unknown>)['prompt.yes']);
+      expect(EXPECTED_KEYS.includes('interact.challenge.size'), 'the pinned roster lists it').toBe(
+        true,
+      );
+    } finally {
+      setLocale('en');
+    }
   });
 });

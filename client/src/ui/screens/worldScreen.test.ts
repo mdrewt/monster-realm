@@ -17,6 +17,12 @@
 //       repeat A / Y and every other button -> 'unhandled', sheet unchanged.
 //
 // The 0 / 1 / many count is over ACTIONABLE entries, so ctl-10b's player actions are additive.
+//
+// bt-15 increment A (BT15.1): `worldButton(sheet, cands, btn, n?, sizes = [])` threads the live
+// party sizes into the sheet; a confirmed size returns `{ sheet: null, request: null, result:
+// 'consumed', command: { kind: 'challenge', targetIdentity, partySize } }` and NEVER `run`.
+// RED REASON (bt-15): worldButton ignores a 5th argument and the sheet opens the legacy Yes / No
+// confirm, whose Yes returns `run`.
 
 import { describe, expect, it } from 'vitest';
 import { VBUTTONS, type VButton } from '../../input/buttons';
@@ -202,7 +208,7 @@ const onlinePlayer = (
 });
 
 describe('worldButton: a faced player (ctl-10b, CTL10B.1)', () => {
-  it('CTL10B-1-WORLD-PLAYER-PICKER: A over a lone online player (Trade + Challenge) runs nothing and opens the picker on Trade; with an npc beside it the picker lists the npc then both player rows', () => {
+  it('CTL10B-1-WORLD-PLAYER-PICKER: A over a lone online player (Trade + Challenge) runs nothing and opens the picker on Trade; with an npc beside it the picker lists the npc then both player rows; Challenge from the picker opens the size pick and a confirmed 2 vs 2 returns the challenge command with partySize 2, never `run` (bt-15) [BT15-1]', () => {
     // WRONG IMPL KILLED: a world A that runs the first player action directly (a lone player would
     // trade or challenge without asking which); one that counts candidates instead of entries
     // (the two-entry player taken for a single); one that leaves A unhandled over a player (the
@@ -231,42 +237,103 @@ describe('worldButton: a faced player (ctl-10b, CTL10B.1)', () => {
     });
     expect(busy.sheet).toBeNull();
 
-    // Over the picker: Down to Challenge, A asks, A runs once.
-    const down = worldButton(lone.sheet, [onlinePlayer(13n)], nav('Down'));
-    const ask = worldButton(down.sheet, [onlinePlayer(13n)], nav('A'));
+    // Over the picker: Down to Challenge, A asks (the size pick, bt-15), Down, A sends ONE command.
+    // NAMED INTENTIONAL CHANGE (bt-15, BT15.1): was "A on Yes runs `{ kind: 'challenge' }`"; the
+    // confirmed pick now returns the `challenge` COMMAND with the picked party size and never `run`.
+    const SIZES = [3, 2, 1] as const;
+    const down = worldButton(lone.sheet, [onlinePlayer(13n)], nav('Down'), undefined, SIZES);
+    const ask = worldButton(down.sheet, [onlinePlayer(13n)], nav('A'), undefined, SIZES);
     expect(ask.run, 'A on Challenge only asks').toBeUndefined();
+    expect(ask.command, 'and sends nothing yet').toBeUndefined();
     expect(ask.result).toBe('consumed');
-    expect(ask.sheet?.confirm?.nav.item, 'on Yes').toBe('yes');
-    const yes = worldButton(ask.sheet, [onlinePlayer(13n)], nav('A'));
-    expect(yes.run).toEqual({ kind: 'challenge', playerIdentity: RIVAL_ID });
-    expect(yes.sheet).toBeNull();
+    expect(ask.sheet?.confirm?.nav.item, 'on the largest size').toBe('size-3');
+    const onTwo = worldButton(ask.sheet, [onlinePlayer(13n)], nav('Down'), undefined, SIZES);
+    expect(onTwo.sheet?.confirm?.nav.item, 'one Down: 2 vs 2').toBe('size-2');
+    expect(onTwo.command).toBeUndefined();
+    const picked = worldButton(onTwo.sheet, [onlinePlayer(13n)], nav('A'), undefined, SIZES);
+    expect(picked.run, 'a challenge is a command, never `run`').toBeUndefined();
+    expect(picked.command, 'the challenge command with the picked size').toEqual({
+      kind: 'challenge',
+      targetIdentity: RIVAL_ID,
+      partySize: 2,
+    });
+    expect(picked.sheet).toBeNull();
+    expect(picked.request).toBeNull();
+    expect(picked.result).toBe('consumed');
   });
 
-  it('CTL10B-1-WORLD-LONE-CHALLENGE: when the ONLY actionable row is a Challenge, A does not run it: the sheet opens directly in the Yes-default confirm; A on Yes then runs it once', () => {
+  // NAMED INTENTIONAL CHANGE (bt-15, BT15.1): the lone-Challenge shortcut opens the SIZED pick
+  // (the sizes threaded through worldButton's 5th argument), and with nobody eligible opens nothing.
+  // Was: "the sheet opens directly in the Yes-default confirm; A on Yes then runs it once".
+  it('CTL10B-1-WORLD-LONE-CHALLENGE (bt-15): when the ONLY actionable row is a Challenge, A opens the size pick directly on its largest size; A on a size returns the challenge command with that size and the LIVE identity, never `run`; with no size offered A opens nothing and sends nothing [BT15-1]', () => {
     // WRONG IMPL KILLED: the one-row fast path that runs whatever its single row is (a lone
-    // Challenge would be sent with no Yes/No); one that opens the sheet but on the rows (the
-    // player would see a one-row list, not the question); a confirm opened on No; and a confirm
-    // whose Yes does not run.
+    // Challenge sent with no question); a shortcut that still opens the legacy Yes / No confirm
+    // (`askConfirm` without the sizes: no size row to pick); the sizes not threaded through
+    // worldButton (the shortcut and the picker see different rows); a confirmed challenge returned
+    // as `run` (main.ts's runInteract arm would send the WHOLE party) or with the size hard-coded
+    // to the largest (`sizes[0]`) or read off the cursor index; the identity stored at entry (the
+    // player who walked away and was replaced gets the challenge); a pick with only No when nobody
+    // is eligible.
     const only = onlinePlayer(13n, ['challenge'] as const);
-    const r = worldButton(null, [only], nav('A'));
+    const SIZES = [3, 2, 1] as const;
+    const r = worldButton(null, [only], nav('A'), undefined, SIZES);
     expect(r.result).toBe('consumed');
     expect(r.run, 'A never runs a Challenge').toBeUndefined();
-    expect(r.sheet, 'the sheet opens').not.toBeNull();
-    expect(r.sheet?.confirm, 'directly in the confirm').not.toBeNull();
+    expect(r.command, 'nor sends one').toBeUndefined();
+    expect(r.sheet?.confirm, 'directly in the pick').not.toBeNull();
     expect(r.sheet?.confirm?.key).toBe('player:13|challenge');
-    expect(r.sheet?.confirm?.nav.item, 'Yes is the default').toBe('yes');
+    expect(r.sheet?.confirm?.nav.item, 'the largest size is the default').toBe('size-3');
+    expect(r.sheet?.confirm?.sizes, 'the sizes reached the pick').toEqual([3, 2, 1]);
 
-    const yes = worldButton(r.sheet, [only], nav('A'));
-    expect(yes.run).toEqual({ kind: 'challenge', playerIdentity: RIVAL_ID });
-    expect(yes.sheet).toBeNull();
-    expect(yes.result).toBe('consumed');
+    const three = worldButton(r.sheet, [only], nav('A'), undefined, SIZES);
+    expect(three.run).toBeUndefined();
+    expect(three.command).toEqual({ kind: 'challenge', targetIdentity: RIVAL_ID, partySize: 3 });
+    expect(three.sheet).toBeNull();
+    expect(three.result).toBe('consumed');
 
-    // B in that confirm returns to the one-row list (the sheet stays open), a held A is ignored.
-    const back = worldButton(r.sheet, [only], nav('B'));
+    // One Down then A: size 2, and the identity is the LIVE candidate's.
+    const SWAPPED_ID = 'ee'.repeat(32);
+    const swapped: InteractCandidate = {
+      ...only,
+      actions: [{ kind: 'challenge', playerIdentity: SWAPPED_ID }],
+    };
+    const onTwo = worldButton(r.sheet, [only], nav('Down'), undefined, SIZES);
+    const two = worldButton(onTwo.sheet, [swapped], nav('A'), undefined, SIZES);
+    expect(two.run).toBeUndefined();
+    expect(two.command, 'the live identity, size 2').toEqual({
+      kind: 'challenge',
+      targetIdentity: SWAPPED_ID,
+      partySize: 2,
+    });
+
+    // The live party no longer offers 3: the pick closes and nothing is sent.
+    const stale = worldButton(r.sheet, [only], nav('A'), undefined, [2, 1]);
+    expect(stale.sheet).toBeNull();
+    expect(stale.command, 'a size no longer offered sends nothing').toBeUndefined();
+    expect(stale.run).toBeUndefined();
+
+    // Two offered: the shortcut opens on 2.
+    const twoOffered = worldButton(null, [only], nav('A'), undefined, [2, 1]);
+    expect(twoOffered.sheet?.confirm?.nav.item).toBe('size-2');
+
+    // Nobody eligible (no 5th argument = []): no pick, nothing run or sent.
+    for (const none of [
+      worldButton(null, [only], nav('A')),
+      worldButton(null, [only], nav('A'), undefined, []),
+    ]) {
+      expect(none.sheet?.confirm ?? null, 'no pick opens').toBeNull();
+      expect(none.run).toBeUndefined();
+      expect(none.command).toBeUndefined();
+    }
+
+    // B in the pick returns to the one-row list (the sheet stays open), a held A is ignored.
+    const back = worldButton(r.sheet, [only], nav('B'), undefined, SIZES);
     expect(back.run).toBeUndefined();
+    expect(back.command).toBeUndefined();
     expect(back.sheet?.confirm).toBeNull();
-    const held = worldButton(r.sheet, [only], nav('A', true));
+    const held = worldButton(r.sheet, [only], nav('A', true), undefined, SIZES);
     expect(held.run).toBeUndefined();
+    expect(held.command).toBeUndefined();
     expect(held.sheet).toEqual(r.sheet);
   });
 });

@@ -3674,13 +3674,30 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     expect(H.calls, 'nothing was sent').toEqual([]);
   });
 
-  it('CTL10B-1-BOOT-CHALLENGE-YES: A on the Challenge row opens a confirm (prompt "Challenge Zed?", rows Yes and No, Yes selected) and sends nothing; A on Yes sends challengePvp exactly once with the FACED (second) player and the party ids; a held Enter repeat sends no second challenge', async () => {
-    // WRONG IMPL KILLED: a Challenge row that sends challengePvp at once (no confirm), a confirm whose
-    // cursor starts on No (Yes is the default), a challenge sent to the first rival or with no
-    // target / no party, a Yes that sends twice (two A edges for one press, or an OS key-repeat of
-    // the held Enter), a sheet that stays open after the send, and a confirm that names no player
-    // (the prompt must carry the faced player's name).
+  // NAMED INTENTIONAL CHANGE (bt-15, BT15.1 / BT15.5): the Challenge confirm is the party-size
+  // pick, not Yes / No. With a party of three conscious monsters its rows are "3 vs 3", "2 vs 2",
+  // "1 vs 1", "No" (the largest first and selected); the picked size decides how many party ids
+  // challengePvp carries (the first N conscious, untraded ones in slot order). Was: rows Yes / No,
+  // A on Yes sent the whole party.
+  /** The faced-player boot with a party of THREE conscious monsters: 61 (slot 0, from the boot),
+   *  then 63 (slot 2) and 62 (slot 1) inserted out of slot order. */
+  const bootFacingWithThree = async (): Promise<void> => {
     await bootFacingTheSecondPlayer();
+    opts.store.upsertMonster(partyMonster(63n, 2));
+    opts.store.upsertMonster(partyMonster(62n, 1));
+    settle(1012);
+    frame(1016);
+  };
+
+  it('CTL10B-1-BOOT-CHALLENGE-YES: A on the Challenge row opens the size pick (prompt "Challenge Zed?", rows 3 vs 3, 2 vs 2, 1 vs 1, No, the largest selected) and sends nothing; Down, Down moves the selection (repainted each time) to 1 vs 1 and A sends challengePvp exactly once to the FACED player with exactly ONE party id, the slot-0 monster; a held Enter repeat sends no second challenge [BT15-1 BT15-5]', async () => {
+    // WRONG IMPL KILLED: the legacy Yes / No confirm rendered for a Challenge (no size to pick); a
+    // row text that is not the catalog's "n vs n" (a literal, or the row key `size-3`); the pick
+    // opening on No or on the smallest size; a `promptSig` that ignores the sizes or the cursor (a
+    // Down never repaints: the selection stays on 3 vs 3 on screen while the model moved); the dead
+    // `runInteract` 'challenge' arm still sending `ownPartyIds()` (all three ids); a dispatch that
+    // ignores `partySize` (three ids for "1 vs 1"); the size read off the cursor index (index 2 is
+    // not 1); a challenge to the first rival; a pick that sends twice on a held Enter.
+    await bootFacingWithThree();
     tapKey('Enter', 1020);
     frame(1025);
     expect(chipRowTexts(), 'precondition: the picker is open').toHaveLength(2);
@@ -3688,52 +3705,95 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     frame(1035);
     expect(selectedFlags(), 'precondition: the cursor is on Challenge').toEqual(['false', 'true']);
 
-    tapKey('Enter', 1040); // A on Challenge: the confirm, no send
+    tapKey('Enter', 1040); // A on Challenge: the size pick, no send
     frame(1045);
-    expect(H.calls, 'A on Challenge sends nothing: the confirm comes first').toEqual([]);
-    expect(chipText(), 'the confirm names the faced player').toContain(CHALLENGE_PROMPT);
-    expect(chipRowTexts(), 'the confirm rows are Yes and No').toEqual(['Yes', 'No']);
-    expect(selectedFlags(), 'Yes is selected').toEqual(['true', 'false']);
+    expect(H.calls, 'A on Challenge sends nothing: the pick comes first').toEqual([]);
+    expect(chipText(), 'the pick names the faced player').toContain(CHALLENGE_PROMPT);
+    expect(chipRowTexts(), 'the size rows, largest first, then No').toEqual([
+      '3 vs 3',
+      '2 vs 2',
+      '1 vs 1',
+      'No',
+    ]);
+    expect(selectedFlags(), 'the largest size is selected').toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+    ]);
     expect(
       chip().querySelector('[role="listbox"]')?.getAttribute('aria-label'),
       'the listbox is named by the prompt',
     ).toBe(CHALLENGE_PROMPT);
-    expect(stack(), 'the confirm is the chip, not a frame').toEqual(WORLD_ONLY);
+    expect(stack(), 'the pick is the chip, not a frame').toEqual(WORLD_ONLY);
 
-    fire('keydown', 'Enter', 1050); // A on Yes, held
-    expect(challengeCalls(), 'A on Yes sends exactly one challenge').toHaveLength(1);
+    tapKey('ArrowDown', 1050);
+    frame(1055);
+    expect(selectedFlags(), 'Down: 2 vs 2, repainted').toEqual(['false', 'true', 'false', 'false']);
+    tapKey('ArrowDown', 1060);
+    frame(1065);
+    expect(selectedFlags(), 'Down: 1 vs 1').toEqual(['false', 'false', 'true', 'false']);
+    expect(H.calls, 'moving sends nothing').toEqual([]);
+
+    fire('keydown', 'Enter', 1070); // A on 1 vs 1, held
+    expect(challengeCalls(), 'A on a size sends exactly one challenge').toHaveLength(1);
     const args = challengeCalls()[0]?.args as { target: unknown; partyIds: bigint[] };
     expect(identityHex(args.target), 'to the FACED player, not the first rival').toBe(
       FACED_IDENTITY,
     );
-    expect(args.partyIds, 'with the party').toEqual([61n]);
+    expect(args.partyIds, '1 vs 1: exactly the slot-0 monster').toEqual([61n]);
     expect(H.calls, 'and nothing else was sent').toEqual(['challengePvp']);
     fire('keydown', 'Enter', 1080, { init: { repeat: true } }); // the OS repeats the held key
     fire('keydown', 'Enter', 1110, { init: { repeat: true } });
     fire('keyup', 'Enter', 1120);
     expect(challengeCalls(), 'a held Enter sends no second challenge').toHaveLength(1);
     frame(1130);
-    expect(chipOptions(), 'the confirm is closed after the send').toEqual([]);
+    expect(chipOptions(), 'the pick is closed after the send').toEqual([]);
     expect(stack()).toEqual(WORLD_ONLY);
     expect(shownById('tradepropose-overlay'), 'no wizard opened').toBe(false);
+
+    // The default row: Enter, Down, Enter, Enter sends "3 vs 3" = the three ids in SLOT order.
+    tapKey('Enter', 1200);
+    tapKey('ArrowDown', 1210);
+    tapKey('Enter', 1220);
+    frame(1225);
+    expect(chipRowTexts(), 'precondition: the pick again').toHaveLength(4);
+    tapKey('Enter', 1230);
+    expect(challengeCalls(), 'a second challenge').toHaveLength(2);
+    const three = challengeCalls()[1]?.args as { partyIds: bigint[] };
+    expect(three.partyIds, '3 vs 3: slots 0, 1, 2 (not insertion order)').toEqual([61n, 62n, 63n]);
   });
 
-  it('CTL10B-1-BOOT-CHALLENGE-NO: in the confirm Down moves to No and A on No returns to the picker rows with nothing sent; B in the confirm also returns to the rows (Yes selected again on re-entry); B on the rows closes the picker; no challenge is ever sent', async () => {
+  it('CTL10B-1-BOOT-CHALLENGE-NO: in the size pick Down walks every row to No and A on No returns to the picker rows with nothing sent; Up from the largest size wraps to No (every row D-pad-reachable); B in the pick also returns to the rows (the largest selected again on re-entry); B on the rows closes the picker; no challenge is ever sent [BT15-1 BT15-5]', async () => {
     // WRONG IMPL KILLED: a No that sends (or that closes the whole picker instead of returning to
-    // the rows), a B in the confirm that closes everything or sends, a confirm that does not reset
-    // to Yes on re-entry (a stale No cursor makes the next A a silent cancel), a Down that does
-    // not move the confirm cursor, and a B on the rows that leaves the picker open.
-    await bootFacingTheSecondPlayer();
+    // the rows); a pick whose Up does not wrap (No unreachable from the top by Up); a B in the pick
+    // that closes everything or sends; a pick that does not reset to the largest size on re-entry
+    // (a stale cursor makes the next A a different size or a silent cancel); a Down that does not
+    // move the cursor; and a B on the rows that leaves the picker open.
+    await bootFacingWithThree();
     tapKey('Enter', 1020);
     tapKey('ArrowDown', 1030);
-    tapKey('Enter', 1040); // the confirm
+    tapKey('Enter', 1040); // the pick
     frame(1045);
-    expect(chipRowTexts(), 'precondition: the confirm is shown').toEqual(['Yes', 'No']);
-    expect(selectedFlags(), 'precondition: Yes selected').toEqual(['true', 'false']);
+    expect(chipRowTexts(), 'precondition: the pick is shown').toEqual([
+      '3 vs 3',
+      '2 vs 2',
+      '1 vs 1',
+      'No',
+    ]);
+    expect(selectedFlags(), 'precondition: the largest selected').toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+    ]);
 
-    tapKey('ArrowDown', 1050);
-    frame(1055);
-    expect(selectedFlags(), 'Down moves to No').toEqual(['false', 'true']);
+    for (const [i, t] of [1050, 1052, 1054].entries()) {
+      tapKey('ArrowDown', t);
+      frame(t + 1);
+      expect(selectedFlags().indexOf('true'), `Down ${i + 1}`).toBe(i + 1);
+    }
+    expect(selectedFlags(), 'three Downs: No').toEqual(['false', 'false', 'false', 'true']);
     expect(H.calls, 'moving sends nothing').toEqual([]);
     tapKey('Enter', 1060); // A on No
     frame(1065);
@@ -3743,10 +3803,23 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
       `Challenge ${EM_DASH} ${FACED_NAME}`,
     ]);
 
-    tapKey('Enter', 1070); // the row cursor was kept on Challenge: the confirm again
+    tapKey('Enter', 1070); // the row cursor was kept on Challenge: the pick again
     frame(1075);
-    expect(chipRowTexts(), 'the confirm is shown again').toEqual(['Yes', 'No']);
-    expect(selectedFlags(), 'with Yes selected again').toEqual(['true', 'false']);
+    expect(chipRowTexts(), 'the pick is shown again').toHaveLength(4);
+    expect(selectedFlags(), 'with the largest selected again').toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+    ]);
+    tapKey('ArrowUp', 1076);
+    frame(1077);
+    expect(selectedFlags(), 'Up from the top wraps to No').toEqual([
+      'false',
+      'false',
+      'false',
+      'true',
+    ]);
     tapKey('Backspace', 1080); // B in the confirm
     frame(1085);
     expect(H.calls, 'B in the confirm sends nothing').toEqual([]);
