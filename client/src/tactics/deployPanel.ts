@@ -95,8 +95,7 @@ export function deployVM(input: DeployInput): DeployVM {
     const id = resolved[i];
     formation.push(id === undefined ? null : (candidates.find((m) => m.monsterId === id) ?? null));
   }
-  // bt-12 API freeze: the composition list lands with the implementation.
-  return { battleId: input.battleId, candidates, formation, wilds: [] };
+  return { battleId: input.battleId, candidates, formation, wilds: [...input.wilds] };
 }
 /** The filled slots as `deploy_units` picks, ascending slot (a sparse assignment keeps its slot numbers). */
 export function picksOf(slots: readonly (DeployMonster | null)[]): DeployPick[] {
@@ -152,6 +151,9 @@ export class DeployPanel implements BattleOpsView {
   #assignment: (DeployMonster | null)[] = [];
   /** The in-flight send's token; null when unlocked. */
   #lock: symbol | null = null;
+  /** The "Still there?" line (bt-12 B) and the whole seconds it shows; null when none shows. */
+  #countdownEl: HTMLElement | null = null;
+  #countdownValue: number | null = null;
 
   constructor(parent: HTMLElement, deps: DeployPanelDeps) {
     this.#deps = deps;
@@ -217,20 +219,31 @@ export class DeployPanel implements BattleOpsView {
     this.#cursor = 'deploy';
     this.#candidate = null;
     this.#assignment = [];
+    this.#countdownEl = null;
+    this.#countdownValue = null;
     this.#root.replaceChildren(this.#titleEl);
     closeOverlayA11y('battleView', null);
   }
 
   /** Which screen the hint bar describes (bt-12 B): the confirm screen or the editor. */
   hint(): HintDeploy {
-    // bt-12 API freeze: the mode-aware answer lands with the implementation.
-    return { deploy: 'confirm' };
+    return { deploy: this.#mode };
   }
 
   /** The "Still there?" countdown (BT12.2): `n` seconds paints one `.tactics-countdown` line as the root's
    *  last child, the same value writes nothing, null removes it. Driven by main.ts's frame pump. */
   setCountdown(seconds: number | null): void {
-    void seconds;
+    if (seconds === this.#countdownValue) return;
+    this.#countdownValue = seconds;
+    if (seconds === null) {
+      this.#countdownEl?.remove();
+      this.#countdownEl = null;
+      return;
+    }
+    if (this.#countdownEl === null) this.#countdownEl = el('p', 'tactics-countdown');
+    this.#countdownEl.textContent = s.stillThere(seconds);
+    // The root's last child (appending a node already there moves it there).
+    this.#root.appendChild(this.#countdownEl);
   }
 
   applyBattleOp(op: BattleOp): void {
@@ -404,6 +417,22 @@ export class DeployPanel implements BattleOpsView {
     const locked = this.#lock !== null;
     const parts: HTMLElement[] = [];
     if (!edit) {
+      // The pack (bt-12 B, BT12.2 "THE Deploying phase SHALL show the wild composition"), in
+      // `wild_index` order, BEFORE the formation: who the player is about to face, then whom to send.
+      if (vm.wilds.length > 0) {
+        const pack = el('ul', 'tactics-deploy-wilds');
+        pack.setAttribute('aria-label', s.deployWilds());
+        vm.wilds.forEach((w, i) => {
+          const li = el('li', 'tactics-deploy-wild');
+          li.setAttribute('data-wild-index', String(i));
+          li.append(
+            el('span', 'tactics-deploy-name', w.name),
+            el('span', 'tactics-deploy-level', s.hudLevel(w.level)),
+          );
+          pack.appendChild(li);
+        });
+        parts.push(pack);
+      }
       const list = el('ul', 'tactics-deploy-formation');
       list.setAttribute('aria-label', s.deployLabel());
       vm.formation.forEach((m, i) => {
@@ -470,6 +499,8 @@ export class DeployPanel implements BattleOpsView {
     // a button the pointer pressed) or stranded on <body>. The rebuild destroyed any focused row.
     const active = document.activeElement;
     const focusWasOurs = active === null || active === document.body || this.#root.contains(active);
+    // The countdown line stays the root's LAST child across every repaint (the pump owns its text).
+    if (this.#countdownEl !== null) parts.push(this.#countdownEl);
     this.#root.replaceChildren(this.#titleEl, ...parts);
     // The cursor must be heard and a click must not strand focus (the tacticsBattle.ts rule): while
     // shown, focus the listbox so its aria-activedescendant announces the cursor row.

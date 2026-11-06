@@ -1802,7 +1802,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The idle countdown shown during the last minute of a wild battle's decision window, asking
   // whether the player is still at the keyboard; {s} is the whole seconds left. A short question and
   // the seconds with the unit symbol.
-  'tactics.clock.stillThere': (p) => `Toujours là ? ${p.s} s`,
+  'tactics.clock.stillThere': (p) => `Toujours là ? ${p.s} s`,
   // @desc: Label of a formation slot; {n} is the slot number, 1-based. One word plus the number.
   'tactics.deploy.slot': (p) => `Emplacement ${p.n}`,
   // @desc: Accessible name of the results panel's list of rewards. One word.

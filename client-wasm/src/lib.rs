@@ -514,13 +514,13 @@ use serde::{Deserialize, Serialize};
 use game_core::tactics::{
     build_kits, damage_pipeline, disengage_taxed, find_path, guard_granted, is_exhausted,
     is_flanked, load_battle_maps, load_tactics_skills, load_tactics_species, load_tactics_tuning,
-    plan as ai_plan, plan_cost, recruit_odds, spend, status_blocks_turn, target_set,
-    validate_at_pop, validate_battle_maps, validate_unit, BattleKind, BattleMapDef, BattleMapEntry,
-    Board, BoardUnit, Cell, EconomyError, Entry, EventPayload, GeometryError, HaltReason, Hooks,
-    MoveAction, MoveClass, Path, PathError, PipelineTrace, QueuedAction, RecruitAction,
-    RecruitError, RecruitOdds, RollPair, Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance,
-    TacticalState, TacticalUnit, TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState,
-    Validated,
+    order as initiative_order, plan as ai_plan, plan_cost, priority_for_round, recruit_odds, spend,
+    status_blocks_turn, target_set, validate_at_pop, validate_battle_maps, validate_unit, BattleKind,
+    BattleMapDef, BattleMapEntry, Board, BoardUnit, Cell, EconomyError, Entry, EventPayload,
+    GeometryError, HaltReason, Hooks, MoveAction, MoveClass, Path, PathError, PipelineTrace,
+    QueuedAction, RecruitAction, RecruitError, RecruitOdds, RollPair, Side, SkillGeometry,
+    SkillTactics, SpeciesTactics, Stance, TacticalState, TacticalUnit, TacticsTuning, TurnBudget,
+    TurnEndCause, UnitKit, UnitState, Validated, MAX_PACK,
 };
 use game_core::{
     accuracy_check, load_skills, load_species, load_type_chart, BattleOutcome, Effectiveness,
@@ -1594,8 +1594,11 @@ pub struct TacticsTuningOut {
 /// `TacticsTuningOut` of one tuning (pure; `tuning_out` applies it to the loaded content).
 #[must_use]
 pub fn tuning_out_of(tuning: &TacticsTuning) -> TacticsTuningOut {
-    let _ = tuning;
-    todo!("bt-12: tuning_out_of")
+    TacticsTuningOut {
+        surge_start_round: tuning.surge_start_round,
+        wild_round_cap: tuning.wild_round_cap,
+        max_pack: MAX_PACK,
+    }
 }
 
 /// The loaded tuning as the client reads it.
@@ -1613,8 +1616,11 @@ pub fn tuning_out() -> Result<TacticsTuningOut, String> {
 /// # Errors
 /// A malformed board (`state_of`).
 pub fn next_initiative_of(board: &BoardIn, this_round_priority: Side) -> Result<Vec<u32>, String> {
-    let _ = (board, this_round_priority);
-    todo!("bt-12: next_initiative_of")
+    let state = state_of(board)?;
+    Ok(initiative_order(
+        &state.contenders(),
+        priority_for_round(this_round_priority, 2),
+    ))
 }
 
 /// `TacticsTuningOut` of the loaded content.

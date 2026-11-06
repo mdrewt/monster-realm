@@ -420,8 +420,15 @@ export function bindTacticsRules(pkg: TacticsWasmExports): TacticsClientRules {
 /** The shell's battle kind: Wild → `wild`; Pvp AND Practice → `pvp` (Practice uses the PvP ruleset and
  *  both sides are the player's — R-bt-11-PRACTICEKIND). Exhaustive. */
 export function shellKind(kind: RuleBattleKind): 'wild' | 'pvp' {
-  void kind;
-  throw new Error('bt-12: shellKind not implemented');
+  switch (kind) {
+    case 'Wild':
+      return 'wild';
+    case 'Pvp':
+    case 'Practice':
+      return 'pvp';
+    default:
+      return kind satisfies never;
+  }
 }
 
 /** The current initiative unit of either side: `Waiting(U)` → U; `Advancing` → the initiative entry at
@@ -431,16 +438,22 @@ export function activeUnitOf(
   initiative: readonly number[],
   turnIdx: number,
 ): number | null {
-  void turnState;
-  void initiative;
-  void turnIdx;
-  throw new Error('bt-12: activeUnitOf not implemented');
+  switch (turnState.kind) {
+    case 'Waiting':
+      return turnState.unitId;
+    case 'Advancing':
+      return initiative[turnIdx] ?? null;
+    case 'NotActive':
+      return null;
+    default:
+      return turnState satisfies never;
+  }
 }
 
 /** The board view's status tag of a rules status (`{ Sleep: … }` → `'Sleep'`); null stays null. */
 export function statusTagOf(status: RuleStatusEffect | null): StatusTag | null {
-  void status;
-  throw new Error('bt-12: statusTagOf not implemented');
+  if (status === null) return null;
+  return typeof status === 'string' ? status : 'Sleep';
 }
 
 const has = (action: QueuedActionRule, tag: 'Skill' | 'Move'): boolean =>

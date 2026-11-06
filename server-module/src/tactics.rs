@@ -1642,31 +1642,30 @@ pub(crate) fn start_wild_tactical(
         content.kit(spawn.species_id)?;
         wilds.push((i, spawn.species_id, spawn.level.as_u8(), seed));
     }
-    // The legacy anchor: the whole party as side A, wild 0 as side B.
+    // The legacy anchor: the whole party as side A, EVERY wild of the pack as side B in
+    // `wild_index` order (bt-12 B, BT12.2: the client's deploy confirm lists the pack from the
+    // anchor's side B, which it already ingests). Every wild is conscious at the start, so
+    // `with_lead` seats wild 0 as the lead.
     let mut team_a = Vec::with_capacity(party.len());
     for m in &party {
         team_a.push(anchor_monster(m, content.species(m.species_id)?));
     }
     let side_a = BattleSide::with_lead(team_a)
         .ok_or_else(|| "party has no conscious monster".to_string())?;
-    let (_, wild0_species, wild0_level, wild0_seed) = wilds
-        .first()
-        .copied()
-        .ok_or_else(|| "encounter: empty pack".to_string())?;
-    let wild0 = content.species(wild0_species)?;
-    let wild0_inst = build_monster(wild0_seed, wild0, Level::new(wild0_level)?);
-    let side_b = BattleSide::with_lead(vec![BattleMonster {
-        species_id: wild0_species,
-        affinity: wild0.affinity,
-        level: wild0_level,
-        current_hp: wild0_inst.derived_stats.hp,
-        max_hp: wild0_inst.derived_stats.hp,
-        stats: wild0_inst.derived_stats,
-        known_skill_ids: wild0.learnable_skill_ids.clone(),
-        status: None,
-    }])
-    .ok_or_else(|| "wild opponent has no conscious monster".to_string())?;
+    let mut team_b = Vec::with_capacity(wilds.len());
+    for &(_, species_id, level, seed) in &wilds {
+        team_b.push(wild_anchor_monster(content, species_id, level, seed)?);
+    }
+    let side_b = BattleSide::with_lead(team_b)
+        .ok_or_else(|| "wild opponent has no conscious monster".to_string())?;
     let now = now_ms(ctx);
+    // A pack >= 2 waits in Deploying: its deadline is written ONCE, to the side-A clock (the
+    // client's "Still there?" countdown reads it) AND the deploy window row (R6: one instant).
+    let deploy_deadline = if pack == 1 {
+        None
+    } else {
+        Some(deploy_deadline_ms(now, &content.tuning))
+    };
     let anchor = ctx.db.battle().insert(Battle {
         battle_id: 0,
         player_identity: player,
@@ -1725,7 +1724,7 @@ pub(crate) fn start_wild_tactical(
         player,
         window_seq: 0,
         window_open_ms: None,
-        deadline_ms: None,
+        deadline_ms: deploy_deadline,
         windows_this_unit_turn: 0,
         idle_ms_total: 0,
         autopass_count: 0,
@@ -1755,16 +1754,33 @@ pub(crate) fn start_wild_tactical(
             })
             .collect();
         materialize(ctx, anchor, tactical, &picks, now)?;
-    } else {
-        arm_deadline(
-            ctx,
-            battle_id,
-            DEPLOY_WINDOW_UNIT,
-            0,
-            deploy_deadline_ms(now, &content.tuning),
-        );
+    } else if let Some(deadline) = deploy_deadline {
+        arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deadline);
     }
     Ok(battle_id)
+}
+
+/// One wild of the pack as the anchor's side B seats it: built from its individuality seed at the
+/// band level (full HP, the derived stats, the species' learnable skills, no status) — exactly the
+/// `battle_wild_unit` rebuild `materialize` performs, so the anchor and the units agree.
+fn wild_anchor_monster(
+    content: &TacticsContent,
+    species_id: u32,
+    level: u8,
+    seed: u32,
+) -> Result<BattleMonster, String> {
+    let species = content.species(species_id)?;
+    let built = build_monster(seed, species, Level::new(level)?);
+    Ok(BattleMonster {
+        species_id,
+        affinity: species.affinity,
+        level,
+        current_hp: built.derived_stats.hp,
+        max_hp: built.derived_stats.hp,
+        stats: built.derived_stats,
+        known_skill_ids: species.learnable_skill_ids.clone(),
+        status: None,
+    })
 }
 
 /// The Deploying window's deadline (bt-12 B, BT12.2): `now + pve_deploy_ms` — the ONE instant both

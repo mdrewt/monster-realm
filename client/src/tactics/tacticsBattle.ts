@@ -315,6 +315,7 @@ export class TacticsBattle implements BattleOpsView {
   readonly #boardEl: HTMLElement;
   readonly #hudEl: HTMLElement;
   readonly #bannerEl: HTMLElement;
+  readonly #fieldEl: HTMLElement;
   readonly #dockEl: HTMLElement;
   readonly #ticker: Ticker;
   readonly #playback: Playback;
@@ -336,6 +337,9 @@ export class TacticsBattle implements BattleOpsView {
   #hint: HintBattle = { start: 'endTurn', undo: false };
   #menuOpen = false;
   #rules: TacticsRules | null = null;
+  /** The "Still there?" line (bt-12 B) and the whole seconds it shows; null when none shows. */
+  #countdownEl: HTMLElement | null = null;
+  #countdownValue: number | null = null;
 
   constructor(parent: HTMLElement, deps: TacticsBattleDeps) {
     this.#deps = deps;
@@ -354,14 +358,14 @@ export class TacticsBattle implements BattleOpsView {
     this.#turnbarEl = div('tactics-turnbar');
     this.#turnbarEl.setAttribute('role', 'group');
 
-    const field = div('tactics-field');
+    this.#fieldEl = div('tactics-field');
     this.#boardEl = div('tactics-board');
     this.#hudEl = div('tactics-hud');
     this.#bannerEl = div('tactics-banner');
     this.#bannerEl.hidden = true;
-    field.append(this.#boardEl, this.#hudEl, this.#bannerEl);
+    this.#fieldEl.append(this.#boardEl, this.#hudEl, this.#bannerEl);
 
-    this.#root.append(this.#titleEl, this.#turnbarEl, field);
+    this.#root.append(this.#titleEl, this.#turnbarEl, this.#fieldEl);
     this.#ticker = new Ticker(this.#root);
     this.#dockEl = div('tactics-dock');
     this.#dockEl.setAttribute('role', 'group');
@@ -388,6 +392,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#root.style.display = 'none';
     this.#playback.skip();
     this.#syncPlaying();
+    this.setCountdown(null);
     closeOverlayA11y('battleView', null);
   }
 
@@ -424,19 +429,34 @@ export class TacticsBattle implements BattleOpsView {
    *  the field after the banner, the same value writes nothing, null removes it; `#commit` never touches
    *  it; `hide()` and a new battle clear it. Driven by main.ts's frame pump on the wall clock. */
   setCountdown(seconds: number | null): void {
-    void seconds;
+    if (seconds === this.#countdownValue) return;
+    this.#countdownValue = seconds;
+    if (seconds === null) {
+      this.#countdownEl?.remove();
+      this.#countdownEl = null;
+      return;
+    }
+    if (this.#countdownEl === null) this.#countdownEl = div('tactics-countdown');
+    this.#countdownEl.textContent = s.stillThere(seconds);
+    // In the field after the banner: `#commit` rewrites the field's other bands, never this one.
+    this.#fieldEl.appendChild(this.#countdownEl);
   }
 
   /** Forget the battle (bt-12 B): the next `render` re-initialises as for a new battle — the cursor
    *  memory, the selection, the cursor, the danger toggle, the mode, the drafts, the in-flight keys, the
    *  ticker and the playback are cleared. main.ts calls it on a reconnect, so a submit the dropped link
-   *  lost never leaves a unit's turn locked. */
-  reset(): void {}
+   *  lost never leaves a unit's turn locked. Neither hides nor shows (the frame owner is main.ts's). */
+  reset(): void {
+    this.#forget();
+    this.#battleId = null;
+    this.#vm = null;
+  }
 
   /** A submit the server REFUSED (bt-12 B): the unit's in-flight key is released so the player's next
    *  commit for the same turn goes out; repaints. main.ts wires it to the dispatch arm's rejection. */
   release(unitId: number): void {
-    void unitId;
+    this.#inflight.delete(unitId);
+    if (this.#vm !== null) this.#atomic(() => this.#paint());
   }
 
   get dangerOn(): boolean {
@@ -912,7 +932,13 @@ export class TacticsBattle implements BattleOpsView {
 
   /** A different battle starts from scratch: nothing of the last one may leak into it. */
   #startBattle(battleId: bigint): void {
+    this.#forget();
     this.#battleId = battleId;
+  }
+
+  /** Everything of the current battle but its id: the planning state, the log, the playback and
+   *  the countdown (`#startBattle` and `reset` share it). */
+  #forget(): void {
     this.#memory = new Map();
     this.#selected = null;
     this.#cursor = null;
@@ -921,9 +947,11 @@ export class TacticsBattle implements BattleOpsView {
     this.#drafts = new Map();
     this.#inflight = new Map();
     this.#lastActive = null;
+    this.#hint = { start: 'endTurn', undo: false };
     this.#ticker.clear();
     this.#playback.skip();
     this.#syncPlaying();
+    this.setCountdown(null);
   }
 
   #syncPlaying(): void {

@@ -175,8 +175,9 @@ export interface RouteContext {
    *  screen (CTL7C.1): its D-pad presses and repeats go to `screen` below, as its other buttons
    *  do, instead of becoming `nav` effects. */
   readonly nav?: { readonly covered: boolean; readonly now: number; readonly screen?: boolean };
-  /** The top frame's screen adapter: asked for every button but X, the main menu's own (`nav`
-   *  effects) and a D-pad edge no nav-capable screen takes. */
+  /** The top frame's screen adapter: asked for every button but the main menu's own (`nav`
+   *  effects), a D-pad edge no nav-capable screen takes, and X anywhere but under a nav-capable
+   *  screen (bt-12: the world's jump and the main menu never ask it). */
   readonly screen?: (btn: NavInput) => ScreenResult;
 }
 
@@ -200,8 +201,9 @@ const navPress = (button: VButton): RouteResult => ({
   effects: [{ kind: 'nav', input: { button, repeat: false } }],
 });
 
-/** A D-pad input for a nav-capable screen: its adapter's command, if it answered with one. */
-const dpadToScreen = (ctx: RouteContext, input: NavInput): readonly RouterEffect[] => {
+/** A D-pad (or, bt-12, X) input for a nav-capable screen: its adapter's command, if it answered
+ *  with one; `consumed` and `unhandled` alike yield nothing (the caller swallows the edge). */
+const askScreenSwallowing = (ctx: RouteContext, input: NavInput): readonly RouterEffect[] => {
   const result = ctx.screen?.(input);
   return typeof result === 'object' ? [{ kind: 'command', command: result }] : [];
 };
@@ -230,7 +232,7 @@ export class InputRouter {
           this.#repeat = { button, nextAt: nav.now + REPEAT_DELAY_MS };
           if (!nav.screen) return navPress(button);
           // Always consumed, whatever the adapter answers: an arrow key must not scroll the page.
-          return { consumed: true, effects: dpadToScreen(ctx, { button, repeat: false }) };
+          return { consumed: true, effects: askScreenSwallowing(ctx, { button, repeat: false }) };
         }
         return ctx.worldActive
           ? { consumed: true, effects: [{ kind: 'dirDown', dir }] }
@@ -253,8 +255,17 @@ export class InputRouter {
       return { consumed: true, effects: [{ kind: 'dirUp', dir }] };
     }
     if (button === 'X') {
-      // Jump does not hold-repeat: only the press acts.
-      return down && ctx.worldActive ? { consumed: true, effects: [{ kind: 'jump' }] } : SWALLOWED;
+      // Jump does not hold-repeat: only the press acts; the release is swallowed everywhere.
+      if (!down) return SWALLOWED;
+      if (ctx.worldActive) return { consumed: true, effects: [{ kind: 'jump' }] };
+      // bt-12 (BT12.2 "X SHALL open the editor", R-bt-11-ROUTERX): under an uncovered nav-capable
+      // SCREEN the press asks its adapter like every other screen button — and is consumed whatever
+      // it answers (X's key is Space, and an unconsumed Space scrolls the page: the D-pad rule). The
+      // main menu (nav without `screen`), a covered frame and a frame with no nav still swallow it.
+      if (nav?.screen === true) {
+        return { consumed: true, effects: askScreenSwallowing(ctx, { button, repeat: false }) };
+      }
+      return SWALLOWED;
     }
     if (nav !== undefined && !nav.screen && NAV_BUTTONS.has(button)) {
       return down ? navPress(button) : SWALLOWED;
@@ -276,7 +287,7 @@ export class InputRouter {
     repeat.nextAt += REPEAT_PERIOD_MS;
     if (repeat.nextAt <= now) repeat.nextAt = now + REPEAT_PERIOD_MS;
     const input: NavInput = { button: repeat.button, repeat: true };
-    return ctx.nav.screen ? dpadToScreen(ctx, input) : [{ kind: 'nav', input }];
+    return ctx.nav.screen ? askScreenSwallowing(ctx, input) : [{ kind: 'nav', input }];
   }
 
   /** Stop any repeat: a held key never repeats into a newly pushed or popped frame, not even
