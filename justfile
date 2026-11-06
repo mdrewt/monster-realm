@@ -128,11 +128,17 @@ mutate:
 
 # game-core mutation gate, zero tolerance: any missed mutant fails; timeouts are
 # tolerated only when missed=0.
-mutate-core:
+#
+# `shard` ("k/n", 0-based; empty = the whole crate) is how the nightly fits under GitHub's 6 h job cap:
+# the crate outgrew one serial job (2052 mutants), so CI runs n shards in a matrix. Each shard is
+# its own zero-tolerance verdict, so the AND over the shards equals the unsharded gate.
+mutate-core shard="":
     #!/usr/bin/env bash
     set -euo pipefail
+    [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-core: shard '{{shard}}' is not k/n" >&2; exit 64; }
+    shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
     status=0
-    cargo mutants -p game-core || status=$?
+    cargo mutants -p game-core ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts. Anything else is not a mutation verdict.
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
@@ -153,14 +159,20 @@ mutate-core:
 # Cap rebaselined by the Phase-3 mutants triage (RC-mutate-server): full run at 428314e = 1151
 # mutants, 31 missed (29 accepted, one MUT-server-* ledger row per file, + 2 stale-build flakes),
 # 1 timeout (evolution.rs check_and_evolve `+=` -> `*=`, counted as caught); cap = 31 + 3 headroom.
-mutate-server cap="34":
+#
+# Unsharded (`shard` empty) it runs and enforces the cap. The nightly runs it as a matrix of `k/n`
+# shards to fit the 6 h job cap (1532 mutants): a shard only RUNS and reports its survivors, and
+# `mutate-server-ratchet` sums every shard's missed.txt against the cap.
+mutate-server cap="34" shard="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{cap}}" in
         ''|*[!0-9]*) echo "mutate-server: cap '{{cap}}' is not a non-negative integer" >&2; exit 64;;
     esac
+    [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-server: shard '{{shard}}' is not k/n" >&2; exit 64; }
+    shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
     status=0
-    cargo mutants -p monster-realm-module --test-tool nextest || status=$?
+    cargo mutants -p monster-realm-module --test-tool nextest ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts (a hang is a detection, so they count as
     # caught; they may accompany missed). Same set as mutate-core. Anything else is not a verdict.
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
@@ -174,7 +186,31 @@ mutate-server cap="34":
         exit 1
     fi
     missed=$(grep -c '' mutants.out/missed.txt || true)
+    if [ -n "{{shard}}" ]; then
+        echo "surviving mutants in shard {{shard}}: $missed (the cap is enforced over all shards by mutate-server-ratchet)"
+        exit 0
+    fi
     echo "surviving mutants: $missed (cap {{cap}})"
+    if [ "$missed" -gt "{{cap}}" ]; then
+        echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated" >&2
+        exit 1
+    fi
+
+# Sum the survivors of every shard's downloaded `missed.txt` (<dir>/*/missed.txt) against the cap.
+# Fails if there are no shard files or fewer than `shards` of them: a shard that never reported
+# must not read as zero survivors (the vacuous-green trap the unsharded recipe also guards).
+mutate-server-ratchet dir cap="34" shards="8":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{cap}}{{shards}}" in ''|*[!0-9]*) echo "mutate-server-ratchet: cap/shards must be integers" >&2; exit 64;; esac
+    files=$(find "{{dir}}" -name missed.txt | sort)
+    n=$(printf '%s\n' "$files" | grep -c . || true)
+    if [ "$n" -ne "{{shards}}" ]; then
+        echo "mutate-server-ratchet: found $n missed.txt under {{dir}}, expected {{shards}} — a shard did not report" >&2
+        exit 1
+    fi
+    missed=$(printf '%s\n' "$files" | xargs cat | grep -c '' || true)
+    echo "surviving mutants across {{shards}} shards: $missed (cap {{cap}})"
     if [ "$missed" -gt "{{cap}}" ]; then
         echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated" >&2
         exit 1

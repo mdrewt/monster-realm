@@ -756,3 +756,18 @@ battle. Routing by phase keeps "a battle is never hidden" (B17) a one-place rule
 switch; constructing the tactical roots at boot; a renderer switch that pops the dialogue frame (a
 server conversation suspended over the battle base stays) or that demotes a visible shell to the
 1v1 view when one batch fails to build.
+
+## The nightly mutation gates run sharded
+
+**Decision.** `mutation` (game-core) and `mutation-server` run as matrices of cargo-mutants
+`--shard k/n` jobs (6 and 8). A core shard is its own zero-tolerance verdict; server shards only
+report survivors and a final `mutation-server` job sums them against the cap
+(`just mutate-server-ratchet`), failing if any shard did not succeed or report. Four guaranteed-hang
+`tiled_import` mutants are excluded in `.cargo/mutants.toml`.
+
+**Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled at
+GitHub's 6 h cap. Sharding keeps every mutant under test with no verdict change; the only new
+dependency is the SHA-pinned `actions/download-artifact` the ratchet job needs.
+
+**Rules out.** Raising the cap or dropping mutants to fit the time limit; a per-shard server cap
+(the ratchet is a total).

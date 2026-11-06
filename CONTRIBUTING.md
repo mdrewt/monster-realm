@@ -36,8 +36,10 @@ non-additive change against the merge base, so `--write` cannot launder one.
 issue per failed, skipped or cancelled job. `mutation` (game-core) allows zero
 surviving mutants: kill each survivor with a test, never with a baseline.
 `mutation-server` fails when survivors exceed the cap in the `mutate-server` recipe.
-Each run uploads its `mutants.out/` as a workflow artifact (`mutants-out-core` /
-`mutants-out-server`, kept 14 days); download the failing run's and the last green
+Both are sharded (6 and 8 shards) to fit GitHub's 6 h job cap; `mutation-server` sums the
+shards' survivors against the cap (`just mutate-server-ratchet`). Each shard uploads its
+`mutants.out/` as a workflow artifact (`mutants-out-core-<n>` / `mutants-out-server-<n>`, kept
+14 days); download the failing run's and the last green
 run's and diff their `missed.txt` before touching the cap. A new survivor in code the
 change touched gets a killing test. Raise the cap only for a survivor proven
 equivalent (it cannot change observable behaviour), recorded as a `MUT-server-*` row

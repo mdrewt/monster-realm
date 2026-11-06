@@ -10,9 +10,17 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
-  # game-core, zero tolerance.
+  # game-core, zero tolerance. Sharded (cargo-mutants `--shard k/n`, 0-based) because the crate's
+  # 2052 mutants no longer fit one serial job under GitHub's 6 h cap (nights of 2026-10-31,
+  # 11-01 and 11-04 were cancelled at exactly 6 h); every shard is its own zero-tolerance verdict,
+  # so the job is red iff any shard is. Keep the matrix length equal to the `/n` in `shard`.
   mutation:
     runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['0/6', '1/6', '2/6', '3/6', '4/6', '5/6']
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
@@ -22,20 +30,27 @@ jobs:
         with: { tool: cargo-mutants@27.1.0 }
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with: { just-version: '1.58.0' }
-      - run: just mutate-core
+      - run: just mutate-core ${{ matrix.shard }}
       # always(): the survivor list matters most on the nights the gate fails.
       - name: Upload mutants.out
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mutants-out-core
+          name: mutants-out-core-${{ strategy.job-index }}
           path: mutants.out/
           if-no-files-found: warn
           retention-days: 14
 
-  # server-module survivor-count ratchet (cap in the justfile recipe).
-  mutation-server:
+  # server-module survivor-count ratchet (cap in the justfile recipe). Sharded for the same 6 h
+  # reason as `mutation` (1532 mutants, ~5 h serial on 2026-10-31 and growing); a shard only runs
+  # and reports its survivors, `mutation-server` below sums them against the cap.
+  mutation-server-shard:
     runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['0/8', '1/8', '2/8', '3/8', '4/8', '5/8', '6/8', '7/8']
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
@@ -47,15 +62,38 @@ jobs:
         with: { tool: cargo-nextest@0.9.148 }
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with: { just-version: '1.58.0' }
-      - run: just mutate-server
+      - run: just mutate-server 34 ${{ matrix.shard }}
       - name: Upload mutants.out
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mutants-out-server
+          name: mutants-out-server-${{ strategy.job-index }}
           path: mutants.out/
           if-no-files-found: warn
           retention-days: 14
+
+  # The ratchet itself: the survivor count over ALL shards against the cap. `!cancelled()` so it
+  # still judges when one shard failed; the recipe fails if a shard's missed.txt is absent.
+  # Keep `shards` equal to the length of the matrix above.
+  mutation-server:
+    needs: [mutation-server-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      # A shard that was cancelled or timed out leaves a partial missed.txt that would under-count.
+      - name: Every shard must have succeeded
+        env:
+          SHARDS: ${{ needs.mutation-server-shard.result }}
+        run: |
+          test "$SHARDS" = success || { echo "mutation-server-shard result is $SHARDS" >&2; exit 1; }
+      - uses: actions/checkout@v6 # v6
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: mutants-out-server-*
+          path: shard-out
+      - run: just mutate-server-ratchet shard-out 34 8
 
   # Client line coverage, report-only. Rust + wasm-pack because `just coverage` builds the wasm pkg.
   coverage:
