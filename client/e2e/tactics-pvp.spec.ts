@@ -800,7 +800,7 @@ test.describe
       let maxStrikesB = 0;
       let maxStrikesA = 0;
       // bt-15 B (BT15.2): the most hit strike pips A's page showed by B's name on any poll.
-      const maxHitPipsB = 0;
+      let maxHitPipsB = 0;
       const hitPipsB = pageA.locator(
         `.tactics-players .tactics-player[data-side="${unitB.side}"] .tactics-strike--hit`,
       );

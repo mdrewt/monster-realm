@@ -91,10 +91,11 @@ import { motionPreferenceFromWindow } from './render/motionPreference';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
+import { clockVM } from './tactics/clock';
 import { DeployPanel, type DeployVM, deployVM } from './tactics/deployPanel';
 import { isAlreadyActing } from './tactics/draft';
 import { CAPS } from './tactics/presentation';
-import { ResultsPanel, type ResultsVM, resultsVM } from './tactics/results';
+import { type ResultsInput, ResultsPanel, type ResultsVM, resultsVM } from './tactics/results';
 import { queueTooLate, stillThere } from './tactics/strings';
 import {
   TacticsBattle,
@@ -143,6 +144,7 @@ import {
   isBareBattle,
   outcomeOnTop,
   popPlayerFramesOverBattle,
+  ratingChange,
   shouldAutoContinue,
   stillThereSeconds,
   structurallyEqual,
@@ -462,6 +464,17 @@ let tacticsShown: {
   readonly battleId: bigint;
   readonly mySide: RuleSide;
   readonly kind: RuleBattleKind;
+} | null = null;
+/** The results panel's rating line (bt-15 increment B, BT15.3): `before` is this client's snapshot of
+ *  the own profile rating at a Pvp battle's FIRST non-Finished sighting (null when no profile row stood
+ *  yet — a first rated game; the server creates the row at the first settle); `result` is frozen at the
+ *  first Finished build so a later profile write never moves the line. The settle writes the profile and
+ *  the terminal anchor in ONE transaction, so `lastOwnRating` (re-baselined by its own listener in that
+ *  same batch) can never be the "before". A battle first seen Finished (a reload) shows no line. */
+let tacticsRating: {
+  readonly battleId: bigint;
+  readonly before: number | null;
+  result: { readonly before: number | null; readonly after: number } | null;
 } | null = null;
 /** The last event seq the shell was fed, per battle (REV B2.4): null until a battle's first
  *  sighting, which feeds the whole transcript while the shell is hidden; later batches feed only the
@@ -2054,6 +2067,13 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
           }),
       );
     }
+    case 'forfeit': {
+      // bt-15 (BT15.3): the shell's confirmed Forfeit row. Active + PvP ruleset only on the server
+      // (a Deploying battle is "not active"; a second press on a finished battle is refused) —
+      // every refusal is reported like any other rejection.
+      const { battleId } = command;
+      return sendGuarded('forfeit', () => conn?.live()?.reducers.forfeit({ battleId }));
+    }
     case 'deployUnits': {
       // bt-12 (BT12.2): the confirmed deploy of a Deploying wild battle. The server validates every
       // pick (owned, in the party, conscious, distinct, slot in range) and refuses with a reason,
@@ -3146,6 +3166,9 @@ function refreshBattle(): void {
     // and closing a covered record then opening a fresh one would leave that frame inert (REV 2
     // A2). The open is the LAST statement of each arm.
     const tacticalRow = store.tacticalBattle(r.action.battle.battleId);
+    // bt-15 (BT15.3): the own rating BEFORE a Pvp battle settles is read here, at its first
+    // non-Finished sighting — the settle batch carries the after.
+    if (tacticalRow !== undefined) noteRatingBaseline(tacticalRow);
     const renderer = battleRenderer(tacticalRow?.phase);
     if (renderer === 'tactical' && tacticalRow !== undefined) {
       if (refreshTacticsShell(tacticalRow)) return;
@@ -3326,6 +3349,31 @@ function buildDeployPanel(
   }
 }
 
+function noteRatingBaseline(row: StoreTacticalBattle): void {
+  if (row.kind !== 'Pvp' || row.phase === 'Finished') return;
+  if (tacticsRating !== null && tacticsRating.battleId === row.battleId) return;
+  tacticsRating = {
+    battleId: row.battleId,
+    before: store.profile(identity)?.rating ?? null,
+    result: null,
+  };
+}
+
+function ratingLineFor(battleId: bigint, outcome: string): ResultsInput['rating'] {
+  const held = tacticsRating;
+  if (held === null || held.battleId !== battleId) return null;
+  if (held.result !== null) return held.result;
+  const change = ratingChange({
+    kind: store.tacticalBattle(battleId)?.kind,
+    outcome,
+    battleId,
+    baseline: { battleId: held.battleId, rating: held.before },
+    after: store.profile(identity)?.rating,
+  });
+  held.result = change;
+  return change;
+}
+
 /** The results panel and its view model from the RAW anchor (bt-12, BT12.4): the raw side decides
  *  won / lost, the transcript's Awards and RecruitResult lines are folded per unit. Builds the panel on
  *  first use. null when the anchor is not terminal — the 1v1 view then keeps the frame. */
@@ -3346,6 +3394,7 @@ function buildResultsPanel(
       return m === undefined ? `#${monsterId}` : ownMonsterName(m);
     },
     speciesName: (speciesId) => store.species(speciesId)?.name ?? `#${speciesId}`,
+    rating: ratingLineFor(battleId, raw.outcome),
   });
   if (vm === null) return null;
   resultsPanel ??= new ResultsPanel(battleMount, {
@@ -3520,6 +3569,7 @@ function tacticsShellDeps(): TacticsBattleDeps {
     onSubmitQueue: (battleId, unitId, entries) =>
       void dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
     onCancelQueue: (battleId, unitId) => void dispatch({ kind: 'cancelQueue', battleId, unitId }),
+    onForfeit: (battleId) => void dispatch({ kind: 'forfeit', battleId }),
   };
 }
 
@@ -3549,6 +3599,33 @@ function pumpStillThere(wallNowMs: number): string | null {
   if (stillThereAnnouncedFor === deadline) return null;
   stillThereAnnouncedFor = deadline;
   return stillThere(seconds);
+}
+
+/** The PvP clock ring and strike pips (bt-15 increment B, BT15.2), pumped on the WALL clock like the
+ *  countdown: the shown tactical shell's battle rows → `clockVM` → `setClock` (the shell memoises an
+ *  equal VM). A frame the VM cannot be built on (no shown battle, no tactical row) clears it, so a
+ *  stale ring never outlives its window. Both players see both rings and strike counts: the clock rows
+ *  are public match state (design §6.2). */
+function pumpClock(wallNowMs: number): void {
+  const view = tacticsBattle;
+  if (view === undefined || !view.visible) return;
+  const shown = tacticsShown;
+  const row = shown === null ? undefined : store.tacticalBattle(shown.battleId);
+  if (shown === null || row === undefined) {
+    view.setClock(null);
+    return;
+  }
+  view.setClock(
+    clockVM({
+      kind: shellKind(row.kind),
+      clocks: store.battleClocks(row.battleId),
+      activeUnitId: activeUnitOf(row.turnState, row.initiative, row.turnIdx),
+      units: store.battleUnits(row.battleId).map((u) => ({ unitId: u.unitId, side: u.row.side })),
+      mySide: shown.mySide,
+      playerName: (id) => store.player(id)?.name ?? store.profile(id)?.name ?? '',
+      nowMs: wallNowMs,
+    }),
+  );
 }
 
 // --- qf-17: the KO-win payout lines (QF17.1, QF17.2) ---------------------------------------
@@ -4979,7 +5056,9 @@ async function main(): Promise<void> {
       // the WALL clock (the deadline is a server epoch instant; a batch-driven countdown would
       // freeze between batches, R5). Its first second is announced below, after the transitions.
       tacticsBattle?.tick();
-      const countdownSaid = pumpStillThere(Date.now());
+      const wallNow = Date.now();
+      const countdownSaid = pumpStillThere(wallNow);
+      pumpClock(wallNow);
       if (now - lastCareTickAtMs >= CARE_READINESS_TICK_MS && upperIds().includes('boxView')) {
         lastCareTickAtMs = now;
         screenHost.observe(contextStack, screenCtx);

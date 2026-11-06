@@ -25,7 +25,8 @@ export type MenuRowId =
   | 'flee'
   | 'end'
   | 'submit'
-  | 'clear';
+  | 'clear'
+  | 'forfeit';
 export type ReasonCode =
   | 'recruitFullAp'
   | 'fleeFullAp'
@@ -157,7 +158,7 @@ export function skillRows(ctx: MenuContext): SkillRow[] {
 }
 
 /** The root rows in order: move, skills, item, recruit (wild), flee (wild), end, submit (prequeue),
- *  clear (prequeue with a READY row and no draft). */
+ *  clear (prequeue with a READY row and no draft), forfeit (pvp; bt-15). */
 export function menuRows(ctx: MenuContext): MenuRow[] {
   const closed = planComplete(ctx.actions);
   const greyed = (id: MenuRowId, reason: ReasonCode, sub: boolean): MenuRow => ({
@@ -206,5 +207,8 @@ export function menuRows(ctx: MenuContext): MenuRow[] {
     rows.push({ id: 'submit', enabled: drafted, reason: null, sub: false });
     if (offers(ctx).cancel) rows.push({ id: 'clear', enabled: true, reason: null, sub: true });
   }
+  // bt-15 (BT15.3): the Forfeit row — a player battle only, LAST, never greyed (a closed plan greys
+  // the action rows, not this one); the shell opens a confirm before `forfeit` is called.
+  if (ctx.kind === 'pvp') rows.push({ id: 'forfeit', enabled: true, reason: null, sub: true });
   return rows;
 }

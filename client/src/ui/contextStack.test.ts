@@ -2274,6 +2274,9 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // bt-12 (named intentional change, BT12.2, plan §3.6): the deploy panel's `deployUnits` (the
     // confirmed deploy of a Deploying wild battle) is the battle's own action too: 15 safe, 25
     // refused, 40 kinds (were 14 / 25 / 39).
+    // bt-15 increment B (named intentional change, BT15.3): the tactical shell's confirmed Forfeit
+    // row (`forfeit`) is the battle's own action too — the player forfeits FROM the battle base:
+    // 16 safe, 25 refused, 41 kinds (were 15 / 25 / 40).
     const big = 5n;
     const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['pop', { kind: 'pop' }],
@@ -2293,6 +2296,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ],
       ['cancelQueue', { kind: 'cancelQueue', battleId: big, unitId: 3 }],
       ['deployUnits', { kind: 'deployUnits', battleId: big, picks: [{ monsterId: 7n, slot: 0 }] }],
+      ['forfeit', { kind: 'forfeit', battleId: big }],
       ['dismissDialogue', { kind: 'dismissDialogue' }],
     ];
     const proposal = {
@@ -2329,16 +2333,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
-    expect(SAFE, 'ANTI-VACUITY: fifteen safe kinds').toHaveLength(15);
+    expect(SAFE, 'ANTI-VACUITY: sixteen safe kinds (bt-15 B: +forfeit)').toHaveLength(16);
     expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      40,
+      41,
     );
     expect(
       kindsOf(SAFE),
-      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too; bt-12: deployUnits), the stack moves and dismissDialogue',
+      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too; bt-12: deployUnits; bt-15 B: forfeit), the stack moves and dismissDialogue',
     ).toEqual([
       'pop',
       'popToBase',
@@ -2354,10 +2358,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'submitQueue',
       'cancelQueue',
       'deployUnits',
+      'forfeit',
       'dismissDialogue',
     ]);
 
-    // The table itself is total over the 40 literal kinds and says exactly this.
+    // The table itself is total over the 41 literal kinds (bt-15 B: +forfeit) and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2477,7 +2482,7 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     ).toBe(4);
   });
 
-  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds fifteen safe and twenty-five refused kinds, forty in all [BT12-2-POLICY-DEPLOY]', () => {
+  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds sixteen safe and twenty-five refused kinds, forty-one in all (bt-15 increment B, named intentional change, BT15.3: +forfeit, the shell`s confirmed Forfeit row is battle-safe) [BT12-2-POLICY-DEPLOY]', () => {
     // WRONG IMPL KILLED: `deployUnits` classified `refuse` (the confirm screen's A, Start and the
     // Edit formation editor's Confirm would all die at the one place they exist: a Deploying battle
     // IS a battle base); a refusal keyed to the payload (empty picks, a bigint battle id past 2^53);
@@ -2502,16 +2507,21 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     for (const [name, stack] of battleStacks) {
       expect(battleRefused(deepFrozen(stack), deploy), `${name}: not refused`).toBe(false);
     }
+    // bt-15 increment B (named intentional change, BT15.3): the shell's confirmed Forfeit row
+    // (`forfeit`) is battle-safe: 16 safe, 25 refused, 41 kinds (were 15 / 25 / 40).
+    expect(COMMAND_BATTLE_POLICY.forfeit, 'bt-15 B: forfeit is the battle`s own action').toBe(
+      'safe',
+    );
     const verdicts = Object.values(COMMAND_BATTLE_POLICY);
     expect(
       verdicts.filter((v) => v === 'safe'),
-      'fifteen safe kinds',
-    ).toHaveLength(15);
+      'sixteen safe kinds',
+    ).toHaveLength(16);
     expect(
       verdicts.filter((v) => v === 'refuse'),
       'twenty-five refused kinds',
     ).toHaveLength(25);
-    expect(Object.keys(COMMAND_BATTLE_POLICY), 'forty kinds in all').toHaveLength(40);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'forty-one kinds in all').toHaveLength(41);
   });
 
   it('the pop a battle-frame renderer switch makes keeps the server conversation: over a battle base every player frame (menu, help, box, a prompt, a text entry) goes and only the dialogue frames stay, as the same objects in their order, while a world-based stack comes back untouched and a bare battle base alone [BT12-1-POP-KEEPS-DIALOGUE]', () => {

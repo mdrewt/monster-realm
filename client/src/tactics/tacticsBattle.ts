@@ -30,7 +30,16 @@
 // projection up to the unit's turn — own plans and, in PvE, each wild's plan applied in initiative
 // order — with the unit's own live row and then its draft) seats its skill aims and its forecast; the
 // DANGER board (the live rows with every own plan applied, every enemy held) feeds danger and intents.
+//
+// bt-15 increment B (BT15.2 / BT15.3): the PvP clock ring and the players strip are SHELL state the
+// frame pump writes through `setClock` (the `setCountdown` precedent: the deadline is a server epoch
+// instant, so main.ts pumps it on the wall clock and `#commit` re-applies the memoised ring after every
+// turn-bar render, only onto the chip that is still current); the Forfeit row is a root menu row of a
+// player battle whose `forfeit` level is a two-row confirm that opens on "Keep fighting" — a mashed A
+// never forfeits — and whose Yes calls `deps.onForfeit` once (not a queue entry: the in-flight map is
+// untouched).
 import type { EventPayload, QueuedAction } from '../module_bindings/types';
+import { structurallyEqual } from '../ui/battlePolicy';
 import type { HintBattle } from '../ui/hintBarModel';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
 import type { BattleOp, BattleOpsView } from '../ui/screens/battleScreen';
@@ -47,6 +56,7 @@ import {
   unitAt,
 } from './boardModel';
 import { renderBoard } from './boardRender';
+import { type ClockVM, renderClock } from './clock';
 import {
   endLabel,
   type MenuContext,
@@ -128,15 +138,19 @@ export interface TacticsBattleDeps {
   ) => void;
   /** bt-11: the confirmed "Clear plan" row → `cancel_queue`. */
   readonly onCancelQueue: (battleId: bigint, unitId: number) => void;
+  /** bt-15 (BT15.3): the confirmed Forfeit row → `forfeit` (not a queue entry, 0 AP). */
+  readonly onForfeit: (battleId: bigint) => void;
 }
 
+/** The menu's levels: the root, the two sub-lists and the two confirms (`clear` and, bt-15, `forfeit`). */
+type MenuLevel = 'root' | 'skills' | 'bait' | 'clear' | 'forfeit';
 /** Where the player's input goes (plan REV 5 A29). A menu level holds its cursor row; an aim holds
  *  what it aims at by identity (never by index), so a changed list cannot shift it silently. */
 type Mode =
   | { readonly kind: 'idle' }
   | {
       readonly kind: 'menu';
-      readonly level: 'root' | 'skills' | 'bait' | 'clear';
+      readonly level: MenuLevel;
       readonly index: number;
     }
   | { readonly kind: 'aimMove' }
@@ -315,6 +329,8 @@ export class TacticsBattle implements BattleOpsView {
   readonly #root: HTMLElement;
   readonly #titleEl: HTMLElement;
   readonly #turnbarEl: HTMLElement;
+  /** bt-15: the players strip (name + strike pips per side) under the turn bar. */
+  readonly #playersEl: HTMLElement;
   readonly #boardEl: HTMLElement;
   readonly #hudEl: HTMLElement;
   readonly #bannerEl: HTMLElement;
@@ -345,6 +361,8 @@ export class TacticsBattle implements BattleOpsView {
   /** The "Still there?" line (bt-12 B) and the whole seconds it shows; null when none shows. */
   #countdownEl: HTMLElement | null = null;
   #countdownValue: number | null = null;
+  /** bt-15: the last clock VM the pump set (the ring + the strip); null when none shows. */
+  #clock: ClockVM | null = null;
 
   constructor(parent: HTMLElement, deps: TacticsBattleDeps) {
     this.#deps = deps;
@@ -362,6 +380,8 @@ export class TacticsBattle implements BattleOpsView {
 
     this.#turnbarEl = div('tactics-turnbar');
     this.#turnbarEl.setAttribute('role', 'group');
+    this.#playersEl = div('tactics-players');
+    this.#playersEl.hidden = true;
 
     this.#fieldEl = div('tactics-field');
     this.#boardEl = div('tactics-board');
@@ -370,7 +390,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#bannerEl.hidden = true;
     this.#fieldEl.append(this.#boardEl, this.#hudEl, this.#bannerEl);
 
-    this.#root.append(this.#titleEl, this.#turnbarEl, this.#fieldEl);
+    this.#root.append(this.#titleEl, this.#turnbarEl, this.#playersEl, this.#fieldEl);
     this.#ticker = new Ticker(this.#root);
     this.#dockEl = div('tactics-dock');
     this.#dockEl.setAttribute('role', 'group');
@@ -398,6 +418,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#playback.skip();
     this.#syncPlaying();
     this.setCountdown(null);
+    this.setClock(null);
     closeOverlayA11y('battleView', null);
   }
 
@@ -445,6 +466,16 @@ export class TacticsBattle implements BattleOpsView {
     this.#countdownEl.textContent = s.stillThere(seconds);
     // In the field after the banner: `#commit` rewrites the field's other bands, never this one.
     this.#fieldEl.appendChild(this.#countdownEl);
+  }
+
+  /** The PvP clock ring and the players strip (bt-15, BT15.2): `vm` paints the ring onto the waiting
+   *  unit's chip and the strike rows into the strip; an equal VM writes nothing; null clears both.
+   *  `#commit` re-applies the memoised ring after every turn-bar render (`#reapplyClock`); `hide()` and
+   *  a new battle clear it. Driven by main.ts's frame pump on the WALL clock (a server epoch deadline). */
+  setClock(vm: ClockVM | null): void {
+    if (structurallyEqual(this.#clock, vm)) return;
+    this.#clock = vm;
+    renderClock(this.#turnbarEl, this.#playersEl, vm);
   }
 
   /** Forget the battle (bt-12 B): the next `render` re-initialises as for a new battle — the cursor
@@ -745,6 +776,11 @@ export class TacticsBattle implements BattleOpsView {
         }
         this.#mode = IDLE;
         break;
+      case 'forfeit':
+        // bt-15 (BT15.3): the confirm precedes the call; not a queue entry, so no in-flight key.
+        if (row.key === 'forfeitYes') this.#deps.onForfeit(vm.battleId);
+        this.#mode = IDLE;
+        break;
       default:
         mode.level satisfies never;
     }
@@ -774,6 +810,10 @@ export class TacticsBattle implements BattleOpsView {
         break;
       case 'clear':
         this.#mode = { kind: 'menu', level: 'clear', index: 0 };
+        break;
+      case 'forfeit':
+        // The confirm opens on "Keep fighting" (index 1): a mashed A never forfeits.
+        this.#mode = { kind: 'menu', level: 'forfeit', index: 1 };
         break;
       default:
         return;
@@ -958,6 +998,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#playback.skip();
     this.#syncPlaying();
     this.setCountdown(null);
+    this.setClock(null);
   }
 
   #syncPlaying(): void {
@@ -1112,7 +1153,7 @@ export class TacticsBattle implements BattleOpsView {
   }
 
   /** The rows of one menu level, labels and reasons resolved. */
-  #menuRows(p: Planning, level: 'root' | 'skills' | 'bait' | 'clear'): MenuRowVM[] {
+  #menuRows(p: Planning, level: MenuLevel): MenuRowVM[] {
     const names = this.#deps.names;
     const ap = this.#rulesPort().freshBudget().ap;
     const reasonOf = (code: Parameters<typeof s.reasonLabel>[0] | null): string | null =>
@@ -1155,6 +1196,11 @@ export class TacticsBattle implements BattleOpsView {
         return [
           { key: 'clearYes', label: s.menuClearYes(), reason: null, enabled: true, sub: false },
           { key: 'clearNo', label: s.menuClearNo(), reason: null, enabled: true, sub: false },
+        ];
+      case 'forfeit':
+        return [
+          { key: 'forfeitYes', label: s.menuForfeitYes(), reason: null, enabled: true, sub: false },
+          { key: 'forfeitNo', label: s.menuForfeitNo(), reason: null, enabled: true, sub: false },
         ];
       default:
         return level satisfies never;
@@ -1536,10 +1582,21 @@ export class TacticsBattle implements BattleOpsView {
     if (frame.ghost !== null) this.#paintGhost(frame.ghost);
     renderInfoBoxes(this.#hudEl, frame.info);
     renderTurnBar(this.#turnbarEl, frame.turnBar);
+    this.#reapplyClock(frame.turnBar);
     this.#turnbarEl.setAttribute('aria-label', s.turnbarLabel());
     this.#bannerEl.hidden = frame.banner === null;
     this.#bannerEl.textContent = frame.banner ?? '';
     this.#paintDock(frame);
+  }
+
+  /** The turn bar's chips were just rebuilt: the memoised ring goes back onto its chip — only while that
+   *  unit is still the bar's CURRENT chip (a turn that moved on drops it until the pump's next frame). */
+  #reapplyClock(bar: TurnBarVM): void {
+    const clock = this.#clock;
+    if (clock === null) return;
+    const current = bar.chips.find((c) => c.state === 'current')?.unitId ?? null;
+    const ring = clock.ring !== null && clock.ring.unitId === current ? clock.ring : null;
+    renderClock(this.#turnbarEl, this.#playersEl, { ring, players: clock.players });
   }
 
   /** The planned Move's ghost: a dashed sprite on the destination cell, inside the grid

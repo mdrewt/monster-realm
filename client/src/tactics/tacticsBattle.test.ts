@@ -4432,7 +4432,7 @@ const stripEntries = (root: HTMLElement): string[] =>
 /** The strip is cleared: no children and hidden. */
 const stripCleared = (root: HTMLElement): boolean => {
   const strip = playersOf(root);
-  return strip.children.length === 0 && strip.hidden;
+  return strip.children.length === 0 && strip.hidden === true;
 };
 
 describe('TacticsBattle: the PvP clock ring and the players strip (bt-15 B, BT15.2)', () => {
@@ -4643,11 +4643,13 @@ describe('TacticsBattle: Forfeit and the Surge badge (bt-15 B, BT15.3 / BT15.5)'
     const k = make();
     k.shell.render(tacVm('pvp'));
     openMenuAt(k, c(1, 1), 'live');
-    const listbox = menuOf(k.root) as HTMLElement;
-    expect(listbox.getAttribute('role'), 'the menu listbox').toBe('listbox');
+    expect(menuOf(k.root)?.getAttribute('role'), 'the menu listbox').toBe('listbox');
     menuTo(k, 'end');
     move(k, 'Down');
     expect(selectedRowId(k.root), 'Down from End: Forfeit').toBe('forfeit');
+    // The dock (and its listbox node) is rebuilt on every paint: re-query after the moves.
+    const listbox = menuOf(k.root) as HTMLElement;
+    expect(listbox.getAttribute('role'), 'still the menu listbox').toBe('listbox');
     const row = menuRow(k.root, 'forfeit');
     expect(
       [row.tagName, row.getAttribute('role'), row.hasAttribute('disabled'), listbox.contains(row)],

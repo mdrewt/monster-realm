@@ -110,6 +110,7 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   submitQueue: 'safe',
   cancelQueue: 'safe',
   deployUnits: 'safe',
+  forfeit: 'safe',
   advanceDialogue: 'refuse',
   dismissDialogue: 'safe',
   pickShop: 'refuse',
@@ -244,4 +245,24 @@ export function countdownDeadline(
     default:
       return kind satisfies never;
   }
+}
+
+// --- bt-15 increment B (BT15.3): the results panel's rating change ---------------------------------
+
+/** The rating the results panel shows: only a Pvp battle (never wild / practice — the server never
+ *  rates them) with a DECISIVE outcome (a `Fled` cancel never rates), the baseline this client took at
+ *  the battle's first non-Finished sighting (`rating: null` when no profile row stood yet — a first
+ *  rated game) and the profile's rating after the settle. null otherwise: a line is never guessed. */
+export function ratingChange(o: {
+  readonly kind: TacticalKindName | undefined;
+  readonly outcome: string;
+  readonly battleId: bigint;
+  readonly baseline: { readonly battleId: bigint; readonly rating: number | null } | null;
+  readonly after: number | undefined;
+}): { readonly before: number | null; readonly after: number } | null {
+  if (o.kind !== 'Pvp') return null;
+  if (o.outcome !== 'SideAWins' && o.outcome !== 'SideBWins') return null;
+  if (o.baseline === null || o.baseline.battleId !== o.battleId) return null;
+  if (o.after === undefined) return null;
+  return { before: o.baseline.rating, after: o.after };
 }
