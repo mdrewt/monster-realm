@@ -2954,6 +2954,128 @@ fn step_delta_counts_a_single_hit_super_effective_ko_after_round_one_only_bt9_5(
     );
 }
 
+/// A `Status{Tick}` of `amount` on `unit` (a zero amount is a tick that dealt nothing).
+fn tick_of(unit: u32, amount: u16) -> EventPayload {
+    EventPayload::Status(StatusEvent {
+        unit,
+        status: StatusEffect::Poison,
+        change: StatusChange::Tick,
+        amount,
+    })
+}
+
+#[test]
+fn only_a_tick_or_hit_that_dealt_damage_voids_a_later_single_hit_se_ko_bt9_5() {
+    let se_ko = |attacker: u32, unit: u32| {
+        executed(
+            attacker,
+            vec![target_hit(unit, 50, true, HitEffectiveness::SuperEffective)],
+        )
+    };
+    let count = |events: Vec<EventPayload>| {
+        step_delta(&prev(Some(P1), 1, &[WILD]), &step_of(2, events), &PLAYERS).se_kos_after_r1
+    };
+    // The earlier tick: amount 0 dealt nothing (the KO is still a single hit), amount 1 did.
+    assert_eq!(
+        count(vec![tick_of(WILD, 0), se_ko(P1, WILD), ko(WILD)]),
+        1,
+        "a zero-amount tick is no earlier damage"
+    );
+    assert_eq!(
+        count(vec![tick_of(WILD, 1), se_ko(P1, WILD), ko(WILD)]),
+        0,
+        "a one-point tick is earlier damage"
+    );
+    // The earlier hit: damage 0 (a status-only hit) dealt nothing, damage 1 did.
+    assert_eq!(
+        count(vec![hit(P2, WILD, 0, false), se_ko(P1, WILD), ko(WILD)]),
+        1,
+        "a zero-damage hit is no earlier damage"
+    );
+    assert_eq!(
+        count(vec![hit(P2, WILD, 1, false), se_ko(P1, WILD), ko(WILD)]),
+        0,
+        "a one-point hit is earlier damage"
+    );
+}
+
+#[test]
+fn step_delta_is_zero_exactly_when_every_field_is_default_bt9_5() {
+    assert!(StepDelta::default().is_zero(), "the default delta is zero");
+    let nonzero = [
+        StepDelta {
+            windows: vec![0],
+            ..StepDelta::default()
+        },
+        StepDelta {
+            prequeued: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            live: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            autopasses: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            halted: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            recruit_attempts: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            recruit_successes: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            items: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            hits: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            misses: 1,
+            ..StepDelta::default()
+        },
+        StepDelta {
+            se_kos_after_r1: 1,
+            ..StepDelta::default()
+        },
+    ];
+    for (i, d) in nonzero.iter().enumerate() {
+        assert!(!d.is_zero(), "delta #{i} carries one non-default field");
+    }
+}
+
+#[test]
+fn apply_delta_books_every_bucket_whether_the_stored_histogram_is_shorter_equal_or_longer_bt9_5() {
+    for (stored, added, want) in [
+        (vec![1, 2], vec![10, 20, 30], vec![11, 22, 30]),
+        (vec![1, 2, 3], vec![10, 20, 30], vec![11, 22, 33]),
+        (vec![1, 2, 3, 4], vec![10, 20, 30], vec![11, 22, 33, 4]),
+    ] {
+        let mut row = zero_summary(42, a(), BattleOutcome::Ongoing);
+        row.windows_histogram = stored.clone();
+        let got = apply_delta(
+            row,
+            &StepDelta {
+                windows: added.clone(),
+                ..StepDelta::default()
+            },
+        );
+        assert_eq!(
+            got.windows_histogram, want,
+            "stored {stored:?} + added {added:?}"
+        );
+    }
+}
+
 #[test]
 fn apply_delta_saturates_every_counter_and_grows_the_histogram_to_any_bucket_bt9_5() {
     let mut row = zero_summary(42, a(), BattleOutcome::Ongoing);
@@ -3269,6 +3391,86 @@ fn a_legacy_ended_close_finalises_the_summary_with_the_legacy_outcome_and_no_new
         1,
         "the legacy funnel already penalised; this close adds none"
     );
+}
+
+/// bt-9.5 `finalize_swept_summary`: a swept tactical battle's `Ongoing` summary is finalised from
+/// its anchor, clock rows and tactical row — exact values on every Side-B field too.
+#[test]
+fn a_swept_ongoing_summary_is_finalised_with_both_sides_idle_and_damage_and_zero_wall_time_bt9_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    seed_prior(&w, PRIOR_TACTICAL, a(), BattleOutcome::Fled, true);
+    w.edit_tactical(PRIOR_TACTICAL, |t| t.attack_damage_dealt_b = 5);
+    w.clocks.seed(&BattleClock {
+        clock_id: 9_999,
+        battle_id: PRIOR_TACTICAL,
+        side: SideRow::B,
+        player: b(),
+        window_seq: 0,
+        window_open_ms: None,
+        deadline_ms: None,
+        windows_this_unit_turn: 0,
+        idle_ms_total: 4_321,
+        autopass_count: 0,
+    });
+    let anchor = w.anchor(PRIOR_TACTICAL).expect("the seeded prior anchor");
+    fx.run_as_at(a(), at(T0 + 5_000), |ctx| {
+        super::finalize_swept_summary(ctx, &anchor);
+    });
+    let want = BattleSummary {
+        outcome: BattleOutcome::Fled,
+        rounds: 3,
+        wall_ms: 0,
+        idle_ms_a: 1_234,
+        idle_ms_b: 4_321,
+        damage_dealt_a: 7,
+        damage_dealt_b: 5,
+        ..zero_summary(PRIOR_TACTICAL, a(), BattleOutcome::Ongoing)
+    };
+    assert_eq!(enc(&summary(&w, PRIOR_TACTICAL)), enc(&want));
+}
+
+#[test]
+fn a_swept_summary_of_a_battle_that_never_left_deploying_books_zero_rounds_bt9_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    seed_prior(&w, PRIOR_TACTICAL, a(), BattleOutcome::Fled, true);
+    w.edit_tactical(PRIOR_TACTICAL, |t| t.phase = Phase::Deploying);
+    let anchor = w.anchor(PRIOR_TACTICAL).expect("the seeded prior anchor");
+    fx.run_as_at(a(), at(T0 + 5_000), |ctx| {
+        super::finalize_swept_summary(ctx, &anchor);
+    });
+    let want = BattleSummary {
+        outcome: BattleOutcome::Fled,
+        rounds: 0,
+        idle_ms_a: 1_234,
+        damage_dealt_a: 7,
+        ..zero_summary(PRIOR_TACTICAL, a(), BattleOutcome::Ongoing)
+    };
+    assert_eq!(enc(&summary(&w, PRIOR_TACTICAL)), enc(&want));
+}
+
+#[test]
+fn a_swept_summary_that_is_already_terminal_is_left_untouched_bt9_5() {
+    let fx = fixture();
+    let w = world(&fx);
+    seed_prior(&w, PRIOR_TACTICAL, a(), BattleOutcome::Fled, true);
+    let done = BattleSummary {
+        rounds: 9,
+        wall_ms: 77_000,
+        idle_ms_a: 11,
+        idle_ms_b: 22,
+        damage_dealt_a: 33,
+        damage_dealt_b: 44,
+        ..zero_summary(PRIOR_TACTICAL, a(), BattleOutcome::SideAWins)
+    };
+    assert_eq!(w.summaries.remove(PRIOR_TACTICAL), 1);
+    w.summaries.seed(&done);
+    let anchor = w.anchor(PRIOR_TACTICAL).expect("the seeded prior anchor");
+    fx.run_as_at(a(), at(T0 + 5_000), |ctx| {
+        super::finalize_swept_summary(ctx, &anchor);
+    });
+    assert_eq!(enc(&summary(&w, PRIOR_TACTICAL)), enc(&done));
 }
 
 #[test]
