@@ -48,11 +48,12 @@ export const challengeLayout = (sizes: readonly number[]): NavLayout =>
     { key: 'no', enabled: true },
   ]);
 
-/** The party size a `size-<n>` row names (a whole number ≥ 1); null for `no` or any other key. */
+/** The party size a `size-<n>` row names — `n` in its canonical decimal form only (`size-03`,
+ *  `size-1e3`, `size-0` are not rows); null for `no` or any other key. */
 export function sizeOfRow(key: string): number | null {
   if (!key.startsWith(SIZE_ROW)) return null;
-  const n = Number(key.slice(SIZE_ROW.length));
-  return Number.isInteger(n) && n >= 1 ? n : null;
+  const digits = key.slice(SIZE_ROW.length);
+  return /^[1-9][0-9]*$/.test(digits) ? Number(digits) : null;
 }
 
 /** The rows of one candidate, in its own action order. */

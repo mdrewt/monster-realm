@@ -1509,6 +1509,13 @@ function interactVerb(action: InteractAction): string {
   }
 }
 
+/** A Challenge confirm row's word (bt-15, BT15.1): a size row is `N vs N`, the last row is No —
+ *  each a literal catalog key (the catalog parity scan). */
+function sizeRowLabel(key: string): string {
+  const n = sizeOfRow(key);
+  return n === null ? i18nT('prompt.no') : tf('interact.challenge.size', { n });
+}
+
 /** A request sheet row's word (ctl-13), each a literal catalog key (the catalog parity scan). */
 function requestRowLabel(key: string): string {
   if (key === 'accept') return i18nT('notice.sheet.accept');
@@ -1932,8 +1939,9 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
     case 'challenge': {
       // bt-15 (BT15.1): the committed list is the first `partySize` ELIGIBLE monsters (party-slotted,
       // conscious, untraded, slot order), read inside the closure AT SEND TIME; the server derives
-      // `format` from its length. Fewer eligible than picked (a faint or a trade since the confirm
-      // opened) sends nothing: never a shorter list than the pick the player confirmed.
+      // `format` from its length. The sheet already re-validated the size at A (actionSheetModel.ts);
+      // this re-check is belt and braces for the closure: fewer eligible than picked sends nothing —
+      // never a shorter list than the pick the player confirmed.
       const { targetIdentity: target, partySize } = command;
       return sendGuarded('pvp-challenge', () => {
         const partyIds = eligibleChallengeIds().slice(0, partySize);
@@ -3248,7 +3256,10 @@ function mySideOf(battleId: bigint): RuleSide {
 function buildDeployPanel(
   battle: {
     readonly battleId: bigint;
+    readonly playerIdentity: string;
+    readonly opponentIdentity: string;
     readonly partyMonsterIds: readonly bigint[];
+    readonly opponentMonsterIds: readonly bigint[];
     readonly sideB: {
       readonly team: readonly { readonly speciesId: number; readonly level: number }[];
     };
@@ -3259,7 +3270,17 @@ function buildDeployPanel(
   try {
     const traded = tradedIds();
     const own = new Map(store.ownMonsters(identity).map((m) => [m.monsterId, m] as const));
-    const party = battle.partyMonsterIds.flatMap((id) => {
+    // bt-15 (BT15.1): the list this panel stages. The own-perspective anchor's `partyMonsterIds` is
+    // the player's side — except in PRACTICE (one owner, both sides, the raw row), where the server
+    // stages the first UNLOCKED own `battle_deploy` row (tactics.rs `stage_pvp`): side B's list is
+    // the raw row's `opponentMonsterIds` once side A has locked.
+    const practice = battle.playerIdentity === battle.opponentIdentity;
+    const staging = practice
+      ? (store.battleDeploys(row.battleId).find((d) => d.owner === identity && !d.locked)?.side ??
+        'A')
+      : 'A';
+    const list = staging === 'B' ? battle.opponentMonsterIds : battle.partyMonsterIds;
+    const party = list.flatMap((id) => {
       const m = own.get(id);
       if (m === undefined || traded.has(id)) return [];
       const row = {
@@ -4225,7 +4246,7 @@ const mrPvpHook = {
 // (the server's refusal of a private table) — reads and observers only. Fingerprinted by
 // scripts/verify-build-hooks.mjs beside the other three.
 /** bt-15 (BT15.4): the e2e's row probe — every myBattleDeploy / myBattleQueue callback since arming. */
-let rowProbe: {
+let rowProbeState: {
   readonly counts: { deploy: number; queue: number };
   readonly off: () => void;
 } | null = null;
@@ -4297,26 +4318,14 @@ const mrTacticsHook = {
       })),
     };
   },
-  /** The raw SDK-cache rows of the two owner-only views and which table handles the generated
-   *  bindings expose at all (a private table has none). */
+  /** The raw SDK-cache rows of the two owner-only views (what the subscription delivered). */
   secrecy(): {
     me: string;
     deploys: { owner: string; locked: boolean; picks: number }[];
     queues: { owner: string; unitId: number }[];
-    present: Record<string, boolean>;
   } {
     const live = conn?.live();
     if (live === undefined) throw new Error('secrecy: no live connection');
-    const handles = live.db as unknown as Record<string, unknown>;
-    const names = [
-      'myBattleDeploy',
-      'myBattleQueue',
-      'battleSecret',
-      'battleQueue',
-      'battleDeploy',
-      'battleUnit',
-      'battleTactical',
-    ];
     return {
       me: identity,
       deploys: [...live.db.myBattleDeploy.iter()].map((d) => ({
@@ -4328,14 +4337,13 @@ const mrTacticsHook = {
         owner: q.owner.toHexString(),
         unitId: q.unitId,
       })),
-      present: Object.fromEntries(names.map((n) => [n, n in handles])),
     };
   },
   /** Starts (or restarts) counting every insert / delete callback on the two owner-only views. */
   armRowProbe(): void {
     const live = conn?.live();
     if (live === undefined) throw new Error('armRowProbe: no live connection');
-    rowProbe?.off();
+    rowProbeState?.off();
     const counts = { deploy: 0, queue: 0 };
     const deploy = (): void => {
       counts.deploy += 1;
@@ -4347,7 +4355,7 @@ const mrTacticsHook = {
     live.db.myBattleDeploy.onDelete(deploy);
     live.db.myBattleQueue.onInsert(queue);
     live.db.myBattleQueue.onDelete(queue);
-    rowProbe = {
+    rowProbeState = {
       counts,
       off: () => {
         live.db.myBattleDeploy.removeOnInsert(deploy);
@@ -4358,8 +4366,8 @@ const mrTacticsHook = {
     };
   },
   rowProbe(): { deploy: number; queue: number } {
-    if (rowProbe === null) throw new Error('rowProbe: not armed');
-    return { ...rowProbe.counts };
+    if (rowProbeState === null) throw new Error('rowProbe: not armed');
+    return { ...rowProbeState.counts };
   },
   /** The transcript's tags in order: each event's unit (when it names one) and, for BattleEnd, how. */
   eventTags(): { tag: string; unit: number | null; how: string | null }[] {
@@ -4389,10 +4397,13 @@ const mrTacticsHook = {
         10_000,
       );
       try {
-        live
+        const handle = live
           .subscriptionBuilder()
           .onApplied(() => {
             clearTimeout(timer);
+            // An applied probe (the positive control) is dropped again: the probe page keeps no
+            // standing subscription of its own.
+            handle.unsubscribe();
             resolve('applied');
           })
           .onError(() => {
@@ -5182,9 +5193,7 @@ async function main(): Promise<void> {
             renderNav(interactSheetEl, challengeLayout(sheet.confirm.sizes), sheet.confirm.nav, {
               frame: 'interact',
               fill: (el, item) => {
-                const n = sizeOfRow(item.key);
-                el.textContent =
-                  n === null ? i18nT('prompt.no') : tf('interact.challenge.size', { n });
+                el.textContent = sizeRowLabel(item.key);
               },
             });
             interactSheetEl.setAttribute('aria-label', question);

@@ -460,7 +460,11 @@ export class DeployPanel implements BattleOpsView {
     this.#sendPicks(picksOf(this.#assignment));
   }
 
-  /** Send `picks` unless empty (nothing to deploy: no lock, no status line) or already in flight. */
+  /** Send `picks` unless empty (nothing to deploy: no lock, no status line) or already in flight.
+   *  The token lock releases on settle; in PvP the server's `locked` row (the VM) takes over — the
+   *  SDK applies a transaction's rows before it resolves the reducer's promise, so the locked VM
+   *  renders first; a press that ever slipped between the two would be refused server-side
+   *  ("already locked", a status line), never a second deploy. */
   #sendPicks(picks: readonly DeployPick[]): void {
     const vm = this.#vm;
     if (vm === null || picks.length === 0 || this.#frozen()) return;
