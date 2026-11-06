@@ -1,15 +1,19 @@
 // tactics/deployPanel.ts — the wild pack ≥ 2 confirm screen and the formation editor (bt-12: BT12.2,
-// BT12.3). A constructed overlay root (the ui/battleView.ts header's a11y wiring: the root is
-// `document.createElement`'d here, every ARIA attribute on it comes from `openOverlayA11y`, `wasVisible`
-// is the FIRST statement of `show()`, `hide()` calls `closeOverlayA11y` unguarded, the open is the LAST
-// statement of the open path). It shares the `battleView` overlay id with the 1v1 view, the tactical
-// shell and the results panel; main.ts keeps them mutually exclusive (`hideOtherBattleViews`).
+// BT12.3), and the PvP side's deploy (bt-15: BT15.1). A constructed overlay root (the ui/battleView.ts
+// header's a11y wiring: the root is `document.createElement`'d here, every ARIA attribute on it comes
+// from `openOverlayA11y`, `wasVisible` is the FIRST statement of `show()`, `hide()` calls
+// `closeOverlayA11y` unguarded, the open is the LAST statement of the open path). It shares the
+// `battleView` overlay id with the 1v1 view, the tactical shell and the results panel; main.ts keeps
+// them mutually exclusive (`hideOtherBattleViews`).
 //
-// Pure first: `resolveFormation` (the remembered-formation rule), `deployVM` (the conscious party and
-// the resolved formation) and `picksOf` (the `deploy_units` picks). The shell keeps the mode, the
-// cursor (by row KEY), the candidate (by monster id, never by index), the editor's assignment and the
-// in-flight lock (a TOKEN: a settle after hide() or after a new battle compares its token and touches
-// nothing). Every paint is compute-then-write; a structurally equal VM writes no DOM.
+// Pure first: `resolveFormation` (the remembered-formation rule), `pvpDeployCount` (the PvP side's
+// count), `deployVM` (the conscious party and the resolved formation) and `picksOf` (the
+// `deploy_units` picks). The shell keeps the mode, the cursor (by row KEY), the candidate (by monster
+// id, never by index), the editor's assignment and the in-flight lock (a TOKEN: a settle after hide()
+// or after a new battle compares its token and touches nothing). Every paint is compute-then-write; a
+// structurally equal VM writes no DOM. In PvP mode (bt-15) the VM also carries the server's own
+// `battle_deploy.locked` — the panel never infers a lock from a promise, so a refused deploy leaves
+// it usable — and the Deploy / Confirm rows refuse a sparse assignment (exactly `format` picks).
 import type { DeployPick } from '../module_bindings/types';
 import { structurallyEqual } from '../ui/battlePolicy';
 import type { HintDeploy } from '../ui/hintBarModel';
@@ -56,46 +60,82 @@ export function resolveFormation(
   return out;
 }
 
+/** Mirror of server-module/src/tactics.rs `pvp_deploy_count` (R-bt-14-FORMATRULE stays open — a
+ *  DISCLOSED deviation from "rules out" until `pvp_deploy_count` / `challenge_format` /
+ *  `PVP_FORMAT_MAX` move to game-core behind a client-wasm export, a follow-up outside bt-15
+ *  increment A's touches; the server validates every pick): a PvP side deploys exactly
+ *  `min(format, conscious)` of its own list. */
+export function pvpDeployCount(format: number, conscious: number): number {
+  return Math.max(0, Math.min(format, conscious));
+}
+
 /** One wild of the pack as the confirm screen lists it (bt-12 B, BT12.2: the anchor's `sideB.team`). */
 export interface DeployWild {
   readonly speciesId: number;
   readonly name: string;
   readonly level: number;
 }
-export interface DeployInput {
+interface DeployInputBase {
   readonly battleId: bigint;
   /** The anchor's `partyMonsterIds` order joined with the own monster rows (a member with no own
    *  row is dropped). */
   readonly party: readonly DeployMonster[];
   /** `store.ownFormation(identity)?.monsterIds ?? []`. */
   readonly remembered: readonly bigint[];
+}
+export interface WildDeployInput extends DeployInputBase {
+  readonly mode: 'wild';
   /** `min(tuning.max_pack, rules.map(mapId).spawn_a.length)` — never a literal. */
   readonly slotCount: number;
   /** The pack in `wild_index` order — the anchor's `sideB.team` (the server seats every wild there). */
   readonly wilds: readonly DeployWild[];
 }
+/** bt-15 (BT15.1): a PvP (or Practice) side's deploy. It carries NO roster field by construction: the
+ *  anchor's `sideB.team` is the OPPONENT's party in a PvP battle (R-bt-14-ROSTERREVEAL) and is never
+ *  offered to this panel. */
+export interface PvpDeployInput extends DeployInputBase {
+  readonly mode: 'pvp';
+  /** The battle's `format` (`battle_tactical.format`): the side deploys `pvpDeployCount(format, conscious)`. */
+  readonly format: number;
+  /** The own `battle_deploy` row's `locked` (`store.battleDeploys`): this side has deployed and waits
+   *  for the other side's lock (the reveal), so nothing may be sent again. */
+  readonly locked: boolean;
+}
+export type DeployInput = WildDeployInput | PvpDeployInput;
 export interface DeployVM {
   readonly battleId: bigint;
+  readonly mode: 'wild' | 'pvp';
   /** hp > 0 only, party order — a fainted monster is NEVER listed. */
   readonly candidates: readonly DeployMonster[];
   /** Length `slotCount`; slot i holds `resolveFormation(...)[i]`'s monster, else null. */
   readonly formation: readonly (DeployMonster | null)[];
-  /** The pack, in order (the composition list of the confirm screen). */
+  /** The pack, in order (the composition list of the confirm screen); empty in PvP. */
   readonly wilds: readonly DeployWild[];
+  /** PvP: the own staging row is locked — every row disabled, nothing sent, until the battle starts. */
+  readonly locked: boolean;
 }
 export function deployVM(input: DeployInput): DeployVM {
   const candidates = input.party.filter((m) => m.hp > 0);
+  const slotCount =
+    input.mode === 'pvp' ? pvpDeployCount(input.format, candidates.length) : input.slotCount;
   const resolved = resolveFormation(
     input.remembered,
     input.party.map((m) => ({ monsterId: m.monsterId, conscious: m.hp > 0 })),
-    input.slotCount,
+    slotCount,
   );
   const formation: (DeployMonster | null)[] = [];
-  for (let i = 0; i < input.slotCount; i += 1) {
+  for (let i = 0; i < slotCount; i += 1) {
     const id = resolved[i];
     formation.push(id === undefined ? null : (candidates.find((m) => m.monsterId === id) ?? null));
   }
-  return { battleId: input.battleId, candidates, formation, wilds: [...input.wilds] };
+  return {
+    battleId: input.battleId,
+    mode: input.mode,
+    candidates,
+    formation,
+    wilds: input.mode === 'pvp' ? [] : [...input.wilds],
+    locked: input.mode === 'pvp' && input.locked,
+  };
 }
 /** The filled slots as `deploy_units` picks, ascending slot (a sparse assignment keeps its slot numbers). */
 export function picksOf(slots: readonly (DeployMonster | null)[]): DeployPick[] {
@@ -258,12 +298,13 @@ export class DeployPanel implements BattleOpsView {
       if (op.dir === 'Up' || op.dir === 'Down') this.#moveCursor(op.dir === 'Down' ? 1 : -1);
       return;
     }
-    // While a send is in flight only a move acts: nothing is sent twice, no editor opens.
-    if (this.#lock !== null) return;
+    // While a send is in flight, or the own PvP row is locked, only a move acts: nothing is sent
+    // twice, no editor opens.
+    if (this.#frozen()) return;
     if (this.#mode === 'confirm') {
       switch (op.kind) {
         case 'activate':
-          if (this.#cursor === 'deploy') this.#sendPicks(picksOf(vm.formation));
+          if (this.#cursor === 'deploy') this.#sendFormation(vm);
           else if (this.#cursor === 'edit') this.#enterEdit();
           return;
         case 'danger':
@@ -305,6 +346,28 @@ export class DeployPanel implements BattleOpsView {
     if (this.#mode === 'confirm') return CONFIRM_ROWS;
     const slots = this.#assignment.map((_, i) => `slot-${i}`);
     return [...slots, 'confirm', 'back'];
+  }
+
+  /** Nothing but a cursor move acts: a send is in flight, or (PvP) the own row is already locked. */
+  #frozen(): boolean {
+    return this.#lock !== null || (this.#vm?.locked ?? false);
+  }
+
+  /** PvP (bt-15, BT15.1): a side deploys exactly `format` picks — a sparse assignment is refused;
+   *  a wild deploy keeps its sparse-slot semantics (bt-12). */
+  #incomplete(slots: readonly (DeployMonster | null)[]): boolean {
+    return this.#vm?.mode === 'pvp' && slots.some((m) => m === null);
+  }
+
+  /** The row `key` is painted disabled and refuses a press: every row while frozen; the Deploy and
+   *  Confirm rows while their picks are incomplete (they still take the cursor). */
+  #refuses(key: string): boolean {
+    if (this.#frozen()) return true;
+    const vm = this.#vm;
+    if (vm === null) return false;
+    if (key === 'deploy') return this.#incomplete(vm.formation);
+    if (key === 'confirm') return this.#incomplete(this.#assignment);
+    return false;
   }
 
   /** The cursor and the candidate follow identity: a row or a monster no longer there falls back. */
@@ -385,14 +448,22 @@ export class DeployPanel implements BattleOpsView {
     this.#paint();
   }
 
+  /** The confirm screen's Deploy: the resolved formation, unless (PvP) it is incomplete. */
+  #sendFormation(vm: DeployVM): void {
+    if (this.#incomplete(vm.formation)) return;
+    this.#sendPicks(picksOf(vm.formation));
+  }
+
+  /** The editor's Confirm / Start: the edited assignment, unless (PvP) it is incomplete. */
   #sendAssignment(): void {
+    if (this.#incomplete(this.#assignment)) return;
     this.#sendPicks(picksOf(this.#assignment));
   }
 
   /** Send `picks` unless empty (nothing to deploy: no lock, no status line) or already in flight. */
   #sendPicks(picks: readonly DeployPick[]): void {
     const vm = this.#vm;
-    if (vm === null || picks.length === 0 || this.#lock !== null) return;
+    if (vm === null || picks.length === 0 || this.#frozen()) return;
     const lock = Symbol('deploy');
     this.#lock = lock;
     this.#paint();
@@ -419,11 +490,12 @@ export class DeployPanel implements BattleOpsView {
     const vm = this.#vm;
     if (vm === null) return;
     const edit = this.#mode === 'edit';
-    const locked = this.#lock !== null;
+    const frozen = this.#frozen();
     const parts: HTMLElement[] = [];
     if (!edit) {
       // The pack (bt-12 B, BT12.2 "THE Deploying phase SHALL show the wild composition"), in
       // `wild_index` order, BEFORE the formation: who the player is about to face, then whom to send.
+      // A PvP VM carries no pack (bt-15): the opponent's roster is never painted here.
       if (vm.wilds.length > 0) {
         const pack = el('ul', 'tactics-deploy-wilds');
         pack.setAttribute('aria-label', s.deployWilds());
@@ -478,7 +550,7 @@ export class DeployPanel implements BattleOpsView {
       row.setAttribute('role', 'option');
       row.setAttribute('data-row', key);
       row.setAttribute('aria-selected', key === this.#cursor ? 'true' : 'false');
-      if (locked) row.setAttribute('aria-disabled', 'true');
+      if (this.#refuses(key)) row.setAttribute('aria-disabled', 'true');
       row.appendChild(el('span', 'tactics-menu-label', this.#rowLabel(key)));
       if (key.startsWith('slot-')) {
         const m = this.#assignment[Number(key.slice('slot-'.length))] ?? null;
@@ -486,19 +558,19 @@ export class DeployPanel implements BattleOpsView {
         else row.append(...monsterSpans(m));
       }
       row.addEventListener('click', () => {
-        // A click moves the cursor there and presses it (the same path as the D-pad and A).
+        // A click moves the cursor there and presses it (the same path as the D-pad and A); while
+        // frozen (a send in flight, or the own PvP row locked) a click is inert, cursor included.
+        if (this.#frozen()) return;
         this.#cursor = key;
-        if (this.#lock !== null) {
-          this.#paint();
-          return;
-        }
         this.applyBattleOp({ kind: 'activate' });
       });
       if (key === this.#cursor) menu.setAttribute('aria-activedescendant', row.id);
       menu.appendChild(row);
     }
     parts.push(menu);
-    if (locked) parts.push(el('p', 'tactics-deploy-status', s.deploySending()));
+    // In flight, or (PvP) locked server-side and waiting for the other side: the same status line
+    // (bt-15 interim wording — the continuation words the locked state on its own).
+    if (frozen) parts.push(el('p', 'tactics-deploy-status', s.deploySending()));
     this.#titleEl.textContent = edit ? s.deployEdit() : s.deployTitle();
     // Where focus was before the rebuild: inside the root (the title the dialog opened on, a row or
     // a button the pointer pressed) or stranded on <body>. The rebuild destroyed any focused row.

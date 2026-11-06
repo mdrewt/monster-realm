@@ -162,6 +162,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The Yes / No question asked before a challenge is sent to the faced player; {name} is
   // that player's display name. main.ts (#interact-prompt)
   'interact.confirm.challenge': (p) => `Défier ${p.name} ?`,
+  // @desc: One row of the Challenge confirm's party-size pick (bt-15): how many monsters each side
+  // fields, {n} vs {n}, largest first. Very short — up to three rows sit side by side. main.ts
+  // (#interact-prompt rows)
+  'interact.challenge.size': (p) => `${p.n} contre ${p.n}`,
   // @desc: Name shown for a heal location in the world interaction chip and picker. One short word.
   // main.ts
   'interact.healer': 'Guérisseur',

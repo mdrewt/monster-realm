@@ -7,7 +7,7 @@
 // (`continuedBattleId`). Pure — no DOM, SDK, module state or clock. The stack itself, its
 // transitions and SCREEN_POLICY stay in contextStack.ts.
 
-import type { TacticalPhaseName } from '../net/rowConvert';
+import type { TacticalKindName, TacticalPhaseName } from '../net/rowConvert';
 import type { Stack } from './contextStack';
 import type { NavInput } from './nav';
 import type { Command as ScreenCommand, ScreenResult } from './screens/types';
@@ -222,4 +222,26 @@ export function stillThereSeconds(deadlineMs: bigint | null, wallNowMs: number):
   const remaining = Number(deadlineMs) - wallNowMs;
   if (remaining <= 0 || remaining > STILL_THERE_LEAD_MS) return null;
   return Math.ceil(remaining / 1000);
+}
+
+// --- bt-15 (BT15.1): which deadline the countdown follows -------------------------------------------
+
+/** The own clock deadline the countdown shows: a WILD battle's always (the "Still there?" nudge over
+ *  its 300 s windows, BT12.2), a Pvp / Practice battle's only while the DEPLOY panel shows (the 45 s
+ *  deploy window: bt-14 writes the deploy deadline into both clock rows) and never an Active PvP
+ *  turn's 30 s window (the clock ring is bt-15 increment B's). Total over the kinds. */
+export function countdownDeadline(
+  kind: TacticalKindName,
+  deployShown: boolean,
+  own: bigint | null,
+): bigint | null {
+  switch (kind) {
+    case 'Wild':
+      return own;
+    case 'Pvp':
+    case 'Practice':
+      return deployShown ? own : null;
+    default:
+      return kind satisfies never;
+  }
 }
