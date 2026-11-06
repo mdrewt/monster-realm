@@ -1626,6 +1626,7 @@ fn m22s4_serializer_per_table_shape() {
         challenger_party_ids: vec![9],
         status: ChallengeStatus::Cancelled,
         created_at_ms: 43,
+        format: 0,
     };
     let out_challenge = super::json_battle_challenge(&challenge);
     assert_eq!(

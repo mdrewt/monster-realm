@@ -1357,6 +1357,8 @@ fn zero_summary(battle_id: u64, player: Identity, outcome: BattleOutcome) -> Bat
         unit_turns_live: 0,
         halted_plans: 0,
         se_kos_after_r1: 0,
+        kos_after_r1: 0,
+        end_how: None,
     }
 }
 
@@ -2973,6 +2975,7 @@ fn apply_delta_saturates_every_counter_and_grows_the_histogram_to_any_bucket_bt9
         hits: 9,
         misses: 4,
         se_kos_after_r1: 1,
+        kos_after_r1: 0,
     };
     let got = apply_delta(row, &delta);
     assert_eq!(got.battle_id, 42);

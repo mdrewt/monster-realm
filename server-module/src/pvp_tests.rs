@@ -370,6 +370,7 @@ fn pv_challenge(id: u64, challenger: PvId, target: PvId, status: PvStatus) -> Pv
         challenger_party_ids: vec![11],
         status,
         created_at_ms: PV_T0,
+        format: 0,
     }
 }
 

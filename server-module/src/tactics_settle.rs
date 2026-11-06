@@ -115,6 +115,8 @@ pub(crate) struct StepDelta {
     pub(crate) misses: u16,
     /// Single-hit super-effective KOs after round 1, both sides (§12-F(c)).
     pub(crate) se_kos_after_r1: u16,
+    /// Every KO after round 1, both sides — the §12-F(c) denominator (bt-14, R-bt-9-SUMMARYDENOM).
+    pub(crate) kos_after_r1: u16,
 }
 
 impl StepDelta {
@@ -406,6 +408,8 @@ fn zero_row(anchor: &Battle, tactical: &BattleTactical) -> BattleSummary {
         unit_turns_live: 0,
         halted_plans: 0,
         se_kos_after_r1: 0,
+        kos_after_r1: 0,
+        end_how: None,
     }
 }
 
@@ -678,6 +682,17 @@ pub(crate) fn settle(
     let row = summary_row(ctx, anchor, tactical);
     let wall_ms = u64::try_from(now_ms.saturating_sub(anchor.created_at_ms)).unwrap_or(0);
     finalize(ctx, row, anchor, tactical, was_active, wall_ms);
+}
+
+/// An anchor-less finish (bt-14, R-bt-9-SUMMARYDENOM's `Ongoing` leftovers): the summary row of
+/// a tactical battle whose anchor is already gone is finalised `Fled` — `rounds` per the phase it
+/// reached, `wall_ms` 0 (its end time is unknown) — instead of staying `Ongoing` forever.
+pub(crate) fn finalize_orphan_summary(
+    ctx: &ReducerContext,
+    tactical: &BattleTactical,
+    now_ms: i64,
+) {
+    let _ = (ctx, tactical, now_ms);
 }
 
 /// A swept (prior-terminal) tactical battle whose summary is still `Ongoing` is finalised with

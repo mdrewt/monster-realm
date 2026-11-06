@@ -68,6 +68,10 @@ struct Host {
     /// prints the real name instead of a bare `false`. Note the memoisation
     /// caveat in the module doc: a name is asked for once per PROCESS.
     requested_indexes: Vec<String>,
+    /// bt-14: WRITE syscalls (insert / update / delete, including no-op ones) per table id since
+    /// the last [`fixture`] or [`Fixture::reset_writes`] — the subscription-visible footprint of a
+    /// transaction, which a row diff cannot see (an unchanged `update` still reaches subscribers).
+    writes: HashMap<u32, u32>,
     /// Opt-in write/scan model + module identity (EOF extension); reset per fixture.
     model: Model,
     next_table_id: u32,
@@ -149,6 +153,7 @@ pub(crate) fn fixture() -> Fixture {
         h.iters.clear();
         h.index_table.clear();
         h.requested_indexes.clear();
+        h.writes.clear();
         h.model = Model::default();
     }
     Fixture { _serial: serial }
@@ -207,6 +212,22 @@ impl Fixture {
     /// assertion reads `false` (a mis-spelled registration matches nothing).
     pub(crate) fn requested_indexes(&self) -> Vec<String> {
         host().requested_indexes.clone()
+    }
+
+    /// WRITE syscalls (insert / update / delete) the generated code made against `table` (its
+    /// `accessor` name) since the fixture or the last [`Fixture::reset_writes`]. Counts CALLS, so a
+    /// byte-identical `update` counts — that is exactly what a subscriber would be told about.
+    #[allow(dead_code)] // bt-14 API freeze: the secrecy tests land next
+    pub(crate) fn writes_to(&self, table: &str) -> u32 {
+        let mut h = host();
+        let id = h.table_id(table);
+        h.writes.get(&id).copied().unwrap_or(0)
+    }
+
+    /// Zero every table's write count (mark the start of the transaction under test).
+    #[allow(dead_code)] // bt-14 API freeze: the secrecy tests land next
+    pub(crate) fn reset_writes(&self) {
+        host().writes.clear();
     }
 }
 
@@ -452,6 +473,7 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
     let Some(ix) = h.index_table.get(&index_id) else {
         unmodelled("datastore_delete_by_index_scan_point_bsatn on an unregistered index")
     };
+    *h.writes.entry(ix.table_id).or_insert(0) += 1;
     let rows = h.rows.entry(ix.table_id).or_default();
     let before = rows.len();
     rows.retain(|row| (ix.extract)(row) != point);
@@ -1484,6 +1506,7 @@ unsafe fn write_row(
     let mut row = unsafe { std::slice::from_raw_parts(row_ptr, len) }.to_vec();
     let mut h = host();
     let h = &mut *h;
+    *h.writes.entry(table_id).or_insert(0) += 1;
     let Some(table) = h.model.tables.get_mut(&table_id).filter(|t| t.writable) else {
         unmodelled(symbol)
     };
@@ -1564,6 +1587,7 @@ unsafe fn delete_all_by_eq(
     let relation = unsafe { std::slice::from_raw_parts(rel_ptr, rel_len) };
     let mut h = host();
     let h = &mut *h;
+    *h.writes.entry(table_id).or_insert(0) += 1;
     let Some(split) = h
         .model
         .tables

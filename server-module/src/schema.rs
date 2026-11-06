@@ -931,6 +931,11 @@ pub struct BattleChallenge {
     pub challenger_party_ids: Vec<u64>,
     pub status: ChallengeStatus,
     pub created_at_ms: i64,
+    /// bt-14 (BT14.1): the party-size format of the battle this challenge opens, 1..=3,
+    /// derived at insert from the challenger's party pick (`pvp::challenge_format`). Rows
+    /// written before the column read 0 (never a format).
+    #[default(0)]
+    pub format: u8,
 }
 
 /// PRIVATE per-turn secret action submitted by one PvP player.
@@ -1253,6 +1258,15 @@ pub struct BattleSummary {
     pub unit_turns_live: u16,
     pub halted_plans: u16,
     pub se_kos_after_r1: u16,
+    /// bt-14 (R-bt-9-SUMMARYDENOM): `Ko` events of both sides in rounds > 1 — the design
+    /// §12-F(c) denominator `se_kos_after_r1` is read against.
+    #[default(0)]
+    pub kos_after_r1: u16,
+    /// bt-14 (BT14.5): how the battle ended (`BattleEnd.how`: the adjudication reason,
+    /// `Forfeit`, `SideEmpty`, ...); `None` while `Ongoing` and for a close with no `BattleEnd`
+    /// (a Deploying cancel, the fallback close).
+    #[default(None)]
+    pub end_how: Option<game_core::tactics::events::EndHow>,
 }
 
 /// PRIVATE remembered formation (design §3.3, §8.1 `player_formation`): the

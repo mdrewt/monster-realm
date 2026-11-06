@@ -29,7 +29,7 @@
 
 use std::sync::LazyLock;
 
-use crate::battle::{is_ongoing_wild_battle, lead_party, write_back_party_hp};
+use crate::battle::{is_ongoing_wild_battle, lead_party, lead_party_ids, write_back_party_hp};
 use crate::content_cache::{
     cached_battle_maps, cached_tactics_items, cached_tactics_skills, cached_tactics_species,
     cached_tactics_zones,
@@ -85,6 +85,9 @@ pub(crate) const BATTLE_SEED_SALT: u64 = 0x7A57_1C5B_A771_E5EE;
 /// decorrelated from the wild's individuality seed (same mixer) while §3.4's
 /// `individuality_seed = wild_seed(seed, i)` is kept.
 const SPAWN_ROLL_SALT: u64 = 0x5BA7_0E5E_ED11_C0DE;
+/// The PvP map pick is `pvp_maps[splitmix64(seed ^ PVP_MAP_SALT) % n]`: decorrelated from the roll
+/// stream (`BATTLE_SEED_SALT`) and the wild spawn roll (`SPAWN_ROLL_SALT`), same mixer.
+pub(crate) const PVP_MAP_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 /// A wild battle: side A is the player, side B the pack (design §2.2).
 const WILD_FORMAT: u8 = 0;
 /// Item entries are refused at submit: the item rule (range, Ally filter, cure match) has no
@@ -893,10 +896,13 @@ fn finish(
         Some(anchor) => {
             tactics_settle::settle(ctx, anchor, &tactical, &close, hp_ok, was_active, now_ms);
         }
-        None => mr_log(
-            "tactical_settle_skipped",
-            &format!("\"battle_id\":{battle_id},\"reason\":\"no anchor\""),
-        ),
+        None => {
+            mr_log(
+                "tactical_settle_skipped",
+                &format!("\"battle_id\":{battle_id},\"reason\":\"no anchor\""),
+            );
+            tactics_settle::finalize_orphan_summary(ctx, &tactical, now_ms);
+        }
     }
     arm_gc(ctx, battle_id, now_ms.saturating_add(GC_DELAY_MS));
 }
@@ -1786,6 +1792,43 @@ fn wild_anchor_monster(
     })
 }
 
+/// The PvP map for `seed` (bt-14, BT14.2): the `pvp: true` maps in content order, index
+/// `splitmix64(seed ^ PVP_MAP_SALT) % n`; `None` when content has no PvP map. Pure.
+#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
+pub(crate) fn pvp_map_id(maps: &[BattleMapEntry], seed: u64) -> Option<u32> {
+    let _ = (maps, seed ^ PVP_MAP_SALT);
+    None
+}
+
+/// How many monsters one side of a PvP battle deploys (bt-14, BT14.1): exactly `format`, or all
+/// it has if fewer conscious. Pure.
+#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
+pub(crate) fn pvp_deploy_count(format: u8, conscious: usize) -> usize {
+    let _ = (format, conscious);
+    0
+}
+
+/// Start a PvP (or Practice, when `challenger == opponent`) tactical battle (bt-14, BT14.2): the
+/// anchor `battle` row (Ongoing, both parties), `battle_tactical` (Deploying), `battle_secret`,
+/// one `battle_clock` row per side and one owner-only `battle_deploy` staging row per side, plus
+/// the 45 s deploy window row. Nothing is written before the last guard (reject, never clamp).
+/// Reached only through the cfg-gated `dev_start_tactical_pvp` until bt-16 flips the
+/// challenge-accept path.
+#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
+pub(crate) fn start_pvp_tactical(
+    ctx: &ReducerContext,
+    challenger: Identity,
+    challenger_party: &[u64],
+    opponent: Identity,
+    opponent_party: &[u64],
+    format: u8,
+    seed: u64,
+) -> Result<u64, String> {
+    let _ = (ctx, challenger, challenger_party, opponent, opponent_party);
+    let _ = (pvp_map_id(&[], seed), pvp_deploy_count(format, 0));
+    Err("start_pvp_tactical: unimplemented".to_string())
+}
+
 /// The Deploying window's deadline (bt-12 B, BT12.2): `now` plus game-core's deploy budget for a
 /// wild battle (`clock::deploy_budget_ms`: the tuning's `pve_deploy_ms`) — the ONE instant both the
 /// deploy-deadline schedule row and the side-A clock's `deadline_ms` carry, so the client's "Still
@@ -2051,6 +2094,73 @@ pub fn cancel_queue(ctx: &ReducerContext, battle_id: u64, unit_id: u32) -> Resul
         Except::None,
     );
     Ok(())
+}
+
+/// Forfeit the sender's PvP tactical battle (bt-14, BT14.5; design §6.4): a client-confirmed
+/// reducer, not a queue entry, 0 AP — the opponent wins through the one terminal funnel
+/// (`conclude(.., EndHow::Forfeit)` → `finish` → `pvp::settle_pvp_battle`). READY rows are voided,
+/// never executed. A wild battle has Flee instead; a Deploying battle is not forfeitable.
+#[spacetimedb::reducer]
+pub fn forfeit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+    const NAME: &str = "forfeit";
+    let me = ctx.sender();
+    let anchor = owned_anchor(ctx, NAME, battle_id)?;
+    crate::guards::require_commitment_predates_deletion(ctx, NAME, anchor.created_at_ms)?;
+    reject(NAME, me, format!("{NAME}: unimplemented"))
+}
+
+/// DEV/TEST entrypoint for the build phase (the live challenge-accept path flips in bt-16):
+/// starts a PvP tactical battle between `challenger` and `opponent` (the same identity twice is a
+/// Practice battle) — the caller itself as challenger, or any pair when the caller is the module
+/// owner (`spacetime call` runs as the publisher). Both parties are the players' party slots;
+/// `format` defaults to the challenger's pick (`pvp::challenge_format`); the seed is drawn
+/// server-side.
+#[cfg(feature = "dev_reducers")]
+#[spacetimedb::reducer]
+pub fn dev_start_tactical_pvp(
+    ctx: &ReducerContext,
+    challenger: Identity,
+    opponent: Identity,
+    format: Option<u8>,
+) -> Result<(), String> {
+    use crate::schema::config;
+    const NAME: &str = "dev_start_tactical_pvp";
+    crate::guards::require_not_deleting(ctx, NAME)?;
+    let me = ctx.sender();
+    let owner = ctx
+        .db
+        .config()
+        .id()
+        .find(0)
+        .map(|c| c.owner_identity)
+        .unwrap_or(Identity::ZERO);
+    // Consent: a player may start only a PRACTICE battle for itself; pairing two different
+    // identities (a non-consenting opponent, a rated result) is the module owner's alone.
+    let practice = challenger == opponent;
+    if me != owner && !(me == challenger && practice) {
+        return reject(NAME, me, "not owner".to_string());
+    }
+    let Some(mut party_a) = lead_party_ids(ctx, challenger) else {
+        return reject(NAME, me, "no party monster".to_string());
+    };
+    let (party_a, party_b) = if practice {
+        // One party split into two DISJOINT side lists, in slot order.
+        if party_a.len() < 2 {
+            return reject(NAME, me, "practice needs two party monsters".to_string());
+        }
+        let b = party_a.split_off(party_a.len().div_ceil(2));
+        (party_a, b)
+    } else {
+        let Some(party_b) = lead_party_ids(ctx, opponent) else {
+            return reject(NAME, me, "no party monster".to_string());
+        };
+        (party_a, party_b)
+    };
+    let format = format.unwrap_or_else(|| crate::pvp::challenge_format(party_a.len()));
+    let seed: u64 = ctx.random();
+    start_pvp_tactical(ctx, challenger, &party_a, opponent, &party_b, format, seed)
+        .map(|_| ())
+        .inspect_err(|e| log_reject(NAME, me, e))
 }
 
 /// DEV/TEST entrypoint for the build phase (the live encounter path flips in bt-16):

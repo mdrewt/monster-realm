@@ -840,6 +840,7 @@ fn json_battle_challenge(row: &BattleChallenge) -> String {
         challenger_party_ids,
         status,
         created_at_ms,
+        format: _,
     } = row;
     let mut out = String::new();
     let mut first = true;

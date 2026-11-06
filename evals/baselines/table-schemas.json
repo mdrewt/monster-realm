@@ -987,7 +987,8 @@
       "target": "Identity",
       "challenger_party_ids": "Vec<u64>",
       "status": "ChallengeStatus",
-      "created_at_ms": "i64"
+      "created_at_ms": "i64",
+      "format": "u8"
     },
     "order": [
       "challenge_id",
@@ -995,9 +996,12 @@
       "target",
       "challenger_party_ids",
       "status",
-      "created_at_ms"
+      "created_at_ms",
+      "format"
     ],
-    "defaults": [],
+    "defaults": [
+      "format"
+    ],
     "unique": [],
     "indexes": [
       "challenger",
@@ -1441,7 +1445,9 @@
       "unit_turns_prequeued": "u16",
       "unit_turns_live": "u16",
       "halted_plans": "u16",
-      "se_kos_after_r1": "u16"
+      "se_kos_after_r1": "u16",
+      "kos_after_r1": "u16",
+      "end_how": "Option<game_core::tactics::events::EndHow>"
     },
     "order": [
       "battle_id",
@@ -1466,9 +1472,14 @@
       "unit_turns_prequeued",
       "unit_turns_live",
       "halted_plans",
-      "se_kos_after_r1"
+      "se_kos_after_r1",
+      "kos_after_r1",
+      "end_how"
     ],
-    "defaults": [],
+    "defaults": [
+      "kos_after_r1",
+      "end_how"
+    ],
     "unique": [],
     "indexes": [
       "player_identity",

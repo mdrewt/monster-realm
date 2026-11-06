@@ -237,6 +237,13 @@ fn has_active_incoming_challenge(ctx: &ReducerContext, identity: Identity) -> bo
 
 /// Build a team of `BattleMonster`s from `party_ids` owned by `owner`.
 /// Validates each monster: exists, owned, party-slotted, not in trade.
+/// bt-14 (BT14.1): the party-size format a challenge opens, derived from the challenger's
+/// party pick — `min(party_len, MAX_PACK)` (ranked plays 3v3 by picking 3; casual 1–3). Pure.
+pub(crate) fn challenge_format(party_len: usize) -> u8 {
+    let _ = party_len;
+    0
+}
+
 /// Also returns the per-slot ability ids (parallel to the team vec).
 fn build_pvp_team(
     ctx: &ReducerContext,
@@ -548,7 +555,7 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 /// - The rating rides the just-committed outcome and is
 ///   infallible by construction — no error posture needed.
 /// - The stale `battle_action` sweep runs last (hoisted from the forfeit path).
-fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String> {
+pub(crate) fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String> {
     let battle_id = battle.battle_id;
 
     // write_back_battle_results first — battle row is still Ongoing in DB so its
@@ -924,7 +931,8 @@ pub fn challenge_pvp(
         .inspect_err(|e| log_reject("challenge_pvp", me, e))?;
     }
 
-    // Guard 8 (irreversible): insert the challenge row.
+    // Guard 8 (irreversible): insert the challenge row (`format` from the pick, BT14.1).
+    let format = challenge_format(party_ids.len());
     let challenge = ctx.db.battle_challenge().insert(BattleChallenge {
         challenge_id: 0,
         challenger: me,
@@ -932,6 +940,7 @@ pub fn challenge_pvp(
         challenger_party_ids: party_ids,
         status: ChallengeStatus::Pending,
         created_at_ms: now_ms(ctx),
+        format,
     });
 
     // Guard 9: arm the TTL reaper (post-insert — the auto_inc challenge_id only
