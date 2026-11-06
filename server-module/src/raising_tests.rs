@@ -3317,3 +3317,107 @@ mod nh {
         assert_eq!(rows(&w), vec![(b(), T0 + 1)]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// evaluate_heal_currency pure seam — the heal_party currency gate.
+//
+// No shipped heal location charges currency (every RON `cost_currency` is 0) and
+// the content cache is not injectable, so the priced branch of `heal_party` is
+// only reachable through this seam. Oracles are literals written here.
+// ---------------------------------------------------------------------------
+
+mod heal_currency {
+    use super::*;
+    use game_core::HealLocationDef;
+
+    const ESCROW_ERR: &str = "currency is in an active trade";
+
+    fn def(location_id: u32, cost_currency: u64) -> HealLocationDef {
+        HealLocationDef {
+            location_id,
+            zone_id: 0,
+            tile_x: 0,
+            tile_y: 0,
+            cost_item_id: None,
+            cost_qty: 0,
+            cooldown_ms: 30_000,
+            cost_currency,
+        }
+    }
+
+    /// `(balance, escrowed)` reader that records whether it was consulted.
+    fn run(
+        defs: &[HealLocationDef],
+        location_id: u32,
+        balance: u64,
+        escrowed: u64,
+    ) -> (Result<Option<u64>, String>, bool) {
+        let mut read = false;
+        let r = evaluate_heal_currency(defs, location_id, || {
+            read = true;
+            (balance, escrowed)
+        });
+        (r, read)
+    }
+
+    // kills: `==` -> `!=` in the location lookup (would price the wrong def / the
+    // unknown location). Two defs with different ids and different prices.
+    #[test]
+    fn the_price_is_that_of_the_matching_location_only() {
+        let defs = [def(1, 70), def(2, 20)];
+        assert_eq!(run(&defs, 1, 1_000, 0).0, Ok(Some(70)));
+        assert_eq!(run(&defs, 2, 1_000, 0).0, Ok(Some(20)));
+    }
+
+    // kills: `==` -> `!=` (a non-matching def would be priced for an unknown id).
+    #[test]
+    fn an_unknown_location_is_free_and_reads_nothing() {
+        let defs = [def(1, 70), def(2, 20)];
+        assert_eq!(run(&defs, 99, 0, 0), (Ok(None), false));
+        assert_eq!(run(&[], 1, 0, 0), (Ok(None), false));
+    }
+
+    // kills: `cost > 0` -> `==`, `>=` (a zero cost would read the wallet and, with an
+    // empty one, wrongly pass/fail; `>=` would return Some(0)), and `<`.
+    #[test]
+    fn a_free_location_spends_nothing_even_with_an_empty_wallet() {
+        let defs = [def(1, 0)];
+        assert_eq!(run(&defs, 1, 0, 0), (Ok(None), false));
+        assert_eq!(run(&defs, 1, 0, 500), (Ok(None), false));
+    }
+
+    // kills: `cost > 0` -> `<` / `==` for a priced location (gate would be skipped,
+    // letting an unaffordable heal through).
+    #[test]
+    fn a_priced_location_consults_the_wallet_and_rejects_when_broke() {
+        let defs = [def(1, 50)];
+        assert_eq!(run(&defs, 1, 0, 0), (Err(ESCROW_ERR.to_string()), true));
+    }
+
+    // kills: `cost > available` -> `>=` (rejects the exact-fit), `<` (rejects every
+    // affordable heal), `==` (passes cost > available).
+    #[test]
+    fn exactly_the_available_balance_is_affordable_one_more_is_not() {
+        let defs = [def(1, 50)];
+        assert_eq!(run(&defs, 1, 50, 0), (Ok(Some(50)), true));
+        assert_eq!(run(&defs, 1, 49, 0), (Err(ESCROW_ERR.to_string()), true));
+        assert_eq!(run(&defs, 1, 51, 0), (Ok(Some(50)), true));
+    }
+
+    // Escrowed currency is not spendable: available = balance - escrowed.
+    // kills: dropping/ignoring the escrow term (balance 100, escrow 60 => 40 free).
+    #[test]
+    fn escrowed_currency_reduces_what_is_available() {
+        let defs = [def(1, 50)];
+        assert_eq!(run(&defs, 1, 100, 50), (Ok(Some(50)), true));
+        assert_eq!(run(&defs, 1, 100, 51), (Err(ESCROW_ERR.to_string()), true));
+    }
+
+    // An escrow larger than the balance saturates to 0 available (no underflow
+    // wrap that would make everything affordable).
+    #[test]
+    fn escrow_exceeding_balance_leaves_nothing_available() {
+        let defs = [def(1, 1)];
+        assert_eq!(run(&defs, 1, 10, 25), (Err(ESCROW_ERR.to_string()), true));
+    }
+}

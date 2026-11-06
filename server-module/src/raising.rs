@@ -277,6 +277,35 @@ pub(crate) fn evaluate_heal(
     Ok(())
 }
 
+/// Pure currency-cost seam for `heal_party` (testable without a DB).
+///
+/// Looks `location_id` up in `defs` and returns `Ok(Some(cost))` when it charges
+/// currency (`cost_currency > 0`), `Ok(None)` when the location is unknown or free.
+/// `read_balance_and_escrow` yields `(wallet balance, currency escrowed in the
+/// caller's open trades)`; it is invoked ONLY for a priced location, so a free
+/// heal performs no wallet/escrow reads. Rejects with the trade-escrow error when
+/// `cost` exceeds the unescrowed balance (`balance - escrowed`, saturating);
+/// `cost == available` is allowed.
+pub(crate) fn evaluate_heal_currency(
+    defs: &[game_core::HealLocationDef],
+    location_id: u32,
+    read_balance_and_escrow: impl FnOnce() -> (u64, u64),
+) -> Result<Option<u64>, String> {
+    let cost = defs
+        .iter()
+        .find(|d| d.location_id == location_id)
+        .map(|d| d.cost_currency)
+        .unwrap_or(0);
+    if cost > 0 {
+        let (balance, escrowed) = read_balance_and_escrow();
+        if cost > saturating_sub_u64(balance, escrowed) {
+            return Err("currency is in an active trade".to_string());
+        }
+        return Ok(Some(cost));
+    }
+    Ok(None)
+}
+
 /// Restore all party monsters to full HP at a heal location.
 /// Reject-never-burns: all checks run BEFORE the first DB write.
 /// In-battle + cooldown + zone checked. Cost consumed before heal.
@@ -322,15 +351,13 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     evaluate_heal(last_heal, now, loc.cooldown_ms)?;
 
     // Step 6b: currency cost. Cost from the process-wide
-    // heal-location cache — no per-call RON re-parse; 0 means free.
-    let currency_cost = crate::content_cache::cached_heal_locations()
-        .map_err(|e| format!("heal_party: cached_heal_locations: {e}"))?
-        .iter()
-        .find(|d| d.location_id == location_id)
-        .map(|d| d.cost_currency)
-        .unwrap_or(0);
-    if currency_cost > 0 {
-        // Trade escrow guard: reject if currency_cost > available.
+    // heal-location cache — no per-call RON re-parse; a free location spends nothing.
+    // The decision (incl. the trade escrow guard) is the pure seam
+    // `evaluate_heal_currency`; the wallet/escrow reads stay lazy (only for a priced
+    // location) and the spend is the first write, after every rejection.
+    let defs = crate::content_cache::cached_heal_locations()
+        .map_err(|e| format!("heal_party: cached_heal_locations: {e}"))?;
+    if let Some(currency_cost) = evaluate_heal_currency(defs, location_id, || {
         let escrowed = escrowed_currency_amount(
             ctx.db
                 .trade_offer()
@@ -339,11 +366,8 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
                 .chain(ctx.db.trade_offer().counterparty().filter(me)),
             me,
         );
-        let balance = wallet_balance(ctx, me);
-        let available = saturating_sub_u64(balance, escrowed);
-        if currency_cost > available {
-            return Err("currency is in an active trade".to_string());
-        }
+        (wallet_balance(ctx, me), escrowed)
+    })? {
         spend_currency(ctx, me, currency_cost)?;
     }
 
