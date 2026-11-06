@@ -113,7 +113,7 @@ import {
   type TacticsTuning,
 } from './tactics/wasm';
 import { t } from './ui/a11yCopy';
-import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
+import { challengeLayout, sheetLayout, sizeOfRow } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
   armReseed,
@@ -138,6 +138,7 @@ import {
   battleRefused,
   battleRenderer,
   continuedBattleId,
+  countdownDeadline,
   hideOtherBattleViews,
   isBareBattle,
   outcomeOnTop,
@@ -265,7 +266,7 @@ import {
   privacyStep,
 } from './ui/privacyModel';
 import type { PrivacyView, PrivacyViewHandlers } from './ui/privacyView';
-import { buildPvpChallengeViewModel } from './ui/pvpModel';
+import { buildPvpChallengeViewModel, challengeSizes, consciousPartyIds } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
 import type { QuestLogView } from './ui/questLogView';
@@ -1431,7 +1432,8 @@ function runInteract(action: InteractAction): void {
       }
       break;
     case 'challenge':
-      void dispatch({ kind: 'challenge', targetIdentity: action.playerIdentity });
+      // bt-15 (BT15.1): a challenge reaches `dispatch` only as a SIZED Command from the confirm's
+      // size row (worldScreen.ts); the bare action runs nothing, so no path sends an unsized one.
       break;
   }
 }
@@ -1472,6 +1474,9 @@ const requestLine = (n: RequestNotice): string =>
 const worldPort: WorldPort = {
   candidates: worldCandidates,
   run: runInteract,
+  // bt-15 (BT15.1): the party sizes a Challenge confirm offers, largest first — over the eligible
+  // party (conscious, untraded, slot order), read live at every press.
+  challengeSizes: () => challengeSizes(eligibleChallengeIds().length),
   notices: {
     notices: () => buildNotices(noticeInput()),
     pending: livePending,
@@ -1504,9 +1509,11 @@ function interactVerb(action: InteractAction): string {
   }
 }
 
-/** A Challenge confirm row's word (`confirmLayout`'s keys), each a literal catalog key. */
-function confirmRowLabel(key: string): string {
-  return key === 'yes' ? i18nT('prompt.yes') : i18nT('prompt.no');
+/** A Challenge confirm row's word (bt-15, BT15.1): a size row is `N vs N`, the last row is No —
+ *  each a literal catalog key (the catalog parity scan). */
+function sizeRowLabel(key: string): string {
+  const n = sizeOfRow(key);
+  return n === null ? i18nT('prompt.no') : tf('interact.challenge.size', { n });
 }
 
 /** A request sheet row's word (ctl-13), each a literal catalog key (the catalog parity scan). */
@@ -1706,6 +1713,26 @@ const ownPartyIds = (): bigint[] =>
     .ownMonsters(identity)
     .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
     .map((m) => m.monsterId);
+
+/** The own monsters in the player's open trade, either side of it: neither offered to a deploy nor
+ *  committed to a challenge (the server refuses a traded monster at both). */
+function tradedIds(): ReadonlySet<bigint> {
+  const offer = store.ownTradeOffer(identity);
+  return new Set<bigint>([
+    ...(offer?.initiatorMonsterIds ?? []),
+    ...(offer?.counterpartyMonsterIds ?? []),
+  ]);
+}
+/** bt-15 (BT15.1): the monsters a challenge may commit — party-slotted, conscious and untraded, in
+ *  slot order (`consciousPartyIds`); the pick sends the first N of them. */
+const eligibleChallengeIds = (): bigint[] =>
+  consciousPartyIds(store.ownMonsters(identity), tradedIds(), PARTY_SLOT_NONE);
+/** bt-15 (BT15.1): the own `battle_deploy` row(s) of `battleId` are all locked — this side has
+ *  deployed and waits for the other side's lock (a Practice battle stages two own rows in turn). */
+function ownDeployLocked(battleId: bigint): boolean {
+  const mine = store.battleDeploys(battleId).filter((d) => d.owner === identity);
+  return mine.length > 0 && mine.every((d) => d.locked);
+}
 
 /** C5: a REJECTED answer changed no server row — the request is still Pending, so the optimistic
  *  `answeredRequests` key is released and the banner, badges and Y answer it again. Handed to the
@@ -1910,13 +1937,17 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       });
     }
     case 'challenge': {
-      // Party ids are read inside the closure, at send time.
-      const target = command.targetIdentity;
-      return sendGuarded('pvp-challenge', () =>
-        conn
-          ?.live()
-          ?.reducers.challengePvp({ target: new Identity(target), partyIds: ownPartyIds() }),
-      );
+      // bt-15 (BT15.1): the committed list is the first `partySize` ELIGIBLE monsters (party-slotted,
+      // conscious, untraded, slot order), read inside the closure AT SEND TIME; the server derives
+      // `format` from its length. The sheet already re-validated the size at A (actionSheetModel.ts);
+      // this re-check is belt and braces for the closure: fewer eligible than picked sends nothing —
+      // never a shorter list than the pick the player confirmed.
+      const { targetIdentity: target, partySize } = command;
+      return sendGuarded('pvp-challenge', () => {
+        const partyIds = eligibleChallengeIds().slice(0, partySize);
+        if (partyIds.length < partySize) return undefined;
+        return conn?.live()?.reducers.challengePvp({ target: new Identity(target), partyIds });
+      });
     }
     case 'acceptChallenge': {
       const { challengeId } = command;
@@ -3225,7 +3256,10 @@ function mySideOf(battleId: bigint): RuleSide {
 function buildDeployPanel(
   battle: {
     readonly battleId: bigint;
+    readonly playerIdentity: string;
+    readonly opponentIdentity: string;
     readonly partyMonsterIds: readonly bigint[];
+    readonly opponentMonsterIds: readonly bigint[];
     readonly sideB: {
       readonly team: readonly { readonly speciesId: number; readonly level: number }[];
     };
@@ -3234,14 +3268,19 @@ function buildDeployPanel(
 ): { readonly kind: 'deploy'; readonly view: DeployPanel; readonly vm: DeployVM } | null {
   if (battleMount === undefined) return null;
   try {
-    const slotCount = Math.min(tuningOf().max_pack, mapFactsOf(row.mapId).spawns);
-    const offer = store.ownTradeOffer(identity);
-    const traded = new Set<bigint>([
-      ...(offer?.initiatorMonsterIds ?? []),
-      ...(offer?.counterpartyMonsterIds ?? []),
-    ]);
+    const traded = tradedIds();
     const own = new Map(store.ownMonsters(identity).map((m) => [m.monsterId, m] as const));
-    const party = battle.partyMonsterIds.flatMap((id) => {
+    // bt-15 (BT15.1): the list this panel stages. The own-perspective anchor's `partyMonsterIds` is
+    // the player's side — except in PRACTICE (one owner, both sides, the raw row), where the server
+    // stages the first UNLOCKED own `battle_deploy` row (tactics.rs `stage_pvp`): side B's list is
+    // the raw row's `opponentMonsterIds` once side A has locked.
+    const practice = battle.playerIdentity === battle.opponentIdentity;
+    const staging = practice
+      ? (store.battleDeploys(row.battleId).find((d) => d.owner === identity && !d.locked)?.side ??
+        'A')
+      : 'A';
+    const list = staging === 'B' ? battle.opponentMonsterIds : battle.partyMonsterIds;
+    const party = list.flatMap((id) => {
       const m = own.get(id);
       if (m === undefined || traded.has(id)) return [];
       const row = {
@@ -3253,18 +3292,29 @@ function buildDeployPanel(
       };
       return [row];
     });
-    const vm = deployVM({
+    const base = {
       battleId: battle.battleId,
       party,
       remembered: store.ownFormation(identity)?.monsterIds ?? [],
-      slotCount,
-      // The pack (bt-12 B): the server seats every wild in the anchor's side B at the start.
-      wilds: battle.sideB.team.map((w) => ({
-        speciesId: w.speciesId,
-        name: store.species(w.speciesId)?.name ?? `#${w.speciesId}`,
-        level: w.level,
-      })),
-    });
+    };
+    // bt-15 (BT15.1): a PvP / Practice side deploys `pvpDeployCount(format, conscious)` of its OWN
+    // list and follows its own `battle_deploy.locked`; the anchor's side B is the OPPONENT's roster
+    // there (R-bt-14-ROSTERREVEAL) and is read only as a wild pack.
+    const vm = deployVM(
+      shellKind(row.kind) === 'pvp'
+        ? { mode: 'pvp', ...base, format: row.format, locked: ownDeployLocked(row.battleId) }
+        : {
+            mode: 'wild',
+            ...base,
+            slotCount: Math.min(tuningOf().max_pack, mapFactsOf(row.mapId).spawns),
+            // The pack (bt-12 B): the server seats every wild in the anchor's side B at the start.
+            wilds: battle.sideB.team.map((w) => ({
+              speciesId: w.speciesId,
+              name: store.species(w.speciesId)?.name ?? `#${w.speciesId}`,
+              level: w.level,
+            })),
+          },
+    );
     deployPanel ??= new DeployPanel(battleMount, {
       onDeploy: (battleId, picks) => dispatch({ kind: 'deployUnits', battleId, picks }),
     });
@@ -3486,13 +3536,17 @@ function pumpStillThere(wallNowMs: number): string | null {
         ? deployPanel
         : undefined;
   if (shown === null || view === undefined) return null;
-  const deadline =
-    shown.kind === 'Wild'
-      ? (store.battleClocks(shown.battleId).find((c) => c.player === identity)?.deadlineMs ?? null)
-      : null;
+  const own =
+    store.battleClocks(shown.battleId).find((c) => c.player === identity)?.deadlineMs ?? null;
+  // bt-15 (BT15.1): a wild battle's own deadline always; a PvP / Practice battle's only while the
+  // deploy panel shows (the 45 s deploy window), never an Active turn's.
+  const deadline = countdownDeadline(shown.kind, view === deployPanel, own);
   const seconds = stillThereSeconds(deadline, wallNowMs);
   view.setCountdown(seconds);
-  if (seconds === null || deadline === null || stillThereAnnouncedFor === deadline) return null;
+  // The live-region announcement stays the WILD "Still there?" nudge: a PvP deploy window paints
+  // its countdown and announces nothing (bt-15 interim; the continuation words it as a deploy one).
+  if (shown.kind !== 'Wild' || seconds === null || deadline === null) return null;
+  if (stillThereAnnouncedFor === deadline) return null;
   stillThereAnnouncedFor = deadline;
   return stillThere(seconds);
 }
@@ -4134,6 +4188,23 @@ const mrPvpHook = {
   allPlayers(): Array<{ identity: string; name: string }> {
     return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
   },
+  // bt-15 (BT15.4): every `battle_challenge` row as the SDK cache holds it, with the format the
+  // server derived from the committed party's length — the e2e's oracle for the party-size pick.
+  challengeFormats(): Array<{
+    challengeId: string;
+    challenger: string;
+    target: string;
+    format: number;
+  }> {
+    const live = conn?.live();
+    if (live === undefined) return [];
+    return [...live.db.battleChallenge.iter()].map((c) => ({
+      challengeId: c.challengeId.toString(),
+      challenger: c.challenger.toHexString(),
+      target: c.target.toHexString(),
+      format: c.format,
+    }));
+  },
   // BOTH-SIDES battle read: store.battle(id) hits the by-id map directly and exposes BOTH
   // sides' internals to a test driver — which the production path deliberately never does
   // (it reads only the local player's own row, via the either-role accessors, and sees the
@@ -4169,13 +4240,23 @@ const mrPvpHook = {
 
 // bt-12 (BT12.5): the tactical e2e's READ-ONLY hook — the local player's tactical battle as the store
 // holds it (the rows the player's own views carry: never a seed, never the opponent's plan) and the
-// own monsters' HP. No
-// reducer reaches through it; every battle action in the e2e is a virtual button. Fingerprinted by
+// own monsters' HP. No reducer reaches through it; every battle action in the e2e is a virtual
+// button. bt-15 (BT15.4) adds the secrecy oracles: the raw SDK-cache rows of the two owner-only
+// views, a row-callback probe over them, the transcript's tags and an ad-hoc subscription probe
+// (the server's refusal of a private table) — reads and observers only. Fingerprinted by
 // scripts/verify-build-hooks.mjs beside the other three.
+/** bt-15 (BT15.4): the e2e's row probe — every myBattleDeploy / myBattleQueue callback since arming. */
+let rowProbeState: {
+  readonly counts: { deploy: number; queue: number };
+  readonly off: () => void;
+} | null = null;
 const mrTacticsHook = {
   battle(): null | {
     battleId: string;
     phase: string;
+    kind: string;
+    format: number;
+    strikes: { A: number; B: number };
     round: number;
     turnIdx: number;
     initiative: number[];
@@ -4198,10 +4279,16 @@ const mrTacticsHook = {
     const raw = store.latestPlayerBattle(identity);
     const row = raw === undefined ? undefined : store.tacticalBattle(raw.battleId);
     if (row === undefined) return null;
-    const clock = store.battleClocks(row.battleId).find((c) => c.player === identity);
+    const clocks = store.battleClocks(row.battleId);
+    const clock = clocks.find((c) => c.player === identity);
+    const strikesOf = (side: 'A' | 'B'): number =>
+      clocks.find((c) => c.side === side)?.autopassCount ?? 0;
     return {
       battleId: String(row.battleId),
       phase: row.phase,
+      kind: row.kind,
+      format: row.format,
+      strikes: { A: strikesOf('A'), B: strikesOf('B') },
       round: row.round,
       turnIdx: row.turnIdx,
       initiative: [...row.initiative],
@@ -4230,6 +4317,105 @@ const mrTacticsHook = {
         state: u.row.state,
       })),
     };
+  },
+  /** The raw SDK-cache rows of the two owner-only views (what the subscription delivered). */
+  secrecy(): {
+    me: string;
+    deploys: { owner: string; locked: boolean; picks: number }[];
+    queues: { owner: string; unitId: number }[];
+  } {
+    const live = conn?.live();
+    if (live === undefined) throw new Error('secrecy: no live connection');
+    return {
+      me: identity,
+      deploys: [...live.db.myBattleDeploy.iter()].map((d) => ({
+        owner: d.owner.toHexString(),
+        locked: d.locked,
+        picks: d.picks.length,
+      })),
+      queues: [...live.db.myBattleQueue.iter()].map((q) => ({
+        owner: q.owner.toHexString(),
+        unitId: q.unitId,
+      })),
+    };
+  },
+  /** Starts (or restarts) counting every insert / delete callback on the two owner-only views. */
+  armRowProbe(): void {
+    const live = conn?.live();
+    if (live === undefined) throw new Error('armRowProbe: no live connection');
+    rowProbeState?.off();
+    const counts = { deploy: 0, queue: 0 };
+    const deploy = (): void => {
+      counts.deploy += 1;
+    };
+    const queue = (): void => {
+      counts.queue += 1;
+    };
+    live.db.myBattleDeploy.onInsert(deploy);
+    live.db.myBattleDeploy.onDelete(deploy);
+    live.db.myBattleQueue.onInsert(queue);
+    live.db.myBattleQueue.onDelete(queue);
+    rowProbeState = {
+      counts,
+      off: () => {
+        live.db.myBattleDeploy.removeOnInsert(deploy);
+        live.db.myBattleDeploy.removeOnDelete(deploy);
+        live.db.myBattleQueue.removeOnInsert(queue);
+        live.db.myBattleQueue.removeOnDelete(queue);
+      },
+    };
+  },
+  rowProbe(): { deploy: number; queue: number } {
+    if (rowProbeState === null) throw new Error('rowProbe: not armed');
+    return { ...rowProbeState.counts };
+  },
+  /** The transcript's tags in order: each event's unit (when it names one) and, for BattleEnd, how. */
+  eventTags(): { tag: string; unit: number | null; how: string | null }[] {
+    const raw = store.latestPlayerBattle(identity);
+    if (raw === undefined) return [];
+    return store.battleEvents(raw.battleId).map((e) => {
+      const p = e.payload as { tag: string; value?: unknown };
+      const v = (typeof p.value === 'object' && p.value !== null ? p.value : {}) as {
+        unit?: unknown;
+        how?: { tag?: unknown };
+      };
+      return {
+        tag: p.tag,
+        unit: typeof v.unit === 'number' ? v.unit : null,
+        how: p.tag === 'BattleEnd' && typeof v.how?.tag === 'string' ? v.how.tag : null,
+      };
+    });
+  },
+  /** An ad-hoc subscription: 'applied' when the server accepts `sql`, 'error' when it refuses it
+   *  (a private table). Settles on whichever fires first; nothing answers in 10 s → rejects. */
+  probeSubscribe(sql: string): Promise<'applied' | 'error'> {
+    const live = conn?.live();
+    if (live === undefined) return Promise.reject(new Error('probeSubscribe: no live connection'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('probeSubscribe: no answer in 10 s')),
+        10_000,
+      );
+      try {
+        const handle = live
+          .subscriptionBuilder()
+          .onApplied(() => {
+            clearTimeout(timer);
+            // An applied probe (the positive control) is dropped again: the probe page keeps no
+            // standing subscription of its own.
+            handle.unsubscribe();
+            resolve('applied');
+          })
+          .onError(() => {
+            clearTimeout(timer);
+            resolve('error');
+          })
+          .subscribe([sql]);
+      } catch {
+        clearTimeout(timer);
+        resolve('error');
+      }
+    });
   },
   ownMonsters(): { monsterId: string; currentHp: number; maxHp: number; partySlot: number }[] {
     return store.ownMonsters(identity).map((m) => ({
@@ -4970,7 +5156,7 @@ async function main(): Promise<void> {
         request !== null
           ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
           : sheet !== null
-            ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}`
+            ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
             : chip !== null
               ? interactChipText(chip)
               : null;
@@ -4998,15 +5184,16 @@ async function main(): Promise<void> {
             interactSheetEl.setAttribute('aria-label', heading);
             interactSheetEl.style.display = '';
           } else if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
-            // The Challenge confirm (ctl-10b): the question, then Yes / No as the listbox.
+            // The Challenge confirm (ctl-10b; bt-15 BT15.1): the question, then the party-size rows
+            // (largest first) and No as the listbox, each word a literal catalog key.
             const question = tf('interact.confirm.challenge', {
               name: interactName(asked.candidate),
             });
             interactChipTextEl.textContent = question;
-            renderNav(interactSheetEl, confirmLayout, sheet.confirm.nav, {
+            renderNav(interactSheetEl, challengeLayout(sheet.confirm.sizes), sheet.confirm.nav, {
               frame: 'interact',
               fill: (el, item) => {
-                el.textContent = confirmRowLabel(item.key);
+                el.textContent = sizeRowLabel(item.key);
               },
             });
             interactSheetEl.setAttribute('aria-label', question);

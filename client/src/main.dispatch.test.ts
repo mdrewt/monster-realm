@@ -6408,3 +6408,289 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     }
   });
 });
+
+// --- bt-15 increment A (BT15.1): the sized challenge and the PvP deploy panel, booted -------------
+//
+// SOURCE OF TRUTH: spec §bt-15 BT15.1 (the challenger picks 1-3 party monsters; the PvP Deploying
+// panel requires exactly `format` conscious picks, locks on confirm and shows the 45 s countdown);
+// plan memory/projects/monster-realm-bt-15-plan.md §2 (BT15.1a/b) + §6 (H1 the lock is the server's
+// own `battle_deploy.locked`; M2 the dispatch re-reads the party at send time and aborts silently
+// when too few are eligible; M4 the slot count is the CONSCIOUS count) and the tester brief's API
+// freeze (`challenge` Command `{ targetIdentity, partySize }`; `buildDeployPanel`'s pvp branch never
+// reads `battle.sideB`; `countdownDeadline` drives the pump; the PvP countdown announces nothing).
+//
+// The challenge Command reaches dispatch through the REAL router from a stand-in menu adapter
+// (`commandAdapter`, ctl-7c's idiom), so the store can change between the Command being built and
+// its send. Keys: A Enter, Start KeyM, Down ArrowDown. RED REASON: the `challenge` arm sends
+// `ownPartyIds()` (every party slot, store order, fainted and traded included) and ignores
+// `partySize`; the deploy panel's pvp branch does not exist (a Pvp Deploying battle builds the wild
+// panel: the opponent's roster as the pack, `min(max_pack, spawns)` slots, no lock, no countdown).
+
+/** An open trade offer the booted player initiated, holding `ids` (the deploy-X case's shape). */
+function bt15Offer(tradeId: bigint, ids: readonly bigint[]): StoreTradeOffer {
+  return {
+    tradeId,
+    initiator: H.identity,
+    counterparty: OTHER_IDENTITY,
+    initiatorMonsterIds: [...ids],
+    initiatorItems: [],
+    initiatorCurrency: 0n,
+    counterpartyMonsterIds: [],
+    counterpartyItems: [],
+    counterpartyCurrency: 0n,
+    initiatorCards: [],
+    counterpartyCards: [],
+    status: 'Pending',
+    createdAtMs: 1_000n,
+  };
+}
+
+/** The challengePvp sends so far, as reducer argument objects. */
+const bt15Challenges = (): unknown[] =>
+  H.calls.filter((c) => c.name === 'challengePvp').map((c) => c.args);
+
+describe('bt-15: the sized challenge and the PvP deploy panel (BT15.1)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('a sized challenge Command sends challengePvp with exactly the first partySize conscious, untraded party monsters in slot order, read at SEND time (a monster fainted or a trade withdrawn after the Command was built counts), and sends nothing at all when fewer are eligible than the size [BT15-1]', async () => {
+    // WRONG IMPL KILLED: `ownPartyIds()` as today (every party slot: the fainted and the in-trade
+    // monsters go to the server, which refuses the challenge or seats a fainted lead); the slice
+    // taken BEFORE the filter (`ownPartyIds().slice(0, n)` then filtered: size 2 sends one id);
+    // store insertion order instead of slot order (the rows are inserted 2, 255, 0, 4, 3, 5, 1);
+    // `partySize` ignored (always the whole eligible party); the ids captured when the pick opened
+    // or the Command was built instead of inside the send closure (the monster fainted in between
+    // is sent); a short party padded or sent anyway (eligible 2 < size 3 must send NOTHING and call
+    // no other reducer: the server would refuse or rate an asymmetric battle).
+    await bootReady();
+    server(1000);
+    const [P0, P1, P2, P3] = [2n ** 60n + 1n, 2n ** 60n + 3n, 2n ** 60n + 5n, 2n ** 60n + 7n];
+    const BOXED = 2n ** 60n + 9n;
+    const FAINT = 2n ** 60n + 11n;
+    const TRADED = 2n ** 60n + 13n;
+    const own = (id: bigint, slot: number, hp = 20): StoreMonsterPub => ({
+      ...monster(id, slot),
+      currentHp: hp,
+    });
+    for (const m of [
+      own(P2, 2),
+      own(BOXED, 255),
+      own(P0, 0),
+      own(FAINT, 4, 0),
+      own(P3, 3),
+      own(TRADED, 5),
+      own(P1, 1),
+    ]) {
+      opts.store.upsertMonster(m);
+    }
+    opts.store.upsertTradeOffer(bt15Offer(2n ** 60n + 97n, [TRADED]));
+    server(1010);
+    const target = new Identity(OTHER_IDENTITY);
+    const issue: { command: unknown } = {
+      command: { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize: 2 },
+    };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1020);
+
+    H.calls = [];
+    await pageUp(1100);
+    expect(H.calls, 'size 2: the first two conscious, untraded ids in slot order').toEqual([
+      { name: 'challengePvp', args: { target, partyIds: [P0, P1] } },
+    ]);
+
+    issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize: 3 };
+    H.calls = [];
+    await pageUp(1200);
+    expect(bt15Challenges(), 'size 3: slots 0, 1, 2').toEqual([{ target, partyIds: [P0, P1, P2] }]);
+    issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize: 1 };
+    H.calls = [];
+    await pageUp(1300);
+    expect(bt15Challenges(), 'size 1: the slot-0 monster alone').toEqual([
+      { target, partyIds: [P0] },
+    ]);
+
+    // The Command is built (size 3), THEN P1 faints: the send reads the party as it is now.
+    issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize: 3 };
+    opts.store.upsertMonster(own(P1, 1, 0));
+    server(1350);
+    H.calls = [];
+    await pageUp(1400);
+    expect(bt15Challenges(), 'the fainted P1 is skipped at send time: slots 0, 2, 3').toEqual([
+      { target, partyIds: [P0, P2, P3] },
+    ]);
+
+    // The trade is withdrawn: TRADED (slot 5) is eligible again at send time.
+    opts.store.upsertMonster(own(P2, 2, 0));
+    opts.store.removeTradeOffer(2n ** 60n + 97n);
+    server(1450);
+    H.calls = [];
+    await pageUp(1500);
+    expect(bt15Challenges(), 'P1 and P2 fainted, the trade gone: slots 0, 3, 5').toEqual([
+      { target, partyIds: [P0, P3, TRADED] },
+    ]);
+
+    // Too few eligible at send time: P3 faints, two remain for a size-3 Command — nothing is sent.
+    opts.store.upsertMonster(own(P3, 3, 0));
+    server(1550);
+    H.calls = [];
+    await pageUp(1600);
+    expect(H.calls, 'eligible 2 < size 3: no challengePvp and no other reducer').toEqual([]);
+    issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize: 2 };
+    H.calls = [];
+    await pageUp(1700);
+    expect(bt15Challenges(), 'control: size 2 still sends the two left').toEqual([
+      { target, partyIds: [P0, TRADED] },
+    ]);
+  });
+
+  it('a Deploying PvP battle shows the deploy panel with pvpDeployCount(format, conscious) slots and NO opponent roster, A sends exactly those picks, the own locked my_battle_deploy row (and not the opponent`s) disables every row with the sending line, and the countdown paints 44 s on the panel with nothing announced [BT15-1]', async () => {
+    // WRONG IMPL KILLED: the wild branch run for a PvP battle (`battle.sideB.team` — the OPPONENT's
+    // roster, R-bt-14-ROSTERREVEAL — painted as the pack: the species line "#977" shows); the slot
+    // count from `min(max_pack, spawns)` (three slots for a format-2 battle: the server refuses a
+    // third pick) or from the party length (a dead slot for the fainted member); the fainted member
+    // offered; no lock reflection (a second A sends deploy_units again, "already locked"); a lock
+    // read from ANY locked row (the opponent locking first would freeze this panel); the bt-12
+    // Wild-only countdown (no 45 s deploy countdown in PvP); a PvP countdown that is announced on the
+    // live region (interim: the PvP deploy countdown announces nothing, plan §2).
+    await bootReady();
+    server(1000);
+    await bt12Legacy();
+    const wall = { t: 1_750_000_000_000 };
+    vi.spyOn(Date, 'now').mockImplementation(() => wall.t);
+    let t = 1000;
+    const tick = (wallMs: number): void => {
+      wall.t = wallMs;
+      t += 50;
+      frame(t);
+    };
+    const W0 = wall.t;
+    const live = (): string => document.getElementById('a11y-live')?.textContent ?? '';
+    const line = (s: number): string => i18n.tf('tactics.clock.stillThere', { s });
+
+    const B = 2n ** 60n + 111n;
+    const [P1, P2, P3] = [2n ** 60n + 113n, 2n ** 60n + 115n, 2n ** 60n + 117n];
+    const [O1, O2] = [2n ** 60n + 119n, 2n ** 60n + 121n];
+    opts.store.upsertMonster(bt12Monster(P1, 0));
+    opts.store.upsertMonster(bt12Monster(P2, 1));
+    opts.store.upsertMonster(bt12Monster(P3, 2, 0));
+    const OPP_SPECIES = 977;
+    opts.store.upsertBattle({
+      ...bt12bAnchor(B, 'Ongoing', [P1, P2, P3], H.identity, OTHER_IDENTITY),
+      opponentMonsterIds: [O1, O2],
+      sideB: {
+        active: 0,
+        team: [
+          { ...BATTLE_MONSTER, speciesId: OPP_SPECIES, level: 41 },
+          { ...BATTLE_MONSTER, speciesId: OPP_SPECIES + 2, level: 43 },
+        ],
+      },
+    });
+    opts.store.reconcileTacticalBattlesFromView([
+      {
+        ...bt12bTactical(B, 'Pvp', {
+          initiative: [],
+          turnIdx: 0,
+          turnState: { kind: 'NotActive' },
+          tiePrioritySide: 'A',
+          round: 0,
+          phase: 'Deploying',
+        }),
+        format: 2,
+      },
+    ]);
+    opts.store.reconcileBattleClocksFromView([bt12bClock(B, BigInt(W0 + 44_000), null)]);
+    t += 50;
+    server(t);
+    const deploy = bt12Root('tactics-deploy');
+    expect(deploy !== null && bt12Displayed(deploy), 'the deploy panel is shown').toBe(true);
+    if (deploy === null) return;
+    const slotNames = (): (string | null)[] =>
+      [...deploy.querySelectorAll('.tactics-deploy-formation .tactics-deploy-slot')].map(
+        (li) => li.querySelector('.tactics-deploy-name')?.textContent ?? null,
+      );
+    expect(slotNames(), 'format 2, two conscious: two slots, the fainted P3 never').toEqual([
+      `m${P1}`,
+      `m${P2}`,
+    ]);
+    expect(deploy.querySelector('.tactics-deploy-wilds'), 'no opponent roster list').toBeNull();
+    expect(
+      deploy.textContent?.includes(`#${OPP_SPECIES}`),
+      'no text names the opponent`s species',
+    ).toBe(false);
+    expect(deploy.textContent?.includes(`#${OPP_SPECIES + 2}`)).toBe(false);
+
+    // The 45 s deploy countdown: 44 s out, painted on the shown deploy root, announced nowhere.
+    tick(W0);
+    const countdowns = (): string[] =>
+      [...document.querySelectorAll('.tactics-countdown')].map((n) =>
+        deploy.contains(n) ? (n.textContent ?? '') : 'OUTSIDE',
+      );
+    expect(countdowns(), 'the countdown shows 44 on the deploy panel').toEqual([line(44)]);
+    for (let i = 1; i <= 20; i += 1) tick(W0 + i * 100);
+    expect(countdowns(), 'two seconds of frames on: 42').toEqual([line(42)]);
+    expect(live().includes(line(44)), 'the PvP deploy countdown is not announced').toBe(false);
+    expect(live().includes(line(43)) || live().includes(line(42)), 'at any value').toBe(false);
+
+    // The OPPONENT's locked row does not lock this panel: A sends the two picks once.
+    const deployRow = (owner: string, locked: boolean, deployId: bigint) => ({
+      deployId,
+      battleId: B,
+      owner,
+      side: owner === H.identity ? ('A' as const) : ('B' as const),
+      picks: owner === H.identity ? [bt12Pick(P1, 0), bt12Pick(P2, 1)] : [bt12Pick(O1, 0)],
+      locked,
+    });
+    opts.store.reconcileBattleDeploysFromView([deployRow(OTHER_IDENTITY, true, 7n)]);
+    t += 50;
+    server(t);
+    const disabled = (): number =>
+      deploy.querySelectorAll('.tactics-menu [role="option"][aria-disabled="true"]').length;
+    expect(disabled(), 'the opponent`s lock leaves every row enabled').toBe(0);
+    H.calls = [];
+    t += 50;
+    press('Enter', t);
+    await flush();
+    expect(bt12Sends(), 'A sends exactly the two picks').toEqual([
+      { battleId: B, picks: [bt12Pick(P1, 0), bt12Pick(P2, 1)] },
+    ]);
+
+    // The server locks the OWN row: every row refuses, the sending line shows, A sends nothing.
+    opts.store.reconcileBattleDeploysFromView([
+      deployRow(OTHER_IDENTITY, true, 7n),
+      deployRow(H.identity, true, 9n),
+    ]);
+    t += 50;
+    server(t);
+    const rows = deploy.querySelectorAll('.tactics-menu [role="option"]').length;
+    expect(rows, 'fixture: the confirm rows').toBe(2);
+    expect(disabled(), 'the own lock disables every row').toBe(rows);
+    expect(
+      deploy.querySelector('p.tactics-deploy-status')?.textContent,
+      'the sending line (interim wording)',
+    ).toBe(i18n.t('tactics.deploy.sending'));
+    t += 50;
+    press('Enter', t);
+    await flush();
+    expect(bt12Sends(), 'a locked panel sends nothing more').toHaveLength(1);
+    t += 50;
+    press('ArrowDown', t);
+    expect(
+      deploy
+        .querySelector('.tactics-menu [role="option"][aria-selected="true"]')
+        ?.getAttribute('data-row'),
+      'the cursor still moves (D-pad reachable)',
+    ).toBe('edit');
+  });
+});

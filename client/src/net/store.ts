@@ -1531,6 +1531,13 @@ export class AuthoritativeStore {
       .filter((c) => c.battleId === battleId)
       .sort((a, b) => (a.clockId < b.clockId ? -1 : a.clockId > b.clockId ? 1 : 0));
   }
+  /** bt-15 (BT15.1): the owner-only deploy staging rows of `battleId`, ascending deployId — the
+   *  own `locked` flag the PvP deploy panel reflects (a Practice battle has two own rows). */
+  battleDeploys(battleId: bigint): readonly StoreBattleDeploy[] {
+    return [...this.#battleDeploys.values()]
+      .filter((d) => d.battleId === battleId)
+      .sort((a, b) => (a.deployId < b.deployId ? -1 : a.deployId > b.deployId ? 1 : 0));
+  }
   /** Ascending seq, then eventId. */
   battleEvents(battleId: bigint): readonly StoreBattleEvent[] {
     return [...this.#battleEvents.values()]

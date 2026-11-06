@@ -430,19 +430,26 @@ const otherPlayerName = (page: Page, named?: string): Promise<string> =>
     return only.name;
   }, named ?? null);
 
+/** The size rows of the Challenge pick (bt-15, BT15.1): `n vs n` for n = sizes[0] down to 1. */
+const sizeRowText = (n: number): string => `${n} vs ${n}`;
+
 /**
  * Starts a trade or a challenge the way a player does now (CTL10B.1): closes every open frame,
  * stands on the other player's tile (walking there only when `otherPage` is given and the two
  * stand apart), waits for the chip to read `[Enter] Choose…`, presses A, moves the picker cursor
  * to the row `<verb> — <name>` and presses A. A Trade opens the trade wizard on Offer with the
- * player pre-selected. A Challenge shows the Yes / No confirm; Yes is asserted selected, then A
- * on Yes sends it. `targetName` defaults to the one other player's name.
+ * player pre-selected. A Challenge shows the party-size pick (bt-15, named intentional change: was
+ * Yes / No): the rows are `N vs N`, …, `1 vs 1`, then `No`, the largest size selected; the helper
+ * Downs to the `size vs size` row (default: the first, the largest) and presses A, which sends it.
+ * `targetName` defaults to the one other player's name. The three pre-bt-15 callers pass no `size`
+ * and fight one-monster parties, so their pick is `1 vs 1`, `No` and A sends the first row.
  */
 export async function openFaceToFace(
   page: Page,
   verb: FaceVerb,
   targetName?: string,
   otherPage?: Page,
+  size?: number,
 ): Promise<void> {
   const label = `openFaceToFace(${verb})`;
   await closeAll(page);
@@ -498,15 +505,46 @@ export async function openFaceToFace(
   await pressButton(page, 'A');
 
   if (verb === 'Challenge') {
+    // The pick: `N vs N` … `1 vs 1` (descending, N = min(3, eligible)), then No, the first selected.
+    let pick: SheetRow[] = [];
     await expect
-      .poll(async () => (await readSheetRows(page)).map((r) => `${r.text}:${r.selected}`), {
-        message: `${label}: the confirm must show Yes (selected) and No`,
+      .poll(
+        async () => {
+          pick = await readSheetRows(page);
+          const texts = pick.map((r) => r.text);
+          const sizes = texts.length - 1;
+          if (sizes < 1 || sizes > 3 || texts[sizes] !== 'No') return `not the pick: ${texts}`;
+          const want = [...Array.from({ length: sizes }, (_, i) => sizeRowText(sizes - i)), 'No'];
+          return `${texts.join('|')}#${pick.findIndex((r) => r.selected)}` === `${want.join('|')}#0`
+            ? 'ok'
+            : `${texts.join('|')} selected ${pick.findIndex((r) => r.selected)}`;
+        },
+        {
+          message: `${label}: the size pick must show N vs N … 1 vs 1, No with the largest selected`,
+          timeout: 5_000,
+        },
+      )
+      .toBe('ok');
+    const at = size === undefined ? 0 : pick.findIndex((r) => r.text === sizeRowText(size));
+    if (at === -1) {
+      throw new Error(
+        `${label}: the pick offers no ${sizeRowText(size ?? 0)} row (rows: ${pick.map((r) => r.text)})`,
+      );
+    }
+    for (let i = 0; i < at; i++) await pressButton(page, 'Down');
+    await expect
+      .poll(async () => (await readSheetRows(page)).findIndex((r) => r.selected), {
+        message: `${label}: the pick cursor must reach row ${at}`,
         timeout: 5_000,
       })
-      .toEqual(['Yes:true', 'No:false']);
+      .toBe(at);
     await pressButton(page, 'A');
   }
 }
+
+/** The Challenge pick's rows as `text:selected`, read-only (bt-15 specs assert them directly). */
+export const readPickRows = async (page: Page): Promise<string[]> =>
+  (await readSheetRows(page)).map((r) => `${r.text}:${r.selected}`);
 
 /** How long a WANDERING NPC gets to reach the faced tile, per attempt (dialogue.spec and
  *  wallet-balance.spec talk to elder_oak from (6,3), facing (6,4)). qf-5 (#599) slowed
@@ -680,6 +718,11 @@ export interface TacticsSnap {
   owner: 'legacy' | 'deploy' | 'tactical' | 'results' | null;
   events: number;
   deadlineMs: string | null;
+  /** bt-15 (API freeze): the tactical row's kind and format, and each side's AutoPass strikes (the
+   *  clock rows' `autopassCount`). */
+  kind: 'Wild' | 'Pvp' | 'Practice';
+  format: number;
+  strikes: { A: number; B: number };
   units: {
     unitId: number;
     side: 'A' | 'B';
@@ -776,6 +819,75 @@ export async function dpadCursorTo(page: Page, to: Tile, maxPresses = 24): Promi
       .not.toBe(`${at.x},${at.y}`)
       .catch(() => undefined);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// bt-15 (BT15.1, BT15.4): read-only PvP secrecy probes over the DEV `__mrTactics` hook, and the
+// deploy confirm pressed by buttons. Nothing here calls a reducer (`armRowProbe` only starts the
+// page's own callback counter).
+// ---------------------------------------------------------------------------------------------
+
+/** `__mrTactics.secrecy()`: the raw own-scoped deploy / queue rows the SDK cache holds. */
+export interface Secrecy {
+  me: string;
+  deploys: { owner: string; locked: boolean; picks: number }[];
+  queues: { owner: string; unitId: number }[];
+  present: Record<string, boolean>;
+}
+/** One transcript entry of the shown battle: the payload tag, its unit (or null) and, for the
+ *  BattleEnd entry, the `how` tag. */
+export interface EventTag {
+  tag: string;
+  unit: number | null;
+  how: string | null;
+}
+type PvpProbeWindow = Window & {
+  __mrTactics?: {
+    secrecy(): Secrecy;
+    armRowProbe(): void;
+    rowProbe(): { deploy: number; queue: number };
+    eventTags(): EventTag[];
+  };
+};
+
+const tacticsHook = <T>(page: Page, what: string, read: string): Promise<T> =>
+  page.evaluate(
+    ({ what: w, read: r }) => {
+      const hook = (window as unknown as PvpProbeWindow).__mrTactics as
+        | Record<string, () => unknown>
+        | undefined;
+      const fn = hook?.[r];
+      if (typeof fn !== 'function') throw new Error(`${w}: __mrTactics.${r} is missing (DEV only)`);
+      return fn.call(hook) as never;
+    },
+    { what, read },
+  );
+
+export const readSecrecy = (page: Page): Promise<Secrecy> =>
+  tacticsHook<Secrecy>(page, 'readSecrecy', 'secrecy');
+export const armRowProbe = (page: Page): Promise<void> =>
+  tacticsHook<void>(page, 'armRowProbe', 'armRowProbe');
+export const readRowProbe = (page: Page): Promise<{ deploy: number; queue: number }> =>
+  tacticsHook<{ deploy: number; queue: number }>(page, 'readRowProbe', 'rowProbe');
+export const readEventTags = (page: Page): Promise<EventTag[]> =>
+  tacticsHook<EventTag[]>(page, 'readEventTags', 'eventTags');
+
+/** Presses the deploy confirm screen's Deploy by buttons: Up until the `deploy` row is selected
+ *  (bounded by the two rows), then A. Fails when the row is refused (`aria-disabled`). */
+export async function deployByButtons(page: Page, label: string): Promise<void> {
+  const row = page.locator(`${TACTICS.deploy} [data-row="deploy"]`);
+  await expect(row, `${label}: the Deploy row is painted`).toHaveCount(1, { timeout: 20_000 });
+  if ((await row.getAttribute('aria-disabled')) === 'true') {
+    throw new Error(`${label}: the Deploy row is refused (aria-disabled)`);
+  }
+  for (let presses = 0; presses < 3; presses += 1) {
+    if ((await row.getAttribute('aria-selected')) === 'true') break;
+    await pressButton(page, 'Up');
+  }
+  await expect(row, `${label}: the cursor is on Deploy`).toHaveAttribute('aria-selected', 'true', {
+    timeout: 2_000,
+  });
+  await pressButton(page, 'A');
 }
 
 /** Walk the open tactical menu's cursor to the row `key` with Down presses, bounded by the row

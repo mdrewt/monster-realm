@@ -126,3 +126,46 @@ export function buildPvpChallengeViewModel(
 
   return { incoming, outgoing, challengeablePlayers };
 }
+
+// --- bt-15 (BT15.1): the party-size pick -----------------------------------------------------------
+
+/** Mirror of server-module/src/pvp.rs `PVP_FORMAT_MAX` (R-bt-14-FORMATRULE stays open — a DISCLOSED
+ *  deviation from "rules out" until `pvp_deploy_count` / `challenge_format` / `PVP_FORMAT_MAX` move to
+ *  game-core behind a client-wasm export, a follow-up outside bt-15 increment A's touches; the server
+ *  validates every challenge). The server derives `battle_challenge.format = min(len, PVP_FORMAT_MAX)`
+ *  from the committed list's LENGTH, so the pick is the length of the list `challengePvp` sends. */
+export const PVP_FORMAT_MAX = 3;
+
+/** What the pick reads of an own monster row. */
+export interface PartyPickRow {
+  readonly monsterId: bigint;
+  readonly partySlot: number;
+  readonly currentHp: number;
+}
+
+/** The monsters a challenge may commit, in ASCENDING party-slot order (never the store's order):
+ *  party-slotted (`partySlot !== partySlotNone`), conscious (`currentHp > 0`) and not in `excluded`
+ *  (the player's open trade, either side of it — `challenge_pvp` refuses a traded monster).
+ *  NARROWER than the server's acceptance set on purpose (a DISCLOSED client rule, not a mirror):
+ *  `challenge_pvp` has no HP check, but a fainted monster committed to the list would raise the
+ *  format above what the side can field (`pvp_deploy_count` = min(format, conscious)), so it is
+ *  never offered; the server validates whatever is sent. */
+export function consciousPartyIds(
+  monsters: readonly PartyPickRow[],
+  excluded: ReadonlySet<bigint>,
+  partySlotNone: number,
+): bigint[] {
+  return monsters
+    .filter((m) => m.partySlot !== partySlotNone && m.currentHp > 0 && !excluded.has(m.monsterId))
+    .sort((a, b) => a.partySlot - b.partySlot)
+    .map((m) => m.monsterId);
+}
+
+/** The sizes the Challenge confirm offers, LARGEST FIRST (the first row is the default — "ranked is
+ *  3"): `[min(PVP_FORMAT_MAX, eligible), …, 1]`; empty when nothing is eligible. */
+export function challengeSizes(eligible: number): number[] {
+  const top = Math.min(PVP_FORMAT_MAX, Math.floor(eligible));
+  const out: number[] = [];
+  for (let n = top; n >= 1; n -= 1) out.push(n);
+  return out;
+}

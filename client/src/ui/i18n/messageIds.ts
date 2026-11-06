@@ -61,6 +61,7 @@ export type MessageId =
   | 'interact.verb.trade'
   | 'interact.verb.challenge'
   | 'interact.confirm.challenge'
+  | 'interact.challenge.size'
   | 'interact.healer'
   | 'key.enter'
   // key.* / controls.* : keycap names (input/glyphs.ts) and Options › Controls (ui/controlsModel.ts, ctl-12).
@@ -597,6 +598,7 @@ export interface MessageParams {
   readonly 'interact.choose': { readonly key: string };
   readonly 'interact.entry': { readonly verb: string; readonly name: string };
   readonly 'interact.confirm.challenge': { readonly name: string };
+  readonly 'interact.challenge.size': { readonly n: number };
   readonly 'key.numpad': { readonly key: string };
   readonly 'controls.capture.prompt': { readonly label: string };
   readonly 'controls.swapped': {

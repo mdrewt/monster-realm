@@ -87,6 +87,9 @@ export interface WorldPort {
   run(action: InteractAction): void;
   /** The world's notices (ctl-13): optional, so a port without them is the ctl-10a world. */
   notices?: WorldNoticePort;
+  /** bt-15 (BT15.1): the party sizes a Challenge confirm may offer, largest first (empty: nothing
+   *  conscious to field). Optional, so a port without it asks no size. */
+  challengeSizes?(): readonly number[];
 }
 
 /** The shell's side of the notices: what shows, what waits, and B's and View's effects. */
@@ -219,6 +222,7 @@ export class ScreenHost {
           port === undefined
             ? undefined
             : { notices: port.notices(), pending: port.pending(), request: this.#request },
+          world.challengeSizes?.() ?? [],
         );
         this.#sheet = step.sheet;
         this.#request = step.request;

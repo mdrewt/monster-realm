@@ -3158,6 +3158,10 @@ const BT12R_MOSS = bt12rMonster(9_007_199_254_740_999n, 'Mossback', 13, 41, 43);
 /** Three candidates, two of them placed: the third slot is empty. */
 const BT12R_VM: DeployVM = {
   battleId: BT12R_BATTLE,
+  // NAMED CHANGE (bt-15, BT15.1): DeployVM gains `mode` and the PvP `locked` flag; this wild fixture
+  // keeps bt-12's behaviour (a type-only edit, disclosed in the bt-15 PR).
+  mode: 'wild',
+  locked: false,
   candidates: [BT12R_SPRIGG, BT12R_CINDER, BT12R_MOSS],
   formation: [BT12R_SPRIGG, BT12R_CINDER, null],
   // NAMED CHANGE (bt-12 B, plan REV B2.11): DeployVM gains the pack the confirm screen lists.

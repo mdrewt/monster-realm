@@ -52,6 +52,7 @@ import {
   deployVM,
   type PartyMember,
   picksOf,
+  pvpDeployCount,
   resolveFormation,
 } from './deployPanel';
 import { ResultsPanel, type ResultsVM } from './results';
@@ -86,12 +87,20 @@ const W3: DeployWild = { speciesId: 37, name: 'Thornet', level: 19 };
 const PACK: readonly DeployWild[] = [W1, W2];
 const NO_WILDS: readonly DeployWild[] = [];
 
+/** NAMED INTENTIONAL CHANGE (bt-15, BT15.1): `DeployInput` is a discriminated union on `mode`
+ *  ('wild' | 'pvp') and `DeployVM` carries `mode` and `locked`; every literal below gains
+ *  `mode: 'wild'` (and `locked: false` on a VM). Wild mode is otherwise unchanged. */
+type WildInput = Extract<DeployInput, { readonly mode: 'wild' }>;
+type PvpInput = Extract<DeployInput, { readonly mode: 'pvp' }>;
+
 /** Three conscious monsters, the formation in party order, a pack of two. */
 const VM3: DeployVM = {
   battleId: BATTLE,
+  mode: 'wild',
   candidates: [M1, M2, M3],
   formation: [M1, M2, M3],
   wilds: PACK,
+  locked: false,
 };
 
 const UP: BattleOp = { kind: 'move', dir: 'Up' };
@@ -233,7 +242,8 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
     // candidate or deployed (it is remembered first here); a remembered stranger kept; a hard-coded
     // 3 slots (the slotCount-2 and slotCount-5 fixtures); `hp >= 0` as the consciousness gate (0 HP
     // is fainted) or `hp > 1` (1 HP is conscious); a candidate list in remembered order.
-    const input: DeployInput = {
+    const input: WildInput = {
+      mode: 'wild',
       battleId: BATTLE,
       party: [M1, M2, M3, DOWN_MON],
       remembered: [M3.monsterId, DOWN_MON.monsterId, STRANGER, M1.monsterId],
@@ -265,6 +275,7 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
       M3,
     ]);
     const firstDown = deployVM({
+      mode: 'wild',
       battleId: BATTLE,
       party: [DOWN_MON, M2, M1],
       remembered: [],
@@ -275,11 +286,18 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
     expect(firstDown.formation, 'and the third slot stays empty').toEqual([M2, M1, null]);
     const oneHp = mon(9_007_199_254_741_005n, 'Pip', 19, 1, 53);
     expect(
-      deployVM({ battleId: BATTLE, party: [oneHp], remembered: [], slotCount: 3, wilds: PACK })
-        .candidates,
+      deployVM({
+        mode: 'wild',
+        battleId: BATTLE,
+        party: [oneHp],
+        remembered: [],
+        slotCount: 3,
+        wilds: PACK,
+      }).candidates,
       '1 HP is conscious',
     ).toEqual([oneHp]);
     const allDown = deployVM({
+      mode: 'wild',
       battleId: BATTLE,
       party: [DOWN_MON],
       remembered: [DOWN_MON.monsterId],
@@ -351,9 +369,11 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
 
     const sparse = mount({
       battleId: BATTLE,
+      mode: 'wild',
       candidates: [M2, M3],
       formation: [null, M2, M3],
       wilds: PACK,
+      locked: false,
     });
     ops(sparse.panel, A);
     expect(sparse.sends, 'a sparse formation sends slots 1 and 2').toEqual([
@@ -429,9 +449,11 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
 
     const sparse = mount({
       battleId: BATTLE,
+      mode: 'wild',
       candidates: [M1],
       formation: [M1, null, null],
       wilds: PACK,
+      locked: false,
     });
     ops(sparse.panel, X, DOWN, DOWN);
     expect(cursorKey(sparse.root()), 'the third slot').toBe('slot-2');
@@ -452,9 +474,11 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
     expect(candidateName(held.root()), 'fixture: Mossback is the candidate').toBe('Mossback');
     held.panel.render({
       battleId: BATTLE,
+      mode: 'wild',
       candidates: [M3, M1, M2],
       formation: [M1, M2, M3],
       wilds: PACK,
+      locked: false,
     });
     expect(cursorKey(held.root()), 'a re-render keeps the cursor on its row').toBe('confirm');
     expect(candidateName(held.root()), 'and the candidate by monster id, not by index').toBe(
@@ -462,9 +486,11 @@ describe('deploy panel: the view model and the confirm screen (bt-12, BT12.2)', 
     );
     held.panel.render({
       battleId: BATTLE,
+      mode: 'wild',
       candidates: [M1, M2],
       formation: [M1, M2, null],
       wilds: PACK,
+      locked: false,
     });
     expect(
       candidateName(held.root()),
@@ -686,7 +712,8 @@ describe('deploy panel: the wild composition and the countdown (bt-12 B, BT12.2)
     // that survives as stale nodes after a new pack renders (the old names still shown); data
     // indexes 1-based.
     const party = [M1, M2, M3];
-    const input: DeployInput = {
+    const input: WildInput = {
+      mode: 'wild',
       battleId: BATTLE,
       party,
       remembered: [],
@@ -1000,7 +1027,14 @@ describe('deploy panel: every string from the catalog (bt-12, BT12.6)', () => {
       // confirm screen's wild list (its label, the wild's name and level line) joins the allowed
       // texts and accessible names below — the composition list is catalog text plus model data too.
       const m = mount(
-        { battleId: BATTLE, candidates: [M1, M2], formation: [M1, M2, null], wilds: [W3] },
+        {
+          battleId: BATTLE,
+          mode: 'wild',
+          candidates: [M1, M2],
+          formation: [M1, M2, null],
+          wilds: [W3],
+          locked: false,
+        },
         'manual',
       );
       const root = m.root();
@@ -1238,9 +1272,11 @@ describe('deploy panel: focus (bt-12, BT12.6)', () => {
     quiet.panel.render(VM3);
     quiet.panel.render({
       battleId: BATTLE,
+      mode: 'wild',
       candidates: [M1, M2, M3],
       formation: [M2, M1, M3],
       wilds: PACK,
+      locked: false,
     });
     await tick();
     expect(
@@ -1397,5 +1433,293 @@ describe('the battle frame switch (bt-12, BT12.1)', () => {
     expect(help.getAttribute('role'), 'Help is not the switch`s to close').toBe('dialog');
     expect(roles()[0], 'the 1v1 root opened its record').toBe('dialog/true');
     expect(roles()[1], 'the deploy root holds none').toBe('none/none');
+  });
+});
+
+// --- bt-15 increment A (BT15.1, BT15.5): the PvP deploy panel --------------------------------------
+//
+// SOURCE OF TRUTH: spec §bt-15 BT15.1 ("THE Deploying panel in PvP mode SHALL require exactly
+// `format` conscious picks, lock on confirm and show the 45 s deploy countdown") and BT15.5 (every
+// string from the catalog, every element D-pad-reachable); plan memory/projects/monster-realm-bt-15-
+// plan.md §2 BT15.1b + §6 (H1: the lock is the server's `battle_deploy.locked`, carried in the VM; M4:
+// the slot count is the CONSCIOUS count; L: one refusal predicate for the in-flight lock, an
+// incomplete pvp slot and the server lock). API freeze: `pvpDeployCount(format, conscious) = min`;
+// a pvp `DeployInput` carries `format` and `locked` and NO wilds; `deployVM` copies `mode`/`locked`.
+//
+// RED REASON: `pvpDeployCount` is not exported (TypeError), `deployVM` ignores `mode` / `format` /
+// `locked` (a pvp input has no `slotCount`, so it builds an empty formation and copies `wilds:
+// undefined`), and the panel has no pvp mode (no aria-disabled Deploy for an empty slot, no
+// VM-driven lock).
+
+const DEPLOY_ROW = '#tactics-deploy-row-deploy';
+const CONFIRM_ROW = '#tactics-deploy-row-confirm';
+const ariaDisabled = (root: HTMLElement, selector: string): string | null =>
+  root.querySelector(selector)?.getAttribute('aria-disabled') ?? null;
+/** A hand-built pvp VM (the shapes `deployVM` returns; used where a test needs an empty slot). */
+const pvpVM = (
+  formation: readonly (DeployMonster | null)[],
+  candidates: readonly DeployMonster[],
+  locked = false,
+  battleId = BATTLE,
+): DeployVM => ({ battleId, mode: 'pvp', candidates, formation, wilds: [], locked });
+const pvpInput = (o: Partial<PvpInput> = {}): PvpInput => ({
+  mode: 'pvp',
+  battleId: BATTLE,
+  party: [M1, M2, M3],
+  remembered: [],
+  format: 3,
+  locked: false,
+  ...o,
+});
+
+describe('deploy panel: PvP mode (bt-15, BT15.1 / BT15.5)', () => {
+  it('pvpDeployCount is min(format, conscious): a format larger than the conscious party deploys every conscious monster, a smaller one caps it, nobody conscious deploys nobody [BT15-1]', () => {
+    // WRONG IMPL KILLED: `max` (format 3 with two conscious would demand three picks the server
+    // refuses); the format alone (the same); the conscious count alone (format 2 with three
+    // conscious would deploy three); a floor of 1 (zero conscious would demand a pick).
+    const cases: readonly (readonly [number, number, number])[] = [
+      [3, 2, 2],
+      [2, 3, 2],
+      [1, 1, 1],
+      [3, 0, 0],
+      [3, 3, 3],
+      [1, 3, 1],
+      [2, 2, 2],
+    ];
+    for (const [format, conscious, want] of cases) {
+      expect(pvpDeployCount(format, conscious), `format ${format}, ${conscious} conscious`).toBe(
+        want,
+      );
+    }
+  });
+
+  it('a pvp deployVM is mode pvp with no wilds and the lock copied, and its formation is pvpDeployCount(format, conscious) slots filled by the remembered rule — never the party length [BT15-1]', () => {
+    // WRONG IMPL KILLED (M4): slots from `party.length` (a fainted member adds an empty slot the
+    // player can never fill, so the pvp Deploy stays refused forever); slots from `format` alone
+    // (format 3, two conscious: the same dead slot); a pvp VM that keeps a wilds list (the
+    // opponent's roster: R-bt-14-ROSTERREVEAL); `locked` dropped or defaulted (the server lock
+    // never reaches the panel); the remembered order ignored in pvp mode; a wild VM whose mode or
+    // lock is not 'wild' / false.
+    const two = deployVM(pvpInput({ party: [M1, M2, DOWN_MON], remembered: [M2.monsterId] }));
+    expect(two.mode, 'the mode').toBe('pvp');
+    expect(two.wilds, 'no wild list in pvp').toEqual([]);
+    expect(two.locked, 'unlocked').toBe(false);
+    expect(two.battleId).toBe(BATTLE);
+    expect(two.candidates, 'the conscious party, party order').toEqual([M1, M2]);
+    expect(
+      two.formation,
+      'format 3, two conscious: two slots, the remembered one first — no dead third slot',
+    ).toEqual([M2, M1]);
+    expect(deployVM(pvpInput({ locked: true })).locked, 'the lock is copied').toBe(true);
+    expect(deployVM(pvpInput({ format: 1 })).formation, 'format 1: one slot').toEqual([M1]);
+    expect(deployVM(pvpInput({ format: 2 })).formation, 'format 2 caps three conscious').toEqual([
+      M1,
+      M2,
+    ]);
+    expect(
+      deployVM(
+        pvpInput({
+          party: [M1, M2, M3, DOWN_MON],
+          remembered: [DOWN_MON.monsterId, STRANGER, M3.monsterId],
+          format: 2,
+        }),
+      ).formation,
+      'a fainted and a stranger remembered id are skipped; the rest fill from party order',
+    ).toEqual([M3, M1]);
+    const nobody = deployVM(pvpInput({ party: [DOWN_MON] }));
+    expect(nobody.candidates, 'all fainted: no candidate').toEqual([]);
+    expect(nobody.formation, 'and no slot').toEqual([]);
+  });
+
+  it('the shown pvp panel paints NO wild list; a full formation`s Deploy sends exactly its picks once; an empty slot makes Deploy / Confirm aria-disabled and refuses A, Start and a click while the D-pad still reaches it; filling the slot re-enables it and Start sends [BT15-1 BT15-5]', () => {
+    // WRONG IMPL KILLED: the wild list painted in pvp mode (or merely hidden by CSS — it must be
+    // absent from the DOM); a pvp Deploy that sends a SPARSE formation (the server wants exactly
+    // `format`-or-conscious picks); a disabled row REMOVED instead of kept reachable (a D-pad player
+    // cannot land on it, BT15.5); an aria-disabled row that still sends on A, Start or click; every
+    // row disabled instead of just the send rows; a disable latch that survives filling the slot;
+    // the conscious-count rule broken (format 3, two conscious: Deploy must be ENABLED).
+    // Full: three of three.
+    const full = mount(deployVM(pvpInput()));
+    const root = full.root();
+    expect(root.querySelector('.tactics-deploy-wilds'), 'no wild list in the DOM').toBeNull();
+    expect(root.querySelectorAll('.tactics-deploy-wild'), 'no wild row either').toHaveLength(0);
+    expect(rowKeys(root), 'the confirm screen`s two rows').toEqual(['deploy', 'edit']);
+    expect(disabledRows(root), 'a full formation disables nothing').toBe(0);
+    expect(formationNames(root)).toEqual(['Sprigg', 'Cindertail', 'Mossback']);
+    ops(full.panel, A, A);
+    expect(full.sends, 'A on Deploy sends the three picks, once').toEqual([
+      { battleId: BATTLE, picks: [pick(M1, 0), pick(M2, 1), pick(M3, 2)] },
+    ]);
+
+    // Format 3, two conscious: two slots, both filled, Deploy enabled.
+    const short = mount(deployVM(pvpInput({ party: [M1, M2, DOWN_MON] })));
+    expect(formationNames(short.root()), 'two slots, both filled').toEqual([
+      'Sprigg',
+      'Cindertail',
+    ]);
+    expect(ariaDisabled(short.root(), DEPLOY_ROW), 'Deploy is enabled').toBeNull();
+    ops(short.panel, A);
+    expect(short.sends).toEqual([{ battleId: BATTLE, picks: [pick(M1, 0), pick(M2, 1)] }]);
+
+    // An empty slot on the confirm screen: Deploy refuses every route, the cursor still reaches it.
+    const gap = mount(pvpVM([M1, null], [M1]));
+    const g = gap.root();
+    expect(ariaDisabled(g, DEPLOY_ROW), 'Deploy is aria-disabled').toBe('true');
+    expect(ariaDisabled(g, '#tactics-deploy-row-edit'), 'Edit formation is not').toBeNull();
+    expect(rowKeys(g), 'the disabled row is still a row').toEqual(['deploy', 'edit']);
+    ops(gap.panel, A, START);
+    click(g.querySelector(DEPLOY_ROW), 'the Deploy row');
+    expect(gap.sends, 'A, Start and a click on a disabled Deploy send nothing').toEqual([]);
+    ops(gap.panel, DOWN);
+    expect(cursorKey(g), 'Down moves').toBe('edit');
+    ops(gap.panel, DOWN);
+    expect(cursorKey(g), 'and wraps back onto the disabled Deploy').toBe('deploy');
+    expect(statusLine(g), 'a refused Deploy shows no sending line').toBeNull();
+
+    // In the editor: a slot emptied by a re-render (its monster no longer offered) disables Confirm.
+    const ed = mount(pvpVM([M1, M2], [M1, M2]));
+    const e = ed.root();
+    ops(ed.panel, X);
+    expect(ed.panel.mode, 'fixture: the editor').toBe('edit');
+    ed.panel.render(pvpVM([M1, M3], [M1, M3]));
+    expect(editorNames(e), 'fixture: the second slot lost its monster').toEqual(['Sprigg', null]);
+    expect(ariaDisabled(e, CONFIRM_ROW), 'Confirm is aria-disabled').toBe('true');
+    expect(disabledRows(e), 'only Confirm: the slots and Back stay usable').toBe(1);
+    ops(ed.panel, DOWN, DOWN);
+    expect(cursorKey(e), 'the D-pad reaches the disabled Confirm').toBe('confirm');
+    ops(ed.panel, A, START);
+    click(e.querySelector(CONFIRM_ROW), 'the Confirm row');
+    expect(ed.sends, 'A, Start and a click on a disabled Confirm send nothing').toEqual([]);
+    expect(ed.panel.mode, 'still in the editor').toBe('edit');
+    ops(ed.panel, UP, RB);
+    expect(cursorKey(e), 'fixture: on the empty slot').toBe('slot-1');
+    expect(candidateName(e), 'fixture: Mossback is the candidate').toBe('Mossback');
+    ops(ed.panel, A);
+    expect(editorNames(e), 'the slot is filled').toEqual(['Sprigg', 'Mossback']);
+    expect(ariaDisabled(e, CONFIRM_ROW), 'Confirm is enabled again').toBeNull();
+    ops(ed.panel, START);
+    expect(ed.sends, 'and Start sends the full assignment').toEqual([
+      { battleId: BATTLE, picks: [pick(M1, 0), pick(M3, 1)] },
+    ]);
+  });
+
+  it('a VM with locked true disables every row and shows the catalog`s sending line (English and French), no op but a move acts and nothing sends — in the editor too; an equal locked VM writes no DOM; a VM with locked false re-enables; the lock comes from the VM alone, so a rejected or resolved deploy leaves an unlocked VM sendable [BT15-1 BT15-5]', async () => {
+    // WRONG IMPL KILLED (H1): a lock latched on the deploy promise's RESOLVE (sendGuarded resolves
+    // on a refusal and on a frozen link, so a refused deploy would lock the panel for good); a lock
+    // latched on the send; a latch that survives a `locked: false` VM (a server-unlocked row stays
+    // refused); a `locked` VM that still sends on A / Start / click or opens the editor on X; a
+    // locked status line that is a literal (a French boot reads English); a repaint on every
+    // render (the nodes are rebuilt for an equal VM: a screen reader re-reads, focus churns); a
+    // locked editor whose Start still sends.
+    for (const [locale, C] of [
+      ['en', EN],
+      ['fr', FR],
+    ] as const) {
+      setLocale(locale);
+      const m = mount(deployVM(pvpInput({ locked: true })), 'manual');
+      const root = m.root();
+      expect(rowKeys(root), `${locale}: fixture: the confirm rows`).toEqual(['deploy', 'edit']);
+      expect(disabledRows(root), `${locale}: every row is aria-disabled`).toBe(2);
+      expect(statusLine(root)?.textContent, `${locale}: the catalog sending line`).toBe(
+        cat(C, 'tactics.deploy.sending'),
+      );
+      ops(m.panel, A, START, X, B, LB, RB);
+      click(root.querySelector(DEPLOY_ROW), 'the Deploy row');
+      expect(m.sends, `${locale}: a locked panel sends nothing`).toEqual([]);
+      expect(m.panel.mode, `${locale}: and opens no editor`).toBe('confirm');
+      click(root.querySelector('#tactics-deploy-row-edit'), 'the Edit formation row');
+      expect(m.panel.mode, `${locale}: not even by a click on Edit formation`).toBe('confirm');
+      ops(m.panel, DOWN);
+      expect(cursorKey(root), `${locale}: a move still moves`).toBe('edit');
+
+      // An equal locked VM (fresh objects) writes nothing: the very nodes survive.
+      const statusNode = statusLine(root);
+      const rowNode = root.querySelector('#tactics-deploy-row-edit');
+      const html = root.innerHTML;
+      m.panel.render(deployVM(pvpInput({ locked: true })));
+      expect(statusLine(root), `${locale}: the same status node`).toBe(statusNode);
+      expect(root.querySelector('#tactics-deploy-row-edit'), `${locale}: the same row node`).toBe(
+        rowNode,
+      );
+      expect(root.innerHTML, `${locale}: no DOM written`).toBe(html);
+
+      // Unlocked by the server: every row usable again, and A on Deploy sends.
+      m.panel.render(deployVM(pvpInput({ locked: false })));
+      expect(disabledRows(root), `${locale}: locked false re-enables`).toBe(0);
+      expect(statusLine(root), `${locale}: and drops the sending line`).toBeNull();
+      ops(m.panel, UP, A);
+      expect(m.sends, `${locale}: an unlocked VM sends`).toHaveLength(1);
+      m.panel.hide();
+    }
+    setLocale('en');
+
+    // A locked VM arriving while the editor is open: every editor row refuses too.
+    const ed = mount(deployVM(pvpInput()), 'manual');
+    ops(ed.panel, X);
+    expect(ed.panel.mode, 'fixture: the editor').toBe('edit');
+    ed.panel.render(deployVM(pvpInput({ locked: true })));
+    expect(disabledRows(ed.root()), 'every editor row is aria-disabled').toBe(
+      rowKeys(ed.root()).length,
+    );
+    expect(rowKeys(ed.root()).length, 'fixture: slots, Confirm, Back').toBe(5);
+    ops(ed.panel, START, A);
+    click(ed.root().querySelector(CONFIRM_ROW), 'the Confirm row');
+    expect(ed.sends, 'a locked editor sends nothing').toEqual([]);
+
+    // The lock is the VM's alone: a REJECTED deploy leaves an unlocked VM sendable (a retry sends).
+    const r = mount(deployVM(pvpInput()), 'manual');
+    ops(r.panel, A);
+    expect(r.sends, 'the first send').toHaveLength(1);
+    r.pending[0]?.reject(new Error('deploy_units: already locked'));
+    await tick();
+    expect(disabledRows(r.root()), 'a rejection does not lock the panel').toBe(0);
+    expect(statusLine(r.root()), 'nor leave the sending line').toBeNull();
+    ops(r.panel, A);
+    expect(r.sends, 'a retry sends again').toHaveLength(2);
+    // ... and a RESOLVED deploy with the VM still unlocked (the server has not locked yet) does
+    // not latch either.
+    r.pending[1]?.resolve();
+    await tick();
+    expect(disabledRows(r.root()), 'a resolve does not lock the panel').toBe(0);
+    ops(r.panel, A);
+    expect(r.sends, 'and a third A sends').toHaveLength(3);
+    // The server's lock arrives: now the panel refuses.
+    r.pending[2]?.resolve();
+    await tick();
+    r.panel.render(deployVM(pvpInput({ locked: true })));
+    expect(disabledRows(r.root()), 'the server lock disables every row').toBe(2);
+    ops(r.panel, A);
+    expect(r.sends, 'and nothing more is sent').toHaveLength(3);
+  });
+
+  it('wild mode is unchanged: a wild deployVM is mode wild and never locked, the wild list still paints, and a sparse wild formation`s Deploy and Confirm stay enabled and send the sparse picks [BT15-1]', () => {
+    // WRONG IMPL KILLED: the pvp completeness rule applied to wild battles (a wild pack of two
+    // against one conscious monster could never deploy: sparse is legal for Wild, BT12.2); a wild
+    // VM without `mode: 'wild'` / `locked: false` (main.ts's lock read would be undefined); the wild
+    // list dropped for every mode.
+    const vm = deployVM({
+      mode: 'wild',
+      battleId: BATTLE,
+      party: [M1, DOWN_MON],
+      remembered: [],
+      slotCount: 3,
+      wilds: PACK,
+    });
+    expect(vm.mode, 'a wild VM').toBe('wild');
+    expect(vm.locked, 'never locked').toBe(false);
+    expect(vm.formation, 'sparse: one of three').toEqual([M1, null, null]);
+    const m = mount(vm);
+    const root = m.root();
+    expect(root.querySelectorAll('li.tactics-deploy-wild'), 'the pack still paints').toHaveLength(
+      2,
+    );
+    expect(ariaDisabled(root, DEPLOY_ROW), 'a sparse wild Deploy is enabled').toBeNull();
+    expect(disabledRows(root)).toBe(0);
+    ops(m.panel, X);
+    expect(ariaDisabled(root, CONFIRM_ROW), 'and so is the editor`s Confirm').toBeNull();
+    ops(m.panel, START);
+    expect(m.sends, 'the sparse picks are sent').toEqual([
+      { battleId: BATTLE, picks: [pick(M1, 0)] },
+    ]);
   });
 });

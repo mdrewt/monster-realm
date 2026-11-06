@@ -49,7 +49,9 @@ export type Command =
   | { readonly kind: 'confirmTrade'; readonly tradeId: bigint }
   | { readonly kind: 'cancelTrade'; readonly tradeId: bigint }
   | { readonly kind: 'proposeTrade'; readonly args: TradeProposeArgs }
-  | { readonly kind: 'challenge'; readonly targetIdentity: string }
+  // bt-15 (BT15.1): `partySize` is the party-size pick (1..3) — the challenge commits the first
+  // `partySize` eligible party monsters; the server derives `format` from that list's length.
+  | { readonly kind: 'challenge'; readonly targetIdentity: string; readonly partySize: number }
   | { readonly kind: 'acceptChallenge'; readonly challengeId: bigint }
   | { readonly kind: 'declineChallenge'; readonly challengeId: bigint }
   | { readonly kind: 'cancelChallenge'; readonly challengeId: bigint }

@@ -2,9 +2,11 @@
 // are the wasm rule's answer (ui/interactModel.ts); this decides only what a press does with them.
 // Counting is over ACTIONABLE rows, so ctl-10b's player actions add rows without changing the rule:
 // none → the press is not ours (no toast); one → it runs; several → the picker opens. A Challenge
-// never runs on A alone: a lone Challenge row opens straight into its Yes-default confirm (ctl-10b).
-// Notices (ctl-13): with no target, Y opens the oldest pending request's Accept / Decline / View
-// sheet, and B dismisses the top notice; the shell runs the returned command, dismissal or view.
+// never runs on A alone: a lone Challenge row opens straight into its party-size pick (ctl-10b's
+// Yes-default confirm, re-shaped by bt-15 BT15.1), and a confirmed pick leaves as a SIZED `challenge`
+// Command, never as a run. Notices (ctl-13): with no target, Y opens the oldest pending request's
+// Accept / Decline / View sheet, and B dismisses the top notice; the shell runs the returned command,
+// dismissal or view.
 import {
   askConfirm,
   openSheet,
@@ -38,7 +40,7 @@ export interface WorldStep {
   readonly request: RequestSheet | null;
   readonly result: 'consumed' | 'unhandled';
   readonly run?: InteractAction;
-  /** A request answered from its sheet. */
+  /** A request answered from its sheet, or a challenge confirmed with its party size (bt-15). */
   readonly command?: Command;
   /** The key of the notice B dismissed, or of the request just answered. */
   readonly dismiss?: string;
@@ -46,11 +48,31 @@ export interface WorldStep {
   readonly view?: RequestNotice;
 }
 
+/** One sheet step's outcome: a plain action runs; a confirmed challenge is the sized `challenge`
+ *  Command (bt-15, BT15.1) and never a run — a challenge without a size runs nothing. */
+function sheetOutcome(step: ReturnType<typeof sheetStep>): WorldStep {
+  const base = { sheet: step.state, request: null, result: 'consumed' } as const;
+  if (step.run === undefined) return base;
+  if (step.run.kind !== 'challenge') return { ...base, run: step.run };
+  if (step.partySize === undefined) return base;
+  return {
+    ...base,
+    command: {
+      kind: 'challenge',
+      targetIdentity: step.run.playerIdentity,
+      partySize: step.partySize,
+    },
+  };
+}
+
+/** `sizes` (bt-15): the party sizes a Challenge confirm may offer, largest first; empty when there
+ *  is nothing conscious to field, so a Challenge row runs nothing and opens no confirm. */
 export function worldButton(
   sheet: SheetState | null,
   cands: readonly InteractCandidate[],
   btn: NavInput,
   n?: WorldNotices,
+  sizes: readonly number[] = [],
 ): WorldStep {
   // An open request sheet owns every button.
   if (n?.request != null) {
@@ -68,19 +90,18 @@ export function worldButton(
     return base;
   }
   // An open sheet owns every button.
-  if (sheet !== null) {
-    const step = sheetStep(sheet, btn, cands);
-    return step.run === undefined
-      ? { sheet: step.state, request: null, result: 'consumed' }
-      : { sheet: step.state, request: null, result: 'consumed', run: step.run };
-  }
+  if (sheet !== null) return sheetOutcome(sheetStep(sheet, btn, cands, sizes));
   if (btn.repeat) return { sheet, request: null, result: 'unhandled' };
   if (btn.button === 'A') {
     const entries = pickerEntries(cands);
     const only = entries.length === 1 ? entries[0] : undefined;
     const opened = openSheet(entries);
-    if (only !== undefined && opened !== null && only.action.kind === 'challenge')
-      return { sheet: askConfirm(opened, only.key), request: null, result: 'consumed' };
+    if (only !== undefined && opened !== null && only.action.kind === 'challenge') {
+      // A lone Challenge opens straight into its pick; with nothing to field it does nothing.
+      return sizes.length === 0
+        ? { sheet, request: null, result: 'consumed' }
+        : { sheet: askConfirm(opened, only.key, sizes), request: null, result: 'consumed' };
+    }
     if (only !== undefined) return { sheet, request: null, result: 'consumed', run: only.action };
     return opened === null
       ? { sheet, request: null, result: 'unhandled' }
