@@ -137,6 +137,11 @@ mutate-core shard="":
     set -euo pipefail
     [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-core: shard '{{shard}}' is not k/n" >&2; exit 64; }
     shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
+    # Backstop for a runaway-allocation mutant (one once pushed ~550 MB/s until the whole 16 GB
+    # runner died, see .cargo/mutants.toml #5): cap each process's address space so the allocation
+    # aborts the test (= caught) instead of taking the machine down. The unmutated build + full
+    # test run fits in 8 GB. `|| true`: platforms without `ulimit -v` simply run uncapped.
+    ulimit -v 8000000 2>/dev/null || true
     status=0
     cargo mutants -p game-core ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts. Anything else is not a mutation verdict.
