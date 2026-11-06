@@ -36,11 +36,11 @@ use crate::schema::{
 use crate::tactics::{content_species, next_event_seq};
 use game_core::tactics::queue::is_player_owned;
 use game_core::tactics::{
-    on_unit_defeated, pay, Award, AwardsEvent, EventPayload, HitEffectiveness, Ledger,
+    on_unit_defeated, pay, Award, AwardsEvent, EndHow, EventPayload, HitEffectiveness, Ledger,
     StatusChange, StepResult, TacticalState, UnitState,
 };
-use game_core::{base_stat_total, BattleOutcome, Xp};
-use spacetimedb::{ReducerContext, Table};
+use game_core::{base_stat_total, BattleMonster, BattleOutcome, Xp};
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// The H1 proxy's threshold (‰): a battle whose FIRST recruit attempt saw the wild below it is
 /// `weaken_first`. `scripts/playtest-report.mjs` carries the same default (`weakenThresholdPermille`).
@@ -115,6 +115,8 @@ pub(crate) struct StepDelta {
     pub(crate) misses: u16,
     /// Single-hit super-effective KOs after round 1, both sides (§12-F(c)).
     pub(crate) se_kos_after_r1: u16,
+    /// Every KO after round 1, both sides — the §12-F(c) denominator (bt-14, R-bt-9-SUMMARYDENOM).
+    pub(crate) kos_after_r1: u16,
 }
 
 impl StepDelta {
@@ -342,10 +344,14 @@ pub(crate) fn step_delta(prev: &StepPrev, out: &StepResult, player_units: &[u32]
                     }
                 }
             }
+            EventPayload::Ko(_) => {
+                if out.round > 1 {
+                    d.kos_after_r1 = d.kos_after_r1.saturating_add(1);
+                }
+            }
             EventPayload::Missed(_)
             | EventPayload::QueueVoided(_)
             | EventPayload::StoodGround(_)
-            | EventPayload::Ko(_)
             | EventPayload::Awards(_)
             | EventPayload::Moved(_)
             | EventPayload::RoundEnded(_)
@@ -377,6 +383,7 @@ pub(crate) fn apply_delta(mut row: BattleSummary, delta: &StepDelta) -> BattleSu
     row.hits = row.hits.saturating_add(delta.hits);
     row.misses = row.misses.saturating_add(delta.misses);
     row.se_kos_after_r1 = row.se_kos_after_r1.saturating_add(delta.se_kos_after_r1);
+    row.kos_after_r1 = row.kos_after_r1.saturating_add(delta.kos_after_r1);
     row
 }
 
@@ -406,6 +413,8 @@ fn zero_row(anchor: &Battle, tactical: &BattleTactical) -> BattleSummary {
         unit_turns_live: 0,
         halted_plans: 0,
         se_kos_after_r1: 0,
+        kos_after_r1: 0,
+        end_how: None,
     }
 }
 
@@ -467,31 +476,49 @@ pub(crate) fn mark_first_recruit(ctx: &ReducerContext, battle_id: u64, hp_permil
 
 /// Finalise a summary row: the outcome, the rounds the battle was Active for, the wall time, the
 /// idle time per side (the clock rows) and the attack damage per side (the tactical row).
+#[allow(clippy::too_many_arguments)]
 fn finalize(
     ctx: &ReducerContext,
     row: BattleSummary,
-    anchor: &Battle,
+    battle_id: u64,
+    outcome: BattleOutcome,
     tactical: &BattleTactical,
     was_active: bool,
     wall_ms: u64,
 ) {
     let (mut idle_a, mut idle_b) = (0u64, 0u64);
-    for clock in ctx.db.battle_clock().battle_id().filter(anchor.battle_id) {
+    for clock in ctx.db.battle_clock().battle_id().filter(battle_id) {
         match clock.side {
             SideRow::A => idle_a = clock.idle_ms_total,
             SideRow::B => idle_b = clock.idle_ms_total,
         }
     }
     ctx.db.battle_summary().battle_id().update(BattleSummary {
-        outcome: anchor.state.outcome,
+        outcome,
         rounds: if was_active { tactical.round } else { 0 },
         wall_ms,
         idle_ms_a: idle_a,
         idle_ms_b: idle_b,
         damage_dealt_a: tactical.attack_damage_dealt_a,
         damage_dealt_b: tactical.attack_damage_dealt_b,
+        end_how: last_battle_end_how(ctx, battle_id),
         ..row
     });
+}
+
+/// The `how` of the battle's LAST `BattleEnd` payload (the adjudication reason, `Forfeit`,
+/// `SideEmpty`, ...); `None` when the transcript holds none (a Deploying cancel, the fallback close).
+fn last_battle_end_how(ctx: &ReducerContext, battle_id: u64) -> Option<EndHow> {
+    ctx.db
+        .battle_event()
+        .battle_id()
+        .filter(battle_id)
+        .filter_map(|e| match e.payload {
+            EventPayload::BattleEnd(end) => Some((e.seq, end.how)),
+            _ => None,
+        })
+        .max_by_key(|&(seq, _)| seq)
+        .map(|(_, how)| how)
 }
 
 fn settle_log(evt: &str, battle_id: u64, reason: &str) {
@@ -564,51 +591,68 @@ fn pay_ledger(
     let favorable = is_wild_win(anchor) && wild_defeated;
     let today = day_epoch_utc(now_ms);
     let mut applied: Vec<Award> = Vec::new();
-    // The legacy funnel's loop: every CONSCIOUS party member (deployed or benched), the ledger
-    // supplying its XP and essence instead of the 1v1 formula; a member with nothing to credit
-    // (no award, no win credit) is left untouched.
-    for (i, bm) in anchor.state.side_a.team.iter().enumerate() {
-        if bm.is_fainted() {
-            continue;
-        }
-        let Some(&mid) = anchor.party_monster_ids.get(i) else {
-            continue;
-        };
-        let award = units
-            .iter()
-            .find(|&&(_, m)| m == mid)
-            .and_then(|&(unit, _)| payout.awards.iter().find(|a| a.unit == unit));
-        if award.is_none() && !favorable {
-            continue;
-        }
-        if ctx.db.monster().monster_id().find(mid).is_none() {
-            settle_log(
-                "tactical_settle_err",
-                battle_id,
-                &format!("monster {mid} is gone"),
-            );
-            continue;
-        }
-        let xp = Xp::new(award.map_or(0, |a| a.xp));
-        let essence: Vec<(game_core::Affinity, u32)> =
-            award.map_or_else(Vec::new, |a| a.essence.clone());
-        match credit_monster(
-            ctx,
-            anchor.player_identity,
-            mid,
-            bm.max_hp,
-            &species_base,
-            Some(xp),
-            &essence,
-            favorable,
-            today,
-        ) {
-            Ok(()) => {
-                if let Some(award) = award {
-                    applied.push(award.clone());
-                }
+    // The legacy funnel's loop over each side's roster: every CONSCIOUS party member (deployed or
+    // benched), the ledger supplying its XP and essence instead of the 1v1 formula; a member with
+    // nothing to credit (no award, no win credit) is left untouched. A wild battle credits side A
+    // only; under the PvP ruleset both sides are players and are paid alike (design §7: essence to
+    // the killer, both sides symmetric, no XP, no currency — and Practice's ledger is empty by
+    // game-core's rule, so nothing is credited there).
+    let mut sides: Vec<(&[BattleMonster], &[u64], Identity)> = vec![(
+        &anchor.state.side_a.team,
+        &anchor.party_monster_ids,
+        anchor.player_identity,
+    )];
+    if state.kind.uses_pvp_rules() {
+        sides.push((
+            &anchor.state.side_b.team,
+            &anchor.opponent_monster_ids,
+            anchor.opponent_identity,
+        ));
+    }
+    for (team, ids, owner) in sides {
+        for (i, bm) in team.iter().enumerate() {
+            if bm.is_fainted() {
+                continue;
             }
-            Err(e) => settle_log("tactical_settle_err", battle_id, &e),
+            let Some(&mid) = ids.get(i) else {
+                continue;
+            };
+            let award = units
+                .iter()
+                .find(|&&(_, m)| m == mid)
+                .and_then(|&(unit, _)| payout.awards.iter().find(|a| a.unit == unit));
+            if award.is_none() && !favorable {
+                continue;
+            }
+            if ctx.db.monster().monster_id().find(mid).is_none() {
+                settle_log(
+                    "tactical_settle_err",
+                    battle_id,
+                    &format!("monster {mid} is gone"),
+                );
+                continue;
+            }
+            let xp = Xp::new(award.map_or(0, |a| a.xp));
+            let essence: Vec<(game_core::Affinity, u32)> =
+                award.map_or_else(Vec::new, |a| a.essence.clone());
+            match credit_monster(
+                ctx,
+                owner,
+                mid,
+                bm.max_hp,
+                &species_base,
+                Some(xp),
+                &essence,
+                favorable,
+                today,
+            ) {
+                Ok(()) => {
+                    if let Some(award) = award {
+                        applied.push(award.clone());
+                    }
+                }
+                Err(e) => settle_log("tactical_settle_err", battle_id, &e),
+            }
         }
     }
     grant_currency(ctx, anchor.player_identity, payout.currency);
@@ -677,7 +721,40 @@ pub(crate) fn settle(
     sweep_prior_terminals(ctx, anchor, Some(battle_id));
     let row = summary_row(ctx, anchor, tactical);
     let wall_ms = u64::try_from(now_ms.saturating_sub(anchor.created_at_ms)).unwrap_or(0);
-    finalize(ctx, row, anchor, tactical, was_active, wall_ms);
+    finalize(
+        ctx,
+        row,
+        anchor.battle_id,
+        anchor.state.outcome,
+        tactical,
+        was_active,
+        wall_ms,
+    );
+}
+
+/// An anchor-less finish (bt-14, R-bt-9-SUMMARYDENOM's `Ongoing` leftovers): the summary row of
+/// a tactical battle whose anchor is already gone is finalised `Fled` — `rounds` per the phase it
+/// reached, `wall_ms` 0 (its end time is unknown) — instead of staying `Ongoing` forever.
+pub(crate) fn finalize_orphan_summary(
+    ctx: &ReducerContext,
+    tactical: &BattleTactical,
+    was_active: bool,
+) {
+    let Some(row) = ctx.db.battle_summary().battle_id().find(tactical.battle_id) else {
+        return;
+    };
+    if row.outcome != BattleOutcome::Ongoing {
+        return;
+    }
+    finalize(
+        ctx,
+        row,
+        tactical.battle_id,
+        BattleOutcome::Fled,
+        tactical,
+        was_active,
+        0,
+    );
 }
 
 /// A swept (prior-terminal) tactical battle whose summary is still `Ongoing` is finalised with
@@ -695,7 +772,15 @@ pub(crate) fn finalize_swept_summary(ctx: &ReducerContext, anchor: &Battle) {
         return;
     };
     let was_active = tactical.phase != game_core::tactics::Phase::Deploying;
-    finalize(ctx, row, anchor, &tactical, was_active, 0);
+    finalize(
+        ctx,
+        row,
+        anchor.battle_id,
+        anchor.state.outcome,
+        &tactical,
+        was_active,
+        0,
+    );
 }
 
 #[cfg(test)]

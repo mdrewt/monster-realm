@@ -405,7 +405,7 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 /// lookup in `forfeit_on_disconnect` for the case where the disconnecting player is
 /// the opponent (side B).  Adding an index is additive: no column or PK
 /// change; the schema-snapshot eval tracks columns+PK only, not index presence.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle)]
 pub struct Battle {
     #[primary_key]
@@ -931,6 +931,11 @@ pub struct BattleChallenge {
     pub challenger_party_ids: Vec<u64>,
     pub status: ChallengeStatus,
     pub created_at_ms: i64,
+    /// bt-14 (BT14.1): the party-size format of the battle this challenge opens, 1..=3,
+    /// derived at insert from the challenger's party pick (`pvp::challenge_format`). Rows
+    /// written before the column read 0 (never a format).
+    #[default(0)]
+    pub format: u8,
 }
 
 /// PRIVATE per-turn secret action submitted by one PvP player.
@@ -1043,7 +1048,7 @@ pub struct DeployPick {
 /// columns are the persistence manifest bt-3 measured beyond §8.1
 /// (`tactics::queue::TacticalBattle`): the clock pad accumulated since the last
 /// `Waiting`, and the adjudication's cumulative attack damage per side.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle_tactical)]
 pub struct BattleTactical {
     #[primary_key]
@@ -1073,7 +1078,7 @@ pub struct BattleTactical {
 /// `battle_id`. `slot` and `budget_last` are the bt-3 persistence columns.
 /// The unit's max HP is `stats.hp` (as `TacticalUnit::max_hp`), not a second
 /// column that could disagree with it.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle_unit)]
 pub struct BattleUnit {
     #[primary_key]
@@ -1130,7 +1135,7 @@ pub struct BattleQueue {
 /// Practice battle one owner stages both sides, hence `side`. Owner-only read
 /// path (`my_battle_deploy`). Synthetic `deploy_id` key: the natural key
 /// `(battle_id, side)` is a pair.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle_deploy)]
 pub struct BattleDeploy {
     #[primary_key]
@@ -1150,7 +1155,7 @@ pub struct BattleDeploy {
 /// naming the side's owner — in a Practice battle both rows name one player.
 /// Both participants read both rows (`my_battle_clock`): the opponent's
 /// window and strike count are public match state, not a secret.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle_clock)]
 pub struct BattleClock {
     #[primary_key]
@@ -1172,7 +1177,7 @@ pub struct BattleClock {
 /// PRIVATE battle seed (design §8.1 `battle_secret`): the RNG seed and the
 /// roll counter. NO view, ever — the `battle_wild` doctrine: a client that
 /// could read the seed could replay every roll.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 #[spacetimedb::table(accessor = battle_secret)]
 pub struct BattleSecret {
     #[primary_key]
@@ -1253,6 +1258,15 @@ pub struct BattleSummary {
     pub unit_turns_live: u16,
     pub halted_plans: u16,
     pub se_kos_after_r1: u16,
+    /// bt-14 (R-bt-9-SUMMARYDENOM): `Ko` events of both sides in rounds > 1 — the design
+    /// §12-F(c) denominator `se_kos_after_r1` is read against.
+    #[default(0)]
+    pub kos_after_r1: u16,
+    /// bt-14 (BT14.5): how the battle ended (`BattleEnd.how`: the adjudication reason,
+    /// `Forfeit`, `SideEmpty`, ...); `None` while `Ongoing` and for a close with no `BattleEnd`
+    /// (a Deploying cancel, the fallback close).
+    #[default(None)]
+    pub end_how: Option<game_core::tactics::events::EndHow>,
 }
 
 /// PRIVATE remembered formation (design §3.3, §8.1 `player_formation`): the

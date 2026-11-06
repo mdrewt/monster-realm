@@ -57,6 +57,7 @@ import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EssenceTrainReducer from "./essence_train_reducer";
 import EvolveReducer from "./evolve_reducer";
 import FleeReducer from "./flee_reducer";
+import ForfeitReducer from "./forfeit_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import ProposeTradeReducer from "./propose_trade_reducer";
@@ -474,6 +475,7 @@ const reducersSchema = __reducers(
   __reducerSchema("essence_train", EssenceTrainReducer),
   __reducerSchema("evolve", EvolveReducer),
   __reducerSchema("flee", FleeReducer),
+  __reducerSchema("forfeit", ForfeitReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("propose_trade", ProposeTradeReducer),

@@ -4592,6 +4592,8 @@ const BT7_COLUMNS_BATTLE_SUMMARY: &[&str] = &[
     "unit_turns_live",
     "halted_plans",
     "se_kos_after_r1",
+    "kos_after_r1",
+    "end_how",
 ];
 
 const BT7_COLUMNS_PLAYER_FORMATION: &[&str] = &["owner_identity", "monster_ids"];
@@ -4615,6 +4617,7 @@ const BT7_COLUMNS_BATTLE_CHALLENGE: &[&str] = &[
     "challenger_party_ids",
     "status",
     "created_at_ms",
+    "format",
 ];
 
 /// BT7.1 — every tactical row type declares EXACTLY the plan's columns in the
@@ -5506,6 +5509,7 @@ mod acct_nh {
             challenger_party_ids: vec![],
             status,
             created_at_ms: 1,
+            format: 0,
         }
     }
 
@@ -5752,6 +5756,8 @@ mod acct_nh {
             unit_turns_live: 4,
             halted_plans: 1,
             se_kos_after_r1: 0,
+            kos_after_r1: 0,
+            end_how: None,
         }
     }
 

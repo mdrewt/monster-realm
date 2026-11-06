@@ -18,14 +18,20 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-// The canonical forbidden reducer set (§K F1 — EXACTLY 3). These are the only
-// three functions carrying both `#[cfg(feature="dev_reducers")]` and
+// The canonical forbidden reducer set (§K F1 — EXACTLY 4). These are the only
+// four functions carrying both `#[cfg(feature="dev_reducers")]` and
 // `#[spacetimedb::reducer]` (bt-8 added `dev_start_tactical_wild`, the
-// build-phase tactical start; bt-16 deletes it with the live-path flip). `grant_item` (inventory.rs) is a `pub(crate)`
+// build-phase tactical start; bt-14 added `dev_start_tactical_pvp`, its PvP twin; bt-16 deletes
+// both with the live-path flip). `grant_item` (inventory.rs) is a `pub(crate)`
 // helper, NOT a reducer — it can never surface in `describe`, so including it
 // would guard a non-existent surface. If a callable `grant_item` reducer is
 // ever introduced, add it here.
-export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait', 'dev_start_tactical_wild'];
+export const FORBIDDEN_REDUCERS = [
+  'start_wild_battle',
+  'grant_bait',
+  'dev_start_tactical_wild',
+  'dev_start_tactical_pvp',
+];
 
 // parseReducerNames(describeOutput) -> string[]
 //

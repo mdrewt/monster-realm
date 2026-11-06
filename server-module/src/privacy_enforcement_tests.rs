@@ -1413,11 +1413,13 @@ const EXPECTED_GATED: &[&str] = &[
     "complete_guest_claim",
     "consume_crystalized_essence",
     "deploy_units",
+    "dev_start_tactical_pvp",
     "dev_start_tactical_wild",
     "dismiss_dialogue",
     "enqueue_move",
     "essence_train",
     "evolve",
+    "forfeit",
     "grant_bait",
     "heal_party",
     "join_game",
@@ -1790,7 +1792,12 @@ fn rb45_real_crate_matches_the_rosters() {
         "the corpus is lib.rs plus its bare mods"
     );
 
-    for name in ["grant_bait", "start_wild_battle", "dev_start_tactical_wild"] {
+    for name in [
+        "grant_bait",
+        "start_wild_battle",
+        "dev_start_tactical_wild",
+        "dev_start_tactical_pvp",
+    ] {
         assert!(
             matches!(verdict_of(&report, name), census::Verdict::Gated { .. }),
             "{name} is gated today and is scanned even though its cfg hides it"

@@ -1626,6 +1626,9 @@ fn m22s4_serializer_per_table_shape() {
         challenger_party_ids: vec![9],
         status: ChallengeStatus::Cancelled,
         created_at_ms: 43,
+        // bt-14 (BT14.1): a NON-zero format, so an emitter that writes the column's default (or
+        // a constant) instead of the row's value cannot pass.
+        format: 2,
     };
     let out_challenge = super::json_battle_challenge(&challenge);
     assert_eq!(
@@ -1637,9 +1640,12 @@ fn m22s4_serializer_per_table_shape() {
             ("challenger_party_ids", m22s4_arr(&[m22s4_quoted_num(9)])),
             ("status", m22s4_qtxt("Cancelled")),
             ("created_at_ms", m22s4_quoted_num(43)),
+            ("format", m22s4_bare(2)),
         ]),
         "m22s4 [X1/battle_challenge]: the challenge status renders as its variant NAME, and the \
-         fixture picks the LAST of the four variants so a first-arm collapse fails."
+         fixture picks the LAST of the four variants so a first-arm collapse fails. bt-14 \
+         (BT14.1): the appended `format` column is EXPORTED, last (tail declaration order), as a \
+         BARE u8 — the subject's own challenge row states the party-size format it opened."
     );
 
     // --- battle_action (nested payload enum) --------------------------------

@@ -415,6 +415,8 @@ pub(crate) struct World<'a> {
     pub(crate) wallets: Handle<'a, PlayerWallet>,
     /// bt-9: the tactical recruit glue's H1/H2 row (`playtest::record_recruit_event`).
     pub(crate) playtests: Handle<'a, PlaytestEvent, u64>,
+    /// bt-14: a PvP settle rates through `ranking::apply_pvp_rating` (find-or-insert, update).
+    pub(crate) profiles: Handle<'a, crate::schema::Profile>,
 }
 
 pub(crate) fn world(fx: &Fixture) -> World<'_> {
@@ -600,6 +602,10 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
             .scannable()
             .unique()
             .auto_inc(|r| r.event_id, |r, id| r.event_id = id),
+        profiles: fx
+            .table::<crate::schema::Profile>("profile", "identity", |r| r.identity)
+            .writable()
+            .unique(),
     };
     w.configs.seed(&Config {
         id: 0,
@@ -676,6 +682,7 @@ impl World<'_> {
             ("battle_gc_sched", row_set(&self.gcs.rows())),
             ("player_wallet", row_set(&self.wallets.rows())),
             ("playtest_event", row_set(&self.playtests.rows())),
+            ("profile", row_set(&self.profiles.rows())),
         ]
     }
 
@@ -754,7 +761,7 @@ impl World<'_> {
             .collect()
     }
 
-    fn deploys_of(&self, id: u64) -> Vec<BattleDeploy> {
+    pub(crate) fn deploys_of(&self, id: u64) -> Vec<BattleDeploy> {
         self.deploys
             .rows()
             .into_iter()
@@ -4222,6 +4229,1983 @@ fn submit_queue_refusal_emits_one_structured_reject_log_line_bt8_1() {
 }
 
 // ===========================================================================
+// bt-14 — PvP tactical battles: start, secret staging, reveal-by-copy, the PvP clock, secrecy
+// ===========================================================================
+//
+// SOURCE OF TRUTH: spec M-battle-tactics §bt-14 (BT14.1–BT14.4), design §6.1–§6.3 + §3.3, and the
+// plan's §1 interface contract as amended by REV 2 (memory/projects/monster-realm-bt-14-plan.md).
+// Names end `_bt14_N` (the ledger CHECKs filter on the suffix). RED REASON at the API freeze:
+// `start_pvp_tactical` refuses ("start_pvp_tactical: unimplemented"), `pvp_map_id` answers `None`
+// and `pvp_deploy_count` 0, so every scenario below stops at its start (or its pure oracle).
+//
+// Fixture conventions (on top of bt-8's): side B's party monsters are 21/22/23 (disjoint from A's
+// 11..14), sturdy like A's, and SLOWER than every A unit, so the chain of a fresh reveal stops at
+// A's fastest unit; a PvP battle starts on map 7 (the seed is chosen with the spec's own map rule,
+// `pvp_map_for`, never a guessed constant).
+
+/// Spec BT14.2 / design §3.3: the PvP deploy clock.
+pub(crate) const PVP_DEPLOY_MS: i64 = 45_000;
+/// Spec BT14.3 / design §6.2: one PvP window.
+pub(crate) const PVP_WINDOW_MS: i64 = 30_000;
+/// B's client connection (the `on_disconnect` idiom of bt-8's CONN_A).
+pub(crate) const CONN_B: u128 = 0xB1;
+
+/// Side B's pair: species with kits, speeds below every A speed.
+pub(crate) const B_PAIR: [Spec; 2] = [(21, 2, 0, 160), (22, 1, 1, 150)];
+/// Side B's trio.
+pub(crate) const B_TRIO: [Spec; 3] = [(21, 2, 0, 160), (22, 1, 1, 150), (23, 3, 2, 140)];
+/// Side A's trio (bt-8's TRIO: 11 / 12 / 13 at 200 / 190 / 180).
+pub(crate) const A_TRIO: [Spec; 3] = TRIO;
+
+/// A third identity that is in no battle.
+pub(crate) fn c() -> Identity {
+    Identity::from_byte_array([0xC3; 32])
+}
+
+pub(crate) fn ids(specs: &[Spec]) -> Vec<u64> {
+    specs.iter().map(|&(id, ..)| id).collect()
+}
+
+/// Every monster of `specs` onto the slot of its list position.
+pub(crate) fn picks_in_order(specs: &[Spec]) -> Vec<DeployPick> {
+    specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(id, ..))| pick(id, u8::try_from(i).expect("a small slot")))
+        .collect()
+}
+
+/// The shipped tuning carries the design's PvP numbers the tests below are written against.
+fn assert_pvp_tuning() {
+    let t = load_tactics_tuning().expect("tactics tuning content loads");
+    assert_eq!(
+        (
+            i64::from(t.pvp_deploy_ms),
+            i64::from(t.pvp_window_ms),
+            t.max_windows_per_turn,
+            t.autopass_forfeit,
+            t.surge_start_round
+        ),
+        (PVP_DEPLOY_MS, PVP_WINDOW_MS, 3, 4, 9),
+        "PRECONDITION: the shipped PvP tuning is the design's (45 s deploy, 30 s windows, <= 3 \
+         windows per unit-turn, the 4th auto-pass forfeits, Surge from round 9)"
+    );
+}
+
+/// The `pvp: true` maps, in content order.
+pub(crate) fn pvp_pool() -> Vec<u32> {
+    load_battle_maps()
+        .expect("battle map content loads")
+        .into_iter()
+        .filter(|m| m.pvp)
+        .map(|m| m.id)
+        .collect()
+}
+
+/// The PvP map a start seed lands by the plan's rule: `pool[splitmix64(seed ^ PVP_MAP_SALT) % n]`.
+pub(crate) fn pvp_map_for(seed: u64) -> u32 {
+    let pool = pvp_pool();
+    let n = u64::try_from(pool.len()).expect("a small pool");
+    assert!(n > 0, "PRECONDITION: content has a PvP map");
+    let idx = usize::try_from(splitmix64(seed ^ super::PVP_MAP_SALT) % n).expect("an index");
+    pool[idx]
+}
+
+/// The first start seed whose PvP map is `map_id`.
+pub(crate) fn pvp_seed(map_id: u32) -> u64 {
+    (1..10_000u64)
+        .find(|&s| pvp_map_for(s) == map_id)
+        .unwrap_or_else(|| panic!("no seed lands PvP map {map_id}"))
+}
+
+/// `start_pvp_tactical` as the module would call it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_start_pvp(
+    fx: &Fixture,
+    challenger: Identity,
+    challenger_party: &[u64],
+    opponent: Identity,
+    opponent_party: &[u64],
+    format: u8,
+    seed: u64,
+    now: i64,
+) -> Result<u64, String> {
+    fx.run_as_at(module(), at(now), |ctx| {
+        super::start_pvp_tactical(
+            ctx,
+            challenger,
+            challenger_party,
+            opponent,
+            opponent_party,
+            format,
+            seed,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_pvp(
+    fx: &Fixture,
+    challenger: Identity,
+    challenger_party: &[u64],
+    opponent: Identity,
+    opponent_party: &[u64],
+    format: u8,
+    seed: u64,
+    now: i64,
+) -> u64 {
+    try_start_pvp(
+        fx,
+        challenger,
+        challenger_party,
+        opponent,
+        opponent_party,
+        format,
+        seed,
+        now,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "start_pvp_tactical refused: {e}; indexes asked: {:?}",
+            fx.requested_indexes()
+        )
+    })
+}
+
+/// A and B joined, each with its party seeded.
+pub(crate) fn pvp_parties(w: &World<'_>, a_specs: &[Spec], b_specs: &[Spec]) {
+    w.join(a(), 1);
+    w.seed_party(a(), a_specs);
+    w.join(b(), 2);
+    w.seed_party(b(), b_specs);
+}
+
+/// A Deploying PvP battle on map 7 between A (`a_specs`) and B (`b_specs`), started at `T0`.
+pub(crate) fn deploying_pvp(
+    fx: &Fixture,
+    w: &World<'_>,
+    a_specs: &[Spec],
+    b_specs: &[Spec],
+    format: u8,
+) -> u64 {
+    pvp_parties(w, a_specs, b_specs);
+    let id = start_pvp(
+        fx,
+        a(),
+        &ids(a_specs),
+        b(),
+        &ids(b_specs),
+        format,
+        pvp_seed(7),
+        T0,
+    );
+    assert_eq!(
+        w.tactical(id).phase,
+        Phase::Deploying,
+        "PRECONDITION: a PvP start opens Deploying"
+    );
+    id
+}
+
+/// A revealed PvP battle: each side's unit ids in slot order, and the reveal instant.
+pub(crate) struct PvpLive {
+    pub(crate) id: u64,
+    pub(crate) a: Vec<u32>,
+    pub(crate) b: Vec<u32>,
+    pub(crate) revealed_at: i64,
+}
+
+/// Both sides lock their whole list in slot order at `T0 + 5_000` (A, then B: the reveal). Format =
+/// the list length, so every monster deploys; A's fastest unit holds the first window.
+pub(crate) fn live_pvp(fx: &Fixture, w: &World<'_>, a_specs: &[Spec], b_specs: &[Spec]) -> PvpLive {
+    assert_eq!(a_specs.len(), b_specs.len(), "fixture: equal sides");
+    let format = u8::try_from(a_specs.len()).expect("a small format");
+    let id = deploying_pvp(fx, w, a_specs, b_specs, format);
+    let t = T0 + 5_000;
+    deploy(fx, a(), t, id, picks_in_order(a_specs)).expect("A locks its picks");
+    deploy(fx, b(), t, id, picks_in_order(b_specs)).expect("B locks its picks: the reveal");
+    let a_units: Vec<u32> = w
+        .side_units(id, SideRow::A)
+        .iter()
+        .map(|u| u.unit_id)
+        .collect();
+    let b_units: Vec<u32> = w
+        .side_units(id, SideRow::B)
+        .iter()
+        .map(|u| u.unit_id)
+        .collect();
+    assert_eq!(
+        (a_units.len(), b_units.len()),
+        (a_specs.len(), b_specs.len()),
+        "PRECONDITION: both sides are on the board"
+    );
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(a_units[0]),
+        "PRECONDITION: A's fastest unit holds the first window"
+    );
+    PvpLive {
+        id,
+        a: a_units,
+        b: b_units,
+        revealed_at: t,
+    }
+}
+
+impl World<'_> {
+    /// The battle's clock rows, side A first.
+    pub(crate) fn clocks_of(&self, id: u64) -> Vec<BattleClock> {
+        let mut rows: Vec<BattleClock> = self
+            .clocks
+            .rows()
+            .into_iter()
+            .filter(|r| r.battle_id == id)
+            .collect();
+        rows.sort_by_key(|r| r.side as u8);
+        rows
+    }
+
+    /// The battle's ONE clock row of `side`.
+    pub(crate) fn clock_of(&self, id: u64, side: SideRow) -> BattleClock {
+        let mut rows: Vec<BattleClock> = self
+            .clocks_of(id)
+            .into_iter()
+            .filter(|r| r.side == side)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "battle {id}: exactly one side-{side:?} battle_clock row"
+        );
+        rows.remove(0)
+    }
+
+    pub(crate) fn edit_clock_of(&self, id: u64, side: SideRow, f: impl FnOnce(&mut BattleClock)) {
+        let mut row = self.clock_of(id, side);
+        assert_eq!(
+            self.clocks.remove(row.clock_id),
+            1,
+            "battle {id}'s side-{side:?} clock edited in place"
+        );
+        f(&mut row);
+        self.clocks.seed(&row);
+    }
+
+    /// The battle's staging rows, side A first.
+    pub(crate) fn sorted_deploys_of(&self, id: u64) -> Vec<BattleDeploy> {
+        let mut rows = self.deploys_of(id);
+        rows.sort_by_key(|r| r.side as u8);
+        rows
+    }
+
+    /// `(rating, wins, losses)` of `who`'s ladder row, if any.
+    pub(crate) fn profile(&self, who: Identity) -> Option<(i32, u32, u32)> {
+        self.profiles
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| (p.rating, p.wins, p.losses))
+    }
+
+    /// The remembered formation of `who` (crate-visible twin of `formation_of`).
+    pub(crate) fn remembered(&self, who: Identity) -> Option<Vec<u64>> {
+        self.formation_of(who)
+    }
+}
+
+/// `(window_seq, window_open_ms, deadline_ms, windows_this_unit_turn, autopass_count)`.
+pub(crate) fn clock_window(c: &BattleClock) -> (u32, Option<i64>, Option<i64>, u8, u8) {
+    (
+        c.window_seq,
+        c.window_open_ms,
+        c.deadline_ms,
+        c.windows_this_unit_turn,
+        c.autopass_count,
+    )
+}
+
+/// Seat `attacker` and `target` two tiles apart in one column, on PLAIN, line-of-sight-clear tiles
+/// of the battle's own map that no other unit stands on (every shipped Light reaches distance 2) —
+/// the PvP twin of `seat_in_light_range`, which assumes map 1's open rows.
+pub(crate) fn seat_in_clear_lane(w: &World<'_>, id: u64, attacker: u32, target: u32) {
+    let map = map_def(w.tactical(id).map_id);
+    let others: Vec<(u8, u8)> = w
+        .units_of(id)
+        .iter()
+        .filter(|u| u.unit_id != attacker && u.unit_id != target)
+        .map(|u| (u.x, u.y))
+        .collect();
+    let clear = |x: u8, y: u8| {
+        let tile = &map.tiles[usize::from(y) * usize::from(map.width) + usize::from(x)];
+        tile.terrain == game_core::tactics::Terrain::Plain
+            && !tile.blocks_los
+            && !others.contains(&(x, y))
+    };
+    let (x, y) = (0..map.height.saturating_sub(2))
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .find(|&(x, y)| clear(x, y) && clear(x, y + 1) && clear(x, y + 2))
+        .expect("PRECONDITION: the map has a clear three-tile column lane");
+    w.edit_unit(attacker, |u| {
+        u.x = x;
+        u.y = y;
+    });
+    w.edit_unit(target, |u| {
+        u.x = x;
+        u.y = y + 2;
+    });
+}
+
+/// A free PLAIN orthogonal neighbour of `unit` (a one-stride Move costs one stride point there).
+pub(crate) fn plain_step(w: &World<'_>, id: u64, unit: u32) -> (u8, u8) {
+    let map = map_def(w.tactical(id).map_id);
+    let me = w.unit(unit);
+    let taken: Vec<(u8, u8)> = w.units_of(id).iter().map(|u| (u.x, u.y)).collect();
+    let mut around: Vec<(u8, u8)> = Vec::new();
+    if me.x > 0 {
+        around.push((me.x - 1, me.y));
+    }
+    if me.x + 1 < map.width {
+        around.push((me.x + 1, me.y));
+    }
+    if me.y > 0 {
+        around.push((me.x, me.y - 1));
+    }
+    if me.y + 1 < map.height {
+        around.push((me.x, me.y + 1));
+    }
+    around
+        .into_iter()
+        .find(|&(x, y)| {
+            let tile = &map.tiles[usize::from(y) * usize::from(map.width) + usize::from(x)];
+            tile.terrain == game_core::tactics::Terrain::Plain && !taken.contains(&(x, y))
+        })
+        .expect("PRECONDITION: the unit has a free plain neighbour")
+}
+
+/// A CONSISTENT PvP round boundary at `round`: idle budgets, no window open on EITHER clock, no
+/// deadline row, `Advancing` with `order` as the initiative.
+pub(crate) fn pvp_boundary(w: &World<'_>, id: u64, round: u16, order: &[u32]) {
+    for u in w.units_of(id) {
+        w.edit_unit(u.unit_id, rest);
+    }
+    let order = order.to_vec();
+    w.edit_tactical(id, |t| {
+        t.round = round;
+        t.turn_state = TurnState::Advancing;
+        t.turn_idx = 0;
+        t.initiative = order;
+        t.pending_pad_ms = 0;
+    });
+    for side in [SideRow::A, SideRow::B] {
+        w.edit_clock_of(id, side, |c| {
+            c.window_open_ms = None;
+            c.deadline_ms = None;
+            c.windows_this_unit_turn = 0;
+        });
+    }
+    for row in w.deadlines_of(id) {
+        assert_eq!(w.deadlines.remove(row.scheduled_id), 1);
+    }
+}
+
+/// The deadline rows of `id` other than the one that just fired.
+fn deadlines_but(w: &World<'_>, id: u64, fired: u64) -> Vec<(u32, u32, ScheduleAt)> {
+    w.deadlines_of(id)
+        .iter()
+        .filter(|r| r.scheduled_id != fired)
+        .map(|r| (r.unit_id, r.window_seq, r.scheduled_at))
+        .collect()
+}
+
+/// `(side, owner, slot, monster_id, wild_index, stance, x, y, cur_hp)` of every unit of `side`.
+type UnitSeat = (
+    SideRow,
+    Option<Identity>,
+    u8,
+    Option<u64>,
+    Option<u8>,
+    Option<StanceRow>,
+    u8,
+    u8,
+    u16,
+);
+
+fn seats(w: &World<'_>, id: u64, side: SideRow) -> Vec<UnitSeat> {
+    w.side_units(id, side)
+        .iter()
+        .map(|u| {
+            (
+                u.side,
+                u.owner,
+                u.slot,
+                u.monster_id,
+                u.wild_index,
+                u.stance,
+                u.x,
+                u.y,
+                u.cur_hp,
+            )
+        })
+        .collect()
+}
+
+/// The seat a deployed party monster must take: its owner, slot, own id, no wild index, no stance,
+/// the side's spawn tile of `slot`, its monster row's current HP.
+fn want_seat(w: &World<'_>, side: SideRow, owner: Identity, slot: u8, mid: u64) -> UnitSeat {
+    let map = map_def(7);
+    let spawn = match side {
+        SideRow::A => map.spawn_a[usize::from(slot)],
+        SideRow::B => map.spawn_b[usize::from(slot)],
+    };
+    (
+        side,
+        Some(owner),
+        slot,
+        Some(mid),
+        None,
+        None,
+        spawn.x,
+        spawn.y,
+        w.monster(mid).current_hp,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// BT14.1 — format, at least one conscious monster, deploy exactly `format` or all it has
+// ---------------------------------------------------------------------------
+
+/// `start_pvp_tactical(challenger, party_a, opponent, party_b, format)` is refused with `want` after
+/// `setup`, and the whole store is byte-identical.
+fn assert_pvp_start_refused(
+    label: &str,
+    side_a: (Identity, &[u64]),
+    side_b: (Identity, &[u64]),
+    format: u8,
+    want: &str,
+    setup: impl FnOnce(&Fixture, &World<'_>),
+) {
+    let fx = fixture();
+    let w = world(&fx);
+    pvp_parties(&w, &PAIR, &B_PAIR);
+    setup(&fx, &w);
+    let before = w.snapshot();
+    let got = try_start_pvp(
+        &fx,
+        side_a.0,
+        side_a.1,
+        side_b.0,
+        side_b.1,
+        format,
+        pvp_seed(7),
+        T0,
+    );
+    assert_eq!(got, Err(want.to_string()), "{label}");
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "{label}: a refused start writes nothing"
+    );
+}
+
+/// Every BT14.1 guard of the start refuses (never clamps) with its client-contract text, before any
+/// write: a format outside 1..=3, a monster on both sides (two identities, and Practice), a side with
+/// no conscious monster (each side's own message), a challenger or an opponent already in battle.
+///
+/// WRONG IMPL KILLED: the stub (every case answers "unimplemented"); a format clamped into range; a
+/// shared monster accepted (one HP pool on two sides); one message for both unconscious sides; the
+/// opponent's busy state unchecked (one identity in two battles); any guard writing before it refuses.
+#[test]
+fn start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1() {
+    let (pa, pb) = (ids(&PAIR), ids(&B_PAIR));
+    for format in [0u8, 4] {
+        assert_pvp_start_refused(
+            &format!("format {format}"),
+            (a(), &pa),
+            (b(), &pb),
+            format,
+            "format must be 1..=3",
+            |_, _| {},
+        );
+    }
+    assert_pvp_start_refused(
+        "a monster on both sides (two players)",
+        (a(), &[11, 12]),
+        (b(), &[12, 21]),
+        2,
+        "a monster cannot be on both sides",
+        |_, _| {},
+    );
+    assert_pvp_start_refused(
+        "a monster on both sides (practice)",
+        (a(), &[11, 12]),
+        (a(), &[12]),
+        2,
+        "a monster cannot be on both sides",
+        |_, _| {},
+    );
+    assert_pvp_start_refused(
+        "the challenger's whole party fainted",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "challenger party has no conscious monster",
+        |_, w| {
+            for mid in [11, 12] {
+                w.edit_monster(mid, |m| m.current_hp = 0);
+            }
+        },
+    );
+    assert_pvp_start_refused(
+        "the opponent's whole party fainted",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "opponent party has no conscious monster",
+        |_, w| {
+            for mid in [21, 22] {
+                w.edit_monster(mid, |m| m.current_hp = 0);
+            }
+        },
+    );
+    assert_pvp_start_refused(
+        "the challenger is in a wild battle",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "already in an ongoing battle",
+        |fx, _| {
+            start(fx, a(), seed_for(1, Some(1)), None, T0 - 10);
+        },
+    );
+    assert_pvp_start_refused(
+        "the opponent is in a wild battle",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "opponent is already in an ongoing battle",
+        |fx, _| {
+            start(fx, b(), seed_for(1, Some(1)), None, T0 - 10);
+        },
+    );
+}
+
+/// "Accepting SHALL require at least 1 conscious monster": a side with ONE conscious member (its
+/// partner fainted) starts, and then deploys exactly that one (all it has, the format being 2).
+///
+/// WRONG IMPL KILLED: the stub; a start that demands `format` conscious monsters per side; a deploy
+/// count of `format` regardless of the side's conscious members ("deploy exactly 2" for a side that
+/// has one).
+#[test]
+fn start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1() {
+    let fx = fixture();
+    let w = world(&fx);
+    pvp_parties(&w, &PAIR, &B_PAIR);
+    w.edit_monster(12, |m| m.current_hp = 0);
+    let id = start_pvp(
+        &fx,
+        a(),
+        &ids(&PAIR),
+        b(),
+        &ids(&B_PAIR),
+        2,
+        pvp_seed(7),
+        T0,
+    );
+    let t = w.tactical(id);
+    assert_eq!(
+        (t.kind, t.format, t.phase),
+        (BattleKind::Pvp, 2, Phase::Deploying),
+        "one conscious monster is enough to start"
+    );
+    deploy(&fx, a(), T0 + 1_000, id, vec![pick(11, 0)])
+        .expect("a side with one conscious monster deploys exactly that one");
+    let rows = w.sorted_deploys_of(id);
+    assert_eq!(
+        (rows[0].side, rows[0].picks.clone(), rows[0].locked),
+        (SideRow::A, vec![pick(11, 0)], true),
+        "A's staging row holds its one pick, locked"
+    );
+}
+
+/// `deploy_units` in a PvP battle refuses any pick count but `pvp_deploy_count(format, conscious of
+/// the SENDER's side)`, writing nothing: format 2 with 3 conscious is exactly 2 (1 and 3 refused);
+/// format 3 with 2 conscious (+1 fainted) is exactly 2 ("all it has if fewer"); and side B is counted
+/// on B's OWN conscious members, not A's.
+///
+/// WRONG IMPL KILLED: the API freeze (the wild path materialises any 1..=3 picks at once); a count
+/// of `format` alone (format 3 with 2 conscious demands 3: an unreachable deploy); the conscious count
+/// of the wrong side (B with 2 told to deploy A's 3); a clamped / trimmed pick list (reject, never
+/// clamp); a refusal that writes the staging row anyway.
+#[test]
+fn pvp_deploy_units_refuses_any_pick_count_but_the_format_or_every_conscious_member_bt14_1() {
+    // Format 2, A has three conscious.
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let id = deploying_pvp(&fx, &w, &A_TRIO, &B_TRIO, 2);
+        let before = w.snapshot();
+        for picks in [
+            vec![pick(11, 0)],
+            vec![pick(11, 0), pick(12, 1), pick(13, 2)],
+        ] {
+            let n = picks.len();
+            assert_eq!(
+                deploy(&fx, a(), T0 + 1_000, id, picks),
+                Err("deploy exactly 2 monsters".to_string()),
+                "format 2, three conscious: {n} picks refused"
+            );
+            assert_eq!(
+                changed(&before, &w.snapshot()),
+                none(),
+                "{n} picks: nothing written"
+            );
+        }
+        deploy(&fx, a(), T0 + 1_000, id, vec![pick(11, 0), pick(12, 1)])
+            .expect("format 2: exactly two picks deploy");
+    }
+    // Format 3, A has two conscious and a fainted third.
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        pvp_parties(&w, &A_TRIO, &B_TRIO);
+        w.edit_monster(13, |m| m.current_hp = 0);
+        let id = start_pvp(
+            &fx,
+            a(),
+            &ids(&A_TRIO),
+            b(),
+            &ids(&B_TRIO),
+            3,
+            pvp_seed(7),
+            T0,
+        );
+        let before = w.snapshot();
+        assert_eq!(
+            deploy(&fx, a(), T0 + 1_000, id, vec![pick(11, 0)]),
+            Err("deploy exactly 2 monsters".to_string()),
+            "format 3, two conscious: one pick refused"
+        );
+        assert_eq!(changed(&before, &w.snapshot()), none());
+        deploy(&fx, a(), T0 + 1_000, id, vec![pick(11, 0), pick(12, 1)])
+            .expect("format 3 with two conscious: all it has (two) deploys");
+    }
+    // Format 3, A has three, B has two: B is counted on its own side.
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        let id = deploying_pvp(&fx, &w, &A_TRIO, &B_PAIR, 3);
+        let before = w.snapshot();
+        assert_eq!(
+            deploy(&fx, b(), T0 + 1_000, id, vec![pick(21, 0)]),
+            Err("deploy exactly 2 monsters".to_string()),
+            "B's count is B's own two conscious, not A's three"
+        );
+        assert_eq!(changed(&before, &w.snapshot()), none());
+        deploy(&fx, b(), T0 + 1_000, id, vec![pick(21, 0), pick(22, 1)])
+            .expect("B deploys its two");
+        assert!(
+            w.units_of(id).is_empty(),
+            "A has not locked: nothing is revealed yet"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BT14.2 — start → Deploying, secret staging, reveal-by-copy, the 45 s clock, the dev gate
+// ---------------------------------------------------------------------------
+
+/// `pvp_map_id` picks from the `pvp: true` maps IN THE ORDER GIVEN (content order), at
+/// `splitmix64(seed ^ PVP_MAP_SALT) % n`, reaching every PvP map; no PvP map is `None`.
+///
+/// WRONG IMPL KILLED: the stub (`None`); a wild-pool map; the raw seed or the battle-seed salt; a
+/// sorted or reversed pool; a pool that also counts non-PvP maps.
+#[test]
+fn pvp_map_id_picks_the_pvp_maps_in_content_order_by_the_salted_seed_bt14_2() {
+    let maps = load_battle_maps().expect("battle map content loads");
+    assert_eq!(
+        pvp_pool(),
+        vec![7, 8],
+        "PRECONDITION: content ships two PvP maps, 7 then 8"
+    );
+    let mut seen: Vec<u32> = Vec::new();
+    for seed in 0..256u64 {
+        let got = super::pvp_map_id(&maps, seed);
+        assert_eq!(got, Some(pvp_map_for(seed)), "seed {seed}");
+        if let Some(id) = got {
+            if !seen.contains(&id) {
+                seen.push(id);
+            }
+        }
+    }
+    seen.sort_unstable();
+    assert_eq!(seen, vec![7, 8], "every PvP map is reachable");
+    let mut reversed = maps.clone();
+    reversed.reverse();
+    let flipped: Vec<u32> = reversed.iter().filter(|m| m.pvp).map(|m| m.id).collect();
+    for seed in 0..64u64 {
+        let i = usize::try_from(splitmix64(seed ^ super::PVP_MAP_SALT) % 2).expect("an index");
+        assert_eq!(
+            super::pvp_map_id(&reversed, seed),
+            Some(flipped[i]),
+            "seed {seed}: the pool is taken in the order given"
+        );
+    }
+    let wild_only: Vec<game_core::tactics::BattleMapEntry> =
+        maps.iter().filter(|m| !m.pvp).cloned().collect();
+    assert_eq!(super::pvp_map_id(&wild_only, 5), None, "no PvP map: None");
+    assert_eq!(super::pvp_map_id(&[], 5), None, "no map at all: None");
+}
+
+/// A PvP start writes exactly the plan's rows and nothing that reveals a side: ONE anchor (both
+/// identities, both party lists, Ongoing), `battle_tactical` {Pvp, format, the seed's PvP map,
+/// Deploying, round 1, NotActive}, `battle_secret` {the salted seed, no draw}, TWO clock rows (A =
+/// challenger, B = opponent, both on the 45 s deploy deadline, no window), TWO owner-only staging
+/// rows (empty, unlocked), ONE deploy window row at `now + 45 s` — and no unit, no wild unit, no
+/// event, no READY row.
+///
+/// WRONG IMPL KILLED: the stub; a wild start's single clock (B's strikes have nowhere to live); the
+/// PvE 300 s window; a deploy deadline on one clock only; staging rows owned by one player (the
+/// opponent cannot stage, or reads A's); units written at the start (sides revealed before the
+/// lock); the raw seed in `battle_secret`; a map from the wild pool.
+#[test]
+fn pvp_start_opens_deploying_with_two_clocks_two_staging_rows_and_a_45_second_window_bt14_2() {
+    assert_pvp_tuning();
+    let fx = fixture();
+    let w = world(&fx);
+    pvp_parties(&w, &PAIR, &B_PAIR);
+    let seed = pvp_seed(7);
+    let id = start_pvp(&fx, a(), &[11, 12], b(), &[21, 22], 2, seed, T0);
+    let deadline = T0 + PVP_DEPLOY_MS;
+
+    assert_eq!(w.battles.rows().len(), 1, "exactly one anchor");
+    let anchor = w.anchor(id).expect("the anchor row");
+    assert_eq!(
+        (
+            anchor.player_identity,
+            anchor.opponent_identity,
+            anchor.party_monster_ids.clone(),
+            anchor.opponent_monster_ids.clone(),
+            anchor.state.outcome,
+            anchor.created_at_ms
+        ),
+        (
+            a(),
+            b(),
+            vec![11, 12],
+            vec![21, 22],
+            BattleOutcome::Ongoing,
+            T0
+        )
+    );
+    let team = |t: &[game_core::BattleMonster]| -> Vec<(u32, u16, u16)> {
+        t.iter()
+            .map(|m| (m.species_id, m.current_hp, m.max_hp))
+            .collect()
+    };
+    assert_eq!(
+        team(&anchor.state.side_a.team[..]),
+        vec![(1, 300, 300), (3, 300, 300)],
+        "side A's team is the challenger's party"
+    );
+    assert_eq!(
+        team(&anchor.state.side_b.team[..]),
+        vec![(2, 300, 300), (1, 300, 300)],
+        "side B's team is the opponent's party"
+    );
+
+    let t = w.tactical(id);
+    assert_eq!(
+        (t.kind, t.format, t.map_id, t.content_version),
+        (
+            BattleKind::Pvp,
+            2,
+            pvp_map_for(seed),
+            crate::CONTENT_VERSION
+        )
+    );
+    assert_eq!(t.map_id, 7, "PRECONDITION: the seed lands map 7");
+    assert_eq!(
+        (t.phase, t.round, t.turn_state),
+        (Phase::Deploying, 1, TurnState::NotActive)
+    );
+    let secret = w.secret(id);
+    assert_eq!(
+        (secret.seed, secret.action_seq),
+        (splitmix64(seed ^ BATTLE_SEED_SALT), 0)
+    );
+
+    // (side, player, clock_window(..)) — a local alias keeps clippy's type_complexity quiet.
+    type ClockSeat = (SideRow, Identity, (u32, Option<i64>, Option<i64>, u8, u8));
+    let clocks: Vec<ClockSeat> = w
+        .clocks_of(id)
+        .iter()
+        .map(|c| (c.side, c.player, clock_window(c)))
+        .collect();
+    assert_eq!(
+        clocks,
+        vec![
+            (SideRow::A, a(), (0, None, Some(deadline), 0, 0)),
+            (SideRow::B, b(), (0, None, Some(deadline), 0, 0)),
+        ],
+        "one clock per side, each on the 45 s deploy deadline, no window open"
+    );
+    let staging: Vec<(SideRow, Identity, Vec<DeployPick>, bool)> = w
+        .sorted_deploys_of(id)
+        .iter()
+        .map(|d| (d.side, d.owner, d.picks.clone(), d.locked))
+        .collect();
+    assert_eq!(
+        staging,
+        vec![
+            (SideRow::A, a(), Vec::new(), false),
+            (SideRow::B, b(), Vec::new(), false),
+        ],
+        "one owner-only staging row per side, empty and unlocked"
+    );
+    let window = w.only_deadline(id);
+    assert_eq!(
+        (window.unit_id, window.window_seq, window.scheduled_at),
+        (DEPLOY_WINDOW_UNIT, 0, time(deadline)),
+        "the 45 s deploy window"
+    );
+    assert!(
+        w.units_of(id).is_empty(),
+        "no battle_unit before the reveal"
+    );
+    assert!(w.wild_units_of(id).is_empty(), "a PvP battle has no wild");
+    assert!(w.events_of(id).is_empty(), "the battle has not started");
+    assert!(w.queues_of(id).is_empty());
+}
+
+/// From Deploying on, the start holds BOTH players: either one is refused as a challenger or as an
+/// opponent of a new PvP start (nothing written).
+///
+/// WRONG IMPL KILLED: the stub; an anchor that names only the challenger (the opponent stays free to
+/// enter a second battle); a start that skips the opponent's busy check.
+#[test]
+fn a_pvp_start_holds_both_players_in_an_ongoing_battle_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    w.join(c(), 3);
+    w.seed_party(c(), &[(31, 1, 0, 120)]);
+    for who in [a(), b()] {
+        assert!(
+            crate::guards::is_in_ongoing_battle(&fx.ctx(), who),
+            "the Deploying battle {id} holds {who}"
+        );
+    }
+    let before = w.snapshot();
+    for (label, ch, cp, op, opp, want) in [
+        (
+            "A challenges again",
+            a(),
+            vec![11, 12],
+            c(),
+            vec![31],
+            "already in an ongoing battle",
+        ),
+        (
+            "B is challenged again",
+            c(),
+            vec![31],
+            b(),
+            vec![21, 22],
+            "opponent is already in an ongoing battle",
+        ),
+        (
+            "B challenges",
+            b(),
+            vec![21, 22],
+            c(),
+            vec![31],
+            "already in an ongoing battle",
+        ),
+    ] {
+        assert_eq!(
+            try_start_pvp(&fx, ch, &cp, op, &opp, 1, pvp_seed(7), T0 + 1_000),
+            Err(want.to_string()),
+            "{label}"
+        );
+        assert_eq!(changed(&before, &w.snapshot()), none(), "{label}");
+    }
+}
+
+/// The same identity twice (disjoint side lists) is a Practice battle under the PvP ruleset: two
+/// clock rows and two staging rows that all name the one player, one per side.
+///
+/// WRONG IMPL KILLED: the stub; `kind = Pvp` for a self-battle (it would rate); one clock or one
+/// staging row for the one player (side B has nowhere to stage or strike).
+#[test]
+fn practice_start_names_one_player_on_both_sides_with_disjoint_lists_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    w.seed_party(a(), &A_TRIO);
+    let id = start_pvp(&fx, a(), &[11, 12], a(), &[13], 2, pvp_seed(7), T0);
+    let anchor = w.anchor(id).expect("anchor");
+    assert_eq!(
+        (
+            anchor.player_identity,
+            anchor.opponent_identity,
+            anchor.party_monster_ids.clone(),
+            anchor.opponent_monster_ids.clone()
+        ),
+        (a(), a(), vec![11, 12], vec![13])
+    );
+    assert_eq!(w.tactical(id).kind, BattleKind::Practice);
+    let clocks: Vec<(SideRow, Identity)> =
+        w.clocks_of(id).iter().map(|c| (c.side, c.player)).collect();
+    assert_eq!(clocks, vec![(SideRow::A, a()), (SideRow::B, a())]);
+    let staging: Vec<(SideRow, Identity, bool)> = w
+        .sorted_deploys_of(id)
+        .iter()
+        .map(|d| (d.side, d.owner, d.locked))
+        .collect();
+    assert_eq!(
+        staging,
+        vec![(SideRow::A, a(), false), (SideRow::B, a(), false)]
+    );
+}
+
+/// A stranger can neither stage nor read a PvP battle's deploy: `deploy_units` is "not owner" and
+/// writes nothing.
+///
+/// WRONG IMPL KILLED: a participant check that only rejects identities named on no anchor at all;
+/// the opponent's row staged by whoever calls.
+#[test]
+fn pvp_deploy_units_refuses_a_stranger_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    w.join(c(), 3);
+    w.seed_party(c(), &[(31, 1, 0, 120), (32, 2, 1, 110)]);
+    let before = w.snapshot();
+    assert_eq!(
+        deploy(&fx, c(), T0 + 1_000, id, vec![pick(31, 0), pick(32, 1)]),
+        Err("not owner".to_string())
+    );
+    assert_eq!(changed(&before, &w.snapshot()), none());
+}
+
+/// The FIRST lock stages only the sender's row and reveals nothing: A's row becomes {picks, locked},
+/// B's row is byte-identical, no unit exists, the phase is still Deploying, the opponent's
+/// owner-only deploy view shows only its own unlocked row, and no participant-visible table is
+/// written at all (`writes_to` 0: not even a byte-identical update the opponent would be pinged
+/// with). A second lock by A is "already locked" and writes nothing.
+///
+/// WRONG IMPL KILLED: the API freeze (the wild path materialises A's side at once — a one-sided
+/// reveal); a ready flag on `battle_tactical` / the anchor; a staging row readable by the opponent;
+/// a re-lock that silently swaps A's picks after seeing nothing (or anything).
+#[test]
+fn the_first_lock_stages_only_the_senders_row_and_reveals_nothing_to_the_opponent_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    let b_row = w
+        .sorted_deploys_of(id)
+        .into_iter()
+        .find(|d| d.side == SideRow::B)
+        .expect("B's staging row");
+    let deadlines = row_set(&w.deadlines_of(id));
+    fx.reset_writes();
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(12, 0), pick(11, 1)]).expect("A locks");
+    for table in [
+        "battle",
+        "battle_tactical",
+        "battle_unit",
+        "battle_clock",
+        "battle_event",
+        "battle_secret",
+    ] {
+        assert_eq!(
+            fx.writes_to(table),
+            0,
+            "A's lock writes nothing to the participant-visible / secret table {table}"
+        );
+    }
+    let rows = w.sorted_deploys_of(id);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (
+            rows[0].side,
+            rows[0].owner,
+            rows[0].picks.clone(),
+            rows[0].locked
+        ),
+        (SideRow::A, a(), vec![pick(12, 0), pick(11, 1)], true),
+        "A's staging row holds its picks, locked"
+    );
+    assert_eq!(enc(&rows[1]), enc(&b_row), "B's staging row is untouched");
+    assert!(
+        w.units_of(id).is_empty(),
+        "still no battle_unit: one lock reveals nothing"
+    );
+    assert_eq!(w.tactical(id).phase, Phase::Deploying);
+    assert_eq!(
+        row_set(&w.deadlines_of(id)),
+        deadlines,
+        "the deploy window still runs"
+    );
+    let b_view: Vec<BattleDeploy> =
+        fx.call_view(crate::native_host_tests::VIEW_MY_BATTLE_DEPLOY, b());
+    assert_eq!(
+        row_set(&b_view),
+        row_set(&[b_row]),
+        "the opponent's deploy view holds only its own unlocked row"
+    );
+    let a_view: Vec<BattleDeploy> =
+        fx.call_view(crate::native_host_tests::VIEW_MY_BATTLE_DEPLOY, a());
+    assert_eq!(row_set(&a_view), row_set(&rows[..1]), "A reads its own row");
+    let before = w.snapshot();
+    assert_eq!(
+        deploy(&fx, a(), T0 + 3_000, id, vec![pick(11, 0), pick(12, 1)]),
+        Err("already locked".to_string())
+    );
+    assert_eq!(changed(&before, &w.snapshot()), none());
+}
+
+/// The SECOND lock reveals both sides in that one call: units for both sides exist (A's on
+/// `spawn_a[slot]`, B's on `spawn_b[slot]`, each owned by its player, naming its monster, no wild
+/// index, no stance, the monster's HP), the staging rows are gone, the phase is Active, the only
+/// event is `BattleStarted`, the chain stops at A's fastest unit, the deploy row is replaced by ONE
+/// 30 s turn window, and each player's formation is its picks. A later deploy is "battle is not
+/// deploying".
+///
+/// WRONG IMPL KILLED: the freeze; side B copied from a wild pack or not at all; B's units on
+/// `spawn_a`, owned by A, or without `monster_id` (no HP write-back); staging rows left behind;
+/// two windows armed (the deploy row kept); the PvE window; only A's formation remembered.
+#[test]
+fn the_second_lock_copies_both_stagings_into_units_and_starts_in_one_call_bt14_2() {
+    assert_pvp_tuning();
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(11, 0), pick(12, 1)]).expect("A locks");
+    assert!(w.units_of(id).is_empty(), "PRECONDITION: nothing revealed");
+    let t = T0 + 4_000;
+    deploy(&fx, b(), t, id, vec![pick(22, 0), pick(21, 1)]).expect("B locks: the reveal");
+
+    assert_eq!(
+        seats(&w, id, SideRow::A),
+        vec![
+            want_seat(&w, SideRow::A, a(), 0, 11),
+            want_seat(&w, SideRow::A, a(), 1, 12),
+        ],
+        "A's units, copied from A's staging"
+    );
+    assert_eq!(
+        seats(&w, id, SideRow::B),
+        vec![
+            want_seat(&w, SideRow::B, b(), 0, 22),
+            want_seat(&w, SideRow::B, b(), 1, 21),
+        ],
+        "B's units, copied from B's staging in the same call"
+    );
+    assert!(w.deploys_of(id).is_empty(), "the staging rows are consumed");
+    let fastest = w.side_units(id, SideRow::A)[0].unit_id;
+    let tac = w.tactical(id);
+    assert_eq!(
+        (tac.phase, tac.turn_state),
+        (Phase::Active, TurnState::Waiting(fastest))
+    );
+    let events: Vec<EventPayload> = w.events_of(id).into_iter().map(|e| e.payload).collect();
+    assert!(
+        matches!(events.as_slice(), [EventPayload::BattleStarted(s)] if s.round == 1),
+        "only BattleStarted precedes A's first window, got {events:?}"
+    );
+    let open = t + i64::from(BATTLE_START_CAP_MS);
+    let window = w.only_deadline(id);
+    assert_eq!(
+        (window.unit_id, window.window_seq, window.scheduled_at),
+        (fastest, 1, time(open + PVP_WINDOW_MS)),
+        "the deploy row is replaced by ONE 30 s turn window"
+    );
+    assert_eq!(w.remembered(a()), Some(vec![11, 12]));
+    assert_eq!(w.remembered(b()), Some(vec![22, 21]));
+    let before = w.snapshot();
+    assert_eq!(
+        deploy(&fx, a(), t + 1_000, id, vec![pick(11, 0), pick(12, 1)]),
+        Err("battle is not deploying".to_string())
+    );
+    assert_eq!(changed(&before, &w.snapshot()), none());
+}
+
+/// Deploy expiry with A locked and B not: B is auto-filled from its REMEMBERED formation, then the
+/// first conscious members in slot order, capped at the format — and the reveal happens in the fire
+/// (Active, both sides on the board, one turn window). It is not a strike.
+///
+/// WRONG IMPL KILLED: the freeze (a wild-style `Fled` close of a PvP deploy); B's remembered
+/// formation ignored (21, 22 instead of 23, 21); the format cap ignored (three B units); A's locked
+/// picks replaced by an auto-fill; an expiry booked as an auto-pass strike.
+#[test]
+fn deploy_expiry_auto_fills_the_unlocked_side_from_its_remembered_formation_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &A_TRIO, &B_TRIO, 2);
+    w.formations.seed(&PlayerFormation {
+        owner_identity: b(),
+        monster_ids: vec![23],
+    });
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(12, 0), pick(11, 1)]).expect("A locks");
+    let window = w.only_deadline(id);
+    let expiry = T0 + PVP_DEPLOY_MS;
+    assert_eq!(fire_deadline(&fx, expiry, deadline_args(&window)), Ok(()));
+    let a_ids: Vec<Option<u64>> = w
+        .side_units(id, SideRow::A)
+        .iter()
+        .map(|u| u.monster_id)
+        .collect();
+    let b_ids: Vec<Option<u64>> = w
+        .side_units(id, SideRow::B)
+        .iter()
+        .map(|u| u.monster_id)
+        .collect();
+    assert_eq!(a_ids, vec![Some(12), Some(11)], "A's locked picks are kept");
+    assert_eq!(
+        b_ids,
+        vec![Some(23), Some(21)],
+        "B: the remembered 23 first, then 21 in slot order, capped at the format (2)"
+    );
+    assert_eq!(w.tactical(id).phase, Phase::Active, "the fire revealed");
+    assert!(w.deploys_of(id).is_empty());
+    let windows = deadlines_but(&w, id, window.scheduled_id);
+    assert_eq!(windows.len(), 1, "one turn window besides the firing row");
+    assert_ne!(windows[0].0, DEPLOY_WINDOW_UNIT);
+    let strikes: Vec<u8> = w.clocks_of(id).iter().map(|c| c.autopass_count).collect();
+    assert_eq!(strikes, vec![0, 0], "a deploy expiry is not a strike");
+}
+
+/// Deploy expiry with NEITHER side locked and no formation remembered: both sides are auto-filled
+/// with their first conscious members in slot order (A's fainted 11 skipped), capped at the format.
+///
+/// WRONG IMPL KILLED: the freeze; an expiry that fills only the challenger; a fainted member
+/// deployed; no cap.
+#[test]
+fn deploy_expiry_with_neither_side_locked_auto_fills_both_in_slot_order_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    pvp_parties(&w, &A_TRIO, &B_TRIO);
+    w.edit_monster(11, |m| m.current_hp = 0);
+    let id = start_pvp(
+        &fx,
+        a(),
+        &ids(&A_TRIO),
+        b(),
+        &ids(&B_TRIO),
+        2,
+        pvp_seed(7),
+        T0,
+    );
+    let window = w.only_deadline(id);
+    assert_eq!(
+        fire_deadline(&fx, T0 + PVP_DEPLOY_MS, deadline_args(&window)),
+        Ok(())
+    );
+    let placed = |side: SideRow| -> Vec<(u8, Option<u64>)> {
+        w.side_units(id, side)
+            .iter()
+            .map(|u| (u.slot, u.monster_id))
+            .collect()
+    };
+    assert_eq!(placed(SideRow::A), vec![(0, Some(12)), (1, Some(13))]);
+    assert_eq!(placed(SideRow::B), vec![(0, Some(21)), (1, Some(22))]);
+    assert_eq!(w.tactical(id).phase, Phase::Active);
+}
+
+/// A premature deploy fire (the runtime fired early) only re-arms the same window at the clock's
+/// deadline; nothing else moves.
+///
+/// WRONG IMPL KILLED: a premature fire that auto-fills or closes the deploy; a re-arm at `now`.
+#[test]
+fn a_premature_pvp_deploy_fire_only_rearms_the_window_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    let window = w.only_deadline(id);
+    let before = w.snapshot();
+    assert_eq!(
+        fire_deadline(&fx, T0 + 1_000, deadline_args(&window)),
+        Ok(())
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        vec!["tactical_deadline_sched"],
+        "a premature fire only re-arms"
+    );
+    assert_eq!(
+        deadlines_but(&w, id, window.scheduled_id),
+        vec![(DEPLOY_WINDOW_UNIT, 0, time(T0 + PVP_DEPLOY_MS))],
+        "one new row, same pin, at the 45 s deadline"
+    );
+}
+
+/// Deploy expiry where a side has NO eligible monster left (B's only one fainted after the start)
+/// cancels the battle: anchor `Fled`, phase Finished, no unit, no staging row, no rating, the GC armed.
+///
+/// WRONG IMPL KILLED: the freeze's wild close is right on the anchor but this pins it for PvP too
+/// and adds: a materialise with an empty side B (an instant SideAWins rated against a player who
+/// could not deploy); a rating on a cancel.
+#[test]
+fn deploy_expiry_with_a_side_left_without_a_conscious_monster_cancels_unrated_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR[..1], &B_PAIR[..1], 1);
+    w.edit_monster(21, |m| m.current_hp = 0);
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(11, 0)]).expect("A locks");
+    let window = w.only_deadline(id);
+    let expiry = T0 + PVP_DEPLOY_MS;
+    assert_eq!(fire_deadline(&fx, expiry, deadline_args(&window)), Ok(()));
+    assert_eq!(
+        w.anchor(id).expect("anchor").state.outcome,
+        BattleOutcome::Fled
+    );
+    assert_eq!(w.tactical(id).phase, Phase::Finished);
+    assert!(w.units_of(id).is_empty(), "nothing was revealed");
+    assert!(w.deploys_of(id).is_empty());
+    assert!(w.profiles.rows().is_empty(), "a cancel rates nobody");
+    let gcs: Vec<ScheduleAt> = w.gcs_of(id).iter().map(|r| r.scheduled_at).collect();
+    assert_eq!(gcs, vec![time(expiry + GC_DELAY_MS)]);
+    for who in [a(), b()] {
+        assert!(!crate::guards::is_in_ongoing_battle(&fx.ctx(), who));
+    }
+}
+
+/// The dev entrypoint's consent rule (REV 2 E, D): a player may start only a PRACTICE battle for
+/// itself — its party split in slot order (3 -> 2 + 1) — and pairing two different identities is the
+/// module owner's alone; a one-monster party cannot practise; no party is "no party monster".
+///
+/// WRONG IMPL KILLED: a dev reducer any player can aim at a non-consenting opponent (a rated
+/// result); a practice that puts the whole party on both sides; a split by any rule but slot order.
+#[cfg(feature = "dev_reducers")]
+#[test]
+fn dev_start_tactical_pvp_lets_a_player_start_only_its_own_practice_bt14_2() {
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        pvp_parties(&w, &PAIR, &B_PAIR);
+        let before = w.snapshot();
+        for (challenger, opponent) in [(a(), b()), (b(), b())] {
+            let got = fx.run_as_at(a(), at(T0), |ctx| {
+                super::dev_start_tactical_pvp(ctx, challenger, opponent, None)
+            });
+            assert_eq!(got, Err("not owner".to_string()));
+            assert_eq!(changed(&before, &w.snapshot()), none());
+        }
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &A_TRIO);
+        let got = fx.run_as_at(a(), at(T0), |ctx| {
+            super::dev_start_tactical_pvp(ctx, a(), a(), None)
+        });
+        assert_eq!(got, Ok(()));
+        let anchors = w.battles.rows();
+        assert_eq!(anchors.len(), 1);
+        let anchor = &anchors[0];
+        assert_eq!(
+            (
+                anchor.player_identity,
+                anchor.opponent_identity,
+                anchor.party_monster_ids.clone(),
+                anchor.opponent_monster_ids.clone()
+            ),
+            (a(), a(), vec![11, 12], vec![13]),
+            "the party split in slot order: 2 for A, 1 for B"
+        );
+        let t = w.tactical(anchor.battle_id);
+        assert_eq!(
+            (t.kind, t.format, t.phase),
+            (BattleKind::Practice, 2, Phase::Deploying)
+        );
+        assert!(pvp_pool().contains(&t.map_id));
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &PAIR[..1]);
+        let before = w.snapshot();
+        let got = fx.run_as_at(a(), at(T0), |ctx| {
+            super::dev_start_tactical_pvp(ctx, a(), a(), None)
+        });
+        assert_eq!(got, Err("practice needs two party monsters".to_string()));
+        assert_eq!(changed(&before, &w.snapshot()), none());
+    }
+    {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        let got = fx.run_as_at(a(), at(T0), |ctx| {
+            super::dev_start_tactical_pvp(ctx, a(), a(), None)
+        });
+        assert_eq!(got, Err("no party monster".to_string()));
+    }
+}
+
+/// The module owner (the publisher's `spacetime call`) may pair two players; the format argument is
+/// honoured.
+///
+/// WRONG IMPL KILLED: an owner check that also blocks the owner; a format argument ignored.
+#[cfg(feature = "dev_reducers")]
+#[test]
+fn dev_start_tactical_pvp_lets_the_module_owner_pair_two_players_bt14_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    pvp_parties(&w, &PAIR, &B_PAIR);
+    let got = fx.run_as_at(module(), at(T0), |ctx| {
+        super::dev_start_tactical_pvp(ctx, a(), b(), Some(1))
+    });
+    assert_eq!(got, Ok(()));
+    let anchors = w.battles.rows();
+    assert_eq!(anchors.len(), 1);
+    let anchor = &anchors[0];
+    assert_eq!(
+        (
+            anchor.player_identity,
+            anchor.opponent_identity,
+            anchor.party_monster_ids.clone(),
+            anchor.opponent_monster_ids.clone()
+        ),
+        (a(), b(), vec![11, 12], vec![21, 22])
+    );
+    let t = w.tactical(anchor.battle_id);
+    assert_eq!((t.kind, t.format), (BattleKind::Pvp, 1));
+}
+
+// ---------------------------------------------------------------------------
+// BT14.3 — the PvP clock: 30 s windows, <= 3 per unit-turn, AutoPass strikes, the 4th forfeits
+// ---------------------------------------------------------------------------
+
+/// After the reveal the waiting unit's SIDE clock holds window 1 with a 30 s budget (opened after
+/// the BattleStarted pad), and the other side's clock holds no window (and no stale deploy
+/// deadline).
+///
+/// WRONG IMPL KILLED: the PvE 300 s budget; the window booked on the wrong side's clock; the deploy
+/// deadline left on B's clock (B's client counts down a window that does not exist).
+#[test]
+fn the_reveal_opens_a_30_second_window_on_the_waiting_side_only_bt14_3() {
+    assert_pvp_tuning();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let open = live.revealed_at + i64::from(BATTLE_START_CAP_MS);
+    assert_eq!(
+        clock_window(&w.clock_of(live.id, SideRow::A)),
+        (1, Some(open), Some(open + PVP_WINDOW_MS), 1, 0),
+        "A's first window: 30 s from its open"
+    );
+    let b_clock = w.clock_of(live.id, SideRow::B);
+    assert_eq!(
+        (b_clock.window_open_ms, b_clock.deadline_ms),
+        (None, None),
+        "B's clock holds no window"
+    );
+    let window = w.only_deadline(live.id);
+    assert_eq!(
+        (window.unit_id, window.window_seq, window.scheduled_at),
+        (live.a[0], 1, time(open + PVP_WINDOW_MS))
+    );
+}
+
+/// Every accepted live submit that leaves AP re-arms a FRESH full 30 s window (seq 2, then 3; one
+/// deadline row each time), and a unit-turn never opens a 4th: with 2 AP left after the third
+/// window the next action ends the turn and the next unit's turn starts its own count. (At the
+/// design's numbers a 4th window is structurally unreachable — every window after the first needs
+/// >= 2 AP and every live submit that keeps the turn spends >= 2 of 6.)
+///
+/// WRONG IMPL KILLED: a window that keeps its old deadline (no reset on submit); the PvE budget on a
+/// re-arm; two deadline rows; a per-unit-turn count that is never reset for the next unit.
+#[test]
+fn accepted_live_pvp_submits_rearm_fresh_30_second_windows_at_most_three_per_unit_turn_bt14_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let u = live.a[0];
+    seat_in_clear_lane(&w, live.id, u, live.b[0]);
+    let t1 = T0 + 10_000;
+    let u_row = w.unit(u);
+    submit(&fx, a(), t1, live.id, u, vec![light(&u_row, live.b[0])])
+        .expect("a live Light the unit can afford");
+    let c = w.clock_of(live.id, SideRow::A);
+    let (open, deadline) = (
+        c.window_open_ms.expect("a fresh window"),
+        c.deadline_ms.expect("its deadline"),
+    );
+    assert_eq!((c.window_seq, c.windows_this_unit_turn), (2, 2));
+    assert_eq!(deadline - open, PVP_WINDOW_MS, "a FRESH full 30 s window");
+    assert!((0..=5_000).contains(&(open - t1)), "the pad is capped");
+    let window = w.only_deadline(live.id);
+    assert_eq!(
+        (window.unit_id, window.window_seq, window.scheduled_at),
+        (u, 2, time(deadline))
+    );
+
+    let (x, y) = plain_step(&w, live.id, u);
+    let t2 = T0 + 15_000;
+    submit(&fx, a(), t2, live.id, u, vec![step(x, y)]).expect("a one-stride Move: 2 AP left");
+    let c = w.clock_of(live.id, SideRow::A);
+    let (open, deadline) = (
+        c.window_open_ms.expect("a fresh window"),
+        c.deadline_ms.expect("its deadline"),
+    );
+    assert_eq!(
+        (c.window_seq, c.windows_this_unit_turn),
+        (3, 3),
+        "the third window of the unit-turn"
+    );
+    assert_eq!(deadline - open, PVP_WINDOW_MS);
+    let window = w.only_deadline(live.id);
+    assert_eq!((window.unit_id, window.window_seq), (u, 3));
+    assert_eq!(
+        w.unit(u).ap,
+        2,
+        "PRECONDITION: 2 AP left after Light + Move"
+    );
+
+    let t3 = T0 + 20_000;
+    submit(&fx, a(), t3, live.id, u, vec![QueuedAction::EndTurn]).expect("the turn ends");
+    assert!(w
+        .events_of(live.id)
+        .iter()
+        .any(|e| matches!(&e.payload, EventPayload::TurnEnded(x) if x.unit == u)));
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.a[1]),
+        "the next unit waits"
+    );
+    let c = w.clock_of(live.id, SideRow::A);
+    assert_eq!(
+        (c.window_seq, c.windows_this_unit_turn),
+        (4, 1),
+        "the next unit-turn counts its own windows from 1"
+    );
+}
+
+/// A window expiry under the PvP ruleset is an `AutoPass` (strike 1) that ends the turn uncommitted
+/// WITHOUT Guard, books the strike on the OWNER's clock row — which BOTH participants read through
+/// `my_battle_clock` — and opens the next unit's window (no flee).
+///
+/// WRONG IMPL KILLED: the wild AutoFlee on a PvP battle; a Guard granted on an auto-pass; the strike
+/// on the other side's clock; a clock view filtered to the caller's own side (the deterrent is
+/// that both see both counts).
+#[test]
+fn a_pvp_window_expiry_auto_passes_without_guard_and_books_a_strike_both_players_see_bt14_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let window = w.only_deadline(live.id);
+    let deadline = w
+        .clock_of(live.id, SideRow::A)
+        .deadline_ms
+        .expect("A's window is open");
+    let last = w.events_of(live.id).last().map_or(0, |e| e.seq);
+    assert_eq!(fire_deadline(&fx, deadline, deadline_args(&window)), Ok(()));
+    let fresh: Vec<EventPayload> = w
+        .events_of(live.id)
+        .into_iter()
+        .filter(|e| e.seq > last)
+        .map(|e| e.payload)
+        .collect();
+    assert!(
+        matches!(
+            fresh.as_slice(),
+            [
+                EventPayload::AutoPass(p),
+                EventPayload::TurnEnded(t),
+                ..
+            ] if p.unit == live.a[0] && p.strike == 1
+                && t.unit == live.a[0] && !t.guard && !t.committed
+        ),
+        "AutoPass{{strike 1}} then TurnEnded{{guard false, uncommitted}}, got {fresh:?}"
+    );
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::Ongoing,
+        "an auto-pass is no flee"
+    );
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.a[1])
+    );
+    let a_clock = w.clock_of(live.id, SideRow::A);
+    assert_eq!(
+        clock_window(&a_clock),
+        (2, Some(deadline), Some(deadline + PVP_WINDOW_MS), 1, 1),
+        "the strike is A's; the next unit's 30 s window opens at once (nothing to animate)"
+    );
+    assert_eq!(w.clock_of(live.id, SideRow::B).autopass_count, 0);
+    assert_eq!(
+        deadlines_but(&w, live.id, window.scheduled_id),
+        vec![(live.a[1], 2, time(deadline + PVP_WINDOW_MS))]
+    );
+    for who in [a(), b()] {
+        let seen: Vec<BattleClock> =
+            fx.call_view(crate::native_host_tests::VIEW_MY_BATTLE_CLOCK, who);
+        assert_eq!(
+            row_set(&seen),
+            row_set(&w.clocks_of(live.id)),
+            "{who} reads both clocks, strikes included"
+        );
+    }
+}
+
+/// The strike count never resets: A's first unit and its second unit each auto-pass in round 1, B
+/// plays its turns, the boundary runs round 2, and A's first unit auto-passes again — A's clock
+/// reads 3 (strikes 1, 2, 3 in order), B's 0, and the battle goes on (the 4th would forfeit).
+///
+/// WRONG IMPL KILLED: a per-unit or per-round count; a count reset by `begin_unit_turn`; strikes
+/// booked on the side whose clock happens to be loaded first.
+#[test]
+fn pvp_strikes_accumulate_across_units_and_rounds_and_never_reset_bt14_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let expire_waiting = || {
+        let row = w.only_deadline(live.id);
+        let deadline = w
+            .clock_of(live.id, SideRow::A)
+            .deadline_ms
+            .expect("an A window is open");
+        assert_eq!(fire_deadline(&fx, deadline, deadline_args(&row)), Ok(()));
+        // The runtime deletes the fired row itself.
+        assert_eq!(w.deadlines.remove(row.scheduled_id), 1);
+        deadline
+    };
+    let d1 = expire_waiting();
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.a[1])
+    );
+    let d2 = expire_waiting();
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.b[0]),
+        "B's turn"
+    );
+    assert!(d2 > d1);
+    for &unit in &live.b {
+        submit(
+            &fx,
+            b(),
+            d2 + 1_000,
+            live.id,
+            unit,
+            vec![QueuedAction::EndTurn],
+        )
+        .expect("B ends its turns live");
+    }
+    let t = w.tactical(live.id);
+    assert_eq!(
+        (t.turn_state, t.round),
+        (TurnState::Advancing, 2),
+        "round 1 is over"
+    );
+    let adv = w.advances_of(live.id);
+    assert_eq!(adv.len(), 1);
+    fire_advance(&fx, d2 + 2_000, advance_args(&adv[0])).expect("round 2 starts");
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.a[0])
+    );
+    expire_waiting();
+    let strikes: Vec<(u32, u8)> = w
+        .events_of(live.id)
+        .iter()
+        .filter_map(|e| match &e.payload {
+            EventPayload::AutoPass(p) => Some((p.unit, p.strike)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        strikes,
+        vec![(live.a[0], 1), (live.a[1], 2), (live.a[0], 3)],
+        "one count per PLAYER for the whole match"
+    );
+    assert_eq!(
+        (
+            w.clock_of(live.id, SideRow::A).autopass_count,
+            w.clock_of(live.id, SideRow::B).autopass_count
+        ),
+        (3, 0)
+    );
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::Ongoing,
+        "three strikes do not forfeit"
+    );
+}
+
+/// The 4th auto-pass of the match forfeits: with three strikes on A's clock, A's next expiry ends
+/// the battle `BattleEnd{SideBWins, Forfeit}` through the funnel — anchor `SideBWins`, phase
+/// Finished, A's READY row voided (never executed) and deleted, every deadline row but the firing
+/// one swept, one GC row, B rated up and A down exactly once.
+///
+/// WRONG IMPL KILLED: a 5th-strike forfeit (`>` for `>=`); the forfeit mapped to the striker's side;
+/// a terminal PvP anchor that is never rated (the funnel skipped) or rated twice; READY rows
+/// executed at the end.
+#[test]
+fn the_fourth_auto_pass_forfeits_the_player_through_the_funnel_bt14_3() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    submit(
+        &fx,
+        a(),
+        T0 + 8_000,
+        live.id,
+        live.a[1],
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("A pre-queues its second unit");
+    w.edit_clock_of(live.id, SideRow::A, |c| c.autopass_count = 3);
+    let window = w.only_deadline(live.id);
+    let deadline = w
+        .clock_of(live.id, SideRow::A)
+        .deadline_ms
+        .expect("A's window is open");
+    assert_eq!(fire_deadline(&fx, deadline, deadline_args(&window)), Ok(()));
+    let events = w.events_of(live.id);
+    assert!(events.iter().any(|e| matches!(
+        &e.payload,
+        EventPayload::AutoPass(p) if p.unit == live.a[0] && p.strike == 4
+    )));
+    assert!(events.iter().any(|e| matches!(
+        &e.payload,
+        EventPayload::BattleEnd(x) if x.outcome == BattleOutcome::SideBWins && x.how == EndHow::Forfeit
+    )));
+    assert_eq!(
+        w.anchor(live.id).expect("anchor").state.outcome,
+        BattleOutcome::SideBWins
+    );
+    assert_eq!(w.tactical(live.id).phase, Phase::Finished);
+    assert!(w.queues_of(live.id).is_empty(), "the READY row is deleted");
+    assert!(events
+        .iter()
+        .any(|e| matches!(&e.payload, EventPayload::QueueVoided(v) if v.unit == live.a[1])));
+    assert!(
+        !events.iter().any(|e| matches!(
+            &e.payload,
+            EventPayload::TurnEnded(t) if t.unit == live.a[1]
+        )),
+        "the voided plan never ran"
+    );
+    assert!(deadlines_but(&w, live.id, window.scheduled_id).is_empty());
+    let gcs: Vec<ScheduleAt> = w.gcs_of(live.id).iter().map(|r| r.scheduled_at).collect();
+    assert_eq!(gcs, vec![time(deadline + GC_DELAY_MS)]);
+    let (rw, rl) =
+        game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
+    assert_eq!(w.profile(b()), Some((rw, 1, 0)), "B rated up once");
+    assert_eq!(w.profile(a()), Some((rl, 0, 1)), "A rated down once");
+}
+
+// ---------------------------------------------------------------------------
+// BT14.4 — secrecy: no ready flag, events only at execution, the opponent receives nothing
+// ---------------------------------------------------------------------------
+//
+// ACCEPTED REVEALS (REV 2 H — named here so they are not mistaken for false greens): (a) the legacy
+// `my_battle` anchor shows the opponent's party roster from Deploying on (slots and positions stay
+// secret until the copy; R-bt-14-ROSTERREVEAL -> bt-17); (b) `QueueVoided{unit}` after a KO, a
+// turn-skip or the battle end discloses that a plan existed; (c) a submit landing after its deadline
+// but before the fire commits is accepted.
+
+/// Every view the opponent (B) subscribes to, as one byte set per view.
+fn opponent_views(fx: &Fixture) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+    use crate::native_host_tests::{
+        VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
+        VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS, VIEW_MY_TACTICAL_BATTLE,
+    };
+    vec![
+        (
+            "my_battle",
+            row_set(&fx.call_view::<Battle>(VIEW_MY_BATTLE, b())),
+        ),
+        (
+            "my_tactical_battle",
+            row_set(&fx.call_view::<BattleTactical>(VIEW_MY_TACTICAL_BATTLE, b())),
+        ),
+        (
+            "my_battle_units",
+            row_set(&fx.call_view::<BattleUnit>(VIEW_MY_BATTLE_UNITS, b())),
+        ),
+        (
+            "my_battle_events",
+            row_set(&fx.call_view::<BattleEvent>(VIEW_MY_BATTLE_EVENTS, b())),
+        ),
+        (
+            "my_battle_clock",
+            row_set(&fx.call_view::<BattleClock>(VIEW_MY_BATTLE_CLOCK, b())),
+        ),
+        (
+            "my_battle_queue",
+            row_set(&fx.call_view::<BattleQueue>(VIEW_MY_BATTLE_QUEUE, b())),
+        ),
+        (
+            "my_battle_deploy",
+            row_set(&fx.call_view::<BattleDeploy>(VIEW_MY_BATTLE_DEPLOY, b())),
+        ),
+    ]
+}
+
+/// Does `hay` contain `needle` as a contiguous byte run?
+fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The two-identity proof: A's pre-queue for a unit that is NOT waiting, its re-submit (a different
+/// plan) and its cancel each reach the opponent as NOTHING — every view B subscribes to is
+/// byte-identical before and after, B's queue view stays empty while A's shows the row, and no
+/// participant-visible or secret table is written at all (`writes_to` 0; the owner-only queue row is
+/// the only write). After the reveal no staging row exists for anyone, and no byte run of the
+/// battle seed appears in any row the opponent can read.
+///
+/// WRONG IMPL KILLED: a ready flag on `battle_unit` / `battle_tactical`; `store` re-writing
+/// unchanged rows on a pre-queue (REV 2 G: an unchanged update is a subscription ping that times
+/// the opponent's planning); a queue view that leaks another owner's rows; a seed in a public row.
+#[test]
+fn a_prequeue_resubmit_and_cancel_reach_the_opponent_as_nothing_at_all_bt14_4() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let quiet = [
+        "battle",
+        "battle_tactical",
+        "battle_unit",
+        "battle_secret",
+        "battle_clock",
+        "battle_event",
+        "battle_deploy",
+    ];
+    let views = opponent_views(&fx);
+    let unit = live.a[1];
+    let u_row = w.unit(unit);
+    let plans: [(&str, Vec<QueuedAction>); 2] = [
+        ("pre-queue", vec![QueuedAction::EndTurn]),
+        ("re-submit", vec![light(&u_row, live.b[0])]),
+    ];
+    for (i, (label, plan)) in plans.into_iter().enumerate() {
+        fx.reset_writes();
+        submit(
+            &fx,
+            a(),
+            T0 + 8_000 + 1_000 * i64::try_from(i).expect("small"),
+            live.id,
+            unit,
+            plan,
+        )
+        .unwrap_or_else(|e| panic!("{label} accepted, got {e}"));
+        for table in quiet {
+            assert_eq!(fx.writes_to(table), 0, "{label}: {table} is not written");
+        }
+        assert!(
+            fx.writes_to("battle_queue") > 0,
+            "{label}: non-vacuous: the owner-only READY row was written"
+        );
+        assert_eq!(
+            opponent_views(&fx),
+            views,
+            "{label}: every view the opponent reads is byte-identical"
+        );
+        let mine: Vec<BattleQueue> =
+            fx.call_view(crate::native_host_tests::VIEW_MY_BATTLE_QUEUE, a());
+        assert_eq!(
+            mine.iter()
+                .map(|q| (q.unit_id, q.owner))
+                .collect::<Vec<_>>(),
+            vec![(unit, a())],
+            "{label}: A reads its own READY row"
+        );
+    }
+    fx.reset_writes();
+    cancel(&fx, a(), T0 + 11_000, live.id, unit).expect("A cancels");
+    for table in quiet {
+        assert_eq!(fx.writes_to(table), 0, "cancel: {table} is not written");
+    }
+    assert!(w.queues_of(live.id).is_empty(), "the READY row is gone");
+    assert_eq!(opponent_views(&fx), views, "cancel: nothing reaches B");
+
+    let seed = w.secret(live.id).seed.to_le_bytes();
+    for (view, rows) in opponent_views(&fx) {
+        assert!(
+            !rows.iter().any(|r| contains_bytes(r, &seed)),
+            "no row of {view} carries the battle seed"
+        );
+    }
+    for (name, rows) in opponent_views(&fx) {
+        if name == "my_battle_deploy" {
+            assert!(
+                rows.is_empty(),
+                "after the reveal no staging row is left for B"
+            );
+        }
+    }
+    let a_deploys: Vec<BattleDeploy> =
+        fx.call_view(crate::native_host_tests::VIEW_MY_BATTLE_DEPLOY, a());
+    assert!(a_deploys.is_empty(), "nor for A");
+}
+
+/// `battle_event` rows exist only at execution: a READY plan for A's second unit leaves no
+/// `Executed` / `Moved` / `PlanHalted` / `TurnEnded` naming it while it waits, and they appear (to
+/// both players) the moment the unit's turn runs it — the READY row consumed.
+///
+/// WRONG IMPL KILLED: a "planned" event written at submit (an unexecuted entry the opponent receives);
+/// a plan that runs at submit time.
+#[test]
+fn a_queued_plan_reaches_battle_event_only_when_it_executes_bt14_4() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let (u1, u2) = (live.a[0], live.a[1]);
+    seat_in_clear_lane(&w, live.id, u2, live.b[0]);
+    let u2_row = w.unit(u2);
+    submit(
+        &fx,
+        a(),
+        T0 + 8_000,
+        live.id,
+        u2,
+        vec![light(&u2_row, live.b[0])],
+    )
+    .expect("A pre-queues its second unit's Light");
+    let names_u2 = |e: &EventPayload| match e {
+        EventPayload::Executed(x) => x.attacker == u2,
+        EventPayload::Moved(m) => m.unit == u2,
+        EventPayload::PlanHalted(h) => h.unit == u2,
+        EventPayload::TurnEnded(t) => t.unit == u2,
+        _ => false,
+    };
+    let b_events = |fx: &Fixture| -> Vec<EventPayload> {
+        fx.call_view::<BattleEvent>(crate::native_host_tests::VIEW_MY_BATTLE_EVENTS, b())
+            .into_iter()
+            .map(|e| e.payload)
+            .collect()
+    };
+    assert!(
+        !w.events_of(live.id).iter().any(|e| names_u2(&e.payload)),
+        "nothing about the READY plan is in the transcript"
+    );
+    assert!(!b_events(&fx).iter().any(names_u2));
+    submit(
+        &fx,
+        a(),
+        T0 + 9_000,
+        live.id,
+        u1,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("the waiting unit ends its turn: the READY plan pops");
+    assert!(
+        w.events_of(live.id)
+            .iter()
+            .any(|e| matches!(&e.payload, EventPayload::Executed(x) if x.attacker == u2)),
+        "the plan executed and only now is in the transcript"
+    );
+    assert!(
+        b_events(&fx)
+            .iter()
+            .any(|e| matches!(e, EventPayload::Executed(x) if x.attacker == u2)),
+        "the opponent sees it once it ran"
+    );
+    assert!(w.queues_of(live.id).is_empty(), "the READY row is consumed");
+}
+
+/// REV 2 A: the legacy 1v1 `submit_pvp_action` on a TACTICAL PvP anchor is refused for BOTH
+/// participants with the tactical guard's text, and writes nothing (no `battle_action` pick, no
+/// anchor change) — a 1v1 turn must never settle (rate) a battle the tactical rows still run.
+///
+/// WRONG IMPL KILLED: the freeze (no tactical-anchor guard on `submit_pvp_action`: each side's pick is
+/// recorded and the second resolves a 1v1 turn on the anchor).
+#[test]
+fn legacy_submit_pvp_action_refuses_a_tactical_pvp_anchor_for_both_participants_bt14_4() {
+    let fx = fixture();
+    let w = world(&fx);
+    let actions = fx
+        .table_keyed::<crate::schema::BattleAction, u64>("battle_action", "action_id", |r| {
+            r.action_id
+        })
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.action_id, |r, id| r.action_id = id);
+    let _ = fx.table_keyed::<crate::schema::BattleAction, u64>("battle_action", "battle_id", |r| {
+        r.battle_id
+    });
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let anchor = w.anchor(live.id).expect("anchor");
+    let lead_skill = |side: &game_core::BattleSide| -> u32 {
+        side.team
+            .first()
+            .and_then(|lead| lead.known_skill_ids.first().copied())
+            .expect("the lead knows a skill")
+    };
+    let before = w.snapshot();
+    for (who, skill) in [
+        (a(), lead_skill(&anchor.state.side_a)),
+        (b(), lead_skill(&anchor.state.side_b)),
+    ] {
+        let got = fx.run_as_at(who, at(T0 + 9_000), |ctx| {
+            crate::pvp::submit_pvp_action(
+                ctx,
+                live.id,
+                game_core::PvpAction::Attack { skill_id: skill },
+            )
+        });
+        assert_eq!(
+            got,
+            Err(TACTICAL_REFUSAL.to_string()),
+            "{who}: the legacy pick is refused on a tactical anchor"
+        );
+        assert_eq!(
+            changed(&before, &w.snapshot()),
+            none(),
+            "{who}: nothing written"
+        );
+        assert!(actions.rows().is_empty(), "{who}: no battle_action row");
+    }
+}
+
+/// A's `deploy_units` naming one of B's monsters is refused with the SAME ownership text whether B
+/// has already LOCKED that monster or not — the refusal is no oracle on the opponent's secret
+/// staging (a refused call rolls back, so a probe would be free) — and writes nothing.
+///
+/// RED REASON: the GREEN artifact at e2effbb8 answered "monster 21 is staged on the other side" for
+/// the locked probe, but "monster 23 not owned by player" for the unlocked one.
+///
+/// WRONG IMPL KILLED: any cross-side staging check that runs before the ownership check; any error
+/// text that depends on the opponent's staging row.
+#[test]
+fn a_probe_with_the_opponents_locked_monster_gets_the_unowned_refusal_bt14_4() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pvp(&fx, &w, &PAIR, &B_TRIO, 2);
+    deploy(&fx, b(), T0 + 1_000, id, vec![pick(21, 0), pick(22, 1)]).expect("B locks 21 and 22");
+    let before = w.snapshot();
+    let mut errors: Vec<String> = Vec::new();
+    for (label, probe) in [("B's LOCKED monster", 21u64), ("B's UNLOCKED monster", 23)] {
+        let got = deploy(&fx, a(), T0 + 2_000, id, vec![pick(probe, 0), pick(11, 1)]);
+        assert_eq!(
+            got,
+            Err(format!("monster {probe} not owned by player")),
+            "{label}: the plain ownership refusal, whatever the opponent staged"
+        );
+        if let Err(e) = got {
+            errors.push(e);
+        }
+    }
+    assert!(
+        errors.iter().all(|e| !e.contains("staged")),
+        "no refusal mentions the opponent's staging: {errors:?}"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "neither probe writes anything"
+    );
+}
+
+// ===========================================================================
 // mut-W3 — mutation-gate tests: what `store` persists, the wild turn through `ShellHooks`, the
 // firing-row exception, and the pure helpers/guards a stepped scenario never discriminates
 // ===========================================================================
@@ -4417,7 +6401,7 @@ fn a_plan_for_a_unit_without_an_owner_row_is_not_stored_as_a_ready_row_mutw3() {
     assert_eq!(ready_rows(&w, id), vec![(u2, vec![end], T0 + 2_000)]);
 }
 
-/// An expired PvP-ruleset window is an auto-pass strike on the side-A clock row, and the
+/// An expired PvP window is an auto-pass strike on the acting side's clock row, and the
 /// firing deadline row is the one deadline row the module leaves alone (the runtime deletes
 /// it): the stale window row goes, the next unit's window is armed. The firing row carries an
 /// id no other row has.
@@ -4425,25 +6409,34 @@ fn a_plan_for_a_unit_without_an_owner_row_is_not_stored_as_a_ready_row_mutw3() {
 fn an_expired_pvp_window_persists_the_strike_and_spares_only_the_firing_deadline_row_mutw3() {
     let fx = fixture();
     let w = world(&fx);
-    let live = live_pair(&fx, &w);
-    w.edit_tactical(live.id, |t| t.kind = BattleKind::Practice);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
     let stale = w.only_deadline(live.id);
-    let deadline = w.clock(live.id).deadline_ms.expect("an open window");
+    let deadline = w
+        .clock_of(live.id, SideRow::A)
+        .deadline_ms
+        .expect("an open window");
     let firing = TacticalDeadlineSched {
         scheduled_id: 9_901,
         ..deadline_args(&stale)
     };
     w.deadlines.seed(&firing);
-    assert_eq!(w.clock(live.id).autopass_count, 0, "PRECONDITION");
+    assert_eq!(
+        w.clock_of(live.id, SideRow::A).autopass_count,
+        0,
+        "PRECONDITION"
+    );
 
     assert_eq!(fire_deadline(&fx, deadline, deadline_args(&firing)), Ok(()));
 
     assert_eq!(
-        w.clock(live.id).autopass_count,
+        w.clock_of(live.id, SideRow::A).autopass_count,
         1,
         "the first expiry is strike 1"
     );
-    assert_eq!(w.tactical(live.id).turn_state, TurnState::Waiting(live.u2));
+    assert_eq!(
+        w.tactical(live.id).turn_state,
+        TurnState::Waiting(live.a[1])
+    );
     let mut rows: Vec<(u64, u32, u32)> = w
         .deadlines_of(live.id)
         .iter()
@@ -4453,16 +6446,16 @@ fn an_expired_pvp_window_persists_the_strike_and_spares_only_the_firing_deadline
     assert_eq!(
         rows.len(),
         2,
-        "the firing row and u2's fresh window: {rows:?}"
+        "the firing row and the next unit's fresh window: {rows:?}"
     );
     assert!(
-        rows.contains(&(9_901, live.u1, stale.window_seq)),
+        rows.contains(&(9_901, live.a[0], stale.window_seq)),
         "the firing row survives: {rows:?}"
     );
     assert!(
         rows.iter()
-            .any(|&(sid, unit, _)| sid != 9_901 && unit == live.u2),
-        "u2's window is armed under a fresh id: {rows:?}"
+            .any(|&(sid, unit, _)| sid != 9_901 && unit == live.a[1]),
+        "the next unit's window is armed under a fresh id: {rows:?}"
     );
     assert!(
         rows.iter().all(|&(sid, _, _)| sid != stale.scheduled_id),

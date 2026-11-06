@@ -23,4 +23,5 @@ export default __t.row({
     return ChallengeStatus;
   },
   createdAtMs: __t.i64().name("created_at_ms"),
+  format: __t.u8(),
 });
