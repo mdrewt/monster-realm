@@ -162,7 +162,8 @@ mutate-core shard="":
         exit 1
     fi
 
-# Local pre-push check: mutate only the code changed vs `base` (game-core + server-module).
+# Local pre-push check: mutate only the code COMMITTED since `base` (game-core + server-module);
+# uncommitted edits are not seen.
 # Empty diff = nothing to mutate. Same exit triage as mutate-core (0 ok, 2 missed, 3 timeouts).
 mutate-diff base="origin/master":
     #!/usr/bin/env bash
@@ -178,15 +179,19 @@ mutate-diff base="origin/master":
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
     fi
-    [ "$status" -ne 2 ] || { echo "mutate-diff: missed mutants — see mutants.out/missed.txt" >&2; exit 1; }
+    # Judge by missed.txt, not the exit code alone: exit 3 (timeouts) can accompany missed mutants.
+    if [ -s mutants.out/missed.txt ]; then
+        cat mutants.out/missed.txt >&2
+        echo "mutate-diff: $(grep -c '' mutants.out/missed.txt) missed mutant(s) in the diff" >&2
+        exit 1
+    fi
 
 # Server-module mutation gate, zero tolerance like game-core: a surviving mutant is either killed by
 # a test or, if provably equivalent / log-only, excluded in .cargo/mutants.toml with the proof.
 # There is no survivor budget to creep. The crate is `monster-realm-module`.
 #
-# Unsharded (`shard` empty) it runs and enforces zero survivors. The nightly runs a matrix of `k/n`
-# shards to fit the 6 h job cap (~1500 mutants): a shard only RUNS and reports its survivors, and
-# `mutate-server-check` sums every shard's missed.txt.
+# Unsharded (`shard` empty) it runs the whole crate. The nightly runs a matrix of `k/n` shards to
+# fit the 6 h job cap (~1500 mutants); every shard is its own zero-tolerance verdict, like mutate-core.
 mutate-server shard="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -216,27 +221,7 @@ mutate-server shard="":
     missed=$(grep -c '' mutants.out/missed.txt || true)
     echo "mutate-server: missed=$missed (zero-tolerance${shard_args[*]:+, shard {{shard}}})"
     if [ "$missed" -gt 0 ]; then
-        echo "server-module mutation gate: $missed surviving mutant(s) — zero-tolerance" >&2
-        exit 1
-    fi
-
-# Aggregate of the sharded server run: zero survivors across every shard's downloaded
-# `missed.txt` (<dir>/*/missed.txt). Fails if fewer than `shards` of them are present: a shard that
-# never reported must not read as zero survivors (the vacuous-green trap).
-mutate-server-check dir shards="8":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{shards}}" in ''|*[!0-9]*) echo "mutate-server-check: shards must be an integer" >&2; exit 64;; esac
-    files=$(find "{{dir}}" -name missed.txt | sort)
-    n=$(printf '%s\n' "$files" | grep -c . || true)
-    if [ "$n" -ne "{{shards}}" ]; then
-        echo "mutate-server-check: found $n missed.txt under {{dir}}, expected {{shards}} — a shard did not report" >&2
-        exit 1
-    fi
-    missed=$(printf '%s\n' "$files" | xargs cat | grep -c '' || true)
-    echo "mutate-server-check: missed=$missed across {{shards}} shards (zero-tolerance)"
-    if [ "$missed" -gt 0 ]; then
-        printf '%s\n' "$files" | xargs cat >&2
+        cat mutants.out/missed.txt >&2
         echo "server-module mutation gate: $missed surviving mutant(s) — zero-tolerance" >&2
         exit 1
     fi

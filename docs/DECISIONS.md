@@ -760,23 +760,24 @@ server conversation suspended over the battle base stays) or that demotes a visi
 ## The nightly mutation gates run sharded and both are zero-tolerance
 
 **Decision.** `mutation` (game-core) and `mutation-server` run as matrices of cargo-mutants
-`--shard k/n` jobs (6 and 8). Every core shard is its own zero-tolerance verdict; server shards
-only report survivors and a final `mutation-server` job requires zero across all of them
-(`just mutate-server-check`), failing if any shard did not succeed or report. The server gate has
-no survivor cap: a server survivor is killed by a test or, if provably equivalent or a log line
-nothing reads, excluded in `.cargo/mutants.toml` with the written proof (function + operator +
-column keys, so line drift cannot re-expose a runaway mutant). Four guaranteed-hang `tiled_import`
-mutants and one runaway-allocation mutant are excluded there too. `mutate-core` and `mutate-server`
-carry an 8 GB `ulimit -v` backstop so a runaway allocation aborts its test instead of killing the
-runner. `mutate-server` builds incrementally (`CARGO_INCREMENTAL=1`; CI's toolchain action sets 0):
-about 4x faster rebuilds per mutant with identical verdicts; `just mutate-diff` mutates only the
-changed lines locally. `just test` also runs the server tests with `--features dev_reducers`, which
-the default build compiles out.
+`--shard k/n` jobs (6 and 8). Every shard is its own zero-tolerance verdict and the job is red iff
+any shard is. The server gate has no survivor cap: a server survivor is killed by a test or, if
+provably equivalent (no input distinguishes it), excluded in `.cargo/mutants.toml` with the written
+proof (function + operator + column keys, so line drift cannot re-expose a runaway mutant). Log
+lines are observable (a log sink asserts them), so a mutant that only changes a log line is killed,
+not excluded. Four guaranteed-hang `tiled_import` mutants and one runaway-allocation mutant are
+excluded there too. `mutate-core` and `mutate-server` carry an 8 GB `ulimit -v` backstop so a
+runaway allocation aborts its test instead of killing the runner. `mutate-server` builds
+incrementally (`CARGO_INCREMENTAL=1`; CI's toolchain action sets 0): about 4x faster rebuilds per
+mutant with identical verdicts; `just mutate-diff` mutates only the lines committed since a base.
+`just test` also runs the server tests with `--features dev_reducers`, which the default build
+compiles out.
 
 **Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled at
 GitHub's 6 h cap. A count cap hides regressions (kill one, add one, same number) and rewards
 raising it; the server had drifted to 72 survivors against a cap of 34, which were cleared with real
-tests. The only new dependency is the SHA-pinned `actions/download-artifact` the aggregate job needs.
+tests.
 
 **Rules out.** Raising a cap or dropping mutants to fit the time limit; excluding a killable
-mutant; a per-shard server budget; a committed survivor baseline file.
+mutant; a per-shard server budget; a committed survivor baseline file; an aggregate job that
+re-counts what each shard already judged.

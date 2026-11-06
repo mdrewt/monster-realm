@@ -4453,3 +4453,87 @@ fn recruiting_the_second_wild_of_a_two_species_pack_records_that_wilds_species_a
         "the monster minted is the second wild's species (the row and the recruit agree)"
     );
 }
+
+// ---- settle log lines are observable events: a log sink asserts them (nextest runs each test in its own process, so installing the global logger once per test is safe, as in the crate's other sinks) ----
+struct SettleLogSink(std::sync::Mutex<Vec<String>>);
+impl log::Log for SettleLogSink {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(record.args().to_string());
+    }
+    fn flush(&self) {}
+}
+static SETTLE_LOGS: SettleLogSink = SettleLogSink(std::sync::Mutex::new(Vec::new()));
+fn install_log_sink() {
+    log::set_logger(&SETTLE_LOGS).expect("nextest");
+    log::set_max_level(log::LevelFilter::Info);
+}
+fn captured_log_lines(needle: &str) -> Vec<String> {
+    SETTLE_LOGS
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|l| l.contains(needle))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn unattributed_ko_logs_ledger_skip() {
+    install_log_sink();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    fall_in_battle(&w, live.id, live.u2);
+    ready_ko(&w, &live);
+    ko_submit(&fx, &w, &live, T0 + 25_000);
+    let skip = captured_log_lines("tactical_ledger_skip");
+    assert_eq!(skip.len(), 1, "{skip:?}");
+    assert!(
+        skip[0].contains(&format!("\"unattributed\":[{}]", live.u2)),
+        "{skip:?}"
+    );
+    assert!(captured_log_lines("tactical_ledger_mismatch").is_empty());
+}
+
+#[test]
+fn fall_without_ko_logs_mismatch() {
+    install_log_sink();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    w.edit_unit(live.u2, |u| {
+        u.cur_hp = 0;
+        u.state = UnitState::Fainted;
+    });
+    w.edit_tactical(live.id, |t| t.initiative.retain(|&x| x != live.u2));
+    ready_ko(&w, &live);
+    ko_submit(&fx, &w, &live, T0 + 25_000);
+    let mm = captured_log_lines("tactical_ledger_mismatch");
+    assert_eq!(mm.len(), 1, "{mm:?}");
+    assert!(
+        mm[0].contains(&format!("\"fainted_without_ko\":[{}]", live.u2)),
+        "{mm:?}"
+    );
+    assert!(captured_log_lines("tactical_ledger_skip").is_empty());
+}
+
+#[test]
+fn failed_writeback_logs_skipped() {
+    install_log_sink();
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    ready_ko(&w, &live);
+    w.edit_monster(12, |m| m.owner_identity = b());
+    ko_submit(&fx, &w, &live, T0 + 25_000);
+    let l = captured_log_lines("tactical_settle_skipped");
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert!(l[0].contains("HP write-back failed"), "{l:?}");
+}

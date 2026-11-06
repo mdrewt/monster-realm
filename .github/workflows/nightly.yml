@@ -41,10 +41,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # server-module mutation gate, zero tolerance like game-core. Sharded for the same 6 h
-  # reason as `mutation` (1532 mutants, ~5 h serial on 2026-10-31 and growing); a shard only runs
-  # and reports its survivors, `mutation-server` below checks all shards for zero survivors.
-  mutation-server-shard:
+  # server-module mutation gate, zero tolerance like game-core. Sharded for the same 6 h reason as
+  # `mutation` (~1500 mutants, ~5 h serial on 2026-10-31 and growing); every shard is its own verdict
+  # and the job is red iff any shard is. Keep the matrix length equal to the `/n` in `shard`.
+  mutation-server:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -71,29 +71,6 @@ jobs:
           path: mutants.out/
           if-no-files-found: warn
           retention-days: 14
-
-  # The aggregate: zero survivors over ALL shards. `!cancelled()` so it
-  # still judges when one shard failed; the recipe fails if a shard's missed.txt is absent.
-  # Keep `shards` equal to the length of the matrix above.
-  mutation-server:
-    needs: [mutation-server-shard]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      # A shard that was cancelled or timed out leaves a partial missed.txt that would under-count.
-      - name: Every shard must have succeeded
-        env:
-          SHARDS: ${{ needs.mutation-server-shard.result }}
-        run: |
-          test "$SHARDS" = success || { echo "mutation-server-shard result is $SHARDS" >&2; exit 1; }
-      - uses: actions/checkout@v6 # v6
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: mutants-out-server-*
-          path: shard-out
-      - run: just mutate-server-check shard-out 8
 
   # Client line coverage, report-only. Rust + wasm-pack because `just coverage` builds the wasm pkg.
   coverage:

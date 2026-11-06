@@ -64,7 +64,8 @@
 #    keep running). Keyed by column (:25) + function.
 #
 #
-# Server-module exclusions (entries 8-17). The server gate is zero-tolerance, like game-core: each
+# Server-module exclusions (entries 8-17; 10 and 14 were log-line claims, refuted - log lines ARE
+# observable through a log sink, so those mutants are killed by tests and no longer excluded). The server gate is zero-tolerance, like game-core: each
 # of these was first attacked with a test (an exhaustive truth table / boundary table / the full
 # suite) and survives it, because the mutated code cannot change anything observable. All are
 # keyed by file + function + operator + column, never by a bare line. Each is deleted the moment
@@ -82,12 +83,6 @@
 #    len == n is a no-op, so the two comparisons differ only where the result is identical (an
 #    exhaustive shorter/equal/longer histogram table test passes with the mutant applied).
 #
-# 10. settle_log (tactics_settle.rs:498:5) `-> ()` and the two `delete !` guards in pay_ledger
-#     (532:12, 539:8): settle_log = json_escape + log::info!, returns (), every caller ignores
-#     it; the pay_ledger guards wrap only an mr_log(...) call. Only a log line changes - no row,
-#     event, ledger or wallet. The killable `delete !` mutants in pay_ledger (563:18, 581:31) are
-#     NOT matched (column-keyed) and are killed by tests.
-#
 # 11. account_state_is_legal (accounts.rs:150:17) `&&` -> `||` on the terminal clause: it differs
 #     only when the stamp-paired predicate is already false (an exhaustive truth table over every
 #     status x stamp combination passes with the mutant applied).
@@ -96,11 +91,9 @@
 #     slice fresh[..0], i.e. nothing.
 #
 # 13. PlaytestKind::code (playtest.rs:47:9) `-> 1`: equivalent while PlaytestKind has one variant
-#     whose code is the literal 1 (the `-> 0` mutant is killed). Remove this entry when a second
-#     variant exists.
-#
-# 14. sync_content_inner (content.rs:123:21) `>` -> `==`/`<`/`>=` on `stranded > 0`: the guard
-#     gates only a log::warn!, nothing observable.
+#     whose code is the literal 1 (the `-> 0` mutant is killed). The test
+#     playtest_kind_has_exactly_one_variant stops compiling when a second variant is added: remove
+#     this entry then.
 #
 # 15. validate_enum_rosters (content.rs:879:5) `-> Ok(())`: takes no input, reads only const
 #     rosters and always returns Ok(()) today. CONTINGENT equivalence: if a roster is ever made
@@ -131,14 +124,11 @@ exclude_re = [
     "tactics/queue\\.rs:\\d+:25: replace < with <= in TacticalBattle::cancel_queue",
     "battle\\.rs:\\d+:16: replace != with == in start_wild_battle",
     "taming\\.rs:\\d+:27: replace == with != in grant_bait",
-    "tactics\\.rs:\\d+:\\d+: replace .* in dev_start_tactical_wild$",
+    "tactics\\.rs:\\d+:(11|21|27): replace (!=|&&) with (==|\\|\\|) in dev_start_tactical_wild$",
     "tactics_settle\\.rs:\\d+:36: replace < with <= in apply_delta",
-    "tactics_settle\\.rs:\\d+:\\d+: replace settle_log with \\(\\)",
-    "tactics_settle\\.rs:\\d+:(12|8): delete ! in pay_ledger",
     "accounts\\.rs:\\d+:17: replace && with \\|\\| in account_state_is_legal",
     "playtest\\.rs:\\d+:20: replace > with >= in plan_reap",
     "playtest\\.rs:\\d+:\\d+: replace PlaytestKind::code -> u16 with 1",
-    "content\\.rs:\\d+:21: replace > with (==|<|>=) in sync_content_inner",
     "content\\.rs:\\d+:\\d+: replace validate_enum_rosters -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
     "trading\\.rs:\\d+:(27|30): replace > with >= in propose_trade",
     "battle\\.rs:\\d+:\\d+: replace \\|\\| with && in battle_with_forced_terminal",

@@ -678,3 +678,16 @@ fn nh_ensure_playtest_reaper_arms_one_interval_singleton() {
     super::ensure_playtest_reaper(&ctx);
     assert_eq!(rows.rows().len(), 1, "duplicates collapse to one");
 }
+
+/// Tripwire for the `PlaytestKind::code -> 1` entry in `.cargo/mutants.toml`: that mutant is
+/// equivalent ONLY while the enum has a single variant. This exhaustive match (no wildcard) stops
+/// compiling when a second variant is added, so whoever adds it must read the entry, delete the
+/// exclusion and give the new variant a code the tests pin.
+#[test]
+fn playtest_kind_has_exactly_one_variant() {
+    use crate::playtest::PlaytestKind;
+    match PlaytestKind::RecruitAttempt {
+        PlaytestKind::RecruitAttempt => {}
+    }
+    assert_eq!(PlaytestKind::RecruitAttempt.code(), 1);
+}
