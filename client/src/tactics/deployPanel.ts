@@ -13,6 +13,7 @@
 import type { DeployPick } from '../module_bindings/types';
 import { structurallyEqual } from '../ui/battlePolicy';
 import type { HintDeploy } from '../ui/hintBarModel';
+import { LIVE_REGION_ID } from '../ui/liveRegion';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
 import type { BattleOp, BattleOpsView } from '../ui/screens/battleScreen';
 import * as s from './strings';
@@ -32,8 +33,8 @@ export interface PartyMember {
 }
 
 /** Mirror of server-module/src/tactics.rs `resolve_formation` (R-bt-8-FORMATIONRULE stays open — a
- *  DISCLOSED deviation from "rules out" until the continuation exports it from client-wasm; the server
- *  validates every pick): the distinct remembered ids that are in the party AND conscious, in
+ *  DISCLOSED deviation from "rules out" until a game-core export lands, a follow-up outside bt-12's
+ *  touches; the server validates every pick): the distinct remembered ids that are in the party AND conscious, in
  *  remembered order, then the conscious party members in party order not already chosen, up to `cap`.
  *  Ids compare as bigints (2^53 and 2^53 + 1 are two monsters). */
 export function resolveFormation(
@@ -221,8 +222,16 @@ export class DeployPanel implements BattleOpsView {
     this.#assignment = [];
     this.#countdownEl = null;
     this.#countdownValue = null;
-    this.#root.replaceChildren(this.#titleEl);
+    this.#root.replaceChildren(this.#titleEl, ...this.#adoptedLiveRegion());
     closeOverlayA11y('battleView', null);
+  }
+
+  /** The live region `openOverlayA11y` adopted into this root, if it is here: every rebuild of the
+   *  root's children keeps it (a detached region would silence every announcement — the "Still
+   *  there?" one included — until the panel hides). */
+  #adoptedLiveRegion(): HTMLElement[] {
+    const live = document.getElementById(LIVE_REGION_ID);
+    return live !== null && live.parentElement === this.#root ? [live] : [];
   }
 
   /** Which screen the hint bar describes (bt-12 B): the confirm screen or the editor. */
@@ -501,7 +510,7 @@ export class DeployPanel implements BattleOpsView {
     const focusWasOurs = active === null || active === document.body || this.#root.contains(active);
     // The countdown line stays the root's LAST child across every repaint (the pump owns its text).
     if (this.#countdownEl !== null) parts.push(this.#countdownEl);
-    this.#root.replaceChildren(this.#titleEl, ...parts);
+    this.#root.replaceChildren(this.#titleEl, ...this.#adoptedLiveRegion(), ...parts);
     // The cursor must be heard and a click must not strand focus (the tacticsBattle.ts rule): while
     // shown, focus the listbox so its aria-activedescendant announces the cursor row.
     if (this.#visible && focusWasOurs) menu.focus({ preventScroll: true });

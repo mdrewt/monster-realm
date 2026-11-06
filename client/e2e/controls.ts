@@ -754,7 +754,7 @@ export async function readBandTiles(page: Page): Promise<Tile[]> {
 }
 
 /** Walk the shell's cursor to `to` one D-pad press at a time, re-reading the painted cursor after
- *  every press (never a blind count). Bounded by the board's perimeter. */
+ *  every press (never a blind count). Bounded by `maxPresses` (a 7x5 board needs at most 10). */
 export async function dpadCursorTo(page: Page, to: Tile, maxPresses = 24): Promise<void> {
   for (let presses = 0; presses <= maxPresses; presses += 1) {
     const at = await readCursorTile(page);

@@ -1535,7 +1535,7 @@ fn anchor_monster(m: &Monster, species: &Species) -> BattleMonster {
 /// anchor `battle` row (Ongoing, the whole party as side A), `battle_tactical`,
 /// `battle_secret`, one `battle_wild_unit` per wild and the side-A clock; a pack of 1
 /// auto-deploys the remembered formation and starts at once, a pack ≥ 2 opens the
-/// 300 s Deploying window. `forced_pack` overrides the roll (dev only; `1..=MAX_PACK`
+/// Deploying window (the tuning's `pve_deploy_ms`). `forced_pack` overrides the roll (dev only; `1..=MAX_PACK`
 /// and never more than the conscious party — reject, never clamp).
 ///
 /// Until bt-16 wires the grass path, the only production caller is the cfg-gated dev

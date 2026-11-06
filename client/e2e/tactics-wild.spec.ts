@@ -55,8 +55,9 @@ const MAX_BATTLES = 5;
 const MAX_FLEE_BATTLES = 3;
 /** Own turns per battle before it is abandoned (Flee) and restarted. */
 const MAX_OWN_TURNS = 16;
-/** The longest one wait for the next own turn may take (the AI's turns plus the presentation pad). */
-const TURN_WAIT_MS = 30_000;
+/** The longest one wait for the next own turn may take (the AI's turns plus the presentation pad;
+ *  measured ~1 s), so a stalled battle fails on its named bound, not on the test timeout. */
+const TURN_WAIT_MS = 15_000;
 
 interface GameSnap {
   identity: string;
@@ -297,14 +298,17 @@ async function recruitWithBait(p: Page): Promise<boolean> {
   return true;
 }
 
-/** Waits for the results panel, lets it auto-advance, and expects the world base back. */
-async function throughResults(p: Page, label: string): Promise<void> {
+/** Waits for the results panel, reads its text, lets it auto-advance, and expects the world base
+ *  back. Returns the panel's text (the outcome title and the reward lines). */
+async function throughResults(p: Page, label: string): Promise<string> {
   await expect(p.locator(TACTICS.results), `${label}: the results panel shows`).toBeVisible({
     timeout: 20_000,
   });
   await expect(p.locator(`${TACTICS.results} [data-testid="battle-title"]`)).toBeVisible();
+  const text = (await p.locator(TACTICS.results).textContent()) ?? '';
   await expect.poll(async () => (await snap(p)).stack.length, { timeout: 20_000 }).toBe(1);
   await expect(p.locator(TACTICS.results), `${label}: the results panel closed`).toBeHidden();
+  return text;
 }
 
 /** How many attacks were committed with the forecast up, across the whole test. */
@@ -409,7 +413,7 @@ test.describe
             if ((el as HTMLElement).style.display !== 'none')
               w.__mrDeploySeen = (w.__mrDeploySeen ?? 0) + 1;
           }
-        }).observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+        }).observe(document, { subtree: true, childList: true, attributes: true });
       });
       await page.goto('/');
       await ready(page);
@@ -478,7 +482,10 @@ test.describe
             }
           }
         }
-        await throughResults(page, `battle ${battle}`);
+        const results = await throughResults(page, `battle ${battle}`);
+        if (recruited) {
+          expect(results, 'the results panel lists the recruit').toContain('joined your team!');
+        }
       }
       expect(recruited, `a wild was recruited within ${MAX_BATTLES} battles`).toBe(true);
       expect(
@@ -554,7 +561,8 @@ test.describe
         const unitBaseline = new Map<string, number>();
         for (const u of t?.units ?? []) if (u.mine) unitBaseline.set(String(u.unitId), u.curHp);
         hurt = await takeAHitThenFlee(page, unitBaseline);
-        await throughResults(page, `pack of two ${attempt}`);
+        const results = await throughResults(page, `pack of two ${attempt}`);
+        expect(results, 'the results panel reads the fled outcome').toContain('Got away safely!');
       }
       expect(hurt, `a wild landed a hit within ${MAX_FLEE_BATTLES} pack battles`).toBe(true);
 

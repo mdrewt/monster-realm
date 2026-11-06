@@ -453,7 +453,9 @@ export function activeUnitOf(
 /** The board view's status tag of a rules status (`{ Sleep: … }` → `'Sleep'`); null stays null. */
 export function statusTagOf(status: RuleStatusEffect | null): StatusTag | null {
   if (status === null) return null;
-  return typeof status === 'string' ? status : 'Sleep';
+  if (typeof status === 'string') return status;
+  if ('Sleep' in status) return 'Sleep';
+  return status satisfies never;
 }
 
 const has = (action: QueuedActionRule, tag: 'Skill' | 'Move'): boolean =>

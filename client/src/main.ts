@@ -1997,8 +1997,16 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         'submit-queue',
         () => conn?.live()?.reducers.submitQueue({ battleId, unitId, entries: [...entries] }),
         // A refusal (a stale turn, a race) releases the unit's in-flight key so the next commit for
-        // the same turn goes out (REV B2.3); a success keeps it until the READY row or a new turn.
-        () => tacticsBattle?.release(unitId),
+        // the same turn goes out (REV B2.3); a success keeps it until the READY row, the landed
+        // budget or a new turn. The repaint runs inside a promise handler: a throw is reported, not
+        // left as an unhandled rejection.
+        () => {
+          try {
+            tacticsBattle?.release(unitId);
+          } catch (err) {
+            reportPaintError(err);
+          }
+        },
       );
     }
     case 'cancelQueue': {
@@ -2376,8 +2384,10 @@ function resetPredictionState(): void {
   battleSynced = false;
   lastBattleVM = null;
   // bt-12 B: the shell forgets its battle (a submit the dropped link lost must not keep a unit's
-  // turn locked), the transcript is fed again from seq 0 at the next sighting, the memos reset.
+  // turn locked) and hides, so the next sighting feeds the transcript from seq 0 while hidden (a
+  // visible shell would replay the history as live beats); the memos reset.
   tacticsBattle?.reset();
+  tacticsBattle?.hide();
   tacticsIngested = null;
   tacticsShown = null;
   lastTacticsVM = null;
@@ -3182,9 +3192,21 @@ function ownMonsterName(m: StoreMonsterPub): string {
   return m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${m.monsterId}`);
 }
 
-/** The side-A spawn count per map, read once per mapId through the rules port (a whole map
- *  definition crosses the wasm boundary for one length). */
-const deploySpawnCounts = new Map<number, number>();
+/** What the client keeps of a battle map — its size and its side-A spawn count — read once per
+ *  mapId through the rules port (a whole map definition crosses the wasm boundary for three numbers). */
+const tacticsMapFacts = new Map<
+  number,
+  { readonly width: number; readonly height: number; readonly spawns: number }
+>();
+function mapFactsOf(mapId: number): { width: number; height: number; spawns: number } {
+  let facts = tacticsMapFacts.get(mapId);
+  if (facts === undefined) {
+    const map = tacticsRules().map(mapId);
+    facts = { width: map.width, height: map.height, spawns: map.spawn_a.length };
+    tacticsMapFacts.set(mapId, facts);
+  }
+  return facts;
+}
 
 /** The local player's side of `battleId` from the RAW anchor (a PvP accepter is side B). */
 function mySideOf(battleId: bigint): RuleSide {
@@ -3212,12 +3234,7 @@ function buildDeployPanel(
 ): { readonly kind: 'deploy'; readonly view: DeployPanel; readonly vm: DeployVM } | null {
   if (battleMount === undefined) return null;
   try {
-    let spawns = deploySpawnCounts.get(row.mapId);
-    if (spawns === undefined) {
-      spawns = tacticsRules().map(row.mapId).spawn_a.length;
-      deploySpawnCounts.set(row.mapId, spawns);
-    }
-    const slotCount = Math.min(tuningOf().max_pack, spawns);
+    const slotCount = Math.min(tuningOf().max_pack, mapFactsOf(row.mapId).spawns);
     const offer = store.ownTradeOffer(identity);
     const traded = new Set<bigint>([
       ...(offer?.initiatorMonsterIds ?? []),
@@ -3330,7 +3347,16 @@ function refreshTacticsShell(row: StoreTacticalBattle): boolean {
       try {
         view.ingest(fresh.map((e) => e.payload));
       } catch (err) {
-        reportPaintError(err); // one unrenderable event never blocks the log: the mark still moves
+        // `ingest` is atomic, so the batch left no line: feed the events one by one, and only the
+        // unrenderable one drops (reported once); the mark still moves past the whole batch.
+        reportPaintError(err);
+        for (const e of fresh) {
+          try {
+            view.ingest([e.payload]);
+          } catch (bad) {
+            console.warn('[tactics] event dropped from the log', e.seq, bad);
+          }
+        }
       }
     }
     tacticsIngested = { battleId: row.battleId, seq: last };
@@ -3361,7 +3387,7 @@ const tacticsVMEqual = (a: TacticsBattleVM, b: TacticsBattleVM): boolean =>
 function buildTacticsVM(row: StoreTacticalBattle): TacticsBattleVM {
   const rules = tacticsRules();
   const tuning = tuningOf();
-  const map = rules.map(row.mapId);
+  const map = mapFactsOf(row.mapId);
   const rows = store.battleUnits(row.battleId);
   const board: RulesBoard = { kind: row.kind, map_id: row.mapId, units: rows.map((u) => u.row) };
   return {
@@ -4142,7 +4168,8 @@ const mrPvpHook = {
 };
 
 // bt-12 (BT12.5): the tactical e2e's READ-ONLY hook — the local player's tactical battle as the store
-// holds it (own rows only: never a seed, never the opponent's plan) and the own monsters' HP. No
+// holds it (the rows the player's own views carry: never a seed, never the opponent's plan) and the
+// own monsters' HP. No
 // reducer reaches through it; every battle action in the e2e is a virtual button. Fingerprinted by
 // scripts/verify-build-hooks.mjs beside the other three.
 const mrTacticsHook = {
