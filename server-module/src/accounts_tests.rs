@@ -628,6 +628,55 @@ fn auth_account_state_invariant_table() {
     }
 }
 
+/// Exhaustive truth table of `account_state_is_legal` over EVERY combination of
+/// status x deletion stamp x terminal marker x claim pair (2*2*2*2*2 = 32 rows),
+/// against an oracle written here straight from the documented invariant (the
+/// predicate's doc comment) rather than by calling any production helper:
+///   - `Active` <=> no deletion stamp (so `PendingDeletion` <=> a stamp);
+///   - a terminal marker requires `PendingDeletion` AND a deletion stamp;
+///   - `claimed_from` and `claimed_at_ms` are set together or not at all.
+#[test]
+fn auth_account_state_invariant_exhaustive_truth_table() {
+    let mut legal_rows = 0;
+    for pending in [false, true] {
+        for stamped in [false, true] {
+            for terminal in [false, true] {
+                for from_set in [false, true] {
+                    for at_set in [false, true] {
+                        let account = Account {
+                            status: if pending {
+                                AccountStatus::PendingDeletion
+                            } else {
+                                AccountStatus::Active
+                            },
+                            deletion_requested_at_ms: stamped.then_some(50),
+                            terminal_at_ms: terminal.then_some(90),
+                            claimed_from: from_set.then(|| ident(2)),
+                            claimed_at_ms: at_set.then_some(30),
+                            ..base_account(1)
+                        };
+                        let status_ok = pending == stamped;
+                        let terminal_ok = !terminal || (pending && stamped);
+                        let claim_ok = from_set == at_set;
+                        let expected = status_ok && terminal_ok && claim_ok;
+                        legal_rows += usize::from(expected);
+                        assert_eq!(
+                            account_state_is_legal(&account),
+                            expected,
+                            "pending={pending} stamped={stamped} terminal={terminal} \
+                             claimed_from={from_set} claimed_at={at_set}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Independent count: legal = (pending==stamped: 2 of 4 status/stamp combos)
+    // with terminal allowed only when pending&&stamped (1 combo x 2 terminal
+    // values + 1 combo x terminal=false) = 3, times 2 legal claim combos = 6.
+    assert_eq!(legal_rows, 6);
+}
+
 /// W3-2 (pure): all FIVE Account-returning constructors return a LEGAL state,
 /// chained fresh -> touched -> requested -> cancelled -> claimed so each one is
 /// fed a real predecessor rather than a hand-built fixture.
