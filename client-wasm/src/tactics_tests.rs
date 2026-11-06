@@ -2149,3 +2149,205 @@ fn bt11_type_factor_matches_chart() {
         "a pair the injected chart does not list is neutral"
     );
 }
+
+// ---------------------------------------------------------------------------
+// bt-12 increment B (BT12.1): the tuning the client sizes by, the next round's initiative
+// ---------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-bt-12-plan-b.md §2.1 as amended by REV B2.5 / B2.6
+// (`TacticsTuningOut` keeps `{ surge_start_round, wild_round_cap, max_pack }`; `tuning_out_of` is pure
+// and tested with distinct values) and F4 (the next round's priority is `priority_for_round(this, 2)`:
+// game-core's alternation applied from the CURRENT side, never a restated flip). Names start `bt12_`
+// (the BT12.1 CHECK filters `test(/bt12_/)`). RED REASON: `tuning_out_of` and `next_initiative_of`
+// are `todo!()` on the API freeze.
+
+use game_core::tactics::{
+    order as initiative_order, priority_for_round as initiative_priority_for_round,
+    Contender as InitiativeContender, MAX_PACK as GAME_MAX_PACK,
+};
+
+/// `TacticsTuningOut` mirrors the LOADED tuning field by field and game-core's `MAX_PACK`, and the
+/// pure `tuning_out_of` reads each field from the tuning it is given (a hand-built tuning whose
+/// values differ from the design's and from each other).
+///
+/// WRONG IMPL KILLED: the `todo!()` body; `surge_start_round` and `wild_round_cap` swapped (both
+/// u16); a field read from `TacticsTuning::DESIGN` instead of the tuning given (the hand-built one
+/// differs); a literal `max_pack: 3` instead of `MAX_PACK` (equal today: pinned by identity to the
+/// constant, and the hand-built tuning proves it does not come from the tuning); `tuning_out`
+/// applying the mapper to anything but the loaded content.
+#[test]
+fn bt12_tuning_out_mirrors_the_loaded_tuning_and_max_pack() {
+    let loaded = load_tactics_tuning().expect("tactics_tuning RON");
+    let out = super::tuning_out().expect("the loaded content");
+    assert_eq!(
+        out.surge_start_round, loaded.surge_start_round,
+        "surge_start_round from the loaded tuning"
+    );
+    assert_eq!(
+        out.wild_round_cap, loaded.wild_round_cap,
+        "wild_round_cap from the loaded tuning"
+    );
+    assert_eq!(
+        out.max_pack, GAME_MAX_PACK,
+        "max_pack is game-core's MAX_PACK"
+    );
+    assert_eq!(
+        out,
+        super::TacticsTuningOut {
+            surge_start_round: loaded.surge_start_round,
+            wild_round_cap: loaded.wild_round_cap,
+            max_pack: GAME_MAX_PACK,
+        },
+        "the whole struct"
+    );
+    assert_ne!(
+        loaded.surge_start_round, loaded.wild_round_cap,
+        "ANTI-VACUITY: the shipped surge start and round cap differ, so a swap shows"
+    );
+
+    let hand = TacticsTuning {
+        surge_start_round: 17,
+        wild_round_cap: 41,
+        pve_window_ms: 123_000,
+        pve_deploy_ms: 77_000,
+        ..TacticsTuning::DESIGN
+    };
+    assert_ne!(
+        hand.surge_start_round, T.surge_start_round,
+        "fixture: not the design surge"
+    );
+    assert_ne!(
+        hand.wild_round_cap, T.wild_round_cap,
+        "fixture: not the design cap"
+    );
+    assert_eq!(
+        super::tuning_out_of(&hand),
+        super::TacticsTuningOut {
+            surge_start_round: 17,
+            wild_round_cap: 41,
+            max_pack: GAME_MAX_PACK,
+        },
+        "the pure mapper reads the tuning it is given; the pack cap is game-core's, not the tuning's"
+    );
+    assert_eq!(
+        super::tuning_out_of(&loaded),
+        out,
+        "tuning_out is tuning_out_of over the loaded tuning"
+    );
+}
+
+/// `next_initiative_of(board, this_round_priority)` is `order(contenders, priority_for_round(this,
+/// 2))` over the board's CONSCIOUS units: built here by hand from the `join` oracle's kits
+/// (`Contender { eff_speed: stats.speed, base_speed: kit.base_speed }`), for both priorities, on a
+/// 4-unit mixed board whose two sides tie on speed AND base speed (only the tie rank separates them)
+/// plus a fainted, faster unit that must be absent; a duplicate id is refused.
+///
+/// WRONG IMPL KILLED: the `todo!()` body; the CURRENT round's priority passed straight to `order`
+/// (the A/B tie comes out reversed); a hard-coded A or B; a fainted unit kept (23 would lead); an
+/// input-order, id-order or slot-order answer; the row's base speed confused with its levelled
+/// speed (22 ties on speed and loses only on base speed); a duplicate id answered instead of Err.
+#[test]
+fn bt12_next_initiative_is_game_core_order_under_the_other_side() {
+    let l = live();
+    let fast = |mut r: UnitRow, speed: u16| {
+        r.stats.speed = speed;
+        r
+    };
+    let wild = |mut r: UnitRow, index: u8, stance: Stance| {
+        r.wild_index = Some(index);
+        r.stance = Some(stance);
+        r
+    };
+    let rows = vec![
+        fast(row(11, Side::A, 0, 1, 1, 1), 50),
+        fast(row(12, Side::A, 1, 2, 3, 1), 80),
+        fast(
+            wild(row(21, Side::B, 0, 1, 1, 5), 0, Stance::Aggressive),
+            50,
+        ),
+        fast(wild(row(22, Side::B, 1, 3, 3, 5), 1, Stance::Skittish), 50),
+        fast(
+            fainted(wild(row(23, Side::B, 2, 1, 5, 5), 2, Stance::Territorial)),
+            99,
+        ),
+    ];
+    let b = board(1, rows.clone());
+
+    let by_hand = |this_round: Side| -> Vec<u32> {
+        let contenders: Vec<InitiativeContender> = b
+            .units
+            .iter()
+            .map(|r| join(&l, r))
+            .filter(TacticalUnit::is_conscious)
+            .map(|u| InitiativeContender {
+                id: u.id,
+                side: u.side,
+                slot: u.slot,
+                eff_speed: u.kit.stats.speed,
+                base_speed: u.kit.base_speed,
+            })
+            .collect();
+        initiative_order(&contenders, initiative_priority_for_round(this_round, 2))
+    };
+    for this_round in [Side::A, Side::B] {
+        assert_eq!(
+            super::next_initiative_of(&b, this_round),
+            Ok(by_hand(this_round)),
+            "{this_round:?} held priority this round"
+        );
+    }
+    // The oracle's own answers, pinned (the 11 / 21 tie flips with the priority; 23 is absent).
+    assert_eq!(
+        by_hand(Side::A),
+        vec![12, 21, 11, 22],
+        "after an A round, B ranks first"
+    );
+    assert_eq!(
+        by_hand(Side::B),
+        vec![12, 11, 21, 22],
+        "after a B round, A ranks first"
+    );
+    assert_ne!(
+        by_hand(Side::A),
+        initiative_order(
+            &b.units
+                .iter()
+                .map(|r| join(&l, r))
+                .filter(TacticalUnit::is_conscious)
+                .map(|u| InitiativeContender {
+                    id: u.id,
+                    side: u.side,
+                    slot: u.slot,
+                    eff_speed: u.kit.stats.speed,
+                    base_speed: u.kit.base_speed,
+                })
+                .collect::<Vec<_>>(),
+            Side::A,
+        ),
+        "ANTI-VACUITY: the next round's order differs from this round's"
+    );
+    let mut reversed = rows.clone();
+    reversed.reverse();
+    assert_eq!(
+        super::next_initiative_of(&board(1, reversed), Side::A),
+        Ok(vec![12, 21, 11, 22]),
+        "the input order does not matter"
+    );
+
+    let mut dup_rows = rows;
+    let mut twin = dup_rows[0].clone();
+    twin.slot = 3;
+    twin.pos = Cell { x: 2, y: 2 };
+    dup_rows.push(twin);
+    let err = super::next_initiative_of(&board(1, dup_rows), Side::A)
+        .expect_err("a duplicate unit id is a malformed board");
+    assert!(
+        err.contains("11"),
+        "the error names the duplicate id: {err}"
+    );
+    assert!(
+        super::next_initiative_of(&board(4242, vec![row(1, Side::A, 0, 1, 1, 1)]), Side::B)
+            .is_err(),
+        "an unknown map is a malformed board"
+    );
+}

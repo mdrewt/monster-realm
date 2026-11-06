@@ -1758,10 +1758,19 @@ fn forced_pack_of_two_starts_deploying_with_one_deploy_window_row_and_no_units_b
         "the 300 s deploy window rides the (battle, 0, 0) row"
     );
     let clock = w.clock(id);
+    // NAMED INTENTIONAL CHANGE (bt-12 B, plan REV B2.6 / B2.11): the pack >= 2 start writes the
+    // Deploying deadline into the side-A clock (the client's "Still there?" countdown reads it), at
+    // the same instant the deploy window row is armed; no turn window is open (`window_open_ms`
+    // None, `window_seq` 0). Was `(0, None, None)`.
+    let pve_deploy_ms = i64::from(
+        load_tactics_tuning()
+            .expect("tactics tuning content loads")
+            .pve_deploy_ms,
+    );
     assert_eq!(
         (clock.window_seq, clock.window_open_ms, clock.deadline_ms),
-        (0, None, None),
-        "no turn window has opened"
+        (0, None, Some(T0 + pve_deploy_ms)),
+        "no turn window has opened; the deploy deadline is on the clock"
     );
     let wilds: Vec<(u8, u32)> = w
         .wild_units_of(id)
@@ -1860,6 +1869,282 @@ fn deploy_units_materialises_the_picks_and_swaps_the_deploy_window_for_a_turn_wi
         w.events_of(id).first().map(|e| e.payload.clone()),
         Some(EventPayload::BattleStarted(s)) if s.round == 1
     ));
+}
+
+// ===========================================================================
+// bt-12 increment B (BT12.2): the anchor seats the whole pack; the Deploying deadline on the clock
+// ===========================================================================
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-bt-12-plan-b.md §2.3 as amended by REV B2.6 (the
+// pack >= 2 start writes ONLY `deadline_ms: Some(deploy_deadline_ms(now, &tuning))` into the side-A
+// clock; `window_open_ms` stays None) and F5 (the first `apply_step` of `materialize` replaces it with
+// the first turn window). Names end `_bt12_2` (the BT12.2 CHECK filters `test(/_bt12_2/)`). RED REASON:
+// on the API freeze the anchor's side B holds wild 0 only and the pack >= 2 clock is `(0, None, None)`.
+
+/// The pve deploy window of the loaded tuning, in ms.
+fn loaded_pve_deploy_ms() -> i64 {
+    i64::from(
+        load_tactics_tuning()
+            .expect("tactics tuning content loads")
+            .pve_deploy_ms,
+    )
+}
+
+/// The pve turn window of the loaded tuning, in ms.
+fn loaded_pve_window_ms() -> i64 {
+    i64::from(
+        load_tactics_tuning()
+            .expect("tactics tuning content loads")
+            .pve_window_ms,
+    )
+}
+
+/// A forced pack >= 2 start's anchor seats EVERY wild of the pack in its side B, in `wild_index`
+/// order, each built exactly as wild 0 always was (`build_monster` from the individuality seed at
+/// the band level: full HP, the derived stats, the species' learnable skills, no status), wild 0 the
+/// lead; side A is the party, untouched. Driven for a pack of two (PAIR) and of three (TRIO).
+///
+/// WRONG IMPL KILLED: the API freeze (side B = wild 0 only: the client's composition list shows
+/// one wild of a pack of two); the pack seated out of `wild_index` order or truncated; a wild built
+/// from wild 0's seed / species / level (copies); a wild at a fraction of its HP or with another
+/// wild's stats; a lead other than wild 0 (R7: every wild is conscious at start); side A altered.
+#[test]
+fn pack_of_two_start_seats_every_wild_in_the_anchor_side_b_bt12_2() {
+    for (party, pack) in [(&PAIR[..], 2_u8), (&TRIO[..], 3_u8)] {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), party);
+        let id = start(&fx, a(), seed_for(4, None), Some(pack), T0);
+        let anchor = w.anchor(id).expect("the anchor exists from Deploying on");
+        let wilds = w.wild_units_of(id);
+        assert_eq!(
+            wilds.len(),
+            usize::from(pack),
+            "pack {pack}: one battle_wild_unit per wild"
+        );
+        let side_b = &anchor.state.side_b;
+        assert_eq!(
+            side_b.team.len(),
+            usize::from(pack),
+            "pack {pack}: the anchor's side B seats the whole pack"
+        );
+        for (i, wr) in wilds.iter().enumerate() {
+            assert_eq!(
+                usize::from(wr.wild_index),
+                i,
+                "fixture: the wild rows in wild_index order"
+            );
+            let species = species_def(wr.species_id);
+            let built = game_core::build_monster(
+                wr.individuality_seed,
+                &species,
+                Level::new(wr.level).expect("a band level is a level"),
+            );
+            let want = game_core::BattleMonster {
+                species_id: wr.species_id,
+                affinity: species.affinity,
+                level: wr.level,
+                current_hp: built.derived_stats.hp,
+                max_hp: built.derived_stats.hp,
+                stats: built.derived_stats,
+                known_skill_ids: species.learnable_skill_ids.clone(),
+                status: None,
+            };
+            assert_eq!(
+                side_b.team[i], want,
+                "pack {pack}: side B member {i} is wild {i}, rebuilt from its seed"
+            );
+        }
+        assert_eq!(side_b.active, 0, "pack {pack}: wild 0 is the lead");
+        let side_a: Vec<u32> = anchor
+            .state
+            .side_a
+            .team
+            .iter()
+            .map(|m| m.species_id)
+            .collect();
+        let party_species: Vec<u32> = party.iter().map(|&(_, species, _, _)| species).collect();
+        assert_eq!(side_a, party_species, "pack {pack}: side A is the party");
+        assert_eq!(anchor.state.side_a.active, 0, "pack {pack}: the party lead");
+    }
+}
+
+/// The pack >= 2 start writes the Deploying deadline `now + pve_deploy_ms` (the loaded tuning) into
+/// the side-A clock, the SAME instant the deploy window row is armed at; no turn window is open
+/// (`window_open_ms` None, `window_seq` 0, no window counted). Driven at two start instants.
+///
+/// WRONG IMPL KILLED: the API freeze (`deadline_ms` None: the client's "Still there?" countdown has
+/// nothing to read during Deploying — BT12.2); `window_open_ms` written too (an open window at seq 0
+/// is an engine-impossible state, REV B2.6); the deadline from `pve_window_ms` or `pvp_deploy_ms`
+/// (pinned on a hand-built tuning by `deploy_deadline_ms_adds_pve_deploy_ms_not_the_window_bt12_2`);
+/// the clock and the schedule row computed from two different instants (R6); a deadline from T0
+/// whatever `now` is.
+#[test]
+fn pack_of_two_start_writes_the_deploy_deadline_on_the_side_a_clock_bt12_2() {
+    for now in [T0, T0 + 12_345] {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1);
+        w.seed_party(a(), &PAIR);
+        let id = start(&fx, a(), seed_for(4, None), Some(2), now);
+        assert_eq!(w.tactical(id).phase, Phase::Deploying, "fixture: Deploying");
+        let clock = w.clock(id);
+        let deadline = now + loaded_pve_deploy_ms();
+        assert_eq!(
+            (clock.side, clock.player),
+            (SideRow::A, a()),
+            "the side-A clock"
+        );
+        assert_eq!(
+            (
+                clock.window_seq,
+                clock.window_open_ms,
+                clock.deadline_ms,
+                clock.windows_this_unit_turn
+            ),
+            (0, None, Some(deadline), 0),
+            "start at {now}: the deploy deadline, no open window"
+        );
+        let window = w.only_deadline(id);
+        assert_eq!(
+            (window.unit_id, window.window_seq, window.scheduled_at),
+            (DEPLOY_WINDOW_UNIT, 0, time(deadline)),
+            "start at {now}: the deploy window row is armed at the clock's deadline"
+        );
+    }
+}
+
+/// Deploying the picks replaces the Deploying deadline on the clock with the FIRST TURN window: the
+/// clock carries that window's seq, open and deadline (`open + pve_window_ms`), and the one window
+/// row is armed at it — nothing of the deploy deadline survives.
+///
+/// WRONG IMPL KILLED: a deploy deadline that leaks past `deploy_units` (the turn window keeps the
+/// Deploying deadline: the countdown and the idle clock fire early or late); a first window opened
+/// before the deploy instant; the window row left at the deploy deadline (two clocks disagreeing);
+/// and (red on the freeze) a pack >= 2 start that wrote no deadline to replace.
+#[test]
+fn deploy_units_replaces_the_deploy_deadline_with_the_first_turn_window_bt12_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let id = deploying_pair(&fx, &w);
+    let deploy_deadline = T0 + loaded_pve_deploy_ms();
+    assert_eq!(
+        w.clock(id).deadline_ms,
+        Some(deploy_deadline),
+        "before the deploy: the Deploying deadline is on the clock"
+    );
+    let at_ms = T0 + 10_000;
+    deploy(&fx, a(), at_ms, id, vec![pick(11, 0), pick(12, 1)]).expect("a legal pick set deploys");
+    let clock = w.clock(id);
+    let open = clock
+        .window_open_ms
+        .expect("the first turn window is open after the deploy");
+    assert!(
+        open >= at_ms,
+        "the first window opens at or after the deploy ({open} >= {at_ms})"
+    );
+    assert_eq!(
+        (
+            clock.window_seq,
+            clock.deadline_ms,
+            clock.windows_this_unit_turn
+        ),
+        (1, Some(open + loaded_pve_window_ms()), 1),
+        "the first turn window's seq, deadline and count"
+    );
+    assert_ne!(
+        clock.deadline_ms,
+        Some(deploy_deadline),
+        "the Deploying deadline is gone"
+    );
+    let window = w.only_deadline(id);
+    assert_ne!(
+        window.unit_id, DEPLOY_WINDOW_UNIT,
+        "the deploy window row is gone"
+    );
+    assert_eq!(
+        (window.window_seq, window.scheduled_at),
+        (1, time(open + loaded_pve_window_ms())),
+        "one window row, armed at the clock's deadline"
+    );
+}
+
+/// A pack-1 start never writes the Deploying deadline: the clock holds the first turn window the
+/// engine opened inside `materialize` (open after the BattleStarted pad, deadline open + the PvE
+/// window), never `now + pve_deploy_ms`.
+///
+/// WRONG IMPL KILLED (R6): the deploy deadline written on the pack-1 path too (a stale deadline the
+/// first window would have to overwrite — or, written after `materialize`, the turn window's deadline
+/// clobbered by the deploy one); a deploy window row armed for a battle that never deploys.
+#[test]
+fn pack_of_one_start_keeps_the_deploy_deadline_off_the_clock_bt12_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    w.seed_party(a(), &PAIR);
+    let id = start(&fx, a(), seed_for(1, Some(1)), None, T0);
+    assert_eq!(
+        w.tactical(id).phase,
+        Phase::Active,
+        "fixture: a pack of one is Active at once"
+    );
+    let clock = w.clock(id);
+    let open = T0 + i64::from(BATTLE_START_CAP_MS);
+    assert_eq!(
+        (clock.window_seq, clock.window_open_ms, clock.deadline_ms),
+        (1, Some(open), Some(open + loaded_pve_window_ms())),
+        "the first turn window, as the engine opened it"
+    );
+    assert_ne!(
+        clock.deadline_ms,
+        Some(T0 + loaded_pve_deploy_ms()),
+        "never the Deploying deadline"
+    );
+    let windows = w.deadlines_of(id);
+    assert_eq!(windows.len(), 1, "exactly one window row");
+    assert_ne!(
+        windows[0].unit_id, DEPLOY_WINDOW_UNIT,
+        "no deploy window row for a battle that never deploys"
+    );
+}
+
+/// `deploy_deadline_ms(now, tuning)` is `now + pve_deploy_ms` of the tuning GIVEN — on a hand-built
+/// tuning whose four window lengths all differ (the shipped RON has pve_deploy_ms == pve_window_ms,
+/// so a swap is invisible on content) — and saturates instead of overflowing.
+///
+/// WRONG IMPL KILLED: `pve_window_ms`, `pvp_deploy_ms` or `pvp_window_ms` read instead; the design
+/// constant read instead of the tuning given; `now` dropped; a wrapping add (a far-future `now`
+/// would arm a deadline in the past).
+#[test]
+fn deploy_deadline_ms_adds_pve_deploy_ms_not_the_window_bt12_2() {
+    let hand = game_core::tactics::TacticsTuning {
+        pve_deploy_ms: 77_003,
+        pve_window_ms: 123_001,
+        pvp_deploy_ms: 45_007,
+        pvp_window_ms: 30_011,
+        ..game_core::tactics::TacticsTuning::DESIGN
+    };
+    assert_eq!(
+        super::deploy_deadline_ms(T0, &hand),
+        T0 + 77_003,
+        "T0 + pve_deploy_ms"
+    );
+    assert_eq!(
+        super::deploy_deadline_ms(0, &hand),
+        77_003,
+        "from the epoch"
+    );
+    assert_eq!(
+        super::deploy_deadline_ms(T0 + 9, &hand),
+        T0 + 9 + 77_003,
+        "now is read"
+    );
+    assert_eq!(
+        super::deploy_deadline_ms(i64::MAX - 5, &hand),
+        i64::MAX,
+        "saturates at i64::MAX"
+    );
 }
 
 /// `start_wild_tactical` refused for `a()` after `setup`, with the store byte-identical.

@@ -39,6 +39,12 @@ export type MessageId =
   | 'chrome.chip.endTurn'
   | 'chrome.chip.guard'
   | 'chrome.chip.submit'
+  // bt-12 B (BT12.2): the deploy panel's verbs (the confirm screen and the formation editor).
+  | 'chrome.chip.deploy'
+  | 'chrome.chip.editFormation'
+  | 'chrome.chip.assign'
+  | 'chrome.chip.prevMonster'
+  | 'chrome.chip.nextMonster'
   | 'chrome.badge.request'
   | 'notice.sheet.accept'
   | 'notice.sheet.decline'
@@ -554,6 +560,8 @@ export type MessageId =
   | 'tactics.deploy.nextMonster'
   | 'tactics.deploy.confirm'
   | 'tactics.deploy.back'
+  | 'tactics.deploy.wilds'
+  | 'tactics.clock.stillThere'
   | 'tactics.deploy.slot'
   | 'tactics.results.label'
   | 'tactics.results.none'
@@ -846,6 +854,7 @@ export interface MessageParams {
   // bt-12: the deploy panel's 1-based slot label and the results panel's lines. `amount` is the
   // player's gold as the u64 the server pays (a bigint, printed digit for digit).
   readonly 'tactics.deploy.slot': { readonly n: number };
+  readonly 'tactics.clock.stillThere': { readonly s: number };
   readonly 'tactics.results.monster': {
     readonly name: string;
     readonly xp: number;

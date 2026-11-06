@@ -51,13 +51,24 @@ export interface HintBattle {
   readonly undo: boolean;
 }
 
+/** What only the deploy panel knows (bt-12, BT12.2 / R-bt-12-DEPLOYHINT): which of its two screens is
+ *  up. `confirm`: A deploys, X opens the editor, Start opens the menu; `edit`: A assigns, B backs out,
+ *  LB / RB cycle the candidates, Start submits. */
+export interface HintDeploy {
+  readonly deploy: 'confirm' | 'edit';
+}
+
 export function hintBar(
   stack: Stack,
   bindings: Bindings,
   notices: readonly Notice[],
   world: HintWorld = NO_WORLD,
-  battle?: HintBattle,
+  battleOrDeploy?: HintBattle | HintDeploy,
 ): readonly HintChip[] {
+  const deploy =
+    battleOrDeploy !== undefined && 'deploy' in battleOrDeploy ? battleOrDeploy : undefined;
+  const battle =
+    battleOrDeploy !== undefined && !('deploy' in battleOrDeploy) ? battleOrDeploy : undefined;
   const chip = (button: VButton, verb: string, badge = false): HintChip => {
     const code = bindings.buttons[button][0];
     return { button, keycap: code === undefined ? '' : glyph(code), verb, badge };
@@ -84,6 +95,27 @@ export function hintBar(
       return chips;
     }
     case 'battle':
+      // bt-12 (BT12.2): the deploy panel's two screens. The confirm screen: A deploys, X opens the
+      // editor, Start still opens the menu (badged by a waiting request); no B (there is no
+      // back-out). The editor: A assigns, B backs out, LB / RB cycle the candidates, Start submits.
+      if (deploy !== undefined) {
+        if (deploy.deploy === 'confirm') {
+          return [
+            chip('A', t('chrome.chip.deploy')),
+            chip('X', t('chrome.chip.editFormation')),
+            start(),
+            select(),
+          ];
+        }
+        return [
+          chip('A', t('chrome.chip.assign')),
+          chip('B', t('chrome.chip.back')),
+          chip('LB', t('chrome.chip.prevMonster')),
+          chip('RB', t('chrome.chip.nextMonster')),
+          chip('Start', t('chrome.chip.submit')),
+          select(),
+        ];
+      }
       // bt-11 (BT11.6): the tactical shell's map — B undoes a drafted chip or backs out, X toggles
       // the danger overlay, LB / RB cycle own units, Start ends the turn / guards / submits.
       if (battle !== undefined) {

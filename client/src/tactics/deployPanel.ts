@@ -12,7 +12,7 @@
 // nothing). Every paint is compute-then-write; a structurally equal VM writes no DOM.
 import type { DeployPick } from '../module_bindings/types';
 import { structurallyEqual } from '../ui/battlePolicy';
-import type { HintBattle } from '../ui/hintBarModel';
+import type { HintDeploy } from '../ui/hintBarModel';
 import { closeOverlayA11y, openOverlayA11y } from '../ui/overlayA11y';
 import type { BattleOp, BattleOpsView } from '../ui/screens/battleScreen';
 import * as s from './strings';
@@ -32,8 +32,8 @@ export interface PartyMember {
 }
 
 /** Mirror of server-module/src/tactics.rs `resolve_formation` (R-bt-8-FORMATIONRULE stays open — a
- *  DISCLOSED deviation from "rules out" until the continuation exports it from client-wasm; the server
- *  validates every pick): the distinct remembered ids that are in the party AND conscious, in
+ *  DISCLOSED deviation from "rules out" until a game-core export lands, a follow-up outside bt-12's
+ *  touches; the server validates every pick): the distinct remembered ids that are in the party AND conscious, in
  *  remembered order, then the conscious party members in party order not already chosen, up to `cap`.
  *  Ids compare as bigints (2^53 and 2^53 + 1 are two monsters). */
 export function resolveFormation(
@@ -56,6 +56,12 @@ export function resolveFormation(
   return out;
 }
 
+/** One wild of the pack as the confirm screen lists it (bt-12 B, BT12.2: the anchor's `sideB.team`). */
+export interface DeployWild {
+  readonly speciesId: number;
+  readonly name: string;
+  readonly level: number;
+}
 export interface DeployInput {
   readonly battleId: bigint;
   /** The anchor's `partyMonsterIds` order joined with the own monster rows (a member with no own
@@ -63,8 +69,10 @@ export interface DeployInput {
   readonly party: readonly DeployMonster[];
   /** `store.ownFormation(identity)?.monsterIds ?? []`. */
   readonly remembered: readonly bigint[];
-  /** `rules.map(mapId).spawn_a.length` — never a literal. */
+  /** `min(tuning.max_pack, rules.map(mapId).spawn_a.length)` — never a literal. */
   readonly slotCount: number;
+  /** The pack in `wild_index` order — the anchor's `sideB.team` (the server seats every wild there). */
+  readonly wilds: readonly DeployWild[];
 }
 export interface DeployVM {
   readonly battleId: bigint;
@@ -72,6 +80,8 @@ export interface DeployVM {
   readonly candidates: readonly DeployMonster[];
   /** Length `slotCount`; slot i holds `resolveFormation(...)[i]`'s monster, else null. */
   readonly formation: readonly (DeployMonster | null)[];
+  /** The pack, in order (the composition list of the confirm screen). */
+  readonly wilds: readonly DeployWild[];
 }
 export function deployVM(input: DeployInput): DeployVM {
   const candidates = input.party.filter((m) => m.hp > 0);
@@ -85,7 +95,7 @@ export function deployVM(input: DeployInput): DeployVM {
     const id = resolved[i];
     formation.push(id === undefined ? null : (candidates.find((m) => m.monsterId === id) ?? null));
   }
-  return { battleId: input.battleId, candidates, formation };
+  return { battleId: input.battleId, candidates, formation, wilds: [...input.wilds] };
 }
 /** The filled slots as `deploy_units` picks, ascending slot (a sparse assignment keeps its slot numbers). */
 export function picksOf(slots: readonly (DeployMonster | null)[]): DeployPick[] {
@@ -129,6 +139,9 @@ export class DeployPanel implements BattleOpsView {
   readonly #deps: DeployPanelDeps;
   readonly #root: HTMLElement;
   readonly #titleEl: HTMLElement;
+  /** Every repaint rewrites THIS container's children, never the root's: the root also holds what
+   *  the overlay a11y open adopts into it (ui/liveRegion.ts), which a root rebuild would detach. */
+  readonly #bodyEl: HTMLElement;
 
   #visible = false;
   #vm: DeployVM | null = null;
@@ -141,6 +154,9 @@ export class DeployPanel implements BattleOpsView {
   #assignment: (DeployMonster | null)[] = [];
   /** The in-flight send's token; null when unlocked. */
   #lock: symbol | null = null;
+  /** The "Still there?" line (bt-12 B) and the whole seconds it shows; null when none shows. */
+  #countdownEl: HTMLElement | null = null;
+  #countdownValue: number | null = null;
 
   constructor(parent: HTMLElement, deps: DeployPanelDeps) {
     this.#deps = deps;
@@ -151,7 +167,8 @@ export class DeployPanel implements BattleOpsView {
     this.#titleEl = el('h2', 'tactics-title');
     this.#titleEl.setAttribute('data-testid', 'battle-title');
     this.#titleEl.setAttribute('tabindex', '-1');
-    this.#root.appendChild(this.#titleEl);
+    this.#bodyEl = el('div', 'tactics-deploy-body');
+    this.#root.append(this.#titleEl, this.#bodyEl);
     parent.appendChild(this.#root);
   }
 
@@ -206,13 +223,32 @@ export class DeployPanel implements BattleOpsView {
     this.#cursor = 'deploy';
     this.#candidate = null;
     this.#assignment = [];
-    this.#root.replaceChildren(this.#titleEl);
+    this.#countdownEl?.remove();
+    this.#countdownEl = null;
+    this.#countdownValue = null;
+    this.#bodyEl.replaceChildren();
     closeOverlayA11y('battleView', null);
   }
 
-  /** The hint bar's verbs while the EDITOR is open: `{ start: 'submit', undo: false }`. */
-  hint(): HintBattle {
-    return { start: 'submit', undo: false };
+  /** Which screen the hint bar describes (bt-12 B): the confirm screen or the editor. */
+  hint(): HintDeploy {
+    return { deploy: this.#mode };
+  }
+
+  /** The "Still there?" countdown (BT12.2): `n` seconds paints one `.tactics-countdown` line as the root's
+   *  last child, the same value writes nothing, null removes it. Driven by main.ts's frame pump. */
+  setCountdown(seconds: number | null): void {
+    if (seconds === this.#countdownValue) return;
+    this.#countdownValue = seconds;
+    if (seconds === null) {
+      this.#countdownEl?.remove();
+      this.#countdownEl = null;
+      return;
+    }
+    if (this.#countdownEl === null) this.#countdownEl = el('p', 'tactics-countdown');
+    this.#countdownEl.textContent = s.stillThere(seconds);
+    // The root's last child (appending a node already there moves it there).
+    this.#root.appendChild(this.#countdownEl);
   }
 
   applyBattleOp(op: BattleOp): void {
@@ -386,6 +422,22 @@ export class DeployPanel implements BattleOpsView {
     const locked = this.#lock !== null;
     const parts: HTMLElement[] = [];
     if (!edit) {
+      // The pack (bt-12 B, BT12.2 "THE Deploying phase SHALL show the wild composition"), in
+      // `wild_index` order, BEFORE the formation: who the player is about to face, then whom to send.
+      if (vm.wilds.length > 0) {
+        const pack = el('ul', 'tactics-deploy-wilds');
+        pack.setAttribute('aria-label', s.deployWilds());
+        vm.wilds.forEach((w, i) => {
+          const li = el('li', 'tactics-deploy-wild');
+          li.setAttribute('data-wild-index', String(i));
+          li.append(
+            el('span', 'tactics-deploy-name', w.name),
+            el('span', 'tactics-deploy-level', s.hudLevel(w.level)),
+          );
+          pack.appendChild(li);
+        });
+        parts.push(pack);
+      }
       const list = el('ul', 'tactics-deploy-formation');
       list.setAttribute('aria-label', s.deployLabel());
       vm.formation.forEach((m, i) => {
@@ -452,7 +504,9 @@ export class DeployPanel implements BattleOpsView {
     // a button the pointer pressed) or stranded on <body>. The rebuild destroyed any focused row.
     const active = document.activeElement;
     const focusWasOurs = active === null || active === document.body || this.#root.contains(active);
-    this.#root.replaceChildren(this.#titleEl, ...parts);
+    // Only the body is rebuilt: the title, the countdown line (the root's LAST child, the pump owns
+    // its text) and whatever the a11y open adopted into the root stay where they are.
+    this.#bodyEl.replaceChildren(...parts);
     // The cursor must be heard and a click must not strand focus (the tacticsBattle.ts rule): while
     // shown, focus the listbox so its aria-activedescendant announces the cursor row.
     if (this.#visible && focusWasOurs) menu.focus({ preventScroll: true });

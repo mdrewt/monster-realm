@@ -79,6 +79,21 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Verb on the Start button chip during a tactical battle while the player pre-plans a
   // unit's next turn: sends the plan. One short word.
   'chrome.chip.submit': 'Submit',
+  // @desc: Verb on the A button chip at the deploy confirm screen of a wild pack battle: sends the
+  // remembered formation into battle. One word.
+  'chrome.chip.deploy': 'Deploy',
+  // @desc: Verb on the X button chip at the deploy confirm screen: opens the formation editor. Two
+  // short words.
+  'chrome.chip.editFormation': 'Edit formation',
+  // @desc: Verb on the A button chip in the formation editor: puts the shown monster into the
+  // highlighted slot. One word.
+  'chrome.chip.assign': 'Assign',
+  // @desc: Verb on the LB button chip in the formation editor: shows the previous party monster.
+  // Two short words.
+  'chrome.chip.prevMonster': 'Prev monster',
+  // @desc: Verb on the RB button chip in the formation editor: shows the next party monster. Two
+  // short words.
+  'chrome.chip.nextMonster': 'Next monster',
   // @desc: Badge beside the Start chip and the Social menu row while a trade or challenge request
   // waits for an answer. One short word. hintBar.ts, menuModel.ts
   'chrome.badge.request': 'New',
@@ -1741,8 +1756,15 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'tactics.deploy.confirm': 'Confirm',
   // @desc: Editor menu row that returns to the confirm screen, discarding the edits. One word.
   'tactics.deploy.back': 'Back',
+  // @desc: Accessible name of the confirm screen's list of the wild monsters the player is about to
+  // face (species name and level per row). Two short words.
+  'tactics.deploy.wilds': 'Wild pack',
   // @desc: Label of a formation slot; {n} is the slot number, 1-based. One word plus the number.
   'tactics.deploy.slot': (p) => `Slot ${p.n}`,
+  // @desc: The idle countdown shown during the last minute of a wild battle's decision window, asking
+  // whether the player is still at the keyboard; {s} is the whole seconds left. A short question and
+  // the seconds with the unit symbol.
+  'tactics.clock.stillThere': (p) => `Still there? ${p.s} s`,
   // @desc: Accessible name of the results panel's list of rewards. One word.
   'tactics.results.label': 'Rewards',
   // @desc: The results panel's only line when nothing was earned. Two words.

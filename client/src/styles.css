@@ -1105,6 +1105,39 @@
   color: #e6b450;
   font-style: italic;
 }
+/* bt-12 B (BT12.2): the confirm screen's wild composition (one row per wild of the pack) and the
+   "Still there?" countdown line (the deploy panel's last child; inside the shell's field after the
+   banner). Plain text, no animation. */
+.tactics-deploy-wilds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.tactics-deploy-wild {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.tactics-countdown {
+  margin: 0;
+  color: #e6b450;
+  font-weight: 600;
+}
+/* The shell's variant floats over the top of the field (the field is a fixed-height box whose board
+   fills it; the banner floats at its bottom the same way). The deploy panel's stays in flow. */
+.tactics-field > .tactics-countdown {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  pointer-events: none;
+}
 .tactics-results-list {
   list-style: none;
   margin: 0;

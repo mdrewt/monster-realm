@@ -245,6 +245,9 @@ const sameTile = (a: Cell, b: Cell): boolean => a.x === b.x && a.y === b.y;
 const aimKeyOf = (target: ActionTarget): string =>
   target === 'SelfTarget' ? 'self' : `u:${target.Unit}`;
 const inflightKey = (vm: TacticsBattleVM): string => `${vm.battleId}:${vm.round}:${vm.turnIdx}`;
+/** The spend the rules read (ap, strides, attacks) — what a landed live plan moves. */
+const sameBudget = (a: TurnBudget, b: TurnBudget): boolean =>
+  a.ap === b.ap && a.strides_used === b.strides_used && a.attacks === b.attacks;
 /** A unit's planning mode: live on its own waiting turn without a READY row, else pre-queue (A28). */
 const modeOf = (vm: TacticsBattleVM, unitId: number): 'live' | 'prequeue' =>
   vm.activeUnitId === unitId && !vm.readyPlans.has(unitId) ? 'live' : 'prequeue';
@@ -315,6 +318,7 @@ export class TacticsBattle implements BattleOpsView {
   readonly #boardEl: HTMLElement;
   readonly #hudEl: HTMLElement;
   readonly #bannerEl: HTMLElement;
+  readonly #fieldEl: HTMLElement;
   readonly #dockEl: HTMLElement;
   readonly #ticker: Ticker;
   readonly #playback: Playback;
@@ -329,13 +333,18 @@ export class TacticsBattle implements BattleOpsView {
   #mode: Mode = IDLE;
   /** The drafts by unit id, each with the mode it was drafted in (a flip drops it, A28). */
   #drafts = new Map<number, { readonly draft: Draft; readonly mode: 'live' | 'prequeue' }>();
-  /** The turn key at which a unit's last commit was sent: further commits wait for a new key. */
-  #inflight = new Map<number, string>();
+  /** A unit's last send: the turn key it went under and the unit's own row budget at that moment.
+   *  Further sends wait for a new key, a READY row (C18) or — a LIVE plan that left the turn open
+   *  (bt-12 B) — the server's execution landing as a change of that budget. */
+  #inflight = new Map<number, { readonly key: string; readonly budget: TurnBudget | null }>();
   /** The last `activeUnitId` seen: the selection follows it when it CHANGES to an own unit. */
   #lastActive: number | null = null;
   #hint: HintBattle = { start: 'endTurn', undo: false };
   #menuOpen = false;
   #rules: TacticsRules | null = null;
+  /** The "Still there?" line (bt-12 B) and the whole seconds it shows; null when none shows. */
+  #countdownEl: HTMLElement | null = null;
+  #countdownValue: number | null = null;
 
   constructor(parent: HTMLElement, deps: TacticsBattleDeps) {
     this.#deps = deps;
@@ -354,14 +363,14 @@ export class TacticsBattle implements BattleOpsView {
     this.#turnbarEl = div('tactics-turnbar');
     this.#turnbarEl.setAttribute('role', 'group');
 
-    const field = div('tactics-field');
+    this.#fieldEl = div('tactics-field');
     this.#boardEl = div('tactics-board');
     this.#hudEl = div('tactics-hud');
     this.#bannerEl = div('tactics-banner');
     this.#bannerEl.hidden = true;
-    field.append(this.#boardEl, this.#hudEl, this.#bannerEl);
+    this.#fieldEl.append(this.#boardEl, this.#hudEl, this.#bannerEl);
 
-    this.#root.append(this.#titleEl, this.#turnbarEl, field);
+    this.#root.append(this.#titleEl, this.#turnbarEl, this.#fieldEl);
     this.#ticker = new Ticker(this.#root);
     this.#dockEl = div('tactics-dock');
     this.#dockEl.setAttribute('role', 'group');
@@ -388,6 +397,7 @@ export class TacticsBattle implements BattleOpsView {
     this.#root.style.display = 'none';
     this.#playback.skip();
     this.#syncPlaying();
+    this.setCountdown(null);
     closeOverlayA11y('battleView', null);
   }
 
@@ -418,6 +428,40 @@ export class TacticsBattle implements BattleOpsView {
   tick(): void {
     this.#playback.tick();
     this.#syncPlaying();
+  }
+
+  /** The "Still there?" countdown (bt-12 B, BT12.2): `n` seconds paints one `.tactics-countdown` line in
+   *  the field after the banner, the same value writes nothing, null removes it; `#commit` never touches
+   *  it; `hide()` and a new battle clear it. Driven by main.ts's frame pump on the wall clock. */
+  setCountdown(seconds: number | null): void {
+    if (seconds === this.#countdownValue) return;
+    this.#countdownValue = seconds;
+    if (seconds === null) {
+      this.#countdownEl?.remove();
+      this.#countdownEl = null;
+      return;
+    }
+    if (this.#countdownEl === null) this.#countdownEl = div('tactics-countdown');
+    this.#countdownEl.textContent = s.stillThere(seconds);
+    // In the field after the banner: `#commit` rewrites the field's other bands, never this one.
+    this.#fieldEl.appendChild(this.#countdownEl);
+  }
+
+  /** Forget the battle (bt-12 B): the next `render` re-initialises as for a new battle — the cursor
+   *  memory, the selection, the cursor, the danger toggle, the mode, the drafts, the in-flight keys, the
+   *  ticker and the playback are cleared. main.ts calls it on a reconnect, so a submit the dropped link
+   *  lost never leaves a unit's turn locked. Neither hides nor shows (the frame owner is main.ts's). */
+  reset(): void {
+    this.#forget();
+    this.#battleId = null;
+    this.#vm = null;
+  }
+
+  /** A submit the server REFUSED (bt-12 B): the unit's in-flight key is released so the player's next
+   *  commit for the same turn goes out; repaints. main.ts wires it to the dispatch arm's rejection. */
+  release(unitId: number): void {
+    this.#inflight.delete(unitId);
+    if (this.#vm !== null) this.#atomic(() => this.#paint());
   }
 
   get dangerOn(): boolean {
@@ -787,15 +831,16 @@ export class TacticsBattle implements BattleOpsView {
     this.#drafts.set(p.unitId, { draft: push(p.draft, action), mode: p.mode });
   }
 
-  /** Send `actions` for `unitId` — once per turn key (A28): the sink is called FIRST (a throw keeps
-   *  the draft), the draft cleared after. */
+  /** Send `actions` for `unitId` — once per turn key (A28) until `#reconcile` re-arms it: the sink
+   *  is called FIRST (a throw keeps the draft), the draft cleared after. */
   #send(unitId: number, actions: readonly QueuedActionRule[]): void {
     const vm = this.#vm;
     if (vm === null) return;
     const key = inflightKey(vm);
-    if (this.#inflight.get(unitId) === key) return;
+    if (this.#inflight.get(unitId)?.key === key) return;
     this.#deps.onSubmitQueue(vm.battleId, unitId, toWire(actions));
-    this.#inflight.set(unitId, key);
+    const budget = vm.board.units.find((r) => r.id === unitId)?.budget ?? null;
+    this.#inflight.set(unitId, { key, budget });
     this.#drafts.delete(unitId);
   }
 
@@ -893,7 +938,13 @@ export class TacticsBattle implements BattleOpsView {
 
   /** A different battle starts from scratch: nothing of the last one may leak into it. */
   #startBattle(battleId: bigint): void {
+    this.#forget();
     this.#battleId = battleId;
+  }
+
+  /** Everything of the current battle but its id: the planning state, the log, the playback and
+   *  the countdown (`#startBattle` and `reset` share it). */
+  #forget(): void {
     this.#memory = new Map();
     this.#selected = null;
     this.#cursor = null;
@@ -902,9 +953,11 @@ export class TacticsBattle implements BattleOpsView {
     this.#drafts = new Map();
     this.#inflight = new Map();
     this.#lastActive = null;
+    this.#hint = { start: 'endTurn', undo: false };
     this.#ticker.clear();
     this.#playback.skip();
     this.#syncPlaying();
+    this.setCountdown(null);
   }
 
   #syncPlaying(): void {
@@ -1132,8 +1185,16 @@ export class TacticsBattle implements BattleOpsView {
     // A READY row acknowledges the round-trip: the next submit (a replacement) may go (C18). When
     // the row being replaced is still present this re-arms at once, so only the FIRST send of a
     // turn is guarded against a double press — game-core replaces the plan, so a repeat is harmless.
-    for (const id of [...this.#inflight.keys()]) {
-      if (vm.readyPlans.has(id)) this.#inflight.delete(id);
+    // A LIVE plan writes no row: it executes at once, and one that does not end the turn leaves
+    // the unit Waiting with the rest of its budget (bt-12 B). Its acknowledgement is the unit's own
+    // row budget moving from what the send went under (a skill costs AP and counts an attack, a
+    // move strides); a plan that ends the turn moves the key instead. Another unit's budget, the
+    // target's HP or a re-render with the same budget re-arm nothing (the double-press guard).
+    for (const [id, held] of [...this.#inflight.entries()]) {
+      const budget = vm.board.units.find((r) => r.id === id)?.budget;
+      const landed =
+        held.budget !== null && budget !== undefined && !sameBudget(budget, held.budget);
+      if (vm.readyPlans.has(id) || landed) this.#inflight.delete(id);
     }
   }
 

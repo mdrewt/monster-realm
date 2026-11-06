@@ -68,7 +68,12 @@ import {
   rateLimitTick,
   resolveDevLogLevel,
 } from './net/devLog';
-import { AuthoritativeStore, ownPerspective, type StoreMonsterPub } from './net/store';
+import {
+  AuthoritativeStore,
+  ownPerspective,
+  type StoreMonsterPub,
+  type StoreTacticalBattle,
+} from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
@@ -90,8 +95,23 @@ import { DeployPanel, type DeployVM, deployVM } from './tactics/deployPanel';
 import { isAlreadyActing } from './tactics/draft';
 import { CAPS } from './tactics/presentation';
 import { ResultsPanel, type ResultsVM, resultsVM } from './tactics/results';
-import { queueTooLate } from './tactics/strings';
-import { bindTacticsRules, type TacticsRules } from './tactics/wasm';
+import { queueTooLate, stillThere } from './tactics/strings';
+import {
+  TacticsBattle,
+  type TacticsBattleDeps,
+  type TacticsBattleVM,
+} from './tactics/tacticsBattle';
+import {
+  activeUnitOf,
+  bindTacticsRules,
+  type RuleBattleKind,
+  type RuleSide,
+  type RulesBoard,
+  shellKind,
+  statusTagOf,
+  type TacticsClientRules,
+  type TacticsTuning,
+} from './tactics/wasm';
 import { t } from './ui/a11yCopy';
 import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
@@ -123,6 +143,8 @@ import {
   outcomeOnTop,
   popPlayerFramesOverBattle,
   shouldAutoContinue,
+  stillThereSeconds,
+  structurallyEqual,
 } from './ui/battlePolicy';
 import type { BattleRewardsVM, BattleView } from './ui/battleView';
 import {
@@ -199,7 +221,7 @@ import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
 import type { HelpView } from './ui/helpView';
 import { HintBarView } from './ui/hintBar';
-import { type HintChip, hintBar } from './ui/hintBarModel';
+import { type HintBattle, type HintChip, type HintDeploy, hintBar } from './ui/hintBarModel';
 import { isRtl, negotiateLocale } from './ui/i18n/locale';
 import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';
 import {
@@ -423,30 +445,68 @@ let battleView: BattleView | undefined;
 // every legacy test's and e2e's selector), on the mount `main()` keeps in `battleMount`.
 let deployPanel: DeployPanel | undefined;
 let resultsPanel: ResultsPanel | undefined;
+// bt-12 B (BT12.1): the tactical shell owns the frame of an Active tactical battle; built lazily too.
+let tacticsBattle: TacticsBattle | undefined;
 let battleMount: HTMLElement | undefined;
-let tacticsRulesPort: TacticsRules | null = null;
+let tacticsRulesPort: TacticsClientRules | null = null;
 /** The tactics rules port, bound on first use (see the `wasmPkg` import note). */
-const tacticsRules = (): TacticsRules => (tacticsRulesPort ??= bindTacticsRules(wasmPkg));
-/** The three views that can own the battle frame, in a fixed order (undefined until built). */
-const battleViews = (): readonly (BattleView | DeployPanel | ResultsPanel | undefined)[] => [
-  battleView,
-  deployPanel,
-  resultsPanel,
-];
+const tacticsRules = (): TacticsClientRules => (tacticsRulesPort ??= bindTacticsRules(wasmPkg));
+/** The client-facing tuning (the Surge start, the wild round cap, the pack cap), read once. */
+let tacticsTuning: TacticsTuning | null = null;
+const tuningOf = (): TacticsTuning => (tacticsTuning ??= tacticsRules().tuning());
+/** The tactical battle a battle view shows (the deploy panel or the shell), set BEFORE its render:
+ *  the shell's names closure reads `mySide` inside its frame, and the countdown pump reads whose own
+ *  clock to follow and whether the battle is a wild one. Null when no tactical view shows. */
+let tacticsShown: {
+  readonly battleId: bigint;
+  readonly mySide: RuleSide;
+  readonly kind: RuleBattleKind;
+} | null = null;
+/** The last event seq the shell was fed, per battle (REV B2.4): null until a battle's first
+ *  sighting, which feeds the whole transcript while the shell is hidden; later batches feed only the
+ *  events past it. Keyed by the battle id as a bigint (ids differing only above 2^53 are two). */
+let tacticsIngested: { readonly battleId: bigint; readonly seq: number } | null = null;
+/** The last VM the shell rendered: an identical batch paints nothing (REV B2.2). */
+let lastTacticsVM: TacticsBattleVM | null = null;
+/** The deadline whose "Still there?" countdown the live region already announced (once per window). */
+let stillThereAnnouncedFor: bigint | null = null;
+/** The four views that can own the battle frame, in a fixed order (undefined until built). */
+const battleViews = (): readonly (
+  | BattleView
+  | DeployPanel
+  | ResultsPanel
+  | TacticsBattle
+  | undefined
+)[] => [battleView, deployPanel, resultsPanel, tacticsBattle];
 /** Whether any battle view shows: the `battleView` mirror probe. */
 const battleFrameShown = (): boolean => battleViews().some((v) => v?.visible === true);
 /** The `battleView` force-hide handle: every built view's own hide (each is idempotent). */
 const hideAllBattleViews = (): void => {
   for (const v of battleViews()) v?.hide();
+  tacticsShown = null;
 };
-/** The view the screen host lends the battle adapter: the deploy panel while it shows, else the
- *  1v1 view (the results panel takes no ops; its Continue is a click or the auto-advance). */
-const activeBattleView = (): BattleView | DeployPanel | undefined =>
-  deployPanel?.visible === true ? deployPanel : battleView;
-/** Whether the deploy panel's EDITOR owns Start and the hint verbs (REV 2 A6): at the confirm
- *  screen Start opens the main menu as at any battle base, so Escape (Start's key) never deploys. */
-const deployEditorOwnsStart = (): boolean =>
-  deployPanel?.visible === true && deployPanel.mode === 'edit';
+/** The view the screen host lends the battle adapter: the tactical shell while it shows, else the
+ *  deploy panel while it shows, else the 1v1 view (the results panel takes no ops; its Continue is a
+ *  click or the auto-advance). */
+const activeBattleView = (): BattleView | DeployPanel | TacticsBattle | undefined =>
+  tacticsBattle?.visible === true
+    ? tacticsBattle
+    : deployPanel?.visible === true
+      ? deployPanel
+      : battleView;
+/** Whether Start is the battle adapter's (bt-11 BT11.6, bt-12 B): the tactical shell shows (End Turn
+ *  / Guard / Submit) or the deploy panel's EDITOR is open (Submit). At the deploy CONFIRM screen Start
+ *  opens the main menu as at any battle base, so Escape (Start's key) never deploys (REV 2 A6). */
+const tacticalOwnsStart = (): boolean =>
+  tacticsBattle?.visible === true || (deployPanel?.visible === true && deployPanel.mode === 'edit');
+/** What the shown battle view tells the hint bar and Help: the shell's verbs, else the deploy panel's
+ *  screen (both of them — R-bt-12-DEPLOYHINT), else nothing (a legacy battle). */
+const battleHint = (): HintBattle | HintDeploy | undefined =>
+  tacticsBattle?.visible === true
+    ? tacticsBattle.hint()
+    : deployPanel?.visible === true
+      ? deployPanel.hint()
+      : undefined;
 let raisingView: RaisingView | undefined;
 let evolutionView: EvolutionView | undefined;
 let dialogueView: DialogueView | undefined;
@@ -544,6 +604,7 @@ const RECONNECT_RESETS: readonly (() => void)[] = [
   () => battleView?.hide(),
   () => deployPanel?.hide(),
   () => resultsPanel?.hide(),
+  () => tacticsBattle?.hide(),
   () => raisingView?.hide(),
   () => evolutionView?.hide(),
   () => leaderboardView?.hide(),
@@ -1323,8 +1384,8 @@ function hintChips(
       sheetOpen: screenHost.sheetOpen,
       requestWaiting: pending.length > 0,
     },
-    // bt-12: the deploy editor's verbs (B back, LB / RB prev / next, Start submit) while it is open.
-    deployEditorOwnsStart() ? deployPanel?.hint() : undefined,
+    // bt-12: the shown tactical view's verbs — the shell's, else the deploy panel's (both screens).
+    battleHint(),
   );
 }
 
@@ -1932,8 +1993,20 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       // bt-11: a unit's plan (a live commit or a pre-queue) to `submit_queue`; the server costs it
       // on its board and refuses with a typed reason, reported like every other rejection.
       const { battleId, unitId, entries } = command;
-      return sendGuarded('submit-queue', () =>
-        conn?.live()?.reducers.submitQueue({ battleId, unitId, entries: [...entries] }),
+      return sendGuarded(
+        'submit-queue',
+        () => conn?.live()?.reducers.submitQueue({ battleId, unitId, entries: [...entries] }),
+        // A refusal (a stale turn, a race) releases the unit's in-flight key so the next commit for
+        // the same turn goes out (REV B2.3); a success keeps it until the READY row, the landed
+        // budget or a new turn. The repaint runs inside a promise handler: a throw is reported, not
+        // left as an unhandled rejection.
+        () => {
+          try {
+            tacticsBattle?.release(unitId);
+          } catch (err) {
+            reportPaintError(err);
+          }
+        },
       );
     }
     case 'cancelQueue': {
@@ -2310,6 +2383,15 @@ function resetPredictionState(): void {
   dismissedBattleId = null;
   battleSynced = false;
   lastBattleVM = null;
+  // bt-12 B: the shell forgets its battle (a submit the dropped link lost must not keep a unit's
+  // turn locked) and hides, so the next sighting feeds the transcript from seq 0 while hidden (a
+  // visible shell would replay the history as live beats); the memos reset.
+  tacticsBattle?.reset();
+  tacticsBattle?.hide();
+  tacticsIngested = null;
+  tacticsShown = null;
+  lastTacticsVM = null;
+  stillThereAnnouncedFor = null;
   lastPayout = null;
   // Pending PvP submit state must be cleared on reconnect/zone-switch — the
   // server will have GC'd the old battle and any pending action is no longer relevant.
@@ -2603,7 +2685,7 @@ const routeCtx = (): RouteContext => {
           contextStack,
           btn,
           outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
-          deployEditorOwnsStart(),
+          tacticalOwnsStart(),
         ) ??
         screenHost.button(contextStack, btn, screenCtx, identity === '' ? undefined : worldPort);
       // The world sheet opening or closing is a frame edge for held input (B14): no walk or
@@ -3027,16 +3109,23 @@ function refreshBattle(): void {
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
     // bt-12 (BT12.1): which view owns the frame follows the tactical row's phase. A Deploying wild
-    // battle shows the deploy panel, a Finished one the results panel; an Active one keeps the 1v1
-    // view until the continuation constructs the tactical shell (R-bt-12-TACTICSEXPORTS). A switch
-    // under a frame that sits over the battle base (Help, a conversation) first pops to the base:
-    // the three roots share one overlay a11y record, and closing a covered record then opening a
-    // fresh one would leave that frame inert (REV 2 A2). The open is the LAST statement of each arm.
+    // battle shows the deploy panel, an Active one the tactical shell (bt-12 B), a Finished one the
+    // results panel, no row the 1v1 view. A switch under a frame that sits over the battle base
+    // (Help, a conversation) first pops to the base: the four roots share one overlay a11y record,
+    // and closing a covered record then opening a fresh one would leave that frame inert (REV 2
+    // A2). The open is the LAST statement of each arm.
     const tacticalRow = store.tacticalBattle(r.action.battle.battleId);
     const renderer = battleRenderer(tacticalRow?.phase);
+    if (renderer === 'tactical' && tacticalRow !== undefined) {
+      if (refreshTacticsShell(tacticalRow)) return;
+      // The shell could not be built or rendered (reported once): a visible shell keeps the frame,
+      // never demoted to the 1v1 view (B17); otherwise the 1v1 view below shows the battle.
+      if (tacticsBattle?.visible === true) return;
+    }
+    tacticsShown = null; // the deploy arm sets it again
     const panel =
       renderer === 'deploy' && tacticalRow !== undefined
-        ? buildDeployPanel(r.action.battle, tacticalRow.mapId)
+        ? buildDeployPanel(r.action.battle, tacticalRow)
         : renderer === 'results'
           ? buildResultsPanel(r.action.battle.battleId)
           : null;
@@ -3103,29 +3192,58 @@ function ownMonsterName(m: StoreMonsterPub): string {
   return m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${m.monsterId}`);
 }
 
-/** The deploy slot count per map, read once per mapId through the rules port (a whole map
- *  definition crosses the wasm boundary for one length). */
-const deploySlotCounts = new Map<number, number>();
+/** What the client keeps of a battle map — its size and its side-A spawn count — read once per
+ *  mapId through the rules port (a whole map definition crosses the wasm boundary for three numbers). */
+const tacticsMapFacts = new Map<
+  number,
+  { readonly width: number; readonly height: number; readonly spawns: number }
+>();
+function mapFactsOf(mapId: number): { width: number; height: number; spawns: number } {
+  let facts = tacticsMapFacts.get(mapId);
+  if (facts === undefined) {
+    const map = tacticsRules().map(mapId);
+    facts = { width: map.width, height: map.height, spawns: map.spawn_a.length };
+    tacticsMapFacts.set(mapId, facts);
+  }
+  return facts;
+}
+
+/** The local player's side of `battleId` from the RAW anchor (a PvP accepter is side B). */
+function mySideOf(battleId: bigint): RuleSide {
+  const raw = store.latestPlayerBattle(identity);
+  return raw !== undefined && raw.battleId === battleId && raw.playerIdentity !== identity
+    ? 'B'
+    : 'A';
+}
 
 /** The deploy panel and its view model for the own-perspective anchor `battle` (bt-12, BT12.2 /
  *  BT12.3): the anchor's party order joined with the own monster rows (a member with no own row is
- *  dropped), the remembered formation and the map's spawn count. Builds the panel on first use. null
+ *  dropped; one in the player's open trade is neither offered nor defaulted — `deploy_units` refuses
+ *  it), the remembered formation, the pack from the anchor's side B and the slot count
+ *  `min(max_pack, spawn_a.length)` (the server's own cap). Builds the panel on first use. null
  *  (reported once) when the rules port or the map cannot be read — the 1v1 view keeps the frame (B17). */
 function buildDeployPanel(
-  battle: { readonly battleId: bigint; readonly partyMonsterIds: readonly bigint[] },
-  mapId: number,
+  battle: {
+    readonly battleId: bigint;
+    readonly partyMonsterIds: readonly bigint[];
+    readonly sideB: {
+      readonly team: readonly { readonly speciesId: number; readonly level: number }[];
+    };
+  },
+  row: StoreTacticalBattle,
 ): { readonly kind: 'deploy'; readonly view: DeployPanel; readonly vm: DeployVM } | null {
   if (battleMount === undefined) return null;
   try {
-    let slotCount = deploySlotCounts.get(mapId);
-    if (slotCount === undefined) {
-      slotCount = tacticsRules().map(mapId).spawn_a.length;
-      deploySlotCounts.set(mapId, slotCount);
-    }
+    const slotCount = Math.min(tuningOf().max_pack, mapFactsOf(row.mapId).spawns);
+    const offer = store.ownTradeOffer(identity);
+    const traded = new Set<bigint>([
+      ...(offer?.initiatorMonsterIds ?? []),
+      ...(offer?.counterpartyMonsterIds ?? []),
+    ]);
     const own = new Map(store.ownMonsters(identity).map((m) => [m.monsterId, m] as const));
     const party = battle.partyMonsterIds.flatMap((id) => {
       const m = own.get(id);
-      if (m === undefined) return [];
+      if (m === undefined || traded.has(id)) return [];
       const row = {
         monsterId: m.monsterId,
         name: ownMonsterName(m),
@@ -3140,10 +3258,17 @@ function buildDeployPanel(
       party,
       remembered: store.ownFormation(identity)?.monsterIds ?? [],
       slotCount,
+      // The pack (bt-12 B): the server seats every wild in the anchor's side B at the start.
+      wilds: battle.sideB.team.map((w) => ({
+        speciesId: w.speciesId,
+        name: store.species(w.speciesId)?.name ?? `#${w.speciesId}`,
+        level: w.level,
+      })),
     });
     deployPanel ??= new DeployPanel(battleMount, {
       onDeploy: (battleId, picks) => dispatch({ kind: 'deployUnits', battleId, picks }),
     });
+    tacticsShown = { battleId: row.battleId, mySide: mySideOf(row.battleId), kind: row.kind };
     return { kind: 'deploy', view: deployPanel, vm };
   } catch (err) {
     reportPaintError(err);
@@ -3182,6 +3307,196 @@ function buildResultsPanel(
   });
   return { kind: 'results', view: resultsPanel, vm };
 }
+// --- bt-12 B (BT12.1 / BT12.2): the tactical shell owns the Active phase --------------------------
+
+/** The tactical shell for the Active battle `row`: the VM from the store rows, the render skipped
+ *  on an identical batch (REV B2.2), the transcript fed past the per-battle watermark (REV B2.4),
+ *  then the switch. False when the VM or the render fails (reported once): the caller keeps the
+ *  frame's current owner, and the watermark never moves on a render failure, so the next good batch
+ *  feeds the whole log. */
+function refreshTacticsShell(row: StoreTacticalBattle): boolean {
+  if (battleMount === undefined) return false;
+  tacticsShown = { battleId: row.battleId, mySide: mySideOf(row.battleId), kind: row.kind };
+  let vm: TacticsBattleVM;
+  try {
+    vm = buildTacticsVM(row);
+  } catch (err) {
+    reportPaintError(err);
+    return false;
+  }
+  if (tacticsBattle === undefined) {
+    tacticsBattle = new TacticsBattle(battleMount, tacticsShellDeps());
+  }
+  const view = tacticsBattle;
+  const mark = tacticsIngested;
+  const first = mark === null || mark.battleId !== row.battleId;
+  const since = first ? -1 : mark.seq;
+  const fresh = store.battleEvents(row.battleId).filter((e) => e.seq > since);
+  const last = fresh.at(-1)?.seq ?? since;
+  if (!(view.visible && lastTacticsVM !== null && tacticsVMEqual(lastTacticsVM, vm))) {
+    try {
+      view.render(vm);
+    } catch (err) {
+      reportPaintError(err);
+      return false;
+    }
+    lastTacticsVM = vm;
+  }
+  const feed = (): void => {
+    if (fresh.length > 0) {
+      try {
+        view.ingest(fresh.map((e) => e.payload));
+      } catch (err) {
+        // `ingest` is atomic, so the batch left no line: feed the events one by one, and only the
+        // unrenderable one drops (reported once); the mark still moves past the whole batch.
+        reportPaintError(err);
+        for (const e of fresh) {
+          try {
+            view.ingest([e.payload]);
+          } catch (bad) {
+            console.warn('[tactics] event dropped from the log', e.seq, bad);
+          }
+        }
+      }
+    }
+    tacticsIngested = { battleId: row.battleId, seq: last };
+  };
+  // A first sighting feeds the history while HIDDEN (the render of a new battle cleared the ticker;
+  // a hidden view plays no beats) and then shows; a later batch shows first, so only live events play.
+  if (first) feed();
+  popOverBattleBeforeSwitch(view);
+  hideOtherBattleViews(battleViews(), view);
+  if (!view.visible) view.show();
+  if (!first) feed();
+  lastBattleVM = null;
+  return true;
+}
+
+/** Structural equality of two shell VMs (`readyPlans` as entries: a Map compares as `{}`). */
+const tacticsVMEqual = (a: TacticsBattleVM, b: TacticsBattleVM): boolean =>
+  structurallyEqual(
+    { ...a, readyPlans: [...a.readyPlans] },
+    { ...b, readyPlans: [...b.readyPlans] },
+  );
+
+/** The shell's VM from the store rows of `row`'s battle: the units (`mine` by owner, `ai` when
+ *  ownerless), the map's size, the active unit (`Waiting(U)` whatever `turnIdx` says), the tuning's
+ *  Surge start and round cap, the NEXT round's initiative from the rules under this round's tie side
+ *  (never a flip restated here), the own READY plans and the baits held. Throws on a malformed board
+ *  (the rules refuse it) — the caller reports and keeps the frame's owner. */
+function buildTacticsVM(row: StoreTacticalBattle): TacticsBattleVM {
+  const rules = tacticsRules();
+  const tuning = tuningOf();
+  const map = mapFactsOf(row.mapId);
+  const rows = store.battleUnits(row.battleId);
+  const board: RulesBoard = { kind: row.kind, map_id: row.mapId, units: rows.map((u) => u.row) };
+  return {
+    battleId: row.battleId,
+    kind: shellKind(row.kind),
+    width: map.width,
+    height: map.height,
+    units: rows.map((u) => ({
+      unitId: u.unitId,
+      side: u.row.side,
+      mine: u.owner === identity,
+      ai: u.owner === null,
+      speciesId: u.row.species_id,
+      speciesName: store.species(u.row.species_id)?.name ?? `#${u.row.species_id}`,
+      level: u.row.level,
+      affinity: u.affinity,
+      x: u.row.pos.x,
+      y: u.row.pos.y,
+      curHp: u.row.cur_hp,
+      maxHp: u.row.stats.hp,
+      status: statusTagOf(u.row.status),
+      ap: u.row.budget.ap,
+      guard: u.row.guard,
+      firstStand: u.row.first_stand,
+      role: null, // no role reaches the client; the HUD's role chip stays off
+      stance: u.row.stance,
+      state: u.row.state,
+    })),
+    activeUnitId: activeUnitOf(row.turnState, row.initiative, row.turnIdx),
+    round: row.round,
+    initiative: row.initiative,
+    turnIdx: row.turnIdx,
+    nextInitiative: rules.nextInitiative(board, row.tiePrioritySide),
+    surgeStartRound: tuning.surge_start_round,
+    wildRoundCap: tuning.wild_round_cap,
+    targetUnitId: null,
+    board,
+    readyPlans: new Map(
+      store.ownQueue(row.battleId, identity).map((q) => [q.unitId, q.entries] as const),
+    ),
+    baits: buildBaitItems(store.ownInventory(identity), store.itemDefs())
+      .filter((b) => b.recruitBonus > 0)
+      .map((b) => ({ itemId: b.itemId, name: b.name, count: b.count, bonus: b.recruitBonus })),
+    // A tactical recruit lands in the box (taming::insert_recruited): the server never refuses one
+    // for a full party, so there is no headroom predicate to mirror (R-bt-11-PARTYFULL).
+    partyFull: false,
+  };
+}
+
+/** The shell's deps: the clocks, live name closures over the store (the shown battle's units; an
+ *  own unit by its monster's name, else its species, else `#id`; `mySide` from the shown anchor),
+ *  the rules port and the two queue reducers through `dispatch`. */
+function tacticsShellDeps(): TacticsBattleDeps {
+  return {
+    now: () => performance.now(),
+    reduceMotion: () => motionPreference.reduceMotion,
+    names: {
+      unit: (unitId) => {
+        const shown = tacticsShown;
+        const u =
+          shown === null
+            ? undefined
+            : store.battleUnits(shown.battleId).find((x) => x.unitId === unitId);
+        if (u === undefined) return `#${unitId}`;
+        const own =
+          u.owner === identity && u.monsterId !== null
+            ? store.ownMonsters(identity).find((m) => m.monsterId === u.monsterId)
+            : undefined;
+        return own !== undefined
+          ? ownMonsterName(own)
+          : (store.species(u.row.species_id)?.name ?? `#${unitId}`);
+      },
+      skill: (skillId) => store.skill(skillId)?.name ?? `#${skillId}`,
+      item: (itemId) => store.itemDef(itemId)?.name ?? `#${itemId}`,
+      get mySide() {
+        return tacticsShown?.mySide ?? 'A';
+      },
+    },
+    rules: tacticsRules,
+    onSubmitQueue: (battleId, unitId, entries) =>
+      void dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
+    onCancelQueue: (battleId, unitId) => void dispatch({ kind: 'cancelQueue', battleId, unitId }),
+  };
+}
+
+/** The "Still there?" countdown (BT12.2), pumped on the WALL clock: the shown tactical view's own
+ *  clock deadline — a WILD battle's only — through `stillThereSeconds`; the view memoises the second,
+ *  so an unchanged value writes nothing. Returns the line to announce the first time a window's
+ *  countdown shows, else null. */
+function pumpStillThere(wallNowMs: number): string | null {
+  const shown = tacticsShown;
+  const view =
+    tacticsBattle?.visible === true
+      ? tacticsBattle
+      : deployPanel?.visible === true
+        ? deployPanel
+        : undefined;
+  if (shown === null || view === undefined) return null;
+  const deadline =
+    shown.kind === 'Wild'
+      ? (store.battleClocks(shown.battleId).find((c) => c.player === identity)?.deadlineMs ?? null)
+      : null;
+  const seconds = stillThereSeconds(deadline, wallNowMs);
+  view.setCountdown(seconds);
+  if (seconds === null || deadline === null || stillThereAnnouncedFor === deadline) return null;
+  stillThereAnnouncedFor = deadline;
+  return stillThere(seconds);
+}
+
 // --- qf-17: the KO-win payout lines (QF17.1, QF17.2) ---------------------------------------
 // The server pays a win silently, in the ONE transaction that also flips the battle row terminal
 // (write_back_battle_results: grant_currency, then the winners' xp), and the client folds a
@@ -3852,12 +4167,87 @@ const mrPvpHook = {
   },
 };
 
+// bt-12 (BT12.5): the tactical e2e's READ-ONLY hook — the local player's tactical battle as the store
+// holds it (the rows the player's own views carry: never a seed, never the opponent's plan) and the
+// own monsters' HP. No
+// reducer reaches through it; every battle action in the e2e is a virtual button. Fingerprinted by
+// scripts/verify-build-hooks.mjs beside the other three.
+const mrTacticsHook = {
+  battle(): null | {
+    battleId: string;
+    phase: string;
+    round: number;
+    turnIdx: number;
+    initiative: number[];
+    activeUnitId: number | null;
+    turnState: 'NotActive' | 'Waiting' | 'Advancing';
+    owner: 'legacy' | 'deploy' | 'tactical' | 'results' | null;
+    events: number;
+    deadlineMs: string | null;
+    units: {
+      unitId: number;
+      side: 'A' | 'B';
+      mine: boolean;
+      x: number;
+      y: number;
+      curHp: number;
+      maxHp: number;
+      state: string;
+    }[];
+  } {
+    const raw = store.latestPlayerBattle(identity);
+    const row = raw === undefined ? undefined : store.tacticalBattle(raw.battleId);
+    if (row === undefined) return null;
+    const clock = store.battleClocks(row.battleId).find((c) => c.player === identity);
+    return {
+      battleId: String(row.battleId),
+      phase: row.phase,
+      round: row.round,
+      turnIdx: row.turnIdx,
+      initiative: [...row.initiative],
+      activeUnitId: activeUnitOf(row.turnState, row.initiative, row.turnIdx),
+      turnState: row.turnState.kind,
+      owner:
+        tacticsBattle?.visible === true
+          ? 'tactical'
+          : deployPanel?.visible === true
+            ? 'deploy'
+            : resultsPanel?.visible === true
+              ? 'results'
+              : battleView?.visible === true
+                ? 'legacy'
+                : null,
+      events: store.battleEvents(row.battleId).length,
+      deadlineMs: clock?.deadlineMs == null ? null : String(clock.deadlineMs),
+      units: store.battleUnits(row.battleId).map((u) => ({
+        unitId: u.unitId,
+        side: u.row.side,
+        mine: u.owner === identity,
+        x: u.row.pos.x,
+        y: u.row.pos.y,
+        curHp: u.row.cur_hp,
+        maxHp: u.row.stats.hp,
+        state: u.row.state,
+      })),
+    };
+  },
+  ownMonsters(): { monsterId: string; currentHp: number; maxHp: number; partySlot: number }[] {
+    return store.ownMonsters(identity).map((m) => ({
+      monsterId: String(m.monsterId),
+      currentHp: m.currentHp,
+      maxHp: m.statHp,
+      partySlot: m.partySlot,
+    }));
+  },
+};
+
 // D-17.5-E: DEV-only test hooks. Only the window ASSIGNMENTS are gated —
 // the hook consts above stay top-level (still referenced here, so no unused-var lint).
 if (import.meta.env.DEV) {
   (window as unknown as { __game: typeof snapshot }).__game = snapshot;
   (window as unknown as { __mrTrade: typeof mrTradeHook }).__mrTrade = mrTradeHook;
   (window as unknown as { __mrPvp: typeof mrPvpHook }).__mrPvp = mrPvpHook;
+  (window as unknown as { __mrTactics: typeof mrTacticsHook }).__mrTactics = mrTacticsHook;
 }
 
 // the build stamp is UNGATED — present in the production playtest build,
@@ -4399,6 +4789,11 @@ async function main(): Promise<void> {
       }
       // Menu auto-repeat: the router synthesizes the held D-pad's repeat edges on this clock.
       for (const effect of inputRouter.tick(routeCtx())) applyRouterEffect(effect);
+      // bt-12 B: the tactical shell's playback on the frame clock; the "Still there?" countdown on
+      // the WALL clock (the deadline is a server epoch instant; a batch-driven countdown would
+      // freeze between batches, R5). Its first second is announced below, after the transitions.
+      tacticsBattle?.tick();
+      const countdownSaid = pumpStillThere(Date.now());
       if (now - lastCareTickAtMs >= CARE_READINESS_TICK_MS && upperIds().includes('boxView')) {
         lastCareTickAtMs = now;
         screenHost.observe(contextStack, screenCtx);
@@ -4420,6 +4815,7 @@ async function main(): Promise<void> {
         if (a === null || a === document.body || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
       }
       lastA11ySnapshot = nextSnapshot;
+      if (countdownSaid !== null) liveRegion.announce(countdownSaid, now);
       // qf-6: a queued status notice is spoken clear of the transitions above and of anything
       // announced outside the pump since the last frame (statusNoticeStep holds it a full
       // coalescing window past them, and re-queues one they clobbered).
@@ -4428,7 +4824,8 @@ async function main(): Promise<void> {
         {
           kind: 'frame',
           nowMs: now,
-          transitionAnnounced: edges.length > 0 || worldEdge || announcedSinceFrame,
+          transitionAnnounced:
+            edges.length > 0 || worldEdge || announcedSinceFrame || countdownSaid !== null,
         },
         COALESCE_WINDOW_MS,
       );

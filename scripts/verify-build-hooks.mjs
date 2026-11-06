@@ -3,8 +3,9 @@
 // Scans the emitted `client/dist/**/*.js` production bundle and fails loud
 // (non-zero exit) if any DEV debug-hook `window`-binding survives into the
 // honest build. It matches the BINDING form (`.__game=`/`.__mrTrade=`/
-// `.__mrPvp=`, plus the `defineProperty(window,"__x"` escape), NOT a bare
-// substring: an unminified build legitimately retains dead object literals
+// `.__mrPvp=`/`.__mrTactics=`, plus the `defineProperty(window,"__x"` escape),
+// NOT a bare substring (bar `__mrTactics`, whose name occurs nowhere else): an
+// unminified build legitimately retains dead object literals
 // (`{challengePvp,proposeTrade}`) not attached to `window`, and
 // the ungated prod build stamp `window.__mrBuild=` must NOT be flagged.
 //
@@ -27,6 +28,10 @@ import { pathToFileURL } from 'node:url';
 // receivers) plus the defineProperty escape. NO bracket `["__game"]` forms (vite
 // emits no sourcemaps by default so they aren't reachable); NO bare `__game`
 // substring; and NOT `.__mrBuild=` (the ungated prod stamp is not a dev hook).
+// bt-12 (BT12.5): the tactical e2e hook `__mrTactics` joins in the same two shapes AND
+// as the bare name — the one shape that catches `Object.assign(window, { __mrTactics })`
+// or a bracket write; its name occurs nowhere else in the bundle (the hook object is
+// `mrTacticsHook`, bound only inside the DEV-gated branch the minifier drops).
 export const DEV_HOOK_FINGERPRINTS = [
   '.__game=',
   '.__game =',
@@ -34,12 +39,17 @@ export const DEV_HOOK_FINGERPRINTS = [
   '.__mrTrade =',
   '.__mrPvp=',
   '.__mrPvp =',
+  '.__mrTactics=',
+  '.__mrTactics =',
+  '__mrTactics',
   'defineProperty(window,"__game"',
   "defineProperty(window,'__game'",
   'defineProperty(window,"__mrTrade"',
   "defineProperty(window,'__mrTrade'",
   'defineProperty(window,"__mrPvp"',
   "defineProperty(window,'__mrPvp'",
+  'defineProperty(window,"__mrTactics"',
+  "defineProperty(window,'__mrTactics'",
 ];
 
 // findDevHooks(bundleText, fingerprints) -> string[]
@@ -132,7 +142,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
     }
     console.error(
-      `verify-build-hooks: ${offenders.length} DEV hook fingerprint(s) leaked into the production build — the honest build must strip __game/__mrTrade/__mrPvp.`,
+      `verify-build-hooks: ${offenders.length} DEV hook fingerprint(s) leaked into the production build — the honest build must strip __game/__mrTrade/__mrPvp/__mrTactics.`,
     );
     process.exit(1);
   }
@@ -163,7 +173,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
 
   console.log(
-    `verify-build-hooks: OK — scanned ${jsFiles.length} .js file(s) under "${distDir}"; no DEV hooks (__game/__mrTrade/__mrPvp) present; bundle bakes playtest DB "${expectedDb}".`,
+    `verify-build-hooks: OK — scanned ${jsFiles.length} .js file(s) under "${distDir}"; no DEV hooks (__game/__mrTrade/__mrPvp/__mrTactics) present; bundle bakes playtest DB "${expectedDb}".`,
   );
   process.exit(0);
 }

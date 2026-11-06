@@ -448,7 +448,10 @@ fn clock_of_row(row: &BattleClock) -> ClockState {
     ClockState {
         window_seq: row.window_seq,
         window_open_ms: row.window_open_ms,
-        deadline_ms: row.deadline_ms,
+        // The engine's clock holds a deadline only while a window is open. A Deploying row carries
+        // the deploy deadline with no open window (bt-12 B, for the client's countdown); nothing
+        // loads a Deploying battle today, but a future reader must never see a half-open window.
+        deadline_ms: row.window_open_ms.and(row.deadline_ms),
         windows_this_unit_turn: row.windows_this_unit_turn,
         idle_ms_total: row.idle_ms_total,
         autopass_count: row.autopass_count,
@@ -1532,7 +1535,7 @@ fn anchor_monster(m: &Monster, species: &Species) -> BattleMonster {
 /// anchor `battle` row (Ongoing, the whole party as side A), `battle_tactical`,
 /// `battle_secret`, one `battle_wild_unit` per wild and the side-A clock; a pack of 1
 /// auto-deploys the remembered formation and starts at once, a pack ≥ 2 opens the
-/// 300 s Deploying window. `forced_pack` overrides the roll (dev only; `1..=MAX_PACK`
+/// Deploying window (the tuning's `pve_deploy_ms`). `forced_pack` overrides the roll (dev only; `1..=MAX_PACK`
 /// and never more than the conscious party — reject, never clamp).
 ///
 /// Until bt-16 wires the grass path, the only production caller is the cfg-gated dev
@@ -1642,31 +1645,30 @@ pub(crate) fn start_wild_tactical(
         content.kit(spawn.species_id)?;
         wilds.push((i, spawn.species_id, spawn.level.as_u8(), seed));
     }
-    // The legacy anchor: the whole party as side A, wild 0 as side B.
+    // The legacy anchor: the whole party as side A, EVERY wild of the pack as side B in
+    // `wild_index` order (bt-12 B, BT12.2: the client's deploy confirm lists the pack from the
+    // anchor's side B, which it already ingests). Every wild is conscious at the start, so
+    // `with_lead` seats wild 0 as the lead.
     let mut team_a = Vec::with_capacity(party.len());
     for m in &party {
         team_a.push(anchor_monster(m, content.species(m.species_id)?));
     }
     let side_a = BattleSide::with_lead(team_a)
         .ok_or_else(|| "party has no conscious monster".to_string())?;
-    let (_, wild0_species, wild0_level, wild0_seed) = wilds
-        .first()
-        .copied()
-        .ok_or_else(|| "encounter: empty pack".to_string())?;
-    let wild0 = content.species(wild0_species)?;
-    let wild0_inst = build_monster(wild0_seed, wild0, Level::new(wild0_level)?);
-    let side_b = BattleSide::with_lead(vec![BattleMonster {
-        species_id: wild0_species,
-        affinity: wild0.affinity,
-        level: wild0_level,
-        current_hp: wild0_inst.derived_stats.hp,
-        max_hp: wild0_inst.derived_stats.hp,
-        stats: wild0_inst.derived_stats,
-        known_skill_ids: wild0.learnable_skill_ids.clone(),
-        status: None,
-    }])
-    .ok_or_else(|| "wild opponent has no conscious monster".to_string())?;
+    let mut team_b = Vec::with_capacity(wilds.len());
+    for &(_, species_id, level, seed) in &wilds {
+        team_b.push(wild_anchor_monster(content, species_id, level, seed)?);
+    }
+    let side_b = BattleSide::with_lead(team_b)
+        .ok_or_else(|| "wild opponent has no conscious monster".to_string())?;
     let now = now_ms(ctx);
+    // A pack >= 2 waits in Deploying: its deadline is written ONCE, to the side-A clock (the
+    // client's "Still there?" countdown reads it) AND the deploy window row (R6: one instant).
+    let deploy_deadline = if pack == 1 {
+        None
+    } else {
+        Some(deploy_deadline_ms(now, &content.tuning))
+    };
     let anchor = ctx.db.battle().insert(Battle {
         battle_id: 0,
         player_identity: player,
@@ -1725,7 +1727,7 @@ pub(crate) fn start_wild_tactical(
         player,
         window_seq: 0,
         window_open_ms: None,
-        deadline_ms: None,
+        deadline_ms: deploy_deadline,
         windows_this_unit_turn: 0,
         idle_ms_total: 0,
         autopass_count: 0,
@@ -1755,16 +1757,44 @@ pub(crate) fn start_wild_tactical(
             })
             .collect();
         materialize(ctx, anchor, tactical, &picks, now)?;
-    } else {
-        arm_deadline(
-            ctx,
-            battle_id,
-            DEPLOY_WINDOW_UNIT,
-            0,
-            now.saturating_add(i64::from(content.tuning.pve_deploy_ms)),
-        );
+    } else if let Some(deadline) = deploy_deadline {
+        arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deadline);
     }
     Ok(battle_id)
+}
+
+/// One wild of the pack as the anchor's side B seats it: built from its individuality seed at the
+/// band level (full HP, the derived stats, the species' learnable skills, no status) — exactly the
+/// `battle_wild_unit` rebuild `materialize` performs, so the anchor and the units agree.
+fn wild_anchor_monster(
+    content: &TacticsContent,
+    species_id: u32,
+    level: u8,
+    seed: u32,
+) -> Result<BattleMonster, String> {
+    let species = content.species(species_id)?;
+    let built = build_monster(seed, species, Level::new(level)?);
+    Ok(BattleMonster {
+        species_id,
+        affinity: species.affinity,
+        level,
+        current_hp: built.derived_stats.hp,
+        max_hp: built.derived_stats.hp,
+        stats: built.derived_stats,
+        known_skill_ids: species.learnable_skill_ids.clone(),
+        status: None,
+    })
+}
+
+/// The Deploying window's deadline (bt-12 B, BT12.2): `now` plus game-core's deploy budget for a
+/// wild battle (`clock::deploy_budget_ms`: the tuning's `pve_deploy_ms`) — the ONE instant both the
+/// deploy-deadline schedule row and the side-A clock's `deadline_ms` carry, so the client's "Still
+/// there?" countdown reads the same deadline in Deploying as in a turn window.
+pub(crate) fn deploy_deadline_ms(now_ms: i64, tuning: &TacticsTuning) -> i64 {
+    now_ms.saturating_add(i64::from(game_core::tactics::clock::deploy_budget_ms(
+        BattleKind::Wild,
+        tuning,
+    )))
 }
 
 // ===========================================================================

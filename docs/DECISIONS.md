@@ -732,3 +732,27 @@ runs. It is not the player's reach.
 
 **Rules out.** A nearest-within-range target; widening the client rule to match
 `TALK_RANGE`; starting a trade or challenge remotely from a menu.
+
+## The battle frame has one owner per tactical phase
+
+**Decision.** Four views can own the `battleView` frame — the 1v1 view, the deploy panel, the
+tactical shell and the results panel — and exactly one shows at a time. `refreshBattle` routes by
+the tactical row's phase (`battleRenderer`: no row → the 1v1 view, Deploying → the deploy panel,
+Active → the shell, Finished → the results panel) and switches with one fixed ritual: render the
+hidden target first, pop every PLAYER frame over the battle base, hide the other views, then show
+(the open is the last statement); a target that cannot be built or rendered leaves the current
+owner in place. The three constructed roots are built lazily on the first batch that routes to
+them, share the one `battleView` overlay a11y record, and keep their own `hide()` idempotent;
+`activeBattleView`, `tacticalOwnsStart` and `battleHint` read the SHOWN view, never the phase.
+
+**Why.** The overlay registry, the context stack, the a11y record (`OVERLAY_A11Y`, the adopted
+live region, the focus trap) and every legacy test and e2e selector (`[data-testid="battle-title"]`,
+`aria-modal`) key on ONE id, `battleView`. Two visible roots would be two titles and two modal
+dialogs; closing a covered record and opening a fresh one would leave a frame over the base inert;
+a root constructed at boot would collide with every legacy selector before the first tactical
+battle. Routing by phase keeps "a battle is never hidden" (B17) a one-place rule.
+
+**Rules out.** A second overlay id per battle view; showing a battle view outside `refreshBattle`'s
+switch; constructing the tactical roots at boot; a renderer switch that pops the dialogue frame (a
+server conversation suspended over the battle base stays) or that demotes a visible shell to the
+1v1 view when one batch fails to build.

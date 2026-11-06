@@ -135,8 +135,8 @@ export function battleRefused(stack: Stack, command: ScreenCommand): boolean {
 // --- bt-12: which view owns the `battleView` frame, and the results countdown ------------------
 
 /** The view that owns the battle frame for a tactical phase: no tactical row → the 1v1 view;
- *  Deploying → the deploy panel; Active → the tactical shell (the continuation; A keeps the 1v1 view
- *  there); Finished → the results panel. Total over the phase names; an unknown phase still shows a
+ *  Deploying → the deploy panel; Active → the tactical shell (bt-12 B; a shell that cannot be built
+ *  leaves the frame with its current owner, B17); Finished → the results panel. Total over the phase names; an unknown phase still shows a
  *  battle (B17). */
 export type BattleRenderer = 'legacy' | 'deploy' | 'tactical' | 'results';
 export function battleRenderer(phase: TacticalPhaseName | undefined): BattleRenderer {
@@ -206,4 +206,20 @@ export function structurallyEqual(a: unknown, b: unknown): boolean {
   return ka.every(
     (k) => Object.hasOwn(rb, k) && structurallyEqual((a as Record<string, unknown>)[k], rb[k]),
   );
+}
+
+// --- bt-12 (BT12.2): the "Still there?" countdown ---------------------------------------------------
+
+/** The countdown shows for the last `STILL_THERE_LEAD_MS` of a PvE window — the design's "240 s into" a
+ *  300 s window, restated against the server's deadline. A presentation constant: no rule reads it. */
+export const STILL_THERE_LEAD_MS = 60_000;
+
+/** The whole seconds the countdown shows (1..60), or null: no deadline, more than the lead left, or
+ *  the deadline passed. `deadlineMs` is the server's epoch instant; `wallNowMs` the client's wall clock. */
+export function stillThereSeconds(deadlineMs: bigint | null, wallNowMs: number): number | null {
+  if (deadlineMs === null) return null;
+  // A deadline is an epoch instant well inside the double's exact range; no 32-bit op touches it.
+  const remaining = Number(deadlineMs) - wallNowMs;
+  if (remaining <= 0 || remaining > STILL_THERE_LEAD_MS) return null;
+  return Math.ceil(remaining / 1000);
 }

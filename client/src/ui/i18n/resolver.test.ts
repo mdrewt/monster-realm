@@ -53,7 +53,9 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     // FULL VALUE SNAPSHOT: a punctuation-only change to any one plain
     // value — e.g. dropping the em dash in `contentStale` — passes every check above (it only
     // asserts t(key) === CATALOG_EN[key], never the LITERAL English text) but fails here. Kills
-    // that survivor by pinning the exact 9-entry plain-value table from the plan. Scoped to
+    // that survivor by pinning the exact plain-value table (bt-12 increment B, named intentional
+    // change, BT12.2: +5 chrome.chip.* deploy verbs; 38 entries now, grown from the plan's 9-entry
+    // m24-s1 seed by the later slices annotated below). Scoped to
     // `chrome.*` for the same reason as the loop above — this snapshot is S1's roster, not the
     // full (S3+-grown) one.
     const plainKeys = Object.keys(CATALOG_EN as Record<string, unknown>).filter(
@@ -81,6 +83,12 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'chrome.chip.endTurn': 'End turn',
       'chrome.chip.guard': 'Guard',
       'chrome.chip.submit': 'Submit',
+      // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.5): +5 chrome.chip.* deploy verbs.
+      'chrome.chip.deploy': 'Deploy',
+      'chrome.chip.editFormation': 'Edit formation',
+      'chrome.chip.assign': 'Assign',
+      'chrome.chip.prevMonster': 'Prev monster',
+      'chrome.chip.nextMonster': 'Next monster',
       'chrome.badge.request': 'New',
       'chrome.help.title': 'Controls & Goals',
       'chrome.rename.submit': 'Rename',

@@ -33,6 +33,8 @@ import {
   isBareBattle,
   OUTCOME_CONTINUE_GRACE_MS,
   popPlayerFramesOverBattle,
+  STILL_THERE_LEAD_MS,
+  stillThereSeconds,
 } from './battlePolicy';
 import {
   acceleratorsDenied,
@@ -4165,5 +4167,45 @@ describe('context stack: the roster of who owns a frame (so-2, SO2.7)', () => {
       sortedIds([...MIRRORED_IDS, ...PLAYER_IDS]),
       'together exactly the overlay ids (a duplicate or a missing id breaks the multiset)',
     ).toEqual(sortedIds(OVERLAY_IDS));
+  });
+});
+
+describe('battle policy: the "Still there?" countdown (bt-12 B, BT12.2)', () => {
+  it('stillThereSeconds shows whole seconds 1..60 only inside the last STILL_THERE_LEAD_MS before the deadline, null above the lead, at or after the deadline and with no deadline, and a bigint deadline past 2^53 still compares [BT12-2-STILL-THERE]', () => {
+    // WRONG IMPL KILLED: a constant that is not the design's 240 s into a 300 s window (60 000 ms
+    // lead); a strict `<` at the lead (60 s exactly shows nothing); `Math.floor` / `Math.round`
+    // instead of a ceiling (59.001 s shows 59, 0.001 s shows 0); `remaining >= 0` (the deadline
+    // instant shows "0 s"); a past deadline shown as a negative count; a null deadline read as 0n
+    // (Number(null) is 0: every wall clock is then "past"); a `Number(deadline)` truncated through a
+    // 32-bit op (`| 0`, `>>> 0`), which breaks a deadline far from the epoch; a lead measured from a
+    // window OPEN instead of the deadline (no open is passed: the signature takes the deadline only).
+    const T = 1_750_000_000_000;
+    const D = BigInt(T);
+    expect(STILL_THERE_LEAD_MS, 'the design lead: the last 60 s of a 300 s window').toBe(60_000);
+    const cases: readonly (readonly [string, bigint | null, number, number | null])[] = [
+      ['no deadline', null, T, null],
+      ['one ms more than the lead left', D, T - 60_001, null],
+      ['far above the lead', D, T - 240_000, null],
+      ['exactly the lead left', D, T - 60_000, 60],
+      ['59.001 s left (ceiling)', D, T - 59_001, 60],
+      ['59 s left', D, T - 59_000, 59],
+      ['1.5 s left', D, T - 1_500, 2],
+      ['1 s left', D, T - 1_000, 1],
+      ['1 ms left', D, T - 1, 1],
+      ['at the deadline', D, T, null],
+      ['1 ms past the deadline', D, T + 1, null],
+      ['a minute past the deadline', D, T + 60_000, null],
+    ];
+    for (const [label, deadline, now, want] of cases) {
+      expect(stillThereSeconds(deadline, now), label).toBe(want);
+    }
+    // A deadline whose low 32 bits are small while the value is far past 2^53 (even, so it is exact
+    // as a double): 30 s ahead of a wall clock of 2^53.
+    const big = 2n ** 53n + 30_000n;
+    expect(stillThereSeconds(big, 2 ** 53), 'a bigint deadline past 2^53, 30 s ahead').toBe(30);
+    expect(stillThereSeconds(big, 2 ** 53 - 40_000), 'and 70 s ahead: above the lead').toBeNull();
+    expect(stillThereSeconds(2n ** 32n + 5_000n, 2 ** 32), 'a deadline past 2^32, 5 s ahead').toBe(
+      5,
+    );
   });
 });
