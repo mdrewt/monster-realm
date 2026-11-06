@@ -33,18 +33,15 @@ non-additive change against the merge base, so `--write` cannot launder one.
 ## When the nightly run is red
 
 `.github/workflows/nightly.yml` runs the slow checks, and its `notify` job opens one
-issue per failed, skipped or cancelled job. `mutation` (game-core) allows zero
-surviving mutants: kill each survivor with a test, never with a baseline.
-`mutation-server` fails when survivors exceed the cap in the `mutate-server` recipe.
-Both are sharded (6 and 8 shards) to fit GitHub's 6 h job cap; `mutation-server` sums the
-shards' survivors against the cap (`just mutate-server-ratchet`). Each shard uploads its
-`mutants.out/` as a workflow artifact (`mutants-out-core-<n>` / `mutants-out-server-<n>`, kept
-14 days); download the failing run's and the last green
-run's and diff their `missed.txt` before touching the cap. A new survivor in code the
-change touched gets a killing test. Raise the cap only for a survivor proven
-equivalent (it cannot change observable behaviour), recorded as a `MUT-server-*` row
-in `docs/debloat/ledger.ndjson`. The cap is then that full-run missed count plus
-headroom of max(3, 5%). A
+issue per failed, skipped or cancelled job. `mutation` (game-core) and `mutation-server`
+(server-module) both allow zero surviving mutants: kill each survivor with a test, never
+with a baseline or a budget. Only a mutant that provably cannot change observable behaviour
+(equivalent, or a log line nothing reads) may be excluded, in `.cargo/mutants.toml`, with the
+written proof, keyed by file + function + operator + column. Both gates are sharded (6 and 8
+shards) to fit GitHub's 6 h job cap; `just mutate-server-check` sums the server shards. Each
+shard uploads its `mutants.out/` as a workflow artifact (`mutants-out-core-<n>` /
+`mutants-out-server-<n>`, kept 14 days); download the failing run's and read its `missed.txt`.
+A
 `smoke-republish` failure means publishing over live data would fail or lose data, so
 fix it before the next publish.
 
