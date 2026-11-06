@@ -1,9 +1,10 @@
 # Blessed equivalent-mutant exclusions (each entry states why the mutant is equivalent).
+# Every entry needs an equivalence/hang proof and is deleted the moment surrounding code makes
+# it killable.
 #
 # 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
 #    `dy > 0` and `dy >= 0` are indistinguishable on the reachable domain.
 #    Line-pinned: drift resurfaces the mutant → nightly red → re-pin consciously.
-#    Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
 #
 # 2. apply_entry_ability EntryHeal guard (ability.rs:170:60): `current_hp < max_hp`
 #    vs `current_hp <= max_hp` produce identical output because the branch body
@@ -26,9 +27,8 @@
 #    EG3 authored the real ten-edge graph, so the mutation is now killable and
 #    is killed for real by `eg3_load_evolution_paths_returns_the_authored_graph`
 #    (game-core/src/content.rs) plus the exact-shape pin T2 in
-#    game-core/tests/eg3_evolution_graph.rs. Retired in all three places its own
-#    self-expiry instructions named: this entry, the canary test, and the
-#    four-entry pin in evals/mutate-core-recipe-integrity.eval.mjs. The list is
+#    game-core/tests/eg3_evolution_graph.rs. Retired in the two places its own
+#    self-expiry instructions named: this entry and the canary test. The list is
 #    back to THREE permanent, equivalent-by-construction exclusions.
 #
 # 5. Five `tiled_import` dev-tool JSON parser mutants that never terminate:
@@ -46,10 +46,28 @@
 #       memory, so this one is NOT safe to let drift: it is matched by column (:30) and
 #       function, not by line, and this also covers the finite `-=` at 231:30 (the ']' arm).
 #
+# 6. dijkstra stale-entry guard (tactics/movement.rs:112:60): `best[here].d < cost` -> `>`.
+#    A popped heap entry always has cost >= best[here] (best only ever decreases and every
+#    push records the cost it just stored), so `d > cost` is never true and the guard never
+#    skips - exactly like `<` for d == cost. With the guard inert, a stale entry (d < cost) is
+#    processed anyway, but its relaxations are `candidate = cost + w >= d + w >= best[next]`:
+#    the fresh, cheaper entry for `here` pops first and has already relaxed every neighbour to
+#    <= d + w, so the strict `candidate < d` relaxation never wins. dist/pred are identical on
+#    every input; the full game-core suite (incl. integration tests) stays green with it applied.
+#    Keyed by column (:60) + function, not line: drift cannot re-expose a different mutant.
+#
+# 7. cancel_queue waiting-order guard (tactics/queue.rs:969:25): `mine < theirs` -> `<=`.
+#    `mine == theirs` only when `unit == waiting` (initiative positions are unique), and that
+#    case already returned AlreadyActing at the `waiting == unit` check above, so `<` and `<=`
+#    agree on every reachable input (the `==` and `>` mutants at the same site ARE killed and
+#    keep running). Keyed by column (:25) + function.
+#
 exclude_re = [
     "tiled_import\\.rs:\\d+:30: replace \\+= with -= in Parser<'a>::parse_array",
     "tiled_import\\.rs:(66:22|190:22|196:26|206:26): replace \\+= with \\*= in Parser<'a>::(skip_whitespace|parse_number)",
     "npc/rules\\.rs:61:15: replace > with >= in toward_home",
     "ability\\.rs:170:60: replace < with <= in apply_entry_ability",
     "trading/types\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
+    "tactics/movement\\.rs:\\d+:60: replace < with > in dijkstra",
+    "tactics/queue\\.rs:\\d+:25: replace < with <= in TacticalBattle::cancel_queue",
 ]

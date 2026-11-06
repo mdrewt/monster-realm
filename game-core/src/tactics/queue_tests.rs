@@ -3219,6 +3219,19 @@ fn paralysis_blocks_on_a_roll_below_twenty_five_and_draws_once_bt3_5() {
     assert_eq!(acts.state.action_seq, 1, "exactly one draw");
 }
 
+/// BT3.5: the Paralysis block decision is `splitmix64(seed) % 100 < 25` for EVERY seed, not just
+/// the two boundary rolls: sweeping 200 seeds pins the `% 100` reduction (a `/` or `+` in its
+/// place gives a different roll for most seeds, so some seed flips its blocked/acts outcome).
+/// Kills: `% 100` replaced by `/ 100` or `+ 100` in `start_turn`.
+#[test]
+fn paralysis_block_follows_the_mod_hundred_rule_across_a_seed_sweep_bt3_5() {
+    for seed in 0u64..200 {
+        let (b, _, _) = skip_fixture(seed, StatusEffect::Paralysis, false);
+        let blocked = b.turn_state == TurnState::Waiting(2);
+        assert_eq!(blocked, mix(seed) % 100 < 25, "seed {seed}");
+    }
+}
+
 /// The carried M14 rule: can side A's active monster act with `status` on `roll`?
 fn carried_can_act(status: Option<StatusEffect>, roll: u8) -> bool {
     let mut store = BattleStatusStore::new(1, 0);
