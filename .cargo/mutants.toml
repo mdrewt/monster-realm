@@ -31,7 +31,18 @@
 #    four-entry pin in evals/mutate-core-recipe-integrity.eval.mjs. The list is
 #    back to THREE permanent, equivalent-by-construction exclusions.
 #
+# 5. The four `pos += 1` -> `pos *= 1` mutants of the tiled_import dev-tool JSON parser
+#    (Parser::skip_whitespace, Parser::parse_number x3). `pos` starts at 0 (or never leaves the
+#    byte being skipped), so `*= 1` never advances it: each is a guaranteed infinite loop that
+#    cargo-mutants can only end by its timeout, and a timeout already counts as caught
+#    (mutate-core tolerates exit 3). Skipping them changes no verdict; it removes ~5 min of a
+#    pinned-CPU spin per night (the 2026-11-02/03/05 runs also died with a runner "shutdown
+#    signal" right after the fourth of them; cause unproven, the spin is the only suspect). Line-pinned to exactly these four (the
+#    other `*=` mutants in those functions are KILLED by tests and must keep running); drift
+#    is safe: a shifted mutant resurfaces as a tolerated timeout, never as a missed one.
+#
 exclude_re = [
+    "tiled_import\\.rs:(66:22|190:22|196:26|206:26): replace \\+= with \\*= in Parser<'a>::(skip_whitespace|parse_number)",
     "npc/rules\\.rs:61:15: replace > with >= in toward_home",
     "ability\\.rs:170:60: replace < with <= in apply_entry_ability",
     "trading/types\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
