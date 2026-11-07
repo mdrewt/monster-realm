@@ -16,6 +16,7 @@ import {
   expectSample,
   measuredContrast,
   mediaMatches,
+  resolveLength,
   resolveToken,
   sampleProbe,
   sampleRect,
@@ -335,6 +336,9 @@ const HINT_BAR_AT_16 = { padding: '4px 8px 4px 8px', gap: '8px 8px' };
 
 const STATUS_PROBE_TEXT = 'uif-1 status probe';
 
+/** One colour on all four sides, as `sampleStyle('border-color')` joins them (top right bottom left). */
+const fourSides = (c: string): string => [c, c, c, c].join(' ');
+
 test.describe
   .serial('UIF1 — the token set and the token-driven chrome, measured in Chromium', () => {
     let browser: Browser;
@@ -521,11 +525,15 @@ test.describe
       await openMenu(page);
 
       type Spec = Record<string, Record<string, string>>;
-      // `.mr-frame--bottom`, `--prompt`, `--banner` and `.mr-notice-banner` have no element on screen
-      // here (the dialogue's bottom box, the walk-up chip, the deletion countdown and the request
-      // line each appear only mid-flow), so each is sampled on a PROBE wearing the production class
-      // appended to the frame layer and removed in the same evaluate (uiKit.sampleProbe). The class
-      // rule is what is measured; the flow that mounts it is covered elsewhere.
+      // `.mr-frame--bottom`, `--prompt`, `--banner`, `.mr-frame-tabs`, `.mr-frame-tabstrip`,
+      // `.mr-nav-tab` and `.mr-section-header` have no element on screen on the menu (the dialogue's
+      // bottom box, the walk-up chip, the deletion countdown, the Social tab strip and the section
+      // header each appear only mid-flow or on another screen), so each is sampled on a PROBE
+      // wearing the production class appended to the frame layer (or the menu's body) and removed
+      // in the same evaluate (uiKit.sampleProbe): no screen order is assumed. The class rule is what
+      // is measured; the flow that mounts it is covered elsewhere. The notice banner is NOT probed:
+      // the real `#notice-banner` (hintBar.ts, prepended to `#hint-bar`) is sampled with its state
+      // forced shown, because a rule scoped to `.mr-hint-bar .mr-notice-banner` reaches only that.
       const read = async (): Promise<Spec> => ({
         shell: await sampleStyle(page, '#menu-overlay', [
           'top',
@@ -533,7 +541,32 @@ test.describe
           'bottom',
           'left',
           'padding',
+          'font-size',
         ]),
+        navItem: await sampleStyle(page, MENU_ROW, ['padding', 'font-size']),
+        titlebar: await sampleStyle(page, '#menu-overlay .mr-frame-titlebar', [
+          'padding',
+          'gap',
+          'min-height',
+          'border-bottom-width',
+        ]),
+        tabs: await sampleProbe(page, { className: 'mr-frame-tabs', parent: '#frame-layer' }, [
+          'gap',
+        ]),
+        tabstrip: await sampleProbe(
+          page,
+          { className: 'mr-frame-tabstrip', parent: '#frame-layer' },
+          ['gap'],
+        ),
+        tab: await sampleProbe(page, { className: 'mr-nav-tab', parent: '#frame-layer' }, [
+          'padding',
+        ]),
+        header: await sampleProbe(
+          page,
+          { className: 'mr-section-header', parent: '#menu-overlay .mr-frame-body' },
+          ['font-size'],
+        ),
+        contentMax: { width: await resolveLength(page, '--mr-content-max') },
         frame: await sampleStyle(page, '#menu-overlay .mr-frame', ['border-width']),
         title: await sampleStyle(page, '#menu-overlay .mr-frame-title', ['font-size']),
         hint: await sampleStyle(page, '.mr-hint-bar', ['padding', 'gap']),
@@ -563,12 +596,33 @@ test.describe
           { className: 'mr-frame mr-frame--banner', parent: '#frame-layer' },
           ['padding', 'top', 'font-size', 'border-width'],
         ),
-        notice: await sampleProbe(page, { className: 'mr-notice-banner', parent: '#frame-layer' }, [
-          'padding',
-          'font-size',
-          'border-width',
-        ]),
+        // The real banner is `hidden` until a request line shows; text and `hidden` are forced for
+        // the sample only and restored in the same evaluate (uiKit.sampleWithState).
+        notice: await sampleWithState(
+          page,
+          '#notice-banner',
+          { text: 'uif-1 notice probe', forceShown: true },
+          ['padding', 'font-size', 'border-width'],
+        ),
       });
+      // Line heights are unitless multiples (1.4, 1.6), so the used px value is a float: compared
+      // within 0.1px, in px at the root being measured.
+      const readLines = async (): Promise<Record<string, number>> => {
+        const px = (s: Record<string, string>): number => Number.parseFloat(s['line-height'] ?? '');
+        return {
+          shell: px(await sampleStyle(page, '#menu-overlay', ['line-height'])),
+          title: px(await sampleStyle(page, '#menu-overlay .mr-frame-title', ['line-height'])),
+          header: px(
+            await sampleProbe(
+              page,
+              { className: 'mr-section-header', parent: '#menu-overlay .mr-frame-body' },
+              ['line-height'],
+            ),
+          ),
+        };
+      };
+      const LINES_AT_16 = { shell: 22.4, title: 28, header: 22.4 }; // 1.6 x 14, 1.4 x 20, 1.4 x 16
+      const LINES_AT_32 = { shell: 44.8, title: 56, header: 44.8 };
 
       const AT_16: Spec = {
         shell: {
@@ -577,7 +631,20 @@ test.describe
           bottom: '40px',
           left: '8px',
           padding: '12px 16px 12px 16px',
+          'font-size': '14px',
         },
+        navItem: { padding: '2px 8px 2px 20px', 'font-size': '14px' },
+        titlebar: {
+          padding: '4px 8px 4px 8px',
+          gap: '8px 8px',
+          'min-height': '40px',
+          'border-bottom-width': '2px',
+        },
+        tabs: { gap: '4px 4px' },
+        tabstrip: { gap: '4px 4px' },
+        tab: { padding: '0px 8px 0px 8px' },
+        header: { 'font-size': '16px' },
+        contentMax: { width: '1280px' }, // --mr-content-max 80rem
         frame: { 'border-width': '2px 2px 2px 2px' },
         title: { 'font-size': '20px' },
         hint: { padding: '4px 8px 4px 8px', gap: '8px 8px' },
@@ -612,7 +679,20 @@ test.describe
           bottom: '80px',
           left: '16px',
           padding: '24px 32px 24px 32px',
+          'font-size': '28px',
         },
+        navItem: { padding: '4px 16px 4px 40px', 'font-size': '28px' },
+        titlebar: {
+          padding: '8px 16px 8px 16px',
+          gap: '16px 16px',
+          'min-height': '80px',
+          'border-bottom-width': '2px', // WF1-A4: a border does NOT double
+        },
+        tabs: { gap: '8px 8px' },
+        tabstrip: { gap: '8px 8px' },
+        tab: { padding: '0px 16px 0px 16px' },
+        header: { 'font-size': '32px' },
+        contentMax: { width: '2560px' }, // 80rem at a 32px root
         frame: { 'border-width': '2px 2px 2px 2px' }, // WF1-A4: a border does NOT double
         title: { 'font-size': '40px' },
         hint: { padding: '8px 16px 8px 16px', gap: '16px 16px' },
@@ -648,6 +728,15 @@ test.describe
       for (const [name, expected] of Object.entries(AT_16)) {
         expectSample(base[name] ?? {}, expected, `${name} at a 16px root`);
       }
+      const lines16 = await readLines();
+      for (const [name, expected] of Object.entries(LINES_AT_16)) {
+        expectNear(
+          lines16[name] ?? Number.NaN,
+          expected,
+          0.1,
+          `${name} line-height at a 16px root`,
+        );
+      }
 
       await withRootFontSize(page, 32, async () => {
         expect(await rootSize(), 'precondition: the root is now 32px').toBe('32px');
@@ -655,47 +744,131 @@ test.describe
         for (const [name, expected] of Object.entries(AT_32)) {
           expectSample(doubled[name] ?? {}, expected, `${name} at a 32px root`);
         }
+        const lines32 = await readLines();
+        for (const [name, expected] of Object.entries(LINES_AT_32)) {
+          expectNear(
+            lines32[name] ?? Number.NaN,
+            expected,
+            0.1,
+            `${name} line-height at a 32px root`,
+          );
+        }
       });
       expect(await rootSize(), 'the root font size is restored').toBe('16px');
     });
 
     test('UIF1.1 chip focus: a keyboard-focused chip rings in --mr-focus, and in the higher tier under prefers-contrast more', async () => {
       await closeAll(page);
-      const chip = page.locator('#chip-start');
-      await expect(chip, 'the Start chip is on screen').toBeVisible();
+      for (const id of ['chip-start', 'chip-select']) {
+        await expect(page.locator(`#${id}`), `the ${id} chip is on screen`).toBeVisible();
+      }
 
-      // Tab to the chip by keyboard: focus-visible only matches for keyboard modality.
-      const focusByKeyboard = async (): Promise<void> => {
+      // Tab to a chip by keyboard: focus-visible only matches for keyboard modality. (A
+      // mouse-focused chip is not asserted: clicking a chip opens a frame, so it cannot be held.)
+      const focusByKeyboard = async (id: string): Promise<void> => {
+        const chip = page.locator(`#${id}`);
         await chip.focus();
         await page.keyboard.press('Shift+Tab');
         await page.keyboard.press('Tab');
         await expect
           .poll(() => page.evaluate(() => document.activeElement?.id ?? ''), {
-            message: 'Tab lands on the Start chip',
+            message: `Tab lands on the ${id} chip`,
           })
-          .toBe('chip-start');
+          .toBe(id);
         expect(
           await chip.evaluate((el) => el.matches(':focus-visible')),
-          'the chip is focus-visible, not merely focused',
+          `the ${id} chip is focus-visible, not merely focused`,
         ).toBe(true);
       };
-      const ring = (): Promise<Record<string, string>> =>
-        sampleStyle(page, '#chip-start', ['outline-color', 'outline-style']);
+      const ring = (id: string): Promise<Record<string, string>> =>
+        sampleStyle(page, `#${id}`, ['outline-color', 'outline-style', 'outline-width']);
 
       try {
-        await focusByKeyboard();
-        const rest = await ring();
-        expect(rest['outline-style'], 'a ring is drawn').not.toBe('none');
-        expect(rest['outline-color'], 'the ring is the --mr-focus colour').toBe(FOCUS);
+        for (const id of ['chip-start', 'chip-select']) {
+          await focusByKeyboard(id);
+          expectSample(
+            await ring(id),
+            { 'outline-color': FOCUS, 'outline-style': 'solid', 'outline-width': '2px' },
+            `${id} ring`,
+          );
+        }
+
+        // The ring is the CHIP's: keyboard-focused native controls with no kit class (and a bare
+        // nav row) must not take --mr-focus. The previous chip focus is keyboard-modal, so the
+        // programmatic focus below is :focus-visible. Each probe is removed in the same evaluate.
+        const leaks = await page.evaluate(() => {
+          const layer = document.querySelector('#frame-layer');
+          if (layer === null) throw new Error('no #frame-layer');
+          const made: HTMLElement[] = [];
+          try {
+            const out: Array<Record<string, string | boolean>> = [];
+            for (const [tag, cls] of [
+              ['button', ''],
+              ['input', ''],
+              ['div', 'mr-nav-item'],
+            ] as const) {
+              const el = document.createElement(tag);
+              el.setAttribute('data-ui-kit-probe', 'focus');
+              if (cls !== '') el.className = cls;
+              if (tag === 'div') el.tabIndex = 0;
+              el.textContent = tag === 'input' ? '' : 'probe';
+              layer.appendChild(el);
+              made.push(el);
+              el.focus();
+              const cs = getComputedStyle(el);
+              out.push({
+                tag: cls === '' ? tag : `${tag}.${cls}`,
+                focused: document.activeElement === el,
+                color: cs.outlineColor,
+                style: cs.outlineStyle,
+              });
+            }
+            return out;
+          } finally {
+            for (const el of made) el.remove();
+          }
+        });
+        expect(leaks.length, 'three probes were measured').toBe(3);
+        for (const leak of leaks) {
+          expect(leak.focused, `${leak.tag} probe holds focus`).toBe(true);
+          expect(leak.color, `${leak.tag} (no chip class) does not ring in --mr-focus`).not.toBe(
+            FOCUS,
+          );
+        }
 
         await page.emulateMedia({ contrast: 'more' });
         expect(await mediaMatches(page, '(prefers-contrast: more)'), 'precondition: more').toBe(
           true,
         );
-        await focusByKeyboard();
-        expect((await ring())['outline-color'], 'and the higher tier under more').toBe(FOCUS_MORE);
+        await focusByKeyboard('chip-start');
+        expect((await ring('chip-start'))['outline-color'], 'and the higher tier under more').toBe(
+          FOCUS_MORE,
+        );
       } finally {
         await page.emulateMedia({ contrast: null });
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      }
+
+      // The focused listbox keeps its own dashed #cc5500 ring (not --mr-focus): the nav kit's
+      // tab stop, which can cross the light active row. Focus is set by script (the rule is
+      // `:focus`, not `:focus-visible`) and blurred afterwards.
+      try {
+        await openMenu(page);
+        await page.locator('#menu-rows').focus();
+        expect(
+          await page.evaluate(() => document.activeElement?.id ?? ''),
+          'the menu list holds focus',
+        ).toBe('menu-rows');
+        expectSample(
+          await sampleStyle(page, '#menu-rows', [
+            'outline-color',
+            'outline-style',
+            'outline-width',
+          ]),
+          { 'outline-color': 'rgb(204, 85, 0)', 'outline-style': 'dashed', 'outline-width': '2px' },
+          'the focused listbox ring',
+        );
+      } finally {
         await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       }
     });
@@ -720,6 +893,32 @@ test.describe
         ] as string,
         rowText: (await sampleStyle(page, MENU_ROW, ['color'])).color as string,
         disabledRow: (await sampleStyle(page, feedRow, ['color'])).color as string,
+        // A disabled row that sits in a `.mr-nav-list` (the menu's own list): no menu row is
+        // disabled in production, so `is-disabled` is FORCED on a non-active row for the sample
+        // only, and the class attribute is restored in the same evaluate. It reaches a
+        // `.mr-nav-list .mr-nav-item.is-disabled` rule that the Feed row (outside any
+        // `.mr-nav-list`) cannot.
+        disabledListRow: (
+          await sampleWithState(
+            page,
+            '#menu-rows .mr-nav-item:not(.is-active):not(.is-disabled)',
+            { addClasses: ['is-disabled'] },
+            ['color'],
+          )
+        ).color as string,
+        chipColor: (await sampleStyle(page, '#hint-bar .mr-chip', ['color'])).color as string,
+        chipBorder: (await sampleStyle(page, '#hint-bar .mr-chip', ['border-color']))[
+          'border-color'
+        ] as string,
+        chipBg: (await sampleStyle(page, '#hint-bar .mr-chip', ['background-color']))[
+          'background-color'
+        ] as string,
+        statusColor: (
+          await sampleWithState(page, '#status', { text: STATUS_PROBE_TEXT }, ['color'])
+        ).color as string,
+        statusBg: (
+          await sampleWithState(page, '#status', { text: STATUS_PROBE_TEXT }, ['background-color'])
+        )['background-color'] as string,
         markOk: (
           await sampleWithState(
             page,
@@ -753,6 +952,12 @@ test.describe
           frameBorder: 'rgb(255, 255, 255)', // #ffffff
           rowText: 'rgb(255, 255, 255)', // #ffffff
           disabledRow: 'rgb(170, 170, 170)', // #aaaaaa
+          disabledListRow: 'rgb(170, 170, 170)', // #aaaaaa
+          chipColor: 'rgb(255, 255, 255)', // #ffffff
+          chipBorder: fourSides('rgb(255, 255, 255)'), // #ffffff
+          chipBg: 'rgb(16, 16, 24)', // #101018
+          statusColor: 'rgb(255, 255, 255)', // #ffffff
+          statusBg: 'rgb(16, 16, 24)', // #101018
           markOk: 'rgb(110, 231, 183)', // #6ee7b7
           markError: 'rgb(252, 165, 165)', // #fca5a5
         });
@@ -769,6 +974,12 @@ test.describe
         frameBorder: 'rgb(224, 224, 224)', // #e0e0e0
         rowText: 'rgb(224, 224, 224)', // #e0e0e0
         disabledRow: 'rgb(138, 138, 154)', // #8a8a9a
+        disabledListRow: 'rgb(138, 138, 154)', // #8a8a9a
+        chipColor: 'rgb(224, 224, 224)', // #e0e0e0
+        chipBorder: fourSides('rgb(224, 224, 224)'), // #e0e0e0
+        chipBg: 'rgb(30, 30, 46)', // #1e1e2e
+        statusColor: 'rgb(224, 224, 224)', // #e0e0e0
+        statusBg: 'rgb(30, 30, 46)', // #1e1e2e
         markOk: 'rgb(52, 211, 153)', // #34d399
         markError: 'rgb(248, 113, 113)', // #f87171
       });
@@ -803,6 +1014,47 @@ test.describe
         ratio,
         `Feed... measured contrast ${ratio.toFixed(2)}:1 against its background`,
       ).toBeGreaterThanOrEqual(3);
+
+      // The cursor ON the disabled row (`.is-active.is-disabled`): the table's reused-values note
+      // gives it #55556a (rgb(85, 85, 106)) on the inverted fill, at 4.5:1 or better. Walk Down from
+      // Summary one press at a time, bounded, each landing observed; the cursor is walked back Up in
+      // the `finally`, because the menu remembers the sheet's cursor for the session.
+      let presses = 0;
+      const activeIdInFeedList = (): Promise<string> =>
+        page.evaluate((id) => {
+          const row = document.getElementById(id);
+          const list = row?.closest('[role="listbox"]') ?? row?.parentElement ?? null;
+          return list?.querySelector('.mr-nav-item.is-active')?.id ?? '';
+        }, feedRow.slice(1));
+      try {
+        for (; presses < 12; presses += 1) {
+          const from = await activeIdInFeedList();
+          if (from === feedRow.slice(1)) break;
+          await pressButton(page, 'Down');
+          await expect
+            .poll(activeIdInFeedList, { message: `Down moves the cursor off ${from}` })
+            .not.toBe(from);
+        }
+        await expect(page.locator(feedRow), 'the cursor is now ON the Feed row').toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        await expect(page.locator(feedRow), 'the cursor row wears is-active').toHaveClass(
+          /is-active/,
+        );
+        await expect(page.locator(feedRow), 'and is still disabled').toHaveClass(/is-disabled/);
+        expect(
+          (await sampleStyle(page, feedRow, ['color'])).color,
+          'Feed... (disabled, ON the cursor)',
+        ).toBe('rgb(85, 85, 106)'); // #55556a
+        const onCursor = await measuredContrast(page, feedRow);
+        expect(
+          onCursor,
+          `Feed... on the cursor measured contrast ${onCursor.toFixed(2)}:1 against its fill`,
+        ).toBeGreaterThanOrEqual(4.5);
+      } finally {
+        for (let back = 0; back < presses; back += 1) await pressButton(page, 'Up');
+      }
     });
 
     test('UIF1.3 read-only list: the Rankings rows read muted, the cursor row has no inverted fill, and an actionable row differs on both counts', async () => {
@@ -841,6 +1093,7 @@ test.describe
       expect(cursorRow.color, 'row 0 (cursor) text is not the inverted bg colour').not.toBe(
         'rgb(30, 30, 46)',
       );
+      expect(cursorRow.color, 'row 0 (cursor) text reads the frame-fg token').toBe(FG);
 
       // An ACTIONABLE row, on the main menu: a resting row reads frame-fg, and the active row is
       // the inverted fill the read-only cursor row must not have.
@@ -937,5 +1190,51 @@ test.describe
         1,
         '#hint-bar',
       );
+
+      // The insets at two other windows, so a viewport-dependent cheat (an inset that equals 8px
+      // only at 1280 wide) reds. REM-RELATIVE, with no literal px: uif-2 scales the root font size
+      // later, so the oracle is the measured root size (read in px, never assumed): the shell sits
+      // 0.5 root from the left, top and right edges and 2.5 root above the bottom (the hint bar's
+      // row), and the hint bar spans the full width with its bottom on the viewport's bottom.
+      try {
+        for (const size of [
+          { width: 1920, height: 1080 },
+          { width: 640, height: 240 },
+        ]) {
+          const at = `${size.width}x${size.height}`;
+          await page.setViewportSize(size);
+          await expect
+            .poll(() => page.evaluate(() => [window.innerWidth, window.innerHeight]), {
+              message: `the window is ${at}`,
+            })
+            .toEqual([size.width, size.height]);
+          const root = Number.parseFloat(
+            (await sampleStyle(page, 'html', ['font-size']))['font-size'] as string,
+          );
+          expect(root, `${at}: the root font size is a positive length`).toBeGreaterThan(0);
+
+          const shell = await sampleRect(page, '#menu-overlay');
+          expectNear(shell.x, 0.5 * root, 1, `${at}: shell left gap`);
+          expectNear(shell.y, 0.5 * root, 1, `${at}: shell top gap`);
+          expectNear(size.width - (shell.x + shell.width), 0.5 * root, 1, `${at}: shell right gap`);
+          expectNear(
+            size.height - (shell.y + shell.height),
+            2.5 * root,
+            1,
+            `${at}: shell bottom gap`,
+          );
+          const bar = await sampleRect(page, '#hint-bar');
+          expectNear(bar.x, 0, 1, `${at}: hint bar left edge`);
+          expectNear(bar.width, size.width, 1, `${at}: hint bar spans the full width`);
+          expectNear(
+            bar.y + bar.height,
+            size.height,
+            1,
+            `${at}: hint bar bottom is the viewport's`,
+          );
+        }
+      } finally {
+        await page.setViewportSize(VIEWPORT);
+      }
     });
   });

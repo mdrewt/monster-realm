@@ -13,7 +13,8 @@
 // never leave a stray node or a changed root behind for the next test, and no frame, store batch
 // or timer runs between the write and the restore.
 //
-// Imports only `@playwright/test` types, so it loads under Playwright without Vite.
+// Imports only from `@playwright/test` (the `Page` type and the runtime `expect`, which the
+// comparison helpers below call), and nothing from `src/`, so it loads under Playwright without Vite.
 import { expect, type Page } from '@playwright/test';
 
 // ---------------------------------------------------------------------------------------------
@@ -233,6 +234,33 @@ export async function resolveToken(page: Page, token: string): Promise<string> {
   );
 }
 
+/**
+ * Resolves a LENGTH token to the computed `width` Chromium gives an element sized by it: a
+ * temporary absolutely-positioned element is given `width: var(--token, 1px)`, its computed `width`
+ * is read, and the element is removed. For a token nothing consumes yet (`--mr-content-max`): the
+ * sentinel is `1px`, so an undeclared token reads `1px`, never an inherited size. Scales with the
+ * root font size for a rem token, so a spec can read it at two roots.
+ */
+export async function resolveLength(page: Page, token: string): Promise<string> {
+  if (!/^--[A-Za-z0-9_-]+$/.test(token)) {
+    throw new Error(`uiKit.resolveLength: not a custom property name: ${token}`);
+  }
+  return page.evaluate((name) => {
+    const probe = document.createElement('div');
+    probe.setAttribute('data-ui-kit-probe', 'length');
+    probe.style.setProperty('position', 'absolute');
+    probe.style.setProperty('visibility', 'hidden');
+    probe.style.setProperty('max-width', 'none');
+    probe.style.setProperty('width', `var(${name}, 1px)`);
+    document.body.appendChild(probe);
+    try {
+      return getComputedStyle(probe).width;
+    } finally {
+      probe.remove();
+    }
+  }, token);
+}
+
 /** Resolves every token in `tokens` (see `resolveToken`), keyed by the token name. */
 export async function resolveTokens(
   page: Page,
@@ -298,8 +326,10 @@ export async function sampleProbe(
 export interface TemporaryState {
   /** Attributes set for the sample (value `null` removes the attribute for the sample). */
   readonly attrs?: Readonly<Record<string, string | null>>;
-  /** Text written for the sample; the previous text is restored. */
+  /** Text written for the sample; the previous child nodes (elements included) are restored. */
   readonly text?: string;
+  /** Classes added for the sample; the previous `class` attribute is restored exactly. */
+  readonly addClasses?: readonly string[];
   /** Un-hide the element for the sample (`hidden`, inline display); both are restored. */
   readonly forceShown?: boolean;
 }
@@ -324,12 +354,19 @@ export async function sampleWithState(
       }
       const attrs = Object.entries(st.attrs ?? {});
       const before = attrs.map(([name]) => [name, el.getAttribute(name)] as const);
-      const was = { text: el.textContent, hidden: el.hidden, display: el.style.display };
+      // The child NODES are saved (not the text), so a restore keeps any element child intact.
+      const was = {
+        nodes: Array.from(el.childNodes),
+        cls: el.getAttribute('class'),
+        hidden: el.hidden,
+        display: el.style.display,
+      };
       try {
         for (const [name, value] of attrs) {
           if (value === null) el.removeAttribute(name);
           else el.setAttribute(name, value);
         }
+        for (const cls of st.addClasses ?? []) el.classList.add(cls);
         if (st.text !== undefined) el.textContent = st.text;
         if (st.forceShown === true) {
           el.hidden = false;
@@ -350,7 +387,11 @@ export async function sampleWithState(
           if (value === null) el.removeAttribute(name);
           else el.setAttribute(name, value);
         }
-        if (st.text !== undefined) el.textContent = was.text;
+        if (st.text !== undefined) el.replaceChildren(...was.nodes);
+        if (st.addClasses !== undefined) {
+          if (was.cls === null) el.removeAttribute('class');
+          else el.setAttribute('class', was.cls);
+        }
         el.hidden = was.hidden;
         el.style.display = was.display;
       }

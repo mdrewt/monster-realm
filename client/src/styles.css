@@ -224,6 +224,7 @@
   min-height: 0;
   overflow-y: auto;
 }
+/* Stays literal until the strip becomes an overlay (uif-4): ui/frame.test.ts pins these values. */
 .mr-frame-feedback {
   min-height: 1.5em;
   padding: 0.25rem 0.5rem;
@@ -1013,11 +1014,11 @@
   background: var(--mr-frame-bg);
   color: var(--mr-frame-fg);
 }
-/* The button name is drawn AND spoken ("Start Menu"), so the accessible name contains the visible
- * label (WCAG 2.5.3, label in name). */
 .mr-chip:focus-visible {
   outline: var(--mr-border-width) solid var(--mr-focus);
 }
+/* The button name is drawn AND spoken ("Start Menu"), so the accessible name contains the visible
+ * label (WCAG 2.5.3, label in name). */
 .mr-chip::before {
   content: attr(data-button) " ";
   font-weight: bold;
@@ -1241,7 +1242,7 @@
 
 /*
  * The kit's visual contract (uif-1, the token table in M-ui-foundation-wireframes.md; docs/DECISIONS.md
- * "UI tokens and frame anatomy"). Spacing and type are rem so the root scale reaches them; border
+ * "Menu chrome draws from `--mr-*` tokens; the listbox ring stays #cc5500"). Spacing and type are rem so the root scale reaches them; border
  * widths stay px, because a rem border lands on fractional device pixels and shimmers.
  * fg on bg measures 12.42:1 (WCAG 1.4.3 AA needs 4.5:1); the bg is opaque, so the ratio holds over
  * any canvas. indexShell.smoke.test.ts recomputes it from here.
