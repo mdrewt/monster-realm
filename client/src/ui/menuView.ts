@@ -45,7 +45,6 @@ function menuFrame(overlay: HTMLElement, rows: HTMLElement): FrameChrome {
       tabStrip: part('mr-frame-tabstrip'),
       body: part('mr-frame-body'),
       feedback: part('mr-frame-feedback'),
-      hintSlot: part('mr-frame-hints'),
     };
   }
   const frame = createFrame(document, { id: 'menu', size: 'side' });
