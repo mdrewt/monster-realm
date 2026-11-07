@@ -7,14 +7,34 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { t } from '../src/ui/i18n/resolver';
 import {
+  attackByButtons,
+  awaitTacticalActive,
   closeAll,
+  draftMoveToward,
+  endTurn,
   expectPosted,
   faceTile,
+  fightToOutcome,
+  fleeByButtons,
   interactChip,
+  menuCursorTo,
+  NO_BAIT_ROW,
+  openMenu,
   pressAccel,
   pressButton,
+  readTactics,
+  recruitByButtons,
   StuckStackError,
+  sides,
+  TACTICS,
+  type TacticsSnap,
+  throughResults,
+  tileDistance,
+  turnKey,
+  waitExecuted,
+  waitOwnTurnOrEnd,
   walkTo,
 } from './controls';
 
@@ -23,45 +43,43 @@ import {
 // DESIGN RATIONALE
 // ================
 // These tests drive the recruit flow using ONLY the real game loop:
-// walk onto grass → encounter wild monster → weaken → recruit.  No server
-// feature-gated reducers are called from the page; the test cannot
-// authenticate as the browser identity (DbConnection is built without
-// .withToken; the SDK persists no token in a form the page JS can access),
-// so feature-gated server reducers like start_wild_battle and grant_bait
-// are not callable from page.evaluate().
+// walk onto grass → encounter wild monster → weaken → recruit. No reducer is called from the
+// page; the test cannot authenticate as the browser identity (DbConnection is built without
+// .withToken; the SDK persists no token in a form the page JS can access). Seeding is owner SQL
+// (`spacetime sql` runs as the module OWNER — the tactics-wild / wallet-balance precedent).
 //
-// The specialist's infra slice publishes the module with the
-// feature-gated reducers enabled (--bin-path in CI) so server-side feature
-// reducers are available for future slices that expose a test hook on
-// window.__game().  That publish does NOT make those reducers callable from
-// the page — the browser side revival therefore uses pure gameplay.
+// bt-16 (BT16.2) — NAMED INTENTIONAL CHANGE: the grass now opens a TACTICAL wild battle; the 1v1
+// command list (Fight / Recruit / Run), its skill grid, the "HP x/y · affinity" cards, the
+// `bait-selector` and its Yes / No `recruit-action`, and `outcome-text` never appear for a live
+// battle. SURVIVING CHECKS, each named at its test:
+//   - R1: retired "`recruit-action` visible + an empty `bait-selector`" → on an own turn NOT
+//     adjacent to the wild the Recruit row is GREYED, and on an own turn ADJACENT (a full budget)
+//     it is live and its bait list shows NO bait row for a fresh inventory — only the no-bait choice
+//     (`bait:none`, tacticsBattle.ts).
+//   - R2: retired the 1v1 weaken + Recruit loop → tactics-wild's weaken-then-recruit loop by
+//     buttons (`attackByButtons` with the forecast's KO guard, then `recruitByButtons` with the
+//     seeded bait) → ownMonsters +1, the recruit in the BOX (partySlot 255).
+//   - R3: retired "`outcome-text` reads Victory! + SQL SideAWins for R2's battle" → a battle fought
+//     to a WIN by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
+//     catalog victory string and the server's battle row is SideAWins.
+//
+// SEEDING (owner SQL, after R1 so R1's "fresh inventory" holds): R2 makes the starter sturdy (300
+// HP, 250 defences — tactics-wild's precedent) and puts bait (item 1) in its bag; R3 raises attack
+// to 250 and HP to 999 so any landed hit KOs a zone-0 wild (battle-dpad's precedent).
 //
 // BOUNDED-RETRY POLICY
 // ====================
-// Every loop has a named MAX_* constant.  Comments next to each loop give
-// the probability arithmetic justifying the bound.  The test fails with a
-// descriptive message when a bound is exceeded; it never waits forever.
+// Every loop has a named MAX_* constant. The test fails with a descriptive message when a bound
+// is exceeded; it never waits forever.
 //
 // MOVEMENT PROTOCOL
 // =================
-// The server drains one queued move per 200 ms (STEP_MS); the client
-// queue cap is 2.  We send one step at a time and wait for
-// waitForFunction on (ownAuthTile changed OR ongoingBattle appeared)
-// before sending the next step.  NEVER call step() while ongoingBattle
-// is non-null — the encounter guard is suppressed during Ongoing battles
-// but server-side queue drain still runs; a queued move completing during
-// battle is safe but wastes the 200 ms slot and can trigger a second
-// encounter the instant the battle ends.
-//
-// HP THRESHOLDS (tunable constants; executor should adjust if CI is flaky)
-// =========================================================================
-// OWN_HP_FLEE_THRESHOLD_PCT  — flee immediately if own HP% falls at/below this
-// WEAKEN_STOP_PCT             — stop attacking wild when opponent HP% is at/below this
-// OWN_HP_ATTACK_MIN_PCT       — stop attacking if own HP% falls at/below this
+// The server drains one queued move per 200 ms (STEP_MS); the client queue cap is 2. We send
+// one step at a time and wait for (ownAuthTile changed OR ongoingBattle appeared) before the next.
+// NEVER call step() while ongoingBattle is non-null.
 
 // ---------------------------------------------------------------------------
 // Snapshot shape — mirrors the REAL window.__game() snapshot.
-// Fields accessed by the test; additional fields exist on the live object.
 // ---------------------------------------------------------------------------
 
 interface Tile {
@@ -98,78 +116,48 @@ interface GameSnap {
 }
 
 // ---------------------------------------------------------------------------
-// Tunable empirical constants — the executor SHOULD adjust if CI is flaky.
+// Tunable empirical constants.
 // ---------------------------------------------------------------------------
 /** Max walk steps per encounter hunt. The (1,2)↔(2,2) shuttle enters grass on
  *  every 2nd step (only the East step onto (2,2) rolls), so 80 steps ≈ 40 grass
  *  entries: P(no encounter) = 0.8^40 ≈ 1.3e-4. */
 const MAX_WALK_STEPS = 80;
-/** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO).
- *
- * Statistical justification:
- *
- * Zone 0 encounter table (encounters/000-core.ron):
- *   Flameling (Fire,  weight 10): 10/22 ≈ 45.5% — safe to weaken + recruit
- *   Tidalin   (Water, weight  7):  7/22 ≈ 31.8% — flee immediately (enc slot consumed)
- *   Sproutlet (Plant, weight  5):  5/22 ≈ 22.7% — safe to weaken + recruit
- * → P(non-Water per slot) = 15/22 ≈ 68.2%.
- *
- * Of non-Water encounters, estimate ~85% survive the weaken phase without KO.
- * Of those, P(≥1 recruit in MAX_RECRUIT_CLICKS=12 at 380‰/click) ≈ 0.998.
- * Effective P(success per enc slot) ≈ 0.682 × 0.85 × 0.998 ≈ 0.58.
- *
- * Pessimistic (p=0.40): P(fail all 30) = 0.6^30 ≈ 1.2e-7.
- * Very pessimistic (p=0.30): P(fail all 30) = 0.7^30 ≈ 2.2e-5.
- *
- * Determinism note: SpacetimeDB ctx.random() is server-side only; injecting a
- * seed from the test process is not possible within client/e2e/** (ADR-0086
- * §infra; dev reducers require the browser identity auth token which is
- * inaccessible from the Node.js test process per the design rationale above).
- * A budget raise is the correct fix for this touch boundary.
- */
-const MAX_ENCOUNTERS = 30;
-/** Max recruit clicks per encounter (bounded inner loop).
- *
- * Raised from 8 to 12: at WEAKEN_STOP_PCT=40% wild HP, recruit_chance ≈ 380‰.
- * P(≥1 success in 12 clicks) = 1-(0.62)^12 ≈ 0.998 vs. ≈ 0.980 for 8 clicks.
- */
-const MAX_RECRUIT_CLICKS = 12;
+/** R2: battles to try for a recruit. Recruit odds are 80‰ base + up to 500‰ for missing HP +
+ *  150‰ bait (roughly 50-70 % per adjacent attempt, several attempts per battle — tactics-wild's
+ *  measured BT12.5 loop, 5 battles); 10 leaves margin for kiting and KO'd wilds. */
+const MAX_ENCOUNTERS = 10;
+/** Own turns per battle before it is abandoned (Flee) and the grass re-hunted. */
+const MAX_OWN_TURNS = 16;
+/** R1: own turns spent closing in until the wild is adjacent on a fresh turn. */
+const MAX_APPROACH_TURNS = 12;
+/** R1: battles to try for an adjacent own turn (a wild that kites or flees is re-hunted). */
+const MAX_R1_BATTLES = 3;
+/** R3: battles to try for a WIN (an auto-fleeing wild or a round cap ends one otherwise). */
+const MAX_WIN_BATTLES = 3;
 /** Max heal attempts (30s cooldown per heal; KO recovery path). */
 const MAX_HEALS = 2;
-/** Max pre-encounter HP-restoration heals (flee-damage recovery, separate from
- *  KO-recovery heals tracked by MAX_HEALS).
- *
- *  ROOT CAUSE: write_back_party_hp fires on EVERY
- *  flee, persisting depleted HP to the DB.  The NEXT begin_encounter
- *  builds side_a from the current DB HP, so subsequent battles enter at e.g.
- *  HP=4/20 (20%) — immediately triggering OWN_HP_FLEE_THRESHOLD_PCT — creating
- *  an infinite flee loop with only 1 recruit click ever attempted.
- *
- *  Fix: before each encounter walk, restore HP via heal_party if below 80%.
- *  These heals are NOT KO-recovery (party is alive, not fainted), so they use
- *  a separate counter and do not consume MAX_HEALS budget.
- *  Bound: at most one pre-encounter heal per outer enc iteration (30 max).
- */
+/** Max pre-encounter HP-restoration heals (flee-damage recovery, separate from KO-recovery). */
 const MAX_FLEE_HEALS = 30;
-/** Max skill attacks per encounter when weakening wild (bounded inner). */
-const MAX_SKILL_ATTACKS = 6;
 /** Step-wait timeout per move in ms (200 ms drain + network + margin). */
 const STEP_WAIT_MS = 8_000;
-/** Opponent HP% below which we consider the wild sufficiently weakened to recruit. */
-const WEAKEN_STOP_PCT = 40;
-/** Own HP% below which we stop attacking and try to recruit immediately. */
-const OWN_HP_ATTACK_MIN_PCT = 50;
-/** Own HP% at/below which we flee immediately (Water-type danger). */
-const OWN_HP_FLEE_THRESHOLD_PCT = 30;
+/** One wait for the next own live turn in a wild battle (the AI's turns plus the pad). */
+const TURN_WAIT_MS = 15_000;
+/** The wild is recruited (not hit again) at or under this share of its max HP. */
+const WEAK_PCT = 45;
+/** R2 seeds (tactics-wild's precedent): no wild can KO the starter; bait in the bag. */
+const SEED_HP = 300;
+const SEED_DEFENSE = 250;
+const BAIT_ITEM_ID = 1;
+const BAIT_SEED = 9;
+/** R3 seeds (battle-dpad's precedent): any landed hit KOs a zone-0 wild. */
+const WIN_ATTACK = 250;
+const WIN_HP = 999;
 
 // ---------------------------------------------------------------------------
-// Grass tiles in zone 0 (content knowledge from plan §World facts).
-// Spawn is (1,1); row y=1 is all floor x=1..8; (2,2) is the nearest grass tile.
-// shuttleDir is TILE-AWARE (not a fixed cycle): a fixed direction cycle drifts
-// south onto grassless rows and decays the encounter rate; deriving the next
-// direction from the CURRENT authoritative tile keeps the walk pinned to the
-// (1,2)↔(2,2) shuttle and self-corrects any drift (e.g. a stray queued move
-// draining after a battle).  Only the East step onto (2,2) rolls an encounter.
+// Grass tiles in zone 0. Spawn is (1,1); row y=1 is all floor x=1..8; (2,2) is the nearest grass
+// tile. shuttleDir is TILE-AWARE (not a fixed cycle): deriving the next direction from the
+// CURRENT authoritative tile keeps the walk pinned to the (1,2)↔(2,2) shuttle and self-corrects
+// any drift. Only the East step onto (2,2) rolls an encounter.
 // ---------------------------------------------------------------------------
 function shuttleDir(tile: Tile): string {
   if (tile.x === 1 && tile.y === 1) return 'South'; // spawn → (1,2)
@@ -181,10 +169,6 @@ function shuttleDir(tile: Tile): string {
   return 'South';
 }
 
-// ---------------------------------------------------------------------------
-// snap: extract the GameSnap-shaped subset from window.__game().
-// Only serialisable (non-function) fields are transferred.
-// ---------------------------------------------------------------------------
 const snap = (p: Page): Promise<GameSnap> =>
   p.evaluate(() => {
     const g = (window as unknown as { __game: () => GameSnap }).__game();
@@ -197,9 +181,6 @@ const snap = (p: Page): Promise<GameSnap> =>
     };
   });
 
-// ---------------------------------------------------------------------------
-// ready: wait until __game() is available AND identity + tile are non-empty.
-// ---------------------------------------------------------------------------
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
     () => {
@@ -216,7 +197,6 @@ async function ready(p: Page): Promise<void> {
 // ---------------------------------------------------------------------------
 // stepOne: send one directional step and wait for the authoritative tile to
 // change OR for an ongoingBattle to appear — whichever comes first.
-// Returns 'moved' | 'battle' depending on which condition triggered first.
 // Precondition: must NOT be called while ongoingBattle is non-null.
 // ---------------------------------------------------------------------------
 async function stepOne(p: Page, dir: string, fromTile: Tile): Promise<'moved' | 'battle'> {
@@ -224,8 +204,6 @@ async function stepOne(p: Page, dir: string, fromTile: Tile): Promise<'moved' | 
     (d) => (window as unknown as { __game: () => { step: (x: string) => void } }).__game().step(d),
     dir,
   );
-  // Wait until auth tile changes (move drained) OR a battle appears.
-  // Bounded by STEP_WAIT_MS (200 ms drain × safety factor).
   const result = await p.waitForFunction(
     (args: { fromX: number; fromY: number }) => {
       const g = (window as unknown as { __game: () => GameSnap }).__game();
@@ -244,109 +222,79 @@ async function stepOne(p: Page, dir: string, fromTile: Tile): Promise<'moved' | 
   return result.jsonValue() as Promise<'moved' | 'battle'>;
 }
 
-// ---------------------------------------------------------------------------
-// parseHpLine: parse "HP cur/max · Affinity" text from a card's hp text node.
-// Returns { cur, max, affinity } or null if the format is unrecognised.
-// Source: battleView.ts:135 `HP ${card.currentHp}/${card.maxHp} · ${card.affinity}`
-// ---------------------------------------------------------------------------
-function parseHpLine(text: string): { cur: number; max: number; affinity: string } | null {
-  // Format: "HP 12/20 · Fire"  (note: middle-dot U+00B7)
-  const idx = text.indexOf('HP ');
-  if (idx === -1) return null;
-  const rest = text.slice(idx + 3);
-  const slashIdx = rest.indexOf('/');
-  const dotIdx = rest.indexOf(' · ');
-  if (slashIdx === -1 || dotIdx === -1) return null;
-  const cur = parseInt(rest.slice(0, slashIdx), 10);
-  const max = parseInt(rest.slice(slashIdx + 1, dotIdx), 10);
-  const affinity = rest.slice(dotIdx + 3).trim();
-  if (Number.isNaN(cur) || Number.isNaN(max)) return null;
-  return { cur, max, affinity };
+/** Walks the shuttle until a wild battle is ongoing (MAX_WALK_STEPS), then waits for its tactical
+ *  row Active (a one-monster party is a pack of one; `awaitTacticalActive` deploys by buttons if it
+ *  ever is not). */
+async function huntEncounter(p: Page, label: string): Promise<TacticsSnap> {
+  let found = false;
+  for (let i = 0; i < MAX_WALK_STEPS && !found; i++) {
+    const g = await snap(p);
+    if (g.ongoingBattle !== null) {
+      found = true;
+      break;
+    }
+    const tile = g.ownAuthTile ?? { x: 1, y: 1 };
+    try {
+      if ((await stepOne(p, shuttleDir(tile), tile)) === 'battle') found = true;
+    } catch {
+      // stepOne timed out (a wall bump): the next shuttle direction is re-derived.
+    }
+  }
+  expect(found, `${label}: a wild battle within MAX_WALK_STEPS=${MAX_WALK_STEPS}`).toBe(true);
+  const active = await awaitTacticalActive(p, label);
+  expect(active.kind, `${label}: a WILD tactical battle`).toBe('Wild');
+  return active;
+}
+
+function stdbTarget(label: string): { server: string; db: string } {
+  const server = process.env.STDB_SERVER ?? 'local';
+  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
+    throw new Error(`${label}: STDB_SERVER/VITE_STDB_DB failed charset validation`);
+  }
+  return { server, db };
+}
+
+/** Owner SQL (literal-shaped statements only: letters, digits, spaces, `* = ( ) ,`). */
+function ownerSql(query: string, label: string): string {
+  const { server, db } = stdbTarget(label);
+  if (!/^[A-Za-z0-9_ *=(),]+$/.test(query)) {
+    throw new Error(`${label}: refusing a non-literal-shaped sql statement: ${query}`);
+  }
+  try {
+    return execSync(`spacetime sql -s ${server} ${db} "${query}"`, {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+  } catch (err) {
+    throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
+  }
+}
+
+const normId = (id: string): string => id.toLowerCase().replace(/^0x/, '');
+
+/** Owner-SQL seed of the starter's stat columns in `monster` and `monster_pub`. */
+function seedStarter(
+  monsterId: string,
+  cols: readonly (readonly [string, number])[],
+  label: string,
+): void {
+  if (!/^[0-9]+$/.test(monsterId)) throw new Error(`${label}: non-decimal monster id ${monsterId}`);
+  for (const table of ['monster', 'monster_pub']) {
+    for (const [col, val] of cols) {
+      ownerSql(`UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${monsterId}`, label);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
-// waitForBattleCleared: wait until ongoingBattle is null (battle row GC'd or
-// fled).  Used after Run (the command list's flee) to confirm the overlay is gone.
+// waitForBattleCleared: wait until ongoingBattle is null (fled or ended).
 // ---------------------------------------------------------------------------
 async function waitForBattleCleared(p: Page): Promise<void> {
   await p.waitForFunction(
     () => (window as unknown as { __game: () => GameSnap }).__game().ongoingBattle === null,
     null,
     { timeout: 15_000 },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// THE COMMAND LIST FIRST (qf-7b, QF7B.2). The battle's command list
-// (data-testid="battle-commands"; rows battle-command-fight|recruit|swap|bag|run) is the first
-// step of every action: the skill grid renders only after Fight is pressed, the bait list only
-// after Recruit is pressed, and every new turn closes both again (CTL8I.1: a new turn starts on
-// Fight). So EVERY attack presses Fight and EVERY recruit attempt presses Recruit. Run is the
-// sanctioned flee path (QF7.4); the legacy Flee button is not used here. A command row is a
-// <button> that is aria-disabled="true" while greyed (the PvE in-flight lock between an action
-// and its settle, a finished battle), and pressing a greyed row does nothing, so every press
-// first waits for its row to be live.
-// ---------------------------------------------------------------------------
-
-/** Presses the Recruit or Run command once it is live; fails when it does not go live in 5 s. */
-async function pressCommand(p: Page, id: 'recruit' | 'run'): Promise<void> {
-  const row = p.getByTestId(`battle-command-${id}`);
-  await expect(row, `the ${id} command goes live`).toHaveAttribute('aria-disabled', 'false', {
-    timeout: 5_000,
-  });
-  await row.click({ timeout: 5_000 });
-}
-
-/** The first PvE skill cell: a row of the skills list (`data-battle-list="skills"`) whose label is
- *  `<name> (<power>) · <affinity> · Acc n%` (catalog battle.skill.pveLabel), hence the "(" text
- *  marker. */
-const skillCell = (p: Page) => p.locator('button[data-battle-list="skills"]:has-text("(")').first();
-
-/** Presses Fight once it is live and waits for a skill cell; true when the grid is open. Returns
- *  false ONLY when the battle has ended (a fresh snap reads `ongoingBattle === null`): the attack
- *  loop's "skills not visible -> break". In a battle that is still ongoing every failure THROWS,
- *  naming it — Fight that never goes live, a press that fails, and above all a live Fight whose
- *  press does not open the grid — so a grid regression fails HERE rather than surfacing ~30 min
- *  later as "did not recruit within MAX_ENCOUNTERS" on an unweakened wild. The 5 s live wait is
- *  the bounded retry for the brief lock window (Fight greyed while the previous call settles). */
-async function openSkillGrid(p: Page): Promise<boolean> {
-  /** The battle still on, as "battle <id>, turn <n>" for the failure message; null once ended. */
-  const stillOn = async (): Promise<string | null> => {
-    const b = (await snap(p)).ongoingBattle;
-    return b === null ? null : `battle ${b.battleId}, turn ${b.turnNumber}`;
-  };
-  const fight = p.locator('[data-testid="battle-command-fight"][aria-disabled="false"]');
-  const live = await fight
-    .waitFor({ state: 'visible', timeout: 5_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!live) {
-    const notLive = await stillOn();
-    if (notLive === null) return false; // the battle ended: the command list is gone
-    throw new Error(
-      `openSkillGrid: Fight did not go live within 5 s in an ongoing battle (${notLive})`,
-    );
-  }
-  try {
-    await fight.click({ timeout: 3_000 });
-  } catch (err) {
-    const pressFailed = await stillOn();
-    if (pressFailed === null) return false; // the battle ended before the press landed
-    throw new Error(
-      `openSkillGrid: pressing a live Fight failed in an ongoing battle (${pressFailed}): ` +
-        (err as Error).message,
-    );
-  }
-  const open = await skillCell(p)
-    .waitFor({ state: 'visible', timeout: 5_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (open) return true;
-  const noGrid = await stillOn();
-  if (noGrid === null) return false; // the battle ended right after the press
-  throw new Error(
-    'openSkillGrid: Fight was live but the skill grid did not open in an ongoing battle ' +
-      `(${noGrid}): no data-battle-list="skills" cell within 5 s of the Fight press`,
   );
 }
 
@@ -397,13 +345,9 @@ type HealWant = 'revived' | 'restored';
 
 const boxTitle = (p: Page) => p.locator('[data-testid="box-title"]');
 
-/** Opens the box (Monsters frame) with the B accelerator. closeAll first: after a KO,
- *  __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the store) while the battle
- *  frame KEEPS showing the terminal outcome (the terminal row is GC'd lazily, M12.5e); Start
- *  continues it (the terminal-dismiss latch, dismissedBattleId), and closeAll presses Start only
- *  above the base and fails naming a frame Start cannot close (StuckStackError). The sentinel
- *  is the box title (`data-testid="box-title"`) — ctl-10a: the 'Heal Party' text it used to
- *  wait for no longer exists. */
+/** Opens the box (Monsters frame) with the B accelerator. closeAll first: a frame left over a
+ *  finished battle (the results panel) is continued by Start; closeAll presses Start only above
+ *  the base and fails naming a frame Start cannot close (StuckStackError). */
 async function openBox(p: Page): Promise<boolean> {
   for (let i = 0; i < MAX_BOX_OPEN_TRIES; i++) {
     if (
@@ -431,8 +375,7 @@ async function closeBox(p: Page): Promise<void> {
 
 /** Reads the box's HP state, polling up to `timeoutMs` for `want`'s condition. The box lists
  *  each monster as "HP cur/max (pct%)" and is subscription-driven. Scoped to the box frame
- *  (the `.mr-frame` holding the box title), so the HIDDEN battle frame's stale card text (also
- *  "HP x/y") can never satisfy it. An HP-less box never counts as healed. */
+ *  (the `.mr-frame` holding the box title). An HP-less box never counts as healed. */
 async function boxHpMeets(p: Page, want: HealWant, timeoutMs: number): Promise<boolean> {
   return p
     .waitForFunction(
@@ -519,17 +462,12 @@ async function reviveAtHealer(p: Page): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // restoreHpBeforeEncounter: open the box, check HP, and heal at the healer if
-// below 80%. Called at the start of each enc iteration to undo HP depletion that
-// write_back_party_hp persists on flee. The HP check stays in the box at the
-// shuttle (fast path: no walk when the party is healthy); only a low party walks
-// to the healer (ctl-10a: Box heal retired).
-//
-// Detection: box HP format is "HP cur/max (pct%)". We scan
-// ALL HP pairs in the box text (matchAll) — every visible monster row must
-// satisfy the threshold — unlike the KO path (which only checks "HP 0/").
+// below 80%. Called at the start of each R2 battle to undo HP depletion that a fled battle
+// persists. The HP check stays in the box at the shuttle (fast path: no walk when the party is
+// healthy); only a low party walks to the healer (ctl-10a: Box heal retired).
+// Returns true if a heal was performed, false if HP was already adequate or the box could not be
+// opened.
 // ---------------------------------------------------------------------------
-// Returns true if a heal was performed (HP was low and the healer was used), false
-// if HP was already adequate or the box could not be opened.
 async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
   // A frame closeAll cannot close is the latched case: skip the heal rather than fail.
   let boxOpen: boolean;
@@ -545,8 +483,6 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
     return false; // another overlay is latched; skip and proceed
   }
 
-  // Determine if HP is below the restoration threshold (80% of max).
-  // If already healthy, close immediately without walking to the healer.
   const needsHeal = await p
     .waitForFunction(
       () => {
@@ -554,8 +490,6 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
         const root = title?.closest('.mr-frame');
         if (!(root instanceof HTMLElement) || root.style.display === 'none') return 'no-box';
         const text = root.textContent ?? '';
-        // Box HP format: "HP cur/max (pct%)" — scan ALL pairs so every monster
-        // row must be healthy before we skip the heal.
         const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
         if (!ms.length) return 'no-hp';
         const anyLow = ms.some((match) => {
@@ -574,17 +508,59 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
   await closeBox(p);
   if (needsHeal !== 'low') return false;
 
-  // HP is low — heal at the healer and wait for HP to reach ≥ 80% (MAX_HEAL_TRIES covers the
-  // 30 s cooldown). As before, a party that still reads low after the tries is not a failure
-  // here: the encounter loop's own flee/KO handling takes over.
   const restored = await healAtHealer(p, 'restored', 'restoreHpBeforeEncounter');
   if (!restored) console.log('restoreHpBeforeEncounter: HP still below 80% after the healer');
   return true;
 }
 
+/** R2's live-turn loop (tactics-wild's BT12.5 loop): close in, weaken with the forecast's KO
+ *  guard, recruit adjacent with the seeded bait. Resolves 'recruited', or 'ended' / 'stalled'
+ *  (the caller flees a stalled battle and re-hunts). */
+async function fightToRecruit(
+  p: Page,
+  counts: { clicks: number; lastKey: string | null },
+): Promise<'recruited' | 'ended' | 'stalled'> {
+  let last: string | null = null;
+  counts.lastKey = null;
+  for (let turn = 0; turn < MAX_OWN_TURNS; turn += 1) {
+    const tt = await waitOwnTurnOrEnd(p, last, TURN_WAIT_MS);
+    if (tt.phase === 'Finished') {
+      return tt.units.some((u) => u.side === 'B' && u.state === 'Recruited')
+        ? 'recruited'
+        : 'ended';
+    }
+    last = turnKey(tt);
+    counts.lastKey = last;
+    const { me, enemy: wild } = sides(tt);
+    await openMenu(p, me);
+    if (tileDistance(me, wild) === 1) {
+      const weak = wild.curHp * 100 <= wild.maxHp * WEAK_PCT;
+      if (weak && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) {
+        counts.clicks += 1;
+        continue;
+      }
+      const hit = await attackByButtons(p, { allowKo: false, enemyHp: wild.curHp });
+      if (hit === 'attacked') {
+        await waitExecuted(p, tt.events);
+        await endTurn(p);
+        continue;
+      }
+      if (hit === 'kills' && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) {
+        counts.clicks += 1;
+        continue;
+      }
+      await endTurn(p);
+      continue;
+    }
+    const drafted = await draftMoveToward(p, wild);
+    if (!drafted) await pressButton(p, 'B'); // leave the menu
+    await endTurn(p);
+  }
+  return 'stalled';
+}
+
 // ---------------------------------------------------------------------------
-// Suite (describe.serial: one page, sequential tests sharing state via the
-// suiteScoped variable `winningBattleId` for R3).
+// Suite (describe.serial: one page, sequential tests).
 // ---------------------------------------------------------------------------
 
 test.describe
@@ -592,12 +568,7 @@ test.describe
     let browser: Browser;
     let ctx: BrowserContext;
     let page: Page;
-
-    // Suite-scoped (inside the describe — reviewer M4): R2 records the battleId
-    // from the winning encounter so R3 can cross-check via spacetime sql.  Null
-    // means R2 did not record a winning id (unreachable when R2 passes; R3 then
-    // fails with a clear message).
-    let winningBattleId: string | null = null;
+    let starterId = '';
 
     test.beforeAll(async () => {
       browser = await chromium.launch();
@@ -605,6 +576,11 @@ test.describe
       page = await ctx.newPage();
       await page.goto('/');
       await ready(page);
+      const starter = (await snap(page)).ownMonsters[0];
+      if (!starter || !/^[0-9]+$/.test(starter.monsterId)) {
+        throw new Error('beforeAll: no starter with a decimal monsterId');
+      }
+      starterId = starter.monsterId;
     });
 
     test.afterAll(async () => {
@@ -614,116 +590,122 @@ test.describe
     // -------------------------------------------------------------------------
     // R1 (EARS 13.5h-1, criterion 1):
     //   WHEN the player walks onto a grass tile, a wild battle MAY start.
-    //   THE recruit-action button SHALL be visible while the battle is Ongoing.
-    //   THE bait-selector SHALL be ABSENT until the Recruit command is pressed
-    //   (qf-7b, QF7B.2), then present AND contain ZERO options with
-    //   data-recruit-bonus (no bait in a fresh inventory — classify-by-data
-    //   negative half).
-    //   The test flees (Run) after assertions to leave a clean state for R2.
+    //   SURVIVING CHECK (bt-16): retired "`recruit-action` visible + `bait-selector` with zero
+    //   `data-recruit-bonus` rows" → the Recruit row is GREYED on an own turn not adjacent to the
+    //   wild, LIVE on an own turn adjacent to it (a full budget), and its bait list offers NO bait
+    //   row for a fresh inventory — exactly one `bait:` row, the no-bait choice. Then Flee.
     // -------------------------------------------------------------------------
-    test('R1: recruit-action visible + bait-selector has no bait options in fresh inventory', async () => {
-      test.setTimeout(120_000);
+    test('R1: the Recruit row is greyed when not adjacent and live when adjacent, and its bait list offers no bait row in a fresh inventory (bt-16: was recruit-action + an empty bait-selector)', async () => {
+      test.setTimeout(300_000);
+      expect(
+        (await snap(page)).ownInventory.filter((s) => s.itemId === BAIT_ITEM_ID).length,
+        'fixture: a fresh inventory holds no bait',
+      ).toBe(0);
 
-      // Walk grass until we get a wild encounter.
-      // 80 steps ≈ 40 grass entries; P(no encounter) = 0.8^40 ≈ 1.3e-4.
-      let encounterFound = false;
-      for (let i = 0; i < MAX_WALK_STEPS && !encounterFound; i++) {
-        const g = await snap(page);
-        if (g.ongoingBattle !== null) {
-          encounterFound = true;
-          break;
+      let sawGreyed = false;
+      let checked = false;
+      // Both halves are required: a wild already adjacent on the first own turn gives the live
+      // half only, so the battle is fled and the grass re-hunted until the greyed half is seen too.
+      for (let battle = 0; battle < MAX_R1_BATTLES && !(checked && sawGreyed); battle += 1) {
+        await huntEncounter(page, `R1 battle ${battle}`);
+        let last: string | null = null;
+        const doneHere = false;
+        for (let turn = 0; turn < MAX_APPROACH_TURNS && !doneHere; turn += 1) {
+          const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+          if (tt.phase !== 'Active') break;
+          last = turnKey(tt);
+          const { me, enemy } = sides(tt);
+          await openMenu(page, me);
+          const recruitRow = page.locator(TACTICS.menuRow('recruit'));
+          await expect(recruitRow, 'R1: a wild battle`s menu offers the Recruit row').toHaveCount(
+            1,
+            {
+              timeout: 5_000,
+            },
+          );
+          if (tileDistance(me, enemy) > 1) {
+            await expect(
+              recruitRow,
+              'R1: NOT adjacent to the wild, the Recruit row is greyed',
+            ).toHaveAttribute('aria-disabled', 'true');
+            sawGreyed = true;
+            await draftMoveToward(page, enemy);
+            await endTurn(page);
+            continue;
+          }
+          // Adjacent on a fresh own turn: the row is live and its bait list holds no bait.
+          await expect(
+            recruitRow,
+            'R1: adjacent with a full budget, the Recruit row is live',
+          ).not.toHaveAttribute('aria-disabled', 'true');
+          await menuCursorTo(page, 'recruit');
+          await pressButton(page, 'A');
+          await expect(
+            page.locator(TACTICS.menuRow(NO_BAIT_ROW)),
+            'R1: the bait list offers the no-bait choice',
+          ).toHaveCount(1, { timeout: 5_000 });
+          await expect(
+            page.locator('.tactics-menu-row[data-row^="bait:"]'),
+            'R1: a fresh inventory offers NO bait row — only the no-bait choice',
+          ).toHaveCount(1);
+          await pressButton(page, 'B'); // the bait list → the root menu
+          await expect(page.locator(TACTICS.menuRow('flee'))).toHaveCount(1, { timeout: 5_000 });
+          checked = true;
+          doneHere = true;
+          // Flee from the open root menu (Flee needs the whole budget: nothing was spent).
+          await fleeByButtons(page);
         }
-        const tile = g.ownAuthTile ?? { x: 1, y: 1 };
-        const dir = shuttleDir(tile);
-        try {
-          const outcome = await stepOne(page, dir, tile);
-          if (outcome === 'battle') encounterFound = true;
-        } catch {
-          // stepOne timed out (wall-bump — tile did not change AND no battle).
-          // Continue with the next direction in the shuttle.
+        if (!doneHere) {
+          // The wild kited out of reach or the battle ended: leave it and re-hunt.
+          const now = await readTactics(page);
+          if (now !== null && now.phase === 'Active') {
+            const next = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+            if (next.phase === 'Active') await fleeByButtons(page);
+          }
         }
+        await waitForBattleCleared(page);
+        await throughResults(page, `R1 battle ${battle}`);
       }
-
-      expect(encounterFound, 'Expected a wild battle within MAX_WALK_STEPS').toBe(true);
-
-      // The battle overlay must be visible; outcome must be Ongoing.
-      const s = await snap(page);
-      if (s.ongoingBattle === null) {
-        throw new Error('R1: ongoingBattle is null after encounterFound — snapshot inconsistent');
-      }
-      expect(s.ongoingBattle.outcome).toBe('Ongoing');
-
-      // qf-7b (QF7B.2) NEW-CONTRACT WITNESS: the bait list renders ONLY after the Recruit command
-      // is pressed, so before the press no bait list is attached at all. ANTI-VACUITY: the
-      // Recruit row is on screen first, and the command list and the actions row (where the bait
-      // list lives) render in the same refresh, so the absence is the closed list, not an
-      // overlay that has not painted yet.
-      const baitSel = page.locator('[data-testid="bait-selector"]');
-      await expect(page.getByTestId('battle-command-recruit')).toBeVisible({ timeout: 5_000 });
-      await expect(baitSel, 'no bait list before Recruit is pressed').toHaveCount(0);
-      await pressCommand(page, 'recruit');
-
-      // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
-      // Bait list must be present (data-testid="bait-selector", now a role=group of rows) with its
-      // No bait row (data-testid="bait-option-none") first.
-      await expect(baitSel).toBeVisible({ timeout: 5_000 });
-      const noBaitRow = page.locator('[data-testid="bait-option-none"]');
-      await expect(noBaitRow).toBeVisible({ timeout: 5_000 });
-
-      // NEGATIVE classify-by-data assertion: a fresh inventory has no
-      // items with recruit_bonus > 0, so the bait list must have ZERO rows with
-      // data-recruit-bonus.  An impl that hard-codes bait rows instead of
-      // filtering by data attribute would fail here.
-      // Source: battleView.ts `row.setAttribute('data-recruit-bonus', ...)` (ADR-0047).
-      const baitOptions = page.locator('[data-testid="bait-selector"] [data-recruit-bonus]');
-      const baitCount = await baitOptions.count();
-      expect(baitCount, 'Fresh inventory must have zero bait rows (data-recruit-bonus)').toBe(0);
-
-      // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
-      // The recruit action is the confirm's Yes (data-testid="recruit-action"), asked after the
-      // No bait row is pressed (it was a button that read the select's implicit default).
-      await noBaitRow.click({ timeout: 5_000 });
-      const recruitBtn = page.locator('[data-testid="recruit-action"]');
-      await expect(recruitBtn).toBeVisible({ timeout: 5_000 });
-
-      // The selector assertion above is the authoritative DOM-level check.
-      // (itemDef.recruitBonus is not exposed in the GameSnap; classify-by-data is
-      // enforced at the DOM level via data-recruit-bonus — ADR-0047.)
-
-      // Flee to clean up for R2, with the command list's Run (QF7.4: the sanctioned flee path).
-      await pressCommand(page, 'run');
-      await waitForBattleCleared(page);
+      expect(checked, `R1: an own turn adjacent to the wild within ${MAX_R1_BATTLES} battles`).toBe(
+        true,
+      );
+      expect(sawGreyed, 'R1: the greyed Recruit row was seen on a non-adjacent own turn').toBe(
+        true,
+      );
     });
 
     // -------------------------------------------------------------------------
     // R2 (EARS 13.5h-1, criterion 2):
-    //   WHEN the player weakens a wild monster and clicks Recruit, THE recruit
-    //   SHALL eventually succeed.  ownMonsters.length SHALL increase by 1.
-    //   THE new monster SHALL have partySlot === 255 (PARTY_SLOT_NONE = box).
-    //   Records the winning battleId for R3.
-    //
-    //   Encounter loop: MAX_ENCOUNTERS = 30.
-    //   Per encounter, recruit_chance ≈ 80‰ + 500‰×(missingHpFraction).
-    //   At ~40% wild HP remaining: chance ≈ 380‰ per click.
-    //   P(≥1 success in 12 clicks at 380‰) ≈ 1 - (0.62)^12 ≈ 0.998.
-    //   P(success per enc slot) ≈ 0.998 × P(not-Water) × P(survive-weaken) ≈ 0.58.
-    //   P(fail all 30) ≈ 0.6^30 ≈ 1.2e-7 (pessimistic); 0.7^30 ≈ 2.2e-5 (very pessimistic).
+    //   WHEN the player weakens a wild monster and Recruits, THE recruit SHALL eventually
+    //   succeed: ownMonsters.length increases by 1 and the new monster has partySlot === 255.
+    //   SURVIVING CHECK (bt-16): retired the 1v1 weaken + Recruit (Fight / bait list / Yes) loop →
+    //   tactics-wild's weaken-then-`recruitByButtons` loop with the seeded bait.
     // -------------------------------------------------------------------------
-    test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
-      // Timeout budget: 30 enc × ~30s/enc base + pre-encounter heal waits.
-      // restoreHpBeforeEncounter: fast-path (~2s box check) when HP ≥ 80%; slow-path
-      // (ctl-10a: Box heal retired) walks ~8 grass-free steps to the healer, spends up
-      // to 8 tries × ~9 s ≈ 72s waiting out the server 30s cooldown, and walks ~9 steps
-      // back — ≈ 90s worst case per heal (~20s of it walking).
-      // Realistic (server cooldown limits heals to 1 per 30s of real time, and
-      // encounters succeed well before all 30 slots are used): ~650s of encounters
-      // plus ~20s of walking per heal taken.
-      // Headroom: 1800s (30 min), raised from 1500s by ctl-10a for the heal walks
-      // (≈ 10 heals × 20s = 200s on a bad run); a run that degrades every slot still
-      // trips this timeout (red either way, never a false pass).
-      // STEP_WAIT_MS=8_000 is the per-step timeout bound, not actual step duration
-      // (SpacetimeDB drains at ~200ms/step; loaded GHA runners may take 2–3s/step).
+    test('R2: a recruit by buttons after weakening the wild increments ownMonsters by 1 with partySlot 255 (bt-16: tactics-wild`s weaken-then-recruit loop)', async () => {
+      // Budget: up to MAX_ENCOUNTERS battles of up to MAX_OWN_TURNS own turns, plus the
+      // pre-encounter heal walks (≈ 90 s worst case each).
       test.setTimeout(1_800_000);
+      seedStarter(
+        starterId,
+        [
+          ['stat_hp', SEED_HP],
+          ['current_hp', SEED_HP],
+          ['stat_defense', SEED_DEFENSE],
+          ['stat_sp_defense', SEED_DEFENSE],
+        ],
+        'R2 seed',
+      );
+      ownerSql(
+        `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${normId((await snap(page)).identity)}, ${BAIT_ITEM_ID}, ${BAIT_SEED})`,
+        'R2 seed bait',
+      );
+      await expect
+        .poll(
+          async () =>
+            (await snap(page)).ownInventory.find((s) => s.itemId === BAIT_ITEM_ID)?.count ?? 0,
+          { message: 'R2: the seeded bait reaches the page', timeout: 15_000 },
+        )
+        .toBe(BAIT_SEED);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
@@ -731,467 +713,133 @@ test.describe
 
       let recruited = false;
       let healCount = 0;
-      let fleeHealCount = 0; // pre-encounter HP restoration (flee-damage recovery, not KO)
+      let fleeHealCount = 0;
       let encountersUsed = 0;
-      let recruitClicksUsed = 0;
-      winningBattleId = null;
+      const counts: { clicks: number; lastKey: string | null } = { clicks: 0, lastKey: null };
 
       for (let enc = 0; enc < MAX_ENCOUNTERS && !recruited; enc++) {
         encountersUsed = enc + 1;
-
-        // Pre-encounter HP restoration (ROOT CAUSE FIX — see MAX_FLEE_HEALS comment).
-        // write_back_party_hp fires on every flee, so the next battle enters at
-        // whatever HP we had when we fled.  Restore HP before walking if possible.
-        //
-        // NO outer cooldown guard: restoreHpBeforeEncounter handles the 30 s server
-        // cooldown internally (up to MAX_HEAL_TRIES healer tries ≈ 72 s retry window;
-        // ctl-10a: Box heal retired, so it walks to the healer) and
-        // returns immediately when HP is already adequate (box-check fast-path).
-        // The prior HEAL_COOLDOWN_MS outer guard caused a new flake mode: fast
-        // flee-only encounters (e.g. Water-type or low-HP-flee) consumed enc slots
-        // within the 31 s guard window, leaving the party at depleted HP entering
-        // battles and triggering the ownPct ≤ OWN_HP_FLEE_THRESHOLD_PCT flee check
-        // on the first attack-loop iteration — producing recruitClicks≈1 across
-        // MAX_ENCOUNTERS=30.
-        if (fleeHealCount < MAX_FLEE_HEALS) {
-          if (await restoreHpBeforeEncounter(page)) {
-            fleeHealCount++;
-          }
+        if (fleeHealCount < MAX_FLEE_HEALS && (await restoreHpBeforeEncounter(page))) {
+          fleeHealCount++;
         }
-
-        // Walk grass until a battle starts.
-        // P(no encounter in 40 entries @ 20%) ≈ 1.3e-4; outer loop re-attempts.
-        let encBattleFound = false;
-        let currentBattleId: string | null = null;
-
-        for (let step = 0; step < MAX_WALK_STEPS && !encBattleFound; step++) {
-          const g = await snap(page);
-          if (g.ongoingBattle !== null) {
-            encBattleFound = true;
-            currentBattleId = g.ongoingBattle.battleId;
-            break;
-          }
-          const tile = g.ownAuthTile ?? { x: 1, y: 1 };
-          const dir = shuttleDir(tile);
-          try {
-            const outcome = await stepOne(page, dir, tile);
-            if (outcome === 'battle') {
-              encBattleFound = true;
-              const afterStep = await snap(page);
-              currentBattleId = afterStep.ongoingBattle?.battleId ?? null;
-            }
-          } catch {
-            // Timed out (wall-bump or slow drain); try next shuttle direction.
-          }
+        await huntEncounter(page, `R2 enc ${enc + 1}`);
+        const result = await fightToRecruit(page, counts);
+        if (result === 'stalled') {
+          // A FRESH own turn (after the last End Turn's key): Flee needs the whole budget.
+          const next = await waitOwnTurnOrEnd(page, counts.lastKey, TURN_WAIT_MS);
+          if (next.phase === 'Active') await fleeByButtons(page);
         }
-
-        if (!encBattleFound) {
-          // Could not trigger an encounter this loop iteration; keep trying.
-          continue;
+        await waitForBattleCleared(page);
+        const results = await throughResults(page, `R2 enc ${enc + 1}`);
+        console.log(`R2 enc ${enc + 1}: ${result}`);
+        if (result === 'recruited') {
+          expect(results, 'R2: the results panel lists the recruit').toContain('joined your team!');
+          recruited = true;
+          break;
         }
-
-        // Record the battleId at encounter start for R3.
-        winningBattleId = currentBattleId;
-
-        // --- Check opponent affinity: flee Water-type wilds immediately. ---
-        // Water is super-effective vs the Fire starter (Flameling L5, HP 19–21).
-        // Tidalin L7 max damage can one-shot it (plan §Combat facts).
-        // Source: battleView.ts:135 `HP ${cur}/${max} · ${affinity}`.
-        // The HP text node is the first matching element (opponent card rendered first
-        // in #opponentCardEl, battleView.ts:103).
-        const opponentCardText = await page
-          .locator('text=/HP \\d+\\/\\d+ · /')
-          .first()
-          .textContent({ timeout: 5_000 })
-          .catch(() => '');
-        const opponentHp = parseHpLine(opponentCardText ?? '');
-        console.log(
-          `R2 enc ${enc + 1}: type=${opponentHp?.affinity ?? 'unknown'} hp=${opponentHp ? `${opponentHp.cur}/${opponentHp.max}` : '?'}`,
-        );
-
-        if (opponentHp && opponentHp.affinity === 'Water') {
-          // Flee immediately (Run, QF7.4) — Water wipe risk.
-          await pressCommand(page, 'run');
-          await waitForBattleCleared(page);
-          winningBattleId = null; // encounter did not proceed to recruit
-          console.log(`R2 enc ${enc + 1}: fled Water type`);
-          continue;
-        }
-
-        // --- Weaken the wild with skill attacks while HP% is above threshold. ---
-        // Each skill attack = one exchange (you hit, wild hits back).
-        // Stop when opponent HP% <= WEAKEN_STOP_PCT OR own HP% <= OWN_HP_ATTACK_MIN_PCT.
-        // MAX_SKILL_ATTACKS bounds the inner loop (safety net).
-        //
-        // PARTY-ALIVE TRACKING (deflake-recruit-r2):
-        // ongoingBattle === null can mean three distinct outcomes:
-        //   (a) Explicit flee (own HP < OWN_HP_FLEE_THRESHOLD_PCT) — party alive.
-        //   (b) Wild KO'd mid-attack (SideAWins, Victory! visible) — party alive.
-        //   (c) Party KO'd by wild (SideBWins) — party fainted, heal required.
-        // The original code treated (a)+(b) the same as (c), consuming healCount
-        // slots for non-faint events and exhausting MAX_HEALS prematurely.
-        // battleEndedWithPartyAlive is set true for (a) and (b) to suppress the
-        // unnecessary heal path — MAX_HEALS is proof-of-teeth and must not change.
-        let battleEndedWithPartyAlive = false;
-        for (let atk = 0; atk < MAX_SKILL_ATTACKS; atk++) {
-          // Re-read HP from DOM before each attack.
-          // Source: battleView.ts:113 `${label}: ${card.speciesName}` (header) and :135 (hp).
-          const allHpTexts = await page.locator('text=/HP \\d+\\/\\d+ · /').allTextContents();
-
-          // ORDERING ASSUMPTION (structural, tester lens D-1): allHpTexts[0] is the
-          // opponent card, [1] the player card — battleView.ts appends #opponentCardEl
-          // to the root BEFORE #playerCardEl (ctor, :54 vs :61), and allTextContents()
-          // returns DOM order. Only the battle cards can match: the box overlay's HP
-          // format is "HP cur/max (pct%)" (no " · "), and swap buttons have no "HP "
-          // prefix. If battleView ever renders the player card first, this inverts.
-          const oppHpInfo = allHpTexts[0] ? parseHpLine(allHpTexts[0]) : null;
-          const ownHpInfo = allHpTexts[1] ? parseHpLine(allHpTexts[1]) : null;
-
-          const oppPct =
-            oppHpInfo && oppHpInfo.max > 0 ? (oppHpInfo.cur / oppHpInfo.max) * 100 : 100;
-          const ownPct =
-            ownHpInfo && ownHpInfo.max > 0 ? (ownHpInfo.cur / ownHpInfo.max) * 100 : 100;
-
-          // Flee (Run, QF7.4) if own HP critically low from wild counterattacks.
-          if (ownPct <= OWN_HP_FLEE_THRESHOLD_PCT) {
-            await pressCommand(page, 'run');
-            await waitForBattleCleared(page);
-            winningBattleId = null;
-            // Explicit flee: party HP was > OWN_HP_FLEE_THRESHOLD_PCT before flee click;
-            // the wild had no opportunity to KO us. No heal needed.
-            battleEndedWithPartyAlive = true;
-            break;
+        // A party KO'd by the wild blocks encounters: revive at the healer (bounded).
+        if (result === 'ended' && results.includes(t('battle.outcome.defeat'))) {
+          if (healCount >= MAX_HEALS) {
+            throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
           }
-
-          // Wild is sufficiently weakened OR own HP is marginal — stop attacking.
-          if (oppPct <= WEAKEN_STOP_PCT || ownPct <= OWN_HP_ATTACK_MIN_PCT) break;
-
-          // Click the first available skill cell. qf-7b (QF7B.2): the grid renders only after
-          // Fight is pressed and every new turn closes it again, so EVERY attack presses Fight
-          // first and waits for a cell (openSkillGrid). The cell is skillCell: a
-          // data-battle-list="skills" row labelled `<name> (<power>) · <affinity> · Acc n%`
-          // (battleView.ts #renderSkills, catalog battle.skill.pveLabel).
-          if (await openSkillGrid(page)) {
-            await skillCell(page).click({ timeout: 3_000 });
-            // Wait for the turn to complete (turnNumber increments OR battle ends).
-            const beforeTurn = await snap(page);
-            const tn = beforeTurn.ongoingBattle?.turnNumber ?? -1;
-            await page
-              .waitForFunction(
-                (args: { prevTurn: number }) => {
-                  const g = (window as unknown as { __game: () => GameSnap }).__game();
-                  // Battle ended (GC'd → null) or turn advanced.
-                  if (g.ongoingBattle === null) return true;
-                  return g.ongoingBattle.turnNumber > args.prevTurn;
-                },
-                { prevTurn: tn },
-                { timeout: 10_000 },
-              )
-              .catch(() => null); // tolerate if battle ended before waitForFunction resolved
-          } else {
-            // Skills not visible because the battle has ended — openSkillGrid returns false ONLY
-            // then (in a battle still on it throws, naming the grid failure) — break; the
-            // post-weaken check below sorts out how it ended.
-            break;
-          }
-
-          // If the battle ended during the attack, break out of the attack loop.
-          // Determine which side won: SideAWins (we KO'd wild, Victory! visible) means
-          // party is alive; SideBWins (wild KO'd us) means party fainted.
-          const midSnap = await snap(page);
-          if (midSnap.ongoingBattle === null) {
-            // battleView renders Victory! synchronously in the same subscription callback
-            // that set ongoingBattle to null, so isVisible() is reliable here.
-            const wildKOd = await page
-              .getByText('Victory!', { exact: true })
-              .isVisible({ timeout: 2_000 })
-              .catch(() => false);
-            battleEndedWithPartyAlive = wildKOd;
-            winningBattleId = null;
-            break;
-          }
-        }
-
-        // --- Check if the battle ended (KO or fled) before we could recruit. ---
-        const postWeakenSnap = await snap(page);
-        if (postWeakenSnap.ongoingBattle === null) {
-          // Battle ended before recruit phase.  Only heal when the party is fainted
-          // (SideBWins — party KO'd by wild).  Explicit flee and wild-KO (SideAWins)
-          // leave the party alive; charging healCount for those events wastes the
-          // MAX_HEALS budget and causes spurious "exceeded MAX_HEALS" failures.
-          //
-          // battleEndedWithPartyAlive is set by the attack loop for (a) explicit flee
-          // and (b) mid-attack wild-KO detected via midSnap.  For the edge case where
-          // the attack loop exits via "skills not visible → break" (battle may have
-          // just ended), we re-check here with the Victory! text as a fallback.
-          let partyAlive = battleEndedWithPartyAlive;
-          if (!partyAlive) {
-            // battleView.refresh() runs synchronously in the same onBatchApplied
-            // callback that cleared ongoingBattle, so Victory! is DOM-present now.
-            partyAlive = await page
-              .getByText('Victory!', { exact: true })
-              .isVisible({ timeout: 2_000 })
-              .catch(() => false);
-          }
-          if (!partyAlive) {
-            // The terminal outcome frame stays visible (lazy GC — see openBox);
-            // a fainted party blocks encounters, so recover via closeAll → the walk
-            // to the healer → A, A (ctl-10a: Box heal retired; zone-scoped, free, 30s
-            // cooldown) → the walk back to the shuttle.
-            if (healCount < MAX_HEALS) {
-              healCount++;
-              // reviveAtHealer waits for the healed-signal in the box DOM (no bare sleeps).
-              await reviveAtHealer(page);
-            } else {
-              // Fail loud at the point of detection (reviewer M3): a soft-assert +
-              // break would surface as a misleading "did not recruit" hard-fail later.
-              throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
-            }
-          }
-          winningBattleId = null;
-          continue;
-        }
-
-        // --- Click Recruit, bounded inner loop. ---
-        // recruit_chance = 80‰ + 500‰×(missingHpFraction).
-        // At ~40% HP remaining: ≈380‰ per click.
-        // P(≥1 success in 8 clicks @ 380‰) ≈ 0.98.
-        for (let rc = 0; rc < MAX_RECRUIT_CLICKS && !recruited; rc++) {
-          // Safety: confirm battle is still Ongoing before each recruit click.
-          const preRecSnap = await snap(page);
-          if (preRecSnap.ongoingBattle === null) {
-            winningBattleId = null;
-            break;
-          }
-
-          // Also check own HP hasn't dropped dangerously from failed recruit counterattacks.
-          // (Each FAILED recruit click = one wild counterattack — plan §Combat facts.)
-          const allHpNow = await page.locator('text=/HP \\d+\\/\\d+ · /').allTextContents();
-          const ownHpNow = allHpNow[1] ? parseHpLine(allHpNow[1]) : null;
-          const ownPctNow =
-            ownHpNow && ownHpNow.max > 0 ? (ownHpNow.cur / ownHpNow.max) * 100 : 100;
-
-          if (ownPctNow <= OWN_HP_FLEE_THRESHOLD_PCT) {
-            // Too risky — flee (Run, QF7.4) before the wild can KO us.
-            await pressCommand(page, 'run');
-            await waitForBattleCleared(page);
-            winningBattleId = null;
-            // battleEndedWithPartyAlive not needed: the post-weaken null check (above)
-            // is structurally before this recruit loop; breaking here bypasses it and
-            // re-enters the outer enc loop, which re-initialises the flag to false.
-            break;
-          }
-
-          // Click recruit: the Recruit command, No bait, then Yes (data-testid="recruit-action").
-          // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No. qf-7b
-          // (QF7B.2): the bait list renders only after the Recruit command is pressed. The
-          // Recruit press and the No bait click are INSIDE the per-attempt loop on purpose: a
-          // failed attempt advances the turn, which closes the bait list and the confirm, so
-          // every attempt presses Recruit and asks again.
-          recruitClicksUsed++;
-          await pressCommand(page, 'recruit');
-          const noBaitRow = page.locator('[data-testid="bait-option-none"]');
-          await expect(noBaitRow, 'Recruit opens the bait list').toBeVisible({ timeout: 5_000 });
-          await noBaitRow.click({ timeout: 5_000 });
-          const recruitBtn = page.locator('[data-testid="recruit-action"]');
-          await recruitBtn.click({ timeout: 5_000 });
-
-          // Wait for: ownMonsters count increased (success) OR battle ended (KO/flee).
-          // The server processes attemptRecruit, updates monster_pub, and resolves the battle.
-          await page
-            .waitForFunction(
-              (args: { countBefore: number }) => {
-                const g = (window as unknown as { __game: () => GameSnap }).__game();
-                if (g.ownMonsters.length > args.countBefore) return 'recruited';
-                if (g.ongoingBattle === null) return 'ended';
-                return false;
-              },
-              { countBefore: countBefore },
-              { timeout: 15_000 },
-            )
-            .catch(() => null);
-
-          const postRecSnap = await snap(page);
-          if (postRecSnap.ownMonsters.length > countBefore) {
-            recruited = true;
-            // winningBattleId is already set from the encounter start.
-            break;
-          }
-
-          // Recruit failed — battle may still be Ongoing (failed recruit + counterattack).
-          if (postRecSnap.ongoingBattle === null) {
-            // KO'd during a failed recruit counterattack.
-            if (healCount < MAX_HEALS) {
-              healCount++;
-              // ctl-10a: Box heal retired — revive at the bound healer, then walk back.
-              // reviveAtHealer waits for the healed-signal in the box DOM (no bare sleeps).
-              await reviveAtHealer(page);
-            } else {
-              // Fail loud at the point of detection (reviewer M3) — see the
-              // post-weaken KO path above for the rationale.
-              throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}) during recruit clicks`);
-            }
-            winningBattleId = null;
-            break;
-          }
-          // Otherwise: failed recruit, battle still Ongoing — try again.
+          healCount++;
+          await reviveAtHealer(page);
         }
       }
 
-      // -------------------------------------------------------------------------
-      // Final assertions
-      // -------------------------------------------------------------------------
-      // Diagnostics for CI logs (flake triage without a trace download).
       console.log(
-        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${recruitClicksUsed} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited}`,
+        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${counts.clicks} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited}`,
       );
-
       expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
 
+      await expect
+        .poll(async () => (await snap(page)).ownMonsters.length, { timeout: 15_000 })
+        .toBe(countBefore + 1);
       const afterSnap = await snap(page);
-      expect(afterSnap.ownMonsters.length).toBe(countBefore + 1);
-
-      // Find the new monster (the one not present in the before-set, compared by monsterId).
-      // Kills: an impl that does not write the monsterId to the snapshot, or uses the wrong
-      // field name (snake_case monster_id vs camelCase monsterId) — the Set lookup fails.
       const newMonster = afterSnap.ownMonsters.find((m) => !monsterIdsBefore.has(m.monsterId));
       if (newMonster === undefined) {
         throw new Error('R2: newly recruited monster must appear in ownMonsters (monsterId diff)');
       }
       // The recruited monster goes to the box (partySlot === 255 = PARTY_SLOT_NONE).
-      // Kills: an impl that inserts the monster into a party slot instead of the box.
       expect(newMonster.partySlot).toBe(255);
     });
 
     // -------------------------------------------------------------------------
-    // R3 (EARS 13.5h-1, criterion 3, piggybacks R2):
-    //   After a successful recruit, the battle row SURVIVES with SideAWins
-    //   (attempt_recruit GC gap — taming.rs never GC's the row; unlike
-    //   write_back_battle_results which only GC's non-Ongoing rows for loser).
-    //   ASSERT: the outcome frame shows exactly 'Victory!' (SideAWins mapping,
-    //   battleView.ts:240).
-    //   CROSS-CHECK: spacetime sql confirms the recorded battleId has SideAWins.
-    //   Kills: an impl that GC's the battle row on successful recruit, which
-    //   would hide the overlay (battleView.ts: refresh(null) → hide()) and make
-    //   Victory! invisible.
+    // R3 (EARS 13.5h-1, criterion 3):
+    //   SURVIVING CHECK (bt-16): retired "the outcome frame shows exactly 'Victory!' + SQL
+    //   SideAWins for R2's battle" (`outcome-text` is the 1v1 view's) → a battle fought to a WIN
+    //   by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
+    //   catalog victory string AND spacetime sql names SideAWins for that battle. Never "any
+    //   outcome": a battle that ends otherwise is re-hunted (MAX_WIN_BATTLES).
     // -------------------------------------------------------------------------
-    test('R3: winning battle shows Victory! and spacetime sql confirms SideAWins', async () => {
-      test.setTimeout(30_000);
+    test('R3: a battle won by buttons shows the victory title and spacetime sql confirms SideAWins (bt-16: was outcome-text)', async () => {
+      test.setTimeout(420_000);
+      seedStarter(
+        starterId,
+        [
+          ['stat_attack', WIN_ATTACK],
+          ['stat_sp_attack', WIN_ATTACK],
+          ['stat_hp', WIN_HP],
+          ['current_hp', WIN_HP],
+        ],
+        'R3 seed',
+      );
+      let won = false;
+      for (let battle = 0; battle < MAX_WIN_BATTLES && !won; battle += 1) {
+        const start = await huntEncounter(page, `R3 battle ${battle}`);
+        const battleId = start.battleId;
+        if (!/^[0-9]+$/.test(battleId)) {
+          throw new Error(`R3: battleId is not a decimal u64 string: ${battleId}`);
+        }
+        const end = await fightToOutcome(page, {
+          maxOwnTurns: MAX_OWN_TURNS,
+          label: `R3 battle ${battle}`,
+        });
+        expect(end.phase, 'R3: the battle finished').toBe('Finished');
+        const title = page.locator(`${TACTICS.results} [data-testid="battle-title"]`);
+        await expect(title, 'R3: the results panel shows its title').toBeVisible({
+          timeout: 20_000,
+        });
+        const titleText = ((await title.textContent()) ?? '').trim();
+        await throughResults(page, `R3 battle ${battle}`);
 
-      if (winningBattleId === null) {
-        // R2 did not record a winning battleId — unreachable when R2 passes,
-        // but fail hard with a clear message if it is reached (R3 must never
-        // vacuously pass without a recorded winning battle).
-        throw new Error(
-          'R3: winningBattleId is null — R2 did not record a successful recruit battleId',
-        );
+        // Server truth: the outcome tag lives in the `state` struct column (schema.rs Battle row),
+        // so SELECT * prints it; rendering-agnostic (2.6.0 bare `SideAWins`, 2.8.1 snake_case).
+        const sqlOutput = ownerSql(`SELECT * FROM battle WHERE battle_id = ${battleId}`, 'R3');
+        expect(sqlOutput.includes(battleId), `R3: the battle row ${battleId} exists`).toBe(true);
+        const sideAWins = /side_?a_?wins/i.test(sqlOutput);
+        console.log(`R3 battle ${battle}: title "${titleText}", SQL SideAWins ${sideAWins}`);
+        if (sideAWins) {
+          expect(titleText, 'R3: the results title is the victory string').toBe(
+            t('battle.outcome.victory'),
+          );
+          won = true;
+        }
       }
-
-      // The Victory! outcome frame must be visible.
-      // Source: battleView.ts:240 `text = 'Victory!'` (SideAWins case).
-      // The outcome element is `#outcomeEl` with display:block.
-      // Locate by exact textContent — no testid on this element.
-      const victoryEl = page.getByText('Victory!', { exact: true });
-      await expect(victoryEl).toBeVisible({ timeout: 10_000 });
-
-      // Cross-check via spacetime sql that the server confirms SideAWins.
-      // Syntax precedent: global-setup.ts (execSync), smoke-republish.sh (spacetime sql).
-      // The outcome enum variant prints as its name (e.g. 'SideAWins') in sql output.
-      // NEVER use new RegExp(dynamic): use .includes() only (spec-gap-revival discipline).
-      const server = process.env.STDB_SERVER ?? 'local';
-      const db = process.env.VITE_STDB_DB ?? 'monster-realm';
-      // All three interpolated values are validated before entering the shell
-      // string (red-team F5; literal regexes only — never new RegExp(dynamic)).
-      // battleId is a SpacetimeDB u64 serialised via bigint.toString() — decimal
-      // digits only; anything else means the snapshot shape changed under us.
-      if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
-        throw new Error(`R3: STDB_SERVER/VITE_STDB_DB failed charset validation: ${server} ${db}`);
-      }
-      if (!/^[0-9]+$/.test(winningBattleId)) {
-        throw new Error(`R3: winningBattleId is not a decimal u64 string: ${winningBattleId}`);
-      }
-      // `outcome` is nested inside the `state` struct column (schema.rs Battle row),
-      // so it is not directly projectable — SELECT * prints the whole row incl. the
-      // state struct, and the variant name appears only in the outcome field.
-      let sqlOutput = '';
-      try {
-        sqlOutput = execSync(
-          `spacetime sql -s ${server} ${db} "SELECT * FROM battle WHERE battle_id = ${winningBattleId}"`,
-          { encoding: 'utf8', timeout: 10_000 },
-        );
-      } catch (err) {
-        // HARD failure (tester lens A-1): this cross-check IS the gate for the
-        // attempt_recruit GC-gap invariant (the row must survive with SideAWins);
-        // a warn-and-return here would let a CLI/infra failure vacuously pass it.
-        // Both CI and local e2e runs require the spacetime CLI on PATH already
-        // (global-setup publishes with it), so a throw only fires on real breakage.
-        // Note the row-deleted regression does NOT land here: the query then exits
-        // 0 with an empty result and the includes() assertion below catches it.
-        throw new Error(
-          `R3: spacetime sql cross-check could not run (CLI/infra failure, not a ` +
-            `row-content mismatch): ${(err as Error).message}`,
-        );
-      }
-
-      // The sql output must name the SideAWins variant.
-      // Kills: an impl that GC's the battle row on recruit success — the row would
-      // not exist in the query result, so no rendering of the variant would appear.
-      // Rendering-agnostic on purpose: 2.6.0 printed the bare variant name (`SideAWins`),
-      // 2.8.1 prints a snake_case tagged form (`(side_a_wins = ())`). The optional
-      // separators match both without widening to a substring that could straddle columns.
-      const sideAWins = /side_?a_?wins/i;
       expect(
-        sideAWins.test(sqlOutput),
-        `R3: expected spacetime sql output to name the SideAWins variant for battleId=${winningBattleId}, got: ${sqlOutput.slice(0, 200)}`,
+        won,
+        `R3: a battle was won (SQL SideAWins) within MAX_WIN_BATTLES=${MAX_WIN_BATTLES}`,
       ).toBe(true);
     });
 
     // -------------------------------------------------------------------------
     // R4 (RE-ANCHOR — test.fixme, real blocker documented):
-    //   Bait-selector classify-by-data: a bait item grants recruit_bonus > 0.
-    //   The test would: grant a bait item, enter a battle, assert bait-selector
-    //   has ≥1 option with data-recruit-bonus > 0, assert no non-bait item appears.
+    //   Bait-list classify-by-data: a bait item grants recruit_bonus > 0. The test would: grant a
+    //   bait item, enter a battle, assert the bait list has >= 1 row for it, assert no non-bait
+    //   item appears.
     //
-    //   RE-ANCHOR REASON: a bait item (e.g. Lure Berry, itemId 1) can only be
-    //   granted to the browser-session identity via:
-    //   (a) A client/src slice that exposes a test-only bait-grant hook on
-    //       __game() (e.g. __game().grantBait(itemId, qty)) — this hook does
-    //       not exist yet; it is owned by a different client/src slice.
-    //   (b) The shop path — Lure Berry costs 200 currency; a player earns
-    //       ~31 currency per KO-win, requiring ~7 KO battles, which is over
-    //       the e2e time/flake budget for a single test.
-    //   (c) The `spacetime call` path — this requires a browser token that is
-    //       not accessible from the test: DbConnection is built without
-    //       .withToken, the SDK persists no credential, and there is no HTTP
-    //       API surface to obtain the browser identity's token from the test
-    //       process.
-    //   This test will be un-fixmed when a client/src slice exposes
-    //   __game().grantBait(itemId, qty) or equivalent test-hook on __game().
+    //   RE-ANCHOR REASON (pre-bt-16, unchanged): a bait item can only be granted to the
+    //   browser-session identity through a test-only hook on __game() (not exposed; owned by a
+    //   client/src slice), the shop (~7 KO battles of currency — over the e2e budget), or a
+    //   `spacetime call` with the browser token (not reachable from the test process). bt-16 note:
+    //   R2 now seeds bait by owner SQL and recruits WITH it (`bait:1`), which covers the positive
+    //   half of this criterion on the tactical bait list.
     // -------------------------------------------------------------------------
     test.fixme('R4: bait selector lists only items with recruit_bonus > 0 (blocked: __game() test-hook not exposed; owned by a client/src slice)', async () => {
-      // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
-      // STEP 1: grant a bait item.
-      //   Requires __game().grantBait(itemId, qty) on the snapshot — not yet exposed.
-      //   See re-anchor reason above.
+      // STEP 1: grant a bait item (requires __game().grantBait(itemId, qty) — not yet exposed).
       // STEP 2: trigger a wild battle (grass walk as in R1).
-      // STEP 3: press the Recruit command (qf-7b: the bait list renders only after it, as in R1);
-      //   the bait list (data-testid="bait-selector", a group of rows) must then be visible.
-      //   await pressCommand(page, 'recruit');
-      //   const selector = page.locator('[data-testid="bait-selector"]');
-      //   await expect(selector).toBeVisible({ timeout: 5_000 });
-      // STEP 4: assert ≥1 row with data-recruit-bonus.
-      //   Source: battleView.ts row.setAttribute('data-recruit-bonus', String(bait.recruitBonus))
-      //   const baitRows = page.locator('[data-testid="bait-selector"] [data-recruit-bonus]');
-      //   const count = await baitRows.count();
-      //   expect(count).toBeGreaterThanOrEqual(1);
-      // STEP 5: assert all data-recruit-bonus values are > 0 (classify-by-data ADR-0047).
-      //   for (let i = 0; i < count; i++) {
-      //     const bonus = await baitRows.nth(i).getAttribute('data-recruit-bonus');
-      //     expect(Number(bonus)).toBeGreaterThan(0);
-      //   }
-      // STEP 6: assert no non-bait items appear in the list.
-      //   (Every row except the "No bait" row, data-testid="bait-option-none", must have
-      //   data-recruit-bonus > 0.)
-      // Clean up: flee with the command list's Run (QF7.4), as in R1.
+      // STEP 3: on an own turn adjacent to the wild, Recruit → the bait list.
+      // STEP 4: assert >= 1 `bait:<itemId>` row and that every non-`bait:none` row is a bait.
+      // Clean up: Flee, as in R1.
     });
   });

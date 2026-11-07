@@ -905,3 +905,477 @@ export async function menuCursorTo(page: Page, key: string): Promise<void> {
     await pressButton(page, 'Down');
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// bt-16 (BT16.2): the shared tactical-battle drivers. The cutover made every live battle tactical
+// (a grass step opens a tactical WILD battle; accepting a challenge opens a tactical PVP battle in
+// Deploying), so every migrated spec drives its battle through these. Lifted from
+// tactics-wild.spec.ts (bt-12) and pvp-side-b.spec.ts's accept path, generalised: the enemy is any
+// unit on the OTHER side (a PvP accepter is side B), and every wait has a numeric bound and a
+// failure message naming it. They read only `__mrTactics` / `__game` / the DOM and press virtual
+// buttons; NOTHING here calls a reducer.
+// ---------------------------------------------------------------------------------------------
+
+/** How long a started battle's tactical row may take to reach the page. */
+export const TACTICAL_START_MS = 20_000;
+/** How long Deploying may take to become Active once this page pressed Deploy: the other side's
+ *  lock (PvP) plus a batch; strictly under the 45 s PvP auto-fill, so a lock the buttons never
+ *  sent fails here rather than being completed by the auto-fill. */
+export const TACTICAL_ACTIVE_MS = 40_000;
+/** The default bound on one wait for the next own live turn in a WILD battle (the AI's turns plus
+ *  the presentation pad; measured ~1 s in bt-12). PvP callers pass their own (a 30 s window). */
+export const OWN_TURN_WAIT_MS = 15_000;
+/** How long an executed live commit may take to land in the store (the event count grows). */
+export const EXECUTE_WAIT_MS = 15_000;
+/** How long the results panel may take to show, and then to auto-advance to the world base. */
+export const RESULTS_SHOW_MS = 20_000;
+export const RESULTS_ADVANCE_MS = 20_000;
+/** The bait list's no-bait row (tacticsBattle.ts `bait:none`); a held bait is `bait:<itemId>`. */
+export const NO_BAIT_ROW = 'bait:none';
+/** bt-16: the challenge accept path's waits (the banner, the Social cursor). */
+const ACCEPT_UI_MS = 15_000;
+
+type TacticalUnitSnap = TacticsSnap['units'][number];
+
+const manhattanTiles = (a: Tile, b: Tile): number => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+/** The turn identity of a snapshot: battle, round and initiative index. */
+export const turnKey = (t: TacticsSnap): string => `${t.battleId}:${t.round}:${t.turnIdx}`;
+
+/** The CURRENT battle's tactical snapshot: `__mrTactics.battle()` unless the page's ongoing anchor
+ *  names a different battle (the previous, finished battle is still the latest row for one batch),
+ *  in which case null. */
+const readCurrentTactics = (page: Page): Promise<TacticsSnap | null> =>
+  page.evaluate(() => {
+    const w = window as unknown as {
+      __mrTactics?: { battle(): TacticsSnap | null };
+      __game?: () => { ongoingBattle: { battleId: string } | null };
+    };
+    if (w.__mrTactics === undefined) throw new Error('readTactics: __mrTactics is missing (DEV)');
+    const t = w.__mrTactics.battle();
+    const ongoing = w.__game?.().ongoingBattle ?? null;
+    if (t === null) return null;
+    if (ongoing !== null && ongoing.battleId !== t.battleId) return null;
+    return t;
+  });
+
+/**
+ * Waits (≤ TACTICAL_START_MS) for the current battle's tactical row; when it is `Deploying`,
+ * presses Deploy by buttons (`deployByButtons`) unless this side's Deploy row is already refused
+ * (locked: an earlier call deployed it); then waits (≤ TACTICAL_ACTIVE_MS) for `Active`. Returns
+ * the Active snapshot, or a `Finished` one when the battle ended first. Idempotent on an Active
+ * battle. Callers that need BOTH PvP sides Active run it on both pages CONCURRENTLY (each presses
+ * its own Deploy; the second lock flips the phase).
+ */
+export async function awaitTacticalActive(page: Page, label: string): Promise<TacticsSnap> {
+  let seen: TacticsSnap | null = null;
+  await expect
+    .poll(
+      async () => {
+        seen = await readCurrentTactics(page);
+        return seen !== null;
+      },
+      {
+        message: `${label}: the battle's tactical row reaches the page within ${TACTICAL_START_MS} ms`,
+        timeout: TACTICAL_START_MS,
+      },
+    )
+    .toBe(true);
+  // `seen` is written inside the poll closure, which control-flow analysis does not follow.
+  const first = seen as TacticsSnap | null;
+  if (first === null) throw new Error(`${label}: no tactical battle`);
+  if (first.phase === 'Active' || first.phase === 'Finished') return first;
+  if (first.phase === 'Deploying') {
+    const row = page.locator(`${TACTICS.deploy} [data-row="deploy"]`);
+    await expect(row, `${label}: the deploy panel paints its Deploy row`).toHaveCount(1, {
+      timeout: TACTICAL_START_MS,
+    });
+    if ((await row.getAttribute('aria-disabled')) !== 'true') {
+      await deployByButtons(page, label);
+    }
+  }
+  let last: TacticsSnap | null = null;
+  await expect
+    .poll(
+      async () => {
+        last = await readCurrentTactics(page);
+        return last === null ? 'none' : last.phase;
+      },
+      {
+        message: `${label}: battle ${first.battleId} reaches Active within ${TACTICAL_ACTIVE_MS} ms of the Deploy press`,
+        timeout: TACTICAL_ACTIVE_MS,
+      },
+    )
+    .toMatch(/^(Active|Finished)$/);
+  const done = last as TacticsSnap | null;
+  if (done === null) throw new Error(`${label}: the battle vanished while deploying`);
+  return done;
+}
+
+/** Waits (≤ `timeoutMs`) for the next OWN live turn of the current battle — `Waiting` on one of
+ *  this page's units with a turn key other than `afterKey` — or for `Finished`; returns that
+ *  snapshot. Fails naming the bound. */
+export async function waitOwnTurnOrEnd(
+  page: Page,
+  afterKey: string | null,
+  timeoutMs: number,
+): Promise<TacticsSnap> {
+  await page
+    .waitForFunction(
+      (prev: string | null) => {
+        const w = window as unknown as {
+          __mrTactics?: { battle(): TacticsSnap | null };
+          __game?: () => { ongoingBattle: { battleId: string } | null };
+        };
+        const t = w.__mrTactics?.battle() ?? null;
+        if (t === null) return false;
+        const ongoing = w.__game?.().ongoingBattle ?? null;
+        if (ongoing !== null && ongoing.battleId !== t.battleId) return false;
+        if (t.phase === 'Finished') return true;
+        if (t.phase !== 'Active' || t.turnState !== 'Waiting') return false;
+        const unit = t.units.find((u) => u.unitId === t.activeUnitId);
+        if (unit === undefined || !unit.mine) return false;
+        return `${t.battleId}:${t.round}:${t.turnIdx}` !== prev;
+      },
+      afterKey,
+      { timeout: timeoutMs },
+    )
+    .catch((err: unknown) => {
+      throw new Error(
+        `waitOwnTurnOrEnd: no own live turn (after ${afterKey ?? 'none'}) and no finish within ` +
+          `${timeoutMs} ms: ${(err as Error).message}`,
+      );
+    });
+  const t = await readTactics(page);
+  if (t === null) throw new Error('waitOwnTurnOrEnd: the battle vanished');
+  return t;
+}
+
+/** The active OWN unit of `t` and the nearest conscious ENEMY (any unit on the other side). */
+export function sides(t: TacticsSnap): { me: TacticalUnitSnap; enemy: TacticalUnitSnap } {
+  const me = t.units.find((u) => u.unitId === t.activeUnitId);
+  if (me === undefined || !me.mine) throw new Error('sides: no active own unit');
+  const enemies = t.units.filter((u) => u.side !== me.side && u.state === 'Active');
+  enemies.sort((a, b) => manhattanTiles(a, me) - manhattanTiles(b, me));
+  const enemy = enemies[0];
+  if (enemy === undefined) throw new Error('sides: no conscious enemy unit');
+  return { me, enemy };
+}
+
+/** The Manhattan distance between two tiles (the board's adjacency is distance 1). */
+export const tileDistance = manhattanTiles;
+
+/** Lets a playing beat sequence drain (B is the skip key while one plays; idle with no draft it is
+ *  a no-op), so the next press is an input and not a skip. */
+export async function settle(page: Page): Promise<void> {
+  const playing = page.locator(`${TACTICS.shell}.tactics-battle--playing`);
+  if ((await playing.count()) > 0) {
+    await pressButton(page, 'B');
+    await expect(playing, 'settle: B drained the playback').toHaveCount(0, { timeout: 5_000 });
+  }
+}
+
+/** Opens the own unit's command menu: the cursor on `tile` (its unit), then A. */
+export async function openMenu(page: Page, tile: Tile): Promise<void> {
+  await settle(page);
+  await dpadCursorTo(page, tile);
+  await pressButton(page, 'A');
+  await expect(
+    page.locator('.tactics-menu'),
+    'openMenu: A on the own unit opens its menu',
+  ).toHaveCount(1, { timeout: 5_000 });
+}
+
+/** Move (from the OPEN ROOT menu): the band tile nearest `target`, confirmed with A (a drafted,
+ *  reversible Move — its ghost appears). False, with the menu back at its root, when the Move row is
+ *  greyed (boxed in) or the band offers no tile. */
+export async function draftMoveToward(page: Page, target: Tile): Promise<boolean> {
+  const moveRow = page.locator(TACTICS.menuRow('move'));
+  if ((await moveRow.count()) !== 1 || (await moveRow.getAttribute('aria-disabled')) === 'true') {
+    return false;
+  }
+  await menuCursorTo(page, 'move');
+  await pressButton(page, 'A');
+  await expect(
+    page.locator('.tactics-menu'),
+    'draftMoveToward: the Move aim replaces the menu',
+  ).toHaveCount(0, { timeout: 5_000 });
+  await expect(
+    page.locator(TACTICS.bandTile).first(),
+    'draftMoveToward: the Move aim paints a band',
+  ).toBeVisible({ timeout: 5_000 });
+  const band = await readBandTiles(page);
+  const open = band.filter((tile) => !(tile.x === target.x && tile.y === target.y));
+  open.sort((a, b) => manhattanTiles(a, target) - manhattanTiles(b, target));
+  const dest = open[0];
+  if (dest === undefined) {
+    await pressButton(page, 'B'); // leave the aim: back to the root menu
+    return false;
+  }
+  await dpadCursorTo(page, dest);
+  await pressButton(page, 'A');
+  await expect(
+    page.locator(TACTICS.ghost),
+    'draftMoveToward: A drafts the Move (its ghost)',
+  ).toHaveCount(1, { timeout: 5_000 });
+  return true;
+}
+
+/** Ends the own live turn: Start (End Turn — the live draft plus EndTurn) once playback drained. */
+export async function endTurn(page: Page): Promise<void> {
+  await settle(page);
+  await pressButton(page, 'Start');
+}
+
+/** From the OPEN ROOT menu: Skills → the first offered skill → the forecast panel (hit %, min–max
+ *  damage) → A commits the draft plus the hit on the live turn. With `allowKo: false` a forecast
+ *  whose MAX damage reaches `enemyHp` is backed out (`kills`, nothing sent); with `allowKo: true`
+ *  it is committed. `none`: no skill offered or no target in range (backed out to the root menu). */
+export async function attackByButtons(
+  page: Page,
+  opts: { allowKo: boolean; enemyHp: number },
+): Promise<'attacked' | 'kills' | 'none'> {
+  // A greyed Skills row (no skill reaches any target: `outOfRange`) offers nothing to press.
+  const skillsRow = page.locator(TACTICS.menuRow('skills'));
+  await expect(skillsRow, 'attackByButtons: the root menu offers the Skills row').toHaveCount(1, {
+    timeout: 5_000,
+  });
+  if ((await skillsRow.getAttribute('aria-disabled')) === 'true') return 'none';
+  await menuCursorTo(page, 'skills');
+  await pressButton(page, 'A');
+  const skill = page
+    .locator('.tactics-menu-row[data-row^="skill:"]:not([aria-disabled="true"])')
+    .first();
+  const offered = await skill
+    .waitFor({ state: 'visible', timeout: 3_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!offered) {
+    await pressButton(page, 'B'); // the skills list → the root menu
+    return 'none';
+  }
+  const key = await skill.getAttribute('data-row');
+  if (key === null) throw new Error('attackByButtons: a skill row without a key');
+  await menuCursorTo(page, key);
+  await pressButton(page, 'A');
+  const forecast = page.locator(TACTICS.forecast);
+  const aimed = await forecast
+    .waitFor({ state: 'visible', timeout: 3_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!aimed) {
+    await pressButton(page, 'B'); // no target in range: the list stays → the root menu
+    return 'none';
+  }
+  const text = (await forecast.textContent()) ?? '';
+  expect(text, 'attackByButtons: the forecast carries a hit percentage').toMatch(/\d+ ?%/);
+  const damage = /(\d+)[–-](\d+) damage/.exec(text);
+  const max = damage === null ? null : Number(damage[2]);
+  if (!opts.allowKo && (max === null || max >= opts.enemyHp)) {
+    await pressButton(page, 'B'); // the aim → the skills list
+    await pressButton(page, 'B'); // → the root menu
+    return 'kills';
+  }
+  await pressButton(page, 'A'); // commits [draft…, Skill] on the live turn
+  return 'attacked';
+}
+
+/** From the OPEN ROOT menu: Recruit → the bait row `baitKey` (`bait:<itemId>` or `NO_BAIT_ROW`) →
+ *  the aim (the forecast with the odds) → A. False, nothing pressed, when the Recruit row is absent
+ *  or greyed (not adjacent, or the budget is not full). */
+export async function recruitByButtons(page: Page, baitKey: string): Promise<boolean> {
+  const row = page.locator(TACTICS.menuRow('recruit'));
+  if ((await row.count()) !== 1 || (await row.getAttribute('aria-disabled')) === 'true') {
+    return false;
+  }
+  await menuCursorTo(page, 'recruit');
+  await pressButton(page, 'A');
+  await menuCursorTo(page, baitKey);
+  await pressButton(page, 'A');
+  await expect(
+    page.locator(TACTICS.forecast),
+    'recruitByButtons: the recruit aim shows its odds',
+  ).toHaveCount(1, { timeout: 5_000 });
+  await pressButton(page, 'A');
+  return true;
+}
+
+/** Flee by buttons, ONLY in `Active` (Deploying has no menu: deploy first). With no menu open it
+ *  first waits (≤ OWN_TURN_WAIT_MS) for the next own live turn and opens the active unit's menu;
+ *  then the root menu's `flee` row → A. Fails naming a Deploying or Finished battle. */
+export async function fleeByButtons(page: Page): Promise<void> {
+  const now = await readTactics(page);
+  if (now === null) throw new Error('fleeByButtons: no tactical battle');
+  if (now.phase === 'Deploying') throw new Error('fleeByButtons: Deploying — deploy first');
+  if ((await page.locator('.tactics-menu').count()) === 0) {
+    const t = await waitOwnTurnOrEnd(page, null, OWN_TURN_WAIT_MS);
+    if (t.phase !== 'Active') throw new Error(`fleeByButtons: the battle is ${t.phase}`);
+    const me = t.units.find((u) => u.unitId === t.activeUnitId);
+    if (me === undefined) throw new Error('fleeByButtons: no active own unit');
+    await openMenu(page, me);
+  }
+  await menuCursorTo(page, 'flee');
+  await pressButton(page, 'A');
+}
+
+/** Waits for the battle's event count to grow past `events` (a live commit executed and landed) or
+ *  for `Finished`, bounded by EXECUTE_WAIT_MS. */
+export async function waitExecuted(page: Page, events: number): Promise<void> {
+  await page
+    .waitForFunction(
+      (n: number) => {
+        const hook = (window as unknown as { __mrTactics?: { battle(): TacticsSnap | null } })
+          .__mrTactics;
+        const t = hook?.battle() ?? null;
+        return t !== null && (t.events > n || t.phase === 'Finished');
+      },
+      events,
+      { timeout: EXECUTE_WAIT_MS },
+    )
+    .catch((err: unknown) => {
+      throw new Error(
+        `waitExecuted: the commit did not land (events stayed at ${events}) within ` +
+          `${EXECUTE_WAIT_MS} ms: ${(err as Error).message}`,
+      );
+    });
+}
+
+/** Waits (≤ RESULTS_SHOW_MS) for the results panel and its title, reads its text, lets it advance
+ *  (≤ RESULTS_ADVANCE_MS: main.ts auto-continues it) and expects the world base back. Returns the
+ *  panel's text (the outcome title and the reward lines). */
+export async function throughResults(page: Page, label: string): Promise<string> {
+  await expect(page.locator(TACTICS.results), `${label}: the results panel shows`).toBeVisible({
+    timeout: RESULTS_SHOW_MS,
+  });
+  await expect(page.locator(`${TACTICS.results} [data-testid="battle-title"]`)).toBeVisible();
+  const text = (await page.locator(TACTICS.results).textContent()) ?? '';
+  await expect
+    .poll(async () => (await readWorld(page)).stackLength, {
+      message: `${label}: the results panel advances to the world base within ${RESULTS_ADVANCE_MS} ms`,
+      timeout: RESULTS_ADVANCE_MS,
+    })
+    .toBe(1);
+  await expect(page.locator(TACTICS.results), `${label}: the results panel closed`).toBeHidden();
+  return text;
+}
+
+/**
+ * Fights the current Active battle to its end by buttons: on each own live turn the menu opens; an
+ * enemy within a skill's reach is attacked (`attackByButtons({ allowKo: true })`) and the turn
+ * ended, else the unit steps toward the nearest enemy (`draftMoveToward`) and ends the turn. Stops
+ * at `Finished` (never pressing Start into the results panel) and returns that snapshot. Throws
+ * naming `maxOwnTurns` when the bound is spent. Each wait for an own turn is bounded by
+ * `turnWaitMs` (default OWN_TURN_WAIT_MS).
+ */
+export async function fightToOutcome(
+  page: Page,
+  opts: { maxOwnTurns: number; label: string; turnWaitMs?: number },
+): Promise<TacticsSnap> {
+  let last: string | null = null;
+  for (let turn = 0; turn < opts.maxOwnTurns; turn += 1) {
+    const t = await waitOwnTurnOrEnd(page, last, opts.turnWaitMs ?? OWN_TURN_WAIT_MS);
+    if (t.phase === 'Finished') return t;
+    last = turnKey(t);
+    const { me, enemy } = sides(t);
+    await openMenu(page, me);
+    const hit = await attackByButtons(page, { allowKo: true, enemyHp: enemy.curHp });
+    if (hit === 'attacked') {
+      await waitExecuted(page, t.events);
+      const after = await readTactics(page);
+      if (after === null || after.phase === 'Finished') return after ?? t;
+      await endTurn(page);
+      continue;
+    }
+    if (tileDistance(me, enemy) > 1) await draftMoveToward(page, enemy);
+    await endTurn(page);
+  }
+  const end = await readTactics(page);
+  if (end !== null && end.phase === 'Finished') return end;
+  throw new Error(
+    `${opts.label}: the battle did not finish within maxOwnTurns=${opts.maxOwnTurns} own turns`,
+  );
+}
+
+/**
+ * The challenged player's production accept path (pvp-side-b.spec.ts, qf-8 QF8.3): the incoming
+ * challenge's `#notice-banner` shows, P opens Social on Challenges with the cursor on the request
+ * (`aria-current`), A opens its sheet on Accept, A accepts. Returns after the press (the caller
+ * waits for the battle). Every wait ≤ ACCEPT_UI_MS.
+ */
+export async function acceptChallengeByButtons(pageB: Page): Promise<void> {
+  await expect(
+    pageB.locator('#notice-banner'),
+    'accept: the incoming challenge banner shows',
+  ).toBeVisible({ timeout: ACCEPT_UI_MS });
+  await pressAccel(pageB, 'P');
+  await expect(
+    pageB.locator('#pvp-challenge-incoming[aria-current="true"]'),
+    'accept: Social opens on the incoming request',
+  ).toBeVisible({ timeout: ACCEPT_UI_MS });
+  await pressButton(pageB, 'A');
+  await expect(
+    pageB.locator('#social-sheet [aria-selected="true"]'),
+    'accept: the request sheet opens on Accept',
+  ).toHaveText('Accept', { timeout: ACCEPT_UI_MS });
+  await pressButton(pageB, 'A');
+}
+
+/** Face to face, A challenges B (`openFaceToFace`: the size pick's first row) and B accepts by
+ *  buttons; returns once both pages show the PvP battle's tactical row in `Deploying` (each bounded
+ *  by TACTICAL_START_MS). Neither side deploys (tactics-pvp's secrecy oracles run in Deploying). */
+export async function challengeAndAcceptByButtons(
+  pageA: Page,
+  pageB: Page,
+  nameB: string | undefined,
+  label: string,
+): Promise<string> {
+  await closeAll(pageA);
+  await closeAll(pageB);
+  await openFaceToFace(pageA, 'Challenge', nameB, pageB);
+  await acceptChallengeByButtons(pageB);
+  let ids: string[] = [];
+  for (const [who, p] of [
+    ['A', pageA],
+    ['B', pageB],
+  ] as const) {
+    let seen: TacticsSnap | null = null;
+    await expect
+      .poll(
+        async () => {
+          seen = await readCurrentTactics(p);
+          return seen === null ? 'none' : `${seen.kind}:${seen.phase}`;
+        },
+        {
+          message: `${label}: ${who}'s page holds the PvP battle in Deploying within ${TACTICAL_START_MS} ms of the accept`,
+          timeout: TACTICAL_START_MS,
+        },
+      )
+      .toMatch(/^Pvp:(Deploying|Active)$/);
+    const s = seen as TacticsSnap | null;
+    if (s === null) throw new Error(`${label}: ${who} has no battle`);
+    ids = [...ids, s.battleId];
+  }
+  expect(ids[0], `${label}: both pages hold the SAME battle`).toBe(ids[1]);
+  return ids[0] ?? '';
+}
+
+/** A challenges B face to face, B accepts by buttons, then BOTH pages deploy by buttons
+ *  concurrently (`awaitTacticalActive`; the second lock flips the phase) and reach `Active`.
+ *  Returns the battleId. */
+export async function startPvpByButtons(
+  pageA: Page,
+  pageB: Page,
+  nameB: string | undefined,
+  label: string,
+): Promise<string> {
+  const battleId = await challengeAndAcceptByButtons(pageA, pageB, nameB, label);
+  const [ta, tb] = await Promise.all([
+    awaitTacticalActive(pageA, `${label} A`),
+    awaitTacticalActive(pageB, `${label} B`),
+  ]);
+  expect(
+    [ta.battleId, ta.phase, tb.battleId, tb.phase],
+    `${label}: both pages reach Active on battle ${battleId}`,
+  ).toEqual([battleId, 'Active', battleId, 'Active']);
+  return battleId;
+}

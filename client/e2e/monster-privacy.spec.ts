@@ -7,7 +7,48 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
+import { closeAll, pressAccel, startPvpByButtons, TACTICS } from './controls';
+
+/** bt-16: the tactical battle shell (the PvP leg's battle UI since the cutover). */
+const TACTICS_SHELL = TACTICS.shell;
+
+/** bt-16: the species name the server's PUBLIC `species_row` gives `speciesId` (owner SQL, a
+ *  literal-shaped statement over a checked integer). The oracle for the opponent info box. */
+function speciesNameById(speciesId: number, label: string): string {
+  const server = process.env.STDB_SERVER ?? 'local';
+  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+  if (
+    !/^[A-Za-z0-9:/._-]+$/.test(server) ||
+    !/^[A-Za-z0-9_-]+$/.test(db) ||
+    !Number.isInteger(speciesId) ||
+    speciesId < 0
+  ) {
+    throw new Error(`${label}: refusing non-literal-shaped input ${server} ${db} ${speciesId}`);
+  }
+  let out = '';
+  try {
+    out = execSync(
+      `spacetime sql -s ${server} ${db} "SELECT id, name FROM species_row WHERE id = ${speciesId}"`,
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+  } catch (err) {
+    throw new Error(
+      `${label}: spacetime sql species_row failed (CLI/infra): ${(err as Error).message}`,
+    );
+  }
+  const lines = out.split('\n').filter((l) => l.includes('|'));
+  const header = (lines[0] ?? '').split('|').map((c) => c.trim());
+  const nameCol = header.indexOf('name');
+  const row = lines.slice(1).find((l) => l.split('|')[0]?.trim() === String(speciesId));
+  const raw = row?.split('|')[nameCol]?.trim() ?? '';
+  const name = raw.replace(/^"(.*)"$/, '$1');
+  if (nameCol === -1 || name === '') {
+    throw new Error(
+      `${label}: species_row has no name for species ${speciesId}: ${out.slice(0, 300)}`,
+    );
+  }
+  return name;
+}
 
 // monster_pub need-to-know privacy, end to end
 //
@@ -252,22 +293,6 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
   await closeAll(page);
 }
 
-/**
- * Presses `page`'s Fight command through the production DOM (qf-7b, QF7B.2; the shape of the
- * pvp-side-b.spec.ts helper, with this file's 20 s overlay budget — do NOT cross-import). The
- * battle's command list is the first step of every action: the skill grid (the "Submit: <skill>"
- * buttons in PvP) renders only after Fight is pressed. A greyed command row (aria-disabled="true":
- * a PvP move waiting on the opponent, a finished battle) does nothing when pressed, so the press
- * waits for Fight to be live.
- */
-async function pressFight(page: Page): Promise<void> {
-  const fight = page.getByTestId('battle-command-fight');
-  await expect(fight, 'Fight is live').toHaveAttribute('aria-disabled', 'false', {
-    timeout: 20_000,
-  });
-  await fight.click({ timeout: 10_000 });
-}
-
 // ---------------------------------------------------------------------------
 // Inventory privacy (BUG-inventory-world-readable). Stacks are seeded by owner SQL
 // (the CLI runs as the module OWNER, which can write the private table — the
@@ -454,8 +479,9 @@ test.describe
     // ownMonsters.length` holds. Asserting both at the same instant is what
     // makes the deferral honest rather than hopeful.
     // -------------------------------------------------------------------------
-    test('EARS 13r-e-2: the PvP battle overlay renders FULLY while each client holds zero other-player monster rows', async () => {
-      test.setTimeout(120_000);
+    test('EARS 13r-e-2: the PvP tactical battle UI renders the opponent`s info box FULLY (its real species, an HP readout) while each client holds zero other-player monster rows (bt-16: was the 1v1 overlay)', async () => {
+      // bt-16: + both deploys (≤ 40 s) on top of the 120 s flow.
+      test.setTimeout(180_000);
 
       // Distinct labels so the opponent card can be identified by WHOSE it is.
       // Unique per run (the e2e world is shared across runs); alphanumeric and
@@ -473,94 +499,77 @@ test.describe
       // PvP overlay's per-player Challenge button and P / O initiation are gone). A challenges B
       // FACE TO FACE: it stands on B's tile (both joined at the spawn; the helper walks there
       // when they stand apart), presses A, chooses `Challenge — <B's unique rename label>` and
-      // answers Yes at the confirm.
-      await openFaceToFace(pageA, 'Challenge', nameB, pageB);
+      // sends the size pick's first row (bt-15).
+      // B accepts through the Social sheet (ctl-13 CTL13.2: the banner announces the request, P
+      // opens Social on it; qf-8 QF8.3: A opens its sheet on Accept, A accepts), and BOTH sides
+      // deploy by buttons: bt-16 — the accept opens a TACTICAL PvP battle in Deploying
+      // (`startPvpByButtons`: face to face, the accept, then each page's Deploy, to Active).
+      const battleId = await startPvpByButtons(pageA, pageB, nameB, '13r-e-2');
+      expect(battleId, 'the PvP battle has a decimal id').toMatch(/^[0-9]+$/);
 
-      // B accepts through the Social sheet. INTENTIONAL CHANGE (ctl-13, CTL13.2): the incoming
-      // challenge no longer opens the overlay by itself, so B opens Social on Challenges (P) first;
-      // the banner is what announces the request. (Y is not used: A stands on B's tile, so for B
-      // that player is a target.) INTENTIONAL CHANGE (qf-8, QF8.3): the challenge panel's Accept
-      // button is deleted, so B answers on its nav path: the cursor opens on the request, A opens
-      // the sheet on Accept, A accepts.
-      await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
-      await pressAccel(pageB, 'P');
-      await expect(pageB.locator('#pvp-challenge-incoming[aria-current="true"]')).toBeVisible({
-        timeout: 15_000,
-      });
-      await pressButton(pageB, 'A');
-      await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Accept');
-      await pressButton(pageB, 'A');
-
-      // Both overlays must come up (battleView toggles display:none/flex, so
-      // toBeVisible is a real layout assertion, not a cosmetic one): each side's command list
-      // is on screen. qf-7b (QF7B.2): the skill grid renders only after Fight is pressed, so
-      // each side presses its own Fight, and both sides' "Submit: <skill>" buttons must then
-      // render.
-      await expect(pageA.getByTestId('battle-commands')).toBeVisible({ timeout: 20_000 });
-      await expect(pageB.getByTestId('battle-commands')).toBeVisible({ timeout: 20_000 });
-      await pressFight(pageA);
-      await pressFight(pageB);
-      await expect(pageA.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
-        timeout: 20_000,
-      });
-      await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
-        timeout: 20_000,
-      });
-
-      // --- the overlay renders FULLY, on BOTH sides ---------------------------
-      // The opponent card header is `${opponentName}: ${speciesName}`.
+      // --- the battle UI renders FULLY, on BOTH sides ---------------------------
+      // SURVIVING CHECK (bt-16): retired the 1v1 overlay's `battle-commands`, "Submit: <skill>"
+      // buttons, `${name}: ${species}` opponent header and "HP x/y" card readouts (a live battle
+      // is tactical now) → each page's `.tactics-battle` renders the OPPONENT's unit in its FOE
+      // info box (tactics/hud.ts: name / level / HP / affinity — the bt-10 keep-signal) with a
+      // species name EQUAL to the opponent's real species — derived from the OPPONENT page's own
+      // `__game().ownMonsters[0].speciesId` through the server's `species_row` (owner SQL), never
+      // a literal — and an HP readout.
       //
       // WHAT THESE CLAUSES DO AND DO NOT PROVE (stated precisely, because the
-      // obvious over-claim is tempting): they prove the overlay RENDERED — a real
-      // species name, real HP numbers, both cards present — under the new privacy
-      // regime. They do NOT prove non-dependence on monster_pub, and cannot:
-      // battleModel resolves the name from `speciesMap` (the PUBLIC species_row
-      // table) keyed by the speciesId carried in `battle.state`, so it never had a
-      // monster_pub dependency to lose. `Unknown (#<id>)` is battleModel's
-      // species-lookup fallback, not a monster_pub sentinel.
+      // obvious over-claim is tempting): they prove the battle UI RENDERED — the real
+      // species name, real HP numbers — under the privacy regime. They do NOT prove
+      // non-dependence on monster_pub: the shell resolves the name from the PUBLIC
+      // species_row map keyed by the battle unit's species_id, so it never had a
+      // monster_pub dependency to lose.
       //
       // The load-bearing pairing is what follows the loop: a FULLY rendered
-      // overlay AT THE SAME INSTANT as `monsterCount === ownMonsters.length`. That
+      // battle UI AT THE SAME INSTANT as `monsterCount === ownMonsters.length`. That
       // is the evidence for ADR-0194 D3's deferral — the engaged delivery set is
       // empty and the engagement UI is complete anyway — and it is a behavioural
       // observation, not a proof of the code path. The static half of that claim
       // (nothing in the client reads a non-own monster row) is owned by the store
       // accessor deletion and its test in client/src/net/store.test.ts.
-      for (const [page, opponentName, label] of [
-        [pageA, nameB, 'client A'],
-        [pageB, nameA, 'client B'],
+      for (const [page, opponentPage, label] of [
+        [pageA, pageB, 'client A'],
+        [pageB, pageA, 'client B'],
       ] as const) {
-        const header = await page.getByText(`${opponentName}: `).first().innerText();
+        const opponentSpeciesId = await opponentPage.evaluate(
+          () =>
+            (window as unknown as { __game: () => GameSnap }).__game().ownMonsters[0]?.speciesId,
+        );
+        if (opponentSpeciesId === undefined || !Number.isInteger(opponentSpeciesId)) {
+          throw new Error(`${label}: the opponent page holds no own monster species id`);
+        }
+        const expectedSpecies = speciesNameById(opponentSpeciesId, label);
+        await expect(
+          page.locator(TACTICS_SHELL),
+          `${label}: the tactical shell is shown`,
+        ).toBeVisible({
+          timeout: 20_000,
+        });
+        const foeRows = page.locator(`${TACTICS_SHELL} .tactics-info--foe .tactics-info-row`);
+        await expect(
+          foeRows,
+          `${label}: the FOE info box holds the opponent's one unit`,
+        ).toHaveCount(1, { timeout: 20_000 });
+        await expect(
+          foeRows.first().locator('.tactics-info-name'),
+          `${label}: the opponent unit's info box names the opponent's REAL species (${expectedSpecies}, species ${opponentSpeciesId})`,
+        ).toHaveText(expectedSpecies);
+        const hpText = (
+          (await foeRows.first().locator('.tactics-info-hp').textContent()) ?? ''
+        ).trim();
+        const hp = /(\d+)\D+(\d+)/.exec(hpText);
         expect(
-          header.startsWith(`${opponentName}: `),
-          `${label}: the opponent card header must name the opponent — got ${header}`,
+          hp !== null && Number(hp[2]) > 0 && Number(hp[1]) <= Number(hp[2]),
+          `${label}: the opponent unit's info box renders an HP readout (current / max) — got "${hpText}"`,
         ).toBe(true);
-        const species = header.slice(`${opponentName}: `.length).trim();
+        const shellText = (await page.locator(TACTICS_SHELL).textContent()) ?? '';
         expect(
-          species.length,
-          `${label}: the opponent card must show a REAL species name, not an empty one`,
-        ).toBeGreaterThan(0);
-        expect(
-          species.startsWith('Unknown (#'),
-          `${label}: the opponent card fell back to battleModel's placeholder species name ` +
-            `(${species}, client/src/ui/battleModel.ts:190) — the overlay did not render ` +
-            'completely. This says the ENGAGEMENT UI is incomplete under the new regime; it ' +
-            'does not by itself say monster_pub is implicated (the name is resolved from the ' +
-            'PUBLIC species_row map keyed by battle.state), so read it together with the ' +
-            'monsterCount assertion after this loop',
+          shellText.includes('Unknown (#') || shellText.includes(`#${opponentSpeciesId}`),
+          `${label}: the shell shows a placeholder species name somewhere: ${shellText.slice(0, 400)}`,
         ).toBe(false);
-
-        const bodyText = await page.evaluate(() => document.body.innerText);
-        expect(
-          bodyText.includes('Unknown (#'),
-          `${label}: the battle overlay shows a placeholder name somewhere: ${bodyText.slice(0, 400)}`,
-        ).toBe(false);
-        const hpReadouts = bodyText.match(/HP \d+\/\d+/g) ?? [];
-        expect(
-          hpReadouts.length,
-          `${label}: BOTH monster cards must render an "HP current/max" readout ` +
-            `(battleView.ts:228) — found ${hpReadouts.length}: [${hpReadouts.join(', ')}]`,
-        ).toBeGreaterThanOrEqual(2);
       }
 
       // --- and, at the SAME instant, neither client holds a foreign row -------

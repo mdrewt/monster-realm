@@ -6,17 +6,47 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
+import {
+  attackByButtons,
+  closeAll,
+  deployByButtons,
+  endTurn,
+  openFaceToFace,
+  openMenu,
+  pressAccel,
+  pressButton,
+  readTactics,
+  sides,
+  TACTICS,
+  type TacticsSnap,
+  waitExecuted,
+  waitOwnTurnOrEnd,
+} from './controls';
 
-// PvP side-B battle overlay, production path
+// PvP side-B battle UI, production path
 //
 // THE DEFECT: store.ongoingBattle()/store.latestPlayerBattle() (client/src/net/store.ts)
 // used to filter `playerIdentity === identity` ONLY. A PvP ACCEPTER is stored in the
-// row's `opponentIdentity`, so the accepter got NO battle overlay at all in production
-// builds — no cards, no skills, no swap — frozen until the 60s deadline reaper forfeited
-// them. The PRE-EXISTING pvp e2e suite (pvp-full.spec.ts) masked this entirely: it drives
-// BOTH sides through main.ts's DEV-gated role-agnostic test hook, a code path production
-// builds never execute. Green CI, broken real path, for a whole milestone.
+// row's `opponentIdentity`, so the accepter got NO battle UI at all in production
+// builds — frozen until the deadline forfeited them. The PRE-EXISTING pvp e2e suite
+// (pvp-full.spec.ts) masked this entirely: it drives BOTH sides through main.ts's
+// DEV-gated role-agnostic test hook, a code path production builds never execute. Green
+// CI, broken real path, for a whole milestone.
+//
+// bt-16 (BT16.2) — NAMED INTENTIONAL CHANGE: accepting a challenge now opens a TACTICAL PvP
+// battle in Deploying (the 1v1 overlay — Fight, "Submit: <skill>", the turn-number advance —
+// never appears for a live battle). SURVIVING CHECKS, each named at its assertion below:
+//   - retired "B's 1v1 command list + its own Submit buttons" → after Accept BOTH pages show the
+//     PvP deploy panel, both deploy by buttons, and the ACCEPTER's page (B) renders the tactical
+//     shell with a unit that is ITS OWN (mine, side B) — the production-path side-B battle UI;
+//   - retired "the opponent card names A, not B" (the half-fix discriminator) → B's shell paints
+//     B's unit in its OWN info box and A's unit in its FOE box (a raw-row perspective would swap
+//     them), and A's page the mirror image;
+//   - retired "B's own Submit advances turnNumber by one while Ongoing" → on B's own turn B acts
+//     by buttons (an attack through the forecast, else End Turn) and B's event count grows; both
+//     sides end a turn and B's page reaches round 2 (STRICT: a Finished battle fails), bounded by
+//     ROUND_TWO_MS. Who moves first is a coin flip / speed roll: every oracle here is first-mover
+//     independent (each page acts on ITS own turn, concurrently).
 //
 // TWO-CONTEXT DESIGN: copied from ranked-forfeit.spec.ts — two separate
 // chromium.launch() instances generate distinct SpacetimeDB identities (the SDK caches
@@ -40,22 +70,21 @@ import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 // runs. If an earlier-sorting spec ever grows a population-sensitive assertion, this
 // audit needs re-deriving.
 //
-// ZERO USE OF THE DEV TEST HOOK: this spec drives BOTH players through the REAL
-// production DOM only — A on the other player -> the Challenge row -> Yes (ctl-10b: face to
-// face, no PvP-overlay Challenge button) -> B's Social sheet Accept (qf-8: the challenge panel's
-// Accept button is deleted) -> the real Fight command (qf-7b: the skill grid renders only after
-// it) -> the real "Submit: <skill>" buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
-// witness (identity, ongoingBattle.turnNumber/outcome) — never to drive gameplay. The
-// DEV multiplayer test hook the OTHER pvp e2e specs use to read/drive both sides at once
-// must NEVER appear here, in ANY form — not even split across a comment — because using
-// it here is EXACTLY the failure that hid this CRITICAL: a client-side test that proves
-// the DEV path works while the real production path stays broken.
+// ZERO USE OF THE DEV MULTIPLAYER HOOK: this spec drives BOTH players through the REAL
+// production DOM only — A on the other player -> the Challenge row -> the size pick
+// (ctl-10b / bt-15: face to face) -> B's Social sheet Accept (qf-8) -> the deploy panel's Deploy
+// -> the tactical shell's menu, aims and Start. `__game()` is used ONLY for readiness and
+// `__mrTactics` (the read-only tactical hook, never a reducer) as a READ-ONLY witness. The DEV
+// multiplayer test hook the OTHER pvp e2e specs use to read/drive both sides at once must NEVER
+// appear here, in ANY form — not even split across a comment — because using it here is EXACTLY
+// the failure that hid this CRITICAL: a client-side test that proves the DEV path works while the
+// real production path stays broken.
 //
 // THE ANTI-SLIDE GUARD (why a lexical ban alone is not enough, and what replaces it):
 // main.wiring.test.ts's W-PVPB-E2E-NOHOOK raw-scans THIS FILE's text for the DEV hook's
 // literal property name and its role-agnostic battle-lookup method name — a CHEAP
-// SUPPLEMENT, defeated outright by e.g. `window['__mr' + 'Pvp']['battle' + 'ById'](id)`
-// (neither literal appears contiguous). The LOAD-BEARING guard is HERE:
+// SUPPLEMENT, defeated outright by e.g. string concatenation (neither literal appears
+// contiguous). The LOAD-BEARING guard is HERE:
 // `installHookCallCounter` (below) runs a `page.addInitScript` on pageB BEFORE main.ts's
 // module script executes, defining an ACCESSOR PROPERTY on `window` at the DEV hook's
 // runtime property name (built by string-array `.join('')` below — never a contiguous
@@ -66,54 +95,19 @@ import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 // to do anything). `expect(hookCalls).toBe(0)` at the end is the real proof this spec
 // never used it — DO NOT "simplify" this back to a plain `!('...' in window)` check or a
 // bare property reference: both are exactly the obfuscation-defeatable lexical scans this
-// guard replaces.
+// guard replaces. bt-16: the shared controls.ts helpers this spec calls read `__mrTactics`
+// and the DOM only; the counter proves it at runtime.
 //
-// DEADLINE HEADROOM ARITHMETIC (house style per pvp-full.spec.ts:48-56):
-// PVP_TURN_DEADLINE_MS = 60_000 ms (server constant, server-module/src/pvp.rs) — the
-// server's deadline clock starts at `accept_challenge`. `acceptedAt` is therefore
-// captured immediately AFTER pageB's A on the Social sheet's Accept (never before A's
-// challenge, which would also fold the challenge setup into the budget — stricter
-// than intended and a spurious-flake risk). This test asserts the accept ->
-// both-players-submitted flow completes within 45_000 ms of THAT press — a hard ceiling
-// with 15s of headroom under the 60s deadline, so the deadline reaper can never be the
-// reason the turn-advance assertion below passes. The rename steps (below) run BEFORE
-// the challenge and are therefore entirely outside this window.
+// DEPLOY HEADROOM (bt-16; replaces the retired 60 s PVP_TURN_DEADLINE_MS arithmetic): the
+// tactical PvP deploy window is 45 s from accept_challenge, after which the server auto-fills the
+// deploy. `acceptedAt` is captured immediately AFTER B's Accept press, and Active must arrive
+// within DEPLOY_HEADROOM_MS (40 s) of it — so the auto-fill can never be what completes the
+// deploy this test credits to the buttons. The rename steps run BEFORE the challenge, outside it.
 //
-// WHY BOTH PLAYERS ARE RENAMED FIRST (red-team HIGH — the half-fix discriminator):
-// STARTER_SPECIES_ID=1 and roll_starter hardcodes level 5
-// — the join_game seed perturbs only genes/IVs/ nature — so two FRESH players' active
-// starters share identical species, level and known_skill_ids. That makes the turn-advance
-// witness (AC-9) alone UNABLE to discriminate the HALF-FIX (role-agnostic accessors
-// landed, `ownPerspective` never wired into `refreshBattle`) from the real fix: under the
-// half-fix, B's overlay renders the RAW row, so B's Submit buttons are built from the
-// CHALLENGER's known_skill_ids — but those ids are cross-legal for B's own identical
-// starter too, so submit_pvp_action still accepts them and the turn still advances. A
-// rename (via the production KeyN -> rename-input -> rename-submit path) gives each player
-// a distinct, deterministic label with NO such coincidental overlap: the opponent card's
-// header text is resolved from `battle.opponentIdentity` — on a RAW side-B row
-// `opponentIdentity` IS side B, so the half-fix mislabels B's OWN opponent card with B's
-// OWN name. See the two `getByText(...)` assertions after the Submit-visible check for the
-// exact proof; that pair — not the turn-advance witness — is what makes this file catch
-// the half-fix.
+// WHY BOTH PLAYERS ARE RENAMED FIRST: distinct, deterministic labels per run (the players strip
+// names them; the challenge picker row `Challenge — <B's name>` must name ONE player).
 //
-// WHAT THIS TEST KILLS:
-//   - THE HALF-FIX (role-agnostic accessors landed, `ownPerspective` never wired into
-//     `refreshBattle`): the turn-advance witness alone CANNOT see it (see the rename
-//     rationale above — both fresh starters share identical known_skill_ids, so a
-//     wrong-side skill submission is cross-legal and the server accepts it). The two
-//     opponent-label assertions below are the discriminator: under the half-fix, B's
-//     "opponent" card is mislabeled with B's OWN name instead of the challenger's.
-//   - A silently-rejected side-B action masquerading as success: the poll below requires
-//     `turnNumber === turnNumber0 + 1` WHILE `outcome === 'Ongoing'` — never merely "the
-//     waiting banner hid", because that banner's underlying pending flag is ALSO cleared
-//     on any terminal outcome, and the 60s deadline reaper produces a
-//     terminal outcome WITHOUT advancing the turn. A banner-hidden-only
-//     check would pass on a silently-rejected action once the reaper eventually fires;
-//     turn-advance-while-still-Ongoing is unambiguous proof the server ACCEPTED the skill
-//     id B itself submitted (AC-9) — but that alone does not prove PERSPECTIVE (AC-7),
-//     which is why the label assertions are complementary, not a replacement.
-//
-// EARS CRITERIA COVERED: AC-1, AC-7, AC-9
+// EARS CRITERIA COVERED: AC-1, AC-7, AC-9 (re-expressed on the tactical UI, bt-16 BT16.2)
 
 // Runtime property name of the DEV multiplayer test hook, built by array-join so the
 // literal NEVER appears as a contiguous substring anywhere in this file's source text
@@ -126,10 +120,23 @@ const DEV_HOOK_PROP = ['__mr', 'Pvp'].join('');
 // collide with the other.
 const HOOK_CALL_COUNTER_PROP = '__pvpDevHookCallCount';
 
+/** bt-16: how long each page's deploy panel may take to show after the Accept press. */
+const DEPLOY_PANEL_MS = 15_000;
+/** bt-16: Active must arrive this soon after the Accept (under the 45 s deploy auto-fill). */
+const DEPLOY_HEADROOM_MS = 40_000;
+/** bt-16: one PvP turn window is 30 s (`pvp_window_ms`); a page waits for its own turn at most
+ *  the other side's whole window plus slack. */
+const PVP_WINDOW_MS = 30_000;
+const TURN_SLACK_MS = 10_000;
+const OWN_PVP_TURN_MS = PVP_WINDOW_MS + TURN_SLACK_MS;
+/** bt-16: both sides end one turn each → round 2, bounded by two windows plus slack. */
+const ROUND_TWO_MS = 2 * PVP_WINDOW_MS + TURN_SLACK_MS;
+/** bt-16: how long an End Turn press may take to move the turn on. */
+const END_TURN_ACK_MS = 5_000;
+
 interface GameSnap {
   identity: string;
   ownAuthTile: { x: number; y: number } | null;
-  ongoingBattle: { battleId: string; outcome: string; turnNumber: number } | null;
 }
 
 /** Mirrors ranked-forfeit.spec.ts / pvp-full.spec.ts: wait until __game() exists,
@@ -194,28 +201,12 @@ async function readHookCallCount(page: Page): Promise<number> {
 }
 
 /**
- * Presses `page`'s Fight command through the REAL production DOM (qf-7b, QF7B.2). The battle's
- * command list is the first step of every action: the skill grid (the "Submit: <skill>" buttons
- * in PvP) renders only after Fight is pressed, and every new turn and every PvP wait close it
- * again. A greyed command row (aria-disabled="true": a PvP move waiting on the opponent, a
- * finished battle) does nothing when pressed, so the press waits for Fight to be live first.
- */
-async function pressFight(page: Page): Promise<void> {
-  const fight = page.getByTestId('battle-command-fight');
-  await expect(fight, 'Fight is live').toHaveAttribute('aria-disabled', 'false', {
-    timeout: 10_000,
-  });
-  await fight.click({ timeout: 10_000 });
-}
-
-/**
  * Renames `page`'s own player through the REAL production UI (closeAll -> N ->
- * rename-input -> rename-submit), copied from rename.spec.ts:228-245. This is
- * the half-fix discriminator setup — see the file header. Leaves NO overlay open on exit
- * (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this runs
- * closeAll again after the feedback confirms) — required because the incoming-challenge
- * auto-show and A's own face-to-face A press both need a bare world. ctl-11a: N opens the
- * Name screen through the main menu (Profile > Name), so that closeAll takes the menu too.
+ * rename-input -> rename-submit), copied from rename.spec.ts:228-245. Leaves NO overlay open on
+ * exit (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this runs
+ * closeAll again after the feedback confirms) — required because the incoming-challenge banner
+ * path and A's own face-to-face A press both need a bare world. ctl-11a: N opens the Name screen
+ * through the main menu (Profile > Name), so that closeAll takes the menu too.
  */
 async function renamePlayer(page: Page, name: string): Promise<void> {
   await closeAll(page); // dismiss any stale overlay first
@@ -237,15 +228,45 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
   const feedbackText = await page.textContent('[data-testid="rename-feedback"]');
   expect(
     feedbackText ?? '',
-    `11r-b: rename feedback for "${name}" must not indicate an error — the opponent-label ` +
-      'discriminator below is meaningless if the rename itself silently failed',
+    `11r-b: rename feedback for "${name}" must not indicate an error — the challenge picker ` +
+      'row below is ambiguous if the rename itself silently failed',
   ).not.toMatch(/error|failed|reject/i);
   // Close the overlay (see doc comment above) before the challenge/accept flow.
   await closeAll(page);
 }
 
+/** On `page`'s next OWN live turn, ends it by buttons (Start) and waits for the turn to move on;
+ *  `act` first acts on B's page (an attack through the forecast when one reaches). Fails naming
+ *  the bound when no own turn comes or the battle finishes first. Returns the turn snapshot. */
+async function playOwnTurn(page: Page, who: string, act: boolean): Promise<TacticsSnap> {
+  const t = await waitOwnTurnOrEnd(page, null, OWN_PVP_TURN_MS);
+  if (t.phase !== 'Active') {
+    throw new Error(`${who}: the battle is ${t.phase} before its own turn was played (STRICT)`);
+  }
+  const { me, enemy } = sides(t);
+  await openMenu(page, me);
+  if (act) {
+    const hit = await attackByButtons(page, { allowKo: false, enemyHp: enemy.curHp });
+    if (hit === 'attacked') await waitExecuted(page, t.events);
+  }
+  await endTurn(page);
+  await expect
+    .poll(
+      async () => {
+        const now = await readTactics(page);
+        return (
+          now !== null &&
+          (now.round !== t.round || now.turnIdx !== t.turnIdx || now.activeUnitId !== me.unitId)
+        );
+      },
+      { message: `${who}: Start (End Turn) moves the turn on`, timeout: END_TURN_ACK_MS },
+    )
+    .toBe(true);
+  return t;
+}
+
 test.describe
-  .serial('11r-b — PvP side-B battle overlay (production path, zero DEV-hook use)', () => {
+  .serial('11r-b — PvP side-B battle UI (production path, zero DEV-hook use)', () => {
     let browserA: Browser;
     let ctxA: BrowserContext;
     let pageA: Page;
@@ -286,8 +307,8 @@ test.describe
       }
     });
 
-    test('side B (the accepter) gets a real battle overlay with its OWN cards/skills, and its own submitted action resolves the turn', async () => {
-      test.setTimeout(120_000);
+    test('side B (the accepter) gets a real tactical battle UI through the production path: both deploy panels, B`s own unit in its shell, B acts on its own turn by buttons and the round advances on B`s page (bt-16: was the 1v1 overlay`s Fight / Submit / turn advance)', async () => {
+      test.setTimeout(240_000);
 
       const identityA = await pageA.evaluate(
         () => (window as unknown as { __game: () => GameSnap }).__game().identity,
@@ -299,42 +320,27 @@ test.describe
       expect(identityB, 'identityB must be non-empty').not.toBe('');
       expect(identityA, 'identityA and identityB must differ').not.toBe(identityB);
 
-      // Rename BOTH players through the production UI — the half-fix discriminator setup
-      // (see the file header's "WHY BOTH PLAYERS ARE RENAMED FIRST"). Runs BEFORE the
-      // challenge, so it is entirely outside the deadline-headroom window measured below.
-      // Unique per-run suffix so the shared e2e world can't collide with a prior run's row;
-      // alphanumeric-only, well under the server's MAX_NAME_LEN=24 (server-module/src/
-      // guards.rs:49-62, validate_name).
+      // Rename BOTH players through the production UI. Runs BEFORE the challenge, so it is
+      // entirely outside the deploy-headroom window measured below. Unique per-run suffix so the
+      // shared e2e world can't collide with a prior run's row; alphanumeric-only, well under the
+      // server's MAX_NAME_LEN=24 (server-module/src/guards.rs:49-62, validate_name).
       const uniqueSuffix = String(Date.now() % 1_000_000);
       const nameA = `PvpA${uniqueSuffix}`;
       const nameB = `PvpB${uniqueSuffix}`;
       await Promise.all([renamePlayer(pageA, nameA), renamePlayer(pageB, nameB)]);
 
       // B must have no overlay open — P must OPEN Social (with Social already up it would act as
-      // Start and close it; the retired auto-show needed a bare world too). renamePlayer already
-      // closes its own overlay on exit; this is a defensive re-assert immediately before
-      // the challenge, matching the ranked-forfeit.spec.ts placement exactly.
+      // Start and close it). renamePlayer already closes its own overlay on exit; this is a
+      // defensive re-assert immediately before the challenge (ranked-forfeit.spec.ts placement).
       await closeAll(pageB);
 
-      // INTENTIONAL CHANGE (ctl-10b, CTL10B.1-2): the PvP overlay no longer lists players or
-      // offers a per-player Challenge button, and O / P start nothing. A challenges B FACE TO
-      // FACE: A stands on B's tile (both joined at the spawn; the helper walks there when they
-      // stand apart), presses A, chooses `Challenge — <B's name>` (B's unique rename label, so
-      // the row is unambiguous) and answers Yes at the confirm (the default).
+      // INTENTIONAL CHANGE (ctl-10b, CTL10B.1-2 / bt-15): A challenges B FACE TO FACE: A stands on
+      // B's tile, presses A, chooses `Challenge — <B's name>` and sends the size pick's first row.
       await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
-      // B accepts through the Social sheet. INTENTIONAL CHANGE (ctl-13, CTL13.4): the incoming
-      // challenge no longer opens the Challenges overlay by itself, so B first sees the banner and
-      // opens Social on Challenges itself (P: the same panel the auto-show used to open). Y is not
-      // used here on purpose: A stands on B's tile (the face-to-face start), so for B that player
-      // is a TARGET and Y would open the player's sheet, not the request's (respond-request.spec.ts
-      // answers with Y then Enter from a target-free tile). INTENTIONAL CHANGE (qf-8, QF8.3): the
-      // challenge panel's Accept button is deleted, so B answers on its nav path: the cursor opens
-      // on the request, A opens the sheet on Accept, A accepts.
-      // `acceptedAt` is captured HERE (never earlier) — the server's PVP_TURN_DEADLINE_MS clock
-      // starts at accept_challenge, so capturing before A's challenge (or before the rename steps
-      // above) would fold unrelated setup time into the 45s budget asserted below (see the file
-      // header's DEADLINE HEADROOM ARITHMETIC).
+      // B accepts through the Social sheet (ctl-13 CTL13.4: the banner announces the request; P
+      // opens Social on it; qf-8 QF8.3: A opens its sheet on Accept, A accepts). Y is not used: A
+      // stands on B's tile, so for B that player is a TARGET and Y would open the player's sheet.
       await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
       await pressAccel(pageB, 'P');
       await expect(pageB.locator('#pvp-challenge-incoming[aria-current="true"]')).toBeVisible({
@@ -345,100 +351,114 @@ test.describe
       await pressButton(pageB, 'A');
       const acceptedAt = Date.now();
 
-      // The overlay came up on B: its command list is on screen. toBeVisible() — never
-      // toBeAttached() — is deliberate: battleView's root toggles display:none/flex and real
-      // chromium does layout, so visibility here is a meaningful assertion, not merely a
-      // cosmetic one.
-      await expect(pageB.getByTestId('battle-commands')).toBeVisible({ timeout: 15_000 });
-      // qf-7b (QF7B.2): the skill grid renders only after Fight is pressed, so B presses its OWN
-      // Fight, and B's own "Submit: <skill>" buttons must then render.
-      await pressFight(pageB);
-      await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
-        timeout: 15_000,
+      // SURVIVING CHECK (bt-16): retired "B's 1v1 command list is visible" → after Accept BOTH
+      // pages show the PvP deploy panel (toBeVisible: the roots toggle display none/flex and real
+      // chromium does layout), and each deploys by buttons.
+      await expect(pageA.locator(TACTICS.deploy), 'A shows the PvP deploy panel').toBeVisible({
+        timeout: DEPLOY_PANEL_MS,
       });
-
-      // THE HALF-FIX DISCRIMINATOR (red-team HIGH; see the file header for the full chain
-      // of evidence — identical starters make the turn-advance witness below unable to
-      // catch this on its own). WRONG IMPL KILLED: role-agnostic accessors landed with
-      // `ownPerspective` never wired into `refreshBattle`. Under that half-fix, B's overlay
-      // renders the RAW row, whose `opponentIdentity` field IS B itself — so B's "opponent"
-      // card is mislabeled with B's OWN name (main.ts:1309-1313 resolves the label from
-      // that raw field via store.allPlayers()). Plain-string getByText substring matching —
-      // no `new RegExp(...)` (Semgrep detect-non-literal-regexp is an active CI gate here).
-      await expect(pageB.getByText(`${nameA}: `)).toBeVisible();
-      await expect(pageB.getByText(`${nameB}: `)).toHaveCount(0);
-
-      // Direct production-path witness of AC-1: __game().ongoingBattle is non-null on
-      // side B ONLY because store.ongoingBattle() became role-agnostic. Read-only
-      // witness — never used to drive the flow.
-      const snapB0 = await pageB.evaluate(
-        () => (window as unknown as { __game: () => GameSnap }).__game().ongoingBattle,
-      );
-      expect(snapB0, 'side B must have a non-null ongoingBattle (AC-1)').not.toBeNull();
-      // biome-ignore lint/style/noNonNullAssertion: null-checked immediately above
-      const turnNumber0 = snapB0!.turnNumber;
-
-      // B submits through its own real Submit button (the grid B opened above is still open:
-      // nothing has been submitted and the turn has not changed).
-      await pageB
-        .getByRole('button', { name: /^Submit: / })
-        .first()
-        .click();
-      await expect(pageB.getByTestId('pvp-status')).toContainText(/Waiting for opponent/, {
-        timeout: 10_000,
+      await expect(
+        pageB.locator(TACTICS.deploy),
+        'B (the accepter) shows the PvP deploy panel',
+      ).toBeVisible({
+        timeout: DEPLOY_PANEL_MS,
       });
-
-      // A submits through its own real Submit button, after pressing its own Fight (qf-7b).
-      await pressFight(pageA);
-      await pageA
-        .getByRole('button', { name: /^Submit: / })
-        .first()
-        .click();
-
-      // the disambiguating assertion (AC-9): see the file header for why the
-      // predicate must be STRICT turn-advance-while-Ongoing, not merely "banner hidden".
-      await pageB.waitForFunction(
-        (expected: number) => {
-          const g = (window as unknown as { __game: () => GameSnap }).__game();
-          const b = g.ongoingBattle;
-          if (!b) return false;
-          if (b.outcome !== 'Ongoing') {
-            throw new Error(
-              `11r-b: battle resolved to a terminal outcome (${b.outcome}) before the turn ` +
-                'advanced — consistent with a silently-rejected side-B action (wrong-side ' +
-                'skill id, the half-fix symptom) letting the 60s deadline reaper fire',
-            );
-          }
-          return b.turnNumber === expected;
-        },
-        turnNumber0 + 1,
-        { timeout: 30_000 },
-      );
-
-      // Deadline-headroom assertion (see file header arithmetic).
+      await Promise.all([deployByButtons(pageA, 'A deploys'), deployByButtons(pageB, 'B deploys')]);
+      let activeB: TacticsSnap | null = null;
+      await expect
+        .poll(
+          async () => {
+            activeB = await readTactics(pageB);
+            return activeB?.phase ?? 'none';
+          },
+          { message: 'B reaches Active after both locks', timeout: DEPLOY_HEADROOM_MS },
+        )
+        .toBe('Active');
       expect(
         Date.now() - acceptedAt,
-        '11r-b: accept -> both-submit flow must finish well inside PVP_TURN_DEADLINE_MS=60s',
-      ).toBeLessThan(45_000);
+        'Active arrived inside DEPLOY_HEADROOM_MS of the Accept: the buttons deployed, not the 45 s auto-fill',
+      ).toBeLessThan(DEPLOY_HEADROOM_MS);
+      const snapB = activeB as TacticsSnap | null;
+      if (snapB === null) throw new Error('B has no tactical battle');
+      const snapA = await readTactics(pageA);
+      if (snapA === null) throw new Error('A has no tactical battle');
+      expect(snapA.battleId, 'both pages hold the same battle').toBe(snapB.battleId);
+      expect(snapB.kind, 'a PvP battle').toBe('Pvp');
 
-      // Witness: side B is not frozen — its Submit buttons are visible again next turn. qf-7b
-      // (QF7B.2, CTL8I.1): the next turn starts CLOSED — B's Fight is live again (it was greyed
-      // while B waited on A) and no Submit button is rendered until B presses Fight; pressing it
-      // shows them again. The live Fight is asserted first, so the closed grid is read on the
-      // rendered next turn, not on the waiting frame (which renders no grid either).
-      await expect(pageB.getByTestId('battle-command-fight')).toHaveAttribute(
-        'aria-disabled',
-        'false',
-        { timeout: 10_000 },
-      );
-      await expect(
-        pageB.getByRole('button', { name: /^Submit: / }),
-        'the next turn starts with the skill grid closed',
-      ).toHaveCount(0);
-      await pressFight(pageB);
-      await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
-        timeout: 10_000,
+      // SURVIVING CHECK (bt-16): retired "B's own Submit buttons render" → THE DEFECT's witness on
+      // the tactical UI: the ACCEPTER's page renders the shell with a unit that is ITS OWN.
+      await expect(pageB.locator(TACTICS.shell), 'B renders the tactical shell').toBeVisible({
+        timeout: DEPLOY_PANEL_MS,
       });
+      const ownB = snapB.units.filter((u) => u.mine);
+      const ownA = snapA.units.filter((u) => u.mine);
+      expect(ownB.length, 'B (the accepter) holds a unit that is its own').toBeGreaterThan(0);
+      expect(
+        ownB.map((u) => u.side),
+        'the accepter`s own units are side B',
+      ).toEqual(ownB.map(() => 'B'));
+      expect(
+        ownA.map((u) => u.side),
+        'the challenger`s own units are side A',
+      ).toEqual(ownA.map(() => 'A'));
+      // SURVIVING CHECK (bt-16): retired "the opponent card names A, not B" (the half-fix
+      // discriminator) → B's shell paints B's unit in its OWN info box and A's unit in its FOE
+      // box; a raw-row (unprojected) perspective would swap them.
+      const unitB = ownB[0];
+      const unitA = ownA[0];
+      if (unitA === undefined || unitB === undefined) throw new Error('one unit per side expected');
+      await expect(
+        pageB.locator(
+          `${TACTICS.shell} .tactics-info--own .tactics-info-row[data-unit-id="${unitB.unitId}"]`,
+        ),
+        'B`s own info box holds B`s unit',
+      ).toHaveCount(1, { timeout: DEPLOY_PANEL_MS });
+      await expect(
+        pageB.locator(
+          `${TACTICS.shell} .tactics-info--foe .tactics-info-row[data-unit-id="${unitA.unitId}"]`,
+        ),
+        'B`s foe info box holds A`s unit',
+      ).toHaveCount(1);
+      await expect(
+        pageB.locator(
+          `${TACTICS.shell} .tactics-info--own .tactics-info-row[data-unit-id="${unitA.unitId}"]`,
+        ),
+        'A`s unit is never in B`s own box',
+      ).toHaveCount(0);
+
+      // SURVIVING CHECK (bt-16): retired "B's Submit advances turnNumber by one while Ongoing" →
+      // each side plays ITS own turn by buttons, concurrently (first-mover independent): B attacks
+      // through the forecast when a skill reaches (else ends its turn), A ends its turn. B's event
+      // count grows past its Active baseline, and B's page reaches round 2 — STRICT: a battle that
+      // finishes first fails (playOwnTurn throws on a non-Active battle).
+      const eventsB0 = snapB.events;
+      const [turnA, turnB] = await Promise.all([
+        playOwnTurn(pageA, 'A', false),
+        playOwnTurn(pageB, 'B', true),
+      ]);
+      console.log(
+        `[bt-16 side-B ORDER] A's turn ${turnA.round}:${turnA.turnIdx}, B's turn ${turnB.round}:${turnB.turnIdx}; initiative ${snapB.initiative.join(',')}`,
+      );
+      await expect
+        .poll(async () => (await readTactics(pageB))?.events ?? -1, {
+          message: 'B`s own action executed: B`s event count grows',
+          timeout: END_TURN_ACK_MS,
+        })
+        .toBeGreaterThan(eventsB0);
+      await expect
+        .poll(
+          async () => {
+            const t = await readTactics(pageB);
+            if (t === null) return 'no battle';
+            if (t.phase !== 'Active') return `phase ${t.phase}`;
+            return `round ${t.round}`;
+          },
+          {
+            message: `B's page reaches round 2 within ROUND_TWO_MS=${ROUND_TWO_MS} ms, the battle still Active`,
+            timeout: ROUND_TWO_MS,
+          },
+        )
+        .toBe('round 2');
 
       // THE anti-slide guard's actual assertion: this spec never called through the DEV hook.
       const hookCalls = await readHookCallCount(pageB);

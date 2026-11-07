@@ -7,46 +7,55 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import type { VButton } from '../src/input/buttons';
 import type { Stack } from '../src/ui/contextStack';
 import { t } from '../src/ui/i18n/resolver';
-import { pressButton } from './controls';
+import {
+  awaitTacticalActive,
+  draftMoveToward,
+  endTurn,
+  fightToOutcome,
+  menuCursorTo,
+  NO_BAIT_ROW,
+  openMenu,
+  pressAccel,
+  pressButton,
+  readTactics,
+  sides,
+  TACTICS,
+  type TacticsSnap,
+  tileDistance,
+  turnKey,
+  waitOwnTurnOrEnd,
+} from './controls';
 
 // battle-dpad.spec.ts — the D-pad battle (ctl-8j, CTL8J.2 / CTL8J.3): a wild battle played with the
 // virtual buttons only, to an outcome, then continued from the outcome with A (battle one) and with
-// B (battle two); and Start pressed mid-turn, three frames deep, returning to the untouched battle.
+// B (battle two); and the main menu opened mid-turn, three frames deep, returning to the untouched
+// battle with ONE Start.
 //
-// INPUT RULE. Every in-battle input goes through `pressButton` (the hunt, which walks the world,
-// uses the `__game().step` hook exactly as encounter-battle.spec.ts does). No key name, no click.
+// bt-16 (BT16.2) — NAMED INTENTIONAL CHANGE: the grass opens a TACTICAL wild battle; the 1v1 command
+// list (Fight / Recruit / Run), its skill grid, the bait list's Yes / No confirm and `outcome-text`
+// never appear for a live battle. SURVIVING CHECKS, each named at its test:
+//   - CTL8J-3x: the tactical shell is the battle root; Start at the shell is End Turn (bt-11,
+//     BT11.6), so the main menu is opened mid-turn by the Monsters ACCELERATOR (CTL11A.1; Monsters is
+//     not battle-safe, so the menu stays the top frame); Options > How to play opens the third
+//     frame; ONE Start returns to the shell alone — the stack exactly [battle], `.tactics-battle`
+//     visible, the same battle / round / turnIdx / events (nothing submitted), focus inside the shell.
+//   - CTL8J-2-A: on an own turn ADJACENT to the wild, Recruit opens its bait list; B backs out to
+//     the root menu and B closes the menu (the tactical equivalent of Yes / No + B×2), spending
+//     nothing; `fightToOutcome` by buttons; the results panel, A continues (or the auto-advance) to
+//     the world; `ongoingBattle` null.
+//   - CTL8J-2-B: a second hunt to an outcome; B continues to the world.
 //
-// STATE-DRIVEN PRESSES. The battle view's cursor is a focus: with focus OFF a cursor row (the
-// heading, <body>, the world canvas) the first D-pad press only seats the kept cursor and moves
-// nothing, so a press count tells nothing. Every press here is followed by a poll of the focused
-// row (its `data-battle-list`, testid, text and aria-current); the next press is chosen from what
-// the page shows, never counted blind. The two waits that are not a row are the turn advancing
-// (`turnNumber` up, or the battle gone) and the continue (a loop that presses only while the stack
-// is above its base, because the first A inside the 400 ms grace of an outcome is ignored).
-//
-// THE COMMAND LIST FIRST (qf-7b, QF7B.2). The skill grid renders only after Fight is pressed and
-// the bait list only after Recruit is pressed, and every new turn closes them again (CTL8I.1). No
-// step here reads a list before its command: `fightToOutcome` walks to Fight and presses A on it
-// for every attack, and the Recruit case presses A on Recruit before it reads the No bait row.
+// INPUT RULE. Every in-battle input goes through `pressButton` / `pressAccel` (the hunt, which walks
+// the world, uses the `__game().step` hook exactly as encounter-battle.spec.ts does). No key name, no
+// click. Every wait is bounded and named.
 //
 // SEEDING (owner SQL, the encounter-battle.spec precedent). The starter's defense, attack and HP
-// columns are raised. Measured: with only defense raised the starter FAINTED in the first battle
-// (current_hp 0), and an all-fainted party gets no encounter, so the second battle's hunt found
-// nothing. With attack 250 each wild falls in a hit or two, and HP 999 keeps the starter up over
-// both battles, so both reach an outcome by the D-pad (any terminal outcome is still accepted).
-// Levels are NOT seeded: two wins cannot lift a Lv5 starter past zone 0's Lv3-8 encounter bands.
-// Any species may be met (a Water wild resists Fire but MAX_ATTACKS covers it).
-//
-// THE START ROUND TRIP (CTL8J.3, DEFERRED to ctl-13). The criterion says Start, then A opens
-// Monsters, then Start again. Over a battle the main menu keeps Monsters DISABLED (its screen is
-// not battleSafe: SCREEN_POLICY.boxView, mainMenuScreen battleReason; residual
-// R-ctl-6c-MONSTERSRO), so A on it opens nothing and the criterion cannot be met yet. The first
-// case is therefore titled CTL8J-3x, not CTL8J-3: it is the same battle round trip through Options
-// > How to play, the one entry that is enabled over a battle (E0 in encounter-battle.spec.ts walks
-// the same route): a second frame above the menu and ONE Start back to the battle alone.
+// columns are raised: with attack 250 each wild falls in a hit, and HP 999 keeps the starter up over
+// every battle, so each reaches an outcome by the buttons (any terminal outcome is accepted here:
+// this spec is about the D-pad, encounter-battle E2 owns the win). Levels are NOT seeded: two wins
+// cannot lift a Lv5 starter past zone 0's Lv3-8 encounter bands.
 //
 // CLEANUP. One browser, context and identity; afterAll closes the browser.
 
@@ -54,15 +63,17 @@ const SEED_STAT = 250;
 const SEED_HP = 999;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls (recruit.spec MAX_WALK_STEPS). */
 const MAX_WALK_STEPS = 120;
-/** Attacks per battle; at >= 1 net damage per hit this covers a Lv<=8 wild's HP. */
-const MAX_ATTACKS = 30;
-/** Cursor moves one `moveCursorTo` may spend before failing naming the row it is stuck on. */
-const MAX_CURSOR_MOVES = 8;
+/** Own turns a battle may take to an outcome (a hit KOs; the rest is closing in). */
+const MAX_OWN_TURNS = 16;
+/** Own turns CTL8J-2-A may spend closing in until the wild stands adjacent on a fresh turn. */
+const MAX_APPROACH_TURNS = 12;
 /** Menu moves one `menuTo` may spend. */
 const MAX_MENU_MOVES = 8;
 /** Presses `continueWith` may spend (the first A inside the outcome's 400 ms grace is ignored). */
 const MAX_CONTINUE_PRESSES = 12;
 const STEP_WAIT_MS = 8_000;
+/** One wait for the next own live turn in a wild battle. */
+const TURN_WAIT_MS = 15_000;
 
 interface Tile {
   x: number;
@@ -153,20 +164,26 @@ async function stepOne(p: Page, dir: string, from: Tile): Promise<void> {
   );
 }
 
-/** Walk the shuttle until a wild battle is ongoing (any species), and its command list is up. A
- *  battle already ongoing is returned as is, so a case can continue the one before it. */
-async function huntEncounter(p: Page): Promise<void> {
+/** Walk the shuttle until a wild battle is ongoing (any species), then wait for its tactical row
+ *  Active and the shell on screen. A battle already ongoing is returned as is, so a case can
+ *  continue the one before it. */
+async function huntEncounter(p: Page, label: string): Promise<TacticsSnap> {
   for (let i = 0; i < MAX_WALK_STEPS; i++) {
     const g = await snap(p);
     if (g.ongoingBattle !== null) break;
     if (g.ownAuthTile === null) throw new Error('hunt: own tile vanished');
-    await stepOne(p, shuttleDir(g.ownAuthTile), g.ownAuthTile);
+    await stepOne(p, shuttleDir(g.ownAuthTile), g.ownAuthTile).catch(() => undefined);
   }
   expect(
     (await snap(p)).ongoingBattle,
     `no wild encounter within ${MAX_WALK_STEPS} steps`,
   ).not.toBeNull();
-  await expect(p.getByTestId('battle-commands')).toBeVisible({ timeout: 10_000 });
+  const active = await awaitTacticalActive(p, label);
+  expect(active.phase, `${label}: an Active tactical battle`).toBe('Active');
+  await expect(p.locator(TACTICS.shell), `${label}: the tactical shell is on screen`).toBeVisible({
+    timeout: 10_000,
+  });
+  return active;
 }
 
 type StackWin = Window & { __game: () => { stack: Stack; navActive: string | null } };
@@ -175,101 +192,19 @@ const readStack = (p: Page): Promise<Stack> =>
 const navActive = (p: Page): Promise<string | null> =>
   p.evaluate(() => (window as unknown as StackWin).__game().navActive);
 
-/** Whether keyboard focus sits inside the battle overlay root (the parent of its title). */
+/** Whether keyboard focus sits inside the tactical shell (the battle root since bt-16). */
 const focusInsideBattle = (p: Page): Promise<boolean> =>
-  p.evaluate(() => {
-    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement ?? null;
+  p.evaluate((sel) => {
+    const root = document.querySelector(sel);
     return root?.contains(document.activeElement) === true;
-  });
+  }, TACTICS.shell);
 
-/** Whether the battle overlay root is shown. */
+/** Whether the battle root (the tactical shell) is shown. */
 const battleRootShown = (p: Page): Promise<boolean> =>
-  p.evaluate(() => {
-    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
-    return root !== null && root !== undefined && root.style.display !== 'none';
-  });
-
-/** How many elements of the battle root are `aria-current="true"`. */
-const currentCount = (p: Page): Promise<number> =>
-  p.evaluate(() => {
-    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
-    return root?.querySelectorAll('[aria-current="true"]').length ?? 0;
-  });
-
-/** The focused element when it is a battle row: its list, testid, text and whether it is the cursor. */
-interface Row {
-  list: string | null;
-  testid: string | null;
-  text: string;
-  current: boolean;
-}
-const focusedRow = (p: Page): Promise<Row> =>
-  p.evaluate(() => {
-    const none = { list: null, testid: null, text: '', current: false };
-    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
-    const el = document.activeElement;
-    if (!root || !el || !root.contains(el)) return none;
-    const list = el.getAttribute('data-battle-list');
-    if (list === null) return none;
-    return {
-      list,
-      testid: el.getAttribute('data-testid'),
-      text: el.textContent ?? '',
-      current: el.getAttribute('aria-current') === 'true',
-    };
-  });
-
-/** Wait until the focused row satisfies `want`; fail naming `label` and the row it is on. */
-async function waitRow(p: Page, want: (r: Row) => boolean, label: string): Promise<Row> {
-  await expect
-    .poll(async () => want(await focusedRow(p)), { timeout: 5_000, message: label })
-    .toBe(true);
-  return focusedRow(p);
-}
-
-/** The focused row, seating the kept cursor first when focus is off every row. With focus off a
- *  row a D-pad press only seats the cursor (it never moves or presses), so one press is enough and
- *  its result is read, not assumed. */
-async function seatCursor(p: Page): Promise<Row> {
-  const row = await focusedRow(p);
-  if (row.list !== null) return row;
-  await pressButton(p, 'Up');
-  return waitRow(p, (r) => r.list !== null, 'seatCursor: a press did not seat the cursor on a row');
-}
-
-/** Press `button` from wherever the cursor is, then wait for the focused row to satisfy `want`. */
-async function pressUntil(
-  p: Page,
-  button: VButton,
-  want: (r: Row) => boolean,
-  label: string,
-): Promise<Row> {
-  await seatCursor(p);
-  await pressButton(p, button);
-  return waitRow(p, want, `${label} (after ${button})`);
-}
-
-/** Walk the cursor with `dir` until the focused row is `testid`, reading the row after each press. */
-async function moveCursorTo(p: Page, testid: string, dir: VButton): Promise<void> {
-  for (let moves = 0; moves < MAX_CURSOR_MOVES; moves++) {
-    const row = await seatCursor(p);
-    if (row.testid === testid) return;
-    await pressButton(p, dir);
-    await expect
-      .poll(
-        async () => {
-          const next = await focusedRow(p);
-          return next.testid !== row.testid || next.text !== row.text || next.list !== row.list;
-        },
-        {
-          timeout: 3_000,
-          message: `moveCursorTo(${testid}): ${dir} from ${row.testid ?? row.text} did not move the cursor`,
-        },
-      )
-      .toBe(true);
-  }
-  throw new Error(`moveCursorTo(${testid}): not reached in ${MAX_CURSOR_MOVES} ${dir} presses`);
-}
+  p.evaluate((sel) => {
+    const root = document.querySelector<HTMLElement>(sel);
+    return root !== null && root.style.display !== 'none';
+  }, TACTICS.shell);
 
 /** Walk the main menu with Up until `navActive` is `key`, reading it after each press. */
 async function menuTo(p: Page, key: string): Promise<void> {
@@ -284,49 +219,22 @@ async function menuTo(p: Page, key: string): Promise<void> {
   throw new Error(`menuTo(${key}): not reached in ${MAX_MENU_MOVES} presses`);
 }
 
-/** Fight the battle with the D-pad (Fight, A, A on the first-seated skill) until the battle is gone
- *  from `ongoingBattle`; each attack waits for the turn to advance or the battle to end. Returns the
- *  outcome text shown. */
-async function fightToOutcome(p: Page): Promise<string> {
-  for (let attack = 0; attack < MAX_ATTACKS; attack++) {
-    const before = (await snap(p)).ongoingBattle;
-    if (before === null) break;
-    await moveCursorTo(p, 'battle-command-fight', 'Up');
-    await pressUntil(
-      p,
-      'A',
-      (r) => r.list === 'skills' && r.current,
-      'A on Fight opens the skill grid with the cursor on a skill',
-    );
-    await pressButton(p, 'A'); // the skill
-    await p.waitForFunction(
-      (prev: number) => {
-        const b = (window as unknown as Win).__game().ongoingBattle;
-        return b === null || b.turnNumber > prev;
-      },
-      before.turnNumber,
-      { timeout: 15_000 },
-    );
-  }
+/** The results panel is shown with a terminal outcome title (victory, defeat or fled). */
+async function expectTerminalResults(p: Page, label: string): Promise<string> {
+  const title = p.locator(`${TACTICS.results} [data-testid="battle-title"]`);
+  await expect(title, `${label}: the results panel shows`).toBeVisible({ timeout: 20_000 });
+  const text = ((await title.textContent()) ?? '').trim();
   expect(
-    (await snap(p)).ongoingBattle,
-    `the battle is still ongoing after ${MAX_ATTACKS} D-pad attacks`,
-  ).toBeNull();
-  const outcomes = [
-    t('battle.outcome.victory'),
-    t('battle.outcome.defeat'),
-    t('battle.outcome.fled'),
-  ];
-  const outcomeText = p.getByTestId('outcome-text');
-  await expect(outcomeText).toBeVisible({ timeout: 10_000 });
-  const text = (await outcomeText.textContent()) ?? '';
-  expect(outcomes, 'the battle ended in a terminal outcome').toContain(text);
+    [t('battle.outcome.victory'), t('battle.outcome.defeat'), t('battle.outcome.fled')],
+    `${label}: the battle ended in a terminal outcome`,
+  ).toContain(text);
   return text;
 }
 
 /** Press `button` only while the stack is above its base (never at the base), polling each press
  *  for the stack to shrink; the first A inside an outcome's 400 ms grace is ignored, so a press
- *  that changes nothing is repeated. Fails after MAX_CONTINUE_PRESSES. */
+ *  that changes nothing is repeated. The results panel may also auto-advance on its own (main.ts),
+ *  which this accepts. Fails after MAX_CONTINUE_PRESSES. */
 async function continueWith(p: Page, button: 'A' | 'B'): Promise<void> {
   for (let presses = 0; presses < MAX_CONTINUE_PRESSES; presses++) {
     const stack = await readStack(p);
@@ -362,15 +270,20 @@ test.describe
       if (!starter || !/^[0-9]+$/.test(starter.monsterId)) {
         throw new Error('beforeAll: no starter with a decimal monsterId');
       }
-      for (const [col, val] of [
-        ['stat_defense', SEED_STAT],
-        ['stat_sp_defense', SEED_STAT],
-        ['stat_attack', SEED_STAT],
-        ['stat_sp_attack', SEED_STAT],
-        ['stat_hp', SEED_HP],
-        ['current_hp', SEED_HP],
-      ] as const) {
-        sql(`UPDATE monster SET ${col} = ${val} WHERE monster_id = ${starter.monsterId}`, 'seed');
+      for (const table of ['monster', 'monster_pub']) {
+        for (const [col, val] of [
+          ['stat_defense', SEED_STAT],
+          ['stat_sp_defense', SEED_STAT],
+          ['stat_attack', SEED_STAT],
+          ['stat_sp_attack', SEED_STAT],
+          ['stat_hp', SEED_HP],
+          ['current_hp', SEED_HP],
+        ] as const) {
+          sql(
+            `UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${starter.monsterId}`,
+            'seed',
+          );
+        }
       }
     });
 
@@ -378,41 +291,36 @@ test.describe
       await browser.close();
     });
 
-    test('CTL8J-3x-START-HELP-START: the battle round trip through Options > How to play (Monsters is not battle-safe yet, so CTL8J.3 is deferred to ctl-13): Start mid-turn opens the main menu over the battle, a second frame opens above it (three deep), and ONE Start returns to the battle alone, the stack exactly [battle], the command list visible with the cursor still on Recruit, focus inside the battle, the same battle and turn', async () => {
+    test('CTL8J-3x-START-HELP-START: the battle round trip through Options > How to play (Monsters is not battle-safe, so CTL8J.3 is deferred): the main menu opened mid-turn over the tactical shell, a second frame above it (three deep), and ONE Start returns to the shell alone, the stack exactly [battle], the shell visible, focus inside it, the same battle, round, turn and event count (bt-16: the menu opens by its accelerator; was the 1v1 command list with the cursor on Recruit)', async () => {
       // WRONG IMPL KILLED: a Start from depth three that pops only the top frame (the menu is left
       // standing over the battle); a Start that leaves the stack longer than [battle] or changes
-      // its battle; a menu round trip that submits or skips a turn; a battle view that comes back
-      // with the cursor reset to Fight (CTL8I.3: the cursor is where the player left it), without
-      // its command list, or with two aria-current elements; and focus left in the closed menu.
-      // See the header: Monsters is not battle-safe yet (CTL8J.3 deferred to ctl-13), so the
-      // second frame is Options > How to play, the one entry enabled over a battle.
+      // its battle; a menu round trip that submits or skips a turn (round / turnIdx / events
+      // move); a shell that does not come back shown; and focus left in the closed menu.
+      // SURVIVING CHECK (bt-16): retired "Start opens the menu; the command list comes back with
+      // the cursor still on Recruit" → the Monsters accelerator opens the menu (Start is the
+      // shell's End Turn, BT11.6); the shell comes back with the battle, round, turn and events
+      // untouched.
       test.setTimeout(120_000);
-      await huntEncounter(page);
-      const started = (await snap(page)).ongoingBattle;
-      if (started === null) throw new Error('CTL8J-3: no ongoing battle after the hunt');
+      const started = await huntEncounter(page, 'CTL8J-3x');
       const id = started.battleId;
       firstBattleId = id;
+      // Mid-turn: an own live turn (a 300 s PvE window: nothing advances while the menu is up).
+      const own = await waitOwnTurnOrEnd(page, null, TURN_WAIT_MS);
+      expect(own.phase, 'CTL8J-3x: an own live turn').toBe('Active');
       await expect
         .poll(() => readStack(page), { timeout: 5_000 })
         .toEqual([{ kind: 'battle', battleId: id }]);
 
-      // The cursor goes to Recruit by the D-pad, read after every press.
-      await moveCursorTo(page, 'battle-command-recruit', 'Down');
-      await expect(page.getByTestId('battle-command-recruit')).toHaveAttribute(
-        'aria-current',
-        'true',
-      );
-
-      // Start: the menu over the battle, on its first entry.
-      await pressButton(page, 'Start');
+      // The menu over the battle, on its Monsters entry (not battle-safe: nothing opens above it).
+      await pressAccel(page, 'B');
       await expect(page.locator('#menu-overlay')).toBeVisible({ timeout: 5_000 });
+      if ((await readStack(page)).length > 2) await pressButton(page, 'B');
       await expect
         .poll(() => readStack(page), { timeout: 5_000 })
         .toEqual([
           { kind: 'battle', battleId: id },
           { kind: 'screen', id: 'menuView', overBattle: id },
         ]);
-      expect(await navActive(page), 'the menu opens on its first entry').toBe('monsters');
 
       // A second frame above the menu: Options, then How to play (the enabled entry over a battle).
       await menuTo(page, 'options');
@@ -429,107 +337,113 @@ test.describe
         .toEqual([{ kind: 'battle', battleId: id }]);
       await expect(page.locator('#menu-overlay')).toBeHidden({ timeout: 5_000 });
       await expect(page.locator('#help-overlay')).toBeHidden({ timeout: 5_000 });
-      expect(await battleRootShown(page), 'the battle is on screen').toBe(true);
-      await expect(page.getByTestId('battle-commands')).toBeVisible();
-      await expect(
-        page.getByTestId('battle-command-recruit'),
-        'the cursor is still on Recruit',
-      ).toHaveAttribute('aria-current', 'true');
-      expect(await currentCount(page), 'and it is the only cursor').toBe(1);
+      expect(await battleRootShown(page), 'the battle shell is on screen').toBe(true);
+      await expect(page.locator(TACTICS.shell)).toBeVisible();
       await expect.poll(() => focusInsideBattle(page), { timeout: 5_000 }).toBe(true);
-      const after = (await snap(page)).ongoingBattle;
-      expect(after?.battleId, 'the same battle').toBe(id);
-      expect(after?.turnNumber, 'and nothing was submitted').toBe(started.turnNumber);
+      const after = await readTactics(page);
+      expect(
+        after === null
+          ? null
+          : [after.battleId, after.phase, after.round, after.turnIdx, after.events],
+        'the same battle, and nothing was submitted (round, turn and event count unchanged)',
+      ).toEqual([id, 'Active', own.round, own.turnIdx, own.events]);
     });
 
-    test('CTL8J-2-DPAD-BATTLE-A: the same battle on the D-pad alone: Recruit asks Yes / No (the cursor on Yes) and B backs out twice, Fight and A twice attack until an outcome, and A continues from the outcome to the world', async () => {
-      // WRONG IMPL KILLED: a Recruit list or confirm the D-pad cannot enter or leave; a confirm
-      // whose cursor starts on No; a B that closes the whole Recruit step or the battle; a skill
-      // grid the cursor cannot reach or press with A; an outcome A does not continue from (or one
-      // that continues inside the 400 ms grace and skips the result); and a continue that leaves a
+    test('CTL8J-2-DPAD-BATTLE-A: the same battle on the buttons alone: adjacent, Recruit opens its bait list, B backs out to the menu and B closes it spending nothing; the buttons fight to an outcome and A continues from the results to the world (bt-16: was Recruit Yes / No + B×2, Fight + A)', async () => {
+      // WRONG IMPL KILLED: a Recruit list the buttons cannot enter or leave; a B that closes the
+      // whole menu from the bait list or ends the battle; a back-out that spends the turn (round,
+      // turnIdx, events move); an outcome A does not continue from; and a continue that leaves a
       // frame, the battle UI or a battle stack above the world.
-      test.setTimeout(180_000);
-      await huntEncounter(page); // the battle CTL8J-3 left standing
-      const started = (await snap(page)).ongoingBattle;
-      if (started === null) throw new Error('CTL8J-2-A: no ongoing battle');
+      // SURVIVING CHECK (bt-16): retired "Recruit → No bait → Yes/No (cursor on Yes) → B → B →
+      // Fight" → on an own turn ADJACENT to the wild: Recruit → the bait list (`bait:none` first)
+      // → B (back to the root menu) → B (the menu closes) — nothing spent — then `fightToOutcome`.
+      test.setTimeout(240_000);
+      const started = await huntEncounter(page, 'CTL8J-2-A'); // the battle CTL8J-3 left standing
       expect(started.battleId, 'this is the battle CTL8J-3 used').toBe(firstBattleId);
 
-      // Recruit -> A -> No bait -> A -> Yes (the cursor) -> B -> No bait -> B -> Recruit -> Up -> Fight.
-      await moveCursorTo(page, 'battle-command-recruit', 'Down');
-      await pressUntil(
-        page,
-        'A',
-        (r) => r.list === 'recruit' && r.testid === 'bait-option-none' && r.current,
-        'A on Recruit opens the bait list on No bait',
-      );
-      await pressUntil(
-        page,
-        'A',
-        (r) =>
-          r.list === 'recruitConfirm' &&
-          r.testid === 'recruit-action' &&
-          r.current &&
-          r.text === t('battle.recruit.yes'),
-        'A on No bait asks, with the cursor on Yes',
-      );
-      await expect(page.getByTestId('recruit-confirm')).toContainText(
-        t('battle.recruit.confirmNoBait'),
-      );
-      await pressUntil(
-        page,
-        'B',
-        (r) => r.list === 'recruit' && r.testid === 'bait-option-none' && r.current,
-        'B backs out of the question to the No bait row',
-      );
-      await expect(page.getByTestId('recruit-confirm')).toBeHidden({ timeout: 5_000 });
-      await pressUntil(
-        page,
-        'B',
-        (r) => r.list === 'commands' && r.testid === 'battle-command-recruit' && r.current,
-        'B backs out of the list to the Recruit command',
-      );
-      await pressUntil(
-        page,
-        'Up',
-        (r) => r.list === 'commands' && r.testid === 'battle-command-fight' && r.current,
-        'Up: Fight',
-      );
+      // Close in until the wild stands adjacent on a FRESH own turn (Recruit needs the whole budget).
+      let last: string | null = null;
+      let adjacent: TacticsSnap | null = null;
+      for (let turn = 0; turn < MAX_APPROACH_TURNS && adjacent === null; turn += 1) {
+        const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+        if (tt.phase !== 'Active') break;
+        last = turnKey(tt);
+        const { me, enemy } = sides(tt);
+        if (tileDistance(me, enemy) === 1) {
+          adjacent = tt;
+          break;
+        }
+        await openMenu(page, me);
+        const recruitRow = page.locator(TACTICS.menuRow('recruit'));
+        await expect(recruitRow, 'not adjacent: the Recruit row is greyed').toHaveAttribute(
+          'aria-disabled',
+          'true',
+        );
+        await draftMoveToward(page, enemy);
+        await endTurn(page);
+      }
+      if (adjacent === null) {
+        throw new Error(
+          `CTL8J-2-A: the wild never stood adjacent on a fresh own turn within MAX_APPROACH_TURNS=${MAX_APPROACH_TURNS}`,
+        );
+      }
+      const { me } = sides(adjacent);
+      await openMenu(page, me);
+      await menuCursorTo(page, 'recruit');
+      await pressButton(page, 'A');
+      await expect(
+        page.locator(TACTICS.menuRow(NO_BAIT_ROW)),
+        'A on Recruit opens the bait list with its no-bait row',
+      ).toHaveCount(1, { timeout: 5_000 });
+      await pressButton(page, 'B');
+      await expect(
+        page.locator(TACTICS.menuRow('recruit')),
+        'B backs out of the bait list to the root menu',
+      ).toHaveCount(1, { timeout: 5_000 });
+      await expect(page.locator(TACTICS.menuRow(NO_BAIT_ROW))).toHaveCount(0);
+      await pressButton(page, 'B');
+      await expect(page.locator('.tactics-menu'), 'B closes the menu').toHaveCount(0, {
+        timeout: 5_000,
+      });
+      const backedOut = await readTactics(page);
       expect(
-        (await snap(page)).ongoingBattle?.turnNumber,
+        backedOut === null
+          ? null
+          : [backedOut.phase, backedOut.round, backedOut.turnIdx, backedOut.events],
         'asking and backing out spent no turn',
-      ).toBe(started.turnNumber);
+      ).toEqual(['Active', adjacent.round, adjacent.turnIdx, adjacent.events]);
 
-      // Fight and A, A, until an outcome.
-      await fightToOutcome(page);
+      // The buttons, to an outcome.
+      const end = await fightToOutcome(page, { maxOwnTurns: MAX_OWN_TURNS, label: 'CTL8J-2-A' });
+      expect(end.phase, 'CTL8J-2-A: the battle finished').toBe('Finished');
+      await expectTerminalResults(page, 'CTL8J-2-A');
 
-      // A continues (pressed only while the stack is above the world).
+      // A continues (pressed only while the stack is above the world; the auto-advance also counts).
       await continueWith(page, 'A');
       await expect.poll(() => readStack(page), { timeout: 5_000 }).toEqual([{ kind: 'world' }]);
-      await expect(page.getByTestId('outcome-text')).toBeHidden({ timeout: 5_000 });
-      await expect(page.getByTestId('battle-commands')).toBeHidden({ timeout: 5_000 });
+      await expect(page.locator(TACTICS.results)).toBeHidden({ timeout: 5_000 });
       expect(await battleRootShown(page), 'the battle UI is gone').toBe(false);
       expect((await snap(page)).ongoingBattle).toBeNull();
     });
 
-    test('CTL8J-2-DPAD-BATTLE-B: a second battle on the D-pad alone reaches an outcome, and B continues from it to the world', async () => {
-      // WRONG IMPL KILLED: a second battle the D-pad cannot play (state left over from the first:
-      // a pick, a cursor, a lock); an outcome B does not continue from; and a continue that leaves
-      // the stack above the world.
-      test.setTimeout(180_000);
-      await huntEncounter(page);
-      const started = (await snap(page)).ongoingBattle;
-      if (started === null) throw new Error('CTL8J-2-B: no ongoing battle');
+    test('CTL8J-2-DPAD-BATTLE-B: a second battle on the buttons alone reaches an outcome, and B continues from it to the world (bt-16: the tactical results panel)', async () => {
+      // WRONG IMPL KILLED: a second battle the buttons cannot play (state left over from the first:
+      // a draft, a cursor, a lock); an outcome B does not continue from; and a continue that
+      // leaves the stack above the world.
+      test.setTimeout(240_000);
+      const started = await huntEncounter(page, 'CTL8J-2-B');
       expect(started.battleId, 'a second battle, not the first again').not.toBe(firstBattleId);
       await expect
         .poll(() => readStack(page), { timeout: 5_000 })
         .toEqual([{ kind: 'battle', battleId: started.battleId }]);
 
-      await fightToOutcome(page);
+      const end = await fightToOutcome(page, { maxOwnTurns: MAX_OWN_TURNS, label: 'CTL8J-2-B' });
+      expect(end.phase, 'CTL8J-2-B: the battle finished').toBe('Finished');
+      await expectTerminalResults(page, 'CTL8J-2-B');
 
       await continueWith(page, 'B');
       await expect.poll(() => readStack(page), { timeout: 5_000 }).toEqual([{ kind: 'world' }]);
-      await expect(page.getByTestId('outcome-text')).toBeHidden({ timeout: 5_000 });
-      await expect(page.getByTestId('battle-commands')).toBeHidden({ timeout: 5_000 });
+      await expect(page.locator(TACTICS.results)).toBeHidden({ timeout: 5_000 });
       expect(await battleRootShown(page), 'the battle UI is gone').toBe(false);
       expect((await snap(page)).ongoingBattle).toBeNull();
     });

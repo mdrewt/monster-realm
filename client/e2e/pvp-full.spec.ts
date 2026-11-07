@@ -7,8 +7,55 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import {
+  awaitTacticalActive,
+  endTurn,
+  readTactics,
+  type TacticsSnap,
+  waitOwnTurnOrEnd,
+} from './controls';
+
+/** bt-16: one PvP turn window is 30 s (`pvp_window_ms`); one side waits for its own turn at most
+ *  the other's whole window plus slack. */
+const PVP_WINDOW_MS = 30_000;
+const TURN_SLACK_MS = 10_000;
+/** bt-16: both sides end one turn each → round 2, bounded by two windows plus slack. */
+const ROUND_TWO_MS = 2 * PVP_WINDOW_MS + TURN_SLACK_MS;
+/** bt-16: how long an End Turn press may take to move the turn on. */
+const END_TURN_ACK_MS = 5_000;
+
+/** bt-16: on `page`'s next OWN live turn, ends it by buttons (Start = End Turn) and waits for the
+ *  turn to move on. STRICT: a battle that is not Active at its own turn fails (no terminal escape).
+ *  First-mover independent: each page waits for ITS own turn. */
+async function endOwnTurnByButtons(page: Page, who: string): Promise<TacticsSnap> {
+  const t = await waitOwnTurnOrEnd(page, null, PVP_WINDOW_MS + TURN_SLACK_MS);
+  if (t.phase !== 'Active') {
+    throw new Error(`17.5f-1: ${who}'s battle is ${t.phase} before its own turn (STRICT)`);
+  }
+  await endTurn(page);
+  await expect
+    .poll(
+      async () => {
+        const now = await readTactics(page);
+        return now !== null && (now.round !== t.round || now.turnIdx !== t.turnIdx);
+      },
+      { message: `17.5f-1: ${who}'s End Turn moves the turn on`, timeout: END_TURN_ACK_MS },
+    )
+    .toBe(true);
+  return t;
+}
 
 // PvP full flow e2e (EARS 17.5f-1)
+//
+// bt-16 (BT16.2) — NAMED INTENTIONAL CHANGE: accepting a challenge opens a TACTICAL PvP battle in
+// Deploying; the hook's `submitPvpAction` is deleted (the 1v1 reducer refuses a tactical anchor)
+// and the anchor's turnNumber never advances. The hook-existence test requires the other seven
+// members and `submitPvpAction` ABSENT; the flow still challenges and accepts through the hook
+// (this spec's own surface), then BOTH sides deploy and end their own turns BY BUTTONS until round
+// 2 on both pages (strict), then B's disconnect forfeits — the zero-sum rating SQL is unchanged.
+// The STRICT TURN PREDICATE and DEADLINE HEADROOM sections below describe the retired 1v1
+// exchange; their survivors are the round-2 poll (no terminal escape: a Finished battle fails) and
+// the tactical windows (30 s per turn, 45 s deploy).
 //
 // TWO-CONTEXT DESIGN
 // ==================
@@ -101,8 +148,8 @@ interface GameSnap {
 //   acceptChallenge(challengeId, partyIds) → conn.reducers.acceptChallenge({challengeId: BigInt(challengeId), partyIds: partyIds.map(BigInt)})
 //   declineChallenge(challengeId)      → conn.reducers.declineChallenge({challengeId: BigInt(challengeId)})
 //   cancelChallenge(challengeId)       → conn.reducers.cancelChallenge({challengeId: BigInt(challengeId)})
-//   submitPvpAction(battleId, action)  → conn.reducers.submitPvpAction({battleId: BigInt(battleId), action})
-//   allChallenges()                    → store.allChallenges() mapped (challengeId → string via .toString())
+//   (submitPvpAction                   → deleted by bt-16: every live battle is tactical)
+//   allChallenges()                   → store.allChallenges() mapped (challengeId → string via .toString())
 //   allPlayers()                       → store.allPlayers() mapped (identity already string)
 //   battleById(battleId)               → store.battle(BigInt(battleId)) mapped to the shape below
 //                                        (role-agnostic: reads the store map directly, NOT store.ongoingBattle()
@@ -132,10 +179,6 @@ interface MrPvp {
   acceptChallenge(challengeId: string, partyIds: string[]): Promise<void> | undefined;
   declineChallenge(challengeId: string): Promise<void> | undefined;
   cancelChallenge(challengeId: string): Promise<void> | undefined;
-  submitPvpAction(
-    battleId: string,
-    action: { tag: string; value: number },
-  ): Promise<void> | undefined;
   allChallenges(): Array<{
     challengeId: string;
     challenger: string;
@@ -147,8 +190,8 @@ interface MrPvp {
     battleId: string;
     outcome: string;
     turnNumber: number;
-    sideA: { active: number; activeSkillIds: number[] };
-    sideB: { active: number; activeSkillIds: number[] };
+    sideA: { active: number; activeSkillIds: number[]; hp: number };
+    sideB: { active: number; activeSkillIds: number[]; hp: number };
   } | null;
 }
 
@@ -315,25 +358,34 @@ test.describe
     //   - An implementer that ships only some methods.
     //
     // -------------------------------------------------------------------------
-    test('__mrPvp hook is available on window with all required methods (17.5f-1 hook)', async () => {
-      const hasHook = await pageA.evaluate(() => {
-        const w = window as unknown as { __mrPvp?: MrPvp };
-        return (
-          typeof w.__mrPvp?.challengePvp === 'function' &&
-          typeof w.__mrPvp?.acceptChallenge === 'function' &&
-          typeof w.__mrPvp?.declineChallenge === 'function' &&
-          typeof w.__mrPvp?.cancelChallenge === 'function' &&
-          typeof w.__mrPvp?.submitPvpAction === 'function' &&
-          typeof w.__mrPvp?.allChallenges === 'function' &&
-          typeof w.__mrPvp?.allPlayers === 'function' &&
-          typeof w.__mrPvp?.battleById === 'function'
-        );
+    test('__mrPvp hook is available on window with all required methods (17.5f-1 hook; bt-16: submitPvpAction left with the cutover)', async () => {
+      // SURVIVING CHECK (bt-16): retired the `submitPvpAction` member (the 1v1 reducer refuses a
+      // tactical anchor, so main.ts deleted it from the hook) → the remaining seven members are
+      // required, and `submitPvpAction` is required ABSENT (the re-fingerprinted shape).
+      const members = await pageA.evaluate(() => {
+        const w = window as unknown as { __mrPvp?: Record<string, unknown> };
+        const hook = w.__mrPvp;
+        return hook === undefined
+          ? null
+          : Object.keys(hook)
+              .filter((k) => typeof hook[k] === 'function')
+              .sort();
       });
-      expect(
-        hasHook,
-        'window.__mrPvp must expose challengePvp/acceptChallenge/declineChallenge/' +
-          'cancelChallenge/submitPvpAction/allChallenges/allPlayers/battleById',
-      ).toBe(true);
+      expect(members, 'window.__mrPvp must exist (DEV)').not.toBeNull();
+      for (const name of [
+        'challengePvp',
+        'acceptChallenge',
+        'declineChallenge',
+        'cancelChallenge',
+        'allChallenges',
+        'allPlayers',
+        'battleById',
+      ]) {
+        expect(members, `window.__mrPvp must expose ${name}`).toContain(name);
+      }
+      expect(members, 'bt-16: window.__mrPvp no longer carries submitPvpAction').not.toContain(
+        'submitPvpAction',
+      );
     });
 
     // -------------------------------------------------------------------------
@@ -370,8 +422,8 @@ test.describe
     //   - A path that deletes the loser's profile row (hard-fail in parseProfileRows).
     //
     // -------------------------------------------------------------------------
-    test('PvP full flow: challenge → accept → turn exchange → B-disconnect → A wins; zero-sum profile assertion (17.5f-1)', async () => {
-      test.setTimeout(120_000);
+    test('PvP full flow: challenge → accept → both deploy by buttons → each side ends its own turn by buttons to round 2 → B-disconnect → A wins; zero-sum profile assertion (17.5f-1; bt-16: was the 1v1 turn exchange)', async () => {
+      test.setTimeout(240_000);
 
       // Step 1: capture identities.
       const identityA = await pageA.evaluate(() => {
@@ -494,14 +546,12 @@ test.describe
         { timeout: 15_000 },
       );
 
-      // Step 6: A captures battleId + turnNumber0.
-      const { battleId, turnNumber0 } = await pageA.evaluate(() => {
+      // Step 6: A captures battleId (bt-16: the anchor's turnNumber never advances under tactics,
+      // so no turnNumber0 is read; progress is the tactical row's round).
+      const { battleId } = await pageA.evaluate(() => {
         const g = (window as unknown as { __game: () => GameSnap }).__game();
         if (!g.ongoingBattle) throw new Error('17.5f-1: ongoingBattle is null after wait');
-        return {
-          battleId: g.ongoingBattle.battleId,
-          turnNumber0: g.ongoingBattle.turnNumber,
-        };
+        return { battleId: g.ongoingBattle.battleId };
       });
 
       expect(battleId, 'battleId must be a non-empty string').not.toBe('');
@@ -510,105 +560,62 @@ test.describe
         throw new Error(`17.5f-1: battleId is not a decimal u64 string: ${battleId}`);
       }
 
-      // Step 7: battleId is now a plain string — it crosses the page.evaluate
-      // structured-clone boundary safely (no BigInt). We pass it to B's page below.
-
-      // Step 8: A reads its active monster's skill IDs via battleById (from sideA).
-      // B reads its active monster's skill IDs via battleById (from sideB).
-      // As of ADR-0167, the PRODUCTION path (store.ongoingBattle()/
-      // latestPlayerBattle()) is role-agnostic too, and side B gets a real battle overlay
-      // built from its OWN perspective — covered end-to-end by client/e2e/pvp-side-b.spec.ts.
-      // battleById is retained here specifically because it reads BOTH sides' internals by
-      // id in one call (sideA AND sideB), which production deliberately never does (ADR-0167
-      // D5 — the client never needs the opponent's raw side once its own view is projected).
-      // That is why this DEV-hook-driven flow stays useful alongside the production-DOM spec,
-      // not a workaround for B being unable to see the battle at all.
-      const skillIdA = await pageA
-        .waitForFunction(
-          (bid: string) => {
-            const w = window as unknown as { __mrPvp: MrPvp };
-            const battle = w.__mrPvp.battleById(bid);
-            if (!battle) return false;
-            const ids = battle.sideA.activeSkillIds;
-            // ids[0] === 0 is falsy — use explicit length+value guard so skillId 0
-            // does not spin the predicate forever.
-            return ids && ids.length > 0 && ids[0] > 0 ? ids[0] : false;
-          },
-          battleId,
-          { timeout: 10_000 },
-        )
-        .then((h) => h.jsonValue() as Promise<number>);
-
-      // B waits until the battle row appears in B's store (may lag slightly).
-      const skillIdB = await pageB
-        .waitForFunction(
-          (bid: string) => {
-            const w = window as unknown as { __mrPvp: MrPvp };
-            const battle = w.__mrPvp.battleById(bid);
-            if (!battle) return false;
-            const ids = battle.sideB.activeSkillIds;
-            // ids[0] === 0 is falsy — use explicit length+value guard.
-            return ids && ids.length > 0 && ids[0] > 0 ? ids[0] : false;
-          },
-          battleId,
-          { timeout: 10_000 },
-        )
-        .then((h) => h.jsonValue() as Promise<number>);
-
-      expect(typeof skillIdA, 'skillIdA must be a number').toBe('number');
-      expect(typeof skillIdB, 'skillIdB must be a number').toBe('number');
-      expect(skillIdA, 'skillIdA must be > 0').toBeGreaterThan(0);
-      expect(skillIdB, 'skillIdB must be > 0').toBeGreaterThan(0);
-
-      // Step 9: Both players submit their actions simultaneously.
-      // A submits Attack with skillIdA; B submits Attack with skillIdB.
-      // WHAT THIS KILLS: a submitPvpAction that does not register the action server-side.
-      await Promise.all([
-        pageA.evaluate(
-          (args: { battleId: string; skillId: number }) => {
-            const w = window as unknown as { __mrPvp: MrPvp };
-            const p = w.__mrPvp.submitPvpAction(args.battleId, {
-              tag: 'Attack',
-              value: args.skillId,
-            });
-            // conn may be undefined if the hook is not yet wired — treat as RED.
-            if (!p) throw new Error('17.5f-1: submitPvpAction (A) returned undefined');
-            return p;
-          },
-          { battleId, skillId: skillIdA },
-        ),
-        pageB.evaluate(
-          (args: { battleId: string; skillId: number }) => {
-            const w = window as unknown as { __mrPvp: MrPvp };
-            const p = w.__mrPvp.submitPvpAction(args.battleId, {
-              tag: 'Attack',
-              value: args.skillId,
-            });
-            if (!p) throw new Error('17.5f-1: submitPvpAction (B) returned undefined');
-            return p;
-          },
-          { battleId, skillId: skillIdB },
-        ),
+      // SURVIVING CHECK (bt-16): retired Steps 7-10 (both sides read skill ids through
+      // battleById and submit through submitPvpAction; STRICT turnNumber === t0 + 1) — the accept
+      // opens a TACTICAL battle in Deploying, the hook's submitPvpAction is gone and the anchor's
+      // turnNumber never advances — → BOTH pages deploy by buttons, then each side ends ITS OWN
+      // turn by buttons (concurrently: who moves first is a coin flip / speed roll) until BOTH
+      // pages read round 2, STRICT: a battle that finishes first fails.
+      // Steps 7-8: the by-id read still resolves on BOTH pages (the role-agnostic hook read B is
+      // the accepter of).
+      for (const [who, p] of [
+        ['A', pageA],
+        ['B', pageB],
+      ] as const) {
+        await p
+          .waitForFunction(
+            (bid: string) =>
+              (window as unknown as { __mrPvp: MrPvp }).__mrPvp.battleById(bid) !== null,
+            battleId,
+            { timeout: 10_000 },
+          )
+          .catch((err: unknown) => {
+            throw new Error(
+              `17.5f-1: battleById(${battleId}) stayed null on ${who} for 10 s: ${(err as Error).message}`,
+            );
+          });
+      }
+      // Step 9: both deploy by buttons (concurrently; the second lock flips the phase to Active).
+      const [activeA, activeB] = await Promise.all([
+        awaitTacticalActive(pageA, '17.5f-1 A'),
+        awaitTacticalActive(pageB, '17.5f-1 B'),
       ]);
-
-      // Step 10: STRICT wait — turnNumber must advance to exactly turnNumber0+1.
-      // NO `|| terminal` escape hatch (red-team F4):
-      //   A deadline forfeit is TERMINAL without advancing turnNumber.
-      //   If `|| terminal` were allowed, a forfeit could vacuously satisfy the wait
-      //   and the test would miss a broken turn-exchange path.
-      // Budget: 30s. PVP_TURN_DEADLINE_MS = 60s → ≥30s headroom before forfeit fires.
-      // WHAT THIS KILLS: a submitPvpAction that is received but doesn't resolve the turn.
-      await pageA.waitForFunction(
-        (args: { bid: string; expectedTurn: number }) => {
-          const w = window as unknown as { __mrPvp: MrPvp };
-          const battle = w.__mrPvp.battleById(args.bid);
-          if (!battle) return false;
-          // STRICT: only advance — no terminal escape (F4).
-          return battle.turnNumber === args.expectedTurn;
-        },
-        { bid: battleId, expectedTurn: turnNumber0 + 1 },
-        { timeout: 30_000 },
-      );
+      expect([activeA.phase, activeB.phase], '17.5f-1: both pages reach Active').toEqual([
+        'Active',
+        'Active',
+      ]);
+      expect(activeA.battleId, '17.5f-1: the tactical battle is the accepted one').toBe(battleId);
+      // Step 10: each side ends its own turn by buttons (first-mover independent), then round 2.
+      await Promise.all([endOwnTurnByButtons(pageA, 'A'), endOwnTurnByButtons(pageB, 'B')]);
+      for (const [who, p] of [
+        ['A', pageA],
+        ['B', pageB],
+      ] as const) {
+        await expect
+          .poll(
+            async () => {
+              const t = await readTactics(p);
+              if (t === null) return 'no battle';
+              if (t.phase !== 'Active') return `phase ${t.phase}`;
+              return `round ${t.round}`;
+            },
+            {
+              message: `17.5f-1: ${who}'s page reaches round 2 within ROUND_TWO_MS=${ROUND_TWO_MS} ms, still Active (STRICT)`,
+              timeout: ROUND_TWO_MS,
+            },
+          )
+          .toBe('round 2');
+      }
 
       // Step 11: spacetime sql battle-row assertion — server truth (AM-7).
       const server = process.env.STDB_SERVER ?? 'local';
@@ -633,35 +640,34 @@ test.describe
       }
       // The battle row must exist: battleId (decimal u64) must appear in the output.
       // `|| battleSqlOutput.length > 0` was a vacuous escape hatch — removed.
-      // Row-format note: `spacetime sql` prints rows as pipe-separated fields with
-      // struct columns printed as `{ field1 = val1, field2 = val2 }` — the turn_number
-      // field of the state struct appears as `turn_number = N` in the output.
-      // We assert:
-      //   (a) battleId decimal string appears in the output (row exists)
-      //   (b) turn_number has advanced to at least turnNumber0+1 server-side
-      //       (the client wait above already confirmed this via the store; sql confirms
-      //        the server actually committed — kills a client-side-only counter bug).
       expect(
         battleSqlOutput.includes(battleId),
         `17.5f-1: expected battle row ${battleId} in spacetime sql output (row must exist). Got: ${battleSqlOutput.slice(0, 200)}`,
       ).toBe(true);
-      // Parse the turn_number from the sql struct output.
-      // spacetime sql prints struct columns as `{ ..., turn_number = N, ... }`.
-      // We search for `turn_number = ` followed by digits.
-      const turnNumberMatch = /turn_number\s*=\s*([0-9]+)/.exec(battleSqlOutput);
-      if (!turnNumberMatch) {
+      // SURVIVING CHECK (bt-16): retired "server-side turn_number >= t0 + 1" (the anchor's
+      // turn_number never advances under tactics) → the TACTICAL row's `round` column is >= 2
+      // server-side (kills a client-only round counter that never reached the server).
+      let tacticalSql = '';
+      try {
+        tacticalSql = execSync(
+          `spacetime sql -s ${server} ${db} "SELECT battle_id, round FROM battle_tactical WHERE battle_id = ${battleId}"`,
+          { encoding: 'utf8', timeout: 10_000 },
+        );
+      } catch (err) {
         throw new Error(
-          `17.5f-1: could not parse turn_number from sql output (format assumption: ` +
-            `'turn_number = N' substring in struct column print). ` +
-            `Got: ${battleSqlOutput.slice(0, 400)}`,
+          `17.5f-1: spacetime sql battle_tactical check failed (CLI/infra): ${(err as Error).message}`,
         );
       }
-      const serverTurnNumber = parseInt(turnNumberMatch[1]!, 10);
+      const tacticalLines = tacticalSql.split('\n').filter((l) => l.includes('|'));
+      const header = (tacticalLines[0] ?? '').split('|').map((c) => c.trim());
+      const roundCol = header.indexOf('round');
+      const dataLine = tacticalLines.find((l) => l.split('|')[0]?.trim() === battleId);
+      const serverRound = Number(dataLine?.split('|')[roundCol]?.trim() ?? Number.NaN);
       expect(
-        serverTurnNumber,
-        `17.5f-1: server-side turn_number must be >= ${turnNumber0 + 1} after one exchange. ` +
-          `Got: ${serverTurnNumber}. Kills: a client-only counter that never reaches the server.`,
-      ).toBeGreaterThanOrEqual(turnNumber0 + 1);
+        serverRound,
+        `17.5f-1: the server's battle_tactical.round must be >= 2 after both sides ended a turn. ` +
+          `Raw: ${tacticalSql.slice(0, 400)}`,
+      ).toBeGreaterThanOrEqual(2);
 
       // Step 12: IMMEDIATELY close browserB (forfeit_on_disconnect).
       // Tight sequencing: we are already past the turn exchange; closing B NOW gives

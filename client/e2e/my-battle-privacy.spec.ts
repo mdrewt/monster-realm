@@ -6,6 +6,20 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import {
+  attackByButtons,
+  awaitTacticalActive,
+  draftMoveToward,
+  endTurn,
+  OWN_TURN_WAIT_MS,
+  openMenu,
+  readTactics,
+  sides,
+  tileDistance,
+  turnKey,
+  waitExecuted,
+  waitOwnTurnOrEnd,
+} from './controls';
 
 // participant-scoped `battle` privacy, end to end
 //
@@ -33,20 +47,21 @@ import {
 //   (ii)  B's world actually loaded       — the POSITIVE anchor for the negative;
 //   (iii) B does NOT hold A's battle      — THE LEAK NEGATIVE;
 //   (iv)  the counts agree                — B's whole battle map is empty, A's is 1;
-//   (v)   A's row SURVIVES a turn advance — the anti-mechanical-rename control.
+//   (v)   A's row SURVIVES an anchor update — the anti-mechanical-rename control (bt-16: the
+//         update is a landed hit's HP mirror; was a 1v1 turn advance, retired by the cutover).
 //
 // WHY (v) IS NOT OPTIONAL. A view binding has no primary key, so the SDK never
 // fires onUpdate: a mid-battle change arrives as an unordered onInsert(new) +
 // onDelete(old) pair. A "rename" that keeps the old per-row ingest handlers is
 // type-correct and keeps `just ci` green while dropping the battle off the screen
-// the moment the first turn resolves. The turn-advance clause below is the only
-// gate in the slice that observes that at runtime. Its wait is STRICT
-// (`turnNumber === t0 + 1`, no `|| terminal` escape — pvp-full.spec.ts:41-47): a
-// terminal outcome that never advanced the turn must NOT satisfy it.
+// the moment the first turn resolves. The anchor-update clause below is the only
+// gate in the slice that observes that at runtime. Its wait is STRICT (the
+// mirrored `sideB.hp` strictly below its pre-hit value, no `|| terminal` escape): a
+// battle that ends without the anchor carrying the hit must NOT satisfy it.
 //
 // WHY A WILD BATTLE. A wild encounter is driven entirely by the production game
 // loop (walk onto grass), needs no second consenting player, and — because
-// `begin_encounter` writes `opponent_identity: WILD_IDENTITY`
+// the wild writer (bt-16: `start_wild_tactical`) writes `opponent_identity: WILD_IDENTITY`
 // — it exercises the view's FIRST chain branch (`player_identity`). The
 // `opponent_identity` branch is covered live by pvp-full.spec.ts / pvp-side-b.spec.ts,
 // which pass only if side B keeps receiving its battle through the same view.
@@ -117,8 +132,9 @@ interface MrPvp {
     battleId: string;
     outcome: string;
     turnNumber: number;
-    sideA: { active: number; activeSkillIds: number[] };
-    sideB: { active: number; activeSkillIds: number[] };
+    // bt-16: `hp` is the active monster's HP as the anchor mirrors it (-1 without one).
+    sideA: { active: number; activeSkillIds: number[]; hp: number };
+    sideB: { active: number; activeSkillIds: number[]; hp: number };
   } | null;
 }
 
@@ -151,8 +167,12 @@ const STEP_WAIT_MS = 8_000;
  *  the observed subscription-burst latency in this suite (see the 15 s waits used
  *  for first delivery elsewhere). */
 const LEAK_WINDOW_MS = 5_000;
-/** Max attempts to open the skill grid (Fight) and click a skill cell once the overlay is up. */
-const MAX_SKILL_CLICK_TRIES = 10;
+/** bt-16: own live turns clause (v) may spend closing in on the wild before a hit must land. A
+ *  zone-0 board is small (a 7x5 board's far corner is ~10 tiles; a turn's band reaches 2+), so the
+ *  wild is in reach within a few turns; 16 leaves a wide margin and still fails on a kiting wild. */
+const MAX_OWN_TURNS_TO_HIT = 16;
+/** bt-16: how long the hit's anchor update (the HP mirror) may take to reach A's by-id map. */
+const HP_DROP_WAIT_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Grass tiles in zone 0 (recruit.spec.ts:167-175, verbatim reasoning). Spawn is
@@ -273,14 +293,15 @@ test.describe
       }
     });
 
-    test('EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across a turn advance', async () => {
+    test('EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across a landed hit`s anchor update (bt-16: was a 1v1 turn advance)', async () => {
       // Budget: the walk is bounded by MAX_WALK_STEPS x STEP_WAIT_MS = 640 s in the
       // pathological case where every step times out; the realistic path is a few
       // seconds (the server drains a step per 200 ms and the shuttle rolls every
       // other step). Everything after the walk is bounded by its own explicit
       // timeouts. 300 s covers the realistic path with a wide margin without
       // pretending to cover the pathological one — a hung walk should fail, not sit.
-      test.setTimeout(300_000);
+      // bt-16: + clause (v)'s bounded own-turn loop (MAX_OWN_TURNS_TO_HIT x OWN_TURN_WAIT_MS).
+      test.setTimeout(480_000);
 
       // --- both worlds must be loaded before anything below means anything -----
       await Promise.all([
@@ -454,7 +475,7 @@ test.describe
       ).toBe(1);
 
       // ---------------------------------------------------------------------
-      // (v) TURN-ADVANCE SURVIVAL — the anti-mechanical-rename control.
+      // (v) ANCHOR-UPDATE SURVIVAL — the anti-mechanical-rename control.
       //
       // WRONG IMPL KILLED: renaming the subscription and the handlers while keeping
       // the per-row upsert/remove ingest. A view binding has no primary key, so the
@@ -464,64 +485,83 @@ test.describe
       // Every source scan and every unit test in this slice stays green through that
       // bug. This clause is the only one that sees it.
       //
-      // The wait is STRICT — `turnNumber === t0 + 1`, with no `|| terminal` escape.
-      // A battle that ends without resolving a turn must
-      // not be able to satisfy it.
+      // The wait is STRICT — the mirrored HP strictly below its pre-hit value, with no
+      // `|| terminal` escape. A battle that ends without carrying the hit must not be
+      // able to satisfy it.
       // ---------------------------------------------------------------------
-      const turn0 = await pageA.evaluate((id: string) => {
+      // SURVIVING CHECK (bt-16): retired "Fight → skill cell → `turnNumber === t0 + 1`" (the
+      // grass opens a TACTICAL battle: no 1v1 command list, and the anchor's turn_number never
+      // advances under tactics) → a hit lands by buttons and the anchor row's HP MIRROR changes:
+      // `battleById(id).sideB.hp` STRICTLY drops on A (the anchor update — a delete + insert pair
+      // on the view — reached A and kept the row), the row is still held by A afterwards, and B
+      // still holds none. STRICT, no terminal escape: a battle that finishes without the drop
+      // fails, and the own-turn loop is bounded by MAX_OWN_TURNS_TO_HIT.
+      const hp0 = await pageA.evaluate((id: string) => {
         const w = window as unknown as { __mrPvp: MrPvp };
-        return w.__mrPvp.battleById(id)?.turnNumber ?? -1;
+        return w.__mrPvp.battleById(id)?.sideB.hp ?? -1;
       }, battleId);
       expect(
-        turn0,
-        'A must be able to read the battle`s turn number before advancing it',
-      ).toBeGreaterThanOrEqual(0);
+        hp0,
+        'A must be able to read the wild`s mirrored HP on the anchor before the hit',
+      ).toBeGreaterThan(0);
 
-      // Click the first available skill cell. qf-7b (QF7B.2): the skill grid renders only
-      // after the Fight command is pressed, so each try first presses A's Fight
-      // (battle-command-fight) when the grid is not open yet — only once Fight is live, since a
-      // greyed row (aria-disabled="true") does nothing when pressed — then waits for a cell.
-      // A cell is a row of the skills list (data-battle-list="skills"); battleView.ts
-      // #renderSkills labels it `<name> (<power>) · <affinity> · Acc n%` (catalog
-      // battle.skill.pveLabel), so the parenthesis is the stable text marker. Bounded retry
-      // covers the overlay still painting; it never waits on server state.
-      const liveFight = pageA.locator(
-        '[data-testid="battle-command-fight"][aria-disabled="false"]',
-      );
-      const skillBtn = pageA.locator('button[data-battle-list="skills"]:has-text("(")').first();
-      let clicked = false;
-      for (let i = 0; i < MAX_SKILL_CLICK_TRIES && !clicked; i++) {
-        if (!(await skillBtn.isVisible()) && (await liveFight.isVisible())) {
-          await liveFight.click({ timeout: 3_000 }).catch(() => undefined);
+      // The own-turn loop: close in (a drafted Move + End Turn), then strike when a skill reaches.
+      // A non-lethal hit is preferred (the battle stays Ongoing for the counts below); a forecast
+      // that can only KO is committed anyway on its turn — a KO rewrites the anchor too (the HP
+      // mirror to 0 plus the terminal outcome), and the strict oracle is the same drop.
+      await awaitTacticalActive(pageA, '(v) A');
+      let struck = false;
+      let lastKey: string | null = null;
+      for (let turn = 0; turn < MAX_OWN_TURNS_TO_HIT && !struck; turn += 1) {
+        const t = await waitOwnTurnOrEnd(pageA, lastKey, OWN_TURN_WAIT_MS);
+        if (t.phase === 'Finished') break;
+        lastKey = turnKey(t);
+        const { me, enemy } = sides(t);
+        await openMenu(pageA, me);
+        let hit = await attackByButtons(pageA, { allowKo: false, enemyHp: enemy.curHp });
+        if (hit === 'kills')
+          hit = await attackByButtons(pageA, { allowKo: true, enemyHp: enemy.curHp });
+        if (hit === 'attacked') {
+          await waitExecuted(pageA, t.events);
+          // A MISS lands no damage: the tactical unit row says whether the hit connected (the
+          // anchor mirror is the oracle below; this only decides whether to try again).
+          const after = await readTactics(pageA);
+          const target = after?.units.find((u) => u.unitId === enemy.unitId);
+          if (target !== undefined && target.curHp < enemy.curHp) {
+            struck = true;
+            break;
+          }
+          if (after === null || after.phase !== 'Active') break;
+          await endTurn(pageA);
+          continue;
         }
-        const shown = await skillBtn
-          .waitFor({ state: 'visible', timeout: 2_000 })
-          .then(() => true)
-          .catch(() => false);
-        if (shown) {
-          await skillBtn.click({ timeout: 3_000 });
-          clicked = true;
-        }
+        if (tileDistance(me, enemy) > 1) await draftMoveToward(pageA, enemy);
+        await endTurn(pageA);
       }
       expect(
-        clicked,
-        `A must be able to submit an attack within ${MAX_SKILL_CLICK_TRIES} attempts — the ` +
-          'battle overlay must render its skill buttons once Fight is pressed. Without a ' +
-          'submitted turn there is no state change for the store to survive, and this clause ' +
-          'would be vacuous',
+        struck,
+        `A must commit an attack by buttons within MAX_OWN_TURNS_TO_HIT=${MAX_OWN_TURNS_TO_HIT} own ` +
+          'turns (the battle must not finish first). Without a landed hit there is no anchor ' +
+          'update for the store to survive, and this clause would be vacuous',
       ).toBe(true);
 
-      await pageA.waitForFunction(
-        (args: { id: string; expectedTurn: number }) => {
-          const w = window as unknown as { __mrPvp: MrPvp };
-          const b = w.__mrPvp.battleById(args.id);
-          if (!b) return false;
-          // STRICT: only a genuine advance. No terminal escape.
-          return b.turnNumber === args.expectedTurn;
-        },
-        { id: battleId, expectedTurn: turn0 + 1 },
-        { timeout: 30_000 },
-      );
+      await pageA
+        .waitForFunction(
+          (args: { id: string; hp0: number }) => {
+            const w = window as unknown as { __mrPvp: MrPvp };
+            const b = w.__mrPvp.battleById(args.id);
+            // STRICT: only a genuine drop of the mirrored HP. No terminal escape.
+            return b !== null && b.sideB.hp >= 0 && b.sideB.hp < args.hp0;
+          },
+          { id: battleId, hp0 },
+          { timeout: HP_DROP_WAIT_MS },
+        )
+        .catch((err: unknown) => {
+          throw new Error(
+            `(v): battle ${battleId}'s mirrored wild HP (sideB.hp, was ${hp0}) did not strictly ` +
+              `drop on A within HP_DROP_WAIT_MS=${HP_DROP_WAIT_MS} ms after the hit: ${(err as Error).message}`,
+          );
+        });
 
       const afterA = await pageA.evaluate((id: string) => {
         const w = window as unknown as { __mrPvp: MrPvp };
@@ -529,12 +569,13 @@ test.describe
       }, battleId);
       expect(
         afterA,
-        `battle ${battleId} must still be in A's store AFTER the turn advanced. A view carries ` +
+        `battle ${battleId} must still be in A's store AFTER the anchor update. A view carries ` +
           'no primary key, so the update arrives as an unordered insert+delete pair: an ingest ' +
           'that still applies those per row deletes the row it just wrote, and the fight ' +
           'disappears mid-battle. The store must be rebuilt from the post-burst view cache ' +
           'instead',
       ).not.toBeNull();
+      expect(afterA?.sideB.hp ?? -1, 'the row A holds carries the dropped HP').toBeLessThan(hp0);
 
       const finalA = await battleView(pageA);
       expect(
