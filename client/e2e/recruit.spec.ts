@@ -765,10 +765,10 @@ test.describe
       console.log(
         `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${counts.clicks} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited} baitLeft=${baitLeft} attemptHp=[${counts.hpPcts.join(',')}]`,
       );
+      expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
       expect(BAIT_SEED - baitLeft, 'R2: every recruit attempt debited exactly one bait').toBe(
         counts.clicks,
       );
-      expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
 
       await expect
         .poll(async () => (await snap(page)).ownMonsters.length, { timeout: 15_000 })
