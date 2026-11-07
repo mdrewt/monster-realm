@@ -50,6 +50,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { installResizeHandler } from './resizeWiring';
+import { viewportScale } from './viewport';
 
 // --- Minimal deterministic fakes (no real DOM / PixiJS) ----------------------
 
@@ -72,11 +73,34 @@ function makeFakeRenderer() {
   };
 }
 
+/** uif-2: the documentElement the seam writes `--mr-ui-scale` on; records every setProperty. */
+interface StyleWrite {
+  name: string;
+  value: string;
+}
+
+function makeFakeDocument() {
+  const writes: StyleWrite[] = [];
+  return {
+    documentElement: {
+      style: {
+        setProperty(name: string, value: string): void {
+          writes.push({ name, value });
+        },
+      },
+    },
+    get writes(): StyleWrite[] {
+      return writes;
+    },
+  };
+}
+
 interface FakeWindow {
   innerWidth: number;
   innerHeight: number;
   /** MUTABLE on purpose: a monitor drag changes it between fires (uxd1 A12). */
   devicePixelRatio: number;
+  readonly document: ReturnType<typeof makeFakeDocument>;
   addEventListener(type: string, cb: () => void): void;
   registeredType: string | undefined;
   registeredCb: (() => void) | undefined;
@@ -95,6 +119,7 @@ function makeFakeWindow(
     innerWidth: initialWidth,
     innerHeight: initialHeight,
     devicePixelRatio: initialDpr,
+    document: makeFakeDocument(),
     addEventListener(type: string, cb: () => void): void {
       registeredType = type;
       registeredCb = cb;
@@ -214,5 +239,133 @@ describe('installResizeHandler: resize wiring helper (M8.5f criterion E + uxd1 A
 
     expect(renderer.calls).toHaveLength(3);
     expect(renderer.calls[2]).toEqual({ w: 1280, h: 720, dpr: 2 });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// uif-2 (M-ui-foundation) UIF2.3: the same event that sizes the renderer writes
+// `--mr-ui-scale` on the injected documentElement. Titles start with the gate id.
+// -----------------------------------------------------------------------------
+
+const SCALE_PROP = '--mr-ui-scale';
+
+describe('UIF2.3 resize wiring writes --mr-ui-scale', () => {
+  it('UIF2.3 writes the scale at install: literal 1920x1080@1 is "1.5"', () => {
+    const renderer = makeFakeRenderer();
+    const win = makeFakeWindow(1920, 1080, 1);
+    installResizeHandler(renderer, win);
+    expect(win.document.writes).toEqual([{ name: SCALE_PROP, value: '1.5' }]);
+    expect(renderer.calls).toEqual([{ w: 1920, h: 1080, dpr: 1 }]);
+  });
+
+  it('UIF2.3 rewrites on each fire with the fire-time size (not the install-time one)', () => {
+    const renderer = makeFakeRenderer();
+    const win = makeFakeWindow(1920, 1080, 1);
+    installResizeHandler(renderer, win);
+    win.innerWidth = 1280;
+    win.innerHeight = 720;
+    win.fire();
+    win.innerWidth = 3840;
+    win.innerHeight = 2160;
+    win.fire();
+    win.innerWidth = 960;
+    win.innerHeight = 540;
+    win.fire();
+    expect(win.document.writes.map((w) => w.value)).toEqual(['1.5', '1', '3', '0.875']);
+    expect(renderer.calls).toEqual([
+      { w: 1920, h: 1080, dpr: 1 },
+      { w: 1280, h: 720, dpr: 1 },
+      { w: 3840, h: 2160, dpr: 1 },
+      { w: 960, h: 540, dpr: 1 },
+    ]);
+  });
+
+  it('UIF2.3 the written value equals String(viewportScale(w,h,dpr).uiScale) at fractional sizes too', () => {
+    for (const [w, h, dpr] of [
+      [1000, 800, 1],
+      [1536, 864, 1.25],
+      [801, 777, 2],
+      [2000, 1999, 1.5],
+    ] as const) {
+      const renderer = makeFakeRenderer();
+      const win = makeFakeWindow(w, h, dpr);
+      installResizeHandler(renderer, win);
+      expect(win.document.writes).toEqual([
+        { name: SCALE_PROP, value: String(viewportScale(w, h, dpr).uiScale) },
+      ]);
+    }
+    // The literal for the 1.2 row (1536x864@1.25).
+    const win = makeFakeWindow(1536, 864, 1.25);
+    installResizeHandler(makeFakeRenderer(), win);
+    expect(win.document.writes[0]?.value).toBe('1.2');
+  });
+
+  it('UIF2.3 exactly one setProperty per event, always the property --mr-ui-scale', () => {
+    const renderer = makeFakeRenderer();
+    const win = makeFakeWindow(1280, 720, 1);
+    installResizeHandler(renderer, win);
+    expect(win.document.writes).toHaveLength(1);
+    win.fire();
+    win.fire();
+    expect(win.document.writes).toHaveLength(3);
+    for (const w of win.document.writes) expect(w.name).toBe('--mr-ui-scale');
+  });
+
+  it('UIF2.3 a resize event where only the dpr differs re-calls the renderer and rewrites the same scale', () => {
+    const renderer = makeFakeRenderer();
+    const win = makeFakeWindow(1920, 1080, 1);
+    installResizeHandler(renderer, win);
+    win.devicePixelRatio = 2;
+    win.fire();
+    expect(renderer.calls[1]).toEqual({ w: 1920, h: 1080, dpr: 2 });
+    expect(win.document.writes).toEqual([
+      { name: SCALE_PROP, value: '1.5' },
+      { name: SCALE_PROP, value: '1.5' },
+    ]);
+  });
+
+  it('UIF2.3 each of innerWidth, innerHeight, devicePixelRatio is read exactly once per event, and the renderer and the scale share that read', () => {
+    // Each read returns a DIFFERENT value, so a second read would desynchronize the pair.
+    const widths = [1280, 1920, 2560, 3840];
+    const heights = [720, 1080, 1440, 2160];
+    const dprs = [1, 1.25, 1.5, 2];
+    const reads = { w: 0, h: 0, d: 0 };
+    const doc = makeFakeDocument();
+    let cb: (() => void) | undefined;
+    const win = {
+      get innerWidth(): number {
+        return widths[reads.w++] ?? -1;
+      },
+      get innerHeight(): number {
+        return heights[reads.h++] ?? -1;
+      },
+      get devicePixelRatio(): number {
+        return dprs[reads.d++] ?? -1;
+      },
+      document: doc,
+      addEventListener(_type: string, listener: () => void): void {
+        cb = listener;
+      },
+    };
+    const renderer = makeFakeRenderer();
+    installResizeHandler(renderer, win);
+    expect(reads).toEqual({ w: 1, h: 1, d: 1 });
+    expect(renderer.calls).toEqual([{ w: 1280, h: 720, dpr: 1 }]);
+    expect(doc.writes.map((x) => x.value)).toEqual(['1']);
+
+    cb?.();
+    expect(reads).toEqual({ w: 2, h: 2, d: 2 });
+    expect(renderer.calls[1]).toEqual({ w: 1920, h: 1080, dpr: 1.25 });
+    expect(doc.writes.map((x) => x.value)).toEqual(['1', '1.5']);
+
+    cb?.();
+    expect(reads).toEqual({ w: 3, h: 3, d: 3 });
+    expect(renderer.calls[2]).toEqual({ w: 2560, h: 1440, dpr: 1.5 });
+    expect(doc.writes.map((x) => x.value)).toEqual(['1', '1.5', '2']);
+    for (const [i, c] of renderer.calls.entries()) {
+      expect(doc.writes[i]?.value, `event ${i}`).toBe(
+        String(viewportScale(c.w, c.h, c.dpr).uiScale),
+      );
+    }
   });
 });

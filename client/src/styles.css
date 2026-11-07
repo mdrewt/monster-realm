@@ -1281,6 +1281,16 @@
 }
 
 /*
+ * The one rem authority (uif-2): render/resizeWiring.ts writes --mr-ui-scale inline, and until it
+ * does this rule does not match and the root stays at 100%, a scale of 1. The selector is keyed on
+ * the write, not on bare :root, because happy-dom cannot compute rem through a calc() root font-size
+ * (it reads NaNpx) and the real-sheet suites such as frame.test.ts load this file without the seam.
+ */
+:root[style*="--mr-ui-scale"] {
+  font-size: calc(100% * var(--mr-ui-scale));
+}
+
+/*
  * Colour tokens for the evolution overlay.
  *
  * WHY TOKENS AND NOT LITERALS. `ui/evolutionView.ts` colours every element inline (its root's

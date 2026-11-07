@@ -3908,6 +3908,11 @@ function snapshot() {
     stack: [...contextStack],
     // The main menu's active entry key while it is open (under a child too), else null.
     navActive: menuView?.visible ? menuState.nav.item : null,
+    // The source-to-CSS scale the renderer holds, measured through its own transform (uif-2).
+    stageScale:
+      renderer === undefined
+        ? null
+        : renderer.screenFor({ x: 1, y: 0 }).x - renderer.screenFor({ x: 0, y: 0 }).x,
     ongoingBattle: (() => {
       const b = store.ongoingBattle(identity);
       if (!b) return null;
