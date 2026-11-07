@@ -20,6 +20,7 @@ import {
   openMenu,
   pressAccel,
   pressButton,
+  readOwnMonsters,
   readTactics,
   sides,
   TACTICS,
@@ -56,13 +57,24 @@ import {
 // SEEDING (owner SQL, the encounter-battle.spec precedent). The starter's defense, attack and HP
 // columns are raised: with attack 250 each wild falls in a hit, and HP 999 keeps the starter up over
 // every battle, so each reaches an outcome by the buttons (any terminal outcome is accepted here:
-// this spec is about the D-pad, encounter-battle E2 owns the win). Levels are NOT seeded: two wins
-// cannot lift a Lv5 starter past zone 0's Lv3-8 encounter bands.
+// this spec is about the D-pad, encounter-battle E2 owns the win). The level IS seeded (SEED_LEVEL
+// 7, xp 7³) so that a win cannot level the starter: a level-up recomputes the seeded stat columns
+// server-side from the species and leaves current_hp above the new max, after which every wild
+// start is refused (HpAboveMax) and the grass never opens a battle again. Lv7 stays inside zone
+// 0's Lv3-8 encounter bands.
 //
 // CLEANUP. One browser, context and identity; afterAll closes the browser.
 
 const SEED_STAT = 250;
 const SEED_HP = 999;
+/** The starter's seeded level. One win's XP is `bst·L_wild/(5·L_starter)+1` ≤ 328·8/(5·7)+1 = 75
+ *  < 512−343 = 169, so battle A's win can never reach Lv8 and `credit_monster` never recomputes the
+ *  seeded stats before battle B; Lv7 keeps all three zone-0 encounter entries eligible (level
+ *  bands 3–7, 3–7, 4–8). */
+const SEED_LEVEL = 7;
+/** xp_for_level = level³ (encounter-battle.spec precedent): the floor of SEED_LEVEL, so the first
+ *  gain never drops the level. */
+const SEED_XP = SEED_LEVEL * SEED_LEVEL * SEED_LEVEL;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls (recruit.spec MAX_WALK_STEPS). */
 const MAX_WALK_STEPS = 120;
 /** Own turns a battle may take to an outcome (a hit KOs; the rest is closing in). */
@@ -143,6 +155,22 @@ function sql(query: string, label: string): string {
   } catch (err) {
     throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
   }
+}
+
+/** The `spacetime sql` table (header, `-+-` separator, `|`-separated rows) as column → cell
+ *  records (tactics-wild.spec sqlRows). */
+function sqlRows(stdout: string, label: string): Record<string, string>[] {
+  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+  const header = lines.shift();
+  const separator = lines.shift();
+  if (header === undefined || separator === undefined || !/^[-+]+$/.test(separator.trim())) {
+    throw new Error(`${label}: unrecognised spacetime sql table: ${stdout.slice(0, 300)}`);
+  }
+  const cols = header.split('|').map((c) => c.trim());
+  return lines.map((line) => {
+    const cells = line.split('|').map((c) => c.trim());
+    return Object.fromEntries(cols.map((c, i) => [c, cells[i] ?? '']));
+  });
 }
 
 /** Tile-aware (1,2)<->(2,2) grass shuttle (recruit.spec shuttleDir). */
@@ -283,6 +311,8 @@ test.describe
           ['stat_sp_attack', SEED_STAT],
           ['stat_hp', SEED_HP],
           ['current_hp', SEED_HP],
+          ['xp', SEED_XP],
+          ['level', SEED_LEVEL],
         ] as const) {
           sql(
             `UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${starter.monsterId}`,
@@ -290,6 +320,24 @@ test.describe
           );
         }
       }
+      // ANTI-NO-OP: read the seed back (`SELECT *`: the sql() charset guard admits no comma). A
+      // silent zero-row UPDATE would leave a Lv5 starter one win from a stat-recomputing level-up.
+      const row = sqlRows(
+        sql(`SELECT * FROM monster WHERE monster_id = ${starter.monsterId}`, 'seed'),
+        'seed',
+      ).find((r) => r.monster_id === starter.monsterId);
+      expect(row, 'the starter row is visible to the CLI').toBeDefined();
+      expect(Number(row?.level), 'the starter row reads back the level seed SEED_LEVEL').toBe(
+        SEED_LEVEL,
+      );
+      expect(Number(row?.xp), 'the starter row reads back the xp seed SEED_XP').toBe(SEED_XP);
+      expect(Number(row?.stat_hp), 'the starter row reads back the HP seed SEED_HP').toBe(SEED_HP);
+      await expect
+        .poll(() => snap(page).then((s) => s.ownMonsters[0]?.level), {
+          message: 'the client view carries the level seed SEED_LEVEL within 15000 ms',
+          timeout: 15_000,
+        })
+        .toBe(SEED_LEVEL);
     });
 
     test.afterAll(async () => {
@@ -462,6 +510,14 @@ test.describe
       // a draft, a cursor, a lock); an outcome B does not continue from; and a continue that
       // leaves the stack above the world.
       test.setTimeout(240_000);
+      // PRECONDITION: battle A's win paid XP; a level-up would have recomputed the seeded stat_*
+      // columns from the species (999 HP → ~23) while current_hp stayed ~996, and HpAboveMax then
+      // refuses every later wild start (the hunt below would fail on its step bound, unnamed).
+      const starterNow = (await readOwnMonsters(page))[0];
+      expect(
+        [starterNow?.maxHp, (await snap(page)).ownMonsters[0]?.level],
+        "battle A's win did not level the starter: its seeded stats survive (a level-up recomputes stat_* from the species and HpAboveMax then refuses every later wild start)",
+      ).toEqual([SEED_HP, SEED_LEVEL]);
       const started = await huntEncounter(page, 'CTL8J-2-B');
       expect(started.battleId, 'a second battle, not the first again').not.toBe(firstBattleId);
       await expect
