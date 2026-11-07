@@ -400,4 +400,45 @@ test.describe
         await ctx.unroute('**/src/main.ts*');
       }
     });
+
+    test("UIF2.6 the root keeps the browser's font-size preference (default 20px: 20px, then 30px at scale 1.5)", async ({
+      baseURL,
+    }) => {
+      // A SEPARATE browser (not the shared one) whose default font size is 20px; main.ts is aborted so
+      // no game boots and no player joins. A px root (`calc(16px * var)`) would read 24px, not 30px.
+      const url = baseURL ?? `http://localhost:${process.env.MR_E2E_PORT ?? '5290'}`;
+      const big = await chromium.launch({ args: ['--blink-settings=defaultFontSize=20'] });
+      try {
+        const bigCtx = await big.newContext({ viewport: { width: 1280, height: 720 } });
+        await bigCtx.route('**/src/main.ts*', (route) => route.abort());
+        const p = await bigCtx.newPage();
+        await p.goto(url);
+        await p.waitForLoadState('load');
+        const rootFont = () =>
+          p.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+        const before = await p.evaluate(() => ({
+          game: typeof (window as unknown as { __game?: unknown }).__game,
+          rules: document.styleSheets.length,
+          inline: document.documentElement.style.getPropertyValue('--mr-ui-scale'),
+        }));
+        expect(before.game, 'main.ts did not run').toBe('undefined');
+        expect(before.rules, 'the real stylesheet loaded').toBeGreaterThan(0);
+        expect(before.inline, 'nothing wrote the var').toBe('');
+        await expect
+          .poll(rootFont, { message: 'no scale: the browser default 20px', timeout: 5_000 })
+          .toBe('20px');
+
+        await p.evaluate(() => document.documentElement.style.setProperty('--mr-ui-scale', '1.5'));
+        await expect
+          .poll(rootFont, { message: 'scale 1.5 multiplies the 20px preference', timeout: 5_000 })
+          .toBe('30px');
+
+        await p.evaluate(() => document.documentElement.style.removeProperty('--mr-ui-scale'));
+        await expect
+          .poll(rootFont, { message: 'var removed: back to 20px', timeout: 5_000 })
+          .toBe('20px');
+      } finally {
+        await big.close();
+      }
+    });
   });
