@@ -829,3 +829,23 @@ tests.
 **Rules out.** Raising a cap or dropping mutants to fit the time limit; excluding a killable
 mutant; a per-shard server budget; a committed survivor baseline file; an aggregate job that
 re-counts what each shard already judged.
+
+## The menu kit's tokens and frame anatomy
+
+**Decision.** Menu chrome draws its spacing, type, borders and colors from the `--mr-*` tokens in
+`client/src/styles.css`, whose values come from the M-ui-foundation token table. Spacing and type
+are rem, so a root scale reaches them. Border widths stay px (`--mr-border-width`,
+`--mr-border-thin`). Every color token has a `prefers-contrast: more` value in the sheet's last
+block. A frame reads top to bottom as title bar, tab bar, a body that grows and scrolls, an overlaid
+feedback strip, then the world's hint bar below. Screens adopt this slice by slice, and new kit
+classes are named outside the `mr-frame`/`mr-shell` family. The dashed ring on a focused listbox or
+grid stays `#cc5500`; `--mr-focus` is for other focused controls.
+
+**Why.** Each menu had grown its own spacing and type, which read as inconsistent in Playtest 3. A
+rem border lands on fractional device pixels at a continuous scale and shimmers. The listbox ring
+can cross the light active row, where `--mr-focus` measures about 1:1 against the 3:1 that qf-1's
+focus policy requires.
+
+**Rules out.** New px spacing or font sizes in menu chrome; a color literal where a token has that
+role; a rem border width; a token without a `more` value; moving the listbox ring onto `--mr-focus`
+while the active row keeps its light fill.

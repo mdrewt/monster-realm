@@ -175,6 +175,57 @@ async function openMenu(p: Page): Promise<void> {
     .toEqual(['world', 'menuView']);
   await expect(p.locator('#menu-overlay'), 'the menu is shown').toBeVisible();
   await expect(p.locator('#menu-overlay .mr-frame-title'), 'with its title').toBeVisible();
+  await seatMenuCursorOnMonsters(p);
+}
+
+/** The root list in display order (menuModel.ts MENU_ENTRIES). */
+const MENU_ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
+
+/** The `data-nav-key` of the menu's active row and the id of that row, or null when none. */
+const menuActiveRow = (p: Page): Promise<{ key: string; id: string } | null> =>
+  p.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#menu-rows .mr-nav-item.is-active');
+    return el === null ? null : { key: el.dataset.navKey ?? '', id: el.id };
+  });
+
+/**
+ * The menu remembers each level's cursor for the whole session (mainMenuScreen.ts NavMemory), so a
+ * reopened menu lands on the LAST entry used, and an earlier test that opened Social leaves it on
+ * the Social row (A there enters the sub-list instead of pushing a screen). Seat the cursor on
+ * Monsters before any caller presses A: leave a sub-list with B, then Up one row at a time, each
+ * landing asserted, bounded by the root list's length.
+ */
+async function seatMenuCursorOnMonsters(p: Page): Promise<void> {
+  let active = await menuActiveRow(p);
+  expect(active, 'the menu has an active row').not.toBeNull();
+  // A sub-list's rows carry its own frame id (`menuSocial-root-trades`), not `menu-root-`.
+  if (active !== null && !active.id.startsWith('menu-root-')) {
+    await pressButton(p, 'B');
+    await expect
+      .poll(async () => (await menuActiveRow(p))?.id.startsWith('menu-root-') ?? false, {
+        message: 'B leaves the sub-list for the root list',
+      })
+      .toBe(true);
+    active = await menuActiveRow(p);
+  }
+  for (let presses = 0; presses < MENU_ROOT_KEYS.length; presses += 1) {
+    const index = MENU_ROOT_KEYS.indexOf(active?.key ?? '');
+    expect(index, `the active row ${active?.key} is a root entry`).toBeGreaterThanOrEqual(0);
+    if (index === 0) break;
+    const want = MENU_ROOT_KEYS[index - 1] as string;
+    await pressButton(p, 'Up');
+    await expect
+      .poll(async () => (await menuActiveRow(p))?.key, {
+        message: `Up moves the cursor from ${active?.key} to ${want}`,
+      })
+      .toBe(want);
+    active = await menuActiveRow(p);
+  }
+  expect(active?.key, 'the menu cursor is seated on Monsters').toBe('monsters');
+  await expect(p.locator(`#${navItemId('menu', null, 'monsters')}`)).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
 }
 
 /** Social, by its accelerator (P: Challenges), as client/e2e/pvp.spec.ts opens it. */
