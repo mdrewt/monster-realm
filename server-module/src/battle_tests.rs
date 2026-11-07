@@ -2636,9 +2636,19 @@ fn bn_faint_penalty_is_wild_only_and_saturating() {
 /// ST-battle_tests#writeback-economy (log-and-continue + settle-on-error): a missing
 /// loser species or an unparseable loser level ends the credit pass with Ok and HP
 /// still written; an unparseable WINNER level still pays currency; a missing
-/// projection is a loud Err.
+/// projection is a loud Err — and the surviving log-and-continue caller,
+/// `resolve_wild_battle_on_disconnect`, still deletes the `battle` and `battle_wild` rows when
+/// that write-back Errs (the player is never soft-locked) and logs the Err once as
+/// `wild_disconnect_writeback_err`.
+///
+/// kills (last arm, bt-17 round 2): the deletes made conditional on the write-back succeeding
+/// (`if write_back_battle_results(..).is_ok() { delete }`); the Err swallowed without a log line.
+/// NEXTEST-ONLY: installs `BN_LOGS` as the process logger, like
+/// `bn_anonymize_logs_only_the_battles_it_forced_terminal`.
 #[test]
 fn bn_write_back_log_and_continue_paths() {
+    log::set_logger(&BN_LOGS).expect("no logger installed in the native test binary");
+    log::set_max_level(log::LevelFilter::Info);
     // Missing loser species (id 77) -> Ok, HP written, no currency or XP.
     let fx = fixture();
     let w = bn_world(&fx);
@@ -2696,9 +2706,9 @@ fn bn_write_back_log_and_continue_paths() {
     );
     w.assert_mirrored("winner level unparseable");
 
-    // Missing projection -> loud Err. (The reducer-level "settle-on-error" tail — the 1v1
-    // `flee` still committing Fled — left with `flee` in bt-17; the tactical finish's
-    // settle-on-error is `tactics_settle_tests::a_failed_hp_write_back_pays_and_penalises_nothing_but_still_sweeps_and_summarises_bt9_1`.)
+    // Missing projection -> loud Err; the disconnect resolver still commits its deletes.
+    // (Retargeted by bt-17: the caller half was the 1v1 `flee`; it is now the surviving
+    // log-and-continue caller, `resolve_wild_battle_on_disconnect`.)
     drop(fx);
     let fx = fixture();
     let w = bn_world(&fx);
@@ -2721,6 +2731,43 @@ fn bn_write_back_log_and_continue_paths() {
     assert_eq!(
         super::write_back_battle_results(&ctx, &fin),
         Err("monster_pub row missing for monster 11".to_string())
+    );
+    // The disconnect resolver meets the same Err on the stored (Ongoing) battle.
+    w.wild_row(BN_BATTLE);
+    assert_eq!(
+        w.battle(BN_BATTLE).map(|b| b.state.outcome),
+        Some(BattleOutcome::Ongoing),
+        "PRECONDITION: the caller's wild battle is still Ongoing in the store"
+    );
+    assert_eq!(
+        w.wild.rows().len(),
+        1,
+        "PRECONDITION: its battle_wild row exists"
+    );
+    super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
+    assert!(
+        w.battle(BN_BATTLE).is_none(),
+        "log-and-continue: the battle row is deleted although the write-back Erred"
+    );
+    assert!(
+        w.wild.rows().is_empty(),
+        "log-and-continue: the battle_wild row is deleted although the write-back Erred"
+    );
+    let logged: Vec<String> = BN_LOGS
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|l| {
+            l.contains("wild_disconnect_writeback_err")
+                && l.contains(&format!("\"battle_id\":{BN_BATTLE}"))
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        logged.len(),
+        1,
+        "the write-back Err is logged exactly once, never swallowed: {logged:?}"
     );
 }
 

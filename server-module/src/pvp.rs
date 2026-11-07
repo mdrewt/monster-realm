@@ -20,7 +20,7 @@
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
 //!   `scheduled(pvp_deadline_reaper)` cohabitation rule.
 //! - `settle_pvp_battle` is the single decisive-commit funnel: every terminal
-//!   PvP outcome (both-submit, deadline forfeit, disconnect forfeit) commits
+//!   PvP outcome (the deadline forfeit of a legacy anchor, the disconnect forfeit) commits
 //!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`. A
 //!   TACTICAL PvP battle (bt-14: forfeit, disconnect, the 4th auto-pass, Surge,
 //!   adjudication) commits through it too, from `tactics::finish`, in
@@ -218,8 +218,6 @@ fn has_active_incoming_challenge(ctx: &ReducerContext, identity: Identity) -> bo
         .any(|c| c.status == ChallengeStatus::Pending)
 }
 
-/// Build a team of `BattleMonster`s from `party_ids` owned by `owner`.
-/// Validates each monster: exists, owned, party-slotted, not in trade.
 /// bt-14 (BT14.1): the party-size format a challenge opens, derived from the challenger's
 /// party pick — `min(party_len, MAX_PACK)` (ranked plays 3v3 by picking 3; casual 1–3). Pure.
 pub(crate) fn challenge_format(party_len: usize) -> u8 {
@@ -257,8 +255,8 @@ pub(crate) enum SideAWriteBack {
 }
 
 /// Settle a PvP battle that has reached a terminal outcome — the ONE funnel
-/// through which every decisive PvP result (both-submit resolution, deadline
-/// forfeit, disconnect forfeit) commits. Sole caller of
+/// through which every decisive PvP result (the deadline forfeit of a legacy
+/// anchor, the disconnect forfeit, the tactical finish) commits. Sole caller of
 /// `ranking::apply_pvp_rating`, which makes rating application exactly-once
 /// by construction. One named exception: the deletion cascade's forced-terminal
 /// fallback (`battle::anonymize_battles`) commits
@@ -373,7 +371,7 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 /// `on_disconnect` (before the player row is deleted) and the deletion
 /// cascade's step 6a (before the 6b erasures). An `apply_pvp_forfeit` Err is
 /// logged and the loop continues, with no retry here: on a plain disconnect the
-/// still-armed deadline settles the battle later; on the cascade path step 6c
+/// row waits for the next disconnect pass (nothing arms a deadline since bt-17); on the cascade path step 6c
 /// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal.
 pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
     /// An Ongoing 1v1 PvP anchor. A tactical anchor (bt-14) is
@@ -499,11 +497,11 @@ pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
 }
 
 /// delete every `pvp_deadline_schedule` row guarding
-/// `battle_id`. Lives HERE because pvp.rs is that table's sole writer (the
-/// delegation doctrine's ownership rule); called per battle row from
+/// `battle_id`. Lives HERE because pvp.rs is the only module touching that table (the
+/// delegation doctrine's ownership rule; nothing inserts into it since bt-17); called per battle row from
 /// `battle::anonymize_battles`, BEFORE that row's identity swap (after the
 /// swap the join can no longer find it). The column is unindexed — a linear
-/// scan over a table that holds at most one row per live PvP battle.
+/// scan over a table that holds no new rows since bt-17.
 pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
     let ids: Vec<u64> = ctx
         .db
@@ -637,7 +635,7 @@ pub fn challenge_pvp(
     }
 
     // Guard 7: validate party monsters (existence, ownership, slot, escrow).
-    // Duplicate ID dedup (double-XP guard, mirrors start_battle).
+    // Duplicate ID dedup (double-XP guard; the retired 1v1 start had the same check).
     {
         let mut seen = std::collections::HashSet::new();
         for &mid in &party_ids {
@@ -698,8 +696,8 @@ pub fn challenge_pvp(
     Ok(())
 }
 
-/// Accept a pending PvP challenge. Creates the `battle` row and schedules the
-/// turn deadline.
+/// Accept a pending PvP challenge. Opens a tactical PvP battle through
+/// `tactics::start_pvp_tactical` (bt-16).
 ///
 /// Guard order:
 /// 1. Challenge exists.

@@ -3995,7 +3995,7 @@ fn a_halted_recruit_attempt_writes_no_playtest_row_bt9_7() {
 }
 
 // ===========================================================================
-// BT13.2 — the tactical `playtest_event` kind-1 row is exactly what the real 1v1 reducer writes
+// BT13.2 — the tactical `playtest_event` kind-1 row is exactly the row the retired 1v1 reducer wrote (pinned literals)
 //
 // BT9.7 pins the tactical row against `build_playtest_event` — the very helper the row is built
 // with, so a mutant in it (or in `hp_permille`) moves the oracle with the code. These tests pin

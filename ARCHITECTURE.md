@@ -201,7 +201,7 @@ drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
   engine from the stored seed. A recruit rebuilds the exact individual from the wild's
   seed. After a battle ends, only the latest finished battle per player is kept. The 1v1
   tables (`battle_wild`, `battle_action`, `pvp_deadline_schedule`) are retired in place
-  since bt-17 — never dropped, never written.
+  since bt-17 — never dropped; no new rows (the settle and erase sweeps still delete from them).
 - **PvP.** Challenges are public rows with a 120 s TTL. Accepting one opens a tactical
   battle (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the
   tactical clocks and auto-pass rules end a stalled battle. Ranked results update the
@@ -323,7 +323,8 @@ level are resolved before the executor debits the bait, the roll is game-core's
 (`recruit::resolve_recruit`, the private stream), the H1/H2 `playtest_event` row is written
 with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
 `Item` entries stay refused (no game-core rule home yet). One anchor, one payout path: no
-1v1 reducer exists to act on an anchor since bt-17.
+client-callable 1v1 reducer exists since bt-17 (the scheduled `pvp_deadline_reaper` only consumes rows
+nothing arms).
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned

@@ -1857,8 +1857,8 @@ const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
 /// reached `battle_wild` through the same write-back; `start_wild_battle` inserted `battle_wild`.
 ///
 /// kills: a 1v1 reducer left a reducer (its attribute kept — it then reaches a retired table and the
-/// exact-set pins fail); any reducer OUTSIDE the four reaching a retired table; any reducer at all
-/// reaching `pvp_deadline_schedule`. NOT killed (the census sees a reach, not a verb): an insert
+/// exact-set pins fail); any reducer OUTSIDE the four reaching a retired table; any client-callable
+/// reducer reaching `pvp_deadline_schedule` (lifecycle and scheduled reducers keep their own verdicts). NOT killed (the census sees a reach, not a verb): an insert
 /// added INSIDE one of the four, or a de-attributed body re-wired into one of them — those are the
 /// reviewer's and the continuation's (which deletes the bodies).
 #[test]

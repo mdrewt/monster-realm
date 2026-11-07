@@ -145,7 +145,7 @@ pub(crate) fn require_commitment_predates_deletion(
 /// The identity-PARAMETERISED wrapper in this family: the blanket wrapper's
 /// structural containment (no identity parameter, so no call site can ever point
 /// the gate at a third party) is deliberately NOT claimed for this one. Every
-/// consumer carries its own five-state gate test in `tactics_tests.rs`.
+/// consumer carries its own six-state gate test in `tactics_tests.rs`.
 ///
 /// Delegates TRANSITIVELY like both siblings — `deletion_gate` over the ctx-bound
 /// accounts predicate `accounts::is_pending_deletion` — and never re-derives the

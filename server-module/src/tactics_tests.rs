@@ -2505,6 +2505,55 @@ fn wild_start_keeps_every_wild_seed_in_battle_wild_unit_under_the_returned_id_bt
     );
 }
 
+/// A TERMINAL PvP anchor no longer holds either of its players: while A (challenger, side A) and
+/// B (opponent, side B) sit in an Ongoing PvP anchor, a wild start for either is refused "already in
+/// an ongoing battle" (the precondition that makes the control non-vacuous); once that anchor reads
+/// `SideAWins`, a wild start for EACH of them proceeds and opens its own Ongoing anchor.
+///
+/// Replaces the finished-battle control of `battle_tests::bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere`
+/// (it proved a terminal row stops blocking `start_battle` / `begin_encounter`, both deleted, bt-17).
+///
+/// kills: `is_in_ongoing_battle_either_role` ignoring `state.outcome` on either arm (any row
+/// naming the player blocks): the player arm fails for A, the opponent arm for B.
+#[test]
+fn a_terminal_pvp_anchor_no_longer_blocks_a_wild_start_for_either_side_bt17_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let pvp = deploying_pvp(&fx, &w, &PAIR, &B_PAIR, 2);
+    let seed = seed_for(1, Some(1));
+    for who in [a(), b()] {
+        let before = w.snapshot();
+        let got = fx.run_as_at(module(), at(T0 + 1_000), |ctx| {
+            super::start_wild_tactical(ctx, who, seed, seed, None)
+        });
+        assert_eq!(
+            got,
+            Err("already in an ongoing battle".to_string()),
+            "PRECONDITION: {who} is held by the Ongoing PvP anchor"
+        );
+        assert_eq!(changed(&before, &w.snapshot()), none());
+    }
+    let mut anchor = w.anchor(pvp).expect("the PvP anchor");
+    anchor.state.outcome = BattleOutcome::SideAWins;
+    assert_eq!(w.battles.remove(pvp), 1, "the anchor edited in place");
+    w.battles.seed(&anchor);
+    for (who, t) in [(a(), T0 + 2_000), (b(), T0 + 3_000)] {
+        let got = fx.run_as_at(module(), at(t), |ctx| {
+            super::start_wild_tactical(ctx, who, seed, seed, None)
+        });
+        let id = got.unwrap_or_else(|e| {
+            panic!("{who}: a terminal PvP anchor must not block a new start; got Err({e:?})")
+        });
+        assert_ne!(id, pvp, "{who}: a new anchor, not the terminal one");
+        let opened = w.anchor(id).expect("the new wild anchor");
+        assert_eq!(
+            (opened.player_identity, opened.state.outcome),
+            (who, BattleOutcome::Ongoing),
+            "{who}: the wild start opened its own Ongoing battle"
+        );
+    }
+}
+
 #[test]
 fn resolve_formation_keeps_remembered_conscious_party_ids_then_fills_from_party_order_bt8_2() {
     let (ma, mb, mc, md) = (101u64, 102, 103, 104);

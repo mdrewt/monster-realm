@@ -107,8 +107,8 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
 pub(crate) const NO_CONSCIOUS_MONSTER_REASON: &str = "party has no conscious monster";
 
 /// Write post-battle HP back to every party monster (HP only — NO XP). Shared by
-/// `write_back_battle_results` (the win/loss/flee path) and the M8d recruit
-/// success arm (which grants no XP). Dual-writes the private `monster` row and
+/// `write_back_battle_results`, the tactical finish (`tactics::finish`) and the PvP
+/// settle funnel (`pvp::settle_pvp_battle`). Dual-writes the private `monster` row and
 /// its public projection. Returns `Err` on a `side_a.team` / `party_monster_ids`
 /// length mismatch (checked indexing, never panic — M8.5a).
 pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
@@ -390,8 +390,7 @@ pub(crate) fn write_back_battle_results(
     ctx.db.battle_wild().battle_id().delete(battle.battle_id);
 
     // Ordering invariant: the current battle's DB row is still Ongoing at this call site — every
-    // mutating caller (submit_attack, swap_active, flee, taming::attempt_recruit,
-    // pvp::settle_pvp_battle) calls update() AFTER this returns, and the disconnect caller
+    // mutating caller (`pvp::settle_pvp_battle`) calls update() AFTER this returns, and the disconnect caller
     // (resolve_wild_battle_on_disconnect) delete()s the row AFTER, so `keep: None` never
     // targets the in-flight battle.
     sweep_prior_terminals(ctx, battle, None);

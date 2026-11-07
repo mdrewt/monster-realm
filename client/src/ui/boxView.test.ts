@@ -740,7 +740,7 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
     ).toContain('Only monsters in your Party can battle or be swapped in.');
     expect(
       text,
-      'ux4 (X3): the hint must say where new recruits actually GO (taming.rs:163 / ADR-0047 §3) — ' +
+      'ux4 (X3): the hint must say where new recruits actually GO (`taming::insert_recruited` / ADR-0047 §3) — ' +
         'this is the fact whose absence produced the playtest report. The literal clause pin also ' +
         'replaces the subsumed toContain(\'Box\'), which a stray "Box" anywhere would satisfy',
     ).toContain('New recruits arrive in Storage');
