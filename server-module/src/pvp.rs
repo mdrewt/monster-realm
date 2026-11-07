@@ -1,9 +1,10 @@
 //! `pvp` — server-module domain submodule.
 //!
 //! PvP orchestration: the challenge handshake (the accept opens a TACTICAL battle), the
-//! challenge TTL reaper and forfeit-on-disconnect. The 1v1 secret-pick path (`submit_pvp_action`,
-//! both-submit resolution, the turn-deadline reaper's arming) is no longer a reducer since bt-17;
-//! its body stays test-only until the continuation deletes it.
+//! challenge TTL reaper and forfeit-on-disconnect. The 1v1 secret-pick path (the submit, the
+//! both-submit resolution and the turn-deadline arming) is deleted since bt-17; the scheduled
+//! `pvp_deadline_reaper` stays (scheduled-ness is fixed at first publish) and consumes rows
+//! nothing arms.
 //! Challenge liveness: a scheduled TTL reaper deletes Pending challenges older
 //! than `CHALLENGE_TTL_MS`; every challenge-deletion path
 //! disarms its schedule row.
@@ -13,8 +14,7 @@
 //!   by watching `battle.state.turn_number` increment on their own rows of the
 //!   participant-scoped `my_battle` view (`battle` itself is private).
 //! - Accepting a challenge opens a TACTICAL battle through `tactics::start_pvp_tactical`
-//!   (bt-16: the one live PvP path). The 1v1 `start_pvp_battle` helper is unreachable
-//!   from any live path (test-only until the continuation deletes it).
+//!   (bt-16: the one live PvP path; the 1v1 start is deleted).
 //! - Forfeit maps to the existing `SideAWins`/`SideBWins` outcomes; no new
 //!   `BattleOutcome` variant is added (BSATN stability).
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
@@ -30,30 +30,24 @@
 //!   outside this funnel, without rating, HP, XP, currency or evolution
 //!   write-back and without the `battle_action` sweep.
 
-use crate::battle::{reject_if_tactical_anchor, write_back_battle_results, write_back_party_hp};
-use crate::content_cache::cached_skills;
+use crate::battle::{write_back_battle_results, write_back_party_hp};
 use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
-    reject_if_monster_in_trade, require_pvp_participant,
+    reject_if_monster_in_trade,
 };
-use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms};
+use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, battle_tactical, monster, player, skill_row,
-    species_row, trade_offer, Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
+    battle, battle_action, battle_challenge, battle_tactical, monster, player, trade_offer, Battle,
+    BattleAction, BattleChallenge, ChallengeStatus,
 };
 use crate::WILD_IDENTITY;
 use game_core::{
-    apply_entry_ability, is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome,
-    resolve_full_turn, BattleMonster, BattleOutcome, BattleSide, BattleState, BattleStatusStore,
-    PvpAction, SideId, StatusVariance, TurnVariance, CHALLENGE_TTL_MS,
+    is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome, BattleOutcome, SideId,
+    CHALLENGE_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
-
-/// Per-turn PvP deadline: 60 seconds from the start of each turn. The reaper
-/// runs once per turn, forfeiting the side(s) that have not submitted.
-const PVP_TURN_DEADLINE_MS: i64 = 60_000;
 
 // ===========================================================================
 // Ranked account gate
@@ -120,8 +114,9 @@ fn ranked_account_gate(
 // Scheduled table (colocated with its reducer)
 // ===========================================================================
 
-/// One-shot reaper: fires `PVP_TURN_DEADLINE_MS` after a PvP turn starts.
-/// PRIVATE (no `public`) — scheduling information is not client-facing.
+/// One-shot reaper schedule for the retired 1v1 turn deadline. Never armed since bt-17
+/// (the arming path is deleted); the table and its reducer stay because scheduled-ness is
+/// fixed at first publish. PRIVATE (no `public`) — scheduling information is not client-facing.
 /// Colocated with `pvp_deadline_reaper` so the `scheduled(...)` attribute
 /// reference resolves within this module (mirrors `movement_tick_schedule`
 /// in movement.rs).
@@ -141,21 +136,6 @@ pub struct PvpDeadlineSchedule {
 // ===========================================================================
 // Internal helpers
 // ===========================================================================
-
-/// Schedule a one-shot deadline reaper for `battle_id` at turn `turn_number`.
-/// Reached only from `resolve_pvp_turn_if_ready` under the de-attributed `submit_pvp_action`
-/// (bt-17): no reducer arms it; `accept_challenge` starts tactical battles since bt-16.
-fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
-    let now_micros = ctx.timestamp.to_micros_since_unix_epoch();
-    let deadline_micros = now_micros.saturating_add(PVP_TURN_DEADLINE_MS * 1_000);
-    let deadline = spacetimedb::Timestamp::from_micros_since_unix_epoch(deadline_micros);
-    ctx.db.pvp_deadline_schedule().insert(PvpDeadlineSchedule {
-        scheduled_id: 0,
-        scheduled_at: ScheduleAt::Time(deadline),
-        battle_id,
-        turn_number,
-    });
-}
 
 // ===========================================================================
 // Challenge TTL reaper — clone of the trade_offer_reaper
@@ -178,9 +158,8 @@ pub struct BattleChallengeReaperSchedule {
 ///
 /// The deadline is computed FROM THE MS-FLOORED `created_at_ms` (not raw micros) —
 /// kills the ms-truncation edge where the schedule could fire fractionally before
-/// `is_challenge_stale`'s ms clock reaches the TTL boundary. The
-/// adjacent `schedule_deadline` computes from raw now-micros and is NOT the
-/// template here — this is a clone of trading.rs `schedule_trade_reaper`.
+/// `is_challenge_stale`'s ms clock reaches the TTL boundary. This is a clone of
+/// trading.rs `schedule_trade_reaper`.
 fn schedule_challenge_reaper(ctx: &ReducerContext, challenge_id: u64, created_at_ms: i64) {
     let deadline_micros = created_at_ms
         .saturating_mul(1_000)
@@ -251,142 +230,6 @@ pub(crate) fn challenge_format(party_len: usize) -> u8 {
 /// cap `MAX_PACK` at the design's numbers, but a separate rule — never aliased to it.
 pub(crate) const PVP_FORMAT_MAX: u8 = 3;
 
-/// Also returns the per-slot ability ids (parallel to the team vec).
-/// bt-16: reached only through `start_pvp_battle` (see there).
-#[cfg_attr(not(test), allow(dead_code))]
-fn build_pvp_team(
-    ctx: &ReducerContext,
-    party_ids: &[u64],
-    owner: Identity,
-    reducer: &str,
-) -> Result<(Vec<BattleMonster>, Vec<Option<u32>>), String> {
-    let mut team = Vec::with_capacity(party_ids.len());
-    let mut ability_ids: Vec<Option<u32>> = Vec::with_capacity(party_ids.len());
-
-    for &mid in party_ids {
-        let m = ctx.db.monster().monster_id().find(mid).ok_or_else(|| {
-            let e = format!("monster {mid} not found");
-            log_reject(reducer, owner, &e);
-            e
-        })?;
-        if m.owner_identity != owner {
-            let e = format!("monster {mid} not owned by caller");
-            log_reject(reducer, owner, &e);
-            return Err(e);
-        }
-        if let Err(e) = check_monster_in_party(m.party_slot) {
-            let e = format!("monster {mid} {e}");
-            log_reject(reducer, owner, &e);
-            return Err(e);
-        }
-        reject_if_monster_in_trade(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(owner)
-                .chain(ctx.db.trade_offer().counterparty().filter(owner)),
-            mid,
-        )
-        .inspect_err(|e| log_reject(reducer, owner, e))?;
-        let sp = ctx
-            .db
-            .species_row()
-            .id()
-            .find(m.species_id)
-            .ok_or_else(|| format!("species {} not found", m.species_id))?;
-        let skills: Vec<SkillRow> = ctx
-            .db
-            .skill_row()
-            .iter()
-            .filter(|s| sp.learnable_skill_ids.contains(&s.id))
-            .collect();
-        ability_ids.push(sp.ability);
-        team.push(battle_monster_from_row(&m, &sp, &skills)?);
-    }
-    Ok((team, ability_ids))
-}
-
-/// Create a 1v1 PvP battle row directly (bypassing `start_battle`'s
-/// provenance guard, which correctly rejects a client naming another player).
-///
-/// bt-16: UNREACHABLE from any live path — `accept_challenge` opens a tactical battle. Kept
-/// compiled because the trading escrow matrix (`trading_tests.rs`) still exercises it as its
-/// accept-path site; bt-17 deletes it with the rest of the 1v1 engine.
-///
-/// Returns the new `battle_id`.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn start_pvp_battle(
-    ctx: &ReducerContext,
-    challenger: Identity,
-    challenger_party: Vec<u64>,
-    opponent: Identity,
-    opponent_party: Vec<u64>,
-) -> Result<u64, String> {
-    let (team_a, ability_ids_a) =
-        build_pvp_team(ctx, &challenger_party, challenger, "start_pvp_battle")?;
-    let (team_b, ability_ids_b) =
-        build_pvp_team(ctx, &opponent_party, opponent, "start_pvp_battle")?;
-
-    // Seat each side's lead: the first slot with HP > 0.
-    // `None` IS the "no conscious monster" precondition, so
-    // the former `any(|m| !m.is_fainted())` pre-checks are gone rather than kept
-    // alongside. Team order is preserved, so `team[i]` stays coupled to
-    // `*_monster_ids[i]` for HP write-back and to `ability_ids_*[i]` for the
-    // entry ability. The audited identity is the SIDE'S OWNER, never `ctx.sender()`
-    // — this helper was reached only from `accept_challenge` (the ACCEPTOR) until bt-16; since
-    // bt-17 nothing but the trading escrow matrix calls it.
-    let side_a = BattleSide::with_lead(team_a).ok_or_else(|| {
-        let e = "challenger party has no conscious monster".to_string();
-        log_reject("start_pvp_battle", challenger, &e);
-        e
-    })?;
-    let side_b = BattleSide::with_lead(team_b).ok_or_else(|| {
-        let e = "opponent party has no conscious monster".to_string();
-        log_reject("start_pvp_battle", opponent, &e);
-        e
-    })?;
-
-    let mut state = BattleState {
-        side_a,
-        side_b,
-        outcome: BattleOutcome::Ongoing,
-        turn_number: 0,
-        weather: None,
-    };
-
-    // Apply entry abilities for both initial actives.
-    let ability_defs = crate::content_cache::cached_abilities()?;
-    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
-    let mut status = BattleStatusStore {
-        side_a: state.side_a.team.iter().map(|m| m.status).collect(),
-        side_b: state.side_b.team.iter().map(|m| m.status).collect(),
-    };
-    apply_entry_ability(&mut state, SideId::SideA, &abilities, &mut status);
-    apply_entry_ability(&mut state, SideId::SideB, &abilities, &mut status);
-    for (m, s) in state.side_a.team.iter_mut().zip(status.side_a.iter()) {
-        m.status = *s;
-    }
-    for (m, s) in state.side_b.team.iter_mut().zip(status.side_b.iter()) {
-        m.status = *s;
-    }
-
-    let battle = ctx.db.battle().insert(Battle {
-        battle_id: 0,
-        player_identity: challenger,
-        opponent_identity: opponent,
-        state,
-        party_monster_ids: challenger_party,
-        opponent_monster_ids: opponent_party,
-        created_at_ms: now_ms(ctx),
-    });
-
-    log::info!(
-        "{{\"evt\":\"pvp_battle_start\",\"battle_id\":{},\"challenger\":\"{challenger}\",\"opponent\":\"{opponent}\"}}",
-        battle.battle_id
-    );
-    Ok(battle.battle_id)
-}
-
 /// Apply forfeit to an ongoing PvP battle: set the forfeit outcome, then
 /// delegate the entire terminal-commit sequence to `settle_pvp_battle`
 /// — the write-back/update/rating/side-B/sweep ordering
@@ -411,153 +254,6 @@ fn apply_pvp_forfeit(
 pub(crate) enum SideAWriteBack {
     Legacy1v1,
     HpOnly,
-}
-
-/// Check if both PvP participants have submitted actions for the current turn.
-/// If so, collect the actions, delete them, resolve the turn, and reschedule
-/// the deadline for the next turn. No-op if only one (or neither) has submitted.
-fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
-    // Re-read the battle row to get current turn_number and state.
-    let mut battle = match ctx.db.battle().battle_id().find(battle_id) {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-    if battle.state.outcome != BattleOutcome::Ongoing {
-        return Ok(());
-    }
-    let current_turn = battle.state.turn_number;
-
-    // Collect submitted actions for this turn (indexed by battle_id).
-    let actions: Vec<BattleAction> = ctx
-        .db
-        .battle_action()
-        .battle_id()
-        .filter(battle_id)
-        .filter(|a| a.turn_number == current_turn)
-        .collect();
-
-    // Need exactly two: one for each side.
-    if actions.len() < 2 {
-        return Ok(());
-    }
-    debug_assert!(
-        actions.len() == 2,
-        "expected exactly 2 actions for turn {current_turn} of battle {battle_id}, got {}",
-        actions.len()
-    );
-
-    // Find side A (player_identity) and side B (opponent_identity) actions.
-    let action_a = match actions
-        .iter()
-        .find(|a| a.player_identity == battle.player_identity)
-    {
-        Some(a) => a.action,
-        None => return Ok(()),
-    };
-    let action_b = match actions
-        .iter()
-        .find(|a| a.player_identity == battle.opponent_identity)
-    {
-        Some(a) => a.action,
-        None => return Ok(()),
-    };
-
-    // Consume the two action rows (they are turn-scoped; the next turn gets fresh ones).
-    let action_ids: Vec<u64> = actions.iter().map(|a| a.action_id).collect();
-    for id in action_ids {
-        ctx.db.battle_action().action_id().delete(id);
-    }
-
-    // Build all inputs for resolve_full_turn (mirrors submit_attack in battle.rs).
-    let skill_defs = cached_skills()?;
-    let type_chart = crate::content_cache::cached_type_chart(ctx)?;
-    let variance = TurnVariance::from_ctx_random(ctx.random());
-    let sv = StatusVariance::from_ctx_random(ctx.random());
-
-    let mut status = BattleStatusStore {
-        side_a: battle.state.side_a.team.iter().map(|m| m.status).collect(),
-        side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
-    };
-
-    let ability_defs = crate::content_cache::cached_abilities()?;
-    let a_ability_ids: Vec<Option<u32>> = battle
-        .state
-        .side_a
-        .team
-        .iter()
-        .map(|m| {
-            ctx.db
-                .species_row()
-                .id()
-                .find(m.species_id)
-                .and_then(|sp| sp.ability)
-        })
-        .collect();
-    let b_ability_ids: Vec<Option<u32>> = battle
-        .state
-        .side_b
-        .team
-        .iter()
-        .map(|m| {
-            ctx.db
-                .species_row()
-                .id()
-                .find(m.species_id)
-                .and_then(|sp| sp.ability)
-        })
-        .collect();
-    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, ability_defs);
-
-    let _events = resolve_full_turn(
-        &mut battle.state,
-        action_a.into_turn_choice(),
-        action_b.into_turn_choice(),
-        skill_defs,
-        &type_chart,
-        &variance,
-        &mut status,
-        &sv,
-        &abilities,
-    );
-
-    // Persist status back into BattleMonster.status (ongoing only).
-    // Terminal-turn status is not flushed: HP is on BattleMonster directly (mutated
-    // in-place by resolve_full_turn), so HP write-back is unaffected. End-of-battle
-    // status is semantically irrelevant — the battle row transitions to a terminal
-    // outcome immediately. This mirrors battle.rs (submit_attack / swap_active).
-    if battle.state.outcome == BattleOutcome::Ongoing {
-        for (m, s) in battle
-            .state
-            .side_a
-            .team
-            .iter_mut()
-            .zip(status.side_a.iter())
-        {
-            m.status = *s;
-        }
-        for (m, s) in battle
-            .state
-            .side_b
-            .team
-            .iter_mut()
-            .zip(status.side_b.iter())
-        {
-            m.status = *s;
-        }
-    }
-
-    if battle.state.outcome != BattleOutcome::Ongoing {
-        // Terminal: delegate the entire commit sequence to the settle funnel
-        // — the ordering invariants live there.
-        settle_pvp_battle(ctx, battle, SideAWriteBack::Legacy1v1)?;
-    } else {
-        // Reschedule the deadline for the new turn (turn_number was incremented by resolve_full_turn).
-        schedule_deadline(ctx, battle_id, battle.state.turn_number);
-        // Persist the advanced (still-Ongoing) state.
-        let battles = ctx.db.battle();
-        battles.battle_id().update(battle);
-    }
-    Ok(())
 }
 
 /// Settle a PvP battle that has reached a terminal outcome — the ONE funnel
@@ -1213,140 +909,6 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
     Ok(())
 }
 
-/// Submit a PvP action (Attack or Swap) for the current turn.
-///
-/// Guard order:
-/// 1. Battle exists.
-/// 2. ctx.sender() is player_identity (side A) or opponent_identity (side B).
-/// 3. battle is PvP (opponent_identity != WILD_IDENTITY).
-/// 4. outcome == Ongoing.
-/// 5. Validate action against caller's active monster: for Attack, reject when the
-///    caller's active monster has fainted BEFORE the moveset check,
-///    so a corpse gets an actionable "swap to another monster" message rather than
-///    a misleading "skill N not in active monster's moveset"; for Swap, the target
-///    index must be in bounds, not fainted, and not already active. `Swap` is
-///    deliberately NOT given the fainted-active guard
-///    it is the only exit from a corpse-active row.
-/// 6. Double-submit guard: no existing BattleAction for (battle_id, caller, turn_number).
-/// 7. Insert BattleAction (irreversible).
-/// 8. Resolve turn if both sides have now submitted.
-///
-/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
-/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn submit_pvp_action(
-    ctx: &ReducerContext,
-    battle_id: u64,
-    action: PvpAction,
-) -> Result<(), String> {
-    let me = ctx.sender();
-
-    // Guard 1: battle exists.
-    let battle = ctx.db.battle().battle_id().find(battle_id).ok_or_else(|| {
-        let e = "battle not found".to_string();
-        log_reject("submit_pvp_action", me, &e);
-        e
-    })?;
-
-    // Guard 2: participation check — returns SideId.
-    let my_side = require_pvp_participant(ctx, "submit_pvp_action", &battle)?;
-
-    // Guard 2a (bt-14): a TACTICAL anchor is run by the tactical reducers — a 1v1 pick on it
-    // would resolve a turn on `anchor.state` and settle (rate) a battle the tactical rows still
-    // run. After the participation check, so a stranger learns nothing about the battle's kind.
-    reject_if_tactical_anchor(ctx, "submit_pvp_action", battle_id)?;
-
-    // Guard 3: PvP only.
-    if battle.opponent_identity == WILD_IDENTITY {
-        let e = "not a PvP battle".to_string();
-        log_reject("submit_pvp_action", me, &e);
-        return Err(e);
-    }
-
-    // Guard 4: ongoing.
-    if battle.state.outcome != BattleOutcome::Ongoing {
-        let e = "battle is not ongoing".to_string();
-        log_reject("submit_pvp_action", me, &e);
-        return Err(e);
-    }
-
-    let current_turn = battle.state.turn_number;
-
-    // Guard 5: validate action against caller's active monster.
-    let my_team = match my_side {
-        SideId::SideA => &battle.state.side_a,
-        SideId::SideB => &battle.state.side_b,
-    };
-    match action {
-        PvpAction::Attack { skill_id } => {
-            if my_team.active_monster().is_fainted() {
-                // Names ONLY an action the player can actually take.
-                // there is no player-callable forfeit reducer either (the only
-                // forfeits are `forfeit_on_disconnect` and the 60s deadline reaper).
-                // A message naming an affordance the client cannot render walks a
-                // corpse-active player into the reaper, i.e. a ranked rating loss.
-                let e = "your active monster has fainted — swap to another monster".to_string();
-                log_reject("submit_pvp_action", me, &e);
-                return Err(e);
-            }
-            if !my_team.active_monster().known_skill_ids.contains(&skill_id) {
-                let e = format!("skill {skill_id} not in active monster's moveset");
-                log_reject("submit_pvp_action", me, &e);
-                return Err(e);
-            }
-        }
-        PvpAction::Swap { team_index } => {
-            let idx = team_index as usize;
-            if idx >= my_team.team.len() {
-                let e = format!("team_index {team_index} out of bounds");
-                log_reject("submit_pvp_action", me, &e);
-                return Err(e);
-            }
-            if my_team.team[idx].is_fainted() {
-                let e = format!("monster at index {team_index} is fainted");
-                log_reject("submit_pvp_action", me, &e);
-                return Err(e);
-            }
-            if my_team.active == team_index {
-                let e = "already the active monster".to_string();
-                log_reject("submit_pvp_action", me, &e);
-                return Err(e);
-            }
-        }
-    }
-
-    // Guard 6: double-submit guard (no composite unique constraint in SpacetimeDB 2.6 —
-    // same discipline as inventory single-stack; enforce in code).
-    let already_submitted = ctx
-        .db
-        .battle_action()
-        .battle_id()
-        .filter(battle_id)
-        .any(|a| a.player_identity == me && a.turn_number == current_turn);
-    if already_submitted {
-        let e = "already submitted an action for this turn".to_string();
-        log_reject("submit_pvp_action", me, &e);
-        return Err(e);
-    }
-
-    // Guard 7 (irreversible): record the action.
-    ctx.db.battle_action().insert(BattleAction {
-        action_id: 0,
-        battle_id,
-        player_identity: me,
-        action,
-        turn_number: current_turn,
-        submitted_at_ms: now_ms(ctx),
-    });
-
-    log::info!(
-        "{{\"evt\":\"pvp_action\",\"battle_id\":{battle_id},\"sender\":\"{me}\",\"turn\":{current_turn}}}"
-    );
-
-    // Guard 8: resolve the turn if both sides have now submitted.
-    resolve_pvp_turn_if_ready(ctx, battle_id)
-}
-
 /// Scheduled reaper: delete a Pending battle challenge that has outlived
 /// `CHALLENGE_TTL_MS`.
 ///
@@ -1389,7 +951,9 @@ pub fn battle_challenge_reaper(
     Ok(())
 }
 
-/// Scheduled reaper: forfeit the non-submitting side when the turn deadline fires.
+/// Scheduled reaper: forfeit the non-submitting side when the 1v1 turn deadline fires.
+/// Never armed since bt-17 (no path inserts a `pvp_deadline_schedule` row); kept because a
+/// table's scheduled-ness is fixed at first publish.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
 /// Guard: `ctx.sender() != ctx.database_identity()` (identical to `movement_tick` at
@@ -1435,8 +999,8 @@ pub fn pvp_deadline_reaper(ctx: &ReducerContext, args: PvpDeadlineSchedule) -> R
         .any(|a| a.player_identity == battle.opponent_identity && a.turn_number == scheduled_turn);
 
     // Both submitted: resolution is in-flight; this is a no-op safe path
-    // (should be unreachable: resolve_pvp_turn_if_ready runs in the same txn
-    // as the second submit, before the deadline fires).
+    // (unreachable: the 1v1 resolution ran in the same txn as the second submit,
+    // before the deadline fired).
     if a_submitted && b_submitted {
         return Ok(());
     }

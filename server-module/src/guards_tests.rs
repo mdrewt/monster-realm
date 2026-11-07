@@ -59,7 +59,8 @@ fn party_slot_sentinel_outside_valid_range() {
 }
 
 /// check_party_size(0) must be Err — an empty party is
-/// invalid; start_battle with zero monsters must be rejected.
+/// invalid; a tactical start (`start_wild_tactical` / `start_pvp_tactical`) with zero
+/// monsters must be rejected.
 /// Kills: an impl that uses `n > MAX_PARTY_SIZE` only (misses the lower
 /// bound; `1..=MAX_PARTY_SIZE` is the valid range).
 #[test]
@@ -191,7 +192,7 @@ fn check_monster_in_party_accepts_last_valid_slot() {
 }
 
 /// PARTY_SLOT_NONE (255) signals a boxed monster
-/// and must be Err — start_battle must reject boxed monsters.
+/// and must be Err — the PvP tactical start (`start_pvp_tactical`) must reject boxed monsters.
 /// Kills: an impl that accepts all u8 values including the sentinel; an
 ///        impl that only rejects values > MAX_PARTY_SIZE (missing the exact
 ///        sentinel check); an impl that returns Ok(()) unconditionally.
@@ -378,8 +379,7 @@ fn validate_name_accepts_exactly_max_name_len_chars() {
 // `is_ranked_pvp(&Battle) -> bool` is defined as:
 //   player_identity != opponent_identity && opponent_identity != WILD_IDENTITY
 //
-// Home: guards.rs (the battle-authz guard family SSOT — require_owner,
-// require_pvp_participant live here).
+// Home: guards.rs (the battle-authz guard family SSOT — require_owner lives here).
 //
 // Three cases:
 //   1. Distinct players, non-wild opponent → true  (ranked PvP battle)
@@ -1023,12 +1023,12 @@ fn m22s5_deletion_gate_truth_table() {
 /// verdict pinned in each. The three admitted states are the positive control,
 /// and they are what make the two refused states mean anything.
 ///
-/// SCOPE NOTE: today this matrix overlaps the `begin_encounter` matrix in
-/// `battle_tests.rs` almost entirely, because that reducer helper is the seam's
-/// ONLY consumer. It is kept as a DECOUPLING FENCE — the wrapper's own truth
-/// table, independent of any consumer — so that if a second consumer is ever
-/// sanctioned (and the census widened deliberately) the seam still has a
-/// consumer-free witness. Do not re-widen the battle-side test to carry this.
+/// SCOPE NOTE: this is the wrapper's own truth table, independent of any
+/// consumer. The consumer-side matrix — the two live starts
+/// (`tactics::start_wild_tactical`, and `tactics::start_pvp_tactical` for BOTH
+/// of its subjects) driven through the same states — is
+/// `tactics_tests::deletion_gate_on_the_live_starts_refuses_a_pending_or_terminal_subject_only_bt17_2`.
+/// Keep the two separate: this fence holds even if a consumer is reshaped.
 ///
 ///   * A STRANGER'S MID-GRACE ROW IS SEEDED FIRST AND NEVER REMOVED. Without it
 ///     the table only ever holds the subject's row, so a TABLE-keyed gate —
@@ -1280,7 +1280,7 @@ fn rb128_seed_deleting_stranger(
     ));
 }
 
-/// The per-state hook for the twelve reducers whose admitted path stops at a
+/// The per-state hook for the eleven reducers whose admitted path stops at a
 /// READ: nothing was written in any state, so there is nothing to observe.
 fn rb128_no_row_oracle(_refused: bool) {}
 
@@ -1689,36 +1689,6 @@ fn rb128_consume_crystalized_essence_refuses_only_a_deletion_gated_caller() {
         me,
         &call,
         Err(["monster not ", "found"].concat()),
-        &rb128_no_row_oracle,
-    );
-}
-
-/// `attempt_recruit` refuses a deletion-gated caller and
-/// admits everybody else.
-///
-/// Positive control: `battle not found`. The `u64`-keyed
-/// `battle` index is unregistered, so the lookup yields nothing — well before the
-/// bait `consume_one` and the success-path `monster` insert that make this
-/// reducer class (iv) rather than class (i).
-///
-/// kills: a dropped, discarded or below-lookup gate on `attempt_recruit` · M9 · a
-/// table-keyed fake · a latched answer.
-#[test]
-fn rb128_attempt_recruit_refuses_only_a_deletion_gated_caller() {
-    let fx = crate::native_host_tests::fixture();
-    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
-    let ctx = fx.ctx();
-    let me = ctx.sender();
-
-    let name = ["attempt_", "recruit"].concat();
-    let call = || crate::taming::attempt_recruit(&ctx, 1, None);
-    rb128_assert_refused_only_while_gated(
-        name.as_str(),
-        &fx,
-        &acct,
-        me,
-        &call,
-        Err(["battle not ", "found"].concat()),
         &rb128_no_row_oracle,
     );
 }

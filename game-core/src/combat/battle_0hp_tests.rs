@@ -304,7 +304,7 @@ fn drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap() {
 /// pass silently.
 ///
 /// It builds side A with the raw literal `BattleSide { active: 0, team }` — the
-/// exact pre-fix shape from `start_battle` / `begin_encounter` — and asserts the
+/// exact pre-fix shape the retired 1v1 battle starts built — and asserts the
 /// defect signature: a `Faint { SideA }` immediately followed by a
 /// `Switch { SideA, new_active: 1 }`.
 ///
@@ -457,8 +457,9 @@ fn entry_ability_fires_on_the_real_lead_not_on_the_corpse() {
 /// planned and **rejected**, because it deletes the only mechanism that repairs a
 /// 0 HP active. A red-team pass ran the state below for **100 turns** under the
 /// proposed guard: no `Damage`, no `Faint`, no `Switch`, no outcome change — only
-/// `turn_number` advanced. The battle never terminates. In ranked PvP, where
-/// `flee` is rejected and `is_in_ongoing_battle` locks both players out of every
+/// `turn_number` advanced. The battle never terminates. In ranked PvP under the
+/// retired 1v1 shells, where fleeing was rejected and `is_in_ongoing_battle` locks both
+/// players out of every
 /// other path, the only exit would degenerate to "whoever disconnects first takes
 /// a rated loss."
 ///

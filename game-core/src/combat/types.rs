@@ -715,8 +715,8 @@ mod tests {
     /// EARS E1: an all-fainted team has no legal lead.
     ///
     /// `None` IS the "has a conscious member" precondition — the shells
-    /// (`start_battle` / `begin_encounter`) fold their separate `any(conscious)`
-    /// check into this return value.
+    /// (today `tactics::start_wild_tactical`; the retired 1v1 starts before it) fold
+    /// their separate `any(conscious)` check into this return value.
     ///
     /// Kills: an impl that returns `Some(BattleSide { active: 0, .. })` for an
     /// all-fainted team, which would seat a corpse and re-open the defect.

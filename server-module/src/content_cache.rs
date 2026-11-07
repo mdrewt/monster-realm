@@ -11,16 +11,14 @@
 //! caching the error is correct: no retry path exists that could produce a
 //! different result from the same binary.
 //!
-//! The version-keyed type-chart cache at the bottom is the one
+//! The version-keyed type-chart cache core at the bottom is the one
 //! exception to both rules above: it caches DB-derived data (keyed on the
 //! `config` row's `content_version`, so a reseed invalidates it) and it NEVER
 //! caches a failed rebuild — a later transaction can fix DB rows, unlike an
-//! embedded registry.
+//! embedded registry. Its `ReducerContext` accessor (`cached_type_chart`) left
+//! with the 1v1 engine in bt-17; the pure core stays for its tests.
 
-use spacetimedb::{ReducerContext, Table};
 use std::sync::{Arc, LazyLock, Mutex};
-
-use crate::schema::{config, type_relation_row};
 
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
@@ -31,12 +29,16 @@ static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
 static QUEST_DEFS: LazyLock<Result<Vec<game_core::QuestDef>, String>> =
     LazyLock::new(game_core::load_quest_defs);
 
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 static SKILLS: LazyLock<Result<Vec<game_core::SkillDef>, String>> =
     LazyLock::new(game_core::load_skills);
 
 static ITEMS: LazyLock<Result<Vec<game_core::ItemDef>, String>> =
     LazyLock::new(game_core::load_items);
 
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 static ABILITIES: LazyLock<Result<Vec<game_core::AbilityDef>, String>> =
     LazyLock::new(game_core::load_abilities);
 
@@ -87,6 +89,8 @@ pub(crate) fn cached_quest_defs() -> Result<&'static Vec<game_core::QuestDef>, S
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cached_skills() -> Result<&'static Vec<game_core::SkillDef>, String> {
     (*SKILLS).as_ref().map_err(Clone::clone)
 }
@@ -103,6 +107,8 @@ pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String>
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cached_abilities() -> Result<&'static Vec<game_core::AbilityDef>, String> {
     (*ABILITIES).as_ref().map_err(Clone::clone)
 }
@@ -161,6 +167,8 @@ pub(crate) fn cached_battle_maps() -> Result<&'static Vec<game_core::BattleMapEn
 /// The type-chart cache cell: `None` until first build, then the
 /// `(content_version, chart)` pair the last successful rebuild produced.
 /// A plain type alias so tests can construct and poison cells directly.
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) type TypeChartCell = Mutex<Option<(u32, Arc<game_core::TypeChart>)>>;
 
 /// Pure cache core: serve the cached `Arc` on a version hit,
@@ -182,6 +190,8 @@ pub(crate) type TypeChartCell = Mutex<Option<(u32, Arc<game_core::TypeChart>)>>;
 /// # Errors
 /// Propagates `rebuild`'s error verbatim; never caches it (DB-derived data can
 /// be fixed by a later transaction, unlike the embedded registries above).
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn type_chart_cache_lookup(
     cell: &TypeChartCell,
     version: u32,
@@ -196,43 +206,6 @@ pub(crate) fn type_chart_cache_lookup(
     let chart = Arc::new(rebuild()?);
     *state = Some((version, Arc::clone(&chart)));
     Ok(chart)
-}
-
-/// Version-keyed type-chart accessor: serves the cached chart
-/// while the singleton `config` row's `content_version` matches, rebuilding
-/// from `type_relation_row` on a miss. A missing `config` row keys the cache
-/// at version 0 — the pre-seed sentinel, so a spurious hit merely forces a
-/// rebuild on the next real call.
-///
-/// CONTRACT: never call this from any code path that
-/// writes `type_relation_row` in the same transaction. `content.rs`
-/// (`sync_content_inner`) and everything transitively reachable from it
-/// (`marshal.rs`, `evolution.rs`) are FORBIDDEN callers: between the row
-/// rewrite and the `content_version` stamp, a call here would cache the pair
-/// (old version, new chart); a later panic rolls the DATABASE back but not
-/// this process static, leaving a permanent version-match hit on a chart
-/// built from rows that no longer exist.
-///
-/// NOTE: the cell lock is HELD across the rebuild
-/// closure (racing rebuilds cannot clobber each other; safe because reducers
-/// are serial). The re-entrancy footgun: any future rebuild path that
-/// reacquires this cache would DEADLOCK — keep the rebuild closure cache-free.
-///
-/// # Errors
-/// Propagates the rebuild's error (`marshal::type_chart_from_rows`) without
-/// caching it.
-pub(crate) fn cached_type_chart(ctx: &ReducerContext) -> Result<Arc<game_core::TypeChart>, String> {
-    static TYPE_CHART: TypeChartCell = Mutex::new(None);
-    let version = ctx
-        .db
-        .config()
-        .id()
-        .find(0)
-        .map(|c| c.content_version)
-        .unwrap_or(0);
-    type_chart_cache_lookup(&TYPE_CHART, version, || {
-        crate::marshal::type_chart_from_rows(ctx.db.type_relation_row().iter())
-    })
 }
 
 #[cfg(test)]

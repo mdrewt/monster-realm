@@ -2248,6 +2248,263 @@ fn start_refuses_bad_packs_busy_or_unfit_parties_and_writes_nothing_bt8_2() {
     });
 }
 
+// ===========================================================================
+// bt-17 (BT17.2) — the live starts' deletion gate and seed home, re-proven after the 1v1 purge
+// ===========================================================================
+
+/// An identity that is neither a subject, the other PvP side nor the sender: its account is
+/// mid-grace in EVERY state of the deletion-gate matrix and is never removed, so a gate that refuses
+/// when ANY row is pending (a table-keyed fake) cannot pass the admitted states.
+fn gate_stranger() -> Identity {
+    Identity::from_byte_array([0x99; 32])
+}
+
+/// A fresh world for one deletion-gate state: the mid-grace stranger, then `setup`.
+fn gate_world<'a>(fx: &'a Fixture, setup: &dyn Fn(&World<'_>)) -> World<'a> {
+    let w = world(fx);
+    w.accounts.seed(&requested_deletion(
+        new_account_row(gate_stranger(), String::new(), 0),
+        T0 - 5_000,
+    ));
+    setup(&w);
+    w
+}
+
+/// ADMITTED: the start proceeds past the gate — it returns the id of an Ongoing anchor that
+/// seats `subject`.
+fn assert_gate_admits(
+    label: &str,
+    fx: &Fixture,
+    w: &World<'_>,
+    subject: Identity,
+    call: &dyn Fn(&Fixture) -> Result<u64, String>,
+) {
+    let id = call(fx).unwrap_or_else(|e| {
+        panic!("{label}: ADMITTED, the start must proceed past the deletion gate; got Err({e:?})")
+    });
+    let anchor = w
+        .anchor(id)
+        .unwrap_or_else(|| panic!("{label}: the returned id {id} names the inserted anchor"));
+    assert!(
+        anchor.player_identity == subject || anchor.opponent_identity == subject,
+        "{label}: the anchor seats the subject"
+    );
+    assert_eq!(anchor.state.outcome, BattleOutcome::Ongoing, "{label}");
+}
+
+/// REFUSED: the gate's own text, and the whole store byte-identical.
+fn assert_gate_refuses(
+    label: &str,
+    fx: &Fixture,
+    w: &World<'_>,
+    call: &dyn Fn(&Fixture) -> Result<u64, String>,
+) {
+    let before = w.snapshot();
+    assert_eq!(
+        call(fx),
+        Err(crate::guards::REJECT_DELETION_GATED.to_string()),
+        "{label}: REFUSED with the deletion gate's text"
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "{label}: a refused start writes nothing"
+    );
+}
+
+/// The deletion-gate matrix of one live start for one NAMED subject (the sender is always the
+/// module, as on the grass and accept paths): no account row → admitted; `Active` (with the
+/// module SENDER's own row mid-grace) → admitted; `PendingDeletion` → refused; terminal
+/// (`PendingDeletion` + the marker) → refused; the illegal `Active`-status-plus-marker tombstone →
+/// refused (the fail-closed arm `accounts::should_reject_for_deletion` keeps on purpose); the row
+/// removed again → admitted. The refused states and the final admission share ONE fixture, so a
+/// latched answer cannot pass.
+fn assert_live_start_deletion_gate(
+    what: &str,
+    subject: Identity,
+    setup: &dyn Fn(&World<'_>),
+    call: &dyn Fn(&Fixture) -> Result<u64, String>,
+) {
+    let active = new_account_row(subject, String::new(), 0);
+    let pending = requested_deletion(active.clone(), T0 - 1_000);
+    let terminal = crate::accounts::terminal_account(pending.clone(), T0 - 500);
+    let tombstone = Account {
+        status: crate::schema::AccountStatus::Active,
+        deletion_requested_at_ms: None,
+        ..terminal.clone()
+    };
+    {
+        let fx = fixture();
+        let w = gate_world(&fx, setup);
+        assert_gate_admits(&format!("{what}: no account row"), &fx, &w, subject, call);
+    }
+    {
+        let fx = fixture();
+        let w = gate_world(&fx, setup);
+        w.accounts.seed(&active);
+        w.accounts.seed(&requested_deletion(
+            new_account_row(module(), String::new(), 0),
+            T0 - 1_000,
+        ));
+        assert_gate_admits(
+            &format!("{what}: Active (the module sender's own row mid-grace)"),
+            &fx,
+            &w,
+            subject,
+            call,
+        );
+    }
+    {
+        let fx = fixture();
+        let w = gate_world(&fx, setup);
+        for (state, row) in [
+            ("PendingDeletion", &pending),
+            ("terminal", &terminal),
+            ("Active status carrying the terminal marker", &tombstone),
+        ] {
+            w.accounts.seed(row);
+            assert_gate_refuses(&format!("{what}: {state}"), &fx, &w, call);
+            assert_eq!(
+                w.accounts.remove(subject),
+                1,
+                "{what}: {state}: exactly the subject's one row is removed (the stranger's stays)"
+            );
+        }
+        assert_gate_admits(&format!("{what}: row removed"), &fx, &w, subject, call);
+    }
+}
+
+/// The deletion gate of BOTH live starts answers from the NAMED subject's account: the wild start
+/// (`start_wild_tactical`, subject = the walker) and the PvP start (`start_pvp_tactical`, subject =
+/// the challenger, then the opponent) each refuse a mid-grace, terminal or tombstoned subject with
+/// `REJECT_DELETION_GATED` and nothing written, and admit a subject with no row, an `Active` row,
+/// or a removed row — while a stranger is mid-grace throughout and the module sender's own row is
+/// mid-grace in the `Active` state.
+///
+/// Replaces the 1v1 gate matrices deleted by bt-17: `battle_tests::rb46_…` (`start_battle`),
+/// `battle_tests::rb76_…` (`begin_encounter`) and `guards_tests::rb128_attempt_recruit_…`.
+///
+/// kills: the gate checking only `status == PendingDeletion` and ignoring the terminal marker (the
+/// tombstone state — a legal terminal row also carries `PendingDeletion`, so only the illegal
+/// `Active` + marker row tells them apart); the gate dropped on either PvP subject (that subject's
+/// refused states); a gate keyed on `ctx.sender()` (the module: refused states admitted, and the
+/// `Active` state with the module mid-grace refused); a table-keyed or any-row-pending gate (the
+/// admitted states, the stranger mid-grace); a row-exists gate (the `Active` state); inverted
+/// polarity; a latched answer (the final removed-row state); a gate placed after the first write
+/// (the refused-state snapshot).
+#[test]
+fn deletion_gate_on_the_live_starts_refuses_a_pending_or_terminal_subject_only_bt17_2() {
+    assert_live_start_deletion_gate(
+        "start_wild_tactical",
+        a(),
+        &wild_gate_setup,
+        &wild_gate_call,
+    );
+    assert_live_start_deletion_gate(
+        "start_pvp_tactical (challenger)",
+        a(),
+        &pvp_gate_setup,
+        &pvp_gate_call,
+    );
+    assert_live_start_deletion_gate(
+        "start_pvp_tactical (opponent)",
+        b(),
+        &pvp_gate_setup,
+        &pvp_gate_call,
+    );
+}
+
+/// A joined in zone 0 with its `PAIR`.
+fn wild_gate_setup(w: &World<'_>) {
+    w.join(a(), 1);
+    w.seed_party(a(), &PAIR);
+}
+
+/// The grass path's call: the module starts A's wild battle.
+fn wild_gate_call(fx: &Fixture) -> Result<u64, String> {
+    let seed = seed_for(1, Some(1));
+    fx.run_as_at(module(), at(T0), |ctx| {
+        super::start_wild_tactical(ctx, a(), seed, seed, None)
+    })
+}
+
+/// A and B joined with `PAIR` / `B_PAIR`.
+fn pvp_gate_setup(w: &World<'_>) {
+    pvp_parties(w, &PAIR, &B_PAIR);
+}
+
+/// The accept path's call: the module starts A (challenger) against B (opponent), format 2.
+fn pvp_gate_call(fx: &Fixture) -> Result<u64, String> {
+    try_start_pvp(fx, a(), &ids(&PAIR), b(), &ids(&B_PAIR), 2, pvp_seed(7), T0)
+}
+
+/// After a successful wild start, every wild's individuality seed lives in `battle_wild_unit` —
+/// exactly one row per wild, `(battle_id, wild_index, wild_seed(encounter_seed, i))`, keyed by the
+/// id the start RETURNED — and nowhere the anchor's readers see: no `battle_wild` row is written.
+/// The returned id is the inserted anchor's `battle_id`. Two players' starts (a forced pack of
+/// three, a natural pack of one) in one store, so a constant or zero id cannot match both anchors.
+/// (The rows' lifetime is the 24 h `battle_gc` — DECISIONS "Tactical battle privacy is structural".)
+///
+/// Replaces `battle_tests::bn_begin_encounter_keeps_the_seed_private_and_short_lived` (the 1v1
+/// `begin_encounter` is deleted, bt-17).
+///
+/// kills: the seed also written to the anchor-visible `battle_wild` sidecar; `Ok(0)` or any
+/// constant returned instead of the inserted id; a seed row keyed by another battle id; a missing
+/// or duplicated wild row; a seed other than `wild_seed(encounter_seed, i)`.
+#[test]
+fn wild_start_keeps_every_wild_seed_in_battle_wild_unit_under_the_returned_id_bt17_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    w.seed_party(a(), &TRIO);
+    w.join(b(), 2);
+    w.seed_party(b(), &[(21, 1, 0, 200), (22, 3, 1, 190)]);
+    let (seed_a, seed_b) = (seed_for(4, None), seed_for(1, Some(1)));
+    assert_ne!(seed_a, seed_b, "PRECONDITION: two distinct encounter seeds");
+    let id_a = start(&fx, a(), seed_a, Some(3), T0);
+    let id_b = start(&fx, b(), seed_b, None, T0 + 1_000);
+    assert_ne!(id_a, id_b, "two starts return two ids");
+    for (who, id) in [(a(), id_a), (b(), id_b)] {
+        let anchors: Vec<u64> = w
+            .battles
+            .rows()
+            .iter()
+            .filter(|r| r.player_identity == who)
+            .map(|r| r.battle_id)
+            .collect();
+        assert_eq!(
+            anchors,
+            vec![id],
+            "{who}: the returned id IS the one inserted anchor's battle_id"
+        );
+        assert_eq!(
+            w.tactical(id).battle_id,
+            id,
+            "{who}: the tactical row hangs off the returned id"
+        );
+    }
+    let mut got: Vec<(u64, u8, u32)> = w
+        .wild_units
+        .rows()
+        .iter()
+        .map(|r| (r.battle_id, r.wild_index, r.individuality_seed))
+        .collect();
+    got.sort_unstable();
+    let mut want: Vec<(u64, u8, u32)> = (0..3u8)
+        .map(|i| (id_a, i, wild_seed(seed_a, i)))
+        .chain(std::iter::once((id_b, 0, wild_seed(seed_b, 0))))
+        .collect();
+    want.sort_unstable();
+    assert_eq!(
+        got, want,
+        "one battle_wild_unit per wild, under the returned id, with its derived individuality seed"
+    );
+    assert!(
+        w.battle_wilds.rows().is_empty(),
+        "no battle_wild row: the seed never reaches the anchor-visible 1v1 sidecar"
+    );
+}
+
 #[test]
 fn resolve_formation_keeps_remembered_conscious_party_ids_then_fills_from_party_order_bt8_2() {
     let (ma, mb, mc, md) = (101u64, 102, 103, 104);
@@ -3178,175 +3435,6 @@ fn unloadable_battle_falls_back_to_a_fled_close_with_unit_hp_persisted_bt8_5() {
         let gcs: Vec<ScheduleAt> = w.gcs_of(live.id).iter().map(|r| r.scheduled_at).collect();
         assert_eq!(gcs, vec![time(t2 + GC_DELAY_MS)], "{label}");
     }
-}
-
-/// What every legacy 1v1 reducer returns on a tactical anchor (`reject_if_tactical_anchor`).
-const TACTICAL_REFUSAL: &str = "tactical battle: use the tactical reducers";
-
-/// Retargeted by bt-9 (the plan's RT-1, under BT9.1 "paid once"; was
-/// `legacy_flee_on_a_tactical_anchor_persists_the_mirrored_tactical_hp_bt8_5`): a 1v1 reducer
-/// may not act on a tactical anchor at all — a legacy turn would run the 1v1 funnel's own payout
-/// beside the ledger's. Each one refuses with the guard's own error before any write: no monster,
-/// wallet, anchor or tactical row moves. Every call would SUCCEED without the guard — the lead
-/// carries the Poison item 3 cures (so `use_battle_item` is not stopped by its own "no matching
-/// status" check), monster 12 is a conscious swap target, the skill is in the lead's moveset — so
-/// each exact-error assertion bites on its own reducer's guard.
-#[test]
-fn legacy_one_v_one_reducers_refuse_a_tactical_anchor_and_write_nothing_bt9_1() {
-    let fx = fixture();
-    let w = world(&fx);
-    let live = live_pair(&fx, &w);
-    w.inventory.seed(&Inventory {
-        inv_id: 501,
-        owner_identity: a(),
-        item_id: 3,
-        count: 2,
-    });
-    assert!(
-        game_core::load_items()
-            .expect("item content loads")
-            .iter()
-            .find(|i| i.id == 3)
-            .and_then(|i| i.cure_status)
-            .is_some_and(|cure| cure.matches(&game_core::StatusEffect::Poison)),
-        "PRECONDITION: item 3 cures Poison"
-    );
-    let mut anchor = w.anchor(live.id).expect("anchor");
-    assert_eq!(
-        anchor.state.side_a.active, 0,
-        "PRECONDITION: the anchor's lead is team[0]"
-    );
-    anchor.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
-    assert_eq!(w.battles.remove(live.id), 1, "the anchor edited in place");
-    w.battles.seed(&anchor);
-    let skill = anchor.state.side_a.team[0]
-        .known_skill_ids
-        .first()
-        .copied()
-        .expect("the lead knows a skill");
-    let refused: Result<(), String> = Err(TACTICAL_REFUSAL.to_string());
-    let before = w.snapshot();
-    let t = T0 + 40_000;
-    let flee = fx.run_as_at(a(), at(t), |ctx| crate::battle::flee(ctx, live.id));
-    assert_eq!(flee, refused, "flee on a tactical anchor is refused");
-    assert_eq!(
-        changed(&before, &w.snapshot()),
-        none(),
-        "flee writes nothing"
-    );
-    let item = fx.run_as_at(a(), at(t), |ctx| {
-        crate::battle::use_battle_item(ctx, live.id, 3)
-    });
-    assert_eq!(
-        item, refused,
-        "use_battle_item is refused although the lead's Poison is curable"
-    );
-    assert_eq!(
-        changed(&before, &w.snapshot()),
-        none(),
-        "use_battle_item writes nothing (no debit, no cure)"
-    );
-    let swap = fx.run_as_at(a(), at(t), |ctx| {
-        crate::battle::swap_active(ctx, live.id, 1)
-    });
-    assert_eq!(swap, refused, "swap_active is refused");
-    assert_eq!(
-        changed(&before, &w.snapshot()),
-        none(),
-        "swap_active writes nothing"
-    );
-    let attack = fx.run_as_at(a(), at(t), |ctx| {
-        crate::battle::submit_attack(ctx, live.id, skill)
-    });
-    assert_eq!(attack, refused, "submit_attack is refused");
-    assert_eq!(
-        changed(&before, &w.snapshot()),
-        none(),
-        "submit_attack writes nothing"
-    );
-    assert_eq!(
-        w.anchor(live.id).expect("anchor").state.outcome,
-        BattleOutcome::Ongoing,
-        "the tactical battle is still the tactical reducers' to finish"
-    );
-}
-
-/// RT-1 covers the fifth legacy reducer: `taming::attempt_recruit` on a tactical anchor is refused
-/// with the guard's error and writes nothing, EVEN when a `battle_wild` row exists for the anchor
-/// (its own "not a wild battle" refusal is then no protection). The fixture makes the unguarded
-/// path go all the way: a sure-hit bait row (bonus 1000 — `recruit_chance` clamps, so any
-/// `ctx.random()` draw recruits), a held stack of 2, and the content species rows its success arm
-/// reads. Without the guard the bait is debited, a playtest row written and the wild recruited.
-#[test]
-fn legacy_attempt_recruit_refuses_a_tactical_anchor_even_with_a_battle_wild_row_bt9_1() {
-    let fx = fixture();
-    let w = world(&fx);
-    let live = live_pair(&fx, &w);
-    let items = fx.table_keyed::<crate::schema::ItemRow, u32>("item_row", "id", |r| r.id);
-    items.seed(&crate::schema::ItemRow {
-        id: 1,
-        name: "bait".to_string(),
-        description: String::new(),
-        recruit_bonus: 1_000,
-        train_stat: None,
-        train_amount: 0,
-        sell_price: 0,
-        cure_status: None,
-    });
-    let species_rows =
-        fx.table_keyed::<crate::schema::SpeciesRow, u32>("species_row", "id", |r| r.id);
-    for s in &game_core::load_species().expect("species content loads") {
-        species_rows.seed(&crate::schema::SpeciesRow {
-            id: s.id,
-            name: s.name.clone(),
-            base_hp: s.base_stats.hp,
-            base_attack: s.base_stats.attack,
-            base_defense: s.base_stats.defense,
-            base_speed: s.base_stats.speed,
-            base_sp_attack: s.base_stats.sp_attack,
-            base_sp_defense: s.base_stats.sp_defense,
-            affinity: s.affinity,
-            learnable_skill_ids: s.learnable_skill_ids.clone(),
-            ability: s.ability,
-            tier: s.tier,
-        });
-    }
-    w.inventory.seed(&Inventory {
-        inv_id: 501,
-        owner_identity: a(),
-        item_id: 1,
-        count: 2,
-    });
-    assert!(
-        w.battle_wilds.rows().is_empty(),
-        "PRECONDITION: a tactical start writes no battle_wild row of its own"
-    );
-    let wild = w.wild_units_of(live.id)[0].clone();
-    w.battle_wilds.seed(&BattleWild {
-        battle_id: live.id,
-        wild_species_id: wild.species_id,
-        wild_level: wild.level,
-        individuality_seed: wild.individuality_seed,
-    });
-    let before = w.snapshot();
-    let got = fx.run_as_at(a(), at(T0 + 40_000), |ctx| {
-        crate::taming::attempt_recruit(ctx, live.id, Some(1))
-    });
-    assert_eq!(
-        got,
-        Err(TACTICAL_REFUSAL.to_string()),
-        "attempt_recruit on a tactical anchor is refused by the guard"
-    );
-    assert_eq!(
-        changed(&before, &w.snapshot()),
-        none(),
-        "no bait debited, no playtest row, no recruit, no anchor change"
-    );
-    assert_eq!(
-        w.anchor(live.id).expect("anchor").state.outcome,
-        BattleOutcome::Ongoing,
-        "the tactical battle is still the tactical reducers' to finish"
-    );
 }
 
 /// BT9.1 "paid once": `finish` re-reads the STORED tactical row, so a caller holding a stale
@@ -4792,6 +4880,71 @@ fn start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_pl
     );
 }
 
+/// The PvP start refuses a side whose party monster is escrowed in an ACTIVE trade offer — on
+/// EITHER side, whichever chain the offer sits in (the owner as initiator offering it, or as
+/// counterparty asked for it) — with the escrow guard's text and nothing written. The offers name a
+/// third player so neither battle side's other monsters are involved.
+///
+/// Replaces the four 1v1 rows of `trading_tests::nh_escrowed_monster_is_refused_by_every_guarded_reducer`
+/// (`start_battle` party / opponent side, `start_pvp_battle`, `begin_encounter`) deleted by bt-17;
+/// the wild start's own arm is `start_refuses_bad_packs_busy_or_unfit_parties_and_writes_nothing_bt8_2`
+/// ("party monster in a trade").
+///
+/// kills: the `reject_if_monster_in_trade` call in `load_side_party` dropped (all four arms); the
+/// opponent side's loader skipping the guard (the two opponent arms); a guard that reads only the
+/// initiator chain (the two counterparty arms); a guard run after the first write (the snapshot).
+#[test]
+fn pvp_start_refuses_either_sides_party_monster_in_an_active_trade_escrow_bt17_2() {
+    let (pa, pb) = (ids(&PAIR), ids(&B_PAIR));
+    let in_trade = "monster is in an active trade";
+    assert_pvp_start_refused(
+        "the challenger offers its party monster 12",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        in_trade,
+        |_, w| {
+            w.offers.seed(&offer(1, a(), c(), vec![12]));
+        },
+    );
+    assert_pvp_start_refused(
+        "the challenger's party monster 12 is asked for",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        in_trade,
+        |_, w| {
+            w.offers.seed(&TradeOffer {
+                counterparty_monster_ids: vec![12],
+                ..offer(1, c(), a(), Vec::new())
+            });
+        },
+    );
+    assert_pvp_start_refused(
+        "the opponent offers its party monster 22",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        in_trade,
+        |_, w| {
+            w.offers.seed(&offer(1, b(), c(), vec![22]));
+        },
+    );
+    assert_pvp_start_refused(
+        "the opponent's party monster 22 is asked for",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        in_trade,
+        |_, w| {
+            w.offers.seed(&TradeOffer {
+                counterparty_monster_ids: vec![22],
+                ..offer(1, c(), b(), Vec::new())
+            });
+        },
+    );
+}
+
 /// "Accepting SHALL require at least 1 conscious monster": a side with ONE conscious member (its
 /// partner fainted) starts, and then deploys exactly that one (all it has, the format being 2).
 ///
@@ -6017,61 +6170,6 @@ fn a_queued_plan_reaches_battle_event_only_when_it_executes_bt14_4() {
         "the opponent sees it once it ran"
     );
     assert!(w.queues_of(live.id).is_empty(), "the READY row is consumed");
-}
-
-/// REV 2 A: the legacy 1v1 `submit_pvp_action` on a TACTICAL PvP anchor is refused for BOTH
-/// participants with the tactical guard's text, and writes nothing (no `battle_action` pick, no
-/// anchor change) — a 1v1 turn must never settle (rate) a battle the tactical rows still run.
-///
-/// WRONG IMPL KILLED: the freeze (no tactical-anchor guard on `submit_pvp_action`: each side's pick is
-/// recorded and the second resolves a 1v1 turn on the anchor).
-#[test]
-fn legacy_submit_pvp_action_refuses_a_tactical_pvp_anchor_for_both_participants_bt14_4() {
-    let fx = fixture();
-    let w = world(&fx);
-    let actions = fx
-        .table_keyed::<crate::schema::BattleAction, u64>("battle_action", "action_id", |r| {
-            r.action_id
-        })
-        .writable()
-        .scannable()
-        .unique()
-        .auto_inc(|r| r.action_id, |r, id| r.action_id = id);
-    let _ = fx.table_keyed::<crate::schema::BattleAction, u64>("battle_action", "battle_id", |r| {
-        r.battle_id
-    });
-    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
-    let anchor = w.anchor(live.id).expect("anchor");
-    let lead_skill = |side: &game_core::BattleSide| -> u32 {
-        side.team
-            .first()
-            .and_then(|lead| lead.known_skill_ids.first().copied())
-            .expect("the lead knows a skill")
-    };
-    let before = w.snapshot();
-    for (who, skill) in [
-        (a(), lead_skill(&anchor.state.side_a)),
-        (b(), lead_skill(&anchor.state.side_b)),
-    ] {
-        let got = fx.run_as_at(who, at(T0 + 9_000), |ctx| {
-            crate::pvp::submit_pvp_action(
-                ctx,
-                live.id,
-                game_core::PvpAction::Attack { skill_id: skill },
-            )
-        });
-        assert_eq!(
-            got,
-            Err(TACTICAL_REFUSAL.to_string()),
-            "{who}: the legacy pick is refused on a tactical anchor"
-        );
-        assert_eq!(
-            changed(&before, &w.snapshot()),
-            none(),
-            "{who}: nothing written"
-        );
-        assert!(actions.rows().is_empty(), "{who}: no battle_action row");
-    }
 }
 
 /// A's `deploy_units` naming one of B's monsters is refused with the SAME ownership text whether B

@@ -131,7 +131,7 @@ another module's table directly.
 in code: an over-cap move enqueue returns `Err("queue full")`; a stale input seq is
 rejected in `guards::authorize_move`; an oversized party is rejected by
 `check_party_size`, not truncated; `BattleSide::set_active` returns a typed
-`SwapError`; `submit_attack` refuses an attack from a fainted active monster; a
+`SwapError`; `tactics::submit_queue` refuses a fainted unit's act with the typed error; a
 shop purchase or trade that would push the receiver past `MAX_ITEM_STACK` or
 `MAX_BALANCE` is rejected before anything moves (`check_item_headroom` /
 `check_currency_headroom`). A rejected reducer rolls back its whole transaction.
@@ -177,7 +177,7 @@ two identity indexes (`my_tactical_battle`, `my_battle_units`, `my_battle_events
 `player_formation` rows (`my_battle_queue`, `my_battle_deploy`, `my_formation`); and
 `battle_secret` (the seed), `battle_wild_unit` (wild individuality seeds) and
 `battle_summary` (telemetry) have no view at all. `battle_unit` carries no queue or
-ready field. Deploy is reveal-by-copy: each side's picks go to its own owner-only `battle_deploy` row (`locked`, written in `tactics::stage_pvp`). The second lock, or the 45 s window's auto-fill in `tactics::expire_pvp_deploy` (`pvp_deploy_ms`, `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which copies both stagings into `battle_unit` rows and flips the phase in one transaction. No unit row exists before that, so the only participant-visible deploy fact is the phase flip. `battle_clock` holds one row per side (a PvP battle holds two; a Practice battle's two name one player), and both participants read both through `my_battle_clock`: the opponent's window and strike count are match state, not a secret. `tactics::store` writes a row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible. Forfeit is a client-confirmed reducer (`tactics::forfeit`), not a queue entry, and costs 0 AP. Forfeit, disconnect, the 4th auto-pass, Surge and adjudication all reach `tactics::finish` as `Close::Settled`, which settles through `pvp::settle_pvp_battle` in `SideAWriteBack::HpOnly` mode. That is the one caller of `ranking::apply_pvp_rating`; the tactical settlement pays essence to both sides, with no XP and no currency. Practice rates and pays nothing. The legacy `submit_pvp_action` refuses a tactical anchor. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
+ready field. Deploy is reveal-by-copy: each side's picks go to its own owner-only `battle_deploy` row (`locked`, written in `tactics::stage_pvp`). The second lock, or the 45 s window's auto-fill in `tactics::expire_pvp_deploy` (`pvp_deploy_ms`, `game-core/src/tactics/tuning.rs`), calls `tactics::materialize`, which copies both stagings into `battle_unit` rows and flips the phase in one transaction. No unit row exists before that, so the only participant-visible deploy fact is the phase flip. `battle_clock` holds one row per side (a PvP battle holds two; a Practice battle's two name one player), and both participants read both through `my_battle_clock`: the opponent's window and strike count are match state, not a secret. `tactics::store` writes a row only when it moved, so a pre-queue or a cancel leaves nothing participant-visible. Forfeit is a client-confirmed reducer (`tactics::forfeit`), not a queue entry, and costs 0 AP. Forfeit, disconnect, the 4th auto-pass, Surge and adjudication all reach `tactics::finish` as `Close::Settled`, which settles through `pvp::settle_pvp_battle` in `SideAWriteBack::HpOnly` mode. That is the one caller of `ranking::apply_pvp_rating`; the tactical settlement pays essence to both sides, with no XP and no currency. Practice rates and pays nothing. Every tactical table is `exportable: false` in `DATA_LIFECYCLE_MANIFEST`;
 the cascade step (`schema::erase_tactical_rows`, beside the tables it writes) collects
 the battle ids from every row that still names the identity (the `battle` anchor chain,
 the clock, queue, deploy and summary identity columns, and a scan of `battle_unit`),
@@ -438,8 +438,8 @@ and `rewards::pay` is applied through the 1v1 funnel's own per-monster credit
 (ascending unit) and one `unit 0` line for the player's currency appended after `BattleEnd`. The
 win-only credits (daily trust-favorable, Quality Time, the evolution check) need a defeated wild,
 so a recruit-only win pays nothing. `battle_summary` is one row per battle, inserted at the Active
-start (`outcome == Ongoing` until finished) and accumulated every step. The 1v1 reducers refuse a
-tactical anchor (`battle::reject_if_tactical_anchor`).
+start (`outcome == Ongoing` until finished) and accumulated every step. No 1v1 reducer exists to act
+on an anchor since bt-17: one anchor, one payout path.
 
 **Why.** Nothing in game-core calls the KO hook, and the shell sees the board only between
 transactions, so the KO moment is observable only through the transcript; consciousness is
@@ -569,13 +569,17 @@ path any other player can read.
 `accept_challenge` — call the tactical writers (`tactics::start_wild_tactical`,
 `tactics::start_pvp_tactical`) and nothing else. The switch happened in one slice (bt-16)
 together with the deletion of the dev-gated tactical starts and the migration of every
-battle e2e. bt-17 then removed the 1v1 engine from the module's reducer set: `start_battle`
-(which had stayed client-callable through the flip), `submit_attack`, `swap_active`, `flee`,
-`use_battle_item`, `attempt_recruit` and `submit_pvp_action` lost their `#[spacetimedb::reducer]`
-attribute (the generated bindings and `client-callable-reducers.json` carry none of them), the
-dev-only `start_wild_battle` was deleted, and the client's 1v1 renderer, model, dispatch arms and
-copy were deleted. Their Rust bodies stay compiled as `pub(crate)` test-only functions until the
-continuation retargets the trading, guards and tactics test matrices that still call them. The 1v1
+battle e2e. bt-17 then deleted the 1v1 engine from the module: `start_battle` (which had stayed
+client-callable through the flip), `submit_attack`, `swap_active`, `flee`, `use_battle_item`,
+`attempt_recruit`, `submit_pvp_action`, `begin_encounter`, the dev-only `start_wild_battle`, the
+60 s secret-pick deadline arming and the 1v1-only guards are gone (the generated bindings and
+`client-callable-reducers.json` carry none of them), as are the client's 1v1 renderer, model,
+dispatch arms and copy. What stays of the 1v1 engine is deliberate: `game-core`'s `combat::*` is
+the type home of the stored `Battle.state` and of the carried rules the tactical engine reuses; the
+module keeps the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical
+settle funnel calls; eleven row→`BattleMonster` marshaling helpers in `marshal.rs` /
+`content_cache.rs` are exercised only by their own tests (dead-code-allowed in non-test builds)
+until they are deleted with named survivors. The 1v1
 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
 dropped or reordered (see "Schema changes are additive"): a census test pins that no reducer
 reaches `pvp_deadline_schedule`, and that `battle_action` and `battle_wild` are reached by exactly

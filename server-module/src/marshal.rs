@@ -152,6 +152,8 @@ pub(crate) fn table_from_encounter_row(row: &EncounterRow) -> Result<EncounterTa
 /// `learnable_skill_ids` intersected with `skill_ids`, iterated in learnable order
 /// (so `[1,2,3] ∩ [2,3,9] == [2,3]`). An out-of-range `level` is a loud `Err`,
 /// never a panic.
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn wild_battle_monster(
     species: &SpeciesRow,
     skill_ids: &[u32],
@@ -380,6 +382,8 @@ pub(crate) fn evolution_path_from_row(
 /// team slots (index 0 = slot 0, etc.). Each element is the `ability: Option<u32>`
 /// column from the matching `SpeciesRow`. Unknown IDs (no matching `AbilityDef`)
 /// silently resolve to `None` so a stale or missing def does not crash battle start.
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_ability_store(
     side_a_ability_ids: &[Option<u32>],
     side_b_ability_ids: &[Option<u32>],
@@ -405,6 +409,8 @@ pub(crate) fn build_ability_store(
 /// Trust boundary (reject-not-clamp): a row with `stat_defense == 0`
 /// is rejected with `Err` rather than passed into the pure core, where it would
 /// divide-by-zero in `calc_damage`.
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn battle_monster_from_row(
     monster: &Monster,
     species: &SpeciesRow,
@@ -482,8 +488,7 @@ pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
 
 /// Build a `Vec<SkillDef>` from the DB skill rows.
 ///
-/// Production battle paths (submit_attack, swap_active, attempt_recruit) all use
-/// `cached_skills()` (content cache). This function is retained
+/// The retired 1v1 battle paths used `cached_skills()` (content cache). This function is retained
 /// for marshal boundary tests (power > 0, accuracy ∈ [1, 100]); it sets
 /// `sets_weather: None, applies_status: None` which is intentional for unit tests
 /// that exercise the validation logic only.
@@ -509,8 +514,7 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
                 pp: r.pp,
                 // DB SkillRow has no sets_weather or applies_status columns; these are
                 // only populated via cached_skills() (content cache).
-                // All battle-resolution paths (submit_attack, swap_active, attempt_recruit)
-                // use cached_skills(). skill_defs_from_rows is used only for schema
+                // The retired 1v1 resolution paths used cached_skills(). skill_defs_from_rows is used only for schema
                 // validation and marshal tests where sets_weather/applies_status are not needed.
                 sets_weather: None,
                 applies_status: None,
@@ -525,6 +529,8 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
 /// the seed-time constraint from `validate_content`. An out-of-range value would
 /// scale damage by the raw number (`TypeChart::effectiveness` returns it verbatim)
 /// while `classify` would panic via `unreachable!` (M14.5g hardening).
+/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn type_chart_from_rows(
     rows: impl Iterator<Item = TypeRelationRow>,
 ) -> Result<TypeChart, String> {

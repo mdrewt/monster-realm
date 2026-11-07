@@ -17,14 +17,12 @@
 // reducer that ships in the CI-built dev wasm gets the same gate as a
 // client-callable one).
 //
-// `attempt_recruit` was CLASSIFY-OPEN here. rb-128
-// withdrew that classification on ADR-0258 D6's basis: on success
-// it inserts a NEW `monster` and `monster_pub` for the caller — it creates the
-// caller's assets, which is what separates class (iv) from the in-battle class
-// (i) — so it is now gated as its first statement. PRV1-10 still holds: the
-// already-open wild battle stays finishable through the ungated `submit_attack`,
-// `swap_active`, `flee` and `use_battle_item`; only the recruit is refused. The
-// behavioural recruit suite is the `nh` module at the end of this file; the executed matrix lives in `guards_tests.rs`.
+// The 1v1 `attempt_recruit` is deleted (bt-17). The live recruit is the tactical
+// `Recruit` entry, whose insert is `taming::insert_recruited` (called from the
+// tactical recruit hook in `tactics.rs`); its behavioural suite is the `_bt9_2`
+// recruit tests in `tactics_settle_tests.rs`, and the deletion gate that keeps a
+// deleting account from opening the battle it would recruit in is
+// `tactics_tests::deletion_gate_on_the_live_starts_refuses_a_pending_or_terminal_subject_only_bt17_2`.
 //
 // HONEST LIMITS. The executed matrix
 // (the test below, the crate's first `cfg(feature = "dev_reducers")`
@@ -189,15 +187,16 @@ fn rb80_grant_bait_is_refused_only_while_the_caller_is_deletion_gated() {
 }
 
 // ===========================================================================
-// Native-host behavioural suite (debloat Phase 2: EV-recruit-reducer-security,
+// Native-host behavioural suite for the DEV-only `grant_bait` (debloat Phase 2:
 // ST-taming_tests).
 //
-// The SHIPPED `attempt_recruit` runs through `Fixture::run_as_at` with a real
-// sender. DETERMINISM: the bait's `recruit_bonus` is 1000, so
-// `recruit_chance` clamps to 1000 per-mille and the recruit succeeds whatever
-// `ctx.random()` draws. HOST LIMIT: no rollback, so every rejection is refusal
-// BEFORE any write — including before the roll (no playtest_event row).
+// Until bt-17 this module also drove the 1v1 `attempt_recruit`; that reducer is
+// deleted, so the module now holds only the `dev_reducers` test and is compiled
+// only under that feature (the default build would otherwise carry its fixture as
+// dead code). The world below is the recruit world it was written for, unchanged:
+// a battle + battle_wild row, A's party monster and a bait stack of 2.
 // ===========================================================================
+#[cfg(feature = "dev_reducers")]
 mod nh {
     use crate::marshal::pub_from_monster;
     use crate::native_host_tests::{fixture, Fixture, Handle};
@@ -205,13 +204,10 @@ mod nh {
     use crate::schema::{
         Battle, BattleWild, Inventory, ItemRow, Monster, MonsterPub, SpeciesRow, TradeOffer,
     };
-    use crate::taming::attempt_recruit;
-    use crate::PARTY_SLOT_NONE;
-    use game_core::{Affinity, BattleOutcome, TradeItem, TradeStatus};
+    use game_core::{Affinity, BattleOutcome};
     use spacetimedb::sats::bsatn::to_vec;
-    use spacetimedb::{Identity, Timestamp};
+    use spacetimedb::Identity;
 
-    const T0: i64 = 1_750_000_000_000;
     const BATTLE: u64 = 7;
     const BAIT: u32 = 9;
     const NOT_BAIT: u32 = 8;
@@ -222,9 +218,6 @@ mod nh {
     }
     fn b() -> Identity {
         Identity::from_byte_array([0xB2; 32])
-    }
-    fn at(ms: i64) -> Timestamp {
-        Timestamp::from_micros_since_unix_epoch(ms * 1000)
     }
 
     fn item(id: u32, recruit_bonus: u16) -> ItemRow {
@@ -340,7 +333,6 @@ mod nh {
         monsters: Handle<'a, Monster, u64>,
         pubs: Handle<'a, MonsterPub, u64>,
         stacks: Handle<'a, Inventory>,
-        offers: Handle<'a, TradeOffer>,
         events: Handle<'a, PlaytestEvent, u64>,
     }
 
@@ -370,6 +362,7 @@ mod nh {
             .unique()
             .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
         let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let _ = fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator);
         let w = World {
             battles: fx
                 .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
@@ -389,7 +382,6 @@ mod nh {
                 .writable()
                 .unique(),
             stacks: fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity),
-            offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
             events: fx
                 .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
                 .writable()
@@ -437,529 +429,6 @@ mod nh {
                 to_vec(&self.events.rows()).unwrap(),
             ]
         }
-    }
-
-    /// Success: the bait is spent, the roll is recorded once, the recruit lands
-    /// in A's BOX with a fresh-tier public row, the battle ends SideAWins with its
-    /// battle_wild row GC'd, the party HP is written back, and NO XP is granted.
-    #[test]
-    fn nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp() {
-        let fx = fixture();
-        let w = world(&fx);
-        let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, Some(BAIT)));
-        assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
-
-        assert_eq!(w.count(a(), BAIT), 1, "exactly one bait spent");
-        let events = w.events.rows();
-        assert_eq!(events.len(), 1, "the attempt is recorded exactly once");
-        assert_eq!(
-            (
-                events[0].identity,
-                events[0].bait_item_id,
-                events[0].success
-            ),
-            (a(), BAIT, true)
-        );
-
-        let recruits: Vec<Monster> = w
-            .monsters
-            .rows()
-            .into_iter()
-            .filter(|m| m.monster_id != 11)
-            .collect();
-        assert_eq!(recruits.len(), 1, "exactly one monster created");
-        let r = &recruits[0];
-        assert_eq!(
-            (r.owner_identity, r.species_id, r.level, r.party_slot),
-            (a(), WILD_SPECIES, 4, PARTY_SLOT_NONE),
-            "the caller owns the recruit, at the wild's level, in the box"
-        );
-        let p = w
-            .pubs
-            .rows()
-            .into_iter()
-            .find(|p| p.monster_id == r.monster_id)
-            .expect("monster_pub row for the recruit");
-        assert_eq!(
-            to_vec(&p).unwrap(),
-            to_vec(&pub_from_monster(r, 2)).unwrap()
-        );
-
-        assert!(w.wilds.rows().is_empty(), "battle_wild GC'd");
-        assert_eq!(w.battles.rows()[0].state.outcome, BattleOutcome::SideAWins);
-        let lead = w
-            .monsters
-            .rows()
-            .into_iter()
-            .find(|m| m.monster_id == 11)
-            .unwrap();
-        assert_eq!(lead.current_hp, 12, "party HP written back from the battle");
-        assert_eq!((lead.xp, lead.level), (120, 7), "no XP on recruit");
-    }
-
-    /// Refusals before the roll: non-owner, finished battle, non-wild battle,
-    /// unknown item, non-bait item, no bait owned, bait fully escrowed — each
-    /// leaves the store (including the playtest log) byte-identical.
-    #[test]
-    fn nh_recruit_refusals_happen_before_the_roll() {
-        type Setup = fn(&World<'_>);
-        let cases: [(&str, Identity, Option<u32>, Setup, &str); 7] = [
-            ("non-owner", b(), Some(BAIT), |_| {}, "not owner"),
-            (
-                "battle finished",
-                a(),
-                Some(BAIT),
-                |w| {
-                    w.battles.remove(BATTLE);
-                    w.battles.seed(&wild_battle(BattleOutcome::SideBWins));
-                },
-                "battle is not ongoing",
-            ),
-            (
-                "not a wild battle",
-                a(),
-                None,
-                |w| {
-                    w.wilds.remove(BATTLE);
-                },
-                "not a wild battle",
-            ),
-            ("unknown item", a(), Some(77), |_| {}, "unknown item"),
-            (
-                "not bait",
-                a(),
-                Some(NOT_BAIT),
-                |w| w.stack(a(), NOT_BAIT, 3),
-                "item is not bait",
-            ),
-            (
-                "no bait owned",
-                a(),
-                Some(BAIT),
-                |w| {
-                    w.stacks.remove(a());
-                    w.stack(b(), BAIT, 5);
-                },
-                "item is in an active trade",
-            ),
-            (
-                "bait escrowed",
-                a(),
-                Some(BAIT),
-                |w| {
-                    let mut o = TradeOffer {
-                        trade_id: 1,
-                        initiator: a(),
-                        counterparty: b(),
-                        initiator_monster_ids: vec![],
-                        initiator_items: vec![],
-                        initiator_currency: 0,
-                        counterparty_monster_ids: vec![],
-                        counterparty_items: vec![],
-                        counterparty_currency: 0,
-                        initiator_cards: vec![],
-                        counterparty_cards: vec![],
-                        status: TradeStatus::Pending,
-                        created_at_ms: T0,
-                    };
-                    o.initiator_items = vec![TradeItem {
-                        item_id: BAIT,
-                        qty: 2,
-                    }];
-                    w.offers.seed(&o);
-                },
-                "item is in an active trade",
-            ),
-        ];
-        for (label, caller, bait, setup, want) in cases {
-            let fx = fixture();
-            let w = world(&fx);
-            setup(&w);
-            let before = w.snapshot();
-            let got = fx.run_as_at(caller, at(T0), |ctx| attempt_recruit(ctx, BATTLE, bait));
-            assert_eq!(got, Err(want.to_string()), "{label}");
-            assert_eq!(
-                w.snapshot(),
-                before,
-                "{label}: nothing written, no roll recorded"
-            );
-        }
-    }
-
-    /// A FAILED roll on an ongoing battle (no bait, full-HP wild: an 8% chance,
-    /// so a run of fixed clocks — each deterministic — yields failures; at least
-    /// one is required). Against a skill-less wild the turn still advances and
-    /// the post-turn status tick runs: the lead's Sleep(2) is written back as
-    /// Sleep(1) on the battle row, the battle stays Ongoing with its battle_wild
-    /// row, and the party's monster row is untouched (no terminal write-back).
-    ///
-    /// kills: the ongoing-only status write-back inverted (Sleep(2) survives);
-    /// the terminal-only write-back inverted (battle_wild GC'd and HP written
-    /// on an ongoing battle).
-    #[test]
-    fn nh_recruit_failure_on_an_ongoing_battle_persists_status_and_keeps_the_wild() {
-        use crate::schema::TypeRelationRow;
-        use game_core::StatusEffect;
-        let mut failures = 0;
-        for k in 0..16i64 {
-            let fx = fixture();
-            let w = world(&fx);
-            let _ = fx
-                .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
-                .scannable();
-            let mut bt = wild_battle(BattleOutcome::Ongoing);
-            bt.state.side_a.team[0].status = Some(StatusEffect::Sleep { turns_remaining: 2 });
-            bt.state.side_b.team[0].known_skill_ids.clear();
-            w.battles.remove(BATTLE);
-            w.battles.seed(&bt);
-            let monsters_before = to_vec(&w.monsters.rows()).unwrap();
-            let got = fx.run_as_at(a(), at(T0 + k * 7_919), |ctx| {
-                attempt_recruit(ctx, BATTLE, None)
-            });
-            assert_eq!(got, Ok(()), "clock {k}");
-            let after = &w.battles.rows()[0];
-            if after.state.outcome == BattleOutcome::SideAWins {
-                continue; // this clock's roll succeeded
-            }
-            failures += 1;
-            assert_eq!(after.state.outcome, BattleOutcome::Ongoing, "clock {k}");
-            assert_eq!(
-                after.state.side_a.team[0].status,
-                Some(StatusEffect::Sleep { turns_remaining: 1 }),
-                "clock {k}: the ticked status is written back"
-            );
-            assert_eq!(w.wilds.rows().len(), 1, "clock {k}: battle_wild kept");
-            assert_eq!(
-                to_vec(&w.monsters.rows()).unwrap(),
-                monsters_before,
-                "clock {k}: no terminal write-back on an ongoing battle"
-            );
-        }
-        assert!(failures > 0, "at least one clock must roll a failure");
-    }
-
-    // =======================================================================
-    // 21r-a: attempt_recruit's two write-back sites log-and-commit.
-    //
-    // A bare `?` on `write_back_party_hp` (the recruit SUCCESS arm) or on
-    // `write_back_battle_results` (the terminal FAILURE arm) aborts the whole
-    // transaction: the battle row stays `Ongoing` (a softlock every retry
-    // reproduces identically) and, on the success arm, the recruit is rolled
-    // back. The fix mirrors `submit_attack` in battle.rs: log the Err through
-    // `observability::mr_log` and fall through to the terminal `update(battle)`.
-    //
-    // FAILURE INJECTION: party monster 11 is re-seeded as B's, so the SHIPPED
-    // ownership invariant inside `write_back_party_hp` returns Err for A's
-    // battle. HOST LIMIT: no rollback is modelled, so "committed" is read as the
-    // reducer returning `Ok(())` (SpacetimeDB commits on Ok and aborts on Err)
-    // together with the rows it left behind.
-    // =======================================================================
-
-    /// Captures every `log` record as a `(target, line)` pair for this test
-    /// PROCESS. The target is kept so a default-target `log::` call in `taming`
-    /// (target `monster_realm_module::taming`) cannot pass for one routed through
-    /// `observability::mr_log` (target `monster_realm_module::observability`); an
-    /// explicit `target:` spoof of the latter is runtime-identical and NOT caught.
-    ///
-    /// NEXTEST-ONLY. This lib test binary has THREE `log::set_logger` installers:
-    /// `BN_LOGS` (installed by `bn_anonymize_logs_only_the_battles_it_forced_terminal`
-    /// in `battle_tests.rs`) and one per `nh_21ra_` test here. One logger is allowed
-    /// per process, so plain `cargo test -p monster-realm-module` and `just mutate`
-    /// (`cargo mutants --workspace`, which runs plain `cargo test`) fail at least two
-    /// of those three tests. `just test`, `just mutate-server` (`--test-tool nextest`)
-    /// and CI run nextest, one process per test, and are unaffected.
-    struct TmLogSink(std::sync::Mutex<Vec<(String, String)>>);
-    impl log::Log for TmLogSink {
-        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-            true
-        }
-        fn log(&self, record: &log::Record<'_>) {
-            self.0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((record.target().to_string(), record.args().to_string()));
-        }
-        fn flush(&self) {}
-    }
-    static TM_LOGS: TmLogSink = TmLogSink(std::sync::Mutex::new(Vec::new()));
-
-    /// Install `TM_LOGS` as the process logger at `Info`. Called as the FIRST
-    /// statement of each test that reads it (see the sink's nextest-only note).
-    fn install_tm_logs() {
-        log::set_logger(&TM_LOGS).expect("no logger installed in the native test binary");
-        log::set_max_level(log::LevelFilter::Info);
-    }
-
-    /// Every captured `(target, line)` pair whose line names a `writeback_err`
-    /// event, in emission order.
-    fn writeback_err_logs() -> Vec<(String, String)> {
-        TM_LOGS
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|(_, line)| line.contains("writeback_err"))
-            .cloned()
-            .collect()
-    }
-
-    /// Re-seed party monster 11 as B's so `write_back_party_hp` returns its
-    /// ownership Err for A's battle, and assert that the swap landed.
-    fn hand_monster_11_to_b(w: &World<'_>) {
-        assert_eq!(
-            w.monsters.remove(11),
-            1,
-            "fixture: world() seeds A's party monster 11 exactly once"
-        );
-        w.monsters.seed(&party_monster(b()));
-        let owners: Vec<Identity> = w
-            .monsters
-            .rows()
-            .iter()
-            .filter(|m| m.monster_id == 11)
-            .map(|m| m.owner_identity)
-            .collect();
-        assert_eq!(
-            owners,
-            vec![b()],
-            "PRECONDITION: monster 11 must be B's, or write_back_party_hp cannot fail"
-        );
-    }
-
-    /// Monster 11's stored row after the call.
-    fn monster_11(w: &World<'_>) -> Monster {
-        w.monsters
-            .rows()
-            .into_iter()
-            .find(|m| m.monster_id == 11)
-            .expect("monster 11 row")
-    }
-
-    /// The recruit SUCCESS arm with a failing party-HP write-back still commits.
-    ///
-    /// CONTROL PHASE (runs first): in an untouched world, with monster 11 still A's,
-    /// the same clock and bait recruit successfully and the write-back returns Ok
-    /// (A's lead HP 12 lands on monster 11), so NO `writeback_err` line may be
-    /// logged. Its fixture is then dropped and a fresh one built for the failure
-    /// phase in the SAME process, so `TM_LOGS` carries over: the failure phase's
-    /// exactly-one-line assertion holds only if the control phase logged nothing.
-    ///
-    /// FAILURE PHASE: with monster 11 re-seeded as B's, `attempt_recruit` must
-    /// return `Ok(())`; A keeps the freshly inserted recruit and its `monster_pub`
-    /// row; the battle row leaves `Ongoing` as `SideAWins` with its `battle_wild`
-    /// row GC'd; the Err is logged exactly once through `mr_log` as
-    /// `recruit_success_writeback_err`; and B's monster 11 is untouched (owner B,
-    /// HP 33). The recruit's species, level and public-row bytes are pinned by
-    /// `nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp`, not here.
-    ///
-    /// kills: a retained `?` at site A (the `Ok(())` assertion reads the ownership
-    /// Err); the `update` moved into the write-back's Ok arm (the outcome stays
-    /// `Ongoing`); the recruit or its public row deleted in the Err arm (the recruit
-    /// and `monster_pub` assertions); the `battle_wild` delete moved into the Ok
-    /// arm (the GC assertion); a dropped, renamed, mis-shaped or duplicated log
-    /// line (the exact one-element log vector); a default-target `log::` call in
-    /// `taming` bypassing `mr_log` (the target half of that log pair); a "fix" that
-    /// skips the ownership check and writes the battle HP into B's monster (the
-    /// untouched monster-11 assertion); an unconditional log on the Ok path (the
-    /// control phase).
-    #[test]
-    fn nh_21ra_recruit_success_commits_when_the_party_hp_write_back_fails() {
-        install_tm_logs();
-
-        // CONTROL PHASE: a healthy party, so write_back_party_hp returns Ok.
-        {
-            let fx = fixture();
-            let w = world(&fx);
-            let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, Some(BAIT)));
-            assert_eq!(
-                got,
-                Ok(()),
-                "CONTROL: the healthy-party recruit at this clock and bait must succeed"
-            );
-            let outcome = w.battles.rows()[0].state.outcome;
-            let lead_hp = monster_11(&w).current_hp;
-            assert_eq!(
-                (outcome, lead_hp),
-                (BattleOutcome::SideAWins, 12),
-                "PRECONDITION: the control must reach the SUCCESS arm and its write-back must \
-                 return Ok (A's lead HP 12 written into monster 11), or the empty-log check \
-                 below is vacuous"
-            );
-            let logged = writeback_err_logs();
-            assert!(
-                logged.is_empty(),
-                "CONTROL: a successful write-back must not log a writeback_err line (the log \
-                 belongs in the Err arm only), got {logged:?}"
-            );
-        } // drops `w` then `fx`, releasing FIXTURE_LOCK before the next `fixture()`
-
-        // FAILURE PHASE.
-        let fx = fixture();
-        let w = world(&fx);
-        hand_monster_11_to_b(&w);
-
-        let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, Some(BAIT)));
-        assert_eq!(
-            got,
-            Ok(()),
-            "a failed party-HP write-back must be logged, never propagated: an Err aborts \
-             the transaction, rolling the recruit back and leaving the battle Ongoing"
-        );
-
-        let recruits: Vec<Monster> = w
-            .monsters
-            .rows()
-            .into_iter()
-            .filter(|m| m.monster_id != 11)
-            .collect();
-        assert_eq!(
-            recruits.len(),
-            1,
-            "exactly one recruit survives the failed write-back"
-        );
-        assert_eq!(
-            recruits[0].owner_identity,
-            a(),
-            "the caller owns the recruit"
-        );
-        assert!(
-            w.pubs
-                .rows()
-                .iter()
-                .any(|p| p.monster_id == recruits[0].monster_id),
-            "the recruit's monster_pub row survives the failed write-back"
-        );
-
-        let battles = w.battles.rows();
-        assert_eq!(battles.len(), 1, "the battle row is kept");
-        assert_eq!(
-            (battles[0].battle_id, battles[0].state.outcome),
-            (BATTLE, BattleOutcome::SideAWins),
-            "the terminal update runs despite the Err: the battle leaves Ongoing"
-        );
-        assert!(
-            w.wilds.rows().is_empty(),
-            "battle_wild is GC'd despite the Err"
-        );
-
-        let want = r#"{"evt":"recruit_success_writeback_err","battle_id":7,"reason":"write_back_party_hp: ownership changed mid-battle for monster 11 — aborted"}"#;
-        assert_eq!(
-            writeback_err_logs(),
-            vec![(
-                "monster_realm_module::observability".to_string(),
-                want.to_string()
-            )],
-            "the Err is logged exactly once, through observability::mr_log"
-        );
-
-        let m11 = monster_11(&w);
-        assert_eq!(
-            (m11.owner_identity, m11.current_hp),
-            (b(), 33),
-            "no battle HP is written into another player's monster"
-        );
-    }
-
-    /// The terminal FAILURE arm with a failing results write-back still commits.
-    /// A battle at `turn_number == u16::MAX` makes a failed no-bait roll end it
-    /// deterministically as `Fled` (the turn-limit terminal in `advance_turn`: no
-    /// strike-back, no status writes), so `write_back_battle_results` runs: it
-    /// GCs `battle_wild`, sweeps the caller's prior terminal battles (the
-    /// `player_identity` index is registered so that sweep reads the real rows),
-    /// then fails in the nested `write_back_party_hp` because monster 11 is B's.
-    /// `attempt_recruit` must still return `Ok(())`, leaving exactly one battle
-    /// row, now `Fled`, no `battle_wild` row, exactly one
-    /// `recruit_fail_writeback_err` line emitted through `mr_log`, and B's
-    /// monster 11 untouched. The clock is ONE hard-coded timestamp (the roll is
-    /// the context RNG's first draw, seeded from `ctx.timestamp`), and the first
-    /// assertion is a PRECONDITION that this clock's roll missed.
-    ///
-    /// kills: a retained `?` at site B (the `Ok(())` assertion reads the ownership
-    /// Err); the `update` moved into the write-back's Ok arm (the row stays
-    /// `Ongoing`); the `update` moved BEFORE the write-back (the committed `Fled`
-    /// row is then a prior terminal, the sweep deletes it and no battle row is
-    /// left); site B calling `write_back_party_hp` instead of
-    /// `write_back_battle_results` (nothing GCs `battle_wild`); a dropped, renamed,
-    /// mis-shaped or duplicated log line, including the success arm's event name
-    /// pasted here (the exact one-element log vector); a default-target `log::`
-    /// call in `taming` bypassing `mr_log` (the target half of that log pair); a
-    /// "fix" that skips the ownership check and writes the battle HP into B's
-    /// monster (the untouched monster-11 assertion). NOT killed: an unconditional
-    /// log at site B alone, since this test has no Ok-path control phase (the
-    /// success test's control phase covers site A only).
-    #[test]
-    fn nh_21ra_recruit_terminal_failure_commits_fled_when_the_results_write_back_fails() {
-        use crate::schema::TypeRelationRow;
-        install_tm_logs();
-        let fx = fixture();
-        let w = world(&fx);
-        let _ = fx
-            .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
-            .scannable();
-        // MANDATORY: makes the prior-terminal sweep in write_back_battle_results
-        // read the real battle rows, so a Fled row committed BEFORE the write-back
-        // is swept away and the row-count assertion below catches it.
-        let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
-        let mut bt = wild_battle(BattleOutcome::Ongoing);
-        bt.state.turn_number = u16::MAX;
-        assert_eq!(
-            w.battles.remove(BATTLE),
-            1,
-            "fixture: world() seeds battle 7 exactly once"
-        );
-        w.battles.seed(&bt);
-        hand_monster_11_to_b(&w);
-
-        // K = 0 on the `T0 + K * 7_919` clock grid the sibling failure test walks.
-        let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, None));
-
-        let rolls: Vec<bool> = w.events.rows().iter().map(|e| e.success).collect();
-        assert_eq!(
-            rolls,
-            vec![false],
-            "PRECONDITION: this hard-coded clock must roll a recruit FAILURE (exactly one \
-             playtest event, success == false). A success here is a wrong CLOCK, not the \
-             RED: move to another `T0 + K * 7_919` clock whose first draw misses"
-        );
-        assert_eq!(
-            got,
-            Ok(()),
-            "a failed results write-back must be logged, never propagated: an Err aborts \
-             the transaction and leaves the battle Ongoing"
-        );
-
-        let battles = w.battles.rows();
-        assert_eq!(
-            battles.len(),
-            1,
-            "exactly one battle row: the committed terminal must not be swept"
-        );
-        assert_eq!(
-            (battles[0].battle_id, battles[0].state.outcome),
-            (BATTLE, BattleOutcome::Fled),
-            "the terminal update runs despite the Err: the battle leaves Ongoing"
-        );
-        assert!(
-            w.wilds.rows().is_empty(),
-            "write_back_battle_results GCs battle_wild before its Err"
-        );
-
-        let want = r#"{"evt":"recruit_fail_writeback_err","battle_id":7,"reason":"write_back_party_hp: ownership changed mid-battle for monster 11 — aborted"}"#;
-        assert_eq!(
-            writeback_err_logs(),
-            vec![(
-                "monster_realm_module::observability".to_string(),
-                want.to_string()
-            )],
-            "the Err is logged exactly once, through observability::mr_log"
-        );
-
-        let m11 = monster_11(&w);
-        assert_eq!(
-            (m11.owner_identity, m11.current_hp),
-            (b(), 33),
-            "no battle HP is written into another player's monster"
-        );
     }
 
     /// grant_bait (DEV) credits ONLY the caller, capped at 99 per call, and
