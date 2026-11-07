@@ -62,6 +62,11 @@ import {
 // CLEANUP: one browser; afterAll closes it (golden.spec's presence count).
 
 const SEED_HP = 300;
+/** The recruit's seeded HP: below the starter's SEED_HP so the recruit stays the wild's preferred
+ *  target at equal distance — the second party slot's damage write-back keeps being exercised by
+ *  the persistence oracle — yet far above what MAX_PACK_HUNTS hits of ~2–3 damage at SEED_DEFENSE
+ *  can take, so it never faints and never clamps the pack to 1. */
+const RECRUIT_SEED_HP = 120;
 const SEED_DEFENSE = 250;
 const BAIT_ITEM_ID = 1;
 /** The wild is recruited (not hit again) at or under this share of its max HP. */
@@ -457,10 +462,12 @@ test.describe
       // The recruit is seeded sturdy too: pack-1 battles auto-deploy the remembered formation
       // (both monsters) and the wild targets the lowest-HP unit, so an unseeded recruit (~20 HP)
       // can faint across the pack-1 flees — and a fainted recruit clamps every later pack to 1.
+      // RECRUIT_SEED_HP stays below the starter's SEED_HP, so the recruit is still the preferred
+      // target at equal distance and its slot's damage write-back stays exercised.
       for (const table of ['monster', 'monster_pub']) {
         for (const [col, val] of [
-          ['stat_hp', SEED_HP],
-          ['current_hp', SEED_HP],
+          ['stat_hp', RECRUIT_SEED_HP],
+          ['current_hp', RECRUIT_SEED_HP],
           ['stat_defense', SEED_DEFENSE],
           ['stat_sp_defense', SEED_DEFENSE],
         ] as const) {
@@ -475,11 +482,11 @@ test.describe
           async () =>
             (await readOwnMonsters(page)).find((m) => m.monsterId === recruit.monsterId)?.maxHp,
           {
-            message: 'the recruit reads back the HP seed SEED_HP within 15000 ms',
+            message: 'the recruit reads back the HP seed RECRUIT_SEED_HP within 15000 ms',
             timeout: 15_000,
           },
         )
-        .toBe(SEED_HP);
+        .toBe(RECRUIT_SEED_HP);
 
       // ONE hunt budget across every attempt (MAX_PACK_HUNTS).
       const packHunts: PackHuntBudget = { left: MAX_PACK_HUNTS, single: 0 };
