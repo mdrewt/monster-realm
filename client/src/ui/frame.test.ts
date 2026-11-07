@@ -3,12 +3,17 @@
  * frame.test.ts: the one frame chrome (ctl-4, CTL4.6).
  *
  * `createFrame(doc, {id, size})` builds the chrome parts once (title bar with title and
- * breadcrumb, a tab bar with LB/RB slots around the tablist, an internally scrolling body, ONE
- * feedback line, an empty hint-bar slot) in one of four sizes. The feedback line is driven by a
+ * breadcrumb, then BELOW it a tab bar with LB/RB slots around the tablist, an internally scrolling
+ * body, ONE feedback line) in one of four sizes. The feedback line is driven by a
  * pure token-guarded machine, `feedbackStep`, then written by a thin `renderFeedback`.
  *
+ * uif-3 (named intentional changes): the tab bar is built through `createTabBar` as a direct child
+ * of the root, between the title bar and the body (it used to sit inside the title bar), and the
+ * dead hint slot is gone, so CTL4-6-CHROME-PARTS counts seven parts (was eight) and the qf-12 root
+ * pin lists title bar, tab bar, body, feedback.
+ *
  * The contract proven here:
- *  - the parts are eight distinct nodes inside the root, shared with no other frame;
+ *  - the parts are seven distinct nodes inside the root, shared with no other frame;
  *  - the sizes are exactly side, full, bottom and small; anything else (including names found
  *    on every object) throws instead of clamping;
  *  - the tab bar is hidden until a tabs layout with at least one tab is rendered, and holds the
@@ -24,6 +29,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { stripComments } from '../../test-util/stripComments';
 import {
   createFrame,
   type FeedbackEvent,
@@ -70,35 +76,18 @@ beforeEach(() => {
 
 // --- CTL4.6: chrome ------------------------------------------------------------------------
 describe('frame chrome', () => {
-  it('CTL4-6-CHROME-PARTS builds eight distinct parts inside the root, shared with no other frame', () => {
+  it('CTL4-6-CHROME-PARTS builds seven distinct parts inside the root, shared with no other frame', () => {
+    // uif-3 (UIF3.6): the hint slot is deleted, so seven parts, not eight (named intentional change).
     const f = createFrame(document, { id: 'menu', size: 'side' });
-    const parts = [
-      f.root,
-      f.titleEl,
-      f.breadcrumb,
-      f.tabBar,
-      f.tabStrip,
-      f.body,
-      f.feedback,
-      f.hintSlot,
-    ];
-    expect(new Set(parts).size).toBe(8);
+    const parts = [f.root, f.titleEl, f.breadcrumb, f.tabBar, f.tabStrip, f.body, f.feedback];
+    expect(new Set(parts).size).toBe(7);
     for (const part of parts.slice(1)) expect(f.root.contains(part)).toBe(true);
     expect(f.tabBar.contains(f.tabStrip)).toBe(true);
     expect(f.titleEl.contains(f.breadcrumb)).toBe(false);
 
     // a second frame shares no node with the first
     const g = createFrame(document, { id: 'bag', size: 'full' });
-    const other = [
-      g.root,
-      g.titleEl,
-      g.breadcrumb,
-      g.tabBar,
-      g.tabStrip,
-      g.body,
-      g.feedback,
-      g.hintSlot,
-    ];
+    const other = [g.root, g.titleEl, g.breadcrumb, g.tabBar, g.tabStrip, g.body, g.feedback];
     for (const p of other) expect(parts).not.toContain(p);
     expect(f.root.contains(g.root)).toBe(false);
     expect(g.root.contains(f.body)).toBe(false);
@@ -107,13 +96,10 @@ describe('frame chrome', () => {
     expect(f.root.classList.contains('mr-frame')).toBe(true);
     expect(f.body.classList.contains('mr-frame-body')).toBe(true);
     expect(f.feedback.classList.contains('mr-frame-feedback')).toBe(true);
-    expect(f.hintSlot.classList.contains('mr-frame-hints')).toBe(true);
     expect(f.titleEl.id).toBe('menu-title');
     expect(g.titleEl.id).toBe('bag-title');
 
-    // the hint slot is empty (the hint bar fills it later); the body starts empty
-    expect(f.hintSlot.childNodes.length).toBe(0);
-    expect(f.hintSlot.textContent).toBe('');
+    // the body starts empty
     expect(f.body.childNodes.length).toBe(0);
 
     // the title and breadcrumb are written by setFrameTitle and replaced, never appended
@@ -558,7 +544,8 @@ describe('feedbackAnnouncement (polish-1 P5)', () => {
 // WHY. `.mr-frame` is a flex COLUMN. The Monsters (boxView) and Help (helpView) frames mount the
 // strip as a DIRECT child of that column, where `flex: 1 1 auto` made it absorb the free height: the
 // tab labels stretched to a height that followed the active panel's content. The strip must keep
-// `flex-grow: 0` (the other mounts, inside the row-flex `.mr-frame-tabs` titlebar, are unaffected),
+// `flex-grow: 0` (createFrame's own strip, inside the row-flex `.mr-frame-tabs` bar below the title
+// bar since uif-3, is unaffected),
 // and a tab label is one line (`white-space: nowrap`) so its height is uniform.
 //
 // ORACLES. (1) The REAL styles.css parsed with comments stripped: the EFFECTIVE value is computed
@@ -567,8 +554,8 @@ describe('feedbackAnnouncement (polish-1 P5)', () => {
 // ANY block (an @media block included) whose selector merely mentions the class. No new selector may
 // be added to styles.css (battleView.test.ts pins the top-level roster), so the tests read effective
 // values and never a selector spelling. (2) The same sheet injected into happy-dom and read through
-// getComputedStyle on the REAL createFrame strip, placed both in the titlebar and, as boxView and
-// helpView do, directly under the `.mr-frame` column root. happy-dom caches computed style per
+// getComputedStyle on the REAL createFrame strip (in the frame's tab bar row since uif-3, not the
+// title bar) and, as boxView and helpView do, directly under the `.mr-frame` column root. happy-dom caches computed style per
 // element: every element is read once, and the class-is-the-cause probe is a separate clone.
 
 const QF11_STYLES_CSS = readFileSync(
@@ -981,9 +968,11 @@ describe('qf-11 (QF11.1): computed style over a real createFrame strip', () => {
     sheet = null;
   });
 
-  it('the strip is a flex row with grow 0 both in the titlebar and directly under the .mr-frame column root, and every tab label is nowrap [QF11-1-FRAME-STRIP-COMPUTED]', () => {
+  it('the strip is a flex row with grow 0 both in the frame tab bar row and directly under the .mr-frame column root, and every tab label is nowrap [QF11-1-FRAME-STRIP-COMPUTED]', () => {
+    // uif-3 (named intentional change): createFrame's strip lives in the tab bar row below the
+    // title bar, no longer inside the title bar; the assertions are unchanged.
     // WRONG IMPL KILLED: the shipped sheet (computed flex-grow 1 on the strip); a fix that sets
-    // grow 0 but drops `display: flex` (the labels stack); a fix that reaches only the titlebar
+    // grow 0 but drops `display: flex` (the labels stack); a fix that reaches only the tab bar
     // mount and not the strip placed directly in the column (boxView, helpView); labels that still
     // wrap (white-space normal); and a harness whose sheet install is a no-op (the sanity clone
     // below proves the class, not an inherited default, produces the flex display).
@@ -1000,15 +989,15 @@ describe('qf-11 (QF11.1): computed style over a real createFrame strip', () => {
     );
 
     const inBar = getComputedStyle(f.tabStrip);
-    expect(inBar.display, 'titlebar strip: a flex row').toBe('flex');
-    expect(qf11ComputedGrow(inBar), 'titlebar strip: flex-grow').toBe(0);
+    expect(inBar.display, 'tab bar strip: a flex row').toBe('flex');
+    expect(qf11ComputedGrow(inBar), 'tab bar strip: flex-grow').toBe(0);
     // WRONG IMPL KILLED: C3 flex-direction: column on the strip; C1 a basis that fills the column
     // (`flex: 0 1 100%`); the reviewer finding (no `max-width: 100%`: a nowrap strip in an
     // align-items:center column is fit-content wide and overflows instead of scrolling).
-    expect(inBar.flexDirection, 'titlebar strip: not a column').not.toBe('column');
-    expect(inBar.flexBasis, 'titlebar strip: no length or percentage basis').not.toMatch(/[\d%]/);
-    expect(inBar.maxWidth, 'titlebar strip: max-width').toBe('100%');
-    expect(qf11InlineLayout(f.tabStrip), 'titlebar strip: no inline layout style').toEqual([]);
+    expect(inBar.flexDirection, 'tab bar strip: not a column').not.toBe('column');
+    expect(inBar.flexBasis, 'tab bar strip: no length or percentage basis').not.toMatch(/[\d%]/);
+    expect(inBar.maxWidth, 'tab bar strip: max-width').toBe('100%');
+    expect(qf11InlineLayout(f.tabStrip), 'tab bar strip: no inline layout style').toEqual([]);
     expect(f.tabStrip.style.flexGrow, 'C9: no inline flex-grow').toBe('');
 
     // The boxView / helpView mount: the strip is a DIRECT child of the `.mr-frame` column root.
@@ -1077,20 +1066,22 @@ const QF12_SHOWN: readonly Qf12Shown[] = [
 const qf12Attrs = (el: Element): string[] => [...el.getAttributeNames()].sort();
 
 /** The rest of the chrome is untouched by the line's state (S3, S5): the root still holds exactly
- *  the four shipped children (title bar, body, feedback line, hint slot) in order, so no extra
- *  sibling can paint a strip while the line is hidden, no part of the chrome is hidden, and
- *  neither the root nor any of its children carries an inline style. */
+ *  the four children (title bar, tab bar, body, feedback line) in order, so no extra
+ *  sibling can paint a strip while the line is hidden, no part of the chrome (the tab bar aside,
+ *  which is hidden until a tabs layout shows) is hidden, and
+ *  neither the root nor any of its children carries an inline style.
+ *  uif-3 (named intentional change): the hint slot is gone and the tab bar is the second child. */
 function qf12ExpectChrome(f: FrameChrome, when: string): void {
   const kids = Array.from(f.root.children);
-  expect(kids.length, `${when}: the root holds exactly the four shipped children`).toBe(4);
+  expect(kids.length, `${when}: the root holds exactly the four children`).toBe(4);
   expect(kids[0], `${when}: child 0 is the title bar`).toBe(f.titleEl.parentElement);
-  expect(kids[1], `${when}: child 1 is the body`).toBe(f.body);
-  expect(kids[2], `${when}: child 2 is the feedback line`).toBe(f.feedback);
-  expect(kids[3], `${when}: child 3 is the hint slot`).toBe(f.hintSlot);
+  expect(kids[1], `${when}: child 1 is the tab bar`).toBe(f.tabBar);
+  expect(kids[2], `${when}: child 2 is the body`).toBe(f.body);
+  expect(kids[3], `${when}: child 3 is the feedback line`).toBe(f.feedback);
   for (const el of [f.root, ...kids]) {
     expect(el.hasAttribute('style'), `${when}: no inline style on ${el.className}`).toBe(false);
   }
-  for (const part of [f.hintSlot, f.body, f.root]) {
+  for (const part of [f.body, f.root]) {
     expect(part.hidden, `${when}: ${part.className} is not hidden`).toBe(false);
     expect(part.hasAttribute('hidden'), `${when}: ${part.className} has no hidden attr`).toBe(
       false,
@@ -1156,7 +1147,6 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
     const freshNode = fresh.feedback;
     qf12ExpectNone(fresh, freshNode, 'fresh frame');
     // the other parts are not collapsed along with it
-    expect(fresh.hintSlot.hidden, 'hint slot is not hidden').toBe(false);
     expect(fresh.body.hidden, 'body is not hidden').toBe(false);
     expect(fresh.root.hidden, 'root is not hidden').toBe(false);
 
@@ -1436,5 +1426,133 @@ describe('qf-12 (QF12.1, QF12.2): computed style of the real feedback line', () 
     expect(shown.paddingRight, 'padding-right').toBe(want.paddingRight);
     expect(shown.borderTopWidth, 'border-top width 2px').toBe(want.borderTopWidth);
     expect(shown.borderTopStyle, 'border-top style solid').toBe(want.borderTopStyle);
+  });
+});
+
+// --- uif-3 (UIF3.1, UIF3.2, UIF3.6): the tab bar below the title bar, the hint slot gone --------------
+//
+// createFrame builds its tabs through createTabBar (ui/tabBar.ts) as a DIRECT child of the root, between
+// the title bar and the body; the strip id follows the frame id (`{id}-tabs`); renderFrameTabs
+// delegates to renderTabBar, so the selected tab wears `.is-selected` (never `.is-active`); and the
+// dead hint slot is deleted from FrameChrome, createFrame and the menuView re-find.
+describe('uif-3: frame anatomy', () => {
+  const stripOf = (f: FrameChrome): HTMLElement[] =>
+    Array.from(f.tabStrip.querySelectorAll<HTMLElement>('[role="tab"][data-nav-tab]'));
+  const layout = tabsL(['a', ['a1']], ['b', ['b1']], ['c', ['c1']]);
+
+  it('UIF3.1 the tab bar is a direct child of the root, right after the title bar and before the body, and the title bar no longer holds it', () => {
+    // WRONG IMPLS KILLED: the shipped mount inside the title bar (the anatomy moves it below);
+    // the bar appended after the body or the feedback line; a bar built by hand instead of through
+    // createTabBar (no chips classes); a strip id that is not frame-scoped (e2e keys on #bag-tabs).
+    const f = createFrame(document, { id: 'bag', size: 'full' });
+    document.body.appendChild(f.root);
+    const titlebar = f.titleEl.parentElement as HTMLElement;
+    expect(f.tabBar.parentElement).toBe(f.root);
+    expect(f.tabBar.previousElementSibling).toBe(titlebar);
+    expect(f.tabBar.nextElementSibling).toBe(f.body);
+    expect(titlebar.contains(f.tabBar)).toBe(false);
+    expect(titlebar.contains(f.tabStrip)).toBe(false);
+    expect(f.tabBar.classList.contains('mr-tabbar')).toBe(true);
+    expect(f.tabStrip.classList.contains('mr-tabbar-strip')).toBe(true);
+    expect(f.tabStrip.parentElement).toBe(f.tabBar);
+    expect(f.tabStrip.id).toBe('bag-tabs');
+    expect(document.querySelectorAll('#bag-tabs').length).toBe(1);
+    expect(f.tabBar.hasAttribute('hidden')).toBe(true);
+    const chips = Array.from(f.tabBar.querySelectorAll('.mr-tabbar-chip'));
+    expect(chips.map((c) => c.getAttribute('data-button'))).toEqual(['LB', 'RB']);
+    expect(chips.every((c) => c.childNodes.length === 0)).toBe(true);
+    // the title bar keeps the title and the breadcrumb
+    expect(titlebar.children.length).toBe(2);
+    expect(titlebar.children[0]).toBe(f.titleEl);
+    expect(titlebar.children[1]).toBe(f.breadcrumb);
+
+    const g = createFrame(document, { id: 'shop', size: 'small' });
+    expect(g.tabStrip.id).toBe('shop-tabs');
+  });
+
+  it('UIF3.2 renderFrameTabs marks exactly one selected tab with .is-selected equal to aria-selected true, never .is-active, and the marker moves', () => {
+    // WRONG IMPLS KILLED: renderFrameTabs still calling renderTabs alone (the inverted is-active
+    // fill on the selected tab); is-selected stuck on the first tab after a move; aria-selected
+    // and the class disagreeing.
+    const f = createFrame(document, { id: 'bag', size: 'full' });
+    for (const [key, item] of [
+      ['a', 'a1'],
+      ['c', 'c1'],
+      ['b', 'b1'],
+    ] as const) {
+      renderFrameTabs(f, layout, state(item, key), label);
+      const selected = Array.from(f.tabBar.querySelectorAll('.is-selected')).map(
+        (e) => (e as HTMLElement).dataset.navTab,
+      );
+      expect(selected, `selected ${key}`).toEqual([key]);
+      const aria = stripOf(f)
+        .filter((t) => t.getAttribute('aria-selected') === 'true')
+        .map((t) => t.dataset.navTab);
+      expect(aria).toEqual([key]);
+      expect(f.tabBar.querySelectorAll('.is-active').length).toBe(0);
+      expect(f.root.querySelectorAll('.mr-nav-tab.is-active').length).toBe(0);
+    }
+  });
+
+  it('UIF3.2 the frame tab bar hides for a list and for zero tabs, and a restored tabs layout un-hides it with the selection intact', () => {
+    // WRONG IMPLS KILLED: a hidden flag that sticks across tabs, list, tabs; zero tabs shown.
+    const f = createFrame(document, { id: 'bag', size: 'full' });
+    renderFrameTabs(f, layout, state('a1', 'a'), label);
+    expect(f.tabBar.hasAttribute('hidden')).toBe(false);
+    renderFrameTabs(f, listL('x', 'y'), state('x', null), label);
+    expect(f.tabBar.hasAttribute('hidden')).toBe(true);
+    expect(f.tabStrip.children.length).toBe(0);
+    renderFrameTabs(f, layout, state('b1', 'b'), label);
+    expect(f.tabBar.hasAttribute('hidden')).toBe(false);
+    expect(f.tabBar.hidden).toBe(false);
+    expect(f.tabBar.querySelectorAll('.is-selected').length).toBe(1);
+    expect(stripOf(f).length).toBe(3);
+    renderFrameTabs(f, tabsL(), state(null, null), label);
+    expect(f.tabBar.hasAttribute('hidden')).toBe(true);
+    renderFrameTabs(f, layout, state('c1', 'c'), label);
+    expect(f.tabBar.hasAttribute('hidden')).toBe(false);
+    expect((f.tabBar.querySelector('.is-selected') as HTMLElement).dataset.navTab).toBe('c');
+  });
+
+  it('UIF3.6 createFrame returns no hintSlot and builds no .mr-frame-hints element', () => {
+    // WRONG IMPLS KILLED: the dead slot kept on the object or in the DOM (R-qf-12-QF12.3 closes by
+    // deleting it); the property kept as undefined (a leftover key).
+    const f = createFrame(document, { id: 'menu', size: 'side' });
+    expect('hintSlot' in f).toBe(false);
+    expect(Object.keys(f)).not.toContain('hintSlot');
+    expect(f.root.querySelector('.mr-frame-hints')).toBeNull();
+    for (const size of FRAME_SIZES) {
+      const g = createFrame(document, { id: `h${size}`, size });
+      expect(g.root.querySelector('.mr-frame-hints'), size).toBeNull();
+    }
+  });
+
+  it('UIF3.6 the root holds exactly the title bar, the tab bar, the body and the feedback line, in that order', () => {
+    // WRONG IMPLS KILLED: a fifth child left behind (the hint div); the bar after the body.
+    const f = createFrame(document, { id: 'menu', size: 'side' });
+    const kids = Array.from(f.root.children);
+    expect(kids.length).toBe(4);
+    expect(kids[0]).toBe(f.titleEl.parentElement);
+    expect(kids[1]).toBe(f.tabBar);
+    expect(kids[2]).toBe(f.body);
+    expect(kids[3]).toBe(f.feedback);
+    expect(kids[1]?.classList.contains('mr-tabbar')).toBe(true);
+    expect(kids[0]?.classList.contains('mr-frame-titlebar')).toBe(true);
+    expect(kids[2]?.classList.contains('mr-frame-body')).toBe(true);
+    expect(kids[3]?.classList.contains('mr-frame-feedback')).toBe(true);
+  });
+
+  it('UIF3.6 frame.ts no longer names hintSlot or mr-frame-hints outside comments', () => {
+    // WRONG IMPLS KILLED: the interface member or the builder left in place while the runtime test
+    // above only sees the object; reading the source is the only way to see the type declaration.
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'frame.ts'),
+      'utf8',
+    );
+    const code = stripComments(src);
+    expect(code.length).toBeGreaterThan(500);
+    expect(code).toContain('createFrame');
+    expect(code).not.toContain('hintSlot');
+    expect(code).not.toContain('mr-frame-hints');
   });
 });

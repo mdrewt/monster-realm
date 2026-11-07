@@ -58,7 +58,11 @@
 //                                 (focus moves only through overlayA11y).
 //   MV-VIS-01/02/03, MV-CTOR-01..05
 //                                 survive unchanged in intent (MV-VIS-03 now also keeps the frame).
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { stripComments } from '../../test-util/stripComments';
 import { t } from './a11yCopy';
 import { MenuView } from './menuView';
 import { EMPTY_NAV_MEMORY } from './nav';
@@ -491,6 +495,92 @@ describe('MenuView — render', () => {
     expect(feedbackEl().textContent).toBe('Review your quests and their progress.');
     view.render(menuViewModel(mainMenuStep(asked, { button: 'Down', repeat: false }).state));
     expect(feedbackEl().textContent, 'a move clears it').toBe('');
+  });
+});
+
+// ===========================================================================
+// uif-3 (UIF3.6): the hint slot is gone, the menu frame is visibly unchanged
+// ===========================================================================
+//
+// Named intentional change: the frame the menu builds (and the re-find a second MenuView runs over the
+// same markup) no longer carries the dead hint slot; createFrame now also builds a tab bar between the
+// title bar and the body, which the menu never shows (it has no tabs layout), so nothing visible moves.
+
+describe('MenuView — uif-3 frame anatomy', () => {
+  beforeEach(() => {
+    mountMenuOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+  });
+
+  it('UIF3.6 a second MenuView over the same markup re-finds the chrome: no nested frame, no hint element, and the re-found frame still titles and paints feedback', () => {
+    // WRONG IMPLS KILLED: a re-find that still queries .mr-frame-hints (a null part, or a throw
+    // once the element is gone); a re-find that misses the tab bar or the feedback line (the
+    // second view would write into nothing); a second frame built instead of re-found; the
+    // re-found frame wired to the first view's stale parts.
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    newView();
+    const second = newView();
+    const third = newView();
+    expect(overlay.querySelectorAll('.mr-frame').length, 'one frame after three views').toBe(1);
+    expect(overlay.querySelector('.mr-frame-hints'), 'no hint element').toBeNull();
+
+    third.view.render({ ...rootVm(), feedback: { kind: 'info', text: 'Review it.' } });
+    expect(titleEl().textContent).toBe('Menu');
+    expect(titleEl().id).toBe('menu-title');
+    expect(feedbackEl().textContent).toBe('Review it.');
+    expect(feedbackEl().dataset.feedback).toBe('info');
+    expect(feedbackEl().hidden).toBe(false);
+
+    second.view.render(socialVm());
+    expect(titleEl().textContent).toBe('Social');
+    expect(crumbTexts()).toEqual(['Menu']);
+    expect(feedbackEl().hidden, 'the none state hides the line again').toBe(true);
+    expect(feedbackEl().textContent).toBe('');
+    expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
+    expect(optionEls().length).toBe(3);
+  });
+
+  it('UIF3.6 the menu frame holds the title bar, a hidden tab bar, the body and the feedback line, with no hint element; the title bar holds only the title and the breadcrumb', () => {
+    // WRONG IMPLS KILLED: a leftover fifth child (the hint div); a visible tab bar in the menu (its
+    // two LB/RB chips would paint on a screen with no tabs, so something visible moved); the tab
+    // bar left inside the title bar.
+    const { view } = newView();
+    view.render(rootVm());
+    const frame = frameEl();
+    const kids = Array.from(frame.children) as HTMLElement[];
+    expect(kids.length).toBe(4);
+    expect(kids[0]?.classList.contains('mr-frame-titlebar')).toBe(true);
+    expect(kids[1]?.classList.contains('mr-frame-tabs')).toBe(true);
+    expect(kids[2]?.classList.contains('mr-frame-body')).toBe(true);
+    expect(kids[3]?.classList.contains('mr-frame-feedback')).toBe(true);
+    expect(kids[1]?.hasAttribute('hidden'), 'no tabs in the menu: the bar stays hidden').toBe(true);
+    expect(frame.querySelector('.mr-frame-tabstrip')?.children.length).toBe(0);
+    expect(frame.querySelector('.mr-frame-hints')).toBeNull();
+    const titlebar = kids[0] as HTMLElement;
+    expect(Array.from(titlebar.children).map((c) => c.className)).toEqual([
+      'mr-frame-title',
+      'mr-frame-breadcrumb',
+    ]);
+    // a sub-list render keeps the bar hidden too
+    view.render(socialVm());
+    expect(kids[1]?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('UIF3.6 menuView.ts no longer names hintSlot or mr-frame-hints outside comments', () => {
+    // WRONG IMPLS KILLED: the FrameChrome literal in the re-find still listing the member (a type
+    // error once FrameChrome drops it, and the source is the only place that shows it).
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'menuView.ts'),
+      'utf8',
+    );
+    const code = stripComments(src);
+    expect(code.length).toBeGreaterThan(500);
+    expect(code).toContain('menuFrame');
+    expect(code).not.toContain('hintSlot');
+    expect(code).not.toContain('mr-frame-hints');
   });
 });
 
