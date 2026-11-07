@@ -609,7 +609,7 @@ test.describe
       for (let battle = 0; battle < MAX_R1_BATTLES && !(checked && sawGreyed); battle += 1) {
         await huntEncounter(page, `R1 battle ${battle}`);
         let last: string | null = null;
-        const doneHere = false;
+        let doneHere = false;
         for (let turn = 0; turn < MAX_APPROACH_TURNS && !doneHere; turn += 1) {
           const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
           if (tt.phase !== 'Active') break;

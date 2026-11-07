@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -7,17 +8,14 @@ import {
   test,
 } from '@playwright/test';
 import {
-  attackByButtons,
   awaitTacticalActive,
   draftMoveToward,
   endTurn,
   OWN_TURN_WAIT_MS,
   openMenu,
-  readTactics,
   sides,
   tileDistance,
   turnKey,
-  waitExecuted,
   waitOwnTurnOrEnd,
 } from './controls';
 
@@ -48,7 +46,8 @@ import {
 //   (iii) B does NOT hold A's battle      — THE LEAK NEGATIVE;
 //   (iv)  the counts agree                — B's whole battle map is empty, A's is 1;
 //   (v)   A's row SURVIVES an anchor update — the anti-mechanical-rename control (bt-16: the
-//         update is a landed hit's HP mirror; was a 1v1 turn advance, retired by the cutover).
+//         update is the HP mirror of a wild hit on A's own monster, `sideA.hp`; was a 1v1 turn
+//         advance, retired by the cutover).
 //
 // WHY (v) IS NOT OPTIONAL. A view binding has no primary key, so the SDK never
 // fires onUpdate: a mid-battle change arrives as an unordered onInsert(new) +
@@ -56,8 +55,9 @@ import {
 // type-correct and keeps `just ci` green while dropping the battle off the screen
 // the moment the first turn resolves. The anchor-update clause below is the only
 // gate in the slice that observes that at runtime. Its wait is STRICT (the
-// mirrored `sideB.hp` strictly below its pre-hit value, no `|| terminal` escape): a
-// battle that ends without the anchor carrying the hit must NOT satisfy it.
+// mirrored `sideA.hp` — A's own monster, the only side a wild anchor mirrors — strictly below
+// its pre-battle seed, no `|| terminal` escape): a battle that ends without the anchor carrying
+// the hit must NOT satisfy it. A's starter is seeded sturdy by owner SQL before the hunt.
 //
 // WHY A WILD BATTLE. A wild encounter is driven entirely by the production game
 // loop (walk onto grass), needs no second consenting player, and — because
@@ -167,12 +167,37 @@ const STEP_WAIT_MS = 8_000;
  *  the observed subscription-burst latency in this suite (see the 15 s waits used
  *  for first delivery elsewhere). */
 const LEAK_WINDOW_MS = 5_000;
-/** bt-16: own live turns clause (v) may spend closing in on the wild before a hit must land. A
- *  zone-0 board is small (a 7x5 board's far corner is ~10 tiles; a turn's band reaches 2+), so the
- *  wild is in reach within a few turns; 16 leaves a wide margin and still fails on a kiting wild. */
-const MAX_OWN_TURNS_TO_HIT = 16;
+/** bt-16: own live turns clause (v) may spend (A steps toward the wild and ends its turn, never
+ *  attacking) before a WILD hit must have landed on A's monster. A zone-0 board is small (a 7x5
+ *  board's far corner is ~10 tiles; a turn's band reaches 2+), so the two units meet within a few
+ *  turns; 12 leaves a wide margin and still fails on a kiting wild. */
+const MAX_OWN_TURNS_FOR_WILD_HIT = 12;
 /** bt-16: how long the hit's anchor update (the HP mirror) may take to reach A's by-id map. */
 const HP_DROP_WAIT_MS = 60_000;
+/** bt-16: A's starter seed (tactics-wild.spec.ts's precedent): a wild hit lands >= 1 HP, never a KO. */
+const SEED_HP = 300;
+const SEED_DEFENSE = 250;
+
+/** Owner SQL (literal-shaped statements only: letters, digits, spaces, `* = ( ) ,`), as the module
+ *  owner (the CLI identity) — tactics-wild.spec.ts's idiom; charset-checked target. */
+function ownerSql(query: string, label: string): string {
+  const server = process.env.STDB_SERVER ?? 'local';
+  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
+    throw new Error(`${label}: STDB_SERVER/VITE_STDB_DB failed charset validation`);
+  }
+  if (!/^[A-Za-z0-9_ *=(),]+$/.test(query)) {
+    throw new Error(`${label}: refusing a non-literal-shaped sql statement: ${query}`);
+  }
+  try {
+    return execFileSync('spacetime', ['sql', '-s', server, db, query], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+  } catch (err) {
+    throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Grass tiles in zone 0 (recruit.spec.ts:167-175, verbatim reasoning). Spawn is
@@ -293,14 +318,15 @@ test.describe
       }
     });
 
-    test('EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across a landed hit`s anchor update (bt-16: was a 1v1 turn advance)', async () => {
+    test('EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across the anchor update a wild hit on A`s monster writes (sideA.hp strictly drops; bt-16: was a 1v1 turn advance)', async () => {
       // Budget: the walk is bounded by MAX_WALK_STEPS x STEP_WAIT_MS = 640 s in the
       // pathological case where every step times out; the realistic path is a few
       // seconds (the server drains a step per 200 ms and the shuttle rolls every
       // other step). Everything after the walk is bounded by its own explicit
       // timeouts. 300 s covers the realistic path with a wide margin without
       // pretending to cover the pathological one — a hung walk should fail, not sit.
-      // bt-16: + clause (v)'s bounded own-turn loop (MAX_OWN_TURNS_TO_HIT x OWN_TURN_WAIT_MS).
+      // bt-16: + clause (v)'s bounded own-turn loop (MAX_OWN_TURNS_FOR_WILD_HIT x
+      // OWN_TURN_WAIT_MS) and the strict HP_DROP_WAIT_MS.
       test.setTimeout(480_000);
 
       // --- both worlds must be loaded before anything below means anything -----
@@ -321,6 +347,52 @@ test.describe
       const preB = await battleView(pageB);
       expect(preA.identity, 'the two clients must have distinct identities').not.toBe(
         preB.identity,
+      );
+
+      // bt-16: clause (v)'s anchor update is a wild hit on A's monster, so A's starter is made
+      // sturdy BEFORE the hunt (tactics-wild.spec.ts's beforeAll precedent): a hit then lands
+      // >= 1 HP and never KOs. Owner SQL on `monster` AND `monster_pub`, read back once.
+      const starterA = preA.ownMonsters[0];
+      if (starterA === undefined || !/^[0-9]+$/.test(starterA.monsterId)) {
+        throw new Error('(v) seed: A has no starter with a decimal monsterId');
+      }
+      for (const table of ['monster', 'monster_pub']) {
+        for (const [col, val] of [
+          ['stat_hp', SEED_HP],
+          ['current_hp', SEED_HP],
+          ['stat_defense', SEED_DEFENSE],
+          ['stat_sp_defense', SEED_DEFENSE],
+        ] as const) {
+          ownerSql(
+            `UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${starterA.monsterId}`,
+            '(v) seed',
+          );
+        }
+      }
+      const seededOut = ownerSql(
+        `SELECT monster_id, stat_hp, stat_defense FROM monster WHERE monster_id = ${starterA.monsterId}`,
+        '(v) seed',
+      );
+      const seededLine = seededOut
+        .split('\n')
+        .filter((l) => l.includes('|'))
+        .map((l) => l.split('|').map((c) => c.trim()))
+        .find((cells) => cells[0] === starterA.monsterId);
+      expect(
+        [Number(seededLine?.[1]), Number(seededLine?.[2])],
+        '(v) seed: the starter row reads back the HP and defence seeds',
+      ).toEqual([SEED_HP, SEED_DEFENSE]);
+      await pageA.waitForFunction(
+        (args: { id: string; hp: number }) =>
+          (
+            window as unknown as {
+              __mrTactics?: { ownMonsters(): { monsterId: string; currentHp: number }[] };
+            }
+          ).__mrTactics
+            ?.ownMonsters()
+            .some((m) => m.monsterId === args.id && m.currentHp === args.hp) === true,
+        { id: starterA.monsterId, hp: SEED_HP },
+        { timeout: 15_000 },
       );
 
       // --- A drives a wild encounter through the REAL game loop ----------------
@@ -491,75 +563,65 @@ test.describe
       // ---------------------------------------------------------------------
       // SURVIVING CHECK (bt-16): retired "Fight → skill cell → `turnNumber === t0 + 1`" (the
       // grass opens a TACTICAL battle: no 1v1 command list, and the anchor's turn_number never
-      // advances under tactics) → a hit lands by buttons and the anchor row's HP MIRROR changes:
-      // `battleById(id).sideB.hp` STRICTLY drops on A (the anchor update — a delete + insert pair
-      // on the view — reached A and kept the row), the row is still held by A afterwards, and B
-      // still holds none. STRICT, no terminal escape: a battle that finishes without the drop
-      // fails, and the own-turn loop is bounded by MAX_OWN_TURNS_TO_HIT.
-      const hp0 = await pageA.evaluate((id: string) => {
-        const w = window as unknown as { __mrPvp: MrPvp };
-        return w.__mrPvp.battleById(id)?.sideB.hp ?? -1;
-      }, battleId);
+      // advances under tactics) → a WILD hit lands on A's monster and the anchor row's HP MIRROR
+      // changes: `battleById(id).sideA.hp` (A's own active monster — the anchor mirrors only units
+      // that carry a monster_id; a wild unit carries none, so sideB.hp never moves in a wild
+      // battle, tactics.rs `mirror_hp`) STRICTLY drops below its pre-battle value SEED_HP on A
+      // (the anchor update — a delete + insert pair on the view — reached A and kept the row), the
+      // row is still held by A afterwards (count 1), and B still holds none (count 0). STRICT, no
+      // terminal escape: a battle that finishes without the drop fails.
+      //
+      // Driven like tactics-wild's takeAHitThenFlee: A NEVER attacks (it must not KO the wild
+      // before it hits back); on each own turn A steps toward the wild when not adjacent and ends
+      // its turn, bounded by MAX_OWN_TURNS_FOR_WILD_HIT. The sturdy seed above makes the hit land
+      // >= 1 HP and never a KO.
+      const sideAHp = (): Promise<number> =>
+        pageA.evaluate((id: string) => {
+          const w = window as unknown as { __mrPvp: MrPvp };
+          return w.__mrPvp.battleById(id)?.sideA.hp ?? -1;
+        }, battleId);
+      const hp0 = await sideAHp();
       expect(
         hp0,
-        'A must be able to read the wild`s mirrored HP on the anchor before the hit',
+        'A must be able to read its own monster`s mirrored HP on the anchor (at most the seed)',
       ).toBeGreaterThan(0);
+      expect(hp0, 'the mirrored HP never exceeds the pre-battle seed').toBeLessThanOrEqual(SEED_HP);
 
-      // The own-turn loop: close in (a drafted Move + End Turn), then strike when a skill reaches.
-      // A non-lethal hit is preferred (the battle stays Ongoing for the counts below); a forecast
-      // that can only KO is committed anyway on its turn — a KO rewrites the anchor too (the HP
-      // mirror to 0 plus the terminal outcome), and the strict oracle is the same drop.
       await awaitTacticalActive(pageA, '(v) A');
-      let struck = false;
+      let hurt = (await sideAHp()) < SEED_HP;
       let lastKey: string | null = null;
-      for (let turn = 0; turn < MAX_OWN_TURNS_TO_HIT && !struck; turn += 1) {
+      for (let turn = 0; turn < MAX_OWN_TURNS_FOR_WILD_HIT && !hurt; turn += 1) {
         const t = await waitOwnTurnOrEnd(pageA, lastKey, OWN_TURN_WAIT_MS);
-        if (t.phase === 'Finished') break;
+        hurt = (await sideAHp()) < SEED_HP;
+        if (hurt) break;
+        if (t.phase !== 'Active') {
+          throw new Error(
+            `(v): battle ${battleId} is ${t.phase} before a wild hit reached A's monster (STRICT: no terminal escape)`,
+          );
+        }
         lastKey = turnKey(t);
         const { me, enemy } = sides(t);
         await openMenu(pageA, me);
-        let hit = await attackByButtons(pageA, { allowKo: false, enemyHp: enemy.curHp });
-        if (hit === 'kills')
-          hit = await attackByButtons(pageA, { allowKo: true, enemyHp: enemy.curHp });
-        if (hit === 'attacked') {
-          await waitExecuted(pageA, t.events);
-          // A MISS lands no damage: the tactical unit row says whether the hit connected (the
-          // anchor mirror is the oracle below; this only decides whether to try again).
-          const after = await readTactics(pageA);
-          const target = after?.units.find((u) => u.unitId === enemy.unitId);
-          if (target !== undefined && target.curHp < enemy.curHp) {
-            struck = true;
-            break;
-          }
-          if (after === null || after.phase !== 'Active') break;
-          await endTurn(pageA);
-          continue;
-        }
         if (tileDistance(me, enemy) > 1) await draftMoveToward(pageA, enemy);
         await endTurn(pageA);
       }
-      expect(
-        struck,
-        `A must commit an attack by buttons within MAX_OWN_TURNS_TO_HIT=${MAX_OWN_TURNS_TO_HIT} own ` +
-          'turns (the battle must not finish first). Without a landed hit there is no anchor ' +
-          'update for the store to survive, and this clause would be vacuous',
-      ).toBe(true);
 
       await pageA
         .waitForFunction(
-          (args: { id: string; hp0: number }) => {
+          (args: { id: string; seed: number }) => {
             const w = window as unknown as { __mrPvp: MrPvp };
             const b = w.__mrPvp.battleById(args.id);
             // STRICT: only a genuine drop of the mirrored HP. No terminal escape.
-            return b !== null && b.sideB.hp >= 0 && b.sideB.hp < args.hp0;
+            return b !== null && b.sideA.hp >= 0 && b.sideA.hp < args.seed;
           },
-          { id: battleId, hp0 },
+          { id: battleId, seed: SEED_HP },
           { timeout: HP_DROP_WAIT_MS },
         )
         .catch((err: unknown) => {
           throw new Error(
-            `(v): battle ${battleId}'s mirrored wild HP (sideB.hp, was ${hp0}) did not strictly ` +
-              `drop on A within HP_DROP_WAIT_MS=${HP_DROP_WAIT_MS} ms after the hit: ${(err as Error).message}`,
+            `(v): battle ${battleId}'s mirrored own-monster HP (sideA.hp, pre-battle ${SEED_HP}) did not ` +
+              `strictly drop on A within MAX_OWN_TURNS_FOR_WILD_HIT=${MAX_OWN_TURNS_FOR_WILD_HIT} own turns ` +
+              `+ HP_DROP_WAIT_MS=${HP_DROP_WAIT_MS} ms: ${(err as Error).message}`,
           );
         });
 
@@ -575,7 +637,9 @@ test.describe
           'disappears mid-battle. The store must be rebuilt from the post-burst view cache ' +
           'instead',
       ).not.toBeNull();
-      expect(afterA?.sideB.hp ?? -1, 'the row A holds carries the dropped HP').toBeLessThan(hp0);
+      expect(afterA?.sideA.hp ?? -1, 'the row A holds carries the dropped HP').toBeLessThan(
+        SEED_HP,
+      );
 
       const finalA = await battleView(pageA);
       expect(

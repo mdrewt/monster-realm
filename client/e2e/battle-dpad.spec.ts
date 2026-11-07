@@ -14,6 +14,7 @@ import {
   draftMoveToward,
   endTurn,
   fightToOutcome,
+  fleeByButtons,
   menuCursorTo,
   NO_BAIT_ROW,
   openMenu,
@@ -23,6 +24,7 @@ import {
   sides,
   TACTICS,
   type TacticsSnap,
+  throughResults,
   tileDistance,
   turnKey,
   waitOwnTurnOrEnd,
@@ -67,6 +69,9 @@ const MAX_WALK_STEPS = 120;
 const MAX_OWN_TURNS = 16;
 /** Own turns CTL8J-2-A may spend closing in until the wild stands adjacent on a fresh turn. */
 const MAX_APPROACH_TURNS = 12;
+/** CTL8J-2-A: battles (the first is CTL8J-3's) to try for an own turn adjacent to the wild; a
+ *  kiting wild's battle is fled and the grass re-hunted (tactics-wild's MAX_BATTLES precedent). */
+const MAX_ADJACENT_HUNTS = 3;
 /** Menu moves one `menuTo` may spend. */
 const MAX_MENU_MOVES = 8;
 /** Presses `continueWith` may spend (the first A inside the outcome's 400 ms grace is ignored). */
@@ -357,34 +362,60 @@ test.describe
       // SURVIVING CHECK (bt-16): retired "Recruit → No bait → Yes/No (cursor on Yes) → B → B →
       // Fight" → on an own turn ADJACENT to the wild: Recruit → the bait list (`bait:none` first)
       // → B (back to the root menu) → B (the menu closes) — nothing spent — then `fightToOutcome`.
-      test.setTimeout(240_000);
-      const started = await huntEncounter(page, 'CTL8J-2-A'); // the battle CTL8J-3 left standing
-      expect(started.battleId, 'this is the battle CTL8J-3 used').toBe(firstBattleId);
-
-      // Close in until the wild stands adjacent on a FRESH own turn (Recruit needs the whole budget).
-      let last: string | null = null;
+      // bt-16: up to MAX_ADJACENT_HUNTS battles × (MAX_APPROACH_TURNS own turns + flee + results).
+      test.setTimeout(600_000);
+      // Close in until the wild stands adjacent on a FRESH own turn (Recruit needs the whole
+      // budget). A kiting wild can keep its distance for a whole battle (tactics-wild restarts a
+      // battle for the same reason), so a battle that never brings it adjacent within
+      // MAX_APPROACH_TURNS is fled on the next own turn and the grass re-hunted, bounded by
+      // MAX_ADJACENT_HUNTS.
       let adjacent: TacticsSnap | null = null;
-      for (let turn = 0; turn < MAX_APPROACH_TURNS && adjacent === null; turn += 1) {
-        const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
-        if (tt.phase !== 'Active') break;
-        last = turnKey(tt);
-        const { me, enemy } = sides(tt);
-        if (tileDistance(me, enemy) === 1) {
-          adjacent = tt;
-          break;
+      let hunts = 0;
+      for (let hunt = 0; hunt < MAX_ADJACENT_HUNTS && adjacent === null; hunt += 1) {
+        hunts = hunt + 1;
+        const started = await huntEncounter(page, `CTL8J-2-A hunt ${hunt}`);
+        // Only the FIRST attempt is the battle CTL8J-3 left standing; a re-hunt is a NEW battle by
+        // design (the previous one was fled because the wild kited).
+        if (hunt === 0) {
+          expect(started.battleId, 'this is the battle CTL8J-3 used').toBe(firstBattleId);
         }
-        await openMenu(page, me);
-        const recruitRow = page.locator(TACTICS.menuRow('recruit'));
-        await expect(recruitRow, 'not adjacent: the Recruit row is greyed').toHaveAttribute(
-          'aria-disabled',
-          'true',
-        );
-        await draftMoveToward(page, enemy);
-        await endTurn(page);
+        let last: string | null = null;
+        let ended = false;
+        for (let turn = 0; turn < MAX_APPROACH_TURNS && adjacent === null; turn += 1) {
+          const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+          if (tt.phase !== 'Active') {
+            ended = true;
+            break;
+          }
+          last = turnKey(tt);
+          const { me, enemy } = sides(tt);
+          if (tileDistance(me, enemy) === 1) {
+            adjacent = tt;
+            break;
+          }
+          await openMenu(page, me);
+          const recruitRow = page.locator(TACTICS.menuRow('recruit'));
+          await expect(recruitRow, 'not adjacent: the Recruit row is greyed').toHaveAttribute(
+            'aria-disabled',
+            'true',
+          );
+          await draftMoveToward(page, enemy);
+          await endTurn(page);
+        }
+        if (adjacent !== null) break;
+        // Not adjacent in this battle: flee on a FRESH own turn (Flee needs the whole budget),
+        // let the results pass to the world, and re-hunt.
+        console.log(`[bt-16 CTL8J-2-A] hunt ${hunt}: the wild never stood adjacent — re-hunting`);
+        if (!ended) {
+          const next = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
+          if (next.phase === 'Active') await fleeByButtons(page);
+        }
+        await throughResults(page, `CTL8J-2-A hunt ${hunt}`);
       }
       if (adjacent === null) {
         throw new Error(
-          `CTL8J-2-A: the wild never stood adjacent on a fresh own turn within MAX_APPROACH_TURNS=${MAX_APPROACH_TURNS}`,
+          `CTL8J-2-A: the wild never stood adjacent on a fresh own turn within MAX_APPROACH_TURNS=${MAX_APPROACH_TURNS} ` +
+            `own turns in any of ${hunts} of MAX_ADJACENT_HUNTS=${MAX_ADJACENT_HUNTS} hunts`,
         );
       }
       const { me } = sides(adjacent);
