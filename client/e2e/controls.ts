@@ -1182,7 +1182,8 @@ export async function attackByButtons(
 
 /** From the OPEN ROOT menu: Recruit → the bait row `baitKey` (`bait:<itemId>` or `NO_BAIT_ROW`) →
  *  the aim (the forecast with the odds) → A. False, nothing pressed, when the Recruit row is absent
- *  or greyed (not adjacent, or the budget is not full). */
+ *  or greyed (not adjacent, or the budget is not full). Throws, naming the bag, when the opened
+ *  bait list offers no `baitKey` row (every live Recruit debits one bait, success or not). */
 export async function recruitByButtons(page: Page, baitKey: string): Promise<boolean> {
   const row = page.locator(TACTICS.menuRow('recruit'));
   if ((await row.count()) !== 1 || (await row.getAttribute('aria-disabled')) === 'true') {
@@ -1190,6 +1191,15 @@ export async function recruitByButtons(page: Page, baitKey: string): Promise<boo
   }
   await menuCursorTo(page, 'recruit');
   await pressButton(page, 'A');
+  await expect(
+    page.locator(TACTICS.menuRow(NO_BAIT_ROW)),
+    'recruitByButtons: Recruit opens the bait list',
+  ).toHaveCount(1, { timeout: 5_000 });
+  if (baitKey !== NO_BAIT_ROW && (await page.locator(TACTICS.menuRow(baitKey)).count()) === 0) {
+    throw new Error(
+      `recruitByButtons: the bait list offers no ${baitKey} row — the bag holds none of that item (a live Recruit debits one bait, success or not)`,
+    );
+  }
   await menuCursorTo(page, baitKey);
   await pressButton(page, 'A');
   await expect(

@@ -64,8 +64,9 @@ import {
 //     catalog victory string and the server's battle row is SideAWins.
 //
 // SEEDING (owner SQL, after R1 so R1's "fresh inventory" holds): R2 makes the starter sturdy (300
-// HP, 250 defences — tactics-wild's precedent) and puts bait (item 1) in its bag; R3 raises attack
-// to 250 and HP to 999 so any landed hit KOs a zone-0 wild (battle-dpad's precedent).
+// HP, 250 defences — tactics-wild's precedent) and puts one bait (item 1) per possible recruit
+// attempt in its bag (see BAIT_SEED); R3 raises attack to 250 and HP to 999 so any landed hit KOs
+// a zone-0 wild (battle-dpad's precedent).
 //
 // BOUNDED-RETRY POLICY
 // ====================
@@ -149,7 +150,11 @@ const WEAK_PCT = 45;
 const SEED_HP = 300;
 const SEED_DEFENSE = 250;
 const BAIT_ITEM_ID = 1;
-const BAIT_SEED = 9;
+/** One bait per possible recruit attempt: a live Recruit debits one bait, success or not
+ *  (inventory `consume_one` deletes the row at 0), and the bait list hides an empty bag — a seed
+ *  below the loop's attempt budget dies at `bait:1` mid-loop (master red 2026-11-07, CI run
+ *  42330622918). */
+const BAIT_SEED = MAX_ENCOUNTERS * MAX_OWN_TURNS;
 /** R3 seeds (battle-dpad's precedent): any landed hit KOs a zone-0 wild. */
 const WIN_ATTACK = 250;
 const WIN_HP = 999;
@@ -519,7 +524,7 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
  *  (the caller flees a stalled battle and re-hunts). */
 async function fightToRecruit(
   p: Page,
-  counts: { clicks: number; lastKey: string | null },
+  counts: { clicks: number; lastKey: string | null; hpPcts: number[] },
 ): Promise<'recruited' | 'ended' | 'stalled'> {
   let last: string | null = null;
   counts.lastKey = null;
@@ -536,8 +541,10 @@ async function fightToRecruit(
     await openMenu(p, me);
     if (tileDistance(me, wild) === 1) {
       const weak = wild.curHp * 100 <= wild.maxHp * WEAK_PCT;
+      const hpPct = Math.round((wild.curHp * 100) / wild.maxHp);
       if (weak && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) {
         counts.clicks += 1;
+        counts.hpPcts.push(hpPct);
         continue;
       }
       const hit = await attackByButtons(p, { allowKo: false, enemyHp: wild.curHp });
@@ -548,6 +555,7 @@ async function fightToRecruit(
       }
       if (hit === 'kills' && (await recruitByButtons(p, `bait:${BAIT_ITEM_ID}`))) {
         counts.clicks += 1;
+        counts.hpPcts.push(hpPct);
         continue;
       }
       await endTurn(p);
@@ -716,7 +724,11 @@ test.describe
       let healCount = 0;
       let fleeHealCount = 0;
       let encountersUsed = 0;
-      const counts: { clicks: number; lastKey: string | null } = { clicks: 0, lastKey: null };
+      const counts: { clicks: number; lastKey: string | null; hpPcts: number[] } = {
+        clicks: 0,
+        lastKey: null,
+        hpPcts: [],
+      };
 
       for (let enc = 0; enc < MAX_ENCOUNTERS && !recruited; enc++) {
         encountersUsed = enc + 1;
@@ -748,10 +760,15 @@ test.describe
         }
       }
 
+      const baitLeft =
+        (await snap(page)).ownInventory.find((s) => s.itemId === BAIT_ITEM_ID)?.count ?? 0;
       console.log(
-        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${counts.clicks} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited}`,
+        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${counts.clicks} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited} baitLeft=${baitLeft} attemptHp=[${counts.hpPcts.join(',')}]`,
       );
       expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
+      expect(BAIT_SEED - baitLeft, 'R2: every recruit attempt debited exactly one bait').toBe(
+        counts.clicks,
+      );
 
       await expect
         .poll(async () => (await snap(page)).ownMonsters.length, { timeout: 15_000 })
