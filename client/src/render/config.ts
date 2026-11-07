@@ -45,6 +45,26 @@ export const MIN_VISIBLE_TILES = 7;
  *  raising deviceScale, which the `>= 1` floor never opposes. */
 export const MAX_VISIBLE_TILES = 16;
 
+// ---------------------------------------------------------------------------
+// Continuous UI scale — the chrome's half of the hybrid scale authority.
+// Consumed ONLY by `viewport.ts`, which reduces them to `uiScale`. Tunable feel numbers.
+// ---------------------------------------------------------------------------
+
+/** Shorter CSS axis at which the chrome renders at its authored size (uiScale 1).
+ *  WHAT: uiScale = shorterCssPx / UI_REFERENCE_CSS_PX, before the clamp.
+ *  WHY 720: wf-1's token table and geometry are written at 1280x720. */
+export const UI_REFERENCE_CSS_PX = 720;
+
+/** Lower clamp on uiScale.
+ *  WHAT: below a 630 CSS px shorter axis the chrome stops shrinking.
+ *  WHY 0.875: body text (0.875rem) stays at 12.25 px, the smallest size the wf-1 table reads at. */
+export const UI_SCALE_MIN = 0.875;
+
+/** Upper clamp on uiScale.
+ *  WHAT: above a 2160 CSS px shorter axis the chrome stops growing.
+ *  WHY 3: a 4K window's body text is already 42 px; past it the frames only lose content. */
+export const UI_SCALE_MAX = 3;
+
 /** Remote interpolation delay BASE, in STEP_MS multiples.
  *  This is the documentary base value — on smooth networks it equals the operative
  *  delay. The actual per-character delay is ADAPTIVE: derived from the

@@ -1248,6 +1248,8 @@
  * any canvas. indexShell.smoke.test.ts recomputes it from here.
  */
 :root {
+  /* The one rem authority: render/resizeWiring.ts writes the scale, and nothing written yet means 1. */
+  font-size: calc(100% * var(--mr-ui-scale, 1));
   --mr-frame-bg: #1e1e2e;
   --mr-panel-bg: #181826;
   --mr-frame-fg: #e0e0e0;

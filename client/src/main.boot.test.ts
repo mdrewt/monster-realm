@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   clock,
   frame,
+  mountIndexHtmlShell,
   raf,
   stubRaf,
   telemetryMock,
@@ -263,6 +264,7 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
   it('UIF2.3 boot writes --mr-ui-scale on the real documentElement and hands the renderer the same triple', async () => {
     document.documentElement.style.removeProperty('--mr-ui-scale');
     setWindowBox(1920, 1080, 1);
+    mountIndexHtmlShell();
     await boot();
     await vi.waitFor(() => expect(H.resizes.length).toBeGreaterThan(0), { timeout: 5_000 });
     expect(uiScaleVar()).toBe('1.5');
@@ -272,6 +274,7 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
   it('UIF2.3 a real resize event rewrites --mr-ui-scale and re-sizes the renderer with the new triple', async () => {
     document.documentElement.style.removeProperty('--mr-ui-scale');
     setWindowBox(1920, 1080, 1);
+    mountIndexHtmlShell();
     await boot();
     await vi.waitFor(() => expect(H.resizes.length).toBeGreaterThan(0), { timeout: 5_000 });
     expect(uiScaleVar()).toBe('1.5');

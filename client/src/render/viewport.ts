@@ -15,7 +15,15 @@
 // `stageScale = deviceScale / dpr` is source→CSS, and it is FRACTIONAL: Pixi's
 // `resolution: dpr` re-applies the dpr factor, so the stage must be scaled in CSS
 // space. The CSS box still fills the window exactly at any dpr.
-import { MAX_VISIBLE_TILES, MIN_VISIBLE_TILES, TARGET_VISIBLE_TILES, TILE_PX } from './config';
+import {
+  MAX_VISIBLE_TILES,
+  MIN_VISIBLE_TILES,
+  TARGET_VISIBLE_TILES,
+  TILE_PX,
+  UI_REFERENCE_CSS_PX,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
+} from './config';
 
 /** The resolved scale for one (cssW, cssH, dpr) triple. Every field is derived. */
 export interface ViewportScale {
@@ -26,6 +34,8 @@ export interface ViewportScale {
   readonly stageScale: number; // deviceScale / dpr, finite, > 0 (source px -> CSS px)
   readonly effectiveW: number; // SOURCE px = cssW / stageScale
   readonly effectiveH: number; // SOURCE px = cssH / stageScale
+  readonly continuous: number; // shorterCss * dpr / (TILE_PX * TARGET): the unrounded world scale
+  readonly uiScale: number; // shorterCss / UI_REFERENCE_CSS_PX, clamped: continuous, never snapped
 }
 
 /**
@@ -60,6 +70,9 @@ const CSS_HI = 1e6;
  * need a sub-1 scale (the blurry upscale this slice exists to remove) once the
  * shorter axis drops below MIN_VISIBLE_TILES * TILE_PX = 224 device px. So `Dhi`
  * (MIN) yields to `Dlo` (MAX) and both yield to 1.
+ *
+ * `uiScale` is the chrome's half of the one authority, and it reads the shorter CSS axis directly:
+ * going through `continuous / dpr` would round-trip the dpr and only approximate dpr independence.
  */
 export function viewportScale(cssW: number, cssH: number, dpr: number): ViewportScale {
   const dprN = norm(dpr, DPR_LO, DPR_HI, 1);
@@ -72,9 +85,14 @@ export function viewportScale(cssW: number, cssH: number, dpr: number): Viewport
   const s = (Math.min(cssWN, cssHN) / TILE_PX) * dprN;
   const dLo = Math.max(1, Math.ceil(s / MAX_VISIBLE_TILES)); // strict ceiling
   const dHi = Math.max(dLo, Math.floor(s / MIN_VISIBLE_TILES)); // best-effort floor
-  const d0 = Math.max(1, Math.round(s / TARGET_VISIBLE_TILES)); // the aim
+  const continuous = s / TARGET_VISIBLE_TILES;
+  const d0 = Math.max(1, Math.round(continuous)); // the aim
   const deviceScale = Math.min(dHi, Math.max(dLo, d0));
   const stageScale = deviceScale / dprN;
+  const uiScale = Math.min(
+    UI_SCALE_MAX,
+    Math.max(UI_SCALE_MIN, Math.min(cssWN, cssHN) / UI_REFERENCE_CSS_PX),
+  );
   return {
     dpr: dprN,
     cssW: cssWN,
@@ -83,6 +101,8 @@ export function viewportScale(cssW: number, cssH: number, dpr: number): Viewport
     stageScale,
     effectiveW: cssWN / stageScale,
     effectiveH: cssHN / stageScale,
+    continuous,
+    uiScale,
   };
 }
 
