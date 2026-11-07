@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
+import { awaitTacticalActive, closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 
 // Ranked PvP forfeit e2e (RL-18)
 //
@@ -313,8 +313,9 @@ test.describe
     //     keyboard focus off it (step 5b; qf-8: was the deleted Accept button's focus)
     //
     // -------------------------------------------------------------------------
-    test('ranked forfeit flow: challenge → accept → B-disconnect → A wins; zero-sum profile assertion (RL-18)', async () => {
-      test.setTimeout(120_000);
+    test('ranked forfeit flow: challenge → accept → both deploy by buttons → B-disconnect → A wins; zero-sum profile assertion (RL-18)', async () => {
+      // bt-16: + the deploy phase (≤ 40 s) on top of the 120 s flow.
+      test.setTimeout(180_000);
 
       // Step 1: capture identities.
       const identityA = await pageA.evaluate(() => {
@@ -503,6 +504,24 @@ test.describe
         },
         null,
         { timeout: 15_000 },
+      );
+
+      // Step 6b (bt-16, BT16.2): the accept opened a TACTICAL PvP battle in Deploying, and a
+      // Deploying battle whose side disconnects is CANCELLED UNRATED (bt-14). SURVIVING CHECK
+      // (bt-16): retired "accept → close B" → accept → BOTH sides deploy by buttons (B's browser
+      // still open; concurrently, each presses its own Deploy and the second lock flips the phase)
+      // → Active on both pages → close B. The rating assertions below are unchanged and are what
+      // prove the forfeit was RATED (Δ ∈ [1, 31], never 0).
+      const [activeA, activeB] = await Promise.all([
+        awaitTacticalActive(pageA, 'RL-18 A'),
+        awaitTacticalActive(pageB, 'RL-18 B'),
+      ]);
+      expect(
+        [activeA.kind, activeA.phase, activeB.phase],
+        'RL-18 step 6b: a PvP battle Active on both pages before the disconnect',
+      ).toEqual(['Pvp', 'Active', 'Active']);
+      expect(activeB.battleId, 'RL-18 step 6b: both pages hold the same battle').toBe(
+        activeA.battleId,
       );
 
       // Step 7: forfeit via disconnect — close browserB.

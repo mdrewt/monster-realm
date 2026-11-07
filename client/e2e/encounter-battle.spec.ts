@@ -9,40 +9,67 @@ import {
 } from '@playwright/test';
 import type { Stack } from '../src/ui/contextStack';
 import { t, tf } from '../src/ui/i18n/resolver';
-import { pressAccel, pressButton } from './controls';
+import {
+  attackByButtons,
+  awaitTacticalActive,
+  draftMoveToward,
+  endTurn,
+  fightToOutcome,
+  fleeByButtons,
+  openMenu,
+  pressAccel,
+  pressButton,
+  readTactics,
+  sides,
+  TACTICS,
+  type TacticsSnap,
+  throughResults,
+  tileDistance,
+  turnKey,
+  waitExecuted,
+  waitOwnTurnOrEnd,
+} from './controls';
 
 // encounter-battle.spec.ts — walk into grass, meet a wild monster, fight it to a WIN (de-bloat
 // Phase 3 gameplay smoke).
 //
-// WHAT THIS ADDS OVER recruit.spec.ts. recruit R1 already proves grass -> encounter -> Recruit ->
-// recruit button -> Run, and R2 weakens + recruits; its R3 sees "Victory!" only when a win
-// happened by accident. Nothing asserts that an attack's HP drop RENDERS, that a win GRANTS anything, or that
-// the world RESUMES after the terminal frame is dismissed. Those three are this file's tests.
-// E0 (ctl-6c) runs first, on the very battle E1 then fights: it reads PAINT ORDER (a hit-test with
-// `inert` lifted, plus the computed z-index ordering) to check that the main menu Start opens over
-// an Ongoing battle, and the help it leads to, paint above that battle.
+// WHAT THIS ADDS OVER recruit.spec.ts. recruit R1 proves grass -> encounter -> the Recruit row;
+// R2 weakens + recruits. Nothing else asserts that an attack's HP drop RENDERS, that a win GRANTS
+// anything, or that the world RESUMES after the results. Those three are this file's tests. E0
+// (ctl-6c) runs first, on the very battle E1 then fights: it reads PAINT ORDER (a hit-test with
+// `inert` lifted, plus the computed z-index ordering) to check that the main menu opens over an
+// Active battle, and the help it leads to, paint above that battle.
 //
-// SEEDING (owner SQL, the recruit.spec R3 / wallet-balance.spec precedent — the dev reducers are
-// not page-callable). The starter is raised to level 7 with xp = 8^3 - 1, so ANY win levels it
-// to 8 (battle_xp_reward is >= 1, xp.rs) — a VISIBLE XP grant in the box. The seed level MUST stay
-// inside zone 0's encounter bands (Lv3-7 / Lv4-8, content/encounters/000-core.ron):
-// game-core roll_encounter only draws entries whose band contains the PARTY level, so a Lv9+
-// party meets nothing in zone 0 (measured: a Lv10 seed walked 120 grass steps without a roll).
-// The level seed leaves the stats alone (the starter keeps its level-5 creation roll), so the
-// attack and defense columns are seeded too: defense 250 makes a fought wild's Heavy land only
-// 1 HP per hit; attack 100 (SEED_ATTACK — the bound is derived at its declaration) makes Ember,
-// the first skill cell, KO any fought zone-0 wild in <= 4 hits. E1 reads either an intermediate
-// or a terminal HP frame (a Sproutlet dies in one hit; the terminal frame keeps both cards).
-// Level 8 stays far below every evolution gate out of species 1 (min_level 20 / essence gates),
-// so no evolution can fire here.
+// bt-16 (BT16.2) — NAMED INTENTIONAL CHANGE: the grass now opens a TACTICAL wild battle (the 1v1
+// command list, skill grid, "HP x/y · affinity" cards and `outcome-text` never appear for a live
+// battle). SURVIVING CHECKS, each named at its assertion:
+//   - E0: the battle frame's root is the tactical shell `.tactics-battle` (main.ts mounts it on the
+//     one `battleView` frame id); the stack, inert, paint-order and focus oracles are unchanged.
+//     Start at the tactical shell is End Turn (bt-11, BT11.6: battlePolicy `battleButton` leaves
+//     Start to the shell), so the main menu is opened over the battle by the Monsters ACCELERATOR
+//     (`B`, CTL11A.1: pop to the base, open the menu, pick Monsters) — Monsters is not battle-safe,
+//     so the menu stays the top frame over the battle on its Monsters entry. Start still closes the
+//     menu back to the battle. "Nothing was submitted" is read as the tactical row's round, turnIdx
+//     and event count (the anchor's turnNumber never advances under tactics), on an own live turn
+//     (a 300 s PvE window, so nothing advances on its own while the menu is up).
+//   - E1: retired "Fight → skill cell → the opponent card's HP drop renders" → an attack committed
+//     through Skills → the forecast panel → A makes the enemy unit's HP readout on the HUD (its FOE
+//     info box) drop AND its `readTactics().units` HP drop.
+//   - E2: retired "`outcome-text` reads Victory!" → `fightToOutcome` by buttons → the results
+//     title is the victory string (catalog `battle.outcome.victory`), the server's battle row is
+//     `SideAWins`, the box shows Lv8 (the XP grant) and the wallet is credited (SQL).
 //
-// Water wilds (Tidalin) resist Fire and are fled with Run, exactly as recruit.spec does — bounded.
-// No millisecond-class assertions: every wait is a multi-second waitForFunction.
+// SEEDING (owner SQL, the recruit / wallet-balance precedent — no reducer is page-callable). The
+// starter is raised to level 7 with xp = 8^3 - 1, so ANY win levels it to 8 — a VISIBLE XP grant in
+// the box. The seed level MUST stay inside zone 0's encounter bands (Lv3-7 / Lv4-8): a Lv9+ party
+// meets nothing in zone 0. HP 999 and defences 250 keep the starter standing through every battle
+// here (battle-dpad's measured precedent). Attack is left on its natural roll for E1 (a hit that
+// does NOT KO, so the HUD repaints the drop on an Active battle); E2 raises attack and sp_attack to
+// 250 before its hunt so the starter ALWAYS wins on a landed hit. Level 8 stays far below every
+// evolution gate out of species 1 (min_level 20 / essence gates).
 //
-// THE COMMAND LIST FIRST (qf-7b, QF7B.2). The battle's command list (battle-command-fight|...|run)
-// is the first step of every action: the skill grid renders only after Fight is pressed and every
-// new turn closes it again (CTL8I.1), so every attack presses Fight; Run is the sanctioned flee
-// (QF7.4). E1 also witnesses the closed grid before the first Fight and after the attack.
+// BOUNDS ARE NUMBERS, not damage arithmetic (tactical damage is game-core `tactics::resolve`):
+// MAX_OWN_TURNS per battle, MAX_E1_BATTLES / MAX_WIN_BATTLES re-hunts, each wait bounded.
 //
 // CLEANUP. One browser/context/identity; afterAll closes the browser (on_disconnect deletes the
 // player row before golden.spec's presenceCount === 2).
@@ -50,24 +77,21 @@ import { pressAccel, pressButton } from './controls';
 const SEED_LEVEL = 7;
 const SEED_XP = 8 * 8 * 8 - 1; // one short of level 8 (xp_for_level = level^3)
 const SEED_DEFENSE = 250;
-/** Starter attack. Every attack presses the FIRST skill cell, Ember, a Light that bt-6 retuned
- *  40 -> 20; the SQL raises the level, not the stats, so on the natural roll (attack 8-12) E2
- *  read Defeat on the bad draws. At Lv7 (2L/5+2 = 4) against the toughest FOUGHT zone-0 wild
- *  (Water wilds are fled; a Lv7 Tidalin would take 5 hits), a Lv7 Flameling (defense 15,
- *  HP 25): 4*20*100/15/50+2 = 12 -> STAB 18 -> x0.5 = 9 -> variance 85-100 = 7-9 per hit,
- *  <= 4 hits; a Lv8 Sproutlet (defense 16, HP 27): 12 -> 18 -> x2 = 36 -> 30-36, one hit. The
- *  wild's Heavy lands 1 per hit on SEED_DEFENSE, so the starter (HP >= 19) takes >= 19 hits to
- *  fall (calc_damage, derive_stats). 100, not battle-dpad's 250: it keeps a Flameling fight to
- *  several hits, so E1 usually reads an intermediate frame. */
-const SEED_ATTACK = 100;
+const SEED_HP = 999;
+/** E2's win seed (battle-dpad's precedent): any landed hit KOs a zone-0 wild. */
+const SEED_ATTACK = 250;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls. 120 steps ~ 60 grass entries,
  *  P(no encounter) = 0.8^60 ~ 1.5e-6 (recruit.spec MAX_WALK_STEPS arithmetic). */
 const MAX_WALK_STEPS = 120;
-/** Encounters to try before giving up; P(Water) = 7/22 each, so P(all Water in 8) ~ 1e-4. */
-const MAX_ENCOUNTERS = 8;
-/** Attacks per battle; at >= 1 net damage per hit this always covers a Lv<=8 wild's HP. */
-const MAX_ATTACKS = 30;
+/** Own turns per battle: a 7x5 board is crossed in a few strides; 16 covers a kiting wild. */
+const MAX_OWN_TURNS = 16;
+/** E1 battles to try for a NON-lethal landed hit (a lethal forecast is fled and re-hunted). */
+const MAX_E1_BATTLES = 4;
+/** E2 battles to try for a WIN (a wild that auto-flees or a round cap ends a battle otherwise). */
+const MAX_WIN_BATTLES = 3;
 const STEP_WAIT_MS = 8_000;
+/** How long the HUD may take to repaint the enemy's HP after the hit lands. */
+const HUD_REPAINT_MS = 10_000;
 
 interface Tile {
   x: number;
@@ -169,80 +193,38 @@ async function stepOne(p: Page, dir: string, from: Tile): Promise<void> {
   );
 }
 
-/** Battle-card HP lines in DOM order: [0] opponent, [1] own (battleView appends the opponent
- *  card first; the box's "HP x/y (pct%)" has no " · " so it cannot match). */
-async function battleHp(p: Page): Promise<{ cur: number; max: number; affinity: string }[]> {
-  const texts = await p.locator('text=/HP \\d+\\/\\d+ · /').allTextContents();
-  return texts.flatMap((s) => {
-    const m = /HP (\d+)\/(\d+) · (\S+)/.exec(s);
-    return m ? [{ cur: Number(m[1]), max: Number(m[2]), affinity: m[3] ?? '' }] : [];
-  });
-}
-
-/** qf-7b: presses a battle command row (`battle-command-<id>`) once it is live. A greyed row is
- *  aria-disabled="true" (the PvE in-flight lock between an action and its settle, a finished
- *  battle) and pressing it does nothing, so the press waits for the row to go live first. */
-async function pressCommand(p: Page, id: 'fight' | 'run'): Promise<void> {
-  const row = p.getByTestId(`battle-command-${id}`);
-  await expect(row, `the ${id} command goes live`).toHaveAttribute('aria-disabled', 'false', {
-    timeout: 10_000,
-  });
-  await row.click({ timeout: 10_000 });
-}
-
-/** Every rendered skill cell (a row of the skills list); none while the grid is closed. */
-const skillCells = (p: Page) => p.locator('[data-battle-list="skills"]');
-
-/** Walk the shuttle until a non-Water wild battle is ongoing (Water wilds are fled with Run). */
-async function huntNonWaterEncounter(p: Page): Promise<void> {
-  for (let enc = 0; enc < MAX_ENCOUNTERS; enc++) {
-    let found = false;
-    for (let i = 0; i < MAX_WALK_STEPS && !found; i++) {
-      const g = await snap(p);
-      if (g.ongoingBattle !== null) {
-        found = true;
-        break;
-      }
-      if (g.ownAuthTile === null) throw new Error('hunt: own tile vanished');
-      await stepOne(p, shuttleDir(g.ownAuthTile), g.ownAuthTile);
+/** Walk the shuttle until a wild battle is ongoing (a battle already ongoing is returned as is, so
+ *  E1 continues E0's battle), then wait for its tactical row to be Active (a one-monster party is a
+ *  pack of one: Active at once; `awaitTacticalActive` deploys by buttons if it ever is not). */
+async function huntEncounter(p: Page, label: string): Promise<TacticsSnap> {
+  let found = false;
+  for (let i = 0; i < MAX_WALK_STEPS && !found; i++) {
+    const g = await snap(p);
+    if (g.ongoingBattle !== null) {
+      found = true;
+      break;
     }
-    expect(found, `no wild encounter within ${MAX_WALK_STEPS} steps`).toBe(true);
-    await expect.poll(async () => (await battleHp(p)).length, { timeout: 10_000 }).toBe(2);
-    const [opp] = await battleHp(p);
-    if (opp?.affinity !== 'Water') return;
-    await pressCommand(p, 'run'); // the command list's Run (QF7.4), not the legacy Flee button
-    await p.waitForFunction(
-      () => (window as unknown as Win).__game().ongoingBattle === null,
-      null,
-      {
-        timeout: 15_000,
-      },
-    );
+    if (g.ownAuthTile === null) throw new Error('hunt: own tile vanished');
+    await stepOne(p, shuttleDir(g.ownAuthTile), g.ownAuthTile).catch(() => undefined);
   }
-  throw new Error(`hunt: only Water wilds in ${MAX_ENCOUNTERS} encounters`);
+  expect(
+    (await snap(p)).ongoingBattle,
+    `no wild encounter within ${MAX_WALK_STEPS} steps`,
+  ).not.toBeNull();
+  const active = await awaitTacticalActive(p, label);
+  expect(active.phase, `${label}: the encounter is an Active tactical battle`).toBe('Active');
+  expect(active.kind, `${label}: a WILD tactical battle`).toBe('Wild');
+  return active;
 }
 
-/** Press Fight, click the first PvE skill cell ("<name> (<power>) · <affinity> · Acc n%") and
- *  wait for the turn to advance or the battle to end. qf-7b (QF7B.2): the grid renders only after
- *  Fight and every new turn closes it again (CTL8I.1), so every attack presses Fight first. */
-async function attackOnce(p: Page): Promise<void> {
-  const before = (await snap(p)).ongoingBattle;
-  if (before === null) throw new Error('attackOnce: no ongoing battle');
-  await pressCommand(p, 'fight');
-  const cell = p
-    .locator('button:visible')
-    .filter({ hasText: /\(\d+\) · / })
-    .first();
-  await expect(cell, 'Fight opens the skill grid').toBeVisible({ timeout: 10_000 });
-  await cell.click({ timeout: 10_000 });
-  await p.waitForFunction(
-    (prev: number) => {
-      const b = (window as unknown as Win).__game().ongoingBattle;
-      return b === null || b.turnNumber > prev;
-    },
-    before.turnNumber,
-    { timeout: 15_000 },
-  );
+/** The SQL outcome of battle `battleId`: true when the server's row names SideAWins (the variant
+ *  prints bare on 2.6.0 and snake_case-tagged on 2.8.1 — recruit.spec R3's rendering-agnostic match). */
+function sqlSideAWins(battleId: string, label: string): boolean {
+  if (!/^[0-9]+$/.test(battleId)) throw new Error(`${label}: non-decimal battle id ${battleId}`);
+  const out = sql(`SELECT * FROM battle WHERE battle_id = ${battleId}`, label);
+  if (!out.includes(battleId))
+    throw new Error(`${label}: no battle row ${battleId}: ${out.slice(0, 300)}`);
+  return /side_?a_?wins/i.test(out);
 }
 
 async function overlayText(p: Page, title: string): Promise<string> {
@@ -253,6 +235,17 @@ async function overlayText(p: Page, title: string): Promise<string> {
     return root.textContent ?? '';
   }, title);
 }
+
+/** The enemy unit's HP as the HUD's FOE info box paints it (tactics/hud.ts `.tactics-info-hp`,
+ *  "HP cur/max"): its first number, or NaN when the row is not painted. */
+const hudEnemyHp = (p: Page, unitId: number): Promise<number> =>
+  p.evaluate((id) => {
+    const el = document.querySelector(
+      `.tactics-battle .tactics-info--foe .tactics-info-row[data-unit-id="${id}"] .tactics-info-hp`,
+    );
+    const m = /(\d+)/.exec(el?.textContent ?? '');
+    return m === null ? Number.NaN : Number(m[1]);
+  }, unitId);
 
 /** A viewport point the layering probes hit-test. */
 interface Point {
@@ -267,18 +260,20 @@ const readStack = (p: Page): Promise<Stack> =>
 const navActive = (p: Page): Promise<string | null> =>
   p.evaluate(() => (window as unknown as StackWin).__game().navActive);
 
-/** The battle overlay root is the parent of its title heading (ui/battleView.ts). */
+/** bt-16: the battle frame's root is the tactical shell (`.tactics-battle`, tacticsBattle.ts: the
+ *  constructed root that holds the frame title), shown while its display is not none. */
+const BATTLE_ROOT = '.tactics-battle';
 const battleRootShown = (p: Page): Promise<boolean> =>
-  p.evaluate(() => {
-    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
-    return root !== null && root !== undefined && root.style.display !== 'none';
-  });
+  p.evaluate((sel) => {
+    const root = document.querySelector<HTMLElement>(sel);
+    return root !== null && root.style.display !== 'none';
+  }, BATTLE_ROOT);
 
 /** The layering probes: the viewport centre, the centre of the battle title and a point near the
  *  top-left corner, all inside the viewport. Taken while the battle title is on screen. */
 const probePoints = (p: Page): Promise<Point[]> =>
-  p.evaluate(() => {
-    const title = document.querySelector('[data-testid="battle-title"]');
+  p.evaluate((sel) => {
+    const title = document.querySelector(`${sel} [data-testid="battle-title"]`);
     if (title === null) throw new Error('probe: the battle title is missing');
     const r = title.getBoundingClientRect();
     return [
@@ -286,7 +281,7 @@ const probePoints = (p: Page): Promise<Point[]> =>
       { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) },
       { x: 12, y: 12 },
     ];
-  });
+  }, BATTLE_ROOT);
 
 /** Which overlay owns the topmost element under each probe: 'help', 'menu', 'battle', or the stray
  *  element's tag and id (classified in that order).
@@ -302,8 +297,8 @@ const probePoints = (p: Page): Promise<Point[]> =>
  *  layering oracle. */
 const hitOwners = (p: Page, points: Point[], mode: 'paint' | 'pointer'): Promise<string[]> =>
   p.evaluate(
-    ({ pts, lift }) => {
-      const battleRoot = document.querySelector('[data-testid="battle-title"]')?.parentElement;
+    ({ pts, lift, sel }) => {
+      const battleRoot = document.querySelector(sel);
       const menu = document.getElementById('menu-overlay');
       const help = document.getElementById('help-overlay');
       const lifted: { el: Element; value: string }[] = lift
@@ -326,15 +321,12 @@ const hitOwners = (p: Page, points: Point[], mode: 'paint' | 'pointer'): Promise
         for (const { el, value } of lifted) el.setAttribute('inert', value);
       }
     },
-    { pts: points, lift: mode === 'paint' },
+    { pts: points, lift: mode === 'paint', sel: BATTLE_ROOT },
   );
 
-/** Whether the battle overlay root carries `inert` (a frame suspended under another one). */
+/** Whether the battle root carries `inert` (a frame suspended under another one). */
 const battleInert = (p: Page): Promise<boolean> =>
-  p.evaluate(() => {
-    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
-    return root?.hasAttribute('inert') === true;
-  });
+  p.evaluate((sel) => document.querySelector(sel)?.hasAttribute('inert') === true, BATTLE_ROOT);
 
 /** One overlay root's computed `position` and numeric `z-index` ('auto' or a missing root reads as
  *  NaN, which no ordering assertion accepts). */
@@ -350,18 +342,18 @@ interface Layers {
 
 /** The stacking facts of the battle root, #menu-overlay and #help-overlay. */
 const layers = (p: Page): Promise<Layers> =>
-  p.evaluate(() => {
+  p.evaluate((sel) => {
     const read = (el: Element | null | undefined): Layer => {
       if (el === null || el === undefined) return { position: 'missing', z: Number.NaN };
       const cs = getComputedStyle(el);
       return { position: cs.position, z: cs.zIndex === 'auto' ? Number.NaN : Number(cs.zIndex) };
     };
     return {
-      battle: read(document.querySelector('[data-testid="battle-title"]')?.parentElement),
+      battle: read(document.querySelector(sel)),
       menu: read(document.getElementById('menu-overlay')),
       help: read(document.getElementById('help-overlay')),
     };
-  });
+  }, BATTLE_ROOT);
 
 /** The second, independent layering oracle: all three roots are `position: fixed` (so each one's
  *  z-index applies) and the top overlay's computed z-index is strictly above the battle's. Only the
@@ -376,15 +368,47 @@ function expectStackedAbove(l: Layers, top: 'menu' | 'help'): void {
   );
 }
 
-/** Whether keyboard focus sits inside the menu overlay or inside the battle overlay root. */
+/** Whether keyboard focus sits inside the menu overlay or inside the battle root. */
 const focusInside = (p: Page, where: 'menu' | 'battle'): Promise<boolean> =>
-  p.evaluate((w) => {
-    const root =
-      w === 'menu'
-        ? document.getElementById('menu-overlay')
-        : (document.querySelector('[data-testid="battle-title"]')?.parentElement ?? null);
-    return root?.contains(document.activeElement) === true;
-  }, where);
+  p.evaluate(
+    ({ w, sel }) => {
+      const root =
+        w === 'menu' ? document.getElementById('menu-overlay') : document.querySelector(sel);
+      return root?.contains(document.activeElement) === true;
+    },
+    { w: where, sel: BATTLE_ROOT },
+  );
+
+/** Moves the main menu's cursor with Up until `navActive` is `key`, bounded by MAX_MENU_MOVES. */
+const MAX_MENU_MOVES = 8;
+async function menuTo(p: Page, key: string): Promise<void> {
+  for (let moves = 0; moves < MAX_MENU_MOVES; moves++) {
+    const at = await navActive(p);
+    if (at === key) return;
+    await pressButton(p, 'Up');
+    await expect
+      .poll(() => navActive(p), { timeout: 3_000, message: `menuTo(${key}): Up from ${at}` })
+      .not.toBe(at);
+  }
+  throw new Error(`menuTo(${key}): not reached in MAX_MENU_MOVES=${MAX_MENU_MOVES} presses`);
+}
+
+/** bt-16: opens the main menu over the Active tactical battle with the Monsters accelerator
+ *  (Start is the shell's End Turn): the menu opens over the battle and Monsters, not battle-safe,
+ *  opens nothing above it. Should a leaf ever open, ONE B steps back to the menu. Asserts the stack
+ *  is exactly [battle, menu over that battle]. */
+async function openMenuOverBattle(p: Page, battleId: string): Promise<void> {
+  await pressAccel(p, 'B');
+  await expect(p.locator('#menu-overlay')).toBeVisible({ timeout: 5_000 });
+  const stack = await readStack(p);
+  if (stack.length > 2) await pressButton(p, 'B');
+  await expect
+    .poll(() => readStack(p), { timeout: 5_000 })
+    .toEqual([
+      { kind: 'battle', battleId },
+      { kind: 'screen', id: 'menuView', overBattle: battleId },
+    ]);
+}
 
 const boxCardPrefix = (species: string, level: number): string =>
   tf('box.card.stats', { species, level, current: 0, max: 0, percent: 0 }).split(' · HP')[0] ?? '';
@@ -410,27 +434,26 @@ test.describe
         throw new Error('beforeAll: no starter with a decimal monsterId');
       }
       monsterId = starter.monsterId;
-      for (const [col, val] of [
-        ['stat_defense', SEED_DEFENSE],
-        ['stat_sp_defense', SEED_DEFENSE],
-        ['stat_attack', SEED_ATTACK],
-      ] as const) {
-        sql(`UPDATE monster SET ${col} = ${val} WHERE monster_id = ${monsterId}`, 'seed');
-      }
       for (const table of ['monster', 'monster_pub']) {
-        sql(`UPDATE ${table} SET xp = ${SEED_XP} WHERE monster_id = ${monsterId}`, 'seed');
-        sql(`UPDATE ${table} SET level = ${SEED_LEVEL} WHERE monster_id = ${monsterId}`, 'seed');
+        for (const [col, val] of [
+          ['stat_defense', SEED_DEFENSE],
+          ['stat_sp_defense', SEED_DEFENSE],
+          ['stat_hp', SEED_HP],
+          ['current_hp', SEED_HP],
+          ['xp', SEED_XP],
+          ['level', SEED_LEVEL],
+        ] as const) {
+          sql(`UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${monsterId}`, 'seed');
+        }
       }
       // ANTI-NO-OP: read the seed back. A silent zero-row UPDATE would leave the starter on its
-      // natural roll: E2 red on roughly a fifth of the draws with no pointer to the cause.
+      // natural roll: a fainted starter meets no encounter, with no pointer to the cause.
       const row = sqlRows(
         sql(`SELECT * FROM monster WHERE monster_id = ${monsterId}`, 'seed'),
         'seed',
       ).find((r) => r.monster_id === monsterId);
       expect(row, 'the starter row is visible to the CLI').toBeDefined();
-      expect(Number(row?.stat_attack), 'the starter row reads back the attack seed').toBe(
-        SEED_ATTACK,
-      );
+      expect(Number(row?.stat_hp), 'the starter row reads back the HP seed').toBe(SEED_HP);
       expect(Number(row?.stat_defense), 'the starter row reads back the defense seed').toBe(
         SEED_DEFENSE,
       );
@@ -445,31 +468,31 @@ test.describe
       await browser.close();
     });
 
-    test('E0 (CTL6C.1): Start on an Ongoing battle paints the main menu over the battle (hit-tested), Options > How to play paints help over both, B goes back to the menu and Start back to the untouched battle', async () => {
-      // WRONG IMPL KILLED: a menu or help painted UNDER the battle overlay, a z-index not above
-      // the battle's (Start opens a menu the player cannot see while it takes every key). MEASURED
-      // TRAP: the battle under the menu is `inert` (ui/overlayA11y.ts) and Chromium drops inert
-      // subtrees from hit-testing, so a plain elementFromPoint said 'menu' while the battle painted
-      // over it; the 'paint' probe lifts `inert` to read paint order, and expectStackedAbove pins
-      // the computed z-index order as a second oracle. Also: a Start that hides the battle to show
-      // the menu; a menu not stamped over the battle (the stack shape); focus left in the battle
-      // under the menu; a close that does not return to the battle (the stack, the focus and the
-      // probes); and a menu round trip that submits or skips a turn (the turn number is
-      // unchanged). E1 continues on this SAME battle (huntNonWaterEncounter returns at once while
-      // one is ongoing), so this test neither attacks nor leaves a frame open.
-      test.setTimeout(90_000);
-      await huntNonWaterEncounter(page);
-      await expect(
-        page.getByRole('heading', { name: t('battle.title'), exact: true }),
-      ).toBeVisible();
-      const started = (await snap(page)).ongoingBattle;
-      if (started === null) throw new Error('E0: no ongoing battle after the hunt');
-      const id = started.battleId;
+    test('E0 (CTL6C.1): the main menu opened over an Active tactical battle paints over it (hit-tested), Options > How to play paints help over both, B goes back to the menu and Start back to the untouched battle (bt-16: the frame root is the tactical shell; the menu opens by its accelerator)', async () => {
+      // WRONG IMPL KILLED: a menu or help painted UNDER the battle shell, a z-index not above the
+      // battle's (a menu the player cannot see while it takes every key). MEASURED TRAP: the
+      // battle under the menu is `inert` (ui/overlayA11y.ts) and Chromium drops inert subtrees
+      // from hit-testing, so the 'paint' probe lifts `inert` to read paint order, and
+      // expectStackedAbove pins the computed z-index order as a second oracle. Also: an open that
+      // hides the battle to show the menu; a menu not stamped over the battle (the stack shape);
+      // focus left in the battle under the menu; a close that does not return to the battle (the
+      // stack, the focus and the probes); and a menu round trip that submits or skips a turn (the
+      // tactical round, turnIdx and event count are unchanged). E1 continues on this SAME battle.
+      test.setTimeout(120_000);
+      const active = await huntEncounter(page, 'E0');
+      // SURVIVING CHECK (bt-16): the frame root is `.tactics-battle` (was the 1v1 battleView).
+      await expect(page.locator(`${BATTLE_ROOT} [data-testid="battle-title"]`)).toHaveText(
+        t('battle.title'),
+      );
+      const id = active.battleId;
+      // An own live turn: the PvE window is 300 s, so nothing advances while the menu is up.
+      const own = await waitOwnTurnOrEnd(page, null, 15_000);
+      expect(own.phase, 'E0: an own live turn on an Active battle').toBe('Active');
       const all = (owner: string): string[] => [owner, owner, owner];
       const points = await probePoints(page);
       expect(points, 'three layering probes').toHaveLength(3);
 
-      // ANTI-VACUITY: before Start every probe lands in the battle overlay.
+      // ANTI-VACUITY: before the menu every probe lands in the battle shell.
       await expect
         .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
         .toEqual(all('battle'));
@@ -478,39 +501,24 @@ test.describe
         .toEqual([{ kind: 'battle', battleId: id }]);
       await expect.poll(() => focusInside(page, 'battle'), { timeout: 5_000 }).toBe(true);
 
-      // Start opens the menu over the battle, and the menu is what the player sees.
-      await pressButton(page, 'Start');
-      await expect(page.locator('#menu-overlay')).toBeVisible({ timeout: 5_000 });
-      await expect
-        .poll(() => readStack(page), { timeout: 5_000 })
-        .toEqual([
-          { kind: 'battle', battleId: id },
-          { kind: 'screen', id: 'menuView', overBattle: id },
-        ]);
-      // ANTI-VACUITY (the measured trap): the battle under the menu is suspended `inert`, which
-      // is why a plain hit-test skips it. A HARD assert, not informational: the suspension is
-      // ctl-5's stack contract (CTL5.6), set synchronously when the menu opens, so it is not
-      // timing-brittle, and if it ever stops this line reds loudly. Without inert the lift below
-      // is a no-op and the 'paint' probe is still valid, so the fix then is to drop this line.
+      // SURVIVING CHECK (bt-16): retired "Start opens the menu" (Start is the shell's End Turn,
+      // BT11.6) → the Monsters accelerator opens the main menu over the battle.
+      await openMenuOverBattle(page, id);
+      // ANTI-VACUITY (the measured trap): the battle under the menu is suspended `inert`.
       expect(await battleInert(page), 'the battle under the menu is inert').toBe(true);
       await expect
         .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
         .toEqual(all('menu'));
       expectStackedAbove(await layers(page), 'menu');
-      // What the pointer can hit (inert respected): NOT the layering proof (it said 'menu' on the
-      // unfixed build too); it pins only that the menu itself is live, not suspended.
       await expect
         .poll(() => hitOwners(page, points, 'pointer'), { timeout: 5_000 })
         .toEqual(all('menu'));
       expect(await battleRootShown(page), 'the battle stays shown under the menu').toBe(true);
       expect((await snap(page)).ongoingBattle?.battleId, 'the same battle goes on').toBe(id);
       await expect.poll(() => focusInside(page, 'menu'), { timeout: 5_000 }).toBe(true);
-      expect(await navActive(page), 'the menu opens on its first entry').toBe('monsters');
 
       // Options > How to play: help opens above the menu over the battle, and is what is seen.
-      await pressButton(page, 'Up'); // wraps from Monsters to Close
-      await pressButton(page, 'Up');
-      await expect.poll(() => navActive(page), { timeout: 5_000 }).toBe('options');
+      await menuTo(page, 'options');
       await pressButton(page, 'A');
       await expect.poll(() => navActive(page), { timeout: 5_000 }).toBe('help');
       await pressButton(page, 'A');
@@ -551,48 +559,131 @@ test.describe
         .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
         .toEqual(all('battle'));
       await expect.poll(() => focusInside(page, 'battle'), { timeout: 5_000 }).toBe(true);
-      const after = (await snap(page)).ongoingBattle;
-      expect(after?.battleId, 'the battle is still ongoing').toBe(id);
-      expect(after?.turnNumber, 'and nothing was submitted').toBe(started.turnNumber);
+      const after = await readTactics(page);
+      expect(after?.battleId, 'the battle is still the same one').toBe(id);
+      // SURVIVING CHECK (bt-16): retired "turnNumber unchanged" → round, turnIdx and events.
+      expect(
+        after === null ? null : [after.phase, after.round, after.turnIdx, after.events],
+        'and nothing was submitted: the same Active round, turn and event count',
+      ).toEqual(['Active', own.round, own.turnIdx, own.events]);
     });
 
-    test('E1: a grass encounter opens the battle UI, and a submitted attack renders the opponent HP drop', async () => {
-      test.setTimeout(90_000);
-      await huntNonWaterEncounter(page);
-      await expect(
-        page.getByRole('heading', { name: t('battle.title'), exact: true }),
-      ).toBeVisible();
-      // qf-7b (QF7B.2): the skill grid is closed until Fight is pressed (E0's presses all went to
-      // the menu and help above this battle, never to the battle itself). ANTI-VACUITY: the Fight
-      // row is on screen first, and the command list and the grid render in the same refresh, so
-      // no cell means a closed grid, not an unpainted one.
-      await expect(page.getByTestId('battle-command-fight')).toBeVisible({ timeout: 5_000 });
-      await expect(skillCells(page), 'no skill cell before Fight is pressed').toHaveCount(0);
-
-      const [oppBefore] = await battleHp(page);
-      if (!oppBefore) throw new Error('E1: opponent HP line missing');
-      await attackOnce(page);
-      // The terminal frame keeps both cards, so this reads correctly even on a one-hit KO.
-      await expect
-        .poll(async () => (await battleHp(page))[0]?.cur ?? Number.NaN, { timeout: 10_000 })
-        .toBeLessThan(oppBefore.cur);
-      // qf-7b (QF7B.2, CTL8I.1): the attack's new turn starts closed again (and a battle the
-      // attack finished renders no grid at all), so either way no cell is left on screen.
-      await expect(skillCells(page), 'the grid closes after the attack').toHaveCount(0);
-    });
-
-    test('E2: fighting on to a win shows Victory!, grants XP (visible level-up in the box) and currency (server wallet)', async () => {
-      test.setTimeout(90_000);
-      for (let i = 0; i < MAX_ATTACKS; i++) {
-        if ((await snap(page)).ongoingBattle === null) break;
-        await attackOnce(page);
+    test('E1: a grass encounter opens the tactical battle UI, and an attack committed through Skills → the forecast panel → A drops the enemy unit`s HP on the HUD and in the tactical rows (bt-16: was Fight → skill cell → the HP card)', async () => {
+      // SURVIVING CHECK (bt-16): retired "Fight → skill cell → the opponent card's HP drop
+      // renders" → the HUD's FOE info box readout drops AND `readTactics().units` drops. A
+      // NON-lethal hit is required (a KO ends the battle and the results panel takes the frame
+      // before the HUD repaints): a forecast that can only KO, or a miss, is retried on the next
+      // own turn, and a battle offering only lethal hits is fled and re-hunted (MAX_E1_BATTLES).
+      test.setTimeout(300_000);
+      let dropped = false;
+      for (let battle = 0; battle < MAX_E1_BATTLES && !dropped; battle += 1) {
+        await huntEncounter(page, `E1 battle ${battle}`);
+        await expect(page.locator(`${BATTLE_ROOT} [data-testid="battle-title"]`)).toBeVisible();
+        let last: string | null = null;
+        let lethalOnly = false;
+        for (let turn = 0; turn < MAX_OWN_TURNS && !dropped && !lethalOnly; turn += 1) {
+          const tt = await waitOwnTurnOrEnd(page, last, 15_000);
+          if (tt.phase !== 'Active') break;
+          last = turnKey(tt);
+          const { me, enemy } = sides(tt);
+          const hudBefore = await hudEnemyHp(page, enemy.unitId);
+          await openMenu(page, me);
+          const hit = await attackByButtons(page, { allowKo: false, enemyHp: enemy.curHp });
+          if (hit === 'kills') {
+            lethalOnly = true;
+            await endTurn(page);
+            break;
+          }
+          if (hit === 'attacked') {
+            await waitExecuted(page, tt.events);
+            const now = await readTactics(page);
+            const target = now?.units.find((u) => u.unitId === enemy.unitId);
+            if (
+              now !== null &&
+              now.phase === 'Active' &&
+              target !== undefined &&
+              target.curHp < enemy.curHp
+            ) {
+              expect(hudBefore, 'E1: the HUD painted the enemy HP before the hit').toBe(
+                enemy.curHp,
+              );
+              await expect
+                .poll(() => hudEnemyHp(page, enemy.unitId), {
+                  message: `E1: the HUD's foe info box repaints the dropped HP within ${HUD_REPAINT_MS} ms`,
+                  timeout: HUD_REPAINT_MS,
+                })
+                .toBe(target.curHp);
+              expect(target.curHp, 'E1: the tactical row`s enemy HP dropped').toBeLessThan(
+                enemy.curHp,
+              );
+              dropped = true;
+            }
+            await endTurn(page);
+            continue;
+          }
+          if (tileDistance(me, enemy) > 1) await draftMoveToward(page, enemy);
+          await endTurn(page);
+        }
+        // Leave the battle (dropped or not) on a fresh own turn: Flee needs the whole budget.
+        const lastKey = last;
+        const next = await waitOwnTurnOrEnd(page, lastKey, 15_000);
+        if (next.phase === 'Active') await fleeByButtons(page);
+        await throughResults(page, `E1 battle ${battle}`);
       }
-      expect((await snap(page)).ongoingBattle, `battle still ongoing after ${MAX_ATTACKS}`).toBe(
-        null,
+      expect(
+        dropped,
+        `E1: a NON-lethal hit landed and the HUD repainted the drop within ${MAX_E1_BATTLES} battles`,
+      ).toBe(true);
+    });
+
+    test('E2: fighting to a win by buttons shows the victory title, the server records SideAWins, grants XP (visible level-up in the box) and currency (server wallet) (bt-16: was outcome-text)', async () => {
+      // SURVIVING CHECK (bt-16): retired "`outcome-text` reads Victory!" → `fightToOutcome` by
+      // buttons → the results title is the catalog victory string and the server's battle row is
+      // SideAWins (never "any outcome": a battle that ends otherwise is re-hunted, MAX_WIN_BATTLES).
+      test.setTimeout(420_000);
+      for (const table of ['monster', 'monster_pub']) {
+        for (const col of ['stat_attack', 'stat_sp_attack']) {
+          sql(
+            `UPDATE ${table} SET ${col} = ${SEED_ATTACK} WHERE monster_id = ${monsterId}`,
+            'E2 seed',
+          );
+        }
+      }
+      const seeded = sqlRows(
+        sql(`SELECT * FROM monster WHERE monster_id = ${monsterId}`, 'E2 seed'),
+        'E2 seed',
+      ).find((r) => r.monster_id === monsterId);
+      expect(Number(seeded?.stat_attack), 'the starter row reads back the attack seed').toBe(
+        SEED_ATTACK,
       );
-      await expect(page.getByTestId('outcome-text')).toHaveText(t('battle.outcome.victory'), {
-        timeout: 10_000,
-      });
+      let won = false;
+      for (let battle = 0; battle < MAX_WIN_BATTLES && !won; battle += 1) {
+        const start = await huntEncounter(page, `E2 battle ${battle}`);
+        const end = await fightToOutcome(page, {
+          maxOwnTurns: MAX_OWN_TURNS,
+          label: `E2 battle ${battle}`,
+        });
+        expect(end.phase, 'E2: the battle finished').toBe('Finished');
+        const title = page.locator(`${TACTICS.results} [data-testid="battle-title"]`);
+        await expect(title, 'E2: the results panel shows its title').toBeVisible({
+          timeout: 20_000,
+        });
+        const titleText = ((await title.textContent()) ?? '').trim();
+        await throughResults(page, `E2 battle ${battle}`);
+        const sideAWins = sqlSideAWins(start.battleId, 'E2');
+        console.log(
+          `[bt-16 E2] battle ${battle}: title "${titleText}", SQL SideAWins ${sideAWins}`,
+        );
+        if (sideAWins) {
+          expect(titleText, 'E2: the results title is the victory string').toBe(
+            t('battle.outcome.victory'),
+          );
+          won = true;
+        }
+      }
+      expect(won, `E2: a battle was won (SQL SideAWins) within ${MAX_WIN_BATTLES} battles`).toBe(
+        true,
+      );
 
       await page.waitForFunction(
         (lvl) => (window as unknown as Win).__game().ownMonsters[0]?.level === lvl,
@@ -608,10 +699,8 @@ test.describe
       );
       expect(Number(wallet?.balance), 'the win must credit currency').toBeGreaterThan(0);
 
-      // Visible XP: the box card now reads Lv8. Start first dismisses the terminal frame (B is
-      // denied over a server-owned frame, so the bare world must be back before it: ctl-11a),
-      // then B opens Monsters through the main menu.
-      await pressButton(page, 'Start');
+      // Visible XP: the box card now reads Lv8. The results already advanced to the world base
+      // (throughResults), so B opens Monsters through the main menu.
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await expect.poll(async () => (await readStack(page)).length, { timeout: 5_000 }).toBe(1);
       await pressAccel(page, 'B');
@@ -622,8 +711,11 @@ test.describe
       await expect.poll(() => overlayText(page, t('box.title')), { timeout: 5_000 }).toBe('');
     });
 
-    test('E3: with the terminal frame dismissed, the world resumes — no battle UI and a step moves the character', async () => {
-      await expect(page.getByTestId('outcome-text')).toBeHidden({ timeout: 5_000 });
+    test('E3: with the results dismissed, the world resumes — no battle UI and a step moves the character', async () => {
+      // SURVIVING CHECK (bt-16): retired "`outcome-text` hidden" → the tactical results panel is
+      // hidden (and no shell is shown).
+      await expect(page.locator(TACTICS.results)).toBeHidden({ timeout: 5_000 });
+      expect(await battleRootShown(page), 'no battle shell').toBe(false);
       const s = await snap(page);
       expect(s.ongoingBattle).toBe(null);
       const from = s.ownAuthTile;

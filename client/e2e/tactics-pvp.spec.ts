@@ -10,6 +10,7 @@ import {
 import type { Stack } from '../src/ui/contextStack';
 import {
   armRowProbe,
+  challengeAndAcceptByButtons,
   closeAll,
   deployByButtons,
   dpadCursorTo,
@@ -33,12 +34,15 @@ import {
 // vacuity); the tester brief's items 17-19, T4 and its Lens fold (the fold wins).
 //
 // TWO BROWSERS (pvp-full.spec.ts): two `chromium.launch()` instances are two SpacetimeDB identities.
-// A is the challenger and side A of every battle `dev_start_tactical_pvp(A, B, Some(1))` starts; B is
-// side B. Both join with ONE starter, so every battle is format 1 (N > 1 is unit / boot tested:
-// pvpModel / actionSheetModel / main.input / main.dispatch).
+// A is the challenger and side A of every battle; B is side B. bt-16 (named intentional change): the
+// battles are no longer started by `dev_start_tactical_pvp` (deleted by the cutover) but by the
+// production path — A challenges B face to face and B accepts on its Social sheet by buttons
+// (controls.ts `challengeAndAcceptByButtons`), which opens the tactical PvP battle in Deploying. Both
+// join with ONE starter, so every battle is format 1 (N > 1 is unit / boot tested: pvpModel /
+// actionSheetModel / main.input / main.dispatch).
 //
-// SEEDING: owner SQL (`spacetime sql`) and owner calls (`spacetime call`), literal-shaped and
-// charset-checked (tactics-wild.spec.ts's idioms); dev reducers are not page-callable. The two
+// SEEDING: owner SQL (`spacetime sql`), literal-shaped and charset-checked (tactics-wild.spec.ts's
+// idioms); no reducer is called from the page or the CLI. The two
 // starters get DISTINCT random letter-only nicknames, so "B's page never shows A's monster" is a
 // real oracle (two Flamelings would share a species name) with a positive control on A's page.
 //
@@ -208,40 +212,6 @@ const cellNumber = (cell: string | undefined): number | null => {
   return digits === null ? null : Number(digits[0]);
 };
 
-/** `dev_start_tactical_pvp(challenger, opponent, Some(format))` as the module OWNER. */
-function devStartPvp(aHex: string, bHex: string, format: number, label: string): void {
-  const { server, db } = stdbTarget(label);
-  const a = normId(aHex);
-  const b = normId(bHex);
-  if (
-    !/^[0-9a-f]{64}$/.test(a) ||
-    !/^[0-9a-f]{64}$/.test(b) ||
-    !Number.isInteger(format) ||
-    format < 1 ||
-    format > 3
-  ) {
-    throw new Error(`${label}: refusing non-literal-shaped input ${aHex} / ${bHex} / ${format}`);
-  }
-  try {
-    execFileSync(
-      'spacetime',
-      [
-        'call',
-        '-s',
-        server,
-        db,
-        'dev_start_tactical_pvp',
-        `"0x${a}"`,
-        `"0x${b}"`,
-        `{"some":${format}}`,
-      ],
-      { encoding: 'utf8', timeout: 15_000 },
-    );
-  } catch (err) {
-    throw new Error(`${label}: dev_start_tactical_pvp failed: ${(err as Error).message}`);
-  }
-}
-
 /** The PvP turn window of `battleId`, from its LIVE clock rows: the largest `deadline_ms -
  *  window_open_ms` among rows with an open window (the deploy rows carry no open). */
 async function liveWindowMs(battleId: string, label: string): Promise<number> {
@@ -366,15 +336,17 @@ async function countdownSeconds(p: Page): Promise<number | null> {
 }
 
 /** Starts a format-1 PvP battle A vs B and waits for both deploy panels; returns its id, the
- *  deploy deadline (A's own clock, epoch ms) and the snapshot each side read. */
+ *  deploy deadline (A's own clock, epoch ms) and the snapshot each side read.
+ *  SURVIVING CHECK (bt-16): retired `devStartPvp(A, B, 1)` (the dev reducer is deleted by the
+ *  cutover) → the production start: A challenges B face to face (the size pick's `1 vs 1`) and B
+ *  accepts on its Social sheet by buttons (`challengeAndAcceptByButtons`); the accept opens the
+ *  tactical PvP battle in Deploying, so every deploy-phase oracle below is unchanged. */
 async function startPvp(
   a: Page,
   b: Page,
   label: string,
 ): Promise<{ battleId: string; deployDeadline: number }> {
-  await closeAll(a);
-  await closeAll(b);
-  devStartPvp((await snap(a)).identity, (await snap(b)).identity, 1, label);
+  await challengeAndAcceptByButtons(a, b, undefined, label);
   const ta = await waitTactics(
     a,
     (t) => t.owner === 'deploy' && t.phase === 'Deploying',

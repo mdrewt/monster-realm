@@ -8,14 +8,10 @@ import {
   parseReducerNames,
 } from './verify-release-reducers.mjs';
 
-test('the forbidden set is exactly the four dev_reducers-gated reducers', () => {
-  // bt-14 (BT14.2): the PvP build-phase entrypoint joins the release ban.
-  assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), [
-    'dev_start_tactical_pvp',
-    'dev_start_tactical_wild',
-    'grant_bait',
-    'start_wild_battle',
-  ]);
+test('the forbidden set is exactly the two dev_reducers-gated reducers', () => {
+  // bt-16 (BT16.1): the two dev tactical starts are deleted (the live grass and challenge-accept
+  // paths start tactical battles), so only the 1v1-era dev reducers remain gated.
+  assert.deepEqual([...FORBIDDEN_REDUCERS].sort(), ['grant_bait', 'start_wild_battle']);
 });
 
 test('parseReducerNames fails loud on empty, malformed, reducer-less and zero-reducer output', () => {
@@ -50,16 +46,6 @@ test('findForbiddenReducers flags each forbidden reducer by exact name only', ()
   );
   assert.ok(
     findForbiddenReducers(['grant_bait', 'buy'], FORBIDDEN_REDUCERS).includes('grant_bait'),
-  );
-  assert.ok(
-    findForbiddenReducers(['dev_start_tactical_wild', 'buy'], FORBIDDEN_REDUCERS).includes(
-      'dev_start_tactical_wild',
-    ),
-  );
-  assert.ok(
-    findForbiddenReducers(['dev_start_tactical_pvp', 'buy'], FORBIDDEN_REDUCERS).includes(
-      'dev_start_tactical_pvp',
-    ),
   );
   assert.deepEqual(
     findForbiddenReducers(

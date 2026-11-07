@@ -376,8 +376,11 @@ A battle starts with the first conscious monster as lead (`BattleSide::with_lead
 One predicate, `guards::is_in_ongoing_battle`, checks both roles and is used
 everywhere a battle must block something: movement (a drain-time lock in
 `movement_tick`, plus `enqueue_move`/`set_move` rejecting mid-battle), trading,
-evolution, guest claims. PvP turns are secret `battle_action` rows, resolved when both
-arrive or forfeited by a `PVP_TURN_DEADLINE_MS` (60 s) reaper. Challenges expire after
+evolution, guest claims. Accepting a challenge opens a TACTICAL battle
+(`tactics::start_pvp_tactical`): secret queue rows under the 30 s per-unit clock, forfeit on
+the fourth auto-pass or the last connection closing (see "Tactical battle privacy is
+structural"); the 1v1 `battle_action` rows and the 60 s `pvp_deadline_reaper` are never
+written or armed by a live path since the cutover. Challenges expire after
 `CHALLENGE_TTL_MS` (120 s). Only battles between two distinct real players change
 `profile` rating (`guards::is_ranked_pvp`, Elo from `INITIAL_RATING` 1000 with no
 floor). When an identity's last connection closes, its live trades, PvP battles, wild
@@ -560,6 +563,28 @@ holders.
 **Rules out.** An unclassified table; deleting before the grace period ends; an export
 path any other player can read.
 
+## Battles run on one engine at a time; the tactical cutover was a flip, not a toggle
+
+**Decision.** The two live battle starts — the grass trigger in `movement_tick` and
+`accept_challenge` — call the tactical writers (`tactics::start_wild_tactical`,
+`tactics::start_pvp_tactical`) and nothing else. The switch happened in one slice (bt-16)
+together with the deletion of the dev-gated tactical starts and the migration of every
+battle e2e; the 1v1 reducers stay compiled but unreachable until bt-17 deletes them, and
+the 1v1 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from
+use, never dropped or reordered (see "Schema changes are additive"). The account-e2e's
+vacuity allowlist names each retired table with that reason.
+
+**Why.** Two engines reachable at once would need a per-battle discriminator in every
+guard, settlement and client renderer, and a runtime toggle is exactly the surface a
+hostile client would flip. One engine per path keeps `guards::is_in_ongoing_battle`,
+the settlement funnels and the battle frame single-sourced, and compiling the old
+engine through the flip lets the client keep typechecking so the purge can delete both
+sides consistently.
+
+**Rules out.** A feature flag or config row selecting the engine; starting a tactical
+battle through a dev-only reducer in any shipped build; dropping or reordering the
+retired tables (live data, additive schema).
+
 ## Dev-only reducers never ship
 
 **Decision.** `start_wild_battle` and `grant_bait` compile only with the
@@ -567,7 +592,9 @@ path any other player can read.
 playtest recipes publish the default build and then check the *published* module with
 `spacetime describe --json` (`scripts/verify-release-reducers.mjs`), and check that
 the production client bundle contains no DEV debug hooks
-(`scripts/verify-build-hooks.mjs`).
+(`scripts/verify-build-hooks.mjs`). A dev-gated start never outlives its build phase: the
+tactical `dev_start_tactical_*` reducers were deleted in the same slice that wired the live
+paths, and the e2e drives every battle through the player-reachable flows.
 
 **Why.** A dev reducer in a real deployment is a free-items and free-battles exploit.
 Checking the published module rather than the source catches a wrong build flag in

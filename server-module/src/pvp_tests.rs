@@ -880,31 +880,59 @@ fn nh_challenge_pvp_inserts_pending_and_arms_the_ttl_reaper() {
     );
 }
 
-/// EV-pvp-handshake-guards (accept): only the target may accept, only a Pending
+/// The tactical world (`tactics_tests::world`: every table the tactical writers touch, the
+/// content-version config and the shipped encounter rows) with the PvP surface registered on top
+/// (`pv_world`), so `accept_challenge` can reach `tactics::start_pvp_tactical` against real rows.
+/// Joined: A, B (pv_world) and D; parties: A's 11, B's 21; challenges 100 (A -> B, Pending,
+/// `format`), 101 (D -> C, Pending, format 1), 102 (A -> B, Accepted, format 1); reapers 500 -> 100
+/// and 501 -> 101.
+fn pv_accept_world(fx: &PvFixture, format: u8) -> (PvWorld<'_>, PvTacticsWorld<'_>) {
+    let t = crate::tactics::tactics_tests::world(fx);
+    let w = pv_world(fx, true);
+    w.join(pv_d(), true);
+    w.monster(11, pv_a(), 0);
+    w.monster(21, pv_b(), 0);
+    w.challenges.seed(&PvChallenge {
+        format,
+        ..pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending)
+    });
+    w.challenges.seed(&PvChallenge {
+        format: 1,
+        ..pv_challenge(101, pv_d(), pv_c(), PvStatus::Pending)
+    });
+    w.challenges.seed(&PvChallenge {
+        format: 1,
+        ..pv_challenge(102, pv_a(), pv_b(), PvStatus::Accepted)
+    });
+    w.reaper(500, 100);
+    w.reaper(501, 101);
+    (w, t)
+}
+
+type PvTacticsWorld<'a> = crate::tactics::tactics_tests::World<'a>;
+
+/// The PvP store and the whole tactical store as bytes: a refused accept leaves both identical.
+fn pv_accept_snapshot(
+    w: &PvWorld<'_>,
+    t: &PvTacticsWorld<'_>,
+) -> (Vec<Vec<u8>>, crate::tactics::tactics_tests::Snap) {
+    (w.snapshot(), t.snapshot())
+}
+
+/// EV-pvp-handshake-guards (accept) + BT16.1: only the target may accept, only a Pending
 /// challenge, never a deletion-gated acceptor, never while either party is in an
 /// ongoing battle, never with a bad party — all refused before any write. Success
-/// creates the battle (challenger = side A with the committed party, acceptor = side B),
-/// schedules the turn-0 deadline at now + PVP_TURN_DEADLINE_MS, and consumes the
-/// challenge and ONLY its reaper.
-/// kills: role check swapped/removed, status check removed, schedule_deadline -> (),
-/// challenge not deleted, disarm_challenge_reaper -> ().
+/// opens a TACTICAL PvP battle through `tactics::start_pvp_tactical`: the anchor (challenger =
+/// side A with the committed party, acceptor = side B), one `battle_tactical` row (Deploying,
+/// `kind: Pvp`, the challenge's format), one `battle_secret`, one clock per side on the 45 s deploy
+/// deadline, one empty unlocked `battle_deploy` row per owner and ONE deploy-window
+/// `tactical_deadline_sched` row — and NO 1v1 turn deadline (`pvp_deadline_schedule`) and no
+/// `battle_action`; it consumes the challenge and ONLY its reaper.
+/// kills: role check swapped/removed, status check removed, the 1v1 `start_pvp_battle` +
+/// `schedule_deadline` path kept, the challenge's format dropped or clamped, challenge not
+/// deleted, disarm_challenge_reaper -> ().
 #[test]
-fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
-    fn world(fx: &PvFixture) -> PvWorld<'_> {
-        let w = pv_world(fx, true);
-        w.join(pv_d(), true);
-        w.monster(11, pv_a(), 0);
-        w.monster(21, pv_b(), 0);
-        w.challenges
-            .seed(&pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending));
-        w.challenges
-            .seed(&pv_challenge(101, pv_d(), pv_c(), PvStatus::Pending));
-        w.challenges
-            .seed(&pv_challenge(102, pv_a(), pv_b(), PvStatus::Accepted));
-        w.reaper(500, 100);
-        w.reaper(501, 101);
-        w
-    }
+fn nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1() {
     let cases: Vec<PvCase<u64>> = vec![
         (
             "missing challenge",
@@ -999,9 +1027,9 @@ fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
     ];
     for (label, caller, id, party, extra, needle) in cases {
         let fx = pv_fixture();
-        let w = world(&fx);
+        let (w, t) = pv_accept_world(&fx, 1);
         extra(&w);
-        let before = w.snapshot();
+        let before = pv_accept_snapshot(&w, &t);
         let got = fx.run_as_at(caller, pv_at(PV_T0), |ctx| {
             super::accept_challenge(ctx, id, party.clone())
         });
@@ -1012,11 +1040,17 @@ fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
             ),
             Ok(()) => panic!("{label}: must be refused"),
         }
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+        assert_eq!(
+            pv_accept_snapshot(&w, &t),
+            before,
+            "{label}: refused before any write"
+        );
     }
 
+    // Spec BT14.2 / design §3.3: the PvP deploy clock.
+    const PV_DEPLOY_MS: i64 = 45_000;
     let fx = pv_fixture();
-    let w = world(&fx);
+    let (w, t) = pv_accept_world(&fx, 1);
     let t1 = PV_T0 + 5_000;
     let got = fx.run_as_at(pv_b(), pv_at(t1), |ctx| {
         super::accept_challenge(ctx, 100, vec![21])
@@ -1033,6 +1067,7 @@ fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
     let battles = w.battles.rows();
     assert_eq!(battles.len(), 1, "exactly one battle opened");
     let b = &battles[0];
+    let id = b.battle_id;
     assert_eq!(
         (
             b.player_identity,
@@ -1048,20 +1083,75 @@ fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
         (PvOutcome::Ongoing, 0)
     );
     assert_eq!(b.created_at_ms, t1);
-    let deadlines = w.deadlines.rows();
-    assert_eq!(deadlines.len(), 1, "exactly one turn deadline scheduled");
+    let tacticals = t.tacticals.rows();
+    assert_eq!(tacticals.len(), 1, "exactly one battle_tactical row");
+    let tac = tacticals
+        .into_iter()
+        .next()
+        .expect("the one battle_tactical row");
     assert_eq!(
+        (tac.battle_id, tac.kind, tac.phase, tac.format),
         (
-            deadlines[0].battle_id,
-            deadlines[0].turn_number,
-            deadlines[0].scheduled_at
+            id,
+            game_core::tactics::BattleKind::Pvp,
+            game_core::tactics::Phase::Deploying,
+            1
         ),
-        (
-            b.battle_id,
-            0,
-            PvAt::Time(pv_at(t1 + super::PVP_TURN_DEADLINE_MS))
-        )
+        "a tactical PvP battle in Deploying, in the challenge's format"
     );
+    let secrets: Vec<u64> = t.secrets.rows().iter().map(|s| s.battle_id).collect();
+    assert_eq!(secrets, vec![id], "exactly one battle_secret row, for it");
+    assert_eq!(t.clocks.rows().len(), 2, "exactly two battle_clock rows");
+    let clocks: Vec<_> = t
+        .clocks_of(id)
+        .iter()
+        .map(|c| (c.side, c.player, c.window_open_ms, c.deadline_ms))
+        .collect();
+    let deadline = Some(t1 + PV_DEPLOY_MS);
+    assert_eq!(
+        clocks,
+        vec![
+            (crate::schema::SideRow::A, pv_a(), None, deadline),
+            (crate::schema::SideRow::B, pv_b(), None, deadline),
+        ],
+        "one clock per side, both on the 45 s deploy deadline, no window open"
+    );
+    assert_eq!(t.deploys.rows().len(), 2, "exactly two battle_deploy rows");
+    let deploys: Vec<_> = t
+        .sorted_deploys_of(id)
+        .iter()
+        .map(|d| (d.side, d.owner, d.picks.is_empty(), d.locked))
+        .collect();
+    assert_eq!(
+        deploys,
+        vec![
+            (crate::schema::SideRow::A, pv_a(), true, false),
+            (crate::schema::SideRow::B, pv_b(), true, false),
+        ],
+        "one owner-only staging row per side, empty and unlocked"
+    );
+    let windows: Vec<_> = t
+        .deadlines
+        .rows()
+        .iter()
+        .map(|r| (r.battle_id, r.unit_id, r.window_seq, r.scheduled_at))
+        .collect();
+    assert_eq!(
+        windows,
+        vec![(
+            id,
+            crate::tactics::DEPLOY_WINDOW_UNIT,
+            0,
+            PvAt::Time(pv_at(t1 + PV_DEPLOY_MS))
+        )],
+        "exactly one tactical deadline row: the deploy window"
+    );
+    assert_eq!(
+        w.deadlines.rows().len(),
+        0,
+        "no 1v1 turn deadline (pvp_deadline_schedule) is armed"
+    );
+    assert_eq!(w.actions.rows().len(), 0, "no battle_action row is written");
     assert_eq!(
         w.challenge_ids(),
         vec![101, 102],
@@ -1072,6 +1162,84 @@ fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
         vec![101],
         "and only its reaper disarmed"
     );
+}
+
+/// BT16.1 (challenge-accept refusals that only the tactical writer can see): a Pending
+/// challenge with `format: 0` (a pre-bt-14 row) is REFUSED with the writer's own text — never
+/// clamped — and a Pending challenge whose CHALLENGER is mid-deletion is refused as "no longer
+/// available" (the acceptor's own deletion gate passed at guard 2a, so a deletion refusal out of
+/// the writer can only be the challenger's, and its text must not leak that to the acceptor).
+/// Both refusals write nothing: the challenge stays Pending and its reaper stays armed.
+/// kills: a format clamped into 1..=3 (or defaulted); a format-0 challenge accepted into the 1v1
+/// path; the challenger's deletion gate unconsulted; `REJECT_DELETION_GATED` returned verbatim to
+/// the acceptor; the challenge row deleted (or its reaper disarmed) before the start succeeded.
+#[test]
+fn nh_accept_challenge_refuses_a_format_0_or_deleting_challenger_and_keeps_it_pending_bt16_1() {
+    type Arm = (&'static str, u8, bool, &'static str);
+    let arms: [Arm; 2] = [
+        (
+            "a pre-bt-14 format 0 challenge",
+            0,
+            false,
+            "format must be 1..=3",
+        ),
+        (
+            "a deletion-gated challenger",
+            1,
+            true,
+            "challenge is no longer available",
+        ),
+    ];
+    for (label, format, challenger_deleting, want) in arms {
+        let fx = pv_fixture();
+        let (w, t) = pv_accept_world(&fx, format);
+        if challenger_deleting {
+            w.deleting(pv_a());
+        }
+        let before = pv_accept_snapshot(&w, &t);
+        let got = fx.run_as_at(pv_b(), pv_at(PV_T0 + 5_000), |ctx| {
+            super::accept_challenge(ctx, 100, vec![21])
+        });
+        let gate = super::ranked_account_gate(
+            super::ranked_enforcement_active(),
+            false,
+            challenger_deleting,
+        );
+        if gate.is_ok() {
+            assert_eq!(got, Err(want.to_string()), "{label}");
+        }
+        let e = got.expect_err("a refused accept");
+        assert_ne!(
+            e,
+            crate::guards::REJECT_DELETION_GATED.to_string(),
+            "{label}: the acceptor is never told about another player's deletion"
+        );
+        assert!(
+            !e.contains("deletion"),
+            "{label}: no deletion wording reaches the acceptor: {e:?}"
+        );
+        assert_eq!(
+            pv_accept_snapshot(&w, &t),
+            before,
+            "{label}: refused before any write"
+        );
+        let status = w
+            .challenges
+            .rows()
+            .into_iter()
+            .find(|c| c.challenge_id == 100)
+            .map(|c| c.status);
+        assert_eq!(
+            status,
+            Some(PvStatus::Pending),
+            "{label}: the challenge stays Pending"
+        );
+        assert_eq!(
+            w.reaper_challenge_ids(),
+            vec![100, 101],
+            "{label}: its reaper stays armed"
+        );
+    }
 }
 
 /// EV-pvp-handshake-guards (decline / cancel): decline is target-only, cancel is

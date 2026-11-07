@@ -3,12 +3,13 @@
 //! Server-paced, per-zone movement: clients buffer intent; the
 //! scheduled `movement_tick` drains at most one move/character/tick (a character
 //! whose player is in an ongoing battle drains none — its queue stays frozen)
-//! and runs grass-encounter trigger. The
+//! and runs the grass-encounter trigger, which opens a TACTICAL wild battle through
+//! `tactics::start_wild_tactical` (bt-16: the one live wild path). The
 //! `movement_tick_schedule` scheduled `#[table]`
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
 //! reference resolves within the module.
 
-use crate::battle::{begin_encounter, lead_party, lead_party_ids, NO_CONSCIOUS_MONSTER_REASON};
+use crate::battle::{lead_party, lead_party_ids, NO_CONSCIOUS_MONSTER_REASON};
 use crate::evolution::check_and_evolve;
 use crate::guards::{authorize_move, is_in_ongoing_battle, json_escape, log_reject, validate_name};
 use crate::marshal::{
@@ -20,6 +21,7 @@ use crate::schema::{
     character, encounter, monster, monster_pub, npc, player, player_conversation, species_row,
     trade_offer, Character, Player, PlayerConversation,
 };
+use crate::tactics::start_wild_tactical;
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::npc::rules::{in_talk_range, npc_step_due};
 use game_core::{
@@ -283,12 +285,12 @@ const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;
 /// Gates `encounter_table_error` logging (a failed `table_from_encounter_row`).
 static ENCOUNTER_TABLE_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
-/// Gates `begin_encounter_error` logging. A SECOND, independent limiter on
+/// Gates `wild_start_error` logging. A SECOND, independent limiter on
 /// purpose: the party-has-no-conscious-monster Err from
-/// `begin_encounter` is routine gameplay (a fainted party walking grass) and
+/// `start_wild_tactical` is routine gameplay (a fainted party walking grass) and
 /// bursts; sharing one limiter would let that burst mask a real content
 /// defect in the encounter table.
-static BEGIN_ENCOUNTER_ERR_LIMITER: RateLimiter = RateLimiter::new();
+static WILD_START_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
 /// Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute
 /// the outcome via `game_core::apply_move`, write back. Scheduler-only.
@@ -413,9 +415,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         ctx.db.character().entity_id().update(row);
 
         // M8c grass-encounter trigger. EVERY failure mode below is a
-        // no-op, never a panic. Draw `ctx.random()` AT MOST once per character —
-        // only after `stepped_onto_grass` + player + not-already-in-battle pass —
-        // so A's hit cannot shift B's roll in the same tick (R-E).
+        // no-op, never a panic. Draw `ctx.random()` only after `stepped_onto_grass` +
+        // player + not-already-in-battle pass — once for the trigger roll and, on a hit,
+        // twice more for the writer's seeds — so A's hit cannot shift B's roll in the
+        // same tick (R-E).
         if !stepped_onto_grass(prev, next.pos, &map) {
             continue;
         }
@@ -427,17 +430,18 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // ask the both-role SSOT, not a second, side-A-only implementation of the
         // same predicate. This is DEFENSIVE hygiene, not a reachable-bug fix — the
         // drain lock above already skipped every battle-locked character before
-        // this point, and begin_encounter re-guards.
+        // this point, and start_wild_tactical re-guards.
         let already = is_in_ongoing_battle(ctx, player_identity);
         if already {
             continue;
         }
-        // Lead party level (no party → no-op). begin_encounter's empty-party guard
-        // is the backstop.
-        let Some((party_ids, player_level)) = lead_party(ctx, player_identity) else {
+        // Lead party level (no party → no-op); the writer re-reads the party itself.
+        let Some((_, player_level)) = lead_party(ctx, player_identity) else {
             continue;
         };
-        // The zone's PRIVATE encounter table (partial-sync: missing row → no-op).
+        // The zone's PRIVATE encounter table (partial-sync: missing row → no-op). The
+        // trigger rolls on this row; the writer re-reads the same registry through
+        // `content()` — both are `sync_content` projections of one RON table.
         let Some(enc_row) = ctx.db.encounter().zone_id().find(zone) else {
             continue;
         };
@@ -459,18 +463,16 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             }
         };
         let seed: u32 = ctx.random();
-        if let Some(w) = resolve_encounter(&table, seed, player_level) {
-            // A failed begin_encounter is a rate-limited logged no-op:
-            // one character's failure cannot abort the tick, and its own limiter
-            // keeps genuine faults visible.
-            if let Err(e) = begin_encounter(
-                ctx,
-                player_identity,
-                party_ids,
-                w.species_id,
-                w.level.as_u8(),
-                w.individuality_seed,
-            ) {
+        if resolve_encounter(&table, seed, player_level).is_some() {
+            // The trigger fired: the tactical writer rolls the pack, the map and every wild from
+            // `encounter_seed`; `battle_seed` alone feeds the private roll stream (bt-16).
+            // A refused start is a rate-limited logged no-op: one character's failure cannot
+            // abort the tick, and its own limiter keeps genuine faults visible.
+            let encounter_seed: u64 = ctx.random();
+            let battle_seed: u64 = ctx.random();
+            if let Err(e) =
+                start_wild_tactical(ctx, player_identity, encounter_seed, battle_seed, None)
+            {
                 // A deletion-gated walker is refused the encounter as ROUTINE
                 // gameplay, like a fainted party, so this reason must consume neither the error
                 // log nor the limiter window (client-reachable at tick rate: request deletion,
@@ -489,10 +491,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 // (species-not-found, stat corruption), which still log below.
                 if e != NO_CONSCIOUS_MONSTER_REASON {
                     if let Some(suppressed) =
-                        BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
+                        WILD_START_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
                     {
                         log::error!(
-                            "{{\"evt\":\"begin_encounter_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
+                            "{{\"evt\":\"wild_start_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
                             json_escape(&e)
                         );
                     }

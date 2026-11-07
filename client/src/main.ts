@@ -4240,17 +4240,8 @@ const mrPvpHook = {
   cancelChallenge(challengeId: string): Promise<void> | undefined {
     return conn?.live()?.reducers.cancelChallenge({ challengeId: BigInt(challengeId) });
   },
-  submitPvpAction(
-    battleId: string,
-    action: { tag: string; value: number },
-  ): Promise<void> | undefined {
-    // The structured-clone boundary erases the PvpAction union type; the cast restores
-    // it. An unknown tag would fail BSATN encode/server decode — never a silent no-op.
-    return conn?.live()?.reducers.submitPvpAction({
-      battleId: BigInt(battleId),
-      action: action as PvpAction,
-    });
-  },
+  // bt-16: `submitPvpAction` left the hook with the cutover — every live battle is tactical and
+  // the 1v1 reducer refuses a tactical anchor; the e2e drives turns by virtual buttons.
   allChallenges(): Array<{
     challengeId: string;
     challenger: string;
@@ -4292,12 +4283,15 @@ const mrPvpHook = {
   // side, so either page can pick a legal skill for its role.
   // An EMPTY activeSkillIds array means the side's active index was out of bounds —
   // an abnormal server state; callers must not submit an action built from it.
+  // bt-16: `hp` is the active monster's HP as the ANCHOR mirrors it (tactics.rs `mirror_hp`),
+  // -1 without an active monster — the e2e's oracle that a mid-battle anchor update (a
+  // delete + insert pair on the view) reached this client and kept the row.
   battleById(battleId: string): {
     battleId: string;
     outcome: string;
     turnNumber: number;
-    sideA: { active: number; activeSkillIds: number[] };
-    sideB: { active: number; activeSkillIds: number[] };
+    sideA: { active: number; activeSkillIds: number[]; hp: number };
+    sideB: { active: number; activeSkillIds: number[]; hp: number };
   } | null {
     const b = store.battle(BigInt(battleId));
     if (!b) return null;
@@ -4308,10 +4302,12 @@ const mrPvpHook = {
       sideA: {
         active: b.sideA.active,
         activeSkillIds: [...(b.sideA.team[b.sideA.active]?.knownSkillIds ?? [])],
+        hp: b.sideA.team[b.sideA.active]?.currentHp ?? -1,
       },
       sideB: {
         active: b.sideB.active,
         activeSkillIds: [...(b.sideB.team[b.sideB.active]?.knownSkillIds ?? [])],
+        hp: b.sideB.team[b.sideB.active]?.currentHp ?? -1,
       },
     };
   },

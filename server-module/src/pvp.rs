@@ -11,9 +11,9 @@
 //! - `battle_action` is PRIVATE (must-never-leak). Clients detect turn resolution
 //!   by watching `battle.state.turn_number` increment on their own rows of the
 //!   participant-scoped `my_battle` view (`battle` itself is private).
-//! - `start_battle` (the public reducer) retains.
-//!   PvP battles are created by the internal `start_pvp_battle` helper, never
-//!   by routing through `start_battle`.
+//! - Accepting a challenge opens a TACTICAL battle through `tactics::start_pvp_tactical`
+//!   (bt-16: the one live PvP path). The 1v1 `start_pvp_battle` helper is unreachable
+//!   from any live path and is deleted by bt-17.
 //! - Forfeit maps to the existing `SideAWins`/`SideBWins` outcomes; no new
 //!   `BattleOutcome` variant is added (BSATN stability).
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
@@ -251,6 +251,8 @@ pub(crate) fn challenge_format(party_len: usize) -> u8 {
 pub(crate) const PVP_FORMAT_MAX: u8 = 3;
 
 /// Also returns the per-slot ability ids (parallel to the team vec).
+/// bt-16: reached only through `start_pvp_battle` (see there).
+#[cfg_attr(not(test), allow(dead_code))]
 fn build_pvp_team(
     ctx: &ReducerContext,
     party_ids: &[u64],
@@ -303,11 +305,15 @@ fn build_pvp_team(
     Ok((team, ability_ids))
 }
 
-/// Create a PvP battle row directly (bypassing `start_battle`'s
+/// Create a 1v1 PvP battle row directly (bypassing `start_battle`'s
 /// provenance guard, which correctly rejects a client naming another player).
-/// This is an internal function — called only from `accept_challenge`.
+///
+/// bt-16: UNREACHABLE from any live path — `accept_challenge` opens a tactical battle. Kept
+/// compiled because the trading escrow matrix (`trading_tests.rs`) still exercises it as its
+/// accept-path site; bt-17 deletes it with the rest of the 1v1 engine.
 ///
 /// Returns the new `battle_id`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn start_pvp_battle(
     ctx: &ReducerContext,
     challenger: Identity,
@@ -1007,9 +1013,13 @@ pub fn challenge_pvp(
 ///    3a. Both parties hold a full account (re-checked at accept).
 /// 4. Neither party currently in an ongoing battle (re-checked here).
 /// 5. Opponent (target) party size + monster validation.
-/// 6. start_pvp_battle (creates the Battle row) — irreversible.
-/// 7. schedule_deadline — post-battle scheduling.
-/// 8. Delete the challenge row.
+/// 6. `tactics::start_pvp_tactical` (the anchor, the Deploying tactical row, both clocks on
+///    the 45 s deploy deadline, both owner-only staging rows, the deploy window) —
+///    irreversible. A refusal returns BEFORE the challenge row is touched (it stays Pending,
+///    its reaper armed); the challenger's own deletion gate is reported as "challenge is no
+///    longer available" (the acceptor passed 2a, so the bare gate reason would disclose a
+///    third party's account state).
+/// 7. Delete the challenge row and disarm its reaper.
 #[spacetimedb::reducer]
 pub fn accept_challenge(
     ctx: &ReducerContext,
@@ -1092,19 +1102,33 @@ pub fn accept_challenge(
         }
     }
 
-    // Guard 6 (irreversible): create the PvP battle.
-    let battle_id = start_pvp_battle(
+    // Guard 6 (irreversible): open the TACTICAL battle (bt-16). The challenge's `format`
+    // (bt-14, derived from the challenger's pick) is the battle's; a pre-bt-14 row carries 0
+    // and is refused by the writer — reject, never clamp. The seed is drawn here, as every
+    // caller of the writer must.
+    let seed: u64 = ctx.random();
+    let battle_id = crate::tactics::start_pvp_tactical(
         ctx,
         challenge.challenger,
-        challenge.challenger_party_ids.clone(),
+        &challenge.challenger_party_ids,
         me,
-        party_ids,
-    )?;
+        &party_ids,
+        challenge.format,
+        seed,
+    )
+    .map_err(|e| {
+        // The acceptor passed guard 2a, so a deletion-gate refusal here is the CHALLENGER's:
+        // report it without naming a third party's account state.
+        let e = if e == crate::guards::REJECT_DELETION_GATED {
+            "challenge is no longer available".to_string()
+        } else {
+            e
+        };
+        log_reject("accept_challenge", me, &e);
+        e
+    })?;
 
-    // Guard 7: schedule the first-turn deadline.
-    schedule_deadline(ctx, battle_id, 0);
-
-    // Guard 8: consume the challenge row (Accepted challenges are GC'd immediately —
+    // Guard 7: consume the challenge row (Accepted challenges are GC'd immediately —
     // mirrors terminal trade_offer deletion in trading.rs).
     ctx.db
         .battle_challenge()

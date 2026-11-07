@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -6,6 +7,19 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import {
+  awaitTacticalActive,
+  draftMoveToward,
+  endTurn,
+  fleeByButtons,
+  OWN_TURN_WAIT_MS,
+  openMenu,
+  sides,
+  throughResults,
+  tileDistance,
+  turnKey,
+  waitOwnTurnOrEnd,
+} from './controls';
 
 // participant-scoped `battle` privacy, end to end
 //
@@ -33,20 +47,23 @@ import {
 //   (ii)  B's world actually loaded       — the POSITIVE anchor for the negative;
 //   (iii) B does NOT hold A's battle      — THE LEAK NEGATIVE;
 //   (iv)  the counts agree                — B's whole battle map is empty, A's is 1;
-//   (v)   A's row SURVIVES a turn advance — the anti-mechanical-rename control.
+//   (v)   A's row SURVIVES an anchor update — the anti-mechanical-rename control (bt-16: the
+//         update is the HP mirror of a wild hit on A's own monster, `sideA.hp`; was a 1v1 turn
+//         advance, retired by the cutover).
 //
 // WHY (v) IS NOT OPTIONAL. A view binding has no primary key, so the SDK never
 // fires onUpdate: a mid-battle change arrives as an unordered onInsert(new) +
 // onDelete(old) pair. A "rename" that keeps the old per-row ingest handlers is
 // type-correct and keeps `just ci` green while dropping the battle off the screen
-// the moment the first turn resolves. The turn-advance clause below is the only
-// gate in the slice that observes that at runtime. Its wait is STRICT
-// (`turnNumber === t0 + 1`, no `|| terminal` escape — pvp-full.spec.ts:41-47): a
-// terminal outcome that never advanced the turn must NOT satisfy it.
+// the moment the first turn resolves. The anchor-update clause below is the only
+// gate in the slice that observes that at runtime. Its wait is STRICT (the
+// mirrored `sideA.hp` — A's own monster, the only side a wild anchor mirrors — strictly below
+// its pre-battle seed, no `|| terminal` escape): a battle that ends without the anchor carrying
+// the hit must NOT satisfy it. A's starter is seeded sturdy by owner SQL before the hunt.
 //
 // WHY A WILD BATTLE. A wild encounter is driven entirely by the production game
 // loop (walk onto grass), needs no second consenting player, and — because
-// `begin_encounter` writes `opponent_identity: WILD_IDENTITY`
+// the wild writer (bt-16: `start_wild_tactical`) writes `opponent_identity: WILD_IDENTITY`
 // — it exercises the view's FIRST chain branch (`player_identity`). The
 // `opponent_identity` branch is covered live by pvp-full.spec.ts / pvp-side-b.spec.ts,
 // which pass only if side B keeps receiving its battle through the same view.
@@ -117,8 +134,9 @@ interface MrPvp {
     battleId: string;
     outcome: string;
     turnNumber: number;
-    sideA: { active: number; activeSkillIds: number[] };
-    sideB: { active: number; activeSkillIds: number[] };
+    // bt-16: `hp` is the active monster's HP as the anchor mirrors it (-1 without one).
+    sideA: { active: number; activeSkillIds: number[]; hp: number };
+    sideB: { active: number; activeSkillIds: number[]; hp: number };
   } | null;
 }
 
@@ -151,8 +169,43 @@ const STEP_WAIT_MS = 8_000;
  *  the observed subscription-burst latency in this suite (see the 15 s waits used
  *  for first delivery elsewhere). */
 const LEAK_WINDOW_MS = 5_000;
-/** Max attempts to open the skill grid (Fight) and click a skill cell once the overlay is up. */
-const MAX_SKILL_CLICK_TRIES = 10;
+/** bt-16: own live turns clause (v) may spend (A steps toward the wild and ends its turn, never
+ *  attacking) before a WILD hit must have landed on A's monster. A zone-0 board is small (a 7x5
+ *  board's far corner is ~10 tiles; a turn's band reaches 2+), so the two units meet within a few
+ *  turns; 12 leaves a wide margin and still fails on a kiting wild. */
+const MAX_OWN_TURNS_FOR_WILD_HIT = 12;
+/** bt-16: how long the hit's anchor update (the HP mirror) may take to reach A's by-id map. */
+const HP_DROP_WAIT_MS = 60_000;
+/** bt-16: battles clause (v) may hunt for a wild hit on A's monster (a Skittish wild can kite a
+ *  whole battle; tactics-wild's MAX_FLEE_BATTLES precedent). */
+const MAX_HIT_HUNTS = 3;
+/** bt-16: after the last own turn of a battle, how long the wild's turn may take to land its hit
+ *  before the battle is fled and the grass re-hunted. */
+const HIT_LAND_GRACE_MS = 10_000;
+/** bt-16: A's starter seed (tactics-wild.spec.ts's precedent): a wild hit lands >= 1 HP, never a KO. */
+const SEED_HP = 300;
+const SEED_DEFENSE = 250;
+
+/** Owner SQL (literal-shaped statements only: letters, digits, spaces, `* = ( ) ,`), as the module
+ *  owner (the CLI identity) — tactics-wild.spec.ts's idiom; charset-checked target. */
+function ownerSql(query: string, label: string): string {
+  const server = process.env.STDB_SERVER ?? 'local';
+  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
+    throw new Error(`${label}: STDB_SERVER/VITE_STDB_DB failed charset validation`);
+  }
+  if (!/^[A-Za-z0-9_ *=(),]+$/.test(query)) {
+    throw new Error(`${label}: refusing a non-literal-shaped sql statement: ${query}`);
+  }
+  try {
+    return execFileSync('spacetime', ['sql', '-s', server, db, query], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+  } catch (err) {
+    throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Grass tiles in zone 0 (recruit.spec.ts:167-175, verbatim reasoning). Spawn is
@@ -273,14 +326,17 @@ test.describe
       }
     });
 
-    test('EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across a turn advance', async () => {
+    test('EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across the anchor update a wild hit on A`s monster writes (sideA.hp strictly drops; bt-16: was a 1v1 turn advance)', async () => {
       // Budget: the walk is bounded by MAX_WALK_STEPS x STEP_WAIT_MS = 640 s in the
       // pathological case where every step times out; the realistic path is a few
       // seconds (the server drains a step per 200 ms and the shuttle rolls every
       // other step). Everything after the walk is bounded by its own explicit
       // timeouts. 300 s covers the realistic path with a wide margin without
       // pretending to cover the pathological one — a hung walk should fail, not sit.
-      test.setTimeout(300_000);
+      // bt-16: + clause (v)'s bounded own-turn loop (MAX_OWN_TURNS_FOR_WILD_HIT x
+      // OWN_TURN_WAIT_MS) and the strict HP_DROP_WAIT_MS.
+      // + up to MAX_HIT_HUNTS battles for (v)'s wild hit (flee, results and a re-hunt each).
+      test.setTimeout(1_200_000);
 
       // --- both worlds must be loaded before anything below means anything -----
       await Promise.all([
@@ -300,6 +356,52 @@ test.describe
       const preB = await battleView(pageB);
       expect(preA.identity, 'the two clients must have distinct identities').not.toBe(
         preB.identity,
+      );
+
+      // bt-16: clause (v)'s anchor update is a wild hit on A's monster, so A's starter is made
+      // sturdy BEFORE the hunt (tactics-wild.spec.ts's beforeAll precedent): a hit then lands
+      // >= 1 HP and never KOs. Owner SQL on `monster` AND `monster_pub`, read back once.
+      const starterA = preA.ownMonsters[0];
+      if (starterA === undefined || !/^[0-9]+$/.test(starterA.monsterId)) {
+        throw new Error('(v) seed: A has no starter with a decimal monsterId');
+      }
+      for (const table of ['monster', 'monster_pub']) {
+        for (const [col, val] of [
+          ['stat_hp', SEED_HP],
+          ['current_hp', SEED_HP],
+          ['stat_defense', SEED_DEFENSE],
+          ['stat_sp_defense', SEED_DEFENSE],
+        ] as const) {
+          ownerSql(
+            `UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${starterA.monsterId}`,
+            '(v) seed',
+          );
+        }
+      }
+      const seededOut = ownerSql(
+        `SELECT monster_id, stat_hp, stat_defense FROM monster WHERE monster_id = ${starterA.monsterId}`,
+        '(v) seed',
+      );
+      const seededLine = seededOut
+        .split('\n')
+        .filter((l) => l.includes('|'))
+        .map((l) => l.split('|').map((c) => c.trim()))
+        .find((cells) => cells[0] === starterA.monsterId);
+      expect(
+        [Number(seededLine?.[1]), Number(seededLine?.[2])],
+        '(v) seed: the starter row reads back the HP and defence seeds',
+      ).toEqual([SEED_HP, SEED_DEFENSE]);
+      await pageA.waitForFunction(
+        (args: { id: string; hp: number }) =>
+          (
+            window as unknown as {
+              __mrTactics?: { ownMonsters(): { monsterId: string; currentHp: number }[] };
+            }
+          ).__mrTactics
+            ?.ownMonsters()
+            .some((m) => m.monsterId === args.id && m.currentHp === args.hp) === true,
+        { id: starterA.monsterId, hp: SEED_HP },
+        { timeout: 15_000 },
       );
 
       // --- A drives a wild encounter through the REAL game loop ----------------
@@ -454,7 +556,7 @@ test.describe
       ).toBe(1);
 
       // ---------------------------------------------------------------------
-      // (v) TURN-ADVANCE SURVIVAL — the anti-mechanical-rename control.
+      // (v) ANCHOR-UPDATE SURVIVAL — the anti-mechanical-rename control.
       //
       // WRONG IMPL KILLED: renaming the subscription and the handlers while keeping
       // the per-row upsert/remove ingest. A view binding has no primary key, so the
@@ -464,88 +566,184 @@ test.describe
       // Every source scan and every unit test in this slice stays green through that
       // bug. This clause is the only one that sees it.
       //
-      // The wait is STRICT — `turnNumber === t0 + 1`, with no `|| terminal` escape.
-      // A battle that ends without resolving a turn must
-      // not be able to satisfy it.
+      // The wait is STRICT — the mirrored HP strictly below its pre-hit value, with no
+      // `|| terminal` escape. A battle that ends without carrying the hit must not be
+      // able to satisfy it.
       // ---------------------------------------------------------------------
-      const turn0 = await pageA.evaluate((id: string) => {
-        const w = window as unknown as { __mrPvp: MrPvp };
-        return w.__mrPvp.battleById(id)?.turnNumber ?? -1;
-      }, battleId);
-      expect(
-        turn0,
-        'A must be able to read the battle`s turn number before advancing it',
-      ).toBeGreaterThanOrEqual(0);
+      // SURVIVING CHECK (bt-16): retired "Fight → skill cell → `turnNumber === t0 + 1`" (the
+      // grass opens a TACTICAL battle: no 1v1 command list, and the anchor's turn_number never
+      // advances under tactics) → a WILD hit lands on A's monster and the anchor row's HP MIRROR
+      // changes: `battleById(id).sideA.hp` (A's own active monster — the anchor mirrors only units
+      // that carry a monster_id; a wild unit carries none, so sideB.hp never moves in a wild
+      // battle, tactics.rs `mirror_hp`) STRICTLY drops below its pre-battle value SEED_HP on A
+      // (the anchor update — a delete + insert pair on the view — reached A and kept the row), the
+      // row is still held by A afterwards (count 1), and B still holds none (count 0). STRICT, no
+      // terminal escape: a battle that finishes without the drop fails.
+      //
+      // Driven like tactics-wild's takeAHitThenFlee: A NEVER attacks (it must not KO the wild
+      // before it hits back); on each own turn A steps toward the wild when not adjacent and ends
+      // its turn, bounded by MAX_OWN_TURNS_FOR_WILD_HIT. The sturdy seed above makes the hit land
+      // >= 1 HP and never a KO.
+      //
+      // A Skittish wild can kite and never strike within one battle (game-core tactics/ai.rs;
+      // tactics-wild's BT12-5-WILD-FLEE restarts for "a pack that never lands a hit"): a battle with
+      // no drop within MAX_OWN_TURNS_FOR_WILD_HIT own turns (+ HIT_LAND_GRACE_MS), or one that
+      // finishes without a drop, is fled on the next own turn, its results passed, and the grass
+      // re-hunted — bounded by MAX_HIT_HUNTS. Clauses (i)-(iv) above ran on the FIRST battle; on a
+      // re-hunt the (v) row checks below use the NEW battle's id (`hitBattleId`), and the negative
+      // clause (B holds none of it) is asserted for that id too. The fled battle stays a FINISHED
+      // row in A's map, so A's count is compared with its count when the hit battle began
+      // (`countAtHitStart`; 1 on the first battle, asserted by (iv)) — still exact: one more row means
+      // the insert half duplicated, one fewer means the delete half won.
+      const sideAHp = (id: string): Promise<number> =>
+        pageA.evaluate((bid: string) => {
+          const w = window as unknown as { __mrPvp: MrPvp };
+          return w.__mrPvp.battleById(bid)?.sideA.hp ?? -1;
+        }, id);
+      /** A re-hunt: the same production shuttle walk as clause (i), bounded by MAX_WALK_STEPS. */
+      const huntAgain = async (label: string): Promise<string> => {
+        for (let i = 0; i < MAX_WALK_STEPS; i++) {
+          const g = await walkSnap(pageA);
+          if (g.inBattle) break;
+          const tile = g.tile ?? { x: 1, y: 1 };
+          await stepOne(pageA, shuttleDir(tile), tile).catch(() => 'moved' as const);
+        }
+        const id = (await battleView(pageA)).ongoingBattle?.battleId ?? '';
+        if (id === '') {
+          throw new Error(
+            `${label}: no wild encounter within MAX_WALK_STEPS=${MAX_WALK_STEPS} steps`,
+          );
+        }
+        return id;
+      };
 
-      // Click the first available skill cell. qf-7b (QF7B.2): the skill grid renders only
-      // after the Fight command is pressed, so each try first presses A's Fight
-      // (battle-command-fight) when the grid is not open yet — only once Fight is live, since a
-      // greyed row (aria-disabled="true") does nothing when pressed — then waits for a cell.
-      // A cell is a row of the skills list (data-battle-list="skills"); battleView.ts
-      // #renderSkills labels it `<name> (<power>) · <affinity> · Acc n%` (catalog
-      // battle.skill.pveLabel), so the parenthesis is the stable text marker. Bounded retry
-      // covers the overlay still painting; it never waits on server state.
-      const liveFight = pageA.locator(
-        '[data-testid="battle-command-fight"][aria-disabled="false"]',
-      );
-      const skillBtn = pageA.locator('button[data-battle-list="skills"]:has-text("(")').first();
-      let clicked = false;
-      for (let i = 0; i < MAX_SKILL_CLICK_TRIES && !clicked; i++) {
-        if (!(await skillBtn.isVisible()) && (await liveFight.isVisible())) {
-          await liveFight.click({ timeout: 3_000 }).catch(() => undefined);
+      let hitBattleId = battleId;
+      let countAtHitStart = countsA.battleCount;
+      let hurt = false;
+      let hunts = 0;
+      for (let hunt = 0; hunt < MAX_HIT_HUNTS && !hurt; hunt += 1) {
+        hunts = hunt + 1;
+        if (hunt > 0) {
+          hitBattleId = await huntAgain(`(v) re-hunt ${hunt}`);
+          countAtHitStart = (await battleView(pageA)).battleCount;
+          console.log(
+            `[bt-16 (v)] re-hunt ${hunt}: battle ${hitBattleId} (A holds ${countAtHitStart})`,
+          );
         }
-        const shown = await skillBtn
-          .waitFor({ state: 'visible', timeout: 2_000 })
-          .then(() => true)
-          .catch(() => false);
-        if (shown) {
-          await skillBtn.click({ timeout: 3_000 });
-          clicked = true;
+        const hp0 = await sideAHp(hitBattleId);
+        expect(
+          hp0,
+          'A must be able to read its own monster`s mirrored HP on the anchor (at most the seed)',
+        ).toBeGreaterThan(0);
+        expect(hp0, 'the mirrored HP never exceeds the pre-battle seed').toBeLessThanOrEqual(
+          SEED_HP,
+        );
+
+        await awaitTacticalActive(pageA, `(v) A hunt ${hunt}`);
+        hurt = (await sideAHp(hitBattleId)) < SEED_HP;
+        let lastKey: string | null = null;
+        let finished = false;
+        for (let turn = 0; turn < MAX_OWN_TURNS_FOR_WILD_HIT && !hurt; turn += 1) {
+          const t = await waitOwnTurnOrEnd(pageA, lastKey, OWN_TURN_WAIT_MS);
+          hurt = (await sideAHp(hitBattleId)) < SEED_HP;
+          if (hurt) break;
+          if (t.phase !== 'Active') {
+            // A battle that finished without the drop never satisfies (v): re-hunt.
+            finished = true;
+            break;
+          }
+          lastKey = turnKey(t);
+          const { me, enemy } = sides(t);
+          await openMenu(pageA, me);
+          if (tileDistance(me, enemy) > 1) await draftMoveToward(pageA, enemy);
+          await endTurn(pageA);
         }
+        if (!hurt && !finished) {
+          // The last End Turn's wild turn may still land its hit: a short, named grace.
+          hurt = await pageA
+            .waitForFunction(
+              (args: { id: string; seed: number }) => {
+                const w = window as unknown as { __mrPvp: MrPvp };
+                const b = w.__mrPvp.battleById(args.id);
+                return b !== null && b.sideA.hp >= 0 && b.sideA.hp < args.seed;
+              },
+              { id: hitBattleId, seed: SEED_HP },
+              { timeout: HIT_LAND_GRACE_MS },
+            )
+            .then(() => true)
+            .catch(() => false);
+        }
+        if (hurt) break;
+        console.log(
+          `[bt-16 (v)] hunt ${hunt}: no wild hit on battle ${hitBattleId} — fleeing, re-hunting`,
+        );
+        if (!finished) {
+          const next = await waitOwnTurnOrEnd(pageA, lastKey, OWN_TURN_WAIT_MS);
+          if (next.phase === 'Active') await fleeByButtons(pageA);
+        }
+        await throughResults(pageA, `(v) hunt ${hunt}`);
       }
       expect(
-        clicked,
-        `A must be able to submit an attack within ${MAX_SKILL_CLICK_TRIES} attempts — the ` +
-          'battle overlay must render its skill buttons once Fight is pressed. Without a ' +
-          'submitted turn there is no state change for the store to survive, and this clause ' +
-          'would be vacuous',
+        hurt,
+        `(v): no wild hit reached A's monster in ${hunts} of MAX_HIT_HUNTS=${MAX_HIT_HUNTS} hunts ` +
+          `(MAX_OWN_TURNS_FOR_WILD_HIT=${MAX_OWN_TURNS_FOR_WILD_HIT} own turns each)`,
       ).toBe(true);
 
-      await pageA.waitForFunction(
-        (args: { id: string; expectedTurn: number }) => {
-          const w = window as unknown as { __mrPvp: MrPvp };
-          const b = w.__mrPvp.battleById(args.id);
-          if (!b) return false;
-          // STRICT: only a genuine advance. No terminal escape.
-          return b.turnNumber === args.expectedTurn;
-        },
-        { id: battleId, expectedTurn: turn0 + 1 },
-        { timeout: 30_000 },
-      );
+      await pageA
+        .waitForFunction(
+          (args: { id: string; seed: number }) => {
+            const w = window as unknown as { __mrPvp: MrPvp };
+            const b = w.__mrPvp.battleById(args.id);
+            // STRICT: only a genuine drop of the mirrored HP. No terminal escape.
+            return b !== null && b.sideA.hp >= 0 && b.sideA.hp < args.seed;
+          },
+          { id: hitBattleId, seed: SEED_HP },
+          { timeout: HP_DROP_WAIT_MS },
+        )
+        .catch((err: unknown) => {
+          throw new Error(
+            `(v): battle ${hitBattleId}'s mirrored own-monster HP (sideA.hp, pre-battle ${SEED_HP}) did not ` +
+              `strictly drop on A within HP_DROP_WAIT_MS=${HP_DROP_WAIT_MS} ms: ${(err as Error).message}`,
+          );
+        });
 
       const afterA = await pageA.evaluate((id: string) => {
         const w = window as unknown as { __mrPvp: MrPvp };
         return w.__mrPvp.battleById(id);
-      }, battleId);
+      }, hitBattleId);
       expect(
         afterA,
-        `battle ${battleId} must still be in A's store AFTER the turn advanced. A view carries ` +
+        `battle ${hitBattleId} must still be in A's store AFTER the anchor update. A view carries ` +
           'no primary key, so the update arrives as an unordered insert+delete pair: an ingest ' +
           'that still applies those per row deletes the row it just wrote, and the fight ' +
           'disappears mid-battle. The store must be rebuilt from the post-burst view cache ' +
           'instead',
       ).not.toBeNull();
+      expect(afterA?.sideA.hp ?? -1, 'the row A holds carries the dropped HP').toBeLessThan(
+        SEED_HP,
+      );
 
       const finalA = await battleView(pageA);
       expect(
         finalA.battleCount,
-        'A must still hold EXACTLY one battle after the turn advance — two would mean the ' +
-          'insert half of the update pair created a second row (a reconcile keyed on anything ' +
-          'other than battleId), zero would mean the delete half won',
-      ).toBe(1);
+        `A must still hold EXACTLY the ${countAtHitStart} battle row(s) it held when battle ` +
+          `${hitBattleId} began (1 on the first battle; a re-hunt adds the fled battle's finished ` +
+          'row) after the anchor update — one more would mean the insert half of the update pair ' +
+          'created a second row (a reconcile keyed on anything other than battleId), one fewer ' +
+          'would mean the delete half won',
+      ).toBe(countAtHitStart);
 
       // And B still holds nothing after the state change: an update burst must not
-      // become the delivery path for a non-participant.
+      // become the delivery path for a non-participant — asserted for the hit battle's id too
+      // (a re-hunt's battle is not the one clause (iii) probed).
+      const seenByBAfter = await pageB.evaluate((id: string) => {
+        const w = window as unknown as { __mrPvp: MrPvp };
+        return w.__mrPvp.battleById(id);
+      }, hitBattleId);
+      expect(
+        seenByBAfter,
+        `client B must hold NO row for battle ${hitBattleId} after the anchor update`,
+      ).toBeNull();
       const finalB = await battleView(pageB);
       expect(
         finalB.battleCount,

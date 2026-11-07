@@ -130,70 +130,51 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED — an entry beyond the cap
-// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). The
-// `(until bt-16)` rows are the tactical tables whose columns are enums, Vecs,
-// Options or ScheduleAt (not DML-expressible on this CLI) and whose organic
-// writers are the tactical reducers: this module is built WITHOUT
-// `dev_reducers` and `spacetime call` cannot act as the subject, so they become
-// organic when bt-16 flips the live encounter path and retargets the
-// S9-wild-live scenario (R-bt-8-E2EVACUITY; grep "until bt-16"). Two rows are
-// permanent: a wild deploy never writes a `battle_deploy` staging row (PvP's
-// secret deploy does, bt-14), and `tactical_advance_sched` fires with zero delay.
+// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). bt-16
+// (BT16.3, R-bt-8-E2EVACUITY): the live encounter path and the challenge accept
+// now open TACTICAL battles, so the tactical tables are written ORGANICALLY by
+// the S9 scenario and left this list: A's one-monster party meets a pack of one
+// on the grass (Active with auto-deploy, its unit waiting under the 300 s PvE
+// window: `battle_tactical`, `battle_unit`, `battle_clock`,
+// `tactical_deadline_sched` stand at the snapshot), and battle1 — deployed by
+// both sides to Active, then FORFEITED by D's disconnect (settle_pvp_battle:
+// rating, profile rows) — finishes, arming its 24 h `battle_gc_sched` row. The
+// rows below stay with their honest reasons: three tables no live path writes
+// any more (retired in place by the cutover; bt-17 retires them), and three whose
+// rows are swept or consumed before the snapshot. Measured on the first green run:
+// `battle_event` (battle1's BattleEnd at the forfeit settle) and `player_formation`
+// (A's deploy_units upsert in battle1) carry rows and are NOT allowlisted.
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
-    'enum column is not expressible in 2.8.1 SQL DML and the organic writer needs a live PvP turn with private skill knowledge; consumed at forfeit settle',
+    'no live writer since the bt-16 cutover: accept_challenge opens a tactical battle and the 1v1 submit_pvp_action refuses a tactical anchor; retired in place (bt-17 retires the table)',
   ],
   [
     'pvp_deadline_schedule',
-    'the turn-0 deadline row self-consumes at its 60s fire time (reaper no-ops on a terminal battle; the runtime deletes the fired one-shot), so a slow run may pre-snapshot AFTER it fired; on fast runs it is present and its cascade disarm is asserted via the post count',
+    'no live writer since the bt-16 cutover: accept_challenge opens a tactical battle (its deploy window is the tactical deadline) and arms no 1v1 turn deadline; retired in place (bt-17 retires the table)',
   ],
   [
     'player_dialogue_state',
     'Vec<String> columns are not expressible in 2.8.1 SQL DML (probed: 400) and no zone-0 organic writer fits the e2e budget',
   ],
   [
-    'battle_tactical',
-    'enum columns (kind, phase, turn_state) are not DML-expressible; the organic writer is tactics::start_wild_tactical, reachable here only after the bt-16 live-path flip (until bt-16)',
-  ],
-  [
-    'battle_unit',
-    'enum and Vec columns (affinity, status, state, skill_ids) are not DML-expressible; the organic writer is the tactical deploy materialisation, reachable here only after the bt-16 live-path flip (until bt-16)',
-  ],
-  [
     'battle_queue',
-    'Vec<QueuedAction> is not DML-expressible; the organic writer is submit_queue on a live tactical battle, reachable here only after the bt-16 live-path flip (until bt-16)',
+    'a READY row lives only between a pre-queue and the unit`s own turn; the S9 wild battle waits on A`s live turn and nothing pre-queues, so no row stands at the snapshot',
   ],
   [
     'battle_deploy',
-    'Vec<DeployPick> is not DML-expressible, and a wild battle never holds a battle_deploy row: deploy_units materialises the picks directly and the staging row is PvP secret-deploy state (bt-14)',
-  ],
-  [
-    'battle_clock',
-    'Option<i64> columns are not DML-expressible; the organic writer is the tactical clock on a live battle, reachable here only after the bt-16 live-path flip (until bt-16)',
-  ],
-  [
-    'battle_event',
-    'the EventPayload enum column is not DML-expressible; the organic writer is tactical execution on a live battle, reachable here only after the bt-16 live-path flip (until bt-16)',
-  ],
-  [
-    'player_formation',
-    'Vec<u64> is not DML-expressible; the organic writer is the tactical deploy (formation upsert), reachable here only after the bt-16 live-path flip (until bt-16)',
-  ],
-  [
-    'tactical_deadline_sched',
-    'ScheduleAt is not DML-expressible; a deadline row exists only while a live tactical battle waits on a player, reachable here only after the bt-16 live-path flip (until bt-16)',
+    'PvP staging rows only (a wild deploy materialises directly): battle1`s two rows are swept by finish at battle1`s forfeit settle, before the snapshot',
   ],
   [
     'tactical_advance_sched',
     'ScheduleAt is not DML-expressible, and the row is consumed by its own zero-delay fire inside the chain, so no snapshot can observe one',
   ],
   [
-    'battle_gc_sched',
-    'ScheduleAt is not DML-expressible; a GC row exists only for a finished tactical battle, reachable here only after the bt-16 live-path flip (until bt-16)',
+    'battle_wild',
+    'retired in place by the bt-16 cutover: no live path writes it (the grass trigger opens a tactical battle); bt-17 retires the table',
   ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 13;
+export const S9_VACUITY_ALLOWLIST_CAP = 7;
 // Erase-policy identity columns that are `Option<Identity>` (a sum type): the
 // snapshot counts them by battle reachability, never by an identity WHERE.
 export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
@@ -1482,17 +1463,12 @@ export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId, batt
   // 0 unfavorable events read as 83% = Devoted, comfortably past Friendly's
   // 60% floor. Two single-assignment UPDATEs rather than one two-assignment
   // statement: the single-column form is the one this rig has measured.
-  // bt-7: the two scalar-only tactical join tables are seeded under the
-  // subject's terminal PvP battle, so their ViaJoin(battle) sweep is proven on
-  // real rows (the enum / Vec / Option tables are on the vacuity allowlist).
-  stmts.push(
-    'INSERT INTO battle_secret (battle_id, seed, action_seq) VALUES (' + battle1Id + ', 7, 0)',
-  );
-  stmts.push(
-    'INSERT INTO battle_wild_unit (wild_unit_id, battle_id, wild_index, species_id, level, individuality_seed) VALUES (0, ' +
-      battle1Id +
-      ', 0, 1, 5, 99)',
-  );
+  // bt-16 (BT16.3): the two scalar-only tactical join tables are no longer hand
+  // seeded — both are ORGANIC now. battle1 (the accepted PvP challenge) writes
+  // its own `battle_secret` row (PK battle_id: the old INSERT would clash), and
+  // the grass encounter's tactical wild battle writes `battle_secret` and its
+  // `battle_wild_unit` rows, so their ViaJoin(battle) sweep is proven on rows the
+  // live paths wrote. (bt-7 seeded them under battle1 while no live path could.)
   stmts.push('UPDATE monster SET essence_fire = 150 WHERE monster_id = ' + aMonsterId);
   stmts.push('UPDATE monster SET trust_favorable_count = 40 WHERE monster_id = ' + aMonsterId);
   const batch = 50;
@@ -1875,7 +1851,7 @@ const DRIVER_SRC = [
   '  await applied(d.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM battle_challenge"]);',
   '  const dJoin = await tryReducer(d.conn.reducers.joinGame({ name: "dave s9" }));',
   '  emit("S9-D-join", dJoin.ok, dJoin);',
-  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM trade_offer", "SELECT * FROM player", "SELECT * FROM my_pending_evolution_notices"]);',
+  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM trade_offer", "SELECT * FROM player", "SELECT * FROM my_pending_evolution_notices", "SELECT * FROM my_tactical_battle"]);',
   '  const aJoin = await tryReducer(a.conn.reducers.joinGame({ name: "alice s9" }));',
   '  emit("S9-A-join", aJoin.ok, aJoin);',
   '  const aMon = iterRows(a.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(a.identity); });',
@@ -1900,7 +1876,15 @@ const DRIVER_SRC = [
   '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return r.state.outcome.tag === "Ongoing"; });',
   '    return rows.length > 0 ? rows[0] : null;',
   '  });',
-  '  emit("S9-battle1-live", true, { battleId: String(b1.battleId) });',
+  '  // bt-16: the accept opened a TACTICAL battle in Deploying, and a Deploying side that',
+  '  // disconnects CANCELS it unrated (no rating, so no profile rows). Both sides deploy',
+  '  // their one monster and the battle reaches Active BEFORE D disconnects, so the',
+  '  // disconnect is a FORFEIT of a live PvP battle (settle_pvp_battle: rating + profile rows).',
+  '  const depD = await tryReducer(d.conn.reducers.deployUnits({ battleId: b1.battleId, picks: [{ monsterId: dMonPre[0].monsterId, slot: 0 }] }));',
+  '  const depA = await tryReducer(a.conn.reducers.deployUnits({ battleId: b1.battleId, picks: [{ monsterId: aMonId, slot: 0 }] }));',
+  '  if (!depD.ok || !depA.ok) bail("S9-battle1-live", "deploy refused: D=" + depD.err + " A=" + depA.err);',
+  '  await pollFor("battle1 Active on A", 20000, "S9-battle1-live", function () { const rows = iterRows(a.conn, "my_tactical_battle").filter(function (r) { return String(r.battleId) === String(b1.battleId) && r.phase.tag === "Active"; }); return rows.length > 0 ? rows[0] : null; });',
+  '  emit("S9-battle1-live", true, { battleId: String(b1.battleId), phase: "Active" });',
   '  d.conn.disconnect();',
   '  const b1t = await pollFor("battle1 terminal after D forfeit", 30000, "S9-battle1-terminal", function () {',
   '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return String(r.battleId) === String(b1.battleId); });',
@@ -1952,7 +1936,14 @@ const DRIVER_SRC = [
   '    if (rows.length > 0) wild = rows[0];',
   '  }',
   '  if (wild === null) bail("S9-wild-live", "no wild encounter within 80 shuttle steps over zone-0 grass (rate 200/1000 per grass step)");',
-  '  emit("S9-wild-live", true, { battleId: String(wild.battleId) });',
+  '  // bt-16 (BT16.3): the grass now opens a TACTICAL wild battle — its anchor',
+  '  // above AND its my_tactical_battle row (the same battle id; the view rides',
+  '  // the one subscribe list above). The kind tag is the verdict-side oracle.',
+  '  const wildTactical = await pollFor("tactical row of the wild battle on A", 20000, "S9-wild-live", function () {',
+  '    const rows = iterRows(a.conn, "my_tactical_battle").filter(function (r) { return String(r.battleId) === String(wild.battleId); });',
+  '    return rows.length > 0 ? rows[0] : null;',
+  '  });',
+  '  emit("S9-wild-live", true, { battleId: String(wild.battleId), tactical: true, kind: wildTactical.kind.tag });',
   '  emit("S9-seed-ready", true, { wildBattleId: String(wild.battleId) });',
   '  // bt-7: the pre-cascade snapshot is ~75 sequential CLI queries (the ten',
   '  // tactical tables added ~15); 120 s expired mid-snapshot twice, measured.',
@@ -2719,6 +2710,15 @@ async function runLivePhase() {
       throw new Error(
         '[s9/rearm] expected exactly 1 deletion schedule row after redelete, found ' +
           s9.censusRedelete,
+      );
+    }
+    // bt-16 (BT16.3): the grass encounter is a TACTICAL wild battle reached through
+    // my_battle (the anchor) AND my_tactical_battle (its kind tag) — not a 1v1 battle.
+    const wildLive = s9m.dataOf('S9-wild-live');
+    if (!wildLive || wildLive.tactical !== true || wildLive.kind !== 'Wild') {
+      throw new Error(
+        '[s9/wild-tactical] the S9 grass encounter must be a tactical WILD battle (my_tactical_battle kind Wild), got ' +
+          JSON.stringify(wildLive),
       );
     }
     const s9Entries = parseManifestTranscription(M22S9_MANIFEST_TRANSCRIPTION);

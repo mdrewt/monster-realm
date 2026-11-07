@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { awaitTacticalActive, fleeByButtons } from './controls';
 
 // battle↔trade interlock e2e (EARS 17.5f-2)
 //
@@ -350,7 +351,8 @@ test.describe
     //
     // -------------------------------------------------------------------------
     test('battle↔trade interlock: A in wild battle, B proposeTrade rejected; positive control pre-battle succeeds (17.5f-2)', async () => {
-      test.setTimeout(90_000);
+      // bt-16: + the tactical flee (an own live turn, the wild's turns first) and its results.
+      test.setTimeout(150_000);
 
       // (a) Capture identities.
       const identityA = await pageA.evaluate(() => {
@@ -676,14 +678,15 @@ test.describe
       ).toBe(0);
 
       // -----------------------------------------------------------------------
-      // (g) Cleanup: A flees the battle (so afterAll can close the browser cleanly) with the
-      //     command list's Run (qf-7b, QF7.4: the sanctioned flee path). A greyed command row
-      //     (aria-disabled="true") does nothing when pressed, so the press waits for Run to be
-      //     live first.
+      // (g) Cleanup: A flees the battle (so afterAll can close the browser cleanly).
+      //     SURVIVING CHECK (bt-16): retired the 1v1 command list's Run (`battle-command-run`) —
+      //     the grass now opens a TACTICAL wild battle — → `awaitTacticalActive` (deploys by
+      //     buttons if the pack rolled Deploying; a one-monster party is always Active at once)
+      //     then `fleeByButtons` (the own unit's menu → Flee → A, on A's own live turn).
       // -----------------------------------------------------------------------
-      const runBtn = pageA.getByTestId('battle-command-run');
-      await expect(runBtn).toHaveAttribute('aria-disabled', 'false', { timeout: 5_000 });
-      await runBtn.click({ timeout: 5_000 });
+      const active = await awaitTacticalActive(pageA, '17.5f-2 (g)');
+      expect(active.phase, '17.5f-2 (g): the wild battle is Active before the flee').toBe('Active');
+      await fleeByButtons(pageA);
       await waitForBattleCleared(pageA);
     });
   });
