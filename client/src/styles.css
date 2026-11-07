@@ -1286,7 +1286,7 @@
  * the write, not on bare :root, because happy-dom cannot compute rem through a calc() root font-size
  * (it reads NaNpx) and the real-sheet suites such as frame.test.ts load this file without the seam.
  */
-:root[style*='--mr-ui-scale'] {
+:root[style*="--mr-ui-scale"] {
   font-size: calc(100% * var(--mr-ui-scale));
 }
 
