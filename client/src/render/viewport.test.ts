@@ -29,7 +29,15 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { FollowCamera } from './camera';
-import { MAX_VISIBLE_TILES, MIN_VISIBLE_TILES, TARGET_VISIBLE_TILES, TILE_PX } from './config';
+import {
+  MAX_VISIBLE_TILES,
+  MIN_VISIBLE_TILES,
+  TARGET_VISIBLE_TILES,
+  TILE_PX,
+  UI_REFERENCE_CSS_PX,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
+} from './config';
 import { appInitOptions, viewportScale, worldToScreen } from './viewport';
 
 // ---------------------------------------------------------------------------
@@ -623,5 +631,277 @@ describe('A11: sub-tile slide advances smoothly through worldToScreen', () => {
         },
       ),
     );
+  });
+});
+
+// ===========================================================================
+// uif-2 (M-ui-foundation) — ONE viewport scale drives the world (integer
+// deviceScale, unchanged) and the UI (continuous uiScale). Titles start with
+// the gate id so `-t "UIF2.1 "` selects exactly one gate.
+// ===========================================================================
+
+/** FROZEN transcription of the SHIPPED integer algorithm (before uif-2). The new
+ *  `continuous`/`uiScale` fields are additive: nothing here may move by a ulp. */
+function frozenShipped(cssW: number, cssH: number, dpr: number) {
+  const norm = (v: number, lo: number, hi: number, fb: number): number =>
+    Number.isFinite(v) && v >= lo && v <= hi ? v : fb;
+  const dprN = norm(dpr, 0.25, 8, 1);
+  const cssWN = norm(cssW, 1, 1e6, 1);
+  const cssHN = norm(cssH, 1, 1e6, 1);
+  const s = (Math.min(cssWN, cssHN) / 32) * dprN;
+  const dLo = Math.max(1, Math.ceil(s / 16));
+  const dHi = Math.max(dLo, Math.floor(s / 7));
+  const d0 = Math.max(1, Math.round(s / 11));
+  const deviceScale = Math.min(dHi, Math.max(dLo, d0));
+  const stageScale = deviceScale / dprN;
+  return {
+    dpr: dprN,
+    cssW: cssWN,
+    cssH: cssHN,
+    deviceScale,
+    stageScale,
+    effectiveW: cssWN / stageScale,
+    effectiveH: cssHN / stageScale,
+    shorter: Math.min(cssWN, cssHN),
+    uiScale: Math.min(3, Math.max(0.875, Math.min(cssWN, cssHN) / 720)),
+  };
+}
+
+const near = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+
+function expectFrozen(cssW: number, cssH: number, dpr: number): void {
+  const got = viewportScale(cssW, cssH, dpr);
+  const want = frozenShipped(cssW, cssH, dpr);
+  expect(Object.is(got.dpr, want.dpr), `dpr ${got.dpr} vs ${want.dpr}`).toBe(true);
+  expect(Object.is(got.cssW, want.cssW), 'cssW').toBe(true);
+  expect(Object.is(got.cssH, want.cssH), 'cssH').toBe(true);
+  expect(Object.is(got.deviceScale, want.deviceScale), 'deviceScale').toBe(true);
+  expect(Object.is(got.stageScale, want.stageScale), 'stageScale').toBe(true);
+  expect(Object.is(got.effectiveW, want.effectiveW), 'effectiveW').toBe(true);
+  expect(Object.is(got.effectiveH, want.effectiveH), 'effectiveH').toBe(true);
+  expect(Object.is(got.uiScale, want.uiScale), `uiScale ${got.uiScale} vs ${want.uiScale}`).toBe(
+    true,
+  );
+  expect(
+    near(got.continuous, (want.shorter * want.dpr) / (32 * 11)),
+    `continuous ${got.continuous}`,
+  ).toBe(true);
+}
+
+describe('UIF2.1 viewportScale adds continuous and uiScale without moving the integer scale', () => {
+  it('UIF2.1 the integer fields equal the frozen shipped algorithm exactly, and uiScale/continuous match, over realistic sizes', () => {
+    fc.assert(
+      fc.property(cssArb, cssArb, dprArb, (cssW, cssH, dpr) => {
+        expectFrozen(cssW, cssH, dpr);
+      }),
+    );
+  });
+
+  it('UIF2.1 the same holds for out-of-range and non-finite input (normalized, never thrown)', () => {
+    const hostile = fc.constantFrom(
+      Number.NaN,
+      0,
+      -1,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      1e7,
+      1e6,
+      1e6 + 1,
+      0.5,
+      1,
+      720,
+      1920,
+    );
+    const hostileDpr = fc.constantFrom(
+      Number.NaN,
+      0,
+      -1,
+      Number.POSITIVE_INFINITY,
+      9,
+      8,
+      0.25,
+      0.1,
+      1,
+      2,
+    );
+    fc.assert(
+      fc.property(hostile, hostile, hostileDpr, (cssW, cssH, dpr) => {
+        expectFrozen(cssW, cssH, dpr);
+      }),
+    );
+    // Normalized input falls back to 1x1 @1: shorter 1 => uiScale at the floor.
+    expect(viewportScale(Number.NaN, Number.NaN, Number.NaN).uiScale).toBe(0.875);
+  });
+
+  it('UIF2.1 the spec table rows: continuous, deviceScale and uiScale', () => {
+    const rows: Array<[number, number, number, number, number, number]> = [
+      // cssW, cssH, dpr, continuous, deviceScale, uiScale
+      [1280, 720, 1, 2.0454545, 2, 1],
+      [1536, 864, 1.25, 3.0681818, 3, 1.2],
+      [1920, 1080, 1, 3.0681818, 3, 1.5],
+      [2560, 1440, 1, 4.0909091, 4, 2],
+      [3840, 2160, 1, 6.1363636, 6, 3],
+      [960, 540, 1, 1.5340909, 2, 0.875],
+    ];
+    for (const [w, h, dpr, continuous, deviceScale, uiScale] of rows) {
+      const vs = viewportScale(w, h, dpr);
+      expect(vs.continuous, `${w}x${h}@${dpr} continuous`).toBeCloseTo(continuous, 2);
+      expect(vs.deviceScale, `${w}x${h}@${dpr} deviceScale`).toBe(deviceScale);
+      expect(vs.uiScale, `${w}x${h}@${dpr} uiScale`).toBe(uiScale);
+    }
+  });
+
+  it('UIF2.1 continuous multiplies in the dpr (kills a dropped dpr or a wrong factor order)', () => {
+    // 1536x864@1.25: 864*1.25/352 = 3.068; a dropped dpr gives 2.45.
+    expect(viewportScale(1536, 864, 1.25).continuous).toBeGreaterThan(3.06);
+    expect(viewportScale(1536, 864, 1.25).continuous).toBeLessThan(3.08);
+    expect(viewportScale(1536, 864, 1).continuous).toBeGreaterThan(2.44);
+    expect(viewportScale(1536, 864, 1).continuous).toBeLessThan(2.46);
+    // The shorter axis drives it, not the longer one.
+    expect(viewportScale(864, 1536, 1.25).continuous).toBeCloseTo(3.0681818, 6);
+    // Linear in dpr.
+    expect(viewportScale(1000, 800, 2).continuous).toBeCloseTo(
+      2 * viewportScale(1000, 800, 1).continuous,
+      9,
+    );
+  });
+});
+
+describe('UIF2.2 uiScale is continuous, dpr-independent and clamped on the shorter axis', () => {
+  const ui = (w: number, h: number, dpr = 1): number => viewportScale(w, h, dpr).uiScale;
+
+  it('UIF2.2 the constants are 720 / 0.875 / 3', () => {
+    expect(UI_REFERENCE_CSS_PX).toBe(720);
+    expect(UI_SCALE_MIN).toBe(0.875);
+    expect(UI_SCALE_MAX).toBe(3);
+  });
+
+  it('UIF2.2 uiScale is exactly independent of the devicePixelRatio', () => {
+    fc.assert(
+      fc.property(cssArb, cssArb, (w, h) => {
+        const base = ui(w, h, 1);
+        for (const dpr of REALISTIC_DPRS) {
+          expect(Object.is(ui(w, h, dpr), base), `${w}x${h}@${dpr}`).toBe(true);
+        }
+      }),
+    );
+  });
+
+  it('UIF2.2 non-decreasing in the shorter axis everywhere, strictly increasing inside the band', () => {
+    let prev = ui(4000, 1);
+    for (let shorter = 1; shorter <= 4096; shorter += 1) {
+      const cur = ui(4096, shorter);
+      expect(cur, `shorter ${shorter}`).toBeGreaterThanOrEqual(prev);
+      prev = cur;
+    }
+    // 630 = 0.875 * 720 and 2160 = 3 * 720 are the clamp edges; strictly inside, every pixel counts.
+    for (let shorter = 630; shorter < 2160; shorter += 1) {
+      expect(ui(4096, shorter + 1), `shorter ${shorter} -> ${shorter + 1}`).toBeGreaterThan(
+        ui(4096, shorter),
+      );
+    }
+  });
+
+  it('UIF2.2 inside the band uiScale is exactly shorter / 720 (no snapping, no rounding)', () => {
+    for (const [w, h] of [
+      [1280, 720],
+      [1536, 864],
+      [1920, 1080],
+      [800, 800],
+      [801, 801],
+      [2000, 1999],
+      [1999, 2000],
+      [4096, 1234],
+    ] as const) {
+      expect(ui(w, h), `${w}x${h}`).toBe(Math.min(w, h) / 720);
+    }
+    expect(ui(800, 800)).toBe(800 / 720);
+    expect(ui(801, 801)).toBe(801 / 720);
+    expect(ui(801, 801)).not.toBe(ui(800, 800));
+    expect(Number.isInteger(ui(800, 800))).toBe(false);
+    expect(Number.isInteger(ui(1000, 1000))).toBe(false);
+    // Literal spot checks.
+    expect(ui(1280, 720)).toBe(1);
+    expect(ui(1536, 864)).toBe(1.2);
+    expect(ui(1920, 1080)).toBe(1.5);
+  });
+
+  it('UIF2.2 the longer axis does not matter', () => {
+    for (const shorter of [100, 540, 720, 900, 1080, 2000, 3000]) {
+      const base = ui(shorter, shorter);
+      for (const longer of [shorter, shorter + 1, shorter * 2, 4096]) {
+        if (longer < shorter) continue;
+        expect(ui(longer, shorter), `${longer}x${shorter}`).toBe(base);
+        expect(ui(shorter, longer), `${shorter}x${longer}`).toBe(base);
+      }
+    }
+  });
+
+  it('UIF2.2 floor at <=630 and ceiling at >=2160 equal the config constants; a longer-axis clamp is killed', () => {
+    for (const s of [1, 100, 540, 629, 630]) {
+      expect(ui(4000, s), `floor ${s}`).toBe(UI_SCALE_MIN);
+      expect(ui(4000, s), `floor literal ${s}`).toBe(0.875);
+    }
+    for (const s of [2160, 2161, 3000, 4096]) {
+      expect(ui(4096, s), `ceiling ${s}`).toBe(UI_SCALE_MAX);
+      expect(ui(5000, s), `ceiling literal ${s}`).toBe(3);
+    }
+    // A clamp on the LONGER axis would give 3 here; the shorter axis (500) floors.
+    expect(ui(3000, 500)).toBe(0.875);
+    expect(ui(500, 3000)).toBe(0.875);
+    // ...and would give 3 here; the shorter axis (800) is in the band.
+    expect(ui(3000, 800)).toBe(800 / 720);
+    expect(ui(800, 3000)).toBe(800 / 720);
+  });
+});
+
+describe('UIF2.5 any aspect ratio: integer device scale, effective tiles absorb the remainder', () => {
+  const sizes: Array<[number, number]> = [
+    [1000, 900],
+    [1600, 600],
+    [2560, 1080],
+  ];
+
+  it('UIF2.5 at non-16:9 sizes deviceScale is an integer and effective = css / stageScale exactly', () => {
+    for (const [w, h] of sizes) {
+      for (const dpr of [1, 1.25]) {
+        const vs = viewportScale(w, h, dpr);
+        const tag = `${w}x${h}@${dpr}`;
+        expect(Number.isInteger(vs.deviceScale), `${tag} integer`).toBe(true);
+        expect(vs.deviceScale, `${tag} >= 1`).toBeGreaterThanOrEqual(1);
+        expect(vs.effectiveW, `${tag} effectiveW`).toBe(w / vs.stageScale);
+        expect(vs.effectiveH, `${tag} effectiveH`).toBe(h / vs.stageScale);
+        expect(vs.cssW, `${tag} cssW`).toBe(w);
+        expect(vs.cssH, `${tag} cssH`).toBe(h);
+      }
+    }
+  });
+
+  it('UIF2.5 a wider window at the same deviceScale shows more source px (no fixed aspect box)', () => {
+    // 1920x1080 and 2560x1080 share shorter axis 1080 => deviceScale 3, different widths.
+    const a = viewportScale(1920, 1080, 1);
+    const b = viewportScale(2560, 1080, 1);
+    expect(a.deviceScale).toBe(3);
+    expect(b.deviceScale).toBe(3);
+    expect(b.effectiveW).toBeGreaterThan(a.effectiveW);
+    expect(a.effectiveW).toBe(640);
+    expect(b.effectiveW).toBeCloseTo(2560 / 3, 9);
+    expect(b.effectiveH).toBe(a.effectiveH);
+    // 1000x900 and 1200x900 at dpr 1.25: same shorter axis, same deviceScale, wider shows more.
+    const c = viewportScale(1000, 900, 1.25);
+    const d = viewportScale(1200, 900, 1.25);
+    expect(c.deviceScale).toBe(d.deviceScale);
+    expect(d.effectiveW).toBeGreaterThan(c.effectiveW);
+  });
+
+  it('UIF2.5 the visible source px grow with the window while the integer scale holds', () => {
+    // Fixed shorter axis 1080, widening: deviceScale constant, effectiveW strictly increasing.
+    let prev = 0;
+    for (const w of [1100, 1400, 1920, 2400, 3000]) {
+      const vs = viewportScale(w, 1080, 1);
+      expect(vs.deviceScale, `w ${w}`).toBe(3);
+      expect(vs.effectiveW, `w ${w}`).toBeGreaterThan(prev);
+      prev = vs.effectiveW;
+    }
   });
 });

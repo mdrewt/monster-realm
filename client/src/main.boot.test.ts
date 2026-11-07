@@ -44,6 +44,8 @@ const H = vi.hoisted(() => ({
   sends: [] as Sent[],
   /** The predicted position main.ts handed the resolver on each frame. */
   predicted: [] as Array<{ x: number; y: number } | undefined>,
+  /** Every renderer.resize(w, h, dpr) main.ts's resize seam issued (uif-2). */
+  resizes: [] as Array<{ w: number; h: number; dpr: number }>,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open
@@ -97,7 +99,9 @@ vi.mock('./render/world', () => {
     }
     setMap(): void {}
     render(): void {}
-    resize(): void {}
+    resize(w: number, h: number, dpr: number): void {
+      H.resizes.push({ w, h, dpr });
+    }
     screenFor(): { x: number; y: number } {
       return { x: 0, y: 0 };
     }
@@ -155,10 +159,31 @@ function recordListeners(target: EventTarget): void {
 
 let opts: ConnectionOptions;
 
+/** Set window.innerWidth/innerHeight/devicePixelRatio; each original own descriptor is
+ *  restored by afterEach through `restorers` (first change per field only). */
+const touched = new Set<string>();
+function setWindowBox(w: number, h: number, dpr: number): void {
+  const values: Record<string, number> = { innerWidth: w, innerHeight: h, devicePixelRatio: dpr };
+  for (const [field, value] of Object.entries(values)) {
+    if (!touched.has(field)) {
+      touched.add(field);
+      const own = Object.getOwnPropertyDescriptor(window, field);
+      restorers.push(() => {
+        touched.delete(field);
+        if (own !== undefined) Object.defineProperty(window, field, own);
+        else delete (window as unknown as Record<string, unknown>)[field];
+      });
+    }
+    Object.defineProperty(window, field, { value, configurable: true, writable: true });
+  }
+}
+const uiScaleVar = (): string => document.documentElement.style.getPropertyValue('--mr-ui-scale');
+
 async function boot(): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.predicted = [];
+  H.resizes = [];
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -232,6 +257,39 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     vi.unstubAllGlobals();
     raf.cb = null;
     document.body.innerHTML = '';
+    document.documentElement.style.removeProperty('--mr-ui-scale');
+  });
+
+  it('UIF2.3 boot writes --mr-ui-scale on the real documentElement and hands the renderer the same triple', async () => {
+    document.documentElement.style.removeProperty('--mr-ui-scale');
+    setWindowBox(1920, 1080, 1);
+    await boot();
+    await vi.waitFor(() => expect(H.resizes.length).toBeGreaterThan(0), { timeout: 5_000 });
+    expect(uiScaleVar()).toBe('1.5');
+    expect(H.resizes.at(-1)).toEqual({ w: 1920, h: 1080, dpr: 1 });
+  });
+
+  it('UIF2.3 a real resize event rewrites --mr-ui-scale and re-sizes the renderer with the new triple', async () => {
+    document.documentElement.style.removeProperty('--mr-ui-scale');
+    setWindowBox(1920, 1080, 1);
+    await boot();
+    await vi.waitFor(() => expect(H.resizes.length).toBeGreaterThan(0), { timeout: 5_000 });
+    expect(uiScaleVar()).toBe('1.5');
+
+    setWindowBox(1280, 720, 1);
+    window.dispatchEvent(new Event('resize'));
+    expect(uiScaleVar()).toBe('1');
+    expect(H.resizes.at(-1)).toEqual({ w: 1280, h: 720, dpr: 1 });
+
+    setWindowBox(1536, 864, 1.25);
+    window.dispatchEvent(new Event('resize'));
+    expect(uiScaleVar()).toBe('1.2');
+    expect(H.resizes.at(-1)).toEqual({ w: 1536, h: 864, dpr: 1.25 });
+
+    setWindowBox(960, 540, 1);
+    window.dispatchEvent(new Event('resize'));
+    expect(uiScaleVar()).toBe('0.875');
+    expect(H.resizes.at(-1)).toEqual({ w: 960, h: 540, dpr: 1 });
   });
 
   it('BOOT-CONNECT: connect() gets the real store, and onError reaches the #status line', async () => {
