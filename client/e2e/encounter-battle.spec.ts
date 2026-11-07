@@ -14,11 +14,14 @@ import {
   awaitTacticalActive,
   draftMoveToward,
   endTurn,
+  endTurnIfLive,
   fightToOutcome,
   fleeByButtons,
+  moveThenAttackByButtons,
   openMenu,
   pressAccel,
   pressButton,
+  readEventTags,
   readTactics,
   sides,
   TACTICS,
@@ -55,6 +58,15 @@ import {
 //   - E1: retired "Fight → skill cell → the opponent card's HP drop renders" → an attack committed
 //     through Skills → the forecast panel → A makes the enemy unit's HP readout on the HUD (its FOE
 //     info box) drop AND its `readTactics().units` HP drop.
+//   - E1b (ci-fix-20261107T2101): the CORE tactical turn by buttons, which no spec drove before —
+//     a foe out of every skill's reach from the start tile is hit in ONE turn by Move then Skill
+//     from the ghost tile (`moveThenAttackByButtons`: the Move drafted, the menu re-opened, Skills
+//     → the forecast → A; the commit is [Move, Skill]). Oracles: the unit stands on the ghost tile
+//     after the commit, and the transcript since the turn began holds its `Moved` and an
+//     `Executed`. WHY IT EXISTS: master went red on 8ac38368 in E2 — a Skittish Sproutlet kites
+//     to distance 5 whenever the player ends adjacent, and the old fight helper only ever stepped
+//     to the nearest tile and ended the turn, so 16 own turns passed with no hit. Non-lethal like
+//     E1 (a KO would pay XP, level the starter to 8 and recompute its seeded stats before E2).
 //   - E2: retired "`outcome-text` reads Victory!" → `fightToOutcome` by buttons → the results
 //     title is the victory string (catalog `battle.outcome.victory`), the server's battle row is
 //     `SideAWins`, the box shows Lv8 (the XP grant) and the wallet is credited (SQL).
@@ -68,8 +80,16 @@ import {
 // 250 before its hunt so the starter ALWAYS wins on a landed hit. Level 8 stays far below every
 // evolution gate out of species 1 (min_level 20 / essence gates).
 //
+// E1b adds a TEMPORARY speed seed: `stat_speed = SEED_SPEED` on monster + monster_pub (read back).
+// Initiative is `stats.speed` descending, so the starter always acts first, and the spawn rows
+// (y=1 vs y=5) put that opening own turn at distance >= 4 — out of every Flameling skill's reach
+// (Ember range 2-3, Fire Fang 1) — deterministically. Stride length is the SPECIES base speed
+// (content), so nothing else moves. E1b writes the natural speed back (read back) BEFORE its own
+// final assertion, so E2 runs on CI's natural initiative (the wild may act first and kite).
+//
 // BOUNDS ARE NUMBERS, not damage arithmetic (tactical damage is game-core `tactics::resolve`):
-// MAX_OWN_TURNS per battle, MAX_E1_BATTLES / MAX_WIN_BATTLES re-hunts, each wait bounded.
+// MAX_OWN_TURNS per battle, MAX_E1_BATTLES / MAX_E1B_BATTLES / MAX_WIN_BATTLES re-hunts, each wait
+// bounded.
 //
 // CLEANUP. One browser/context/identity; afterAll closes the browser (on_disconnect deletes the
 // player row before golden.spec's presenceCount === 2).
@@ -83,10 +103,19 @@ const SEED_ATTACK = 250;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls. 120 steps ~ 60 grass entries,
  *  P(no encounter) = 0.8^60 ~ 1.5e-6 (recruit.spec MAX_WALK_STEPS arithmetic). */
 const MAX_WALK_STEPS = 120;
-/** Own turns per battle: a 7x5 board is crossed in a few strides; 16 covers a kiting wild. */
+/** Own turns per battle: a board is crossed in a few strides, and a kiting (Skittish) wild is
+ *  answered on the first own turn it is in reach by `fightToOutcome`'s Move-then-Skill. 16 is
+ *  slack: a stall now means a dead button or a changed AI, never a kiter. */
 const MAX_OWN_TURNS = 16;
 /** E1 battles to try for a NON-lethal landed hit (a lethal forecast is fled and re-hunted). */
 const MAX_E1_BATTLES = 4;
+/** E1b's initiative seed: far above any zone-0 wild's speed, so the starter always acts first and
+ *  its opening own turn is at the spawn distance (>= 4, out of every Flameling skill's reach). */
+const SEED_SPEED = 999;
+/** E1b battles to try for a NON-lethal Move-then-Skill on the opening turn. A re-hunt means the
+ *  opening geometry offered only a lethal forecast (`kills`: a KO would level the starter before
+ *  E2) or no band tile a skill fires from (`none`: a choke map or a pack-mate in the way). */
+const MAX_E1B_BATTLES = 6;
 /** E2 battles to try for a WIN (a wild that auto-flees or a round cap ends a battle otherwise). */
 const MAX_WIN_BATTLES = 3;
 const STEP_WAIT_MS = 8_000;
@@ -633,6 +662,164 @@ test.describe
       expect(
         dropped,
         `E1: a NON-lethal hit landed and the HUD repainted the drop within ${MAX_E1_BATTLES} battles`,
+      ).toBe(true);
+    });
+
+    test("E1b: an out-of-reach foe is hit in one turn by Move then Skill from the ghost tile (the kiting wild's answer)", async () => {
+      // WRONG IMPL KILLED: a fight step that only walks toward the foe and ends the turn (the
+      // 8ac38368 stall: no hit from d>=4), a skill pressed from the START tile (greyed: the PRE
+      // oracle), a Move drafted but dropped from the commit (the unit is not on the ghost tile, no
+      // `Moved` in the transcript), a Skills row that ignores the ghost tile or the post-Move
+      // budget (`none` in every battle), and a commit whose skill never executes. The `Executed`
+      // carries no unit in the transcript reader, so it is attributed by ORDER: our skill's
+      // `Executed` sits after our `Moved` and before our own `TurnEnded` (the foe's reply, which a
+      // full-budget commit runs in the same transaction, comes after our `TurnEnded`).
+      // NON-lethal like E1 (`allowKo: false`): a KO would level the starter and recompute its
+      // seeded stats before E2, so a lethal-only opening is fled and re-hunted. The speed restore
+      // runs in a `finally`, so a throw inside the battle loop still writes the natural speed back
+      // before E2. A full-budget commit ends the turn server-side, so the exit ends the turn only
+      // if it is still ours (`endTurnIfLive`).
+      test.setTimeout(300_000);
+      const readSpeed = (label: string): number => {
+        const row = sqlRows(
+          sql(`SELECT * FROM monster WHERE monster_id = ${monsterId}`, label),
+          label,
+        ).find((r) => r.monster_id === monsterId);
+        return Number(row?.stat_speed);
+      };
+      const writeSpeed = (speed: number, label: string): void => {
+        for (const table of ['monster', 'monster_pub']) {
+          sql(`UPDATE ${table} SET stat_speed = ${speed} WHERE monster_id = ${monsterId}`, label);
+        }
+      };
+      // E1b-SEED: the natural speed first (the restore target), then the initiative seed.
+      const naturalSpeed = readSpeed('E1b seed');
+      expect(
+        Number.isInteger(naturalSpeed) && naturalSpeed > 0,
+        `E1b: the starter's natural speed reads back as a positive integer (got ${naturalSpeed})`,
+      ).toBe(true);
+      writeSpeed(SEED_SPEED, 'E1b seed');
+      expect(readSpeed('E1b seed'), 'the starter row reads back the speed seed').toBe(SEED_SPEED);
+
+      let done = false;
+      const outcomes: string[] = [];
+      try {
+        for (let battle = 0; battle < MAX_E1B_BATTLES && !done; battle += 1) {
+          const label = `E1b battle ${battle}`;
+          await huntEncounter(page, label);
+          const t = await waitOwnTurnOrEnd(page, null, 15_000);
+          if (t.phase !== 'Active') {
+            outcomes.push(`${battle}:${t.phase}`);
+            await throughResults(page, label);
+            continue;
+          }
+          const { me, enemy } = sides(t);
+          const opening = tileDistance(me, enemy);
+          // E1b-PRE: the seed puts the opening own turn at the spawn distance, out of every reach.
+          expect(
+            opening,
+            `E1b: the starter acts first at the spawn distance: me (${me.x},${me.y}) to foe ` +
+              `(${enemy.x},${enemy.y}) is d>=4 (round ${t.round}, turnIdx ${t.turnIdx})`,
+          ).toBeGreaterThanOrEqual(4);
+          await openMenu(page, me);
+          await expect(
+            page.locator(TACTICS.menuRow('skills')),
+            'E1b: no skill reaches the foe from the start tile at d>=4 — the Skills row is greyed',
+          ).toHaveAttribute('aria-disabled', 'true', { timeout: 5_000 });
+
+          // E1b-FIRE: Move then Skill in one turn, from the ghost tile.
+          const r = await moveThenAttackByButtons(page, me, enemy, {
+            allowKo: false,
+            enemyHp: enemy.curHp,
+          });
+          if (r.hit === 'attacked') {
+            const dest = r.dest;
+            expect(dest, 'E1b: the Move went somewhere').not.toBeNull();
+            if (dest === null) throw new Error('E1b: the Move went somewhere (dest is null)');
+            expect(
+              { x: dest.x, y: dest.y },
+              'E1b: the ghost tile is not the start tile',
+            ).not.toEqual({ x: me.x, y: me.y });
+            await waitExecuted(page, t.events);
+            await expect
+              .poll(
+                async () => {
+                  const now = await readTactics(page);
+                  const mine = now?.units.find((u) => u.unitId === me.unitId);
+                  return mine === undefined ? null : { x: mine.x, y: mine.y };
+                },
+                {
+                  message:
+                    'E1b: the Move executed before the skill: the unit stands on the ghost tile',
+                  timeout: 5_000,
+                },
+              )
+              .toEqual({ x: dest.x, y: dest.y });
+            await expect
+              .poll(
+                async () => {
+                  const since = (await readEventTags(page)).slice(t.events);
+                  const moved = since.findIndex((e) => e.tag === 'Moved' && e.unit === me.unitId);
+                  if (moved < 0) return 'no Moved for the unit';
+                  const ended = since.findIndex(
+                    (e, i) => i > moved && e.tag === 'TurnEnded' && e.unit === me.unitId,
+                  );
+                  const executed = since.findIndex((e, i) => i > moved && e.tag === 'Executed');
+                  if (executed < 0) return 'no Executed after the Move';
+                  if (ended >= 0 && executed > ended) {
+                    return 'the first Executed after the Move is past the unit TurnEnded (the foe reply)';
+                  }
+                  return 'ok';
+                },
+                {
+                  message:
+                    "E1b: the transcript shows the unit's Move, then its skill executing before its turn ended",
+                  timeout: 5_000,
+                },
+              )
+              .toBe('ok');
+            const after = await readTactics(page);
+            // Information only: a pack's first aim may hit a pack-mate, and a Heavy can miss.
+            const foe = after?.units.find((u) => u.unitId === enemy.unitId);
+            console.log(
+              `[E1b] battle ${battle}: d${opening} -> ghost (${dest.x},${dest.y}) after ` +
+                `${r.tries} tries; foe ${enemy.unitId} hp ${enemy.curHp} -> ` +
+                `${foe?.curHp ?? '?'}; phase ${after?.phase ?? 'null'}`,
+            );
+            outcomes.push(`${battle}:attacked tries:${r.tries}`);
+            await endTurnIfLive(page, t);
+            if (after?.phase === 'Active') {
+              const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
+              if (next.phase === 'Active') await fleeByButtons(page);
+            }
+            await throughResults(page, 'E1b');
+            done = true;
+            continue;
+          }
+          // `kills` (every firing tile forecasts a KO) or `none` (no band tile fires from this
+          // opening geometry): leave on the next own turn and re-hunt.
+          console.log(
+            `[E1b] battle ${battle}: d${opening} -> ${r.hit} after ${r.tries} tries; re-hunting`,
+          );
+          outcomes.push(`${battle}:${r.hit} tries:${r.tries}`);
+          await endTurn(page);
+          const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
+          if (next.phase === 'Active') await fleeByButtons(page);
+          await throughResults(page, label);
+        }
+      } finally {
+        // E1b-RESTORE: in a `finally`, so a throw inside the loop still restores the natural
+        // speed before E2.
+        writeSpeed(naturalSpeed, 'E1b restore');
+      }
+      expect(readSpeed('E1b restore'), 'the starter row reads back its natural speed').toBe(
+        naturalSpeed,
+      );
+      // E1b-DONE
+      expect(
+        done,
+        `E1b: a Move-then-Skill landed within MAX_E1B_BATTLES=${MAX_E1B_BATTLES} battles ` +
+          `(outcomes: ${outcomes.length === 0 ? 'none' : outcomes.join(', ')})`,
       ).toBe(true);
     });
 
