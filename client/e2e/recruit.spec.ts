@@ -132,8 +132,9 @@ const MAX_OWN_TURNS = 16;
 const MAX_APPROACH_TURNS = 12;
 /** R1: battles to try for an adjacent own turn (a wild that kites or flees is re-hunted). */
 const MAX_R1_BATTLES = 3;
-/** R3: battles to try for a WIN (an auto-fleeing wild or a round cap ends one otherwise). */
-const MAX_WIN_BATTLES = 3;
+/** R3: hunts to try for a WIN — a battle that ends otherwise (an auto-fleeing wild, a round cap) or
+ *  that a kiting wild drags past MAX_OWN_TURNS (fled) is re-hunted. */
+const MAX_WIN_HUNTS = 3;
 /** Max heal attempts (30s cooldown per heal; KO recovery path). */
 const MAX_HEALS = 2;
 /** Max pre-encounter HP-restoration heals (flee-damage recovery, separate from KO-recovery). */
@@ -770,7 +771,8 @@ test.describe
     //   SideAWins for R2's battle" (`outcome-text` is the 1v1 view's) → a battle fought to a WIN
     //   by buttons (`fightToOutcome`; the starter seeded to win) → the results title is the
     //   catalog victory string AND spacetime sql names SideAWins for that battle. Never "any
-    //   outcome": a battle that ends otherwise is re-hunted (MAX_WIN_BATTLES).
+    //   outcome": a battle that ends otherwise, or outlasts MAX_OWN_TURNS against a kiting wild
+    //   (fled), is re-hunted (MAX_WIN_HUNTS).
     // -------------------------------------------------------------------------
     test('R3: a battle won by buttons shows the victory title and spacetime sql confirms SideAWins (bt-16: was outcome-text)', async () => {
       test.setTimeout(420_000);
@@ -784,17 +786,53 @@ test.describe
         ],
         'R3 seed',
       );
+      // ANTI-NO-OP: read the attack seed back once (encounter-battle E2's precedent) — a silent
+      // zero-row UPDATE would leave the starter on its natural roll and the fights long.
+      const seededLine = ownerSql(
+        `SELECT monster_id, stat_attack FROM monster WHERE monster_id = ${starterId}`,
+        'R3 seed',
+      )
+        .split('\n')
+        .filter((l) => l.includes('|'))
+        .map((l) => l.split('|').map((c) => c.trim()))
+        .find((cells) => cells[0] === starterId);
+      expect(Number(seededLine?.[1]), 'R3: the starter row reads back the attack seed').toBe(
+        WIN_ATTACK,
+      );
       let won = false;
-      for (let battle = 0; battle < MAX_WIN_BATTLES && !won; battle += 1) {
+      let hunts = 0;
+      for (let battle = 0; battle < MAX_WIN_HUNTS && !won; battle += 1) {
+        hunts = battle + 1;
         const start = await huntEncounter(page, `R3 battle ${battle}`);
         const battleId = start.battleId;
         if (!/^[0-9]+$/.test(battleId)) {
           throw new Error(`R3: battleId is not a decimal u64 string: ${battleId}`);
         }
-        const end = await fightToOutcome(page, {
-          maxOwnTurns: MAX_OWN_TURNS,
-          label: `R3 battle ${battle}`,
-        });
+        // A kiting (Skittish) wild can outlast the own-turn bound: ONLY that bound's error is
+        // caught — the battle is fled on the next own turn, its results passed, and the grass
+        // re-hunted (MAX_WIN_HUNTS). Every other failure propagates.
+        let end: TacticsSnap | null = null;
+        try {
+          end = await fightToOutcome(page, {
+            maxOwnTurns: MAX_OWN_TURNS,
+            label: `R3 battle ${battle}`,
+          });
+        } catch (err) {
+          if (!String((err as Error).message).includes('did not finish within maxOwnTurns=')) {
+            throw err;
+          }
+          console.log(
+            `R3 battle ${battle}: own-turn bound spent (a kiting wild) — fleeing, re-hunting`,
+          );
+          const now = await readTactics(page);
+          if (now !== null && now.phase === 'Active') {
+            const next = await waitOwnTurnOrEnd(page, null, TURN_WAIT_MS);
+            if (next.phase === 'Active') await fleeByButtons(page);
+          }
+          await throughResults(page, `R3 battle ${battle} (fled)`);
+          continue;
+        }
+        if (end === null) throw new Error(`R3 battle ${battle}: fightToOutcome returned nothing`);
         expect(end.phase, 'R3: the battle finished').toBe('Finished');
         const title = page.locator(`${TACTICS.results} [data-testid="battle-title"]`);
         await expect(title, 'R3: the results panel shows its title').toBeVisible({
@@ -818,7 +856,7 @@ test.describe
       }
       expect(
         won,
-        `R3: a battle was won (SQL SideAWins) within MAX_WIN_BATTLES=${MAX_WIN_BATTLES}`,
+        `R3: a battle was won (SQL SideAWins) within ${hunts} of MAX_WIN_HUNTS=${MAX_WIN_HUNTS} hunts`,
       ).toBe(true);
     });
 
