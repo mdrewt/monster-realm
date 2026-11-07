@@ -46,7 +46,8 @@ import {
 // unit, the deploy panel never shown). Battle 2 needs a pack >= 2: the party is two after battle 1's
 // recruit is moved into it (owner SQL, an integer column), and zone 0 rolls packs 1/2 at 60/30 %
 // (+10 % three, clamped to two): a pack of 1 is fled on its first own turn and the grass re-hunted,
-// bounded by MAX_PACK_HUNTS (P(eight packs of 1) = 0.6^8 ~ 1.7 %).
+// bounded by MAX_PACK_HUNTS, ONE budget shared by every attempt
+// (P(30 packs of 1) = 0.6^30 ~ 2e-7).
 //
 // SEEDING (owner SQL, the encounter-battle / menu-flow precedents): the starter is made sturdy
 // (300 HP, 250 defences) so no wild can KO it; bait (item 1) is inserted into its bag. An attack is
@@ -61,9 +62,13 @@ import {
 // CLEANUP: one browser; afterAll closes it (golden.spec's presence count).
 
 const SEED_HP = 300;
+/** The recruit's seeded HP: below the starter's SEED_HP so the recruit stays the wild's preferred
+ *  target at equal distance — the second party slot's damage write-back keeps being exercised by
+ *  the persistence oracle — yet far above what MAX_PACK_HUNTS hits of ~2–3 damage at SEED_DEFENSE
+ *  can take, so it never faints and never clamps the pack to 1. */
+const RECRUIT_SEED_HP = 120;
 const SEED_DEFENSE = 250;
 const BAIT_ITEM_ID = 1;
-const BAIT_SEED = 9;
 /** The wild is recruited (not hit again) at or under this share of its max HP. */
 const WEAK_PCT = 45;
 /** Battle-1 restarts (a KO'd wild, a kiting wild, a timed-out loop) before the test gives up. */
@@ -72,12 +77,18 @@ const MAX_BATTLES = 5;
 const MAX_FLEE_BATTLES = 3;
 /** Own turns per battle before it is abandoned (Flee) and restarted. */
 const MAX_OWN_TURNS = 16;
+/** Bait seeded into the bag: one per possible live Recruit (MAX_BATTLES battles × MAX_OWN_TURNS
+ *  own turns). A Recruit debits one bait, success or not, and an empty bag drops the `bait:1` row
+ *  (recruit.spec precedent). */
+const BAIT_SEED = MAX_BATTLES * MAX_OWN_TURNS;
 /** The longest one wait for the next own turn may take (the AI's turns plus the presentation pad;
  *  measured ~1 s), so a stalled battle fails on its named bound, not on the test timeout. */
 const TURN_WAIT_MS = OWN_TURN_WAIT_MS;
-/** bt-16: grass hunts per pack->=2 battle in test 2 (a pack of 1 is fled and re-hunted):
- *  P(eight packs of 1 in a row) = 0.6^8 ~ 1.7 %. */
-const MAX_PACK_HUNTS = 8;
+/** bt-16: ONE budget of grass hunts shared by every BT12-5-WILD-FLEE attempt (not per attempt; a
+ *  pack of 1 is fled and re-hunted): P(30 packs of 1) = 0.6^30 ~ 2e-7. Measured cost: ≤ ~11 s per
+ *  pack-1 hunt including the flee and the results panel, so the whole budget fits the test
+ *  timeout. */
+const MAX_PACK_HUNTS = 30;
 /** bt-16: shuttle steps per hunt; only the East step onto (2,2) rolls. 120 steps ~ 60 grass
  *  entries, P(no encounter) = 0.8^60 ~ 1.5e-6 (encounter-battle.spec MAX_WALK_STEPS). */
 const MAX_WALK_STEPS = 120;
@@ -284,21 +295,31 @@ async function takeAHitThenFlee(p: Page, baseline: Map<string, number>): Promise
   return false;
 }
 
-/** bt-16: hunts until the grass opens a pack of >= 2 (Deploying with the deploy panel). A pack of 1
- *  (Active at once) is fled on its first own turn and its results passed, then the grass re-hunted;
- *  fails naming MAX_PACK_HUNTS and the count of packs of 1 met. */
-async function huntPackOfTwo(p: Page, label: string): Promise<TacticsSnap> {
-  let single = 0;
-  for (let hunt = 0; hunt < MAX_PACK_HUNTS; hunt += 1) {
+/** The grass-hunt budget BT12-5-WILD-FLEE shares across its attempts: `left` hunts remain of
+ *  MAX_PACK_HUNTS; `single` packs of 1 were met so far. */
+interface PackHuntBudget {
+  left: number;
+  single: number;
+}
+
+/** bt-16: hunts until the grass opens a pack of >= 2 (Deploying with the deploy panel), spending
+ *  the SHARED `budget` (one hunt per grass battle met). A pack of 1 (Active at once) is fled on its
+ *  first own turn and its results passed, then the grass re-hunted; fails naming the hunts spent,
+ *  the packs of 1 met and MAX_PACK_HUNTS once the budget is gone. */
+async function huntPackOfTwo(p: Page, label: string, budget: PackHuntBudget): Promise<TacticsSnap> {
+  while (budget.left > 0) {
+    const hunt = MAX_PACK_HUNTS - budget.left;
+    budget.left -= 1;
     const t = await huntWild(p, `${label} hunt ${hunt}`);
     if (t.phase === 'Deploying') return t;
-    single += 1;
+    budget.single += 1;
     console.log(`[bt-16 ${label}] hunt ${hunt}: a pack of 1 (phase ${t.phase}) — fled, re-hunting`);
     await fleeByButtons(p);
     await throughResults(p, `${label} pack-of-one ${hunt}`);
   }
   throw new Error(
-    `${label}: ${single} of MAX_PACK_HUNTS=${MAX_PACK_HUNTS} hunts rolled a pack of 1 — no pack of 2 met`,
+    `${label}: the shared hunt budget is spent — ${MAX_PACK_HUNTS - budget.left} hunts spent, ` +
+      `${budget.single} packs of 1 met, of MAX_PACK_HUNTS=${MAX_PACK_HUNTS} — no pack of 2 met`,
   );
 }
 
@@ -438,12 +459,45 @@ test.describe
           },
         )
         .toBe(2);
-      const before = new Map((await readOwnMonsters(page)).map((m) => [m.monsterId, m.currentHp]));
+      // The recruit is seeded sturdy too: pack-1 battles auto-deploy the remembered formation
+      // (both monsters) and the wild targets the lowest-HP unit, so an unseeded recruit (~20 HP)
+      // can faint across the pack-1 flees — and a fainted recruit clamps every later pack to 1.
+      // RECRUIT_SEED_HP stays below the starter's SEED_HP, so the recruit is still the preferred
+      // target at equal distance and its slot's damage write-back stays exercised.
+      for (const table of ['monster', 'monster_pub']) {
+        for (const [col, val] of [
+          ['stat_hp', RECRUIT_SEED_HP],
+          ['current_hp', RECRUIT_SEED_HP],
+          ['stat_defense', SEED_DEFENSE],
+          ['stat_sp_defense', SEED_DEFENSE],
+        ] as const) {
+          ownerSql(
+            `UPDATE ${table} SET ${col} = ${val} WHERE monster_id = ${recruit.monsterId}`,
+            'seed recruit',
+          );
+        }
+      }
+      await expect
+        .poll(
+          async () =>
+            (await readOwnMonsters(page)).find((m) => m.monsterId === recruit.monsterId)?.maxHp,
+          {
+            message: 'the recruit reads back the HP seed RECRUIT_SEED_HP within 15000 ms',
+            timeout: 15_000,
+          },
+        )
+        .toBe(RECRUIT_SEED_HP);
 
+      // ONE hunt budget across every attempt (MAX_PACK_HUNTS).
+      const packHunts: PackHuntBudget = { left: MAX_PACK_HUNTS, single: 0 };
+      let before = new Map<string, number>();
       // A pack that never lands a hit (two wilds kiting out of range) is fled and restarted.
       let hurt = false;
       for (let attempt = 0; attempt < MAX_FLEE_BATTLES && !hurt; attempt += 1) {
-        const start = await huntPackOfTwo(page, `pack of two ${attempt}`);
+        const start = await huntPackOfTwo(page, `pack of two ${attempt}`, packHunts);
+        // The pre-battle HP of THIS pack-2 battle (the write-back happens only at battle end), so
+        // a pack-1 flee's damage can never satisfy the persistence oracle below.
+        before = new Map((await readOwnMonsters(page)).map((m) => [m.monsterId, m.currentHp]));
         expect(start.kind, 'a grass encounter opens a WILD tactical battle').toBe('Wild');
         const deploy = page.locator(TACTICS.deploy);
         await expect(deploy, 'the deploy confirm screen shows').toBeVisible({ timeout: 20_000 });

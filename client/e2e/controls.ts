@@ -1274,35 +1274,52 @@ export async function throughResults(page: Page, label: string): Promise<string>
  * enemy within a skill's reach is attacked (`attackByButtons({ allowKo: true })`) and the turn
  * ended, else the unit steps toward the nearest enemy (`draftMoveToward`) and ends the turn. Stops
  * at `Finished` (never pressing Start into the results panel) and returns that snapshot. Throws
- * naming `maxOwnTurns` when the bound is spent. Each wait for an own turn is bounded by
- * `turnWaitMs` (default OWN_TURN_WAIT_MS).
+ * naming `maxOwnTurns` when the bound is spent; the throw also carries the per-turn trace — per own
+ * turn the round:turnIdx, both units' tiles and HP, their distance, the hit result
+ * (`attacked` / `kills` / `none`), whether a Move was drafted (`move:drafted` / `move:none`, absent
+ * when no Move was tried) and the turn's wall time — so a dead-button stall (a leftover draft,
+ * cursor or lock: nothing commits) is distinguishable from a kiting wild in the CI log. Each wait
+ * for an own turn is bounded by `turnWaitMs` (default OWN_TURN_WAIT_MS).
  */
 export async function fightToOutcome(
   page: Page,
   opts: { maxOwnTurns: number; label: string; turnWaitMs?: number },
 ): Promise<TacticsSnap> {
   let last: string | null = null;
+  const trace: string[] = [];
   for (let turn = 0; turn < opts.maxOwnTurns; turn += 1) {
     const t = await waitOwnTurnOrEnd(page, last, opts.turnWaitMs ?? OWN_TURN_WAIT_MS);
     if (t.phase === 'Finished') return t;
+    // Test-side wall clock for the trace only (not a product clock).
+    const turnStartedMs = Date.now();
     last = turnKey(t);
     const { me, enemy } = sides(t);
+    const traceLine = (hit: string, moveNote: string): string =>
+      `r${t.round}:${t.turnIdx} me(${me.x},${me.y})hp${me.curHp} ` +
+      `enemy(${enemy.x},${enemy.y})hp${enemy.curHp}/${enemy.maxHp} d${tileDistance(me, enemy)} ` +
+      `${hit}${moveNote} ${Date.now() - turnStartedMs}ms`;
     await openMenu(page, me);
     const hit = await attackByButtons(page, { allowKo: true, enemyHp: enemy.curHp });
     if (hit === 'attacked') {
       await waitExecuted(page, t.events);
       const after = await readTactics(page);
+      trace.push(traceLine(hit, ''));
       if (after === null || after.phase === 'Finished') return after ?? t;
       await endTurn(page);
       continue;
     }
-    if (tileDistance(me, enemy) > 1) await draftMoveToward(page, enemy);
+    let moveNote = '';
+    if (tileDistance(me, enemy) > 1) {
+      moveNote = (await draftMoveToward(page, enemy)) ? ' move:drafted' : ' move:none';
+    }
     await endTurn(page);
+    trace.push(traceLine(hit, moveNote));
   }
   const end = await readTactics(page);
   if (end !== null && end.phase === 'Finished') return end;
   throw new Error(
-    `${opts.label}: the battle did not finish within maxOwnTurns=${opts.maxOwnTurns} own turns`,
+    `${opts.label}: the battle did not finish within maxOwnTurns=${opts.maxOwnTurns} own turns` +
+      ` — trace: ${trace.join(' | ')}`,
   );
 }
 
