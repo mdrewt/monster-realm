@@ -1192,26 +1192,36 @@ test.describe
       );
 
       // The insets at two other windows, so a viewport-dependent cheat (an inset that equals 8px
-      // only at 1280 wide) reds. REM-RELATIVE, with no literal px: uif-2 scales the root font size
-      // later, so the oracle is the measured root size (read in px, never assumed): the shell sits
-      // 0.5 root from the left, top and right edges and 2.5 root above the bottom (the hint bar's
-      // row), and the hint bar spans the full width with its bottom on the viewport's bottom.
+      // only at 1280 wide) reds. REM-RELATIVE, with no literal px: the oracle is the measured root
+      // font size in px. The window's `resize` handler rewrites `--mr-ui-scale` one event after
+      // the window reports its new size, so the root is read only once it equals wf-1's "1rem"
+      // literal for that window (the settle condition, transcribed, never computed): the shell
+      // sits 0.5 root from the left, top and right edges and 2.5 root above the bottom (the hint
+      // bar's row), and the hint bar spans the full width with its bottom on the viewport's bottom.
+      const readRoot = async (): Promise<number> =>
+        Number.parseFloat((await sampleStyle(page, 'html', ['font-size']))['font-size'] as string);
       try {
         for (const size of [
-          { width: 1920, height: 1080 },
-          { width: 640, height: 240 },
+          { width: 1920, height: 1080, rem: 24 },
+          { width: 640, height: 240, rem: 14 },
         ]) {
           const at = `${size.width}x${size.height}`;
-          await page.setViewportSize(size);
+          await page.setViewportSize({ width: size.width, height: size.height });
           await expect
             .poll(() => page.evaluate(() => [window.innerWidth, window.innerHeight]), {
               message: `the window is ${at}`,
             })
             .toEqual([size.width, size.height]);
-          const root = Number.parseFloat(
-            (await sampleStyle(page, 'html', ['font-size']))['font-size'] as string,
-          );
-          expect(root, `${at}: the root font size is a positive length`).toBeGreaterThan(0);
+          let root = 0;
+          await expect
+            .poll(
+              async () => {
+                root = await readRoot();
+                return root;
+              },
+              { message: `${at}: the root font size settles at wf-1's 1rem`, timeout: 10_000 },
+            )
+            .toBe(size.rem);
 
           const shell = await sampleRect(page, '#menu-overlay');
           expectNear(shell.x, 0.5 * root, 1, `${at}: shell left gap`);
@@ -1235,6 +1245,12 @@ test.describe
         }
       } finally {
         await page.setViewportSize(VIEWPORT);
+        await expect
+          .poll(readRoot, {
+            message: "the root font size settles back at wf-1's 1280x720 1rem",
+            timeout: 10_000,
+          })
+          .toBe(16);
       }
     });
   });

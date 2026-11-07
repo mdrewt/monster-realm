@@ -1,6 +1,6 @@
 // ui/frame.ts — the one frame chrome every screen renders through (design §10, CTL4.6): a title
-// bar (title, breadcrumb, a tab strip flanked by LB/RB slots), an internally scrolling body, one
-// feedback line and a hint-bar slot, in four sizes. Unwired until the screens adopt it.
+// bar (title, breadcrumb), the TabBar below it (`tabBar.ts`), an internally scrolling body and one
+// feedback line, in four sizes. Unwired until the screens adopt it.
 //
 // The kit writes only caller text. Glyphs — the breadcrumb separator, the LB/RB slot letters,
 // the feedback marks — are CSS pseudo-elements keyed on classes and `data-` attributes.
@@ -9,7 +9,8 @@
 // success is shown only when the caller resolves the action that is still pending, so the line
 // never claims an undelivered success (pgcc-a B7). It is not a live region; `#a11y-live` is.
 import type { NavLayout, NavState, NavTab } from './nav';
-import { checkFrameId, renderTabs } from './navRender';
+import { checkFrameId } from './navRender';
+import { createTabBar, renderTabBar } from './tabBar';
 
 export type FrameSize = 'side' | 'full' | 'bottom' | 'small';
 /** Side panel, full, bottom box, small (a prompt or sheet). */
@@ -27,7 +28,6 @@ export interface FrameChrome {
   /** The region that scrolls when the content outgrows the frame. */
   readonly body: HTMLElement;
   readonly feedback: HTMLElement;
-  readonly hintSlot: HTMLElement;
 }
 
 function part(doc: Document, parent: HTMLElement, className: string): HTMLElement {
@@ -35,12 +35,6 @@ function part(doc: Document, parent: HTMLElement, className: string): HTMLElemen
   el.className = className;
   parent.appendChild(el);
   return el;
-}
-
-function buttonSlot(doc: Document, parent: HTMLElement, button: 'LB' | 'RB'): void {
-  const slot = part(doc, parent, 'mr-frame-tabslot');
-  slot.dataset.button = button;
-  slot.setAttribute('aria-hidden', 'true');
 }
 
 export function createFrame(
@@ -59,12 +53,8 @@ export function createFrame(
   const breadcrumb = doc.createElement('ol');
   breadcrumb.className = 'mr-frame-breadcrumb';
   bar.appendChild(breadcrumb);
-  const tabBar = part(doc, bar, 'mr-frame-tabs');
-  tabBar.hidden = true;
-  buttonSlot(doc, tabBar, 'LB');
-  const tabStrip = part(doc, tabBar, 'mr-frame-tabstrip');
-  tabStrip.setAttribute('role', 'tablist');
-  buttonSlot(doc, tabBar, 'RB');
+  const tabs = createTabBar(doc, { id: `${opts.id}-tabs` });
+  root.appendChild(tabs.root);
 
   const body = part(doc, root, 'mr-frame-body');
   const feedback = part(doc, root, 'mr-frame-feedback');
@@ -74,11 +64,10 @@ export function createFrame(
     root,
     titleEl,
     breadcrumb,
-    tabBar,
-    tabStrip,
+    tabBar: tabs.root,
+    tabStrip: tabs.strip,
     body,
     feedback,
-    hintSlot: part(doc, root, 'mr-frame-hints'),
   };
 }
 
@@ -101,8 +90,7 @@ export function renderFrameTabs(
   state: NavState,
   label: (tab: NavTab) => string,
 ): void {
-  renderTabs(f.tabStrip, layout, state, { frame: f.id, label });
-  f.tabBar.hidden = layout.kind !== 'tabs' || layout.tabs.length === 0;
+  renderTabBar({ root: f.tabBar, strip: f.tabStrip }, layout, state, { frame: f.id, label });
 }
 
 export type FeedbackState =

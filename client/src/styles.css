@@ -214,6 +214,7 @@
   /* One line per label, so every tab in a strip has the same height. */
   white-space: nowrap;
 }
+/* Strips that still call `renderTabs` directly; the TabBar marks its tab `.is-selected` instead (uif-3). */
 .mr-nav-tab.is-active {
   background: var(--mr-frame-fg);
   color: var(--mr-frame-bg);
@@ -223,6 +224,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* The containing block of a `.mr-sheet` in this body. */
+  position: relative;
 }
 /* Stays literal until the strip becomes an overlay (uif-4): ui/frame.test.ts pins these values. */
 .mr-frame-feedback {
@@ -285,9 +288,11 @@
  * aria-readonly) whose cursor only scrolls. Its cursor row drops the actionable fill, outline and
  * ▶ for a left bar, so it reads as "you are here", not "press A". The list is its own scroller in
  * the frame's flex column; the `local` covers ride with the content and hide the `scroll` shadows
- * at an edge with nothing beyond it, so a shadow shows only where there are more rows.
+ * at an edge with nothing beyond it, so a shadow shows only where there are more rows. `.mr-scroll` is
+ * the same cue for any kit list (uif-3); Rankings adopts the class in uif-9.
  */
-.mr-nav-list[aria-readonly="true"] {
+.mr-nav-list[aria-readonly="true"],
+.mr-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -1238,6 +1243,127 @@
 /* A Rankings row does nothing on a click either (qf-16, QF16.1): no "clickable" hover cue. */
 .mr-pointer-hover .mr-nav-list[aria-readonly="true"] > .mr-nav-item:hover {
   text-decoration: none;
+}
+
+/*
+ * The kit's primitives (uif-3): the TabBar (ui/tabBar.ts), the ContextSheet (ui/contextSheet.ts), the
+ * empty state and the row card, sized per the geometry table in M-ui-foundation-wireframes.md. Named
+ * outside the `mr-frame`/`mr-shell` family (styles.test.ts CTL7B-1-FRAME-CSS-ROSTER). Their first real
+ * consumer and Chromium proof is uif-6.
+ */
+.mr-tabbar {
+  flex: none;
+  height: 2rem;
+  font-size: var(--mr-font-body);
+}
+.mr-tabbar-chip {
+  flex: none;
+  box-sizing: border-box;
+  width: 3.25rem;
+  border: var(--mr-border-thin) solid var(--mr-frame-border);
+  background: var(--mr-frame-bg);
+  font-size: var(--mr-font-small);
+  text-align: center;
+}
+/* Fills the row by shrinking from 100%, so `.mr-frame-tabstrip` keeps qf-11's no-grow rule. */
+.mr-tabbar-strip {
+  align-self: stretch;
+  width: 100%;
+}
+/* Tabs share the strip evenly up to 7.5rem. No max-width: a longer label widens its tab and the strip
+ * scrolls, where a capped tab would paint the label over its neighbour. */
+.mr-tabbar-strip > .mr-nav-tab {
+  flex: 0 1 7.5rem;
+  box-sizing: border-box;
+  line-height: 2rem;
+  text-align: center;
+}
+/* Which tab, as opposed to which row: never the cursor's inverted fill. The outline is inset so the
+ * strip's `overflow-x` cannot clip it. */
+.mr-nav-tab.is-selected {
+  background: var(--mr-panel-bg);
+  font-weight: var(--mr-font-header-weight);
+  outline: var(--mr-border-width) solid var(--mr-frame-border);
+  outline-offset: calc(-1 * var(--mr-border-width));
+}
+.mr-sheet {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(18rem, 45%);
+  max-height: 100%;
+  border: var(--mr-border-width) solid var(--mr-frame-border);
+  background: var(--mr-frame-bg);
+  color: var(--mr-frame-fg);
+}
+.mr-sheet[hidden] {
+  display: none;
+}
+/* Centered by auto margins: a translate would land on fractional pixels and blur the text. */
+.mr-sheet--detail {
+  inset: 0;
+  width: min(40rem, 90%);
+  height: fit-content;
+  max-height: 90%;
+  margin: auto;
+}
+.mr-sheet-title {
+  flex: none;
+  padding: var(--mr-space-1) var(--mr-space-2);
+  font-size: var(--mr-font-header);
+  font-weight: var(--mr-font-header-weight);
+  line-height: var(--mr-font-header-line);
+}
+.mr-sheet-prose {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--mr-space-2);
+  font-size: var(--mr-font-body);
+  line-height: var(--mr-font-body-line);
+}
+.mr-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mr-space-1);
+  padding: var(--mr-space-4);
+  font-size: var(--mr-font-body);
+  line-height: var(--mr-font-body-line);
+}
+.mr-empty-reason {
+  font-weight: var(--mr-font-header-weight);
+}
+.mr-empty-cue {
+  color: var(--mr-text-muted);
+}
+.mr-empty-next {
+  margin-top: var(--mr-space-1);
+}
+/* Inline-block so the active row's zero-net-width ▶ stays on the card's line instead of pushing the
+ * card down a line and shifting the row. */
+.mr-card {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 100%;
+  vertical-align: top;
+  padding: var(--mr-space-1) var(--mr-space-2);
+  border: var(--mr-border-thin) solid var(--mr-separator);
+  background: var(--mr-panel-bg);
+}
+.mr-card-title {
+  font-weight: var(--mr-font-header-weight);
+}
+.mr-card-line {
+  color: var(--mr-text-muted);
+}
+/* The cursor's inverted text would be dark on the dark card fill, and muted lines would lose it. */
+.mr-nav-item.is-active > .mr-card {
+  border-color: currentColor;
+  background: none;
+}
+.mr-nav-item.is-active > .mr-card > .mr-card-line {
+  color: inherit;
 }
 
 /*

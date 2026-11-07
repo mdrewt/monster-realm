@@ -239,3 +239,181 @@ describe('styles.css ctl-7b: the battle layer and the frame / shell roster (move
     ).toEqual([]);
   });
 });
+
+// uif-3 (UIF3.1, UIF3.2, UIF3.3, UIF3.5): the kit's CSS. Named intentional change: CTL7B-1-FRAME-CSS-ROSTER
+// above is NOT edited, because every new kit selector is named outside the `mr-frame` / `mr-shell`
+// family (`.mr-tabbar`, `.mr-sheet`, `.mr-scroll`, `.mr-empty`, `.mr-card`, `.mr-nav-tab.is-selected`).
+// These pins read declarations off the real sheet; the first Chromium proof of the geometry is uif-6.
+describe('styles.css uif-3: the kit rules', () => {
+  const css = readFileSync(STYLES_CSS_PATH, 'utf8');
+  const rules = ctl7bParseCss(ctl7bStripCssComments(css));
+  const topRules = (selector: string): Ctl7bCssRule[] =>
+    rules.filter((r) => r.at.length === 0 && r.selectors.includes(selector));
+  /** The last value of `prop` across the top-level rules naming exactly `selector`. */
+  const eff = (selector: string, prop: string): string | undefined => {
+    let value: string | undefined;
+    for (const r of topRules(selector)) for (const [p, v] of r.decls) if (p === prop) value = v;
+    return value;
+  };
+  const squash = (v: string | undefined): string => (v ?? '').replace(/\s+/g, '');
+  const borderText = (selector: string): string =>
+    topRules(selector)
+      .flatMap((r) => r.decls)
+      .filter(([p]) => p.startsWith('border') || p === 'outline')
+      .map(([, v]) => v)
+      .join(' ');
+  const KIT = /\.mr-(tabbar|sheet|scroll|empty|card)(?![\w])|\.mr-nav-tab\.is-selected/;
+  const kitRules = rules.filter((r) => r.selectors.some((s) => KIT.test(s)));
+
+  it('UIF3.1 the tab bar rules: a fixed-height row, fixed-width chips on the frame border token, a full-width strip, tabs that share it evenly', () => {
+    // WRONG IMPLS KILLED: no rule for the kit classes (the bar would be the bare titlebar row); a
+    // height that follows content (UIF.1 wants a uniform fixed height); a chip with no border or a
+    // px colour literal; a strip that does not fill the row; tabs that do not share the strip.
+    expect(topRules('.mr-tabbar').length, '.mr-tabbar rule').toBeGreaterThan(0);
+    expect(eff('.mr-tabbar', 'height')).toBe('2rem');
+    expect(eff('.mr-tabbar', 'flex')).toBe('none');
+    expect(topRules('.mr-tabbar-chip').length, '.mr-tabbar-chip rule').toBeGreaterThan(0);
+    expect(eff('.mr-tabbar-chip', 'width')).toBe('3.25rem');
+    expect(eff('.mr-tabbar-chip', 'flex')).toBe('none');
+    const chipBorder = borderText('.mr-tabbar-chip');
+    expect(chipBorder).toContain('var(--mr-frame-border)');
+    expect(chipBorder).toContain('var(--mr-border-thin)');
+    expect(eff('.mr-tabbar-strip', 'width')).toBe('100%');
+    expect(eff('.mr-tabbar-strip > .mr-nav-tab', 'flex')).toBe('0 1 7.5rem');
+    expect(eff('.mr-tabbar-strip > .mr-nav-tab', 'text-align')).toBe('center');
+  });
+
+  it('UIF3.2 the selected tab rule: panel fill, bold, a frame-border outline, and never the inverted fill of the row cursor', () => {
+    // WRONG IMPLS KILLED: no .is-selected rule (a selected tab with no visible cue beyond aria);
+    // the shipped inverted fill (--mr-frame-fg background, --mr-frame-bg text) reused for the
+    // selected tab (the wireframe: never the inverted fill, so selected differs from focused);
+    // a colour-only cue with no outline or weight (needs at least two cues).
+    expect(topRules('.mr-nav-tab.is-selected').length, 'the rule exists').toBe(1);
+    const bg = eff('.mr-nav-tab.is-selected', 'background');
+    expect(bg).toBe('var(--mr-panel-bg)');
+    expect(bg).not.toContain('--mr-frame-fg');
+    expect(eff('.mr-nav-tab.is-selected', 'color')).not.toBe('var(--mr-frame-bg)');
+    expect(['bold', 'var(--mr-font-header-weight)']).toContain(
+      eff('.mr-nav-tab.is-selected', 'font-weight') ?? '',
+    );
+    expect(eff('.mr-nav-tab.is-selected', 'outline') ?? '').toContain('var(--mr-frame-border)');
+    expect(eff('.mr-nav-tab.is-selected', 'text-decoration')).not.toBe('underline');
+  });
+
+  it('UIF3.3 .mr-sheet: absolutely positioned, min(18rem, 45%) wide, bordered with the frame border token, and [hidden] collapses it', () => {
+    // WRONG IMPLS KILLED: a fixed 18rem width (WF1-A2 caps it at 45% of the body); a static or
+    // fixed position (the sheet must anchor in the body); no border; a display rule that beats the
+    // hidden attribute (a closed sheet would still paint).
+    expect(topRules('.mr-sheet').length, '.mr-sheet rule').toBeGreaterThan(0);
+    expect(squash(eff('.mr-sheet', 'width'))).toBe('min(18rem,45%)');
+    expect(eff('.mr-sheet', 'position')).toBe('absolute');
+    const border = borderText('.mr-sheet');
+    expect(border).toContain('var(--mr-frame-border)');
+    expect(border).toContain('var(--mr-border-width)');
+    expect(eff('.mr-sheet[hidden]', 'display')).toBe('none');
+  });
+
+  it('UIF3.3 .mr-sheet--detail: centred at min(40rem, 90%), declared after every .mr-sheet rule so it wins at equal specificity', () => {
+    // WRONG IMPLS KILLED: a detail rule above .mr-sheet (the 18rem width wins and the prose sheet
+    // is narrow: equal specificity, source order decides); a transform-centred box (fractional
+    // pixels blur the text); a missing width or margin.
+    expect(topRules('.mr-sheet--detail').length).toBeGreaterThan(0);
+    expect(squash(eff('.mr-sheet--detail', 'width'))).toBe('min(40rem,90%)');
+    expect(eff('.mr-sheet--detail', 'margin')).toBe('auto');
+    expect(eff('.mr-sheet--detail', 'inset')).toBe('0');
+    expect(eff('.mr-sheet--detail', 'transform')).toBeUndefined();
+    const idx = (selector: string): number[] =>
+      rules
+        .map((r, i) => (r.at.length === 0 && r.selectors.includes(selector) ? i : -1))
+        .filter((i) => i >= 0);
+    const base = idx('.mr-sheet');
+    const detail = idx('.mr-sheet--detail');
+    expect(base.length).toBeGreaterThan(0);
+    expect(Math.min(...detail)).toBeGreaterThan(Math.max(...base));
+  });
+
+  it('UIF3.3 .mr-frame-body declares position: relative (the sheet containing block) and keeps its touch-action rule as it was', () => {
+    // WRONG IMPLS KILLED: no containing block (the absolute sheet anchors to the page or shell and
+    // placement lands in the wrong place); the touch-action rule edited or dropped (ctl-15).
+    expect(eff('.mr-frame-body', 'position')).toBe('relative');
+    const touch = topRules('.mr-frame-body').filter((r) =>
+      r.decls.some(([p]) => p === 'touch-action'),
+    );
+    expect(touch.length).toBe(1);
+    expect(touch[0]?.decls).toEqual([['touch-action', 'pan-y']]);
+  });
+
+  it('UIF3.3 .mr-scroll is the qf-16 Rankings rule generalised: ONE rule whose selector list is the readonly list plus .mr-scroll, holding the four layers and the scroll behaviour', () => {
+    // WRONG IMPLS KILLED: a copied second rule (uif-9 cannot edit styles.css and only adds the
+    // class: the cue must come from the shared rule); .mr-scroll in a second rule; the layers cut
+    // down to fewer than the four qf-16 ones; overflow or flex lost in the join.
+    const hits = rules.filter((r) => r.selectors.some((s) => /\.mr-scroll(?![\w-])/.test(s)));
+    expect(hits.length, '.mr-scroll appears in exactly one rule').toBe(1);
+    const rule = hits[0] as Ctl7bCssRule;
+    expect(rule.at).toEqual([]);
+    expect(rule.selectors).toEqual(['.mr-nav-list[aria-readonly="true"]', '.mr-scroll']);
+    const get = (p: string): string =>
+      rule.decls
+        .filter(([k]) => k === p)
+        .map(([, v]) => v)
+        .at(-1) ?? '';
+    expect(get('background').split('gradient(').length - 1, 'four background layers').toBe(4);
+    expect(get('overflow-y')).toBe('auto');
+    expect(get('flex')).toBe('1 1 auto');
+    expect(get('min-height')).toBe('0');
+    const readonlyAlone = rules.filter(
+      (r) => r.selectors.length === 1 && r.selectors[0] === '.mr-nav-list[aria-readonly="true"]',
+    );
+    expect(readonlyAlone.length, 'no second readonly rule re-declaring the layers').toBe(0);
+  });
+
+  it('UIF3.3 every kit rule sits before @media (prefers-contrast: more), which stays the last block; kit rules use tokens only and no !important', () => {
+    // WRONG IMPLS KILLED: kit rules appended after the contrast block (it must stay LAST: the
+    // m23s9 X2 pin and the override order); a kit rule inside an at-rule; a hex colour or an
+    // !important in a kit rule; a kit selector that joined the frame / shell roster.
+    expect(kitRules.length, 'anti-vacuity: the kit rules exist').toBeGreaterThan(10);
+    const contrast = '@media (prefers-contrast: more)';
+    const firstContrast = rules.findIndex((r) => r.at[0] === contrast);
+    expect(firstContrast, 'the contrast block exists').toBeGreaterThan(0);
+    for (let i = firstContrast; i < rules.length; i += 1) {
+      expect(rules[i]?.at[0], `rule ${i} after the contrast block starts is inside it`).toBe(
+        contrast,
+      );
+    }
+    for (const r of kitRules) {
+      expect(r.at, r.selectors.join(', ')).toEqual([]);
+      expect(rules.indexOf(r), r.selectors.join(', ')).toBeLessThan(firstContrast);
+      for (const [p, v] of r.decls) {
+        expect(v, `${r.selectors.join(', ')} ${p}`).not.toMatch(/!important|#[0-9a-f]{3,8}\b/i);
+      }
+      for (const s of r.selectors)
+        expect(s, 'not in the frame / shell roster family').not.toMatch(/^\.mr-(frame|shell)/);
+    }
+    expect(ctl7bStripCssComments(css)).not.toContain('!important');
+  });
+
+  it('UIF3.5 the empty-state rules exist, with the cue muted by the token', () => {
+    // WRONG IMPLS KILLED: unstyled parts (the reason, cue and next step run together); a cue in a
+    // literal grey (it must follow the contrast tier through --mr-text-muted).
+    for (const s of ['.mr-empty', '.mr-empty-reason', '.mr-empty-cue', '.mr-empty-next']) {
+      expect(topRules(s).length, s).toBeGreaterThan(0);
+    }
+    expect(eff('.mr-empty-cue', 'color')).toBe('var(--mr-text-muted)');
+  });
+
+  it('UIF3.5 .mr-card: a separator-bordered panel that is inline-block and full width, and the active row clears its fill', () => {
+    // WRONG IMPLS KILLED: a block card (the active row's ::before arrow would push it to a new
+    // line and shift the row); a border not drawn from the separator and thin tokens; no
+    // active-row rule (inverted row text on a panel-bg card is dark on dark); a rule that keeps the
+    // card background.
+    expect(eff('.mr-card', 'display')).toBe('inline-block');
+    expect(eff('.mr-card', 'width')).toBe('100%');
+    const border = borderText('.mr-card');
+    expect(border).toContain('var(--mr-separator)');
+    expect(border).toContain('var(--mr-border-thin)');
+    const active = '.mr-nav-item.is-active > .mr-card';
+    expect(topRules(active).length, 'the active-row card rule').toBe(1);
+    const bg = eff(active, 'background') ?? eff(active, 'background-color') ?? '';
+    expect(['none', 'transparent']).toContain(bg);
+  });
+});
