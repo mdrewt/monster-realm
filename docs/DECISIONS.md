@@ -873,4 +873,3 @@ remainder, because a box would change how much world each window shows. Integer 
 `uiScale`, a second scale calculation elsewhere, and a px root size, which would override the
 player's browser font setting. A dpr change with no size change fires no `resize` in Chromium, and
 the seam stays resize-driven, so the world catches up at the next resize.
-
