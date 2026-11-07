@@ -17,7 +17,7 @@
 // THE `// @desc:` CONVENTION (M24 §2.3) applies here exactly as in catalog.en.ts: the contiguous
 // `//` block directly above every entry carries one `// @desc:` line (≥10 non-whitespace chars)
 // written in ENGLISH for the translator/TMS, saying WHAT the string is, WHERE the player sees it
-// and any width constraint; the `battleView.ts:NNN`-style citations are copied from the English
+// and any width constraint; the `<file>:NNN`-style citations are copied from the English
 // entry so the "where" is the same in both files. S8 exports it as the ICU `description`.
 //
 // FRENCH TYPOGRAPHY. The values use a REAL no-break space (U+00A0) before `:` `;` `!` `?` and
@@ -436,19 +436,19 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'session.hint': 'B et Start sont sans effet ici. Tab pour naviguer, Entrée pour choisir.',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
-  // battleView.ts:110 (resolved in show())
+  // tactics/strings.ts, deployPanel.ts, results.ts, tacticsBattle.ts (the battle frame's title)
   'battle.title': 'Combat',
   // @desc: Outcome banner when the player's side wins the battle. Large bold text, one or two
   // words.
-  // battleView.ts:629
+  // tactics/strings.ts (the results panel's victory title)
   'battle.outcome.victory': 'Victoire !',
   // @desc: Outcome banner when the player's side loses the battle. Large bold text, one or two
   // words.
-  // battleView.ts:632
+  // tactics/strings.ts (the results panel's defeat title)
   'battle.outcome.defeat': 'Défaite…',
   // @desc: Outcome banner when the player successfully flees a wild battle. Large bold text, one
   // short phrase.
-  // battleView.ts:635
+  // tactics/strings.ts (the results panel's fled title)
   'battle.outcome.fled': 'Fuite réussie !',
   // @desc: Title of the PvP challenge overlay when the player has no incoming or outgoing
   // challenge; "PvP" is the player-versus-player abbreviation, kept as-is. One word.
@@ -537,7 +537,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // main.ts (dispatch, the `care` arm; pre-migration careAction.ts CARED_MESSAGE)
   'raising.feedback.cared': 'Choyé !',
   // @desc: Heading of the Monsters overlay, where the player arranges which monsters are in
-  // the active party and which stay in storage; quoted inside battle.swap.hint. One short line.
+  // the active party and which stay in storage (the 1v1 swap hint that quoted it left in bt-17). One short line.
   // boxView.ts:69 (resolved in show())
   'box.title': 'Monstres',
   // @desc: Explainer under the heading telling the player that only Party monsters battle and

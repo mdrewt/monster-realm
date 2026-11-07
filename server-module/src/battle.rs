@@ -1,9 +1,10 @@
 //! `battle` — server-module domain submodule.
 //!
-//! The PvE/wild battle cluster: start/wild-start, the per-turn action reducers
-//! (submit_attack, swap_active, flee), heal, and the encounter + write-back
-//! helpers. Reducers are thin: validate the trust boundary, delegate the rule to
-//! `game-core` (the SSOT), write tables; reject with `Err`, never clamp.
+//! The 1v1 battle cluster, retired in bt-17: no reducer remains here (the per-turn action functions
+//! and the start are de-attributed, test-only bodies until the continuation deletes them); what is
+//! live is the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical settle
+//! funnel and the account lifecycle call. Helpers are thin: delegate the rule to `game-core` (the
+//! SSOT), write tables; reject with `Err`, never clamp.
 
 use crate::economy::grant_currency;
 use crate::evolution::check_and_evolve;

@@ -1,8 +1,9 @@
 //! `pvp` — server-module domain submodule.
 //!
-//! PvP battle orchestration: challenge handshake, secret-pick submission,
-//! both-submit resolution via the existing symmetric `resolve_full_turn`, and
-//! liveness (turn-deadline scheduled reaper + forfeit-on-disconnect).
+//! PvP orchestration: the challenge handshake (the accept opens a TACTICAL battle), the
+//! challenge TTL reaper and forfeit-on-disconnect. The 1v1 secret-pick path (`submit_pvp_action`,
+//! both-submit resolution, the turn-deadline reaper's arming) is no longer a reducer since bt-17;
+//! its body stays test-only until the continuation deletes it.
 //! Challenge liveness: a scheduled TTL reaper deletes Pending challenges older
 //! than `CHALLENGE_TTL_MS`; every challenge-deletion path
 //! disarms its schedule row.
@@ -13,7 +14,7 @@
 //!   participant-scoped `my_battle` view (`battle` itself is private).
 //! - Accepting a challenge opens a TACTICAL battle through `tactics::start_pvp_tactical`
 //!   (bt-16: the one live PvP path). The 1v1 `start_pvp_battle` helper is unreachable
-//!   from any live path and is deleted by bt-17.
+//!   from any live path (test-only until the continuation deletes it).
 //! - Forfeit maps to the existing `SideAWins`/`SideBWins` outcomes; no new
 //!   `BattleOutcome` variant is added (BSATN stability).
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
@@ -1061,7 +1062,7 @@ pub fn accept_challenge(
     // Guard 3a: re-checked at accept time — load-bearing, not
     // redundant. Pending rows created before enforcement activation, and any
     // future account-status revocation, must never create a ranked battle;
-    // start_pvp_battle (guard 6, irreversible) is reached ONLY from here.
+    // the tactical start (guard 6, irreversible) is reached ONLY from here.
     if let Err(reason) = ranked_account_gate(
         ranked_enforcement_active(),
         crate::accounts::is_account_holder(ctx, me),

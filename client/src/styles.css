@@ -22,11 +22,11 @@
  *
  * DELIBERATELY ABSENT, and a later reader should NOT helpfully add them here:
  *   - NOTHING further for the battle HP bar. That guard SHIPPED below (slice rb-10,
- *     residual R-m23-s2-X4): the 1v1 view (deleted in bt-17) assigned `className = 'hp-fill'` and its
- *     `cssText` carries no animation declaration, so the rule is reachable. Do NOT re-add an
- *     inline animation there, do NOT add a third `.hp-fill`-matching animation rule here in
- *     any spelling, and do NOT declare a `--custom-property` in either rule — all three are
- *     gated by `evals/reduced-motion-hp-bar.eval.mjs`.
+ *     residual R-m23-s2-X4): the 1v1 view that assigned `className = 'hp-fill'` left in bt-17, so
+ *     no production element carries the class today; the rule stays because e2e/reduced-motion.spec.ts
+ *     probes it with an injected element and leaderboardView.test.ts pins the nested rule. Do NOT
+ *     add a third `.hp-fill`-matching animation rule here in any spelling, and do NOT declare a
+ *     `--custom-property` in either rule.
  *   - `display:none` / `visibility:hidden` on `.sr-only` — banned by A11Y-11 (below).
  */
 
@@ -67,8 +67,9 @@
 
 /*
  * The battle HP bar's fill.
- * the deleted 1v1 view (bt-17) created this element and wrote `width` and; the rule stays for its outside consumers (reduced-motion.spec.ts) and
- * `background` inline, because both are computed per render. The ANIMATION lives here
+ * The deleted 1v1 view (bt-17) created this element and wrote `width` and `background` inline
+ * (both computed per render); no production element carries the class today — the rule stays for
+ * e2e/reduced-motion.spec.ts's injected probe and leaderboardView.test.ts's pin of the nested rule. The ANIMATION lives here
  * instead: an inline declaration is unreachable by any selector at any specificity, and
  * §2.5 requires a stylesheet guard with no JS dependency.
  *

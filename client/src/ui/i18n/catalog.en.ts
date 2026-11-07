@@ -427,19 +427,19 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
-  // battleView.ts:110 (resolved in show())
+  // tactics/strings.ts, deployPanel.ts, results.ts, tacticsBattle.ts (the battle frame's title)
   'battle.title': 'Battle',
   // @desc: Outcome banner when the player's side wins the battle. Large bold text, one or two
   // words.
-  // battleView.ts:629
+  // tactics/strings.ts (the results panel's victory title)
   'battle.outcome.victory': 'Victory!',
   // @desc: Outcome banner when the player's side loses the battle. Large bold text, one or two
   // words.
-  // battleView.ts:632
+  // tactics/strings.ts (the results panel's defeat title)
   'battle.outcome.defeat': 'Defeat...',
   // @desc: Outcome banner when the player successfully flees a wild battle. Large bold text, one
   // short phrase.
-  // battleView.ts:635
+  // tactics/strings.ts (the results panel's fled title)
   'battle.outcome.fled': 'Got away safely!',
   // @desc: Title of the PvP challenge overlay when the player has no incoming or outgoing
   // challenge; "PvP" is the player-versus-player abbreviation. One word.

@@ -61,7 +61,7 @@
  *  when UI text legitimately shrinks, never auto-tighten it. */
 export const SINK_FLOOR = 275;
 
-/** The 19 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
+/** The 18 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
  *  present in the walk and non-empty after comment stripping (I18N-HC-05); a missing one is a
  *  hard fail, never a skip. The SCAN scope is the whole non-test tree — this roster is the
  *  presence proof, not the scope. */

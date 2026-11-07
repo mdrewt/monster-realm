@@ -501,7 +501,7 @@ const activeBattleView = (): DeployPanel | TacticsBattle | undefined =>
 const tacticalOwnsStart = (): boolean =>
   tacticsBattle?.visible === true || (deployPanel?.visible === true && deployPanel.mode === 'edit');
 /** What the shown battle view tells the hint bar and Help: the shell's verbs, else the deploy panel's
- *  screen (both of them — R-bt-12-DEPLOYHINT), else nothing (a legacy battle). */
+ *  screen (both of them — R-bt-12-DEPLOYHINT), else nothing (no shown view, or the results panel). */
 const battleHint = (): HintBattle | HintDeploy | undefined =>
   tacticsBattle?.visible === true
     ? tacticsBattle.hint()
@@ -3100,14 +3100,14 @@ function refreshBattle(): void {
       // (B17); otherwise nothing below shows it either.
       if (tacticsBattle?.visible === true) return;
     }
-    tacticsShown = null; // the deploy arm sets it again
     const panel =
       renderer === 'deploy' && tacticalRow !== undefined
-        ? buildDeployPanel(battle, tacticalRow)
+        ? buildDeployPanel(battle, tacticalRow) // sets `tacticsShown`
         : renderer === 'results'
           ? buildResultsPanel(battle.battleId)
           : null;
     if (panel !== null) {
+      if (panel.kind === 'results') tacticsShown = null;
       // The HIDDEN target is rendered first (no a11y state moves), so a render throw leaves the
       // frame's current owner shown (B17); only then the switch: pop, hide the others, show.
       if (panel.kind === 'deploy') panel.view.render(panel.vm);
@@ -3117,12 +3117,15 @@ function refreshBattle(): void {
       if (!panel.view.visible) panel.view.show();
       return;
     }
-    // Nothing to build (bt-17): no tactical row, a shell that never showed, or a panel that could
-    // not be built. A TERMINAL anchor is dismissed here — in the same batch `reconcileStack` ignored
-    // it (`renderableBattle`) — and every battle view hides, so no stale owner (a shell whose row the
-    // deletion cascade erased) lingers over the world. An ONGOING one keeps whatever owner is shown
-    // (B17: a battle the client can render is never hidden) and otherwise shows nothing: the stack
-    // still holds the battle base and Start opens the menu there.
+    // Nothing was built. A RENDERABLE battle (its tactical row is present — the predicate
+    // `reconcileStack` shares) whose shell or panel failed keeps the frame's current owner, shown
+    // state and all (B17); its builder reported the failure. An anchor WITHOUT its tactical row is
+    // not a battle this client can show (bt-17: the 1v1 view is deleted): a TERMINAL one is dismissed
+    // here — in the same batch `reconcileStack` counted no outcome for it — and every battle view
+    // hides, so no stale owner (a shell whose row the deletion cascade erased) lingers over the
+    // world; an ONGOING one keeps whatever owner is shown and otherwise shows nothing (the stack
+    // still holds the battle base and Start opens the menu there), reported once per battle id.
+    if (renderableBattle(battle, tacticalRow)) return;
     if (battle.outcome !== 'Ongoing') {
       dismissedBattleId = battle.battleId;
       if (battleFrameShown()) hideAllBattleViews();
@@ -3185,7 +3188,7 @@ function mySideOf(battleId: bigint): RuleSide {
  *  dropped; one in the player's open trade is neither offered nor defaulted — `deploy_units` refuses
  *  it), the remembered formation, the pack from the anchor's side B and the slot count
  *  `min(max_pack, spawn_a.length)` (the server's own cap). Builds the panel on first use. null
- *  (reported once) when the rules port or the map cannot be read — the 1v1 view keeps the frame (B17). */
+ *  (reported once) when the rules port or the map cannot be read — the frame keeps its current owner (B17). */
 function buildDeployPanel(
   battle: {
     readonly battleId: bigint;
@@ -3286,7 +3289,7 @@ function ratingLineFor(battleId: bigint, outcome: string): ResultsInput['rating'
 
 /** The results panel and its view model from the RAW anchor (bt-12, BT12.4): the raw side decides
  *  won / lost, the transcript's Awards and RecruitResult lines are folded per unit. Builds the panel on
- *  first use. null when the anchor is not terminal — the 1v1 view then keeps the frame. */
+ *  first use. null when the anchor is not terminal — the frame then keeps its current owner. */
 function buildResultsPanel(
   battleId: bigint,
 ): { readonly kind: 'results'; readonly view: ResultsPanel; readonly vm: ResultsVM } | null {
@@ -4025,7 +4028,7 @@ const mrPvpHook = {
     return conn?.live()?.reducers.cancelChallenge({ challengeId: BigInt(challengeId) });
   },
   // bt-16: `submitPvpAction` left the hook with the cutover — every live battle is tactical and
-  // the 1v1 reducer refuses a tactical anchor; the e2e drives turns by virtual buttons.
+  // `submit_pvp_action` is no longer a reducer (bt-17); the e2e drives turns by virtual buttons.
   allChallenges(): Array<{
     challengeId: string;
     challenger: string;

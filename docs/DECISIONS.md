@@ -578,8 +578,9 @@ copy were deleted. Their Rust bodies stay compiled as `pub(crate)` test-only fun
 continuation retargets the trading, guards and tactics test matrices that still call them. The 1v1
 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
 dropped or reordered (see "Schema changes are additive"): a census test pins that no reducer
-reaches `pvp_deadline_schedule`, and that `battle_action` and `battle_wild` are reached only by
-the tactical settle funnel's deletes. The account-e2e's vacuity allowlist names each retired table
+reaches `pvp_deadline_schedule`, and that `battle_action` and `battle_wild` are reached by exactly
+four tactical reducers (today only through the settle funnel's deletes — the census pins WHICH
+reducers reach a table, not how). The account-e2e's vacuity allowlist names each retired table
 with that reason.
 
 **Why.** Two engines reachable at once would need a per-battle discriminator in every

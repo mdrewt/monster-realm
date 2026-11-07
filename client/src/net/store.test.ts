@@ -4506,7 +4506,7 @@ describe('AuthoritativeStore 11r-b: ownPerspective(battle, identity) — pure vi
   it('T-OWNP-OUTCOME: fast-check — the outcome remap is an INVOLUTION; Ongoing/Fled/any unrecognized tag are FIXED POINTS', () => {
     // Kills: a remap that touches 'Fled' (only SideAWins/SideBWins ever swap), or that
     // coerces/normalizes an unknown tag — an unrecognized outcome must reach every consumer
-    // (decideBattleOverlay, the results panel's won / lost read) UNCHANGED, so a bindings-regen
+    // (decideBattleOverlay; the results panel reads the RAW anchor, not the projection) UNCHANGED, so a bindings-regen
     // drift stays visible downstream instead of being silently mapped to a known tag.
     // (bt-17: the 1v1 `parseOutcomeTag` this comment cited is deleted with ui/battleModel.ts's
     // view model.)

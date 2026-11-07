@@ -156,7 +156,7 @@ export function battleRenderer(phase: TacticalPhaseName | undefined): BattleRend
  *  next. */
 export function renderableBattle(
   latest: { readonly battleId: bigint } | undefined,
-  tacticalRow: unknown | undefined,
+  tacticalRow: object | undefined,
 ): boolean {
   return latest !== undefined && tacticalRow !== undefined;
 }

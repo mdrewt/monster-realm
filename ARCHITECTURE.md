@@ -137,7 +137,7 @@ writes:
 |---|---|
 | `movement` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, scheduled `movement_tick` (the grass trigger opens a tactical wild battle through `tactics::start_wild_tactical`) |
 | `battle` | no reducers since bt-17 (BT17.1): `start_battle`, `submit_attack`, `swap_active`, `use_battle_item` and `flee` lost their reducer attribute and stay compiled as `pub(crate)` test-only bodies until the continuation deletes them (`start_wild_battle` is deleted); the module keeps the terminal-sweep and write-back helpers the tactical settle funnel calls |
-| `taming` | `attempt_recruit` (+ dev-only `grant_bait`) |
+| `taming` | dev-only `grant_bait` (`attempt_recruit` is no longer a reducer since bt-17) |
 | `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, `forfeit`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc`; its two `pub(crate)` writers `start_wild_tactical` (called by `movement_tick`) and `start_pvp_tactical` (called by `accept_challenge`) are the only places a battle is created |
 | `tactics_settle` | no reducers: the one terminal settlement `tactics::finish` calls (reward ledger, faint penalty, prior-terminal sweep, `battle_summary`) |
 | `raising` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `heal_party` |

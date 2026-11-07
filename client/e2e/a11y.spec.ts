@@ -1103,7 +1103,7 @@ test.describe
     const DEPLOY = '[data-ctl7b-fixture="deploy"]';
     const RESULTS = '[data-ctl7b-fixture="results"]';
 
-    test('CTL7B-E2E-BATTLE: the mounted tactical battle roots — the deploy panel (ongoing) and the results panel (won) — are each a frame inside the viewport at >= 4.5:1, layered between the shells and the menu, and at 640x360 the results` title stays reachable [BT17-1]', async () => {
+    test('CTL7B-E2E-BATTLE: the mounted tactical battle roots — the deploy panel (ongoing) and the results panel (won) — are each a frame inside the viewport at >= 4.5:1, layered between the shells and the menu, and at 640x240 the results` title stays reachable [BT17-1]', async () => {
       // RED TODAY only if the tactical roots lack the frame / layer classes or contrast (they carry
       // them since bt-12); the boot half of the purge is CTL7B-E2E-ROOTS above.
       await blurToBody();
@@ -1173,11 +1173,14 @@ test.describe
         // three wilds, three slots, two menu rows) and than its formation editor (one candidate
         // group, five menu rows). It must scroll inside its frame, and `justify-content: safe
         // center` keeps its top (the title) reachable at scrollTop 0 — a plain `center` would push
-        // the title above the frame's top edge. The orchestrator measures this at 640x360.
-        await page.setViewportSize({ width: 640, height: 360 });
+        // the title above the frame's top edge. MEASURED (bt-17, orchestrator): at 640x360 the nine
+        // rows FIT (scrollable: false — the deleted 1v1 cards were the tall content the old 360
+        // targeted), so the short viewport is 640x240 here, where the panel does overflow and the
+        // clause stays non-vacuous.
+        await page.setViewportSize({ width: 640, height: 240 });
         await showBattle('results');
         const small = await page.evaluate(measureFrameInPage, RESULTS);
-        expectFrameOk(small, 'battle (results panel, 640x360)', { scrolledText: true });
+        expectFrameOk(small, 'battle (results panel, 640x240)', { scrolledText: true });
         const reach = await page.evaluate((selector) => {
           const root = document.querySelector(selector) as HTMLElement | null;
           const title = root?.querySelector('[data-testid="battle-title"]') ?? null;
@@ -1196,7 +1199,7 @@ test.describe
         }, RESULTS);
         expect(
           reach,
-          'at 640x360 the results panel must scroll inside its frame (non-vacuity) AND show its ' +
+          'at 640x240 the results panel must scroll inside its frame (non-vacuity) AND show its ' +
             'title inside the frame at scrollTop 0',
         ).toEqual({ scrollable: true, titleInside: true });
 
