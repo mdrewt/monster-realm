@@ -324,12 +324,40 @@ function insetSides(rules: readonly CssRule[]): Record<Side, string | undefined>
   return sides;
 }
 
+/** The value of the custom property `name` from the top-level (no at-rule) `:root` rules of
+ *  `rules`, the last declaration winning, or undefined when no such rule declares it. A
+ *  `prefers-contrast` override is deliberately not read: it only ever swaps colours. */
+function rootToken(rules: readonly CssRule[], name: string): string | undefined {
+  let found: string | undefined;
+  for (const rule of rules) {
+    if (rule.at.length > 0 || !rule.selectors.includes(':root')) continue;
+    for (const [prop, value] of rule.decls) if (prop === name) found = value;
+  }
+  return found;
+}
+
 /** True for `0`, a non-negative length / percentage, or a `calc()` / `var()` that is not
- *  written with a leading minus. */
-function isNonNegativeLength(value: string | undefined): boolean {
+ *  written with a leading minus.
+ *
+ *  uif-1 (named intentional change): the old guard `!value.includes('(-')` rejected EVERY
+ *  `var(--x)`, because `(--` contains `(-`, so a token inset (`top: var(--mr-space-2)`) read as
+ *  negative. An exact `var(--name)` now resolves through the top-level `:root` declarations and
+ *  recurses; an undeclared token, a cycle, or a negative resolved value fails. Everything else
+ *  keeps the old rule, so `calc(-...)` still fails and what was accepted is still accepted. */
+function isNonNegativeLength(
+  value: string | undefined,
+  rules: readonly CssRule[] = STYLES,
+  seen: ReadonlySet<string> = new Set(),
+): boolean {
   if (value === undefined) return false;
   if (value === '0') return true;
   if (/^\d+(\.\d+)?(px|rem|em|vh|vw|vmin|vmax|svh|dvh|%)$/.test(value)) return true;
+  const token = /^var\((--[\w-]+)\)$/.exec(value);
+  if (token !== null) {
+    const name = token[1] as string;
+    if (seen.has(name)) return false;
+    return isNonNegativeLength(rootToken(rules, name), rules, new Set([...seen, name]));
+  }
   return /^(calc|var)\(/.test(value) && !value.includes('(-');
 }
 
@@ -670,6 +698,48 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
         /^0(px)?$/,
       );
     }
+  });
+
+  it('UIF1-INSET-TOKEN-RESOLVE: isNonNegativeLength resolves an exact var(--name) through the top-level :root, recursing, and rejects an undeclared token, a cycle, a negative resolved value and calc(-...), while still accepting what it accepted before', () => {
+    // WRONG IMPL KILLED: the old guard (every var(--x) reads negative, so the token insets of
+    // uif-1 red CTL7A-2-FRAME-IN-VIEWPORT-CSS); a guard that accepts any var() (an undeclared
+    // token, or `--mr-space-2: -8px`, would pass as an inset); no recursion (a token defined as
+    // another token); no cycle guard (a self-referencing token); a lookup that reads the
+    // @media override instead of the top-level declaration; `calc(-...)` newly accepted.
+    const fixture = parseCss(
+      stripCssComments(
+        [
+          ':root { --ok: 0.5rem; --alias: var(--ok); --neg: -8px; --negalias: var(--neg);',
+          '  --loop-a: var(--loop-b); --loop-b: var(--loop-a); --self: var(--self); }',
+          '@media (prefers-contrast: more) { :root { --only-in-media: 1rem; --ok: -1rem; } }',
+        ].join('\n'),
+      ),
+    );
+    const ok = (v: string | undefined): boolean => isNonNegativeLength(v, fixture);
+    expect(ok('var(--ok)'), 'a declared non-negative token').toBe(true);
+    expect(ok('var(--alias)'), 'a token that names another token').toBe(true);
+    expect(ok('var(--missing)'), 'an undeclared token fails').toBe(false);
+    expect(ok('var(--neg)'), 'a negative token fails').toBe(false);
+    expect(ok('var(--negalias)'), 'a negative token behind an alias fails').toBe(false);
+    expect(ok('var(--loop-a)'), 'a two-token cycle fails').toBe(false);
+    expect(ok('var(--self)'), 'a self-reference fails').toBe(false);
+    expect(ok('var(--only-in-media)'), 'a token declared only under @media is not top-level').toBe(
+      false,
+    );
+    // What it accepted before, and rejected before, is unchanged.
+    expect(ok('0'), 'zero').toBe(true);
+    expect(ok('8px'), 'a px length').toBe(true);
+    expect(ok('2.5rem'), 'a rem length').toBe(true);
+    expect(ok('calc(100% - 8px)'), 'a calc with no leading minus').toBe(true);
+    expect(ok('calc(-8px)'), 'calc(-...) still fails').toBe(false);
+    expect(ok('-8px'), 'a negative length still fails').toBe(false);
+    expect(ok(undefined), 'an unset side still fails').toBe(false);
+    // ANTI-VACUITY: against the real sheet the .mr-shell insets are reachable, and a side that
+    // resolves through the sheet's own :root is accepted only when the token is declared there.
+    expect(STYLES.length, 'the real sheet parsed').toBeGreaterThan(10);
+    expect(isNonNegativeLength('var(--mr-no-such-token-anywhere)'), 'undeclared in the sheet').toBe(
+      false,
+    );
   });
 
   it('CTL7A-3-TOKEN-CONTRAST: the frame colour tokens are declared and their text/background pair is at least 4.5:1, and .mr-frame reads exactly those tokens (no other frame rule sets its own colour)', () => {

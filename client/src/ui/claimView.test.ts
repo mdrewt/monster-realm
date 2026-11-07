@@ -1436,27 +1436,40 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
       }
     });
 
-    it('styles.css: the only rules whose selector mentions mr-frame-title are exactly one .mr-frame-titlebar block and one .mr-frame-title block, and the title block declares font-weight only', () => {
+    // uif-1 (named intentional change, UIF1.4): the title block was "font-weight only"; the type
+    // scale rewrites it. The new contract is EXACTLY font-size, font-weight and line-height, each
+    // pinned to its exact token value, so `.mr-frame-title { font-size: 0 }` (a literal that would
+    // hide the chrome) still reds: the old pin killed it by prop roster alone, this kills it by value.
+    it('styles.css: the only rules whose selector mentions mr-frame-title are exactly one .mr-frame-titlebar block and one .mr-frame-title block, and the title block declares exactly font-size, font-weight and line-height, each set to its type-scale token', () => {
       // WRONG IMPL KILLED: a class-keyed hide of the chrome added to the sheet (for example
       // `.mr-button-rows > .mr-frame-titlebar { opacity: 0 }` or `.mr-frame-title { font-size: 0 }`
       // appended as a second block, in a @media block, or in a compound selector): the computed
       // probes read one DOM, this reads the whole sheet. Compared by selector EQUALITY, not by
       // substring; comments are stripped first so a decoy in a comment neither hides nor plants one.
+      // uif-1 adds: the one title block with a literal (`font-size: 0`, `20px`) or a wrong token.
       const stripped = QF13_STYLES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
-      const blocks: Array<{ selectors: string[]; props: string[] }> = [];
+      const blocks: Array<{
+        selectors: string[];
+        props: string[];
+        decls: Array<[string, string]>;
+      }> = [];
       for (const m of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
         const head = (m[1] ?? '').split(';').pop() ?? '';
+        const decls: Array<[string, string]> = (m[2] ?? '')
+          .split(';')
+          .filter((d) => d.includes(':'))
+          .map((d): [string, string] => [
+            d.slice(0, d.indexOf(':')).trim().toLowerCase(),
+            d
+              .slice(d.indexOf(':') + 1)
+              .trim()
+              .replace(/\s+/g, ' '),
+          ])
+          .filter(([p]) => p !== '');
         blocks.push({
           selectors: head.split(',').map((s) => s.trim()),
-          props: (m[2] ?? '')
-            .split(';')
-            .map((d) =>
-              d
-                .slice(0, Math.max(0, d.indexOf(':')))
-                .trim()
-                .toLowerCase(),
-            )
-            .filter((p) => p !== ''),
+          props: decls.map(([p]) => p),
+          decls,
         });
       }
       expect(
@@ -1471,8 +1484,17 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
         'every selector list that names the chrome, with multiplicity',
       ).toEqual(['.mr-frame-title', '.mr-frame-titlebar']);
       const title = mentioning.find((b) => b.selectors.join(', ') === '.mr-frame-title');
-      expect(title?.props, 'the title rule declares font-weight and nothing else').toEqual([
-        'font-weight',
+      expect(
+        title?.props,
+        'ANTI-VACUITY: the title block was found and declares something',
+      ).not.toEqual([]);
+      expect(
+        [...(title?.decls ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        'the title rule declares exactly font-size, font-weight and line-height, each its token',
+      ).toEqual([
+        ['font-size', 'var(--mr-font-title)'],
+        ['font-weight', 'var(--mr-font-title-weight)'],
+        ['line-height', 'var(--mr-font-title-line)'],
       ]);
     });
   });

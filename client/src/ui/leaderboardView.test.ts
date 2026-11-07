@@ -1645,10 +1645,24 @@ function qf16Tokens(text: string): string[] {
   return out;
 }
 
-/** The first token of a shorthand that is not one of `skip`, an image, or a number/length. */
+/** uif-1 (named intentional change): a `--mr-border-*` token (`--mr-border-width`,
+ *  `--mr-border-thin`) is a border WIDTH, a length like `2px`, never a colour. The sheet now writes
+ *  `border: var(--mr-border-width) solid var(--mr-frame-border)`, whose first non-keyword token is
+ *  the width token: without this skip the fold takes it as the bar colour, and the shipped-frame
+ *  ANTI-VACUITY probe (expected `var(--mr-frame-border)`) reds. Only these two exact width tokens
+ *  are skipped; `QF16_BAR_COLOURS` is unchanged, so `var(--mr-frame-bg)` and a literal still fail. */
+const QF16_WIDTH_TOKEN = /^var\(--mr-border-(?:width|thin)\)$/;
+
+/** The first token of a shorthand that is not one of `skip`, an image, a number/length or a border
+ *  width token. */
 function qf16FirstColour(shorthand: string, skip: ReadonlySet<string>): string | undefined {
   return qf16Tokens(shorthand).find(
-    (t) => t !== '/' && !skip.has(t) && !/-gradient\(|^url\(/.test(t) && !/^[+-]?[\d.]/.test(t),
+    (t) =>
+      t !== '/' &&
+      !skip.has(t) &&
+      !QF16_WIDTH_TOKEN.test(t) &&
+      !/-gradient\(|^url\(/.test(t) &&
+      !/^[+-]?[\d.]/.test(t),
   );
 }
 
@@ -2262,7 +2276,14 @@ describe('LeaderboardView — the real stylesheet on the Rankings list (qf-16, Q
       [undefined, 'inherit', 'currentcolor', 'var(--mr-frame-fg)'],
       'its text is the frame foreground, as on a plain row',
     ).toContain(qf16TextColourOf(cursor));
-    expect(qf16TextColourOf(other), 'a plain ranking row sets none').toBeUndefined();
+    // uif-1 (named intentional change, UIF1.3): a non-cursor read-only row is now visibly
+    // distinct from an actionable row, so it may set its text to the muted token (it set none
+    // before). It must still never be the inverted text colour (`var(--mr-frame-bg)`) or a
+    // literal: the whitelist is the unset case and the one muted token.
+    expect(
+      [undefined, 'var(--mr-text-muted)'],
+      'a plain ranking row sets none, or the muted token and nothing inverted',
+    ).toContain(qf16TextColourOf(other));
 
     // ROUND 2 (F): rules inside an at-rule (@media print, @supports, a never-matching media query)
     // do not count, so the `content: none` and the fill reset must be top-level. ANTI-VACUITY: the
