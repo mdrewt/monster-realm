@@ -1214,6 +1214,19 @@ export async function endTurn(page: Page): Promise<void> {
   await pressButton(page, 'Start');
 }
 
+/** After a live commit landed on `turn`: Start (End Turn) ONLY while that turn is still ours. A
+ *  commit that spends the whole budget — Move 2 strides + Light, Move 1 stride + Heavy: 6 AP — ends
+ *  the turn server-side (`queue.rs`: `ap < min_action_cost` → EndTurn), and in that same transaction
+ *  the wild acts and the NEXT own turn may already be Waiting, so a blind Start would end THAT turn
+ *  (measured: the shell then refused the next commit as a duplicate send for the turn, and a later
+ *  Start landed on the results panel and dismissed it). */
+export async function endTurnIfLive(page: Page, turn: TacticsSnap): Promise<void> {
+  const now = await readTactics(page);
+  if (now === null || now.phase !== 'Active' || now.turnState !== 'Waiting') return;
+  if (turnKey(now) !== turnKey(turn)) return; // the commit spent the turn; the next one is not ours to end
+  await endTurn(page);
+}
+
 /** From the OPEN ROOT menu: Skills → the first offered skill → the forecast panel (hit %, min–max
  *  damage) → A commits the draft plus the hit on the live turn. With `allowKo: false` a forecast
  *  whose MAX damage reaches `enemyHp` is backed out (`kills`, nothing sent); with `allowKo: true`
@@ -1395,7 +1408,7 @@ export async function fightToOutcome(
       const after = await readTactics(page);
       trace.push(traceLine(hit, ''));
       if (after === null || after.phase === 'Finished') return after ?? t;
-      await endTurn(page);
+      await endTurnIfLive(page, t);
       continue;
     }
     // Nothing reaches from the start tile: Move then Skill from a ghost tile (the kiter's answer).
@@ -1405,11 +1418,13 @@ export async function fightToOutcome(
     });
     const at = moved.dest === null ? '' : `(${moved.dest.x},${moved.dest.y})`;
     if (moved.hit === 'attacked') {
+      // The commit [Move, Skill] executes in ONE transaction (the wild's reply and the next own turn
+      // included when it spent the budget), so the first new event is the whole step.
       await waitExecuted(page, t.events);
       const after = await readTactics(page);
       trace.push(traceLine(hit, ` move:${at}+attacked tries:${moved.tries}`));
       if (after === null || after.phase === 'Finished') return after ?? t;
-      await endTurn(page);
+      await endTurnIfLive(page, t);
       continue;
     }
     await endTurn(page);

@@ -14,6 +14,7 @@ import {
   awaitTacticalActive,
   draftMoveToward,
   endTurn,
+  endTurnIfLive,
   fightToOutcome,
   fleeByButtons,
   moveThenAttackByButtons,
@@ -672,7 +673,9 @@ test.describe
       // budget (`none` in every battle), and a commit that never executes (no `Executed`).
       // NON-lethal like E1 (`allowKo: false`): a KO would level the starter and recompute its
       // seeded stats before E2, so a lethal-only opening is fled and re-hunted. The speed seed is
-      // written back BEFORE the final assertion so a failure here never leaves it for E2.
+      // written back BEFORE the final assertion so a failure here never leaves it for E2. A
+      // full-budget commit ends the turn server-side, so the exit ends the turn only if it is still
+      // ours (`endTurnIfLive`).
       test.setTimeout(300_000);
       const readSpeed = (label: string): number => {
         const row = sqlRows(
@@ -776,8 +779,8 @@ test.describe
               `phase ${after?.phase ?? 'null'}`,
           );
           outcomes.push(`${battle}:attacked tries:${r.tries}`);
+          await endTurnIfLive(page, t);
           if (after?.phase === 'Active') {
-            await endTurn(page);
             const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
             if (next.phase === 'Active') await fleeByButtons(page);
           }
