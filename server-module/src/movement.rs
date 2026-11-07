@@ -283,12 +283,12 @@ const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;
 /// Gates `encounter_table_error` logging (a failed `table_from_encounter_row`).
 static ENCOUNTER_TABLE_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
-/// Gates `begin_encounter_error` logging. A SECOND, independent limiter on
+/// Gates `wild_start_error` logging. A SECOND, independent limiter on
 /// purpose: the party-has-no-conscious-monster Err from
 /// `begin_encounter` is routine gameplay (a fainted party walking grass) and
 /// bursts; sharing one limiter would let that burst mask a real content
 /// defect in the encounter table.
-static BEGIN_ENCOUNTER_ERR_LIMITER: RateLimiter = RateLimiter::new();
+static WILD_START_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
 /// Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute
 /// the outcome via `game_core::apply_move`, write back. Scheduler-only.
@@ -489,10 +489,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 // (species-not-found, stat corruption), which still log below.
                 if e != NO_CONSCIOUS_MONSTER_REASON {
                     if let Some(suppressed) =
-                        BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
+                        WILD_START_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
                     {
                         log::error!(
-                            "{{\"evt\":\"begin_encounter_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
+                            "{{\"evt\":\"wild_start_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
                             json_escape(&e)
                         );
                     }

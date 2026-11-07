@@ -1789,6 +1789,7 @@ pub(crate) fn start_wild_tactical(
     ctx: &ReducerContext,
     player: Identity,
     encounter_seed: u64,
+    battle_seed: u64,
     forced_pack: Option<u8>,
 ) -> Result<u64, String> {
     require_subject_not_deleting(ctx, player)?;
@@ -1951,7 +1952,7 @@ pub(crate) fn start_wild_tactical(
     });
     ctx.db.battle_secret().insert(BattleSecret {
         battle_id,
-        seed: splitmix64(encounter_seed ^ BATTLE_SEED_SALT),
+        seed: splitmix64(battle_seed ^ BATTLE_SEED_SALT),
         action_seq: 0,
     });
     for (i, species_id, level, seed) in &wilds {
@@ -2862,7 +2863,7 @@ pub fn dev_start_tactical_wild(
         return reject(NAME, me, "not owner".to_string());
     }
     let seed: u64 = ctx.random();
-    start_wild_tactical(ctx, player, seed, pack)
+    start_wild_tactical(ctx, player, seed, seed, pack)
         .map(|_| ())
         .inspect_err(|e| log_reject(NAME, me, e))
 }
