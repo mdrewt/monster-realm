@@ -39,7 +39,6 @@ export function anchorSheet(input: {
   readonly sheet: { readonly w: number; readonly h: number };
   readonly inset: number;
   readonly reserve?: number;
-  readonly minHeight?: number;
 }): AnchorResult {
   const { area, slot, sheet } = input;
   const reserve = Math.min(input.reserve ?? 0, area.h / 2);
@@ -64,7 +63,7 @@ export function anchorSheet(input: {
   if (!overlaps(top.rect, slot)) return top;
   const above = slot.y - area.y;
   const below = area.y + usable - (slot.y + slot.h);
-  const floor = Math.min(Math.max(1, input.minHeight ?? 4 * inset), h0);
+  const floor = Math.min(Math.max(1, 4 * inset), h0);
   return at(above >= below ? 't' : 'b', Math.max(floor, Math.max(above, below) - 2 * inset));
 }
 
@@ -74,7 +73,7 @@ export interface ContextSheet {
   readonly root: HTMLElement;
   /** The title or the confirm question; `hidden` when there is none. */
   readonly heading: HTMLElement;
-  /** The detail variant's text; `hidden` otherwise. */
+  /** The detail variant's text, describing `rows`; `hidden` otherwise. */
   readonly prose: HTMLElement;
   /** The nav container: the sheet's one tab stop. */
   readonly rows: HTMLElement;
@@ -110,6 +109,7 @@ export function createContextSheet(doc: Document, opts: { readonly frame: string
   heading.id = `${opts.frame}-sheet-title`;
   heading.hidden = true;
   const prose = part(doc, root, 'mr-sheet-prose');
+  prose.id = `${opts.frame}-sheet-prose`;
   prose.hidden = true;
   const rows = part(doc, root, 'mr-sheet-rows mr-nav-list mr-scroll');
   return { frame: opts.frame, root, heading, prose, rows };
@@ -135,6 +135,8 @@ export function renderContextSheet(sheet: ContextSheet, content: ContextSheetCon
   if (isDetail) clearPlacement(sheet);
   writeText(sheet.heading, heading);
   writeText(sheet.prose, isDetail ? content.prose : '');
+  if (isDetail) sheet.rows.setAttribute('aria-describedby', sheet.prose.id);
+  else sheet.rows.removeAttribute('aria-describedby');
   renderNav(sheet.rows, content.layout, content.state, {
     frame: sheet.frame,
     fill: content.fill,
@@ -148,6 +150,7 @@ export function closeContextSheet(sheet: ContextSheet): void {
   sheet.root.hidden = true;
   writeText(sheet.heading, '');
   writeText(sheet.prose, '');
+  sheet.rows.removeAttribute('aria-describedby');
   renderNav(
     sheet.rows,
     { kind: 'list', items: [] },

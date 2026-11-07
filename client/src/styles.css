@@ -214,6 +214,7 @@
   /* One line per label, so every tab in a strip has the same height. */
   white-space: nowrap;
 }
+/* Strips that still call `renderTabs` directly; the TabBar marks its tab `.is-selected` instead (uif-3). */
 .mr-nav-tab.is-active {
   background: var(--mr-frame-fg);
   color: var(--mr-frame-bg);

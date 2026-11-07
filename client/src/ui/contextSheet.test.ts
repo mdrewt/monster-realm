@@ -3,7 +3,7 @@
  * contextSheet.test.ts: the ContextSheet kit primitive (uif-3, UIF3.3 and UIF3.4).
  *
  * Three layers:
- *  - `anchorSheet({ area, slot, sheet, inset, reserve?, minHeight? })`: the PURE corner rule
+ *  - `anchorSheet({ area, slot, sheet, inset, reserve? })`: the PURE corner rule
  *    (reference: specs/monster-realm-v2/wireframes/lib.mjs anchorSheet, with three deliberate
  *    fixes: a capped sheet never exceeds its natural height, `scrolls` is exactly rect.h < sheet.h,
  *    and the function is total on tiny bodies). UIF3.4, property tests plus worked examples.
@@ -322,6 +322,45 @@ describe('createContextSheet and renderContextSheet', () => {
     expect(sheet.root.hidden).toBe(true);
     expect(sheet.rows.childElementCount).toBe(0);
   });
+
+  it('UIF3.3 closeContextSheet alone removes aria-activedescendant and aria-labelledby from the rows', () => {
+    // WRONG IMPLS KILLED: a close that empties the rows but keeps the pointer and the name
+    // attributes (a dangling IDREF into nothing for assistive technology).
+    const sheet = createContextSheet(document, { frame: 'bag' });
+    document.body.appendChild(sheet.root);
+    renderContextSheet(sheet, listC('Actions', ['a', 'b'], 'b'));
+    expect(sheet.rows.getAttribute('aria-activedescendant')).not.toBeNull();
+    expect(sheet.rows.getAttribute('aria-labelledby')).not.toBeNull();
+    closeContextSheet(sheet);
+    expect(sheet.rows.getAttribute('aria-activedescendant')).toBeNull();
+    expect(sheet.rows.getAttribute('aria-labelledby')).toBeNull();
+  });
+
+  it('UIF3.3 the detail variant links its prose to its rows with aria-describedby, and no other state keeps the link', () => {
+    // WRONG IMPLS KILLED: no prose id or no describedby (the prose is invisible to a screen reader
+    // on the rows); a prose id not frame-scoped; a stale describedby surviving a re-render as list
+    // or confirm on the reused root, or surviving close.
+    const sheet = createContextSheet(document, { frame: 'bag' });
+    document.body.appendChild(sheet.root);
+    renderContextSheet(sheet, detailC('Info', 'Some prose.', ['close'], 'close'));
+    expect(sheet.prose.id).not.toBe('');
+    expect(sheet.prose.id).toBe('bag-sheet-prose');
+    expect(sheet.rows.getAttribute('aria-describedby')).toBe(sheet.prose.id);
+    expect(document.getElementById(sheet.prose.id)).toBe(sheet.prose);
+
+    renderContextSheet(sheet, listC('Actions', ['a'], 'a'));
+    expect(sheet.rows.hasAttribute('aria-describedby')).toBe(false);
+
+    renderContextSheet(sheet, detailC('Info', 'Again.', ['close'], 'close'));
+    expect(sheet.rows.getAttribute('aria-describedby')).toBe('bag-sheet-prose');
+    renderContextSheet(sheet, confirmC('Sure?', ['y', 'n'], 'n'));
+    expect(sheet.rows.hasAttribute('aria-describedby')).toBe(false);
+
+    renderContextSheet(sheet, detailC('Info', 'Last.', ['close'], 'close'));
+    expect(sheet.rows.getAttribute('aria-describedby')).toBe('bag-sheet-prose');
+    closeContextSheet(sheet);
+    expect(sheet.rows.hasAttribute('aria-describedby')).toBe(false);
+  });
 });
 
 // --- UIF3.3 / UIF3.4: placement over stubbed geometry ----------------------------------------
@@ -376,6 +415,19 @@ describe('placeContextSheet', () => {
   });
   afterEach(() => {
     document.documentElement.style.fontSize = '';
+    document.body.style.fontSize = '';
+  });
+
+  it('UIF3.3 reads rem from the root font size, not the body font size', () => {
+    // WRONG IMPLS KILLED: resolving rem against document.body (inset 7.5 and reserve 17.5 here
+    // instead of 15 and 35), which drifts whenever a frame sets its own font size.
+    document.documentElement.style.fontSize = '20px';
+    document.body.style.fontSize = '10px';
+    const { sheet, slot } = mount({ l: 110, t: 60, w: 50, h: 50 });
+    placeContextSheet(sheet, slot.parentElement as HTMLElement, slot);
+    // inset 0.75 * 20 = 15, reserve 1.75 * 20 = 35: the same numbers as the 20px-everywhere case
+    expect(px(sheet.root.style.left)).toBeCloseTo(204.5, 6);
+    expect(px(sheet.root.style.top)).toBeCloseTo(150, 6);
   });
 
   it('UIF3.3 writes left and top relative to the body padding box plus its scrollTop, unrounded, with no height when the sheet fits', () => {
@@ -471,12 +523,10 @@ type Input = {
   sheet: { w: number; h: number };
   inset: number;
   reserve: number;
-  minHeight?: number;
 };
 
 const run = (inp: Input): ReturnType<typeof anchorSheet> => {
-  const { minHeight, ...rest } = inp;
-  const arg: AnchorInput = minHeight === undefined ? rest : { ...rest, minHeight };
+  const arg: AnchorInput = inp;
   return anchorSheet(arg);
 };
 
@@ -490,7 +540,7 @@ function checkAnchor(inp: Input, when: string): void {
   const usableH = area.h - reserve;
   const inset = Math.min(inp.inset, Math.min(area.w, usableH) / 4);
   const usableBottom = area.y + usableH;
-  const minH = inp.minHeight ?? Math.max(1, 4 * inset);
+  const minH = Math.max(1, 4 * inset);
   const wP = Math.min(sheet.w, area.w - 2 * inset);
   const maxH = usableH - 2 * inset;
   const h0 = Math.min(sheet.h, maxH);
@@ -614,15 +664,6 @@ describe('anchorSheet (pure)', () => {
     );
   });
 
-  it('UIF3.4 property: an explicit minHeight keeps the rect inside the area with a positive height', () => {
-    fc.assert(
-      fc.property(inputArb, fc.integer({ min: 1, max: 300 }), (inp, minHeight) => {
-        checkAnchor({ ...inp, minHeight }, `minHeight ${minHeight}`);
-      }),
-      { numRuns: 500 },
-    );
-  });
-
   it('UIF3.4 the plan pinned counterexamples hold every property (a slot partly outside the area, a huge inset, a reserve over half the area, inset 0)', () => {
     // WRONG IMPLS KILLED: the two shrunk counterexamples the plan review found against the
     // reference: a negative or zero height from an unclamped inset, and a rect on the reserve
@@ -731,8 +772,8 @@ describe('anchorSheet (pure)', () => {
     ).toEqual({ corner: 'bl', rect: { x: 10, y: 170, w: 100, h: 120 }, scrolls: true });
   });
 
-  it('UIF3.4 worked: the floor is min(minHeight, natural), so a short sheet is never grown past its natural height', () => {
-    // WRONG IMPLS KILLED: the reference growing a short sheet to minHeight (covering a slot it did
+  it('UIF3.4 worked: the default floor is min(max(1, 4 * inset), natural), so a short sheet is never grown past its natural height', () => {
+    // WRONG IMPLS KILLED: the reference growing a short sheet to the floor (covering a slot it did
     // not need to); no floor at all (zero or negative height when the bands are thin).
     const slot = { x: 0, y: 15, w: 400, h: 270 };
     expect(run({ area: AREA, slot, sheet: { w: 100, h: 250 }, inset: 10, reserve: 0 })).toEqual({
