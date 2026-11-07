@@ -1413,8 +1413,6 @@ const EXPECTED_GATED: &[&str] = &[
     "complete_guest_claim",
     "consume_crystalized_essence",
     "deploy_units",
-    "dev_start_tactical_pvp",
-    "dev_start_tactical_wild",
     "dismiss_dialogue",
     "enqueue_move",
     "essence_train",
@@ -1692,8 +1690,13 @@ fn rb45_synthetic_ungated_reducer_is_flagged() {
     }
 }
 
+/// rb-45 roster census over the real crate. bt-16 (BT16.1): the two dev-gated tactical starts
+/// (`dev_start_tactical_pvp`, `dev_start_tactical_wild`) are deleted, so the pinned gated SET no
+/// longer names them — while either reducer still exists the both-direction set comparison fails.
+///
+/// kills: a dev tactical start reducer left in tactics.rs (cfg-gated or not).
 #[test]
-fn rb45_real_crate_matches_the_rosters() {
+fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
     let derived: BTreeSet<&str> = crate::schema::DATA_LIFECYCLE_MANIFEST
         .iter()
         .filter(|entry| !matches!(entry.policy, crate::schema::DeletionPolicy::NotOwned))
@@ -1792,12 +1795,7 @@ fn rb45_real_crate_matches_the_rosters() {
         "the corpus is lib.rs plus its bare mods"
     );
 
-    for name in [
-        "grant_bait",
-        "start_wild_battle",
-        "dev_start_tactical_wild",
-        "dev_start_tactical_pvp",
-    ] {
+    for name in ["grant_bait", "start_wild_battle"] {
         assert!(
             matches!(verdict_of(&report, name), census::Verdict::Gated { .. }),
             "{name} is gated today and is scanned even though its cfg hides it"

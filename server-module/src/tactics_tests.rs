@@ -256,10 +256,12 @@ pub(crate) fn rest(u: &mut BattleUnit) {
 // Calls (the shipped entry points, with a chosen sender and clock)
 // ===========================================================================
 
-/// `start_wild_tactical` as the grass path would call it (sender = the module).
+/// `start_wild_tactical` as the grass path would call it (sender = the module). The battle seed
+/// is the encounter seed (bt-16 split the two; passing the same value keeps every seed-pinned
+/// expectation of this suite unchanged).
 pub(crate) fn start(fx: &Fixture, player: Identity, seed: u64, pack: Option<u8>, now: i64) -> u64 {
     fx.run_as_at(module(), at(now), |ctx| {
-        super::start_wild_tactical(ctx, player, seed, pack)
+        super::start_wild_tactical(ctx, player, seed, seed, pack)
     })
     .unwrap_or_else(|e| {
         panic!(
@@ -2167,7 +2169,8 @@ fn assert_start_refused(
     setup(&fx, &w);
     let before = w.snapshot();
     let got = fx.run_as_at(module(), at(T0), |ctx| {
-        super::start_wild_tactical(ctx, a(), seed_for(1, Some(1)), pack)
+        let seed = seed_for(1, Some(1));
+        super::start_wild_tactical(ctx, a(), seed, seed, pack)
     });
     assert_eq!(got, Err(want.to_string()), "{label}");
     assert_eq!(
@@ -5471,109 +5474,14 @@ fn deploy_expiry_with_a_side_left_without_a_conscious_monster_cancels_unrated_bt
     }
 }
 
-/// The dev entrypoint's consent rule (REV 2 E, D): a player may start only a PRACTICE battle for
-/// itself — its party split in slot order (3 -> 2 + 1) — and pairing two different identities is the
-/// module owner's alone; a one-monster party cannot practise; no party is "no party monster".
-///
-/// WRONG IMPL KILLED: a dev reducer any player can aim at a non-consenting opponent (a rated
-/// result); a practice that puts the whole party on both sides; a split by any rule but slot order.
-#[cfg(feature = "dev_reducers")]
-#[test]
-fn dev_start_tactical_pvp_lets_a_player_start_only_its_own_practice_bt14_2() {
-    {
-        let fx = fixture();
-        let w = world(&fx);
-        pvp_parties(&w, &PAIR, &B_PAIR);
-        let before = w.snapshot();
-        for (challenger, opponent) in [(a(), b()), (b(), b())] {
-            let got = fx.run_as_at(a(), at(T0), |ctx| {
-                super::dev_start_tactical_pvp(ctx, challenger, opponent, None)
-            });
-            assert_eq!(got, Err("not owner".to_string()));
-            assert_eq!(changed(&before, &w.snapshot()), none());
-        }
-    }
-    {
-        let fx = fixture();
-        let w = world(&fx);
-        w.join(a(), 1);
-        w.seed_party(a(), &A_TRIO);
-        let got = fx.run_as_at(a(), at(T0), |ctx| {
-            super::dev_start_tactical_pvp(ctx, a(), a(), None)
-        });
-        assert_eq!(got, Ok(()));
-        let anchors = w.battles.rows();
-        assert_eq!(anchors.len(), 1);
-        let anchor = &anchors[0];
-        assert_eq!(
-            (
-                anchor.player_identity,
-                anchor.opponent_identity,
-                anchor.party_monster_ids.clone(),
-                anchor.opponent_monster_ids.clone()
-            ),
-            (a(), a(), vec![11, 12], vec![13]),
-            "the party split in slot order: 2 for A, 1 for B"
-        );
-        let t = w.tactical(anchor.battle_id);
-        assert_eq!(
-            (t.kind, t.format, t.phase),
-            (BattleKind::Practice, 2, Phase::Deploying)
-        );
-        assert!(pvp_pool().contains(&t.map_id));
-    }
-    {
-        let fx = fixture();
-        let w = world(&fx);
-        w.join(a(), 1);
-        w.seed_party(a(), &PAIR[..1]);
-        let before = w.snapshot();
-        let got = fx.run_as_at(a(), at(T0), |ctx| {
-            super::dev_start_tactical_pvp(ctx, a(), a(), None)
-        });
-        assert_eq!(got, Err("practice needs two party monsters".to_string()));
-        assert_eq!(changed(&before, &w.snapshot()), none());
-    }
-    {
-        let fx = fixture();
-        let w = world(&fx);
-        w.join(a(), 1);
-        let got = fx.run_as_at(a(), at(T0), |ctx| {
-            super::dev_start_tactical_pvp(ctx, a(), a(), None)
-        });
-        assert_eq!(got, Err("no party monster".to_string()));
-    }
-}
-
-/// The module owner (the publisher's `spacetime call`) may pair two players; the format argument is
-/// honoured.
-///
-/// WRONG IMPL KILLED: an owner check that also blocks the owner; a format argument ignored.
-#[cfg(feature = "dev_reducers")]
-#[test]
-fn dev_start_tactical_pvp_lets_the_module_owner_pair_two_players_bt14_2() {
-    let fx = fixture();
-    let w = world(&fx);
-    pvp_parties(&w, &PAIR, &B_PAIR);
-    let got = fx.run_as_at(module(), at(T0), |ctx| {
-        super::dev_start_tactical_pvp(ctx, a(), b(), Some(1))
-    });
-    assert_eq!(got, Ok(()));
-    let anchors = w.battles.rows();
-    assert_eq!(anchors.len(), 1);
-    let anchor = &anchors[0];
-    assert_eq!(
-        (
-            anchor.player_identity,
-            anchor.opponent_identity,
-            anchor.party_monster_ids.clone(),
-            anchor.opponent_monster_ids.clone()
-        ),
-        (a(), b(), vec![11, 12], vec![21, 22])
-    );
-    let t = w.tactical(anchor.battle_id);
-    assert_eq!((t.kind, t.format), (BattleKind::Pvp, 1));
-}
+// bt-16 (BT16.1): `dev_start_tactical_pvp_lets_a_player_start_only_its_own_practice_bt14_2` and
+// `dev_start_tactical_pvp_lets_the_module_owner_pair_two_players_bt14_2` were deleted with their
+// subject — the `dev_start_tactical_pvp` reducer is deleted by BT16.1, so no reducer accepts a
+// caller-named pair any more. Surviving checks: `nh_accept_challenge_is_target_only_and_opens_the_battle`
+// (now `nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1`, pvp_tests.rs: the
+// target consents by accepting), the `EXPECTED_GATED` census (privacy_enforcement_tests.rs),
+// `start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1` and
+// `start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1`.
 
 // ---------------------------------------------------------------------------
 // BT14.3 — the PvP clock: 30 s windows, <= 3 per unit-turn, AutoPass strikes, the 4th forfeits
@@ -6694,40 +6602,12 @@ fn the_spawn_roll_seed_mix_pins_the_wild_species_and_levels_of_known_encounters_
     }
 }
 
-/// `dev_start_tactical_wild` (compiled only under `--features dev_reducers`, like the crate's
-/// other dev-reducer test): the player may start their own battle and the module owner may
-/// start anyone's; a stranger is refused `not owner` with the world untouched.
-#[cfg(feature = "dev_reducers")]
-#[test]
-fn dev_start_tactical_wild_admits_only_the_player_and_the_module_owner_mutw3() {
-    let call = |fx: &Fixture, who: Identity| {
-        fx.run_as_at(who, at(T0), |ctx| {
-            super::dev_start_tactical_wild(ctx, a(), Some(1))
-        })
-    };
-
-    // A stranger: refused, nothing written. Then the module owner (the publisher) starts the
-    // player's battle. (One fixture per scope: `fixture()` holds a process-wide lock.)
-    {
-        let fx = fixture();
-        let w = world(&fx);
-        w.join(a(), 1);
-        w.seed_party(a(), &PAIR);
-        let before = w.snapshot();
-        assert_eq!(call(&fx, b()), Err("not owner".to_string()));
-        assert_eq!(changed(&before, &w.snapshot()), none());
-
-        assert_eq!(call(&fx, module()), Ok(()));
-        assert_eq!(w.battles.rows().len(), 1, "the owner started a battle");
-        assert_eq!(w.battles.rows()[0].player_identity, a());
-    }
-    // The player starts their own.
-    {
-        let fx = fixture();
-        let w = world(&fx);
-        w.join(a(), 1);
-        w.seed_party(a(), &PAIR);
-        assert_eq!(call(&fx, a()), Ok(()));
-        assert_eq!(w.battles.rows().len(), 1, "the player started their own");
-    }
-}
+// bt-16 (BT16.1): `dev_start_tactical_wild_admits_only_the_player_and_the_module_owner_mutw3` was
+// deleted with its subject — the `dev_start_tactical_wild` reducer is deleted by BT16.1; the live
+// wild start is `movement_tick`'s grass trigger (no caller-named player). Surviving checks:
+// `nh_accept_challenge_is_target_only_and_opens_the_battle` (now
+// `nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1`), the `EXPECTED_GATED`
+// census (privacy_enforcement_tests.rs),
+// `start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1`,
+// `start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1`,
+// and the movement-path `nh_movement_tick_opens_a_tactical_wild_battle_only_on_a_triggered_grass_step_bt16_1`.
