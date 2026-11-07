@@ -140,8 +140,10 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
 // both sides to Active, then FORFEITED by D's disconnect (settle_pvp_battle:
 // rating, profile rows) — finishes, arming its 24 h `battle_gc_sched` row. The
 // rows below stay with their honest reasons: three tables no live path writes
-// any more (retired in place by the cutover; bt-17 retires them), and five whose
-// rows are timing-dependent at the snapshot.
+// any more (retired in place by the cutover; bt-17 retires them), and three whose
+// rows are swept or consumed before the snapshot. Measured on the first green run:
+// `battle_event` (battle1's BattleEnd at the forfeit settle) and `player_formation`
+// (A's deploy_units upsert in battle1) carry rows and are NOT allowlisted.
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
@@ -164,14 +166,6 @@ export const S9_VACUITY_ALLOWLIST = [
     'PvP staging rows only (a wild deploy materialises directly): battle1`s two rows are swept by finish at battle1`s forfeit settle, before the snapshot',
   ],
   [
-    'battle_event',
-    'written at the first execution (the wild`s own turn or an auto-pass); when A`s unit moves first and waits under its 300 s window the snapshot precedes every execution',
-  ],
-  [
-    'player_formation',
-    'auto-deploy (a pack of one) reads the remembered formation and writes none; only a deploy_units press upserts it',
-  ],
-  [
     'tactical_advance_sched',
     'ScheduleAt is not DML-expressible, and the row is consumed by its own zero-delay fire inside the chain, so no snapshot can observe one',
   ],
@@ -180,7 +174,7 @@ export const S9_VACUITY_ALLOWLIST = [
     'retired in place by the bt-16 cutover: no live path writes it (the grass trigger opens a tactical battle); bt-17 retires the table',
   ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 9;
+export const S9_VACUITY_ALLOWLIST_CAP = 7;
 // Erase-policy identity columns that are `Option<Identity>` (a sum type): the
 // snapshot counts them by battle reachability, never by an identity WHERE.
 export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
