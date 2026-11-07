@@ -98,7 +98,6 @@ export default defineConfig({
         'src/render/world.ts', // WorldRenderer (Pixi); logic = the pure render cores
         'src/render/characterView.ts', // one pooled Pixi sprite per entity
         'src/render/placeholderAssets.ts', // procedural placeholder textures (Pixi Graphics)
-        'src/ui/battleView.ts', // thin DOM shell for the battle screen
         'src/ui/boxView.ts', // thin DOM shell for the box/party screen
         'src/ui/raisingView.ts', // thin DOM shell for the raising/inventory screen
         'src/ui/evolutionView.ts', // thin DOM shell for the evolution/fusion screen

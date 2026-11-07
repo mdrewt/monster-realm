@@ -184,12 +184,20 @@ describe('overlayRegistry — manifest completeness (AC-6)', () => {
     // a mis-resolved directory yields an EMPTY set, and both set-equality
     // directions below would then pass vacuously. The +2 is errorOverlayView and sessionView,
     // both real *View.ts files and both deliberately NOT registry members.
+    // bt-17 (BT17.1): the `battleView` manifest id has NO ui/*View.ts file any more — the 1v1 view is
+    // deleted and the frame's three roots live under client/src/tactics (deployPanel, results,
+    // tacticsBattle), keyed on the one id. Exempted BY NAME (the membership assertions below keep
+    // it honest), so the arithmetic is + 2 - 1.
     expect(
       scanned.size,
-      `expected exactly ${OVERLAY_IDS.length + 2} *View.ts files in ${uiDir} ` +
-        `(the ${OVERLAY_IDS.length} manifest members + errorOverlayView + sessionView); ` +
+      `expected exactly ${OVERLAY_IDS.length + 1} *View.ts files in ${uiDir} ` +
+        `(the ${OVERLAY_IDS.length} manifest members - battleView + errorOverlayView + sessionView); ` +
         `scanned: ${sorted([...scanned]).join(', ')}`,
-    ).toBe(OVERLAY_IDS.length + 2);
+    ).toBe(OVERLAY_IDS.length + 1);
+    expect(
+      OVERLAY_IDS.includes('battleView') && !scanned.has('battleView'),
+      'battleView is a manifest id with no ui/battleView.ts (bt-17): the exemption below is honest only while both hold',
+    ).toBe(true);
     expect(
       scanned.has('errorOverlayView'),
       'the scan must have found errorOverlayView — if it did not, the directory scan is ' +
@@ -212,6 +220,7 @@ describe('overlayRegistry — manifest completeness (AC-6)', () => {
     scanned.delete('sessionView');
 
     const manifest = new Set<string>(OVERLAY_IDS);
+    manifest.delete('battleView'); // bt-17: its roots are the tactics/* views (see above)
     const missingFromManifest = sorted([...scanned].filter((n) => !manifest.has(n)));
     const orphanInManifest = sorted([...manifest].filter((n) => !scanned.has(n)));
 

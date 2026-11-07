@@ -12,7 +12,8 @@
 // (`a11y.overlay.boxView.title`), so the spec's own `[a-z0-9]+` is corrected here.
 
 /** Every message the catalogs must define. S1 seeded the `chrome.*` namespace; S3
- *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4 added
+ *  added `battle.*` and `pvp.*` as it migrated the 1v1 battle view and pvpView.ts (bt-17 kept only the
+ *  four `battle.*` keys the tactical frame reads: `battle.title`, `battle.outcome.*`); S4 added
  *  `evolution.*`, `raising.*`, `box.*`, `trade.*` and `shop.*` for the five mid-density views;
  *  S5 added the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
  *  `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — and gave three
@@ -21,7 +22,7 @@
  *  Adding a literal here is what forces EVERY
  *  registered catalog to grow (the mapped `Catalog` below is total over this union). Keys are
  *  `<namespace>.<screen>.<element>` (M24 §2.3), semantic — named for what the string IS, never
- *  for the DOM mechanism that shows it (`battle.commands.waiting`, not `captionText`). */
+ *  for the DOM mechanism that shows it (`tactics.menu.flee`, not `captionText`). */
 export type MessageId =
   | 'chrome.chip.menu'
   | 'chrome.chip.help'
@@ -154,42 +155,9 @@ export type MessageId =
   | 'session.retry'
   | 'session.hint'
   | 'battle.title'
-  | 'battle.continueHint'
-  | 'battle.swap.hint'
-  | 'battle.pvp.waiting'
-  | 'battle.weather.banner'
-  | 'battle.card.you'
-  | 'battle.card.opponent'
-  | 'battle.card.level'
-  | 'battle.card.hpLine'
-  | 'battle.skill.pvpSubmit'
-  | 'battle.skill.pveLabel'
-  | 'battle.commands.waiting'
-  | 'battle.recruit.listLabel'
-  | 'battle.recruit.noBait'
-  | 'battle.recruit.confirm'
-  | 'battle.recruit.confirmNoBait'
-  | 'battle.recruit.yes'
-  | 'battle.recruit.no'
-  | 'battle.cure.listLabel'
-  | 'battle.cure.option'
-  | 'battle.cure.target'
-  | 'battle.swap.pvpSubmit'
-  | 'battle.swap.pveLabel'
   | 'battle.outcome.victory'
   | 'battle.outcome.defeat'
   | 'battle.outcome.fled'
-  // battle.rewards.* : the KO-win payout lines under the Victory banner (qf-17, QF17.1/QF17.2).
-  | 'battle.rewards.gold'
-  | 'battle.rewards.xp'
-  // ctl-8i: the battle command list (battleView.ts).
-  | 'battle.command.fight'
-  | 'battle.command.recruit'
-  | 'battle.command.swap'
-  | 'battle.command.bag'
-  | 'battle.command.run'
-  | 'battle.commands.label'
-  | 'battle.command.runPvpReason'
   | 'pvp.title.idle'
   | 'pvp.title.challenge'
   | 'pvp.incoming.label'
@@ -637,41 +605,6 @@ export interface MessageParams {
   // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).
-  readonly 'battle.weather.banner': { readonly label: string; readonly turns: number };
-  readonly 'battle.card.level': { readonly level: number };
-  readonly 'battle.card.hpLine': {
-    readonly current: number;
-    readonly max: number;
-    readonly affinity: string;
-  };
-  readonly 'battle.skill.pvpSubmit': {
-    readonly name: string;
-    readonly power: number;
-    readonly affinity: string;
-    readonly accuracy: number;
-  };
-  readonly 'battle.skill.pveLabel': {
-    readonly name: string;
-    readonly power: number;
-    readonly affinity: string;
-    readonly accuracy: number;
-  };
-  readonly 'battle.commands.waiting': { readonly name: string };
-  readonly 'battle.recruit.confirm': { readonly bait: string };
-  readonly 'battle.cure.option': {
-    readonly name: string;
-    readonly cureStatus: string;
-    readonly count: number;
-  };
-  readonly 'battle.cure.target': { readonly species: string };
-  readonly 'battle.rewards.gold': { readonly amount: bigint };
-  readonly 'battle.rewards.xp': { readonly name: string; readonly amount: number };
-  readonly 'battle.swap.pvpSubmit': { readonly species: string };
-  readonly 'battle.swap.pveLabel': {
-    readonly species: string;
-    readonly current: number;
-    readonly max: number;
-  };
   readonly 'pvp.incoming.label': { readonly challenger: string };
   readonly 'pvp.outgoing.label': { readonly target: string };
   // Again MODEL DATA only — species/nick/item names, server-derived

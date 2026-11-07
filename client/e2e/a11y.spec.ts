@@ -936,9 +936,19 @@ test.describe
         return el === null ? 'missing' : getComputedStyle(el).display;
       }, tag);
 
-    test('CTL7B-E2E-ROOTS: the four real roots (battle, box, raising, evolution) are .mr-frame children of #app inside #game-screen, and only the battle carries the fixed layer classes', async () => {
+    // bt-17 (named intentional change, BT17.1): the 1v1 BattleView — the one EAGER battle root — is
+    // purged. The battle frame is owned by the tactical roots (deploy panel, results panel, tactical
+    // shell), built on first need, so at boot there are THREE eager roots and NO battle title at all.
+    // The battle root's parent / class pin moves to main.dispatch.test.ts's `[BT17-1]` deploy-panel
+    // root case; its layer is measured by CTL7B-E2E-BATTLE below on the mounted tactical roots.
+    // RED TODAY: the 1v1 view's battle-title is in the document at boot (count 1, not 0).
+    test('CTL7B-E2E-ROOTS: the three eager roots (box, raising, evolution) are .mr-frame children of #app inside #game-screen carrying exactly the frame classes, and no battle title exists at boot (the tactical battle roots are lazy) [BT17-1]', async () => {
+      const battleTitles = await page.evaluate(
+        () => document.querySelectorAll('[data-testid="battle-title"]').length,
+      );
+      expect(battleTitles, 'no battle root (and so no battle title) is built at boot').toBe(0);
       const roots = await page.evaluate(() =>
-        ['battle', 'box', 'raising', 'evolution'].map((name) => {
+        ['box', 'raising', 'evolution'].map((name) => {
           const titles = document.querySelectorAll(`[data-testid="${name}-title"]`);
           let node: Element | null = titles[0] ?? null;
           while (node !== null && node.parentElement?.id !== 'app') node = node.parentElement;
@@ -955,16 +965,9 @@ test.describe
       const frame = ['mr-frame', 'mr-shell'];
       expect(
         roots,
-        'each real root is a direct child of #app (inside #game-screen) carrying exactly the frame ' +
-          'classes; the battle adds .mr-shell--top (fixed, for E0) and .mr-shell--battle (its layer)',
+        'each eager root is a direct child of #app (inside #game-screen) carrying exactly the ' +
+          'frame classes',
       ).toEqual([
-        {
-          name: 'battle',
-          titles: 1,
-          appChild: true,
-          inGameScreen: true,
-          classes: [...frame, 'mr-shell--battle', 'mr-shell--top'],
-        },
         { name: 'box', titles: 1, appChild: true, inGameScreen: true, classes: frame },
         { name: 'raising', titles: 1, appChild: true, inGameScreen: true, classes: frame },
         { name: 'evolution', titles: 1, appChild: true, inGameScreen: true, classes: frame },
@@ -1017,121 +1020,169 @@ test.describe
 
     // The battle is not reachable without an encounter (a real walk is out of this suite's budget:
     // e2e/encounter-battle.spec.ts E0 already proves the real layering). So the test imports the
-    // view through the Vite dev server INSIDE the page and mounts a second BattleView into the
-    // real #app with a fixture view-model, tagged `data-ctl7b-fixture`.
+    // tactical battle roots through the Vite dev server INSIDE the page and mounts them into the
+    // real #app with fixture view-models, each root tagged `data-ctl7b-fixture` (its value names it).
+    // bt-17 (named intentional change, BT17.1): the 1v1 BattleView this mounted is purged. "Ongoing"
+    // is now the DEPLOY panel (the wild confirm screen: a pack of three, a formation of three) and
+    // "won" the RESULTS panel (a won battle's reason, three XP lines, a recruit, the gold and a
+    // rating line) — the two tactical roots a pure fixture can drive (the tactical shell needs the
+    // wasm rules port). Every oracle stands: the frame in the viewport at >= 4.5:1, position fixed,
+    // z-index 110 between the shells (100) and the menu / help (120), display none once hidden.
     //
     // The page-side code is passed to Playwright as a STRING. A function containing `import()` is
     // serialised after Playwright's own TypeScript transform, which is free to rewrite a dynamic
     // import into a `require()` that does not exist in the page; a string reaches the page as
     // written.
-    const BATTLE_SPEC = '/src/ui/battleView.ts';
-    const BATTLE_CARD =
-      "{ speciesName: 'Sproutle', level: 6, currentHp: 16, maxHp: 22, hpPercent: 72, affinity: 'Plant', status: 'PSN' }";
-    const BATTLE_FOE =
-      "{ speciesName: 'Emberfang', level: 5, currentHp: 14, maxHp: 19, hpPercent: 73, affinity: 'Fire', status: 'BRN' }";
-    /** An ongoing PvE battle: both cards with a status badge, a weather banner, two skills, Flee and a Swap. */
-    const BATTLE_ONGOING = `{
-      battleId: 9001n, turnNumber: 3, outcome: 'Ongoing',
-      playerCard: ${BATTLE_CARD}, opponentCard: ${BATTLE_FOE},
-      skills: [
-        { id: 1, name: 'Vine Whip', affinity: 'Plant', power: 40, accuracy: 100 },
-        { id: 2, name: 'Tackle', affinity: 'Normal', power: 35, accuracy: 95 },
+    const DEPLOY_SPEC = '/src/tactics/deployPanel.ts';
+    const RESULTS_SPEC = '/src/tactics/results.ts';
+    /** A Deploying wild battle: three own monsters (the party size), a pack of three, three slots. */
+    const DEPLOY_INPUT = `{
+      mode: 'wild', battleId: 9001n, remembered: [], slotCount: 3,
+      party: [
+        { monsterId: 101n, name: 'Sproutle', level: 6, hp: 16, maxHp: 22 },
+        { monsterId: 102n, name: 'Mossling', level: 5, hp: 12, maxHp: 18 },
+        { monsterId: 103n, name: 'Tidepup', level: 7, hp: 20, maxHp: 21 },
       ],
-      canFlee: true, canSwap: true,
-      bench: [{ teamIndex: 1, speciesName: 'Mossling', currentHp: 12, maxHp: 18 }],
-      canRecruit: false, baitOptions: [], cureItems: [],
-      weather: { label: 'Rain', turnsRemaining: 3 },
-      isPvp: false, pvpPendingSubmit: false, pvpOpponentName: null,
+      wilds: [
+        { speciesId: 2, name: 'Emberfang', level: 5 },
+        { speciesId: 3, name: 'Duskling', level: 4 },
+        { speciesId: 4, name: 'Sparrowl', level: 6 },
+      ],
     }`;
-    /** The same battle won: the outcome banner and the Esc hint show, the controls are gone. */
-    const BATTLE_WON = `{
-      battleId: 9001n, turnNumber: 4, outcome: 'SideAWins',
-      playerCard: ${BATTLE_CARD}, opponentCard: ${BATTLE_FOE},
-      skills: [], canFlee: false, canSwap: false, bench: [],
-      canRecruit: false, baitOptions: [], cureItems: [],
-      weather: null,
-      isPvp: false, pvpPendingSubmit: false, pvpOpponentName: null,
-    }`;
+    /** The same battle won (`ResultsInput`, results.ts): seven lines — the adjudication reason,
+     *  three own XP / essence lines, one recruit, the gold total and a rating change. */
+    const RESULTS_INPUT = `(() => {
+      const unit = (unitId, side, monsterId, speciesId) => ({
+        unitId, battleId: 9001n, owner: side === 'A' ? 'me' : null, monsterId, affinity: 'Plant',
+        row: { id: unitId, side, slot: unitId, species_id: speciesId },
+      });
+      const ev = (seq, payload) => ({ eventId: 9001n * 100n + BigInt(seq), battleId: 9001n, seq, round: 4, payload });
+      return {
+        battleId: 9001n, outcome: 'SideAWins', mySide: 'A',
+        units: [unit(1, 'A', 101n, 1), unit(2, 'A', 102n, 5), unit(3, 'A', 103n, 3), unit(9, 'B', null, 2)],
+        events: [
+          ev(0, { tag: 'Awards', value: { unit: 1, xp: 40, essence: 3, currency: 25n } }),
+          ev(1, { tag: 'Awards', value: { unit: 2, xp: 35, essence: 2, currency: 10n } }),
+          ev(2, { tag: 'Awards', value: { unit: 3, xp: 30, essence: 1, currency: 0n } }),
+          ev(3, { tag: 'RecruitResult', value: { unit: 1, target: 9, success: true } }),
+          ev(4, { tag: 'BattleEnd', value: { how: { tag: 'AdjudicatedHpPercent' } } }),
+        ],
+        monsterName: (id) => ({ 101: 'Sproutle', 102: 'Mossling', 103: 'Tidepup' })[String(id)] ?? '#' + String(id),
+        speciesName: () => 'Emberfang',
+        rating: { before: 1000, after: 1016 },
+      };
+    })()`;
     const MOUNT_BATTLE = `(async () => {
-      const mod = await import(${JSON.stringify(BATTLE_SPEC)});
-      const noop = () => {};
+      const deployMod = await import(${JSON.stringify(DEPLOY_SPEC)});
+      const resultsMod = await import(${JSON.stringify(RESULTS_SPEC)});
       const app = document.getElementById('app');
       if (app === null) throw new Error('#app is missing');
-      const view = new mod.BattleView(app, {
-        onAttack: noop, onFlee: noop, onSwap: noop, onRecruit: noop,
-        onUseItem: noop, onPvpAttack: noop, onPvpSwap: noop,
-      });
-      app.lastElementChild.setAttribute('data-ctl7b-fixture', '1');
-      window.__ctl7bBattle = view;
+      const deploy = new deployMod.DeployPanel(app, { onDeploy: async () => {} });
+      app.lastElementChild.setAttribute('data-ctl7b-fixture', 'deploy');
+      deploy.render(deployMod.deployVM(${DEPLOY_INPUT}));
+      const results = new resultsMod.ResultsPanel(app, { onContinue() {} });
+      app.lastElementChild.setAttribute('data-ctl7b-fixture', 'results');
+      const vm = resultsMod.resultsVM(${RESULTS_INPUT});
+      if (vm === null) throw new Error('fixture: resultsVM rejected the won battle');
+      results.render(vm);
+      window.__ctl7bBattle = { deploy, results };
       return true;
     })()`;
-    const showBattle = async (vm: string): Promise<void> => {
+    /** Show one mounted root (hiding the other first: they share the battleView overlay id). */
+    const showBattle = async (which: 'deploy' | 'results'): Promise<void> => {
       await page.evaluate(
-        `(() => { const v = window.__ctl7bBattle; v.refresh(${vm}); v.show(); })()`,
+        `(() => { const b = window.__ctl7bBattle; const other = ${JSON.stringify(which)} === 'deploy' ? b.results : b.deploy; other.hide(); b[${JSON.stringify(which)}].show(); })()`,
       );
     };
     const REMOVE_BATTLE = `(() => {
-      const v = window.__ctl7bBattle;
-      if (v) v.hide();
+      const b = window.__ctl7bBattle;
+      if (b) { b.deploy.hide(); b.results.hide(); }
       for (const n of document.querySelectorAll('[data-ctl7b-fixture]')) n.remove();
       delete window.__ctl7bBattle;
     })()`;
+    const DEPLOY = '[data-ctl7b-fixture="deploy"]';
+    const RESULTS = '[data-ctl7b-fixture="results"]';
 
-    test('CTL7B-E2E-BATTLE: a mounted battle, ongoing and won, is a frame inside the viewport at >= 4.5:1, layered between the shells and the menu, and at 640x360 its title stays reachable', async () => {
+    test('CTL7B-E2E-BATTLE: the mounted tactical battle roots — the deploy panel (ongoing) and the results panel (won) — are each a frame inside the viewport at >= 4.5:1, layered between the shells and the menu, and at 640x240 the results` title stays reachable [BT17-1]', async () => {
+      // RED TODAY only if the tactical roots lack the frame / layer classes or contrast (they carry
+      // them since bt-12); the boot half of the purge is CTL7B-E2E-ROOTS above.
       await blurToBody();
       const original = page.viewportSize();
       try {
         await page.evaluate(MOUNT_BATTLE);
-        await showBattle(BATTLE_ONGOING);
-        const fixture = page.locator('[data-ctl7b-fixture]');
-        await expect(fixture).toBeVisible();
+        await showBattle('deploy');
+        await expect(page.locator(DEPLOY)).toBeVisible();
+        await expect(
+          page.locator(`${DEPLOY} .tactics-deploy-formation .tactics-deploy-slot`),
+          'fixture: the confirm screen lists the three formation slots',
+        ).toHaveCount(3);
 
-        const ongoing = await page.evaluate(measureFrameInPage, '[data-ctl7b-fixture]');
-        expectFrameOk(ongoing, 'battle (ongoing)');
+        const ongoing = await page.evaluate(measureFrameInPage, DEPLOY);
+        expectFrameOk(ongoing, 'battle (deploy panel, ongoing)');
 
         // The layer, as Chromium cascades it: the fixed position E0 needs, above every shell and
-        // under the menu and help that open over a battle.
-        const layers = await page.evaluate(() => {
-          const z = (selector: string): string => {
-            const el = document.querySelector(selector);
-            return el === null ? 'missing' : getComputedStyle(el).zIndex;
-          };
-          const root = document.querySelector('[data-ctl7b-fixture]');
-          return {
-            position: root === null ? 'missing' : getComputedStyle(root).position,
-            battle: z('[data-ctl7b-fixture]'),
-            shell: z('#rename-overlay'),
-            menu: z('#menu-overlay'),
-            help: z('#help-overlay'),
-          };
-        });
+        // under the menu and help that open over a battle — for BOTH tactical roots.
+        const layers = await page.evaluate(
+          ({ deploy, results }) => {
+            const z = (selector: string): string => {
+              const el = document.querySelector(selector);
+              return el === null ? 'missing' : getComputedStyle(el).zIndex;
+            };
+            const position = (selector: string): string => {
+              const el = document.querySelector(selector);
+              return el === null ? 'missing' : getComputedStyle(el).position;
+            };
+            return {
+              deployPosition: position(deploy),
+              resultsPosition: position(results),
+              deploy: z(deploy),
+              results: z(results),
+              shell: z('#rename-overlay'),
+              menu: z('#menu-overlay'),
+              help: z('#help-overlay'),
+            };
+          },
+          { deploy: DEPLOY, results: RESULTS },
+        );
         expect(
           layers,
-          'battle z-index sits between the shells (100) and the menu / help (120)',
+          'each battle root is fixed, its z-index between the shells (100) and the menu / help (120)',
         ).toEqual({
-          position: 'fixed',
-          battle: '110',
+          deployPosition: 'fixed',
+          resultsPosition: 'fixed',
+          deploy: '110',
+          results: '110',
           shell: '100',
           menu: '120',
           help: '120',
         });
 
-        await showBattle(BATTLE_WON);
+        await showBattle('results');
+        await expect(page.locator(DEPLOY), 'the deploy panel is hidden first').toBeHidden();
+        await expect(page.locator(`${RESULTS} [data-testid="battle-title"]`)).toBeVisible();
         await expect(
-          page.locator('[data-ctl7b-fixture] [data-testid="outcome-text"]'),
-        ).toBeVisible();
-        const won = await page.evaluate(measureFrameInPage, '[data-ctl7b-fixture]');
-        expectFrameOk(won, 'battle (won)');
+          page.locator(`${RESULTS} ul.tactics-results-list > li[data-line]`),
+          'fixture: the won results paint their seven lines',
+        ).toHaveCount(7);
+        const won = await page.evaluate(measureFrameInPage, RESULTS);
+        expectFrameOk(won, 'battle (results panel, won)');
 
-        // A short viewport: the ongoing battle is taller than the box, so it scrolls inside its
-        // frame, and `justify-content: safe center` keeps its top (the title) reachable at
-        // scrollTop 0 — a plain `center` would push the title above the frame's top edge.
-        await page.setViewportSize({ width: 640, height: 360 });
-        await showBattle(BATTLE_ONGOING);
-        const small = await page.evaluate(measureFrameInPage, '[data-ctl7b-fixture]');
-        expectFrameOk(small, 'battle (ongoing, 640x360)', { scrolledText: true });
-        const reach = await page.evaluate(() => {
-          const root = document.querySelector('[data-ctl7b-fixture]') as HTMLElement | null;
+        // A short viewport. STATE CHOSEN: the RESULTS panel with its seven lines (title, reason,
+        // three XP lines, recruit, gold, rating, then Continue: nine stacked rows), because it is
+        // the tallest fixture a pure render yields — taller than the deploy confirm screen (title,
+        // three wilds, three slots, two menu rows) and than its formation editor (one candidate
+        // group, five menu rows). It must scroll inside its frame, and `justify-content: safe
+        // center` keeps its top (the title) reachable at scrollTop 0 — a plain `center` would push
+        // the title above the frame's top edge. MEASURED (bt-17, orchestrator): at 640x360 the nine
+        // rows FIT (scrollable: false — the deleted 1v1 cards were the tall content the old 360
+        // targeted), so the short viewport is 640x240 here, where the panel does overflow and the
+        // clause stays non-vacuous.
+        await page.setViewportSize({ width: 640, height: 240 });
+        await showBattle('results');
+        const small = await page.evaluate(measureFrameInPage, RESULTS);
+        expectFrameOk(small, 'battle (results panel, 640x240)', { scrolledText: true });
+        const reach = await page.evaluate((selector) => {
+          const root = document.querySelector(selector) as HTMLElement | null;
           const title = root?.querySelector('[data-testid="battle-title"]') ?? null;
           if (root === null || title === null) return null;
           root.scrollTop = 0;
@@ -1145,20 +1196,24 @@ test.describe
               head.left >= frame.left - 0.5 &&
               head.right <= frame.right + 0.5,
           };
-        });
+        }, RESULTS);
         expect(
           reach,
-          'at 640x360 the ongoing battle must scroll inside its frame (non-vacuity) AND show its ' +
+          'at 640x240 the results panel must scroll inside its frame (non-vacuity) AND show its ' +
             'title inside the frame at scrollTop 0',
         ).toEqual({ scrollable: true, titleInside: true });
 
-        await page.evaluate('window.__ctl7bBattle.hide()');
-        await expect(fixture).toBeHidden();
-        const closed = await page.evaluate(() => {
-          const root = document.querySelector('[data-ctl7b-fixture]');
-          return root === null ? 'missing' : getComputedStyle(root).display;
-        });
-        expect(closed, 'a hidden battle computes display:none').toBe('none');
+        await page.evaluate('window.__ctl7bBattle.results.hide()');
+        await expect(page.locator(RESULTS)).toBeHidden();
+        const closed = await page.evaluate(
+          ({ deploy, results }) =>
+            [deploy, results].map((selector) => {
+              const root = document.querySelector(selector);
+              return root === null ? 'missing' : getComputedStyle(root).display;
+            }),
+          { deploy: DEPLOY, results: RESULTS },
+        );
+        expect(closed, 'both hidden battle roots compute display:none').toEqual(['none', 'none']);
       } finally {
         await page.evaluate(REMOVE_BATTLE);
         if (original !== null) await page.setViewportSize(original);

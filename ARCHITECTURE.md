@@ -52,7 +52,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `monster` | Individuality rolls (IVs, nature), stat derivation, levels and XP curve. |
 | `combat` | Battle state and turn resolution, damage and accuracy, statuses, abilities, weather, AI, XP rewards, PvP forfeit and challenge staleness. |
 | `tactics` | Tactical-battle rules (in progress, M-battle-tactics): `geometry` (Manhattan metric, line of sight, the one skill target-set function, flank), `movement` (stride bands, terrain × class weights, Dijkstra pathing with an explicit `(cost, y, x)` tie-break, disengage), `map` (the battle-map validator), `tuning` (`TacticsTuning`, `BattleKind`), `economy` (AP costs, Exert, Guard), `initiative`, `resolve` (`TacticalState` and the damage pipeline), `upkeep`, `outcome` (KO sweep, adjudication), `types` (the storage enums `QueuedAction`, `TurnState`, `Phase`), `events` (the `battle_event` payload), `clock`, `queue` (`TacticalBattle`: the submit gate and executor), `ai`, `encounter`, `recruit`, `rewards`, and `content` (the sidecar registries and lints). `tactics::golden` runs a shared JSON fixture natively and through the `tactics_golden` wasm export to prove native = wasm. |
-| `taming` | Encounter triggers and rolls, recruit chance. |
+| `taming` | dev-only `grant_bait`; `attempt_recruit` is no longer a reducer since bt-17 (the tactical recruit is a `submit_queue` entry) |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |
 | `currency`, `trading` | Balance arithmetic; trade proposal validation, headroom checks, the ordered swap plan. |
@@ -136,8 +136,8 @@ writes:
 | Module | Reducers |
 |---|---|
 | `movement` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, scheduled `movement_tick` (the grass trigger opens a tactical wild battle through `tactics::start_wild_tactical`) |
-| `battle` | `start_battle`, `submit_attack`, `swap_active`, `use_battle_item`, `flee` (+ dev-only `start_wild_battle`) — the 1v1 engine: unreachable from the grass and challenge-accept paths since bt-16, deleted by bt-17 |
-| `taming` | `attempt_recruit` (+ dev-only `grant_bait`) |
+| `battle` | no reducers since bt-17 (BT17.1): `start_battle`, `submit_attack`, `swap_active`, `use_battle_item` and `flee` lost their reducer attribute and stay compiled as `pub(crate)` test-only bodies until the continuation deletes them (`start_wild_battle` is deleted); the module keeps the terminal-sweep and write-back helpers the tactical settle funnel calls |
+| `taming` | dev-only `grant_bait` (`attempt_recruit` is no longer a reducer since bt-17) |
 | `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, `forfeit`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc`; its two `pub(crate)` writers `start_wild_tactical` (called by `movement_tick`) and `start_pvp_tactical` (called by `accept_challenge`) are the only places a battle is created |
 | `tactics_settle` | no reducers: the one terminal settlement `tactics::finish` calls (reward ledger, faint penalty, prior-terminal sweep, `battle_summary`) |
 | `raising` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `heal_party` |
@@ -146,7 +146,7 @@ writes:
 | `economy` | `buy`, `sell` |
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
 | `trading` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, scheduled `trade_offer_reaper` |
-| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, `submit_pvp_action` (1v1, refuses a tactical anchor), scheduled `pvp_deadline_reaper` (never armed since bt-16) and `battle_challenge_reaper` |
+| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed: `submit_pvp_action` is no longer a reducer since bt-17) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
@@ -448,10 +448,23 @@ shop or a heal tile within talk range). The server re-checks the range.
 Strings come from `ui/i18n/`: a `MessageId` union, total catalogs for `en` and `fr`, a
 resolver whose `t()`/`tf()` throw on a missing key, CLDR plural rules, and boot-time
 locale negotiation from `navigator.languages` (`locale.ts`). Accessibility is
-first-class: status badges carry text tokens from `game-core`'s `A11Y_TOKENS`, focus
+first-class: status conditions on the tactical board are named by the exhaustive
+`tactics.status.*` catalog keys (text, never colour alone; the 1v1 status badges and their
+`A11Y_TOKENS` link left with the 1v1 view in bt-17), focus
 is trapped in modals (`focusTrap.ts`), announcements go through live regions
 (`liveRegion.ts`, `announcements.ts`), and `Element.animate` is banned
 (`client/lint/no-waapi.grit`) because it ignores `prefers-reduced-motion`.
+
+The constructed overlays (the battle frame's three roots under `client/src/tactics`, the box,
+raising and evolution views) follow one a11y wiring contract (`ui/overlayA11y.ts`): the root is
+created and appended into the shared `#app` mount, so every ARIA attribute comes from
+`openOverlayA11y`, never from a literal in the view; `show()` reads "was visible" as its FIRST
+statement, because a re-open tears down and re-schedules the deferred focus and drags focus off the
+control the player had reached; `hide()` calls `closeOverlayA11y` UNGUARDED (a no-record close is a
+pure no-op, a guarded close leaks a capture listener, a timer and a return target whenever a record
+desynchronises from the DOM); and the open is the LAST statement of the open path, after the display
+write, since `.focus()` on a `display:none` node is a silent no-op. Each `#app`-mounted view owns its
+root, so opening one never closes a sibling.
 
 ### Diagnostics
 

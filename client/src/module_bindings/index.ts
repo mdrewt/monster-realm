@@ -37,7 +37,6 @@ import {
 import AcceptChallengeReducer from "./accept_challenge_reducer";
 import AckEvolutionNoticesReducer from "./ack_evolution_notices_reducer";
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
-import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import BuyReducer from "./buy_reducer";
 import CancelAccountDeletionReducer from "./cancel_account_deletion_reducer";
 import CancelChallengeReducer from "./cancel_challenge_reducer";
@@ -56,7 +55,6 @@ import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EssenceTrainReducer from "./essence_train_reducer";
 import EvolveReducer from "./evolve_reducer";
-import FleeReducer from "./flee_reducer";
 import ForfeitReducer from "./forfeit_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
@@ -68,16 +66,11 @@ import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
 import SetProfileNameReducer from "./set_profile_name_reducer";
-import StartBattleReducer from "./start_battle_reducer";
 import StartGuestClaimReducer from "./start_guest_claim_reducer";
-import SubmitAttackReducer from "./submit_attack_reducer";
-import SubmitPvpActionReducer from "./submit_pvp_action_reducer";
 import SubmitQueueReducer from "./submit_queue_reducer";
-import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 import TalkReducer from "./talk_reducer";
 import TrainReducer from "./train_reducer";
-import UseBattleItemReducer from "./use_battle_item_reducer";
 
 // Import all procedure arg schemas
 
@@ -455,7 +448,6 @@ const reducersSchema = __reducers(
   __reducerSchema("accept_challenge", AcceptChallengeReducer),
   __reducerSchema("ack_evolution_notices", AckEvolutionNoticesReducer),
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
-  __reducerSchema("attempt_recruit", AttemptRecruitReducer),
   __reducerSchema("buy", BuyReducer),
   __reducerSchema("cancel_account_deletion", CancelAccountDeletionReducer),
   __reducerSchema("cancel_challenge", CancelChallengeReducer),
@@ -474,7 +466,6 @@ const reducersSchema = __reducers(
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("essence_train", EssenceTrainReducer),
   __reducerSchema("evolve", EvolveReducer),
-  __reducerSchema("flee", FleeReducer),
   __reducerSchema("forfeit", ForfeitReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
@@ -486,16 +477,11 @@ const reducersSchema = __reducers(
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),
   __reducerSchema("set_profile_name", SetProfileNameReducer),
-  __reducerSchema("start_battle", StartBattleReducer),
   __reducerSchema("start_guest_claim", StartGuestClaimReducer),
-  __reducerSchema("submit_attack", SubmitAttackReducer),
-  __reducerSchema("submit_pvp_action", SubmitPvpActionReducer),
   __reducerSchema("submit_queue", SubmitQueueReducer),
-  __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
   __reducerSchema("talk", TalkReducer),
   __reducerSchema("train", TrainReducer),
-  __reducerSchema("use_battle_item", UseBattleItemReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

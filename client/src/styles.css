@@ -22,11 +22,11 @@
  *
  * DELIBERATELY ABSENT, and a later reader should NOT helpfully add them here:
  *   - NOTHING further for the battle HP bar. That guard SHIPPED below (slice rb-10,
- *     residual R-m23-s2-X4): `ui/battleView.ts` now assigns `className = 'hp-fill'` and its
- *     `cssText` carries no animation declaration, so the rule is reachable. Do NOT re-add an
- *     inline animation there, do NOT add a third `.hp-fill`-matching animation rule here in
- *     any spelling, and do NOT declare a `--custom-property` in either rule — all three are
- *     gated by `evals/reduced-motion-hp-bar.eval.mjs`.
+ *     residual R-m23-s2-X4): the 1v1 view that assigned `className = 'hp-fill'` left in bt-17, so
+ *     no production element carries the class today; the rule stays because e2e/reduced-motion.spec.ts
+ *     probes it with an injected element and leaderboardView.test.ts pins the nested rule. Do NOT
+ *     add a third `.hp-fill`-matching animation rule here in any spelling, and do NOT declare a
+ *     `--custom-property` in either rule.
  *   - `display:none` / `visibility:hidden` on `.sr-only` — banned by A11Y-11 (below).
  */
 
@@ -67,8 +67,9 @@
 
 /*
  * The battle HP bar's fill.
- * `ui/battleView.ts` #renderMonsterCard creates this element and writes `width` and
- * `background` inline, because both are computed per render. The ANIMATION lives here
+ * The deleted 1v1 view (bt-17) created this element and wrote `width` and `background` inline
+ * (both computed per render); no production element carries the class today — the rule stays for
+ * e2e/reduced-motion.spec.ts's injected probe and leaderboardView.test.ts's pin of the nested rule. The ANIMATION lives here
  * instead: an inline declaration is unreachable by any selector at any specificity, and
  * §2.5 requires a stylesheet guard with no JS dependency.
  *
@@ -155,7 +156,7 @@
 /* A frame whose native buttons are its D-pad rows (qf-13, QF13.2: Profile › Account): they stack
  * as a column, the axis the Up/Down rows walk (ui/screens/profileScreen.ts). The view's inline
  * `display: none` still hides a button. Named outside the `mr-frame`/`mr-shell` family on purpose:
- * battleView.test.ts CTL7B-1-FRAME-CSS-ROSTER pins that roster. */
+ * styles.test.ts CTL7B-1-FRAME-CSS-ROSTER pins that roster (moved from battleView.test.ts in bt-17). */
 .mr-button-rows > button {
   display: block;
   margin: 0.25rem 0;
@@ -357,7 +358,7 @@
   position: fixed;
   z-index: 120;
 }
-/* The battle root (ui/battleView.ts, ctl-7b) carries --top for E0's fixed position and this rule
+/* The battle roots (client/src/tactics: deployPanel, results, tacticsBattle; ctl-7b) carry --top for E0's fixed position and this rule
  * to sit under the menu and help but above the other shells. ORDER IS LOAD-BEARING: both rules are
  * one class, so this one must follow --top for its z-index to win. */
 .mr-shell--battle {
@@ -367,7 +368,7 @@
  * inner .mr-frame--bottom to the bottom edge, so the bottom box needs no inset of its own (the
  * CTL7A-2 shell rule). It paints nothing and catches no clicks; the inner frame does both. Written
  * AFTER the base .mr-shell rule: equal specificity, so source order decides. Named outside the
- * `mr-shell--*` family on purpose: battleView.test.ts CTL7B-1-FRAME-CSS-ROSTER pins that roster. */
+ * `mr-shell--*` family on purpose: styles.test.ts CTL7B-1-FRAME-CSS-ROSTER pins that roster. */
 .mr-dock {
   justify-content: flex-end;
   padding: 0;
@@ -398,7 +399,7 @@
 /*
  * The tactical battle (client/src/tactics, bt-10). The shell's root also wears the shared
  * `mr-frame mr-shell mr-shell--top mr-shell--battle` classes (they place it), but NO selector below
- * names those classes: battleView.test.ts rosters their rules. Every rule hangs off a `tactics-`
+ * names those classes: styles.test.ts rosters their rules. Every rule hangs off a `tactics-`
  * class. The root is a column: turn bar, the field (70 % of the height, one shared background),
  * the ticker and the dock (a darker, bordered command band).
  */

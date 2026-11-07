@@ -569,17 +569,26 @@ path any other player can read.
 `accept_challenge` — call the tactical writers (`tactics::start_wild_tactical`,
 `tactics::start_pvp_tactical`) and nothing else. The switch happened in one slice (bt-16)
 together with the deletion of the dev-gated tactical starts and the migration of every
-battle e2e; the 1v1 reducers stay compiled but unreachable until bt-17 deletes them, and
-the 1v1 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from
-use, never dropped or reordered (see "Schema changes are additive"). The account-e2e's
-vacuity allowlist names each retired table with that reason.
+battle e2e. bt-17 then removed the 1v1 engine from the module's reducer set: `start_battle`
+(which had stayed client-callable through the flip), `submit_attack`, `swap_active`, `flee`,
+`use_battle_item`, `attempt_recruit` and `submit_pvp_action` lost their `#[spacetimedb::reducer]`
+attribute (the generated bindings and `client-callable-reducers.json` carry none of them), the
+dev-only `start_wild_battle` was deleted, and the client's 1v1 renderer, model, dispatch arms and
+copy were deleted. Their Rust bodies stay compiled as `pub(crate)` test-only functions until the
+continuation retargets the trading, guards and tactics test matrices that still call them. The 1v1
+tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
+dropped or reordered (see "Schema changes are additive"): a census test pins that no reducer
+reaches `pvp_deadline_schedule`, and that `battle_action` and `battle_wild` are reached by exactly
+four tactical reducers (today only through the settle funnel's deletes — the census pins WHICH
+reducers reach a table, not how). The account-e2e's vacuity allowlist names each retired table
+with that reason.
 
 **Why.** Two engines reachable at once would need a per-battle discriminator in every
 guard, settlement and client renderer, and a runtime toggle is exactly the surface a
 hostile client would flip. One engine per path keeps `guards::is_in_ongoing_battle`,
 the settlement funnels and the battle frame single-sourced, and compiling the old
-engine through the flip lets the client keep typechecking so the purge can delete both
-sides consistently.
+engine through the flip let the client keep typechecking so the purge could delete the
+client side first and de-attribute the server side in the same slice.
 
 **Rules out.** A feature flag or config row selecting the engine; starting a tactical
 battle through a dev-only reducer in any shipped build; dropping or reordering the
@@ -685,8 +694,9 @@ a key). Escape alone is routed in the capture phase, so a view's `stopPropagatio
 trap it; every other key keeps the bubble phase, where text-entry views shield their
 fields from the accelerators. Each view keeps its state in a pure model (`*Model.ts`) with
 a thin DOM view. Accessibility metadata for every overlay is one total record
-(`OVERLAY_A11Y`); status badges pair colour with a short text token defined once in
-`game-core` (`A11Y_TOKENS`, checked in `validate_content`); `Element.animate` is banned by
+(`OVERLAY_A11Y`); a status condition is named by text, never by colour alone — on the tactical
+board through the exhaustive `tactics.status.*` catalog keys (the 1v1 badges and their
+`A11Y_TOKENS` link left with the 1v1 view in bt-17); `Element.animate` is banned by
 a Biome plugin (`client/lint/no-waapi.grit`) because it ignores
 `prefers-reduced-motion`. All UI strings come from a total typed catalog
 (`client/src/ui/i18n/`: `en` and `fr`); `t()` throws on a missing key, and `setLocale`
@@ -762,27 +772,34 @@ runs. It is not the player's reach.
 
 ## The battle frame has one owner per tactical phase
 
-**Decision.** Four views can own the `battleView` frame — the 1v1 view, the deploy panel, the
-tactical shell and the results panel — and exactly one shows at a time. `refreshBattle` routes by
-the tactical row's phase (`battleRenderer`: no row → the 1v1 view, Deploying → the deploy panel,
-Active → the shell, Finished → the results panel) and switches with one fixed ritual: render the
-hidden target first, pop every PLAYER frame over the battle base, hide the other views, then show
-(the open is the last statement); a target that cannot be built or rendered leaves the current
-owner in place. The three constructed roots are built lazily on the first batch that routes to
-them, share the one `battleView` overlay a11y record, and keep their own `hide()` idempotent;
-`activeBattleView`, `tacticalOwnsStart` and `battleHint` read the SHOWN view, never the phase.
+**Decision.** Three views can own the `battleView` frame — the deploy panel, the tactical shell
+and the results panel — and at most one shows at a time. `refreshBattle` routes by the tactical
+row's phase (`battleRenderer`: Deploying → the deploy panel, Active → the shell, Finished → the
+results panel, no row → `none`) and switches with one fixed ritual: render the hidden target first,
+pop every PLAYER frame over the battle base, hide the other views, then show (the open is the last
+statement); a target that cannot be built or rendered leaves the current owner in place. An anchor
+WITHOUT its tactical row is not a battle the client can show (bt-17 deleted the 1v1 view): an
+Ongoing one builds nothing and keeps a shown owner (B17 reads "a battle the client can render is
+never hidden"; the stack still holds the battle base and Start opens the menu), a terminal one is
+dismissed and every view hides in the same batch — `renderableBattle` is the one predicate
+`reconcileStack` and `refreshBattle` share, so the stack never counts an unrenderable outcome. The
+three roots are built lazily on the first batch that routes to them, share the one `battleView`
+overlay a11y record, and keep their own `hide()` idempotent; `activeBattleView`,
+`tacticalOwnsStart` and `battleHint` read the SHOWN view, never the phase.
 
 **Why.** The overlay registry, the context stack, the a11y record (`OVERLAY_A11Y`, the adopted
-live region, the focus trap) and every legacy test and e2e selector (`[data-testid="battle-title"]`,
+live region, the focus trap) and every test and e2e selector (`[data-testid="battle-title"]`,
 `aria-modal`) key on ONE id, `battleView`. Two visible roots would be two titles and two modal
 dialogs; closing a covered record and opening a fresh one would leave a frame over the base inert;
-a root constructed at boot would collide with every legacy selector before the first tactical
-battle. Routing by phase keeps "a battle is never hidden" (B17) a one-place rule.
+a root constructed at boot would be a second title and a second modal dialog the moment a battle
+routes to another owner. Routing by phase keeps B17 a one-place rule, and sharing the renderable
+predicate with the stack keeps a row-less terminal anchor from closing drop-policy frames on every
+batch with nothing on screen.
 
 **Rules out.** A second overlay id per battle view; showing a battle view outside `refreshBattle`'s
 switch; constructing the tactical roots at boot; a renderer switch that pops the dialogue frame (a
-server conversation suspended over the battle base stays) or that demotes a visible shell to the
-1v1 view when one batch fails to build.
+server conversation suspended over the battle base stays) or that demotes a visible shell when one
+batch fails to build; a fallback renderer for an anchor without its tactical row.
 
 ## The nightly mutation gates run sharded and both are zero-tolerance
 

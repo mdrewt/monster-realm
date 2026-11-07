@@ -47,6 +47,7 @@ import type {
   StoreBattle,
   StoreBattleMonster,
   StoreMonsterPub,
+  StoreTacticalBattle,
   StoreTradeOffer,
 } from './net/store';
 // The test's own resolver instance (main.ts gets a fresh one per boot): both default to English, so
@@ -85,12 +86,53 @@ const H = vi.hoisted(() => ({
 // ctl-10b: named fixture change: the interact export is a stub driven by `H.interact` (the trade
 // wizard is now opened face to face, through A, so the rule must be answerable here).
 // qf-3: named fixture change: the care-readiness export is a stub driven by `H.careRemaining`.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
-  wasmPkgWalkingMock({
+// bt-17 (named fixture change, BT17.1): the 1v1 view is purged, so a battle the player can SEE is a
+// tactical one; the battle cases below seed a tactical row (`putBattle`) and the deploy / results
+// panel is the shown owner. The deploy slot count is read through the lazily bound tactics rules port,
+// which refuses a pkg missing any of its exports: these are main.dispatch.test.ts's minimal shapes
+// (three spawn cells, max_pack 3); nothing here reads anything past the deploy and results panels.
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
+  ...wasmPkgWalkingMock({
     interact: (...args: unknown[]) => H.interact(...args),
     careRemaining: (last: bigint, now: bigint) => H.careRemaining(last, now),
   }),
-);
+  tactics_map: () => ({
+    width: 7,
+    height: 5,
+    tiles: [],
+    spawn_a: [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ],
+    spawn_b: [],
+  }),
+  tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
+  tactics_unit: (row: unknown) => row,
+  tactics_targets: () => ({ Ok: [] }),
+  tactics_path: () => ({ Err: 'Unreachable' }),
+  tactics_disengage: () => ({ Ok: false }),
+  tactics_flank: () => false,
+  tactics_forecast: () => ({}),
+  tactics_recruit_odds: () => ({ Err: { UnknownUnit: { id: 0 } } }),
+  tactics_ai_plan: () => [],
+  tactics_recruit_targets: () => [],
+  tactics_is_exhausted: () => false,
+  tactics_plan: (start: unknown, entries: readonly unknown[]) => ({
+    Ok: { costs: entries.map(() => 0), total: 0, remaining: start, guard_on_end: false },
+  }),
+  tactics_overlays: () => ({
+    reach1: [],
+    reach2: [],
+    range: [],
+    aoe: [],
+    danger: [],
+    shield: [],
+    intents: [],
+  }),
+  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+  tactics_next_initiative: () => [],
+}));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once.
@@ -300,9 +342,70 @@ function battleRow(battleId: bigint, outcome: string): StoreBattle {
   };
 }
 
-/** A battle row arrives (Ongoing by default), in one batch at clock `t`. */
+/** An own monster at `partySlot` (the anchor's party member the deploy panel lists). */
+function ownMonster(monsterId: bigint, partySlot: number): StoreMonsterPub {
+  return {
+    monsterId,
+    ownerIdentity: H.identity,
+    speciesId: 1,
+    nickname: `m${monsterId}`,
+    level: 5,
+    xp: 0,
+    currentHp: 20,
+    statHp: 20,
+    statAttack: 5,
+    statDefense: 5,
+    statSpeed: 5,
+    statSpAttack: 5,
+    statSpDefense: 5,
+    partySlot,
+    tier: 0,
+    essence: {} as StoreMonsterPub['essence'],
+    trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
+    qualityTimeTier: 0,
+    nutritionPct: 0,
+    lastCareAtMs: 0n,
+  };
+}
+
+/** The `my_tactical_battle` row of `battleId` in `phase` (main.dispatch.test.ts's field set). */
+function tacticalRow(
+  battleId: bigint,
+  phase: StoreTacticalBattle['phase'],
+  kind: StoreTacticalBattle['kind'] = 'Wild',
+): StoreTacticalBattle {
+  return {
+    battleId,
+    kind,
+    format: 1,
+    mapId: 13,
+    contentVersion: 1,
+    phase,
+    round: phase === 'Deploying' ? 0 : 1,
+    initiative: [],
+    turnIdx: 0,
+    turnState: { kind: 'NotActive' },
+    tiePrioritySide: 'A',
+    pendingPadMs: 0,
+    attackDamageDealtA: 0,
+    attackDamageDealtB: 0,
+  };
+}
+
+/** A battle row arrives (Ongoing by default), in one batch at clock `t`.
+ *  bt-17 (named fixture change, BT17.1): an anchor with NO tactical row shows no battle view after
+ *  the purge (the stack still holds the battle base), and the cases that call this assert the battle
+ *  ON SCREEN; so the battle arrives as the server now delivers it — the anchor, the own party
+ *  monster, and its tactical row: `Deploying` while Ongoing (the deploy panel is the shown owner),
+ *  `Finished` once terminal (the results panel owns the outcome frame). */
 function putBattle(battleId: bigint, t: number, outcome = 'Ongoing'): void {
-  opts.store.upsertBattle(battleRow(battleId, outcome));
+  const row = battleRow(battleId, outcome);
+  for (const [slot, id] of row.partyMonsterIds.entries())
+    opts.store.upsertMonster(ownMonster(id, slot));
+  opts.store.upsertBattle(row);
+  opts.store.reconcileTacticalBattlesFromView([
+    tacticalRow(battleId, outcome === 'Ongoing' ? 'Deploying' : 'Finished'),
+  ]);
   server(t);
 }
 
@@ -379,7 +482,11 @@ const rankingsShown = (): boolean => shownById('leaderboard-title');
 const dialogueShown = (): boolean => shownById('dialogue-overlay');
 const claimShown = (): boolean => shownById('claim-overlay');
 const boxShown = (): boolean => shownByTestId('box-title');
-const battleShown = (): boolean => shownByTestId('battle-title');
+// bt-17 (named fixture change): the battle roots are LAZY now (deploy, results, shell; several may
+// exist, hidden), so "a battle is shown" is "some battle-title in the document is displayed" — no
+// longer the first one, which threw when absent.
+const battleShown = (): boolean =>
+  [...document.querySelectorAll('[data-testid="battle-title"]')].some(isShown);
 
 interface FrameJson {
   readonly kind: string;
@@ -1592,8 +1699,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
 // sync first mirrored the outcome frame, so each case pins ages well clear of the 400 ms boundary
 // (the pure suite pins 399 / 400).
 
+// bt-17 (named fixture change): the root of the DISPLAYED battle title (the deploy / results panel
+// that owns the frame); the first title in the document may be a hidden lazily built root now.
 const battleRoot = (): HTMLElement => {
-  const title = document.querySelector('[data-testid="battle-title"]');
+  const title = [...document.querySelectorAll('[data-testid="battle-title"]')].find(isShown);
   const root = title?.parentElement;
   if (root === null || root === undefined) throw new Error('the battle overlay root is missing');
   return root;
@@ -1879,11 +1988,13 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     };
 
     /** The link comes back and the same Ongoing battle is re-delivered, in one batch at `t`. */
+    // bt-17 (named fixture change): the re-delivery carries the own monster and the Deploying
+    // tactical row with the anchor (`putBattle`), as the server re-sends them — the reset emptied
+    // both, and a row-less anchor shows no battle view after the purge.
     const reconnectAndRedeliver = async (t: number): Promise<void> => {
       opts.onReconnect(H.identity);
       opts.onHydrated();
-      opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
-      server(t);
+      putBattle(BATTLE_ID, t);
       await flush();
     };
 

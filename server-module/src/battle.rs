@@ -1,9 +1,10 @@
 //! `battle` — server-module domain submodule.
 //!
-//! The PvE/wild battle cluster: start/wild-start, the per-turn action reducers
-//! (submit_attack, swap_active, flee), heal, and the encounter + write-back
-//! helpers. Reducers are thin: validate the trust boundary, delegate the rule to
-//! `game-core` (the SSOT), write tables; reject with `Err`, never clamp.
+//! The 1v1 battle cluster, retired in bt-17: no reducer remains here (the per-turn action functions
+//! and the start are de-attributed, test-only bodies until the continuation deletes them); what is
+//! live is the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical settle
+//! funnel and the account lifecycle call. Helpers are thin: delegate the rule to `game-core` (the
+//! SSOT), write tables; reject with `Err`, never clamp.
 
 use crate::economy::grant_currency;
 use crate::evolution::check_and_evolve;
@@ -32,15 +33,6 @@ use game_core::{
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
-// `start_wild_battle` (dev-only) is the sole battle-module user of these
-// — gate the imports so the default (non-dev) build stays warning-clean.
-#[cfg(feature = "dev_reducers")]
-use crate::marshal::table_from_encounter_row;
-#[cfg(feature = "dev_reducers")]
-use crate::schema::{character, encounter, player};
-#[cfg(feature = "dev_reducers")]
-use game_core::resolve_encounter;
-
 /// Start a PvE battle: build BattleMonsters from the player's party and the
 /// opponent's party (owned by opponent_identity), create a BattleState, insert
 /// the Battle row. Each side's lead is the first slot with HP > 0;
@@ -54,8 +46,11 @@ use game_core::resolve_encounter;
 ///
 /// Deletion-gated: a caller whose account is mid-grace
 /// or terminal is refused before any other state read and every write.
-#[spacetimedb::reducer]
-pub fn start_battle(
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn start_battle(
     ctx: &ReducerContext,
     opponent_identity: Identity,
     party_monster_ids: Vec<u64>,
@@ -374,6 +369,9 @@ pub(crate) const NO_CONSCIOUS_MONSTER_REASON: &str = "party has no conscious mon
 /// selection: side A's active is the first party slot with HP > 0,
 /// and a party with no conscious member is rejected. EVERY rejection is an `Err`,
 /// never a panic.
+/// bt-17: dead in every non-test build (its only caller, the dev-only `start_wild_battle`, is
+/// deleted); kept for the trading escrow matrix until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn begin_encounter(
     ctx: &ReducerContext,
     player_identity: Identity,
@@ -529,85 +527,17 @@ pub(crate) fn begin_encounter(
     Ok(battle.battle_id)
 }
 
-/// DEV/TEST entrypoint: a faithful double of the grass
-/// path, since `movement_tick` is scheduler-only. Validates the sender joined +
-/// has a party + is not already in a battle, draws the encounter seed SERVER-side
-/// (`ctx.random()`, NO client-supplied seed → no IV-grind cheat surface), rolls
-/// species/level from the zone's PRIVATE `encounter` table exactly like the grass
-/// path, and calls `begin_encounter`. A missing encounter row or a no-trigger roll
-/// is a no-op `Err` (never a panic).
-#[cfg(feature = "dev_reducers")]
-#[spacetimedb::reducer]
-pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), String> {
-    let me = ctx.sender();
-    // Must be joined (has a player + character).
-    let Some(player) = ctx.db.player().identity().find(me) else {
-        let e = "not joined".to_string();
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    };
-    // Deletion gate: the same caller-only refusal as `start_battle`,
-    // right after the joined check.
-    crate::guards::require_not_deleting(ctx, "start_wild_battle")?;
-    let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {
-        let e = "no character".to_string();
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    };
-    // Reject a spoofed zone BEFORE any party DB work: the encounter is rolled from
-    // the caller's OWN zone, never a client-named arbitrary zone (reject-not-clamp).
-    if zone_id != character.zone_id {
-        let e = format!(
-            "zone mismatch: arg {zone_id} != character zone {}",
-            character.zone_id
-        );
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    }
-    // Must have a party.
-    let Some((party_ids, player_level)) = lead_party(ctx, me) else {
-        let e = "no party monster".to_string();
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    };
-    // Not already in a battle — EITHER role (begin_encounter
-    // re-checks, this gives a clear error).
-    if is_in_ongoing_battle(ctx, me) {
-        let e = "already in an ongoing battle".to_string();
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    }
-    // The zone's PRIVATE encounter table, keyed by the SERVER-authoritative
-    // character.zone_id (not the raw client arg) — defense-in-depth so the lookup
-    // never trusts the client even if the reject check above is later reordered
-    // (MED-1). (partial-sync: missing row → Err no-op.)
-    let Some(row) = ctx.db.encounter().zone_id().find(character.zone_id) else {
-        let e = format!("no encounter table for zone {}", character.zone_id);
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    };
-    let table = table_from_encounter_row(&row)?;
-    let seed: u32 = ctx.random();
-    let Some(w) = resolve_encounter(&table, seed, player_level) else {
-        let e = "no encounter triggered".to_string();
-        log_reject("start_wild_battle", me, &e);
-        return Err(e);
-    };
-    begin_encounter(
-        ctx,
-        me,
-        party_ids,
-        w.species_id,
-        w.level.as_u8(),
-        w.individuality_seed,
-    )?;
-    Ok(())
-}
-
 /// Submit an attack: resolve one turn where the player attacks with `skill_id`
 /// and the opponent uses AI. Ownership + outcome guards enforced.
-#[spacetimedb::reducer]
-pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Result<(), String> {
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn submit_attack(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    skill_id: u32,
+) -> Result<(), String> {
     let me = ctx.sender();
     let mut battle = ctx
         .db
@@ -771,8 +701,15 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
 }
 
 /// Swap the player's active monster. Ownership + outcome guards enforced.
-#[spacetimedb::reducer]
-pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Result<(), String> {
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn swap_active(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    team_index: u32,
+) -> Result<(), String> {
     let me = ctx.sender();
     let mut battle = ctx
         .db
@@ -914,8 +851,11 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
 }
 
 /// Flee from a battle. Sets outcome to `Fled`; no XP awarded.
-#[spacetimedb::reducer]
-pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     let me = ctx.sender();
     let mut battle = ctx
         .db
@@ -972,8 +912,15 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 /// 6. `consume_one` — irreversible spend happens only if all guards pass.
 /// 7. Clear `BattleMonster.status = None` on the active side-A monster; update
 ///    battle row. No turn advance: using an item is a between-turn passive action.
-#[spacetimedb::reducer]
-pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Result<(), String> {
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn use_battle_item(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    item_id: u32,
+) -> Result<(), String> {
     let me = ctx.sender();
     let mut battle = ctx
         .db

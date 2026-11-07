@@ -9,10 +9,6 @@
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import { BURST_EPSILON_MS } from '../shared/interpConfig';
-// T-OWNP-DOWNSTREAM composes ownPerspective with the REAL view model —
-// the behavioral tooth that proves the projection actually feeds the render path, not just
-// its own field-swap.
-import { buildBattleViewModel } from '../ui/battleModel';
 // The boundary converter, used by the npc-interaction integration
 // tooth at the foot of this file (adapter path: upsertNpc(npcRowToStore(row))).
 // 12r-d [E2]: healLocationRowToStore joins it for the heal-cost currency adapter tooth
@@ -4509,9 +4505,11 @@ describe('AuthoritativeStore 11r-b: ownPerspective(battle, identity) — pure vi
 
   it('T-OWNP-OUTCOME: fast-check — the outcome remap is an INVOLUTION; Ongoing/Fled/any unrecognized tag are FIXED POINTS', () => {
     // Kills: a remap that touches 'Fled' (only SideAWins/SideBWins ever swap), or that
-    // coerces/normalizes an unknown tag — which would defeat parseOutcomeTag's
-    // bindings-regen drift detector (ui/battleModel.ts:203-213 relies on an unrecognized
-    // string reaching it UNCHANGED so its null-guard path stays reachable and meaningful).
+    // coerces/normalizes an unknown tag — an unrecognized outcome must reach every consumer
+    // (decideBattleOverlay; the results panel reads the RAW anchor, not the projection) UNCHANGED, so a bindings-regen
+    // drift stays visible downstream instead of being silently mapped to a known tag.
+    // (bt-17: the 1v1 `parseOutcomeTag` this comment cited is deleted with ui/battleModel.ts's
+    // view model.)
     fc.assert(
       fc.property(
         fc.oneof(fc.constantFrom('Ongoing', 'SideAWins', 'SideBWins', 'Fled'), fc.string()),
@@ -4539,78 +4537,11 @@ describe('AuthoritativeStore 11r-b: ownPerspective(battle, identity) — pure vi
   });
 });
 
-describe('AuthoritativeStore 11r-b: ownPerspective ∘ buildBattleViewModel — the downstream behavioral tooth (ADR-0167)', () => {
-  it("T-OWNP-DOWNSTREAM: BITES side B's projected VM shows THEIR OWN cards/skills/bench; the RAW VM (no projection) shows the challenger's instead — the contrast that makes this bite (AC-7)", () => {
-    const aliceActive = ownpMonster(101, { knownSkillIds: [1] });
-    const aliceBench = ownpMonster(102, { knownSkillIds: [2] });
-    const bobActive = ownpMonster(201, { knownSkillIds: [3] });
-    const bobBenchHealthy = ownpMonster(202, { knownSkillIds: [4], currentHp: 10 });
-    const bobBenchFainted = ownpMonster(203, { knownSkillIds: [5], currentHp: 0 });
-
-    const b: StoreBattle = {
-      battleId: 77n,
-      playerIdentity: 'alice',
-      opponentIdentity: 'bob',
-      outcome: 'Ongoing',
-      turnNumber: 4,
-      sideA: { active: 0, team: [aliceActive, aliceBench] },
-      sideB: { active: 0, team: [bobActive, bobBenchHealthy, bobBenchFainted] },
-      partyMonsterIds: [11n, 12n],
-      opponentMonsterIds: [21n, 22n, 23n],
-      createdAtMs: 5000n,
-      weather: null,
-    };
-
-    const skillMap = new Map<number, StoreSkillRow>(
-      [1, 2, 3, 4, 5].map((id): [number, StoreSkillRow] => [id, skillRow(id)]),
-    );
-    const speciesMap = new Map<number, StoreSpeciesRow>(
-      [101, 102, 201, 202, 203].map((id): [number, StoreSpeciesRow] => [id, speciesRow(id)]),
-    );
-
-    // THE FIX under test: identity 'bob' is the accepter (opponentIdentity) — project
-    // BEFORE building the view model, exactly as main.ts's refreshBattle must (W-PVPB-PROJECT).
-    const projected = ownPerspective(b, 'bob');
-    const vmProjected = buildBattleViewModel(projected, skillMap, speciesMap);
-    expect(vmProjected).not.toBeNull();
-
-    expect(vmProjected!.playerCard.speciesName).toBe(speciesRow(201).name); // bob's OWN active
-    expect(vmProjected!.skills.map((s) => s.id)).toEqual([3]); // bob's OWN active's skills
-    expect(vmProjected!.bench.map((m) => m.speciesName)).toEqual([speciesRow(202).name]); // bob's OWN healthy bench (fainted excluded)
-    expect(vmProjected!.opponentCard.speciesName).toBe(speciesRow(101).name); // the challenger's
-    expect(vmProjected!.isPvp).toBe(true);
-    expect(vmProjected!.canRecruit).toBe(false); // AC-11
-    expect(vmProjected!.canFlee).toBe(false); // AC-11
-
-    // THE CONTRAST — what makes this bite: building the SAME view model from the RAW
-    // (unprojected) row shows the CHALLENGER's monster as playerCard. This is exactly the
-    // defect a dropped or partial ownPerspective call reproduces (the half-fix: AC-1
-    // satisfied via the role-agnostic accessor, AC-7 still violated because nothing
-    // projected the row before it reached buildBattleViewModel).
-    const vmRaw = buildBattleViewModel(b, skillMap, speciesMap);
-    expect(vmRaw).not.toBeNull();
-    expect(vmRaw!.playerCard.speciesName).toBe(speciesRow(101).name); // alice's, NOT bob's
-  });
-
-  it("T-OWNP-OUTCOME-VM: BITES side B's projected VM outcome is SideAWins when the raw row is SideBWins ('Victory!'), and SideBWins when raw is SideAWins ('Defeat...') (AC-8)", () => {
-    // battleView.ts #renderOutcome (~:430-435) maps SideAWins -> 'Victory!' and
-    // SideBWins -> 'Defeat...'. This VM-level tooth does not render the DOM banner itself
-    // (battleView.test.ts's job) — it pins the outcome tag battleView reads, which is what
-    // makes that fixed mapping correct FOR SIDE B specifically.
-    const skillMap = new Map<number, StoreSkillRow>();
-    const speciesMap = new Map<number, StoreSpeciesRow>();
-
-    const bobWon = ownpFixture({ outcome: 'SideBWins' }); // raw server truth: side B won
-    const vmBobWon = buildBattleViewModel(ownPerspective(bobWon, 'bob'), skillMap, speciesMap);
-    expect(vmBobWon).not.toBeNull();
-    expect(vmBobWon!.outcome).toBe('SideAWins'); // side B's OWN perspective: "I won"
-
-    const aliceWon = ownpFixture({ outcome: 'SideAWins' }); // raw server truth: side A won
-    const vmAliceWon = buildBattleViewModel(ownPerspective(aliceWon, 'bob'), skillMap, speciesMap);
-    expect(vmAliceWon).not.toBeNull();
-    expect(vmAliceWon!.outcome).toBe('SideBWins'); // side B's OWN perspective: "I lost"
-  });
-});
+// bt-17 (named intentional change, BT17.2): the 'ownPerspective ∘ buildBattleViewModel — the
+// downstream behavioral tooth' describe (T-OWNP-DOWNSTREAM, T-OWNP-OUTCOME-VM) is deleted with
+// buildBattleViewModel, its 1v1 consumer. Survivors: T-OWNP-SWAP and T-OWNP-OUTCOME above (the
+// projection itself) and main.dispatch.test.ts's [BT17-2] accepter case (the projection feeding
+// the deploy panel that replaced the 1v1 view).
 
 // ===========================================================================
 // StoreHealLocationRow carries costCurrency as a bigint, end to end.

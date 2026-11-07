@@ -2277,19 +2277,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // bt-15 increment B (named intentional change, BT15.3): the tactical shell's confirmed Forfeit
     // row (`forfeit`) is the battle's own action too — the player forfeits FROM the battle base:
     // 16 safe, 25 refused, 41 kinds (were 15 / 25 / 40).
+    // bt-17 (named intentional change, BT17.1): the seven 1v1 kinds (attack, flee, swap, recruit,
+    // useItem, pvpAttack, pvpSwap) leave `Command` and the table: 9 safe, 25 refused, 34 kinds (were
+    // 16 / 25 / 41). The battle's own actions are the four tactical ones; their absence is pinned
+    // by ui/battlePolicy.test.ts's [BT17-1] unrepresentability case.
     const big = 5n;
     const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['pop', { kind: 'pop' }],
       ['popToBase', { kind: 'popToBase' }],
       ['openMenu', { kind: 'openMenu' }],
       ['toggleHelp', { kind: 'toggleHelp' }],
-      ['attack', { kind: 'attack', battleId: big, skillId: 1 }],
-      ['flee', { kind: 'flee', battleId: big }],
-      ['swap', { kind: 'swap', battleId: big, teamIndex: 1 }],
-      ['recruit', { kind: 'recruit', battleId: big, baitItemId: undefined }],
-      ['useItem', { kind: 'useItem', battleId: big, itemId: 3 }],
-      ['pvpAttack', { kind: 'pvpAttack', battleId: big, skillId: 1 }],
-      ['pvpSwap', { kind: 'pvpSwap', battleId: big, teamIndex: 1 }],
       [
         'submitQueue',
         { kind: 'submitQueue', battleId: big, unitId: 3, entries: [{ tag: 'EndTurn' }] },
@@ -2333,28 +2330,21 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
-    expect(SAFE, 'ANTI-VACUITY: sixteen safe kinds (bt-15 B: +forfeit)').toHaveLength(16);
+    expect(SAFE, 'ANTI-VACUITY: nine safe kinds (bt-17: the seven 1v1 kinds gone)').toHaveLength(9);
     expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      41,
+      34,
     );
     expect(
       kindsOf(SAFE),
-      'the safe kinds are exactly the battle`s own actions (bt-11: the tactical submitQueue and cancelQueue too; bt-12: deployUnits; bt-15 B: forfeit), the stack moves and dismissDialogue',
+      'the safe kinds are exactly the battle`s own actions (the tactical submitQueue, cancelQueue, deployUnits and forfeit; bt-17: no 1v1 kind), the stack moves and dismissDialogue',
     ).toEqual([
       'pop',
       'popToBase',
       'openMenu',
       'toggleHelp',
-      'attack',
-      'flee',
-      'swap',
-      'recruit',
-      'useItem',
-      'pvpAttack',
-      'pvpSwap',
       'submitQueue',
       'cancelQueue',
       'deployUnits',
@@ -2362,7 +2352,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'dismissDialogue',
     ]);
 
-    // The table itself is total over the 41 literal kinds (bt-15 B: +forfeit) and says exactly this.
+    // The table itself is total over the 34 literal kinds (bt-17: −7) and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2455,14 +2445,18 @@ describe('context stack: battle semantics (ctl-6c)', () => {
 // that row against a later regression rather than driving it.
 
 describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, BT12.2)', () => {
-  it('the battle frame renderer follows the tactical phase: no tactical row is the 1v1 view, Deploying is the deploy panel, Active is the tactical shell, Finished is the results panel, and an unknown phase still shows a battle [BT12-1-RENDERER-BY-PHASE]', () => {
+  it('the battle frame renderer follows the tactical phase: no tactical row is none (bt-17: no 1v1 view), Deploying is the deploy panel, Active is the tactical shell, Finished is the results panel, and an unknown phase is none while its Ongoing battle still makes the battle base [BT12-1-RENDERER-BY-PHASE]', () => {
+    // NAMED INTENTIONAL CHANGE (bt-17, BT17.1; plan REV 3 §2 / R11): the 1v1 view is purged, so the
+    // row-less and unknown-phase answers are `'none'` (was `'legacy'`). B17 is narrowed to "a battle
+    // the client can render is never hidden": a battle it cannot render builds no view, and its
+    // Ongoing anchor still makes the battle base (pinned below through `reconcile`).
     // WRONG IMPL KILLED: a renderer keyed to the wrong phase (Deploying routed to the results panel,
-    // Finished to the deploy panel: two phases swapped); every phase routed to the 1v1 view (no
-    // tactical row ever owns the frame); a missing-row case that picks a tactical view (a legacy
-    // battle with no my_tactical_battle row would lose its only renderer); and an unknown phase (a
-    // future server variant arriving before a client regen) that throws or answers a hidden view
-    // instead of the 1v1 view (B17: a battle is never hidden).
-    expect(battleRenderer(undefined), 'no tactical row: the 1v1 view').toBe('legacy');
+    // Finished to the deploy panel: two phases swapped); every phase routed to `'none'` (no
+    // tactical row ever owns the frame); a missing-row case that picks a tactical view (a panel
+    // built for an anchor with no my_tactical_battle row); an unknown phase (a future server variant
+    // arriving before a client regen) that throws or answers a tactical view; and a "fix" that also
+    // drops the battle base for a battle with no renderer (movement would unlock mid-battle).
+    expect(battleRenderer(undefined), 'no tactical row: none (bt-17)').toBe('none');
     expect(battleRenderer('Deploying'), 'Deploying: the deploy panel').toBe('deploy');
     expect(battleRenderer('Active'), 'Active: the tactical shell').toBe('tactical');
     expect(battleRenderer('Finished'), 'Finished: the results panel').toBe('results');
@@ -2470,7 +2464,15 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     expect(() => {
       unknown = battleRenderer('Surrendered' as never);
     }, 'an unknown phase never throws').not.toThrow();
-    expect(unknown, 'an unknown phase still shows a battle: the 1v1 view (B17)').toBe('legacy');
+    expect(unknown, 'an unknown phase: none (bt-17)').toBe('none');
+    expect(
+      reconcile(deepFrozen(stackOf(WORLD)), {
+        ongoingBattleId: '7',
+        outcomeShown: false,
+        conversation: false,
+      }).stack,
+      'an Ongoing battle with no renderer still makes the battle base (B17 base half)',
+    ).toEqual(stackOf(battle('7')));
     expect(
       new Set([
         battleRenderer(undefined),
@@ -2482,7 +2484,7 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     ).toBe(4);
   });
 
-  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds sixteen safe and twenty-five refused kinds, forty-one in all (bt-15 increment B, named intentional change, BT15.3: +forfeit, the shell`s confirmed Forfeit row is battle-safe) [BT12-2-POLICY-DEPLOY]', () => {
+  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds nine safe and twenty-five refused kinds, thirty-four in all (bt-15 increment B: +forfeit; bt-17, named intentional change, BT17.1: the seven 1v1 kinds gone) [BT12-2-POLICY-DEPLOY]', () => {
     // WRONG IMPL KILLED: `deployUnits` classified `refuse` (the confirm screen's A, Start and the
     // Edit formation editor's Confirm would all die at the one place they exist: a Deploying battle
     // IS a battle base); a refusal keyed to the payload (empty picks, a bigint battle id past 2^53);
@@ -2512,16 +2514,18 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     expect(COMMAND_BATTLE_POLICY.forfeit, 'bt-15 B: forfeit is the battle`s own action').toBe(
       'safe',
     );
+    // bt-17 (named intentional change, BT17.1): the seven 1v1 kinds leave the table: 9 safe, 25
+    // refused, 34 kinds (were 16 / 25 / 41).
     const verdicts = Object.values(COMMAND_BATTLE_POLICY);
     expect(
       verdicts.filter((v) => v === 'safe'),
-      'sixteen safe kinds',
-    ).toHaveLength(16);
+      'nine safe kinds',
+    ).toHaveLength(9);
     expect(
       verdicts.filter((v) => v === 'refuse'),
       'twenty-five refused kinds',
     ).toHaveLength(25);
-    expect(Object.keys(COMMAND_BATTLE_POLICY), 'forty-one kinds in all').toHaveLength(41);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-four kinds in all').toHaveLength(34);
   });
 
   it('the pop a battle-frame renderer switch makes keeps the server conversation: over a battle base every player frame (menu, help, box, a prompt, a text entry) goes and only the dialogue frames stay, as the same objects in their order, while a world-based stack comes back untouched and a bare battle base alone [BT12-1-POP-KEEPS-DIALOGUE]', () => {

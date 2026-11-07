@@ -148,43 +148,11 @@ function checkOneOtherUsage(localeTag: string, source: string): void {
  *  dies on the CAT-01 exact-output-equality check below. */
 const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<string, unknown>]> = {
   'chrome.status.disconnected': [{ where: 'shop' }, { where: 'trade' }],
-  'battle.weather.banner': [
-    { label: 'Rain', turns: 2 },
-    { label: 'Sandstorm', turns: 5 },
-  ],
-  'battle.card.level': [{ level: 7 }, { level: 12 }],
-  'battle.card.hpLine': [
-    { current: 3, max: 9, affinity: 'Plant' },
-    { current: 20, max: 40, affinity: 'Fire' },
-  ],
-  // ctl-8i (named intentional change): both skill labels take power AND accuracy (the grid cell
-  // gives affinity, power and accuracy), so the hover-only `battle.skill.accuracy` key is DELETED
-  // (R-rb-56-FOLLOWUP-ACC) and the parameterised `battle.commands.waiting` takes its place here;
-  // +7 plain keys (the five command labels, the group label, the Run reason) are in EXPECTED_PLAIN
-  // = 279 keys. Every numeric field differs between the two sets, power 0 and accuracy 0 / 100
-  // included.
-  'battle.skill.pvpSubmit': [
-    { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
-    { name: 'Ember Jab', power: 0, affinity: 'Fire', accuracy: 100 },
-  ],
-  'battle.skill.pveLabel': [
-    { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
-    { name: 'Ember Jab', power: 35, affinity: 'Fire', accuracy: 0 },
-  ],
-  'battle.commands.waiting': [{ name: 'Rival' }, { name: 'Zed' }],
-  'battle.cure.option': [
-    { name: 'Tonic', cureStatus: 'Poison', count: 1 },
-    { name: 'Salve', cureStatus: 'Paralysis', count: 3 },
-  ],
-  // ctl-8j (named intentional change): +2 parameterised keys — the Recruit confirm names the bait
-  // and the Bag target names the active monster. Both are model data, carried verbatim.
-  'battle.recruit.confirm': [{ bait: 'Herb' }, { bait: 'Lure Berry' }],
-  'battle.cure.target': [{ species: 'Sproutle' }, { species: 'Emberfang' }],
-  'battle.swap.pvpSubmit': [{ species: 'Mosshorn' }, { species: 'Cindertail' }],
-  'battle.swap.pveLabel': [
-    { species: 'Mosshorn', current: 6, max: 10 },
-    { species: 'Cindertail', current: 15, max: 20 },
-  ],
+  // bt-17 (named intentional change, BT17.1): the 11 parameterised 1v1 `battle.*` keys that sat here
+  // (`battle.weather.banner`, `battle.card.{level,hpLine}`, `battle.skill.{pvpSubmit,pveLabel}`,
+  // `battle.commands.waiting`, `battle.cure.{option,target}`, `battle.recruit.confirm`,
+  // `battle.swap.{pvpSubmit,pveLabel}`) are DELETED with ui/battleView.ts, their only requester
+  // (catalogParity DEAD-KEY otherwise); `battle.rewards.{gold,xp}` leave below.
   'pvp.incoming.label': [{ challenger: 'Bob' }, { challenger: 'Dana' }],
   'pvp.outgoing.label': [{ target: 'Alice' }, { target: 'Elliot' }],
   // Evolution.* (5 ★). qf-8 (named intentional change, QF8.1): `evolution.choice.evolve` is
@@ -394,15 +362,9 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // destination zone's display name, content data from the zone_def row, carried verbatim; the two
   // sets are NON-shipped names that differ.
   'chrome.status.zoneEntered': [{ name: 'Cobalt Reach' }, { name: 'Umber Fen' }],
-  // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
-  // +battle.rewards.xp (2 ★), the KO-win payout lines under the outcome banner. `amount` of the gold
-  // line is the wallet delta, a bigint; the xp line's `name` is a monster nickname or species name
-  // (model data, carried verbatim) and its `amount` a number; every field differs between the sets.
-  'battle.rewards.gold': [{ amount: 30n }, { amount: 7n }],
-  'battle.rewards.xp': [
-    { name: 'Sparky', amount: 12 },
-    { name: 'Bolt', amount: 3 },
-  ],
+  // qf-17 had added `battle.rewards.{gold,xp}` (the 1v1 KO-win payout lines, 363 → 365). bt-17
+  // (named intentional change, BT17.1): both are DELETED with the 1v1 view's payout lines; the
+  // tactical results panel's `tactics.results.{monster,currency}` lines carry XP and gold.
   // bt-10 (named intentional change, BT10.5/BT10.6): 365 → 425, +29 parameterised `tactics.*` keys
   // (the turn bar's round / surge / retreat badges, the HUD's level / hp / ap / role lines, the
   // ticker's per-event lines and the turn banner). Every field differs between the two sets; names
@@ -568,9 +530,7 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
 const EM_DASH = String.fromCharCode(0x2014);
 /** ctl-8c's "opens a list" mark on the Feed… / Evolve… rows: U+2026 HORIZONTAL ELLIPSIS. */
 const ELLIPSIS = String.fromCharCode(0x2026);
-/** ctl-8i's curly apostrophe in the Run reason, U+2019 by code point (RIGHT_QUOTE below is declared
- *  after the plain table, which would read it in its temporal dead zone). */
-const CURLY_APOSTROPHE = String.fromCharCode(0x2019);
+// bt-17: ctl-8i's CURLY_APOSTROPHE (U+2019 in `battle.command.runPvpReason`) leaves with that key.
 /** U+00B7 MIDDLE DOT, the separator of a skill cell (MIDDLE_DOT below is declared after the tables). */
 const CELL_DOT = String.fromCharCode(0x00b7);
 
@@ -646,40 +606,17 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
   'chrome.status.healUnavailable': 'heal: no heal location available',
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
-  'battle.title': 'Battle', // battleView.ts:110
-  'battle.continueHint': 'Press Enter or Esc to continue', // battleView.ts:243
-  'battle.swap.hint':
-    'No healthy party monster in this battle to swap in. ' +
-    // qf-10 (named intentional change, QF10.4): was '... then B for Party & Box.'.
-    'When this battle ends, press Esc, then B for Monsters.', // battleView.ts:216-218
-  'battle.pvp.waiting': 'Waiting for opponent’s action…', // battleView.ts:347
-  'battle.card.you': 'You', // battleView.ts:291
-  'battle.card.opponent': 'Opponent', // battleView.ts:289
-  // qf-7c (named intentional change, QF7B.1): `battle.action.flee` ('Flee') is RETIRED with the
-  // legacy battle Flee button (catalogParity DEAD-KEY); the command list's Run is the only flee.
-  'battle.recruit.noBait': 'No bait', // battleView.ts:522
-  // ctl-8j (named intentional change): `battle.recruit.submit` ('Recruit'), `battle.cure.placeholder`
-  // ('Select item') and `battle.cure.submit` ('Use Item') are RETIRED with the two <select>s and
-  // their submit buttons (catalogParity DEAD-KEY); +5 plain keys — the bait list's name, the
-  // Recruit confirm's no-bait question and its Yes / No, and the cure list's name.
-  'battle.recruit.listLabel': 'Bait',
-  'battle.recruit.confirmNoBait': 'Recruit with no bait?',
-  'battle.recruit.yes': 'Yes',
-  'battle.recruit.no': 'No',
-  'battle.cure.listLabel': 'Cure items',
-  'battle.outcome.victory': 'Victory!', // battleView.ts:629
-  'battle.outcome.defeat': 'Defeat...', // battleView.ts:632
-  'battle.outcome.fled': 'Got away safely!', // battleView.ts:635
-  // ctl-8i (named intentional change): +7 plain keys — the five command labels, the command
-  // group's accessible name and the reason Run is disabled in a player battle (battleView.ts).
-  'battle.command.fight': 'Fight',
-  'battle.command.recruit': 'Recruit',
-  'battle.command.swap': 'Swap',
-  // qf-10 (named intentional change, QF10.5): the value was 'Bag'; the id is unchanged.
-  'battle.command.bag': 'Items',
-  'battle.command.run': 'Run',
-  'battle.commands.label': 'Commands',
-  'battle.command.runPvpReason': `You can${CURLY_APOSTROPHE}t run from a player battle.`,
+  // bt-17 (named intentional change, BT17.1): the four `battle.*` keys the tactical panels still
+  // read stay (`battle.title`, `battle.outcome.{victory,defeat,fled}`: the deploy / results titles);
+  // the 18 plain 1v1 rows that sat here (`battle.continueHint`, `battle.swap.hint`,
+  // `battle.pvp.waiting`, `battle.card.{you,opponent}`, `battle.recruit.{noBait,listLabel,
+  // confirmNoBait,yes,no}`, `battle.cure.listLabel`, `battle.command.{fight,recruit,swap,bag,run,
+  // runPvpReason}`, `battle.commands.label`) are DELETED with ui/battleView.ts (catalogParity
+  // DEAD-KEY otherwise).
+  'battle.title': 'Battle', // battleView.ts:110 (pre-migration source)
+  'battle.outcome.victory': 'Victory!', // battleView.ts:629 (pre-migration source)
+  'battle.outcome.defeat': 'Defeat...', // battleView.ts:632 (pre-migration source)
+  'battle.outcome.fled': 'Got away safely!', // battleView.ts:635 (pre-migration source)
   'pvp.title.idle': 'PvP', // pvpView.ts:135
   'pvp.title.challenge': 'PvP Challenge', // pvpView.ts:142
   // qf-8 (named intentional change): `pvp.incoming.accept` ('Accept'), `pvp.incoming.decline`
@@ -1216,80 +1153,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { where: 'trade' },
     outputB: 'trade: disconnected — try again',
   },
-  'battle.weather.banner': {
-    inputA: { label: 'Rain', turns: 2 },
-    outputA: 'Rain (2 turns)',
-    inputB: { label: 'Sandstorm', turns: 5 },
-    outputB: 'Sandstorm (5 turns)',
-  },
-  'battle.card.level': {
-    inputA: { level: 7 },
-    outputA: 'Lv7',
-    inputB: { level: 12 },
-    outputB: 'Lv12',
-  },
-  'battle.card.hpLine': {
-    inputA: { current: 3, max: 9, affinity: 'Plant' },
-    outputA: 'HP 3/9 · Plant',
-    inputB: { current: 20, max: 40, affinity: 'Fire' },
-    outputB: 'HP 20/40 · Fire',
-  },
-  // INTENTIONAL CHANGE (ctl-8i, CTL8I.2): the skill cell gives affinity, power AND accuracy in both
-  // modes, so both labels take all four params and end `· Acc N%`; the accuracy key is deleted.
-  // Was: pvpSubmit `Submit: {name} · {affinity}`, pveLabel `{name} ({power}) · {affinity}`, and a
-  // separate `battle.skill.accuracy` (`Acc N%`) that only the hover title carried. Power 0 and
-  // accuracy 0 / 100 are in the sets so a falsy fallback cannot hide.
-  'battle.skill.pvpSubmit': {
-    inputA: { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
-    outputA: `Submit: Vine Lash (40) ${CELL_DOT} Plant ${CELL_DOT} Acc 95%`,
-    inputB: { name: 'Ember Jab', power: 0, affinity: 'Fire', accuracy: 100 },
-    outputB: `Submit: Ember Jab (0) ${CELL_DOT} Fire ${CELL_DOT} Acc 100%`,
-  },
-  'battle.skill.pveLabel': {
-    inputA: { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
-    outputA: `Vine Lash (40) ${CELL_DOT} Plant ${CELL_DOT} Acc 95%`,
-    inputB: { name: 'Ember Jab', power: 35, affinity: 'Fire', accuracy: 0 },
-    outputB: `Ember Jab (35) ${CELL_DOT} Fire ${CELL_DOT} Acc 0%`,
-  },
-  // ctl-8i: the caption over a greyed command list while the opponent has not acted.
-  'battle.commands.waiting': {
-    inputA: { name: 'Rival' },
-    outputA: `Waiting for Rival${ELLIPSIS}`,
-    inputB: { name: 'Zed' },
-    outputB: `Waiting for Zed${ELLIPSIS}`,
-  },
-  'battle.cure.option': {
-    inputA: { name: 'Tonic', cureStatus: 'Poison', count: 1 },
-    outputA: 'Tonic (cures Poison) ×1',
-    inputB: { name: 'Salve', cureStatus: 'Paralysis', count: 3 },
-    outputB: 'Salve (cures Paralysis) ×3',
-  },
-  // ctl-8j: the Recruit confirm (the bait's name verbatim) and the Bag target (the active monster's
-  // species verbatim).
-  'battle.recruit.confirm': {
-    inputA: { bait: 'Herb' },
-    outputA: 'Recruit with Herb?',
-    inputB: { bait: 'Lure Berry' },
-    outputB: 'Recruit with Lure Berry?',
-  },
-  'battle.cure.target': {
-    inputA: { species: 'Sproutle' },
-    outputA: 'Use on Sproutle',
-    inputB: { species: 'Emberfang' },
-    outputB: 'Use on Emberfang',
-  },
-  'battle.swap.pvpSubmit': {
-    inputA: { species: 'Mosshorn' },
-    outputA: 'Submit Swap: Mosshorn',
-    inputB: { species: 'Cindertail' },
-    outputB: 'Submit Swap: Cindertail',
-  },
-  'battle.swap.pveLabel': {
-    inputA: { species: 'Mosshorn', current: 6, max: 10 },
-    outputA: 'Swap: Mosshorn (6/10)',
-    inputB: { species: 'Cindertail', current: 15, max: 20 },
-    outputB: 'Swap: Cindertail (15/20)',
-  },
+  // bt-17 (named intentional change, BT17.1): the 11 parameterised 1v1 `battle.*` outputs that sat
+  // here are DELETED with their keys (see SAMPLE_PARAMS); `battle.rewards.{gold,xp}` leave below.
   'pvp.incoming.label': {
     inputA: { challenger: 'Bob' },
     outputA: 'Bob has challenged you!',
@@ -1704,20 +1569,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Umber Fen' },
     outputB: 'Entering Umber Fen',
   },
-  // qf-17 (QF17.1, QF17.2): the KO-win payout lines; the gold digits are the bigint's own, and the
-  // monster name sits once, verbatim, in its xp line.
-  'battle.rewards.gold': {
-    inputA: { amount: 30n },
-    outputA: '+30 gold',
-    inputB: { amount: 7n },
-    outputB: '+7 gold',
-  },
-  'battle.rewards.xp': {
-    inputA: { name: 'Sparky', amount: 12 },
-    outputA: 'Sparky +12 XP',
-    inputB: { name: 'Bolt', amount: 3 },
-    outputB: 'Bolt +3 XP',
-  },
+  // bt-17 (named intentional change, BT17.1): qf-17's `battle.rewards.{gold,xp}` outputs are
+  // DELETED with the 1v1 payout lines.
   // bt-10 (BT10.5/BT10.6): the tactical client's parameterised lines. Names, reason texts and status
   // words are model data (a catalog text resolved by the caller) and sit once, verbatim, in the line;
   // the numbers are bare digits (no locale grouping); the bigint currency keeps every digit.
@@ -2299,7 +2152,19 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // bt-15 increment B (named intentional change, BT15.2/BT15.3/BT15.5): +9 plain and +4
     // parameterised `tactics.*` keys (the players label, the forfeit rows, the results reasons; the
     // clock ring, the strikes line, the rating lines) = 525.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-15 roster is 525 keys').toHaveLength(525);
+    // bt-17 (named intentional change, BT17.1): -31 `battle.*` keys (18 plain, 13 parameterised)
+    // with the 1v1 view; `battle.title` and `battle.outcome.{victory,defeat,fled}` stay = 494.
+    // RED TODAY: catalog.en.ts still carries the 31 keys (the roster below is 525 there).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-17 roster is 494 keys').toHaveLength(494);
+    expect(
+      EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
+      'bt-17: the four surviving battle.* keys, and no other',
+    ).toEqual([
+      'battle.outcome.defeat',
+      'battle.outcome.fled',
+      'battle.outcome.victory',
+      'battle.title',
+    ]);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2331,10 +2196,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
       ).not.toBe(spec.outputB);
     }
 
-    // (e) the two glyph pins — by code point, not a pasted glyph.
-    const waiting = (CATALOG_EN as Record<string, unknown>)['battle.pvp.waiting'] as string;
-    expect(waiting.includes('’'), 'battle.pvp.waiting must carry U+2019').toBe(true);
-    expect(waiting.includes('…'), 'battle.pvp.waiting must carry U+2026').toBe(true);
+    // (e) the glyph pins — by code point, not a pasted glyph.
+    // bt-17 (named intentional change, BT17.1): the `battle.pvp.waiting` half (U+2019, U+2026) is
+    // deleted with the key; pvp.outgoing.label's U+2026 / U+2014 pin below stays.
     const outgoingFn = (CATALOG_EN as Record<string, unknown>)['pvp.outgoing.label'] as (p: {
       target: string;
     }) => string;
@@ -2345,12 +2209,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
       'pvp.outgoing.label output must carry " " + U+2014 (em dash) + " "',
     ).toBe(true);
 
-    // (f) battle.swap.hint is one string containing '. When'.
-    const swapHint = (CATALOG_EN as Record<string, unknown>)['battle.swap.hint'] as string;
-    expect(typeof swapHint, 'battle.swap.hint must be a plain string').toBe('string');
-    expect(swapHint.includes('. When'), 'battle.swap.hint must contain the literal ". When"').toBe(
-      true,
-    );
+    // (f) bt-17 (named intentional change, BT17.1): the `battle.swap.hint` ". When" pin is deleted
+    // with the key (the 1v1 bench hint).
   });
 
   it('m24s3 CAT-02: every STRING param value appears verbatim in its output (I18N-21 structural half, both sample sets), and the @desc census stays clean over the grown catalog', () => {
@@ -2391,14 +2251,15 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
 /** U+00E9 (e acute), built by code point so the expected French text holds no pasted glyph. */
 const E_ACUTE = String.fromCharCode(0x00e9);
 
+// bt-17 (named intentional change, BT17.1): the `battle.continueHint` row is deleted with the key
+// (the 1v1 outcome's continue hint); the two menu.disabled.* rows stay.
 const EXPECTED_FR_CTL6C: Record<string, string> = {
-  'battle.continueHint': `Appuyez sur Entr${E_ACUTE}e ou Esc pour continuer`,
   'menu.disabled.inBattle': 'Impossible pendant un combat',
   'menu.disabled.battleBag': 'Utilisez les objets avec la commande Sac du combat',
 };
 
 describe('ctl-6c: catalog.fr.ts, the battle keys ctl-6c changed or added', () => {
-  it('ctl-6c FR-PINS: the French battle.continueHint names Enter as well as Esc, and the two menu.disabled.* reasons are their exact French text, each a translation of its English entry', () => {
+  it('ctl-6c FR-PINS: the two menu.disabled.* reasons are their exact French text, each a translation of its English entry (bt-17: the battle.continueHint half is deleted with the key)', () => {
     // WRONG IMPL KILLED (measured): the French continue hint left at, or reverted to, the
     // pre-ctl-6c "Appuyez sur Esc pour continuer" while the English one names Enter too (a French
     // player is never told that A continues the outcome); a French reason left as the English copy
@@ -2681,74 +2542,15 @@ describe('ctl-8g: catalog.fr.ts, the keys ctl-8g adds', () => {
 });
 
 // =============================================================================
-// ctl-8j: the French side of the 7 keys ctl-8j adds (the bait list's name, the Recruit confirm and
-// its Yes / No, the cure list's name and the Bag target), and the 3 keys it retires. Before each `?`
-// stands a U+00A0 NO-BREAK SPACE, the typography catalog.fr.ts documents in its header (ctl-8d).
+// ctl-8j's French pins (the bait list, the Recruit confirm and its Yes / No, the cure list and the Bag
+// target) and its retired-id loop are DELETED by bt-17 (named intentional change, BT17.1): every key
+// they named is a 1v1 `battle.*` key deleted with ui/battleView.ts. The retired-id half's survivor is
+// CAT-01's exact roster census (EXPECTED_KEYS holds no `battle.*` key but the four survivors).
 // =============================================================================
 
-/** U+00E2 (a circumflex), built by code point so the expected text holds no pasted glyph. */
+/** U+00E2 (a circumflex), built by code point so the expected text holds no pasted glyph (the bt-15 B
+ *  French pins below read it). */
 const A_CIRCUMFLEX = String.fromCharCode(0x00e2);
-
-const EXPECTED_FR_CTL8J_PLAIN: Record<string, string> = {
-  'battle.recruit.listLabel': `App${A_CIRCUMFLEX}t`,
-  'battle.recruit.confirmNoBait': `Recruter sans app${A_CIRCUMFLEX}t${NO_BREAK_SPACE}?`,
-  'battle.recruit.yes': 'Oui',
-  'battle.recruit.no': 'Non',
-  'battle.cure.listLabel': 'Objets de soin',
-};
-
-/** The French output for sample A, then sample B, of each new parameterised key. */
-const EXPECTED_FR_CTL8J_PARAMS: Record<string, readonly [string, string]> = {
-  'battle.recruit.confirm': [
-    `Recruter avec Herb${NO_BREAK_SPACE}?`,
-    `Recruter avec Lure Berry${NO_BREAK_SPACE}?`,
-  ],
-  'battle.cure.target': ['Utiliser sur Sproutle', 'Utiliser sur Emberfang'],
-};
-
-describe('ctl-8j: catalog.fr.ts, the keys ctl-8j adds and retires', () => {
-  it('ctl-8j FR-PINS: the 5 new plain keys and the 2 new parameterised keys carry their exact French text, each a translation of its English entry and each closure fed both English sample sets; the three retired ids are gone from both catalogs', () => {
-    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot, the whole Recruit
-    // and Bag step blank); a French entry left as the English copy or swapped with a sibling (Oui /
-    // Non); a closure that drops or swaps its param (the bait or the species); a question mark
-    // glued to its word or set off by a plain breaking space instead of the catalog's U+00A0; a
-    // decomposed or missing circumflex in "Appat"; and a retired id left behind as a dead key in
-    // either catalog.
-    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8J_PLAIN)) {
-      const en = EXPECTED_PLAIN[key];
-      expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
-      const fr = (CATALOG_FR as Record<string, unknown>)[key];
-      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
-      expect(fr, `${key}: the exact French text`).toBe(expected);
-      expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
-    }
-    for (const [key, [outputA, outputB]] of Object.entries(EXPECTED_FR_CTL8J_PARAMS)) {
-      const spec = EXPECTED_PARAM_OUTPUTS[key];
-      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
-      const fr = (CATALOG_FR as Record<string, unknown>)[key];
-      expect(typeof fr, `${key} must be a closure in the fr catalog`).toBe('function');
-      const fn = fr as (p: Record<string, unknown>) => string;
-      expect(fn((spec as ParamOutputSpec).inputA), `${key}(sample A) in French`).toBe(outputA);
-      expect(fn((spec as ParamOutputSpec).inputB), `${key}(sample B) in French`).toBe(outputB);
-      expect(outputA, `${key}: a translation, not the English line`).not.toBe(
-        (spec as ParamOutputSpec).outputA,
-      );
-    }
-    expect(
-      Object.keys(EXPECTED_FR_CTL8J_PLAIN).length + Object.keys(EXPECTED_FR_CTL8J_PARAMS).length,
-      'ANTI-VACUITY: all 7 ctl-8j keys are pinned in French',
-    ).toBe(7);
-
-    for (const retired of [
-      'battle.recruit.submit',
-      'battle.cure.placeholder',
-      'battle.cure.submit',
-    ]) {
-      expect(Object.hasOwn(CATALOG_EN as object, retired), `en ${retired} is retired`).toBe(false);
-      expect(Object.hasOwn(CATALOG_FR as object, retired), `fr ${retired} is retired`).toBe(false);
-    }
-  });
-});
 
 // =============================================================================
 // ctl-8k: the French side of the 2 keys ctl-8k adds (the session gate's Retry label and its frame
@@ -3362,8 +3164,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 525 keys').toBe(525);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(525);
+    // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 494 keys').toBe(494);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(494);
   });
 });
 
@@ -3473,8 +3276,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 525 keys').toBe(525);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(525);
+    // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 494 keys').toBe(494);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(494);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3611,7 +3415,12 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
 // here (the French glyphs by code point); none is read off the catalog under test.
 // =============================================================================
 
-/** The seven keys qf-10 revalues, with their exact English text. */
+// bt-17 (named intentional change, BT17.1): two of qf-10's seven revalued keys —
+// `battle.swap.hint` (the 1v1 bench hint) and `battle.command.bag` (the 1v1 Items command) — are
+// DELETED with ui/battleView.ts, so the tables below hold the five that remain (were seven) and the
+// naming set four (was five; the "À la fin du combat" capital A-grave leaves with the swap hint).
+
+/** The five keys qf-10 revalued that remain (bt-17), with their exact English text. */
 const QF10_EN: Record<string, string> = {
   'box.title': 'Monsters',
   'box.hint':
@@ -3619,18 +3428,12 @@ const QF10_EN: Record<string, string> = {
     `${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`,
   'box.section.box': 'Storage',
   'box.box.empty': 'No monsters in storage.',
-  'battle.swap.hint':
-    'No healthy party monster in this battle to swap in. ' +
-    'When this battle ends, press Esc, then B for Monsters.',
   'raising.title': 'Inventory',
-  'battle.command.bag': 'Items',
 };
 
-/** U+00C0 (A grave) opens "À la fin du combat". */
-const QF10_A_GRAVE_CAP = String.fromCharCode(0x00c0);
-
-/** The seven keys qf-10 revalues, with their exact French text. The apostrophe is U+2019 and the
- *  quote is a guillemet pair with U+00A0 inside, as catalog.fr.ts documents; the dash is U+2014. */
+/** The five keys qf-10 revalued that remain (bt-17), with their exact French text. The apostrophe is
+ *  U+2019 and the quote is a guillemet pair with U+00A0 inside, as catalog.fr.ts documents; the dash
+ *  is U+2014. */
 const QF10_FR: Record<string, string> = {
   'box.title': 'Monstres',
   'box.hint':
@@ -3641,21 +3444,15 @@ const QF10_FR: Record<string, string> = {
     `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`,
   'box.section.box': 'Stockage',
   'box.box.empty': 'Aucun monstre dans le stockage.',
-  'battle.swap.hint':
-    `Aucun monstre de l${RIGHT_QUOTE}${E_ACUTE}quipe en ${E_ACUTE}tat de combattre ne peut ` +
-    `entrer dans ce combat. ${QF10_A_GRAVE_CAP} la fin du combat, appuyez sur Esc, puis sur B ` +
-    'pour Monstres.',
   'raising.title': 'Inventaire',
-  'battle.command.bag': 'Objets',
 };
 
-/** The six values that named the Box / Raising screens (the bag command is not among them). */
+/** The five values that named the Box / Raising screens (bt-17: `battle.swap.hint` deleted). */
 const QF10_NAMING_KEYS = [
   'box.title',
   'box.hint',
   'box.section.box',
   'box.box.empty',
-  'battle.swap.hint',
   'raising.title',
 ] as const;
 
@@ -3679,7 +3476,7 @@ function hasWholeWord(text: string, word: string): boolean {
 }
 
 describe('qf-10: the Monsters / Storage / Inventory / Items wording in both catalogs', () => {
-  it('the English catalog carries the seven qf-10 values exactly and the legacy Party & Box, Raising & Inventory and Box wording is gone from the naming values [QF10-4-EN-VALUES]', () => {
+  it('the English catalog carries the five remaining qf-10 values exactly (bt-17: the two 1v1 battle values deleted) and the legacy Party & Box, Raising & Inventory and Box wording is gone from the naming values [QF10-4-EN-VALUES]', () => {
     // WRONG IMPL KILLED: a value left on the shipped 'Party & Box' / 'Raising & Inventory' /
     // 'Box' / 'No monsters in box.' / 'Bag'; the hint still saying 'arrive in your Box'; the swap
     // hint still pointing at 'Party & Box'; a reworded value (every byte is pinned); and a value
@@ -3689,7 +3486,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     for (const [key, expected] of Object.entries(QF10_EN)) {
       expect(en[key], `en ${key}: the exact qf-10 text`).toBe(expected);
     }
-    expect(Object.keys(QF10_EN), 'ANTI-VACUITY: seven keys').toHaveLength(7);
+    expect(Object.keys(QF10_EN), 'ANTI-VACUITY: five keys (bt-17: was seven)').toHaveLength(5);
     for (const key of QF10_NAMING_KEYS) {
       const value = String(en[key]);
       expect(value.includes('Party & Box'), `en ${key} no longer says "Party & Box"`).toBe(false);
@@ -3705,7 +3502,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     expect(hasWholeWord('Boxes and sandbox', 'Box'), 'control: a substring is not').toBe(false);
   });
 
-  it('the French catalog carries the seven qf-10 values exactly and the legacy Equipe et boite, boite, Elevage and Sac wording is gone from the naming values [QF10-4-FR-VALUES]', () => {
+  it('the French catalog carries the five remaining qf-10 values exactly (bt-17: the two 1v1 battle values deleted) and the legacy Equipe et boite, boite, Elevage and Sac wording is gone from the naming values [QF10-4-FR-VALUES]', () => {
     // WRONG IMPL KILLED: a French value left on 'Équipe et boîte' / 'Boîte' / 'Élevage' / 'Sac'
     // while the English moved (a French boot keeps the old names); the hint still saying
     // 'votre Boîte'; a reworded value or a lost accent / U+2019 / U+00A0 (every byte is pinned); a
@@ -3718,7 +3515,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     for (const [key, expected] of Object.entries(QF10_FR)) {
       expect(fr[key], `fr ${key}: the exact qf-10 text`).toBe(expected);
     }
-    expect(Object.keys(QF10_FR), 'ANTI-VACUITY: seven keys').toHaveLength(7);
+    expect(Object.keys(QF10_FR), 'ANTI-VACUITY: five keys (bt-17: was seven)').toHaveLength(5);
     for (const key of QF10_NAMING_KEYS) {
       const value = String(fr[key]);
       expect(value.includes(EQUIPE_ET_BOITE), `fr ${key} no longer says "${EQUIPE_ET_BOITE}"`).toBe(
@@ -3729,10 +3526,8 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
       expect(value.includes(ELEVAGE), `fr ${key} has no "${ELEVAGE}"`).toBe(false);
       expect(hasWholeWord(value, 'Sac'), `fr ${key} has no whole word "Sac"`).toBe(false);
     }
-    // The bag command is French too, and is not the English word.
-    expect(fr['battle.command.bag'], 'fr battle.command.bag is not the English copy').not.toBe(
-      (CATALOG_EN as Record<string, unknown>)['battle.command.bag'],
-    );
+    // bt-17 (named intentional change): the "the bag command is French too" pin is deleted with
+    // `battle.command.bag` (subject deleted: the 1v1 Items command).
     // Every guillemet in the hint is padded by U+00A0, never a breaking space.
     const hint = String(fr['box.hint']);
     expect(hint.includes(`${QF8_LEFT_GUILLEMET} `), 'no breaking space after the opening «').toBe(
@@ -3750,17 +3545,18 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // shrank (an id added beside the old one instead of revalued).
     const en = CATALOG_EN as Record<string, unknown>;
     const fr = CATALOG_FR as Record<string, unknown>;
+    // bt-17 (named intentional change, BT17.1): `battle.swap.hint` and `battle.command.bag` leave this
+    // list — they are not renamed, they are DELETED with the 1v1 view (the roster census below and
+    // CAT-01's `battle.*` census pin their absence).
     const LEGACY_IDS = [
       'box.title',
       'box.hint',
       'box.section.party',
       'box.section.box',
       'box.box.empty',
-      'battle.swap.hint',
       'raising.title',
-      'battle.command.bag',
     ] as const;
-    expect(LEGACY_IDS, 'ANTI-VACUITY: eight ids').toHaveLength(8);
+    expect(LEGACY_IDS, 'ANTI-VACUITY: six ids (bt-17: was eight)').toHaveLength(6);
     for (const id of LEGACY_IDS) {
       expect(Object.hasOwn(en, id), `en keeps ${id}`).toBe(true);
       expect(Object.hasOwn(fr, id), `fr keeps ${id}`).toBe(true);
@@ -3780,9 +3576,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // NAMED INTENTIONAL CHANGE (bt-12 B, plan §2.9): 504 → 511.
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 525 keys').toBe(525);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(525);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(525);
+    // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 494 keys').toBe(494);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(494);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(494);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -3901,141 +3698,12 @@ describe('qf-15: the zone cue template in both catalogs', () => {
 });
 
 // =============================================================================
-// qf-17 (QF17.1, QF17.2): the KO-win payout lines in BOTH catalogs. The gold line carries the wallet
-// delta, a bigint; the xp line carries a monster's display name (a nickname or a species name, model
-// data, never catalogued) and its XP gain, a number. Every expected byte is typed here, the names
-// are NON-shipped, and none is read off the catalog under test. The French xp line puts a U+00A0
-// before its colon (catalog.fr.ts's documented typography), asserted by code point.
+// qf-17's catalog pins (QF17-1-CATALOG-GOLD, QF17-2-CATALOG-XP: the 1v1 KO-win payout lines
+// `battle.rewards.{gold,xp}` in both catalogs) are DELETED by bt-17 (named intentional change,
+// BT17.1) with the keys. Survivors: tactics/results.test.ts BT12-6-RESULTS-TEXT-FROM-CATALOG and the
+// `tactics.results.{monster,currency}` rows of CAT-01 above (the tactical results panel's XP and
+// gold lines, bigint digit-for-digit).
 // =============================================================================
-
-/** U+00A0 NO-BREAK SPACE, built by code point (never a pasted invisible character). */
-const QF17_NBSP = String.fromCharCode(0x00a0);
-
-describe('qf-17: the KO-win payout lines in both catalogs', () => {
-  it('battle.rewards.gold is a closure in both catalogs: +N gold in English and +N or in French, the bigint amount echoed once and digit-for-digit, for differing amounts [QF17-1-CATALOG-GOLD]', () => {
-    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the gold line never
-    // shows); a plain string where the amount must be interpolated; a French line left as the
-    // English copy; a closure that drops or repeats the amount, or hard-codes one; an amount run
-    // through Number() or a locale formatter (past 2^53 the last digit changes, and 1157 becomes
-    // "1,157"); a sign dropped; the key missing from the pinned roster or the two sample tables.
-    const KEY = 'battle.rewards.gold';
-    const en = CATALOG_EN as Record<string, unknown>;
-    const fr = CATALOG_FR as Record<string, unknown>;
-    expect(Object.hasOwn(en, KEY), 'en carries the key').toBe(true);
-    expect(Object.hasOwn(fr, KEY), 'fr carries the key').toBe(true);
-    expect(typeof en[KEY], 'en is a closure').toBe('function');
-    expect(typeof fr[KEY], 'fr is a closure').toBe('function');
-    const enFn = en[KEY] as (p: { amount: bigint }) => string;
-    const frFn = fr[KEY] as (p: { amount: bigint }) => string;
-
-    type Case = readonly [bigint, string, string];
-    const CASES: readonly Case[] = [
-      [30n, '+30 gold', '+30 or'],
-      [7n, '+7 gold', '+7 or'],
-      [1157n, '+1157 gold', '+1157 or'],
-      [9_007_199_254_740_993n, '+9007199254740993 gold', '+9007199254740993 or'],
-    ];
-    for (const [amount, enLine, frLine] of CASES) {
-      expect(enFn({ amount }), `en, ${amount}`).toBe(enLine);
-      expect(frFn({ amount }), `fr, ${amount}`).toBe(frLine);
-      expect(frFn({ amount }), `${amount}: a translation, not the English line`).not.toBe(
-        enFn({ amount }),
-      );
-      expect(enFn({ amount }).split(String(amount)).length - 1, `en carries ${amount} once`).toBe(
-        1,
-      );
-      expect(frFn({ amount }).split(String(amount)).length - 1, `fr carries ${amount} once`).toBe(
-        1,
-      );
-    }
-    expect(CASES, 'ANTI-VACUITY: four amounts').toHaveLength(4);
-    expect(enFn({ amount: 30n }), 'the amounts change the line (en)').not.toBe(
-      enFn({ amount: 7n }),
-    );
-    expect(frFn({ amount: 30n }), 'the amounts change the line (fr)').not.toBe(
-      frFn({ amount: 7n }),
-    );
-
-    // The key is in the pinned roster and in both sample tables, so CAT-01's bijection and
-    // exact-output checks cover it.
-    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
-    expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([{ amount: 30n }, { amount: 7n }]);
-    const spec = EXPECTED_PARAM_OUTPUTS[KEY] as ParamOutputSpec;
-    expect(spec, 'the English output pins exist').toBeDefined();
-    expect(spec.outputA).toBe('+30 gold');
-    expect(spec.outputB).toBe('+7 gold');
-  });
-
-  it('battle.rewards.xp is a closure in both catalogs: Name +N XP in English and Name, a no-break space, a colon, +N XP in French, the name echoed once and verbatim, for differing names and amounts [QF17-2-CATALOG-XP]', () => {
-    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the xp line never
-    // shows); a French line left as the English copy; the French colon preceded by a breaking space
-    // or by nothing (a browser can strand the colon on the next line; catalog.fr.ts spaces every
-    // colon with U+00A0); a closure that swaps, drops or repeats a param; a name run through a
-    // transform (case, trim, escaping: `<b>x</b>` must stay as typed); an amount run through a
-    // locale formatter (1000000 becomes "1,000,000"); the key missing from the pinned roster or the
-    // two sample tables.
-    const KEY = 'battle.rewards.xp';
-    const en = CATALOG_EN as Record<string, unknown>;
-    const fr = CATALOG_FR as Record<string, unknown>;
-    expect(Object.hasOwn(en, KEY), 'en carries the key').toBe(true);
-    expect(Object.hasOwn(fr, KEY), 'fr carries the key').toBe(true);
-    expect(typeof en[KEY], 'en is a closure').toBe('function');
-    expect(typeof fr[KEY], 'fr is a closure').toBe('function');
-    type Params = { name: string; amount: number };
-    const enFn = en[KEY] as (p: Params) => string;
-    const frFn = fr[KEY] as (p: Params) => string;
-
-    type Case = readonly [Params, string, string];
-    const SPARKY: Case = [
-      { name: 'Sparky', amount: 12 },
-      'Sparky +12 XP',
-      `Sparky${QF17_NBSP}: +12 XP`,
-    ];
-    const BOLT: Case = [{ name: 'Bolt', amount: 3 }, 'Bolt +3 XP', `Bolt${QF17_NBSP}: +3 XP`];
-    const MARKUP: Case = [
-      { name: '<b>x</b>', amount: 1_000_000 },
-      '<b>x</b> +1000000 XP',
-      `<b>x</b>${QF17_NBSP}: +1000000 XP`,
-    ];
-    const CASES: readonly Case[] = [SPARKY, BOLT, MARKUP];
-    for (const [params, enLine, frLine] of CASES) {
-      expect(enFn(params), `en, ${params.name}`).toBe(enLine);
-      expect(frFn(params), `fr, ${params.name}`).toBe(frLine);
-      expect(frFn(params), `${params.name}: a translation, not the English line`).not.toBe(
-        enFn(params),
-      );
-      expect(enFn(params).split(params.name).length - 1, `en carries ${params.name} once`).toBe(1);
-      expect(frFn(params).split(params.name).length - 1, `fr carries ${params.name} once`).toBe(1);
-      expect(
-        enFn(params).split(String(params.amount)).length - 1,
-        `en carries ${params.amount} once`,
-      ).toBe(1);
-      expect(
-        frFn(params).split(String(params.amount)).length - 1,
-        `fr carries ${params.amount} once`,
-      ).toBe(1);
-
-      // The space before the French colon is U+00A0 and nothing else, by code point.
-      const frText = frFn(params);
-      const at = params.name.length;
-      expect(frText.charCodeAt(at), `fr ${params.name}: the space before the colon`).toBe(0x00a0);
-      expect(frText.charAt(at + 1), `fr ${params.name}: then the colon`).toBe(':');
-      expect(frText.includes(`${params.name} :`), 'no breaking space before the colon').toBe(false);
-    }
-    expect(CASES, 'ANTI-VACUITY: three names').toHaveLength(3);
-    expect(enFn(SPARKY[0]), 'the params change the line (en)').not.toBe(enFn(BOLT[0]));
-    expect(frFn(SPARKY[0]), 'the params change the line (fr)').not.toBe(frFn(BOLT[0]));
-
-    // The key is in the pinned roster and in both sample tables (the two sample sets are Sparky and
-    // Bolt), so CAT-01's bijection and exact-output checks cover it.
-    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
-    expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([SPARKY[0], BOLT[0]]);
-    const spec = EXPECTED_PARAM_OUTPUTS[KEY] as ParamOutputSpec;
-    expect(spec, 'the English output pins exist').toBeDefined();
-    expect(spec.outputA).toBe(SPARKY[1]);
-    expect(spec.outputB).toBe(BOLT[1]);
-  });
-});
 
 // =============================================================================
 // bt-15 increment A (BT15.1, BT15.5): the Challenge pick's size row in BOTH catalogs, read through

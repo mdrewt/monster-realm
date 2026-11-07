@@ -1,8 +1,9 @@
 //! `pvp` — server-module domain submodule.
 //!
-//! PvP battle orchestration: challenge handshake, secret-pick submission,
-//! both-submit resolution via the existing symmetric `resolve_full_turn`, and
-//! liveness (turn-deadline scheduled reaper + forfeit-on-disconnect).
+//! PvP orchestration: the challenge handshake (the accept opens a TACTICAL battle), the
+//! challenge TTL reaper and forfeit-on-disconnect. The 1v1 secret-pick path (`submit_pvp_action`,
+//! both-submit resolution, the turn-deadline reaper's arming) is no longer a reducer since bt-17;
+//! its body stays test-only until the continuation deletes it.
 //! Challenge liveness: a scheduled TTL reaper deletes Pending challenges older
 //! than `CHALLENGE_TTL_MS`; every challenge-deletion path
 //! disarms its schedule row.
@@ -13,7 +14,7 @@
 //!   participant-scoped `my_battle` view (`battle` itself is private).
 //! - Accepting a challenge opens a TACTICAL battle through `tactics::start_pvp_tactical`
 //!   (bt-16: the one live PvP path). The 1v1 `start_pvp_battle` helper is unreachable
-//!   from any live path and is deleted by bt-17.
+//!   from any live path (test-only until the continuation deletes it).
 //! - Forfeit maps to the existing `SideAWins`/`SideBWins` outcomes; no new
 //!   `BattleOutcome` variant is added (BSATN stability).
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
@@ -142,8 +143,8 @@ pub struct PvpDeadlineSchedule {
 // ===========================================================================
 
 /// Schedule a one-shot deadline reaper for `battle_id` at turn `turn_number`.
-/// Called from `accept_challenge` (turn 0) and `resolve_pvp_turn_if_ready`
-/// (each subsequent turn).
+/// Reached only from `resolve_pvp_turn_if_ready` under the de-attributed `submit_pvp_action`
+/// (bt-17): no reducer arms it; `accept_challenge` starts tactical battles since bt-16.
 fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
     let now_micros = ctx.timestamp.to_micros_since_unix_epoch();
     let deadline_micros = now_micros.saturating_add(PVP_TURN_DEADLINE_MS * 1_000);
@@ -332,8 +333,8 @@ pub(crate) fn start_pvp_battle(
     // alongside. Team order is preserved, so `team[i]` stays coupled to
     // `*_monster_ids[i]` for HP write-back and to `ability_ids_*[i]` for the
     // entry ability. The audited identity is the SIDE'S OWNER, never `ctx.sender()`
-    // — this helper is reached only from `accept_challenge`, where `ctx.sender()`
-    // is the ACCEPTOR.
+    // — this helper was reached only from `accept_challenge` (the ACCEPTOR) until bt-16; since
+    // bt-17 nothing but the trading escrow matrix calls it.
     let side_a = BattleSide::with_lead(team_a).ok_or_else(|| {
         let e = "challenger party has no conscious monster".to_string();
         log_reject("start_pvp_battle", challenger, &e);
@@ -1061,7 +1062,7 @@ pub fn accept_challenge(
     // Guard 3a: re-checked at accept time — load-bearing, not
     // redundant. Pending rows created before enforcement activation, and any
     // future account-status revocation, must never create a ranked battle;
-    // start_pvp_battle (guard 6, irreversible) is reached ONLY from here.
+    // the tactical start (guard 6, irreversible) is reached ONLY from here.
     if let Err(reason) = ranked_account_gate(
         ranked_enforcement_active(),
         crate::accounts::is_account_holder(ctx, me),
@@ -1229,8 +1230,11 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 /// 6. Double-submit guard: no existing BattleAction for (battle_id, caller, turn_number).
 /// 7. Insert BattleAction (irreversible).
 /// 8. Resolve turn if both sides have now submitted.
-#[spacetimedb::reducer]
-pub fn submit_pvp_action(
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn submit_pvp_action(
     ctx: &ReducerContext,
     battle_id: u64,
     action: PvpAction,

@@ -3,8 +3,8 @@
 // WHY THIS FILE EXISTS. `fr` is the second registered locale: it proves, at runtime and under
 // the §5.3 parity gate (catalogParity.test.ts), that the resolver/catalog resolver/catalog seam
 // carries a real translation — every `MessageId` resolves, every closure reads exactly the
-// same param fields as its English twin, and the first CLDR plural (`battle.weather.banner`)
-// selects through `selectPlural` rather than an `n === 1` branch. It mirrors catalog.en.ts
+// same param fields as its English twin (the one CLDR-plural key, `battle.weather.banner`, left with
+// the 1v1 view in bt-17; `ui/i18n/plural.ts` keeps its own tests). It mirrors catalog.en.ts
 // ENTRY FOR ENTRY, IN THE SAME ORDER, so a side-by-side diff of the two files lines up.
 //
 // ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
@@ -17,7 +17,7 @@
 // THE `// @desc:` CONVENTION (M24 §2.3) applies here exactly as in catalog.en.ts: the contiguous
 // `//` block directly above every entry carries one `// @desc:` line (≥10 non-whitespace chars)
 // written in ENGLISH for the translator/TMS, saying WHAT the string is, WHERE the player sees it
-// and any width constraint; the `battleView.ts:NNN`-style citations are copied from the English
+// and any width constraint; the `<file>:NNN`-style citations are copied from the English
 // entry so the "where" is the same in both files. S8 exports it as the ICU `description`.
 //
 // FRENCH TYPOGRAPHY. The values use a REAL no-break space (U+00A0) before `:` `;` `!` `?` and
@@ -35,22 +35,6 @@
 // digits — no `fmtNumber` grouping (YAGNI for chrome strings).
 
 import type { Catalog } from './messageIds';
-import { cldr, selectPlural } from './plural';
-
-// French's CLDR plural category set is {one, many, other} — three live categories, so the forms
-// are authored by hand through `cldr(...)` (SHAPE-06 forbids the two-category helper here).
-// `one` covers BOTH 0 and 1 (« 0 tour », « 1 tour »); `other` is every other integer
-// (« 2 tours »); `many` is CLDR's 10^6 case (1 000 000, 2 000 000 …), rendered with the
-// partitive « de » as in « 1 000 000 de tours ». The three categories fr never selects (`zero`,
-// `two`, `few`) mirror the nearest live form so the record stays total.
-const WEATHER_TURN_FORMS = cldr({
-  zero: 'tour',
-  one: 'tour',
-  two: 'tours',
-  few: 'tours',
-  many: 'de tours',
-  other: 'tours',
-});
 
 export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Verb on the Start button chip in the hint bar at the bottom of the game screen; the
@@ -452,152 +436,20 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'session.hint': 'B et Start sont sans effet ici. Tab pour naviguer, Entrée pour choisir.',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
-  // battleView.ts:110 (resolved in show())
+  // tactics/strings.ts, deployPanel.ts, results.ts, tacticsBattle.ts (the battle frame's title)
   'battle.title': 'Combat',
-  // @desc: Exit hint shown under the outcome banner once a battle has ended; "Enter" and "Esc" are
-  // keyboard key names and must stay recognisable as such. One short line.
-  // battleView.ts:243 (resolved in show())
-  'battle.continueHint': 'Appuyez sur Entrée ou Esc pour continuer',
-  // @desc: Explainer shown in place of the swap buttons when the player has no healthy bench
-  // monster in this battle; the second sentence tells them how to reach the party screen afterwards
-  // ("Esc" and "B" are keyboard key names; "Monstres" is that screen's title, box.title).
-  // Two sentences, wraps freely in a 320px-wide column.
-  // battleView.ts:216-218 (resolved in show())
-  'battle.swap.hint':
-    'Aucun monstre de l’équipe en état de combattre ne peut entrer dans ce combat. À la fin du combat, appuyez sur Esc, puis sur B pour Monstres.',
-  // @desc: PvP status banner shown after the player has submitted their move, while the opponent's
-  // move is still outstanding; carries a typographic apostrophe and an ellipsis. One line.
-  // battleView.ts:347
-  'battle.pvp.waiting': 'En attente de l’action de l’adversaire…',
-  // @desc: Field-weather banner above the two monster cards; {label} is the weather name (e.g.
-  // "Pluie") and {turns} the number of turns it has left, followed by the CLDR-selected plural of
-  // "tour". One centred line, about 40 characters wide.
-  // battleView.ts:361
-  'battle.weather.banner': (p) =>
-    `${p.label} (${p.turns} ${selectPlural('fr', p.turns, WEATHER_TURN_FORMS)})`,
-  // @desc: Role word prefixed to the player's own monster card header, rendered as "Vous :
-  // <species>". Very short — shares one line with the species name and the level.
-  // battleView.ts:291
-  'battle.card.you': 'Vous',
-  // @desc: Role word prefixed to the opposing monster card header, rendered as "Adversaire :
-  // <species>"; in PvP the rival's display name replaces it when known. Very short — shares one
-  // line with the species name and the level.
-  // battleView.ts:289
-  'battle.card.opponent': 'Adversaire',
-  // @desc: Level badge on the right of a monster card header; {level} is the monster's level and
-  // "Niv." abbreviates "Niveau". Very short — shares one line with the card's name.
-  // battleView.ts:373
-  'battle.card.level': (p) => `Niv.${p.level}`,
-  // @desc: Small line under a monster card's health bar; {current}/{max} are hit points ("PV" =
-  // points de vie) and {affinity} is the monster's elemental type name (e.g. "Feu"). One line,
-  // small text.
-  // battleView.ts:407
-  'battle.card.hpLine': (p) => `PV ${p.current}/${p.max} · ${p.affinity}`,
-  // @desc: PvP skill cell of the two-column skill grid: submits the move rather than using it at
-  // once, hence the leading "Valider :"; {name} is the skill name, {power} its damage value,
-  // {affinity} its elemental type and {accuracy} its hit chance ("Préc." abbreviates "Précision").
-  // Keep the "Valider :" prefix first. Fits a half-width button.
-  // battleView.ts (#renderSkills)
-  'battle.skill.pvpSubmit': (p) =>
-    `Valider : ${p.name} (${p.power}) · ${p.affinity} · Préc. ${p.accuracy} %`,
-  // @desc: PvE skill cell of the two-column skill grid, used at once; {name} is the skill name,
-  // {power} its damage value, {affinity} its elemental type and {accuracy} its hit chance ("Préc."
-  // abbreviates "Précision"). Keep {name} first. Fits a half-width button.
-  // battleView.ts (#renderSkills)
-  'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity} · Préc. ${p.accuracy} %`,
-  // @desc: Accessible name of the bait list a wild battle's Recruit command opens (a group of
-  // buttons: No bait, then one per bait item). One word.
-  // battleView.ts (#renderRecruit)
-  'battle.recruit.listLabel': 'Appât',
-  // @desc: First row of the bait list shown in a wild battle: attempt recruitment with no bait
-  // item. Short, fits a narrow button.
-  // battleView.ts (#renderRecruit)
-  'battle.recruit.noBait': 'Sans appât',
-  // @desc: Question shown after the player picks a bait row; {bait} is the bait item's name. Yes
-  // attempts the recruit with it. One short line.
-  // battleView.ts (#renderRecruitConfirm)
-  'battle.recruit.confirm': (p) => `Recruter avec ${p.bait} ?`,
-  // @desc: Question shown after the player picks the No bait row; Yes attempts the recruit with no
-  // bait. One short line.
-  // battleView.ts (#renderRecruitConfirm)
-  'battle.recruit.confirmNoBait': 'Recruter sans appât ?',
-  // @desc: The Recruit question's default answer: attempt the recruit. One word.
-  // battleView.ts (#renderRecruitConfirm)
-  'battle.recruit.yes': 'Oui',
-  // @desc: The Recruit question's other answer: go back to the bait list. One word.
-  // battleView.ts (#renderRecruitConfirm)
-  'battle.recruit.no': 'Non',
-  // @desc: Accessible name of the list of cure items a battle's Items command opens. Two words.
-  // battleView.ts (#renderCureItems)
-  'battle.cure.listLabel': 'Objets de soin',
-  // @desc: One row of the battle Items command's cure-item list; {name} is the item name, {cureStatus} the
-  // ailment it removes (e.g. "Poison") and {count} how many the player carries. One line in a
-  // narrow button.
-  // battleView.ts (#renderCureItems)
-  'battle.cure.option': (p) => `${p.name} (soigne ${p.cureStatus}) ×${p.count}`,
-  // @desc: The one target row after a cure item is picked: the player's active monster, {species},
-  // the only monster an item can be used on in battle. Pressing it uses the item. Short.
-  // battleView.ts (#renderCureTarget)
-  'battle.cure.target': (p) => `Utiliser sur ${p.species}`,
-  // @desc: PvP swap button: submits a switch to the bench monster {species} rather than swapping at
-  // once. Fits a narrow button.
-  // battleView.ts:601
-  'battle.swap.pvpSubmit': (p) => `Valider l’échange : ${p.species}`,
-  // @desc: PvE swap button: switches at once to the bench monster {species}, whose hit points are
-  // {current}/{max}. Fits a narrow button.
-  // battleView.ts:602
-  'battle.swap.pveLabel': (p) => `Échanger : ${p.species} (${p.current}/${p.max})`,
   // @desc: Outcome banner when the player's side wins the battle. Large bold text, one or two
   // words.
-  // battleView.ts:629
+  // tactics/strings.ts (the results panel's victory title)
   'battle.outcome.victory': 'Victoire !',
   // @desc: Outcome banner when the player's side loses the battle. Large bold text, one or two
   // words.
-  // battleView.ts:632
+  // tactics/strings.ts (the results panel's defeat title)
   'battle.outcome.defeat': 'Défaite…',
   // @desc: Outcome banner when the player successfully flees a wild battle. Large bold text, one
   // short phrase.
-  // battleView.ts:635
+  // tactics/strings.ts (the results panel's fled title)
   'battle.outcome.fled': 'Fuite réussie !',
-  // @desc: Payout line under the Victory banner after a KO win: the gold the wallet gained in the
-  // batch that ended the battle; {amount} is the bigint delta, its digits as they are.
-  'battle.rewards.gold': (p) => `+${p.amount} or`,
-  // @desc: Payout line under the Victory banner: one own monster's XP gain; {name} is its nickname
-  // or species name (model data, carried verbatim), {amount} the XP delta. No-break space before
-  // the colon.
-  'battle.rewards.xp': (p) => `${p.name} : +${p.amount} XP`,
-  // @desc: Battle command list entry that opens the skill grid. One short word; the five command
-  // entries share one narrow row.
-  // battleView.ts (#renderCommands)
-  'battle.command.fight': 'Attaque',
-  // @desc: Battle command list entry that moves to the recruit controls (wild battles only). One
-  // short verb; the five command entries share one narrow row.
-  // battleView.ts (#renderCommands)
-  'battle.command.recruit': 'Recruter',
-  // @desc: Battle command list entry that moves to the bench monsters to swap in. One short verb;
-  // the five command entries share one narrow row.
-  // battleView.ts (#renderCommands)
-  'battle.command.swap': 'Changer',
-  // @desc: Battle command list entry that moves to the battle items (status cures). One short
-  // noun; the five command entries share one narrow row.
-  // battleView.ts (#renderCommands)
-  'battle.command.bag': 'Objets',
-  // @desc: Battle command list entry that runs from a wild battle at once (greyed, with a reason,
-  // in a player battle). One short verb; the five command entries share one narrow row.
-  // battleView.ts (#renderCommands)
-  'battle.command.run': 'Fuir',
-  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Items, Run), read by a
-  // screen reader as the group's label. One word.
-  // battleView.ts (#renderCommands)
-  'battle.commands.label': 'Commandes',
-  // @desc: Caption over the greyed battle command list after the player has submitted a PvP move;
-  // {name} is the rival's display name. Ends with an ellipsis. One line.
-  // battleView.ts (#renderCommands)
-  'battle.commands.waiting': (p) => `En attente de ${p.name}…`,
-  // @desc: Why Run is disabled in a battle against another player, shown under the command list.
-  // One short sentence.
-  // battleView.ts (#renderCommands)
-  'battle.command.runPvpReason': 'Impossible de fuir un combat entre joueurs.',
   // @desc: Title of the PvP challenge overlay when the player has no incoming or outgoing
   // challenge; "PvP" is the player-versus-player abbreviation, kept as-is. One word.
   // pvpView.ts:135
@@ -685,7 +537,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // main.ts (dispatch, the `care` arm; pre-migration careAction.ts CARED_MESSAGE)
   'raising.feedback.cared': 'Choyé !',
   // @desc: Heading of the Monsters overlay, where the player arranges which monsters are in
-  // the active party and which stay in storage; quoted inside battle.swap.hint. One short line.
+  // the active party and which stay in storage (the 1v1 swap hint that quoted it left in bt-17). One short line.
   // boxView.ts:69 (resolved in show())
   'box.title': 'Monstres',
   // @desc: Explainer under the heading telling the player that only Party monsters battle and

@@ -11,10 +11,6 @@
     "advance_dialogue": [
       "choice_idx: u32()"
     ],
-    "attempt_recruit": [
-      "battle_id: u64()",
-      "bait_item_id: option(u32())"
-    ],
     "buy": [
       "shop_id: u32()",
       "item_id: u32()",
@@ -72,9 +68,6 @@
       "monster_id: u64()",
       "to_species: u32()"
     ],
-    "flee": [
-      "battle_id: u64()"
-    ],
     "forfeit": [
       "battle_id: u64()"
     ],
@@ -117,30 +110,13 @@
     "set_profile_name": [
       "name: string()"
     ],
-    "start_battle": [
-      "opponent_identity: identity()",
-      "party_monster_ids: array(u64())",
-      "opponent_monster_ids: array(u64())"
-    ],
     "start_guest_claim": [
       "code: string()"
-    ],
-    "submit_attack": [
-      "battle_id: u64()",
-      "skill_id: u32()"
-    ],
-    "submit_pvp_action": [
-      "battle_id: u64()",
-      "action: PvpAction"
     ],
     "submit_queue": [
       "battle_id: u64()",
       "unit_id: u32()",
       "entries: array(QueuedAction)"
-    ],
-    "swap_active": [
-      "battle_id: u64()",
-      "team_index: u32()"
     ],
     "sync_content": [],
     "talk": [
@@ -149,10 +125,6 @@
     "train": [
       "monster_id: u64()",
       "food_item_id: u32()"
-    ],
-    "use_battle_item": [
-      "battle_id: u64()",
-      "item_id: u32()"
     ]
   }
 }

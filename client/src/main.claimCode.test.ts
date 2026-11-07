@@ -73,8 +73,9 @@ const H = vi.hoisted(() => {
   return h;
 });
 
+// bt-17 (named fixture change, BT17.1): the `./ui/battleView` stand-in is dropped with the module
+// (the 1v1 view is purged; the tactical battle roots are built lazily and never at boot).
 vi.mock('./ui/boxView', () => ({ BoxView: H.makeStub() }));
-vi.mock('./ui/battleView', () => ({ BattleView: H.makeStub() }));
 vi.mock('./ui/raisingView', () => ({ RaisingView: H.makeStub() }));
 vi.mock('./ui/evolutionView', () => ({ EvolutionView: H.makeStub() }));
 vi.mock('./ui/shopView', () => ({ ShopView: H.makeStub() }));

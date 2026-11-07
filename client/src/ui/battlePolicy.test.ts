@@ -16,7 +16,16 @@
 // Do NOT edit these tests to match a buggy implementation; correct them from the spec only.
 
 import { describe, expect, it } from 'vitest';
-import { ratingChange } from './battlePolicy';
+// bt-17 [BT17-1]: the GENERATED bindings (a generated artifact, read for its reducer set).
+import { reducers as generatedReducers } from '../module_bindings';
+import type { StoreTacticalBattle } from '../net/store';
+import {
+  battleRenderer,
+  COMMAND_BATTLE_POLICY,
+  ratingChange,
+  renderableBattle,
+} from './battlePolicy';
+import type { Command } from './screens/types';
 
 /** A battle id past 2^53, and one that differs from it only above 2^53. */
 const B = 2n ** 60n + 7n;
@@ -82,5 +91,138 @@ describe('battlePolicy: the rating change of a finished battle (bt-15 B, BT15.3)
       ),
       'control: the twin battle with ITS own baseline',
     ).toEqual({ before: 1203, after: 1189 });
+  });
+});
+
+// --- bt-17 increment A (BT17.1): the 1v1 commands are unrepresentable; the renderer rule ----------
+//
+// SOURCE OF TRUTH: spec §bt-17 BT17.1 (the 1v1 reducers and the 1v1 client renderer SHALL be
+// deleted); plan memory/projects/monster-realm-bt-17-plan.md REV 3 §2 (`BattleRenderer = 'none' |
+// 'deploy' | 'tactical' | 'results'`, `battleRenderer(undefined) === 'none'`, `COMMAND_BATTLE_POLICY`
+// −7 rows, `ui/screens/types.ts` loses the seven `Command` kinds) and R11/R12 (ONE predicate
+// `renderableBattle(latest, tacticalRow)`: true iff both are defined; the type-level absence check).
+//
+// RED TODAY: `COMMAND_BATTLE_POLICY` still has the seven 1v1 rows (41 keys, not 34); `Command` still
+// has the seven kinds (the three type-level checks below fail `just client-typecheck`);
+// `battleRenderer(undefined)` is 'legacy'; `renderableBattle` is not exported; the generated bindings
+// still export the seven 1v1 reducers.
+
+/** The seven 1v1 `Command` kinds bt-17 deletes. HARD-CODED (never read from production). */
+const GONE_KINDS = [
+  'attack',
+  'flee',
+  'swap',
+  'recruit',
+  'useItem',
+  'pvpAttack',
+  'pvpSwap',
+] as const;
+
+/** Every `Command` kind after the purge, transcribed from ui/screens/types.ts. HARD-CODED. */
+const COMMAND_KINDS = [
+  'pop',
+  'popToBase',
+  'openMenu',
+  'toggleHelp',
+  'care',
+  'train',
+  'evolve',
+  'setNickname',
+  'setPartySlot',
+  'healParty',
+  'buy',
+  'sell',
+  'respondTrade',
+  'confirmTrade',
+  'cancelTrade',
+  'proposeTrade',
+  'challenge',
+  'acceptChallenge',
+  'declineChallenge',
+  'cancelChallenge',
+  'setProfileName',
+  'submitQueue',
+  'cancelQueue',
+  'forfeit',
+  'deployUnits',
+  'advanceDialogue',
+  'dismissDialogue',
+  'pickShop',
+  'claimSignIn',
+  'claimJoin',
+  'claimDecline',
+  'deleteAccount',
+  'cancelAccountDeletion',
+  'requestDataExport',
+] as const;
+
+// Compile-level halves (RED under `just client-typecheck` today): no `Command` kind is one of the
+// seven; every `Command` kind is in COMMAND_KINDS and every listed kind is a `Command` kind.
+type Gone = Extract<Command['kind'], (typeof GONE_KINDS)[number]>;
+const _gone: [Gone] extends [never] ? true : false = true;
+type Listed = (typeof COMMAND_KINDS)[number];
+const _total: [Exclude<Command['kind'], Listed>] extends [never] ? true : false = true;
+const _sound: [Exclude<Listed, Command['kind']>] extends [never] ? true : false = true;
+
+describe('battlePolicy: no 1v1 command, no 1v1 renderer (bt-17, BT17.1)', () => {
+  it('the battle policy table has no row for any of the seven 1v1 commands (attack, flee, swap, recruit, useItem, pvpAttack, pvpSwap), stays total over exactly the 34 remaining Command kinds, and keeps the four tactical actions battle-safe [BT17-1]', () => {
+    // WRONG IMPL KILLED: a 1v1 row left in the table (a dead command a stray adapter could still
+    // issue at a battle base); a purge that drops a live row with them (the table is no longer
+    // total: a Command kind would read `undefined` and `battleSafeCommand` would refuse it); a
+    // tactical action reclassified (the shell's submit / cancel / forfeit and the deploy panel's
+    // deploy would be refused ON the battle base they run at).
+    expect(_gone, 'type level: no Command kind is a 1v1 kind').toBe(true);
+    expect(_total && _sound, 'type level: COMMAND_KINDS is exactly the Command kinds').toBe(true);
+    for (const kind of GONE_KINDS) {
+      expect(kind in COMMAND_BATTLE_POLICY, `no ${kind} row`).toBe(false);
+    }
+    expect(
+      Object.keys(COMMAND_BATTLE_POLICY).sort(),
+      'the table is total over exactly the remaining kinds',
+    ).toEqual([...COMMAND_KINDS].sort());
+    expect(COMMAND_KINDS, 'ANTI-VACUITY: the transcribed roster').toHaveLength(34);
+    for (const kind of ['submitQueue', 'cancelQueue', 'deployUnits', 'forfeit'] as const) {
+      expect(COMMAND_BATTLE_POLICY[kind], `${kind} stays battle-safe`).toBe('safe');
+    }
+  });
+
+  it('battleRenderer maps no tactical row to none, Deploying to deploy, Active to tactical and Finished to results; renderableBattle is true only when the anchor AND its tactical row are both present [BT17-1]', () => {
+    // WRONG IMPL KILLED: the 'legacy' arm kept (a row-less anchor routed to a renderer that no
+    // longer exists); two phases swapped; a `renderableBattle` that reads only the anchor (a
+    // row-less anchor would count as renderable: reconcileStack would close every drop-policy frame
+    // for a terminal one, and refreshBattle would build a view for it) or only the row.
+    expect(battleRenderer(undefined), 'no tactical row').toBe('none');
+    expect(battleRenderer('Deploying')).toBe('deploy');
+    expect(battleRenderer('Active')).toBe('tactical');
+    expect(battleRenderer('Finished')).toBe('results');
+    const anchor = { battleId: 2n ** 60n + 1n };
+    const row = { battleId: anchor.battleId, phase: 'Deploying' } as unknown as StoreTacticalBattle;
+    expect(renderableBattle(undefined, undefined), 'no anchor, no row').toBe(false);
+    expect(renderableBattle(anchor, undefined), 'an anchor with no tactical row').toBe(false);
+    expect(renderableBattle(undefined, row), 'a row with no anchor').toBe(false);
+    expect(renderableBattle(anchor, row), 'the anchor and its tactical row').toBe(true);
+  });
+
+  it('the generated bindings export none of the seven 1v1 reducers (submit_attack, swap_active, flee, use_battle_item, attempt_recruit, submit_pvp_action, start_battle), while the tactical reducers stay [BT17-1]', () => {
+    // WRONG IMPL KILLED: a 1v1 reducer left client-callable (its `#[spacetimedb::reducer]` kept, so
+    // `just gen` re-emits it — R-bt-16-STARTBATTLE); a purge that also drops a tactical reducer. The
+    // accessor map's keys are normalised to snake_case, so the check holds whichever case the
+    // generator emits.
+    const snake = (k: string): string => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+    const names = new Set(Object.keys(generatedReducers).map(snake));
+    for (const kept of ['submit_queue', 'cancel_queue', 'deploy_units', 'forfeit']) {
+      expect(names.has(kept), `control: ${kept} is a generated reducer`).toBe(true);
+    }
+    for (const gone of [
+      'submit_attack',
+      'swap_active',
+      'flee',
+      'use_battle_item',
+      'attempt_recruit',
+      'submit_pvp_action',
+      'start_battle',
+    ]) {
+      expect(names.has(gone), `${gone} is not a generated reducer`).toBe(false);
+    }
   });
 });

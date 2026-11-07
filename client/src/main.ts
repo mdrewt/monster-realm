@@ -56,7 +56,6 @@ import {
   routerConsumes,
   typingKey,
 } from './input/router';
-import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
@@ -124,16 +123,7 @@ import {
   rankedStep,
   resetBattleEmit,
 } from './ui/battleEmitModel';
-import {
-  type BattleViewModel,
-  buildBaitItems,
-  buildBattleViewModel,
-  buildCureItems,
-  decideBattleOverlay,
-  pvpPendingAfterBatch,
-  pvpSubmitPending,
-  shouldSkipBattleRefresh,
-} from './ui/battleModel';
+import { buildBaitItems, decideBattleOverlay } from './ui/battleModel';
 import {
   battleButton,
   battleRefused,
@@ -145,11 +135,11 @@ import {
   outcomeOnTop,
   popPlayerFramesOverBattle,
   ratingChange,
+  renderableBattle,
   shouldAutoContinue,
   stillThereSeconds,
   structurallyEqual,
 } from './ui/battlePolicy';
-import type { BattleRewardsVM, BattleView } from './ui/battleView';
 import {
   buildBoxViewModel,
   buildMonsterStats,
@@ -441,11 +431,10 @@ let lastOwnRating: number | null = null;
 let hydratedSinceReconnect = false;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
-let battleView: BattleView | undefined;
-// bt-12 (BT12.1-BT12.4): the deploy panel (a Deploying wild battle) and the results panel (a Finished
-// one) share the `battleView` frame and overlay id with the 1v1 view. Both are constructed LAZILY, on
-// the first batch that routes to them (a second `battle-title` root under #app would collide with
-// every legacy test's and e2e's selector), on the mount `main()` keeps in `battleMount`.
+// bt-12 (BT12.1-BT12.4): the deploy panel (a Deploying battle) and the results panel (a Finished one)
+// share the `battleView` frame and overlay id. Both are constructed LAZILY, on the first batch that
+// routes to them (the frame has ONE owner, so one `battle-title` root at a time), on the mount
+// `main()` keeps in `battleMount`. bt-17: the 1v1 view is gone; no view is built at boot.
 let deployPanel: DeployPanel | undefined;
 let resultsPanel: ResultsPanel | undefined;
 // bt-12 B (BT12.1): the tactical shell owns the frame of an Active tactical battle; built lazily too.
@@ -484,14 +473,12 @@ let tacticsIngested: { readonly battleId: bigint; readonly seq: number } | null 
 let lastTacticsVM: TacticsBattleVM | null = null;
 /** The deadline whose "Still there?" countdown the live region already announced (once per window). */
 let stillThereAnnouncedFor: bigint | null = null;
-/** The four views that can own the battle frame, in a fixed order (undefined until built). */
-const battleViews = (): readonly (
-  | BattleView
-  | DeployPanel
-  | ResultsPanel
-  | TacticsBattle
-  | undefined
-)[] => [battleView, deployPanel, resultsPanel, tacticsBattle];
+/** The three views that can own the battle frame, in a fixed order (undefined until built). */
+const battleViews = (): readonly (DeployPanel | ResultsPanel | TacticsBattle | undefined)[] => [
+  deployPanel,
+  resultsPanel,
+  tacticsBattle,
+];
 /** Whether any battle view shows: the `battleView` mirror probe. */
 const battleFrameShown = (): boolean => battleViews().some((v) => v?.visible === true);
 /** The `battleView` force-hide handle: every built view's own hide (each is idempotent). */
@@ -500,21 +487,21 @@ const hideAllBattleViews = (): void => {
   tacticsShown = null;
 };
 /** The view the screen host lends the battle adapter: the tactical shell while it shows, else the
- *  deploy panel while it shows, else the 1v1 view (the results panel takes no ops; its Continue is a
- *  click or the auto-advance). */
-const activeBattleView = (): BattleView | DeployPanel | TacticsBattle | undefined =>
+ *  deploy panel while it shows, else nothing (the results panel takes no ops; its Continue is a click
+ *  or the auto-advance — and bt-17 deleted the 1v1 view). */
+const activeBattleView = (): DeployPanel | TacticsBattle | undefined =>
   tacticsBattle?.visible === true
     ? tacticsBattle
     : deployPanel?.visible === true
       ? deployPanel
-      : battleView;
+      : undefined;
 /** Whether Start is the battle adapter's (bt-11 BT11.6, bt-12 B): the tactical shell shows (End Turn
  *  / Guard / Submit) or the deploy panel's EDITOR is open (Submit). At the deploy CONFIRM screen Start
  *  opens the main menu as at any battle base, so Escape (Start's key) never deploys (REV 2 A6). */
 const tacticalOwnsStart = (): boolean =>
   tacticsBattle?.visible === true || (deployPanel?.visible === true && deployPanel.mode === 'edit');
 /** What the shown battle view tells the hint bar and Help: the shell's verbs, else the deploy panel's
- *  screen (both of them — R-bt-12-DEPLOYHINT), else nothing (a legacy battle). */
+ *  screen (both of them — R-bt-12-DEPLOYHINT), else nothing (no shown view, or the results panel). */
 const battleHint = (): HintBattle | HintDeploy | undefined =>
   tacticsBattle?.visible === true
     ? tacticsBattle.hint()
@@ -556,12 +543,6 @@ let sessionView: SessionView | undefined;
 let evolutionNoticeBanner: EvolutionNoticeBanner | undefined;
 let claimModelState: ClaimModelState = CLAIM_INITIAL;
 let sessionModelState: SessionModelState = SESSION_INITIAL;
-// Tracks the turn number at the time the player submitted a PvP action.
-// When the server resolves the turn (battle.turnNumber increments beyond this),
-// pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
-// battle_action is PRIVATE (must-never-leak) — this is the ONLY signal
-// the client has about its own submission state.
-let pvpPendingTurnNumber: number | null = null;
 // The dialogue-dismiss / deferred shop-open state (ui/shopOpenModel.ts): whether a
 // dismiss_dialogue is in flight, and the shop the greet-then-shop button will open on the
 // first no-conversation batch — never inline. Stepped only through `stepShopOpen`.
@@ -615,7 +596,6 @@ const RECONNECT_RESETS: readonly (() => void)[] = [
   () => shopView?.hide(),
   () => tradeView?.hide(),
   () => pvpView?.hide(),
-  () => battleView?.hide(),
   () => deployPanel?.hide(),
   () => resultsPanel?.hide(),
   () => tacticsBattle?.hide(),
@@ -829,9 +809,15 @@ function reconcileStack(): void {
   syncStack();
   // The terminal outcome this batch will show: refreshBattle's own decision, read without
   // committing it, so what the outcome drops closes BEFORE the outcome shows (and takes focus).
+  // bt-17: an anchor without its tactical row is not a battle the client can show (the 1v1 view is
+  // gone) — `renderableBattle` is the predicate `refreshBattle` shares, so such a terminal anchor
+  // never counts as a shown outcome here while that function dismisses it in the same batch.
   const latest = store.latestPlayerBattle(identity);
   const outcome =
-    identity !== '' && latest !== undefined && latest.outcome !== 'Ongoing'
+    identity !== '' &&
+    latest !== undefined &&
+    latest.outcome !== 'Ongoing' &&
+    renderableBattle(latest, store.tacticalBattle(latest.battleId))
       ? decideBattleOverlay(latest, { dismissedBattleId, synced: battleSynced }).action.kind
       : 'hide';
   const next = reconcile(contextStack, {
@@ -1997,42 +1983,6 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         },
       });
     }
-    case 'attack': {
-      const { battleId, skillId } = command;
-      return sendGuarded('attack', () =>
-        conn?.live()?.reducers.submitAttack({ battleId, skillId }),
-      );
-    }
-    case 'flee': {
-      const { battleId } = command;
-      return sendGuarded('flee', () => conn?.live()?.reducers.flee({ battleId }));
-    }
-    case 'swap': {
-      const { battleId, teamIndex } = command;
-      return sendGuarded('swap', () => conn?.live()?.reducers.swapActive({ battleId, teamIndex }));
-    }
-    case 'recruit': {
-      const { battleId, baitItemId } = command;
-      return sendGuarded('recruit', () =>
-        conn?.live()?.reducers.attemptRecruit({ battleId, baitItemId }),
-      );
-    }
-    case 'useItem': {
-      const { battleId, itemId } = command;
-      return sendGuarded('use-item', () =>
-        conn?.live()?.reducers.useBattleItem({ battleId, itemId }),
-      );
-    }
-    case 'pvpAttack':
-      return sendPvpAction('pvp-attack', command.battleId, {
-        tag: 'Attack',
-        value: command.skillId,
-      });
-    case 'pvpSwap':
-      return sendPvpAction('pvp-swap', command.battleId, {
-        tag: 'Swap',
-        value: command.teamIndex,
-      });
     case 'submitQueue': {
       // bt-11: a unit's plan (a live commit or a pre-queue) to `submit_queue`; the server costs it
       // on its board and refuses with a typed reason, reported like every other rejection.
@@ -2177,27 +2127,6 @@ function refusedInBattle(command: Command): boolean {
   return true;
 }
 
-/** A PvP action. pvpPendingTurnNumber is set INSIDE the lambda so sendGuarded's frozen check runs
- *  first — a frozen-link click must not lock the pending submit permanently (the turn never
- *  advances on a dropped send) — and put back on rejection (`pvpSubmitPending`). The explicit
- *  refresh paints the client-local pending flag: an unchanged battle row no longer re-notifies
- *  the batch. */
-function sendPvpAction(where: string, battleId: bigint, action: PvpAction): Promise<void> {
-  return sendGuarded(where, () => {
-    const submit = pvpSubmitPending(pvpPendingTurnNumber, store.latestPlayerBattle(identity));
-    pvpPendingTurnNumber = submit.pending;
-    refreshBattle();
-    return conn
-      ?.live()
-      ?.reducers.submitPvpAction({ battleId, action })
-      ?.catch((err: unknown) => {
-        pvpPendingTurnNumber = submit.onReject;
-        refreshBattle();
-        throw err;
-      });
-  });
-}
-
 /** Apply a stack move: close every frame `next` drops, top first (the order the retired Escape
  *  ladder closed them in, so privacy's dismiss flush still finds the claim shown), each through
  *  its own path; then sync, so the stack again lists exactly what is shown. */
@@ -2218,7 +2147,6 @@ function closeFrame(frame: UpperFrame): void {
       // The terminal outcome continues: latch it so the next batch never re-pops it.
       dismissedBattleId = continuedBattleId(store.latestPlayerBattle(identity), dismissedBattleId);
       hideAllBattleViews();
-      lastBattleVM = null;
       break;
     default:
       hideFrame(frame.id);
@@ -2242,9 +2170,8 @@ function stopTyping(field: HTMLElement): void {
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
 let dismissedBattleId: bigint | null = null;
 let battleSynced = false;
-// VM-compare guard: last rendered BattleViewModel — used by shouldSkipBattleRefresh
-// to suppress equal-VM re-renders (churn prevention). Reset to null on hide + reset.
-let lastBattleVM: BattleViewModel | null = null;
+/** bt-17: the row-less anchor already reported (once per battle id) — see `refreshBattle`. */
+let unrenderableReported: bigint | null = null;
 
 // --- M13.5b status surface ------------------------------------------
 // A minimal dynamically-created status line (no toast system — a deliberate
@@ -2433,7 +2360,6 @@ function resetPredictionState(): void {
   sawFractionalOwnMotion = false;
   dismissedBattleId = null;
   battleSynced = false;
-  lastBattleVM = null;
   // bt-12 B: the shell forgets its battle (a submit the dropped link lost must not keep a unit's
   // turn locked) and hides, so the next sighting feeds the transcript from seq 0 while hidden (a
   // visible shell would replay the history as live beats); the memos reset.
@@ -2443,10 +2369,6 @@ function resetPredictionState(): void {
   tacticsShown = null;
   lastTacticsVM = null;
   stillThereAnnouncedFor = null;
-  lastPayout = null;
-  // Pending PvP submit state must be cleared on reconnect/zone-switch — the
-  // server will have GC'd the old battle and any pending action is no longer relevant.
-  pvpPendingTurnNumber = null;
   // Reset camera hold so a fresh zone/reconnect starts at origin rather than
   // holding a position from a prior zone.
   lastCamX = 0;
@@ -3149,41 +3071,43 @@ store.onBatchApplied(() => refreshRaising());
 
 // --- battle view: refresh on batch, auto-show/hide --------
 function refreshBattle(): void {
-  if (!battleView || identity === '') return;
+  if (battleMount === undefined || identity === '') return;
   // The ONE view-perspective projection in the client — it re-seats
   // the local player as sideA so a PvP accepter (stored in opponentIdentity) gets their
-  // OWN cards/skills/bench from a view layer that hardcodes sideA = the local player.
-  // Every OTHER read of these accessors (diagnostics, observability) stays RAW by design.
+  // OWN side from a layer that hardcodes sideA = the local player (the deploy panel reads the
+  // projected `partyMonsterIds`). Every OTHER read of these accessors (diagnostics, observability)
+  // stays RAW by design.
   const latest = ownPerspective(store.latestPlayerBattle(identity), identity);
   const r = decideBattleOverlay(latest, { dismissedBattleId, synced: battleSynced });
   dismissedBattleId = r.dismissedBattleId;
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
-    // bt-12 (BT12.1): which view owns the frame follows the tactical row's phase. A Deploying wild
-    // battle shows the deploy panel, an Active one the tactical shell (bt-12 B), a Finished one the
-    // results panel, no row the 1v1 view. A switch under a frame that sits over the battle base
-    // (Help, a conversation) first pops to the base: the four roots share one overlay a11y record,
-    // and closing a covered record then opening a fresh one would leave that frame inert (REV 2
-    // A2). The open is the LAST statement of each arm.
-    const tacticalRow = store.tacticalBattle(r.action.battle.battleId);
+    // bt-12 (BT12.1): which view owns the frame follows the tactical row's phase. A Deploying battle
+    // shows the deploy panel, an Active one the tactical shell (bt-12 B), a Finished one the results
+    // panel. bt-17 (BT17.1): no tactical row builds NOTHING — the 1v1 view is deleted. A switch under
+    // a frame that sits over the battle base (Help, a conversation) first pops to the base: the three
+    // roots share one overlay a11y record, and closing a covered record then opening a fresh one
+    // would leave that frame inert (REV 2 A2). The open is the LAST statement of each arm.
+    const battle = r.action.battle;
+    const tacticalRow = store.tacticalBattle(battle.battleId);
     // bt-15 (BT15.3): the own rating BEFORE a Pvp battle settles is read here, at its first
     // non-Finished sighting — the settle batch carries the after.
     if (tacticalRow !== undefined) noteRatingBaseline(tacticalRow);
     const renderer = battleRenderer(tacticalRow?.phase);
     if (renderer === 'tactical' && tacticalRow !== undefined) {
       if (refreshTacticsShell(tacticalRow)) return;
-      // The shell could not be built or rendered (reported once): a visible shell keeps the frame,
-      // never demoted to the 1v1 view (B17); otherwise the 1v1 view below shows the battle.
+      // The shell could not be built or rendered (reported once): a visible shell keeps the frame
+      // (B17); otherwise nothing below shows it either.
       if (tacticsBattle?.visible === true) return;
     }
-    tacticsShown = null; // the deploy arm sets it again
     const panel =
       renderer === 'deploy' && tacticalRow !== undefined
-        ? buildDeployPanel(r.action.battle, tacticalRow)
+        ? buildDeployPanel(battle, tacticalRow) // sets `tacticsShown`
         : renderer === 'results'
-          ? buildResultsPanel(r.action.battle.battleId)
+          ? buildResultsPanel(battle.battleId)
           : null;
     if (panel !== null) {
+      if (panel.kind === 'results') tacticsShown = null;
       // The HIDDEN target is rendered first (no a11y state moves), so a render throw leaves the
       // frame's current owner shown (B17); only then the switch: pop, hide the others, show.
       if (panel.kind === 'deploy') panel.view.render(panel.vm);
@@ -3191,43 +3115,30 @@ function refreshBattle(): void {
       popOverBattleBeforeSwitch(panel.view);
       hideOtherBattleViews(battleViews(), panel.view);
       if (!panel.view.visible) panel.view.show();
-      lastBattleVM = null;
       return;
     }
-    popOverBattleBeforeSwitch(battleView);
-    hideOtherBattleViews(battleViews(), battleView);
-    // What the battle drops was already closed by this batch's `reconcileStack` (SCREEN_POLICY).
-    const inventory = store.ownInventory(identity);
-    const itemDefs = store.itemDefs();
-    pvpPendingTurnNumber = pvpPendingAfterBatch(pvpPendingTurnNumber, r.action.battle);
-    const pvpPendingSubmit = pvpPendingTurnNumber !== null;
-    // Resolve opponent name for PvP label: find the player row whose identity is not ours.
-    const pvpOpponentIdentity = r.action.battle.opponentIdentity;
-    const pvpOpponentName =
-      pvpOpponentIdentity !== r.action.battle.playerIdentity
-        ? (store.allPlayers().find((p) => p.identity === pvpOpponentIdentity)?.name ?? null)
-        : null;
-    const vm = buildBattleViewModel(
-      r.action.battle,
-      store.skillMap(),
-      store.speciesMap(),
-      buildBaitItems(inventory, itemDefs),
-      buildCureItems(inventory, itemDefs),
-      pvpPendingSubmit,
-      pvpOpponentName,
-    );
-    if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
-    // VM-compare guard: skip refresh when the view is visible and the VM is
-    // structurally identical to the last rendered VM (suppresses churn on no-op ticks).
-    // The visible guard is the primary defense: shouldSkipBattleRefresh returns false
-    // while hidden, so a re-show always triggers a full render. The lastBattleVM = null
-    // reset in closeFrame (the outcome continue) is invariant hygiene on top.
-    if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
-    battleView.refresh(vm, lastPayout);
-    lastBattleVM = vm;
+    // Nothing was built. A RENDERABLE battle (its tactical row is present — the predicate
+    // `reconcileStack` shares) whose shell or panel failed keeps the frame's current owner, shown
+    // state and all (B17); its builder reported the failure. An anchor WITHOUT its tactical row is
+    // not a battle this client can show (bt-17: the 1v1 view is deleted): a TERMINAL one is dismissed
+    // here — in the same batch `reconcileStack` counted no outcome for it — and every battle view
+    // hides, so no stale owner (a shell whose row the deletion cascade erased) lingers over the
+    // world; an ONGOING one keeps whatever owner is shown and otherwise shows nothing (the stack
+    // still holds the battle base and Start opens the menu there), reported once per battle id.
+    if (renderableBattle(battle, tacticalRow)) return;
+    if (battle.outcome !== 'Ongoing') {
+      dismissedBattleId = battle.battleId;
+      if (battleFrameShown()) hideAllBattleViews();
+      return;
+    }
+    if (unrenderableReported !== battle.battleId) {
+      unrenderableReported = battle.battleId;
+      console.warn(
+        `[battle] anchor ${battle.battleId} has no tactical row; nothing to show (bt-17)`,
+      );
+    }
   } else if (battleFrameShown()) {
     hideAllBattleViews();
-    lastBattleVM = null;
   }
 }
 
@@ -3243,7 +3154,9 @@ function popOverBattleBeforeSwitch(target: { readonly visible: boolean }): void 
 
 /** The one name rule for an own monster: the nickname, else the species name, else `#id`. */
 function ownMonsterName(m: StoreMonsterPub): string {
-  return m.nickname !== '' ? m.nickname : (store.species(m.speciesId)?.name ?? `#${m.monsterId}`);
+  // `||`, not `??`: an EMPTY species name (a content row with no name) falls through to the id too
+  // (bt-17 T7 — the qf-17 payout line's rule, carried to the deploy and results panels).
+  return m.nickname || store.species(m.speciesId)?.name || `#${m.monsterId}`;
 }
 
 /** What the client keeps of a battle map — its size and its side-A spawn count — read once per
@@ -3275,7 +3188,7 @@ function mySideOf(battleId: bigint): RuleSide {
  *  dropped; one in the player's open trade is neither offered nor defaulted — `deploy_units` refuses
  *  it), the remembered formation, the pack from the anchor's side B and the slot count
  *  `min(max_pack, spawn_a.length)` (the server's own cap). Builds the panel on first use. null
- *  (reported once) when the rules port or the map cannot be read — the 1v1 view keeps the frame (B17). */
+ *  (reported once) when the rules port or the map cannot be read — the frame keeps its current owner (B17). */
 function buildDeployPanel(
   battle: {
     readonly battleId: bigint;
@@ -3376,7 +3289,7 @@ function ratingLineFor(battleId: bigint, outcome: string): ResultsInput['rating'
 
 /** The results panel and its view model from the RAW anchor (bt-12, BT12.4): the raw side decides
  *  won / lost, the transcript's Awards and RecruitResult lines are folded per unit. Builds the panel on
- *  first use. null when the anchor is not terminal — the 1v1 view then keeps the frame. */
+ *  first use. null when the anchor is not terminal — the frame then keeps its current owner. */
 function buildResultsPanel(
   battleId: bigint,
 ): { readonly kind: 'results'; readonly view: ResultsPanel; readonly vm: ResultsVM } | null {
@@ -3467,7 +3380,6 @@ function refreshTacticsShell(row: StoreTacticalBattle): boolean {
   hideOtherBattleViews(battleViews(), view);
   if (!view.visible) view.show();
   if (!first) feed();
-  lastBattleVM = null;
   return true;
 }
 
@@ -3630,131 +3542,6 @@ function pumpClock(wallNowMs: number): void {
   );
 }
 
-// --- qf-17: the KO-win payout lines (QF17.1, QF17.2) ---------------------------------------
-// The server pays a win silently, in the ONE transaction that also flips the battle row terminal
-// (write_back_battle_results: grant_currency, then the winners' xp), and the client folds a
-// transaction's rows into ONE batch — so the payout is the difference between the batch that
-// ended the battle and the batch before it, read off the own-wallet and own-monster rows the store
-// already holds (the qf-6 quest-ack precedent). No new server data. The rules live here, not in a
-// model file: ui/battleView.ts is lazily imported and stubbed away by boot tests, so main.ts may
-// import nothing but types from it.
-interface PayoutMonster {
-  readonly monsterId: bigint;
-  readonly xp: number;
-  readonly nickname: string;
-  readonly speciesId: number;
-  readonly partySlot: number;
-}
-interface PayoutSnapshot {
-  readonly identity: string;
-  /** The RAW latest battle (never the own-perspective one): the server pays `playerIdentity`. */
-  readonly battle:
-    | { readonly battleId: bigint; readonly outcome: string; readonly playerIdentity: string }
-    | undefined;
-  /** Once hydrated an absent wallet row is 0n: grant_currency inserts it lazily on the first win. */
-  readonly balance: bigint;
-  readonly monsters: readonly PayoutMonster[];
-}
-/** This batch's snapshot, or undefined while the store is not hydrated (no baseline is taken from
- *  a partial store) or a present wallet row carries no bigint balance. */
-function payoutSnapshot(i: {
-  readonly ready: boolean;
-  readonly identity: string;
-  readonly battle: PayoutSnapshot['battle'];
-  readonly wallet: { readonly balance: unknown } | undefined;
-  readonly monsters: readonly PayoutMonster[];
-}): PayoutSnapshot | undefined {
-  if (!i.ready || i.identity === '') return undefined;
-  const balance = i.wallet === undefined ? 0n : i.wallet.balance;
-  if (typeof balance !== 'bigint') return undefined;
-  return {
-    identity: i.identity,
-    battle: i.battle,
-    balance,
-    monsters: i.monsters.map((m) => ({
-      monsterId: m.monsterId,
-      xp: m.xp,
-      nickname: m.nickname,
-      speciesId: m.speciesId,
-      partySlot: m.partySlot,
-    })),
-  };
-}
-/** What `now` paid over `prev`: only when the same battle went Ongoing → SideAWins in this batch
- *  and the player is its `playerIdentity` (the side the server pays). Gold is the wallet's rise;
- *  xp lists each own monster present in both snapshots whose xp rose, party slot first, then id. */
-function payoutBetween(
-  prev: PayoutSnapshot | undefined,
-  now: PayoutSnapshot | undefined,
-  speciesName: (id: number) => string | undefined,
-): BattleRewardsVM | undefined {
-  if (prev === undefined || now === undefined || prev.identity !== now.identity) return undefined;
-  const won = now.battle;
-  if (won === undefined || won.outcome !== 'SideAWins' || won.playerIdentity !== now.identity) {
-    return undefined;
-  }
-  const before = prev.battle;
-  if (before === undefined || before.battleId !== won.battleId || before.outcome !== 'Ongoing') {
-    return undefined;
-  }
-  const gold = now.balance > prev.balance ? now.balance - prev.balance : null;
-  const xpBefore = new Map(prev.monsters.map((m) => [m.monsterId, m.xp]));
-  const risen: { readonly m: PayoutMonster; readonly amount: number }[] = [];
-  for (const m of now.monsters) {
-    const was = xpBefore.get(m.monsterId);
-    if (was === undefined || !(m.xp > was)) continue;
-    risen.push({ m, amount: m.xp - was });
-  }
-  risen.sort(
-    (a, b) =>
-      a.m.partySlot - b.m.partySlot ||
-      (a.m.monsterId < b.m.monsterId ? -1 : a.m.monsterId > b.m.monsterId ? 1 : 0),
-  );
-  const xp = risen.map(({ m, amount }) => ({
-    name: m.nickname || speciesName(m.speciesId) || `#${m.monsterId}`,
-    amount,
-  }));
-  if (gold === null && xp.length === 0) return undefined;
-  return { battleId: won.battleId, gold, xp };
-}
-/** The previous batch's snapshot (undefined until hydrated, dropped on reconnect). */
-let payoutBaseline: PayoutSnapshot | undefined;
-/** The payout the battle view shows under its Victory, until another battle is the latest. */
-let lastPayout: BattleRewardsVM | null = null;
-// Its OWN listener, registered AHEAD of refreshBattle's: the baseline advances exactly once per
-// batch, never from the out-of-band refreshes (a reducer failure path refreshes between the SDK's
-// eager wallet upsert and the flush). MUST be total: a throw is logged and drops the baseline (the
-// next batch re-takes it), never the battle screen.
-store.onBatchApplied(() => {
-  try {
-    const latest = store.latestPlayerBattle(identity);
-    const now = payoutSnapshot({
-      ready: hydratedSinceReconnect,
-      identity,
-      battle:
-        latest === undefined
-          ? undefined
-          : {
-              battleId: latest.battleId,
-              outcome: latest.outcome,
-              playerIdentity: latest.playerIdentity,
-            },
-      wallet: store.ownWallet(identity),
-      monsters: store.ownMonsters(identity),
-    });
-    const paid = payoutBetween(payoutBaseline, now, (id) => store.species(id)?.name);
-    payoutBaseline = now;
-    if (paid !== undefined) {
-      lastPayout = paid;
-      lastBattleVM = null; // the VM-compare must not skip the render that shows the lines
-    } else if (lastPayout !== null && latest?.battleId !== lastPayout.battleId) {
-      lastPayout = null;
-    }
-  } catch (err) {
-    console.error('[qf-17] payout listener', err);
-    payoutBaseline = undefined;
-  }
-});
 store.onBatchApplied(() => refreshBattle());
 
 // --- dialogue dismiss + deferred shop open (ui/shopOpenModel.ts) ----------------------
@@ -4241,7 +4028,7 @@ const mrPvpHook = {
     return conn?.live()?.reducers.cancelChallenge({ challengeId: BigInt(challengeId) });
   },
   // bt-16: `submitPvpAction` left the hook with the cutover — every live battle is tactical and
-  // the 1v1 reducer refuses a tactical anchor; the e2e drives turns by virtual buttons.
+  // `submit_pvp_action` is no longer a reducer (bt-17); the e2e drives turns by virtual buttons.
   allChallenges(): Array<{
     challengeId: string;
     challenger: string;
@@ -4337,7 +4124,7 @@ const mrTacticsHook = {
     initiative: number[];
     activeUnitId: number | null;
     turnState: 'NotActive' | 'Waiting' | 'Advancing';
-    owner: 'legacy' | 'deploy' | 'tactical' | 'results' | null;
+    owner: 'deploy' | 'tactical' | 'results' | null;
     events: number;
     deadlineMs: string | null;
     units: {
@@ -4376,9 +4163,7 @@ const mrTacticsHook = {
             ? 'deploy'
             : resultsPanel?.visible === true
               ? 'results'
-              : battleView?.visible === true
-                ? 'legacy'
-                : null,
+              : null,
       events: store.battleEvents(row.battleId).length,
       deadlineMs: clock?.deadlineMs == null ? null : String(clock.deadlineMs),
       units: store.battleUnits(row.battleId).map((u) => ({
@@ -4577,7 +4362,6 @@ async function main(): Promise<void> {
 
   const [
     { BoxView: BoxViewClass },
-    { BattleView: BattleViewClass },
     { RaisingView: RaisingViewClass },
     { EvolutionView: EvolutionViewClass },
     { DialogueView: DialogueViewClass },
@@ -4597,7 +4381,6 @@ async function main(): Promise<void> {
     { ControlsView: ControlsViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
-    import('./ui/battleView'),
     import('./ui/raisingView'),
     import('./ui/evolutionView'),
     import('./ui/dialogueView'),
@@ -4633,16 +4416,6 @@ async function main(): Promise<void> {
         dispatch({ kind: 'setNickname', monsterId, nickname }),
       onSetPartySlot: (monsterId, slot) => dispatch({ kind: 'setPartySlot', monsterId, slot }),
       partySlotNone: PARTY_SLOT_NONE,
-    });
-    // The PvE callbacks RETURN the promise (view lock until settle; M-1 pin).
-    battleView = new BattleViewClass(mount, {
-      onAttack: (battleId, skillId) => dispatch({ kind: 'attack', battleId, skillId }),
-      onFlee: (battleId) => dispatch({ kind: 'flee', battleId }),
-      onSwap: (battleId, teamIndex) => dispatch({ kind: 'swap', battleId, teamIndex }),
-      onRecruit: (battleId, baitItemId) => dispatch({ kind: 'recruit', battleId, baitItemId }),
-      onUseItem: (battleId, itemId) => dispatch({ kind: 'useItem', battleId, itemId }),
-      onPvpAttack: (battleId, skillId) => dispatch({ kind: 'pvpAttack', battleId, skillId }),
-      onPvpSwap: (battleId, teamIndex) => dispatch({ kind: 'pvpSwap', battleId, teamIndex }),
     });
     raisingView = new RaisingViewClass(mount);
     evolutionView = new EvolutionViewClass(mount, {
@@ -4918,7 +4691,6 @@ async function main(): Promise<void> {
       // the next baseline is the first hydrated batch of this connection.
       statusNotice = STATUS_NOTICE_INITIAL;
       questAckBaseline = undefined;
-      payoutBaseline = undefined;
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
       // Zone state is corrected by the reconcile listener's state-based check on
