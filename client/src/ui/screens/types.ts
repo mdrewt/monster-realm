@@ -58,17 +58,6 @@ export type Command =
   // Profile.
   | { readonly kind: 'setProfileName'; readonly name: string }
   // Battle.
-  | { readonly kind: 'attack'; readonly battleId: bigint; readonly skillId: number }
-  | { readonly kind: 'flee'; readonly battleId: bigint }
-  | { readonly kind: 'swap'; readonly battleId: bigint; readonly teamIndex: number }
-  | {
-      readonly kind: 'recruit';
-      readonly battleId: bigint;
-      readonly baitItemId: number | undefined;
-    }
-  | { readonly kind: 'useItem'; readonly battleId: bigint; readonly itemId: number }
-  | { readonly kind: 'pvpAttack'; readonly battleId: bigint; readonly skillId: number }
-  | { readonly kind: 'pvpSwap'; readonly battleId: bigint; readonly teamIndex: number }
   // Tactical battle (bt-11): a unit's plan to `submit_queue` (binding-shaped entries) and the
   // READY-row cancel. The tactical shell issues them through its deps (bt-12 wires them).
   | {

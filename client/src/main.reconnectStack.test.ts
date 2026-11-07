@@ -274,7 +274,7 @@ function battleRow(battleId: bigint, outcome: string): StoreBattle {
  *  tactical row shows no battle view after the purge, and the callers assert the battle on screen. */
 function putBattle(battleId: bigint, t: number): void {
   const row = battleRow(battleId, 'Ongoing');
-  row.partyMonsterIds.forEach((monsterId, partySlot) =>
+  row.partyMonsterIds.forEach((monsterId, partySlot) => {
     opts.store.upsertMonster({
       monsterId,
       ownerIdentity: H.identity,
@@ -296,8 +296,8 @@ function putBattle(battleId: bigint, t: number): void {
       qualityTimeTier: 0,
       nutritionPct: 0,
       lastCareAtMs: 0n,
-    }),
-  );
+    });
+  });
   opts.store.upsertBattle(row);
   opts.store.reconcileTacticalBattlesFromView([
     {
@@ -1044,8 +1044,9 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     expect(battleShown(), 'the battle overlay is reset until the row is re-delivered').toBe(false);
 
     opts.onHydrated();
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
-    server(1300);
+    // bt-17 (orchestrator re-seed, disclosed): the re-delivered battle arrives as the server now
+    // delivers one — with its Deploying tactical row — or no view would show.
+    putBattle(BATTLE_ID, 1300);
     await flush();
     expect(battleShown(), 'the re-delivered battle shows').toBe(true);
     expect(helpShown(), 'with no help left over it').toBe(false);

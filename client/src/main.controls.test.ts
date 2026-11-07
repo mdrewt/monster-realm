@@ -400,7 +400,8 @@ function tacticalRow(
  *  `Finished` once terminal (the results panel owns the outcome frame). */
 function putBattle(battleId: bigint, t: number, outcome = 'Ongoing'): void {
   const row = battleRow(battleId, outcome);
-  row.partyMonsterIds.forEach((id, slot) => opts.store.upsertMonster(ownMonster(id, slot)));
+  for (const [slot, id] of row.partyMonsterIds.entries())
+    opts.store.upsertMonster(ownMonster(id, slot));
   opts.store.upsertBattle(row);
   opts.store.reconcileTacticalBattlesFromView([
     tacticalRow(battleId, outcome === 'Ongoing' ? 'Deploying' : 'Finished'),

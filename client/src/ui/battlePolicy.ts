@@ -100,13 +100,6 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   declineChallenge: 'refuse',
   cancelChallenge: 'refuse',
   setProfileName: 'refuse',
-  attack: 'safe',
-  flee: 'safe',
-  swap: 'safe',
-  recruit: 'safe',
-  useItem: 'safe',
-  pvpAttack: 'safe',
-  pvpSwap: 'safe',
   submitQueue: 'safe',
   cancelQueue: 'safe',
   deployUnits: 'safe',
@@ -135,15 +128,16 @@ export function battleRefused(stack: Stack, command: ScreenCommand): boolean {
 
 // --- bt-12: which view owns the `battleView` frame, and the results countdown ------------------
 
-/** The view that owns the battle frame for a tactical phase: no tactical row → the 1v1 view;
- *  Deploying → the deploy panel; Active → the tactical shell (bt-12 B; a shell that cannot be built
- *  leaves the frame with its current owner, B17); Finished → the results panel. Total over the phase names; an unknown phase still shows a
- *  battle (B17). */
-export type BattleRenderer = 'legacy' | 'deploy' | 'tactical' | 'results';
+/** The view that owns the battle frame for a tactical phase: Deploying → the deploy panel; Active →
+ *  the tactical shell (bt-12 B; a shell that cannot be built leaves the frame with its current owner,
+ *  B17); Finished → the results panel; no tactical row → `none` (bt-17: the 1v1 view is deleted, so an
+ *  anchor without its tactical row builds nothing — a shown owner stays, a terminal one is dismissed).
+ *  Total over the phase names; `rowConvert` drops an unknown phase, so the default arm is `none` too. */
+export type BattleRenderer = 'none' | 'deploy' | 'tactical' | 'results';
 export function battleRenderer(phase: TacticalPhaseName | undefined): BattleRenderer {
   switch (phase) {
     case undefined:
-      return 'legacy';
+      return 'none';
     case 'Deploying':
       return 'deploy';
     case 'Active':
@@ -152,11 +146,22 @@ export function battleRenderer(phase: TacticalPhaseName | undefined): BattleRend
       return 'results';
     default:
       phase satisfies never;
-      return 'legacy';
+      return 'none';
   }
 }
 
-/** What the battle views share: the 1v1 view, the deploy panel and the results panel. */
+/** bt-17: whether the client can show the latest battle at all — its anchor AND its tactical row are
+ *  both present. The ONE predicate `reconcileStack` (is there an outcome to show?) and `refreshBattle`
+ *  (which view) share, so a row-less anchor never churns the stack on one batch and the views on the
+ *  next. */
+export function renderableBattle(
+  latest: { readonly battleId: bigint } | undefined,
+  tacticalRow: unknown | undefined,
+): boolean {
+  return latest !== undefined && tacticalRow !== undefined;
+}
+
+/** What the battle views share: the deploy panel, the results panel and the tactical shell. */
 export interface BattleViewLike {
   readonly visible: boolean;
   hide(): void;

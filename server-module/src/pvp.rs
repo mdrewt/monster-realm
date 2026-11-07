@@ -142,8 +142,8 @@ pub struct PvpDeadlineSchedule {
 // ===========================================================================
 
 /// Schedule a one-shot deadline reaper for `battle_id` at turn `turn_number`.
-/// Called from `accept_challenge` (turn 0) and `resolve_pvp_turn_if_ready`
-/// (each subsequent turn).
+/// Reached only from `resolve_pvp_turn_if_ready` under the de-attributed `submit_pvp_action`
+/// (bt-17): no reducer arms it; `accept_challenge` starts tactical battles since bt-16.
 fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
     let now_micros = ctx.timestamp.to_micros_since_unix_epoch();
     let deadline_micros = now_micros.saturating_add(PVP_TURN_DEADLINE_MS * 1_000);
@@ -332,8 +332,8 @@ pub(crate) fn start_pvp_battle(
     // alongside. Team order is preserved, so `team[i]` stays coupled to
     // `*_monster_ids[i]` for HP write-back and to `ability_ids_*[i]` for the
     // entry ability. The audited identity is the SIDE'S OWNER, never `ctx.sender()`
-    // — this helper is reached only from `accept_challenge`, where `ctx.sender()`
-    // is the ACCEPTOR.
+    // — this helper was reached only from `accept_challenge` (the ACCEPTOR) until bt-16; since
+    // bt-17 nothing but the trading escrow matrix calls it.
     let side_a = BattleSide::with_lead(team_a).ok_or_else(|| {
         let e = "challenger party has no conscious monster".to_string();
         log_reject("start_pvp_battle", challenger, &e);
@@ -1229,8 +1229,11 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 /// 6. Double-submit guard: no existing BattleAction for (battle_id, caller, turn_number).
 /// 7. Insert BattleAction (irreversible).
 /// 8. Resolve turn if both sides have now submitted.
-#[spacetimedb::reducer]
-pub fn submit_pvp_action(
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn submit_pvp_action(
     ctx: &ReducerContext,
     battle_id: u64,
     action: PvpAction,

@@ -973,7 +973,7 @@ function seedRenderableBattle(
   phase: StoreTacticalBattle['phase'] = 'Deploying',
 ): void {
   const mine = row.playerIdentity === H.identity ? row.partyMonsterIds : row.opponentMonsterIds;
-  mine.forEach((id, slot) => opts.store.upsertMonster(ownMonster(id, slot)));
+  for (const [slot, id] of mine.entries()) opts.store.upsertMonster(ownMonster(id, slot));
   opts.store.upsertBattle(row);
   const kind = row.opponentIdentity === WILD_IDENTITY ? 'Wild' : 'Pvp';
   opts.store.reconcileTacticalBattlesFromView([tacticalRow(row.battleId, phase, kind)]);

@@ -3,12 +3,13 @@
 // list. No DOM, SDK, module state or clock; the battle view applies what `paint` hands it.
 //
 // The battle is the stack's BASE, not a frame, so the host steps this adapter directly at a bare
-// battle base (screens/index.ts) and the outcome frame keeps the legacy adapter. The cursor lives
-// in the view: its rows are re-rendered on every batch and the mouse and Tab move it too, so a press
-// is a one-shot op TOKEN (a new object each press, the profileScreen precedent) and every step's
-// state holds the new token or null, so a later paint never re-applies an old one. At a LEGACY
-// battle Start never gets here in play: main.ts's `battleButton` opens the main menu first; the
-// tactical shell (bt-11) leaves Start to this adapter (End Turn / Guard / Submit).
+// battle base (screens/index.ts). The views that implement `BattleOpsView` are the tactical shell
+// and the deploy panel (bt-17 deleted the 1v1 view). The cursor lives in the view: its rows are
+// re-rendered on every batch and the mouse and Tab move it too, so a press is a one-shot op TOKEN (a
+// new object each press, the profileScreen precedent) and every step's state holds the new token or
+// null, so a later paint never re-applies an old one. At a deploy CONFIRM screen Start never gets
+// here in play: main.ts's `battleButton` opens the main menu first; the tactical shell (bt-11) and
+// the deploy EDITOR leave Start to this adapter (End Turn / Guard / Submit).
 import type { CursorDir } from '../battleModel';
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
@@ -18,7 +19,7 @@ export type BattleOp =
   | { readonly kind: 'activate' }
   | { readonly kind: 'back' }
   // bt-11 (BT11.6): the danger toggle (X), own-unit cycling (LB / RB) and Start (End Turn / Guard
-  // live, Submit for a pre-queue). The legacy BattleView ignores them (its switch has no default arm).
+  // live, Submit for a pre-queue).
   | { readonly kind: 'danger' }
   | { readonly kind: 'cycle'; readonly dir: -1 | 1 }
   | { readonly kind: 'start' };
@@ -62,8 +63,8 @@ export const battleScreen: ScreenAdapter<null, BattleScreenState, BattleOpsView>
       case 'RB':
         return done('consumed', btn.repeat ? null : { kind: 'cycle', dir: 1 });
       // Start: End Turn / Guard on a live turn, Submit for a pre-queue. main.ts's `battleButton`
-      // answers Start first at a LEGACY battle (the main menu), so this op reaches only the
-      // tactical shell. Select toggles help, as at the bare base.
+      // answers Start first when no tactical view owns it (the main menu), so this op reaches only
+      // the tactical shell and the deploy editor. Select toggles help, as at the bare base.
       case 'Start':
         return done('consumed', btn.repeat ? null : { kind: 'start' });
       case 'Select':

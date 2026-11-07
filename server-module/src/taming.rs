@@ -37,8 +37,11 @@ use spacetimedb::{Identity, ReducerContext, Table};
 /// the box, write back party HP (NO XP), GC the wild row, end the battle.
 /// Failure: advance the turn, let the wild strike back; if that ends the battle,
 /// run the full results path (XP/loss handling) + GC.
-#[spacetimedb::reducer]
-pub fn attempt_recruit(
+///
+/// Not a reducer since bt-17 (BT17.1): the 1v1 engine is retired, so the attribute is gone and the body
+/// stays only for the trading / guards / tactics test matrices until the continuation deletes it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn attempt_recruit(
     ctx: &ReducerContext,
     battle_id: u64,
     bait_item_id: Option<u32>,

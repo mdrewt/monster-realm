@@ -1835,7 +1835,9 @@ const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
 /// retired table (the classified set narrowed to that one table, NO owner exemption), so every
 /// reducer that reaches a write verb on it (gated or not) is listed for that table:
 ///   (a) `pvp_deadline_schedule` — reached by NO reducer (only `submit_pvp_action` armed it);
-///   (b) `battle_action` — reached by NO reducer (only `submit_pvp_action` wrote it);
+///   (b) `battle_action` — reached by EXACTLY the same four (`pvp::settle_pvp_battle`'s stale-action
+///       delete under the settle funnel; measured on the purged tree — only `submit_pvp_action` ever
+///       INSERTED one);
 ///   (c) `battle_wild` — reached by EXACTLY [`BT17_BATTLE_WILD_SWEEPERS`] (the tactical terminal
 ///       sweep's deletes; the 1v1 starts and `write_back_battle_results` callers are gone);
 ///   (d) none of [`BT17_RETIRED_1V1_REDUCERS`] appears in any table's set.
@@ -1915,18 +1917,24 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
          armed by nothing); reached by: {deadline_desc:#?}"
     );
 
-    let (action, action_desc) = per_table("battle_action");
-    assert!(
-        action.is_empty(),
-        "(b) no reducer may reach battle_action (BT17.1: the 1v1 action log gains no row); \
-         reached by: {action_desc:#?}"
-    );
-
-    let (wild, wild_desc) = per_table("battle_wild");
     let sweepers: BTreeSet<String> = BT17_BATTLE_WILD_SWEEPERS
         .iter()
         .map(|s| String::from(*s))
         .collect();
+
+    // Measured on the purged tree (orchestrator correction, disclosed; the tester pre-authorised
+    // "pin that set the same way as (c)" if a settle path reached this table too): the tactical
+    // settle funnel reaches `pvp::settle_pvp_battle`, whose stale-action sweep deletes the finished
+    // battle's `battle_action` rows, so the same four reducers reach it — a delete, never a new row.
+    let (action, action_desc) = per_table("battle_action");
+    assert_eq!(
+        action, sweepers,
+        "(b) battle_action is reached by EXACTLY the tactical reducers whose terminal path runs \
+         tactics::finish -> tactics_settle::settle -> pvp::settle_pvp_battle (its stale-action delete, \
+         not a new row — the 1v1 action log gains no row, BT17.1); reached by: {action_desc:#?}"
+    );
+
+    let (wild, wild_desc) = per_table("battle_wild");
     assert_eq!(
         wild, sweepers,
         "(c) battle_wild is reached by EXACTLY the tactical reducers whose terminal path runs \
