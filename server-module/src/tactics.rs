@@ -30,7 +30,7 @@
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use crate::battle::{lead_party, lead_party_ids, write_back_party_hp};
+use crate::battle::{lead_party, write_back_party_hp, NO_CONSCIOUS_MONSTER_REASON};
 use crate::content_cache::{
     cached_battle_maps, cached_tactics_items, cached_tactics_skills, cached_tactics_species,
     cached_tactics_zones,
@@ -44,7 +44,7 @@ use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::observability::mr_log;
 use crate::playtest::{hp_permille, record_recruit_event};
-use crate::pvp::{challenge_format, SideAWriteBack, PVP_FORMAT_MAX};
+use crate::pvp::{SideAWriteBack, PVP_FORMAT_MAX};
 use crate::schema::{
     battle, battle_clock, battle_deploy, battle_event, battle_queue, battle_secret,
     battle_tactical, battle_unit, battle_wild_unit, character, inventory, monster, player,
@@ -80,7 +80,7 @@ pub(crate) const GC_DELAY_MS: i64 = 86_400_000;
 /// The Deploying window's deadline row carries this `unit_id` (unit ids are `auto_inc`
 /// from 1) and `window_seq` 0. Frozen once shipped: a fired row is matched on it.
 pub(crate) const DEPLOY_WINDOW_UNIT: u32 = 0;
-/// `battle_secret.seed = splitmix64(encounter_seed ^ BATTLE_SEED_SALT)`: the roll stream
+/// `battle_secret.seed = splitmix64(battle_seed ^ BATTLE_SEED_SALT)`: the roll stream
 /// must never equal the per-wild individuality seeds (`encounter::wild_seed` is the same
 /// mixer over the raw encounter seed).
 pub(crate) const BATTLE_SEED_SALT: u64 = 0x7A57_1C5B_A771_E5EE;
@@ -1775,16 +1775,23 @@ fn anchor_monster(m: &Monster, species: &Species) -> BattleMonster {
     }
 }
 
-/// Start a wild tactical battle for `player` from `encounter_seed` (design §3.4): the
+/// Start a wild tactical battle for `player` (design §3.4) — the ONE live writer of a wild
+/// battle, called by `movement::movement_tick` once the grass trigger fired (bt-16): the
 /// anchor `battle` row (Ongoing, the whole party as side A), `battle_tactical`,
 /// `battle_secret`, one `battle_wild_unit` per wild and the side-A clock; a pack of 1
 /// auto-deploys the remembered formation and starts at once, a pack ≥ 2 opens the
-/// Deploying window (the tuning's `pve_deploy_ms`). `forced_pack` overrides the roll (dev only; `1..=MAX_PACK`
-/// and never more than the conscious party — reject, never clamp).
+/// Deploying window (the tuning's `pve_deploy_ms`).
 ///
-/// Until bt-16 wires the grass path, the only production caller is the cfg-gated dev
-/// reducer, so the default build is told the function (and what only it reaches) is live.
-#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
+/// Two seeds, both drawn by the caller from `ctx.random()`: `encounter_seed` rolls the pack,
+/// the map and every wild's individuality (public through `battle_unit`); `battle_seed`
+/// alone feeds `battle_secret.seed`, so the private roll stream cannot be recovered from
+/// the wilds' public stats (R-bt-8/R-bt-12-SEEDENTROPY). `forced_pack` is the test seam
+/// (the live caller passes `None`; `1..=MAX_PACK` and never more than the conscious party —
+/// reject, never clamp).
+///
+/// Atomic under a swallowing caller: `movement_tick` logs a refusal and carries on with the
+/// tick, so a refusal AFTER the first insert (the pack-1 auto-deploy's dry run) undoes every
+/// row this call wrote before returning the `Err` — nothing half-written ever locks a player.
 pub(crate) fn start_wild_tactical(
     ctx: &ReducerContext,
     player: Identity,
@@ -1840,7 +1847,7 @@ pub(crate) fn start_wild_tactical(
     let conscious =
         u8::try_from(party.iter().filter(|m| m.current_hp > 0).count()).unwrap_or(u8::MAX);
     if conscious == 0 {
-        return Err("party has no conscious monster".to_string());
+        return Err(NO_CONSCIOUS_MONSTER_REASON.to_string());
     }
     let encounter = generate_encounter(
         &zone.pack_weights,
@@ -2001,7 +2008,7 @@ pub(crate) fn start_wild_tactical(
                 slot: u8::try_from(slot).unwrap_or(u8::MAX),
             })
             .collect();
-        materialize(
+        if let Err(e) = materialize(
             ctx,
             anchor,
             tactical,
@@ -2009,11 +2016,25 @@ pub(crate) fn start_wild_tactical(
             SideB::Wild,
             now,
             Except::None,
-        )?;
+        ) {
+            undo_wild_start(ctx, battle_id);
+            return Err(e);
+        }
     } else if let Some(deadline) = deploy_deadline {
         arm_deadline(ctx, battle_id, DEPLOY_WINDOW_UNIT, 0, deadline);
     }
     Ok(battle_id)
+}
+
+/// Delete every row `start_wild_tactical` wrote for `battle_id` before a late refusal (the
+/// anchor, the tactical row, the secret, the wild units, the side-A clock). The native host
+/// has no rollback and the grass caller swallows the `Err`, so the writer compensates itself.
+fn undo_wild_start(ctx: &ReducerContext, battle_id: u64) {
+    ctx.db.battle_clock().battle_id().delete(battle_id);
+    ctx.db.battle_wild_unit().battle_id().delete(battle_id);
+    ctx.db.battle_secret().battle_id().delete(battle_id);
+    ctx.db.battle_tactical().battle_id().delete(battle_id);
+    ctx.db.battle().battle_id().delete(battle_id);
 }
 
 /// One wild of the pack as the anchor's side B seats it: built from its individuality seed at the
@@ -2092,10 +2113,8 @@ fn load_side_party(
 /// `battle_deploy` staging row per side (empty, unlocked), plus the 45 s deploy window row.
 /// Nothing is written before the last guard (reject, never clamp). The two side lists must be
 /// DISJOINT (Practice splits one party): every per-side rule then works over its own list.
-/// Reached only through the cfg-gated `dev_start_tactical_pvp` until bt-16 flips the
-/// challenge-accept path; EVERY caller must draw `seed` from `ctx.random()` — the public `map_id`
-/// derives from it.
-#[cfg_attr(not(feature = "dev_reducers"), allow(dead_code))]
+/// The ONE live writer of a PvP battle, called by `pvp::accept_challenge` (bt-16); EVERY caller
+/// must draw `seed` from `ctx.random()` — the public `map_id` derives from it.
 pub(crate) fn start_pvp_tactical(
     ctx: &ReducerContext,
     challenger: Identity,
@@ -2781,91 +2800,6 @@ fn expire_pvp_deploy(ctx: &ReducerContext, tactical: BattleTactical, now_ms: i64
     ) {
         fallback_close(ctx, tactical, &e, now_ms, except);
     }
-}
-
-/// DEV/TEST entrypoint for the build phase (the live challenge-accept path flips in bt-16):
-/// starts a PvP tactical battle between `challenger` and `opponent` (the same identity twice is a
-/// Practice battle) — the caller itself as challenger, or any pair when the caller is the module
-/// owner (`spacetime call` runs as the publisher). Both parties are the players' party slots;
-/// `format` defaults to the challenger's pick (`pvp::challenge_format`); the seed is drawn
-/// server-side.
-#[cfg(feature = "dev_reducers")]
-#[spacetimedb::reducer]
-pub fn dev_start_tactical_pvp(
-    ctx: &ReducerContext,
-    challenger: Identity,
-    opponent: Identity,
-    format: Option<u8>,
-) -> Result<(), String> {
-    use crate::schema::config;
-    const NAME: &str = "dev_start_tactical_pvp";
-    crate::guards::require_not_deleting(ctx, NAME)?;
-    let me = ctx.sender();
-    let owner = ctx
-        .db
-        .config()
-        .id()
-        .find(0)
-        .map(|c| c.owner_identity)
-        .unwrap_or(Identity::ZERO);
-    // Consent: a player may start only a PRACTICE battle for itself; pairing two different
-    // identities (a non-consenting opponent, a rated result) is the module owner's alone.
-    let practice = challenger == opponent;
-    if me != owner && !(me == challenger && practice) {
-        return reject(NAME, me, "not owner".to_string());
-    }
-    let Some(mut party_a) = lead_party_ids(ctx, challenger) else {
-        return reject(NAME, me, "no party monster".to_string());
-    };
-    let (party_a, party_b) = if practice {
-        // One party split into two DISJOINT side lists, in slot order.
-        if party_a.len() < 2 {
-            return reject(NAME, me, "practice needs two party monsters".to_string());
-        }
-        let b = party_a.split_off(party_a.len().div_ceil(2));
-        (party_a, b)
-    } else {
-        let Some(party_b) = lead_party_ids(ctx, opponent) else {
-            return reject(NAME, me, "no party monster".to_string());
-        };
-        (party_a, party_b)
-    };
-    let format = format.unwrap_or_else(|| challenge_format(party_a.len()));
-    let seed: u64 = ctx.random();
-    start_pvp_tactical(ctx, challenger, &party_a, opponent, &party_b, format, seed)
-        .map(|_| ())
-        .inspect_err(|e| log_reject(NAME, me, e))
-}
-
-/// DEV/TEST entrypoint for the build phase (the live encounter path flips in bt-16):
-/// starts a wild tactical battle for `player` — the caller itself, or any player when the
-/// caller is the module owner (`spacetime call` runs as the publisher). The encounter seed
-/// is drawn server-side; `pack` forces the pack size for deterministic e2e seeding.
-#[cfg(feature = "dev_reducers")]
-#[spacetimedb::reducer]
-pub fn dev_start_tactical_wild(
-    ctx: &ReducerContext,
-    player: Identity,
-    pack: Option<u8>,
-) -> Result<(), String> {
-    use crate::schema::config;
-    const NAME: &str = "dev_start_tactical_wild";
-    crate::guards::require_not_deleting(ctx, NAME)?;
-    let me = ctx.sender();
-    let owner = ctx
-        .db
-        .config()
-        .id()
-        .find(0)
-        .map(|c| c.owner_identity)
-        .unwrap_or(Identity::ZERO);
-    if me != player && me != owner {
-        return reject(NAME, me, "not owner".to_string());
-    }
-    let seed: u64 = ctx.random();
-    start_wild_tactical(ctx, player, seed, seed, pack)
-        .map(|_| ())
-        .inspect_err(|e| log_reject(NAME, me, e))
 }
 
 // ===========================================================================

@@ -1088,7 +1088,11 @@ mod nh {
                 "{label}: the step was applied"
             );
             if !opens {
-                assert_eq!(bt16_counts(&w), [0; 7], "{label}: no battle of either engine");
+                assert_eq!(
+                    bt16_counts(&w),
+                    [0; 7],
+                    "{label}: no battle of either engine"
+                );
                 continue;
             }
             let anchors = w.battles.rows();
@@ -1159,7 +1163,9 @@ mod nh {
     /// row sets left behind); the undo keyed on the wrong battle id.
     #[test]
     fn nh_movement_tick_refused_wild_start_leaves_no_half_written_battle_bt16_1() {
-        let faults: [(&str, &str, fn(&mut Monster)); 2] = [
+        /// (label, the deploy error's variant name, the row corruption that triggers it).
+        type Fault = (&'static str, &'static str, fn(&mut Monster));
+        let faults: [Fault; 2] = [
             ("zero defense", "ZeroDefense", |m| m.stat_defense = 0),
             ("current HP above max", "HpAboveMax", |m| {
                 m.current_hp = m.stat_hp + 1
@@ -1322,9 +1328,16 @@ mod nh {
             "the step onto grass was applied"
         );
         let lines = mv_lines("wild_start_error");
-        assert_eq!(lines.len(), 1, "a genuine fault is logged exactly once: {lines:?}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "a genuine fault is logged exactly once: {lines:?}"
+        );
         let (target, line) = &lines[0];
-        assert_eq!(target, "monster_realm_module::movement", "logged by movement");
+        assert_eq!(
+            target, "monster_realm_module::movement",
+            "logged by movement"
+        );
         assert!(
             line.starts_with("{\"evt\":\"wild_start_error\",\"zone\":0,\"reason\":\"")
                 && line.ends_with("\",\"suppressed\":0}"),

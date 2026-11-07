@@ -135,10 +135,10 @@ writes:
 
 | Module | Reducers |
 |---|---|
-| `movement` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, scheduled `movement_tick` |
-| `battle` | `start_battle`, `submit_attack`, `swap_active`, `use_battle_item`, `flee` (+ dev-only `start_wild_battle`) |
+| `movement` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, scheduled `movement_tick` (the grass trigger opens a tactical wild battle through `tactics::start_wild_tactical`) |
+| `battle` | `start_battle`, `submit_attack`, `swap_active`, `use_battle_item`, `flee` (+ dev-only `start_wild_battle`) — the 1v1 engine: unreachable from the grass and challenge-accept paths since bt-16, deleted by bt-17 |
 | `taming` | `attempt_recruit` (+ dev-only `grant_bait`) |
-| `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc` (+ dev-only `dev_start_tactical_wild`; `start_wild_tactical` is the one writer of a new tactical battle, called from the dev reducer until bt-16 wires the grass path) |
+| `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, `forfeit`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc`; its two `pub(crate)` writers `start_wild_tactical` (called by `movement_tick`) and `start_pvp_tactical` (called by `accept_challenge`) are the only places a battle is created |
 | `tactics_settle` | no reducers: the one terminal settlement `tactics::finish` calls (reward ledger, faint penalty, prior-terminal sweep, `battle_summary`) |
 | `raising` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `heal_party` |
 | `evolution` | `evolve`, `ack_evolution_notices` |
@@ -146,7 +146,7 @@ writes:
 | `economy` | `buy`, `sell` |
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
 | `trading` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, scheduled `trade_offer_reaper` |
-| `pvp` | `challenge_pvp`, `accept_challenge`, `decline_challenge`, `cancel_challenge`, `submit_pvp_action`, scheduled `pvp_deadline_reaper` and `battle_challenge_reaper` |
+| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, `submit_pvp_action` (1v1, refuses a tactical anchor), scheduled `pvp_deadline_reaper` (never armed since bt-16) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
