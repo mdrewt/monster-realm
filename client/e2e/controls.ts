@@ -1086,39 +1086,126 @@ export async function openMenu(page: Page, tile: Tile): Promise<void> {
   ).toHaveCount(1, { timeout: 5_000 });
 }
 
-/** Move (from the OPEN ROOT menu): the band tile nearest `target`, confirmed with A (a drafted,
- *  reversible Move — its ghost appears). False, with the menu back at its root, when the Move row is
- *  greyed (boxed in) or the band offers no tile. */
-export async function draftMoveToward(page: Page, target: Tile): Promise<boolean> {
+/** From the OPEN ROOT menu: Move → A opens the Move aim (the menu gone, the band painted) and
+ *  returns the band's tiles in DOM order. Null, with the menu still at its root, when the Move row is
+ *  absent or greyed (boxed in). */
+async function openMoveAim(page: Page): Promise<Tile[] | null> {
   const moveRow = page.locator(TACTICS.menuRow('move'));
   if ((await moveRow.count()) !== 1 || (await moveRow.getAttribute('aria-disabled')) === 'true') {
-    return false;
+    return null;
   }
   await menuCursorTo(page, 'move');
   await pressButton(page, 'A');
   await expect(
     page.locator('.tactics-menu'),
-    'draftMoveToward: the Move aim replaces the menu',
+    'openMoveAim: the Move aim replaces the menu',
   ).toHaveCount(0, { timeout: 5_000 });
   await expect(
     page.locator(TACTICS.bandTile).first(),
-    'draftMoveToward: the Move aim paints a band',
+    'openMoveAim: the Move aim paints a band',
   ).toBeVisible({ timeout: 5_000 });
-  const band = await readBandTiles(page);
+  return readBandTiles(page);
+}
+
+/** The band's tiles nearest `target` first (Manhattan; ties in DOM order), the target's own tile
+ *  excluded — the ONE ordering every Move helper here steps by. */
+const nearestFirst = (band: Tile[], target: Tile): Tile[] => {
   const open = band.filter((tile) => !(tile.x === target.x && tile.y === target.y));
   open.sort((a, b) => manhattanTiles(a, target) - manhattanTiles(b, target));
-  const dest = open[0];
-  if (dest === undefined) {
-    await pressButton(page, 'B'); // leave the aim: back to the root menu
-    return false;
-  }
+  return open;
+};
+
+/** From the OPEN Move aim: the cursor to `dest`, A — the drafted, reversible Move (its ghost
+ *  appears; the shell is idle with the cursor on `dest`). */
+async function confirmMoveTo(page: Page, dest: Tile): Promise<void> {
   await dpadCursorTo(page, dest);
   await pressButton(page, 'A');
   await expect(
     page.locator(TACTICS.ghost),
-    'draftMoveToward: A drafts the Move (its ghost)',
+    'confirmMoveTo: A drafts the Move (its ghost)',
   ).toHaveCount(1, { timeout: 5_000 });
+}
+
+/** Move (from the OPEN ROOT menu): the band tile nearest `target`, confirmed with A (a drafted,
+ *  reversible Move — its ghost appears). False, with the menu back at its root, when the Move row is
+ *  greyed (boxed in) or the band offers no tile. */
+export async function draftMoveToward(page: Page, target: Tile): Promise<boolean> {
+  const band = await openMoveAim(page);
+  if (band === null) return false;
+  const dest = nearestFirst(band, target)[0];
+  if (dest === undefined) {
+    await pressButton(page, 'B'); // leave the aim: back to the root menu
+    return false;
+  }
+  await confirmMoveTo(page, dest);
   return true;
+}
+
+/** Undoes a drafted Move from the OPEN ROOT menu: B closes the menu (idle), B pops the last chip.
+ *  The menu must be GONE before the pop press (while a beat plays, B is the skip key, not the pop)
+ *  and the ghost gone after it, so a race shows up here by name instead of as a doubled draft. */
+async function undoDraft(page: Page): Promise<void> {
+  await pressButton(page, 'B');
+  await expect(page.locator('.tactics-menu'), 'undoDraft: B closes the root menu').toHaveCount(0, {
+    timeout: 5_000,
+  });
+  await settle(page);
+  await pressButton(page, 'B');
+  await expect(
+    page.locator(TACTICS.ghost),
+    'undoDraft: B pops the drafted Move (its ghost)',
+  ).toHaveCount(0, { timeout: 5_000 });
+}
+
+/** The most band tiles `moveThenAttackByButtons` drafts before it gives up on firing this turn: the
+ *  adjacent ring (≤ 4) plus the distance-2 ring (≤ 8) plus slack. A turn that can fire from nowhere
+ *  then costs ≤ ~16 s, so sixteen such turns still reach `fightToOutcome`'s NAMED throw inside its
+ *  callers' test budgets instead of a trace-less Playwright timeout. */
+export const MAX_MOVE_TRIES = 16;
+
+/**
+ * Move then Skill in ONE turn, by buttons — the game's answer to a foe out of reach (and to a
+ * kiting wild). From the OPEN ROOT menu of the own live turn with NO draft: the band tiles nearest
+ * `enemy` first (`nearestFirst`, the `draftMoveToward` order), and per tile Move → the aim → A on the
+ * tile (the drafted Move's ghost) → the menu re-opened on `me`'s LIVE tile → `attackByButtons` from
+ * the ghost: the Skills row and its rows read the ghost tile and the budget left after the Move
+ * (tactics/commandModel.ts), so no range or AP arithmetic lives here. The first tile a skill fires
+ * from wins — `hit: 'attacked'`, `dest` that tile — and the commit `[Move, Skill]` executes on the
+ * live turn, which stays live for the caller's `waitExecuted` + `endTurn`. A tile that fires nothing
+ * (`none`, or `kills` under `allowKo: false`) is undone (`undoDraft`) and the next is tried, at most
+ * MAX_MOVE_TRIES. When none fires, the nearest tile is re-drafted through `draftMoveToward` (the
+ * step-toward of old, the shell idle on the draft) and `hit` is the last result. `dest: null`, the
+ * menu at its root, when the Move row is greyed or the band is empty.
+ */
+export async function moveThenAttackByButtons(
+  page: Page,
+  me: Tile,
+  enemy: Tile,
+  opts: { allowKo: boolean; enemyHp: number },
+): Promise<{ hit: 'attacked' | 'kills' | 'none'; dest: Tile | null; tries: number }> {
+  const band = await openMoveAim(page);
+  if (band === null) return { hit: 'none', dest: null, tries: 0 };
+  const candidates = nearestFirst(band, enemy);
+  if (candidates.length === 0) {
+    await pressButton(page, 'B'); // leave the aim: back to the root menu
+    return { hit: 'none', dest: null, tries: 0 };
+  }
+  // The aim stays open for the first try; every later try re-opens it from the root menu.
+  let hit: 'attacked' | 'kills' | 'none' = 'none';
+  let tries = 0;
+  for (const dest of candidates.slice(0, MAX_MOVE_TRIES)) {
+    if (tries > 0 && (await openMoveAim(page)) === null) break;
+    tries += 1;
+    await confirmMoveTo(page, dest);
+    await openMenu(page, me);
+    hit = await attackByButtons(page, opts);
+    if (hit === 'attacked') return { hit, dest, tries };
+    await undoDraft(page);
+    await openMenu(page, me);
+  }
+  // Nothing fires from anywhere in reach: step toward the foe as before (idle on the draft).
+  const drafted = await draftMoveToward(page, enemy);
+  return { hit, dest: drafted ? (candidates[0] ?? null) : null, tries };
 }
 
 /** Ends the own live turn: Start (End Turn — the live draft plus EndTurn) once playback drained. */
@@ -1272,14 +1359,17 @@ export async function throughResults(page: Page, label: string): Promise<string>
 /**
  * Fights the current Active battle to its end by buttons: on each own live turn the menu opens; an
  * enemy within a skill's reach is attacked (`attackByButtons({ allowKo: true })`) and the turn
- * ended, else the unit steps toward the nearest enemy (`draftMoveToward`) and ends the turn. Stops
- * at `Finished` (never pressing Start into the results panel) and returns that snapshot. Throws
- * naming `maxOwnTurns` when the bound is spent; the throw also carries the per-turn trace — per own
- * turn the round:turnIdx, both units' tiles and HP, their distance, the hit result
- * (`attacked` / `kills` / `none`), whether a Move was drafted (`move:drafted` / `move:none`, absent
- * when no Move was tried) and the turn's wall time — so a dead-button stall (a leftover draft,
- * cursor or lock: nothing commits) is distinguishable from a kiting wild in the CI log. Each wait
- * for an own turn is bounded by `turnWaitMs` (default OWN_TURN_WAIT_MS).
+ * ended; else the unit Moves then fires from the ghost tile in the same turn
+ * (`moveThenAttackByButtons` — the answer to a kiting wild, which steps out of reach whenever we end
+ * adjacent) and ends the turn; when no band tile fires either, it has stepped toward the nearest
+ * enemy and the turn is ended. Stops at `Finished` (never pressing Start into the results panel)
+ * and returns that snapshot. Throws naming `maxOwnTurns` when the bound is spent; the throw also
+ * carries the per-turn trace — per own turn the round:turnIdx, both units' tiles and HP, their
+ * distance, the start-tile hit result (`attacked` / `none`), the Move (`move:(x,y)+attacked tries:N`
+ * when a skill fired from the ghost, `move:drafted(x,y) tries:N` when only the step toward was left,
+ * `move:none` when boxed in) and the turn's wall time — so a dead-button stall (a leftover draft,
+ * cursor or lock: nothing commits) is distinguishable from a changed AI in the CI log. Each wait for
+ * an own turn is bounded by `turnWaitMs` (default OWN_TURN_WAIT_MS).
  */
 export async function fightToOutcome(
   page: Page,
@@ -1308,12 +1398,27 @@ export async function fightToOutcome(
       await endTurn(page);
       continue;
     }
-    let moveNote = '';
-    if (tileDistance(me, enemy) > 1) {
-      moveNote = (await draftMoveToward(page, enemy)) ? ' move:drafted' : ' move:none';
+    // Nothing reaches from the start tile: Move then Skill from a ghost tile (the kiter's answer).
+    const moved = await moveThenAttackByButtons(page, me, enemy, {
+      allowKo: true,
+      enemyHp: enemy.curHp,
+    });
+    const at = moved.dest === null ? '' : `(${moved.dest.x},${moved.dest.y})`;
+    if (moved.hit === 'attacked') {
+      await waitExecuted(page, t.events);
+      const after = await readTactics(page);
+      trace.push(traceLine(hit, ` move:${at}+attacked tries:${moved.tries}`));
+      if (after === null || after.phase === 'Finished') return after ?? t;
+      await endTurn(page);
+      continue;
     }
     await endTurn(page);
-    trace.push(traceLine(hit, moveNote));
+    trace.push(
+      traceLine(
+        hit,
+        moved.dest === null ? ' move:none' : ` move:drafted${at} tries:${moved.tries}`,
+      ),
+    );
   }
   const end = await readTactics(page);
   if (end !== null && end.phase === 'Finished') return end;
