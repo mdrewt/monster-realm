@@ -1252,7 +1252,6 @@
  */
 .mr-tabbar {
   flex: none;
-  box-sizing: border-box;
   height: 2rem;
   font-size: var(--mr-font-body);
 }
@@ -1317,7 +1316,6 @@
   line-height: var(--mr-font-header-line);
 }
 .mr-sheet-prose {
-  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding: var(--mr-space-2);

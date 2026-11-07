@@ -18,10 +18,8 @@ export interface Rect {
   readonly h: number;
 }
 
-export type SheetCorner = 'bl' | 'br' | 'tl' | 'tr';
-
 export interface AnchorResult {
-  readonly corner: SheetCorner;
+  readonly corner: 'bl' | 'br' | 'tl' | 'tr';
   readonly rect: Rect;
   /** The sheet is shorter than its content, so its rows scroll. */
   readonly scrolls: boolean;
@@ -148,7 +146,6 @@ export function renderContextSheet(sheet: ContextSheet, content: ContextSheetCon
 /** Hides the sheet and empties it, so nothing it named stays in the document. */
 export function closeContextSheet(sheet: ContextSheet): void {
   sheet.root.hidden = true;
-  clearPlacement(sheet);
   writeText(sheet.heading, '');
   writeText(sheet.prose, '');
   renderNav(
@@ -177,8 +174,9 @@ export function placeContextSheet(
 ): AnchorResult | null {
   clearPlacement(sheet);
   if (sheet.root.dataset.sheetVariant === 'detail') return null;
-  const rootStyle = getComputedStyle(sheet.root.ownerDocument.documentElement);
-  const rem = Number.parseFloat(rootStyle.fontSize);
+  const rem = Number.parseFloat(
+    getComputedStyle(sheet.root.ownerDocument.documentElement).fontSize,
+  );
   const area = rectOf(body);
   const own = rectOf(sheet.root);
   const placed = anchorSheet({
