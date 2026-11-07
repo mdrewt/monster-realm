@@ -849,3 +849,25 @@ cross the light active row, where `--mr-focus` measures about 1:1 and the focus-
 **Rules out.** New px spacing or font sizes in menu chrome; a color literal where a token has that
 role; a rem width on a frame, chip or banner border; a color token without a `more` value; moving
 the listbox ring onto `--mr-focus` while the active row keeps its light fill.
+
+## One viewport number scales the world by integers and the chrome continuously
+
+**Decision.** `viewportScale` (`client/src/render/viewport.ts`) is the single scale authority. It
+returns the integer `deviceScale` the world renders at, and the continuous `uiScale`, the shorter
+CSS axis over 720 clamped to [0.875, 3]. `installResizeHandler` writes `uiScale` to `--mr-ui-scale` on
+`documentElement` at the same event that resizes the renderer, and the one `:root` rule,
+`font-size: calc(100% * var(--mr-ui-scale, 1))`, carries it to every rem token.
+
+**Why.** Playtest 3 read the snapping world and the smoothly growing menu as two competing methods
+(#586 D1). Each half needs its own rounding: a fractional stage scale blurs the pixel art, and a
+snapped chrome jumps between sizes. `uiScale` uses CSS pixels only, so a dpr change leaves the chrome
+alone, and `100%` keeps the browser's font-size preference in the product. `world.ts` is untouched
+because it already reads the same pure function at the same event, so the smoothness contract does
+not move. Borders stay px tokens so they land on whole device pixels.
+
+**Rules out.** A fixed-ratio letterbox: the visible tile count and the map margin absorb the
+remainder, because a box would change how much world each window shows. Integer snapping of
+`uiScale`, a second scale calculation elsewhere, and a px root size, which would override the
+player's browser font setting. A dpr change with no size change fires no `resize` in Chromium, and
+the seam stays resize-driven, so the world catches up at the next resize.
+
