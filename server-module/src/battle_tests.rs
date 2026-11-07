@@ -3003,3 +3003,52 @@ fn bn_anonymize_logs_only_the_battles_it_forced_terminal() {
 // bt-17 (BT17.1): `bn_start_wild_battle_checks_the_zone_argument` (the dev-only, `dev_reducers`
 // cfg test of `start_wild_battle`'s zone check) is deleted with the reducer itself — subject
 // deleted (memory/projects/monster-realm-bt-17-deletions.md).
+
+/// A disconnect's auto-flee of the caller's ongoing wild battle pays NOTHING: no currency, no
+/// XP, no level, no essence, no trust credit (`bn_disconnect_resolves_only_the_callers_ongoing_wild_battle`
+/// pins the HP write-back and the row deletes only).
+///
+/// kills: the auto-flee outcome set to `SideAWins` instead of `Fled` (the write-back would then
+/// pay the win: currency, XP, essence, trust).
+#[test]
+fn bn_disconnect_auto_flee_pays_nothing_bt17_2() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let mut mine = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Ongoing,
+    );
+    mine.state.side_a.team[0].current_hp = 17;
+    w.battles.seed(&mine);
+    w.wild_row(BN_BATTLE);
+    let before = w.mon(11);
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
+    assert!(
+        w.battle(BN_BATTLE).is_none(),
+        "PRECONDITION: the disconnect resolved the battle"
+    );
+    let m = w.mon(11);
+    assert_eq!(w.balance(bn_a()), 0, "no currency for a disconnect");
+    assert_eq!(
+        (
+            m.xp,
+            m.level,
+            m.essence_water,
+            m.essence_fire,
+            m.trust_favorable_count
+        ),
+        (
+            before.xp,
+            before.level,
+            before.essence_water,
+            before.essence_fire,
+            before.trust_favorable_count
+        ),
+        "no XP, level, essence or trust for a disconnect"
+    );
+}

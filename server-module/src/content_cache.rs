@@ -18,7 +18,9 @@
 //! embedded registry. Its `ReducerContext` accessor (`cached_type_chart`) left
 //! with the 1v1 engine in bt-17; the pure core stays for its tests.
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
 
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
@@ -29,16 +31,16 @@ static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
 static QUEST_DEFS: LazyLock<Result<Vec<game_core::QuestDef>, String>> =
     LazyLock::new(game_core::load_quest_defs);
 
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 static SKILLS: LazyLock<Result<Vec<game_core::SkillDef>, String>> =
     LazyLock::new(game_core::load_skills);
 
 static ITEMS: LazyLock<Result<Vec<game_core::ItemDef>, String>> =
     LazyLock::new(game_core::load_items);
 
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 static ABILITIES: LazyLock<Result<Vec<game_core::AbilityDef>, String>> =
     LazyLock::new(game_core::load_abilities);
 
@@ -89,8 +91,8 @@ pub(crate) fn cached_quest_defs() -> Result<&'static Vec<game_core::QuestDef>, S
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn cached_skills() -> Result<&'static Vec<game_core::SkillDef>, String> {
     (*SKILLS).as_ref().map_err(Clone::clone)
 }
@@ -107,8 +109,8 @@ pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String>
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn cached_abilities() -> Result<&'static Vec<game_core::AbilityDef>, String> {
     (*ABILITIES).as_ref().map_err(Clone::clone)
 }
@@ -167,8 +169,8 @@ pub(crate) fn cached_battle_maps() -> Result<&'static Vec<game_core::BattleMapEn
 /// The type-chart cache cell: `None` until first build, then the
 /// `(content_version, chart)` pair the last successful rebuild produced.
 /// A plain type alias so tests can construct and poison cells directly.
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) type TypeChartCell = Mutex<Option<(u32, Arc<game_core::TypeChart>)>>;
 
 /// Pure cache core: serve the cached `Arc` on a version hit,
@@ -190,8 +192,8 @@ pub(crate) type TypeChartCell = Mutex<Option<(u32, Arc<game_core::TypeChart>)>>;
 /// # Errors
 /// Propagates `rebuild`'s error verbatim; never caches it (DB-derived data can
 /// be fixed by a later transaction, unlike the embedded registries above).
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn type_chart_cache_lookup(
     cell: &TypeChartCell,
     version: u32,

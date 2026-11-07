@@ -5368,3 +5368,65 @@ fn failed_writeback_logs_skipped() {
     assert_eq!(l.len(), 1, "{l:?}");
     assert!(l[0].contains("HP write-back failed"), "{l:?}");
 }
+
+/// A recruit pre-queued by u1 that pops at the ROUND BOUNDARY runs inside the scheduled
+/// `tactical_advance`, i.e. under the MODULE sender — and the recruited monster still belongs to
+/// the player who queued it. Every other recruit-success test resolves under the owner's own
+/// submit, where the owner and `ctx.sender()` coincide.
+///
+/// Survivor ("the recruit lands with its owner") of `taming_tests::nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp`,
+/// deleted by bt-17.
+///
+/// kills: the recruit insert owned by `ctx.sender()` instead of the unit's owner (the module
+/// identity would own the recruit).
+#[test]
+fn a_prequeued_recruit_popped_by_a_round_advance_is_owned_by_the_player_bt17_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seat_between(&w, &live);
+    give(&w, 1, 2);
+    let pct = odds_pct(&w, live.wild, Some(1));
+    submit(
+        &fx,
+        a(),
+        T0 + 10_000,
+        live.id,
+        live.u1,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("u1 ends its live turn");
+    submit(
+        &fx,
+        a(),
+        T0 + 11_000,
+        live.id,
+        live.u1,
+        vec![recruit(live.wild, Some(1))],
+    )
+    .expect("u1 pre-queues a recruit for the next round");
+    submit(
+        &fx,
+        a(),
+        T0 + 12_000,
+        live.id,
+        live.u2,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("u2 ends its turn: the round closes");
+    force_recruit(&w, live.id, pct, true);
+    for adv in w.advances_of(live.id) {
+        fire_advance(&fx, T0 + 13_000, advance_args(&adv)).expect("the boundary fire is Ok");
+    }
+    let got = new_monsters(&w);
+    assert_eq!(
+        got.len(),
+        1,
+        "PRECONDITION: the pre-queued recruit popped at the boundary and succeeded"
+    );
+    assert_eq!(
+        got[0].owner_identity,
+        a(),
+        "the recruit belongs to the player who queued it, never the module sender"
+    );
+}

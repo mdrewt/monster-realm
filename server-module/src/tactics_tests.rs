@@ -796,7 +796,7 @@ impl World<'_> {
         rows.remove(0)
     }
 
-    fn advances_of(&self, id: u64) -> Vec<TacticalAdvanceSched> {
+    pub(crate) fn advances_of(&self, id: u64) -> Vec<TacticalAdvanceSched> {
         self.advances
             .rows()
             .into_iter()
@@ -2248,6 +2248,47 @@ fn start_refuses_bad_packs_busy_or_unfit_parties_and_writes_nothing_bt8_2() {
     });
 }
 
+/// A forced pack of two waits in Deploying, so no auto-deploy dry run (whose own escrow guard
+/// refuses first on a pack of one) can mask the START-time escrow guard of `start_wild_tactical`:
+/// each of the trio's monsters (first, middle, last) escrowed in an active offer the walker
+/// initiates — and the middle one escrowed as the COUNTERPARTY of a third player's offer — is
+/// refused "monster is in an active trade" with nothing written.
+///
+/// Survivor of the `begin_encounter (encounter path)` row of
+/// `trading_tests::nh_escrowed_monster_is_refused_by_every_guarded_reducer`, deleted by bt-17
+/// (the pack-1 "party monster in a trade" arm of
+/// `start_refuses_bad_packs_busy_or_unfit_parties_and_writes_nothing_bt8_2` is shadowed by the
+/// auto-deploy guard).
+///
+/// kills: `reject_if_monster_in_trade` dropped from `start_wild_tactical`; a guard reading only
+/// the initiator chain (the counterparty arm); a guard on one position of the party only.
+#[test]
+fn wild_start_refuses_an_escrowed_party_monster_for_a_deploying_pack_bt17_2() {
+    for escrowed in [11u64, 12, 13] {
+        assert_start_refused(
+            &format!("pack 2, monster {escrowed} offered by the walker"),
+            Some(2),
+            "monster is in an active trade",
+            |_, w| {
+                w.seed_party(a(), &TRIO);
+                w.offers.seed(&offer(1, a(), b(), vec![escrowed]));
+            },
+        );
+    }
+    assert_start_refused(
+        "pack 2, monster 12 asked for by a third player",
+        Some(2),
+        "monster is in an active trade",
+        |_, w| {
+            w.seed_party(a(), &TRIO);
+            w.offers.seed(&TradeOffer {
+                counterparty_monster_ids: vec![12],
+                ..offer(1, c(), a(), Vec::new())
+            });
+        },
+    );
+}
+
 // ===========================================================================
 // bt-17 (BT17.2) — the live starts' deletion gate and seed home, re-proven after the 1v1 purge
 // ===========================================================================
@@ -2450,7 +2491,9 @@ fn pvp_gate_call(fx: &Fixture) -> Result<u64, String> {
 ///
 /// kills: the seed also written to the anchor-visible `battle_wild` sidecar; `Ok(0)` or any
 /// constant returned instead of the inserted id; a seed row keyed by another battle id; a missing
-/// or duplicated wild row; a seed other than `wild_seed(encounter_seed, i)`.
+/// or duplicated wild row; a seed other than `wild_seed(encounter_seed, i)`; the two derivations
+/// swapped (`battle_secret.seed` from the encounter seed, or the wilds from the battle seed) — the
+/// two seeds are distinct values here.
 #[test]
 fn wild_start_keeps_every_wild_seed_in_battle_wild_unit_under_the_returned_id_bt17_2() {
     let fx = fixture();
@@ -2461,9 +2504,31 @@ fn wild_start_keeps_every_wild_seed_in_battle_wild_unit_under_the_returned_id_bt
     w.seed_party(b(), &[(21, 1, 0, 200), (22, 3, 1, 190)]);
     let (seed_a, seed_b) = (seed_for(4, None), seed_for(1, Some(1)));
     assert_ne!(seed_a, seed_b, "PRECONDITION: two distinct encounter seeds");
-    let id_a = start(&fx, a(), seed_a, Some(3), T0);
-    let id_b = start(&fx, b(), seed_b, None, T0 + 1_000);
+    // The battle seed DIFFERS from the encounter seed (every other start in this suite passes the
+    // same value twice), so a start that derives the roll stream from the encounter seed, or the
+    // wilds from the battle seed, is visible.
+    let battle_seed = |s: u64| s ^ 0xDEAD_BEEF;
+    let start_split = |who: Identity, encounter: u64, pack: Option<u8>, now: i64| -> u64 {
+        fx.run_as_at(module(), at(now), |ctx| {
+            super::start_wild_tactical(ctx, who, encounter, battle_seed(encounter), pack)
+        })
+        .unwrap_or_else(|e| panic!("start_wild_tactical refused: {e}"))
+    };
+    let id_a = start_split(a(), seed_a, Some(3), T0);
+    let id_b = start_split(b(), seed_b, None, T0 + 1_000);
     assert_ne!(id_a, id_b, "two starts return two ids");
+    for (who, id, encounter) in [(a(), id_a, seed_a), (b(), id_b, seed_b)] {
+        assert_eq!(
+            w.secret(id).seed,
+            splitmix64(battle_seed(encounter) ^ BATTLE_SEED_SALT),
+            "{who}: the roll stream derives from the BATTLE seed"
+        );
+        assert_ne!(
+            w.secret(id).seed,
+            splitmix64(encounter ^ BATTLE_SEED_SALT),
+            "{who}: never from the encounter seed"
+        );
+    }
     for (who, id) in [(a(), id_a), (b(), id_b)] {
         let anchors: Vec<u64> = w
             .battles
@@ -4941,7 +5006,9 @@ fn start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_pl
 ///
 /// kills: the `reject_if_monster_in_trade` call in `load_side_party` dropped (all four arms); the
 /// opponent side's loader skipping the guard (the two opponent arms); a guard that reads only the
-/// initiator chain (the two counterparty arms); a guard run after the first write (the snapshot).
+/// initiator chain (the two counterparty arms); a guard run after the first write (the snapshot);
+/// a guard on the LAST party id only (the two trio arms escrow the first); a refusal on ANY active
+/// offer of the owner (the control: offers escrowing only boxed, non-party monsters must admit).
 #[test]
 fn pvp_start_refuses_either_sides_party_monster_in_an_active_trade_escrow_bt17_2() {
     let (pa, pb) = (ids(&PAIR), ids(&B_PAIR));
@@ -4991,6 +5058,53 @@ fn pvp_start_refuses_either_sides_party_monster_in_an_active_trade_escrow_bt17_2
                 ..offer(1, c(), b(), Vec::new())
             });
         },
+    );
+    // Trios, the FIRST monster of each side escrowed: a guard on the last id alone admits these.
+    for (label, escrow) in [
+        (
+            "the challenger's first trio monster 11",
+            offer(1, a(), c(), vec![11]),
+        ),
+        (
+            "the opponent's first trio monster 21",
+            offer(1, b(), c(), vec![21]),
+        ),
+    ] {
+        let fx = fixture();
+        let w = world(&fx);
+        pvp_parties(&w, &A_TRIO, &B_TRIO);
+        w.offers.seed(&escrow);
+        let before = w.snapshot();
+        let got = try_start_pvp(
+            &fx,
+            a(),
+            &ids(&A_TRIO),
+            b(),
+            &ids(&B_TRIO),
+            3,
+            pvp_seed(7),
+            T0,
+        );
+        assert_eq!(got, Err(in_trade.to_string()), "{label}");
+        assert_eq!(
+            changed(&before, &w.snapshot()),
+            none(),
+            "{label}: nothing written"
+        );
+    }
+    // Control: each side holds an active offer escrowing a NON-party (boxed) monster of its own,
+    // so the guard must look at the PARTY ids — the start proceeds.
+    let fx = fixture();
+    let w = world(&fx);
+    pvp_parties(&w, &PAIR, &B_PAIR);
+    w.seed_monster(&party_monster(a(), (19, 1, crate::PARTY_SLOT_NONE, 160)));
+    w.seed_monster(&party_monster(b(), (29, 1, crate::PARTY_SLOT_NONE, 140)));
+    w.offers.seed(&offer(1, a(), c(), vec![19]));
+    w.offers.seed(&offer(2, b(), c(), vec![29]));
+    let got = try_start_pvp(&fx, a(), &pa, b(), &pb, 2, pvp_seed(7), T0);
+    assert!(
+        got.is_ok(),
+        "an offer escrowing only a non-party monster must not block the start, got {got:?}"
     );
 }
 

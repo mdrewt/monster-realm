@@ -6,15 +6,17 @@
 //! reads only `ctx.timestamp`.
 
 use crate::schema::{
-    Character, EncounterEntryRow, EncounterRow, EvolutionPathRow, Monster, MonsterPub, SkillRow,
-    SpeciesRow, TypeRelationRow,
+    Character, EncounterEntryRow, EncounterRow, EvolutionPathRow, Monster, MonsterPub, SpeciesRow,
 };
 #[cfg(test)]
-use game_core::SkillDef;
+use crate::schema::{SkillRow, TypeRelationRow};
+#[cfg(test)]
 use game_core::{
-    derive_stats, roll_individuality, AbilityDef, AbilityStore, Affinity, BattleMonster,
-    CharacterState, EVs, EncounterEntry, EncounterTable, Level, Millis, MonsterInstance, StatBlock,
-    StatKind, TilePos, TypeChart,
+    derive_stats, roll_individuality, AbilityDef, AbilityStore, EVs, SkillDef, StatBlock, TypeChart,
+};
+use game_core::{
+    Affinity, BattleMonster, CharacterState, EncounterEntry, EncounterTable, Level, Millis,
+    MonsterInstance, StatKind, TilePos,
 };
 use spacetimedb::{Identity, ReducerContext};
 
@@ -152,8 +154,8 @@ pub(crate) fn table_from_encounter_row(row: &EncounterRow) -> Result<EncounterTa
 /// `learnable_skill_ids` intersected with `skill_ids`, iterated in learnable order
 /// (so `[1,2,3] ∩ [2,3,9] == [2,3]`). An out-of-range `level` is a loud `Err`,
 /// never a panic.
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn wild_battle_monster(
     species: &SpeciesRow,
     skill_ids: &[u32],
@@ -382,8 +384,8 @@ pub(crate) fn evolution_path_from_row(
 /// team slots (index 0 = slot 0, etc.). Each element is the `ability: Option<u32>`
 /// column from the matching `SpeciesRow`. Unknown IDs (no matching `AbilityDef`)
 /// silently resolve to `None` so a stale or missing def does not crash battle start.
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn build_ability_store(
     side_a_ability_ids: &[Option<u32>],
     side_b_ability_ids: &[Option<u32>],
@@ -409,8 +411,8 @@ pub(crate) fn build_ability_store(
 /// Trust boundary (reject-not-clamp): a row with `stat_defense == 0`
 /// is rejected with `Err` rather than passed into the pure core, where it would
 /// divide-by-zero in `calc_damage`.
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn battle_monster_from_row(
     monster: &Monster,
     species: &SpeciesRow,
@@ -529,8 +531,8 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
 /// the seed-time constraint from `validate_content`. An out-of-range value would
 /// scale damage by the raw number (`TypeChart::effectiveness` returns it verbatim)
 /// while `classify` would panic via `unreachable!` (M14.5g hardening).
-/// Exercised only by its tests since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
+#[cfg(test)]
 pub(crate) fn type_chart_from_rows(
     rows: impl Iterator<Item = TypeRelationRow>,
 ) -> Result<TypeChart, String> {

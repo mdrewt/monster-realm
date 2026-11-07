@@ -578,8 +578,8 @@ dispatch arms and copy. What stays of the 1v1 engine is deliberate: `game-core`'
 the type home of the stored `Battle.state` and of the carried rules the tactical engine reuses; the
 module keeps the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical
 settle funnel calls; ten row→`BattleMonster` marshaling helpers in `marshal.rs` /
-`content_cache.rs` are exercised only by their own tests (dead-code-allowed in non-test builds)
-until they are deleted with named survivors. The 1v1
+`content_cache.rs` compile only under `cfg(test)` (their tests still exercise them; a production caller is a
+compile error) until they are deleted with named survivors. The 1v1
 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
 dropped or reordered (see "Schema changes are additive"): a census test pins that no client-callable reducer
 reaches `pvp_deadline_schedule` (the erase cascade's disarm still deletes from it), and that `battle_action` and `battle_wild` are reached by exactly

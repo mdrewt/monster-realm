@@ -1815,3 +1815,54 @@ fn challenge_pvp_writes_the_derived_format_into_the_inserted_challenge_bt14_1() 
         );
     }
 }
+
+/// The ACCEPTOR's client-supplied party reaches `tactics::start_pvp_tactical` with no ownership
+/// check of `accept_challenge`'s own, so the tactical writer's side loader is the only guard: a
+/// third player's monster, a missing id and the acceptor's own BOXED monster are each refused with
+/// the loader's text, before any write (PvP store and tactical store byte-identical). Skipped
+/// (after the call) only when ranked enforcement is active, where the ranked gate refuses first.
+///
+/// Survivor (with `nh_challenge_pvp_refuses_every_guard_before_writing`, the challenger side) of
+/// `battle_tests::bn_start_battle_enforces_provenance_and_ownership`, deleted by bt-17.
+///
+/// kills: the `m.owner_identity != owner` check dropped from `tactics::load_side_party` (the
+/// foreign arm); `check_monster_in_party` dropped from it (the boxed arm); a missing id skipped
+/// rather than refused (the missing arm).
+#[test]
+fn accept_challenge_refuses_a_foreign_missing_or_boxed_acceptor_party_bt17_2() {
+    for (label, party, needle) in [
+        (
+            "foreign (a third player's monster)",
+            vec![31u64],
+            "monster 31 not owned by caller",
+        ),
+        ("missing", vec![99], "monster 99 not found"),
+        ("boxed", vec![32], "monster 32 monster is boxed"),
+    ] {
+        let fx = pv_fixture();
+        let (w, t) = pv_accept_world(&fx, 1);
+        w.monster(31, pv_c(), 0);
+        w.monster(32, pv_b(), game_core::PARTY_SLOT_NONE);
+        let before = pv_accept_snapshot(&w, &t);
+        let got = fx.run_as_at(pv_b(), pv_at(PV_T0), |ctx| {
+            super::accept_challenge(ctx, 100, party.clone())
+        });
+        let gate = super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
+            .map_err(str::to_string);
+        if gate.is_err() {
+            return;
+        }
+        match &got {
+            Err(e) => assert!(
+                e.contains(needle),
+                "{label}: wrong refusal {e:?} (want {needle:?})"
+            ),
+            Ok(()) => panic!("{label}: ACCEPTED a party the acceptor does not own"),
+        }
+        assert_eq!(
+            pv_accept_snapshot(&w, &t),
+            before,
+            "{label}: refused before any write"
+        );
+    }
+}
