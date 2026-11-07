@@ -670,12 +670,15 @@ test.describe
       // 8ac38368 stall: no hit from d>=4), a skill pressed from the START tile (greyed: the PRE
       // oracle), a Move drafted but dropped from the commit (the unit is not on the ghost tile, no
       // `Moved` in the transcript), a Skills row that ignores the ghost tile or the post-Move
-      // budget (`none` in every battle), and a commit that never executes (no `Executed`).
+      // budget (`none` in every battle), and a commit whose skill never executes. The `Executed`
+      // carries no unit in the transcript reader, so it is attributed by ORDER: our skill's
+      // `Executed` sits after our `Moved` and before our own `TurnEnded` (the foe's reply, which a
+      // full-budget commit runs in the same transaction, comes after our `TurnEnded`).
       // NON-lethal like E1 (`allowKo: false`): a KO would level the starter and recompute its
-      // seeded stats before E2, so a lethal-only opening is fled and re-hunted. The speed seed is
-      // written back BEFORE the final assertion so a failure here never leaves it for E2. A
-      // full-budget commit ends the turn server-side, so the exit ends the turn only if it is still
-      // ours (`endTurnIfLive`).
+      // seeded stats before E2, so a lethal-only opening is fled and re-hunted. The speed restore
+      // runs in a `finally`, so a throw inside the battle loop still writes the natural speed back
+      // before E2. A full-budget commit ends the turn server-side, so the exit ends the turn only
+      // if it is still ours (`endTurnIfLive`).
       test.setTimeout(300_000);
       const readSpeed = (label: string): number => {
         const row = sqlRows(
@@ -700,108 +703,115 @@ test.describe
 
       let done = false;
       const outcomes: string[] = [];
-      for (let battle = 0; battle < MAX_E1B_BATTLES && !done; battle += 1) {
-        const label = `E1b battle ${battle}`;
-        await huntEncounter(page, label);
-        const t = await waitOwnTurnOrEnd(page, null, 15_000);
-        if (t.phase !== 'Active') {
-          outcomes.push(`${battle}:${t.phase}`);
-          await throughResults(page, label);
-          continue;
-        }
-        const { me, enemy } = sides(t);
-        const opening = tileDistance(me, enemy);
-        // E1b-PRE: the seed puts the opening own turn at the spawn distance, out of every reach.
-        expect(
-          opening,
-          `E1b: the starter acts first at the spawn distance: me (${me.x},${me.y}) to foe ` +
-            `(${enemy.x},${enemy.y}) is d>=4 (round ${t.round}, turnIdx ${t.turnIdx})`,
-        ).toBeGreaterThanOrEqual(4);
-        await openMenu(page, me);
-        await expect(
-          page.locator(TACTICS.menuRow('skills')),
-          'E1b: the starter acts first at the spawn distance (d≥4): no skill reaches from the start tile, the Skills row is greyed',
-        ).toHaveAttribute('aria-disabled', 'true', { timeout: 5_000 });
-
-        // E1b-FIRE: Move then Skill in one turn, from the ghost tile.
-        const r = await moveThenAttackByButtons(page, me, enemy, {
-          allowKo: false,
-          enemyHp: enemy.curHp,
-        });
-        if (r.hit === 'attacked') {
-          const dest = r.dest;
-          expect(dest, 'E1b: the Move went somewhere').not.toBeNull();
-          if (dest === null) throw new Error('E1b: the Move went somewhere (dest is null)');
-          expect({ x: dest.x, y: dest.y }, 'E1b: the ghost tile is not the start tile').not.toEqual(
-            { x: me.x, y: me.y },
-          );
-          expect(r.tries, 'E1b: at least one band tile was tried').toBeGreaterThanOrEqual(1);
-          await waitExecuted(page, t.events);
-          await expect
-            .poll(
-              async () => {
-                const now = await readTactics(page);
-                const mine = now?.units.find((u) => u.unitId === me.unitId);
-                return mine === undefined ? null : { x: mine.x, y: mine.y };
-              },
-              {
-                message:
-                  'E1b: the Move executed before the skill: the unit stands on the ghost tile',
-                timeout: 5_000,
-              },
-            )
-            .toEqual({ x: dest.x, y: dest.y });
-          await expect
-            .poll(
-              async () =>
-                (await readEventTags(page))
-                  .slice(t.events)
-                  .some((e) => e.tag === 'Moved' && e.unit === me.unitId),
-              { message: "E1b: the transcript shows the unit's Move", timeout: 5_000 },
-            )
-            .toBe(true);
-          await expect
-            .poll(
-              async () =>
-                (await readEventTags(page)).slice(t.events).some((e) => e.tag === 'Executed'),
-              {
-                message: 'E1b: the transcript shows the skill executing after the Move',
-                timeout: 5_000,
-              },
-            )
-            .toBe(true);
-          const after = await readTactics(page);
-          // Information only: a pack's first aim may hit a pack-mate, and a Heavy can miss.
-          const foe = after?.units.find((u) => u.unitId === enemy.unitId);
-          console.log(
-            `[E1b] battle ${battle}: d${opening} -> ghost (${dest.x},${dest.y}) after ${r.tries} ` +
-              `tries; foe ${enemy.unitId} hp ${enemy.curHp} -> ${foe?.curHp ?? '?'}; ` +
-              `phase ${after?.phase ?? 'null'}`,
-          );
-          outcomes.push(`${battle}:attacked tries:${r.tries}`);
-          await endTurnIfLive(page, t);
-          if (after?.phase === 'Active') {
-            const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
-            if (next.phase === 'Active') await fleeByButtons(page);
+      try {
+        for (let battle = 0; battle < MAX_E1B_BATTLES && !done; battle += 1) {
+          const label = `E1b battle ${battle}`;
+          await huntEncounter(page, label);
+          const t = await waitOwnTurnOrEnd(page, null, 15_000);
+          if (t.phase !== 'Active') {
+            outcomes.push(`${battle}:${t.phase}`);
+            await throughResults(page, label);
+            continue;
           }
-          await throughResults(page, 'E1b');
-          done = true;
-          continue;
-        }
-        // `kills` (every firing tile forecasts a KO) or `none` (no band tile fires from this
-        // opening geometry): leave on the next own turn and re-hunt.
-        console.log(
-          `[E1b] battle ${battle}: d${opening} -> ${r.hit} after ${r.tries} tries; re-hunting`,
-        );
-        outcomes.push(`${battle}:${r.hit} tries:${r.tries}`);
-        await endTurn(page);
-        const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
-        if (next.phase === 'Active') await fleeByButtons(page);
-        await throughResults(page, label);
-      }
+          const { me, enemy } = sides(t);
+          const opening = tileDistance(me, enemy);
+          // E1b-PRE: the seed puts the opening own turn at the spawn distance, out of every reach.
+          expect(
+            opening,
+            `E1b: the starter acts first at the spawn distance: me (${me.x},${me.y}) to foe ` +
+              `(${enemy.x},${enemy.y}) is d>=4 (round ${t.round}, turnIdx ${t.turnIdx})`,
+          ).toBeGreaterThanOrEqual(4);
+          await openMenu(page, me);
+          await expect(
+            page.locator(TACTICS.menuRow('skills')),
+            'E1b: no skill reaches the foe from the start tile at d>=4 — the Skills row is greyed',
+          ).toHaveAttribute('aria-disabled', 'true', { timeout: 5_000 });
 
-      // E1b-RESTORE (before the done assertion, so a failure never leaves the seed for E2).
-      writeSpeed(naturalSpeed, 'E1b restore');
+          // E1b-FIRE: Move then Skill in one turn, from the ghost tile.
+          const r = await moveThenAttackByButtons(page, me, enemy, {
+            allowKo: false,
+            enemyHp: enemy.curHp,
+          });
+          if (r.hit === 'attacked') {
+            const dest = r.dest;
+            expect(dest, 'E1b: the Move went somewhere').not.toBeNull();
+            if (dest === null) throw new Error('E1b: the Move went somewhere (dest is null)');
+            expect(
+              { x: dest.x, y: dest.y },
+              'E1b: the ghost tile is not the start tile',
+            ).not.toEqual({ x: me.x, y: me.y });
+            await waitExecuted(page, t.events);
+            await expect
+              .poll(
+                async () => {
+                  const now = await readTactics(page);
+                  const mine = now?.units.find((u) => u.unitId === me.unitId);
+                  return mine === undefined ? null : { x: mine.x, y: mine.y };
+                },
+                {
+                  message:
+                    'E1b: the Move executed before the skill: the unit stands on the ghost tile',
+                  timeout: 5_000,
+                },
+              )
+              .toEqual({ x: dest.x, y: dest.y });
+            await expect
+              .poll(
+                async () => {
+                  const since = (await readEventTags(page)).slice(t.events);
+                  const moved = since.findIndex((e) => e.tag === 'Moved' && e.unit === me.unitId);
+                  if (moved < 0) return 'no Moved for the unit';
+                  const ended = since.findIndex(
+                    (e, i) => i > moved && e.tag === 'TurnEnded' && e.unit === me.unitId,
+                  );
+                  const executed = since.findIndex((e, i) => i > moved && e.tag === 'Executed');
+                  if (executed < 0) return 'no Executed after the Move';
+                  if (ended >= 0 && executed > ended) {
+                    return 'the first Executed after the Move is past the unit TurnEnded (the foe reply)';
+                  }
+                  return 'ok';
+                },
+                {
+                  message:
+                    "E1b: the transcript shows the unit's Move, then its skill executing before its turn ended",
+                  timeout: 5_000,
+                },
+              )
+              .toBe('ok');
+            const after = await readTactics(page);
+            // Information only: a pack's first aim may hit a pack-mate, and a Heavy can miss.
+            const foe = after?.units.find((u) => u.unitId === enemy.unitId);
+            console.log(
+              `[E1b] battle ${battle}: d${opening} -> ghost (${dest.x},${dest.y}) after ` +
+                `${r.tries} tries; foe ${enemy.unitId} hp ${enemy.curHp} -> ` +
+                `${foe?.curHp ?? '?'}; phase ${after?.phase ?? 'null'}`,
+            );
+            outcomes.push(`${battle}:attacked tries:${r.tries}`);
+            await endTurnIfLive(page, t);
+            if (after?.phase === 'Active') {
+              const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
+              if (next.phase === 'Active') await fleeByButtons(page);
+            }
+            await throughResults(page, 'E1b');
+            done = true;
+            continue;
+          }
+          // `kills` (every firing tile forecasts a KO) or `none` (no band tile fires from this
+          // opening geometry): leave on the next own turn and re-hunt.
+          console.log(
+            `[E1b] battle ${battle}: d${opening} -> ${r.hit} after ${r.tries} tries; re-hunting`,
+          );
+          outcomes.push(`${battle}:${r.hit} tries:${r.tries}`);
+          await endTurn(page);
+          const next = await waitOwnTurnOrEnd(page, turnKey(t), 15_000);
+          if (next.phase === 'Active') await fleeByButtons(page);
+          await throughResults(page, label);
+        }
+      } finally {
+        // E1b-RESTORE: in a `finally`, so a throw inside the loop still restores the natural
+        // speed before E2.
+        writeSpeed(naturalSpeed, 'E1b restore');
+      }
       expect(readSpeed('E1b restore'), 'the starter row reads back its natural speed').toBe(
         naturalSpeed,
       );

@@ -1158,10 +1158,12 @@ async function undoDraft(page: Page): Promise<void> {
 }
 
 /** The most band tiles `moveThenAttackByButtons` drafts before it gives up on firing this turn: the
- *  adjacent ring (≤ 4) plus the distance-2 ring (≤ 8) plus slack. A turn that can fire from nowhere
- *  then costs ≤ ~16 s, so sixteen such turns still reach `fightToOutcome`'s NAMED throw inside its
- *  callers' test budgets instead of a trace-less Playwright timeout. */
-export const MAX_MOVE_TRIES = 16;
+ *  ring adjacent to the enemy (≤ 4 tiles) plus the distance-2 ring (≤ 8) — where a melee or a
+ *  range-2 skill fires from — not the whole band, which runs to ~40 tiles for a 6-point stride on
+ *  an 8x8 board. A turn that can fire from nowhere then costs ≤ ~12 s (measured ≤ 1 s per try), so
+ *  sixteen such turns still reach `fightToOutcome`'s NAMED throw inside its callers' test budgets
+ *  (battle-dpad 240 s, E2 420 s) instead of a trace-less Playwright timeout. */
+const MAX_MOVE_TRIES = 12;
 
 /**
  * Move then Skill in ONE turn, by buttons — the game's answer to a foe out of reach (and to a
@@ -1223,7 +1225,8 @@ export async function endTurn(page: Page): Promise<void> {
 export async function endTurnIfLive(page: Page, turn: TacticsSnap): Promise<void> {
   const now = await readTactics(page);
   if (now === null || now.phase !== 'Active' || now.turnState !== 'Waiting') return;
-  if (turnKey(now) !== turnKey(turn)) return; // the commit spent the turn; the next one is not ours to end
+  // A different key: the commit spent the turn, and the next one is not ours to end.
+  if (turnKey(now) !== turnKey(turn)) return;
   await endTurn(page);
 }
 
@@ -1403,37 +1406,34 @@ export async function fightToOutcome(
       `${hit}${moveNote} ${Date.now() - turnStartedMs}ms`;
     await openMenu(page, me);
     const hit = await attackByButtons(page, { allowKo: true, enemyHp: enemy.curHp });
-    if (hit === 'attacked') {
+    let fired = hit === 'attacked';
+    let moveNote = '';
+    if (!fired) {
+      // Nothing reaches from the start tile: Move then Skill from a ghost tile (the kiter's answer).
+      const moved = await moveThenAttackByButtons(page, me, enemy, {
+        allowKo: true,
+        enemyHp: enemy.curHp,
+      });
+      const at = moved.dest === null ? '' : `(${moved.dest.x},${moved.dest.y})`;
+      fired = moved.hit === 'attacked';
+      moveNote = fired
+        ? ` move:${at}+attacked tries:${moved.tries}`
+        : moved.dest === null
+          ? ' move:none'
+          : ` move:drafted${at} tries:${moved.tries}`;
+    }
+    if (fired) {
+      // A live commit — [Skill] or [Move, Skill] — executes in ONE transaction (the wild's reply and
+      // the next own turn included when it spent the budget), so the first new event is the step.
       await waitExecuted(page, t.events);
       const after = await readTactics(page);
-      trace.push(traceLine(hit, ''));
+      trace.push(traceLine(hit, moveNote));
       if (after === null || after.phase === 'Finished') return after ?? t;
       await endTurnIfLive(page, t);
       continue;
     }
-    // Nothing reaches from the start tile: Move then Skill from a ghost tile (the kiter's answer).
-    const moved = await moveThenAttackByButtons(page, me, enemy, {
-      allowKo: true,
-      enemyHp: enemy.curHp,
-    });
-    const at = moved.dest === null ? '' : `(${moved.dest.x},${moved.dest.y})`;
-    if (moved.hit === 'attacked') {
-      // The commit [Move, Skill] executes in ONE transaction (the wild's reply and the next own turn
-      // included when it spent the budget), so the first new event is the whole step.
-      await waitExecuted(page, t.events);
-      const after = await readTactics(page);
-      trace.push(traceLine(hit, ` move:${at}+attacked tries:${moved.tries}`));
-      if (after === null || after.phase === 'Finished') return after ?? t;
-      await endTurnIfLive(page, t);
-      continue;
-    }
-    await endTurn(page);
-    trace.push(
-      traceLine(
-        hit,
-        moved.dest === null ? ' move:none' : ` move:drafted${at} tries:${moved.tries}`,
-      ),
-    );
+    await endTurn(page); // the step-toward draft (if any) plus EndTurn
+    trace.push(traceLine(hit, moveNote));
   }
   const end = await readTactics(page);
   if (end !== null && end.phase === 'Finished') return end;
