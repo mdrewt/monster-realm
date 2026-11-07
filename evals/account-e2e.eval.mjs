@@ -136,8 +136,9 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
 // the S9 scenario and left this list: A's one-monster party meets a pack of one
 // on the grass (Active with auto-deploy, its unit waiting under the 300 s PvE
 // window: `battle_tactical`, `battle_unit`, `battle_clock`,
-// `tactical_deadline_sched` stand at the snapshot), and battle1's Deploying
-// cancel (D disconnects) finishes it, arming its 24 h `battle_gc_sched` row. The
+// `tactical_deadline_sched` stand at the snapshot), and battle1 — deployed by
+// both sides to Active, then FORFEITED by D's disconnect (settle_pvp_battle:
+// rating, profile rows) — finishes, arming its 24 h `battle_gc_sched` row. The
 // rows below stay with their honest reasons: three tables no live path writes
 // any more (retired in place by the cutover; bt-17 retires them), and five whose
 // rows are timing-dependent at the snapshot.
@@ -160,7 +161,7 @@ export const S9_VACUITY_ALLOWLIST = [
   ],
   [
     'battle_deploy',
-    'PvP staging rows only (a wild deploy materialises directly): battle1`s two rows are swept by finish at its Deploying cancel, before the snapshot',
+    'PvP staging rows only (a wild deploy materialises directly): battle1`s two rows are swept by finish at battle1`s forfeit settle, before the snapshot',
   ],
   [
     'battle_event',
@@ -1881,7 +1882,15 @@ const DRIVER_SRC = [
   '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return r.state.outcome.tag === "Ongoing"; });',
   '    return rows.length > 0 ? rows[0] : null;',
   '  });',
-  '  emit("S9-battle1-live", true, { battleId: String(b1.battleId) });',
+  '  // bt-16: the accept opened a TACTICAL battle in Deploying, and a Deploying side that',
+  '  // disconnects CANCELS it unrated (no rating, so no profile rows). Both sides deploy',
+  '  // their one monster and the battle reaches Active BEFORE D disconnects, so the',
+  '  // disconnect is a FORFEIT of a live PvP battle (settle_pvp_battle: rating + profile rows).',
+  '  const depD = await tryReducer(d.conn.reducers.deployUnits({ battleId: b1.battleId, picks: [{ monsterId: dMonPre[0].monsterId, slot: 0 }] }));',
+  '  const depA = await tryReducer(a.conn.reducers.deployUnits({ battleId: b1.battleId, picks: [{ monsterId: aMonId, slot: 0 }] }));',
+  '  if (!depD.ok || !depA.ok) bail("S9-battle1-live", "deploy refused: D=" + depD.err + " A=" + depA.err);',
+  '  await pollFor("battle1 Active on A", 20000, "S9-battle1-live", function () { const rows = iterRows(a.conn, "my_tactical_battle").filter(function (r) { return String(r.battleId) === String(b1.battleId) && r.phase.tag === "Active"; }); return rows.length > 0 ? rows[0] : null; });',
+  '  emit("S9-battle1-live", true, { battleId: String(b1.battleId), phase: "Active" });',
   '  d.conn.disconnect();',
   '  const b1t = await pollFor("battle1 terminal after D forfeit", 30000, "S9-battle1-terminal", function () {',
   '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return String(r.battleId) === String(b1.battleId); });',
