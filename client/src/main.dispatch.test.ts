@@ -7242,6 +7242,118 @@ describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT
     ]);
   });
 
+  it('the results panel names each own monster`s XP line by its nickname, else its species name, else #<monsterId>, in event order: Sparky, Mosshorn, then #id for an EMPTY species name and #id for an unknown species [BT17-2]', async () => {
+    // RED on the mutant `return \`#${monsterId}\`` in buildResultsPanel's monsterName (verifier-measured
+    // survivor); GREEN on the shipped code.
+    // WRONG IMPL KILLED: the results panel's name always `#<monsterId>`; the species name preferred
+    // over a set nickname; `??` where `||` is needed (the empty species name never falls through);
+    // an unknown species printed as "undefined"; the fallback id taken from the species id.
+    await bootReady();
+    server(1000);
+    opts.store.upsertSpecies(bt17Species(1, 'Mosshorn'));
+    opts.store.upsertSpecies(bt17Species(2, ''));
+    const B = 2n ** 60n + 1001n;
+    const [M1, M2, M3, M4] = [B + 2n, B + 4n, B + 6n, B + 8n];
+    const own = (
+      id: bigint,
+      slot: number,
+      nickname: string,
+      speciesId: number,
+    ): StoreMonsterPub => ({
+      ...bt12Monster(id, slot),
+      nickname,
+      speciesId,
+    });
+    opts.store.upsertMonster(own(M1, 0, 'Sparky', 1));
+    opts.store.upsertMonster(own(M2, 1, '', 1));
+    opts.store.upsertMonster(own(M3, 2, '', 2));
+    opts.store.upsertMonster(own(M4, 3, '', 3));
+    const party = [M1, M2, M3, M4];
+    const unitIds = [61, 62, 63, 64];
+    const WILD_UNIT = 65;
+    const units = [
+      ...party.map((monsterId, i) =>
+        bt12bUnit(B, unitIds[i] as number, {
+          owner: H.identity,
+          monsterId,
+          side: 'A',
+          slot: i,
+          x: 1,
+          y: i,
+        }),
+      ),
+      bt12bUnit(B, WILD_UNIT, {
+        owner: null,
+        monsterId: null,
+        side: 'B',
+        slot: 0,
+        x: 5,
+        y: 2,
+        wild: 0,
+      }),
+    ];
+    const initiative = [...unitIds, WILD_UNIT];
+    opts.store.upsertBattle(bt12bAnchor(B, 'Ongoing', party));
+    opts.store.reconcileBattleUnitsFromView(units);
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(B, 'Wild', {
+        initiative,
+        turnIdx: 0,
+        turnState: { kind: 'Waiting', unitId: 61 },
+        tiePrioritySide: 'A',
+      }),
+    ]);
+    server(1100);
+    // The wins: one Awards event per own unit, distinct xp / essence per line, no gold.
+    const awards = unitIds.map((unitId, i) => ({
+      unitId,
+      xp: 10 + i,
+      essence: 20 + i,
+    }));
+    opts.store.upsertBattle(bt12bAnchor(B, 'SideAWins', party));
+    opts.store.reconcileTacticalBattlesFromView([
+      bt12bTactical(B, 'Wild', {
+        initiative,
+        turnIdx: 0,
+        turnState: { kind: 'NotActive' },
+        tiePrioritySide: 'A',
+        phase: 'Finished',
+      }),
+    ]);
+    opts.store.reconcileBattleEventsFromView([
+      ...awards.map(
+        (a, seq) =>
+          ({
+            eventId: B * 100n + BigInt(seq),
+            battleId: B,
+            seq,
+            round: 3,
+            payload: {
+              tag: 'Awards',
+              value: { unit: a.unitId, xp: a.xp, essence: a.essence, currency: 0n },
+            },
+          }) as StoreBattleEvent,
+      ),
+      bt15bEnd(B, awards.length, 'SideAWins', 'SideEmpty'),
+    ]);
+    server(1200);
+    expect(bt12Shown('tactics-results'), 'precondition: the results panel is shown').toBe(true);
+    const names = ['Sparky', 'Mosshorn', `#${M3}`, `#${M4}`];
+    expect(
+      bt15bLines().filter(([kind]) => kind === 'monster'),
+      'the XP lines name the monsters in event order',
+    ).toEqual(
+      awards.map((a, i) => [
+        'monster',
+        i18n.tf('tactics.results.monster', {
+          name: names[i] as string,
+          xp: a.xp,
+          essence: a.essence,
+        }),
+      ]),
+    );
+  });
+
   it('the deploy panel`s root is a direct child of #app inside #game-screen with exactly the classes mr-frame mr-shell mr-shell--top mr-shell--battle tactics-deploy, and it holds the ONE battle-title element in the whole document [BT17-1]', async () => {
     // RED TODAY (in this file): with the BattleView mock gone, the booted main.ts builds the real
     // 1v1 view's root, a second `[data-testid="battle-title"]` in the document. The parent / class
