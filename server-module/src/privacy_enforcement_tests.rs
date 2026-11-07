@@ -1270,8 +1270,8 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // so no erased identity is left a live battle to settle.
     //
     // bt-17 (BT17.1): the five 1v1 battle rows (submit_attack, swap_active, flee,
-    // use_battle_item, submit_pvp_action) are gone with their `#[spacetimedb::reducer]`
-    // attributes: a fn that is not a reducer has no verdict, so its row would be stale.
+    // use_battle_item, submit_pvp_action) are gone with the reducers themselves (deleted):
+    // a fn that does not exist has no verdict, so its row would be stale.
     (
         "cancel_trade",
         "unwinds an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
@@ -1376,8 +1376,8 @@ const EXPECTED_SCHEDULED: &[&str] = &[
 /// as a SET in both directions: losing a gate is as much a regression as a new
 /// ungated writer, and it is the half the exemption roster cannot see.
 ///
-/// bt-17 (BT17.1): `start_battle`, `attempt_recruit` (client-callable 1v1 reducers, now plain
-/// `pub(crate) fn`s) and `start_wild_battle` (the dev-only 1v1 start, deleted) leave the set.
+/// bt-17 (BT17.1): `start_battle`, `attempt_recruit` (client-callable 1v1 reducers, deleted)
+/// and `start_wild_battle` (the dev-only 1v1 start, deleted) leave the set.
 const EXPECTED_GATED: &[&str] = &[
     "accept_challenge",
     "advance_dialogue",
@@ -1819,7 +1819,7 @@ fn fixture_synthetic_retired_writers() -> String {
 const BT17_BATTLE_WILD_SWEEPERS: &[&str] =
     &["cancel_queue", "deploy_units", "forfeit", "submit_queue"];
 
-/// The seven 1v1 reducers bt-17 de-attributes, plus the deleted dev-only `start_wild_battle`.
+/// The seven 1v1 reducers bt-17 deletes, plus the deleted dev-only `start_wild_battle`.
 const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
     "start_battle",
     "submit_attack",
@@ -1851,14 +1851,14 @@ const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
 /// which is not a new row. The bite is kept: the exact-set pin on (c) still fails a new writer, and
 /// (a), (b) and (d) still fail every 1v1 path.
 ///
-/// RED TODAY: `submit_pvp_action` (a client-callable reducer until bt-17) reaches all three tables
-/// (`battle_action`, `pvp_deadline_schedule`, and `battle_wild` through `write_back_battle_results`);
-/// `submit_attack`, `swap_active`, `flee` and `attempt_recruit` reach `battle_wild` through the same
-/// write-back; `start_wild_battle` inserts `battle_wild`.
+/// RED BEFORE bt-17: `submit_pvp_action` (a client-callable reducer until bt-17, now deleted)
+/// reached all three tables (`battle_action`, `pvp_deadline_schedule`, and `battle_wild` through
+/// `write_back_battle_results`); `submit_attack`, `swap_active`, `flee` and `attempt_recruit`
+/// reached `battle_wild` through the same write-back; `start_wild_battle` inserted `battle_wild`.
 ///
 /// kills: a 1v1 reducer left a reducer (its attribute kept — it then reaches a retired table and the
-/// exact-set pins fail); any reducer OUTSIDE the four reaching a retired table; any reducer at all
-/// reaching `pvp_deadline_schedule`. NOT killed (the census sees a reach, not a verb): an insert
+/// exact-set pins fail); any reducer OUTSIDE the four reaching a retired table; any client-callable
+/// reducer reaching `pvp_deadline_schedule` (lifecycle and scheduled reducers keep their own verdicts). NOT killed (the census sees a reach, not a verb): an insert
 /// added INSIDE one of the four, or a de-attributed body re-wired into one of them — those are the
 /// reviewer's and the continuation's (which deletes the bodies).
 #[test]

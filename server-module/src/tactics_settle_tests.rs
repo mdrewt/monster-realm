@@ -24,8 +24,7 @@ use crate::native_host_tests::{fixture, Fixture};
 use crate::playtest::{build_playtest_event, hp_permille, PlaytestEvent};
 use crate::schema::{
     Battle, BattleClock, BattleEvent, BattleSecret, BattleSummary, BattleTactical, BattleUnit,
-    BattleWild, BattleWildUnit, Inventory, ItemRow, Monster, MoveClassRow, SideRow, SpeciesRow,
-    TypeRelationRow,
+    BattleWildUnit, Inventory, Monster, MoveClassRow, SideRow, SpeciesRow,
 };
 use crate::tactics::tactics_tests::{
     a, advance_args, at, b, changed, deadline_args, deploy, deploying_pair, enc, fire_advance,
@@ -1985,6 +1984,119 @@ fn a_failed_hp_write_back_pays_and_penalises_nothing_but_still_sweeps_and_summar
     );
 }
 
+/// A recruit SUCCESS whose party-HP write-back fails still commits: the recruited wild exists
+/// exactly once (in A's box, rebuilt from its `battle_wild_unit` seed, with its `monster_pub`
+/// mirror), the bait is debited exactly once, the battle is terminal and its summary finalised —
+/// and NOTHING is paid. The battle carries an earlier KO (`ko_scene`: u1 KOs one wild of a pack of
+/// two), so a healthy finish WOULD pay monster 12 its side-mate XP and the player the currency
+/// (`a_recruit_win_pays_the_earlier_ko_and_never_the_recruited_wild_bt9_1`); the "nothing paid"
+/// half is therefore not vacuous. The write-back is made to fail by handing monster 11 (u1's, not
+/// the recruiting u2's) to B after the KO step and before the resolving submit — the
+/// ownership-changed refusal `a_failed_hp_write_back_pays_and_penalises_nothing_..._bt9_1` uses.
+///
+/// Replaces `taming_tests::nh_21ra_recruit_success_commits_when_the_party_hp_write_back_fails`
+/// (the 1v1 `attempt_recruit` is deleted, bt-17).
+///
+/// kills: the finish aborting (`return Err`) on a write-back failure (the submit's `Ok`, the
+/// terminal outcome/phase and the finalised summary); the recruit insert made conditional on the
+/// write-back succeeding (exactly one new monster); the bait debited twice (one left of two); a
+/// payout that ignores the failed write-back (monster 12's XP/pools/trust, the wallet, the Awards
+/// lines); a write-back that "fixes" the failure by writing battle HP into B's monster (monster
+/// 11's row byte-identical).
+#[test]
+fn a_recruit_success_whose_party_hp_write_back_fails_still_commits_once_and_pays_nothing_bt17_2() {
+    install_log_sink();
+    let fx = fixture();
+    let w = world(&fx);
+    let s = ko_scene(&fx, &w);
+    seat_adjacent(&w, s.u2, s.alive);
+    give(&w, 1, 2);
+    let wild_index = w
+        .unit(s.alive)
+        .wild_index
+        .expect("PRECONDITION: the recruit target is a wild");
+    let wild_row = w
+        .wild_units_of(s.id)
+        .into_iter()
+        .find(|r| r.wild_index == wild_index)
+        .expect("PRECONDITION: the target wild has its seed row");
+    let pct = odds_pct(&w, s.alive, Some(1));
+    force_recruit(&w, s.id, pct, true);
+    w.edit_monster(11, |m| m.owner_identity = b());
+    let traded = enc(&w.monster(11));
+    let m12 = w.monster(12);
+    assert_eq!(wallet(&w), 0, "PRECONDITION: the KO step paid nothing yet");
+    assert!(
+        new_monsters(&w).is_empty(),
+        "PRECONDITION: no monster beyond the party before the recruit"
+    );
+
+    submit(
+        &fx,
+        a(),
+        s.t + 10_000,
+        s.id,
+        s.u2,
+        vec![recruit(s.alive, Some(1))],
+    )
+    .expect("the recruit commits although the party HP write-back fails");
+
+    assert_eq!(
+        outcome(&w, s.id),
+        BattleOutcome::SideAWins,
+        "the last wild recruited ends the battle"
+    );
+    assert_eq!(
+        w.tactical(s.id).phase,
+        Phase::Finished,
+        "the battle is terminal"
+    );
+    assert_eq!(
+        summary(&w, s.id).outcome,
+        BattleOutcome::SideAWins,
+        "the summary is finalised"
+    );
+    assert_eq!(
+        captured_log_lines("tactical_settle_skipped").len(),
+        1,
+        "the failed write-back took the logged skip path exactly once"
+    );
+
+    let got = new_monsters(&w);
+    assert_eq!(got.len(), 1, "exactly one recruited monster");
+    let got = &got[0];
+    let species = species_def(wild_row.species_id);
+    let inst =
+        game_core::build_monster(wild_row.individuality_seed, &species, level(wild_row.level));
+    let mut want = monster_from_instance(a(), &inst, crate::PARTY_SLOT_NONE);
+    want.monster_id = got.monster_id;
+    assert_eq!(
+        enc(got),
+        enc(&want),
+        "the recruit is the wild rebuilt from its battle_wild_unit seed, in A's box"
+    );
+    assert_eq!(
+        enc(&w.monster_pub(got.monster_id)),
+        enc(&pub_from_monster(got, species.tier)),
+        "the recruit's public projection mirrors it"
+    );
+    assert_eq!(held(&w, 1), 1, "the bait is debited exactly once");
+
+    assert_eq!(wallet(&w), 0, "no currency");
+    assert!(awards_after_end(&w, s.id).is_empty(), "no Awards line");
+    let m = w.monster(12);
+    assert_eq!(
+        (m.xp, m.level, pools(&m), win_credits(&m)),
+        (m12.xp, m12.level, pools(&m12), win_credits(&m12)),
+        "monster 12 earns neither its side-mate share nor the win credits"
+    );
+    assert_eq!(
+        enc(&w.monster(11)),
+        traded,
+        "the traded-away monster is untouched"
+    );
+}
+
 // ===========================================================================
 // BT9.2 — the recruit entry executes
 // ===========================================================================
@@ -3883,21 +3995,18 @@ fn a_halted_recruit_attempt_writes_no_playtest_row_bt9_7() {
 }
 
 // ===========================================================================
-// BT13.2 — the tactical `playtest_event` kind-1 row is exactly what the real 1v1 reducer writes
+// BT13.2 — the tactical `playtest_event` kind-1 row is exactly the row the retired 1v1 reducer wrote (pinned literals)
 //
-// BT9.7 pins the tactical row against `build_playtest_event` — the very helper both paths share, so
-// a mutant in it (or in `hp_permille`) moves the oracle with the code. These tests pin both paths
-// against LITERALS and against each other: the 1v1 side is the shipped `taming::attempt_recruit`
-// reducer on the same native host, its roll steered by a clock probe (`T0 + k * 7_919`, as
-// `taming_tests` does) with the written `success` as a PRECONDITION and an independent
-// observation (a monster minted / the battle still going) beside it.
+// BT9.7 pins the tactical row against `build_playtest_event` — the very helper the row is built
+// with, so a mutant in it (or in `hp_permille`) moves the oracle with the code. These tests pin
+// the tactical row against LITERALS instead. Until bt-17 the same literals were also asserted on
+// the shipped 1v1 `taming::attempt_recruit`; bt-17 deleted that reducer, so the literal tuple —
+// the value both paths were measured equal to — is the pinned 1v1 row.
 // ===========================================================================
 
-/// The wild's HP on both paths: 20 of 30 is 666 per mille (floor; a round-half-up mutant says 667).
+/// The wild's HP: 20 of 30 is 666 per mille (floor; a round-half-up mutant says 667).
 const BT13_WILD_MAX: u16 = 30;
 const BT13_WILD_CUR: u16 = 20;
-/// The 1v1 world's battle id.
-const BT13_BATTLE: u64 = 7;
 
 /// `(identity, kind, species_id, hp_permille, bait_item_id, success)`: the columns
 /// `scripts/playtest-report.mjs` groups (identity, species) and computes (hp, bait, success) from.
@@ -3921,7 +4030,7 @@ fn bt13_table(w: &World<'_>) -> Vec<PlaytestEvent> {
     rows
 }
 
-/// What one path left behind, read off the store after its attempt.
+/// What the tactical attempt left behind, read off the store.
 struct Bt13Run {
     table: Vec<PlaytestEvent>,
     /// Monsters minted for the player (a recruit success).
@@ -3929,7 +4038,7 @@ struct Bt13Run {
     /// The player's bait stock after the attempt (it started at 2).
     bait_left: u32,
     outcome: BattleOutcome,
-    /// The id of the battle the path played (the tactical anchor's, or the 1v1 helper's literal).
+    /// The id of the battle that was played (the tactical anchor's).
     battle_id: u64,
 }
 
@@ -4047,103 +4156,12 @@ fn bt13_tactical_attempt(seed: u64, bait: Option<u32>, success: bool) -> (Bt13Ru
     (run, species)
 }
 
-/// The 1v1 anchor: the party's lead against a skill-less wild at 20 of 30 HP (so a failed roll
-/// changes nothing but the turn counter, as in `taming_tests`).
-fn bt13_one_v_one_battle(species: u32) -> Battle {
-    let lead = party_monster(a(), PAIR[0]);
-    let wild = BattleMonster {
-        species_id: species,
-        affinity: affinity_of(species),
-        level: 4,
-        current_hp: BT13_WILD_CUR,
-        max_hp: BT13_WILD_MAX,
-        stats: StatBlock {
-            hp: BT13_WILD_MAX,
-            ..TOKEN
-        },
-        known_skill_ids: Vec::new(),
-        status: None,
-    };
-    Battle {
-        battle_id: BT13_BATTLE,
-        player_identity: a(),
-        opponent_identity: crate::WILD_IDENTITY,
-        state: BattleState {
-            side_a: BattleSide::with_lead(vec![battle_monster_of(&lead)])
-                .expect("a conscious lead"),
-            side_b: BattleSide::with_lead(vec![wild]).expect("a conscious wild"),
-            outcome: BattleOutcome::Ongoing,
-            turn_number: 3,
-            weather: None,
-        },
-        party_monster_ids: vec![lead.monster_id],
-        opponent_monster_ids: Vec::new(),
-        created_at_ms: T0,
-    }
-}
-
-/// One run of the SHIPPED 1v1 `attempt_recruit` at the clock `T0 + k * 7_919`, on a fresh world.
-fn bt13_one_v_one_attempt(species: u32, bait: Option<u32>, k: i64) -> Bt13Run {
-    let fx = fixture();
-    let w = world(&fx);
-    let items = fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id);
-    items.seed(&ItemRow {
-        id: 1,
-        name: "Lure Berry".to_string(),
-        description: String::new(),
-        recruit_bonus: bait_bonus(1),
-        train_stat: None,
-        train_amount: 0,
-        sell_price: 0,
-        cure_status: None,
-    });
-    let species_rows = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
-    for s in game_core::load_species().expect("species content loads") {
-        species_rows.seed(&species_row_of(&s));
-    }
-    // The failure arm reads the type chart from its rows (empty: a skill-less wild never uses it).
-    let _ = fx
-        .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
-        .scannable();
-    w.seed_monster(&party_monster(a(), PAIR[0]));
-    give(&w, 1, 2);
-    w.battles.seed(&bt13_one_v_one_battle(species));
-    w.battle_wilds.seed(&BattleWild {
-        battle_id: BT13_BATTLE,
-        wild_species_id: species,
-        wild_level: 4,
-        individuality_seed: 0xBEEF,
-    });
-    let got = fx.run_as_at(a(), at(T0 + k * 7_919), |ctx| {
-        crate::taming::attempt_recruit(ctx, BT13_BATTLE, bait)
-    });
-    assert_eq!(got, Ok(()), "clock {k}: the 1v1 attempt is accepted");
-    Bt13Run {
-        table: bt13_table(&w),
-        minted: new_monsters(&w).len(),
-        bait_left: held(&w, 1),
-        outcome: outcome(&w, BT13_BATTLE),
-        battle_id: BT13_BATTLE,
-    }
-}
-
-/// The first clock on the `T0 + k * 7_919` grid whose 1v1 roll comes out `success`, as a run.
-fn bt13_one_v_one_probe(species: u32, bait: Option<u32>, success: bool) -> Bt13Run {
-    for k in 0..64 {
-        let run = bt13_one_v_one_attempt(species, bait, k);
-        if run.table.len() == 1 && run.table[0].success == success {
-            return run;
-        }
-    }
-    panic!("no clock in 0..64 rolls a 1v1 recruit with success == {success} and bait {bait:?}");
-}
-
-/// Tactical vs 1v1 at the same wild (20 / 30 HP), the same bait and the same wanted result: the
-/// full row tuple is equal across the paths and equal to literals.
+/// The tactical row at a wild of 20 / 30 HP, with the given bait and the wanted result, against
+/// the LITERAL tuple the 1v1 `attempt_recruit` wrote for the same inputs (the 1v1 path is deleted
+/// since bt-17, so the literals it was measured equal to are now pinned on their own).
 fn bt13_assert_parity(bait: Option<u32>, success: bool) {
     let seed = bt13_pack_one_seed();
-    let (tactical, species) = bt13_tactical_attempt(seed, bait, success);
-    let one = bt13_one_v_one_probe(species, bait, success);
+    let (run, species) = bt13_tactical_attempt(seed, bait, success);
     assert!(
         species != 0 && species != PAIR[0].1 && species != PAIR[1].1,
         "PRECONDITION: the wild's species ({species}) is neither 0 nor a party monster's"
@@ -4151,63 +4169,61 @@ fn bt13_assert_parity(bait: Option<u32>, success: bool) {
     let bait_literal: u32 = if bait.is_some() { 1 } else { 0 };
     // Literals: the player, kind 1, the wild's species, 20/30 -> 666 (floor), the bait id or 0.
     let want: Bt13Row = (a(), 1, species, 666, bait_literal, success);
-    for (label, run) in [("tactical", &tactical), ("1v1", &one)] {
+    assert_eq!(
+        run.table.len(),
+        1,
+        "exactly one row in the WHOLE playtest_event table"
+    );
+    assert_eq!(
+        bt13_row(&run.table[0]),
+        want,
+        "(identity, kind, species, hp_permille, bait, success) against the pinned 1v1 literals"
+    );
+    assert_eq!(
+        run.table[0].battle_id, run.battle_id,
+        "the row names the battle that was played (the live anchor id)"
+    );
+    assert_eq!(
+        run.bait_left,
+        if bait.is_some() { 1 } else { 2 },
+        "the bait stock moved iff a bait was named"
+    );
+    if success {
+        assert_eq!(run.minted, 1, "PRECONDITION: a monster was minted");
         assert_eq!(
-            run.table.len(),
-            1,
-            "{label}: exactly one row in the WHOLE playtest_event table"
+            run.outcome,
+            BattleOutcome::SideAWins,
+            "PRECONDITION: the recruit ended the battle in a win"
         );
+    } else {
+        assert_eq!(run.minted, 0, "PRECONDITION: nothing was minted");
         assert_eq!(
-            bt13_row(&run.table[0]),
-            want,
-            "{label}: (identity, kind, species, hp_permille, bait, success) against the literals"
+            run.outcome,
+            BattleOutcome::Ongoing,
+            "PRECONDITION: the battle goes on"
         );
-        assert_eq!(
-            run.table[0].battle_id, run.battle_id,
-            "{label}: the row names the battle that was played (tactical: the live anchor id; \
-             1v1: the helper's battle id literal)"
-        );
-        assert_eq!(
-            run.bait_left,
-            if bait.is_some() { 1 } else { 2 },
-            "{label}: the bait stock moved iff a bait was named"
-        );
-        if success {
-            assert_eq!(run.minted, 1, "{label}: PRECONDITION: a monster was minted");
-            assert_eq!(
-                run.outcome,
-                BattleOutcome::SideAWins,
-                "{label}: PRECONDITION: the recruit ended the battle in a win"
-            );
-        } else {
-            assert_eq!(run.minted, 0, "{label}: PRECONDITION: nothing was minted");
-            assert_eq!(
-                run.outcome,
-                BattleOutcome::Ongoing,
-                "{label}: PRECONDITION: the battle goes on"
-            );
-        }
     }
-    // Cross-path equality is the loop above: both rows equal the same literals (transitive).
 }
 
 #[test]
-fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_success_with_bait_bt13_2() {
+fn the_tactical_recruit_row_matches_the_pinned_one_v_one_literals_on_a_success_with_bait_bt13_2() {
     bt13_assert_parity(Some(1), true);
 }
 
 #[test]
-fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_failure_with_bait_bt13_2() {
+fn the_tactical_recruit_row_matches_the_pinned_one_v_one_literals_on_a_failure_with_bait_bt13_2() {
     bt13_assert_parity(Some(1), false);
 }
 
 #[test]
-fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_success_without_bait_bt13_2() {
+fn the_tactical_recruit_row_matches_the_pinned_one_v_one_literals_on_a_success_without_bait_bt13_2()
+{
     bt13_assert_parity(None, true);
 }
 
 #[test]
-fn the_tactical_recruit_row_equals_the_one_v_one_row_on_a_failure_without_bait_bt13_2() {
+fn the_tactical_recruit_row_matches_the_pinned_one_v_one_literals_on_a_failure_without_bait_bt13_2()
+{
     bt13_assert_parity(None, false);
 }
 
@@ -5351,4 +5367,66 @@ fn failed_writeback_logs_skipped() {
     let l = captured_log_lines("tactical_settle_skipped");
     assert_eq!(l.len(), 1, "{l:?}");
     assert!(l[0].contains("HP write-back failed"), "{l:?}");
+}
+
+/// A recruit pre-queued by u1 that pops at the ROUND BOUNDARY runs inside the scheduled
+/// `tactical_advance`, i.e. under the MODULE sender — and the recruited monster still belongs to
+/// the player who queued it. Every other recruit-success test resolves under the owner's own
+/// submit, where the owner and `ctx.sender()` coincide.
+///
+/// Survivor ("the recruit lands with its owner") of `taming_tests::nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp`,
+/// deleted by bt-17.
+///
+/// kills: the recruit insert owned by `ctx.sender()` instead of the unit's owner (the module
+/// identity would own the recruit).
+#[test]
+fn a_prequeued_recruit_popped_by_a_round_advance_is_owned_by_the_player_bt17_2() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    seat_between(&w, &live);
+    give(&w, 1, 2);
+    let pct = odds_pct(&w, live.wild, Some(1));
+    submit(
+        &fx,
+        a(),
+        T0 + 10_000,
+        live.id,
+        live.u1,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("u1 ends its live turn");
+    submit(
+        &fx,
+        a(),
+        T0 + 11_000,
+        live.id,
+        live.u1,
+        vec![recruit(live.wild, Some(1))],
+    )
+    .expect("u1 pre-queues a recruit for the next round");
+    submit(
+        &fx,
+        a(),
+        T0 + 12_000,
+        live.id,
+        live.u2,
+        vec![QueuedAction::EndTurn],
+    )
+    .expect("u2 ends its turn: the round closes");
+    force_recruit(&w, live.id, pct, true);
+    for adv in w.advances_of(live.id) {
+        fire_advance(&fx, T0 + 13_000, advance_args(&adv)).expect("the boundary fire is Ok");
+    }
+    let got = new_monsters(&w);
+    assert_eq!(
+        got.len(),
+        1,
+        "PRECONDITION: the pre-queued recruit popped at the boundary and succeeded"
+    );
+    assert_eq!(
+        got[0].owner_identity,
+        a(),
+        "the recruit belongs to the player who queued it, never the module sender"
+    );
 }

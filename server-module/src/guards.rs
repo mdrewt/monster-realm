@@ -6,7 +6,6 @@
 
 use crate::schema::{battle, character, player, Battle, Character};
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
-use game_core::SideId;
 use spacetimedb::{Identity, ReducerContext};
 
 /// Escape a string for interpolation into a hand-built JSON log line.
@@ -138,20 +137,15 @@ pub(crate) fn require_commitment_predates_deletion(
 
 /// The subject-keyed member of the deletion family:
 /// refuse a NAMED subject whose account is mid-grace or terminal, for an opener
-/// the subject did not call — today the scheduler-opened wild encounter, where
-/// the caller is the module itself and the walker is derived server-side from
-/// the character's own row.
+/// the subject did not call — the scheduler-opened wild encounter
+/// (`tactics::start_wild_tactical`, where the caller is the module itself and the
+/// walker is derived server-side from the character's own row) and the
+/// challenge accept (`tactics::start_pvp_tactical`, gating both participants).
 ///
-/// The FIRST identity-PARAMETERISED wrapper in this family.
-/// (no identity parameter, so no call site can ever point the gate at a third
-/// party) still holds for the blanket wrapper and is deliberately NOT claimed for
-/// this one. Containment here is MECHANICAL instead: a crate-wide BARE-name
-/// census in `guards_tests.rs`
-/// (`rb76_subject_gate_and_begin_encounter_are_contained_crate_wide`) admits
-/// exactly ONE consumer, `battle::begin_encounter`, and zero mentions in every
-/// other module, so a counterparty-keyed second caller is a CI red rather than a
-/// runtime surprise; the needle is the bare name, which also catches a
-/// function-pointer binding or a `use ... as` alias.
+/// The identity-PARAMETERISED wrapper in this family: the blanket wrapper's
+/// structural containment (no identity parameter, so no call site can ever point
+/// the gate at a third party) is deliberately NOT claimed for this one. Every
+/// consumer carries its own six-state gate test in `tactics_tests.rs`.
 ///
 /// Delegates TRANSITIVELY like both siblings — `deletion_gate` over the ctx-bound
 /// accounts predicate `accounts::is_pending_deletion` — and never re-derives the
@@ -160,12 +154,11 @@ pub(crate) fn require_commitment_predates_deletion(
 /// it. One static reason, as for every gated shape.
 ///
 /// It deliberately does NOT log, and therefore takes no `reducer` tag: on this
-/// path the CALLER owns observability — `battle::begin_encounter` logs none of
+/// path the CALLER owns observability — `tactics::start_wild_tactical` logs none of
 /// its `Err` returns — and a `log_reject` call here would be an unbounded,
 /// client-triggered warn stream, roughly one line per second per deleting walker
 /// on grass for the whole grace window, on a refusal the scheduler treats as a
-/// routine non-event. The client-facing path is unaffected: `start_wild_battle`'s
-/// own caller-only gate fires, and logs, first.
+/// routine non-event.
 pub(crate) fn require_subject_not_deleting(
     ctx: &ReducerContext,
     subject: Identity,
@@ -235,8 +228,8 @@ pub(crate) fn authorize_move(
 
 // --- Battle-input validators -------------------------------
 // Pure, total predicates over the trust boundary. Extracted so the rejection
-// rules are unit-testable without a ReducerContext and reused by `start_battle`
-// and the write-back path. Every illegal input is an `Err` — reject-not-clamp.
+// rules are unit-testable without a ReducerContext and reused by the tactical
+// starts and the write-back path. Every illegal input is an `Err` — reject-not-clamp.
 
 /// Caller party size must be in `1..=MAX_PARTY_SIZE` (empty is invalid; an
 /// oversized list is rejected, never truncated). The SSOT party-size validator.
@@ -409,30 +402,6 @@ pub(crate) fn saturating_sub_u64(a: u64, b: u64) -> u64 {
 
 pub(crate) fn saturating_sub_u32(a: u32, b: u32) -> u32 {
     a.saturating_sub(b)
-}
-
-/// PvP participant guard: verify the caller is one of the two sides in `battle`
-/// and return which side they are on. Called from `submit_pvp_action` BEFORE the
-/// `WILD_IDENTITY` / ongoing checks so the error message is accurate.
-///
-/// Returns `SideId::SideA` if `ctx.sender() == battle.player_identity` (challenger),
-/// `SideId::SideB` if `ctx.sender() == battle.opponent_identity`.
-/// Returns `Err("not a participant in this battle")` otherwise.
-pub(crate) fn require_pvp_participant(
-    ctx: &ReducerContext,
-    reducer: &str,
-    battle: &Battle,
-) -> Result<SideId, String> {
-    let me = ctx.sender();
-    if battle.player_identity == me {
-        Ok(SideId::SideA)
-    } else if battle.opponent_identity == me {
-        Ok(SideId::SideB)
-    } else {
-        let e = "not a participant in this battle".to_string();
-        log_reject(reducer, me, &e);
-        Err(e)
-    }
 }
 
 /// Battle-kind classifier: a battle is RANKED PvP iff its

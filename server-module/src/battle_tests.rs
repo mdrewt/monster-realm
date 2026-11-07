@@ -1845,470 +1845,12 @@ fn rb129_forced_terminal_property_over_random_rows() {
     }
 }
 
-// ===========================================================================
-// the caller-only deletion gate on PvE battle start.
-//
-// EXECUTION (`rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated`)
-// runs the SHIPPED reducer (`native_host_tests`)
-// against real `account` rows: the gate refuses the two deleting states, ADMITS
-// the three others, and answers from the CALLER's row rather than from the table
-// (a stranger stays mid-grace throughout). The dev-only `start_wild_battle` is
-// compiled in no default test build.
-// ===========================================================================
-
-/// `start_battle` refuses a deletion-gated caller,
-/// ADMITS everybody else, and answers from the CALLER's row.
-///
-/// The shipped reducer runs through five account
-/// states, with the exact verdict pinned in each: no row, `Active`,
-/// `PendingDeletion`, `PendingDeletion` + the terminal marker, and row removed.
-/// The three admitted states are the positive control, and they are what make the
-/// two refused states mean something.
-///
-/// A STRANGER'S `PendingDeletion` ROW IS SEEDED FIRST AND NEVER REMOVED. Without
-/// it the account table only ever holds the sender's row, so a TABLE-keyed gate —
-/// refuse if ANYBODY is deleting — is observationally identical to the
-/// caller-keyed one in all five states. With it, the three admitted states are
-/// only reachable by a gate that keys on `ctx.sender()`.
-///
-/// WHY THE ADMITTED STATES ERR AT ALL, and why that is the honest claim. The
-/// fixture can seed only `Identity`-keyed rows, so the `monster` content lookup
-/// finds nothing: an unregistered index yields no rows in this host,
-/// which is exactly why every pre-gate read — the two ongoing-battle filters, the
-/// party lookup — is a no-op instead of an abort, and why the reducer stops at
-/// content lookup rather than at a write.
-/// Every write syscall ABORTS the process (uncatchable, so `#[should_panic]`
-/// cannot be used here). The RED this test proves is therefore: a deletion-gated
-/// caller is ADMITTED past every caller-standing check into content lookup — not
-/// that the battle row was written. No table is opened writable, so a write
-/// reached before the gate would abort this process.
-///
-/// THE DUMMY SENDER is the all-zero identity, which is also `WILD_IDENTITY`
-/// (lib.rs). That is harmless here: `start_battle`'s provenance rule
-/// admits an opponent equal to the caller, and this test passes the caller's own
-/// identity as the opponent, so the provenance check passes on both of its arms.
-/// It does mean this test cannot distinguish a caller gate from an opponent-keyed
-/// one — that is what the bare-name clause of the source pin is for.
-///
-/// Rows are built with the shipped pure constructors only, so this test can never
-/// assemble a state the module itself cannot; `terminal_account` debug-asserts
-/// legality, which is why the illegal `Active` + marker shape is not reachable
-/// here and is left to `accounts_tests`' truth table. `seed` PUSHES
-/// rather than upserting, so each state removes the previous row and asserts that
-/// exactly one row went — and because `remove` is `Identity`-keyed, the stranger's
-/// row never affects that count.
-///
-/// kills:
-///   - the dropped gate (and any later deletion of it).
-///   - a discarded verdict — `let _ = ..`, `.ok();` — which leaves the reducer
-///     admitting both deleting states.
-///   - `if false`-wrapped or otherwise unreachable gate: same failure.
-///   - INVERTED POLARITY, which no source scan in this slice can see: the
-///     `Active` and no-row states would start returning the deletion reject, and
-///     the two admitted-state assertions fail. Inverted, this gate would refuse
-///     EVERY caller — a total outage of battle start — while every text pin stays
-///     byte-identical.
-///   - a constant reject at the call site: the three admitted states fail.
-///   - a row-exists-keyed fake (`is_some()` instead of the status test): the
-///     `Active` state fails.
-///   - A TABLE-WIDE SCAN OR ANY-ROW-PENDING FAKE: the three admitted states fail
-///     while the stranger is mid-grace. (If such a fake is written as a full-table
-///     iteration it aborts the process on the unmodelled scan syscall instead —
-///     also a failure, and a louder one.)
-///   - a sender-keyed fake (any rule that answers from the identity rather than
-///     from the row): the `Active` and the removed states disagree with the
-///     `PendingDeletion` one on the SAME identity, so at least one fails.
-///   - a latched or memoised answer that never returns to admitting: the final
-///     removed-row state fails.
-///   - a gate that keys on `PendingDeletion` alone and ignores the terminal
-///     marker: the fourth state still passes today (the marker implies
-///     `PendingDeletion` on a legal row) — recorded honestly, this row is a
-///     fail-closed regression fence, not an independent kill.
-#[test]
-fn rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated() {
-    let fx = crate::native_host_tests::fixture();
-    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
-    let ctx = fx.ctx();
-    let me = ctx.sender();
-
-    // The party and opponent ids differ so the dedup scan cannot reject first.
-    let call = || crate::battle::start_battle(&ctx, me, vec![1], vec![2]);
-
-    let ordinary: Result<(), String> = Err("party monster 1 not found".to_string());
-    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
-
-    let active = crate::accounts::new_account_row(me, String::new(), 0);
-    let pending = crate::accounts::requested_deletion(active.clone(), 1);
-    let terminal = crate::accounts::terminal_account(pending.clone(), 2);
-
-    // A mid-grace STRANGER, seeded once and never removed: the account table is
-    // never empty of deleting rows, so an any-row-pending gate cannot masquerade
-    // as a caller-keyed one in the three admitted states below.
-    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
-    acct.seed(&crate::accounts::requested_deletion(
-        crate::accounts::new_account_row(stranger, String::new(), 0),
-        1,
-    ));
-
-    // --- State 1: no account row for the caller (a guest) -------------------
-    let got = call();
-    assert_eq!(
-        got, ordinary,
-        "rb-46 R-m22-s5-X12 FAIL (admitted state, no account row): `start_battle` returned \
-         {got:?} for a caller with NO account row, while a STRANGER's row is mid-grace. A \
-         caller who never authenticated is not inside the deletion gate and must be admitted \
-         past it into the ordinary guard chain; the error above is the next guard's, and \
-         pinning it EXACTLY is what stops a `not joined`-style regression from masquerading \
-         as a pass. A deletion reject here means the gate answers from the TABLE (or from \
-         something else that is not the caller's own row) rather than from `ctx.sender()`."
-    );
-
-    // --- State 2: an Active account row -------------------------------------
-    acct.seed(&active);
-    let got = call();
-    assert_eq!(
-        got,
-        ordinary,
-        "rb-46 R-m22-s5-X12 FAIL (admitted state, Active account): `start_battle` returned \
-         {got:?} for a caller whose account row is `Active` (a stranger's row is mid-grace). \
-         This is the ordinary player, and refusing them is a TOTAL OUTAGE of battle start \
-         that every source pin in this slice would report as correctly gated — the call text \
-         is byte-identical whichever way the decision runs. It is also what a row-EXISTS-keyed \
-         fake produces, what an any-row-pending TABLE scan produces, and what an inverted \
-         branch produces. Indexes the generated code asked the host for: {:?}",
-        fx.requested_indexes()
-    );
-
-    // --- State 3: mid-grace (PendingDeletion) --------------------------------
-    assert_eq!(
-        acct.remove(me),
-        1,
-        "rb-46 fixture: exactly one `Active` account row was seeded for the CALLER and must \
-         be removed before the next state is pushed — `seed` appends rather than upserting, \
-         so a miscount would leave two rows for one identity and the unique-index lookup \
-         would assert instead of answering. `remove` is Identity-keyed, so the stranger's \
-         row is deliberately untouched and must never be counted here."
-    );
-    acct.seed(&pending);
-    let got = call();
-    assert_eq!(
-        got,
-        gated,
-        "rb-46 R-m22-s5-X12 FAIL (refused state, mid-grace): `start_battle` returned {got:?} \
-         for a caller whose account is `PendingDeletion`; it must return the module's single \
-         static deletion reject. THIS IS THE RED STATE AT HEAD — at HEAD `start_battle` \
-         carries no deletion gate at all, so a mid-grace account walks past every \
-         caller-standing check and opens a new battle commitment the deletion cascade will \
-         then have to unwind. The expected value is compared against the CONSTANT, never a \
-         re-typed literal, so a reworded reason cannot drift silently into text no client \
-         ever receives. Indexes the generated code asked the host for: {:?}",
-        fx.requested_indexes()
-    );
-
-    // --- State 4: terminal (PendingDeletion + the marker) -------------------
-    assert_eq!(
-        acct.remove(me),
-        1,
-        "rb-46 fixture: exactly one `PendingDeletion` account row was seeded for the CALLER \
-         and must be removed before the terminal row is pushed (`seed` appends, it never \
-         upserts; the stranger's row is Identity-keyed and stays put)."
-    );
-    acct.seed(&terminal);
-    let got = call();
-    assert_eq!(
-        got, gated,
-        "rb-46 R-m22-s5-X12 FAIL (refused state, terminal): `start_battle` returned {got:?} \
-         for a caller whose account carries the M22 terminal marker. An already-erased \
-         account must never open a new commitment: its game data is gone, so the battle \
-         would be created against rows the cascade has already deleted. The pure decision \
-         is an explicit disjunction (`accounts::should_reject_for_deletion`) precisely so \
-         this state is fail-closed even on the illegal `Active`-plus-marker shape."
-    );
-
-    // --- State 5: the caller's row is gone again -----------------------------
-    assert_eq!(
-        acct.remove(me),
-        1,
-        "rb-46 fixture: exactly one terminal account row was seeded for the CALLER and must \
-         be removable; the stranger's mid-grace row stays."
-    );
-    let got = call();
-    assert_eq!(
-        got, ordinary,
-        "rb-46 R-m22-s5-X12 FAIL (admitted state, row removed): `start_battle` returned \
-         {got:?} once the caller's account row was gone again (the stranger's mid-grace row \
-         is still there). The verdict must track LIVE rows FOR THE CALLER: an answer that \
-         latches on a row it has already seen — a memoised predicate, a cached decision, a \
-         process-wide flag — would keep refusing this identity forever, and an any-row-pending \
-         answer would refuse it because of somebody else. No state above can distinguish \
-         either of those from a correct gate on its own."
-    );
-}
-
-// ===========================================================================
-// the scheduler-opened grass-path wild encounter is a gated commitment, refused
-// at the SHARED choke point.
-//
-// WHY THE GATE GOES HERE AND NOT IN `movement_tick`. Both wild
-// encounter openers funnel through `begin_encounter`: the scheduled grass path
-// and the dev-only `start_wild_battle`. Gating the funnel gates both, once.
-// Gating `movement_tick` instead would put account-state vocabulary in
-// `movement.rs` (a second consumer of a wrapper this slice contains to one), and
-// — decisively — a pre-roll `continue` there CHANGES the per-tick `ctx.random()`
-// draw count, so one walker's account state would shift the encounter seeds of
-// every character rolled after them in the same tick.
-//
-// EXECUTION (`rb76_begin_encounter_refuses_only_a_deletion_gated_walker`) runs
-// the SHIPPED helper against real `account` rows: the
-// gate refuses the two deleting states, ADMITS the three others, and answers from
-// the WALKER's row rather than from the table or the sender.
-// ===========================================================================
-
-/// `begin_encounter` refuses a deletion-gated WALKER, ADMITS everybody else, and answers from the
-/// `player_identity` ARGUMENT.
-///
-/// The shipped helper runs through five walker
-/// states, with the exact verdict pinned in each: no row, `Active`,
-/// mid-grace, mid-grace plus the terminal marker, and row removed. The three
-/// admitted states are the positive control, and they are what make the two
-/// refused states mean something.
-///
-/// A STRANGER'S MID-GRACE ROW IS SEEDED FIRST AND NEVER REMOVED. Without it the
-/// account table only ever holds the walker's row, so a TABLE-keyed gate —
-/// refuse if ANYBODY is deleting — is observationally identical to the
-/// subject-keyed one in all five states.
-///
-/// `ctx.sender()` under this host is the all-zero identity,
-/// and on the REAL grass path it is the MODULE identity — never the walker. So:
-///   (i) the SENDER's own row is driven mid-grace while the WALKER is `Active`,
-///       and the call must still be ADMITTED. A caller-keyed gate — the obvious
-///       copy of `start_battle`'s, and the one that compiles most easily here —
-///       refuses, and on the scheduler path it would refuse or admit every
-///       walker in the zone together according to an account no player owns.
-///   (ii) the SENDER's own row is driven `Active` while the WALKER is mid-grace,
-///       and the call must still be REFUSED. This is the sharper half: a
-///       caller-keyed gate ADMITS here, so the feature looks present, passes
-///       every source pin, and gates nothing on the path it was written for.
-///
-/// WHY THE ADMITTED STATES ERR AT ALL, and why that is the honest claim. The
-/// fixture registers only the `account` table, so the `monster` point read finds
-/// nothing: an unregistered index yields no rows in this host,
-/// which is exactly why every pre-gate read — the two ongoing-battle filters, the party lookup — is
-/// a no-op instead of an abort, and why the helper stops at the party lookup rather than at a
-/// write.
-/// Every write syscall ABORTS the process (uncatchable, so `#[should_panic]`
-/// cannot be used here). The RED this test proves is therefore: a deletion-gated
-/// walker is ADMITTED past every standing check INTO THE PARTY LOOKUP — not that
-/// a battle row was written. No table is opened writable, so a write reached
-/// before the gate would abort this process.
-///
-/// THE DUMMY SENDER is the all-zero identity, which is also `WILD_IDENTITY`
-/// (lib.rs). Nothing in `begin_encounter` compares the caller against that
-/// sentinel, so it is inert here — but it does mean a constant-keyed gate
-/// (`if player_identity == WILD_IDENTITY`) could not be distinguished from a
-/// correct one by this test. That class belongs to the equality pins in the
-/// source test beside this one.
-///
-/// Rows are built with the shipped pure constructors only, so this test can
-/// never assemble a state the module itself cannot; `terminal_account`
-/// debug-asserts legality, which is why the illegal `Active`-plus-marker shape
-/// is not reachable here and is left to `accounts_tests`' truth table. `seed`
-/// PUSHES rather than upserting, so each state removes the previous row and
-/// asserts that exactly one row went — and because `remove` is `Identity`-keyed,
-/// neither the stranger's row nor the sender's affects that count.
-///
-/// kills:
-///   - the dropped gate (and any later deletion of it);
-///   - a discarded verdict — `let _ = ..`, `.ok();` — which leaves the helper
-///     admitting both deleting states;
-///   - an `if false`-wrapped or otherwise unreachable gate: same failure;
-///   - INVERTED POLARITY, which no source scan in this slice can see: the
-///     `Active` and no-row states would start returning the deletion reject.
-///     Inverted, this gate refuses EVERY walker — a total outage of wild
-///     encounters, PvE progression included — while every text pin stays
-///     byte-identical;
-///   - a CALLER-KEYED gate, in either direction, through the two sender
-///     controls. the shape
-///     `start_battle`'s gate has, it is one line away in the same file, and it
-///     is correct THERE and wrong HERE;
-///   - a table-wide or any-row-pending fake: the three admitted states fail
-///     while the stranger is mid-grace;
-///   - a row-EXISTS-keyed fake (`is_some()` instead of the status test): the
-///     `Active` state fails;
-///   - a latched or memoised answer that never returns to admitting: the final
-///     removed-row state fails;
-///   - a gate keyed on the mid-grace status alone that ignores the terminal
-///     marker: that state still passes today (the marker implies the status on a
-///     legal row) — recorded honestly, a fail-closed regression fence rather
-///     than an independent kill.
-#[test]
-fn rb76_begin_encounter_refuses_only_a_deletion_gated_walker() {
-    let fx = crate::native_host_tests::fixture();
-    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
-    let ctx = fx.ctx();
-    let sender = ctx.sender();
-    let walker = spacetimedb::Identity::from_byte_array([7u8; 32]);
-    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
-
-    // One party id, so the dedup scan above the gate cannot reject first.
-    let call = || crate::battle::begin_encounter(&ctx, walker, vec![1], 1, 1, 1);
-
-    let ordinary: Result<u64, String> = Err("party monster 1 not found".to_string());
-    let gated: Result<u64, String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
-
-    let walker_active = crate::accounts::new_account_row(walker, String::new(), 0);
-    let walker_pending = crate::accounts::requested_deletion(walker_active.clone(), 1);
-    let walker_terminal = crate::accounts::terminal_account(walker_pending.clone(), 2);
-    let sender_active = crate::accounts::new_account_row(sender, String::new(), 0);
-    let sender_pending = crate::accounts::requested_deletion(sender_active.clone(), 1);
-
-    // A mid-grace STRANGER, seeded once and never removed.
-    acct.seed(&crate::accounts::requested_deletion(
-        crate::accounts::new_account_row(stranger, String::new(), 0),
-        1,
-    ));
-
-    // --- State 1: the walker has no account row (a guest) -------------------
-    let got = call();
-    assert_eq!(
-        got,
-        ordinary,
-        "rb-76 R-rb-46-GRASSPATH FAIL (admitted, no walker row): `begin_encounter` returned \
-         {got:?} for a walker with NO account row, while a STRANGER's row is mid-grace. A \
-         player who never authenticated is not inside the para-4.7 deletion gate and must be \
-         admitted past it into the ordinary guard chain; the expected error is the next \
-         guard's (the party lookup), and pinning it EXACTLY is what stops an unrelated \
-         regression from masquerading as a pass. A deletion reject here means the gate \
-         answers from the TABLE rather than from the walker's own row. Indexes the generated \
-         code asked the host for: {:?}",
-        fx.requested_indexes()
-    );
-
-    // --- State 2: the walker's row is Active --------------------------------
-    acct.seed(&walker_active);
-    let got = call();
-    assert_eq!(
-        got,
-        ordinary,
-        "rb-76 R-rb-46-GRASSPATH FAIL (admitted, Active walker): `begin_encounter` returned \
-         {got:?} for a walker whose account row is `Active` (a stranger's row is mid-grace). \
-         This is the ordinary player stepping onto grass, and refusing them is a TOTAL \
-         OUTAGE of wild encounters — PvE progression itself — that every source pin in this \
-         slice would report as correctly gated, because the call text is byte-identical \
-         whichever way the decision runs. It is also what a row-EXISTS-keyed fake produces, \
-         what an any-row-pending table scan produces, and what an inverted branch produces. \
-         Indexes the generated code asked the host for: {:?}",
-        fx.requested_indexes()
-    );
-
-    // --- Control (i): the SENDER is mid-grace while the walker is Active ----
-    acct.seed(&sender_pending);
-    let got = call();
-    assert_eq!(
-        got, ordinary,
-        "rb-76 R-rb-46-GRASSPATH FAIL (subject-keyed, sender mid-grace): `begin_encounter` \
-         returned {got:?} while the WALKER's row is `Active` and the CONTEXT SENDER's own \
-         row is mid-grace. The gate must answer about `player_identity`, the \
-         SERVER-DERIVED walker read from the character's own `player` row — never about \
-         `ctx.sender()`. THE MUTANT THIS KILLS is the whole reason this slice exists: \
-         `start_battle`, one screen above in this same file, is gated by the CALLER-ONLY \
-         wrapper, and copying that line here compiles, reads naturally and is wrong. On the \
-         scheduled grass path `ctx.sender()` is the MODULE identity, so a caller-keyed gate \
-         asks about an account no player owns and decides for every walker in the zone at \
-         once."
-    );
-    assert_eq!(
-        acct.remove(sender),
-        1,
-        "rb-76 fixture: exactly one mid-grace row was seeded for the CONTEXT SENDER and must \
-         be removed before the next state — `seed` appends rather than upserting, so a \
-         miscount would leave two rows for one identity and the unique-index lookup would \
-         assert instead of answering. `remove` is Identity-keyed, so the stranger's and the \
-         walker's rows are deliberately untouched and must never be counted here."
-    );
-
-    // --- State 3: the walker is mid-grace -----------------------------------
-    assert_eq!(
-        acct.remove(walker),
-        1,
-        "rb-76 fixture: exactly one `Active` row was seeded for the WALKER and must be \
-         removed before the mid-grace row is pushed (`seed` appends, it never upserts)."
-    );
-    acct.seed(&walker_pending);
-    let got = call();
-    assert_eq!(
-        got,
-        gated,
-        "rb-76 R-rb-46-GRASSPATH FAIL (refused, walker mid-grace): `begin_encounter` \
-         returned {got:?} for a walker whose account is inside the deletion grace window; it \
-         must return the module's single static deletion reject. THIS IS THE RED STATE AT \
-         HEAD — at HEAD `begin_encounter` carries no deletion gate at all, so a mid-grace \
-         walker walks past every standing check and opens a new wild-battle commitment that \
-         the para-4.4 cascade will then have to boot. The expected value is compared against \
-         the CONSTANT, never a re-typed literal, so a reworded reason cannot drift silently \
-         into text no client ever receives. Indexes the generated code asked the host for: \
-         {:?}",
-        fx.requested_indexes()
-    );
-
-    // --- Control (ii): the SENDER is Active while the walker is mid-grace ---
-    acct.seed(&sender_active);
-    let got = call();
-    assert_eq!(
-        got, gated,
-        "rb-76 R-rb-46-GRASSPATH FAIL (subject-keyed, sender Active): `begin_encounter` \
-         returned {got:?} while the WALKER is mid-grace and the CONTEXT SENDER's own row is \
-         `Active`. This is the mirror of the control above and the sharper half: a \
-         caller-keyed gate ADMITS here, so the encounter is opened, the feature looks \
-         present in review, every source pin in this slice passes, and nothing at all is \
-         gated on the scheduled path the criterion is about."
-    );
-    assert_eq!(
-        acct.remove(sender),
-        1,
-        "rb-76 fixture: exactly one `Active` row was seeded for the CONTEXT SENDER and must \
-         be removable; the stranger's and the walker's rows stay."
-    );
-
-    // --- State 4: the walker carries the terminal marker --------------------
-    assert_eq!(
-        acct.remove(walker),
-        1,
-        "rb-76 fixture: exactly one mid-grace row was seeded for the WALKER and must be \
-         removed before the terminal row is pushed."
-    );
-    acct.seed(&walker_terminal);
-    let got = call();
-    assert_eq!(
-        got, gated,
-        "rb-76 R-rb-46-GRASSPATH FAIL (refused, walker terminal): `begin_encounter` returned \
-         {got:?} for a walker whose account carries the M22 terminal marker. An \
-         already-erased account must never open a new commitment: its game data is gone, so \
-         the battle would be created against rows the cascade has already deleted, and side \
-         A's party ids would point at monsters that no longer exist. The pure decision is an \
-         explicit disjunction precisely so this state is fail-closed even on the illegal \
-         `Active`-plus-marker shape."
-    );
-
-    // --- State 5: the walker's row is gone again ----------------------------
-    assert_eq!(
-        acct.remove(walker),
-        1,
-        "rb-76 fixture: exactly one terminal row was seeded for the WALKER and must be \
-         removable; the stranger's mid-grace row stays."
-    );
-    let got = call();
-    assert_eq!(
-        got, ordinary,
-        "rb-76 R-rb-46-GRASSPATH FAIL (admitted, walker row removed): `begin_encounter` \
-         returned {got:?} once the walker's account row was gone again (the stranger's \
-         mid-grace row is still there). The verdict must track LIVE rows FOR THE WALKER: an \
-         answer that latches on a row it has already seen — a memoised predicate, a cached \
-         decision, a process-wide flag — would keep refusing this identity forever, and an \
-         any-row-pending answer would refuse it because of somebody else. No state above can \
-         distinguish either of those from a correct gate on its own."
-    );
-}
+// bt-17: the 1v1 start gates (`rb46_start_battle_…`, `rb76_begin_encounter_…`) left with
+// `start_battle` and `begin_encounter`. The live starts' deletion gate is
+// `tactics_tests::deletion_gate_on_the_live_starts_refuses_a_pending_or_terminal_subject_only_bt17_2`;
+// the subject-keyed wrapper's own truth table is
+// `guards_tests::rb76_subject_gate_answers_from_the_named_subject`
+// (memory/projects/monster-realm-bt-17b-deletions.md).
 
 // ===========================================================================
 // Native-host behavioural suite (debloat Phase 2: EV-battle-reducer-security,
@@ -2623,14 +2165,6 @@ impl BnWorld<'_> {
         self.pubs.seed(&crate::marshal::pub_from_monster(&m, 2));
         self.monsters.seed(&m);
     }
-    fn stack(&self, owner: Identity, item_id: u32, count: u32) {
-        self.stacks.seed(&Inventory {
-            inv_id: 1000 + u64::from(item_id) + u64::from(owner.to_byte_array()[0]) * 100,
-            owner_identity: owner,
-            item_id,
-            count,
-        });
-    }
     fn wild_row(&self, battle_id: u64) {
         self.wild.seed(&BattleWild {
             battle_id,
@@ -2648,14 +2182,6 @@ impl BnWorld<'_> {
             .into_iter()
             .find(|m| m.monster_id == id)
             .expect("monster row")
-    }
-    fn count(&self, owner: Identity, item_id: u32) -> u32 {
-        self.stacks
-            .rows()
-            .iter()
-            .filter(|r| r.owner_identity == owner && r.item_id == item_id)
-            .map(|r| r.count)
-            .sum()
     }
     fn balance(&self, owner: Identity) -> u64 {
         self.wallets
@@ -2716,452 +2242,19 @@ fn bn_bytes<T: spacetimedb::Serialize>(row: &T) -> Vec<u8> {
 
 type BnCall = fn(&spacetimedb::ReducerContext) -> Result<(), String>;
 
-/// The four in-battle PvE action reducers against [`BN_BATTLE`].
-fn bn_actions() -> Vec<(&'static str, BnCall)> {
-    vec![
-        ("submit_attack", |ctx| {
-            super::submit_attack(ctx, BN_BATTLE, 1)
-        }),
-        ("swap_active", |ctx| super::swap_active(ctx, BN_BATTLE, 1)),
-        ("flee", |ctx| super::flee(ctx, BN_BATTLE)),
-        ("use_battle_item", |ctx| {
-            super::use_battle_item(ctx, BN_BATTLE, 3)
-        }),
-    ]
-}
-
-/// A wild battle for A with party [11, 12], active poisoned, an Antidote (item 3) held.
-fn bn_wild_setup(w: &BnWorld<'_>, outcome: BattleOutcome) {
-    w.monster(11, bn_a(), 0);
-    w.monster(12, bn_a(), 1);
-    let mut b = bn_battle(bn_a(), crate::WILD_IDENTITY, &[11, 12], &[], outcome);
-    b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
-    w.battles.seed(&b);
-    w.wild_row(BN_BATTLE);
-    w.stack(bn_a(), 3, 2);
-}
-
-/// EV-battle-reducer-security (ownership) + ST-battle_tests#reducer-guards: a STRANGER
-/// gets the exact owner reject from every action reducer with the store untouched;
-/// the OWNER's call runs and visibly changes the battle.
-/// kills: each reducer -> Ok(()), the Ongoing comparators flipped (owner refused).
-#[test]
-fn bn_battle_actions_refuse_a_stranger_and_admit_the_owner() {
-    for (label, call) in bn_actions() {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        bn_wild_setup(&w, BattleOutcome::Ongoing);
-        let before = w.snapshot();
-        let got = fx.run_as_at(bn_b(), bn_at(BN_T0), call);
-        assert_eq!(got, Err("not owner".to_string()), "{label}: stranger");
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
-
-        let state_before = w.battle(BN_BATTLE).unwrap().state;
-        let got = fx.run_as_at(bn_a(), bn_at(BN_T0), call);
-        assert_eq!(
-            got,
-            Ok(()),
-            "{label}: owner; asked {:?}",
-            fx.requested_indexes()
-        );
-        let after = w.battle(BN_BATTLE).expect("battle row kept");
-        assert_ne!(
-            after.state, state_before,
-            "{label}: the owner's call changed nothing"
-        );
-        match label {
-            "flee" => {
-                assert_eq!(after.state.outcome, BattleOutcome::Fled);
-                assert!(w.wild.rows().is_empty(), "flee: battle_wild row deleted");
-            }
-            "swap_active" => assert_eq!(after.state.side_a.active, 1),
-            "use_battle_item" => {
-                assert_eq!(after.state.side_a.team[0].status, None);
-                assert_eq!(w.count(bn_a(), 3), 1, "exactly one Antidote consumed");
-            }
-            _ => assert!(after.state.turn_number > state_before.turn_number),
-        }
-        w.assert_mirrored(label);
-    }
-}
-
-/// every action reducer refuses a terminal battle with no XP, currency, item or row
-/// change.
-#[test]
-fn bn_battle_actions_refuse_a_terminal_battle() {
-    for outcome in [
-        BattleOutcome::Fled,
-        BattleOutcome::SideAWins,
-        BattleOutcome::SideBWins,
-    ] {
-        for (label, call) in bn_actions() {
-            let fx = fixture();
-            let w = bn_world(&fx);
-            bn_wild_setup(&w, outcome);
-            let before = w.snapshot();
-            let got = fx.run_as_at(bn_a(), bn_at(BN_T0), call);
-            assert_eq!(
-                got,
-                Err("battle is not ongoing".to_string()),
-                "{label} on {outcome:?}"
-            );
-            assert_eq!(w.snapshot(), before, "{label} on {outcome:?}: untouched");
-        }
-    }
-}
-
-/// EV-ranking-pve-exclusion: the four PvE reducers refuse a RANKED PvP battle (two
-/// distinct real players) with the row unchanged, whoever of the two calls (side B
-/// is not the row's owner). Control: a practice self-battle is not ranked and runs.
-#[test]
-fn bn_pve_actions_refuse_a_ranked_pvp_battle() {
-    for (label, call) in bn_actions() {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        w.monster(11, bn_a(), 0);
-        w.monster(12, bn_a(), 1);
-        w.monster(21, bn_b(), 0);
-        let mut b = bn_battle(bn_a(), bn_b(), &[11, 12], &[21], BattleOutcome::Ongoing);
-        b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
-        w.battles.seed(&b);
-        w.stack(bn_a(), 3, 2);
-        let before = w.snapshot();
-        assert_eq!(
-            fx.run_as_at(bn_a(), bn_at(BN_T0), call),
-            Err("not available in PvP battles".to_string()),
-            "{label}: side A of a ranked battle"
-        );
-        assert_eq!(
-            fx.run_as_at(bn_b(), bn_at(BN_T0), call),
-            Err("not owner".to_string()),
-            "{label}: side B of a ranked battle"
-        );
-        assert_eq!(w.snapshot(), before, "{label}: ranked battle untouched");
-
-        // Practice control: the same shape with A on both sides.
-        drop(fx);
-        let fx = fixture();
-        let w = bn_world(&fx);
-        w.monster(11, bn_a(), 0);
-        w.monster(12, bn_a(), 1);
-        w.monster(13, bn_a(), 2);
-        let mut b = bn_battle(bn_a(), bn_a(), &[11, 12], &[13], BattleOutcome::Ongoing);
-        b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
-        w.battles.seed(&b);
-        w.stack(bn_a(), 3, 2);
-        assert_eq!(
-            fx.run_as_at(bn_a(), bn_at(BN_T0), call),
-            Ok(()),
-            "{label}: a practice battle is not ranked"
-        );
-    }
-}
-
-/// ST-battle_tests#reducer-guards (fainted rules): submit_attack refuses a fainted
-/// active and an unknown skill; swap_active refuses a fainted target, an
-/// out-of-range index and the current active; flee deliberately has no fainted
-/// guard. Status bookkeeping: a sleeping opponent's counter advances on the row.
-#[test]
-fn bn_fainted_and_move_legality_guards() {
-    let seed = |w: &BnWorld<'_>, active_hp: u16, target_hp: u16| {
-        w.monster(11, bn_a(), 0);
-        w.monster(12, bn_a(), 1);
-        let mut b = bn_battle(
-            bn_a(),
-            crate::WILD_IDENTITY,
-            &[11, 12],
-            &[],
-            BattleOutcome::Ongoing,
-        );
-        b.state.side_a.team[0].current_hp = active_hp;
-        b.state.side_a.team[1].current_hp = target_hp;
-        b.state.side_b.team[0].status = Some(game_core::StatusEffect::Sleep { turns_remaining: 3 });
-        w.battles.seed(&b);
-        w.wild_row(BN_BATTLE);
-    };
-    type Case = (&'static str, u16, u16, BnCall, Result<(), String>);
-    let cases: Vec<Case> = vec![
-        (
-            "attack with a fainted active",
-            0,
-            150,
-            |ctx| super::submit_attack(ctx, BN_BATTLE, 1),
-            Err("your active monster has fainted — swap to another monster or flee".to_string()),
-        ),
-        (
-            "attack with an unknown skill",
-            150,
-            150,
-            |ctx| super::submit_attack(ctx, BN_BATTLE, 99),
-            Err("skill 99 not in active monster's moveset".to_string()),
-        ),
-        (
-            "swap to a fainted monster",
-            150,
-            0,
-            |ctx| super::swap_active(ctx, BN_BATTLE, 1),
-            Err("monster at index 1 is fainted".to_string()),
-        ),
-        (
-            "swap out of range",
-            150,
-            150,
-            |ctx| super::swap_active(ctx, BN_BATTLE, 2),
-            Err("team_index 2 out of bounds".to_string()),
-        ),
-        (
-            "swap to the active",
-            150,
-            150,
-            |ctx| super::swap_active(ctx, BN_BATTLE, 0),
-            Err("already the active monster".to_string()),
-        ),
-    ];
-    for (label, active_hp, target_hp, call, want) in cases {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        seed(&w, active_hp, target_hp);
-        let before = w.snapshot();
-        assert_eq!(fx.run_as_at(bn_a(), bn_at(BN_T0), call), want, "{label}");
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
-    }
-    // flee with a fainted active is allowed (the escape hatch).
-    {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        seed(&w, 0, 150);
-        assert_eq!(
-            fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, BN_BATTLE)),
-            Ok(())
-        );
-        assert_eq!(
-            w.battle(BN_BATTLE).unwrap().state.outcome,
-            BattleOutcome::Fled
-        );
-    }
-    // A legal attack and a legal swap write the advanced status store back while Ongoing.
-    for (label, call) in [
-        (
-            "attack",
-            (|ctx| super::submit_attack(ctx, BN_BATTLE, 1)) as BnCall,
-        ),
-        ("swap", |ctx| super::swap_active(ctx, BN_BATTLE, 1)),
-    ] {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        seed(&w, 150, 150);
-        assert_eq!(fx.run_as_at(bn_a(), bn_at(BN_T0), call), Ok(()), "{label}");
-        let b = w.battle(BN_BATTLE).unwrap();
-        assert_eq!(b.state.outcome, BattleOutcome::Ongoing, "{label}");
-        assert_ne!(
-            b.state.side_b.team[0].status,
-            Some(game_core::StatusEffect::Sleep { turns_remaining: 3 }),
-            "{label}: the turn's status bookkeeping must land on the row"
-        );
-    }
-}
-
-/// ST-battle_tests#reducer-guards (cure item): a non-cure item, an unknown item, a
-/// cure that does not match the status, and a cure item not held are all refused
-/// with nothing consumed; the matching held cure consumes exactly one and clears it.
-#[test]
-fn bn_use_battle_item_consumes_only_a_matching_held_cure() {
-    type Case = (&'static str, u32, bool, u32, Result<(), String>);
-    let cases: Vec<Case> = vec![
-        (
-            "not a cure",
-            1,
-            true,
-            2,
-            Err("item 1 is not a cure item".to_string()),
-        ),
-        (
-            "unknown item",
-            999,
-            true,
-            2,
-            Err("item 999 not found".to_string()),
-        ),
-        (
-            "status not matched",
-            3,
-            false,
-            2,
-            Err("active monster does not have status cured by item 3".to_string()),
-        ),
-        (
-            "not held",
-            3,
-            true,
-            0,
-            Err("item is in an active trade".to_string()),
-        ),
-    ];
-    for (label, item, poisoned, held, want) in cases {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        bn_wild_setup(&w, BattleOutcome::Ongoing);
-        // A decoy stack of another item: a wrong-row count lookup would read it.
-        w.stack(bn_a(), 1, 5);
-        if held != 2 {
-            w.stacks.remove(bn_a());
-            w.stack(bn_a(), 1, 5);
-        }
-        if !poisoned {
-            let mut b = w.battle(BN_BATTLE).unwrap();
-            w.battles.remove(BN_BATTLE);
-            b.state.side_a.team[0].status = Some(game_core::StatusEffect::Burn);
-            w.battles.seed(&b);
-        }
-        let before = w.snapshot();
-        assert_eq!(
-            fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
-                super::use_battle_item(ctx, BN_BATTLE, item)
-            }),
-            want,
-            "{label}"
-        );
-        assert_eq!(w.snapshot(), before, "{label}: nothing consumed");
-    }
-}
-
-/// EV-battle-reducer-security (provenance + ownership): start_battle refuses a
-/// third-party opponent, a foreign side-A monster, a side-B monster the
-/// named opponent does not own, a boxed monster, duplicates across the two lists and
-/// an empty party — each before any write. Controls: a self battle and a WILD battle
-/// insert exactly one Ongoing row naming the caller and the opponent as given.
-#[test]
-fn bn_start_battle_enforces_provenance_and_ownership() {
-    let fx = fixture();
-    let w = bn_world(&fx);
-    w.monster(11, bn_a(), 0);
-    w.monster(12, bn_a(), 1);
-    w.monster(13, bn_a(), crate::PARTY_SLOT_NONE);
-    w.monster(21, bn_b(), 0);
-    w.monster(50, crate::WILD_IDENTITY, 0);
-    let me = bn_a();
-    type Case = (&'static str, Identity, Vec<u64>, Vec<u64>, &'static str);
-    let cases: Vec<Case> = vec![
-        (
-            "third-party opponent",
-            bn_b(),
-            vec![11],
-            vec![21],
-            "opponent must be self or server-authored (PvP unsupported)",
-        ),
-        (
-            "dup in party",
-            me,
-            vec![11, 11],
-            vec![12],
-            "duplicate monster_id 11 in party_monster_ids",
-        ),
-        (
-            "dup across sides",
-            me,
-            vec![11],
-            vec![11],
-            "duplicate monster_id 11 in opponent_monster_ids",
-        ),
-        (
-            "foreign party monster",
-            me,
-            vec![21],
-            vec![12],
-            "monster 21 not owned by caller",
-        ),
-        (
-            "opponent monster not the opponent's",
-            me,
-            vec![11],
-            vec![21],
-            "monster 21 not owned by opponent",
-        ),
-        (
-            "wild opponent with the caller's monster",
-            crate::WILD_IDENTITY,
-            vec![11],
-            vec![12],
-            "monster 12 not owned by opponent",
-        ),
-    ];
-    for (label, opp, party, opps, want) in cases {
-        let before = w.snapshot();
-        let got = fx.run_as_at(me, bn_at(BN_T0), |ctx| {
-            super::start_battle(ctx, opp, party.clone(), opps.clone())
-        });
-        assert_eq!(got, Err(want.to_string()), "{label}");
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
-    }
-    let before = w.snapshot();
-    let got = fx.run_as_at(me, bn_at(BN_T0), |ctx| {
-        super::start_battle(ctx, me, vec![13], vec![12])
-    });
-    assert!(got.is_err(), "boxed monster must be refused: {got:?}");
-    assert!(
-        fx.run_as_at(me, bn_at(BN_T0), |ctx| super::start_battle(
-            ctx,
-            me,
-            vec![],
-            vec![12]
-        ))
-        .is_err(),
-        "empty party"
-    );
-    assert_eq!(w.snapshot(), before, "boxed/empty refused before any write");
-
-    // Controls.
-    assert_eq!(
-        fx.run_as_at(me, bn_at(BN_T0), |ctx| {
-            super::start_battle(ctx, me, vec![11], vec![12])
-        }),
-        Ok(())
-    );
-    let rows = w.battles.rows();
-    assert_eq!(rows.len(), 1, "exactly one battle row");
-    let b = &rows[0];
-    assert_eq!(
-        (b.player_identity, b.opponent_identity, b.state.outcome),
-        (me, me, BattleOutcome::Ongoing)
-    );
-    assert_eq!(
-        (
-            b.party_monster_ids.clone(),
-            b.opponent_monster_ids.clone(),
-            b.created_at_ms
-        ),
-        (vec![11], vec![12], BN_T0)
-    );
-    assert_eq!(
-        fx.run_as_at(me, bn_at(BN_T0), |ctx| {
-            super::start_battle(ctx, me, vec![11], vec![12])
-        }),
-        Err("already in an ongoing battle".to_string()),
-        "a second concurrent battle"
-    );
-    drop(fx);
-    let fx = fixture();
-    let w = bn_world(&fx);
-    w.monster(11, bn_a(), 0);
-    w.monster(50, crate::WILD_IDENTITY, 0);
-    assert_eq!(
-        fx.run_as_at(me, bn_at(BN_T0), |ctx| {
-            super::start_battle(ctx, crate::WILD_IDENTITY, vec![11], vec![50])
-        }),
-        Ok(())
-    );
-    let rows = w.battles.rows();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        (rows[0].player_identity, rows[0].opponent_identity),
-        (me, crate::WILD_IDENTITY)
-    );
-}
-
-/// a player seated as SIDE B of an ongoing PvP battle cannot open or act outside it
-/// — start_battle, begin_encounter, heal_party, care, train and evolve all refuse,
-/// before any write.
-/// Control: once that battle is terminal, start_battle and begin_encounter run.
+/// a player seated as SIDE B of an ongoing PvP battle cannot act outside it —
+/// heal_party, care, train and evolve all refuse, before any write. Control: once
+/// that battle is terminal, train and evolve no longer answer with the ongoing-battle
+/// refusal (they stop at a later lookup, writing nothing; heal_party and care are left
+/// out of the control because their admitted paths write tables this world does not
+/// fully register).
+///
+/// Retargeted by bt-17: the `start_battle` / `begin_encounter` rows left with their
+/// bodies; a side-B player opening a NEW battle is refused by the live starts in
+/// `tactics_tests::a_pvp_start_holds_both_players_in_an_ongoing_battle_bt14_2` (the
+/// challenger / opponent busy arms) and
+/// `tactics_tests::start_refuses_bad_packs_busy_or_unfit_parties_and_writes_nothing_bt8_2`
+/// ("already in a battle").
 #[test]
 fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
     use crate::schema::{Character, HealLocationRow};
@@ -3209,16 +2302,6 @@ fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
     }
     let cases: Vec<(&str, BnCall, &str)> = vec![
         (
-            "start_battle",
-            |ctx| super::start_battle(ctx, ctx.sender(), vec![11], vec![12]),
-            "already in an ongoing battle",
-        ),
-        (
-            "begin_encounter",
-            |ctx| super::begin_encounter(ctx, ctx.sender(), vec![11], 2, 5, 7).map(|_| ()),
-            "already in an ongoing battle",
-        ),
-        (
             "heal_party",
             |ctx| crate::raising::heal_party(ctx, 999),
             "cannot heal during an ongoing battle",
@@ -3251,94 +2334,30 @@ fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
         );
         assert_eq!(w.snapshot(), before, "{label}: refused before any write");
     }
-    for (label, call, _) in cases.iter().take(2) {
+    for (label, call, want) in cases
+        .iter()
+        .filter(|(label, ..)| ["train", "evolve"].contains(label))
+    {
         let fx = fixture();
-        let w = setup(&fx, BattleOutcome::SideAWins);
+        let _w = setup(&fx, BattleOutcome::SideAWins);
         let got = fx.run_as_at(bn_a(), bn_at(BN_T0), call);
-        assert_eq!(got, Ok(()), "{label}: a finished PvP battle does not block");
-        assert_eq!(w.battles.rows().len(), 2, "{label}: one new battle row");
+        assert_ne!(
+            got,
+            Err(want.to_string()),
+            "{label}: a finished PvP battle does not block"
+        );
     }
-}
-
-/// EV-wild-individuality-privacy (behavioural side) + EV-battle-reducer-security C4:
-/// begin_encounter returns the INSERTED battle's id, writes a battle row naming the
-/// player and the WILD sentinel, and keeps the individuality seed only in the
-/// private battle_wild row keyed by that id; ending the battle (flee) deletes the
-/// battle_wild row so no seed outlives its encounter. Refusals before any write:
-/// a foreign monster, duplicates, an already-battling player.
-#[test]
-fn bn_begin_encounter_keeps_the_seed_private_and_short_lived() {
-    let fx = fixture();
-    let w = bn_world(&fx);
-    w.monster(11, bn_a(), 0);
-    w.monster(12, bn_a(), 1);
-    w.monster(21, bn_b(), 0);
-    // C opens an encounter first, so A's battle id is 2, never a constant 0 or 1.
-    w.monster(31, bn_c(), 0);
-    assert_eq!(
-        fx.run_as_at(bn_c(), bn_at(BN_T0), |ctx| {
-            super::begin_encounter(ctx, bn_c(), vec![31], 2, 5, 1)
-        }),
-        Ok(1)
-    );
-    w.wild.remove(1);
-    let before = w.snapshot();
-    for (label, party, want) in [
-        ("foreign", vec![21], "monster 21 not owned by player"),
-        (
-            "dup",
-            vec![11, 11],
-            "duplicate monster_id 11 in party_monster_ids",
-        ),
-    ] {
-        let got = fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
-            super::begin_encounter(ctx, bn_a(), party.clone(), 2, 5, 0xBEEF)
-        });
-        assert_eq!(got, Err(want.to_string()), "{label}");
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
-    }
-    let id = fx
-        .run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
-            super::begin_encounter(ctx, bn_a(), vec![11, 12], 2, 5, 0xBEEF)
-        })
-        .expect("encounter opens");
-    assert_eq!(id, 2, "the returned id is the INSERTED row's auto-inc id");
-    let b = w.battle(id).expect("battle row under the returned id");
-    assert_eq!(
-        (b.player_identity, b.opponent_identity, b.state.outcome),
-        (bn_a(), crate::WILD_IDENTITY, BattleOutcome::Ongoing)
-    );
-    assert_eq!(b.party_monster_ids, vec![11, 12]);
-    assert_eq!(
-        bn_bytes(&w.wild.rows()),
-        bn_bytes(&vec![BattleWild {
-            battle_id: id,
-            wild_species_id: 2,
-            wild_level: 5,
-            individuality_seed: 0xBEEF,
-        }]),
-        "the seed lives only in battle_wild, keyed by the battle id"
-    );
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
-            super::begin_encounter(ctx, bn_a(), vec![11], 2, 5, 1).map(|_| ())
-        }),
-        Err("already in an ongoing battle".to_string())
-    );
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, id)),
-        Ok(())
-    );
-    assert!(
-        w.wild.rows().is_empty(),
-        "the seed does not outlive the encounter"
-    );
 }
 
 /// EV-battle-lifecycle-gc (its new_home): finishing a battle GCs the player's OLDER
 /// terminal battles, keeping exactly one terminal row — the latest — while another
 /// player's terminal row and the player's own ongoing row are untouched; on a PvP
 /// write-back the OPPONENT's old terminal rows (as opponent) are GC'd too.
+///
+/// Retargeted by bt-17: the wild half was driven through the 1v1 `flee`; it now calls the
+/// write-back `flee` ran (`write_back_battle_results`) directly with the finishing battle's
+/// terminal (Fled) value while its stored row is still Ongoing — the write-back's documented
+/// call-site contract, exactly as the PvP half below does.
 #[test]
 fn bn_write_back_gcs_old_terminal_battles() {
     let fx = fixture();
@@ -3363,20 +2382,30 @@ fn bn_write_back_gcs_old_terminal_battles() {
         BattleOutcome::Ongoing,
     ));
     w.wild_row(BN_BATTLE);
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, BN_BATTLE)),
-        Ok(())
+    let fled = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Fled,
+    );
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_battle_results(&ctx, &fled), Ok(()));
+    assert!(
+        w.wild.rows().is_empty(),
+        "the finishing battle's battle_wild row is GC'd"
     );
     let mut ids: Vec<u64> = w.battles.rows().iter().map(|b| b.battle_id).collect();
     ids.sort_unstable();
     assert_eq!(
         ids,
         vec![3, 4, 5, BN_BATTLE],
-        "A's two older terminal rows are GC'd; C's rows and the latest stay"
+        "A's two older terminal rows are GC'd; C's rows and the in-flight battle stay"
     );
     assert_eq!(
         w.battle(BN_BATTLE).unwrap().state.outcome,
-        BattleOutcome::Fled
+        BattleOutcome::Ongoing,
+        "the write-back never touches the in-flight battle's own row (its caller commits it)"
     );
 
     // PvP write-back: B's old terminal row (B as opponent) goes, B's ongoing stays.
@@ -3607,10 +2636,19 @@ fn bn_faint_penalty_is_wild_only_and_saturating() {
 /// ST-battle_tests#writeback-economy (log-and-continue + settle-on-error): a missing
 /// loser species or an unparseable loser level ends the credit pass with Ok and HP
 /// still written; an unparseable WINNER level still pays currency; a missing
-/// projection is a loud Err — and a reducer that meets it still commits the battle's
-/// terminal outcome (the write-back error is logged, not propagated).
+/// projection is a loud Err — and the surviving log-and-continue caller,
+/// `resolve_wild_battle_on_disconnect`, still deletes the `battle` and `battle_wild` rows when
+/// that write-back Errs (the player is never soft-locked) and logs the Err once as
+/// `wild_disconnect_writeback_err`.
+///
+/// kills (last arm, bt-17 round 2): the deletes made conditional on the write-back succeeding
+/// (`if write_back_battle_results(..).is_ok() { delete }`); the Err swallowed without a log line.
+/// NEXTEST-ONLY: installs `BN_LOGS` as the process logger, like
+/// `bn_anonymize_logs_only_the_battles_it_forced_terminal`.
 #[test]
 fn bn_write_back_log_and_continue_paths() {
+    log::set_logger(&BN_LOGS).expect("no logger installed in the native test binary");
+    log::set_max_level(log::LevelFilter::Info);
     // Missing loser species (id 77) -> Ok, HP written, no currency or XP.
     let fx = fixture();
     let w = bn_world(&fx);
@@ -3668,7 +2706,9 @@ fn bn_write_back_log_and_continue_paths() {
     );
     w.assert_mirrored("winner level unparseable");
 
-    // Missing projection -> loud Err; flee still commits Fled.
+    // Missing projection -> loud Err; the disconnect resolver still commits its deletes.
+    // (Retargeted by bt-17: the caller half was the 1v1 `flee`; it is now the surviving
+    // log-and-continue caller, `resolve_wild_battle_on_disconnect`.)
     drop(fx);
     let fx = fixture();
     let w = bn_world(&fx);
@@ -3692,15 +2732,42 @@ fn bn_write_back_log_and_continue_paths() {
         super::write_back_battle_results(&ctx, &fin),
         Err("monster_pub row missing for monster 11".to_string())
     );
+    // The disconnect resolver meets the same Err on the stored (Ongoing) battle.
+    w.wild_row(BN_BATTLE);
     assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, BN_BATTLE)),
-        Ok(()),
-        "settle-on-error: the reducer still succeeds"
+        w.battle(BN_BATTLE).map(|b| b.state.outcome),
+        Some(BattleOutcome::Ongoing),
+        "PRECONDITION: the caller's wild battle is still Ongoing in the store"
     );
     assert_eq!(
-        w.battle(BN_BATTLE).unwrap().state.outcome,
-        BattleOutcome::Fled,
-        "…and commits the terminal outcome"
+        w.wild.rows().len(),
+        1,
+        "PRECONDITION: its battle_wild row exists"
+    );
+    super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
+    assert!(
+        w.battle(BN_BATTLE).is_none(),
+        "log-and-continue: the battle row is deleted although the write-back Erred"
+    );
+    assert!(
+        w.wild.rows().is_empty(),
+        "log-and-continue: the battle_wild row is deleted although the write-back Erred"
+    );
+    let logged: Vec<String> = BN_LOGS
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|l| {
+            l.contains("wild_disconnect_writeback_err")
+                && l.contains(&format!("\"battle_id\":{BN_BATTLE}"))
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        logged.len(),
+        1,
+        "the write-back Err is logged exactly once, never swallowed: {logged:?}"
     );
 }
 
@@ -3871,117 +2938,6 @@ fn bn_lead_party_ids_orders_the_slotted_party_and_ignores_levels() {
     assert_eq!(super::lead_party(&ctx, bn_a()).map(|(ids, _)| ids), None);
 }
 
-/// Survivors of the AFTER probe (submit_attack :757, swap_active :908): the battle
-/// write-back runs EXACTLY when the turn ends the battle. A KO by attack settles a
-/// wild win (currency paid, battle_wild gone); a swap into a lone 1-HP monster that
-/// is knocked out settles a loss (faint penalty written, battle_wild gone).
-/// The Ongoing direction (write-back must NOT run) is the `battle_wild` row that
-/// survives a non-final turn, asserted here too.
-#[test]
-fn bn_a_battle_ending_turn_settles_and_a_non_final_turn_does_not() {
-    // Attack KO -> SideAWins -> write-back.
-    let fx = fixture();
-    let w = bn_world(&fx);
-    w.monster(11, bn_a(), 0);
-    let mut b = bn_battle(
-        bn_a(),
-        crate::WILD_IDENTITY,
-        &[11],
-        &[],
-        BattleOutcome::Ongoing,
-    );
-    b.state.side_b.team[0].current_hp = 1;
-    b.state.side_b.team[0].status = Some(game_core::StatusEffect::Sleep { turns_remaining: 3 });
-    w.battles.seed(&b);
-    w.wild_row(BN_BATTLE);
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::submit_attack(
-            ctx, BN_BATTLE, 1
-        )),
-        Ok(())
-    );
-    assert_eq!(
-        w.battle(BN_BATTLE).unwrap().state.outcome,
-        BattleOutcome::SideAWins
-    );
-    assert!(w.wild.rows().is_empty(), "attack KO: the write-back ran");
-    assert_eq!(w.balance(bn_a()), 30, "attack KO: the win was paid");
-    drop(fx);
-
-    // Swap into a 1-HP monster that the awake opponent knocks out -> SideBWins.
-    let fx = fixture();
-    let w = bn_world(&fx);
-    w.monster(11, bn_a(), 0);
-    w.monster(12, bn_a(), 1);
-    let mut b = bn_battle(
-        bn_a(),
-        crate::WILD_IDENTITY,
-        &[11, 12],
-        &[],
-        BattleOutcome::Ongoing,
-    );
-    b.state.side_a.team[0].current_hp = 0;
-    b.state.side_a.team[1].current_hp = 1;
-    w.battles.seed(&b);
-    w.wild_row(BN_BATTLE);
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::swap_active(
-            ctx, BN_BATTLE, 1
-        )),
-        Ok(())
-    );
-    assert_eq!(
-        w.battle(BN_BATTLE).unwrap().state.outcome,
-        BattleOutcome::SideBWins
-    );
-    assert!(w.wild.rows().is_empty(), "swap KO: the write-back ran");
-    assert_eq!(
-        (
-            w.mon(11).trust_unfavorable_count,
-            w.mon(12).trust_unfavorable_count
-        ),
-        (1, 1),
-        "swap KO: both fainted members took the wild faint penalty"
-    );
-    drop(fx);
-
-    // Non-final turns: the battle_wild row (deleted only by write-back) survives.
-    for (label, call) in [
-        (
-            "attack",
-            (|ctx| super::submit_attack(ctx, BN_BATTLE, 1)) as BnCall,
-        ),
-        ("swap", |ctx| super::swap_active(ctx, BN_BATTLE, 1)),
-    ] {
-        let fx = fixture();
-        let w = bn_world(&fx);
-        w.monster(11, bn_a(), 0);
-        w.monster(12, bn_a(), 1);
-        let mut b = bn_battle(
-            bn_a(),
-            crate::WILD_IDENTITY,
-            &[11, 12],
-            &[],
-            BattleOutcome::Ongoing,
-        );
-        b.state.side_b.team[0].status = Some(game_core::StatusEffect::Sleep { turns_remaining: 3 });
-        w.battles.seed(&b);
-        w.wild_row(BN_BATTLE);
-        assert_eq!(fx.run_as_at(bn_a(), bn_at(BN_T0), call), Ok(()), "{label}");
-        assert_eq!(
-            w.battle(BN_BATTLE).unwrap().state.outcome,
-            BattleOutcome::Ongoing,
-            "{label}"
-        );
-        assert_eq!(
-            w.wild.rows().len(),
-            1,
-            "{label}: no write-back on a non-final turn"
-        );
-        assert_eq!(w.balance(bn_a()), 0, "{label}: nothing paid");
-    }
-}
-
 /// Captures `log` records for this test PROCESS (nextest isolates each test).
 struct BnLogSink(std::sync::Mutex<Vec<String>>);
 impl log::Log for BnLogSink {
@@ -4047,3 +3003,52 @@ fn bn_anonymize_logs_only_the_battles_it_forced_terminal() {
 // bt-17 (BT17.1): `bn_start_wild_battle_checks_the_zone_argument` (the dev-only, `dev_reducers`
 // cfg test of `start_wild_battle`'s zone check) is deleted with the reducer itself — subject
 // deleted (memory/projects/monster-realm-bt-17-deletions.md).
+
+/// A disconnect's auto-flee of the caller's ongoing wild battle pays NOTHING: no currency, no
+/// XP, no level, no essence, no trust credit (`bn_disconnect_resolves_only_the_callers_ongoing_wild_battle`
+/// pins the HP write-back and the row deletes only).
+///
+/// kills: the auto-flee outcome set to `SideAWins` instead of `Fled` (the write-back would then
+/// pay the win: currency, XP, essence, trust).
+#[test]
+fn bn_disconnect_auto_flee_pays_nothing_bt17_2() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let mut mine = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Ongoing,
+    );
+    mine.state.side_a.team[0].current_hp = 17;
+    w.battles.seed(&mine);
+    w.wild_row(BN_BATTLE);
+    let before = w.mon(11);
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
+    assert!(
+        w.battle(BN_BATTLE).is_none(),
+        "PRECONDITION: the disconnect resolved the battle"
+    );
+    let m = w.mon(11);
+    assert_eq!(w.balance(bn_a()), 0, "no currency for a disconnect");
+    assert_eq!(
+        (
+            m.xp,
+            m.level,
+            m.essence_water,
+            m.essence_fire,
+            m.trust_favorable_count
+        ),
+        (
+            before.xp,
+            before.level,
+            before.essence_water,
+            before.essence_fire,
+            before.trust_favorable_count
+        ),
+        "no XP, level, essence or trust for a disconnect"
+    );
+}

@@ -2750,8 +2750,17 @@ fn nh_escrow_seed(fx: &Fixture, w: &NhWorld<'_>) {
     }
 }
 
-/// hand-enumerated: every call site of `reject_if_monster_in_trade` — 11 functions, 12
-/// sites. For each, the subject monster escrowed in an active offer (on the initiator
+/// hand-enumerated: the call sites of `reject_if_monster_in_trade` outside the tactical
+/// shell — 8 functions, 8 sites (the 1v1 `start_battle` x2, `start_pvp_battle` and
+/// `begin_encounter` rows left with their bodies in bt-17). The tactical sites are driven in
+/// their own suite: `start_wild_tactical` by
+/// `tactics_tests::start_refuses_bad_packs_busy_or_unfit_parties_and_writes_nothing_bt8_2`
+/// ("party monster in a trade"), `start_pvp_tactical` (both sides, both index chains) by
+/// `tactics_tests::pvp_start_refuses_either_sides_party_monster_in_an_active_trade_escrow_bt17_2`,
+/// and the deploy staging by
+/// `tactics_tests::deploy_units_refuses_every_illegal_pick_set_before_any_write_bt8_1`
+/// ("pick in an active trade"). For each site here, the subject monster escrowed in an
+/// active offer (on the initiator
 /// side, then on the counterparty side, exercising both index chains) is refused with
 /// the exact escrow error on a WRITE-WALLED store (a write before the guard would panic,
 /// so this is refusal-before-write). Control: the same offer escrowing a DIFFERENT
@@ -2778,20 +2787,8 @@ fn nh_escrowed_monster_is_refused_by_every_guarded_reducer() {
         ("consume_crystalized_essence", |ctx| {
             crate::raising::consume_crystalized_essence(ctx, 11, 5)
         }),
-        ("start_battle party side", |ctx| {
-            crate::battle::start_battle(ctx, ctx.sender(), vec![11], vec![12])
-        }),
-        ("start_battle opponent side", |ctx| {
-            crate::battle::start_battle(ctx, ctx.sender(), vec![12], vec![11])
-        }),
         ("challenge_pvp", |ctx| {
             crate::pvp::challenge_pvp(ctx, nh_b(), vec![11])
-        }),
-        ("start_pvp_battle (accept path)", |ctx| {
-            crate::pvp::start_pvp_battle(ctx, ctx.sender(), vec![11], nh_b(), vec![21]).map(|_| ())
-        }),
-        ("begin_encounter (encounter path)", |ctx| {
-            crate::battle::begin_encounter(ctx, ctx.sender(), vec![11], 1, 3, 7).map(|_| ())
         }),
     ];
     type Shape = (&'static str, fn(u64) -> TradeOffer);
@@ -2861,7 +2858,6 @@ fn nh_escrowed_monster_is_refused_by_every_guarded_reducer() {
 /// `escrowed_currency_amount_*` unit tests above.
 #[test]
 fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
-    use game_core::BattleOutcome::Ongoing;
     const ITEM_REFUSAL: &str = "item is in an active trade";
     const CURRENCY_REFUSAL: &str = "currency is in an active trade";
     let item_offer = |item: u32, qty: u32, as_counterparty: bool| {
@@ -2877,23 +2873,6 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
             }
         }
     };
-    let seed_battle = |fx: &Fixture, w: &NhWorld<'_>| {
-        let mut b = nh_battle(nh_a(), crate::WILD_IDENTITY, Ongoing);
-        b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
-        b.party_monster_ids = vec![11];
-        w.battles.seed(&b);
-        let _ = fx.table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id);
-        fx.table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| {
-            r.battle_id
-        })
-        .seed(&crate::schema::BattleWild {
-            battle_id: 900,
-            wild_species_id: 1,
-            wild_level: 3,
-            individuality_seed: 7,
-        });
-    };
-
     // sell: 5 held, 3 escrowed (A as counterparty) -> selling 3 refused, 2 sold.
     {
         let fx = fixture();
@@ -2953,23 +2932,20 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
             "buy: 2 bought at 10"
         );
     }
-    // Past-guard rows on a write-walled store.
+    // Past-guard rows on a write-walled store. (The 1v1 `use_battle_item` and
+    // `attempt_recruit (bait)` rows left with their reducers in bt-17: the tactical bait
+    // escrow is `tactics_settle_tests::bait_held_only_in_a_trade_escrow_is_refused_at_submit_and_never_debited_bt9_2`,
+    // and the tactical engine refuses every `Item` entry.)
     type Call = fn(&ReducerContext) -> Result<(), String>;
-    let rows: Vec<(&str, u32, u32, bool, bool, Call)> = vec![
-        ("train (food)", 2, 3, true, false, |ctx| {
+    let rows: Vec<(&str, u32, u32, bool, Call)> = vec![
+        ("train (food)", 2, 3, true, |ctx| {
             crate::raising::train(ctx, 11, 2)
         }),
-        ("consume_crystalized_essence", 5, 3, false, false, |ctx| {
+        ("consume_crystalized_essence", 5, 3, false, |ctx| {
             crate::raising::consume_crystalized_essence(ctx, 11, 5)
         }),
-        ("use_battle_item", 3, 2, true, true, |ctx| {
-            crate::battle::use_battle_item(ctx, 900, 3)
-        }),
-        ("attempt_recruit (bait)", 1, 2, false, true, |ctx| {
-            crate::taming::attempt_recruit(ctx, 900, Some(1))
-        }),
     ];
-    for (label, item, held, as_cp, battle, call) in rows {
+    for (label, item, held, as_cp, call) in rows {
         for escrowed in [held, held - 1] {
             let control = escrowed != held;
             let fx = fixture();
@@ -2977,9 +2953,6 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
             nh_escrow_seed(&fx, &w);
             if control {
                 nh_open_writes(&fx);
-            }
-            if battle {
-                seed_battle(&fx, &w);
             }
             w.stack(nh_a(), item, held);
             w.offers.seed(&item_offer(item, escrowed, as_cp));

@@ -500,7 +500,8 @@ function makePartyCard(): MonsterCardViewModel {
 
 /**
  * A freshly recruited monster sitting in the BOX. This is the client-side face of the
- * reported defect: `attempt_recruit` inserts with `PARTY_SLOT_NONE` (taming.rs:163 — a
+ * reported defect: the tactical recruit (`taming::insert_recruited`) inserts with
+ * `PARTY_SLOT_NONE` (a
  * DECIDED semantic, ADR-0047 §3 "box (PARTY_SLOT_NONE), full HP … avoids clobbering an
  * occupied party slot"), and `lead_party` builds side A only from
  * `party_slot != PARTY_SLOT_NONE` — so a box recruit can never appear on the battle bench.
@@ -656,7 +657,7 @@ describe('BoxView ux4 X2: box vs party render (EXPECTED GREEN)', () => {
     expect(
       boxGrid.textContent,
       'ux4 (X2): the recruited monster must render in the BOX grid — that is where ' +
-        'attempt_recruit puts it (PARTY_SLOT_NONE, taming.rs:163 / ADR-0047 §3)',
+        'the tactical recruit (`taming::insert_recruited`) puts it (PARTY_SLOT_NONE, ADR-0047 §3)',
     ).toContain('Emberfang');
     expect(
       partyGrid.textContent,
@@ -739,7 +740,7 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
     ).toContain('Only monsters in your Party can battle or be swapped in.');
     expect(
       text,
-      'ux4 (X3): the hint must say where new recruits actually GO (taming.rs:163 / ADR-0047 §3) — ' +
+      'ux4 (X3): the hint must say where new recruits actually GO (`taming::insert_recruited` / ADR-0047 §3) — ' +
         'this is the fact whose absence produced the playtest report. The literal clause pin also ' +
         'replaces the subsumed toContain(\'Box\'), which a stray "Box" anywhere would satisfy',
     ).toContain('New recruits arrive in Storage');

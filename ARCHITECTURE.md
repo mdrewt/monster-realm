@@ -52,7 +52,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `monster` | Individuality rolls (IVs, nature), stat derivation, levels and XP curve. |
 | `combat` | Battle state and turn resolution, damage and accuracy, statuses, abilities, weather, AI, XP rewards, PvP forfeit and challenge staleness. |
 | `tactics` | Tactical-battle rules (in progress, M-battle-tactics): `geometry` (Manhattan metric, line of sight, the one skill target-set function, flank), `movement` (stride bands, terrain × class weights, Dijkstra pathing with an explicit `(cost, y, x)` tie-break, disengage), `map` (the battle-map validator), `tuning` (`TacticsTuning`, `BattleKind`), `economy` (AP costs, Exert, Guard), `initiative`, `resolve` (`TacticalState` and the damage pipeline), `upkeep`, `outcome` (KO sweep, adjudication), `types` (the storage enums `QueuedAction`, `TurnState`, `Phase`), `events` (the `battle_event` payload), `clock`, `queue` (`TacticalBattle`: the submit gate and executor), `ai`, `encounter`, `recruit`, `rewards`, and `content` (the sidecar registries and lints). `tactics::golden` runs a shared JSON fixture natively and through the `tactics_golden` wasm export to prove native = wasm. |
-| `taming` | dev-only `grant_bait`; `attempt_recruit` is no longer a reducer since bt-17 (the tactical recruit is a `submit_queue` entry) |
+| `taming` | dev-only `grant_bait`; the tactical recruit is a `submit_queue` entry (the 1v1 `attempt_recruit` is deleted since bt-17) |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |
 | `currency`, `trading` | Balance arithmetic; trade proposal validation, headroom checks, the ordered swap plan. |
@@ -136,8 +136,8 @@ writes:
 | Module | Reducers |
 |---|---|
 | `movement` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, scheduled `movement_tick` (the grass trigger opens a tactical wild battle through `tactics::start_wild_tactical`) |
-| `battle` | no reducers since bt-17 (BT17.1): `start_battle`, `submit_attack`, `swap_active`, `use_battle_item` and `flee` lost their reducer attribute and stay compiled as `pub(crate)` test-only bodies until the continuation deletes them (`start_wild_battle` is deleted); the module keeps the terminal-sweep and write-back helpers the tactical settle funnel calls |
-| `taming` | dev-only `grant_bait` (`attempt_recruit` is no longer a reducer since bt-17) |
+| `battle` | no reducers since bt-17 (BT17.1): the 1v1 start and per-turn action reducers are deleted; the module keeps the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical settle funnel and the account lifecycle call |
+| `taming` | dev-only `grant_bait`; the tactical recruit's insert (`insert_recruited`, called from `tactics.rs`'s recruit hook) — the 1v1 `attempt_recruit` is deleted since bt-17 |
 | `tactics` | `deploy_units`, `submit_queue`, `cancel_queue`, `forfeit`, scheduled `tactical_deadline_fire`, `tactical_advance` and `battle_gc`; its two `pub(crate)` writers `start_wild_tactical` (called by `movement_tick`) and `start_pvp_tactical` (called by `accept_challenge`) are the only places a battle is created |
 | `tactics_settle` | no reducers: the one terminal settlement `tactics::finish` calls (reward ledger, faint penalty, prior-terminal sweep, `battle_summary`) |
 | `raising` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `heal_party` |
@@ -146,7 +146,7 @@ writes:
 | `economy` | `buy`, `sell` |
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
 | `trading` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, scheduled `trade_offer_reaper` |
-| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed: `submit_pvp_action` is no longer a reducer since bt-17) and `battle_challenge_reaper` |
+| `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
@@ -195,14 +195,16 @@ drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
 
 ### Battles, trades and the rest
 
-- **PvE.** A grass encounter starts a wild battle and stores the wild's
-  individuality seed in the private `battle_wild` table. Turns resolve in
-  `game-core` with `TurnVariance::from_ctx_random(ctx.random())`. A recruit rebuilds
-  the exact individual from the seed. After a battle ends, only the latest finished
-  battle per player is kept.
-- **PvP.** Challenges are public rows with a 120 s TTL. Each side's secret move is a
-  private `battle_action` row. A turn resolves when both moves are in, or a 60 s
-  deadline reaper forfeits the side that did not act. Ranked results update the
+- **PvE.** A grass encounter opens a tactical wild battle (`tactics::start_wild_tactical`)
+  and stores each wild's individuality seed in the private `battle_wild_unit` table; the
+  battle's own seed lives in `battle_secret`. Turns resolve in `game-core`'s tactical
+  engine from the stored seed. A recruit rebuilds the exact individual from the wild's
+  seed. After a battle ends, only the latest finished battle per player is kept. The 1v1
+  tables (`battle_wild`, `battle_action`, `pvp_deadline_schedule`) are retired in place
+  since bt-17 — never dropped; no new rows (the settle and erase sweeps still delete from them).
+- **PvP.** Challenges are public rows with a 120 s TTL. Accepting one opens a tactical
+  battle (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the
+  tactical clocks and auto-pass rules end a stalled battle. Ranked results update the
   public `profile` table.
 - **Trading.** Offers are public `trade_offer` rows with a one-hour TTL
   (`TRADE_OFFER_TTL_MS`). Offered assets stay where they are, and guards stop them
@@ -281,7 +283,7 @@ body is the whole security boundary.
   tables included) and none is exportable. A finished tactical battle's event, unit,
   queue, clock, secret, wild-unit and staging rows are deleted 24 h later by the
   scheduled `battle_gc`; `battle_tactical`, `battle_summary` and the anchor survive. A
-  player's PRIOR terminal anchors are swept at every battle end (1v1 or tactical) with
+  player's PRIOR terminal anchors are swept at every tactical battle end with
   their tactical rows; only their `battle_summary` rows survive, finalised.
 
 **Tactical battles (`tactics.rs` + `tactics_settle.rs`, M-battle-tactics bt-8/bt-9).** The server is a shell over
@@ -297,16 +299,16 @@ the battle as `Fled` with no HP write. Every step mirrors the deployed units' HP
 anchor's legacy side-A team, so the one write-back primitive (`battle::write_back_party_hp`)
 persists damaged HP at every tactical terminal; a battle whose rows can no longer be loaded
 (content drift) is closed by a fallback that writes each unit's HP to its monster row only
-while that monster still belongs to the unit's owner, and a tactical row whose anchor a
-legacy reducer already ended closes with no HP write at all (that reducer's own write-back
-ran) — the scheduled reducers never leave a tactical battle `Ongoing`. Every close goes
+while that monster still belongs to the unit's owner, and a tactical row whose anchor is
+already terminal closes with no HP write at all — the scheduled reducers never leave a
+tactical battle `Ongoing`. Every close goes
 through one `finish`, idempotent against the stored row, which hands `tactics_settle::settle`
 the close kind. Settlement (design §7): the reward ledger is a fold of the persisted
 transcript — each `Ko` is credited through `game_core::tactics::rewards::on_unit_defeated` to
 the attacker of the last opposite-side hit on the victim, against the board as it stood at
 that moment (the final board with the units not yet fallen restored: consciousness is
 monotone, nothing heals mid-battle); `rewards::pay` pays only the units conscious at the end,
-on every terminal path alike, through the 1v1 funnel's own per-monster credit
+on every terminal path alike, through the carried per-monster credit
 (`battle::credit_monster`) over the whole conscious party, so the win-only trust-favorable
 credit, Quality Time and the evolution check keep their carried scope; the currency goes to
 the wallet; one `Awards` line per paid monster plus one `unit 0` line for the currency is
@@ -320,8 +322,9 @@ recruit glue is the `Hooks` impl: the bait's content row, the wild's seed row, s
 level are resolved before the executor debits the bait, the roll is game-core's
 (`recruit::resolve_recruit`, the private stream), the H1/H2 `playtest_event` row is written
 with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
-`Item` entries stay refused (no game-core rule home yet). The 1v1 reducers refuse a tactical
-anchor (`battle::reject_if_tactical_anchor`): one anchor, one payout path. 
+`Item` entries stay refused (no game-core rule home yet). One anchor, one payout path: no
+client-callable 1v1 reducer exists since bt-17 (the scheduled `pvp_deadline_reaper` only consumes rows
+nothing arms).
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned

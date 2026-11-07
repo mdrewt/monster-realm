@@ -928,9 +928,9 @@ fn pv_accept_snapshot(
 /// deadline, one empty unlocked `battle_deploy` row per owner and ONE deploy-window
 /// `tactical_deadline_sched` row — and NO 1v1 turn deadline (`pvp_deadline_schedule`) and no
 /// `battle_action`; it consumes the challenge and ONLY its reaper.
-/// kills: role check swapped/removed, status check removed, the 1v1 `start_pvp_battle` +
-/// `schedule_deadline` path kept, the challenge's format dropped or clamped, challenge not
-/// deleted, disarm_challenge_reaper -> ().
+/// kills: role check swapped/removed, status check removed, a 1v1 turn deadline or
+/// `battle_action` row written beside the tactical start, the challenge's format dropped or
+/// clamped, challenge not deleted, disarm_challenge_reaper -> ().
 #[test]
 fn nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1() {
     let cases: Vec<PvCase<u64>> = vec![
@@ -1731,272 +1731,6 @@ fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
     );
 }
 
-/// ST-pvp_tests#reducer-guards (submit_pvp_action): a stranger, a wild battle, a finished
-/// battle, an unknown skill, an out-of-range / fainted / already-active swap and a second
-/// pick for the same turn are refused before any write; an Attack from a fainted active
-/// is refused while a Swap out of it is admitted (the only exit). One valid
-/// pick inserts exactly one action for the current turn and resolves nothing.
-/// kills: participant check removed, WILD check removed, double-submit guard removed,
-/// fainted-active guard moved onto Swap.
-#[test]
-fn nh_submit_pvp_action_guards_and_records_one_pick() {
-    let seed = |w: &PvWorld<'_>| {
-        w.battles.seed(&pv_battle(
-            900,
-            pv_a(),
-            pv_b(),
-            PvOutcome::Ongoing,
-            &[30, 0, 30],
-            &[30, 30],
-        ));
-        w.battles.seed(&pv_battle(
-            901,
-            pv_a(),
-            PV_WILD,
-            PvOutcome::Ongoing,
-            &[30],
-            &[30],
-        ));
-        w.battles.seed(&pv_battle(
-            902,
-            pv_c(),
-            pv_d(),
-            PvOutcome::SideAWins,
-            &[30],
-            &[30],
-        ));
-        let mut corpse = pv_battle(903, pv_c(), pv_d(), PvOutcome::Ongoing, &[0, 30], &[30]);
-        corpse.state.turn_number = 4;
-        w.battles.seed(&corpse);
-        w.action(50, 904, pv_d(), 1);
-        // The caller's own pick from an EARLIER turn never counts as this turn's.
-        w.action(51, 900, pv_a(), 0);
-    };
-    let atk = |skill_id| PvPick::Attack { skill_id };
-    let swap = |team_index| PvPick::Swap { team_index };
-    let cases: Vec<(&str, PvId, u64, PvPick, &str)> = vec![
-        ("missing battle", pv_a(), 999, atk(1), "battle not found"),
-        ("stranger", pv_c(), 900, atk(1), ""),
-        ("wild battle", pv_a(), 901, atk(1), "not a PvP battle"),
-        (
-            "finished battle",
-            pv_c(),
-            902,
-            atk(1),
-            "battle is not ongoing",
-        ),
-        (
-            "unknown skill",
-            pv_a(),
-            900,
-            atk(2),
-            "skill 2 not in active monster's moveset",
-        ),
-        (
-            "swap out of range",
-            pv_a(),
-            900,
-            swap(3),
-            "team_index 3 out of bounds",
-        ),
-        (
-            "swap to a fainted slot",
-            pv_a(),
-            900,
-            swap(1),
-            "monster at index 1 is fainted",
-        ),
-        (
-            "swap to the active slot",
-            pv_a(),
-            900,
-            swap(0),
-            "already the active monster",
-        ),
-        (
-            "attack from a fainted active",
-            pv_c(),
-            903,
-            atk(1),
-            "your active monster has fainted",
-        ),
-    ];
-    for (label, who, battle_id, pick, needle) in cases {
-        let fx = pv_fixture();
-        let w = pv_world(&fx, false);
-        seed(&w);
-        let before = w.snapshot();
-        let got = fx.run_as(who, |ctx| super::submit_pvp_action(ctx, battle_id, pick));
-        match &got {
-            Err(e) => assert!(
-                e.contains(needle),
-                "{label}: wrong refusal {e:?} (want {needle:?})"
-            ),
-            Ok(()) => panic!("{label}: must be refused"),
-        }
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
-    }
-    let fx = pv_fixture();
-    let w = pv_world(&fx, false);
-    seed(&w);
-    let battle_bytes =
-        |w: &PvWorld<'_>| spacetimedb::sats::bsatn::to_vec(&w.battle(900).unwrap()).unwrap();
-    let before_battle = battle_bytes(&w);
-    assert_eq!(
-        fx.run_as_at(pv_a(), pv_at(PV_T0 + 7), |ctx| super::submit_pvp_action(
-            ctx,
-            900,
-            atk(1)
-        )),
-        Ok(())
-    );
-    let mine: Vec<PvAction> = w
-        .actions
-        .rows()
-        .into_iter()
-        .filter(|a| a.battle_id == 900 && a.turn_number == 1)
-        .collect();
-    assert_eq!(mine.len(), 1, "exactly one pick recorded");
-    assert_eq!(
-        (
-            mine[0].player_identity,
-            mine[0].action,
-            mine[0].turn_number,
-            mine[0].submitted_at_ms
-        ),
-        (pv_a(), atk(1), 1, PV_T0 + 7)
-    );
-    assert_eq!(
-        battle_bytes(&w),
-        before_battle,
-        "one side's pick resolves nothing"
-    );
-    let before = w.snapshot();
-    assert_eq!(
-        fx.run_as(pv_a(), |ctx| super::submit_pvp_action(ctx, 900, swap(2))),
-        Err("already submitted an action for this turn".to_string())
-    );
-    assert_eq!(
-        w.snapshot(),
-        before,
-        "a second pick for the same turn writes nothing"
-    );
-    // The corpse-active side may still swap out.
-    assert_eq!(
-        fx.run_as(pv_c(), |ctx| super::submit_pvp_action(ctx, 903, swap(1))),
-        Ok(())
-    );
-}
-
-/// ST-pvp_tests#reducer-guards (turn resolution): the SECOND pick of a turn resolves
-/// it in the same call — both picks of THAT turn are consumed (an older-turn pick is
-/// not), the resolved state is written back with its status store (a sleeping bench
-/// monster ticks down), the turn advances and the next deadline is armed at
-/// now + PVP_TURN_DEADLINE_MS. A turn that decides the battle settles it instead:
-/// terminal outcome, both ratings applied once, no further deadline.
-/// kills: the `< 2` readiness check, the current-turn filter, either side's pick
-/// lookup, the Ongoing status copy, and the settle-vs-reschedule branch.
-#[test]
-fn nh_second_pick_resolves_the_turn_and_a_decisive_turn_settles() {
-    let fx = pv_fixture();
-    let w = pv_world(&fx, true);
-    let mut b = pv_battle(
-        900,
-        pv_a(),
-        pv_b(),
-        PvOutcome::Ongoing,
-        &[30, 30, 30],
-        &[30, 30, 30],
-    );
-    b.state.side_a.team[2].status = Some(game_core::StatusEffect::Sleep { turns_remaining: 3 });
-    w.battles.seed(&b);
-    w.action(60, 900, pv_a(), 0); // a stale pick from turn 0
-    let t = PV_T0 + 9_000;
-    let swap = PvPick::Swap { team_index: 1 };
-    // Side B picks a DIFFERENT swap, so crossed pick lookups are visible.
-    let swap_b = PvPick::Swap { team_index: 2 };
-    assert_eq!(
-        fx.run_as_at(pv_a(), pv_at(t), |ctx| super::submit_pvp_action(
-            ctx, 900, swap
-        )),
-        Ok(())
-    );
-    assert_eq!(
-        w.battle(900).map(|b| b.state.turn_number),
-        Some(1),
-        "one pick resolves nothing"
-    );
-    assert_eq!(
-        fx.run_as_at(pv_b(), pv_at(t), |ctx| super::submit_pvp_action(
-            ctx, 900, swap_b
-        )),
-        Ok(())
-    );
-    let b = w.battle(900).expect("battle kept");
-    assert_eq!(b.state.outcome, PvOutcome::Ongoing);
-    assert_eq!(b.state.turn_number, 2, "the turn advanced");
-    assert_eq!(
-        (b.state.side_a.active, b.state.side_b.active),
-        (1, 2),
-        "each side's OWN swap applied"
-    );
-    assert_eq!(
-        b.state.side_a.team[2].status,
-        Some(game_core::StatusEffect::Sleep { turns_remaining: 2 }),
-        "the resolved status store is written back (bench sleep ticks 3 -> 2)"
-    );
-    assert_eq!(
-        w.action_ids(),
-        vec![60],
-        "this turn's two picks consumed, the stale one kept"
-    );
-    let d = w.deadlines.rows();
-    assert_eq!(d.len(), 1, "exactly one next-turn deadline");
-    assert_eq!(
-        (d[0].battle_id, d[0].turn_number, d[0].scheduled_at),
-        (900, 2, PvAt::Time(pv_at(t + super::PVP_TURN_DEADLINE_MS)))
-    );
-    assert!(
-        w.profiles.rows().is_empty(),
-        "an undecided turn rates nobody"
-    );
-
-    // A decisive turn: side A's only monster is at 1 HP, so side B's hit ends it.
-    drop(fx);
-    let fx = pv_fixture();
-    let w = pv_world(&fx, true);
-    w.battles.seed(&pv_battle(
-        901,
-        pv_a(),
-        pv_b(),
-        PvOutcome::Ongoing,
-        &[1],
-        &[30],
-    ));
-    let atk = PvPick::Attack { skill_id: 1 };
-    for who in [pv_a(), pv_b()] {
-        assert_eq!(
-            fx.run_as_at(who, pv_at(t), |ctx| super::submit_pvp_action(ctx, 901, atk)),
-            Ok(())
-        );
-    }
-    let b = w.battle(901).expect("battle kept (terminal)");
-    assert_eq!(
-        b.state.outcome,
-        PvOutcome::SideBWins,
-        "side A was knocked out"
-    );
-    let (rw, rl) =
-        game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
-    assert_eq!(w.profile(pv_b()), Some((rw, 1, 0)));
-    assert_eq!(w.profile(pv_a()), Some((rl, 0, 1)));
-    assert!(
-        w.deadlines.rows().is_empty(),
-        "a settled battle arms no further deadline"
-    );
-    assert!(w.action_ids().is_empty(), "both picks consumed");
-}
-
 // ===========================================================================
 // bt-14 (spec M-battle-tactics BT14.1) — the challenge `format` and the per-side deploy count.
 //
@@ -2078,6 +1812,57 @@ fn challenge_pvp_writes_the_derived_format_into_the_inserted_challenge_bt14_1() 
             (rows[0].challenger_party_ids.clone(), rows[0].format),
             (party.clone(), want),
             "party of {party_len}: the challenge opens format {want}"
+        );
+    }
+}
+
+/// The ACCEPTOR's client-supplied party reaches `tactics::start_pvp_tactical` with no ownership
+/// check of `accept_challenge`'s own, so the tactical writer's side loader is the only guard: a
+/// third player's monster, a missing id and the acceptor's own BOXED monster are each refused with
+/// the loader's text, before any write (PvP store and tactical store byte-identical). Skipped
+/// (after the call) only when ranked enforcement is active, where the ranked gate refuses first.
+///
+/// Survivor (with `nh_challenge_pvp_refuses_every_guard_before_writing`, the challenger side) of
+/// `battle_tests::bn_start_battle_enforces_provenance_and_ownership`, deleted by bt-17.
+///
+/// kills: the `m.owner_identity != owner` check dropped from `tactics::load_side_party` (the
+/// foreign arm); `check_monster_in_party` dropped from it (the boxed arm); a missing id skipped
+/// rather than refused (the missing arm).
+#[test]
+fn accept_challenge_refuses_a_foreign_missing_or_boxed_acceptor_party_bt17_2() {
+    for (label, party, needle) in [
+        (
+            "foreign (a third player's monster)",
+            vec![31u64],
+            "monster 31 not owned by caller",
+        ),
+        ("missing", vec![99], "monster 99 not found"),
+        ("boxed", vec![32], "monster 32 monster is boxed"),
+    ] {
+        let fx = pv_fixture();
+        let (w, t) = pv_accept_world(&fx, 1);
+        w.monster(31, pv_c(), 0);
+        w.monster(32, pv_b(), game_core::PARTY_SLOT_NONE);
+        let before = pv_accept_snapshot(&w, &t);
+        let got = fx.run_as_at(pv_b(), pv_at(PV_T0), |ctx| {
+            super::accept_challenge(ctx, 100, party.clone())
+        });
+        let gate = super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
+            .map_err(str::to_string);
+        if gate.is_err() {
+            return;
+        }
+        match &got {
+            Err(e) => assert!(
+                e.contains(needle),
+                "{label}: wrong refusal {e:?} (want {needle:?})"
+            ),
+            Ok(()) => panic!("{label}: ACCEPTED a party the acceptor does not own"),
+        }
+        assert_eq!(
+            pv_accept_snapshot(&w, &t),
+            before,
+            "{label}: refused before any write"
         );
     }
 }

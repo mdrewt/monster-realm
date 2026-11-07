@@ -248,7 +248,8 @@ fn nh_set_nickname_refuses_a_stranger_and_admits_the_owner() {
 //   raising.rs care, train, heal_party, essence_train,
 //              consume_crystalized_essence, accrue_quality_time     -> dw_raising_sites
 //   evolution.rs apply_evolution                                    -> dw_apply_evolution_site
-//   movement.rs join_game (insert), taming.rs attempt_recruit (ins) -> dw_insert_sites
+//   movement.rs join_game (insert), taming.rs insert_recruited (ins) -> dw_insert_sites
+//     (insert_recruited is the tactical recruit's insert; the 1v1 attempt_recruit is gone, bt-17)
 //   pvp.rs write_back_party_hp_pvp_side_b (via forfeit_on_disconnect) -> dw_pvp_side_b_site
 //   content.rs sync_content_inner (re-derive pass)                   -> dw_sync_content_site
 //
@@ -683,8 +684,10 @@ fn dw_apply_evolution_site() {
     w.assert_mirrored("apply_evolution");
 }
 
-/// movement.rs join_game and taming.rs attempt_recruit: the two INSERT sites create
-/// a private row and its projection together (tier from the species row).
+/// movement.rs join_game and taming.rs insert_recruited (the tactical recruit's insert —
+/// the 1v1 `attempt_recruit` that also reached it is deleted, bt-17): the two INSERT sites
+/// create a private row and its projection together (the recruit's projection tier is the
+/// species' fresh tier).
 #[test]
 fn dw_insert_sites() {
     use crate::schema::Character;
@@ -706,92 +709,50 @@ fn dw_insert_sites() {
         assert_eq!(rows[0].owner_identity, dw_c());
         w.assert_mirrored("join_game");
     }
-    // attempt_recruit: retried over clock values (the roll is ctx.random()) until a
-    // recruit lands; a failed roll inserts nothing.
-    let mut recruited = false;
-    for k in 0..64 {
+    // insert_recruited: the tactical recruit's insert, called directly with a content species
+    // whose tier is set to 3 (every seeded projection here carries tier 0, so a projection
+    // written with a copied or default tier cannot pass).
+    {
         let fx = fixture();
         let w = dw_world(&fx);
         w.monster(11, dw_a(), 0);
-        w.stack(dw_a(), 1, 3);
-        let lead = game_core::BattleMonster {
-            species_id: 1,
-            affinity: game_core::Affinity::Fire,
-            level: 7,
-            current_hp: 30,
-            max_hp: 30,
-            stats: game_core::StatBlock {
-                hp: 30,
-                attack: 20,
-                defense: 20,
-                speed: 20,
-                sp_attack: 20,
-                sp_defense: 20,
-            },
-            known_skill_ids: vec![1],
-            status: None,
-        };
-        let wild = game_core::BattleMonster {
-            species_id: 2,
-            current_hp: 1,
-            max_hp: 200,
-            ..lead.clone()
-        };
-        fx.table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
-            .seed(&Battle {
-                battle_id: 900,
-                player_identity: dw_a(),
-                opponent_identity: crate::WILD_IDENTITY,
-                state: game_core::BattleState {
-                    side_a: game_core::BattleSide {
-                        active: 0,
-                        team: vec![lead],
-                    },
-                    side_b: game_core::BattleSide {
-                        active: 0,
-                        team: vec![wild],
-                    },
-                    outcome: game_core::BattleOutcome::Ongoing,
-                    turn_number: 1,
-                    weather: None,
-                },
-                party_monster_ids: vec![11],
-                opponent_monster_ids: vec![],
-                created_at_ms: 0,
-            });
-        fx.table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| {
-            r.battle_id
-        })
-        .seed(&crate::schema::BattleWild {
-            battle_id: 900,
-            wild_species_id: 2,
-            wild_level: 5,
-            individuality_seed: 77,
+        let mut species = game_core::load_species()
+            .expect("species content loads")
+            .into_iter()
+            .find(|s| s.id == 2)
+            .expect("species 2 is in the content");
+        species.tier = 3;
+        let level = game_core::Level::new(5).expect("5 is a level");
+        let inserted = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::taming::insert_recruited(ctx, dw_a(), 77, &species, level)
         });
-        let got = fx.run_as_at(dw_a(), dw_at(DW_T0 + k * 1000), |ctx| {
-            crate::taming::attempt_recruit(ctx, 900, Some(1))
-        });
+        let rows = w.monsters.rows();
+        assert_eq!(rows.len(), 2, "monster 11 plus exactly one recruit");
+        let stored = w
+            .row(inserted.monster_id)
+            .expect("the returned row is the stored row");
         assert_eq!(
-            got,
-            Ok(()),
-            "attempt_recruit; asked {:?}",
-            fx.requested_indexes()
+            dw_bytes(&stored),
+            dw_bytes(&inserted),
+            "insert_recruited returns exactly the row it stored"
         );
-        w.assert_mirrored("attempt_recruit");
-        let mine = w.monsters.rows().len();
-        if mine == 2 {
-            let pubs = w.pubs.rows();
-            let new = pubs.iter().find(|p| p.monster_id != 11).unwrap();
-            assert_eq!(new.tier, 3, "recruit projection carries the species tier");
-            recruited = true;
-            break;
-        }
-        assert_eq!(mine, 1, "a failed roll inserts nothing");
+        assert_eq!(
+            (stored.owner_identity, stored.party_slot, stored.species_id),
+            (dw_a(), crate::PARTY_SLOT_NONE, 2),
+            "the owner's box, the recruited species"
+        );
+        w.assert_mirrored("insert_recruited");
+        let new = w
+            .pubs
+            .rows()
+            .into_iter()
+            .find(|p| p.monster_id == inserted.monster_id)
+            .expect("the recruit's projection");
+        assert_eq!(
+            new.tier, 3,
+            "the recruit projection carries the species' fresh tier"
+        );
     }
-    assert!(
-        recruited,
-        "no recruit landed in 64 rolls at 1/200 HP with bait"
-    );
 }
 
 /// pvp.rs write_back_party_hp_pvp_side_b (private; reached through the shipped
