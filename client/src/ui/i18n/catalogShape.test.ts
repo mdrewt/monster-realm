@@ -522,10 +522,12 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
     ).toEqual([]);
     // Anti-vacuity: the walker must have actually READ these S3-S5-migrated view files and
     // found REAL tf( calls (any key, not just a11y.*) — kills a single-file or empty walker.
+    // bt-17 (named intentional change, BT17.1): 'ui/battleView.ts' is deleted; its roster slot goes
+    // to 'ui/pvpView.ts' (four tf( calls), so the walker is still proven over five view files.
     const roster = [
-      'ui/battleView.ts',
       'ui/boxView.ts',
       'ui/leaderboardView.ts',
+      'ui/pvpView.ts',
       'ui/shopView.ts',
       'ui/tradeView.ts',
     ];

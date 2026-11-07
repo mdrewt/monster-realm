@@ -1268,36 +1268,10 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // battle::anonymize_battles forces every still-Ongoing row terminal against
     // the erased side (a wild row is auto-fled) before tombstoning it,
     // so no erased identity is left a live battle to settle.
-    (
-        "submit_attack",
-        "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
-    ),
-    (
-        "swap_active",
-        "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
-    ),
-    (
-        "flee",
-        "unwinds an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
-    ),
-    (
-        "use_battle_item",
-        "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
-    ),
-    (
-        "submit_pvp_action",
-        "acts on an already-open PvP commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
-    ),
+    //
+    // bt-17 (BT17.1): the five 1v1 battle rows (submit_attack, swap_active, flee,
+    // use_battle_item, submit_pvp_action) are gone with their `#[spacetimedb::reducer]`
+    // attributes: a fn that is not a reducer has no verdict, so its row would be stale.
     (
         "cancel_trade",
         "unwinds an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
@@ -1401,10 +1375,12 @@ const EXPECTED_SCHEDULED: &[&str] = &[
 /// Every reducer that carries a depth-0 gate before its first write today. Pinned
 /// as a SET in both directions: losing a gate is as much a regression as a new
 /// ungated writer, and it is the half the exemption roster cannot see.
+///
+/// bt-17 (BT17.1): `start_battle`, `attempt_recruit` (client-callable 1v1 reducers, now plain
+/// `pub(crate) fn`s) and `start_wild_battle` (the dev-only 1v1 start, deleted) leave the set.
 const EXPECTED_GATED: &[&str] = &[
     "accept_challenge",
     "advance_dialogue",
-    "attempt_recruit",
     "buy",
     "cancel_queue",
     "care",
@@ -1428,8 +1404,6 @@ const EXPECTED_GATED: &[&str] = &[
     "set_nickname",
     "set_party_slot",
     "set_profile_name",
-    "start_battle",
-    "start_wild_battle",
     "submit_queue",
     "talk",
     "train",
@@ -1443,9 +1417,10 @@ const EXPECTED_NO_WRITES: &[&str] = &["start_guest_claim"];
 /// only refuses a manifest that shrank to nothing.
 const CLASSIFIED_TABLE_FLOOR: usize = 24;
 
-/// Reducer floor for the real corpus (54), so the per-reducer verdict
+/// Reducer floor for the real corpus (53), so the per-reducer verdict
 /// pin cannot be satisfied by an engine that finds almost none of them.
-const REDUCER_FLOOR: usize = 54;
+/// bt-17 (BT17.1): 54 → 53, the 1v1 reducer attributes measured gone; never lowered again.
+const REDUCER_FLOOR: usize = 53;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -1795,12 +1770,15 @@ fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
         "the corpus is lib.rs plus its bare mods"
     );
 
-    for name in ["grant_bait", "start_wild_battle"] {
-        assert!(
-            matches!(verdict_of(&report, name), census::Verdict::Gated { .. }),
-            "{name} is gated today and is scanned even though its cfg hides it"
-        );
-    }
+    // bt-17 (BT17.1): the `start_wild_battle` arm leaves with the deleted dev-only 1v1 start
+    // (a one-element loop would trip clippy's single_element_loop, so the one name is direct).
+    assert!(
+        matches!(
+            verdict_of(&report, "grant_bait"),
+            census::Verdict::Gated { .. }
+        ),
+        "grant_bait is gated today and is scanned even though its cfg hides it"
+    );
 
     for &(name, _basis) in DELIBERATE_EXEMPTIONS {
         assert!(
@@ -1808,4 +1786,84 @@ fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
             "roster row {name} names a reducer that no longer exists"
         );
     }
+}
+
+/// bt-17 (BT17.1): the tables the 1v1 engine wrote and that stay in the schema, retired from use
+/// ("no new rows written"): the 1v1 action log, the 1v1 wild roster and the 60 s secret-pick
+/// deadline schedule.
+const RETIRED_1V1_TABLES: &[&str] = &["battle_action", "battle_wild", "pvp_deadline_schedule"];
+
+/// One synthetic reducer per retired table, each writing it with no gate: the anti-vacuity half
+/// of the bt-17 census (the accessor names really are what the census sees).
+fn fixture_synthetic_retired_writers() -> String {
+    let mut src = String::new();
+    for (i, table) in RETIRED_1V1_TABLES.iter().enumerate() {
+        src.push_str(&fixture_table_item(table, "", &format!("SynthRetired{i}")));
+        src.push_str(&fixture_reducer(
+            &fixture_reducer_attr(""),
+            &format!("synth_bt17_writes_{table}"),
+            "",
+            &[fixture_write_stmt(table, "insert"), String::from(OK_TAIL)],
+        ));
+    }
+    src
+}
+
+/// BT17.1 "retired from use (no new rows written)", as a census over the real crate: with the
+/// classified set narrowed to the three retired tables and NO owner exemption, every reducer that
+/// reaches a write on any of them (gated or not) is a writer. Lifecycle and scheduled reducers
+/// keep their own verdicts and are out of scope (the `pvp_deadline_reaper` stays scheduled: its
+/// scheduled-ness is fixed at first publish, and it only consumes rows nothing arms).
+///
+/// RED TODAY: `submit_pvp_action` (a client-callable reducer until bt-17) writes `battle_action`
+/// and arms `pvp_deadline_schedule`; `start_wild_battle` (the dev-only 1v1 start) writes
+/// `battle_wild`.
+///
+/// kills: a 1v1 reducer left a reducer (its attribute kept); a de-attributed body re-wired into a
+/// live reducer's call graph (the census follows crate calls transitively); a new writer of a
+/// retired table.
+#[test]
+fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
+    let retired: BTreeSet<&str> = RETIRED_1V1_TABLES.iter().copied().collect();
+    let no_owners: &[&str] = &[];
+    let writers = |report: &census::Report| -> BTreeSet<String> {
+        report
+            .names_with(|v| {
+                matches!(
+                    v,
+                    census::Verdict::Gated { .. }
+                        | census::Verdict::Ungated { .. }
+                        | census::Verdict::Owner
+                )
+            })
+            .into_iter()
+            .map(String::from)
+            .collect()
+    };
+
+    // Anti-vacuity: the same pipeline flags one synthetic writer per retired table.
+    let mut injected_sources = census::real_sources().expect("real_sources must read the crate");
+    injected_sources.push((String::from("synth"), fixture_synthetic_retired_writers()));
+    let injected = census::census(&injected_sources, &retired, no_owners)
+        .expect("the real corpus plus the synthetic writers must census cleanly");
+    let flagged = writers(&injected);
+    for table in RETIRED_1V1_TABLES {
+        let name = format!("synth_bt17_writes_{table}");
+        assert!(
+            flagged.contains(&name),
+            "the census must flag the synthetic writer of {table}; flagged: {flagged:?}"
+        );
+    }
+
+    let sources = census::real_sources().expect("real_sources must read the crate");
+    let report =
+        census::census(&sources, &retired, no_owners).expect("the real corpus must census cleanly");
+    let offenders: Vec<String> = writers(&report)
+        .iter()
+        .map(|name| format!("{name}: {}", describe_verdict(&report, name)))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "no reducer may write a retired 1v1 table (BT17.1: no new rows); writers: {offenders:#?}"
+    );
 }

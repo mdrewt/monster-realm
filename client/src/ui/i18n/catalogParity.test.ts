@@ -20,7 +20,8 @@ import { CATALOG_EN } from './catalog.en';
 // NO import of './catalog.fr' — see the header. `CATALOGS`, `t`, `tf`, `setLocale`,
 // `currentLocale` are the resolver's public surface; `CATALOGS.fr` is read
 // dynamically below, which is `undefined` at HEAD (Catalog | undefined via the index type).
-import { CATALOGS, currentLocale, setLocale, t, tf } from './resolver';
+// bt-17: `tf` left the import with FR-02 (its only caller in this file).
+import { CATALOGS, currentLocale, setLocale, t } from './resolver';
 
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_SRC = path.resolve(I18N_DIR, '..', '..');
@@ -639,12 +640,15 @@ const PLURAL_CATEGORIES: Readonly<Record<string, readonly string[]>> = Object.fr
 // Proxy field-set equality (FR-01, R7).
 // ---------------------------------------------------------------------------
 
-// battle.weather.banner is the ONE key this slice authors through the plural seam (ADR-0263 D6,
-// plan §1 "DECISION (option B)"); its fr closure calls `selectPlural('fr', p.turns, …)`, which
-// needs a genuine NUMBER for `p.turns` — feeding it a string sentinel would make
-// `Intl.PluralRules.prototype.select` misbehave. FR-02 owns this key's real plural proof, so the
-// generic Proxy-based field-set loop below excludes it and uses concrete params instead.
-const PLURAL_PARAM_KEYS: ReadonlySet<string> = new Set(['battle.weather.banner']);
+// battle.weather.banner WAS the one key authored through the plural seam (ADR-0263 D6, plan §1
+// "DECISION (option B)"): its fr closure called `selectPlural('fr', p.turns, …)` and needed a real
+// NUMBER for `p.turns`, so the generic Proxy loop below excluded it. bt-17 (named intentional change,
+// BT17.1): the key is deleted with the 1v1 weather banner and NO French plural key remains in the
+// product, so the exclusion set is EMPTY — every tf key now runs through the Proxy field-set loop.
+// (Today the key still exists, so the loop feeds its fr closure a Proxy `turns`: whatever that
+// does, the FR-01 outcome on it is not a bt-17 claim — the bt-17 RED in this file is PARITY-02's
+// roster, which still lists ui/battleView.ts.)
+const PLURAL_PARAM_KEYS: ReadonlySet<string> = new Set<string>([]);
 
 function makeFieldTrackingProxy(family: string, accessed: Set<string>): Record<string, unknown> {
   return new Proxy<Record<string, unknown>>(
@@ -767,7 +771,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       // bt-10 (named intentional change, BT10.6): the tactical client's ONE resolver importer; every
       // other tactics/*.ts module takes its text from it (tactics/strings.test.ts scans for that).
       'tactics/strings.ts',
-      'ui/battleView.ts',
+      // bt-17 (named intentional change, BT17.1): 'ui/battleView.ts' leaves with the 1v1 view.
       'ui/boxView.ts',
       'ui/careAction.ts',
       'ui/claimModel.ts',
@@ -1253,46 +1257,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       ).toBeGreaterThanOrEqual(100);
     });
 
-    it('m24s7 FR-02: battle.weather.banner selects French plural forms (0≡1, 1≠2, 1e6 -> many)', () => {
-      // The plural FORM is everything after the LAST DIGIT of the interpolated turn count, up to
-      // (but excluding) the closing `)` — never just the last space-delimited word: CLDR-correct
-      // French spells `many` as the TWO-WORD "de tours" ("1 000 000 de tours"), so a last-word
-      // extractor collapses `many` and `other` (both end in the bare word "tours") and the
-      // many-vs-other assertion below becomes unsatisfiable under correct French.
-      function pluralForm(s: string): string {
-        const trimmed = endsWith(s, ')') ? s.slice(0, -1) : s;
-        let lastDigitIdx = -1;
-        for (let i = 0; i < trimmed.length; i++) {
-          const code = trimmed.charCodeAt(i);
-          if (code >= 48 && code <= 57) lastDigitIdx = i;
-        }
-        const after = lastDigitIdx === -1 ? trimmed : trimmed.slice(lastDigitIdx + 1);
-        let start = 0;
-        while (start < after.length && isWhitespace(after.charAt(start))) start += 1;
-        return after.slice(start);
-      }
-      try {
-        setLocale('fr');
-        const out0 = tf('battle.weather.banner', { label: 'Pluie', turns: 0 });
-        const out1 = tf('battle.weather.banner', { label: 'Pluie', turns: 1 });
-        const out2 = tf('battle.weather.banner', { label: 'Pluie', turns: 2 });
-        const outMany = tf('battle.weather.banner', { label: 'Pluie', turns: 1_000_000 });
-        expect(
-          pluralForm(out0),
-          "fr's 'one' category covers BOTH 0 and 1 — the two forms must match",
-        ).toBe(pluralForm(out1));
-        expect(pluralForm(out1), "fr's 'one' (1) and 'other' (2) forms must differ").not.toBe(
-          pluralForm(out2),
-        );
-        expect(
-          pluralForm(outMany),
-          "fr's 'many' (1e6, «de tours») and 'other' (2, «tours») forms must differ — a " +
-            'cldr({..., many: other}) authoring would collapse this',
-        ).not.toBe(pluralForm(out2));
-      } finally {
-        setLocale('en');
-      }
-    });
+    // bt-17 (named intentional change, BT17.1 / BT17.2): 'm24s7 FR-02: battle.weather.banner
+    // selects French plural forms (0≡1, 1≠2, 1e6 -> many)' is deleted with the key — no French
+    // plural key remains in the product. Survivors: ui/i18n/plural.test.ts's `selectPlural` cases
+    // (the seam itself; named in memory/projects/monster-realm-bt-17-deletions.md).
 
     it("m24s7 FR-03: box.hint quotes its own locale's box.sheet.move (the Monsters sheet's Move row); setLocale(fr) redirects t()", () => {
       // qf-8 (named intentional change, QF8.1): the quoted control was the Box card's "To Party"

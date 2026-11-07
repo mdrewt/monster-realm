@@ -4,7 +4,8 @@
 // failing sinks (every player-facing string routes through t()/tf()).
 //
 // SCOPE (plan R1): every `client/src/**/*.ts` whose name does NOT end in `.test.ts`
-// (`endsWith`, never substring) — the S0 precedent's walk. The 19 spec-named files
+// (`endsWith`, never substring) — the S0 precedent's walk. The 18 spec-named files (19 until bt-17
+// deleted ui/battleView.ts)
 // (`SCAN_TARGETS`) are asserted present-and-non-empty; `SINK_FLOOR` is `>=` over the
 // whole-tree total. The roster and the floor are ANTI-VACUITY guards (proof the scan still sees
 // the tree), not ratchets: the floor is edited consciously when UI text legitimately shrinks and
@@ -702,22 +703,29 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     check('[t(), t()].join() stays exempt', RB130_ARRAY_JOIN_T, { sinks: 1, failing: 0 }, []);
   });
 
-  it('m24s2 I18N-17: the real scan reads every non-test client/src/**/*.ts, finds all 19 SCAN_TARGETS present and non-empty, observes >= SINK_FLOOR sinks, and trips no unterminated/truncated/masked tripwire', () => {
-    // The roster is the spec's 19 (main.ts + 18 ui/*View.ts), sorted, no duplicates.
-    expect(SCAN_TARGETS.length).toBe(19);
+  it('m24s2 I18N-17: the real scan reads every non-test client/src/**/*.ts, finds all 18 SCAN_TARGETS present and non-empty, observes >= SINK_FLOOR sinks, and trips no unterminated/truncated/masked tripwire', () => {
+    // bt-17 (named intentional change, BT17.1): ui/battleView.ts is deleted, so the roster is 18
+    // (main.ts + 17 ui/*View.ts), was 19 / 18. RED TODAY: SCAN_TARGETS still lists it.
+    // The roster is main.ts + 17 ui/*View.ts, sorted, no duplicates.
+    expect(SCAN_TARGETS.length).toBe(18);
     expect([...SCAN_TARGETS].sort()).toEqual([...SCAN_TARGETS]);
-    expect(new Set(SCAN_TARGETS).size).toBe(19);
+    expect(new Set(SCAN_TARGETS).size).toBe(18);
     expect(SCAN_TARGETS).toContain('main.ts');
-    expect(SCAN_TARGETS.filter((f) => f.startsWith('ui/') && f.endsWith('View.ts')).length).toBe(
-      18,
+    expect(SCAN_TARGETS, 'bt-17: the deleted 1v1 view is no scan target').not.toContain(
+      'ui/battleView.ts',
     );
-    // SINK_FLOOR and the 19-file roster above are anti-vacuity guards, not ratchets: they prove
+    expect(SCAN_TARGETS.filter((f) => f.startsWith('ui/') && f.endsWith('View.ts')).length).toBe(
+      17,
+    );
+    // SINK_FLOOR and the 18-file roster above are anti-vacuity guards, not ratchets: they prove
     // the scan still sees the tree. The floor is edited consciously when UI text legitimately
     // shrinks and is never auto-tightened.
-    expect(
-      SINK_FLOOR,
-      'SINK_FLOOR is an anti-vacuity guard, not a ratchet: edit it consciously when UI text legitimately shrinks, never auto-tighten',
-    ).toBe(235);
+    // bt-17 (named intentional change, plan REV 3 §2 / R13): the `toBe(235)` pin is removed — the
+    // purge deletes battleView.ts's sinks, the implementer re-measures SINK_FLOOR on the purged tree
+    // (rounded DOWN to a multiple of 5) and the PR body records the before / after counts the
+    // verifier recomputes. The `>= SINK_FLOOR` whole-tree clause below still gates the scan.
+    expect(SINK_FLOOR % 5, 'SINK_FLOOR is rounded down to a multiple of 5').toBe(0);
+    expect(SINK_FLOOR, 'SINK_FLOOR is a real floor').toBeGreaterThan(0);
 
     const tree = scan();
     const byFile = new Map(tree.perFile.map((p) => [p.file, p]));

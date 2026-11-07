@@ -4044,43 +4044,6 @@ fn bn_anonymize_logs_only_the_battles_it_forced_terminal() {
     );
 }
 
-/// Dev-only `start_wild_battle` (compiled only with `--features dev_reducers`, so the
-/// default suite never builds it): the zone argument must equal the caller's
-/// character zone; a matching zone proceeds to the encounter-table lookup.
-#[cfg(feature = "dev_reducers")]
-#[test]
-fn bn_start_wild_battle_checks_the_zone_argument() {
-    use crate::schema::Character;
-    let fx = fixture();
-    let w = bn_world(&fx);
-    w.monster(11, bn_a(), 0);
-    w.players.seed(&Player {
-        identity: bn_a(),
-        entity_id: 5,
-        name: String::new(),
-        online: true,
-        last_input_seq: 0,
-    });
-    fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
-        .seed(&Character {
-            entity_id: 5,
-            zone_id: 0,
-            tile_x: 0,
-            tile_y: 0,
-            facing: game_core::Direction::South,
-            action: game_core::ActionState::Idle,
-            move_started_at_ms: 0,
-            sprite_id: 0,
-            move_queue: vec![],
-        });
-    let before = w.snapshot();
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::start_wild_battle(ctx, 3)),
-        Err("zone mismatch: arg 3 != character zone 0".to_string())
-    );
-    assert_eq!(
-        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::start_wild_battle(ctx, 0)),
-        Err("no encounter table for zone 0".to_string())
-    );
-    assert_eq!(w.snapshot(), before);
-}
+// bt-17 (BT17.1): `bn_start_wild_battle_checks_the_zone_argument` (the dev-only, `dev_reducers`
+// cfg test of `start_wild_battle`'s zone check) is deleted with the reducer itself — subject
+// deleted (memory/projects/monster-realm-bt-17-deletions.md).
