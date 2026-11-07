@@ -76,8 +76,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_BINDINGS } from '../input/bindings';
+import { DeployPanel } from '../tactics/deployPanel';
 import { t } from './a11yCopy';
-import { BattleView } from './battleView';
 import { BoxView } from './boxView';
 import { ClaimView } from './claimView';
 import { ControlsView } from './controlsView';
@@ -241,16 +241,14 @@ const asyncNoop = async (): Promise<void> => {};
  *     `S3-<view>-REOPEN-AFTER-HIDE`.
  */
 const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
+  // bt-17 (named fixture change, BT17.1): the 1v1 BattleView is purged; the `battleView` overlay id
+  // is opened by the deploy panel (and the results panel and the tactical shell), each a constructed
+  // `#app` root with a `[data-testid="battle-title"]` anchor. The panel is shown WITHOUT a rendered
+  // VM: its paint (a no-op with no VM) would otherwise move focus to its listbox on a repeated
+  // show(), which is the panel's own behaviour (tactics/deployPanel.test.ts), not the shared
+  // open-guard this table pins.
   battleView: () => {
-    const view = new BattleView(appMount(), {
-      onAttack: noop,
-      onFlee: noop,
-      onSwap: noop,
-      onRecruit: noop,
-      onUseItem: noop,
-      onPvpAttack: noop,
-      onPvpSwap: noop,
-    });
+    const view = new DeployPanel(appMount(), { onDeploy: asyncNoop });
     view.show();
     return {
       root: capturedRoot('battleView'),

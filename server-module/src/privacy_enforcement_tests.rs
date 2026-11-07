@@ -1809,22 +1809,56 @@ fn fixture_synthetic_retired_writers() -> String {
     src
 }
 
-/// BT17.1 "retired from use (no new rows written)", as a census over the real crate: with the
-/// classified set narrowed to the three retired tables and NO owner exemption, every reducer that
-/// reaches a write on any of them (gated or not) is a writer. Lifecycle and scheduled reducers
-/// keep their own verdicts and are out of scope (the `pvp_deadline_reaper` stays scheduled: its
-/// scheduled-ness is fixed at first publish, and it only consumes rows nothing arms).
+/// The client-callable reducers that legitimately reach `battle_wild` after bt-17, and only by
+/// DELETING the rows of a finished 1v1-anchored battle: each tactical reducer that can end a
+/// battle runs `tactics::finish` → `tactics_settle::settle` → `battle::sweep_prior_terminals`
+/// (the legacy funnel's prior-terminal sweep, run on every `Close` kind), which clears the old
+/// anchor's `battle_wild` roster. The census counts every write verb (insert AND delete), so a
+/// delete-only sweep is a "reach" — pinned here as an exact set, so a NEW reducer reaching
+/// `battle_wild` (an insert path above all) still fails.
+const BT17_BATTLE_WILD_SWEEPERS: &[&str] =
+    &["cancel_queue", "deploy_units", "forfeit", "submit_queue"];
+
+/// The seven 1v1 reducers bt-17 de-attributes, plus the deleted dev-only `start_wild_battle`.
+const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
+    "start_battle",
+    "submit_attack",
+    "swap_active",
+    "flee",
+    "use_battle_item",
+    "attempt_recruit",
+    "submit_pvp_action",
+    "start_wild_battle",
+];
+
+/// BT17.1 "retired from use (no new rows written)", as a census over the real crate, run once PER
+/// retired table (the classified set narrowed to that one table, NO owner exemption), so every
+/// reducer that reaches a write verb on it (gated or not) is listed for that table:
+///   (a) `pvp_deadline_schedule` — reached by NO reducer (only `submit_pvp_action` armed it);
+///   (b) `battle_action` — reached by NO reducer (only `submit_pvp_action` wrote it);
+///   (c) `battle_wild` — reached by EXACTLY [`BT17_BATTLE_WILD_SWEEPERS`] (the tactical terminal
+///       sweep's deletes; the 1v1 starts and `write_back_battle_results` callers are gone);
+///   (d) none of [`BT17_RETIRED_1V1_REDUCERS`] appears in any table's set.
+/// Lifecycle and scheduled reducers keep their own verdicts and are out of scope (the
+/// `pvp_deadline_reaper` stays scheduled: its scheduled-ness is fixed at first publish, and it only
+/// consumes rows nothing arms).
 ///
-/// RED TODAY: `submit_pvp_action` (a client-callable reducer until bt-17) writes `battle_action`
-/// and arms `pvp_deadline_schedule`; `start_wild_battle` (the dev-only 1v1 start) writes
-/// `battle_wild`.
+/// Correction (tester round 2, from the spec): round 1 asserted that NO reducer reaches any of the
+/// three tables, but BT17.1 says "no NEW rows written", and the census cannot tell an insert from
+/// a delete — the four tactical reducers above reach `battle_wild` only through the sweep's delete,
+/// which is not a new row. The bite is kept: the exact-set pin on (c) still fails a new writer, and
+/// (a), (b) and (d) still fail every 1v1 path.
+///
+/// RED TODAY: `submit_pvp_action` (a client-callable reducer until bt-17) reaches all three tables
+/// (`battle_action`, `pvp_deadline_schedule`, and `battle_wild` through `write_back_battle_results`);
+/// `submit_attack`, `swap_active`, `flee` and `attempt_recruit` reach `battle_wild` through the same
+/// write-back; `start_wild_battle` inserts `battle_wild`.
 ///
 /// kills: a 1v1 reducer left a reducer (its attribute kept); a de-attributed body re-wired into a
 /// live reducer's call graph (the census follows crate calls transitively); a new writer of a
-/// retired table.
+/// retired table; a fifth reducer reaching `battle_wild`.
 #[test]
 fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
-    let retired: BTreeSet<&str> = RETIRED_1V1_TABLES.iter().copied().collect();
     let no_owners: &[&str] = &[];
     let writers = |report: &census::Report| -> BTreeSet<String> {
         report
@@ -1841,29 +1875,76 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
             .collect()
     };
 
-    // Anti-vacuity: the same pipeline flags one synthetic writer per retired table.
+    // Anti-vacuity: the same per-table pipeline flags that table's synthetic writer (and, the
+    // census being per table, NOT the other two tables' writers).
     let mut injected_sources = census::real_sources().expect("real_sources must read the crate");
     injected_sources.push((String::from("synth"), fixture_synthetic_retired_writers()));
-    let injected = census::census(&injected_sources, &retired, no_owners)
-        .expect("the real corpus plus the synthetic writers must census cleanly");
-    let flagged = writers(&injected);
     for table in RETIRED_1V1_TABLES {
-        let name = format!("synth_bt17_writes_{table}");
-        assert!(
-            flagged.contains(&name),
-            "the census must flag the synthetic writer of {table}; flagged: {flagged:?}"
-        );
+        let only: BTreeSet<&str> = [*table].into_iter().collect();
+        let injected = census::census(&injected_sources, &only, no_owners)
+            .expect("the real corpus plus the synthetic writers must census cleanly");
+        let flagged = writers(&injected);
+        for other in RETIRED_1V1_TABLES {
+            let name = format!("synth_bt17_writes_{other}");
+            assert_eq!(
+                flagged.contains(&name),
+                other == table,
+                "the {table} census must flag exactly its own synthetic writer ({name}); \
+                 flagged: {flagged:?}"
+            );
+        }
     }
 
     let sources = census::real_sources().expect("real_sources must read the crate");
-    let report =
-        census::census(&sources, &retired, no_owners).expect("the real corpus must census cleanly");
-    let offenders: Vec<String> = writers(&report)
-        .iter()
-        .map(|name| format!("{name}: {}", describe_verdict(&report, name)))
-        .collect();
+    let per_table = |table: &str| -> (BTreeSet<String>, Vec<String>) {
+        let only: BTreeSet<&str> = [table].into_iter().collect();
+        let report = census::census(&sources, &only, no_owners)
+            .expect("the real corpus must census cleanly");
+        let set = writers(&report);
+        let described = set
+            .iter()
+            .map(|name| format!("{name}: {}", describe_verdict(&report, name)))
+            .collect();
+        (set, described)
+    };
+
+    let (deadline, deadline_desc) = per_table("pvp_deadline_schedule");
     assert!(
-        offenders.is_empty(),
-        "no reducer may write a retired 1v1 table (BT17.1: no new rows); writers: {offenders:#?}"
+        deadline.is_empty(),
+        "(a) no reducer may reach pvp_deadline_schedule (BT17.1: the 1v1 secret-pick deadline is \
+         armed by nothing); reached by: {deadline_desc:#?}"
     );
+
+    let (action, action_desc) = per_table("battle_action");
+    assert!(
+        action.is_empty(),
+        "(b) no reducer may reach battle_action (BT17.1: the 1v1 action log gains no row); \
+         reached by: {action_desc:#?}"
+    );
+
+    let (wild, wild_desc) = per_table("battle_wild");
+    let sweepers: BTreeSet<String> = BT17_BATTLE_WILD_SWEEPERS
+        .iter()
+        .map(|s| String::from(*s))
+        .collect();
+    assert_eq!(
+        wild, sweepers,
+        "(c) battle_wild is reached by EXACTLY the tactical reducers whose terminal path runs \
+         tactics::finish -> tactics_settle::settle -> battle::sweep_prior_terminals (a delete of \
+         the finished anchor's roster, not a new row); reached by: {wild_desc:#?}"
+    );
+
+    for name in BT17_RETIRED_1V1_REDUCERS {
+        for (table, set) in [
+            ("pvp_deadline_schedule", &deadline),
+            ("battle_action", &action),
+            ("battle_wild", &wild),
+        ] {
+            assert!(
+                !set.contains(*name),
+                "(d) the retired 1v1 reducer {name} still reaches {table}: it must no longer be a \
+                 reducer (BT17.1)"
+            );
+        }
+    }
 }

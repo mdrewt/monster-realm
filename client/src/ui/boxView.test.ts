@@ -198,8 +198,8 @@ import type { MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 // ---------------------------------------------------------------------------
 
 import { beforeEach } from 'vitest';
+import { DeployPanel, deployVM } from '../tactics/deployPanel';
 import { t } from './a11yCopy';
-import { BattleView } from './battleView';
 import { EvolutionView } from './evolutionView';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -396,17 +396,24 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
   }[] = [
     { id: 'boxView', make: (app) => new BoxView(app, makeBoxCallbacks()) },
     {
+      // bt-17 (named fixture change, BT17.1): the `battleView` overlay's root is the deploy panel's
+      // (the 1v1 BattleView is purged; the deploy panel, the results panel and the tactical shell
+      // share the battleView overlay id). Same pin: it owns its own root under the shared mount.
       id: 'battleView',
-      make: (app) =>
-        new BattleView(app, {
-          onAttack: vi.fn(),
-          onFlee: vi.fn(),
-          onSwap: vi.fn(),
-          onRecruit: vi.fn(),
-          onUseItem: vi.fn(),
-          onPvpAttack: vi.fn(),
-          onPvpSwap: vi.fn(),
-        }),
+      make: (app) => {
+        const panel = new DeployPanel(app, { onDeploy: async () => {} });
+        panel.render(
+          deployVM({
+            mode: 'wild',
+            battleId: 1n,
+            party: [{ monsterId: 11n, name: 'Sproutle', level: 5, hp: 18, maxHp: 20 }],
+            remembered: [],
+            slotCount: 1,
+            wilds: [{ speciesId: 2, name: 'Emberfang', level: 4 }],
+          }),
+        );
+        return panel;
+      },
     },
     {
       id: 'raisingView',

@@ -37,7 +37,13 @@ import {
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster, StoreMonsterPub, StoreNpcRow } from './net/store';
+import type {
+  StoreBattle,
+  StoreBattleMonster,
+  StoreMonsterPub,
+  StoreNpcRow,
+  StoreTacticalBattle,
+} from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import type { NavInput } from './ui/nav';
 
@@ -142,6 +148,48 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
       grass: grid(false),
       warps: [],
     }),
+    // bt-17 (named fixture change, BT17.1): with the 1v1 view purged, a battle the player can SEE is
+    // a tactical one, so the cases below that assert a shown battle seed a Deploying tactical row and
+    // the deploy panel is the shown owner. The panel's slot count is read through the lazily bound
+    // tactics rules port (`min(tuning.max_pack, map.spawn_a.length)`), which refuses a pkg missing any
+    // of its exports: these are main.dispatch.test.ts's minimal shapes (three spawn cells, max_pack
+    // 3); nothing here reads anything past the deploy panel.
+    tactics_map: () => ({
+      width: 7,
+      height: 5,
+      tiles: [],
+      spawn_a: [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 2, y: 0 },
+      ],
+      spawn_b: [],
+    }),
+    tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
+    tactics_unit: (row: unknown) => row,
+    tactics_targets: () => ({ Ok: [] }),
+    tactics_path: () => ({ Err: 'Unreachable' }),
+    tactics_disengage: () => ({ Ok: false }),
+    tactics_flank: () => false,
+    tactics_forecast: () => ({}),
+    tactics_recruit_odds: () => ({ Err: { UnknownUnit: { id: 0 } } }),
+    tactics_ai_plan: () => [],
+    tactics_recruit_targets: () => [],
+    tactics_is_exhausted: () => false,
+    tactics_plan: (start: unknown, entries: readonly unknown[]) => ({
+      Ok: { costs: entries.map(() => 0), total: 0, remaining: start, guard_on_end: false },
+    }),
+    tactics_overlays: () => ({
+      reach1: [],
+      reach2: [],
+      range: [],
+      aoe: [],
+      danger: [],
+      shield: [],
+      intents: [],
+    }),
+    tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+    tactics_next_initiative: () => [],
   };
 });
 
@@ -861,6 +909,82 @@ function battleRow(battleId: bigint, outcome: string): StoreBattle {
   };
 }
 
+// bt-17 (named fixture change, BT17.1): an Ongoing anchor with NO tactical row shows no battle view
+// any more (the 1v1 renderer is purged; the stack still holds the battle base). Every case below that
+// asserts a battle ON SCREEN therefore seeds the battle the way the server now delivers one: the
+// anchor, the player's own party monsters and a `Deploying` tactical row, so the deploy panel is the
+// shown owner. A case that only reads the stack keeps the bare anchor.
+
+/** An own monster at `partySlot` (the anchor's party member the deploy panel lists). */
+function ownMonster(monsterId: bigint, partySlot: number): StoreMonsterPub {
+  return {
+    monsterId,
+    ownerIdentity: H.identity,
+    speciesId: 1,
+    nickname: `m${monsterId}`,
+    level: 5,
+    xp: 0,
+    currentHp: 20,
+    statHp: 20,
+    statAttack: 5,
+    statDefense: 5,
+    statSpeed: 5,
+    statSpAttack: 5,
+    statSpDefense: 5,
+    partySlot,
+    tier: 0,
+    essence: {} as StoreMonsterPub['essence'],
+    trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
+    qualityTimeTier: 0,
+    nutritionPct: 0,
+    lastCareAtMs: 0n,
+  };
+}
+
+/** The `my_tactical_battle` row of `battleId` in `phase` (main.dispatch.test.ts's field set). */
+function tacticalRow(
+  battleId: bigint,
+  phase: StoreTacticalBattle['phase'],
+  kind: StoreTacticalBattle['kind'] = 'Wild',
+): StoreTacticalBattle {
+  return {
+    battleId,
+    kind,
+    format: 1,
+    mapId: 13,
+    contentVersion: 1,
+    phase,
+    round: phase === 'Deploying' ? 0 : 1,
+    initiative: [],
+    turnIdx: 0,
+    turnState: { kind: 'NotActive' },
+    tiePrioritySide: 'A',
+    pendingPadMs: 0,
+    attackDamageDealtA: 0,
+    attackDamageDealtB: 0,
+  };
+}
+
+/** Put `row` in the store as a battle the client renders: the anchor, the booted player's own party
+ *  (its side's id list, so a PvP accepter's are the anchor's `opponentMonsterIds`) and a tactical
+ *  row in `phase` — `Deploying` shows the deploy panel, `Finished` the results panel. No flush. */
+function seedRenderableBattle(
+  row: StoreBattle,
+  phase: StoreTacticalBattle['phase'] = 'Deploying',
+): void {
+  const mine = row.playerIdentity === H.identity ? row.partyMonsterIds : row.opponentMonsterIds;
+  mine.forEach((id, slot) => opts.store.upsertMonster(ownMonster(id, slot)));
+  opts.store.upsertBattle(row);
+  const kind = row.opponentIdentity === WILD_IDENTITY ? 'Wild' : 'Pvp';
+  opts.store.reconcileTacticalBattlesFromView([tacticalRow(row.battleId, phase, kind)]);
+}
+
+/** The battle goes: the anchor and its tactical row together, as the server sweeps them. No flush. */
+function removeRenderableBattle(battleId: bigint): void {
+  opts.store.removeBattle(battleId);
+  opts.store.reconcileTacticalBattlesFromView([]);
+}
+
 /** Seed the world: the own player at (2, 6) plus one dialogue NPC at (3, 6), in one batch. */
 function seedWorld(t: number): void {
   opts.store.upsertNpc({
@@ -932,7 +1056,11 @@ const shownByTestId = (testId: string): boolean => {
   return isShown(el);
 };
 const boxShown = (): boolean => shownByTestId('box-title');
-const battleShown = (): boolean => shownByTestId('battle-title');
+// bt-17 (named fixture change): the battle roots are LAZY now (the deploy, results and shell roots
+// are built on first need, and more than one may exist, hidden), so "a battle is shown" is "some
+// battle-title in the document is displayed" — no longer the first one, which threw when absent.
+const battleShown = (): boolean =>
+  [...document.querySelectorAll('[data-testid="battle-title"]')].some(isShown);
 const promptShown = (): boolean => shownById('interact-prompt');
 /** How many times the interact (talk) reducer has been called. */
 const talkCalls = (): number => H.calls.filter((name) => name === 'talk').length;
@@ -1040,7 +1168,9 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // ONE batch carries the battle row AND a server pullback to a tile the predictor does not
     // hold, with every send acked and nothing owed. At the world that is exactly what makes a
     // held, committed key re-issue a step from the corrected baseline.
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    // bt-17 (named fixture change): re-seeded with its Deploying tactical row and own monster — this
+    // case asserts the battle ON SCREEN, and a row-less anchor shows no battle view after the purge.
+    seedRenderableBattle(battleRow(BATTLE_ID, 'Ongoing'));
     server(1180, { x: 2, y: 7, ack: sent });
     expect(H.sends.length, 'no step is sent in the batch that brings the battle in').toBe(sent);
     frame(1190);
@@ -1092,7 +1222,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(promptShown(), 'the prompt is still hidden').toBe(false);
 
     // The battle row goes: the base returns to the world.
-    opts.store.removeBattle(BATTLE_ID);
+    removeRenderableBattle(BATTLE_ID);
     server(2200, { x: 2, y: 7, ack: sent });
     frame(2210);
     frame(2400);
@@ -1122,14 +1252,16 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     const t0 = committedHold(1010);
     const sent = H.sends.length;
 
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    // bt-17 (named fixture change): re-seeded with its Deploying tactical row and own monster — the
+    // precondition below asserts the battle ON SCREEN, which a row-less anchor no longer is.
+    seedRenderableBattle(battleRow(BATTLE_ID, 'Ongoing'));
     settle(t0 + 10);
     frame(t0 + 100);
     frame(t0 + 300);
     expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
     expect(H.sends.length, 'no step walks into a battle').toBe(sent);
 
-    opts.store.removeBattle(BATTLE_ID);
+    removeRenderableBattle(BATTLE_ID);
     settle(t0 + 500);
     expect(battleShown(), 'precondition: the battle overlay is gone').toBe(false);
     frame(t0 + 510);
@@ -1308,7 +1440,10 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     seedWorld(1000);
     frame(1005);
 
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    // bt-17 (named fixture change): both preconditions assert a battle ON SCREEN, so the battle is
+    // seeded with its tactical row — Deploying (the deploy panel) while Ongoing, Finished (the
+    // results panel, the outcome frame's owner now) once it ends. A row-less anchor shows nothing.
+    seedRenderableBattle(battleRow(BATTLE_ID, 'Ongoing'));
     settle(1010);
     frame(1020);
     expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
@@ -1317,15 +1452,21 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     ]);
 
     // The SAME battle finishes: the row stays in the store with a terminal outcome.
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'SideAWins'));
+    seedRenderableBattle(battleRow(BATTLE_ID, 'SideAWins'), 'Finished');
     settle(1030);
     frame(1040);
     expect(battleShown(), 'precondition: the outcome frame is on screen').toBe(true);
     expect(stack()[0], 'a finished row is not a battle base').toEqual({ kind: 'world' });
 
-    // Escape dismisses the outcome frame; the finished row is still in the store.
-    fire('keydown', 'Escape', 1100);
-    expect(battleShown(), 'precondition: Escape dismissed the outcome frame').toBe(false);
+    // B dismisses the outcome frame; the finished row is still in the store.
+    // bt-17 (named intentional change): the key was Escape (the 1v1 outcome's dismiss); the results
+    // panel continues on B at once (main.dispatch.test.ts BT12-4-BOOT-RESULTS: "B continues at
+    // once"), so B is the dismiss press here. What is proven is unchanged: a dismissed outcome
+    // leaves the world base, with the finished row still stored.
+    fire('keydown', 'Backspace', 1100);
+    fire('keyup', 'Backspace', 1102);
+    await flush();
+    expect(battleShown(), 'precondition: B dismissed the outcome frame').toBe(false);
     frame(1110);
     expect(stack(), 'nothing is left on the stack').toEqual([{ kind: 'world' }]);
 
@@ -1437,14 +1578,17 @@ function endConversation(t: number): void {
   opts.store.removeConversation(H.identity);
   settle(t);
 }
-/** An Ongoing wild battle row arrives, in one batch at clock `t`. */
+/** An Ongoing wild battle row arrives, in one batch at clock `t`.
+ *  bt-17 (named fixture change): with its own monster and Deploying tactical row (`seedRenderableBattle`),
+ *  because every caller asserts `battleShown()` and a row-less anchor shows no battle view after the
+ *  purge; the deploy panel is the shown owner. */
 function startBattle(battleId: bigint, t: number): void {
-  opts.store.upsertBattle(battleRow(battleId, 'Ongoing'));
+  seedRenderableBattle(battleRow(battleId, 'Ongoing'));
   settle(t);
 }
-/** The battle row goes, in one batch at clock `t`. */
+/** The battle row goes (with its tactical row), in one batch at clock `t`. */
 function endBattle(battleId: bigint, t: number): void {
-  opts.store.removeBattle(battleId);
+  removeRenderableBattle(battleId);
   settle(t);
 }
 const rootOf = (id: string): HTMLElement => {
@@ -1761,7 +1905,9 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(shownById('dialogue-overlay'), 'precondition: the dialogue is open').toBe(true);
     clickShop(1020);
     opts.store.removeConversation(H.identity);
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    // bt-17 (named fixture change): seeded renderable (Deploying row + own monster): (a) asserts the
+    // battle ON SCREEN, which a row-less anchor no longer is after the purge.
+    seedRenderableBattle(battleRow(BATTLE_ID, 'Ongoing'));
     settle(1100);
     expect(battleShown(), 'a: precondition: the battle is on screen').toBe(true);
     expect(shownById('shop-overlay'), 'a: no shop opens over a battle').toBe(false);
@@ -1780,7 +1926,10 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(shownById('dialogue-overlay'), 'precondition: the dialogue is open again').toBe(true);
     clickShop(1310);
     opts.store.removeConversation(H.identity);
-    opts.store.upsertBattle(battleRow(BATTLE_ID + 1n, 'SideAWins'));
+    // bt-17 (named fixture change): the terminal anchor comes with its Finished tactical row, so the
+    // results panel shows the outcome; a row-less terminal anchor is hidden and latched dismissed
+    // after the purge (no outcome frame at all), which is not what (b) is about.
+    seedRenderableBattle(battleRow(BATTLE_ID + 1n, 'SideAWins'), 'Finished');
     settle(1400);
     expect(battleShown(), 'b: precondition: the outcome is on screen').toBe(true);
     expect(stack()[0], 'b: precondition: the base is the world, not a battle').toEqual({
@@ -1791,8 +1940,12 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       { kind: 'world' },
       { kind: 'screen', id: 'battleView' },
     ]);
-    fire('keydown', 'Escape', 1500);
-    expect(battleShown(), 'b: precondition: Escape dismissed the outcome').toBe(false);
+    // bt-17 (named intentional change): B, not Escape — the results panel continues on B at once
+    // (main.dispatch.test.ts BT12-4-BOOT-RESULTS); Escape dismissed the purged 1v1 outcome.
+    fire('keydown', 'Backspace', 1500);
+    fire('keyup', 'Backspace', 1502);
+    await flush();
+    expect(battleShown(), 'b: precondition: B dismissed the outcome').toBe(false);
     settle(1600);
     expect(shownById('shop-overlay'), 'b: the pending id was consumed: nothing opens later').toBe(
       false,
@@ -1824,7 +1977,10 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       fire('keydown', overlay.code, t);
       expect(isShown(root), `${overlay.name}: precondition: opened`).toBe(true);
 
-      opts.store.upsertBattle(accepterBattleRow(battleId, 'Ongoing'));
+      // bt-17 (named fixture change): seeded renderable — the accepter's own monster (the anchor's
+      // opponentMonsterIds) and a Deploying Pvp row — because the case asserts the battle ON SCREEN
+      // and a row-less anchor shows no battle view after the purge.
+      seedRenderableBattle(accepterBattleRow(battleId, 'Ongoing'));
       settle(t + 50);
       expect(
         opts.store.ongoingBattle(H.identity)?.battleId,
@@ -2031,7 +2187,10 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     ]);
 
     // No frame runs between here and the assertions: the batch alone must do it.
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'SideAWins'));
+    // bt-17 (named fixture change): the terminal anchor comes with its Finished tactical row (the
+    // results panel shows the outcome); a row-less terminal anchor is hidden and latched dismissed
+    // after the purge, so it would push no outcome frame at all.
+    seedRenderableBattle(battleRow(BATTLE_ID, 'SideAWins'), 'Finished');
     settle(1300);
     expect(battleShown(), 'the outcome is on screen').toBe(true);
     expect(shownById('claim-overlay'), 'the claim overlay is closed in that same batch').toBe(

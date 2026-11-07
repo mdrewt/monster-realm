@@ -50,7 +50,7 @@ import {
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster } from './net/store';
+import type { StoreBattle, StoreBattleMonster, StoreMonsterPub } from './net/store';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -64,9 +64,49 @@ const H = vi.hoisted(() => ({
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
-vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
-  wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
-);
+// bt-17 (named fixture change, BT17.1): the 1v1 view is purged, so a battle the player can SEE is a
+// tactical one (`putBattle` seeds a Deploying row; the deploy panel is the shown owner). Its slot
+// count is read through the lazily bound tactics rules port, which refuses a pkg missing any of its
+// exports: main.dispatch.test.ts's minimal shapes (three spawn cells, max_pack 3).
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
+  ...wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+  tactics_map: () => ({
+    width: 7,
+    height: 5,
+    tiles: [],
+    spawn_a: [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ],
+    spawn_b: [],
+  }),
+  tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
+  tactics_unit: (row: unknown) => row,
+  tactics_targets: () => ({ Ok: [] }),
+  tactics_path: () => ({ Err: 'Unreachable' }),
+  tactics_disengage: () => ({ Ok: false }),
+  tactics_flank: () => false,
+  tactics_forecast: () => ({}),
+  tactics_recruit_odds: () => ({ Err: { UnknownUnit: { id: 0 } } }),
+  tactics_ai_plan: () => [],
+  tactics_recruit_targets: () => [],
+  tactics_is_exhausted: () => false,
+  tactics_plan: (start: unknown, entries: readonly unknown[]) => ({
+    Ok: { costs: entries.map(() => 0), total: 0, remaining: start, guard_on_end: false },
+  }),
+  tactics_overlays: () => ({
+    reach1: [],
+    reach2: [],
+    range: [],
+    aoe: [],
+    danger: [],
+    shield: [],
+    intents: [],
+  }),
+  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+  tactics_next_initiative: () => [],
+}));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once.
@@ -228,9 +268,55 @@ function battleRow(battleId: bigint, outcome: string): StoreBattle {
   };
 }
 
-/** An Ongoing battle row arrives in one batch at clock `t`. */
+/** An Ongoing battle row arrives in one batch at clock `t`.
+ *  bt-17 (named fixture change, BT17.1): with the own party monster and a `Deploying` tactical row
+ *  (main.dispatch.test.ts's field set), as the server now delivers a battle: an anchor with no
+ *  tactical row shows no battle view after the purge, and the callers assert the battle on screen. */
 function putBattle(battleId: bigint, t: number): void {
-  opts.store.upsertBattle(battleRow(battleId, 'Ongoing'));
+  const row = battleRow(battleId, 'Ongoing');
+  row.partyMonsterIds.forEach((monsterId, partySlot) =>
+    opts.store.upsertMonster({
+      monsterId,
+      ownerIdentity: H.identity,
+      speciesId: 1,
+      nickname: `m${monsterId}`,
+      level: 5,
+      xp: 0,
+      currentHp: 20,
+      statHp: 20,
+      statAttack: 5,
+      statDefense: 5,
+      statSpeed: 5,
+      statSpAttack: 5,
+      statSpDefense: 5,
+      partySlot,
+      tier: 0,
+      essence: {} as StoreMonsterPub['essence'],
+      trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
+      qualityTimeTier: 0,
+      nutritionPct: 0,
+      lastCareAtMs: 0n,
+    }),
+  );
+  opts.store.upsertBattle(row);
+  opts.store.reconcileTacticalBattlesFromView([
+    {
+      battleId,
+      kind: 'Wild',
+      format: 1,
+      mapId: 13,
+      contentVersion: 1,
+      phase: 'Deploying',
+      round: 0,
+      initiative: [],
+      turnIdx: 0,
+      turnState: { kind: 'NotActive' },
+      tiePrioritySide: 'A',
+      pendingPadMs: 0,
+      attackDamageDealtA: 0,
+      attackDamageDealtB: 0,
+    },
+  ]);
   server(t);
 }
 
@@ -320,7 +406,10 @@ const controlsShown = (): boolean => shownById('controls-overlay');
 const dialogueShown = (): boolean => shownById('dialogue-overlay');
 const boxShown = (): boolean => shownByTestId('box-title');
 const raisingShown = (): boolean => shownByTestId('raising-title');
-const battleShown = (): boolean => shownByTestId('battle-title');
+// bt-17 (named fixture change): the battle roots are lazy (several may exist, hidden), so "a battle
+// is shown" is "some battle-title in the document is displayed", no longer the first one.
+const battleShown = (): boolean =>
+  [...document.querySelectorAll('[data-testid="battle-title"]')].some(isShown);
 
 interface FrameJson {
   readonly kind: string;
@@ -730,7 +819,10 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
       load: async () => (await import('./ui/pvpView')).PvpView,
       stale: 'pvp-challenge-feedback',
     },
-    { id: 'battleView', load: async () => (await import('./ui/battleView')).BattleView },
+    // bt-17 (named removal, BT17.1/BT17.2): the `battleView` row (the eager 1v1 BattleView's hide()
+    // run by the reset pass) is deleted with the module; the tactical battle roots are built on first
+    // need, so no battle view exists to reset on a boot that never met a battle. The ledger
+    // (memory/projects/monster-realm-bt-17-deletions.md) names its survivor. The roster is now eight.
     { id: 'raisingView', load: async () => (await import('./ui/raisingView')).RaisingView },
     { id: 'evolutionView', load: async () => (await import('./ui/evolutionView')).EvolutionView },
     {

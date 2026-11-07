@@ -43,7 +43,12 @@ import {
 import type { WasmMoveInput } from './convert/convert';
 import { DEFAULT_BINDINGS } from './input/bindings';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster, StoreMonsterPub } from './net/store';
+import type {
+  StoreBattle,
+  StoreBattleMonster,
+  StoreMonsterPub,
+  StoreTacticalBattle,
+} from './net/store';
 import { t as i18nT, tf as i18nTf } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -60,7 +65,49 @@ const H = vi.hoisted(() => ({
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid;
 // the interaction rule answers no candidates (nothing here is faced).
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock({ interact: () => [] }));
+// bt-17 (named fixture change, BT17.1): the 1v1 view is purged, so a battle the player can SEE is a
+// tactical one (`putBattle` seeds its tactical row; the deploy / results panel is the shown owner).
+// The deploy slot count is read through the lazily bound tactics rules port, which refuses a pkg
+// missing any of its exports: main.dispatch.test.ts's minimal shapes (three spawn cells, max_pack 3).
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
+  ...wasmPkgWalkingMock({ interact: () => [] }),
+  tactics_map: () => ({
+    width: 7,
+    height: 5,
+    tiles: [],
+    spawn_a: [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ],
+    spawn_b: [],
+  }),
+  tactics_fresh_budget: () => ({ ap: 6, strides_used: 0, attacks: 0, last: null }),
+  tactics_unit: (row: unknown) => row,
+  tactics_targets: () => ({ Ok: [] }),
+  tactics_path: () => ({ Err: 'Unreachable' }),
+  tactics_disengage: () => ({ Ok: false }),
+  tactics_flank: () => false,
+  tactics_forecast: () => ({}),
+  tactics_recruit_odds: () => ({ Err: { UnknownUnit: { id: 0 } } }),
+  tactics_ai_plan: () => [],
+  tactics_recruit_targets: () => [],
+  tactics_is_exhausted: () => false,
+  tactics_plan: (start: unknown, entries: readonly unknown[]) => ({
+    Ok: { costs: entries.map(() => 0), total: 0, remaining: start, guard_on_end: false },
+  }),
+  tactics_overlays: () => ({
+    reach1: [],
+    reach2: [],
+    range: [],
+    aoe: [],
+    danger: [],
+    shield: [],
+    intents: [],
+  }),
+  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+  tactics_next_initiative: () => [],
+}));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once; sessionState() reads H.session.
@@ -260,9 +307,33 @@ function battleRow(battleId: bigint, outcome: string): StoreBattle {
   };
 }
 
-/** A battle row arrives (Ongoing by default), in one batch at clock `t`. */
+/** A battle row arrives (Ongoing by default), in one batch at clock `t`.
+ *  bt-17 (named fixture change, BT17.1): an anchor with NO tactical row shows no battle view after
+ *  the purge (the stack still holds the battle base), and the callers assert the battle ON SCREEN
+ *  (`battleShown()`); so the battle arrives as the server now delivers it — the anchor, the own party
+ *  monster and its tactical row: `Deploying` while Ongoing (the deploy panel is the shown owner),
+ *  `Finished` once terminal (the results panel owns the outcome frame). */
 function putBattle(battleId: bigint, t: number, outcome = 'Ongoing'): void {
-  opts.store.upsertBattle(battleRow(battleId, outcome));
+  const row = battleRow(battleId, outcome);
+  row.partyMonsterIds.forEach((id, slot) => opts.store.upsertMonster(monster(id, slot)));
+  opts.store.upsertBattle(row);
+  const tactical: StoreTacticalBattle = {
+    battleId,
+    kind: 'Wild',
+    format: 1,
+    mapId: 13,
+    contentVersion: 1,
+    phase: outcome === 'Ongoing' ? 'Deploying' : 'Finished',
+    round: outcome === 'Ongoing' ? 0 : 1,
+    initiative: [],
+    turnIdx: 0,
+    turnState: { kind: 'NotActive' },
+    tiePrioritySide: 'A',
+    pendingPadMs: 0,
+    attackDamageDealtA: 0,
+    attackDamageDealtB: 0,
+  };
+  opts.store.reconcileTacticalBattlesFromView([tactical]);
   server(t);
 }
 
@@ -355,7 +426,11 @@ const shownByTestId = (testId: string): boolean => {
 
 const menuShown = (): boolean => shownById('menu-overlay');
 const questLogShown = (): boolean => shownById('quest-log-overlay');
-const battleShown = (): boolean => shownByTestId('battle-title');
+// bt-17 (named fixture change): the battle roots are lazy (deploy, results, shell; several may exist,
+// hidden), so "a battle is shown" is "some battle-title in the document is displayed" — no longer
+// the first one, which threw when absent.
+const battleShown = (): boolean =>
+  [...document.querySelectorAll('[data-testid="battle-title"]')].some(isShown);
 
 /** The leaf roots an accelerator can open, by name. Exactly the expected ones may be shown. */
 const LEAF_ROOTS: ReadonlyArray<readonly [string, () => boolean]> = [

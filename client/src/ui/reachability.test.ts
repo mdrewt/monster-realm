@@ -50,13 +50,10 @@ import { ACCEL_PATHS, type AccelPath, accelDecision, type MenuAccel } from '../i
 import type {
   AffinityName,
   EssenceByAffinity,
-  StoreBattle,
   StoreBattleChallenge,
-  StoreBattleMonster,
   StoreEvolutionPath,
   StoreMonsterCard,
   StoreMonsterPub,
-  StoreSkillRow,
   StoreSpeciesRow,
   StoreTradeOffer,
 } from '../net/store';
@@ -64,8 +61,6 @@ import type {
 import { type DeployMonster, DeployPanel, type DeployVM } from '../tactics/deployPanel';
 import { ResultsPanel } from '../tactics/results';
 import type { BagVm } from './bagModel';
-import { type BaitItem, type BattleViewModel, buildBattleViewModel } from './battleModel';
-import { BattleView } from './battleView';
 import type { MonsterCardViewModel } from './boxModel';
 import { BoxView } from './boxView';
 import { contextStep, mirrorEdges, type Stack, WORLD_STACK } from './contextStack';
@@ -1729,230 +1724,13 @@ function qf8RenderSocialSheet(): Qf8Rendered {
   };
 }
 
-// ---- the battle (qf-7c, QF7B.3): a practice battle where Run is the only live command, then the
-// next battle, a wild one (two skills, two healthy bench monsters, a bait, no cure item), with its
-// Run pressed and the flee in flight. Both are built by the REAL `buildBattleViewModel` over
-// store-shaped rows, so no state rests on a view model the battle model never yields ----
+// bt-17 (named removal, BT17.1): the qf-7c battle fixtures (`QF8_BATTLE_SPECIES`,
+// `QF8_BATTLE_SKILLS`, `qf8BattleMonster`, `qf8BattleVm`, `QF8_BATTLE_COMMANDS`, `qf8RenderBattle`)
+// are deleted with the 1v1 BattleView and its model; their one consumer, the `battleView` row of
+// QF8_RETIRED below, is deleted with them (subject deleted: the legacy Flee button).
 
-/** The species both battles name (`qf8Species`, the QF8.1 evolve fixture's row; no name reads like
- *  the retired "Flee"): Pebblit against Sparrowl, then Tidepup (benched: Mossling and Emberfang)
- *  against Duskling, so each state's card headers are its own. */
-const QF8_BATTLE_SPECIES: ReadonlyMap<number, StoreSpeciesRow> = new Map(
-  [
-    qf8Species(1, 'Pebblit'),
-    qf8Species(2, 'Sparrowl'),
-    qf8Species(3, 'Tidepup'),
-    qf8Species(4, 'Duskling'),
-    qf8Species(5, 'Mossling'),
-    qf8Species(6, 'Emberfang'),
-  ].map((row) => [row.id, row] as const),
-);
-
-/** The wild battle's two known skills. */
-const QF8_BATTLE_SKILLS: ReadonlyMap<number, StoreSkillRow> = new Map(
-  [
-    { id: 31, name: 'Pebble Toss', affinity: 'Earth', power: 30, accuracy: 95, pp: 20 },
-    { id: 32, name: 'Gust', affinity: 'Wind', power: 35, accuracy: 90, pp: 15 },
-  ].map((row) => [row.id, row] as const),
-);
-
-/** A healthy battle monster of `speciesId` that knows `knownSkillIds`. */
-function qf8BattleMonster(speciesId: number, knownSkillIds: readonly number[]): StoreBattleMonster {
-  return {
-    speciesId,
-    affinity: 'Plant',
-    level: 6,
-    currentHp: 18,
-    maxHp: 22,
-    statHp: 22,
-    statAttack: 10,
-    statDefense: 10,
-    statSpeed: 10,
-    statSpAttack: 10,
-    statSpDefense: 10,
-    knownSkillIds,
-    status: null,
-  };
-}
-
-/** The real battle model's view of `battle`; a battle it rejects is a broken fixture, never a
- *  state. */
-function qf8BattleVm(
-  battle: StoreBattle,
-  skills: ReadonlyMap<number, StoreSkillRow>,
-  baits: readonly BaitItem[],
-): BattleViewModel {
-  const vm = buildBattleViewModel(battle, skills, QF8_BATTLE_SPECIES, baits);
-  if (vm === null) {
-    throw new Error(`fixture: buildBattleViewModel rejected battle ${String(battle.battleId)}`);
-  }
-  return vm;
-}
-
-/** The battle's five command rows, in cursor order. */
-const QF8_BATTLE_COMMANDS = ['fight', 'recruit', 'swap', 'bag', 'run'] as const;
-
-function qf8RenderBattle(): Qf8Rendered {
-  // A practice battle: the player against their own identity over an owned opponent, so neither
-  // wild (Recruit greyed) nor PvP (Run live); one monster (no bench), no skill the skill map knows,
-  // no cure item. Run is the only live command, so the spy matrix's presses reach nothing but Run.
-  const practice = qf8BattleVm(
-    {
-      battleId: 77n,
-      playerIdentity: QF8_ME,
-      opponentIdentity: QF8_ME,
-      outcome: 'Ongoing',
-      turnNumber: 1,
-      sideA: { active: 0, team: [qf8BattleMonster(1, [31])] },
-      sideB: { active: 0, team: [qf8BattleMonster(2, [])] },
-      partyMonsterIds: [61n],
-      opponentMonsterIds: [5n],
-      createdAtMs: 1_000n,
-      weather: null,
-    },
-    new Map(),
-    [],
-  );
-  // The next battle, wild (the all-zero identity, no owned opponent): Fight, Recruit, Swap and Run
-  // live, Bag greyed. NO cure item: the Bag's cure list still renders at rest (R-qf-7b-CURELIST),
-  // so its row's click listener would be an undeclared registration, and the matrix's press on it
-  // (happy-dom has no disabled-click guard) would open the Bag target under the PvE lock.
-  const wild = qf8BattleVm(
-    {
-      battleId: 78n,
-      playerIdentity: QF8_ME,
-      opponentIdentity: '00'.repeat(32),
-      outcome: 'Ongoing',
-      turnNumber: 1,
-      sideA: {
-        active: 0,
-        team: [qf8BattleMonster(3, [31, 32]), qf8BattleMonster(5, []), qf8BattleMonster(6, [])],
-      },
-      sideB: { active: 0, team: [qf8BattleMonster(4, [])] },
-      partyMonsterIds: [61n, 62n, 63n],
-      opponentMonsterIds: [],
-      createdAtMs: 2_000n,
-      weather: null,
-    },
-    QF8_BATTLE_SKILLS,
-    [{ itemId: 3, name: 'Lure Berry', recruitBonus: 150, count: 2 }],
-  );
-
-  const parent = document.createElement('div');
-  document.body.appendChild(parent);
-  const rec = qf8Recorder();
-  // Run's answer, switched per state: settled in the practice battle (the matrix's Run press flees
-  // and the lock releases), never settled once the wild battle's Run is pressed.
-  let fleeAnswer: Promise<void> = Promise.resolve();
-  const fleeSends: bigint[] = [];
-  const baseline = qf8NativeControls();
-  const view = new BattleView(parent, {
-    onAttack: rec.record('onAttack'),
-    // UNRECORDED: Run IS the nav path's send (the command list's own row), so a matrix press on it
-    // is no duplicate; that it is the ONLY flee is pinned by `ownRegistrations` (Run's one click
-    // listener) and the retired selector and label.
-    onFlee: (battleId) => {
-      fleeSends.push(battleId);
-      return fleeAnswer;
-    },
-    onSwap: rec.record('onSwap'),
-    onRecruit: rec.record('onRecruit'),
-    onUseItem: rec.record('onUseItem'),
-    onPvpAttack: rec.record('onPvpAttack'),
-    onPvpSwap: rec.record('onPvpSwap'),
-  });
-  const root = parent.firstElementChild as HTMLElement;
-  /** Each command row's aria-disabled, in cursor order. */
-  const greyed = (): Array<string | null> =>
-    QF8_BATTLE_COMMANDS.map(
-      (id) =>
-        root.querySelector(`[data-testid="battle-command-${id}"]`)?.getAttribute('aria-disabled') ??
-        null,
-    );
-  /** The cursor lists on screen (each `data-battle-list` value once). */
-  const lists = (): string[] => [
-    ...new Set(
-      [...root.querySelectorAll('[data-battle-list]')].map(
-        (el) => el.getAttribute('data-battle-list') ?? '',
-      ),
-    ),
-  ];
-  const card = (role: 'battle.card.you' | 'battle.card.opponent', species: string): string =>
-    `${i18nT(role)}: ${species}`;
-  return {
-    root,
-    baseline,
-    calls: rec.calls,
-    states: [
-      {
-        name: 'a practice battle: Run the only live command (one monster, no known skill, no bait, no cure item)',
-        apply: () => {
-          view.refresh(practice);
-          expect(
-            greyed(),
-            'fixture: the real model`s practice battle greys Fight, Recruit, Swap and Bag, Run live',
-          ).toEqual(['true', 'true', 'true', 'true', 'false']);
-        },
-        anchors: () => [
-          i18nT('battle.title'),
-          card('battle.card.you', 'Pebblit'),
-          card('battle.card.opponent', 'Sparrowl'),
-          i18nT('battle.command.run'),
-        ],
-      },
-      {
-        name: 'the next battle, wild (two skills, two healthy bench monsters, a bait, no cure item), its Run pressed and the flee in flight',
-        apply: () => {
-          // The practice battle fled at most once, and only for itself: the retired test's spy
-          // matrix presses its live Run once and the lock that press takes greys Run for every later
-          // synchronous event of the pass (the native test runs no matrix: no flee at all).
-          expect(
-            fleeSends.filter((id) => id !== 77n),
-            'the practice battle is the only battle fled from so far',
-          ).toEqual([]);
-          expect(
-            fleeSends.length,
-            'the practice battle fled at most once (the lock held for every later event)',
-          ).toBeLessThanOrEqual(1);
-          view.refresh(wild);
-          expect(
-            greyed(),
-            'fixture: the real model`s wild battle greys Bag alone (no cure item)',
-          ).toEqual(['false', 'false', 'false', 'true', 'false']);
-          fleeAnswer = new Promise<void>(() => {});
-          const sent = fleeSends.length;
-          root.querySelector<HTMLButtonElement>('[data-testid="battle-command-run"]')?.click();
-          expect(fleeSends.slice(sent), 'the Run press is one flee, for the wild battle').toEqual([
-            78n,
-          ]);
-          expect(greyed(), 'the flee in flight greys all five commands').toEqual([
-            'true',
-            'true',
-            'true',
-            'true',
-            'true',
-          ]);
-          expect(lists(), 'and no list is open: the command list is the only one').toEqual([
-            'commands',
-          ]);
-        },
-        anchors: () => [
-          i18nT('battle.title'),
-          card('battle.card.you', 'Tidepup'),
-          card('battle.card.opponent', 'Duskling'),
-          i18nT('battle.command.run'),
-        ],
-      },
-    ],
-    dispose: () => {
-      view.hide();
-      parent.remove();
-    },
-  };
-}
-
-// ---- the table: one row per retired duplicate. All seven QF8.2 names are here (qf-7c added the
-// battle's legacy Flee, QF7B.3); a slice that retires another duplicate adds its row ----
+// ---- the table: one row per retired duplicate. bt-17 deleted the battle's legacy Flee row (qf-7c,
+// QF7B.3) with the 1v1 BattleView; a slice that retires another duplicate adds its row ----
 
 const QF8_RETIRED: readonly Qf8Row[] = [
   {
@@ -2079,49 +1857,11 @@ const QF8_RETIRED: readonly Qf8Row[] = [
     },
     render: qf8RenderSocialSheet,
   },
-  {
-    // qf-7c (QF7B.3): the battle's legacy Flee, a button in no cursor list whose click fled beside
-    // the command list's Run. No state opens a list (the grid, the bait list, the bench rows, a
-    // second step): a list's rows ARE the nav path's own listeners, and `qf8Watch` never forgets a
-    // registration, so a list opened in any state would fail (b) for every later one. The rows'
-    // own sends are pinned by battleView.test.ts. `onFlee` is the one callback NOT recorded: Run is
-    // the nav path's send (the matrix presses it in the practice battle, where it is live), and
-    // that it is the only flee is what `ownRegistrations` pins (Run's single click listener) beside
-    // the retired selector, label and text.
-    view: 'battleView',
-    retiredTitle:
-      'the battle, built by the real battle model as a practice battle where Run is the only live command and then a wild battle offering skills, a bench and a bait with its Run pressed and the flee in flight, renders no button outside a cursor list and no element labelled Flee (however its spaces are spelled), registers no listener, on* handler or shadow root beyond its focus trap, its held-Enter guard and its five command rows, and no pointer, mouse, touch, focus or key event on any element, the document or the window reaches a battle callback but Run`s own flee [QF8-2-BATTLE-RETIRED]',
-    nativeTitle:
-      'with the battle shown in each of those states, the document gains no native control or tab stop beyond the five command rows [QF8-2-BATTLE-NATIVE]',
-    // The legacy Flee carried no data-battle-list; every button rendered now is a cursor row.
-    retiredSelectors: ['button:not([data-battle-list])'],
-    // The deleted button read exactly "Flee" (its catalog id, battle.action.flee, is retired).
-    retiredLabels: [/^flee$/i],
-    // The outcome says "Got away safely!" and the command "Run": no live text carries the word.
-    retiredText: ['Flee'],
-    // The held-Enter guard (battleView.ts's constructor: it prevents a repeat, never sends), the
-    // dialog's focus trap (show() -> overlayA11y.ts's installTrap: Tab only) and the five command
-    // rows, built once in the constructor (Run's is the flee; the others open their lists).
-    ownRegistrations: [
-      'root keydown',
-      'root keydown capture',
-      'button[data-testid="battle-command-fight"] click',
-      'button[data-testid="battle-command-recruit"] click',
-      'button[data-testid="battle-command-swap"] click',
-      'button[data-testid="battle-command-bag"] click',
-      'button[data-testid="battle-command-run"] click',
-    ],
-    // The five command rows: buttons, so native controls. The heading is `tabindex="-1"` (no tab
-    // stop) and the command group is a `div`; nothing else is legitimate.
-    allowedDelta: {
-      'button[data-testid="battle-command-fight"]': 1,
-      'button[data-testid="battle-command-recruit"]': 1,
-      'button[data-testid="battle-command-swap"]': 1,
-      'button[data-testid="battle-command-bag"]': 1,
-      'button[data-testid="battle-command-run"]': 1,
-    },
-    render: qf8RenderBattle,
-  },
+  // bt-17 (named removal, BT17.1): the qf-7c `battleView` row (QF8-2-BATTLE-RETIRED /
+  // QF8-2-BATTLE-NATIVE: the 1v1 battle's legacy Flee) is deleted with the 1v1 BattleView, its
+  // model and its Flee command (`flee` is no longer a reducer); disposition "subject deleted: the
+  // legacy Flee button" in memory/projects/monster-realm-bt-17-deletions.md. The tactical battle
+  // roots keep their own rows in this matrix (bt-12, BT12.6).
 ];
 
 function qf8Describe(el: Element): string {
