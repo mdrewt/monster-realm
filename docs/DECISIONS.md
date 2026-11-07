@@ -855,15 +855,18 @@ the listbox ring onto `--mr-focus` while the active row keeps its light fill.
 **Decision.** `viewportScale` (`client/src/render/viewport.ts`) is the single scale authority. It
 returns the integer `deviceScale` the world renders at, and the continuous `uiScale`, the shorter
 CSS axis over 720 clamped to [0.875, 3]. `installResizeHandler` writes `uiScale` to `--mr-ui-scale` on
-`documentElement` at the same event that resizes the renderer, and the one `:root` rule,
-`font-size: calc(100% * var(--mr-ui-scale, 1))`, carries it to every rem token.
+`documentElement` at the same event that resizes the renderer, and the one root rule,
+`:root[style*='--mr-ui-scale'] { font-size: calc(100% * var(--mr-ui-scale)); }`, carries it to every
+rem token. Until the first write the rule does not match, so the root stays at 100%, a scale of 1.
 
 **Why.** Playtest 3 read the snapping world and the smoothly growing menu as two competing methods
 (#586 D1). Each half needs its own rounding: a fractional stage scale blurs the pixel art, and a
 snapped chrome jumps between sizes. `uiScale` uses CSS pixels only, so a dpr change leaves the chrome
 alone, and `100%` keeps the browser's font-size preference in the product. `world.ts` is untouched
 because it already reads the same pure function at the same event, so the smoothness contract does
-not move. Borders stay px tokens so they land on whole device pixels.
+not move. Borders stay px tokens so they land on whole device pixels. The selector is keyed on the
+write because happy-dom cannot compute rem through a `calc()` root font-size (it reads `NaNpx`), and
+suites such as `frame.test.ts` load the real sheet without the seam.
 
 **Rules out.** A fixed-ratio letterbox: the visible tile count and the map margin absorb the
 remainder, because a box would change how much world each window shows. Integer snapping of

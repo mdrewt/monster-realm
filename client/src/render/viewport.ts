@@ -78,21 +78,19 @@ export function viewportScale(cssW: number, cssH: number, dpr: number): Viewport
   const dprN = norm(dpr, DPR_LO, DPR_HI, 1);
   const cssWN = norm(cssW, CSS_LO, CSS_HI, 1);
   const cssHN = norm(cssH, CSS_LO, CSS_HI, 1);
+  const shorterCss = Math.min(cssWN, cssHN);
   // Shorter axis in tiles at deviceScale 1, measured in DEVICE px. Both operand
   // orders are exact here (the bounds cap the product at 1e6 * 8 = 8e6, far below
   // any overflow), so this order is chosen only to keep the units readable:
   // "CSS px -> tiles" first, then "tiles -> device tiles".
-  const s = (Math.min(cssWN, cssHN) / TILE_PX) * dprN;
+  const s = (shorterCss / TILE_PX) * dprN;
   const dLo = Math.max(1, Math.ceil(s / MAX_VISIBLE_TILES)); // strict ceiling
   const dHi = Math.max(dLo, Math.floor(s / MIN_VISIBLE_TILES)); // best-effort floor
   const continuous = s / TARGET_VISIBLE_TILES;
   const d0 = Math.max(1, Math.round(continuous)); // the aim
   const deviceScale = Math.min(dHi, Math.max(dLo, d0));
   const stageScale = deviceScale / dprN;
-  const uiScale = Math.min(
-    UI_SCALE_MAX,
-    Math.max(UI_SCALE_MIN, Math.min(cssWN, cssHN) / UI_REFERENCE_CSS_PX),
-  );
+  const uiScale = Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, shorterCss / UI_REFERENCE_CSS_PX));
   return {
     dpr: dprN,
     cssW: cssWN,

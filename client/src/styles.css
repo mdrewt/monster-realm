@@ -1248,8 +1248,6 @@
  * any canvas. indexShell.smoke.test.ts recomputes it from here.
  */
 :root {
-  /* The one rem authority: render/resizeWiring.ts writes the scale, and nothing written yet means 1. */
-  font-size: calc(100% * var(--mr-ui-scale, 1));
   --mr-frame-bg: #1e1e2e;
   --mr-panel-bg: #181826;
   --mr-frame-fg: #e0e0e0;
@@ -1280,6 +1278,16 @@
   --mr-content-max: 80rem;
   --mr-border-width: 2px;
   --mr-border-thin: 1px;
+}
+
+/*
+ * The one rem authority (uif-2): render/resizeWiring.ts writes --mr-ui-scale inline, and until it
+ * does this rule does not match and the root stays at 100%, a scale of 1. The selector is keyed on
+ * the write, not on bare :root, because happy-dom cannot compute rem through a calc() root font-size
+ * (it reads NaNpx) and the real-sheet suites such as frame.test.ts load this file without the seam.
+ */
+:root[style*='--mr-ui-scale'] {
+  font-size: calc(100% * var(--mr-ui-scale));
 }
 
 /*
