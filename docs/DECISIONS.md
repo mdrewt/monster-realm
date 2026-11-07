@@ -829,3 +829,23 @@ tests.
 **Rules out.** Raising a cap or dropping mutants to fit the time limit; excluding a killable
 mutant; a per-shard server budget; a committed survivor baseline file; an aggregate job that
 re-counts what each shard already judged.
+
+## Menu chrome draws from `--mr-*` tokens; the listbox ring stays `#cc5500`
+
+**Decision.** Menu chrome takes its spacing, type, borders and colors from the `--mr-*` tokens in
+`client/src/styles.css`, the one home of their values. Spacing and type are rem, so a root scale
+reaches them. Frame, chip and banner border widths stay px (`--mr-border-width`,
+`--mr-border-thin`). Every color token has a `prefers-contrast: more` value in the sheet's last
+block. The target frame reads top to bottom as title bar, tab bar, a body that grows and scrolls and
+an overlaid feedback strip, with the world's hint bar below; screens move onto it one at a time, so
+some still differ. New kit classes are named outside the `mr-frame`/`mr-shell` family. The dashed
+ring on a focused listbox or grid stays `#cc5500`; `--mr-focus` is for other focused controls.
+
+**Why.** Each menu had grown its own spacing and type, which players reported as inconsistent. A rem
+border lands on fractional device pixels at a continuous scale and shimmers. The listbox ring can
+cross the light active row, where `--mr-focus` measures about 1:1 and the focus-ring tests in
+`client/src/ui/overlayA11yWiring.test.ts` require 3:1.
+
+**Rules out.** New px spacing or font sizes in menu chrome; a color literal where a token has that
+role; a rem width on a frame, chip or banner border; a color token without a `more` value; moving
+the listbox ring onto `--mr-focus` while the active row keeps its light fill.

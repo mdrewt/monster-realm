@@ -15,10 +15,10 @@
  * `just ci` has no client build step, vitest never applies CSS, and there is no e2e
  * console-error gate.
  *
- * The `:root` colour tokens and the
- * `@media (prefers-contrast: more)` override at the END of this file. Every token is
- * consumed by an inline `var()` in `ui/evolutionView.ts` — a token nothing reads is a
- * decoy, and `evolutionView.test.ts` (m23s9 X3) reds on one.
+ * The `:root` tokens and the `@media (prefers-contrast: more)` override at the END of this file.
+ * Every `--mr-evo-*` token is consumed by an inline `var()` in `ui/evolutionView.ts` — a token
+ * nothing reads is a decoy, and `evolutionView.test.ts` (m23s9 X3) reds on one. The kit tokens
+ * (uif-1) are the visual contract the frames adopt slice by slice.
  *
  * DELIBERATELY ABSENT, and a later reader should NOT helpfully add them here:
  *   - NOTHING further for the battle HP bar. That guard SHIPPED below (slice rb-10,
@@ -112,7 +112,7 @@
   flex-direction: column;
   box-sizing: border-box;
   max-height: 100%;
-  border: 2px solid var(--mr-frame-border);
+  border: var(--mr-border-width) solid var(--mr-frame-border);
   background: var(--mr-frame-bg);
   color: var(--mr-frame-fg);
   /* Native controls inside a frame (shop buttons, the rename input) paint light-on-dark
@@ -133,7 +133,7 @@
   max-height: 40%;
   /* The dialogue's bottom box (ctl-8a): the inner frame of a docked shell takes the shell's
    * padding and scrolling, and the clicks the docked shell lets through. */
-  padding: 12px 16px;
+  padding: var(--mr-space-3) var(--mr-space-4);
   overflow: auto;
   pointer-events: auto;
 }
@@ -146,12 +146,23 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  border-bottom: 2px solid var(--mr-frame-border);
+  gap: var(--mr-space-2);
+  box-sizing: border-box;
+  min-height: 2.5rem;
+  padding: var(--mr-space-1) var(--mr-space-2);
+  border-bottom: var(--mr-border-width) solid var(--mr-frame-border);
 }
 .mr-frame-title {
-  font-weight: bold;
+  font-size: var(--mr-font-title);
+  font-weight: var(--mr-font-title-weight);
+  line-height: var(--mr-font-title-line);
+}
+/* The section-header level of the type scale (UIF1.4): one class any body part can wear. Named
+ * outside the `mr-frame`/`mr-shell` family on purpose (styles.test.ts CTL7B-1-FRAME-CSS-ROSTER). */
+.mr-section-header {
+  font-size: var(--mr-font-header);
+  font-weight: var(--mr-font-header-weight);
+  line-height: var(--mr-font-header-line);
 }
 /* A frame whose native buttons are its D-pad rows (qf-13, QF13.2: Profile › Account): they stack
  * as a column, the axis the Up/Down rows walk (ui/screens/profileScreen.ts). The view's inline
@@ -174,7 +185,7 @@
 .mr-frame-tabs {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: var(--mr-space-1);
   width: 100%;
 }
 .mr-frame-tabs[hidden] {
@@ -196,10 +207,10 @@
    * overflows: its tabs could not be clicked. */
   min-height: min-content;
   overflow-x: auto;
-  gap: 0.25rem;
+  gap: var(--mr-space-1);
 }
 .mr-nav-tab {
-  padding: 0 0.5rem;
+  padding: 0 var(--mr-space-2);
   /* One line per label, so every tab in a strip has the same height. */
   white-space: nowrap;
 }
@@ -213,6 +224,7 @@
   min-height: 0;
   overflow-y: auto;
 }
+/* Stays literal until the strip becomes an overlay (uif-4): ui/frame.test.ts pins these values. */
 .mr-frame-feedback {
   min-height: 1.5em;
   padding: 0.25rem 0.5rem;
@@ -225,10 +237,12 @@
 .mr-frame-feedback[data-feedback="ok"]::before {
   content: "✓" / "";
   padding-right: 0.25rem;
+  color: var(--mr-state-ok);
 }
 .mr-frame-feedback[data-feedback="error"]::before {
   content: "!" / "";
   padding-right: 0.25rem;
+  color: var(--mr-state-error);
 }
 /*
  * Every static overlay list in client/index.html (qf-4, QF4.3). Without this the UA paints a disc
@@ -261,7 +275,7 @@
   outline-width: 3px;
 }
 .mr-nav-item.is-disabled {
-  color: #8a8a9a;
+  color: var(--mr-text-disabled);
 }
 .mr-nav-item.is-active.is-disabled {
   color: #55556a;
@@ -285,6 +299,9 @@
     radial-gradient(farthest-side at 50% 100%, var(--mr-frame-border), transparent) bottom / 100%
     0.75rem no-repeat scroll;
 }
+.mr-nav-list[aria-readonly="true"] > .mr-nav-item {
+  color: var(--mr-text-muted);
+}
 .mr-nav-list[aria-readonly="true"] > .mr-nav-item.is-active {
   background: none;
   color: var(--mr-frame-fg);
@@ -304,8 +321,10 @@
  *   - A listbox or grid is the nav-kit tab stop (ui/navRender.ts writes the role): a DASHED ring
  *     around the whole list, unlike the filled, solid-outlined active row. #cc5500 measures 3.8:1
  *     on --mr-frame-bg and 3.3:1 on --mr-frame-fg, so it stays visible over the active row too. The
- *     offset is negative because .mr-shell clips its overflow.
- * Native controls keep the browser ring.
+ *     offset is negative because .mr-shell clips its overflow. This ring stays #cc5500, not
+ *     --mr-focus (uif-1): it can cross the light active row, where #ffd866 measures about 1:1, and
+ *     qf-1's QF1-2-LISTBOX-GRID-RING requires 3:1 on that fill. --mr-focus rings `.mr-chip`.
+ * Other native controls keep the browser ring.
  */
 :where([tabindex="-1"]):focus {
   outline: none;
@@ -341,14 +360,14 @@
 }
 .mr-shell {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  bottom: 40px;
-  left: 8px;
+  top: var(--mr-space-2);
+  right: var(--mr-space-2);
+  bottom: 2.5rem;
+  left: var(--mr-space-2);
   overflow: auto;
   z-index: 100;
-  padding: 12px 16px;
-  font: 14px / 1.6 monospace;
+  padding: var(--mr-space-3) var(--mr-space-4);
+  font: var(--mr-font-body-weight) var(--mr-font-body) / var(--mr-font-body-line) monospace;
   pointer-events: auto;
 }
 /* Menu and help open over a battle (ctl-6c), whose root is z-index 110 (.mr-shell--battle).
@@ -941,32 +960,32 @@
 .mr-frame--banner {
   position: absolute;
   max-height: none;
-  border-width: 1px;
-  font: 12px / 1.4 monospace;
+  border-width: var(--mr-border-thin);
+  font: var(--mr-font-small-weight) var(--mr-font-small) / var(--mr-font-small-line) monospace;
   pointer-events: none;
   white-space: nowrap;
 }
 .mr-frame--prompt {
   z-index: 40;
-  padding: 1px 6px;
+  padding: 0.0625rem 0.375rem;
   transform: translate(-50%, -100%);
 }
 .mr-frame--banner {
   z-index: 45;
-  top: 4px;
+  top: var(--mr-space-1);
   left: 50%;
-  padding: 2px 8px;
+  padding: 0.125rem var(--mr-space-2);
   transform: translateX(-50%);
 }
 /* The status line: out of the page flow, above the hint bar, on the frame background so it
  * reads over any terrain. Hidden while empty. */
 .mr-status {
   position: absolute;
-  left: 8px;
-  bottom: 36px;
+  left: var(--mr-space-2);
+  bottom: 2.25rem;
   z-index: 45;
-  padding: 1px 6px;
-  font: 12px / 1.4 monospace;
+  padding: 0.0625rem 0.375rem;
+  font: var(--mr-font-small-weight) var(--mr-font-small) / var(--mr-font-small-line) monospace;
   color: var(--mr-frame-fg);
   background: var(--mr-frame-bg);
   pointer-events: none;
@@ -981,19 +1000,22 @@
   bottom: 0;
   z-index: 50;
   display: flex;
-  gap: 8px;
-  padding: 4px 8px;
+  gap: var(--mr-space-2);
+  padding: var(--mr-space-1) var(--mr-space-2);
   pointer-events: none;
 }
 .mr-chip {
   pointer-events: auto;
   cursor: pointer;
-  font: 12px / 1.4 monospace;
-  padding: 2px 8px;
-  border: 1px solid var(--mr-frame-border);
-  border-radius: 3px;
+  font: var(--mr-font-small-weight) var(--mr-font-small) / var(--mr-font-small-line) monospace;
+  padding: 0.125rem var(--mr-space-2);
+  border: var(--mr-border-thin) solid var(--mr-frame-border);
+  border-radius: 0.1875rem;
   background: var(--mr-frame-bg);
   color: var(--mr-frame-fg);
+}
+.mr-chip:focus-visible {
+  outline: var(--mr-border-width) solid var(--mr-focus);
 }
 /* The button name is drawn AND spoken ("Start Menu"), so the accessible name contains the visible
  * label (WCAG 2.5.3, label in name). */
@@ -1016,11 +1038,11 @@
 }
 .mr-notice-banner {
   max-width: 50%;
-  padding: 2px 8px;
-  font: 12px / 1.4 monospace;
+  padding: 0.125rem var(--mr-space-2);
+  font: var(--mr-font-small-weight) var(--mr-font-small) / var(--mr-font-small-line) monospace;
   white-space: normal;
   overflow-wrap: anywhere;
-  border: 1px solid var(--mr-frame-border);
+  border: var(--mr-border-thin) solid var(--mr-frame-border);
   background: var(--mr-frame-bg);
   color: var(--mr-frame-fg);
 }
@@ -1219,13 +1241,43 @@
 }
 
 /*
- * Frame colour tokens (CTL7A.3). fg on bg measures 12.6:1 (WCAG 1.4.3 AA needs 4.5:1); the bg is
- * opaque, so the ratio holds over any canvas. indexShell.smoke.test.ts recomputes it from here.
+ * The kit's visual contract (uif-1, the token table in M-ui-foundation-wireframes.md; docs/DECISIONS.md
+ * "Menu chrome draws from `--mr-*` tokens; the listbox ring stays #cc5500"). Spacing and type are rem so the root scale reaches them; border
+ * widths stay px, because a rem border lands on fractional device pixels and shimmers.
+ * fg on bg measures 12.42:1 (WCAG 1.4.3 AA needs 4.5:1); the bg is opaque, so the ratio holds over
+ * any canvas. indexShell.smoke.test.ts recomputes it from here.
  */
 :root {
   --mr-frame-bg: #1e1e2e;
+  --mr-panel-bg: #181826;
   --mr-frame-fg: #e0e0e0;
   --mr-frame-border: #e0e0e0;
+  --mr-separator: #6b6b82;
+  --mr-text-muted: #b4b4c2;
+  --mr-text-disabled: #8a8a9a;
+  --mr-state-ok: #34d399;
+  --mr-state-warn: #f59e0b;
+  --mr-state-error: #f87171;
+  --mr-focus: #ffd866;
+  --mr-space-1: 0.25rem;
+  --mr-space-2: 0.5rem;
+  --mr-space-3: 0.75rem;
+  --mr-space-4: 1rem;
+  --mr-font-title: 1.25rem;
+  --mr-font-title-weight: bold;
+  --mr-font-title-line: 1.4;
+  --mr-font-header: 1rem;
+  --mr-font-header-weight: bold;
+  --mr-font-header-line: 1.4;
+  --mr-font-body: 0.875rem;
+  --mr-font-body-weight: normal;
+  --mr-font-body-line: 1.6;
+  --mr-font-small: 0.75rem;
+  --mr-font-small-weight: normal;
+  --mr-font-small-line: 1.4;
+  --mr-content-max: 80rem;
+  --mr-border-width: 2px;
+  --mr-border-thin: 1px;
 }
 
 /*
@@ -1268,6 +1320,17 @@
  */
 @media (prefers-contrast: more) {
   :root {
+    --mr-frame-bg: #101018;
+    --mr-panel-bg: #000000;
+    --mr-frame-fg: #ffffff;
+    --mr-frame-border: #ffffff;
+    --mr-separator: #bbbbbb;
+    --mr-text-muted: #dddddd;
+    --mr-text-disabled: #aaaaaa;
+    --mr-state-ok: #6ee7b7;
+    --mr-state-warn: #fcd34d;
+    --mr-state-error: #fca5a5;
+    --mr-focus: #ffe08a;
     --mr-evo-backdrop: #000;
     --mr-evo-card: #101018;
     --mr-evo-row: #000;
