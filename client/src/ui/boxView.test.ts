@@ -1410,6 +1410,10 @@ const M24S4_BX_PLAIN_KEYS = new Set([
   'evolution.path.allMet',
   'prompt.yes',
   'prompt.no',
+  // INTENTIONAL CHANGE (uif-7, UIF7.2): the sheet's Close row and the lists' Back row read the kit's
+  // two ids (a «kit.sheet.close» span is an expected sentinel now).
+  'kit.sheet.close',
+  'kit.sheet.back',
 ]);
 
 // INTENTIONAL CHANGE (ctl-8c): the food row, the Evolve confirm, the fed line, and the reused path
@@ -1537,6 +1541,9 @@ const M24S4_BX_ROSTER = [
   String.fromCharCode(0x2192), // the path heading's arrow
   'Yes',
   'Fed ',
+  // uif-7 (UIF7.2): the Close and Back rows' English must come from the catalog too.
+  'Close',
+  'Back',
 ];
 
 function m24s4BxAssertNoRosterWord(texts: readonly string[], label: string): void {
@@ -1833,6 +1840,16 @@ function ctl7bExpectCleanDescendants(root: HTMLElement, when: string): number {
   const offenders: string[] = [];
   for (const el of all) {
     for (const prop of ctl7bInline(el).keys()) {
+      // uif-7 (UIF7.1) named change: the tab content area `#monsters-panel` may write exactly
+      // `position:relative` inline: it is the containing block the one context sheet is placed in.
+      // Nothing else may place itself, and no other element may write `position` at all.
+      if (
+        prop === 'position' &&
+        el.id === 'monsters-panel' &&
+        ctl7bInline(el).get('position') === 'relative'
+      ) {
+        continue;
+      }
       if (CTL7B_BANNED_ON_DESCENDANTS.has(prop)) {
         offenders.push(`<${el.tagName.toLowerCase()}> ${prop}`);
       }
@@ -2201,6 +2218,10 @@ function c8bHidden(el: Element, root: Element): boolean {
   expect(root.contains(el), 'the element is inside the frame root').toBe(true);
   for (let n: Element | null = el; n !== null && n !== root; n = n.parentElement) {
     if ((n as HTMLElement).style.display === 'none') return true;
+    // uif-7 (UIF7.1) named change: the context sheet kit hides its root and heading by the `hidden`
+    // attribute (closeContextSheet), never by inline display; the panels and parts of this frame
+    // still hide by inline display and never set `hidden`, so counting it changes no earlier case.
+    if ((n as HTMLElement).hidden === true) return true;
   }
   return false;
 }
@@ -2395,9 +2416,10 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     const list = sheet as HTMLElement;
     const rows = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
     // INTENTIONAL CHANGE (ctl-8c): the design §5 six-row order.
+    // uif-7 (UIF7.2): the seventh row is Close, the kit's `kit.sheet.close`.
     expect(
       rows.map((row) => row.textContent),
-      'Summary, Care, Feed, Evolve, Nickname, Move: the catalog labels in order',
+      'Summary, Care, Feed, Evolve, Nickname, Move, Close: the catalog labels in order',
     ).toEqual([
       c8bT('box.sheet.summary'),
       c8bT('box.sheet.care'),
@@ -2405,6 +2427,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
       c8bT('box.sheet.evolve'),
       c8bT('box.sheet.nickname'),
       c8bT('box.sheet.move'),
+      c8bT('kit.sheet.close'),
     ]);
     expect(
       rows.map((row) => row.textContent),
@@ -2416,6 +2439,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
       `Evolve${C8C_ELLIPSIS}`,
       'Nickname',
       'Move',
+      'Close',
     ]);
     const activeRows = (): (string | null)[] =>
       [...list.querySelectorAll<HTMLElement>('[role="option"].is-active')].map(
@@ -2427,7 +2451,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     expect(
       rows.map((row) => row.getAttribute('aria-selected')),
       'and the only selected one',
-    ).toEqual(['false', 'false', 'false', 'false', 'true', 'false']);
+    ).toEqual(['false', 'false', 'false', 'false', 'true', 'false', 'false']);
     expect(c8bHidden(list, root), 'the sheet shows').toBe(false);
     expect(
       c8bShownText(parent, root, 'Kip'),
@@ -2440,16 +2464,17 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
     expect(activeRows()).toEqual([c8bT('box.sheet.summary')]);
 
-    // DOM order: the sheet precedes both panels and is inside neither.
+    // uif-7 (UIF7.1) named change: the sheet is the ContextSheet mounted INSIDE the tab content area
+    // `#monsters-panel` (beside the grids, which stay), not a part placed before the panels; the
+    // clause that survives is that it is inside neither grid (a refresh rebuilds the grids).
+    expect(monstersPanelOf(parent).contains(list), 'the sheet is inside #monsters-panel').toBe(
+      true,
+    );
     for (const [name, grid] of [
       ['Party', party],
       ['Box', box],
     ] as const) {
-      expect(
-        grid.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_PRECEDING,
-        `the sheet comes before the ${name} panel`,
-      ).not.toBe(0);
-      expect(grid.contains(list), `the sheet is not inside the ${name} panel`).toBe(false);
+      expect(grid.contains(list), `the sheet is not inside the ${name} grid`).toBe(false);
     }
 
     // Another monster, another tab: its own name replaces the first one (a nickname-less card
@@ -3039,6 +3064,8 @@ describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
         'box.sheet.evolve',
         'box.sheet.nickname',
         'box.sheet.move',
+        // INTENTIONAL CHANGE (uif-7, UIF7.2): the sheet's seventh row, Close.
+        'kit.sheet.close',
         'box.rename.prompt',
         'box.feedback.movedToParty',
       ]) {
@@ -3445,28 +3472,24 @@ const c8cActiveIds = (list: Element): string[] =>
     .filter((row) => row.classList.contains('is-active'))
     .map((row) => row.id);
 
-/** `el` comes before the hint and both panels in the DOM and is inside none of them (typing
- *  mode's Escape focuses the frame's first enabled non-text control: never a node inside a
- *  panel; the cards' buttons this guarded against are deleted by qf-8, the order check stays). */
-function c8cBeforeHintAndPanels(
+/** uif-7 (UIF7.1, UIF7.3) named replacement of `c8cBeforeHintAndPanels`: the food list, the Evolve
+ *  list and the confirm are the one sheet's rows now, mounted INSIDE `#monsters-panel` (the sheet's
+ *  containing block) and so no longer "before the hint and both panels". What survives of the old
+ *  claim: `el` is inside neither grid (a refresh rebuilds the grids) and comes before the hint. */
+function c8cInPanelNotInGridBeforeHint(
   parent: HTMLElement,
   root: HTMLElement,
   el: Element,
   name: string,
 ): void {
   const hint = root.querySelector<HTMLElement>(BOX_PARTY_HINT_SELECTOR) as HTMLElement;
-  const anchors: ReadonlyArray<readonly [string, HTMLElement]> = [
-    ['the hint', hint],
-    ['the Party panel', partyGridOf(parent)],
-    ['the Box panel', boxGridOf(parent)],
-  ];
-  for (const [label, anchor] of anchors) {
-    expect(
-      anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING,
-      `${name} comes before ${label}`,
-    ).not.toBe(0);
-    expect(anchor.contains(el), `${name} is not inside ${label}`).toBe(false);
-  }
+  expect(monstersPanelOf(parent).contains(el), `${name} is inside #monsters-panel`).toBe(true);
+  expect(partyGridOf(parent).contains(el), `${name} is not inside the Party grid`).toBe(false);
+  expect(boxGridOf(parent).contains(el), `${name} is not inside the Storage grid`).toBe(false);
+  expect(
+    hint.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING,
+    `${name} comes before the hint`,
+  ).not.toBe(0);
 }
 
 /** Every `«key|<json>»` span's parsed params, in text order. */
@@ -3492,7 +3515,8 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     // repaint that only ever adds); a disabled row that cannot carry the cursor; flags read from
     // the wrong field (canFeed disabling Evolve).
     const { view, root } = c8bOpen();
-    const ACTIONS = ['summary', 'care', 'feed', 'evolve', 'nickname', 'move'];
+    // uif-7 (UIF7.2): the seventh row is Close.
+    const ACTIONS = ['summary', 'care', 'feed', 'evolve', 'nickname', 'move', 'close'];
     const row = (action: string): HTMLElement => c8cById(root, `monstersSheet-root-${action}`);
     const paintSheet = (action: SheetAction, canFeed: boolean, canEvolve: boolean): void => {
       view.paint(
@@ -3544,6 +3568,7 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
       i18nT('box.sheet.evolve'),
       i18nT('box.sheet.nickname'),
       i18nT('box.sheet.move'),
+      i18nT('kit.sheet.close'),
     ]);
     expect(
       c8cOptions(list).map((r) => r.textContent),
@@ -3555,11 +3580,12 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
       `Evolve${C8C_ELLIPSIS}`,
       'Nickname',
       'Move',
+      'Close',
     ]);
     expect(
       c8cOptions(list).map((r) => r.getAttribute('aria-disabled')),
       'all enabled',
-    ).toEqual([null, null, null, null, null, null]);
+    ).toEqual([null, null, null, null, null, null, null]);
     expect(c8cActiveIds(list), 'Care is the active row').toEqual(['monstersSheet-root-care']);
 
     // No food.
@@ -3624,13 +3650,18 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     expectDisabled('feed', i18nT('box.sheet.feed'), i18nT('box.sheet.feedNone'), 'after refresh');
   });
 
-  it('CTL8C-1-VIEW-FEED: a feed paint shows a food list (rows monstersFeed-root-<itemId>) reading the catalog food row for each food in order, the painted key active, the sheet still shown, before the hint and both panels; names are text; a null feed hides the list by inline display:none and empties it', () => {
+  // uif-7 (UIF7.3) named changes to the food list's pins: its rows are the one ContextSheet's rows
+  // (ids `monstersSheet-root-<itemId>` and `monstersSheet-root-back`, was `monstersFeed-root-*`),
+  // the list REPLACES the sheet's rows (no sheet under it, was: the sheet stayed shown), it sits in
+  // `#monsters-panel` (was: before the hint and both panels), it is named by the sheet heading
+  // `#monsters-sheet-name` (was: labelled by the sheet's Feed row), and a null feed leaves the sheet
+  // content to the paint (was: the feed list hidden by inline display and emptied).
+  it('CTL8C-1-VIEW-FEED: a feed paint shows the food rows (monstersSheet-root-<itemId>, then Back) in the one sheet, reading the catalog food row for each food in order, the painted key active, no sheet action row beside them; names are text; a paint with no feed shows the other content and leaves no food row behind', () => {
     // WRONG IMPL KILLED: no list; rows keyed by index (the screen's cursor key would name no row);
-    // a row text from a literal, without the count, or with the wrong food's count; the sheet
-    // hidden under the list (its active row, Feed…, is the context); a list placed after the panels
-    // (typing mode's Escape would land inside a panel); a name parsed as HTML; a stale row kept
-    // after its food is gone; a null feed that leaves the list showing, or hidden but still holding
-    // "Bait (x3)" (the e2e text scans read hidden text).
+    // a row text from a literal, without the count, or with the wrong food's count; the sheet's
+    // action rows left under the food rows (two lists in one sheet); a list placed outside the
+    // panel; a name parsed as HTML; a stale row kept after its food is gone; a closed list that
+    // still holds "Bait (x3)" (the e2e text scans read hidden text).
     const { parent, view, root } = c8bOpen();
     const BAIT_ROW: FoodVm = { itemId: 7, name: 'Bait', count: 3 };
     const GLOW_ROW: FoodVm = { itemId: 40, name: 'Glowberry', count: 12 };
@@ -3638,99 +3669,145 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
       c8bPaint({
         tab: 'party',
         activeKey: '100',
-        sheet: c8bSheet(C8B_KIP, 'feed'),
+        sheet: null,
         feed: { foods, activeKey },
       });
 
     view.paint(feedPaint([BAIT_ROW, GLOW_ROW], '40'));
-    const list = c8cListOf(root, 'monstersFeed-root-7');
-    const sheetList = c8cListOf(root, 'monstersSheet-root-feed');
-    expect(list, 'the food list is its own list, not the sheet').not.toBe(sheetList);
-    // WRONG IMPL KILLED (round 2): an unlabelled food list, or one labelled by another sheet row
-    // (a screen reader would announce the list with no name, or as the Evolve… list).
-    expect(list.getAttribute('aria-labelledby'), 'labelled by the Feed row that opened it').toBe(
-      'monstersSheet-root-feed',
+    const list = c8cListOf(root, 'monstersSheet-root-7');
+    expect(
+      root.querySelector('#monstersSheet-root-feed'),
+      'no sheet action row beside the food rows',
+    ).toBeNull();
+    // WRONG IMPL KILLED (round 2): an unlabelled food list (a screen reader would announce the list
+    // with no name): it is named by the sheet's heading, which holds the monster's name.
+    expect(list.getAttribute('aria-labelledby'), 'named by the sheet heading').toBe(
+      'monsters-sheet-name',
+    );
+    expect(root.querySelector('#monsters-sheet-name')?.textContent, 'the heading names Kip').toBe(
+      'Kip',
     );
     expect(c8cOptions(list).map((r) => r.id)).toEqual([
-      'monstersFeed-root-7',
-      'monstersFeed-root-40',
+      'monstersSheet-root-7',
+      'monstersSheet-root-40',
+      'monstersSheet-root-back',
     ]);
     expect(c8cOptions(list).map((r) => r.textContent)).toEqual([
       i18nTf('box.feed.item', { name: 'Bait', count: 3 }),
       i18nTf('box.feed.item', { name: 'Glowberry', count: 12 }),
+      i18nT('kit.sheet.back'),
     ]);
     expect(
       c8cOptions(list).map((r) => r.textContent),
       'English bytes',
-    ).toEqual(['Bait (x3)', 'Glowberry (x12)']);
-    expect(c8cActiveIds(list), 'the painted key').toEqual(['monstersFeed-root-40']);
-    expect(c8cOptions(list).map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true']);
-    expect(c8cOptions(list).map((r) => r.getAttribute('aria-disabled'))).toEqual([null, null]);
+    ).toEqual(['Bait (x3)', 'Glowberry (x12)', 'Back']);
+    expect(c8cActiveIds(list), 'the painted key').toEqual(['monstersSheet-root-40']);
+    expect(c8cOptions(list).map((r) => r.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'true',
+      'false',
+    ]);
+    expect(c8cOptions(list).map((r) => r.getAttribute('aria-disabled'))).toEqual([
+      null,
+      null,
+      null,
+    ]);
     expect(c8bHidden(list, root), 'the list shows').toBe(false);
-    expect(c8bHidden(sheetList, root), 'the sheet stays shown under it').toBe(false);
-    c8cBeforeHintAndPanels(parent, root, list, 'the food list');
+    expect(monstersPanelOf(parent).contains(list), 'inside #monsters-panel').toBe(true);
 
-    // The cursor moves; a batch render keeps the list; a new count is repainted.
+    // The cursor moves (onto Back too); a batch render keeps the list; a new count is repainted.
     view.paint(feedPaint([BAIT_ROW, GLOW_ROW], '7'));
-    expect(c8cActiveIds(list)).toEqual(['monstersFeed-root-7']);
+    expect(c8cActiveIds(list)).toEqual(['monstersSheet-root-7']);
+    view.paint(feedPaint([BAIT_ROW, GLOW_ROW], 'back'));
+    expect(c8cActiveIds(list), 'the cursor can rest on Back').toEqual(['monstersSheet-root-back']);
+    view.paint(feedPaint([BAIT_ROW, GLOW_ROW], '7'));
     view.refresh(c8bParty(), c8bBox());
-    expect(c8cOptions(list).map((r) => r.textContent)).toEqual(['Bait (x3)', 'Glowberry (x12)']);
-    expect(c8cActiveIds(list)).toEqual(['monstersFeed-root-7']);
+    expect(c8cOptions(list).map((r) => r.textContent)).toEqual([
+      'Bait (x3)',
+      'Glowberry (x12)',
+      'Back',
+    ]);
+    expect(c8cActiveIds(list)).toEqual(['monstersSheet-root-7']);
     view.paint(feedPaint([{ itemId: 7, name: 'Bait', count: 2 }, GLOW_ROW], '7'));
-    expect(c8cById(root, 'monstersFeed-root-7').textContent).toBe('Bait (x2)');
+    expect(c8cById(root, 'monstersSheet-root-7').textContent).toBe('Bait (x2)');
 
     // A name is text, never markup; a food that is gone leaves no row.
     view.paint(feedPaint([{ itemId: 9, name: '<b>Bait</b>', count: 1 }], '9'));
     expect(list.querySelector('b'), 'no element made from a name').toBeNull();
-    expect(c8cById(root, 'monstersFeed-root-9').textContent).toBe('<b>Bait</b> (x1)');
-    expect(root.querySelectorAll('[id="monstersFeed-root-7"]'), 'the gone food`s row').toHaveLength(
+    expect(c8cById(root, 'monstersSheet-root-9').textContent).toBe('<b>Bait</b> (x1)');
+    expect(
+      root.querySelectorAll('[id="monstersSheet-root-7"]'),
+      'the gone food`s row',
+    ).toHaveLength(0);
+
+    // The food rows leave when another content takes the sheet: no food row, no food text.
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'feed') }));
+    expect(root.querySelectorAll('[id="monstersSheet-root-9"]'), 'no food row left').toHaveLength(
       0,
     );
-
-    // A null feed: hidden by inline display and emptied, the node kept.
-    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'feed') }));
-    expect(root.contains(list), 'the list node is kept').toBe(true);
-    expect(c8bHidden(list, root), 'hidden by inline display:none').toBe(true);
-    expect(list.textContent, 'and empty of text').toBe('');
-    expect(root.querySelectorAll('[id^="monstersFeed-root-"]'), 'no food row left').toHaveLength(0);
+    expect(root.textContent ?? '', 'no food text left').not.toContain('<b>Bait</b>');
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    expect(
+      root.querySelectorAll('[id^="monstersSheet-root-"]'),
+      'a closed sheet holds no row at all',
+    ).toHaveLength(0);
   });
 
-  it('CTL8C-1-VIEW-EVOLVE: an evolve paint lists every path (rows monstersEvolve-root-<edgeId>) with its catalog heading and a status line (the raw unmet reason, the catalog ready line for a met path that is no choice, the catalog all-met line for a choice), only choices enabled, no evo-ready-note or evo-choice testid; a confirm paint asks the catalog question in #monsters-evolve-question over a Yes / No listbox labelled by it, the painted answer active; both sit before the hint and panels; null hides and empties them, focus left in them goes to the title anchor, and a reopen shows neither', async () => {
+  // uif-7 (UIF7.3) named changes to the Evolve list and confirm pins: the path rows and the Yes / No
+  // rows are the one ContextSheet's rows (ids `monstersSheet-root-<edgeId|yes|no|back>`, was
+  // `monstersEvolve-root-*` / `monstersConfirm-root-*`), they REPLACE the sheet's rows (no sheet
+  // under them) and each other (the confirm is the sheet's confirm variant: one shared rows list,
+  // was: separate lists), the question is the sheet heading `#monsters-sheet-name` (was
+  // `#monsters-evolve-question`), they sit in `#monsters-panel` (was: before the hint and panels),
+  // and focus left on a closing sheet goes to the title anchor (was: left on a hidden list).
+  it('CTL8C-1-VIEW-EVOLVE: an evolve paint lists every path (rows monstersSheet-root-<edgeId>, then Back) with its catalog heading and a status line (the raw unmet reason, the catalog ready line for a met path that is no choice, the catalog all-met line for a choice), only choices enabled, no evo-ready-note or evo-choice testid; a confirm paint asks the catalog question in the sheet heading (#monsters-sheet-name) over Yes / No rows named by it, the painted answer active; null closes the sheet and empties it, focus left in it goes to the title anchor, and a reopen shows neither', async () => {
     // WRONG IMPL KILLED: a list of the met paths only; rows keyed by index or by species; a status
     // line from a literal, the same line for every path, an unmet reason re-worded (it must match
     // the server's reject message), a met-but-not-choice path offered as a choice (enabled) or
     // described as "all met" (the server applies it itself); the evolution view's evo-ready-note /
     // evo-choice testids reused here (the e2e locators would hit two elements); a confirm question
-    // from a literal, naming the wrong monster or species, or parsed as HTML; an unlabelled Yes /
-    // No list; Yes and No both or neither active; parts placed after the panels; a hidden confirm
-    // still holding its question text, or holding the focus (the next key would leave the frame);
-    // a reopen that shows the last visit's confirm.
+    // from a literal, naming the wrong monster or species, or parsed as HTML; an unnamed Yes /
+    // No list; Yes and No both or neither active; a closed sheet still holding its question text,
+    // or holding the focus (the next key would leave the frame); a reopen that shows the last
+    // visit's confirm.
     const { parent, view, root } = c8bOpen();
     await s4FlushMacrotask();
     const evolvePaint = (mon: EvolutionMonsterViewModel, activeKey: string | null): MonstersPaint =>
       c8bPaint({
         tab: 'party',
         activeKey: '100',
-        sheet: c8bSheet(C8B_KIP, 'evolve'),
+        sheet: null,
         evolve: { mon, activeKey },
       });
     const text = (edgeId: number): string =>
-      c8cById(root, `monstersEvolve-root-${edgeId}`).textContent ?? '';
+      c8cById(root, `monstersSheet-root-${edgeId}`).textContent ?? '';
 
     view.paint(evolvePaint(C8C_TWO_CHOICES, '30'));
-    const list = c8cListOf(root, 'monstersEvolve-root-10');
-    expect(list, 'its own list, not the sheet').not.toBe(
-      c8cListOf(root, 'monstersSheet-root-evolve'),
+    const list = c8cListOf(root, 'monstersSheet-root-10');
+    expect(
+      root.querySelector('#monstersSheet-root-evolve'),
+      'no sheet action row beside the path rows',
+    ).toBeNull();
+    // WRONG IMPL KILLED (round 2): an unnamed Evolve list (a screen reader would announce the paths
+    // with no name): it is named by the sheet heading, which holds the monster's name.
+    expect(list.getAttribute('aria-labelledby'), 'named by the sheet heading').toBe(
+      'monsters-sheet-name',
     );
-    // WRONG IMPL KILLED (round 2): an unlabelled Evolve list, or one labelled by another sheet row
-    // (a screen reader would announce the paths with no name, or as the Feed… list).
-    expect(list.getAttribute('aria-labelledby'), 'labelled by the Evolve row that opened it').toBe(
-      'monstersSheet-root-evolve',
+    expect(root.querySelector('#monsters-sheet-name')?.textContent, 'the heading names Kip').toBe(
+      'Kip',
     );
     expect(
       c8cOptions(list).map((r) => r.id),
-      'every path, by edge id',
-    ).toEqual(['monstersEvolve-root-10', 'monstersEvolve-root-20', 'monstersEvolve-root-30']);
+      'every path, by edge id, then Back',
+    ).toEqual([
+      'monstersSheet-root-10',
+      'monstersSheet-root-20',
+      'monstersSheet-root-30',
+      'monstersSheet-root-back',
+    ]);
+    expect(c8cById(root, 'monstersSheet-root-back').textContent, 'Back reads the catalog').toBe(
+      i18nT('kit.sheet.back'),
+    );
     expect(text(10)).toContain(i18nTf('evolution.path.heading', { species: 'Tidepup' }));
     expect(text(10), 'an unmet path: its first unmet requirement, raw').toContain(
       'requires level 50',
@@ -3742,28 +3819,28 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     expect(text(30)).toContain(i18nT('evolution.path.allMet'));
     expect(text(20), 'English bytes').toContain(`${C8C_ARROW} Duskling`);
     expect(text(20), 'English bytes').toContain('All requirements met.');
+    // uif-7 (UIF7.2): the Back row is the one enabled row after the paths, whatever the paths say.
     expect(
       c8cOptions(list).map((r) => r.getAttribute('aria-disabled')),
-      'only the choices are enabled',
-    ).toEqual(['true', null, null]);
+      'only the choices are enabled (and Back)',
+    ).toEqual(['true', null, null, null]);
     expect(c8cOptions(list).map((r) => r.classList.contains('is-disabled'))).toEqual([
       true,
       false,
       false,
-    ]);
-    expect(c8cActiveIds(list), 'the painted key').toEqual(['monstersEvolve-root-30']);
-    expect(c8bHidden(list, root)).toBe(false);
-    expect(c8bHidden(c8cListOf(root, 'monstersSheet-root-evolve'), root), 'the sheet shows').toBe(
       false,
-    );
-    c8cBeforeHintAndPanels(parent, root, list, 'the Evolve list');
+    ]);
+    expect(c8cActiveIds(list), 'the painted key').toEqual(['monstersSheet-root-30']);
+    expect(c8bHidden(list, root)).toBe(false);
+    expect(monstersPanelOf(parent).contains(list), 'inside #monsters-panel').toBe(true);
     expect(list.textContent ?? '', 'no HP-shaped token for the e2e HP scans').not.toContain('HP ');
 
     // Exactly one met: the ready line, and it is not offered.
     view.paint(evolvePaint(C8C_ONE_READY, '10'));
     expect(c8cOptions(list).map((r) => r.id)).toEqual([
-      'monstersEvolve-root-10',
-      'monstersEvolve-root-20',
+      'monstersSheet-root-10',
+      'monstersSheet-root-20',
+      'monstersSheet-root-back',
     ]);
     expect(text(20)).toContain(i18nTf('evolution.card.ready', { species: 'Duskling' }));
     expect(text(20), 'English bytes').toContain(
@@ -3772,7 +3849,11 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     expect(text(20), 'the auto-applied path is not "all met"').not.toContain(
       i18nT('evolution.path.allMet'),
     );
-    expect(c8cOptions(list).map((r) => r.getAttribute('aria-disabled'))).toEqual(['true', 'true']);
+    expect(c8cOptions(list).map((r) => r.getAttribute('aria-disabled'))).toEqual([
+      'true',
+      'true',
+      null,
+    ]);
 
     for (const [mon, key] of [
       [C8C_TWO_CHOICES, '20'],
@@ -3790,51 +3871,58 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
       c8bPaint({
         tab: 'party',
         activeKey: '100',
-        sheet: c8bSheet(C8B_KIP, 'evolve'),
+        sheet: null,
         confirm: { name, species: 'Emberfang', yes },
       });
     view.paint(confirmPaint(false));
-    const question = c8cById(root, 'monsters-evolve-question');
+    // uif-7 (UIF7.3): the question is the sheet's heading (#monsters-sheet-name), and Yes / No are
+    // the rows of the SAME list the paths used.
+    const question = c8cById(root, 'monsters-sheet-name');
     expect(question.textContent).toBe(
       i18nTf('box.evolve.confirm', { name: 'Kip', species: 'Emberfang' }),
     );
     expect(question.textContent, 'English bytes').toBe('Evolve Kip into Emberfang?');
     expect(c8bHidden(question, root), 'the question shows').toBe(false);
-    const answers = c8cListOf(root, 'monstersConfirm-root-yes');
-    expect(c8cListOf(root, 'monstersConfirm-root-no'), 'Yes and No are one list').toBe(answers);
-    expect(answers.getAttribute('aria-labelledby'), 'labelled by the question').toBe(
-      'monsters-evolve-question',
+    expect(
+      root.querySelector('#monsters-evolve-question'),
+      'the old question part is gone',
+    ).toBeNull();
+    const answers = c8cListOf(root, 'monstersSheet-root-yes');
+    expect(c8cListOf(root, 'monstersSheet-root-no'), 'Yes and No are one list').toBe(answers);
+    expect(answers, 'the very list the paths were in: one sheet').toBe(list);
+    expect(answers.getAttribute('aria-labelledby'), 'named by the question').toBe(
+      'monsters-sheet-name',
     );
     expect(
-      c8cOptions(answers)
-        .map((r) => r.id)
-        .sort(),
-    ).toEqual(['monstersConfirm-root-no', 'monstersConfirm-root-yes']);
-    expect(c8cById(root, 'monstersConfirm-root-yes').textContent).toBe(i18nT('prompt.yes'));
-    expect(c8cById(root, 'monstersConfirm-root-no').textContent).toBe(i18nT('prompt.no'));
-    expect(c8cById(root, 'monstersConfirm-root-yes').textContent, 'English bytes').toBe('Yes');
-    expect(c8cById(root, 'monstersConfirm-root-no').textContent, 'English bytes').toBe('No');
-    expect(c8cActiveIds(answers), 'No is painted').toEqual(['monstersConfirm-root-no']);
+      c8cOptions(answers).map((r) => r.id),
+      'Yes then No, and nothing else (no path row, no Back)',
+    ).toEqual(['monstersSheet-root-yes', 'monstersSheet-root-no']);
+    expect(c8cById(root, 'monstersSheet-root-yes').textContent).toBe(i18nT('prompt.yes'));
+    expect(c8cById(root, 'monstersSheet-root-no').textContent).toBe(i18nT('prompt.no'));
+    expect(c8cById(root, 'monstersSheet-root-yes').textContent, 'English bytes').toBe('Yes');
+    expect(c8cById(root, 'monstersSheet-root-no').textContent, 'English bytes').toBe('No');
+    expect(c8cActiveIds(answers), 'No is painted').toEqual(['monstersSheet-root-no']);
     // WRONG IMPL KILLED (round 2): a Yes or No row laid out disabled (`enabled: false` in the
     // confirm layout): a screen reader hears "dimmed" on an answer A does act on, and the row is
     // styled as unavailable while it is the default.
     const expectAnswersEnabled = (when: string): void => {
-      for (const id of ['monstersConfirm-root-yes', 'monstersConfirm-root-no']) {
+      for (const id of ['monstersSheet-root-yes', 'monstersSheet-root-no']) {
         expect(c8cById(root, id).getAttribute('aria-disabled'), `${when}: ${id}`).toBeNull();
         expect(c8cById(root, id).classList.contains('is-disabled'), `${when}: ${id}`).toBe(false);
       }
     };
     expectAnswersEnabled('No painted');
     expect(c8bHidden(answers, root)).toBe(false);
-    c8cBeforeHintAndPanels(parent, root, question, 'the confirm question');
-    c8cBeforeHintAndPanels(parent, root, answers, 'the Yes / No list');
-    expect(c8bHidden(list, root), 'no evolve paint: the Evolve list is hidden').toBe(true);
-    expect(list.textContent, 'and empty').toBe('');
+    expect(monstersPanelOf(parent).contains(answers), 'inside #monsters-panel').toBe(true);
+    expect(
+      root.querySelectorAll('[id="monstersSheet-root-10"]'),
+      'no evolve paint: no path row is left',
+    ).toHaveLength(0);
     view.paint(confirmPaint(true));
-    expect(c8cActiveIds(answers), 'Yes is painted').toEqual(['monstersConfirm-root-yes']);
+    expect(c8cActiveIds(answers), 'Yes is painted').toEqual(['monstersSheet-root-yes']);
     expectAnswersEnabled('Yes painted');
-    expect(answers.getAttribute('aria-labelledby'), 'still labelled by the question').toBe(
-      'monsters-evolve-question',
+    expect(answers.getAttribute('aria-labelledby'), 'still named by the question').toBe(
+      'monsters-sheet-name',
     );
 
     // A nickname is text, never markup.
@@ -3842,16 +3930,29 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     expect(question.querySelector('i'), 'no element made from a nickname').toBeNull();
     expect(question.textContent).toBe('Evolve <i>Kip</i> into Emberfang?');
 
-    // The confirm closes with focus on its list: hidden, emptied, focus on the title anchor.
+    // The confirm gives way to the path list with focus on the shared list: focus stays in the
+    // sheet, the heading names the monster again (uif-7: one sheet, one heading).
     answers.focus();
-    expect(document.activeElement, 'fixture: focus is on the Yes / No list').toBe(answers);
+    expect(document.activeElement, 'fixture: focus is on the sheet`s list').toBe(answers);
     view.paint(evolvePaint(C8C_TWO_CHOICES, '30'));
-    expect(c8bHidden(question, root), 'the question is hidden').toBe(true);
+    expect(question.textContent, 'the heading names the monster again').toBe('Kip');
+    expect(
+      root.querySelectorAll('[id="monstersSheet-root-yes"]'),
+      'the Yes / No rows are gone',
+    ).toHaveLength(0);
+    expect(c8bHidden(list, root), 'the Evolve list shows again').toBe(false);
+    expect(
+      (document.activeElement as HTMLElement).closest('[data-context-sheet]'),
+      'focus stays in the sheet while its content swaps',
+    ).not.toBeNull();
+
+    // The sheet closes with focus in it: it is hidden and emptied, focus goes to the title anchor.
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    expect(c8bHidden(question, root), 'the heading is hidden').toBe(true);
     expect(question.textContent, 'and empty').toBe('');
-    expect(c8bHidden(answers, root), 'the Yes / No list is hidden').toBe(true);
+    expect(c8bHidden(answers, root), 'the list is hidden').toBe(true);
     expect(answers.textContent, 'and empty').toBe('');
     expect(document.activeElement, 'focus goes to the title anchor').toBe(c8bAnchor(root));
-    expect(c8bHidden(list, root), 'the Evolve list shows again').toBe(false);
 
     // A reopened frame shows neither the confirm nor the list.
     view.paint(confirmPaint(false));
@@ -3938,33 +4039,38 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
         }),
       );
       let joined = walk('the sheet with both reasons, and the fed line');
+      // uif-7 (UIF7.2): the sheet's seventh row is Close, from the kit's catalog id.
       for (const key of [
         'box.sheet.care',
         'box.sheet.feed',
         'box.sheet.evolve',
         'box.sheet.feedNone',
         'evolution.card.noPaths',
+        'kit.sheet.close',
       ]) {
         expect(joined, `«${key}» is rendered`).toContain(`«${key}»`);
       }
       expect(c8cSpanParams(joined, 'box.feedback.fed')).toEqual([{ name: 'Kip' }]);
 
+      // uif-7 (UIF7.3): the lists and the confirm are painted as the screen paints them, with no
+      // sheet beside them (one content at a time); the lists end with the kit's Back row.
       view.paint(
         c8bPaint({
           tab: 'party',
           activeKey: '100',
-          sheet: c8bSheet(C8B_KIP, 'feed'),
+          sheet: null,
           feed: { foods: [{ itemId: 7, name: 'Bait', count: 3 }], activeKey: '7' },
         }),
       );
       joined = walk('the food list');
       expect(c8cSpanParams(joined, 'box.feed.item')).toEqual([{ name: 'Bait', count: 3 }]);
+      expect(joined, '«kit.sheet.back» ends the food list').toContain('«kit.sheet.back»');
 
       view.paint(
         c8bPaint({
           tab: 'party',
           activeKey: '100',
-          sheet: c8bSheet(C8B_KIP, 'evolve'),
+          sheet: null,
           evolve: { mon: C8C_TWO_CHOICES, activeKey: '20' },
         }),
       );
@@ -3979,18 +4085,19 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
         c8bPaint({
           tab: 'party',
           activeKey: '100',
-          sheet: c8bSheet(C8B_KIP, 'evolve'),
+          sheet: null,
           evolve: { mon: C8C_ONE_READY, activeKey: '10' },
         }),
       );
       joined = walk('the Evolve list with one ready path');
       expect(c8cSpanParams(joined, 'evolution.card.ready')).toEqual([{ species: 'Duskling' }]);
+      expect(joined, '«kit.sheet.back» ends the Evolve list').toContain('«kit.sheet.back»');
 
       view.paint(
         c8bPaint({
           tab: 'party',
           activeKey: '100',
-          sheet: c8bSheet(C8B_KIP, 'evolve'),
+          sheet: null,
           confirm: { name: 'Kip', species: 'Emberfang', yes: false },
         }),
       );
@@ -5919,5 +6026,530 @@ describe('BoxView uif-6: the Party draws six cells (UIF6.8)', () => {
       c8bMarked(root).map((el) => el.dataset.navKey),
       'after a refresh',
     ).toEqual(['slot-2']);
+  });
+});
+
+// =============================================================================
+// uif-7 (UIF7.1 to UIF7.4): the Monsters sheet is the frame's one ContextSheet (placed by the kit,
+// never covering the cursor slot: proved in Chromium by client/e2e/ui-monsters.spec.ts), its Close
+// and Back rows, one content at a time, and the Summary as a page. happy-dom proves structure only.
+// =============================================================================
+
+/** Every sheet root in the frame, shown or not. */
+const uif7Sheets = (root: Element): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('[data-context-sheet]'),
+];
+/** The sheet roots a player can see (the kit hides by the `hidden` attribute). */
+const uif7Shown = (root: HTMLElement): HTMLElement[] =>
+  uif7Sheets(root).filter((el) => !c8bHidden(el, root));
+/** `actual` is exactly `expected`, element for element by IDENTITY (toEqual on DOM nodes compares
+ *  structure, so two look-alike roots would pass it). */
+function uif7ExpectSame(
+  actual: readonly HTMLElement[],
+  expected: readonly HTMLElement[],
+  message: string,
+): void {
+  expect(actual.length, `${message}: how many`).toBe(expected.length);
+  expected.forEach((el, i) => {
+    expect(actual[i], `${message}: element ${i} is the very node`).toBe(el);
+  });
+}
+/** The sheet actions' row ids: none may exist while another content owns the sheet. */
+const UIF7_ACTION_IDS = ['summary', 'care', 'feed', 'evolve', 'nickname', 'move', 'close'].map(
+  (key) => `monstersSheet-root-${key}`,
+);
+const uif7RowIds = (root: Element): string[] =>
+  [...root.querySelectorAll<HTMLElement>('[id^="monstersSheet-root-"]')].map((el) => el.id);
+
+describe('BoxView uif-7: the sheet is the ContextSheet inside the panel (UIF7.1)', () => {
+  it('UIF7.1 opening the sheet paints ONE shown .mr-sheet [data-context-sheet] inside #monsters-panel (inside neither grid), the tab bar and the active grid stay displayed, no dim or backdrop element appears, and #monsters-sheet-name is the sheet`s heading, holds the monster`s name and names the rows', () => {
+    // WRONG IMPL KILLED: today's loose `div` parts above the panel (no [data-context-sheet] at all,
+    // so the pointer source cannot close it and the kit cannot place it); a second sheet root; a
+    // sheet mounted in the frame root or in a grid (a refresh would rebuild a grid and wipe it, or
+    // the panel's containing block would not hold it); a sheet that hides the grid or the tabs
+    // behind it (wf-1: the context stays visible); a dim layer or backdrop (wf-1: nothing is
+    // dimmed); a heading id other than the pinned `monsters-sheet-name` (main.partyFull, reachability,
+    // pointer.spec and menu-flow.spec read it) or a heading that is not the sheet's own; rows
+    // that are not named by the heading.
+    const { parent, view, root } = c8bOpen();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
+
+    const sheets = uif7Sheets(root);
+    expect(sheets, 'exactly one sheet root in the frame').toHaveLength(1);
+    expect(
+      document.querySelectorAll('[data-context-sheet]'),
+      'and exactly one in the document',
+    ).toHaveLength(1);
+    const sheet = sheets[0] as HTMLElement;
+    expect(sheet.classList.contains('mr-sheet'), 'the kit`s class').toBe(true);
+    expect(sheet.hidden, 'not hidden').toBe(false);
+    expect(c8bHidden(sheet, root), 'shown').toBe(false);
+    expect(sheet.dataset.sheetVariant, 'the list variant').toBe('list');
+    expect(monstersPanelOf(parent).contains(sheet), 'inside #monsters-panel').toBe(true);
+    expect(partyGridOf(parent).contains(sheet), 'not inside the Party grid').toBe(false);
+    expect(boxGridOf(parent).contains(sheet), 'not inside the Storage grid').toBe(false);
+
+    // The context stays: the tab bar, and the active grid with its cursor card.
+    const bar = root.querySelector<HTMLElement>('.mr-tabbar');
+    expect(bar, 'precondition: the tab bar exists').not.toBeNull();
+    expect(c8bHidden(bar as HTMLElement, root), 'the tab bar stays displayed').toBe(false);
+    expect(c8bSelected(root), 'the Party tab is the selected one').toEqual(['true', 'false']);
+    expect(partyGridOf(parent).style.display, 'the active grid is still a grid').toBe('grid');
+    expect(c8bHidden(partyGridOf(parent), root), 'and shown').toBe(false);
+    expect(
+      c8bMarked(root).map((el) => el.dataset.navKey),
+      'the cursor card is still marked',
+    ).toEqual(['100']);
+
+    // Nothing is dimmed: no backdrop-like element, no inline fade or translucent fill anywhere.
+    for (const el of [root, ...root.querySelectorAll<HTMLElement>('*')]) {
+      expect(
+        ctl7bClasses(el).filter((c) => /backdrop|scrim|dim|overlay/i.test(c)),
+        `no dim or backdrop class on <${el.tagName.toLowerCase()}>`,
+      ).toEqual([]);
+      const inline = ctl7bInline(el);
+      for (const prop of ['opacity', 'filter', 'backdrop-filter']) {
+        expect(inline.has(prop), `no inline ${prop} on <${el.tagName.toLowerCase()}>`).toBe(false);
+      }
+      for (const prop of ['background', 'background-color']) {
+        expect(
+          (inline.get(prop) ?? '').includes('rgba('),
+          `no translucent inline ${prop} on <${el.tagName.toLowerCase()}>`,
+        ).toBe(false);
+      }
+    }
+
+    // The heading: one element, the sheet's own, holding the monster's name and naming the rows.
+    const headings = document.querySelectorAll('#monsters-sheet-name');
+    expect(headings, 'one #monsters-sheet-name in the document').toHaveLength(1);
+    const heading = headings[0] as HTMLElement;
+    expect(sheet.contains(heading), 'it is the sheet`s heading').toBe(true);
+    expect(heading.hidden, 'shown').toBe(false);
+    expect(heading.textContent, 'holding the monster`s name').toBe('Kip');
+    expect(
+      c8cListOf(root, 'monstersSheet-root-summary').getAttribute('aria-labelledby'),
+      'the rows are named by it',
+    ).toBe('monsters-sheet-name');
+    expect(sheet.contains(c8cListOf(root, 'monstersSheet-root-summary')), 'rows in the sheet').toBe(
+      true,
+    );
+
+    // Another monster, another tab: the same sheet root, the new name.
+    view.paint(
+      c8bPaint({ tab: 'storage', activeKey: '200', sheet: c8bSheet(C8B_EMBER, 'summary') }),
+    );
+    uif7ExpectSame(uif7Sheets(root), [sheet], 'still one root');
+    expect(heading.textContent, 'the new name (a nickname-less card shows its species)').toBe(
+      'Emberfang',
+    );
+    expect(c8bHidden(boxGridOf(parent), root), 'the Storage grid is the shown one').toBe(false);
+  });
+
+  it('UIF7.1 closing the sheet hides the root and leaves it with no row, no heading text and no monster name; a later open shows it again and a reopened frame starts closed', () => {
+    // WRONG IMPL KILLED: a close that only hides (the rows and the name stay in the document: the e2e
+    // text scans read hidden text, and a stale name would announce the previous monster); a sheet
+    // that never comes back; a reopen that keeps the last visit's sheet.
+    const { view, root } = c8bOpen();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'care') }));
+    const sheet = uif7Sheets(root)[0] as HTMLElement;
+    uif7ExpectSame(uif7Shown(root), [sheet], 'fixture: shown');
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    expect(sheet.hidden, 'the root is hidden').toBe(true);
+    expect(uif7Shown(root), 'no sheet shows').toEqual([]);
+    expect(sheet.querySelectorAll('[data-nav-key]'), 'no row is left in it').toHaveLength(0);
+    expect((sheet.textContent ?? '').trim(), 'and no text at all').toBe('');
+    expect(sheet.textContent ?? '', 'no monster name').not.toContain('Kip');
+    expect(root.querySelector('#monsters-sheet-name')?.textContent ?? '', 'no heading text').toBe(
+      '',
+    );
+    expect(uif7RowIds(root), 'no sheet row id anywhere in the frame').toEqual([]);
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', sheet: c8bSheet(C8B_MOSS, 'move') }));
+    uif7ExpectSame(uif7Shown(root), [sheet], 'it shows again');
+    expect(root.querySelector('#monsters-sheet-name')?.textContent, 'with the new name').toBe(
+      'Mossling',
+    );
+    expect(uif7RowIds(root)).toEqual(UIF7_ACTION_IDS);
+
+    view.hide();
+    view.show();
+    expect(uif7Shown(root), 'a reopened frame starts with no sheet').toEqual([]);
+    expect(uif7RowIds(root), 'and no row').toEqual([]);
+  });
+
+  it('UIF7.1 focus on a sheet row or its list when the sheet closes stays inside the frame (never <body>), and a content swap keeps focus in the sheet', async () => {
+    // WRONG IMPL KILLED: a close that empties the rows under the focused element (focus falls to
+    // <body> and the next key heals to the world, out of the frame: the kit's closeContextSheet
+    // removes the rows, so the view must move focus itself); a heal that tests only inline
+    // display:none (the kit hides by the `hidden` attribute); a content swap that drops focus.
+    const { view, root } = c8bOpen();
+    await s4FlushMacrotask();
+    const open = (): void =>
+      view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
+    const close = (): void => view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    const expectInFrame = (when: string): void => {
+      expect(document.activeElement, `${when}: focus is not on <body>`).not.toBe(document.body);
+      expect(root.contains(document.activeElement), `${when}: focus is inside the frame root`).toBe(
+        true,
+      );
+    };
+
+    open();
+    const list = c8cListOf(root, 'monstersSheet-root-summary');
+    list.focus();
+    expect(document.activeElement, 'fixture: focus is on the sheet`s list').toBe(list);
+    close();
+    expectInFrame('closed with focus on the list');
+
+    open();
+    const row = c8cById(root, 'monstersSheet-root-care');
+    row.focus();
+    expect(document.activeElement, 'fixture: focus is on a row').toBe(row);
+    close();
+    expectInFrame('closed with focus on a row');
+
+    // A swap to the food list keeps focus in the one sheet.
+    open();
+    c8cListOf(root, 'monstersSheet-root-summary').focus();
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: null,
+        feed: { foods: [{ itemId: 7, name: 'Bait', count: 3 }], activeKey: '7' },
+      }),
+    );
+    expect(
+      (document.activeElement as HTMLElement).closest('[data-context-sheet]'),
+      'focus is still in the sheet after the swap',
+    ).not.toBeNull();
+  });
+});
+
+describe('BoxView uif-7: Close and Back rows, one content at a time (UIF7.2, UIF7.3)', () => {
+  const NO_PATH: EvolutionMonsterViewModel = {
+    ...C8C_TWO_CHOICES,
+    paths: [],
+    eligibleCount: 0,
+    choices: [],
+    readyPathName: null,
+  };
+  const paintFeed = (view: BoxView, foods: readonly FoodVm[], activeKey: string | null): void =>
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', feed: { foods, activeKey } }));
+  const paintEvolve = (
+    view: BoxView,
+    mon: EvolutionMonsterViewModel,
+    activeKey: string | null,
+  ): void => view.paint(c8bPaint({ tab: 'party', activeKey: '100', evolve: { mon, activeKey } }));
+  const lastRow = (list: HTMLElement): HTMLElement => list.lastElementChild as HTMLElement;
+
+  it('UIF7.2 the sheet`s rows end with Close (monstersSheet-root-close reading kit.sheet.close, enabled, last in DOM order, directly after Move) and Close can be the active row', () => {
+    // WRONG IMPL KILLED: a Close row missing, first, or before Move; a label from a literal; a
+    // Close row drawn disabled (aria-disabled, .is-disabled) or with a reason; one that cannot carry
+    // the cursor (the screen's Up from Summary lands on it).
+    const { view, root } = c8bOpen();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'close') }));
+    const list = c8cListOf(root, 'monstersSheet-root-close');
+    const close = lastRow(list);
+    expect(close.id, 'Close is the last row').toBe('monstersSheet-root-close');
+    expect(close.textContent, 'it reads the catalog').toBe(i18nT('kit.sheet.close'));
+    expect(close.textContent, 'English bytes').toBe('Close');
+    expect(close.children.length, 'a bare label: no reason, no extra element').toBe(0);
+    expect(close.getAttribute('aria-disabled'), 'enabled').toBeNull();
+    expect(close.classList.contains('is-disabled')).toBe(false);
+    expect(close.previousElementSibling?.id, 'directly after Move').toBe('monstersSheet-root-move');
+    expect(c8cActiveIds(list), 'the painted action Close is the active row').toEqual([
+      'monstersSheet-root-close',
+    ]);
+    expect(close.getAttribute('aria-selected')).toBe('true');
+    // Cooling Care, no food, no path: Close stays an ordinary enabled row.
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: c8bSheet(C8B_KIP, 'summary', false, false, 3_600_000n),
+      }),
+    );
+    expect(lastRow(list).id).toBe('monstersSheet-root-close');
+    expect(lastRow(list).getAttribute('aria-disabled'), 'enabled whatever the flags').toBeNull();
+    expect(lastRow(list).getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('UIF7.2 the food list, the Evolve list and the empty lists end with Back (monstersSheet-root-back reading kit.sheet.back, enabled, last in DOM order, a bare label) and Back can be the active row', () => {
+    // WRONG IMPL KILLED: a Back row only in the lists that have rows (an emptied list would have no
+    // way back); Back filled with a path heading or a food line; a Back row disabled with the
+    // unmet paths around it; Back not last; a Back that cannot carry the cursor.
+    const { view, root } = c8bOpen();
+    const expectBack = (when: string, list: HTMLElement, active: boolean): void => {
+      const back = lastRow(list);
+      expect(back.id, `${when}: Back is the last row`).toBe('monstersSheet-root-back');
+      expect(back.textContent, `${when}: it reads the catalog`).toBe(i18nT('kit.sheet.back'));
+      expect(back.textContent, `${when}: English bytes`).toBe('Back');
+      expect(back.children.length, `${when}: a bare label`).toBe(0);
+      expect(back.getAttribute('aria-disabled'), `${when}: enabled`).toBeNull();
+      expect(back.classList.contains('is-disabled'), `${when}: not dimmed`).toBe(false);
+      expect(back.getAttribute('aria-selected'), `${when}: active iff painted`).toBe(
+        active ? 'true' : 'false',
+      );
+      expect(
+        [...list.querySelectorAll('[id$="-back"]')].length,
+        `${when}: exactly one Back row`,
+      ).toBe(1);
+    };
+
+    const BAIT: FoodVm = { itemId: 7, name: 'Bait', count: 3 };
+    paintFeed(view, [BAIT], '7');
+    const list = c8cListOf(root, 'monstersSheet-root-7');
+    expectBack('food list, on a food', list, false);
+    paintFeed(view, [BAIT], 'back');
+    expectBack('food list, on Back', list, true);
+    paintFeed(view, [], 'back');
+    expect(
+      c8cOptions(list).map((r) => r.id),
+      'no food: Back alone',
+    ).toEqual(['monstersSheet-root-back']);
+    expectBack('empty food list', list, true);
+
+    paintEvolve(view, C8C_TWO_CHOICES, '20');
+    expectBack('Evolve list with choices, on a path', list, false);
+    paintEvolve(view, C8C_ONE_READY, 'back');
+    expectBack('Evolve list with one ready path, on Back', list, true);
+    expect(
+      c8cOptions(list).map((r) => r.getAttribute('aria-disabled')),
+      'the unmet and the auto-applied paths are dimmed, Back is not',
+    ).toEqual(['true', 'true', null]);
+    paintEvolve(view, NO_PATH, 'back');
+    expect(
+      c8cOptions(list).map((r) => r.id),
+      'no path: Back alone',
+    ).toEqual(['monstersSheet-root-back']);
+    expectBack('Evolve list with no path', list, true);
+  });
+
+  it('UIF7.2 under fr the Close and Back rows read Fermer and Retour, and English again after the locale returns', () => {
+    // WRONG IMPL KILLED: labels resolved once at construction and cached across a locale switch;
+    // an English literal (a French boot reads Close).
+    const { view, root } = c8bOpen();
+    try {
+      p2SetLocale('fr');
+      view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'close') }));
+      const list = c8cListOf(root, 'monstersSheet-root-close');
+      expect(lastRow(list).textContent, 'fr Close').toBe('Fermer');
+      paintFeed(view, [{ itemId: 7, name: 'Bait', count: 3 }], 'back');
+      expect(lastRow(list).textContent, 'fr Back').toBe('Retour');
+      p2SetLocale('en');
+      paintFeed(view, [{ itemId: 7, name: 'Bait', count: 3 }], 'back');
+      expect(lastRow(list).textContent, 'en Back again').toBe('Back');
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+
+  it('UIF7.3 while the food list, the Evolve list and the confirm paint, the frame holds exactly ONE [data-context-sheet], the same root throughout, shown, with exactly that content`s rows (every id monstersSheet-root-<key>) and no sheet action row, and only one list is visible', () => {
+    // WRONG IMPL KILLED: today's separate food, Evolve and confirm lists painted under the sheet
+    // (several listboxes shown, the sheet's action rows left on screen); a second sheet root per
+    // content (stacking: the kit's one root is reused so a sub-list replaces rows); rows under
+    // another frame id (`monstersFeed-*`, `monstersEvolve-*`, `monstersConfirm-*`: the pointer
+    // source, e2e and the nav ids all read one frame id); an old row left behind after a swap.
+    const { parent, view, root } = c8bOpen();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'feed') }));
+    const sheet = uif7Sheets(root)[0] as HTMLElement;
+    expect(uif7RowIds(root), 'fixture: the sheet`s rows').toEqual(UIF7_ACTION_IDS);
+
+    const contents: ReadonlyArray<readonly [string, () => void, readonly string[], string]> = [
+      [
+        'the food list',
+        () =>
+          paintFeed(
+            view,
+            [
+              { itemId: 7, name: 'Bait', count: 3 },
+              { itemId: 40, name: 'Glowberry', count: 12 },
+            ],
+            '7',
+          ),
+        ['monstersSheet-root-7', 'monstersSheet-root-40', 'monstersSheet-root-back'],
+        'list',
+      ],
+      [
+        'the Evolve list',
+        () => paintEvolve(view, C8C_TWO_CHOICES, '20'),
+        [
+          'monstersSheet-root-10',
+          'monstersSheet-root-20',
+          'monstersSheet-root-30',
+          'monstersSheet-root-back',
+        ],
+        'list',
+      ],
+      [
+        'the confirm',
+        () =>
+          view.paint(
+            c8bPaint({
+              tab: 'party',
+              activeKey: '100',
+              confirm: { name: 'Kip', species: 'Emberfang', yes: false },
+            }),
+          ),
+        ['monstersSheet-root-yes', 'monstersSheet-root-no'],
+        'confirm',
+      ],
+      [
+        'the sheet again',
+        () =>
+          view.paint(
+            c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }),
+          ),
+        UIF7_ACTION_IDS,
+        'list',
+      ],
+    ];
+    for (const [name, paint, ids, variant] of contents) {
+      paint();
+      uif7ExpectSame(uif7Sheets(root), [sheet], `${name}: still the one root`);
+      uif7ExpectSame(uif7Shown(root), [sheet], `${name}: and it shows`);
+      expect(uif7RowIds(root), `${name}: exactly its rows, in order`).toEqual(ids);
+      expect(sheet.dataset.sheetVariant, `${name}: the variant`).toBe(variant);
+      if (name !== 'the sheet again') {
+        for (const id of UIF7_ACTION_IDS) {
+          expect(
+            root.querySelector(`[id="${id}"]`),
+            `${name}: no sheet action row ${id}`,
+          ).toBeNull();
+        }
+      }
+      const visibleLists = [...root.querySelectorAll<HTMLElement>('[role="listbox"]')].filter(
+        (el) => !c8bHidden(el, root),
+      );
+      expect(visibleLists, `${name}: one list is visible`).toHaveLength(1);
+      c8cInPanelNotInGridBeforeHint(parent, root, sheet, `${name}: the sheet`);
+    }
+  });
+
+  it('UIF7.3 the confirm renders as the confirm variant: data-sheet-variant="confirm", its heading holds the box.evolve.confirm text, Yes and No are the rows named by it, and No is the selected row by default; the list variant returns with the next list', () => {
+    // WRONG IMPL KILLED: a confirm rendered as a list (no data-sheet-variant="confirm": the kit's
+    // confirm styling and the pointer proof key on it); the question left in a separate part (the
+    // heading would hold the monster's name); a Yes default (a double tap would evolve); both or
+    // neither answer selected; the question from a literal or not carrying the monster and species.
+    const { view, root } = c8bOpen();
+    const confirm = (yes: boolean): void =>
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          confirm: { name: 'Kip', species: 'Emberfang', yes },
+        }),
+      );
+    confirm(false);
+    const sheet = uif7Shown(root)[0] as HTMLElement;
+    expect(sheet.dataset.sheetVariant, 'the confirm variant').toBe('confirm');
+    const heading = root.querySelector('#monsters-sheet-name') as HTMLElement;
+    expect(sheet.contains(heading)).toBe(true);
+    expect(heading.textContent, 'the heading holds the question').toBe(
+      i18nTf('box.evolve.confirm', { name: 'Kip', species: 'Emberfang' }),
+    );
+    expect(heading.hidden, 'shown').toBe(false);
+    const yes = c8cById(root, 'monstersSheet-root-yes');
+    const no = c8cById(root, 'monstersSheet-root-no');
+    expect(no.getAttribute('aria-selected'), 'No is selected by default').toBe('true');
+    expect(yes.getAttribute('aria-selected'), 'Yes is not').toBe('false');
+    expect(c8cListOf(root, 'monstersSheet-root-no').getAttribute('aria-labelledby')).toBe(
+      'monsters-sheet-name',
+    );
+    confirm(true);
+    expect(yes.getAttribute('aria-selected'), 'Yes when painted').toBe('true');
+    expect(no.getAttribute('aria-selected')).toBe('false');
+    paintEvolve(view, C8C_TWO_CHOICES, '20');
+    expect(sheet.dataset.sheetVariant, 'the list variant returns').toBe('list');
+    expect(heading.textContent, 'with the monster`s name as the heading').toBe('Kip');
+  });
+});
+
+describe('BoxView uif-7: the Summary is a page (UIF7.4)', () => {
+  const grids = (parent: HTMLElement): readonly HTMLElement[] => [
+    partyGridOf(parent),
+    boxGridOf(parent),
+  ];
+
+  it('UIF7.4 the summary paints a page inside #monsters-panel in place of both grids (each display:none), with no sheet shown and the tab bar still displayed, its text holding the card line and every stat value, on both tabs, and #monsters-summary-stats is kept', () => {
+    // WRONG IMPL KILLED: today's pane under the sheet (the sheet and a grid still showing); a page
+    // that hides only the active grid (the other tab's cells stay in the a11y tree); a page drawn
+    // outside the panel or inside a grid (a refresh rebuilds the grid); the tab bar hidden with the
+    // grids (a tab click would have nothing to land on); a page missing a stat (level, HP,
+    // trust, attack, defense, speed, spAttack, spDefense: the game's only stats display); the id
+    // `monsters-summary-stats` renamed (qf-9 and the e2e text scans read it).
+    const { parent, view, root } = q9Open(q9Map());
+    const stats = q9MossStats();
+    for (const tab of ['party', 'storage'] as const) {
+      view.paint(c8bPaint({ tab, activeKey: tab === 'party' ? '101' : '200', summary: C8B_MOSS }));
+      const where = `${tab} tab`;
+      for (const grid of grids(parent)) {
+        expect(grid.style.display, `${where}: a grid is display:none`).toBe('none');
+        expect(c8bHidden(grid, root), `${where}: read as hidden`).toBe(true);
+      }
+      expect(uif7Shown(root), `${where}: no sheet shows`).toEqual([]);
+      const bar = root.querySelector<HTMLElement>('.mr-tabbar') as HTMLElement;
+      expect(c8bHidden(bar, root), `${where}: the tab bar stays displayed`).toBe(false);
+      expect(c8bSelected(root), `${where}: the selected tab follows the paint`).toEqual(
+        tab === 'party' ? ['true', 'false'] : ['false', 'true'],
+      );
+
+      const line = q9Line(root);
+      expect(c8bHidden(line, root), `${where}: the stats line shows`).toBe(false);
+      const panel = monstersPanelOf(parent);
+      let page: HTMLElement = line;
+      while (page.parentElement !== null && page.parentElement !== panel) page = page.parentElement;
+      expect(page.parentElement, `${where}: the page is a child of #monsters-panel`).toBe(panel);
+      expect(
+        grids(parent).some((g) => g.contains(page)),
+        `${where}: not in a grid`,
+      ).toBe(false);
+      expect(c8bHidden(page, root), `${where}: the page shows`).toBe(false);
+      const text = page.textContent ?? '';
+      expect(text, `${where}: the card line (level, HP)`).toContain(p2Stats(C8B_MOSS));
+      expect(text, `${where}: the stats line`).toContain(q9En(stats));
+      for (const value of [
+        String(C8B_MOSS.level),
+        String(C8B_MOSS.currentHp),
+        String(C8B_MOSS.statHp),
+        stats.trustTier,
+        String(stats.statAttack),
+        String(stats.statDefense),
+        String(stats.statSpeed),
+        String(stats.statSpAttack),
+        String(stats.statSpDefense),
+      ]) {
+        expect(text, `${where}: the page holds ${value}`).toContain(value);
+      }
+      expect(text, `${where}: the monster's name heads the page`).toContain('Mossling');
+    }
+  });
+
+  it('UIF7.4 a paint with no summary restores the active grid, hides and empties the page, and the sheet and the page replace each other', () => {
+    // WRONG IMPL KILLED: a page that stays after the summary closes (a grid never comes back); a
+    // grid restored to the wrong display or the inactive grid shown too; stat text left in the
+    // hidden page (the e2e scans read hidden text); a sheet left open under the page.
+    const { parent, view, root } = q9Open(q9Map());
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', sheet: c8bSheet(C8B_MOSS, 'summary') }));
+    expect(uif7Shown(root), 'fixture: the sheet shows').toHaveLength(1);
+    expect(partyGridOf(parent).style.display, 'fixture: the Party grid shows').toBe('grid');
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    expect(uif7Shown(root), 'the page replaces the sheet').toEqual([]);
+    expect(uif7RowIds(root), 'and no sheet row is left').toEqual([]);
+    expect(q9Line(root).textContent, 'the page holds the stats').toBe(q9En(q9MossStats()));
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', sheet: c8bSheet(C8B_MOSS, 'summary') }));
+    expect(partyGridOf(parent).style.display, 'the Party grid is back').toBe('grid');
+    expect(boxGridOf(parent).style.display, 'the Storage grid stays hidden').toBe('none');
+    expect(uif7Shown(root), 'the sheet is back').toHaveLength(1);
+    expect(c8bHidden(q9Line(root), root), 'the page is hidden').toBe(true);
+    expect(root.textContent ?? '', 'and holds no stat text').not.toContain('ATK ');
+
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
+    expect(boxGridOf(parent).style.display, 'Storage: its grid shows').toBe('grid');
+    expect(partyGridOf(parent).style.display, 'and the Party grid is hidden').toBe('none');
   });
 });

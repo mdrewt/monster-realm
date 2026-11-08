@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { t } from '../src/ui/i18n/resolver';
 import { closeAll, pressAccel, pressButton } from './controls';
 import {
   contrastRatio,
@@ -13,6 +14,8 @@ import {
   expectSample,
   measuredContrast,
   parseRgb,
+  type Rect,
+  rectsOverlap,
   resolveLength,
   sampleStyle,
 } from './uiKit';
@@ -757,3 +760,577 @@ test.describe
       }
     });
   });
+
+// ===========================================================================================
+// uif-7 (UIF7.1, UIF7.3, UIF7.4, UIF7.5): the Monsters sheet, its Feed… list and Evolve confirm, the
+// Summary page and the outside click, measured in Chromium.
+//
+// EVIDENCE LABEL (the UIF6.4 precedent): real modules + real CSS + a FAKE store, on a page whose
+// main.ts is route-aborted (so it never connects, adds no presence row and needs no database). The
+// e2e cannot seed boxed monsters (monster / monster_pub carry enum columns that owner SQL cannot
+// write), so the fixture page imports the real BoxView, monstersModel, monstersScreen and
+// PointerSource from the Vite dev server and wires PointerSource.press -> monstersScreen.onButton ->
+// paint exactly as main.ts does. The page-side code is a STRING (a function containing `import()` is
+// rewritten by Playwright's transform).
+//
+// THE FIXTURE WORLD (all species 1, level 5): two Party monsters (slots 0 and 1, nicknames P0 and
+// P1), nine Storage monsters (ids 101 to 109, nicknames N101 to N109: three columns, three rows),
+// every species-1 monster with two evolution CHOICES (edges 20 and 30; edge 10 is unmet), one food
+// (Bait x3) so Feed… is enabled, and a distinct stats row (attack 71 … spDefense 75, trust Neutral).
+// The evolve confirm is therefore reachable from the fake store (three Bs from the list).
+//
+// ORACLE RULE (UIF6's): geometry claims compare measured rects with each other; no pixel literal
+// except the 1280x720 window the criteria name.
+// ===========================================================================================
+
+const UIF7_MOUNT = `(async () => {
+  const [boxMod, modelMod, screenMod, pointerMod, raisingMod] = await Promise.all([
+    import('/src/ui/boxView.ts'),
+    import('/src/ui/monstersModel.ts'),
+    import('/src/ui/screens/monstersScreen.ts'),
+    import('/src/input/pointerSource.ts'),
+    import('/src/ui/raisingModel.ts'),
+  ]);
+  const screenEl = document.querySelector('#game-screen');
+  if (screenEl === null) throw new Error('#game-screen is missing');
+  let app = document.getElementById('app');
+  if (app === null) {
+    app = document.createElement('div');
+    app.id = 'app';
+    screenEl.appendChild(app);
+  }
+  const view = new boxMod.BoxView(app, {
+    onSetNickname() {},
+    onSetPartySlot() {},
+    partySlotNone: 255,
+  });
+  const essence = { Fire: 0, Water: 0, Plant: 0, Electric: 0, Earth: 0, Wind: 0, Light: 0, Dark: 0 };
+  const mon = (id, slot, nickname) => ({
+    monsterId: BigInt(id), ownerIdentity: 'fixture', speciesId: 1, nickname, level: 5, xp: 0,
+    currentHp: 30, statHp: 40, statAttack: 71, statDefense: 72, statSpeed: 73, statSpAttack: 74,
+    statSpDefense: 75, partySlot: slot, tier: 0, essence, trustTier: 'Neutral',
+    qualityTimeTier: 0, nutritionPct: 0, lastCareAtMs: 0n,
+  });
+  const species = new Map([
+    [1, 'Sproutle'], [2, 'Emberfang'], [3, 'Duskling'], [4, 'Tidepup'],
+  ].map(([id, name]) => [id, {
+    id, name, baseHp: 45, baseAttack: 49, baseDefense: 49, baseSpeed: 45,
+    baseSpAttack: 65, baseSpDefense: 65, affinity: 'Fire', learnableSkillIds: [],
+  }]));
+  const edge = (edgeId, toSpecies, minLevel) => ({
+    pathId: BigInt(edgeId * 1000), edgeId, fromSpecies: 1, toSpecies, minLevel, essence: [],
+    minTrustTier: null, minQualityTimeTier: null, minNutritionPct: null,
+  });
+  const paths = [edge(10, 4, 50), edge(20, 3, 1), edge(30, 2, 1)];
+  const monsters = [mon(1, 0, 'P0'), mon(2, 1, 'P1')];
+  for (let i = 101; i <= 109; i += 1) monsters.push(mon(i, 255, 'N' + i));
+  const items = raisingMod.buildInventoryItems(
+    [{ invId: 1n, ownerIdentity: 'fixture', itemId: 7, count: 3 }],
+    new Map([[7, {
+      id: 7, name: 'Bait', description: '', recruitBonus: 0, trainStat: 'attack', trainAmount: 1,
+      sellPrice: 0n, cureStatus: null,
+    }]]),
+  );
+  const vm = modelMod.buildMonstersVm(monsters, species, 6, 255, paths, items, new Map(), 'storage');
+  const stats = new Map(monsters.map((m) => [String(m.monsterId), {
+    trustTier: 'Neutral', statAttack: 71, statDefense: 72, statSpeed: 73, statSpAttack: 74,
+    statSpDefense: 75,
+  }]));
+  let state = screenMod.monstersScreen.init(vm);
+  view.show();
+  view.refresh(vm.partySlots, vm.storage, stats);
+  const paint = () => screenMod.monstersScreen.paint(view, vm, state);
+  paint();
+  const fired = [];
+  const press = (button) => {
+    const step = screenMod.monstersScreen.onButton(vm, state, { button, repeat: false });
+    state = step.state;
+    if (step.result !== 'consumed' && step.result !== 'unhandled') fired.push(step.result);
+    paint();
+  };
+  new pointerMod.PointerSource(screenEl, () => null, {
+    top: () => 'frame',
+    press,
+    capturing: () => false,
+    cancelCapture() {},
+    choice() {},
+    shop() {},
+  });
+  window.__uif7 = {
+    press,
+    reset() {
+      state = screenMod.monstersScreen.init(vm);
+      paint();
+    },
+    item: () => state.nav.item,
+    tab: () => state.nav.tab,
+    phase: () => ({
+      kind: state.phase.kind,
+      monsterId: state.phase.monsterId === undefined ? null : String(state.phase.monsterId),
+    }),
+    fired,
+  };
+  return true;
+})()`;
+
+interface Uif7Hook {
+  press(button: string): void;
+  reset(): void;
+  item(): string | null;
+  tab(): string | null;
+  phase(): { kind: string; monsterId: string | null };
+  fired: unknown[];
+}
+
+const uif7Press = (p: Page, button: string): Promise<void> =>
+  p.evaluate((b) => (window as unknown as { __uif7: Uif7Hook }).__uif7.press(b), button);
+const uif7Reset = (p: Page): Promise<void> =>
+  p.evaluate(() => (window as unknown as { __uif7: Uif7Hook }).__uif7.reset());
+const uif7Phase = (p: Page): Promise<{ kind: string; monsterId: string | null }> =>
+  p.evaluate(() => (window as unknown as { __uif7: Uif7Hook }).__uif7.phase());
+const uif7Item = (p: Page): Promise<string | null> =>
+  p.evaluate(() => (window as unknown as { __uif7: Uif7Hook }).__uif7.item());
+const uif7Tab = (p: Page): Promise<string | null> =>
+  p.evaluate(() => (window as unknown as { __uif7: Uif7Hook }).__uif7.tab());
+const uif7Fired = (p: Page): Promise<unknown[]> =>
+  p.evaluate(() => (window as unknown as { __uif7: Uif7Hook }).__uif7.fired.slice());
+const uif7Presses = async (p: Page, buttons: readonly string[]): Promise<void> => {
+  for (const b of buttons) await uif7Press(p, b);
+};
+
+const asRect = (b: Box): Rect => ({ x: b.x, y: b.y, width: b.w, height: b.h });
+
+interface SheetGeometry {
+  sheetCount: number;
+  sheet: Box | null;
+  border: number;
+  cursor: Box;
+  cursorKey: string;
+  panel: Box;
+  viewport: { w: number; h: number };
+  cells: Array<{ key: string; box: Box; hit: boolean }>;
+}
+
+/** Every number the sheet claims need, read in ONE evaluate: the shown sheet root's rect and border,
+ *  the cursor cell's rect, the panel's, and for each cell of the cursor's grid the rect and whether
+ *  `elementFromPoint` at its centre lands on that cell (or a descendant): what covers the grid. */
+const sheetGeometry = (p: Page): Promise<SheetGeometry> =>
+  p.evaluate(() => {
+    const box = (el: Element): Box => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height, r: r.right, b: r.bottom };
+    };
+    const panel = document.getElementById('monsters-panel');
+    const cursor = document.querySelector<HTMLElement>('#monsters-panel [aria-current="true"]');
+    if (panel === null || cursor === null || cursor.parentElement === null) {
+      throw new Error('the Monsters panel or its cursor cell is not in the document');
+    }
+    const sheets = [...document.querySelectorAll<HTMLElement>('[data-context-sheet]')].filter(
+      (el) => !el.hidden && getComputedStyle(el).display !== 'none',
+    );
+    const sheet = sheets[0] ?? null;
+    const cs = sheet === null ? null : getComputedStyle(sheet);
+    const cells = [...cursor.parentElement.querySelectorAll<HTMLElement>('[data-nav-key]')].map(
+      (el) => {
+        const b = box(el);
+        const top = document.elementFromPoint(b.x + b.w / 2, b.y + b.h / 2);
+        return { key: el.dataset.navKey ?? '', box: b, hit: top !== null && el.contains(top) };
+      },
+    );
+    return {
+      sheetCount: sheets.length,
+      sheet: sheet === null ? null : box(sheet),
+      border:
+        cs === null
+          ? 0
+          : Math.max(
+              Number.parseFloat(cs.borderTopWidth),
+              Number.parseFloat(cs.borderRightWidth),
+              Number.parseFloat(cs.borderBottomWidth),
+              Number.parseFloat(cs.borderLeftWidth),
+            ),
+      cursor: box(cursor),
+      cursorKey: cursor.dataset.navKey ?? '',
+      panel: box(panel),
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+      cells,
+    };
+  });
+
+/** The Storage cursor on column `col`, row `row` of the fixture's 3x3 grid (the frame opens on the
+ *  first cell). */
+const uif7StorageCell = async (p: Page, col: number, row: number): Promise<void> => {
+  await uif7Reset(p);
+  await uif7Presses(p, [...Array(col).fill('Right'), ...Array(row).fill('Down')] as string[]);
+};
+
+test.describe
+  .serial('UIF7 — the Monsters sheet, the Summary page and the outside click, measured in Chromium (fixture page)', () => {
+    let browser: Browser;
+    let ctx: BrowserContext;
+    let page: Page;
+
+    test.beforeAll(async () => {
+      test.setTimeout(60_000);
+      browser = await chromium.launch();
+      ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+      await ctx.route('**/src/main.ts*', (route) => route.abort());
+      page = await ctx.newPage();
+    });
+
+    test.afterAll(async () => {
+      await browser.close();
+    });
+
+    // A fresh fixture page per test: a new BoxView, a new store, a new cursor.
+    test.beforeEach(async () => {
+      await page.setViewportSize(VIEWPORT);
+      await page.goto('/');
+      await page.waitForLoadState('load');
+      expect(
+        await page.evaluate(() => typeof (window as unknown as { __game?: unknown }).__game),
+        'main.ts did not run',
+      ).toBe('undefined');
+      await page.evaluate(UIF7_MOUNT);
+      await expect(page.locator('#monsters-tab-storage'), 'the fixture frame shows').toBeVisible();
+    });
+
+    test('UIF7.1 at 1280x720 the open sheet never touches the cursor cell, for every Storage column in the first and last rows and a Party cell in each column, with a non-zero border, the tabs and grid visible and nothing else covering the grid; and again with the food list and the Evolve confirm open (the row count changes the height)', async () => {
+      // WRONG IMPL KILLED: a sheet laid over the selected slot (the wf-1 placement verdict: the corner
+      // away from the slot, flipped when it would touch); a sheet pinned to one corner whatever the
+      // slot (the right-column and last-row cells collide with it); a placement done once on open and
+      // never again after a content swap (Feed… has 2 rows, Evolve… 4: the height changes); a
+      // borderless sheet (it would read as part of the grid); a sheet or a dim layer that covers the
+      // tabs or the grid (`elementFromPoint` at a cell far from the sheet lands on the layer, not the
+      // cell); a sheet that leaves the panel or the window.
+      test.setTimeout(180_000);
+      const scenarios: Array<{ label: string; go: () => Promise<void> }> = [];
+      for (const row of [0, 2]) {
+        for (const col of [0, 1, 2]) {
+          scenarios.push({
+            label: `Storage column ${col}, row ${row}`,
+            go: () => uif7StorageCell(page, col, row),
+          });
+        }
+      }
+      for (const slot of [0, 1]) {
+        scenarios.push({
+          label: `Party slot ${slot}`,
+          go: async () => {
+            await uif7Reset(page);
+            await uif7Press(page, 'RB'); // the Party tab, on its first occupied slot
+            if (slot === 1) await uif7Press(page, 'Right');
+          },
+        });
+      }
+
+      const expectClear = async (label: string, stage: string): Promise<void> => {
+        const g = await sheetGeometry(page);
+        const where = `${label}, ${stage}`;
+        expect(g.sheetCount, `${where}: exactly one sheet shows`).toBe(1);
+        const sheet = g.sheet as Box;
+        expect(
+          rectsOverlap(asRect(sheet), asRect(g.cursor)),
+          `${where}: the sheet ${JSON.stringify(sheet)} does not cover the cursor cell ${g.cursorKey} ${JSON.stringify(g.cursor)}`,
+        ).toBe(false);
+        expect(g.border, `${where}: the sheet has a non-zero border`).toBeGreaterThan(0);
+        expect(sheet.w, `${where}: the sheet has a width`).toBeGreaterThan(20);
+        expect(sheet.h, `${where}: and a height`).toBeGreaterThan(20);
+        expect(sheet.x, `${where}: inside the panel (left)`).toBeGreaterThanOrEqual(
+          g.panel.x - 0.5,
+        );
+        expect(sheet.r, `${where}: inside the panel (right)`).toBeLessThanOrEqual(g.panel.r + 0.5);
+        expect(sheet.y, `${where}: inside the panel (top)`).toBeGreaterThanOrEqual(g.panel.y - 0.5);
+        expect(sheet.b, `${where}: inside the panel (bottom)`).toBeLessThanOrEqual(g.panel.b + 0.5);
+        expect(sheet.r, `${where}: inside the window (right)`).toBeLessThanOrEqual(g.viewport.w);
+        expect(sheet.b, `${where}: inside the window (bottom)`).toBeLessThanOrEqual(g.viewport.h);
+        // Nothing but the sheet covers the grid: every cell the sheet does not overlap, that lies in
+        // the panel and the window, is what the point at its centre hits.
+        const probed = g.cells.filter(
+          (c) =>
+            !rectsOverlap(asRect(sheet), asRect(c.box)) &&
+            c.box.y >= g.panel.y &&
+            c.box.b <= g.panel.b &&
+            c.box.b <= g.viewport.h,
+        );
+        expect(
+          probed.length,
+          `${where}: non-vacuity: cells away from the sheet were probed`,
+        ).toBeGreaterThanOrEqual(2);
+        for (const cell of probed) {
+          expect(cell.hit, `${where}: cell ${cell.key} is not covered by anything`).toBe(true);
+        }
+        await expect(page.locator('#monsters-tab-party'), `${where}: the Party tab`).toBeVisible();
+        await expect(
+          page.locator('#monsters-tab-storage'),
+          `${where}: the Storage tab`,
+        ).toBeVisible();
+        await expect(
+          page.locator('#monsters-panel [aria-current="true"]'),
+          `${where}: the cursor cell`,
+        ).toBeVisible();
+      };
+
+      for (const scenario of scenarios) {
+        await scenario.go();
+        await uif7Press(page, 'A');
+        expect((await uif7Phase(page)).kind, `${scenario.label}: A opened the sheet`).toBe('sheet');
+        await expectClear(scenario.label, 'the sheet');
+
+        // Feed… (two Downs from Summary), A: the food list, two rows (Bait, Back).
+        await uif7Presses(page, ['Down', 'Down', 'A']);
+        expect((await uif7Phase(page)).kind, `${scenario.label}: the food list`).toBe('feed');
+        await expectClear(scenario.label, 'the food list');
+        await uif7Press(page, 'B'); // back to the sheet, on Feed…
+
+        // Evolve… (one Down), A: the path list, then A on the first choice: the confirm.
+        await uif7Presses(page, ['Down', 'A']);
+        expect((await uif7Phase(page)).kind, `${scenario.label}: the Evolve list`).toBe('evolve');
+        await expectClear(scenario.label, 'the Evolve list');
+        await uif7Press(page, 'A');
+        expect((await uif7Phase(page)).kind, `${scenario.label}: the confirm`).toBe(
+          'evolveConfirm',
+        );
+        await expectClear(scenario.label, 'the confirm');
+      }
+    });
+
+    test('UIF7.3 in Chromium, opening Feed… keeps exactly one shown [data-context-sheet], whose rows are the food rows and Back (the sheet`s action rows are gone), and B brings the sheet`s rows back into the same root', async () => {
+      // WRONG IMPL KILLED: a food list painted as a second sheet root or a loose list beside the
+      // sheet (two shown roots, the sheet's own rows still visible under it); the sheet's rows left
+      // on screen with the food rows added; a B that leaves the food rows.
+      await uif7Reset(page);
+      await uif7Press(page, 'A');
+      const shownSheets = page.locator('[data-context-sheet]:not([hidden])');
+      await expect(shownSheets, 'the sheet is open: one root').toHaveCount(1);
+      const rootBefore = await shownSheets.first().evaluate((el) => el.id || el.className);
+      await expect(
+        page.locator('#monstersSheet-root-summary'),
+        'the action rows show',
+      ).toBeVisible();
+
+      await uif7Presses(page, ['Down', 'Down', 'A']);
+      await expect(shownSheets, 'Feed… keeps exactly one shown sheet root').toHaveCount(1);
+      expect(await shownSheets.first().evaluate((el) => el.id || el.className)).toBe(rootBefore);
+      const rows = shownSheets.first().locator('[role="option"]');
+      await expect(rows, 'the food row and Back').toHaveCount(2);
+      await expect(rows.first(), 'the food row').toHaveText(/Bait/);
+      await expect(rows.last(), 'Back').toHaveText(t('kit.sheet.back'));
+      for (const key of ['summary', 'care', 'feed', 'evolve', 'nickname', 'move', 'close']) {
+        await expect(
+          page.locator(`#monstersSheet-root-${key}`),
+          `the sheet action row ${key} is gone`,
+        ).toHaveCount(0);
+      }
+      await expect(
+        page.locator('[role="listbox"]:visible'),
+        'one list is visible on the page',
+      ).toHaveCount(1);
+
+      await uif7Press(page, 'B');
+      await expect(shownSheets, 'back on the sheet: still one root').toHaveCount(1);
+      await expect(
+        page.locator('#monstersSheet-root-feed'),
+        'the action rows are back',
+      ).toBeVisible();
+      await expect(
+        page.locator('#monstersSheet-root-close'),
+        'with Close as the last row',
+      ).toBeVisible();
+    });
+
+    test('UIF7.4 the Summary page is visible inside the panel in place of both grids, with no sheet and the tabs visible, showing every stat value as text', async () => {
+      // WRONG IMPL KILLED: today's pane under the sheet (the grid and the sheet still on screen); a
+      // page hidden by size 0 or drawn outside the panel; the grids hidden but the tab bar gone with
+      // them; stat values present in the DOM but not rendered (innerText reads only what shows).
+      await uif7Reset(page);
+      await uif7Presses(page, ['A', 'A']); // the sheet on Summary, then Summary
+      expect((await uif7Phase(page)).kind, 'fixture: the summary phase').toBe('summary');
+
+      await expect(
+        page.locator('[data-context-sheet]:not([hidden])'),
+        'no sheet shows',
+      ).toHaveCount(0);
+      await expect(page.locator('#monsters-tab-party'), 'the Party tab stays').toBeVisible();
+      await expect(page.locator('#monsters-tab-storage'), 'the Storage tab stays').toBeVisible();
+      const grids = await page.evaluate(() => {
+        const display = (cellSelector: string): string | null => {
+          const grid = document.querySelector(cellSelector)?.parentElement;
+          return grid === null || grid === undefined ? null : getComputedStyle(grid).display;
+        };
+        return {
+          party: display('#monsters-panel [data-nav-key="1"]'),
+          storage: display('#monsters-panel [data-nav-key="101"]'),
+        };
+      });
+      expect(grids.party, 'the Party grid is display:none').toBe('none');
+      expect(grids.storage, 'the Storage grid is display:none').toBe('none');
+
+      const stats = page.locator('#monsters-summary-stats');
+      await expect(stats, 'the stats line is visible').toBeVisible();
+      const inPanel = await stats.evaluate((el) => {
+        const panel = document.getElementById('monsters-panel');
+        let page: HTMLElement = el;
+        while (page.parentElement !== null && page.parentElement !== panel)
+          page = page.parentElement;
+        if (panel === null || page.parentElement !== panel) return null;
+        const r = page.getBoundingClientRect();
+        const pr = panel.getBoundingClientRect();
+        return {
+          page: { x: r.x, y: r.y, w: r.width, h: r.height, r: r.right, b: r.bottom },
+          panel: { x: pr.x, y: pr.y, w: pr.width, h: pr.height, r: pr.right, b: pr.bottom },
+        };
+      });
+      expect(
+        inPanel,
+        'the stats line sits in a page that is a child of #monsters-panel',
+      ).not.toBeNull();
+      const { page: pageBox, panel } = inPanel as { page: Box; panel: Box };
+      expect(pageBox.w, 'the page has a width').toBeGreaterThan(100);
+      expect(pageBox.h, 'and a height').toBeGreaterThan(40);
+      expect(pageBox.x, 'inside the panel (left)').toBeGreaterThanOrEqual(panel.x - 0.5);
+      expect(pageBox.r, 'inside the panel (right)').toBeLessThanOrEqual(panel.r + 0.5);
+      expect(pageBox.b, 'inside the panel (bottom)').toBeLessThanOrEqual(panel.b + 0.5);
+
+      // Rendered text (innerText): the name, trust, and every stat.
+      const rendered = page.locator('#monsters-panel');
+      for (const value of ['N101', 'Neutral', '71', '72', '73', '74', '75', '30', '40']) {
+        await expect(rendered, `the page shows ${value}`).toContainText(value, {
+          useInnerText: true,
+        });
+      }
+      await expect(rendered, 'the level shows').toContainText('5', { useInnerText: true });
+    });
+
+    test('UIF7.5 with the sheet open, a REAL mouse click on ANOTHER Storage cell closes the sheet and lands on that cell (the cursor is there and the sheet that opens names that monster); a click on the Party tab closes the sheet and selects Party', async () => {
+      // WRONG IMPL KILLED: a click eaten by the open sheet or by a layer over the grid (the cell is
+      // never reached); a sheet that stays open after the click; a click that lands on the OLD
+      // monster; a tab click the sheet swallows; a command sent on the way.
+      test.setTimeout(90_000);
+      await uif7StorageCell(page, 0, 0);
+      await uif7Press(page, 'A');
+      expect(await uif7Phase(page), 'fixture: the sheet is open on the first cell').toEqual({
+        kind: 'sheet',
+        monsterId: '101',
+      });
+
+      const target = await pickClickTarget(page);
+      await page.mouse.click(target.x, target.y);
+      await expect
+        .poll(() => uif7Phase(page), { message: `the click landed on cell ${target.key}` })
+        .toEqual({ kind: 'sheet', monsterId: target.key });
+      expect(await uif7Item(page), 'the cursor is on the clicked cell').toBe(target.key);
+      await expect(
+        page.locator('#monsters-panel [aria-current="true"]'),
+        'aria-current is on the clicked cell',
+      ).toHaveAttribute('data-nav-key', target.key);
+      await expect(
+        page.locator('[data-context-sheet]:not([hidden])'),
+        'one sheet shows, not two',
+      ).toHaveCount(1);
+      await expect(
+        page.locator('#monsters-sheet-name'),
+        'and it names the clicked monster, not the first one',
+      ).toHaveText(`N${target.key}`);
+
+      // The Party tab, by a real click.
+      await page.locator('#monsters-tab-party').click();
+      await expect(page.locator('#monsters-tab-party'), 'Party is selected').toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect((await uif7Phase(page)).kind, 'the sheet is closed').toBe('list');
+      expect(await uif7Tab(page)).toBe('party');
+      await expect(
+        page.locator('[data-context-sheet]:not([hidden])'),
+        'no sheet shows',
+      ).toHaveCount(0);
+      expect(await uif7Fired(page), 'no command was sent on the way').toEqual([]);
+    });
+
+    test('UIF7.5 the same holds from the Evolve confirm (three Bs deep, the fixture monster has two choices), from the food list and from the Summary page: the click closes what is open and lands on its target, the tab click selects Party', async () => {
+      // WRONG IMPL KILLED: a close that presses one B only (the sub-list or confirm stays open under
+      // the click); a close that cannot reach three levels (the confirm); a Summary page a tab click
+      // cannot leave (the page is no sheet root, so the click is a tab seek that Summary must take);
+      // a command sent on the way (feed, evolve).
+      test.setTimeout(120_000);
+
+      // From the Evolve confirm: Down x3 (Care, Feed…, Evolve…), A (the list), A (the confirm).
+      await uif7StorageCell(page, 0, 0);
+      await uif7Presses(page, ['A', 'Down', 'Down', 'Down', 'A', 'A']);
+      expect((await uif7Phase(page)).kind, 'fixture: the Evolve confirm is open').toBe(
+        'evolveConfirm',
+      );
+      await expect(
+        page.locator('[data-context-sheet][data-sheet-variant="confirm"]:not([hidden])'),
+        'fixture: the confirm variant shows',
+      ).toHaveCount(1);
+      const fromConfirm = await pickClickTarget(page);
+      await page.mouse.click(fromConfirm.x, fromConfirm.y);
+      await expect
+        .poll(() => uif7Phase(page), { message: 'the confirm: the click landed on its cell' })
+        .toEqual({ kind: 'sheet', monsterId: fromConfirm.key });
+      await expect(
+        page.locator('#monsters-sheet-name'),
+        'the confirm: names the clicked one',
+      ).toHaveText(`N${fromConfirm.key}`);
+      await expect(
+        page.locator('[data-context-sheet][data-sheet-variant="confirm"]:not([hidden])'),
+        'the confirm is gone',
+      ).toHaveCount(0);
+
+      // From the food list.
+      await uif7StorageCell(page, 0, 0);
+      await uif7Presses(page, ['A', 'Down', 'Down', 'A']);
+      expect((await uif7Phase(page)).kind, 'fixture: the food list is open').toBe('feed');
+      const fromFeed = await pickClickTarget(page);
+      await page.mouse.click(fromFeed.x, fromFeed.y);
+      await expect
+        .poll(() => uif7Phase(page), { message: 'the food list: the click landed on its cell' })
+        .toEqual({ kind: 'sheet', monsterId: fromFeed.key });
+      await expect(page.locator('#monsters-sheet-name')).toHaveText(`N${fromFeed.key}`);
+
+      // From the Summary page: a tab click leaves it and selects Party.
+      await uif7StorageCell(page, 0, 0);
+      await uif7Presses(page, ['A', 'A']);
+      expect((await uif7Phase(page)).kind, 'fixture: the Summary page is open').toBe('summary');
+      await page.locator('#monsters-tab-party').click();
+      await expect(page.locator('#monsters-tab-party'), 'Party is selected').toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect((await uif7Phase(page)).kind, 'the Summary page is gone').toBe('list');
+      await expect(
+        page.locator('#monsters-summary-stats'),
+        'the page no longer shows its stats',
+      ).toBeHidden();
+      await expect(
+        page.locator('#monsters-panel [aria-current="true"]'),
+        'the Party grid shows its cursor cell',
+      ).toBeVisible();
+      expect(await uif7Fired(page), 'nothing was sent on the way').toEqual([]);
+    });
+  });
+
+/** A Storage cell the open sheet does not cover, other than the cursor's, with its centre point and
+ *  key: found by geometry, so the real click lands on a cell and not on the sheet. */
+async function pickClickTarget(p: Page): Promise<{ key: string; x: number; y: number }> {
+  const g = await sheetGeometry(p);
+  expect(g.sheetCount, 'precondition: a sheet is showing').toBe(1);
+  const sheet = g.sheet as Box;
+  const candidates = g.cells.filter(
+    (c) =>
+      c.key !== g.cursorKey &&
+      c.hit &&
+      !rectsOverlap(asRect(sheet), asRect(c.box), 0) &&
+      c.box.y >= g.panel.y &&
+      c.box.b <= g.panel.b &&
+      c.box.b <= g.viewport.h,
+  );
+  expect(
+    candidates.length,
+    'precondition: a clickable cell away from the sheet exists',
+  ).toBeGreaterThan(0);
+  const pick = candidates[candidates.length - 1] as { key: string; box: Box };
+  return { key: pick.key, x: pick.box.x + pick.box.w / 2, y: pick.box.y + pick.box.h / 2 };
+}
