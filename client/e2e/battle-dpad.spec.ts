@@ -47,7 +47,9 @@ import {
 //   - CTL8J-2-A: on an own turn ADJACENT to the wild, Recruit opens its bait list; B backs out to
 //     the root menu and B closes the menu (the tactical equivalent of Yes / No + B×2), spending
 //     nothing; `fightToOutcome` by buttons; the results panel, A continues (or the auto-advance) to
-//     the world; `ongoingBattle` null.
+//     the world; `ongoingBattle` null. A wild that steps away from adjacency (a kiting, Skittish
+//     wild) is recognised on the next fresh own turn and its battle fled and re-hunted (at most
+//     MAX_ADJACENT_HUNTS battles); every approach turn asserts the drafted Move executed.
 //   - CTL8J-2-B: a second hunt to an outcome; B continues to the world.
 //
 // INPUT RULE. Every in-battle input goes through `pressButton` / `pressAccel` (the hunt, which walks
@@ -79,11 +81,19 @@ const SEED_XP = SEED_LEVEL * SEED_LEVEL * SEED_LEVEL;
 const MAX_WALK_STEPS = 120;
 /** Own turns a battle may take to an outcome (a hit KOs; the rest is closing in). */
 const MAX_OWN_TURNS = 16;
-/** Own turns CTL8J-2-A may spend closing in until the wild stands adjacent on a fresh turn. */
+/** Own turns CTL8J-2-A may spend closing in until the wild stands adjacent on a fresh turn. The
+ *  fallback for geometry the kite judgement (`kitedAway`) cannot read: a far spawn behind rough
+ *  ground may need an extra approach turn before adjacency is reached. */
 const MAX_APPROACH_TURNS = 12;
-/** CTL8J-2-A: battles (the first is CTL8J-3's) to try for an own turn adjacent to the wild; a
- *  kiting wild's battle is fled and the grass re-hunted (tactics-wild's MAX_BATTLES precedent). */
-const MAX_ADJACENT_HUNTS = 3;
+/** CTL8J-2-A: battles to try for an own turn adjacent to the wild (tactics-wild's MAX_BATTLES
+ *  precedent). The first battle is CTL8J-3x's. A battle whose wild steps away from adjacency (a
+ *  kiting, Skittish wild) is given up at once (`kitedAway`), fled and the grass re-hunted. Zone 0's
+ *  FROZEN encounter weights 10/7/5 make such a battle ≤ 5/22 ≈ 23 % of draws (pack slots roll
+ *  independently; this identity owns one monster, so every battle is one wild), so 8 hunts fail
+ *  only when 8 kiters come in a row, ≈ 7e-6 per run. Cost model (measured): a kiter hunt ≈ 10–15 s
+ *  (recognised on own turn 2–3), a battle that runs the whole MAX_APPROACH_TURNS bound ≈ 37 s, so
+ *  even 8 bound hunts plus the fight that follows stay under the 600 s test timeout. */
+const MAX_ADJACENT_HUNTS = 8;
 /** Menu moves one `menuTo` may spend. */
 const MAX_MENU_MOVES = 8;
 /** Presses `continueWith` may spend (the first A inside the outcome's 400 ms grace is ignored). */
@@ -286,6 +296,43 @@ async function continueWith(p: Page, button: 'A' | 'B'): Promise<void> {
   }
 }
 
+/** CTL8J-2-A: what the last own turn stepped toward — the wild (by unitId) and where it stood — and
+ *  the tile the Move left (`from`). */
+interface Stepped {
+  unitId: number;
+  x: number;
+  y: number;
+  from: Tile;
+}
+
+/** True when the last own turn's Move reached the tile next to where `stepped` stood and that same
+ *  wild, still conscious, is no longer adjacent: it stepped away from us. A kiting (Skittish) wild
+ *  does this on every turn we end adjacent, so no number of approach turns can bring it adjacent on a
+ *  fresh own turn. Judged from the fresh turn's snapshot, after the adjacency check. */
+function kitedAway(me: Tile, stepped: Stepped | null, units: TacticsSnap['units']): boolean {
+  if (stepped === null || tileDistance(me, stepped) !== 1) return false;
+  const wild = units.find((u) => u.unitId === stepped.unitId);
+  return wild !== undefined && wild.state === 'Active' && tileDistance(me, wild) > 1;
+}
+
+/** The battle's wild species and level (`s<species_id>L<level>`, `+`-joined by wild_index) by owner
+ *  SQL on the private `battle_wild_unit` row — DIAGNOSTIC ONLY (it tells a Skittish kite from an AI
+ *  that disengages in the CI log); `?` when the read fails, so a CLI hiccup cannot fail the test. */
+function wildSpecies(battleId: string): string {
+  if (!/^[0-9]+$/.test(battleId)) return '?';
+  try {
+    const rows = sqlRows(
+      sql(`SELECT * FROM battle_wild_unit WHERE battle_id = ${battleId}`, 'wild species'),
+      'wild species',
+    );
+    rows.sort((a, b) => Number(a.wild_index) - Number(b.wild_index));
+    const text = rows.map((r) => `s${r.species_id}L${r.level}`).join('+');
+    return text === '' ? '?' : text;
+  } catch {
+    return '?';
+  }
+}
+
 test.describe
   .serial('ctl-8j — the battle on the D-pad', () => {
     let browser: Browser;
@@ -405,40 +452,57 @@ test.describe
     test('CTL8J-2-DPAD-BATTLE-A: the same battle on the buttons alone: adjacent, Recruit opens its bait list, B backs out to the menu and B closes it spending nothing; the buttons fight to an outcome and A continues from the results to the world (bt-16: was Recruit Yes / No + B×2, Fight + A)', async () => {
       // WRONG IMPL KILLED: a Recruit list the buttons cannot enter or leave; a B that closes the
       // whole menu from the bait list or ends the battle; a back-out that spends the turn (round,
-      // turnIdx, events move); an outcome A does not continue from; and a continue that leaves a
-      // frame, the battle UI or a battle stack above the world.
+      // turnIdx, events move); an outcome A does not continue from; a continue that leaves a
+      // frame, the battle UI or a battle stack above the world; and a Move that drafts but never
+      // executes (the unit stays on its tile).
       // SURVIVING CHECK (bt-16): retired "Recruit → No bait → Yes/No (cursor on Yes) → B → B →
       // Fight" → on an own turn ADJACENT to the wild: Recruit → the bait list (`bait:none` first)
       // → B (back to the root menu) → B (the menu closes) — nothing spent — then `fightToOutcome`.
-      // bt-16: up to MAX_ADJACENT_HUNTS battles × (MAX_APPROACH_TURNS own turns + flee + results).
+      // bt-16: up to MAX_ADJACENT_HUNTS battles; a kiting wild's battle is given up the turn it
+      // steps away.
       test.setTimeout(600_000);
       // Close in until the wild stands adjacent on a FRESH own turn (Recruit needs the whole
-      // budget). A kiting wild can keep its distance for a whole battle (tactics-wild restarts a
-      // battle for the same reason), so a battle that never brings it adjacent within
-      // MAX_APPROACH_TURNS is fled on the next own turn and the grass re-hunted, bounded by
-      // MAX_ADJACENT_HUNTS.
+      // budget). A wild that steps away from adjacency is a kiter (`kitedAway`): that battle is
+      // fled on the spot and the grass re-hunted. A battle that never reaches adjacency within
+      // MAX_APPROACH_TURNS is fled on the next own turn. Both are bounded by MAX_ADJACENT_HUNTS;
+      // every hunt leaves one line (`hunts`) that the re-hunt log and the final throw carry.
       let adjacent: TacticsSnap | null = null;
-      let hunts = 0;
+      const hunts: string[] = [];
       for (let hunt = 0; hunt < MAX_ADJACENT_HUNTS && adjacent === null; hunt += 1) {
-        hunts = hunt + 1;
         const started = await huntEncounter(page, `CTL8J-2-A hunt ${hunt}`);
         // Only the FIRST attempt is the battle CTL8J-3 left standing; a re-hunt is a NEW battle by
         // design (the previous one was fled because the wild kited).
         if (hunt === 0) {
           expect(started.battleId, 'this is the battle CTL8J-3 used').toBe(firstBattleId);
         }
+        const wild = wildSpecies(started.battleId);
+        const trace: string[] = [];
         let last: string | null = null;
+        let stepped: Stepped | null = null;
+        let kited = false;
         let ended = false;
-        for (let turn = 0; turn < MAX_APPROACH_TURNS && adjacent === null; turn += 1) {
+        let outcome = `bound@${MAX_APPROACH_TURNS}`;
+        for (let turn = 0; turn < MAX_APPROACH_TURNS; turn += 1) {
           const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
           if (tt.phase !== 'Active') {
             ended = true;
+            outcome = `ended:${tt.phase}@${turn}`;
             break;
           }
           last = turnKey(tt);
           const { me, enemy } = sides(tt);
+          trace.push(
+            `r${tt.round}:${tt.turnIdx} me(${me.x},${me.y}) wild#${enemy.unitId}(${enemy.x},${enemy.y})hp${enemy.curHp}/${enemy.maxHp} d${tileDistance(me, enemy)}`,
+          );
+          if (stepped !== null) {
+            expect(
+              tileDistance(me, stepped.from),
+              `the drafted Move executed: the unit left (${stepped.from.x},${stepped.from.y}) — ${trace.join(' | ')}`,
+            ).toBeGreaterThan(0);
+          }
           if (tileDistance(me, enemy) === 1) {
             adjacent = tt;
+            outcome = `adjacent@${turn + 1}`;
             break;
           }
           await openMenu(page, me);
@@ -447,14 +511,29 @@ test.describe
             'aria-disabled',
             'true',
           );
-          await draftMoveToward(page, enemy);
+          // The menu stays OPEN on this fresh turn: the flee below uses it.
+          if (kitedAway(me, stepped, tt.units)) {
+            kited = true;
+            outcome = `kited@${turn + 1}`;
+            break;
+          }
+          stepped = (await draftMoveToward(page, enemy))
+            ? { unitId: enemy.unitId, x: enemy.x, y: enemy.y, from: { x: me.x, y: me.y } }
+            : null;
           await endTurn(page);
         }
+        hunts.push(
+          `hunt ${hunt}: battle ${started.battleId} wild=${wild} ${outcome} — ${trace.join(' | ')}`,
+        );
         if (adjacent !== null) break;
-        // Not adjacent in this battle: flee on a FRESH own turn (Flee needs the whole budget),
-        // let the results pass to the world, and re-hunt.
-        console.log(`[bt-16 CTL8J-2-A] hunt ${hunt}: the wild never stood adjacent — re-hunting`);
-        if (!ended) {
+        console.log(`[bt-16 CTL8J-2-A] ${hunts[hunts.length - 1]} — re-hunting`);
+        // Give the battle up (Flee needs the whole budget), let the results pass to the world, and
+        // re-hunt. kited: we are ON a fresh own live turn with its menu open, so Flee goes straight
+        // to the Flee row (waiting for a turn after `last` here would wait for one that never
+        // comes). bound: wait for the next fresh own turn, then flee. ended: nothing to flee.
+        if (kited) {
+          await fleeByButtons(page);
+        } else if (!ended) {
           const next = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
           if (next.phase === 'Active') await fleeByButtons(page);
         }
@@ -463,7 +542,7 @@ test.describe
       if (adjacent === null) {
         throw new Error(
           `CTL8J-2-A: the wild never stood adjacent on a fresh own turn within MAX_APPROACH_TURNS=${MAX_APPROACH_TURNS} ` +
-            `own turns in any of ${hunts} of MAX_ADJACENT_HUNTS=${MAX_ADJACENT_HUNTS} hunts`,
+            `own turns in any of ${hunts.length} of MAX_ADJACENT_HUNTS=${MAX_ADJACENT_HUNTS} hunts — hunts: ${hunts.join(' || ')}`,
         );
       }
       const { me } = sides(adjacent);
