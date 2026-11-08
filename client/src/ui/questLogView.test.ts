@@ -816,6 +816,20 @@ const qf4Empty = (): HTMLElement | null => document.getElementById('quest-log-em
 /** How many elements carry this id (getElementById returns only the first, so a duplicate hides). */
 const qf4IdCount = (id: string): number => document.querySelectorAll(`[id="${id}"]`).length;
 
+/** uif-10: the overlay's first element child is `#quest-log-frame`, whose first element child is the
+ *  `.mr-frame-titlebar`; returns that bar. */
+function qf10FrameBar(root: HTMLElement, when: string): HTMLElement | null {
+  const frame = root.firstElementChild as HTMLElement | null;
+  expect(frame?.id, `${when}: the overlay's first element child is #quest-log-frame`).toBe(
+    'quest-log-frame',
+  );
+  const bar = frame?.firstElementChild as HTMLElement | null;
+  expect(bar?.className, `${when}: the frame's first element child is the title bar`).toBe(
+    'mr-frame-titlebar',
+  );
+  return bar;
+}
+
 /** The title is plain, visible, focus-inert text: nothing hides it, nothing styles it inline. */
 function qf4ExpectTitleInert(when: string): void {
   const title = qf4Title() as HTMLElement;
@@ -845,19 +859,23 @@ function qf4ExpectEmptyInert(when: string): void {
   expect(empty.hasAttribute('hidden'), `${when}: no hidden attribute`).toBe(false);
   expect(empty.hasAttribute('aria-hidden'), `${when}: no aria-hidden`).toBe(false);
   expect(empty.hasAttribute('tabindex'), `${when}: no tabindex`).toBe(false);
-  expect(empty.hasAttribute('class'), `${when}: no class attribute at all`).toBe(false);
+  // INTENTIONAL CHANGE (uif-10, UIF10.2): the empty line is now the kit's EmptyState, so it carries
+  // exactly the class `mr-empty`. Was: `expect(empty.hasAttribute('class')).toBe(false)` ("no class
+  // attribute at all"). The inertness teeth are kept: no hidden / aria-hidden / tabindex / inline
+  // declaration, and no role or aria-live (the attribute names are class + id, style aside).
+  expect(empty.className, `${when}: the kit class, exactly`).toBe('mr-empty');
   expect(empty.style.cssText, `${when}: shown, so no inline declaration remains`).toBe('');
   expect(empty.style.length, `${when}: no inline property`).toBe(0);
   expect(empty.hidden, `${when}: not hidden`).toBe(false);
-  // The attribute NAME set is exactly id, plus at most an EMPTY style attribute (happy-dom may keep
-  // `style=""` after display goes from none back to ''): no role, no aria-live, nothing else.
+  // The attribute NAME set is exactly class + id, plus at most an EMPTY style attribute (happy-dom
+  // may keep `style=""` after display goes from none back to ''): no role, no aria-live, nothing else.
   expect(
     Array.from(empty.attributes)
       .map((a) => a.name)
       .filter((n) => n !== 'style')
       .sort(),
-    `${when}: attribute names are exactly id (style aside)`,
-  ).toEqual(['id']);
+    `${when}: attribute names are exactly class and id (style aside)`,
+  ).toEqual(['class', 'id']);
   expect(empty.getAttribute('style') ?? '', `${when}: any style attribute is empty`).toBe('');
 }
 
@@ -875,7 +893,15 @@ describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
       expect(qf4IdCount('quest-log-title'), `${when}: exactly one title`).toBe(1);
       const title = qf4Title();
       expect(title, `${when}: the title exists`).not.toBeNull();
-      expect(root.firstElementChild, `${when}: the overlay's first element child`).toBe(title);
+      // INTENTIONAL CHANGE (uif-10, UIF10.3): the title keeps its id, its class (exactly
+      // `mr-frame-title`) and its text, but now lives in a `.mr-frame-titlebar` div that is the first
+      // child of ONE inner flex column, `div#quest-log-frame`, which is the overlay's first element
+      // child (frame anatomy: title bar, then the body). The root itself stays `display:block`
+      // because outside-touch e2e pin it (wallet-balance.spec.ts:711, trade.spec.ts:223), so the
+      // flex column the `.mr-scroll` list needs lives one level down. Was:
+      // `expect(root.firstElementChild).toBe(title)`.
+      const bar = qf10FrameBar(root, when);
+      expect(title?.parentElement, `${when}: the title is in that bar`).toBe(bar);
       expect(ctl8fListEl().contains(title), `${when}: outside the listbox`).toBe(false);
       expect(title?.className, `${when}: the class, exactly`).toBe('mr-frame-title');
       expect([...(title?.classList ?? [])], `${when}: one class only`).toEqual(['mr-frame-title']);
@@ -941,7 +967,12 @@ describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
     view.paint({ questId: null, detail: 'ghost' });
     qf4ExpectTitleInert('empty list, unlisted detail');
 
-    expect(root.firstElementChild, 'and it is still the first child').toBe(qf4Title());
+    // INTENTIONAL CHANGE (uif-10, UIF10.3): the overlay's first element child is `#quest-log-frame`
+    // (the inner flex column; the root stays display:block for the outside-touch e2e pins), and the
+    // title's bar is ITS first child. Was: `expect(root.firstElementChild).toBe(qf4Title())`.
+    expect(qf10FrameBar(root, 'after the paints'), 'and its bar is still first').toBe(
+      qf4Title()?.parentElement,
+    );
   });
 
   it('QF4-1-TITLE-ONE-AFTER-REOPEN: render, hide and render again (and a null render) never leave two titles, and the title stays the first child', () => {
@@ -959,12 +990,20 @@ describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
     view.hide();
     view.render(questVm(1));
     expect(qf4IdCount('quest-log-title'), 'hide then render').toBe(1);
-    expect(root.firstElementChild).toBe(qf4Title());
+    // INTENTIONAL CHANGE (uif-10, UIF10.3): the overlay's first element child is the one
+    // `#quest-log-frame` column and the title bar (holding the title) is ITS first child (the root
+    // stays display:block for the outside-touch e2e pins). Was:
+    // `expect(root.firstElementChild).toBe(qf4Title())` here and below.
+    expect(qf10FrameBar(root, 'hide then render')).toBe(qf4Title()?.parentElement);
+    expect(root.querySelectorAll('.mr-frame-titlebar'), 'one bar').toHaveLength(1);
+    expect(qf4IdCount('quest-log-frame'), 'one frame column').toBe(1);
 
     view.render(null);
     view.render({ active: [] });
     expect(qf4IdCount('quest-log-title'), 'render(null) then render').toBe(1);
-    expect(root.firstElementChild).toBe(qf4Title());
+    expect(qf10FrameBar(root, 'render(null) then render')).toBe(qf4Title()?.parentElement);
+    expect(qf4IdCount('quest-log-frame'), 'still one frame column').toBe(1);
+    expect(root.querySelectorAll('.mr-frame-titlebar'), 'still one bar').toHaveLength(1);
     expect(qf4Title()?.textContent).toBe(qf4TitleText());
   });
 
@@ -1051,20 +1090,23 @@ describe('QuestLogView qf-4: the Journal empty state (QF4.2)', () => {
     expect(empty.style.display).toBe('');
 
     view.render(questVm(2));
-    expect(qf4Empty(), 'the same element, not a rebuilt one').toBe(empty);
+    // INTENTIONAL CHANGE (uif-10, UIF10.2): the empty state is the kit's EmptyState, which the view
+    // may rebuild per render, so element identity is no longer pinned (the id count is). Was:
+    // `expect(qf4Empty()).toBe(empty)` ("the same element, not a rebuilt one"), here and below.
+    const hiddenEmpty = qf4Empty() as HTMLElement;
+    expect(hiddenEmpty, 'an empty element still exists').not.toBeNull();
     expect(qf4IdCount('quest-log-empty')).toBe(1);
-    expect(empty.style.display, 'hidden beside quests').toBe('none');
-    expect(empty.textContent, 'its text is cleared while hidden').toBe('');
+    expect(hiddenEmpty.style.display, 'hidden beside quests').toBe('none');
+    expect(hiddenEmpty.textContent, 'its text is cleared while hidden').toBe('');
     expect(ctl8fListEl().hasAttribute('aria-describedby'), 'no description (no detail open)').toBe(
       false,
     );
     expect(ctl8fRows()).toHaveLength(2);
 
     view.render({ active: [] });
-    expect(qf4Empty()).toBe(empty);
     expect(qf4IdCount('quest-log-empty')).toBe(1);
-    expect(empty.style.display, 'shown again').toBe('');
-    expect(empty.textContent).toBe(qf4EmptyText());
+    expect(qf4Empty()?.style.display, 'shown again').toBe('');
+    expect(qf4Empty()?.textContent).toBe(qf4EmptyText());
     expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-empty');
   });
 
@@ -1149,6 +1191,98 @@ describe('QuestLogView qf-4: the Journal empty state (QF4.2)', () => {
     view.hide();
     view.render({ active: [] });
     qf4ExpectEmptyInert('after hide then empty');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-10 (UIF10.2, UIF10.3): the Journal on the kit. The empty state is the kit's EmptyState with
+// the existing `journal.empty` copy as its one reason line (no cue, no next step); the title is
+// kept, in a title bar that is the overlay's first child; the list is reset and scrolls with rows.
+// ---------------------------------------------------------------------------
+
+const uifIsZero = (v: string): boolean => v === '0px' || v === '0';
+
+describe('QuestLogView uif-10: the Journal on the kit (UIF10.2, UIF10.3)', () => {
+  it('UIF10.2 an empty journal renders the kit EmptyState: .mr-empty with exactly one .mr-empty-reason holding journal.empty and no cue or next step, outside the listbox, inert, still describing the list, with the title kept; quests hide it', () => {
+    // WRONG IMPL KILLED: the shipped bare text div (no .mr-empty, no reason line); a cue or next
+    // step invented beside the one catalogued sentence; the sentence rewritten instead of the
+    // catalog value; the state moved into the listbox, made a live region or given a tab stop; a
+    // describedby no longer naming it; the title dropped while the kit lands; an empty state left
+    // up beside real quests.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render({ active: [] });
+
+    const empty = qf4Empty() as HTMLElement;
+    expect(empty, 'the empty element exists').not.toBeNull();
+    expect(empty.style.display, 'shown').toBe('');
+    expect(empty.classList.contains('mr-empty'), 'the kit root').toBe(true);
+    const reasons = empty.querySelectorAll('.mr-empty-reason');
+    expect(reasons, 'exactly one reason line').toHaveLength(1);
+    expect(reasons[0]?.textContent, 'the journal.empty copy, as the reason only').toBe(
+      qf4EmptyText(),
+    );
+    expect(empty.querySelectorAll('.mr-empty-cue'), 'no cue line').toHaveLength(0);
+    expect(empty.querySelectorAll('.mr-empty-next'), 'no next-step line').toHaveLength(0);
+    expect(empty.children.length, 'only the reason is in it').toBe(1);
+    expect(ctl8fListEl().contains(empty), 'outside the listbox').toBe(false);
+    expect(root.contains(empty), 'inside the overlay').toBe(true);
+    expect(empty.hasAttribute('aria-live'), 'not a live region').toBe(false);
+    expect(empty.hasAttribute('tabindex'), 'no tab stop on it').toBe(false);
+    expect(
+      empty.querySelectorAll('[tabindex], a, button, input, select, textarea'),
+      'nothing focusable inside',
+    ).toHaveLength(0);
+    expect(ctl8fListEl().getAttribute('aria-describedby'), 'it describes the list').toBe(
+      'quest-log-empty',
+    );
+    expect(qf4Title()?.textContent, 'the title is kept').toBe(qf4TitleText());
+    expect(qf4Title()?.parentElement?.className, 'in a title bar').toBe('mr-frame-titlebar');
+
+    view.paint({ questId: null, detail: null });
+    expect(
+      qf4Empty()?.querySelectorAll('.mr-empty-reason'),
+      'a paint keeps the one reason',
+    ).toHaveLength(1);
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-empty');
+
+    view.render(questVm(2));
+    expect(qf4Empty()?.style.display, 'hidden with quests').toBe('none');
+    expect(ctl8fListEl().hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  it('UIF10.3 the Journal list is reset (inline margin 0, padding 0) and is a .mr-scroll list only while it has rows; the title bar comes before the list', () => {
+    // WRONG IMPL KILLED: a list with the UA indent (first row 40px off the frame edge); a list that
+    // never scrolls (many quests overflow the frame); the scroll class left on an empty list
+    // (the empty state would sit under a scroll region with nothing in it); a title bar that is
+    // not before the list.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    const expectReset = (when: string): void => {
+      const style = ctl8fListEl().style;
+      expect(uifIsZero(style.margin), `${when}: margin 0 (got "${style.margin}")`).toBe(true);
+      expect(uifIsZero(style.padding), `${when}: padding 0 (got "${style.padding}")`).toBe(true);
+    };
+
+    view.render(questVm(3));
+    expect(ctl8fListEl().classList.contains('mr-scroll'), 'rows: scrolls').toBe(true);
+    expectReset('with rows');
+    // The parts live in ONE inner flex column, #quest-log-frame (the root stays display:block for
+    // the outside-touch e2e pins): the title bar is its first child and the list follows it.
+    const bar = qf10FrameBar(root, 'with rows');
+    const frame = root.firstElementChild as HTMLElement;
+    const kids = [...frame.children];
+    expect(kids.indexOf(bar as Element), 'the title bar is first in the frame').toBe(0);
+    expect(kids.indexOf(ctl8fListEl()), 'the list follows the title bar').toBeGreaterThan(0);
+
+    view.render({ active: [] });
+    expect(ctl8fListEl().classList.contains('mr-scroll'), 'empty: no scroll region').toBe(false);
+    expectReset('empty');
+
+    view.render(questVm(1));
+    expect(ctl8fListEl().classList.contains('mr-scroll'), 'rows again: scrolls').toBe(true);
+    expectReset('rows again');
   });
 });
 
@@ -1398,7 +1532,21 @@ describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
     const expectSwept = (when: string): void => {
       expect(document.getElementById('quest-log-list'), `${when}: still the same list`).toBe(list);
       expect(list.classList.contains(QF4_NAV_LIST), `${when}: carries ${QF4_NAV_LIST}`).toBe(true);
-      expect(list.hasAttribute('style'), `${when}: no inline style`).toBe(false);
+      // INTENTIONAL CHANGE (uif-10, UIF10.3): the list now carries the inline reset (margin 0,
+      // padding 0). Was: `expect(list.hasAttribute('style')).toBe(false)` ("no inline style"). The
+      // pin still catches an inline list-style / display override: the inline style may hold ONLY
+      // margin and padding longhands, all zero.
+      const inline = Array.from({ length: list.style.length }, (_, i) => list.style.item(i));
+      expect(
+        inline.filter((p) => !p.startsWith('margin') && !p.startsWith('padding')),
+        `${when}: inline style holds only the margin/padding reset`,
+      ).toEqual([]);
+      expect(list.style.getPropertyValue('list-style'), `${when}: no inline list-style`).toBe('');
+      expect(list.style.display, `${when}: no inline display`).toBe('');
+      for (const p of ['margin', 'padding']) {
+        const v = list.style.getPropertyValue(p);
+        expect(v === '0px' || v === '0', `${when}: inline ${p} is 0 (got "${v}")`).toBe(true);
+      }
       expect(qf4FreshListStyle(list), `${when}: computes list-style none`).toBe('none');
     };
 

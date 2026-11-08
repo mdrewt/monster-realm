@@ -29,10 +29,11 @@
 // state, shows the open quest's name and step. The hidden-to-visible edge resets the paint to the
 // opening (the first row, no detail), so a reopen never shows the last open's place.
 //
-// qf-4: the title (`#quest-log-title`, first child) and the empty state (`#quest-log-empty`, after
-// the list) are built here too, never in index.html, whose inner id roster indexShell.smoke.test.ts
+// qf-4: the title (`#quest-log-title`, in the first-child title bar since uif-10) and the empty state
+// (`#quest-log-empty`, after the list; the kit EmptyState since uif-10) are built here too, never in index.html, whose inner id roster indexShell.smoke.test.ts
 // pins. Both are written on every render, before the a11y open. The empty state sits OUTSIDE the
 // listbox: a row inside it would be painted as the cursor. While it shows, it describes the list.
+import { createEmptyState } from './emptyState';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
@@ -46,6 +47,8 @@ export class QuestLogView {
   private detail: HTMLElement;
   private heading: HTMLElement;
   private empty: HTMLElement;
+  /** The cursor row last scrolled into view, so a batch render does not scroll again. */
+  private scrolledId: string | null = null;
   private rendered: QuestLogViewModel = { active: [] };
   private kept: JournalPaint = OPENING;
 
@@ -57,17 +60,28 @@ export class QuestLogView {
     this.list.setAttribute('role', 'listbox');
     // Named by the overlay's own label (openOverlayA11y writes it while the journal is open).
     this.list.setAttribute('aria-labelledby', 'quest-log-overlay');
+    this.heading = document.createElement('div');
+    this.heading.id = 'quest-log-title';
+    this.heading.className = 'mr-frame-title';
+    // uif-10 (UIF10.3): the frame anatomy — the title in a title bar, first; then the list, reset
+    // to the frame's content edge, growing and scrolling (`.mr-scroll`) while it has rows. The root
+    // stays `display: block` (wallet-balance.spec and trade.spec pin it), so the parts sit in one
+    // inner flex column that fills it: the column `.mr-frame` would otherwise be.
+    const bar = document.createElement('div');
+    bar.className = 'mr-frame-titlebar';
+    bar.append(this.heading);
+    const column = document.createElement('div');
+    column.id = 'quest-log-frame';
+    column.style.cssText = 'display:flex;flex-direction:column;height:100%;';
+    this.overlay.prepend(column);
+    column.append(bar, this.list);
     this.detail = document.createElement('div');
     this.detail.id = 'quest-log-detail';
     this.detail.style.display = 'none';
     this.list.after(this.detail);
-    this.heading = document.createElement('div');
-    this.heading.id = 'quest-log-title';
-    this.heading.className = 'mr-frame-title';
-    this.list.before(this.heading);
-    this.empty = document.createElement('div');
-    this.empty.id = 'quest-log-empty';
-    this.empty.style.display = 'none';
+    this.list.style.margin = '0';
+    this.list.style.padding = '0';
+    this.empty = this.emptyState('');
     this.list.after(this.empty);
   }
 
@@ -88,6 +102,10 @@ export class QuestLogView {
     }
     if (cursor === undefined) this.list.removeAttribute('aria-activedescendant');
     else this.list.setAttribute('aria-activedescendant', cursor.id);
+    if (cursor !== undefined && cursor.id !== this.scrolledId) {
+      if (typeof cursor.scrollIntoView === 'function') cursor.scrollIntoView({ block: 'nearest' });
+      this.scrolledId = cursor.id;
+    }
 
     const open = this.rendered.active.find((q) => q.questId === this.kept.detail);
     this.detail.style.display = open === undefined ? 'none' : '';
@@ -107,7 +125,10 @@ export class QuestLogView {
 
   render(vm: QuestLogViewModel | null): void {
     const wasVisible = this.visible;
-    if (!wasVisible) this.kept = OPENING;
+    if (!wasVisible) {
+      this.kept = OPENING;
+      this.scrolledId = null;
+    }
     if (!vm) {
       this.overlay.style.display = 'none';
       if (wasVisible) closeOverlayA11y('questLogView', null);
@@ -116,8 +137,10 @@ export class QuestLogView {
     this.overlay.style.display = 'block';
     this.heading.textContent = t('journal.title');
     const isEmpty = vm.active.length === 0;
-    this.empty.style.display = isEmpty ? '' : 'none';
-    this.empty.textContent = isEmpty ? t('journal.empty') : '';
+    const empty = this.emptyState(isEmpty ? t('journal.empty') : '');
+    this.empty.replaceWith(empty);
+    this.empty = empty;
+    this.list.classList.toggle('mr-scroll', !isEmpty);
     this.list.replaceChildren();
     vm.active.forEach((entry, i) => {
       const li = document.createElement('li');
@@ -134,6 +157,15 @@ export class QuestLogView {
     // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
     // `initialFocusSelector` against a fully-painted root).
     if (!wasVisible) openOverlayA11y('questLogView', this.overlay);
+  }
+
+  /** The kit EmptyState (UIF10.2): `journal.empty` is one sentence, so it is the reason alone. An
+   *  empty `reason` is the hidden state. */
+  private emptyState(reason: string): HTMLElement {
+    const el = createEmptyState(document, { reason });
+    el.id = 'quest-log-empty';
+    if (reason === '') el.style.display = 'none';
+    return el;
   }
 
   get visible(): boolean {

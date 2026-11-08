@@ -90,6 +90,7 @@ const shield = (e: KeyboardEvent): void => {
 function stepItem(step: ProposeStep, active: boolean): HTMLLIElement {
   const li = document.createElement('li');
   li.setAttribute('data-step', step);
+  li.className = active ? 'mr-nav-tab is-selected' : 'mr-nav-tab';
   li.textContent = stepLabel(step);
   if (active) li.setAttribute('aria-current', 'step');
   return li;
@@ -164,10 +165,17 @@ export class TradeProposeView {
     // The wizard's parts (ctl-8e). The header goes before the select; the review row goes after
     // the submit button and takes programmatic focus only, so typing mode's Escape (focus to the
     // frame's first non-text control) still lands on the select. Yes / No are marks, not buttons.
+    // uif-10 (UIF10.3): the header takes the TabBar's slot (the frame's first child) and geometry by
+    // class, but stays an `ol` whose current item is `aria-current="step"` (WF1-A6). No chips: the
+    // steps are not LB/RB-steppable. `mr-frame-tabstrip` lets a narrow frame scroll the steps.
     this.#steps = document.createElement('ol');
     this.#steps.setAttribute('data-testid', 'tradepropose-steps');
-    this.#target.before(this.#steps);
+    this.#steps.className = 'mr-frame-tabs mr-frame-tabstrip mr-tabbar mr-tabbar-strip';
+    this.#steps.style.cssText = 'list-style:none;margin:0;padding:0;';
+    overlay.prepend(this.#steps);
     this.#monsters.tabIndex = -1;
+    // The offer list grows and scrolls with the kit's cue; the fields sit below it.
+    this.#monsters.classList.add('mr-scroll');
     this.#review = document.createElement('div');
     this.#review.setAttribute('data-testid', 'tradepropose-review');
     this.#review.tabIndex = -1;
@@ -193,6 +201,8 @@ export class TradeProposeView {
     // Both currency inputs are typing rows (CTL6B.5): the field owns every key but Escape and
     // Enter, which main.ts routes (stop typing / A). Live enable on input.
     for (const input of [this.#offerInput, this.#requestInput]) {
+      // A 24px target at the default root size (WCAG 2.2 target-size, UIF10.4).
+      input.style.minHeight = '1.5rem';
       input.addEventListener('keydown', shield);
       input.addEventListener('input', () => {
         this.#refreshSubmitEnabled();
@@ -348,6 +358,8 @@ export class TradeProposeView {
     for (const m of lists.offerableMonsters) {
       const id = m.monsterId.toString();
       const label = document.createElement('label');
+      // One row per monster, so the offer list grows and scrolls as a list (UIF10.3).
+      label.style.display = 'block';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.value = id; // monsterId in value AND data-monster-id (the e2e reads data-monster-id)
@@ -379,9 +391,13 @@ export class TradeProposeView {
   #paintHeader(steps: readonly ProposeStep[], active: ProposeStep): void {
     const items = steps.map((step) => stepItem(step, step === active));
     this.#steps.replaceChildren(...items);
-    // The two focus targets that are not form controls are named by their step.
+    // The two focus targets that are not form controls are named by their step, and so are the
+    // three form controls, which have no <label> (uif-10, UIF10.4: axe select-name / label).
     this.#monsters.setAttribute('aria-label', t('tradePropose.step.offer'));
     this.#review.setAttribute('aria-label', t('tradePropose.step.review'));
+    this.#target.setAttribute('aria-label', t('tradePropose.step.target'));
+    this.#offerInput.setAttribute('aria-label', t('tradePropose.step.coins'));
+    this.#requestInput.setAttribute('aria-label', t('tradePropose.step.ask'));
   }
 
   /** The review row, read from the on-screen draft: the question (or why it cannot be sent), a

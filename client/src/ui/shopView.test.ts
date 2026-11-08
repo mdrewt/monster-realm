@@ -1035,6 +1035,13 @@ const ctl8aShopEl = (id: string): HTMLElement => {
   return el;
 };
 
+/** The sheet's heading (the confirm question): its `.mr-sheet-title`. */
+const sheetTitle = (sheet: HTMLElement): HTMLElement => {
+  const el = sheet.querySelector<HTMLElement>('.mr-sheet-title');
+  if (el === null) throw new Error('the sheet has no .mr-sheet-title');
+  return el;
+};
+
 /** A paint over the opening one (Buy, its first row, no description, no prompt). */
 const ctl8aPaint = (over: Partial<ShopPaint> = {}): ShopPaint => ({
   tab: 'buy',
@@ -1071,9 +1078,15 @@ function ctl8aExpectRow(listId: string, key: string | undefined): void {
 function ctl8aExpectTab(tab: 'buy' | 'sell'): void {
   const buy = ctl8aShopEl('shop-tab-buy');
   const sell = ctl8aShopEl('shop-tab-sell');
-  expect(buy.classList.contains('is-active'), 'Buy tab is-active').toBe(tab === 'buy');
+  // INTENTIONAL CHANGE (uif-10, UIF10.1): the Buy | Sell strip is now a kit TabBar, whose selected
+  // tab carries `is-selected` and NEVER the row cursor's `is-active` (so "which tab" and "which
+  // row" can both be true on one screen). Was: `buy.classList.contains('is-active')` ===
+  // (tab === 'buy'), and the same for Sell. aria-selected is unchanged.
+  expect(buy.classList.contains('is-selected'), 'Buy tab is-selected').toBe(tab === 'buy');
+  expect(buy.classList.contains('is-active'), 'Buy tab is never is-active').toBe(false);
   expect(buy.getAttribute('aria-selected'), 'Buy tab aria-selected').toBe(String(tab === 'buy'));
-  expect(sell.classList.contains('is-active'), 'Sell tab is-active').toBe(tab === 'sell');
+  expect(sell.classList.contains('is-selected'), 'Sell tab is-selected').toBe(tab === 'sell');
+  expect(sell.classList.contains('is-active'), 'Sell tab is never is-active').toBe(false);
   expect(sell.getAttribute('aria-selected'), 'Sell tab aria-selected').toBe(String(tab === 'sell'));
   expect(ctl8aShopEl('shop-for-sale').hidden, 'the Buy list is hidden iff Sell').toBe(
     tab !== 'buy',
@@ -1276,7 +1289,15 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     const text = ctl8aShopEl('shop-prompt-text');
     const confirm = ctl8aShopEl('shop-confirm');
     expect(prompt.contains(text), '#shop-prompt-text is in the prompt').toBe(true);
-    expect(prompt.contains(confirm), '#shop-confirm is in the prompt').toBe(true);
+    // INTENTIONAL CHANGE (uif-10, UIF10.1): `#shop-confirm` is now the ONE ContextSheet root and
+    // sits in `#shop-body` beside the prompt, no longer inside `#shop-prompt`. Was:
+    // `expect(prompt.contains(confirm), '#shop-confirm is in the prompt').toBe(true)`. The
+    // confirm assertions below read the sheet (its heading and rows) instead of #shop-prompt-text,
+    // and `#shop-prompt` is hidden while the sheet shows the confirm (it replaces the quantity row).
+    expect(prompt.contains(confirm), '#shop-confirm is NOT in the prompt').toBe(false);
+    expect(confirm.hasAttribute('data-context-sheet'), '#shop-confirm is the sheet root').toBe(
+      true,
+    );
     ctl8aExpectBefore(ctl8aShopEl('shop-inventory'), prompt, 'the Sell list, then the prompt');
     // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#shop-feedback` is retired; the prompt is no longer
     // ordered against it. Was: `ctl8aExpectBefore(prompt, #shop-feedback, 'the prompt, then the
@@ -1301,8 +1322,11 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
       yes: true,
     };
     view.paint(ctl8aPaint({ prompt: buyConfirm }));
-    expect(prompt.hidden).toBe(false);
-    expect(text.textContent).toBe(i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }));
+    // Was: `prompt.hidden` false and `text.textContent` the confirm question (uif-10, UIF10.1).
+    expect(prompt.hidden, 'the quantity prompt gives way to the sheet').toBe(true);
+    expect(sheetTitle(confirm).textContent).toBe(
+      i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }),
+    );
     expect(confirm.hidden, 'Yes / No are shown').toBe(false);
     const yes = ctl8aShopEl('shopConfirm-root-yes');
     const no = ctl8aShopEl('shopConfirm-root-no');
@@ -1317,8 +1341,12 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     expect(no.getAttribute('aria-selected')).toBe('false');
 
     view.render(CTL8A_SHOP);
-    expect(prompt.hidden, 'kept by a batch render').toBe(false);
-    expect(text.textContent).toBe(i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }));
+    // Was: `prompt.hidden` false and `text.textContent` the question (uif-10, UIF10.1): the confirm
+    // is kept by a batch render as an open sheet.
+    expect(confirm.hidden, 'the confirm is kept by a batch render').toBe(false);
+    expect(sheetTitle(confirm).textContent).toBe(
+      i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }),
+    );
 
     view.paint(
       ctl8aPaint({
@@ -1327,7 +1355,8 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
         prompt: { kind: 'confirm', tab: 'sell', name: 'Charm', qty: 2, gold: 18n, yes: false },
       }),
     );
-    expect(text.textContent, 'the Sell confirm').toBe(
+    // Was: `text.textContent` (uif-10, UIF10.1): the question is the sheet's heading now.
+    expect(sheetTitle(confirm).textContent, 'the Sell confirm').toBe(
       i18nTf('shop.confirm.sell', { qty: 2, name: 'Charm', gold: 18n }),
     );
     expect(ctl8aShopEl('shopConfirm-root-no').classList.contains('is-active'), 'on No').toBe(true);
@@ -1352,6 +1381,7 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
       ctl8aExpectTab('buy');
       ctl8aExpectRow('shop-for-sale', ctl8aBuyKeys()[0]);
       expect(ctl8aShopEl('shop-prompt').hidden, `${when}: no prompt`).toBe(true);
+      expect(ctl8aShopEl('shop-confirm').hidden, `${when}: no confirm sheet`).toBe(true);
       expect(ctl8aShopEl('shop-description').textContent, `${when}: no description`).toBe('');
     };
     const closeMidConfirmOnSell = (): void => {
@@ -1362,7 +1392,13 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
         prompt: { kind: 'confirm', tab: 'sell', name: 'Charm', qty: 2, gold: 18n, yes: true },
       });
       ctl8aExpectTab('sell');
-      expect(ctl8aShopEl('shop-prompt').hidden, 'fixture: the confirm is open').toBe(false);
+      // INTENTIONAL CHANGE (uif-10, UIF10.1): the confirm is the ContextSheet now and `#shop-prompt`
+      // is hidden while it shows, so the precondition reads the sheet. Was:
+      // `expect(ctl8aShopEl('shop-prompt').hidden, 'fixture: the confirm is open').toBe(false)`.
+      expect(ctl8aShopEl('shop-confirm').hidden, 'fixture: the confirm is open').toBe(false);
+      expect(ctl8aShopEl('shop-confirm').dataset.sheetVariant, 'fixture: confirm variant').toBe(
+        'confirm',
+      );
       view.hide();
     };
 
@@ -1379,6 +1415,222 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     closeMidConfirmOnSell();
     view.show();
     expectOpening('reopened by show alone');
+
+    removeOverlay(overlay);
+  });
+});
+
+// =============================================================================
+// uif-10 (UIF10.1, UIF10.3): the Shop on the kit. The Buy | Sell strip is a kit TabBar, the
+// Buy/Sell confirm is the ContextSheet's confirm variant (the shipped `#shop-confirm` id moves to
+// the sheet root, inside `#shop-body`), and the lists live in `#shop-body.mr-frame-body`.
+// =============================================================================
+
+const uifIsZero = (v: string): boolean => v === '0px' || v === '0';
+
+describe('ShopView uif-10: the TabBar and the confirm sheet (UIF10.1)', () => {
+  it('UIF10.1 #shop-tabs is the strip of ONE kit TabBar placed right after the title bar (LB chip, strip, RB chip), with Buy and Sell tabs where the painted one is is-selected and aria-selected and none is ever is-active, and a second construction duplicates nothing', () => {
+    // WRONG IMPL KILLED: the shipped bare `.mr-frame-tabstrip` div (no chips, no `.mr-tabbar`
+    // root); chips with text or without aria-hidden (read aloud as letters); the bar placed after
+    // the lists or before the title bar; the row cursor's is-active on a tab; a tab mark on both
+    // or neither; a TabBar, strip or sheet created again by the second view; a bar that stays
+    // hidden once a tabs layout is painted.
+    const overlay = mountShopOverlay();
+    new ShopView(makeCallbacks());
+    const view = new ShopView(makeCallbacks());
+    view.render(CTL8A_SHOP);
+    view.show();
+
+    expect(document.querySelectorAll('.mr-tabbar'), 'one TabBar').toHaveLength(1);
+    expect(document.querySelectorAll('#shop-tabs'), 'one strip').toHaveLength(1);
+    expect(document.querySelectorAll('[data-context-sheet]'), 'one sheet').toHaveLength(1);
+
+    const strip = ctl8aShopEl('shop-tabs');
+    const root = strip.parentElement as HTMLElement;
+    expect(root.classList.contains('mr-tabbar'), 'the strip is in a .mr-tabbar').toBe(true);
+    expect(root.classList.contains('mr-frame-tabs'), 'which is a .mr-frame-tabs').toBe(true);
+    expect(root.hidden, 'the bar shows once tabs are painted').toBe(false);
+    const kids = Array.from(root.children) as HTMLElement[];
+    expect(kids, 'LB chip, strip, RB chip').toHaveLength(3);
+    expect(kids[1]).toBe(strip);
+    for (const [chip, button] of [
+      [kids[0], 'LB'],
+      [kids[2], 'RB'],
+    ] as const) {
+      expect(chip?.dataset.button, `${button} chip`).toBe(button);
+      expect(chip?.getAttribute('aria-hidden'), `${button} chip is hidden from AT`).toBe('true');
+      expect(chip?.textContent, `${button} chip writes no text`).toBe('');
+    }
+    const bar = overlay.querySelector('.mr-frame-titlebar') as HTMLElement;
+    expect(root.previousElementSibling, 'the bar is right after the title bar').toBe(bar);
+
+    const expectSelected = (tab: 'buy' | 'sell'): void => {
+      const tabs = Array.from(strip.querySelectorAll<HTMLElement>('[role="tab"]'));
+      expect(
+        tabs.map((el) => el.textContent),
+        'Buy, Sell',
+      ).toEqual([i18nT('shop.tab.buy'), i18nT('shop.tab.sell')]);
+      expect(
+        tabs.map((el) => el.classList.contains('is-selected')),
+        `${tab}: selected`,
+      ).toEqual([tab === 'buy', tab === 'sell']);
+      expect(
+        tabs.map((el) => el.getAttribute('aria-selected')),
+        `${tab}: aria-selected`,
+      ).toEqual([String(tab === 'buy'), String(tab === 'sell')]);
+      expect(
+        tabs.some((el) => el.classList.contains('is-active')),
+        `${tab}: no tab is is-active`,
+      ).toBe(false);
+    };
+    expectSelected('buy');
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    expectSelected('sell');
+    view.render(CTL8A_SHOP);
+    view.paint(ctl8aPaint());
+    expectSelected('buy');
+    expect(document.querySelectorAll('.mr-tabbar'), 'still one TabBar').toHaveLength(1);
+
+    removeOverlay(overlay);
+  });
+
+  it('UIF10.1 the Buy/Sell confirm is the ONE ContextSheet confirm variant: #shop-confirm in #shop-body (not in #shop-prompt) titled with the catalogued question, rows yes/no with the painted answer active and #shop-prompt hidden; the quantity phase is unchanged; leaving the confirm closes and empties the sheet; a sheet never opened writes nothing', () => {
+    // WRONG IMPL KILLED: the shipped Yes/No inside #shop-prompt (no sheet, no variant); a confirm
+    // question that is not the catalogued Buy / Sell sentence with the total; rows other than
+    // yes,no or with retyped labels; the cursor ignoring the paint's yes (Sell must land on No); the
+    // quantity row left up under the sheet; a sheet that keeps its question and rows after the
+    // prompt leaves confirm (a stale Yes in the tab order); a render of a closed sheet that mints
+    // a tab stop (renderNav writes a tabindex on its rows) before any confirm.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.render(CTL8A_SHOP);
+    view.show();
+    const sheet = ctl8aShopEl('shop-confirm');
+    const prompt = ctl8aShopEl('shop-prompt');
+    const body = ctl8aShopEl('shop-body');
+    const rowsEl = (): HTMLElement => sheet.querySelector('.mr-sheet-rows') as HTMLElement;
+    const keys = (): Array<string | undefined> =>
+      Array.from(sheet.querySelectorAll<HTMLElement>('.mr-sheet-rows [data-nav-key]')).map(
+        (el) => el.dataset.navKey,
+      );
+    const activeKeys = (): Array<string | undefined> =>
+      Array.from(sheet.querySelectorAll<HTMLElement>('.mr-sheet-rows [data-nav-key]'))
+        .filter((el) => el.classList.contains('is-active'))
+        .map((el) => el.dataset.navKey);
+
+    // A sheet that was never opened writes nothing.
+    view.paint(ctl8aPaint());
+    expect(rowsEl().children.length, 'never opened: no rows').toBe(0);
+    expect(rowsEl().hasAttribute('tabindex'), 'never opened: no tab stop').toBe(false);
+
+    expect(sheet.classList.contains('mr-sheet'), 'the sheet root').toBe(true);
+    expect(sheet.hasAttribute('data-context-sheet')).toBe(true);
+    expect(body.contains(sheet), '#shop-confirm is inside #shop-body').toBe(true);
+    expect(prompt.contains(sheet), '#shop-confirm is not inside #shop-prompt').toBe(false);
+
+    // The quantity phase, as shipped.
+    view.paint(ctl8aPaint({ prompt: { kind: 'qty', tab: 'buy', name: 'Charm', qty: 3 } }));
+    expect(prompt.hidden, 'the quantity prompt is visible').toBe(false);
+    expect(ctl8aShopEl('shop-prompt-text').textContent).toBe(
+      i18nTf('shop.qty.buy', { name: 'Charm', qty: 3 }),
+    );
+    expect(sheet.hidden, 'no sheet on the quantity row').toBe(true);
+
+    // Buy confirm: Yes.
+    view.paint(
+      ctl8aPaint({
+        prompt: { kind: 'confirm', tab: 'buy', name: 'Charm', qty: 3, gold: 51n, yes: true },
+      }),
+    );
+    expect(sheet.hidden, 'the sheet is shown').toBe(false);
+    expect(sheet.dataset.sheetVariant).toBe('confirm');
+    expect(sheetTitle(sheet).textContent, 'the catalogued Buy question').toBe(
+      i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }),
+    );
+    expect(keys(), 'rows yes, no').toEqual(['yes', 'no']);
+    expect(
+      Array.from(sheet.querySelectorAll('.mr-sheet-rows [data-nav-key]')).map(
+        (el) => el.textContent,
+      ),
+      'the catalogued labels',
+    ).toEqual([i18nT('prompt.yes'), i18nT('prompt.no')]);
+    expect(activeKeys(), 'Buy: the cursor is on yes').toEqual(['yes']);
+    expect(prompt.hidden, 'the quantity prompt gives way to the sheet').toBe(true);
+
+    // Sell confirm: No.
+    view.paint(
+      ctl8aPaint({
+        tab: 'sell',
+        activeKey: ctl8aSellKeys()[0] as string,
+        prompt: { kind: 'confirm', tab: 'sell', name: 'Charm', qty: 2, gold: 18n, yes: false },
+      }),
+    );
+    expect(sheetTitle(sheet).textContent, 'the catalogued Sell question').toBe(
+      i18nTf('shop.confirm.sell', { qty: 2, name: 'Charm', gold: 18n }),
+    );
+    expect(keys()).toEqual(['yes', 'no']);
+    expect(activeKeys(), 'Sell: the cursor is on no').toEqual(['no']);
+    view.render(CTL8A_SHOP);
+    expect(activeKeys(), 'kept by a batch render').toEqual(['no']);
+
+    // Leaving the confirm closes and empties the sheet.
+    view.paint(ctl8aPaint({ prompt: { kind: 'qty', tab: 'buy', name: 'Charm', qty: 1 } }));
+    expect(sheet.hidden, 'closed on leaving confirm').toBe(true);
+    expect(keys(), 'no rows left behind').toEqual([]);
+    expect(sheetTitle(sheet).textContent, 'no heading left behind').toBe('');
+    view.paint(ctl8aPaint());
+    expect(sheet.hidden).toBe(true);
+    expect(keys()).toEqual([]);
+
+    removeOverlay(overlay);
+  });
+});
+
+describe('ShopView uif-10: the frame body and its lists (UIF10.3)', () => {
+  it('UIF10.3 #shop-body.mr-frame-body follows the TabBar and holds the two lists, the description, the prompt and the sheet in order; both lists are .mr-scroll with inline margin 0 and padding 0, through a tab switch and a render', () => {
+    // WRONG IMPL KILLED: lists left in the overlay root beside the title bar (no body to grow
+    // and scroll in); a body placed before the TabBar; the sheet or prompt outside the body (the
+    // sheet's containing block); the wrong order; lists with no scroll class or with the UA
+    // indent (rows 40px off the frame edge); a reset applied to one list only or lost on a render.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.render(CTL8A_SHOP);
+    view.show();
+
+    const body = ctl8aShopEl('shop-body');
+    expect(body.classList.contains('mr-frame-body'), 'the frame body').toBe(true);
+    const tabbar = ctl8aShopEl('shop-tabs').parentElement as HTMLElement;
+    expect(tabbar.nextElementSibling, 'the body is right after the TabBar').toBe(body);
+    expect(
+      Array.from(body.children).map((el) => el.id),
+      'the body holds, in order',
+    ).toEqual([
+      'shop-for-sale',
+      'shop-inventory',
+      'shop-description',
+      'shop-prompt',
+      'shop-confirm',
+    ]);
+
+    const expectLists = (when: string): void => {
+      for (const id of ['shop-for-sale', 'shop-inventory']) {
+        const el = ctl8aShopEl(id);
+        expect(el.classList.contains('mr-scroll'), `${when}: #${id} scrolls`).toBe(true);
+        expect(
+          uifIsZero(el.style.margin),
+          `${when}: #${id} margin 0 (got "${el.style.margin}")`,
+        ).toBe(true);
+        expect(
+          uifIsZero(el.style.padding),
+          `${when}: #${id} padding 0 (got "${el.style.padding}")`,
+        ).toBe(true);
+      }
+    };
+    expectLists('on Buy');
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    expectLists('on Sell');
+    view.render(CTL8A_SHOP);
+    expectLists('after a render');
 
     removeOverlay(overlay);
   });

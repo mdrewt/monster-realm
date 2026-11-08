@@ -617,3 +617,42 @@ describe('HealView — the question and Yes / No (ctl-8a, CTL8A.3)', () => {
     expect(options.getAttribute('aria-labelledby')).toBe('heal-reason');
   });
 });
+
+// ---------------------------------------------------------------------------
+// uif-10 (UIF10.3): the Heal list sits on the frame's start edge. The UA gives a bare `ul` a
+// 40px start padding (and a block margin), which put Heal's first line at x 66 against the
+// root's content edge at x 26; the view resets both inline (the real bite is the e2e x-inset).
+// No title bar is asserted (R-uif-10-TITLES): the rows and prompt stay as shipped.
+// ---------------------------------------------------------------------------
+describe('HealView uif-10: the list reset (UIF10.3)', () => {
+  it('UIF10.3 #heal-list carries inline margin 0 and padding 0 after a render, a paint and a reopen, and its rows are still the shipped ones', () => {
+    // WRONG IMPL KILLED: a list left with the UA indent (Heal's rows 40px right of the frame's
+    // content edge); a reset written only at construction that a rebuild or a reopen loses; a
+    // reset that also drops or reorders the shipped rows.
+    mountHealOverlay();
+    const view = new HealView();
+    const isZero = (v: string): boolean => v === '0px' || v === '0';
+    const expectReset = (when: string): void => {
+      const listEl = document.getElementById('heal-list') as HTMLElement;
+      expect(isZero(listEl.style.margin), `${when}: margin 0 (got "${listEl.style.margin}")`).toBe(
+        true,
+      );
+      expect(
+        isZero(listEl.style.padding),
+        `${when}: padding 0 (got "${listEl.style.padding}")`,
+      ).toBe(true);
+    };
+
+    view.render(healVm([healLocation({ locationId: 7 })]));
+    expectReset('after render');
+    const rows = Array.from(document.querySelectorAll('#heal-list > li'));
+    expect(rows, 'one shipped row per location').toHaveLength(1);
+    expect((rows[0] as HTMLElement).dataset.locationId).toBe('7');
+
+    view.paint({ active: 'no', cost: 'Free' });
+    expectReset('after paint');
+    view.hide();
+    view.render(healVm([healLocation()]));
+    expectReset('after reopen');
+  });
+});
