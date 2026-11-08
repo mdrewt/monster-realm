@@ -1129,6 +1129,11 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tactics.results.endHow.adjudicatedDamageDealt': 'Decided on damage dealt',
   'tactics.results.endHow.adjudicatedCoin': 'Decided by the coin',
   'tactics.results.endHow.forfeit': 'Ended by forfeit',
+  // uif-7 (named intentional change, UIF7.2): +2 plain `kit.sheet.*` keys = 496 keys. The context
+  // sheet's closing rows: Close ends the Monsters sheet, Back ends its Feed… and Evolve… lists. They
+  // are the kit's, reused by later slices with no further catalog edit.
+  'kit.sheet.close': 'Close',
+  'kit.sheet.back': 'Back',
 };
 
 interface ParamOutputSpec {
@@ -2162,7 +2167,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // bt-17 (named intentional change, BT17.1): -31 `battle.*` keys (18 plain, 13 parameterised)
     // with the 1v1 view; `battle.title` and `battle.outcome.{victory,defeat,fled}` stay = 494.
     // RED TODAY: catalog.en.ts still carries the 31 keys (the roster below is 525 there).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the bt-17 roster is 494 keys').toHaveLength(494);
+    // uif-7 (named intentional change, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-7 roster is 496 keys').toHaveLength(496);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3172,8 +3178,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 494 keys').toBe(494);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(494);
+    // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 496 keys').toBe(496);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(496);
   });
 });
 
@@ -3284,8 +3291,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 494 keys').toBe(494);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(494);
+    // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 496 keys').toBe(496);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(496);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3574,9 +3582,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // NAMED INTENTIONAL CHANGE (bt-15 A, BT15.1): 511 → 512, +interact.challenge.size.
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 494 keys').toBe(494);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(494);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(494);
+    // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 496 keys').toBe(496);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(496);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(496);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -3875,5 +3884,40 @@ describe('bt-15 B: the clock, forfeit and results keys in both catalogs', () => 
     for (const key of [...Object.keys(FR_PLAIN), ...Object.keys(FR_PARAMS)]) {
       expect(EXPECTED_KEYS.includes(key), `the pinned roster lists ${key}`).toBe(true);
     }
+  });
+});
+
+// =============================================================================
+// uif-7 (UIF7.2): the context sheet's two closing rows, in BOTH catalogs. Every expected byte is
+// typed here; none is read off the catalog under test. The French wording is the kit's: Close is
+// "Fermer" and Back is "Retour".
+// =============================================================================
+
+describe('uif-7: the sheet Close and Back rows in both catalogs', () => {
+  it('UIF7.2 kit.sheet.close reads Close / Fermer and kit.sheet.back reads Back / Retour, plain non-empty strings, French different from English, the two different from each other, and both in the pinned roster', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: the sheet's last row
+    // goes blank); a French value left as the English copy; one text reused for both rows (the
+    // player could not tell Close from Back); a closure where the view calls t(); a key missing
+    // from the pinned roster; the existing `chrome.chip.close` / `chrome.chip.back` (hint-bar
+    // verbs) edited on the way instead of new ids added.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const EXPECTED: ReadonlyArray<readonly [string, string, string]> = [
+      ['kit.sheet.close', 'Close', 'Fermer'],
+      ['kit.sheet.back', 'Back', 'Retour'],
+    ];
+    for (const [key, enText, frText] of EXPECTED) {
+      expect(en[key], `en ${key}`).toBe(enText);
+      expect(fr[key], `fr ${key}`).toBe(frText);
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+      expect(EXPECTED_PLAIN[key], `the pinned roster lists ${key} as a plain key`).toBe(enText);
+      expect(EXPECTED_KEYS.includes(key), `${key} is in the roster`).toBe(true);
+    }
+    expect(EXPECTED, 'ANTI-VACUITY: two keys').toHaveLength(2);
+    expect(en['kit.sheet.close'], 'Close and Back differ (en)').not.toBe(en['kit.sheet.back']);
+    expect(fr['kit.sheet.close'], 'Close and Back differ (fr)').not.toBe(fr['kit.sheet.back']);
+    // The hint-bar verbs keep their own ids and text.
+    expect(en['chrome.chip.close']).toBe('Close');
+    expect(en['chrome.chip.back']).toBe('Back');
   });
 });

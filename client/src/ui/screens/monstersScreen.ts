@@ -5,7 +5,7 @@
 // The frame is the box root: tabs Party (a grid of one cell per slot, an empty slot disabled) and
 // Storage (a grid), opening on the tab its open path bound (`ctx.monstersTab`, uif-6: Party from the
 // menu and V, Storage from B), else Storage, each tab keeping its own cursor. A on a monster opens its sheet
-// (Summary, Care, Feed…, Evolve…, Nickname, Move); B backs out one level and B at the list pops the
+// (Summary, Care, Feed…, Evolve…, Nickname, Move, Close); B backs out one level and B at the list pops the
 // frame. Move sends `setPartySlot` (to the view model's boxed sentinel, or -1: dispatch picks the
 // next free slot); the "Moved" line is shown only once a batch shows the monster in the other tab,
 // and a pending move expires with the next button, so a refused move never claims success.
@@ -20,6 +20,13 @@
 // player has not seen); in the shipped loop `observe` settles each batch first, so this is the
 // belt to that brace. Feed… and Evolve… are disabled (reachable, acting on nothing) with no food or
 // no path.
+//
+// uif-7. The sheet ends with Close and the food and Evolve lists with Back (UIF7.2): A on either is
+// B's own step, a held A on them does nothing (the sheet-A rule). One sheet at a time (UIF7.3):
+// the food list, the Evolve list and the confirm REPLACE the sheet's rows, so the paint carries the
+// sheet only in the sheet and nickname phases. Summary is a page in place of the grid (UIF7.4):
+// B or A return to the sheet on Summary, and LB / RB (a tab click, which no sheet close precedes)
+// close it to the list on the other tab.
 //
 // The nickname row is a DOM text field (typing mode, CTL6B.5): the field owns the keys, Enter
 // reaches this adapter as A and B (after Escape stopped typing) cancels. The text never enters
@@ -59,6 +66,7 @@ import {
   firstPathKey,
   foodKey,
   foodLayout,
+  isBackKey,
   isChoice,
   layoutOfKeys,
   type MonstersTab,
@@ -149,9 +157,9 @@ export interface MonstersPaint {
     /** The monster's remaining care cooldown in ms; 0n = Care ready (qf-3). */
     readonly careRemainingMs: bigint;
   } | null;
-  /** The food list under the sheet. */
+  /** The food list, in the sheet's place (uif-7). */
   readonly feed: { readonly foods: readonly FoodVm[]; readonly activeKey: string | null } | null;
-  /** The Evolve list under the sheet: the monster's evolution view model. */
+  /** The Evolve list, in the sheet's place: the monster's evolution view model. */
   readonly evolve: {
     readonly mon: EvolutionMonsterViewModel;
     readonly activeKey: string | null;
@@ -244,7 +252,10 @@ function settle(vm: MonstersVm, state: MonstersScreenState): MonstersScreenState
   if (phase.kind === 'feed') {
     const first = vm.foods[0];
     if (first === undefined) next = { ...next, phase: sheet(phase.monsterId, 'feed') };
-    else if (phase.item === null || !vm.foods.some((f) => foodKey(f.itemId) === phase.item)) {
+    else if (
+      phase.item === null ||
+      (!isBackKey(phase.item) && !vm.foods.some((f) => foodKey(f.itemId) === phase.item))
+    ) {
       next = { ...next, phase: { ...phase, item: foodKey(first.itemId) } };
     }
   } else if (phase.kind === 'evolve' || phase.kind === 'evolveConfirm') {
@@ -258,7 +269,10 @@ function settle(vm: MonstersVm, state: MonstersScreenState): MonstersScreenState
         const path = findPath(mon, phase.path) === undefined ? first : phase.path;
         next = { ...next, phase: { kind: 'evolve', monsterId: phase.monsterId, path } };
       }
-    } else if (phase.path === null || findPath(mon, phase.path) === undefined) {
+    } else if (
+      phase.path === null ||
+      (!isBackKey(phase.path) && findPath(mon, phase.path) === undefined)
+    ) {
       next = { ...next, phase: { ...phase, path: first } };
     }
   }
@@ -401,6 +415,10 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
           case 'A':
           case 'B':
             return to(sheet(phase.monsterId, 'summary'));
+          case 'LB':
+          case 'RB':
+            // The tabs stay on the page; a tab press (or click) closes it to the list on that tab.
+            return to(LIST, { nav: navStep(monstersLayout(vm), base.nav, btn).state });
           case 'Select':
             return done({ kind: 'toggleHelp' });
           default:
@@ -429,6 +447,7 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
             return item === phase.item ? done('consumed') : to({ ...phase, item });
           }
           case 'A': {
+            if (isBackKey(phase.item)) return btn.repeat ? done('consumed') : to(back);
             // No confirm (CTL8C.1): the cursor food is sent at once, and the sheet comes back.
             const food = vm.foods.find((f) => foodKey(f.itemId) === phase.item);
             if (btn.repeat || food === undefined || found === undefined) return done('consumed');
@@ -464,6 +483,9 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
             // Only a choice opens the confirm: an unmet path, or the single met path the server
             // applies itself, is listed to be read, never offered.
             const path = phase.path;
+            if (isBackKey(path)) {
+              return btn.repeat ? done('consumed') : to(sheet(phase.monsterId, 'evolve'));
+            }
             if (btn.repeat || mon === undefined || path === null || !isChoice(mon, path)) {
               return done('consumed');
             }
@@ -549,7 +571,7 @@ function idOfKey(vm: MonstersVm, key: string): bigint | undefined {
 
 /** A on a sheet action: Summary and Nickname open their pane, Care sends at once when ready (a
  *  cooling Care acts on nothing, qf-3), Feed… and Evolve… open their lists (nothing when
- *  disabled), Move sends the monster across. */
+ *  disabled), Move sends the monster across, Close closes the sheet as B does. */
 function act(
   state: MonstersScreenState,
   vm: MonstersVm,
@@ -581,6 +603,8 @@ function act(
       const edit = state.edit + 1;
       return [{ ...state, edit, phase: { kind: 'nickname', monsterId, edit } }, 'consumed'];
     }
+    case 'close':
+      return [{ ...state, phase: LIST }, 'consumed'];
     case 'move': {
       const toParty = found.tab === 'storage';
       return [
@@ -591,8 +615,8 @@ function act(
   }
 }
 
-/** The sheet stays painted under its summary, its typing row, the food and Evolve lists and the
- *  confirm (on the row that opened them). */
+/** The sheet is painted in the sheet phase and under its typing row (on Nickname) only: the food
+ *  and Evolve lists and the confirm replace its rows, and the summary page replaces the grid. */
 function sheetOf(
   phase: MonstersPhase,
   card: MonsterCardViewModel | undefined,
@@ -600,8 +624,7 @@ function sheetOf(
   canEvolve: boolean,
   careRemainingMs: bigint,
 ): MonstersPaint['sheet'] {
-  if (card === undefined || phase.kind === 'list') return null;
-  const action: SheetAction =
-    phase.kind === 'sheet' ? phase.action : phase.kind === 'evolveConfirm' ? 'evolve' : phase.kind;
+  if (card === undefined || (phase.kind !== 'sheet' && phase.kind !== 'nickname')) return null;
+  const action = phase.kind === 'sheet' ? phase.action : 'nickname';
   return { card, action, canFeed, canEvolve, careRemainingMs };
 }

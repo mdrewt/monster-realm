@@ -188,25 +188,40 @@ test.describe
       await pressButton(page, 'Down'); // Evolve…
       await pressButton(page, 'A'); // the Evolve list
 
-      const evolveList = page.locator(
-        `[role="listbox"][aria-labelledby="${navItemId('monstersSheet', null, 'evolve')}"]`,
-      );
+      // uif-7 (UIF7.3) named change: the Evolve list is the rows of the frame's one ContextSheet
+      // (`[data-context-sheet]`, named by its heading `#monsters-sheet-name`), no longer a list
+      // labelled by the sheet's Evolve row.
+      const evolveList = page.locator('[data-context-sheet] [role="listbox"]');
       await expect(evolveList).toBeVisible({ timeout: 10_000 });
       const rows = evolveList.locator('[role="option"]');
       const readyText = tf('evolution.card.ready', { species: TO_NAME });
       // Every outgoing path of species 1 is listed (edges 1-3, header), and exactly ONE reads
       // "ready" for Pyroleo — the retired `evo-ready-note`'s text, on that path's row.
-      await expect(rows).toHaveCount(3);
+      // uif-7 (UIF7.2) named change: the list ends with a Back row, so 4 rows (was 3).
+      await expect(rows).toHaveCount(4);
+      await expect(rows.last(), 'the last row is Back').toHaveAttribute(
+        'id',
+        navItemId('monstersSheet', null, 'back'),
+      );
+      await expect(rows.last()).toHaveText(t('kit.sheet.back'));
       await expect(rows.filter({ hasText: readyText })).toHaveCount(1);
-      // No picker: with one eligible path the server applies it itself, so no row is an enabled
-      // choice (the legacy overlay showed no choice button either), the ready row included.
+      // No picker: with one eligible path the server applies it itself, so no PATH row is an
+      // enabled choice (the legacy overlay showed no choice button either), the ready row included.
+      // uif-7: the one enabled row is Back (it is no choice: it only returns to the sheet).
       await expect(rows.filter({ hasText: readyText })).toHaveAttribute('aria-disabled', 'true');
       await expect(evolveList.locator('[role="option"]:not([aria-disabled="true"])')).toHaveCount(
+        1,
+      );
+      await expect(
+        evolveList.locator('[role="option"]:not([aria-disabled="true"])'),
+      ).toHaveAttribute('id', navItemId('monstersSheet', null, 'back'));
+      // A on the cursor row (the first path, Pyroleo's edge 1) opens no Yes / No confirm either.
+      // uif-7 named change: the confirm is the sheet's confirm variant (was `#monsters-evolve-question`
+      // holding no text).
+      await pressButton(page, 'A');
+      await expect(page.locator('[data-context-sheet][data-sheet-variant="confirm"]')).toHaveCount(
         0,
       );
-      // A on the cursor row (the first path, Pyroleo's edge 1) opens no Yes / No confirm either.
-      await pressButton(page, 'A');
-      await expect(page.locator('#monsters-evolve-question')).toHaveText('');
 
       // Nothing has fired yet: the box still lists the tier-0 form at the seeded level.
       // Start returns to the world; B reopens the frame on Storage.

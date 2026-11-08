@@ -41,8 +41,10 @@ import { closeAll, pressButton, readWorld, safeTile, stepTile, walkTo } from './
 //    Party" is played on the starter itself: Move sends it to Storage, then RB, A, Move brings it
 //    back. The presses are the design's (E, Enter, ..., Enter), only the monster is the same.
 //  - THE SHEET IS LONGER THAN THE TABLE'S "Enter, Enter". The Monsters sheet lists Summary, Care,
-//    Feed..., Evolve..., Nickname, Move, with the cursor opening on Summary, so Move is five Downs
-//    away (ui/monstersModel.ts SHEET_ACTIONS). Each Down is asserted by the row it lands on.
+//    Feed..., Evolve..., Nickname, Move, Close, with the cursor opening on Summary, so Move is five
+//    Downs away (ui/monstersModel.ts SHEET_ACTIONS). Each Down is asserted by the row it lands on.
+//    uif-7 (UIF7.2) named change: the sheet gained its last row, Close (one Down past Move, and
+//    the Up that wraps from Summary), so the helper below also walks Move -> Close -> Move.
 //  - NO "Menu > Bag" BREADCRUMB. The Bag paints the raising frame's own title; the menu paints a
 //    breadcrumb only inside its groups (Social, Profile, Options). The step asserts that title and
 //    that the menu is still open underneath instead.
@@ -192,6 +194,20 @@ async function openSheetAtMove(p: Page, name: string): Promise<void> {
     'the sheet opens on Summary',
   ).toHaveAttribute('aria-selected', 'true');
   for (const key of ['care', 'feed', 'evolve', 'nickname', 'move']) await sheetDownTo(p, key);
+  // uif-7 (UIF7.2): Close is the sheet's last row, one Down past Move; Up comes back to Move, so A
+  // below is still Move. Up is asserted by the row it lands on, like every Down.
+  const rows = p.locator('[data-context-sheet] [role="option"]');
+  await expect(rows.last(), 'Close is the last row of the sheet').toHaveAttribute(
+    'id',
+    navItemId('monstersSheet', null, 'close'),
+  );
+  await expect(rows.last()).toHaveText(t('kit.sheet.close'));
+  await sheetDownTo(p, 'close');
+  await pressButton(p, 'Up');
+  await expect(
+    p.locator(`#${navItemId('monstersSheet', null, 'move')}`),
+    'Up from Close is Move again',
+  ).toHaveAttribute('aria-selected', 'true');
 }
 
 test.describe

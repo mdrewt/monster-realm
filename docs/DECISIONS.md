@@ -904,3 +904,26 @@ selectors for the strip. A multi-line strip: a long hint ends in an ellipsis and
 still says all of it. Frames whose strip is still view-owned (boxView, raisingView, and the per-view
 lines that uif-4b moves) carry a persistent hint on the raised world line until their strips join
 the seam.
+
+## The Monsters action sheet is one corner-anchored ContextSheet; Summary is a page in the frame
+
+**Decision.** A Monsters frame has one `ContextSheet` (`createContextSheet`, `client/src/ui/contextSheet.ts`,
+root `[data-context-sheet]`), mounted in the tab content area `#monsters-panel` (`position:relative`,
+`client/src/ui/boxView.ts`). `anchorSheet` puts it in a bottom corner away from the cursor cell, the top
+corner if the bottom would touch that cell, else height-capped and scrolling. Nothing is dimmed; the tabs
+and grid stay live. It is re-placed on every paint and on panel resize. One content shows at a time: the
+sheet's rows, a sub-list (Feed…, Evolve…) or the Evolve confirm, all in the same root. Every row id is
+`monstersSheet-root-<key>`; the heading keeps `monsters-sheet-name`. The sheet ends with Close, each
+sub-list with Back (key `back`, `BACK_KEY` in `client/src/ui/monstersModel.ts`). A on either is B's step;
+a held A does nothing. Summary is a page in the frame that replaces both grids, with the tabs kept. It is
+not a sheet and adds no `OverlayId`. B or A returns to the sheet on the same monster; LB/RB close it to the
+list on that tab, since a tab click has no sheet close before it.
+
+**Why.** A sheet wedged between tabs and panels read as a stray panel (feedback 047). A fixed single corner
+covers the selected slot for some slots. Beside-the-slot moves with every slot, and in-slot buttons break on
+the grid, so only the detail page was adopted (wf-1, M-ui-foundation-wireframes.md "Verdict: sheet placement"). A
+page gives Summary room for all stats without a second overlay.
+
+**Rules out.** A fixed corner, beside-the-slot placement, in-slot buttons, a dim layer, a second sheet root
+per sub-list, and a Summary implemented as a sheet or an overlay. Later sheets (Inventory uif-8, Social
+uif-12) reuse this placement and the `kit.sheet.close` / `kit.sheet.back` rows.

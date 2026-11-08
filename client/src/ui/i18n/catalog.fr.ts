@@ -1716,4 +1716,12 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Results line for a first rated game (no rating stood before it); {after} is the new whole
   // rating. One word and the number.
   'tactics.results.ratingNew': (p) => `Classement ${p.after}`,
+  // @desc: Last row of a context sheet (the bordered mini-menu of a frame); choosing it closes the
+  // sheet, as the Back button does. One word.
+  // boxView.ts (the Monsters sheet)
+  'kit.sheet.close': 'Fermer',
+  // @desc: Last row of a sub-list inside a context sheet (for example the food list); choosing it
+  // returns to the sheet's own rows. One word.
+  // boxView.ts (the Monsters Feed and Evolve lists)
+  'kit.sheet.back': 'Retour',
 } satisfies Catalog);

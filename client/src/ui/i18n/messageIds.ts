@@ -564,7 +564,10 @@ export type MessageId =
   | 'tactics.forecast.recruit'
   | 'tactics.forecast.recruitLines'
   | 'tactics.forecast.bait'
-  | 'tactics.projected.assumes';
+  | 'tactics.projected.assumes'
+  // uif-7: the context sheet's closing rows (the kit's, reused by later slices).
+  | 'kit.sheet.close'
+  | 'kit.sheet.back';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in

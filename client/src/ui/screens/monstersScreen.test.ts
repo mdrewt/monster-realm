@@ -420,6 +420,8 @@ const SHEET_STEPS: Readonly<Record<SheetAction, readonly Input[]>> = {
   evolve: ['A', 'Down', 'Down', 'Down'],
   nickname: ['A', 'Down', 'Down', 'Down', 'Down'],
   move: ['A', 'Down', 'Down', 'Down', 'Down', 'Down'],
+  // uif-7 (UIF7.2): the seventh row, Close, six Downs from Summary.
+  close: ['A', 'Down', 'Down', 'Down', 'Down', 'Down', 'Down'],
 };
 
 /** Kip (party monster 11, the first Party card) on the sheet row `action`, from a fresh frame. */
@@ -850,6 +852,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     // wrap, a repeat A (a held key) that opens the sheet, and an A on an empty Storage that opens
     // a sheet for nothing.
     // ctl-8c (named intentional change): the roster is the design §5 six-row order.
+    // uif-7 (UIF7.2): the roster gains a last row, Close.
     expect(SHEET_ACTIONS, 'the sheet`s actions, in display order').toEqual([
       'summary',
       'care',
@@ -857,6 +860,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
       'evolve',
       'nickname',
       'move',
+      'close',
     ]);
     const w = world();
     const vm = vmOf(w);
@@ -894,6 +898,8 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
       seen.push(actionOf(s));
     }
     // The default world has no evolution path (Evolve… disabled): the walk still reaches it.
+    // uif-7 (UIF7.2): the walk now passes Close before it wraps to Summary, and a fresh Up from
+    // Summary wraps to Close (was Move), so Move is two Ups away (was one).
     expect(seen, 'Down walks the list and wraps back to Summary').toEqual([
       'summary',
       'care',
@@ -901,12 +907,14 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
       'evolve',
       'nickname',
       'move',
+      'close',
       'summary',
     ]);
-    expect(actionOf(swallowed(vm, a.state, ['Up'])), 'a fresh Up on Summary wraps to Move').toBe(
-      'move',
+    expect(actionOf(swallowed(vm, a.state, ['Up'])), 'a fresh Up on Summary wraps to Close').toBe(
+      'close',
     );
-    expect(actionOf(swallowed(vm, a.state, ['Up', 'Up']))).toBe('nickname');
+    expect(actionOf(swallowed(vm, a.state, ['Up', 'Up'])), 'then Move').toBe('move');
+    expect(actionOf(swallowed(vm, a.state, ['Up', 'Up', 'Up']))).toBe('nickname');
     expect(actionOf(swallowed(vm, a.state, ['Down', 'Up']))).toBe('summary');
     expect(actionOf(swallowed(vm, a.state, [rep('Up')])), 'a repeat Up on Summary stays').toBe(
       'summary',
@@ -1315,7 +1323,9 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
 });
 
 describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
-  it('ctl-8b gap: the sheet stays painted under the summary and under the typing row, on the same card, with the action that opened them', () => {
+  // uif-7 (UIF7.3, UIF7.4) named change: the title said "the sheet stays painted under the summary and
+  // under the typing row"; the summary is a page now (no sheet), the typing row keeps its sheet.
+  it('ctl-8b gap: the sheet stays painted under the typing row, on the same card, with the action that opened it, and is gone under the summary page', () => {
     // WRONG IMPL KILLED: a sheetOf that answers null in the summary or nickname phase (the pane
     // would draw under no sheet: the view hides the sheet, the name line and the row's frame
     // vanish, and the focus rescue sends Escape-then-Enter somewhere else), one that paints the
@@ -1327,10 +1337,10 @@ describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
     const summary = swallowed(vm, opened, ['A', 'A']);
     expect(summary.phase.kind, 'fixture: the summary phase').toBe('summary');
     const summaryPaint = paintOf(vm, summary);
-    expect(summaryPaint.sheet, 'the sheet is painted under the summary').not.toBeNull();
-    expect(summaryPaint.sheet?.action).toBe('summary');
-    expect(summaryPaint.sheet?.card, 'the same card as the summary').toEqual(cardOf(vm, 21n));
-    expect(summaryPaint.summary).toEqual(cardOf(vm, 21n));
+    // uif-7 (UIF7.4, UIF7.3): the Summary is a PAGE in place of the grid, not a pane under the
+    // sheet: the paint carries the summary card and NO sheet (one content at a time).
+    expect(summaryPaint.sheet, 'no sheet under the summary page').toBeNull();
+    expect(summaryPaint.summary, 'the page is the monster`s').toEqual(cardOf(vm, 21n));
 
     const row = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(row.phase.kind, 'fixture: the nickname phase').toBe('nickname');
@@ -1554,13 +1564,9 @@ describe('monstersScreen — Care and Feed (ctl-8c, CTL8C.1)', () => {
     const painted = paintOf(vm, opened.state);
     expect(painted.feed).toEqual({ foods: vm.foods, activeKey: '7' });
     // qf-3 (named intentional change): the sheet paint carries `careRemainingMs` (0n: ready).
-    expect(painted.sheet, 'the sheet stays painted under the list').toEqual({
-      card: cardOf(vm, 11n),
-      action: 'feed',
-      canFeed: true,
-      canEvolve: false,
-      careRemainingMs: 0n,
-    });
+    // uif-7 (UIF7.3): the food rows REPLACE the sheet's rows in the one ContextSheet, so the paint
+    // carries no sheet while the list shows (was: the sheet painted under the list).
+    expect(painted.sheet, 'no sheet while the food list shows').toBeNull();
     expect(painted).toMatchObject({
       tab: 'party',
       activeKey: '11',
@@ -1575,12 +1581,21 @@ describe('monstersScreen — Care and Feed (ctl-8c, CTL8C.1)', () => {
       const s = swallowed(vm, opened.state, inputs);
       return s.phase.kind === 'feed' ? s.phase.item : null;
     };
+    // uif-7 (UIF7.2): the list ends with the Back row, so the last Down lands on 'back' (a fresh Down
+    // from it wraps to the first food, a fresh Up from the first food wraps to 'back'; was: the
+    // last food was the end of the wrap).
     expect(itemAfter(['Down'])).toBe('15');
     expect(itemAfter(['Down', 'Down'])).toBe('40');
-    expect(itemAfter(['Down', 'Down', 'Down']), 'a fresh Down wraps').toBe('7');
-    expect(itemAfter(['Up']), 'a fresh Up wraps').toBe('40');
+    expect(itemAfter(['Down', 'Down', 'Down']), 'Down from the last food lands on Back').toBe(
+      'back',
+    );
+    expect(itemAfter(['Down', 'Down', 'Down', 'Down']), 'a fresh Down from Back wraps').toBe('7');
+    expect(itemAfter(['Up']), 'a fresh Up from the first food wraps to Back').toBe('back');
     expect(itemAfter([rep('Up')]), 'a repeat Up at the top stays').toBe('7');
-    expect(itemAfter(['Down', 'Down', rep('Down')]), 'a repeat Down at the end stays').toBe('40');
+    expect(
+      itemAfter(['Down', 'Down', 'Down', rep('Down')]),
+      'a repeat Down at the end (Back) stays',
+    ).toBe('back');
     expect(itemAfter(['Left', 'Right']), 'Left and Right move nothing').toBe('7');
     const onCarrot = swallowed(vm, opened.state, ['Down']);
     expect(onCarrot.phase).toEqual(feedPhase(11n, '15'));
@@ -1621,8 +1636,9 @@ describe('monstersScreen — Care and Feed (ctl-8c, CTL8C.1)', () => {
     expect(fed.state.feedback, 'no line before a batch shows it').toBeNull();
     expect(paintOf(vm, fed.state)).toMatchObject({ feed: null, confirm: null, feedback: null });
 
-    // The third food, reached by wrapping Up: item 40.
-    const onGlowberry = swallowed(vm, kipOn(vm, 'feed'), ['A', 'Up']);
+    // The third food, item 40. uif-7 (UIF7.2): reached by two Downs (a fresh Up from the first food
+    // wraps to the Back row now, was: to the last food).
+    const onGlowberry = swallowed(vm, kipOn(vm, 'feed'), ['A', 'Down', 'Down']);
     expect(press(vm, onGlowberry, 'A').result).toEqual({
       kind: 'train',
       monsterId: 11n,
@@ -1800,7 +1816,8 @@ describe('monstersScreen — Evolve (ctl-8c, CTL8C.1)', () => {
       expect(list.phase).toEqual(evolvePhase(11n, '10'));
       const painted = paintOf(vm, list);
       expect(painted.evolve).toEqual({ mon, activeKey: '10' });
-      expect(painted.sheet).toMatchObject({ action: 'evolve', canEvolve: true });
+      // uif-7 (UIF7.3): the path rows replace the sheet's rows: no sheet is painted under the list.
+      expect(painted.sheet, 'no sheet while the Evolve list shows').toBeNull();
       expect(painted.confirm).toBeNull();
       const refused = press(vm, list, 'A');
       expect(refused.result).toBe('consumed');
@@ -1810,7 +1827,15 @@ describe('monstersScreen — Evolve (ctl-8c, CTL8C.1)', () => {
       expect(onSecond.phase).toEqual(evolvePhase(11n, '20'));
       expect(paintOf(vm, onSecond).evolve?.activeKey).toBe('20');
       expect(press(vm, onSecond, 'A').state.phase).toEqual(onSecond.phase);
-      expect(swallowed(vm, list, ['Down', 'Down']).phase, 'a fresh Down wraps').toEqual(list.phase);
+      // uif-7 (UIF7.2): the second Down lands on the Back row, the third wraps to the first path
+      // (was: the second Down wrapped straight to the first path).
+      expect(
+        swallowed(vm, list, ['Down', 'Down']).phase,
+        'Down from the last path is Back',
+      ).toEqual(evolvePhase(11n, 'back'));
+      expect(swallowed(vm, list, ['Down', 'Down', 'Down']).phase, 'a fresh Down wraps').toEqual(
+        list.phase,
+      );
     }
 
     // Exactly one met: no choice (the server applies it on the next action).
@@ -1905,14 +1930,10 @@ describe('monstersScreen — Evolve (ctl-8c, CTL8C.1)', () => {
       species: 'Duskling',
       yes: false,
     });
-    // qf-3 (named intentional change): the sheet paint carries `careRemainingMs` (0n: ready).
-    expect(painted.sheet, 'the sheet stays painted, on Evolve').toEqual({
-      card: cardOf(vm, 11n),
-      action: 'evolve',
-      canFeed: true,
-      canEvolve: true,
-      careRemainingMs: 0n,
-    });
+    // uif-7 (UIF7.3): the confirm is the one sheet's confirm variant: no sheet is painted beside it
+    // (was: the sheet painted, on Evolve, under the confirm).
+    expect(painted.sheet, 'no sheet beside the confirm').toBeNull();
+    expect(painted.evolve, 'and no Evolve list: one content at a time').toBeNull();
     expect(painted.feed).toBeNull();
 
     const no = press(vm, opened.state, 'A');
@@ -2491,32 +2512,61 @@ describe('monstersScreen — the Care cooldown (qf-3, QF3.3, QF3.4)', () => {
 
     // (b) Every pane the sheet stays painted under: its name, the walk that opens it from the
     // list, the phase it opens, and the part of the paint that is the pane itself.
-    type Pane = readonly [string, readonly Input[], string, (p: MonstersPaint) => unknown];
+    // uif-7 (UIF7.3, UIF7.4) named change: only the typing row keeps the sheet painted under it now.
+    // The summary page, the food list, the Evolve list and the confirm REPLACE the sheet's rows, so
+    // their paints carry no sheet (the Care row is not on screen) and the old "still painted, a NEW
+    // state per shown minute" claim moves to where the Care row returns: after B (one press, two
+    // from the confirm) the sheet paints the minute and the readiness of THAT press's view model.
+    type Pane = readonly [string, readonly Input[], string, (p: MonstersPaint) => unknown, number];
     const panes: readonly Pane[] = [
-      ['the summary pane', [...SHEET_STEPS.summary, 'A'], 'summary', (p) => p.summary],
-      ['the food list', [...SHEET_STEPS.feed, 'A'], 'feed', (p) => p.feed],
-      ['the Evolve list', [...SHEET_STEPS.evolve, 'A'], 'evolve', (p) => p.evolve],
-      ['the confirm', [...SHEET_STEPS.evolve, 'A', 'A'], 'evolveConfirm', (p) => p.confirm],
-      ['the typing row', [...SHEET_STEPS.nickname, 'A'], 'nickname', (p) => p.nickname],
+      ['the summary page', [...SHEET_STEPS.summary, 'A'], 'summary', (p) => p.summary, 1],
+      ['the food list', [...SHEET_STEPS.feed, 'A'], 'feed', (p) => p.feed, 1],
+      ['the Evolve list', [...SHEET_STEPS.evolve, 'A'], 'evolve', (p) => p.evolve, 1],
+      ['the confirm', [...SHEET_STEPS.evolve, 'A', 'A'], 'evolveConfirm', (p) => p.confirm, 2],
     ];
-    for (const [name, steps, kind, pane] of panes) {
+    for (const [name, steps, kind, pane, backs] of panes) {
       const opened = swallowed(vm0, monstersScreen.init(vm0), steps);
       expect(opened.phase.kind, `fixture: ${name} is open`).toBe(kind);
       const first = paintOf(vm0, opened);
       expect(pane(first), `fixture: ${name} is painted`).not.toBeNull();
-      expect(first.sheet?.careRemainingMs, `${name}: the cooling row under it`).toBe(r0);
-      expect(observe(later1s, opened), `${name}: the same minute, SAME`).toBe(opened);
-      const moved = observe(later1m, opened);
-      expect(moved, `${name}: the shown minute changed, a NEW state`).not.toBe(opened);
-      expect(moved.phase, `${name}: still open`).toEqual(opened.phase);
-      const movedPaint = paintOf(later1m, moved);
-      expect(pane(movedPaint), `${name}: still painted`).not.toBeNull();
-      expect(movedPaint.sheet?.careRemainingMs, `${name}: a minute on`).toBe(r0 - 60_000n);
-      const ready = observe(atReady, moved);
-      expect(ready, `${name}: readiness flipped, a NEW state`).not.toBe(moved);
-      expect(ready.phase, `${name}: still open`).toEqual(opened.phase);
-      expect(paintOf(atReady, ready).sheet?.careRemainingMs, `${name}: ready`).toBe(0n);
+      expect(first.sheet, `${name}: no sheet (and so no Care row) under it`).toBeNull();
+      const back = (vm: MonstersVm): MonstersPaint => {
+        const sheet = swallowed(
+          vm,
+          opened,
+          Array.from({ length: backs }, () => 'B' as const),
+        );
+        expect(sheet.phase.kind, `${name}: B returns to the sheet`).toBe('sheet');
+        return paintOf(vm, sheet);
+      };
+      expect(back(vm0).sheet?.careRemainingMs, `${name}: back on the sheet, the cooling row`).toBe(
+        r0,
+      );
+      expect(
+        back(later1m).sheet?.careRemainingMs,
+        `${name}: back on the sheet a minute on, the hint has moved`,
+      ).toBe(r0 - 60_000n);
+      expect(
+        back(atReady).sheet?.careRemainingMs,
+        `${name}: back on the sheet at the end of the cooldown, Care is ready`,
+      ).toBe(0n);
     }
+    const typing = swallowed(vm0, monstersScreen.init(vm0), [...SHEET_STEPS.nickname, 'A']);
+    expect(typing.phase.kind, 'fixture: the typing row is open').toBe('nickname');
+    const first = paintOf(vm0, typing);
+    expect(first.nickname, 'fixture: the typing row is painted').not.toBeNull();
+    expect(first.sheet?.careRemainingMs, 'the typing row: the cooling row under it').toBe(r0);
+    expect(observe(later1s, typing), 'the typing row: the same minute, SAME').toBe(typing);
+    const moved = observe(later1m, typing);
+    expect(moved, 'the typing row: the shown minute changed, a NEW state').not.toBe(typing);
+    expect(moved.phase, 'the typing row: still open').toEqual(typing.phase);
+    const movedPaint = paintOf(later1m, moved);
+    expect(movedPaint.nickname, 'the typing row: still painted').not.toBeNull();
+    expect(movedPaint.sheet?.careRemainingMs, 'the typing row: a minute on').toBe(r0 - 60_000n);
+    const ready = observe(atReady, moved);
+    expect(ready, 'the typing row: readiness flipped, a NEW state').not.toBe(moved);
+    expect(ready.phase, 'the typing row: still open').toEqual(typing.phase);
+    expect(paintOf(atReady, ready).sheet?.careRemainingMs, 'the typing row: ready').toBe(0n);
   });
 
   it('Up and Down still land on a cooling Care (disabled, reachable) and walk past it in the design order [QF3-3-CARE-REACHABLE]', () => {
@@ -2584,5 +2634,318 @@ describe('monstersScreen — the Care cooldown (qf-3, QF3.3, QF3.4)', () => {
     expect(cooled, 'the anchor moved: a NEW state').not.toBe(sent.state);
     expect(paintOf(stamped, cooled).sheet?.careRemainingMs, 'a whole cooldown').toBe(full);
     expect(press(stamped, cooled, 'A').result, 'and Care is swallowed now').toBe('consumed');
+  });
+});
+
+// =============================================================================
+// uif-7 (UIF7.2, UIF7.3, UIF7.4): the Close and Back rows, one sheet at a time, the Summary page.
+// =============================================================================
+
+/** A food list whose cursor sits on the Back row: Kip (11) opened Feed… over three foods (7, 15, 40),
+ *  then three Downs (15, 40, back). */
+const onFeedBack = (vm: MonstersVm): MonstersScreenState =>
+  swallowed(vm, kipOn(vm, 'feed'), ['A', 'Down', 'Down', 'Down']);
+
+/** Kip's Evolve list (TWO_MET: paths 10, 20, 30; opens on the first choice, 20) with the cursor on
+ *  Back: Down (30), Down (back). */
+const onEvolveBack = (vm: MonstersVm): MonstersScreenState =>
+  swallowed(vm, kipOn(vm, 'evolve'), ['A', 'Down', 'Down']);
+
+describe('monstersScreen uif-7: Close and Back (UIF7.2)', () => {
+  it('UIF7.2 CLOSE-EQ-B: A on the sheet`s Close row yields the same state and the same result as B from that sheet (the list phase on the same monster, no command), for a Storage and a Party monster', () => {
+    // WRONG IMPL KILLED: a Close row whose A does nothing (swallowed, sheet stays); one that pops
+    // the whole frame; one that sends a command; one that closes to the list but moves the cursor,
+    // keeps a pending move or leaves a stale `shown` signature (the state would differ from B's);
+    // an A on Close acting on the monster's Move.
+    const vm = vmOf(world());
+    for (const [name, prefix] of [
+      ['a Storage monster', [] as Input[]],
+      ['a Party monster', ['RB'] as Input[]],
+    ] as const) {
+      const onClose = swallowed(vm, monstersScreen.init(vm), [...prefix, ...SHEET_STEPS.close]);
+      expect(onClose.phase.kind, `${name}: fixture: the sheet`).toBe('sheet');
+      expect(onClose.phase, `${name}: fixture: on Close`).toMatchObject({ action: 'close' });
+      const a = press(vm, onClose, 'A');
+      const b = press(vm, onClose, 'B');
+      expect(a.result, `${name}: A on Close is swallowed, no command`).toBe('consumed');
+      expect(a.result).toEqual(b.result);
+      expect(a.state.phase.kind, `${name}: back on the list`).toBe('list');
+      expect(a.state, `${name}: the very state B reaches`).toEqual(b.state);
+      expect(cursorOf(a.state), `${name}: the cursor stays on the monster`).toEqual(
+        cursorOf(onClose),
+      );
+      expect(paintOf(vm, a.state).sheet, `${name}: nothing painted as a sheet`).toBeNull();
+    }
+  });
+
+  it('UIF7.2 CLOSE-REPEAT: a held A on Close is swallowed and changes nothing (the sheet-A rule), and the same press made fresh closes', () => {
+    // WRONG IMPL KILLED: a Close that ignores the repeat flag (a held Enter would close the sheet
+    // and then act on the list under it: open the next sheet, once per repeat).
+    const vm = vmOf(world());
+    const onClose = swallowed(vm, monstersScreen.init(vm), SHEET_STEPS.close);
+    const held = press(vm, onClose, rep('A'));
+    expect(held.result).toBe('consumed');
+    expect(held.state, 'state unchanged').toEqual(onClose);
+    expect(held.state.phase, 'still the sheet, on Close').toEqual(sheetPhase(21n, 'close'));
+    expect(press(vm, onClose, 'A').state.phase.kind, 'CONTROL: fresh, it closes').toBe('list');
+  });
+
+  it('UIF7.2 CLOSE-WALK: Up from Summary wraps to Close, Down from Close wraps to Summary, Close is painted as the active row, and A on every other row still does what it did', () => {
+    // WRONG IMPL KILLED: a Close row outside the walk (Up from Summary would still land on Move);
+    // a wrap that skips it; a paint whose action stays the previous row; a Close that steals the
+    // Move row's command.
+    const vm = vmOf(world());
+    const onSummary = swallowed(vm, monstersScreen.init(vm), ['A']);
+    expect(swallowed(vm, onSummary, ['Up']).phase, 'Up from Summary: Close').toEqual(
+      sheetPhase(21n, 'close'),
+    );
+    const onClose = swallowed(vm, onSummary, ['Up']);
+    expect(swallowed(vm, onClose, ['Down']).phase, 'Down from Close: Summary').toEqual(
+      sheetPhase(21n, 'summary'),
+    );
+    expect(swallowed(vm, onClose, ['Up']).phase, 'Up from Close: Move').toEqual(
+      sheetPhase(21n, 'move'),
+    );
+    expect(paintOf(vm, onClose).sheet, 'Close is the painted action').toMatchObject({
+      action: 'close',
+      card: cardOf(vm, 21n),
+    });
+    expect(
+      press(vm, swallowed(vm, onSummary, ['Up', 'Up']), 'A').result,
+      'Move still sends',
+    ).toEqual({ kind: 'setPartySlot', monsterId: 21n, slot: -1 });
+    expect(
+      swallowed(vm, kipOn(vm, 'close'), []).phase,
+      'a Party monster walks to Close the same way',
+    ).toEqual(sheetPhase(11n, 'close'));
+  });
+
+  it('UIF7.2 BACK-FEED: A on the food list`s Back row returns to the sheet on Feed, the same state and result as B, with nothing sent and nothing pending; a held A does nothing', () => {
+    // WRONG IMPL KILLED: a Back row that is looked up as a food (A swallowed, the list stays); one
+    // that feeds the first food; one that sends train for item "back" (NaN) or leaves a pending
+    // feed; one that drops to the list instead of the sheet; one that ignores the repeat flag.
+    const vm = vmOf(world({ inventory: FOODS3 }));
+    const onBack = onFeedBack(vm);
+    expect(onBack.phase, 'fixture: the cursor is on Back').toEqual(feedPhase(11n, 'back'));
+    expect(paintOf(vm, onBack).feed?.activeKey, 'the paint names the Back row').toBe('back');
+    const a = press(vm, onBack, 'A');
+    const b = press(vm, onBack, 'B');
+    expect(a.result, 'no command').toBe('consumed');
+    expect(a.state.phase, 'the sheet, on Feed').toEqual(sheetPhase(11n, 'feed'));
+    expect(a.state.pendingFeed, 'nothing pending').toBeNull();
+    expect(a.state, 'the very state B reaches').toEqual(b.state);
+    expect(a.result).toEqual(b.result);
+    expect(paintOf(vm, a.state).feed, 'the list is gone').toBeNull();
+
+    const held = press(vm, onBack, rep('A'));
+    expect(held.result).toBe('consumed');
+    expect(held.state.phase, 'a held A on Back changes nothing').toEqual(onBack.phase);
+    // The default world holds one food (Bait): Back is one Down away.
+    const one = vmOf(world());
+    const oneBack = swallowed(one, kipOn(one, 'feed'), ['A', 'Down']);
+    expect(oneBack.phase).toEqual(feedPhase(11n, 'back'));
+    expect(press(one, oneBack, 'A').state.phase).toEqual(sheetPhase(11n, 'feed'));
+  });
+
+  it('UIF7.2 BACK-EVOLVE: A on the Evolve list`s Back row returns to the sheet on Evolve (no confirm, no command), the same state and result as B, whether or not any path is a choice; a held A does nothing', () => {
+    // WRONG IMPL KILLED: a Back row looked up as a path (A swallowed); one that opens a confirm for
+    // it; one that evolves; one that drops to the list; one that ignores the repeat flag.
+    for (const [name, paths] of [
+      ['two choices', TWO_MET],
+      ['none met', NONE_MET],
+      ['one met', ONE_MET],
+    ] as const) {
+      const vm = vmOf(world({ paths }));
+      const list = swallowed(vm, kipOn(vm, 'evolve'), ['A']);
+      expect(list.phase.kind, `${name}: fixture: the Evolve list`).toBe('evolve');
+      // Down until Back (a fresh Down wraps, so walk at most paths + 1 steps).
+      let onBack = list;
+      for (
+        let i = 0;
+        i < 4 && !(onBack.phase.kind === 'evolve' && onBack.phase.path === 'back');
+      ) {
+        onBack = swallowed(vm, onBack, ['Down']);
+        i += 1;
+      }
+      expect(onBack.phase, `${name}: fixture: the cursor reached Back`).toEqual(
+        evolvePhase(11n, 'back'),
+      );
+      expect(paintOf(vm, onBack).evolve?.activeKey, `${name}: the paint names Back`).toBe('back');
+      const a = press(vm, onBack, 'A');
+      const b = press(vm, onBack, 'B');
+      expect(a.result, `${name}: no command`).toBe('consumed');
+      expect(a.state.phase, `${name}: the sheet, on Evolve`).toEqual(sheetPhase(11n, 'evolve'));
+      expect(a.state, `${name}: the very state B reaches`).toEqual(b.state);
+      expect(paintOf(vm, a.state).confirm, `${name}: no confirm`).toBeNull();
+      const held = press(vm, onBack, rep('A'));
+      expect(held.result).toBe('consumed');
+      expect(held.state.phase, `${name}: a held A on Back changes nothing`).toEqual(onBack.phase);
+    }
+  });
+
+  it('UIF7.2 BACK-SETTLE: a food list or an Evolve list with the cursor on Back keeps it across a batch that changes a count or a path (never re-seated to the first row), repaints with Back still active, and closes to the sheet only when the list itself empties', () => {
+    // WRONG IMPL KILLED: a settle that treats 'back' as a gone food or path and re-seats the cursor
+    // to the first row on every batch (the player pressing Down to Back would be thrown back to the
+    // top by an unrelated count change); a list left open with only Back in it after the last food
+    // or path vanished (nothing to choose; Feed… and Evolve… are disabled with none); the SAME-state
+    // rule broken for a Back cursor.
+    const w = world({ inventory: FOODS3, paths: TWO_MET });
+    const vm = vmOf(w);
+
+    const feedBack = onFeedBack(vm);
+    expect(observe(vmOf(w), feedBack), 'nothing changed: the same object').toBe(feedBack);
+    for (const [name, batch] of [
+      ['a count changed', withCount(w, BAIT, 2)],
+      ['the first food ran out', withoutItem(w, BAIT)],
+      ['another food ran out', withoutItem(w, CARROT)],
+    ] as const) {
+      const next = observe(vmOf(batch), feedBack);
+      expect(next.phase, `${name}: the cursor stays on Back`).toEqual(feedPhase(11n, 'back'));
+      expect(paintOf(vmOf(batch), next).feed?.activeKey, `${name}: Back is painted active`).toBe(
+        'back',
+      );
+    }
+    const countsOnly = observe(vmOf(withCount(w, BAIT, 2)), feedBack);
+    expect(paintOf(vmOf(withCount(w, BAIT, 2)), countsOnly).feed?.foods).toContainEqual({
+      itemId: BAIT,
+      name: 'Bait',
+      count: 2,
+    });
+    const starved = observe(vmOf({ ...w, inventory: [] }), feedBack);
+    expect(starved.phase, 'no food left: the sheet, on Feed').toEqual(sheetPhase(11n, 'feed'));
+    expect(paintOf(vmOf({ ...w, inventory: [] }), starved).feed).toBeNull();
+
+    const evoBack = onEvolveBack(vm);
+    expect(evoBack.phase, 'fixture: the cursor is on Back').toEqual(evolvePhase(11n, 'back'));
+    expect(observe(vmOf(w), evoBack), 'nothing changed: the same object').toBe(evoBack);
+    const raised: World = {
+      ...w,
+      paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(30, 1, 2, 50)],
+    };
+    const swapped: World = {
+      ...w,
+      paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(40, 1, 2, 1)],
+    };
+    for (const [name, batch] of [
+      ['a path became unmet', raised],
+      ['a path was swapped for another', swapped],
+    ] as const) {
+      const next = observe(vmOf(batch), evoBack);
+      expect(next.phase, `${name}: the cursor stays on Back`).toEqual(evolvePhase(11n, 'back'));
+      expect(paintOf(vmOf(batch), next).evolve?.activeKey, `${name}: Back is painted active`).toBe(
+        'back',
+      );
+    }
+    const pathless = observe(vmOf({ ...w, paths: [] }), evoBack);
+    expect(pathless.phase, 'no path left: the sheet, on Evolve').toEqual(sheetPhase(11n, 'evolve'));
+  });
+});
+
+describe('monstersScreen uif-7: one sheet at a time (UIF7.3) and the Summary page (UIF7.4)', () => {
+  it('UIF7.3 the paint carries exactly one content: the sheet only in the sheet and nickname phases, the food list, the Evolve list, the confirm and the summary page each with no sheet', () => {
+    // WRONG IMPL KILLED: today's `sheetOf` that paints the sheet under every sub-list and the
+    // summary (two sheets' worth of rows on screen, or a second root); a sub-list painted together
+    // with another (a confirm beside its list); a nickname row that lost its sheet.
+    const vm = vmOf(world({ inventory: FOODS3, paths: TWO_MET }));
+    const paints: ReadonlyArray<
+      readonly [string, MonstersScreenState, keyof MonstersPaint | null]
+    > = [
+      ['the sheet', kipOn(vm, 'summary'), 'sheet'],
+      ['the typing row', swallowed(vm, kipOn(vm, 'nickname'), ['A']), 'nickname'],
+      ['the food list', swallowed(vm, kipOn(vm, 'feed'), ['A']), 'feed'],
+      ['the Evolve list', swallowed(vm, kipOn(vm, 'evolve'), ['A']), 'evolve'],
+      ['the confirm', swallowed(vm, kipOn(vm, 'evolve'), ['A', 'A']), 'confirm'],
+      ['the summary page', swallowed(vm, kipOn(vm, 'summary'), ['A']), 'summary'],
+    ];
+    for (const [name, state, own] of paints) {
+      const painted = paintOf(vm, state);
+      if (name === 'the typing row') {
+        expect(painted.sheet, `${name}: the sheet stays under the typing row`).not.toBeNull();
+        expect(painted.nickname, `${name}: the row`).not.toBeNull();
+        continue;
+      }
+      for (const part of ['sheet', 'feed', 'evolve', 'confirm', 'summary'] as const) {
+        if (part === own) {
+          expect(painted[part], `${name}: paints its own content`).not.toBeNull();
+        } else {
+          expect(painted[part], `${name}: no ${part} beside it`).toBeNull();
+        }
+      }
+    }
+  });
+
+  it('UIF7.4 B and A on the summary page return to the sheet on Summary for the same monster, with no command; Start and Select still act; a D-pad press is swallowed and leaves the page open', () => {
+    // WRONG IMPL KILLED: a page that B closes to the list (the sheet is one level up); one that A
+    // leaves open; one that changes monster with the D-pad (the wf-1 verdict: a page, not a
+    // browser); a command from the page; Start or Select swallowed.
+    const vm = vmOf(world());
+    const opened = monstersScreen.init(vm);
+    for (const [name, prefix, id] of [
+      ['a Storage monster', [] as Input[], 21n],
+      ['a Party monster', ['RB', 'Right'] as Input[], 12n],
+    ] as const) {
+      const summary = swallowed(vm, opened, [...prefix, 'A', 'A']);
+      expect(summary.phase, `${name}: fixture: the page`).toEqual({
+        kind: 'summary',
+        monsterId: id,
+      });
+      for (const button of ['B', 'A'] as const) {
+        const step = press(vm, summary, button);
+        expect(step.result, `${name}: ${button} sends nothing`).toBe('consumed');
+        expect(step.state.phase, `${name}: ${button} returns to the sheet on Summary`).toEqual(
+          sheetPhase(id, 'summary'),
+        );
+      }
+      for (const button of ['Up', 'Down', 'Left', 'Right'] as const) {
+        const step = press(vm, summary, button);
+        expect(step.result, `${name}: ${button} is swallowed`).toBe('consumed');
+        expect(step.state.phase, `${name}: ${button} leaves the page open`).toEqual(summary.phase);
+        expect(cursorOf(step.state), `${name}: ${button} moves no cursor`).toEqual(
+          cursorOf(summary),
+        );
+      }
+      expect(press(vm, summary, 'Start').result).toEqual(POP_TO_BASE);
+      expect(press(vm, summary, 'Select').result).toEqual(TOGGLE_HELP);
+    }
+  });
+
+  it('UIF7.4 LB and RB on the summary page close it to the list with the other tab selected (the tab each tab was left on, the paint following), swallowed with no command', () => {
+    // WRONG IMPL KILLED: tabs that do nothing on the page (a click on a tab is the same LB / RB
+    // press by the pointer source: the page would swallow it and the tab click would be dead,
+    // UIF7.5's tab proof); a switch that leaves the page open over the new tab; a switch that
+    // changes the tab but forgets the other tab's cursor; one that sends a command.
+    const vm = vmOf(world());
+    const opened = monstersScreen.init(vm);
+    const stoSummary = swallowed(vm, opened, ['A', 'A']);
+    expect(stoSummary.nav.tab).toBe('storage');
+    for (const button of ['LB', 'RB'] as const) {
+      const step = press(vm, stoSummary, button);
+      expect(step.result, `${button}: no command`).toBe('consumed');
+      expect(step.state.phase.kind, `${button}: the page is closed to the list`).toBe('list');
+      expect(cursorOf(step.state), `${button}: Party, on its first monster`).toEqual({
+        tab: 'party',
+        item: '11',
+      });
+      expect(paintOf(vm, step.state), `${button}: the paint follows`).toMatchObject({
+        tab: 'party',
+        activeKey: '11',
+        summary: null,
+        sheet: null,
+      });
+    }
+    const partySummary = swallowed(vm, opened, ['RB', 'Right', 'A', 'A']);
+    expect(partySummary.phase).toMatchObject({ kind: 'summary', monsterId: 12n });
+    for (const button of ['LB', 'RB'] as const) {
+      const step = press(vm, partySummary, button);
+      expect(step.result).toBe('consumed');
+      expect(step.state.phase.kind, `${button}: from Party, to the list`).toBe('list');
+      expect(cursorOf(step.state), `${button}: Storage, on the cursor it was left on`).toEqual({
+        tab: 'storage',
+        item: '21',
+      });
+    }
+    // The list is live: A on the new tab's cursor opens ITS sheet.
+    const toParty = press(vm, stoSummary, 'RB').state;
+    expect(press(vm, toParty, 'A').state.phase).toEqual(sheetPhase(11n, 'summary'));
   });
 });

@@ -188,6 +188,15 @@ export function expectRect(actual: Rect, expected: Rect, tolerance = 1, label = 
   }
 }
 
+/** Whether two rects overlap by MORE than `tolerance` CSS px on both axes (sharing an edge, or
+ *  overlapping by a sub-pixel antialiasing sliver, is not an overlap). uif-7: the sheet must not
+ *  cover the cursor slot, so the spec asks this of the sheet's rect and the cursor cell's. */
+export function rectsOverlap(a: Rect, b: Rect, tolerance = 0.5): boolean {
+  const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return overlapX > tolerance && overlapY > tolerance;
+}
+
 /** `actual` is within `tolerance` of `expected` (one length, e.g. a height). */
 export function expectNear(
   actual: number,

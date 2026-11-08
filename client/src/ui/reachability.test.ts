@@ -1413,38 +1413,50 @@ function qf8RenderBox(): Qf8Rendered {
           i18nTf('box.sheet.careCooldown', { hours: 1, minutes: 0 }),
         ],
       },
+      // uif-7 (UIF7.3) named changes: the lists and the confirm REPLACE the sheet's rows in the one
+      // ContextSheet, so the screen paints them with no sheet and one at a time. Was: the food list
+      // under the sheet (`sheet` painted beside `feed`) and the Evolve list and its confirm painted
+      // together. Now: the food list alone, the Evolve list alone, and the confirm alone, each with
+      // its own anchors (the Back row's label is an anchor too).
       {
-        name: 'the food list open under the Storage card`s sheet',
+        name: 'the food list open in the sheet of the Storage card',
         apply: () =>
           paint({
             tab: 'storage',
             activeKey: String(QF8_BOX_STORAGE_CARD.monsterId),
-            sheet: { ...storageSheet, action: 'feed', canFeed: true },
+            sheet: null,
             feed: { foods: QF8_BOX_FOODS, activeKey: null },
           }),
-        anchors: () => [i18nTf('box.feed.item', { name: 'Protein', count: 2 })],
+        anchors: () => [
+          i18nTf('box.feed.item', { name: 'Protein', count: 2 }),
+          i18nT('kit.sheet.back'),
+        ],
       },
       {
-        name: 'the Evolve list and its Yes / No confirm open under the badged card`s sheet',
+        name: 'the Evolve list open in the sheet of the badged card',
         apply: () =>
           paint({
             tab: 'party',
             activeKey: String(QF8_BOX_BADGED_CARD.monsterId),
-            sheet: {
-              card: QF8_BOX_BADGED_CARD,
-              action: 'evolve',
-              canFeed: false,
-              canEvolve: true,
-              careRemainingMs: 0n,
-            },
+            sheet: null,
             evolve: { mon: QF8_EVO_TWO_CHOICES, activeKey: null },
-            confirm: { name: 'Mo', species: 'Emberfang', yes: false },
           }),
         anchors: () => [
           i18nTf('evolution.path.heading', { species: 'Duskling' }),
           i18nTf('evolution.path.heading', { species: 'Emberfang' }),
-          i18nTf('box.evolve.confirm', { name: 'Mo', species: 'Emberfang' }),
+          i18nT('kit.sheet.back'),
         ],
+      },
+      {
+        name: 'the Yes / No confirm open in the sheet of the badged card',
+        apply: () =>
+          paint({
+            tab: 'party',
+            activeKey: String(QF8_BOX_BADGED_CARD.monsterId),
+            sheet: null,
+            confirm: { name: 'Mo', species: 'Emberfang', yes: false },
+          }),
+        anchors: () => [i18nTf('box.evolve.confirm', { name: 'Mo', species: 'Emberfang' })],
       },
       {
         name: 'the Storage card`s summary and its nickname row',
@@ -1844,7 +1856,7 @@ const QF8_RETIRED: readonly Qf8Row[] = [
     retiredTitle:
       'the Monsters frame, shown over a plain Party card, an evolution-badged Party card, an empty slot and a Storage card, then painted with its sheet, food list, Evolve list and confirm, summary and nickname row in turn, renders no element labelled To Box or To Party (however its spaces are spelled), registers no listener, on* handler or shadow root beyond its focus trap and its nickname field`s key guard, and no pointer, mouse, touch, focus or key event on any element, the document or the window reaches a BoxView callback [QF8-2-BOX-RETIRED]',
     nativeTitle:
-      'with the Monsters frame shown and painted in each of those states, the document gains no native control or tab stop beyond the nickname field, its label and the four nav-list containers [QF8-2-BOX-NATIVE]',
+      'with the Monsters frame shown and painted in each of those states, the document gains no native control or tab stop beyond the nickname field, its label and the one nav-list container of the sheet [QF8-2-BOX-NATIVE]',
     retiredSelectors: [],
     retiredLabels: [/^to box$/i, /^to party$/i],
     retiredText: [],
@@ -1853,13 +1865,15 @@ const QF8_RETIRED: readonly Qf8Row[] = [
     // focus trap (show() -> overlayA11y.ts's installTrap: Tab only, never a send).
     ownRegistrations: ['input#monsters-nickname-input keydown', 'root keydown capture'],
     // BoxView's permanent typing field (`input#monsters-nickname-input`, hidden until a Nickname
-    // opens) and its `<label for>`, and the four id-less nav containers `renderNav` makes tab stops
-    // on every apply: the sheet, the food list, the Evolve list and the Yes / No confirm. The cards
-    // are `div`s with a nav key and no tab stop; the title is `tabindex="-1"`.
+    // opens) and its `<label for>`, and the ONE id-less nav container `renderNav` makes a tab stop:
+    // the rows of the frame's one ContextSheet (sheet actions, food, paths and Yes / No share it).
+    // The cards are `div`s with a nav key and no tab stop; the title is `tabindex="-1"`.
+    // uif-7 (UIF7.3) named change: 4 -> 1. The sheet, the food list, the Evolve list and the confirm
+    // were four containers; they are one sheet's rows list now.
     allowedDelta: {
       'input#monsters-nickname-input': 1,
       'label[for="monsters-nickname-input"]': 1,
-      'div[role="listbox"][tabindex="0"]:not([id])': 4,
+      'div[role="listbox"][tabindex="0"]:not([id])': 1,
     },
     render: qf8RenderBox,
   },
@@ -2388,16 +2402,19 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
         path: '20',
       });
       expect(fired, 'fixture: nothing sent yet').toEqual([]);
+      // uif-7 (UIF7.3) named change: the path rows are the one sheet's rows, ids
+      // `monstersSheet-root-<edgeId>` (was `monstersEvolve-root-<edgeId>`), and Yes / No are
+      // `monstersSheet-root-yes|no` (was `monstersConfirm-root-*`).
       for (const edge of [10, 20, 30]) {
         expect(
-          gameScreen.querySelector(`#monstersEvolve-root-${edge}[data-nav-key]`),
+          gameScreen.querySelector(`#monstersSheet-root-${edge}[data-nav-key]`),
           `precondition: path ${edge} is a nav row`,
         ).not.toBeNull();
       }
 
       // Control: the unmet path. The cursor follows the click; A on a path that is no choice is
       // swallowed, so nothing is offered and nothing is sent.
-      click('monstersEvolve-root-10');
+      click('monstersSheet-root-10');
       expect(state.phase, 'the click moved the cursor to the unmet path').toEqual({
         kind: 'evolve',
         monsterId: 11n,
@@ -2406,7 +2423,7 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
       expect(fired, 'an unmet path is no choice: nothing sent').toEqual([]);
 
       // The SECOND choice (edge 30, two rows below): its confirm opens, defaulting to No.
-      click('monstersEvolve-root-30');
+      click('monstersSheet-root-30');
       expect(state.phase, 'the click opened the confirm for THE CLICKED path').toEqual({
         kind: 'evolveConfirm',
         monsterId: 11n,
@@ -2416,7 +2433,7 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
       expect(fired, 'the confirm sends nothing').toEqual([]);
 
       // Yes: one click on the row, not a D-pad press. The cursor was on No.
-      click('monstersConfirm-root-yes');
+      click('monstersSheet-root-yes');
       expect(
         fired,
         'the pointer reached evolve exactly once, with the target species of the clicked path',
@@ -2547,6 +2564,245 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
     } finally {
       view.hide();
       gameScreen.remove();
+    }
+  });
+});
+
+// ---- uif-7 (UIF7.5): an outside click closes the Monsters sheet and lands on its target ----
+//
+// The REAL BoxView, the REAL Monsters adapter and the REAL PointerSource over a happy-dom frame.
+// happy-dom has no layout, so what is proved here is the ROUTING: the pointer source's capture step
+// presses B until no `[data-context-sheet]` shows (MAX_CLOSE_DEPTH presses at most), then the same
+// click routes as if no sheet had been open. Where the click LANDS on screen (a cell not covered by
+// the sheet) is proved in Chromium by client/e2e/ui-monsters.spec.ts (UIF7.5).
+
+type Uif7State = ReturnType<typeof monstersScreen.init>;
+
+interface Uif7Pointer {
+  readonly click: (selector: string) => void;
+  readonly drive: (button: VButton) => void;
+  readonly state: () => Uif7State;
+  readonly fired: readonly ScreenResult[];
+  /** The sheet roots a player can see. */
+  readonly shownSheets: () => HTMLElement[];
+  readonly heading: () => string;
+  readonly partyGridShown: () => boolean;
+  readonly dispose: () => void;
+}
+
+/** Kip (31) in the Party; Mo, Bo, Zed and Pip (32 to 35) in Storage, a 3-wide grid; species 1 has
+ *  two choices (edges 20, 30) and an unmet path (edge 10); one food (Bait x3). */
+function uif7PointerWorld(): Uif7Pointer {
+  const monsters = [
+    qf8Monster(31n, 0, 1, 'Kip'),
+    qf8Monster(32n, 255, 1, 'Mo'),
+    qf8Monster(33n, 255, 2, 'Bo'),
+    qf8Monster(34n, 255, 2, 'Zed'),
+    qf8Monster(35n, 255, 2, 'Pip'),
+  ];
+  const paths = [qf8Edge(10, 1, 4, 50), qf8Edge(20, 1, 3, 1), qf8Edge(30, 1, 2, 1)];
+  const species = [
+    qf8Species(1, 'Sproutle'),
+    qf8Species(2, 'Emberfang'),
+    qf8Species(3, 'Duskling'),
+    qf8Species(4, 'Tidepup'),
+  ];
+  const ctx = {
+    store: {
+      ownMonsters: (identity: string) => (identity === QF8_ME ? monsters : []),
+      speciesMap: () => new Map(species.map((s) => [s.id, s])),
+      evolutionPaths: () => paths.values(),
+      ownInventory: () => [{ invId: 1n, ownerIdentity: QF8_ME, itemId: 7, count: 3 }],
+      itemDefs: () =>
+        new Map([
+          [
+            7,
+            {
+              id: 7,
+              name: 'Bait',
+              description: '',
+              recruitBonus: 0,
+              trainStat: 'attack',
+              trainAmount: 1,
+              sellPrice: 0n,
+              cureStatus: null,
+            },
+          ],
+        ]),
+    },
+    identity: QF8_ME,
+    now: () => 0,
+    wallNowMs: () => 1_750_000_000_000,
+  } as unknown as ScreenContext;
+  const vm = monstersScreen.viewModel(ctx);
+  expect(
+    vm.storage.map((card) => card.monsterId),
+    'fixture: four Storage monsters',
+  ).toEqual([32n, 33n, 34n, 35n]);
+  expect(vm.foods.length, 'fixture: one food').toBe(1);
+  let state = monstersScreen.init(vm);
+  const fired: ScreenResult[] = [];
+
+  const gameScreen = document.createElement('div');
+  document.body.appendChild(gameScreen);
+  const rec = qf8Recorder();
+  const view = new BoxView(gameScreen, {
+    onSetNickname: rec.record('onSetNickname'),
+    onSetPartySlot: rec.record('onSetPartySlot'),
+    partySlotNone: vm.partySlotNone,
+  });
+  view.show();
+  view.refresh(vm.partySlots, vm.storage);
+  const paint = (): void => {
+    if (monstersScreen.paint === undefined) throw new Error('monstersScreen must define paint');
+    monstersScreen.paint(view, vm, state);
+  };
+  const drive = (button: VButton): void => {
+    const step = monstersScreen.onButton(vm, state, press(button));
+    state = step.state;
+    if (step.result !== 'consumed' && step.result !== 'unhandled') fired.push(step.result);
+    paint();
+  };
+  paint();
+  new PointerSource(gameScreen, () => null, {
+    top: () => 'frame',
+    press: drive,
+    capturing: () => false,
+    cancelCapture: () => {},
+    choice: () => {},
+    shop: () => {},
+  });
+  const click = (selector: string): void => {
+    const target = gameScreen.querySelector<HTMLElement>(selector);
+    expect(target, `precondition: ${selector} is painted`).not.toBeNull();
+    (target as HTMLElement).dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    );
+  };
+  return {
+    click,
+    drive,
+    state: () => state,
+    fired,
+    shownSheets: () =>
+      [...gameScreen.querySelectorAll<HTMLElement>('[data-context-sheet]')].filter(
+        (el) => !el.hidden,
+      ),
+    heading: () => gameScreen.querySelector('#monsters-sheet-name')?.textContent ?? '',
+    partyGridShown: () => {
+      const grid = gameScreen.querySelector<HTMLElement>('[data-nav-key="31"]')?.parentElement;
+      return grid !== null && grid !== undefined && grid.style.display !== 'none';
+    },
+    dispose: () => {
+      view.hide();
+      gameScreen.remove();
+    },
+  };
+}
+
+describe('an outside click closes the Monsters sheet and lands on its target (uif-7, UIF7.5)', () => {
+  it('UIF7.5 with the sheet open, a click on ANOTHER Storage card closes it and lands on that card (its own sheet opens, naming it, and the cursor is there), and a click on the Party tab closes it and selects Party; nothing is sent', () => {
+    // WRONG IMPL KILLED: a sheet root the pointer source cannot see (no [data-context-sheet]: the
+    // click is routed under an open sheet and lands on nothing, or on the sheet's own rows); a sheet
+    // that stays open after B (the kit's `hidden` is not honoured by the view's repaint); a close
+    // that swallows the click (the cursor stays on the old card); a click that lands on the OLD
+    // monster; a tab click that the open sheet eats; a command sent by the walk (Care, Move).
+    const w = uif7PointerWorld();
+    try {
+      w.click('[data-nav-key="32"]');
+      expect(w.state().phase, 'fixture: the first click opened Mo`s sheet').toEqual({
+        kind: 'sheet',
+        monsterId: 32n,
+        action: 'summary',
+      });
+      expect(w.shownSheets(), 'fixture: one sheet shows').toHaveLength(1);
+      expect(w.heading(), 'fixture: it names Mo').toBe('Mo');
+
+      w.click('[data-nav-key="34"]');
+      expect(w.state().phase, 'the click landed on Zed and opened ITS sheet').toEqual({
+        kind: 'sheet',
+        monsterId: 34n,
+        action: 'summary',
+      });
+      expect(w.state().nav.item, 'the cursor is on Zed').toBe('34');
+      expect(w.shownSheets(), 'one sheet shows, not two').toHaveLength(1);
+      expect(w.heading(), 'and it names Zed, not Mo').toBe('Zed');
+
+      w.click('#monsters-tab-party');
+      expect(w.state().phase.kind, 'the sheet is closed').toBe('list');
+      expect(w.state().nav.tab, 'Party is selected').toBe('party');
+      expect(w.shownSheets(), 'no sheet shows').toEqual([]);
+      expect(w.partyGridShown(), 'the Party grid shows').toBe(true);
+      expect(w.fired, 'the walk sent nothing').toEqual([]);
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('UIF7.5 the same holds from the food list, from the Evolve confirm (three Bs deep) and from the Summary page: the click closes what is open, lands on its target and sends nothing', () => {
+    // WRONG IMPL KILLED: a close that presses one B only (a sub-list would stay: the click would
+    // land under an open sheet); a close deeper than the confirm needs (MAX_CLOSE_DEPTH is 3 and
+    // the confirm is exactly three Bs from the list); a Summary page the tab click cannot leave
+    // (the page is not a [data-context-sheet], so the pointer source routes the click as a tab
+    // seek: Summary must take LB / RB); a command sent on the way (feed, evolve).
+    // From the food list.
+    {
+      const w = uif7PointerWorld();
+      try {
+        w.click('[data-nav-key="32"]');
+        for (const button of ['Down', 'Down', 'A'] as const) w.drive(button);
+        expect(w.state().phase.kind, 'fixture: the food list').toBe('feed');
+        w.click('[data-nav-key="35"]');
+        expect(w.state().phase, 'the food list: landed on Pip').toEqual({
+          kind: 'sheet',
+          monsterId: 35n,
+          action: 'summary',
+        });
+        expect(w.shownSheets(), 'the food list: one sheet').toHaveLength(1);
+        expect(w.heading()).toBe('Pip');
+        expect(w.fired, 'the food list: nothing sent').toEqual([]);
+      } finally {
+        w.dispose();
+      }
+    }
+
+    // From the Evolve confirm.
+    {
+      const w = uif7PointerWorld();
+      try {
+        w.click('[data-nav-key="32"]');
+        for (const button of ['Down', 'Down', 'Down', 'A', 'A'] as const) w.drive(button);
+        expect(w.state().phase.kind, 'fixture: the Evolve confirm').toBe('evolveConfirm');
+        w.click('[data-nav-key="33"]');
+        expect(w.state().phase, 'the confirm: landed on Bo').toEqual({
+          kind: 'sheet',
+          monsterId: 33n,
+          action: 'summary',
+        });
+        expect(w.shownSheets(), 'the confirm: one sheet').toHaveLength(1);
+        expect(w.heading()).toBe('Bo');
+        expect(w.fired, 'the confirm: no evolve sent').toEqual([]);
+      } finally {
+        w.dispose();
+      }
+    }
+
+    // From the Summary page: a tab click leaves it.
+    {
+      const w = uif7PointerWorld();
+      try {
+        w.click('[data-nav-key="32"]');
+        w.drive('A');
+        expect(w.state().phase.kind, 'fixture: the Summary page').toBe('summary');
+        expect(w.partyGridShown(), 'fixture: the page replaced the grids').toBe(false);
+        w.click('#monsters-tab-party');
+        expect(w.state().phase.kind, 'the page is gone').toBe('list');
+        expect(w.state().nav.tab, 'Party is selected').toBe('party');
+        expect(w.partyGridShown(), 'the Party grid is back').toBe(true);
+        expect(w.fired, 'the summary: nothing sent').toEqual([]);
+      } finally {
+        w.dispose();
+      }
     }
   });
 });

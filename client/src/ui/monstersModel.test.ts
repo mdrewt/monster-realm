@@ -34,6 +34,7 @@ import type {
 } from '../net/store';
 import { buildEvolutionViewModel, type EvolutionMonsterViewModel } from './evolutionModel';
 import {
+  BACK_KEY,
   buildMonstersVm,
   canEvolve,
   careCooldownParts,
@@ -43,6 +44,8 @@ import {
   firstPathKey,
   foodKey,
   foodLayout,
+  foodLayoutOf,
+  isBackKey,
   isChoice,
   isSlotKey,
   layoutOfKeys,
@@ -356,8 +359,9 @@ describe('monstersLayout (ctl-8b, CTL8B.1)', () => {
 // ctl-8c (CTL8C.1): Care, Feed… and Evolve… on the sheet; the foods and the evolution paths.
 // =============================================================================
 
-/** The design §5 sheet order (Summary, Care, Feed…, Evolve…, Nickname, Move). */
-const C8C_SHEET_ORDER = ['summary', 'care', 'feed', 'evolve', 'nickname', 'move'];
+/** The design §5 sheet order (Summary, Care, Feed…, Evolve…, Nickname, Move), then uif-7's Close.
+ *  // uif-7 (UIF7.2): the sheet ends with a Close row (named change: `close` appended last). */
+const C8C_SHEET_ORDER = ['summary', 'care', 'feed', 'evolve', 'nickname', 'move', 'close'];
 
 describe('the sheet layout (ctl-8c, CTL8C.1)', () => {
   it('CTL8C-1-SHEET-ORDER: sheetLayout is a list of Summary, Care, Feed, Evolve, Nickname, Move in that order for every (canFeed, canEvolve) pair; Feed is disabled exactly when canFeed is false and Evolve exactly when canEvolve is false (both stay in the list, reachable), every other row enabled; SHEET_ACTIONS is the same order', () => {
@@ -395,6 +399,8 @@ describe('the sheet layout (ctl-8c, CTL8C.1)', () => {
         evolve: canEvolve,
         nickname: true,
         move: true,
+        // uif-7 (UIF7.2): the Close row is always enabled.
+        close: true,
       });
     }
     expect([...SHEET_ACTIONS], 'SHEET_ACTIONS is the layout`s order').toEqual(C8C_SHEET_ORDER);
@@ -434,6 +440,8 @@ describe('the Care row and the cooldown hint (qf-3, QF3.3, QF3.4)', () => {
             evolve: canEvolve,
             nickname: true,
             move: true,
+            // uif-7 (UIF7.2): the Close row is always enabled.
+            close: true,
           });
           seen += 1;
         }
@@ -626,6 +634,8 @@ describe('the Monsters view model: foods and evolution (ctl-8c, CTL8C.1)', () =>
       ['2', true],
       ['7', true],
       ['4000', true],
+      // uif-7 (UIF7.2): the food list ends with the enabled Back row.
+      [BACK_KEY, true],
     ]);
     expect(foodKey(4000)).toBe('4000');
     expect(foodKey(7)).toBe('7');
@@ -667,16 +677,22 @@ describe('the Monsters view model: foods and evolution (ctl-8c, CTL8C.1)', () =>
       expect(layout.kind, 'a path list').toBe('list');
       return layout.items.map((item) => [item.key, item.enabled]);
     };
+    // uif-7 (UIF7.2): every path list ends with the enabled Back row (the empty list too).
     expect(rows(twoMet), 'every outgoing path by edge id, only the choices enabled').toEqual([
       ['10', false],
       ['20', true],
       ['30', true],
+      [BACK_KEY, true],
     ]);
-    expect(rows(noneMet)).toEqual([['40', false]]);
-    expect(rows(noPath)).toEqual([]);
+    expect(rows(noneMet)).toEqual([
+      ['40', false],
+      [BACK_KEY, true],
+    ]);
+    expect(rows(noPath)).toEqual([[BACK_KEY, true]]);
     expect(rows(oneMet), 'the single met path is listed, not offered').toEqual([
       ['50', false],
       ['60', false],
+      [BACK_KEY, true],
     ]);
 
     expect(firstPathKey(twoMet), 'the first CHOICE, not the first path').toBe('20');
@@ -687,7 +703,9 @@ describe('the Monsters view model: foods and evolution (ctl-8c, CTL8C.1)', () =>
     // Defaults: no paths, no items.
     const bare = buildMonstersVm(monsters, SPECIES, SIX, BOXED);
     expect(bare.foods).toEqual([]);
-    expect(foodLayout(bare).items).toEqual([]);
+    // uif-7 (UIF7.2): no food is still the Back row alone (Feed… stays disabled, so it is never
+    // opened empty; settle closes an emptied list to the sheet).
+    expect(foodLayout(bare).items.map((i) => [i.key, i.enabled])).toEqual([[BACK_KEY, true]]);
     expect(bare.evolution.map((m) => m.paths.length)).toEqual([0, 0, 0, 0]);
     expect(bare.evolution.map(canEvolve)).toEqual([false, false, false, false]);
   });
@@ -885,5 +903,108 @@ describe('monstersModel uif-6: the tab the frame opens on (UIF6.2)', () => {
     const storage = buildMonstersVm(mixed(), SPECIES, SIX, BOXED, [], [], new Map(), 'storage');
     expect(storage.openTab).toBe('storage');
     expect({ ...party, openTab: 'storage' }, 'only the tab differs').toEqual(base);
+  });
+});
+
+// =============================================================================
+// uif-7 (UIF7.2): the sheet ends with a Close row, and the Feed… and Evolve… lists end with a Back
+// row, each LAST in order, always enabled.
+// =============================================================================
+
+describe('monstersModel uif-7: Close and Back rows (UIF7.2)', () => {
+  it('UIF7.2 sheetLayout ends with an enabled close row directly after move, whatever the Feed, Evolve and Care flags, and SHEET_ACTIONS ends with close', () => {
+    // WRONG IMPL KILLED: a Close row placed first or before Move (Up from Summary would not wrap to
+    // it, and "last in order" fails); a Close row that follows a flag (disabled while Care cools or
+    // with no food: B's twin must always act); a Close row missing from SHEET_ACTIONS (the screen
+    // walks the layout, the view labels from the constant: they would disagree); a Close dropped
+    // for some flag triple.
+    const bools = [true, false] as const;
+    let seen = 0;
+    for (const canFeed of bools) {
+      for (const canEvolve of bools) {
+        for (const canCare of bools) {
+          const label = `canFeed=${canFeed} canEvolve=${canEvolve} canCare=${canCare}`;
+          const items = sheetLayout(canFeed, canEvolve, canCare).items;
+          const last = items[items.length - 1];
+          expect(last?.key, `${label}: the last row is close`).toBe('close');
+          expect(last?.enabled, `${label}: close is enabled`).toBe(true);
+          expect(items[items.length - 2]?.key, `${label}: right after move`).toBe('move');
+          expect(
+            items.filter((i) => i.key === 'close'),
+            `${label}: exactly one close`,
+          ).toHaveLength(1);
+          expect(items, `${label}: seven rows`).toHaveLength(7);
+          seen += 1;
+        }
+      }
+    }
+    expect(seen, 'ANTI-VACUITY: all eight triples').toBe(8);
+    expect(SHEET_ACTIONS[SHEET_ACTIONS.length - 1], 'SHEET_ACTIONS ends with close').toBe('close');
+    expect(SHEET_ACTIONS[SHEET_ACTIONS.length - 2]).toBe('move');
+  });
+
+  it('UIF7.2 foodLayoutOf ends with an enabled back row (the only row for no food), keyed apart from every food key', () => {
+    // WRONG IMPL KILLED: a Back row first (the cursor would open on it); a Back row only when food
+    // exists (an emptied list would have no way back); a Back row disabled; a back key that is a
+    // decimal string (it would collide with an item id); two Back rows.
+    expect(BACK_KEY, 'the key is the word, never a decimal id').toBe('back');
+    expect(isBackKey(BACK_KEY)).toBe(true);
+    for (const key of ['0', '7', '40', 'backs', 'Back', '', 'slot-0']) {
+      expect(isBackKey(key), `${JSON.stringify(key)} is no back key`).toBe(false);
+    }
+    const none = foodLayoutOf([]).items.map((i) => [i.key, i.enabled]);
+    expect(none, 'no food: the Back row alone').toEqual([[BACK_KEY, true]]);
+    const three = foodLayoutOf([
+      { itemId: 7, name: 'Bait', count: 3 },
+      { itemId: 15, name: 'Carrot', count: 1 },
+      { itemId: 40, name: 'Glowberry', count: 12 },
+    ]);
+    expect(three.kind, 'still a list').toBe('list');
+    expect(three.items.map((i) => [i.key, i.enabled])).toEqual([
+      ['7', true],
+      ['15', true],
+      ['40', true],
+      [BACK_KEY, true],
+    ]);
+    expect(foodKey(0), 'an item id 0 is "0", never back').toBe('0');
+    expect(isBackKey(foodKey(0))).toBe(false);
+  });
+
+  it('UIF7.2 pathLayout ends with an enabled back row for every shape of monster, even when no path is a choice, and firstPathKey never lands on it', () => {
+    // WRONG IMPL KILLED: a Back row only for monsters with a choice; a Back row that inherits the
+    // paths' disabled flag (an all-unmet list would trap the cursor); a firstPathKey that returns
+    // back for a pathless monster (the Evolve list would open on Back).
+    const monsters = [
+      monster(1n, 1, 0), // two choices and an unmet path
+      monster(2n, 2, BOXED), // one unmet path
+      monster(3n, 3, BOXED), // no path
+      monster(4n, 4, 1), // exactly one met path (no choice)
+    ];
+    const paths = [
+      c8cEdge(30, 1, 2, 1),
+      c8cEdge(10, 1, 4, 50),
+      c8cEdge(20, 1, 3, 1),
+      c8cEdge(40, 2, 3, 50),
+      c8cEdge(60, 4, 2, 50),
+      c8cEdge(50, 4, 1, 1),
+    ];
+    const vm = buildMonstersVm(monsters, SPECIES, SIX, BOXED, paths);
+    for (const id of [1n, 2n, 3n, 4n]) {
+      const mon = c8cEvo(vm, id);
+      const items = pathLayout(mon).items;
+      const last = items[items.length - 1];
+      expect(last?.key, `monster ${id}: the last row is back`).toBe(BACK_KEY);
+      expect(last?.enabled, `monster ${id}: back is enabled`).toBe(true);
+      expect(
+        items.filter((i) => isBackKey(i.key)),
+        `monster ${id}: one back row`,
+      ).toHaveLength(1);
+      expect(items.length, `monster ${id}: the paths, then back`).toBe(mon.paths.length + 1);
+      const first = firstPathKey(mon);
+      expect(
+        first === null || !isBackKey(first),
+        `monster ${id}: opens on a path, never back`,
+      ).toBe(true);
+    }
   });
 });

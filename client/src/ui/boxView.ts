@@ -50,8 +50,16 @@
 //
 // ctl-8c: the sheet gains Care, Feed… and Evolve…; the food list, the Evolve list (every outgoing
 // path, only the choices enabled, the status line raw from the model's reason) and the Yes / No
-// confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
-// line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
+// confirm take the sheet's place (uif-7, below), and the "Fed {name}" line joins the feedback line.
+// A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
+//
+// uif-7: the sheet is the frame's one ContextSheet (ui/contextSheet.ts) inside the tab content area,
+// placed by the kit in a bottom corner away from the cursor cell (wf-1's verdict), nothing dimmed.
+// It holds one content at a time (UIF7.3): the sheet's rows (ending with Close), the food list or
+// the Evolve list (each ending with Back), or the Evolve confirm (the confirm variant). Every row id
+// is `monstersSheet-root-<key>`, and the heading keeps the id `monsters-sheet-name`. The Summary is a
+// page in the panel in place of both grids (UIF7.4); the tabs stay. A click outside the sheet closes
+// it and then lands on its target through the pointer source (uif-5).
 //
 // qf-2: a care answer or a train rejection for an action sent FROM this frame comes back to this
 // frame's line (QF2.1), through a sink `feedbackLine()` hands out bound to the current open: a sink
@@ -61,6 +69,14 @@
 // own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
 // hide().
 import type { MonsterCardViewModel, MonsterStatsViewModel } from './boxModel';
+import {
+  type ContextSheet,
+  type ContextSheetContent,
+  closeContextSheet,
+  createContextSheet,
+  placeContextSheet,
+  renderContextSheet,
+} from './contextSheet';
 import { createEmptyState } from './emptyState';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
@@ -69,6 +85,7 @@ import {
   findPath,
   foodKey,
   foodLayoutOf,
+  isBackKey,
   PARTY_COLS,
   pathLayout,
   type SheetAction,
@@ -76,8 +93,7 @@ import {
   sheetLayout,
   slotKey,
 } from './monstersModel';
-import { list, type NavTab, tabs } from './nav';
-import { navItemId, renderNav } from './navRender';
+import { list, type NavItem, type NavTab, tabs } from './nav';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { MonstersFeedback, MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 import { createTabBar, renderTabBar, type TabBar } from './tabBar';
@@ -96,6 +112,7 @@ const SHEET_LABELS: Readonly<Record<SheetAction, () => string>> = {
   evolve: () => t('box.sheet.evolve'),
   nickname: () => t('box.sheet.nickname'),
   move: () => t('box.sheet.move'),
+  close: () => t('kit.sheet.close'),
 };
 
 /** Why a disabled sheet row is disabled, shown after its label (ctl-8c). */
@@ -120,12 +137,16 @@ const CONFIRM_LAYOUT = list([
   { key: CONFIRM_YES, enabled: true },
   { key: 'no', enabled: true },
 ]);
-/** What a hidden list renders: nothing, so its text is empty too (the e2e text scans read hidden
- *  descendants). */
-const EMPTY_LIST = list([]);
 
-/** The sheet-level parts' box: the sheet, the lists and the confirm share it. */
-const PART_STYLE = 'width:100%;max-width:600px;margin-bottom:8px;';
+/** The frame id of every row the one sheet shows (its actions, foods, paths, Yes / No, Back). */
+const SHEET_FRAME = 'monstersSheet';
+
+/** Fill a Back row (the food and Evolve lists' last row); false for any other row. */
+function fillBack(el: HTMLElement, item: NavItem): boolean {
+  if (!isBackKey(item.key)) return false;
+  el.textContent = t('kit.sheet.back');
+  return true;
+}
 
 const OPENING: MonstersPaint = {
   tab: 'storage',
@@ -218,15 +239,11 @@ export class BoxView {
   // ctl-8b: the Monsters frame's parts and the kept paint.
   /** uif-6: the kit's TabBar (LB chip, `#monsters-tabs`, RB chip) under the title. */
   readonly #tabBar: TabBar;
-  readonly #sheetEl: HTMLDivElement;
-  readonly #sheetName: HTMLDivElement;
-  readonly #sheetList: HTMLDivElement;
-  // ctl-8c: the food list, the Evolve list and the Yes / No confirm under the sheet.
-  readonly #feedList: HTMLDivElement;
-  readonly #evolveList: HTMLDivElement;
-  readonly #confirmEl: HTMLDivElement;
-  readonly #confirmQuestion: HTMLDivElement;
-  readonly #confirmList: HTMLDivElement;
+  /** uif-7: the frame's one ContextSheet, in the panel (its containing block). */
+  readonly #sheet: ContextSheet;
+  /** uif-6: the tab content area `#monsters-panel`. */
+  readonly #panel: HTMLDivElement;
+  /** uif-7: the Summary page, in the panel in place of the grids. */
   readonly #summaryEl: HTMLDivElement;
   readonly #summaryName: HTMLDivElement;
   readonly #summaryStats: HTMLDivElement;
@@ -278,20 +295,18 @@ export class BoxView {
     header.appendChild(title);
     this.#root.appendChild(header);
 
-    // ctl-8b: the tabs, the sheet, its summary and typing row and the Move line, all BEFORE the
-    // panels and the hint. Typing mode's Escape focuses the frame's first enabled non-text
-    // control: the sheet's nav list (Enter there is the router's A); the cards carry no control
-    // of their own (qf-8).
+    // ctl-8b: the tabs, the typing row and the Move line sit BEFORE the panel and the hint; the
+    // sheet and the Summary page are in the panel (uif-7). Typing mode's Escape focuses the frame's
+    // first enabled non-text control; the cards carry no control of their own (qf-8).
     this.#tabBar = createTabBar(document, { id: 'monsters-tabs' });
     this.#root.appendChild(this.#tabBar.root);
 
-    this.#sheetEl = document.createElement('div');
-    this.#sheetEl.style.cssText = PART_STYLE;
-    this.#sheetName = document.createElement('div');
-    this.#sheetName.id = 'monsters-sheet-name';
-    this.#sheetName.style.fontWeight = 'bold';
-    this.#sheetList = document.createElement('div');
+    this.#sheet = createContextSheet(document, { frame: SHEET_FRAME });
+    // The heading names the monster (or asks the confirm): the id its consumers read.
+    this.#sheet.heading.id = 'monsters-sheet-name';
     this.#summaryEl = document.createElement('div');
+    this.#summaryEl.id = 'monsters-summary';
+    this.#summaryEl.style.cssText = 'flex:1 1 auto;min-height:0;overflow-y:auto;';
     this.#summaryName = document.createElement('div');
     this.#summaryStats = document.createElement('div');
     this.#summaryDetail = document.createElement('div');
@@ -307,28 +322,7 @@ export class BoxView {
       if (!FIELD_RELEASED.has(e.code)) e.stopPropagation();
     });
     this.#rowEl.append(this.#rowLabel, this.#input);
-    this.#sheetEl.append(this.#sheetName, this.#sheetList);
-    // ctl-8c: the lists and the confirm sit right under the sheet, before the summary and the
-    // typing row (and so before the panels and the hint, for the typing-mode Escape rule above).
-    this.#feedList = document.createElement('div');
-    this.#feedList.style.cssText = PART_STYLE;
-    this.#evolveList = document.createElement('div');
-    this.#evolveList.style.cssText = PART_STYLE;
-    this.#confirmEl = document.createElement('div');
-    this.#confirmEl.style.cssText = PART_STYLE;
-    this.#confirmQuestion = document.createElement('div');
-    this.#confirmQuestion.id = 'monsters-evolve-question';
-    this.#confirmQuestion.style.fontWeight = 'bold';
-    this.#confirmList = document.createElement('div');
-    this.#confirmEl.append(this.#confirmQuestion, this.#confirmList);
-    this.#root.append(
-      this.#sheetEl,
-      this.#feedList,
-      this.#evolveList,
-      this.#confirmEl,
-      this.#summaryEl,
-      this.#rowEl,
-    );
+    this.#root.appendChild(this.#rowEl);
 
     this.#feedbackEl = document.createElement('div');
     this.#feedbackEl.className = 'mr-frame-feedback';
@@ -337,12 +331,14 @@ export class BoxView {
     // uif-6: the tab content area. It grows to the free height of the frame and to
     // `--mr-content-max` wide even when empty (038, 045), and clips: a grid that outgrows it scrolls
     // inside it by the cursor (039). The tab names the panel, so it has no heading (QF10.2).
+    // uif-7: it is also the sheet's containing block (`position:relative`).
     const panel = document.createElement('div');
     panel.id = 'monsters-panel';
     panel.style.cssText =
       'flex:1 1 auto;min-height:0;width:100%;max-width:var(--mr-content-max);align-self:center;' +
       'box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;' +
-      'padding:var(--mr-space-2);';
+      'padding:var(--mr-space-2);position:relative;';
+    this.#panel = panel;
     this.#root.appendChild(panel);
 
     // The Party: one cell per slot in a grid of PARTY_COLS (WF1-A3), rows sharing the height, so
@@ -359,6 +355,16 @@ export class BoxView {
       `${GRID_STYLE}grid-template-columns:repeat(${STORAGE_COLS},minmax(0,1fr));` +
       'align-content:start;overflow-y:hidden;';
     panel.appendChild(this.#boxEl);
+
+    // uif-7: the Summary page (in place of both grids) and the one sheet, over the grid.
+    panel.append(this.#summaryEl, this.#sheet.root);
+    // Re-place the open sheet when the panel's size changes (a window resize, a text step). Never
+    // disconnected: the view lives as long as the page, and a hidden frame places nothing.
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => {
+        if (this.#visible) this.#placeSheet();
+      }).observe(panel);
+    }
 
     // qf-10 (QF10.3): the hint sits BELOW the panels, the root's last child — never on the seam
     // between the tab strip and the tab contents. A direct #root child, so it cannot be wiped by
@@ -476,8 +482,10 @@ export class BoxView {
       { frame: 'monsters', label: tabLabel },
     );
     const onParty = p.tab === 'party';
-    setShown(this.#partyEl, onParty, 'grid');
-    setShown(this.#boxEl, !onParty, 'grid');
+    // uif-7 (UIF7.4): the Summary page replaces both grids; the tabs stay.
+    const onPage = p.summary !== null;
+    setShown(this.#partyEl, onParty && !onPage, 'grid');
+    setShown(this.#boxEl, !onParty && !onPage, 'grid');
 
     const active = onParty ? this.#partyEl : this.#boxEl;
     const key =
@@ -505,101 +513,21 @@ export class BoxView {
       }
     }
 
-    const sheet = p.sheet;
-    setShown(this.#sheetEl, sheet !== null, '');
-    this.#sheetName.textContent = sheet === null ? '' : cardName(live(sheet.card));
-    // Rendered empty when there is no sheet, so the hidden list holds no text either.
-    renderNav(
-      this.#sheetList,
-      sheet === null
-        ? EMPTY_LIST
-        : sheetLayout(sheet.canFeed, sheet.canEvolve, sheet.careRemainingMs === 0n),
-      { tab: null, item: sheet === null ? null : sheet.action, perTab: {} },
-      {
-        frame: 'monstersSheet',
-        labelledBy: this.#sheetName.id,
-        fill: (el, item) => {
-          const key = item.key as SheetAction;
-          el.textContent = SHEET_LABELS[key]();
-          // A disabled row says why, after its label (the row itself carries aria-disabled). No
-          // inline colour: the cursor row's background is light, and `.is-disabled` dims it.
-          const reason = item.enabled || sheet === null ? undefined : sheetReason(key, sheet);
-          if (reason !== undefined) {
-            const why = document.createElement('span');
-            why.textContent = ` ${reason}`;
-            el.appendChild(why);
-          }
-        },
-      },
+    // uif-7: the one sheet, with this paint's one content; closed (and emptied) when there is none.
+    // Focus inside it when its rows change or it closes (the kit drops the rows) stays in the frame.
+    const hadFocus = this.#sheet.root.contains(document.activeElement);
+    const cursorCard = key === null ? undefined : this.#cards.get(key);
+    const content = this.#sheetContent(
+      p,
+      cursorCard === undefined ? '' : cardName(cursorCard),
+      live,
     );
-
-    // ctl-8c: the food list, the Evolve list and the confirm. A hidden part is rendered EMPTY as
-    // well as hidden: the e2e helpers read the root's textContent, hidden descendants included.
-    const feed = p.feed;
-    setShown(this.#feedList, feed !== null, '');
-    renderNav(
-      this.#feedList,
-      feed === null ? EMPTY_LIST : foodLayoutOf(feed.foods),
-      { tab: null, item: feed === null ? null : feed.activeKey, perTab: {} },
-      {
-        frame: 'monstersFeed',
-        // Named by the sheet row that opened it (the sheet is painted under the list).
-        labelledBy: navItemId('monstersSheet', null, 'feed'),
-        fill: (el, item) => {
-          const food = feed?.foods.find((f) => foodKey(f.itemId) === item.key);
-          if (food !== undefined) {
-            el.textContent = tf('box.feed.item', { name: food.name, count: food.count });
-          }
-        },
-      },
-    );
-
-    const evolve = p.evolve;
-    setShown(this.#evolveList, evolve !== null, '');
-    renderNav(
-      this.#evolveList,
-      evolve === null ? EMPTY_LIST : pathLayout(evolve.mon),
-      { tab: null, item: evolve === null ? null : evolve.activeKey, perTab: {} },
-      {
-        frame: 'monstersEvolve',
-        labelledBy: navItemId('monstersSheet', null, 'evolve'),
-        fill: (el, item) => {
-          const path = evolve === null ? undefined : findPath(evolve.mon, item.key);
-          if (path === undefined) return;
-          const heading = document.createElement('div');
-          heading.textContent = tf('evolution.path.heading', { species: path.toSpeciesName });
-          // The model's reason stays raw (it is the server's reject wording). A met path that is
-          // no choice is the one the server applies itself: it reads as ready, never as offered.
-          const status = document.createElement('div');
-          status.style.fontSize = '12px'; // colour inherits: the cursor row's background is light
-          status.textContent =
-            path.unmetReason ??
-            (item.enabled
-              ? t('evolution.path.allMet')
-              : tf('evolution.card.ready', { species: path.toSpeciesName }));
-          el.append(heading, status);
-        },
-      },
-    );
-
-    const confirm = p.confirm;
-    setShown(this.#confirmEl, confirm !== null, '');
-    this.#confirmQuestion.textContent =
-      confirm === null
-        ? ''
-        : tf('box.evolve.confirm', { name: confirm.name, species: confirm.species });
-    renderNav(
-      this.#confirmList,
-      confirm === null ? EMPTY_LIST : CONFIRM_LAYOUT,
-      { tab: null, item: confirm === null ? null : confirm.yes ? 'yes' : 'no', perTab: {} },
-      {
-        frame: 'monstersConfirm',
-        labelledBy: this.#confirmQuestion.id,
-        fill: (el, item) => {
-          el.textContent = item.key === CONFIRM_YES ? t('prompt.yes') : t('prompt.no');
-        },
-      },
-    );
+    if (content === null) closeContextSheet(this.#sheet);
+    else renderContextSheet(this.#sheet, content);
+    this.#placeSheet();
+    if (hadFocus && !this.#sheet.root.contains(document.activeElement)) {
+      (this.#sheet.root.hidden ? this.#titleEl : this.#sheet.rows).focus();
+    }
 
     const summary = p.summary === null ? null : live(p.summary);
     setShown(this.#summaryEl, summary !== null, '');
@@ -654,11 +582,106 @@ export class BoxView {
     }
   }
 
+  /** The one sheet's content for this paint, or null: the sheet's rows (titled by the monster),
+   *  the food list or the Evolve list (titled by the cursor monster, `name`), or the confirm. */
+  #sheetContent(
+    p: MonstersPaint,
+    name: string,
+    live: (card: MonsterCardViewModel) => MonsterCardViewModel,
+  ): ContextSheetContent | null {
+    const sheet = p.sheet;
+    if (sheet !== null) {
+      return {
+        variant: 'list',
+        title: cardName(live(sheet.card)),
+        layout: sheetLayout(sheet.canFeed, sheet.canEvolve, sheet.careRemainingMs === 0n),
+        state: { tab: null, item: sheet.action, perTab: {} },
+        fill: (el, item) => {
+          const key = item.key as SheetAction;
+          el.textContent = SHEET_LABELS[key]();
+          // A disabled row says why, after its label (the row itself carries aria-disabled). No
+          // inline colour: the cursor row's background is light, and `.is-disabled` dims it.
+          const reason = item.enabled ? undefined : sheetReason(key, sheet);
+          if (reason !== undefined) {
+            const why = document.createElement('span');
+            why.textContent = ` ${reason}`;
+            el.appendChild(why);
+          }
+        },
+      };
+    }
+    const feed = p.feed;
+    if (feed !== null) {
+      return {
+        variant: 'list',
+        title: name,
+        layout: foodLayoutOf(feed.foods),
+        state: { tab: null, item: feed.activeKey, perTab: {} },
+        fill: (el, item) => {
+          if (fillBack(el, item)) return;
+          const food = feed.foods.find((f) => foodKey(f.itemId) === item.key);
+          if (food !== undefined) {
+            el.textContent = tf('box.feed.item', { name: food.name, count: food.count });
+          }
+        },
+      };
+    }
+    const evolve = p.evolve;
+    if (evolve !== null) {
+      return {
+        variant: 'list',
+        title: name,
+        layout: pathLayout(evolve.mon),
+        state: { tab: null, item: evolve.activeKey, perTab: {} },
+        fill: (el, item) => {
+          if (fillBack(el, item)) return;
+          const path = findPath(evolve.mon, item.key);
+          if (path === undefined) return;
+          const heading = document.createElement('div');
+          heading.textContent = tf('evolution.path.heading', { species: path.toSpeciesName });
+          // The model's reason stays raw (it is the server's reject wording). A met path that is
+          // no choice is the one the server applies itself: it reads as ready, never as offered.
+          const status = document.createElement('div');
+          status.style.fontSize = '12px'; // colour inherits: the cursor row's background is light
+          status.textContent =
+            path.unmetReason ??
+            (item.enabled
+              ? t('evolution.path.allMet')
+              : tf('evolution.card.ready', { species: path.toSpeciesName }));
+          el.append(heading, status);
+        },
+      };
+    }
+    const confirm = p.confirm;
+    if (confirm !== null) {
+      return {
+        variant: 'confirm',
+        question: tf('box.evolve.confirm', { name: confirm.name, species: confirm.species }),
+        layout: CONFIRM_LAYOUT,
+        state: { tab: null, item: confirm.yes ? CONFIRM_YES : 'no', perTab: {} },
+        fill: (el, item) => {
+          el.textContent = item.key === CONFIRM_YES ? t('prompt.yes') : t('prompt.no');
+        },
+      };
+    }
+    return null;
+  }
+
+  /** Anchor the shown sheet away from the cursor cell (wf-1's verdict, the kit's rule), once the
+   *  grid is rendered and the cell scrolled in. Nothing to place while the sheet is hidden, the
+   *  panel has no box (hidden, or no layout engine) or no cell is under the cursor. */
+  #placeSheet(): void {
+    if (this.#sheet.root.hidden || this.#panel.getBoundingClientRect().width <= 0) return;
+    const active = this.#paint.tab === 'party' ? this.#partyEl : this.#boxEl;
+    const cell = active.querySelector<HTMLElement>('[data-nav-key].is-active');
+    if (cell !== null) placeContextSheet(this.#sheet, this.#panel, cell);
+  }
+
   /** Whether `el` sits in the frame below an inline-hidden part (the root itself excluded). */
   #hiddenInFrame(el: HTMLElement): boolean {
     if (!this.#root.contains(el)) return false;
     for (let n: HTMLElement | null = el; n !== null && n !== this.#root; n = n.parentElement) {
-      if (n.style.display === 'none') return true;
+      if (n.style.display === 'none' || n.hidden) return true;
     }
     return false;
   }
