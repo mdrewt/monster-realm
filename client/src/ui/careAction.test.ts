@@ -95,7 +95,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // careAction.ts is shipped — these imports resolve against the real module. `performCare` takes
 // ONE `CareActionDeps` argument; the monster id is bound into the `call` thunk by the caller.
 import type { CareActionDeps } from './careAction';
-import { performCare } from './careAction';
+import { performCare as performCareCore } from './careAction';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
 import { setLocale, t } from './i18n/resolver';
@@ -114,6 +114,19 @@ const FR = CATALOG_FR as unknown as Record<string, string>;
 // `reduceErrorMessage(err, 'care')` expectations are unchanged. The `PGCCA-*` describe at the
 // bottom of the file adds the new gating tests.
 const CARED = 'Cared!';
+
+// INTENTIONAL CHANGE (uif-4b, UIF4B.1): `showFeedback` now receives the outcome as a SECOND argument
+// (`showFeedback(message, outcome)`), so the seam can pick the message kind without comparing text.
+// Was: `showFeedback(message)`. The message, ordering, exactly-once and visibility pins below are
+// about the MESSAGE argument only, so they run through this one-argument view of the real core
+// (it forwards the message and drops the outcome; every call count is the core's own). The
+// outcome argument has its own tests on the raw core (`performCareCore`) in the UIF4B.1 describe
+// at the bottom of the file.
+const performCare = (deps: CareActionDeps): Promise<void> =>
+  performCareCore({
+    ...deps,
+    showFeedback: (message: string) => (deps.showFeedback as (message: string) => void)(message),
+  });
 
 // Drain the microtask queue (renameView.test.ts / shopView.test.ts precedent) —
 // used only to prove NOTHING has fired yet while a promise is deliberately held open.
@@ -647,5 +660,89 @@ describe('performCare(): the generalised feedback core takes successMessage + wh
 
     expect(showFeedback).toHaveBeenCalledTimes(1);
     expect(showFeedback).toHaveBeenCalledWith('Cared!');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-4b (UIF4B.1): the outcome argument. `showFeedback(message, outcome)` is called EXACTLY ONCE per
+// arm with 'ok' (the settled success), 'rejected' (a synchronous throw AND a settled rejection) or
+// 'disconnected' (call() returned undefined). The seam routes on it, so a wrong tag is a wrong
+// channel kind. These run on the RAW core, so the second argument is really observed.
+// ---------------------------------------------------------------------------
+
+describe('performCare(): the outcome argument (uif-4b, UIF4B.1)', () => {
+  it('UIF4B.1 a settled success calls showFeedback exactly once with (successMessage, "ok")', async () => {
+    // WRONG IMPL KILLED: no outcome argument (the seam cannot tell success from rejection without
+    // comparing text), 'ok' on a rejection, or a second call.
+    const showFeedback = vi.fn();
+    await performCareCore({
+      call: vi.fn().mockResolvedValue(undefined),
+      successMessage: 'Purchase complete!',
+      where: 'buy',
+      showFeedback,
+    });
+    expect(showFeedback).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith('Purchase complete!', 'ok');
+  });
+
+  it('UIF4B.1 a settled rejection calls showFeedback exactly once with (the reduced error text, "rejected")', async () => {
+    // WRONG IMPL KILLED: a rejection tagged 'ok' (a success kind for a failed action), or the
+    // 'disconnected' tag reused for every failure.
+    const err = makeSenderError('not enough gold');
+    const showFeedback = vi.fn();
+    await performCareCore({
+      call: vi.fn().mockRejectedValue(err),
+      successMessage: 'Purchase complete!',
+      where: 'buy',
+      showFeedback,
+    });
+    expect(showFeedback).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith('buy: not enough gold', 'rejected');
+  });
+
+  it('UIF4B.1 a synchronous throw from call() calls showFeedback exactly once with (the reduced error text, "rejected")', async () => {
+    // WRONG IMPL KILLED: the sync-throw arm forgetting the outcome (or tagging it 'disconnected').
+    const err = new Error('serialization failure');
+    const showFeedback = vi.fn();
+    await performCareCore({
+      call: () => {
+        throw err;
+      },
+      successMessage: 'Offer sent!',
+      where: 'propose-trade',
+      showFeedback,
+    });
+    expect(showFeedback).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith(reduceErrorMessage(err, 'propose-trade'), 'rejected');
+  });
+
+  it('UIF4B.1 a call returning undefined calls showFeedback exactly once with (the disconnected line, "disconnected")', async () => {
+    // WRONG IMPL KILLED: the frozen-link arm tagged 'rejected' or 'ok' (the seam would route a
+    // dead link as a server refusal, or as a success).
+    setLocale('en');
+    const showFeedback = vi.fn();
+    await performCareCore({
+      call: () => undefined,
+      successMessage: 'Offer sent!',
+      where: 'propose-trade',
+      showFeedback,
+    });
+    expect(showFeedback).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith('disconnected — try again', 'disconnected');
+  });
+
+  it('UIF4B.1 the outcome tag follows the arm, never the message text: a success whose text equals an error line is still "ok"', async () => {
+    // WRONG IMPL KILLED: the outcome derived by comparing the message to the success string
+    // (the `message === cared` comparison the seam used to make), which mis-tags a coincident text.
+    const err = makeSenderError('x');
+    const same = reduceErrorMessage(err, 'buy');
+    const showFeedback = vi.fn();
+    await performCareCore({
+      call: vi.fn().mockResolvedValue(undefined),
+      successMessage: same,
+      where: 'buy',
+      showFeedback,
+    });
+    expect(showFeedback).toHaveBeenCalledWith(same, 'ok');
   });
 });

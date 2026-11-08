@@ -12,7 +12,8 @@
 //      overlay's `initialFocusSelector` (#rename-input) from OVERLAY_A11Y. The defer itself is
 //      still load-bearing for the same reason it always was: it lets the opening key event (KeyN)
 //      fully complete so the `n` does not land in the field it just opened.
-//   3. hide() resets the input value + feedback so a stale draft never survives a re-open.
+//   3. hide() resets the input value so a stale draft never survives a re-open. The view owns
+//      no message line: a rename's outcome is a toast, routed by main.ts (uif-4b).
 //
 // Fully unit-covered via happy-dom (leaderboardView/errorOverlayView precedent) — this
 // file is therefore NOT in vite.config.ts coverage.exclude.
@@ -70,7 +71,6 @@ export class RenameView {
   readonly #current: HTMLElement;
   readonly #input: HTMLInputElement;
   readonly #submitBtn: HTMLButtonElement;
-  readonly #feedback: HTMLElement;
   readonly #cbs: RenameCallbacks;
   // In-flight lock: prevents double-submit while a reducer Promise is pending.
   #pending = false;
@@ -92,10 +92,6 @@ export class RenameView {
     const submitBtn = document.getElementById('rename-submit');
     if (!submitBtn) throw new Error('rename-submit missing');
     this.#submitBtn = submitBtn as HTMLButtonElement;
-
-    const feedback = document.getElementById('rename-feedback');
-    if (!feedback) throw new Error('rename-feedback missing');
-    this.#feedback = feedback;
 
     this.#cbs = cbs;
 
@@ -156,9 +152,8 @@ export class RenameView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    // Stale-draft guard (RT-RN-02): a value/feedback from a prior open must not survive.
+    // Stale-draft guard (RT-RN-02): a value from a prior open must not survive.
     this.#input.value = '';
-    this.#feedback.textContent = '';
     // Release the in-flight lock (shopView/tradeView precedent): onReconnect and the
     // battle auto-show force-hide this overlay, and the SDK never settles an in-flight
     // reducer promise after a link drop — so .finally() may never run.
@@ -192,20 +187,12 @@ export class RenameView {
     if (press === this.#submitBtn) press.click();
   }
 
-  /** Display a feedback message (reducer success / failure). textContent only (XSS). */
-  showFeedback(msg: string): void {
-    this.#feedback.textContent = msg;
-  }
-
   // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
   #submit(): void {
     if (this.#pending) return;
     // currentName is irrelevant here — only trimmedDraft/canSubmit are consulted.
     const vm = buildRenameViewModel('', this.#input.value);
     if (!vm.canSubmit) return; // empty-after-trim → no-op, do NOT call onSubmit.
-    // Clear any prior feedback so a stale "Name updated!" never lingers under a new
-    // in-flight submission (red-team Finding 2 — misleading positive UX).
-    this.#feedback.textContent = '';
     this.#pending = true;
     this.#submitBtn.disabled = true;
     // .finally() resets on BOTH resolve and reject — no dead-button-forever (RT-RN-03).

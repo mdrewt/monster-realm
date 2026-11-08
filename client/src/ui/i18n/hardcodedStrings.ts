@@ -55,11 +55,11 @@
 
 /** Fewer sinks than this across the whole non-test client tree means the scanner stopped
  *  seeing the tree — a scanner failure, never a clean tree (`>=`). An anti-vacuity guard, not a
- *  ratchet: re-measured in bt-17 after the 1v1 view left the tree (277 sinks on 2026-11-07 — the
- *  tactical views had added more than the deleted view carried; the previous floor was 235 from 246
- *  sinks on 2026-10-29) and set to that total rounded down to a multiple of 5; lower it consciously
- *  when UI text legitimately shrinks, never auto-tighten it. */
-export const SINK_FLOOR = 275;
+ *  ratchet: re-measured in uif-4b after five views' message lines retired to the toast seam (264
+ *  sinks on 2026-11-08; the previous floor was 275 from 277 sinks in bt-17 on 2026-11-07, and 235
+ *  from 246 on 2026-10-29) and set to that total rounded down to a multiple of 5; lower it
+ *  consciously when UI text legitimately shrinks, never auto-tighten it. */
+export const SINK_FLOOR = 260;
 
 /** The 18 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
  *  present in the walk and non-empty after comment stripping (I18N-HC-05); a missing one is a

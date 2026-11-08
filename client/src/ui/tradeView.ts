@@ -6,9 +6,9 @@
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `trade.*` key from ui/i18n/catalog.en.ts —
 // the `#renderSide` heading arguments included; the English bytes
 // are unchanged (the catalog pins them). The item row `${item.name} ×${item.qty}` is deliberately
-// NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` and the
-// `showFeedback` message are model data, rendered raw. Every `t(`/`tf(` first argument is a
-// string LITERAL. No constructor-time strings: this view renders into the static index.html shell.
+// NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` is model data, rendered raw.
+// Every `t(`/`tf(` first argument is a string LITERAL. The view owns no message line: a trade's
+// outcome is a toast, routed by main.ts on its policy channel (uif-4b). No constructor-time strings: this view renders into the static index.html shell.
 //
 // THE SOCIAL FRAME'S PAINTER (ctl-8d, CTL8D.1-.2). The Social screen (ui/screens/socialScreen.ts)
 // paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the tab strip, the
@@ -162,10 +162,6 @@ export class TradeView {
   readonly #mySideEl: HTMLElement;
   readonly #theirSideEl: HTMLElement;
   readonly #actionsEl: HTMLElement;
-  readonly #feedbackEl: HTMLElement;
-  // Tracks the last rendered offer key (tradeId + statusLabel) to detect state
-  // changes and clear stale feedback.
-  #lastRenderKey: string | null = null;
   // The Social frame's paint for this root, kept only while the root is visible, and the status
   // text the last render wrote (the Players placeholder is written over it).
   #social: SocialPaint | null = null;
@@ -195,11 +191,6 @@ export class TradeView {
       (() => {
         throw new Error('trade-actions missing');
       })();
-    this.#feedbackEl =
-      el.querySelector('#trade-feedback') ??
-      (() => {
-        throw new Error('trade-feedback missing');
-      })();
   }
 
   get visible(): boolean {
@@ -218,8 +209,6 @@ export class TradeView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    this.#feedbackEl.textContent = '';
-    this.#lastRenderKey = null;
     // A hidden root holds no placeholder, no hidden part and no cursor mark.
     this.#social = null;
     this.#applySocial();
@@ -246,18 +235,8 @@ export class TradeView {
       this.#status = t('trade.status.none');
       this.#mySideEl.replaceChildren();
       this.#theirSideEl.replaceChildren();
-      this.#lastRenderKey = null;
       this.#applySocial();
       return;
-    }
-
-    // Clear stale feedback on offer-state change: a status
-    // transition (Pending → ConfirmedByCounterparty, or a new tradeId) means the
-    // prior "Trade accepted!" / "Trade rejected." is no longer meaningful.
-    const renderKey = `${vm.tradeId}-${vm.statusLabel}`;
-    if (renderKey !== this.#lastRenderKey) {
-      this.#feedbackEl.textContent = '';
-      this.#lastRenderKey = renderKey;
     }
 
     this.#status = vm.statusLabel;
@@ -276,8 +255,7 @@ export class TradeView {
 
   /** Write the status line and apply the kept Social paint to this root. On the Players tab the
    *  status reads the placeholder and the sides and actions are hidden; the status stays shown
-   *  (it is the dialog's focus anchor) and so does the feedback line (a trade result must not
-   *  vanish). The trade row's cursor is marked on the status by class AND aria-current, never
+   *  (it is the dialog's focus anchor). The trade row's cursor is marked on the status by class AND aria-current, never
    *  colour alone. With no paint the root is exactly the legacy trade overlay. */
   #applySocial(): void {
     const p = this.#social;
@@ -293,11 +271,6 @@ export class TradeView {
     this.#statusEl.classList.toggle('is-active', cursor);
     if (cursor) this.#statusEl.setAttribute('aria-current', 'true');
     else this.#statusEl.removeAttribute('aria-current');
-  }
-
-  /** Display a feedback message (reducer success/failure). */
-  showFeedback(message: string): void {
-    this.#feedbackEl.textContent = message;
   }
 
   #renderSide(el: HTMLElement, side: TradeSideViewModel, heading: string): void {

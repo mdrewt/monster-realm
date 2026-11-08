@@ -114,7 +114,6 @@ function mountRenameOverlay(): {
   currentEl: HTMLElement;
   input: HTMLInputElement;
   submitBtn: HTMLButtonElement;
-  feedbackEl: HTMLElement;
 } {
   const existing = document.getElementById('rename-overlay');
   if (existing) existing.remove();
@@ -130,16 +129,18 @@ function mountRenameOverlay(): {
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit">Rename</button>
-      <div id="rename-feedback" data-testid="rename-feedback"></div>
     </div>
   `;
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#rename-feedback` is retired (the rename outcome goes
+  // through the one seam, to the toast), so the fixture no longer mounts it. Was: a
+  // `div#rename-feedback[data-testid=rename-feedback]` after the submit button, which the
+  // constructor looked up or threw on.
 
   const overlay = document.getElementById('rename-overlay') as HTMLElement;
   const currentEl = document.getElementById('rename-current') as HTMLElement;
   const input = document.getElementById('rename-input') as HTMLInputElement;
   const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
-  const feedbackEl = document.getElementById('rename-feedback') as HTMLElement;
-  return { overlay, currentEl, input, submitBtn, feedbackEl };
+  return { overlay, currentEl, input, submitBtn };
 }
 
 function teardown(): void {
@@ -828,18 +829,19 @@ describe('RenameView RT-RN-02 / M-2: hide() resets input value and feedback', ()
     expect(input.value).toBe('');
   });
 
-  it('BITES: hide() clears #rename-feedback textContent — kills impl that leaves stale feedback on re-open', () => {
-    // RT-RN-02: feedback from a prior rename attempt (success/error) must not linger.
-    // WRONG IMPL KILLED: an impl where hide() does not touch the feedback element.
+  it('UIF4B.5 hide() neither needs nor creates a #rename-feedback line (the view owns no message text), and the draft still clears', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the view's feedback line is retired, so hide() no
+    // longer clears one. Was: "hide() clears #rename-feedback textContent" (RT-RN-02), with a
+    // `div#rename-feedback` in the fixture. The stale-message risk it guarded is now structural: the
+    // outcome is a timed toast, never a node of this overlay (UIF4B.3 pins it end to end).
+    // WRONG IMPL KILLED: a hide() that still looks the line up (a TypeError on null), or creates it.
     const view = new RenameView({ onSubmit: async () => {} });
     view.show();
-
-    const feedbackEl = document.getElementById('rename-feedback') as HTMLElement;
-    feedbackEl.textContent = 'Rename failed: invalid name';
-
-    view.hide();
-
-    expect(feedbackEl.textContent).toBe('');
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = 'StaleValue';
+    expect(() => view.hide()).not.toThrow();
+    expect(input.value, 'the draft is still reset').toBe('');
+    expect(document.getElementById('rename-feedback'), 'no retired line appears').toBeNull();
   });
 });
 
@@ -847,7 +849,7 @@ describe('RenameView RT-RN-02 / M-2: hide() resets input value and feedback', ()
 // showFeedback(): writes feedback text via textContent
 // ---------------------------------------------------------------------------
 
-describe('RenameView showFeedback(): writes textContent to #rename-feedback', () => {
+describe('RenameView has no showFeedback (uif-4b)', () => {
   beforeEach(() => {
     mountRenameOverlay();
   });
@@ -856,14 +858,14 @@ describe('RenameView showFeedback(): writes textContent to #rename-feedback', ()
     teardown();
   });
 
-  it('BITES: showFeedback("Name updated") sets #rename-feedback textContent — kills no-op impl', () => {
-    // Proves the method exists and writes to the feedback element.
-    // WRONG IMPL KILLED: an impl where showFeedback() is a no-op or writes to wrong element.
+  it('UIF4B.5 the view has no showFeedback method (the rename outcome is the seam`s, not the view`s)', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): was "showFeedback('Name updated') sets #rename-feedback
+    // textContent". The method and its node are retired: every rename message goes through the one
+    // seam (a toast), so the view cannot pick a channel.
+    // WRONG IMPL KILLED: a surviving showFeedback (a second, view-owned channel).
     const view = new RenameView({ onSubmit: async () => {} });
     view.show();
-    view.showFeedback('Name updated');
-    const feedbackEl = document.getElementById('rename-feedback') as HTMLElement;
-    expect(feedbackEl.textContent).toBe('Name updated');
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
   });
 });
 

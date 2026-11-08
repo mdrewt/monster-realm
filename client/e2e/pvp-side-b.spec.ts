@@ -217,15 +217,17 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
   });
   await page.fill('[data-testid="rename-input"]', name);
   await page.click('[data-testid="rename-submit"]');
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the rename outcome is a toast (the one seam), read from
+  // `#toast`. Was: the overlay's own `[data-testid="rename-feedback"]` line, retired from index.html.
   await page.waitForFunction(
     () => {
-      const fb = document.querySelector('[data-testid="rename-feedback"]');
-      return fb !== null && (fb.textContent ?? '').trim().length > 0;
+      const fb = document.querySelector('#toast');
+      return fb !== null && !(fb as HTMLElement).hidden && (fb.textContent ?? '').trim().length > 0;
     },
     null,
     { timeout: 15_000 },
   );
-  const feedbackText = await page.textContent('[data-testid="rename-feedback"]');
+  const feedbackText = await page.textContent('#toast');
   expect(
     feedbackText ?? '',
     `11r-b: rename feedback for "${name}" must not indicate an error — the challenge picker ` +

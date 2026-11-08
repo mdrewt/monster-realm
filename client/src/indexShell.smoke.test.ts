@@ -430,12 +430,19 @@ const FRAMED_IDS: readonly string[] = [...NINE_SHELL_IDS, 'help-overlay'];
 /** Every root inside #frame-layer; the menu hosts its own ui/frame.ts `.mr-frame`. */
 const FRAME_LAYER_IDS: readonly string[] = [...FRAMED_IDS, 'menu-overlay'];
 
-/** Every id-bearing descendant each root shipped before ctl-7a (client/index.html at 8e4d49b7). */
+/** Every id-bearing descendant each root shipped before ctl-7a (client/index.html at 8e4d49b7).
+ *
+ *  INTENTIONAL CHANGE (uif-4b, UIF4B.5): four static message lines are RETIRED from index.html and
+ *  from this roster, because every one of their message kinds moved to the toast channel through
+ *  the one seam: `shop-feedback`, `pvp-challenge-feedback`, `rename-feedback` and
+ *  `tradepropose-feedback`. `trade-feedback` STAYS as an empty node nothing writes (hidden
+ *  dependency: ui/screens/socialScreen.boot.test.ts boots the real index.html and throws when it is
+ *  absent; residual R-uif-4b-TRADEFEEDBACK-NODE to uif-9). Was: all five lines were listed. */
 const INNER_IDS: Readonly<Record<string, readonly string[]>> = {
   'dialogue-overlay': ['dialogue-npc-name', 'dialogue-node-text', 'dialogue-choices'],
   'quest-log-overlay': ['quest-log-list'],
   'heal-overlay': ['heal-list'],
-  'shop-overlay': ['shop-title', 'shop-for-sale', 'shop-inventory', 'shop-feedback'],
+  'shop-overlay': ['shop-title', 'shop-for-sale', 'shop-inventory'],
   'trade-overlay': [
     'trade-status',
     'trade-my-side',
@@ -448,17 +455,15 @@ const INNER_IDS: Readonly<Record<string, readonly string[]>> = {
     'pvp-challenge-incoming',
     'pvp-challenge-outgoing',
     'pvp-player-list',
-    'pvp-challenge-feedback',
   ],
   'leaderboard-overlay': ['leaderboard-title', 'leaderboard-list'],
-  'rename-overlay': ['rename-current', 'rename-input', 'rename-submit', 'rename-feedback'],
+  'rename-overlay': ['rename-current', 'rename-input', 'rename-submit'],
   'tradepropose-overlay': [
     'tradepropose-target',
     'tradepropose-monsters',
     'tradepropose-offer-currency',
     'tradepropose-request-currency',
     'tradepropose-submit',
-    'tradepropose-feedback',
   ],
   'help-overlay': ['help-title', 'help-controls', 'help-goals'],
   'menu-overlay': ['menu-heading', 'menu-rows', 'menu-back-hint'],
@@ -469,13 +474,13 @@ const TEST_IDS: readonly string[] = [
   'rename-current',
   'rename-input',
   'rename-submit',
-  'rename-feedback',
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `rename-feedback` and `tradepropose-feedback` leave the
+  // roster with their retired lines. Was: both listed.
   'tradepropose-target',
   'tradepropose-monsters',
   'tradepropose-offer-currency',
   'tradepropose-request-currency',
   'tradepropose-submit',
-  'tradepropose-feedback',
 ];
 
 const bodyElementChildren = (): Element[] =>
@@ -837,9 +842,50 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
         checked += 1;
       }
     }
-    // ANTI-VACUITY: the eleven roots hold 37 descendants between them (48 elements in all), so a
+    // ANTI-VACUITY: the eleven roots hold 33 descendants between them (44 elements in all), so a
     // walk that saw only the roots (or nothing) cannot reach this count.
-    expect(checked, 'the roots and their descendants were walked').toBeGreaterThanOrEqual(48);
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the four retired feedback lines leave the walk, so the
+    // floor drops by four. Was: 37 descendants, 48 elements.
+    expect(checked, 'the roots and their descendants were walked').toBeGreaterThanOrEqual(44);
+  });
+
+  it('UIF4B.5 the four retired message lines are gone from index.html, #trade-feedback stays as the named residual, and every other shell keeps its ids', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#shop-feedback`, `#pvp-challenge-feedback`,
+    // `#rename-feedback` and `#tradepropose-feedback` are retired: every one of their message kinds
+    // moved to the toast channel (spec: "a line whose kinds all move to toast retires with its roster
+    // row, named"). `#trade-feedback` stays an empty node nothing writes (hidden dependency:
+    // socialScreen.boot.test.ts reads it; residual R-uif-4b-TRADEFEEDBACK-NODE -> uif-9).
+    // WRONG IMPL KILLED: a retired line left in the markup (a dead node a view could still paint, or
+    // a second channel), a stale data-testid for one, and a `#trade-feedback` removed with them
+    // (socialScreen.boot.test.ts would throw).
+    for (const id of [
+      'shop-feedback',
+      'pvp-challenge-feedback',
+      'rename-feedback',
+      'tradepropose-feedback',
+    ]) {
+      expect(doc.getElementById(id), `#${id} is retired from index.html`).toBeNull();
+      expect(
+        doc.querySelector(`[data-testid="${id}"]`),
+        `data-testid="${id}" is retired from index.html`,
+      ).toBeNull();
+      expect(
+        Object.values(INNER_IDS).some((ids) => ids.includes(id)),
+        `#${id} is retired from the roster`,
+      ).toBe(false);
+      expect(TEST_IDS.includes(id), `${id} is retired from the test-id roster`).toBe(false);
+    }
+    const residual = doc.getElementById('trade-feedback');
+    expect(residual, '#trade-feedback stays (the named residual)').not.toBeNull();
+    expect(residual?.closest('#trade-overlay'), 'inside the trade shell').not.toBeNull();
+    expect((residual?.textContent ?? '').trim(), 'and empty in the markup').toBe('');
+    expect(
+      INNER_IDS['trade-overlay']?.includes('trade-feedback'),
+      '#trade-feedback is still on the roster',
+    ).toBe(true);
+    // Control: the retired lines' neighbours are untouched.
+    expect(doc.getElementById('shop-inventory'), 'control: the shop lists stay').not.toBeNull();
+    expect(doc.getElementById('rename-submit'), 'control: the rename form stays').not.toBeNull();
   });
 
   it('CTL7A-4-CHIPS-SHELL: #hint-bar holds exactly the Start and Select chips as empty native buttons, and #help-hint is gone', () => {

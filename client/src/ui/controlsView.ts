@@ -20,8 +20,13 @@
 // first in `paint`, so a paint that throws later cannot leave the shell capturing keys for a
 // capture the screen has left; `hide()` ends it on every close path.
 //
-// The feedback line is not a live region (ui/liveRegion.ts owns the only one): each line, the
-// capture prompt and the confirm's question go to `handlers.announce`.
+// The strip (`#controls-feedback`, the shared `.mr-frame-feedback` overlay, hidden while empty) is
+// this frame's hint line: main.ts's seam paints a refused key there (`showHint`) for as long as the
+// capture waits. Every outcome (a bind, a swap, a cancel, Clear, Reset, a failed save) is a toast,
+// routed by main.ts on its policy channel (uif-4b): the view hands Clear and Reset over through
+// `handlers.onOutcome` and never picks a channel. The strip is not a live region
+// (ui/liveRegion.ts owns the only one): a hint, the capture prompt and the confirm's question go to
+// `handlers.announce`.
 import type { Bindings } from '../input/bindings';
 import type { Accel } from '../input/buttons';
 import { glyph } from '../input/glyphs';
@@ -49,6 +54,14 @@ export interface ControlsViewHandlers {
   readonly onCancelCapture: () => void;
   /** Say `text` through the page's live region. */
   readonly announce: (text: string) => void;
+  /** A Clear or Reset outcome line, and whether its table was saved: the seam routes it. Optional
+   *  only for the shell rigs that never apply a request; main.ts always passes it. */
+  readonly onOutcome?: (text: string, saved: boolean) => void;
+}
+
+/** An outcome line as shown: an unsaved change says so. */
+export function savedLine(text: string, saved: boolean): string {
+  return saved ? text : `${text} ${t('controls.saveFailed')}`;
 }
 
 /** The id prefix of the nav items and tabs (`controls-tab-buttons`, `controls-buttons-A_0`). */
@@ -117,6 +130,7 @@ export class ControlsView implements ControlsScreenView {
     this.#capture = ensureElement('controls-capture', 'p');
     this.#cancelBtn = ensureElement('controls-cancel-btn', 'button');
     this.#feedback = ensureElement('controls-feedback', 'p');
+    this.#feedback.classList.add('mr-frame-feedback');
     // DOM order is Tab order: the rows, then the Cancel chip while a slot waits for a key.
     for (const child of [
       this.#title,
@@ -132,6 +146,7 @@ export class ControlsView implements ControlsScreenView {
     for (const shown of [this.#title, this.#tabs, this.#rows, this.#feedback]) {
       shown.style.display = '';
     }
+    this.#feedback.hidden = this.#feedback.textContent === '';
     // The focus anchor must be focusable before the first paint (overlayA11y focuses it on open).
     this.#rows.setAttribute('tabindex', '0');
     this.#cancelBtn.addEventListener('click', () => handlers.onCancelCapture());
@@ -163,7 +178,7 @@ export class ControlsView implements ControlsScreenView {
     this.#overlay.style.display = 'none';
     this.#capturing = null;
     this.#confirming = false;
-    this.#feedback.textContent = '';
+    this.#clearHint();
     for (const part of [this.#capture, this.#cancelBtn, this.#question]) {
       part.style.display = 'none';
     }
@@ -171,20 +186,27 @@ export class ControlsView implements ControlsScreenView {
     closeOverlayA11y('controlsView', null);
   }
 
-  /** Write the feedback line and announce it; an unsaved change says so. */
-  showFeedback(text: string, saved = true): void {
-    const line = saved ? text : `${text} ${t('controls.saveFailed')}`;
-    this.#feedback.textContent = line;
-    this.#handlers.announce(line);
+  /** Write a hint on the strip and announce it, once per call. */
+  showHint(text: string): void {
+    this.#feedback.textContent = text;
+    this.#feedback.hidden = false;
+    this.#handlers.announce(text);
+  }
+
+  #clearHint(): void {
+    this.#feedback.textContent = '';
+    this.#feedback.hidden = true;
   }
 
   paint(p: ControlsPaint): void {
     const was = this.#capturing;
     this.#capturing = p.capturing;
     if (p.capturing !== null && !sameTarget(was, p.capturing)) {
-      this.#feedback.textContent = '';
+      this.#clearHint();
       this.#handlers.announce(capturePrompt(p.capturing.row));
     }
+    // A hint belongs to the capture that refused the key: it ends with it.
+    if (was !== null && p.capturing === null) this.#clearHint();
     if (p.request !== null && p.request !== this.#applied) {
       this.#applied = p.request;
       this.#apply(p.request);
@@ -197,11 +219,11 @@ export class ControlsView implements ControlsScreenView {
       case 'clear': {
         const saved = this.#handlers.onClear(request.accel);
         const label = rowLabel({ kind: 'accel', id: request.accel });
-        this.showFeedback(tf('controls.cleared', { label }), saved);
+        this.#handlers.onOutcome?.(tf('controls.cleared', { label }), saved);
         break;
       }
       case 'reset':
-        this.showFeedback(t('controls.reset.done'), this.#handlers.onReset());
+        this.#handlers.onOutcome?.(t('controls.reset.done'), this.#handlers.onReset());
         break;
     }
   }

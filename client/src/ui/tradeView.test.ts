@@ -249,40 +249,27 @@ function makeNoTradeVM(): TradeScreenViewModel {
 //   8. Verify #trade-feedback is now EMPTY (cleared on state change)
 //
 // ---------------------------------------------------------------------------
-describe('TradeView [m16.5c-TV-2]: stale feedback cleared when offer statusLabel changes', () => {
-  it('BITES: feedback persists on same-status re-render but clears when statusLabel changes', () => {
+describe('TradeView [m16.5c-TV-2]: the view owns no feedback line any more (uif-4b)', () => {
+  it('UIF4B.5 [m16.5c-TV-2] the view has no showFeedback, and a status change touches no #trade-feedback text', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): NAMED REMOVAL of TV-2 ("feedback persists on a
+    // same-status re-render but clears when statusLabel changes"). The view's `showFeedback` and its
+    // read/write of `#trade-feedback` are retired: every trade message goes through the one seam (a
+    // timed toast), so there is no view-owned line to go stale. Survivors: the toast's own expiry
+    // (ui/toast.test.ts), and main.feedbackCore.test.ts UIF4B.3 (a late settle writes nothing into
+    // any overlay). Was: showFeedback('Trade accepted!') then renders, reading #trade-feedback.
+    // WRONG IMPL KILLED: a surviving showFeedback (a second channel), and a view that still writes
+    // the node that stays in index.html as an empty residual (R-uif-4b-TRADEFEEDBACK-NODE).
     const overlay = mountTradeOverlay();
-    const cbs = makeCallbacks();
-    const view = new TradeView(cbs);
-
+    const view = new TradeView(makeCallbacks());
     view.show();
-
-    // Step 2: initial render — statusLabel='Offer received'
-    const vmPending = makePendingTradeVM('Offer received', ['accept', 'reject']);
-    view.render(vmPending);
-
-    // Step 3: show feedback (e.g. from a prior accept action response)
-    view.showFeedback('Trade accepted!');
-
-    const feedbackEl = document.getElementById('trade-feedback')!;
-
-    // Step 4: feedback must be visible
-    expect(feedbackEl.textContent).toBe('Trade accepted!');
-
-    // Step 5: re-render with SAME statusLabel — feedback must NOT be cleared
-    view.render(vmPending);
-
-    // Step 6: same state → feedback preserved (no clear on same state)
-    expect(feedbackEl.textContent).toBe('Trade accepted!');
-
-    // Step 7: re-render with CHANGED statusLabel (server advanced offer)
-    const vmConfirmed = makePendingTradeVM('Accepted — awaiting confirmation', ['cancel']);
-    view.render(vmConfirmed);
-
-    // Step 8: BITES — without fix, 'Trade accepted!' still visible.
-    // After fix: #feedbackEl is cleared when statusLabel changes.
-    expect(feedbackEl.textContent).toBe('');
-
+    const feedbackEl = document.getElementById('trade-feedback') as HTMLElement;
+    feedbackEl.textContent = 'sentinel the view must leave alone';
+    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
+    view.render(makePendingTradeVM('Accepted — awaiting confirmation', ['cancel']));
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+    expect(feedbackEl.textContent, 'the view neither reads nor clears that node').toBe(
+      'sentinel the view must leave alone',
+    );
     removeOverlay(overlay);
   });
 });
@@ -298,33 +285,24 @@ describe('TradeView [m16.5c-TV-2]: stale feedback cleared when offer statusLabel
 //   5. Verify #trade-feedback is empty (cleared on kind transition)
 //
 // ---------------------------------------------------------------------------
-describe('TradeView [m16.5c-TV-3]: feedback cleared on kind transition no-trade→trade', () => {
-  it('BITES: stale feedback from prior session must be cleared when new offer arrives', () => {
+describe('TradeView [m16.5c-TV-3]: no feedback line to clear on a kind transition (uif-4b)', () => {
+  it('UIF4B.5 [m16.5c-TV-3] hide() and the no-trade to trade transition run with no #trade-feedback node at all', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): NAMED REMOVAL of TV-3 ("stale feedback from a prior
+    // session must be cleared when a new offer arrives"), for the reason TV-2 above gives: no
+    // view-owned line remains. Was: showFeedback('stale!') then a no-trade to trade render, reading
+    // #trade-feedback. Survivor: the view must not NEED the node (it stays in index.html only as an
+    // empty residual for socialScreen.boot.test.ts), so it is mounted here WITHOUT it.
+    // WRONG IMPL KILLED: a constructor or render that still looks the node up (a TypeError on null).
     const overlay = mountTradeOverlay();
-    const cbs = makeCallbacks();
-    const view = new TradeView(cbs);
-
+    document.getElementById('trade-feedback')?.remove();
+    const view = new TradeView(makeCallbacks());
     view.show();
-
-    // Step 2: render no-trade state (offer was cancelled or never existed)
-    view.render(makeNoTradeVM());
-
-    // Step 3: inject stale feedback (this simulates a message set during a prior
-    // trade session — e.g. the player saw "Trade accepted!" but then the server
-    // removed the offer and the overlay is still open)
-    view.showFeedback('stale!');
-
-    const feedbackEl = document.getElementById('trade-feedback')!;
-    expect(feedbackEl.textContent).toBe('stale!'); // precondition
-
-    // Step 4: new offer arrives from server — render with kind='trade'
-    const vmNewOffer = makePendingTradeVM('Offer received', ['accept', 'reject']);
-    view.render(vmNewOffer);
-
-    // Step 5: BITES — without fix, 'stale!' persists because render() never
-    // clears #feedbackEl.  After fix: the kind transition clears the element.
-    expect(feedbackEl.textContent).toBe('');
-
+    expect(() => {
+      view.render(makeNoTradeVM());
+      view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
+      view.hide();
+    }).not.toThrow();
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
     removeOverlay(overlay);
   });
 });
@@ -834,13 +812,11 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
     view.render(vmB);
     expect(actionsEl.childNodes.length, 'qf-8: no Accept / Reject control renders').toBe(0);
 
-    // showFeedback never touches the resolver.
-    vi.mocked(i18nT).mockClear();
-    vi.mocked(i18nTf).mockClear();
-    view.showFeedback('a raw feedback line');
-    expect(document.getElementById('trade-feedback')!.textContent).toBe('a raw feedback line');
-    expect(i18nT).not.toHaveBeenCalled();
-    expect(i18nTf).not.toHaveBeenCalled();
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the "showFeedback never touches the resolver" clause is
+    // dropped with the method (retired; trade messages are the seam's). Was:
+    // `view.showFeedback('a raw feedback line')` read back from #trade-feedback. Survivor: the
+    // view has no showFeedback at all.
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
 
     removeOverlay(overlay);
   });
@@ -893,10 +869,9 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
       expect(joined).not.toContain('«trade.action.reject»');
       expect(joined, 'the second render drew its sides').toContain('«trade.side.offer»');
 
-      view.showFeedback('a raw feedback line');
-      texts = m24s4TvWalkSubtree(overlay);
-      m24s4TvAssertNoRosterWord(texts, 'feedback');
-      expect(texts.join('\n')).toContain('a raw feedback line');
+      // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the closing `showFeedback('a raw feedback line')`
+      // clause is dropped with the method (retired). Was: the line was written and then found in
+      // the walked subtree.
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
@@ -1322,11 +1297,17 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
 
     // Players: the placeholder; the sides and the actions hidden; the status and feedback shown.
-    view.showFeedback('a trade result line');
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the view no longer owns a feedback line, so the
+    // `showFeedback('a trade result line')` setup and its "Players: the feedback line stays" read
+    // are dropped; a sentinel the test writes into the residual node proves the view leaves it
+    // alone. Was: `view.showFeedback('a trade result line')` read back after the Players paint.
+    feedback.textContent = 'a sentinel the view must not touch';
     view.paintSocial(chrome, socialPaint({ tab: 'players' }));
     expect(status.textContent, 'Players: the placeholder').toBe(placeholder);
     expect(hiddenTradeParts(), 'Players: the sides and the actions hidden').toEqual(PLAYERS_HIDDEN);
-    expect(feedback.textContent, 'Players: the feedback line stays').toBe('a trade result line');
+    expect(feedback.textContent, 'Players: the residual node is left alone').toBe(
+      'a sentinel the view must not touch',
+    );
 
     // Batch renders keep it, on both render branches.
     view.render(offer);

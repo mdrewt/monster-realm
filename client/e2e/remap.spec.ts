@@ -207,9 +207,10 @@ test.describe
         tf('controls.slot.primary', { label: t('controls.button.a'), key: 'K' }),
       );
       await expect(page.locator('#controls-capture'), 'the capture ended').toBeHidden();
-      await expect(page.locator('#controls-feedback'), 'the bound line').toHaveText(
-        t('controls.bound'),
-      );
+      // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the bound line is a toast (the one seam), read from
+      // `#toast`; the Controls strip carries only a refused-key hint. Was: `#controls-feedback`.
+      await expect(page.locator('#toast'), 'the bound line').toHaveText(t('controls.bound'));
+      await expect(page.locator('#controls-feedback'), 'the strip stays empty').toHaveText('');
       await expect
         .poll(async () => (await liveBindings(page)).buttons.A, {
           message: 'mr.controls holds A := K, Numpad Enter kept as its Alt',

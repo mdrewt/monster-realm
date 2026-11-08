@@ -42,6 +42,12 @@
  *
  * Every test asserts the reducer spy's call count, so none can pass with the action never firing.
  *
+ * uif-4b (named intentional change, UIF4B.1 / UIF4B.3): every per-view line is retired, so the eight
+ * non-care sites' message is read off `#toast` (the one seam, a timed channel) and the overlay's
+ * subtree must hold no copy of it. The four HIDDEN tests no longer pin a silent drop: after a late
+ * settle the overlay holds no message, `#status` nothing stale, and the toast carries the outcome.
+ * Care keeps the Monsters sheet's own line. Was: each site read its own overlay's feedback node.
+ *
  * TESTS (each tag appears in exactly one title):
  *   PGCCA-A4-HIDDEN-SHOP / -TRADE / -RENAME / -PROPOSE  paint only while the overlay is visible,
  *                                                        with the reducer's exact args asserted
@@ -542,11 +548,35 @@ interface Site {
   readonly open: () => Activate;
 }
 
-/** The reader of a feedback node by id (the eight sites whose line is a node of their own overlay). */
-const feedbackById =
-  (id: string): (() => string) =>
-  () =>
-    textOf(id);
+/** uif-4b (UIF4B.1): the toast's visible text, '' while it is hidden (a hidden toast shows nothing).
+ *  Nothing ticks the toast clock in this harness (rAF is stubbed to 0), so a toast shown by a site
+ *  stays up for the rest of the test. */
+function toastText(): string {
+  const el = document.getElementById('toast');
+  if (el === null) throw new Error('#toast must exist once the shell is mounted');
+  return el.hidden ? '' : (el.textContent ?? '');
+}
+
+/** INTENTIONAL CHANGE (uif-4b, UIF4B.1): the eight non-care sites' message is the TOAST, not a node
+ *  of their own overlay. Was: `feedbackById(<the site's own feedback line id>)`, which read
+ *  `#shop-feedback`, `#trade-feedback`, `#rename-feedback` or `#tradepropose-feedback` (retired or
+ *  unwritten now). */
+const onToast = (): (() => string) => toastText;
+
+/** The exact en success line of each non-care site (literal bytes, built from code points where a
+ *  glyph is involved; never read off the catalog under test). The shop lines are ctl-7d's. */
+const CHECK = String.fromCharCode(0x2713);
+const MINUS = String.fromCharCode(0x2212);
+const SUCCESS_TEXT: Readonly<Record<string, string>> = {
+  buy: `${CHECK} Bought 1 Potion (${MINUS}10g)`,
+  sell: `${CHECK} Sold 1 Herb (+5g)`,
+  accept: 'Trade accepted!',
+  reject: 'Trade rejected.',
+  confirm: 'Trade complete!',
+  cancel: 'Trade cancelled.',
+  rename: 'Name updated!',
+  propose: 'Offer sent!',
+};
 
 const SITES: readonly Site[] = [
   {
@@ -561,7 +591,7 @@ const SITES: readonly Site[] = [
   {
     name: 'buy',
     tag: 'buy',
-    feedback: feedbackById('shop-feedback'),
+    feedback: onToast(),
     overlayId: 'shop-overlay',
     reducer: H.buy,
     args: { shopId: 1, itemId: 1, qty: 1 },
@@ -570,7 +600,7 @@ const SITES: readonly Site[] = [
   {
     name: 'sell',
     tag: 'sell',
-    feedback: feedbackById('shop-feedback'),
+    feedback: onToast(),
     overlayId: 'shop-overlay',
     reducer: H.sell,
     args: { itemId: 2, qty: 1 },
@@ -579,7 +609,7 @@ const SITES: readonly Site[] = [
   {
     name: 'accept',
     tag: 'respond-trade',
-    feedback: feedbackById('trade-feedback'),
+    feedback: onToast(),
     overlayId: 'trade-overlay',
     reducer: H.respondTrade,
     args: { tradeId: TRADE_ID, accepted: true },
@@ -588,7 +618,7 @@ const SITES: readonly Site[] = [
   {
     name: 'reject',
     tag: 'respond-trade',
-    feedback: feedbackById('trade-feedback'),
+    feedback: onToast(),
     overlayId: 'trade-overlay',
     reducer: H.respondTrade,
     args: { tradeId: TRADE_ID, accepted: false },
@@ -597,7 +627,7 @@ const SITES: readonly Site[] = [
   {
     name: 'confirm',
     tag: 'confirm-trade',
-    feedback: feedbackById('trade-feedback'),
+    feedback: onToast(),
     overlayId: 'trade-overlay',
     reducer: H.confirmTrade,
     args: { tradeId: TRADE_ID },
@@ -606,7 +636,7 @@ const SITES: readonly Site[] = [
   {
     name: 'cancel',
     tag: 'cancel-trade',
-    feedback: feedbackById('trade-feedback'),
+    feedback: onToast(),
     overlayId: 'trade-overlay',
     reducer: H.cancelTrade,
     args: { tradeId: TRADE_ID },
@@ -615,7 +645,7 @@ const SITES: readonly Site[] = [
   {
     name: 'rename',
     tag: 'set-profile-name',
-    feedback: feedbackById('rename-feedback'),
+    feedback: onToast(),
     overlayId: 'rename-overlay',
     reducer: H.setProfileName,
     args: { name: 'NewName' },
@@ -624,7 +654,7 @@ const SITES: readonly Site[] = [
   {
     name: 'propose',
     tag: 'propose-trade',
-    feedback: feedbackById('tradepropose-feedback'),
+    feedback: onToast(),
     overlayId: 'tradepropose-overlay',
     reducer: H.proposeTrade,
     // Every field but `counterparty` (an SDK Identity, checked by its hex in the HIDDEN test).
@@ -646,10 +676,14 @@ function siteNamed(name: string): Site {
   return site;
 }
 
-/** Open `name`'s view, hold its reducer open, hide the overlay, then settle: nothing may paint. */
-async function expectNoPaintWhenHidden(name: string): Promise<readonly unknown[]> {
+/** UIF4B.3: open `name`'s view, hold its reducer open, hide the overlay, then settle. The overlay's
+ *  subtree must hold no copy of the message, `#status` nothing stale, and the toast must carry the
+ *  outcome; reopening the overlay must still show no message in it. */
+async function expectOutcomeOnToastNotInOverlay(name: string): Promise<readonly unknown[]> {
   await bootMain('/');
   const site = siteNamed(name);
+  const overlayId = site.overlayId as string;
+  const text = SUCCESS_TEXT[name] as string;
   const activate = site.open();
   const held = holdOpen();
   site.reducer.mockImplementationOnce(() => held.promise);
@@ -657,38 +691,58 @@ async function expectNoPaintWhenHidden(name: string): Promise<readonly unknown[]
   activate();
   expect(site.reducer, `${name}: the action must have reached the reducer`).toHaveBeenCalledOnce();
   expect(site.reducer).toHaveBeenCalledWith(site.args);
-  expect(site.feedback(), `${name}: nothing may paint while pending`).toBe('');
+  expect(toastText(), `${name}: nothing may paint while pending`).toBe('');
   const calledWith = site.reducer.mock.calls[0] as readonly unknown[];
 
-  hideOverlay(site.overlayId as string);
+  hideOverlay(overlayId);
   held.release();
   await settle();
 
-  expect(site.feedback(), `${name}: a hidden overlay must not be painted into`).toBe('');
+  const overlay = document.getElementById(overlayId) as HTMLElement;
+  expect(
+    overlay.textContent,
+    `${name}: a hidden overlay's subtree holds no copy of the message`,
+  ).not.toContain(text);
+  expect(textOf('status'), `${name}: #status holds nothing stale`).not.toContain(text);
+  expect(toastText(), `${name}: the toast carries the outcome`).toBe(text);
+
+  overlay.style.display = '';
+  await settle();
+  expect(
+    overlay.textContent,
+    `${name}: reopened, the overlay still holds no message from the late settle`,
+  ).not.toContain(text);
   return calledWith;
 }
 
-describe('main.ts feedback sites paint only while their overlay is visible (slice pgcc-a, A4)', () => {
-  it('PGCCA-A4-HIDDEN-SHOP: a Buy that settles after #shop-overlay was hidden paints no success line', async () => {
-    // WRONG IMPL KILLED: the shop closure routed through the core WITHOUT its visibility guard —
-    // the success line would land in the hidden overlay and greet the next open.
-    await expectNoPaintWhenHidden('buy');
+describe('main.ts a message that fires after its overlay closed paints nothing stale (slice uif-4b, UIF4B.3)', () => {
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.3): the four PGCCA-A4-HIDDEN-* tests pinned the per-sink
+  // visibility guard as a SILENT DROP: a late settle wrote into no overlay and nowhere else. Every
+  // per-view line is retired, so there is no overlay line to guard; the outcome now goes to the timed
+  // toast (the same as uif-4's `reportError` and care when its frame was left), and the overlay's
+  // subtree must still hold no copy of it, before or after a reopen. Was: the feedback node of the
+  // overlay stayed '' and nothing else was read.
+  it('UIF4B.3 PGCCA-A4-HIDDEN-SHOP: a Buy that settles after #shop-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast', async () => {
+    // WRONG IMPL KILLED: a shop sink that still paints a line inside the (hidden) overlay — it would
+    // greet the next open; or one that drops the message silently (no toast at all).
+    await expectOutcomeOnToastNotInOverlay('buy');
   });
 
-  it('PGCCA-A4-HIDDEN-TRADE: an Accept that settles after #trade-overlay was hidden paints no success line', async () => {
-    // WRONG IMPL KILLED: the trade closure routed through the core WITHOUT its visibility guard.
-    await expectNoPaintWhenHidden('accept');
+  it('UIF4B.3 PGCCA-A4-HIDDEN-TRADE: an Accept that settles after #trade-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast', async () => {
+    // WRONG IMPL KILLED: a trade sink that still writes #trade-feedback (the residual node), or
+    // drops the message.
+    await expectOutcomeOnToastNotInOverlay('accept');
   });
 
-  it('PGCCA-A4-HIDDEN-RENAME: a rename that settles after #rename-overlay was hidden paints no success line', async () => {
-    // WRONG IMPL KILLED: the rename closure routed through the core WITHOUT its visibility guard.
-    await expectNoPaintWhenHidden('rename');
+  it('UIF4B.3 PGCCA-A4-HIDDEN-RENAME: a rename that settles after #rename-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast', async () => {
+    // WRONG IMPL KILLED: a rename sink that still paints into the hidden overlay, or drops it.
+    await expectOutcomeOnToastNotInOverlay('rename');
   });
 
-  it('PGCCA-A4-HIDDEN-PROPOSE: a trade proposal that settles after #tradepropose-overlay was hidden paints no success line', async () => {
-    // WRONG IMPL KILLED: the trade-propose closure routed through the core WITHOUT its visibility
-    // guard; or an args thunk that drops a field (monster ids, either currency, the counterparty).
-    const [args] = (await expectNoPaintWhenHidden('propose')) as [Record<string, unknown>];
+  it('UIF4B.3 PGCCA-A4-HIDDEN-PROPOSE: a trade proposal that settles after #tradepropose-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast, with every argument field intact', async () => {
+    // WRONG IMPL KILLED: the trade-propose sink painting into the hidden overlay or dropping the
+    // message; or an args thunk that drops a field (monster ids, either currency, the counterparty).
+    const [args] = (await expectOutcomeOnToastNotInOverlay('propose')) as [Record<string, unknown>];
     const { counterparty, ...rest } = args;
     expect(rest).toEqual({
       initiatorMonsterIds: [5n],
@@ -703,11 +757,14 @@ describe('main.ts feedback sites paint only while their overlay is visible (slic
 });
 
 describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1/A4)', () => {
-  it('PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 9 sites, care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
+  it('UIF4B.1 PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 9 sites, on the TOAST at the eight overlay sites (never in their overlay) and care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the eight non-care sites read `#toast`, and their overlay
+    // subtree must hold no copy of the line. Was: each read its own overlay's feedback node.
     // WRONG IMPL KILLED: a site passing the wrong `where` (a copy-pasted care/buy tag), or reverted
-    // to an inline pattern that drops the error arm. qf-9: the care site is the Monsters sheet, its
-    // line the Monsters frame's own `.mr-frame-feedback` (a care rejection painted on the status
-    // line or nowhere reads '' there).
+    // to an inline pattern that drops the error arm; a rejection left on a view-owned line (the
+    // overlay holds a copy) or on #status. qf-9: the care site is the Monsters sheet, its line the
+    // Monsters frame's own `.mr-frame-feedback` (a care rejection painted on the status line or
+    // nowhere reads '' there).
     expect(SITES.length, 'ANTI-VACUITY: all nine sites').toBe(9);
     for (const [i, site] of SITES.entries()) {
       if (i > 0) resetApp();
@@ -727,12 +784,24 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
       expect(site.feedback(), `${site.name}: the error line, spelled out`).toBe(
         `${site.tag}: nope`,
       );
+      if (site.overlayId !== undefined) {
+        expect(
+          document.getElementById(site.overlayId)?.textContent,
+          `${site.name}: the overlay subtree holds no copy of the error line`,
+        ).not.toContain(`${site.tag}: nope`);
+        expect(textOf('status'), `${site.name}: and #status does not carry it`).not.toContain(
+          `${site.tag}: nope`,
+        );
+      }
     }
   }, 60_000);
 
-  it('PGCCA-A1-FROZEN-PER-SITE: a frozen link paints the disconnected line and calls no reducer at the 7 sites feedbackI18n does not cover, care on the Monsters sheet`s own line [QF9-3-FROZEN-CARE-SHEET]', async () => {
+  it('UIF4B.1 PGCCA-A1-FROZEN-PER-SITE: a frozen link puts the disconnected line on the toast (never in the overlay) and calls no reducer at the 6 overlay sites feedbackI18n does not cover, and care keeps it on the Monsters sheet`s own line [QF9-3-FROZEN-CARE-SHEET]', async () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the six non-care sites read `#toast` (kind
+    // link-down-send), with no copy in their overlay. Was: each read its own overlay's feedback node.
     // WRONG IMPL KILLED: a site that lost the frozen gate (it would call a dead connection and hang
-    // or paint a false success), or one that paints something other than the disconnected line.
+    // or paint a false success), or one that paints something other than the disconnected line, or
+    // leaves it on a view-owned line.
     const sites = SITES.filter((s) => s.name !== 'buy' && s.name !== 'accept');
     expect(sites.map((s) => s.name)).toEqual([
       'care',
@@ -760,6 +829,42 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
         EN['chrome.feedback.disconnected'],
       );
       expect(site.feedback()).toBe('disconnected — try again');
+      if (site.overlayId !== undefined) {
+        expect(
+          document.getElementById(site.overlayId)?.textContent,
+          `${site.name}: the overlay subtree holds no copy of the disconnected line`,
+        ).not.toContain('disconnected — try again');
+      }
+    }
+  }, 60_000);
+
+  it('UIF4B.1 PGCCA-A1-SUCCESS-PER-SITE: a settled success puts the exact success line on the toast (visible), with no copy in the overlay, at all 8 overlay sites', async () => {
+    // WRONG IMPL KILLED: a success still painted on a view-owned line (an overlay copy), on #status,
+    // or not shown at all; a swapped trade line (accepted <-> rejected, completed <-> cancelled); a
+    // success tagged with a rejection kind (the line would still show but on the wrong channel).
+    const sites = SITES.filter((s) => s.overlayId !== undefined);
+    expect(
+      sites.map((s) => s.name),
+      'ANTI-VACUITY: the eight overlay sites',
+    ).toEqual(['buy', 'sell', 'accept', 'reject', 'confirm', 'cancel', 'rename', 'propose']);
+    for (const [i, site] of sites.entries()) {
+      if (i > 0) resetApp();
+      await bootMain('/');
+      const activate = site.open();
+      activate();
+      await settle();
+
+      const text = SUCCESS_TEXT[site.name] as string;
+      expect(site.reducer, `${site.name}: reducer calls`).toHaveBeenCalledOnce();
+      expect(site.reducer, `${site.name}: reducer args`).toHaveBeenCalledWith(site.args);
+      const toast = document.getElementById('toast') as HTMLElement;
+      expect(toast.hidden, `${site.name}: the toast is shown`).toBe(false);
+      expect(toast.textContent, `${site.name}: the exact success line`).toBe(text);
+      expect(
+        document.getElementById(site.overlayId as string)?.textContent,
+        `${site.name}: the overlay subtree holds no copy`,
+      ).not.toContain(text);
+      expect(textOf('status'), `${site.name}: #status does not carry it`).not.toContain(text);
     }
   }, 60_000);
 

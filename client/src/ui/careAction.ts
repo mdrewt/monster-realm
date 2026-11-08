@@ -1,5 +1,6 @@
 // ui/careAction.ts — the feedback-action decision core: one reducer call with a visible
-// outcome line (care, shop buy/sell, the four trade responses, rename, trade-propose).
+// outcome message (care, shop buy/sell, the four trade responses, rename, trade-propose), tagged
+// with the arm that settled so the caller routes it on its policy channel (uif-4b).
 //
 // WHY THIS MODULE EXISTS: `onCare` used to live inline in main.ts, which is
 // coverage-excluded and whose wiring closures are not exported — so the design's
@@ -18,6 +19,10 @@
 import { t } from './i18n/resolver';
 import { reduceErrorMessage } from './statusModel';
 
+/** Which arm settled: the reducer answered OK, it refused (a throw or a rejection), or no call
+ *  was made because the link is frozen or down. */
+export type CareOutcome = 'ok' | 'rejected' | 'disconnected';
+
 export interface CareActionDeps {
   /**
    * Invokes the reducer, building its arguments inside the thunk. Returns the
@@ -34,8 +39,9 @@ export interface CareActionDeps {
   readonly successMessage: string;
   /** The `reduceErrorMessage` tag naming the action (`'care'`, `'buy'`, …). */
   readonly where: string;
-  /** Renders a message on the calling overlay's feedback line. */
-  readonly showFeedback: (message: string) => void;
+  /** Shows the one outcome message; `outcome` names the arm, so the caller picks the message's
+   *  kind from what happened, never from its text. */
+  readonly showFeedback: (message: string, outcome: CareOutcome) => void;
   /**
    * Called when the action REJECTS — a synchronous throw from `call` or the settled
    * rejection — right after its failure line is painted. The disconnected arm is NOT
@@ -69,7 +75,7 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     // throw must land in the SAME error arm as a rejection.
     inFlight = deps.call();
   } catch (err) {
-    deps.showFeedback(reduceErrorMessage(err, deps.where));
+    deps.showFeedback(reduceErrorMessage(err, deps.where), 'rejected');
     deps.onRejected?.();
     return;
   }
@@ -78,7 +84,7 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
   // report a call that never happened.
   // Frozen/disconnected link: no reducer call happened, so this is NOT a success.
   if (inFlight === undefined) {
-    deps.showFeedback(t('chrome.feedback.disconnected'));
+    deps.showFeedback(t('chrome.feedback.disconnected'), 'disconnected');
     return;
   }
   // The await and its two arms get their OWN try: a single try wrapping both
@@ -87,11 +93,11 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
   // frozen arm. Exactly one showFeedback call per arm, always.
   try {
     await inFlight;
-    deps.showFeedback(deps.successMessage);
+    deps.showFeedback(deps.successMessage, 'ok');
   } catch (err) {
     // reduceErrorMessage passes SenderError reasons through and collapses
     // InternalError to a generic line — raw err.message is never shown.
-    deps.showFeedback(reduceErrorMessage(err, deps.where));
+    deps.showFeedback(reduceErrorMessage(err, deps.where), 'rejected');
     deps.onRejected?.();
   }
 }

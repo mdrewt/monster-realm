@@ -201,6 +201,24 @@ afterEach(async () => {
 // Overlay a11y wiring on the show()/hide() edge
 // ---------------------------------------------------------------------------
 
+describe('PvpView — no view-owned message line (uif-4b, UIF4B.5)', () => {
+  it('UIF4B.5 the view has no showFeedback (it had no caller: WF1-A5) and works with no #pvp-challenge-feedback node in the shell', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `showFeedback` and the `#pvp-challenge-feedback` lookup
+    // are retired (the line is gone from index.html with its roster row; challenge messages go
+    // through the one seam). The mount below drops the node the shared fixture still carries, so a
+    // constructor or refresh that needs it throws. Was: the view held the node and exposed a
+    // `showFeedback` nothing called.
+    // WRONG IMPL KILLED: a surviving showFeedback, and a constructor/refresh that still looks the
+    // retired node up.
+    const root = mountPvpOverlay();
+    document.getElementById('pvp-challenge-feedback')?.remove();
+    const view = new PvpView(makeCallbacks());
+    expect(() => view.refresh(pvpVm(), false)).not.toThrow();
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+    expect(root.querySelector('#pvp-challenge-feedback'), 'and none is created').toBeNull();
+  });
+});
+
 describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
   it('S3-pvpView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t(), and the view really starts hidden', () => {
     const root = mountPvpOverlay();
@@ -496,18 +514,9 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
   // each button dispatches onChallenge with the identity" tested only the per-player Challenge
   // list, which is deleted; its survivor is CTL10B-2-PVP-NO-INITIATE below.
 
-  it('BITES: hide() clears the feedback line, and showFeedback() writes it via textContent', () => {
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    const feedback = document.getElementById('pvp-challenge-feedback') as HTMLElement;
-
-    view.show();
-    view.showFeedback('Challenge sent!');
-    expect(feedback.textContent).toBe('Challenge sent!');
-
-    view.hide();
-    expect(feedback.textContent).toBe('');
-  });
+  // NAMED REMOVAL (uif-4b, UIF4B.5): "hide() clears the feedback line, and showFeedback() writes it
+  // via textContent" tested the retired `showFeedback` and `#pvp-challenge-feedback`. Its survivor is
+  // the UIF4B.5 absence test at the top of this file.
 });
 
 // ---------------------------------------------------------------------------
@@ -718,12 +727,9 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
     // NAMED REMOVAL (ctl-10b, CTL10B.2): the "players empty" (pvp.players.none) and "players
     // present" (pvp.players.heading + raw-name button) blocks tested the deleted player list.
 
-    // showFeedback never touches the resolver.
-    vi.mocked(i18nT).mockClear();
-    vi.mocked(i18nTf).mockClear();
-    view.showFeedback('some feedback text');
-    expect(i18nT).not.toHaveBeenCalled();
-    expect(i18nTf).not.toHaveBeenCalled();
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the "showFeedback never touches the resolver" clause is
+    // dropped with the method (retired). Was: `view.showFeedback('some feedback text')` with no
+    // t()/tf() call after it. Survivor: pvpView UIF4B.5 (the view has no showFeedback).
   });
 
   it('m24s3 PV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {

@@ -36,7 +36,7 @@ import {
   type SlotTarget,
   slots,
 } from './controlsModel';
-import { ControlsView } from './controlsView';
+import { ControlsView, savedLine } from './controlsView';
 import { setLocale, t, tf } from './i18n/resolver';
 import { type NavState, navFocus, navInit } from './nav';
 import { closeOverlayA11y } from './overlayA11y';
@@ -115,14 +115,32 @@ function rig(opts: RigOptions = {}) {
   const onReset = vi.fn(opts.onReset ?? ((): boolean => true));
   const onCancelCapture = vi.fn();
   const announce = vi.fn();
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the handlers gain `onOutcome(text, saved)`, which carries
+  // the Clear and Reset outcome lines to the seam (main routes them to the toast). Was: the view
+  // wrote those lines itself through `showFeedback`.
+  const onOutcome = vi.fn();
   const view = new ControlsView({
     bindings: opts.bindings ?? (() => DEFAULT_BINDINGS),
     onClear,
     onReset,
     onCancelCapture,
     announce,
+    onOutcome,
   } as Handlers);
-  return { view, onClear, onReset, onCancelCapture, announce };
+  return { view, onClear, onReset, onCancelCapture, announce, onOutcome };
+}
+
+/** uif-4b: the strip (`#controls-feedback`) is out of sight: `hidden` or `display:none`, on itself or
+ *  an ancestor. Either spelling counts, so the test pins the behaviour, not the attribute. */
+function stripHidden(): boolean {
+  for (
+    let node: Element | null = el(FEEDBACK_ID);
+    node instanceof HTMLElement;
+    node = node.parentElement
+  ) {
+    if (node.hidden || node.style.display === 'none') return true;
+  }
+  return false;
 }
 
 function el(id: string): HTMLElement {
@@ -347,12 +365,16 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     expect(readCell('A_1'), 'the Alt is untouched').toBe(slotText(table, btnRow('A'), 1));
   });
 
-  it('a request token is applied exactly once however often it is painted; a new token applies again: clear calls onClear(accel) then writes the cleared line, reset calls onReset() then writes the done line', () => {
+  it('UIF4B.1 a request token is applied exactly once however often it is painted; a new token applies again: clear calls onClear(accel) then onOutcome(cleared line, true), reset calls onReset() then onOutcome(done line, true), and the view writes no line of its own', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the Clear and Reset outcome lines are handed to
+    // `handlers.onOutcome(text, saved)` (main routes them through the one seam, to the toast); the
+    // view no longer writes `#controls-feedback` for them. Was: the view wrote the line itself.
     // WRONG IMPL KILLED: a token applied on every paint (each repaint clears or resets again, and
     // the host repaints after every step), one compared by shape (the second, distinct Clear press
     // of the same row would do nothing), a clear routed to onReset or with the wrong accelerator,
-    // a feedback line missing or not the catalog's, and a reset that does not say so.
-    const { view, onClear, onReset } = rig();
+    // an outcome line missing or not the catalog's, a reset that does not say so, and a view that
+    // still paints its own strip (a second channel for the same message).
+    const { view, onClear, onReset, onOutcome, announce } = rig();
     view.show();
     const nav = navOn('shortcuts', 'J_clear');
     const clearJ: ControlsRequest = { kind: 'clear', accel: 'J' };
@@ -361,7 +383,14 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     expect(onClear).toHaveBeenCalledTimes(1);
     expect(onClear).toHaveBeenCalledWith('J');
     expect(onReset).not.toHaveBeenCalled();
-    expect(readable(el(FEEDBACK_ID), 'the feedback line')).toBe(
+    expect(onOutcome).toHaveBeenCalledTimes(1);
+    expect(onOutcome).toHaveBeenLastCalledWith(
+      tf('controls.cleared', { label: rowLabel(accRow('J')) }),
+      true,
+    );
+    expect(el(FEEDBACK_ID).textContent, 'the view paints no strip line of its own').toBe('');
+    expect(stripHidden(), 'and the strip stays hidden').toBe(true);
+    expect(announce, 'and does not announce it (the toast does)').not.toHaveBeenCalledWith(
       tf('controls.cleared', { label: rowLabel(accRow('J')) }),
     );
 
@@ -387,7 +416,8 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     view.paint(r);
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onClear, 'a reset is not a clear').toHaveBeenCalledTimes(3);
-    expect(readable(el(FEEDBACK_ID), 'the feedback line')).toBe(t('controls.reset.done'));
+    expect(onOutcome, 'one outcome per applied token so far').toHaveBeenCalledTimes(4);
+    expect(onOutcome).toHaveBeenLastCalledWith(t('controls.reset.done'), true);
     view.paint(r);
     view.paint({ ...r });
     expect(onReset, 'once per token').toHaveBeenCalledTimes(1);
@@ -395,32 +425,43 @@ describe('ControlsView — the live table and the one-shot request (ctl-12b)', (
     expect(onReset).toHaveBeenCalledTimes(2);
   });
 
-  it('when the handler answers false (the save failed) the feedback line also carries the save-failed text; when it answers true it does not', () => {
-    // WRONG IMPL KILLED: a failed save reported as a plain success (the remap lasts only until a
-    // reload and the player is never told), the result of onClear / onReset ignored, and a
-    // save-failed line shown on every outcome.
+  it('UIF4B.1 when the handler answers false (the save failed) onOutcome gets saved=false with the plain outcome text; when it answers true it gets saved=true', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the save-failed suffix is composed by the pure
+    // `savedLine` helper at the seam, so the view hands over the PLAIN text plus the flag. Was: the
+    // view appended `controls.saveFailed` to its own strip line.
+    // WRONG IMPL KILLED: a failed save reported as a plain success (saved=true: the remap lasts only
+    // until a reload and the player is never told), the result of onClear / onReset ignored, a
+    // saved=false on every outcome, and the suffix pre-appended to the text (it would be doubled by
+    // the seam's savedLine).
     const failing = rig({ onClear: () => false, onReset: () => false });
     failing.view.show();
     failing.view.paint(
       paintOf({ nav: navOn('shortcuts', 'I_clear'), request: { kind: 'clear', accel: 'I' } }),
     );
     const cleared = tf('controls.cleared', { label: rowLabel(accRow('I')) });
-    const failed = t('controls.saveFailed');
-    let line = readable(el(FEEDBACK_ID), 'the feedback line');
-    expect(line.startsWith(cleared), `starts with the outcome: ${line}`).toBe(true);
-    expect(line.endsWith(failed), `ends with the save-failed text: ${line}`).toBe(true);
+    expect(failing.onOutcome).toHaveBeenLastCalledWith(cleared, false);
     failing.view.paint(paintOf({ nav: navOn('buttons', 'reset'), request: { kind: 'reset' } }));
-    line = readable(el(FEEDBACK_ID), 'the feedback line');
-    expect(line.startsWith(t('controls.reset.done')), line).toBe(true);
-    expect(line.endsWith(failed), line).toBe(true);
+    expect(failing.onOutcome).toHaveBeenLastCalledWith(t('controls.reset.done'), false);
+    expect(failing.onOutcome).toHaveBeenCalledTimes(2);
 
     const saving = rig();
     saving.view.show();
     saving.view.paint(
       paintOf({ nav: navOn('shortcuts', 'I_clear'), request: { kind: 'clear', accel: 'I' } }),
     );
-    expect(el(FEEDBACK_ID).textContent, 'a saved clear: the outcome alone').toBe(cleared);
-    expect((el(FEEDBACK_ID).textContent ?? '').includes(failed)).toBe(false);
+    expect(saving.onOutcome).toHaveBeenCalledTimes(1);
+    expect(saving.onOutcome).toHaveBeenLastCalledWith(cleared, true);
+  });
+
+  it('UIF4B.1 savedLine(text, saved) is the text when saved and `${text} ${controls.saveFailed}` when not, in the active locale', () => {
+    // WRONG IMPL KILLED: a helper that always appends, never appends, drops the space, or reads the
+    // suffix at import time (frozen in en under fr).
+    expect(savedLine('Saved.', true)).toBe('Saved.');
+    expect(savedLine('Saved.', false)).toBe(`Saved. ${t('controls.saveFailed')}`);
+    expect(t('controls.saveFailed').length, 'fixture: a real suffix').toBeGreaterThan(0);
+    setLocale('fr');
+    expect(savedLine('Saved.', false)).toBe(`Saved. ${t('controls.saveFailed')}`);
+    expect(savedLine('Saved.', false)).not.toBe('Saved. ');
   });
 
   it('the token is applied BEFORE the rows render: a Clear or a Reset that changes the live table shows the new keycaps in the same paint', () => {
@@ -518,22 +559,31 @@ describe('ControlsView — capture state, focus and announcements (ctl-12b)', ()
     expect(throwingRender.view.capturing, 'set before the render threw').toEqual(jAlt);
   });
 
-  it('hide() clears the feedback line, the capture prompt and the confirm: a re-shown frame shows none of them', () => {
+  it('UIF4B.1 hide() clears and hides the strip, the capture prompt and the confirm: a re-shown frame shows none of them', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the strip is written by `showHint` (was `showFeedback`)
+    // and hide() also HIDES it (it is hidden while empty).
     // WRONG IMPL KILLED: a hide() that only writes display (a reopened Controls screen would show
-    // the last session's "Saved." line, a stale "Press a key…" prompt, or the Reset all question
-    // with nothing behind it).
+    // the last session's refused hint, a stale "Press a key…" prompt, or the Reset all question
+    // with nothing behind it), and a hide() that empties the strip but leaves its box showing.
     const { view } = rig();
     view.show();
     view.paint(paintOf({ capturing: slotOf(btnRow('A'), 0) }));
-    view.showFeedback(t('controls.bound'));
-    expect(el(FEEDBACK_ID).textContent, 'precondition: a feedback line').toBe(t('controls.bound'));
+    view.showHint(t('controls.refused.reserved'));
+    expect(el(FEEDBACK_ID).textContent, 'precondition: a hint on the strip').toBe(
+      t('controls.refused.reserved'),
+    );
+    expect(stripHidden(), 'precondition: the strip is up').toBe(false);
     expect(hiddenAncestorOf(el(CAPTURE_ID)), 'precondition: the prompt is up').toBeNull();
     view.hide();
     expect(view.visible).toBe(false);
-    expect(el(FEEDBACK_ID).textContent, 'the feedback line is cleared').toBe('');
+    expect(el(FEEDBACK_ID).textContent, 'the strip is cleared').toBe('');
+    expect(el(FEEDBACK_ID).hidden || el(FEEDBACK_ID).style.display === 'none', 'and hidden').toBe(
+      true,
+    );
     view.show();
     expect(view.visible).toBe(true);
     expect(el(FEEDBACK_ID).textContent, 'nothing on reopen').toBe('');
+    expect(stripHidden(), 'the strip is hidden on reopen').toBe(true);
     expect(hiddenAncestorOf(el(CAPTURE_ID)), 'no prompt on reopen').not.toBeNull();
     expect(hiddenAncestorOf(el(CANCEL_ID)), 'no Cancel chip on reopen').not.toBeNull();
 
@@ -619,22 +669,30 @@ describe('ControlsView — capture state, focus and announcements (ctl-12b)', ()
     expect(view.isCancelChip(window), 'the window').toBe(false);
   });
 
-  it('a capture start clears the old feedback line and announces the prompt, once per capture; showFeedback writes and announces its line, with the save-failed text when saved is false', () => {
-    // WRONG IMPL KILLED: a stale outcome line left under a new prompt (the player reads "Saved."
-    // while the slot still waits), a prompt never announced (a screen-reader user hears nothing
-    // after pressing A), one announced on every repaint of the same capture, and a feedback line
-    // written silently or announced with different text than it shows.
+  it('UIF4B.1 a capture start clears and hides the old strip hint and announces the prompt, once per capture; showHint writes the strip, un-hides it and announces its text once per call', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): `showHint(text)` replaces `showFeedback(text, saved)`:
+    // the strip carries ONLY a hint (a refused key), the saved/failed outcomes go to the toast.
+    // Was: showFeedback also composed the save-failed suffix and carried outcome lines.
+    // WRONG IMPL KILLED: a stale hint left under a new prompt, a prompt never announced (a
+    // screen-reader user hears nothing after pressing A), one announced on every repaint of the same
+    // capture, a hint written silently or announced with different text than it shows, one that
+    // writes the text but leaves the strip hidden (the player sees nothing), and a hint announced
+    // twice for one show.
     const { view, announce } = rig();
     view.show();
     view.paint(paintOf());
-    view.showFeedback(t('controls.cancelled'));
-    expect(readable(el(FEEDBACK_ID), 'the feedback line')).toBe(t('controls.cancelled'));
-    expect(announce).toHaveBeenLastCalledWith(t('controls.cancelled'));
+    expect(stripHidden(), 'the strip starts hidden while empty').toBe(true);
+    view.showHint(t('controls.refused.reserved'));
+    expect(readable(el(FEEDBACK_ID), 'the strip')).toBe(t('controls.refused.reserved'));
+    expect(stripHidden(), 'showHint un-hides the strip').toBe(false);
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenLastCalledWith(t('controls.refused.reserved'));
 
     announce.mockClear();
     const aPrimary = slotOf(btnRow('A'), 0);
     view.paint(paintOf({ capturing: aPrimary }));
-    expect(el(FEEDBACK_ID).textContent, 'the capture start clears the old line').toBe('');
+    expect(el(FEEDBACK_ID).textContent, 'the capture start clears the old hint').toBe('');
+    expect(stripHidden(), 'and hides the strip').toBe(true);
     expect(announce).toHaveBeenCalledTimes(1);
     expect(announce).toHaveBeenCalledWith(capturePrompt(btnRow('A')));
     view.paint(paintOf({ capturing: aPrimary }));
@@ -648,12 +706,45 @@ describe('ControlsView — capture state, focus and announcements (ctl-12b)', ()
     );
 
     announce.mockClear();
-    const failed = t('controls.saveFailed');
-    view.showFeedback(t('controls.bound'), false);
-    const line = readable(el(FEEDBACK_ID), 'the feedback line');
-    expect(line.startsWith(t('controls.bound')), line).toBe(true);
-    expect(line.endsWith(failed), line).toBe(true);
-    expect(announce, 'announced as shown').toHaveBeenCalledWith(line);
+    view.showHint(t('controls.refused.protected'));
+    expect(readable(el(FEEDBACK_ID), 'the strip')).toBe(t('controls.refused.protected'));
+    expect(announce, 'announced as shown, once').toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(t('controls.refused.protected'));
+  });
+
+  it('UIF4B.1 the strip is #controls-feedback with the shared mr-frame-feedback class from construction, hidden while empty, and the view offers no showFeedback', () => {
+    // WRONG IMPL KILLED: a strip without the shared class (it would reflow the frame body: the
+    // class is the zero-layout-height sticky strip), one visible while empty (a blank box), a new
+    // selector instead of the reused class, and a surviving `showFeedback` (a second way for a
+    // caller to choose the channel).
+    const { view } = rig();
+    const strip = el(FEEDBACK_ID);
+    expect(strip.classList.contains('mr-frame-feedback'), 'the shared strip class').toBe(true);
+    expect(strip.textContent, 'empty at construction').toBe('');
+    expect(stripHidden(), 'hidden at construction').toBe(true);
+    view.show();
+    expect(stripHidden(), 'hidden while empty after show').toBe(true);
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+    expect(typeof view.showHint, 'showHint is the one writer').toBe('function');
+  });
+
+  it('UIF4B.1 a hint survives a repaint of the same capture and is cleared and hidden by the capture ENDING (a paint with nothing capturing)', () => {
+    // WRONG IMPL KILLED: a paint that clears the strip on every repaint (the host repaints after the
+    // refused step itself, so the hint would vanish at once), and a capture end that leaves the last
+    // hint standing under a browsing grid.
+    const { view } = rig();
+    view.show();
+    const aPrimary = slotOf(btnRow('A'), 0);
+    view.paint(paintOf({ capturing: aPrimary }));
+    view.showHint(t('controls.refused.reserved'));
+    view.paint(paintOf({ capturing: aPrimary }));
+    expect(el(FEEDBACK_ID).textContent, 'the repaint of the same capture keeps it').toBe(
+      t('controls.refused.reserved'),
+    );
+    expect(stripHidden(), 'still shown').toBe(false);
+    view.paint(paintOf());
+    expect(el(FEEDBACK_ID).textContent, 'the capture ended: cleared').toBe('');
+    expect(stripHidden(), 'and hidden').toBe(true);
   });
 
   it('when a capture ends while the Cancel chip holds focus, focus moves to #controls-rows; focus elsewhere is left alone', () => {
@@ -786,8 +877,11 @@ describe('ControlsView — the frame (ctl-12b)', () => {
     expect(hiddenAncestorOf(el(QUESTION_ID)), 'the question while confirming').toBeNull();
     expect(hiddenAncestorOf(cell('yes')), 'Yes').toBeNull();
     expect(hiddenAncestorOf(cell('no')), 'No').toBeNull();
-    view.showFeedback(t('controls.bound'));
-    expect(hiddenAncestorOf(el(FEEDBACK_ID)), 'the feedback line once written').toBeNull();
+    // INTENTIONAL CHANGE (uif-4b): the strip shows through `showHint` (was `showFeedback`) and is
+    // hidden until then.
+    view.showHint(t('controls.refused.reserved'));
+    expect(hiddenAncestorOf(el(FEEDBACK_ID)), 'the strip once a hint is written').toBeNull();
+    expect(stripHidden(), 'and not hidden by the hidden attribute either').toBe(false);
   });
 });
 

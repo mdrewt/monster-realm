@@ -724,12 +724,17 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     // sinks; the implementer re-measured the floor on the purged tree (277 sinks on 2026-11-07,
     // rounded DOWN to a multiple of 5 = 275). The exact pin is restored so a drive-by lowering is
     // caught. The `>= SINK_FLOOR` whole-tree clause below still gates the scan.
+    // uif-4b (named intentional change, hidden dependency of the touches set): the shop, trade,
+    // pvp, rename and trade-propose message lines are retired to the toast seam, which removed
+    // their textContent writes; the tree measured 264 sinks on 2026-11-08, rounded DOWN to a
+    // multiple of 5 = 260. Was: 275 (bt-17). The exact pin, the % 5 check and the whole-tree
+    // `>=` clause are unchanged.
     expect(SINK_FLOOR % 5, 'SINK_FLOOR is rounded down to a multiple of 5').toBe(0);
     expect(SINK_FLOOR, 'SINK_FLOOR is a real floor').toBeGreaterThan(0);
     expect(
       SINK_FLOOR,
       'SINK_FLOOR is an anti-vacuity guard, not a ratchet: edit it consciously when UI text legitimately shrinks, never auto-tighten or drive-by lower it',
-    ).toBe(275);
+    ).toBe(260);
 
     const tree = scan();
     const byFile = new Map(tree.perFile.map((p) => [p.file, p]));

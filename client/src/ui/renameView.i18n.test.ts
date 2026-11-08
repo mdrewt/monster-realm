@@ -61,9 +61,11 @@ function mount(): {
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit" type="button"></button>
-      <div id="rename-feedback" data-testid="rename-feedback"></div>
     </div>
   `;
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the fixture mirrors the new index.html, which no longer
+  // ships `#rename-feedback` (retired; the rename outcome is a toast). Was: a
+  // `div#rename-feedback[data-testid=rename-feedback]` after the submit button.
   return {
     overlay: document.getElementById('rename-overlay') as HTMLElement,
     currentEl: document.getElementById('rename-current') as HTMLElement,

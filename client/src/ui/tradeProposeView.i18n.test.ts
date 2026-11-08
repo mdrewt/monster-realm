@@ -61,9 +61,11 @@ function mount(): {
       <input id="tradepropose-offer-currency" data-testid="tradepropose-offer-currency" type="number" min="0" />
       <input id="tradepropose-request-currency" data-testid="tradepropose-request-currency" type="number" min="0" />
       <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button"></button>
-      <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
   `;
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the fixture mirrors the new index.html, which no longer
+  // ships `#tradepropose-feedback` (retired; the wizard's outcome is a toast). Was: a
+  // `div#tradepropose-feedback[data-testid=tradepropose-feedback]` after the submit button.
   return {
     overlay: document.getElementById('tradepropose-overlay') as HTMLElement,
     targetSelect: document.getElementById('tradepropose-target') as HTMLSelectElement,
