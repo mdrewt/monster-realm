@@ -7,7 +7,15 @@ import {
   test,
 } from '@playwright/test';
 import { closeAll, pressAccel, pressButton } from './controls';
-import { expectNear, expectSample, resolveLength, sampleStyle } from './uiKit';
+import {
+  contrastRatio,
+  expectNear,
+  expectSample,
+  measuredContrast,
+  parseRgb,
+  resolveLength,
+  sampleStyle,
+} from './uiKit';
 
 // ui-monsters.spec.ts — uif-6 (M-ui-foundation): the Monsters frame's layout, growth, pseudo-scroll,
 // bound tab and Party grid, measured in Chromium (UIF6.1 and UIF6.3 to UIF6.8; UIF6.2 is the booted
@@ -418,6 +426,37 @@ test.describe
         selected['background-color'],
         'the selected tab is not filled like the focused card',
       ).not.toBe(card['background-color']);
+
+      // WRONG IMPL KILLED (red-team M14): `CURSOR_TEXT = 'var(--mr-frame-fg)'` on the inverted
+      // fill, i.e. fg on fg: the cursor card's text invisible while every fill and colour-differs
+      // assertion above and below still passes. The text must read against the fill it sits on.
+      const readable = async (sel: string, label: string): Promise<void> => {
+        const s = await sampleStyle(page, sel, ['color', 'background-color']);
+        const ratio = contrastRatio(
+          parseRgb(s.color as string),
+          parseRgb(s['background-color'] as string),
+        );
+        expect(
+          ratio,
+          `${label}: text ${s.color} on its own fill ${s['background-color']} measures ${ratio.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(4.5);
+      };
+      const cursor = `${PARTY_GRID} [aria-current="true"]`;
+      await readable(cursor, 'the cursor card on the starter');
+      // A descendant (the name line) too: inherited colour must not be overridden back to fg.
+      // The name span paints no fill of its own: measure it against what is behind it (the card's
+      // fill, composited up the ancestors).
+      const nameRatio = await measuredContrast(page, `${cursor} span`);
+      expect(
+        nameRatio,
+        `the cursor card's name measures ${nameRatio.toFixed(2)}:1 on the fill behind it`,
+      ).toBeGreaterThanOrEqual(4.5);
+      await pressButton(page, 'Right'); // the starter is alone in slot 0: Right lands on slot-1
+      await expect(page.locator(`${PARTY_GRID} [data-nav-key="slot-1"]`)).toHaveAttribute(
+        'aria-current',
+        'true',
+      );
+      await readable(cursor, 'the cursor on the empty slot');
     });
 
     test('UIF6.8 at 1280x720 the Party is six cells in two columns and three rows, none wider than half the panel, all inside the panel and the window, and the D-pad moves the cursor along that grid', async () => {

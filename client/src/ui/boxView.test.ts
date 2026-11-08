@@ -5889,6 +5889,15 @@ describe('BoxView uif-6: the Party draws six cells (UIF6.8)', () => {
       );
     }
     expect(cells[3]?.textContent ?? '', 'slot 3 holds Mossling').toContain('Mossling');
+    // WRONG IMPL KILLED: empty cells that are not marked disabled (AT reads an empty slot as an
+    // actionable item, unlike the nav kit's disabled rows), or a monster cell wrongly disabled.
+    for (const cell of cells) {
+      const empty = (cell.dataset.navKey ?? '').startsWith('slot-');
+      expect(
+        cell.getAttribute('aria-disabled'),
+        `${cell.dataset.navKey}: ${empty ? 'an empty slot is aria-disabled' : 'a monster cell is not'}`,
+      ).toBe(empty ? 'true' : null);
+    }
     expect(
       c8bMarked(root).map((el) => el.dataset.navKey),
       'the cursor on monster 100',

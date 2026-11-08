@@ -82,7 +82,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { MonstersFeedback, MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 
-const TAB_STRIP = tabs([
+const MONSTERS_TABS = tabs([
   { key: 'party', layout: list([]) },
   { key: 'storage', layout: list([]) },
 ]);
@@ -259,7 +259,7 @@ export class BoxView {
     this.#root = document.createElement('div');
     // ctl-7b: a class-styled frame. `.mr-shell` places it inside `#game-screen` (the `#app` mount
     // main.ts passes is inside it) and `.mr-frame` paints the frame tokens; inline is only the
-    // display toggle and the centring.
+    // display toggle.
     this.#root.className = 'mr-frame mr-shell';
     this.#root.style.cssText = 'display:none;';
 
@@ -471,7 +471,7 @@ export class BoxView {
 
     renderTabBar(
       this.#tabBar,
-      TAB_STRIP,
+      MONSTERS_TABS,
       { tab: p.tab, item: null, perTab: {} },
       { frame: 'monsters', label: tabLabel },
     );
@@ -694,6 +694,7 @@ export class BoxView {
         // Dimmed by colour, never opacity (opacity 0.4 fell below AA).
         el.dataset.navKey = slotKey(i);
         el.dataset.empty = '';
+        el.setAttribute('aria-disabled', 'true');
         el.textContent = tf('box.party.emptySlot', { slot: i });
         el.style.color = CELL_EMPTY_TEXT;
       } else {

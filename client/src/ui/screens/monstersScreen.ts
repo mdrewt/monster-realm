@@ -123,8 +123,9 @@ export interface MonstersScreenState {
   readonly feedback: MonstersFeedback | null;
   /** The last nickname-row token handed out; each open of the row takes the next one. */
   readonly edit: number;
-  /** Each tab's monster keys when the cursor was last settled: the layout `observe` re-seats
-   *  from (compared by value, so an equal batch keeps the same state). */
+  /** Each tab's nav keys when the cursor was last settled (the Party's one per slot, an empty
+   *  slot's `slot-<i>`): the layout `observe` re-seats from (compared by value, so an equal batch
+   *  keeps the same state). */
   readonly keys: TabKeys;
   /** The painted sheet-derived data's signature ('' in the list phase); see the header. */
   readonly shown: string;

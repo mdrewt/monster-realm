@@ -512,15 +512,15 @@ describe('monstersScreen uif-6: the Party grid (UIF6.8)', () => {
     // activeKey lags the state. Layout: 11 slot-1 / slot-2 13 / slot-4 slot-5.
     const { vm, opened } = open();
     expect(opened.nav.item).toBe('11');
-    const after = (inputs: readonly Input[]): string | null =>
+    const landsOn = (inputs: readonly Input[]): string | null =>
       swallowed(vm, opened, inputs).nav.item;
-    expect(after(['Right']), 'Right: the empty slot beside it').toBe('slot-1');
-    expect(after(['Down']), 'Down: the empty slot under it').toBe('slot-2');
-    expect(after(['Down', 'Right']), 'under it, then right: monster 13').toBe('13');
-    expect(after(['Down', 'Down']), 'two rows down').toBe('slot-4');
-    expect(after(['Down', 'Right', 'Up']), 'up from 13: slot 1').toBe('slot-1');
-    expect(after(['Down', 'Right', 'Down']), 'down from 13: slot 5').toBe('slot-5');
-    expect(after(['Down', 'Right', 'Left']), 'left of 13: slot 2').toBe('slot-2');
+    expect(landsOn(['Right']), 'Right: the empty slot beside it').toBe('slot-1');
+    expect(landsOn(['Down']), 'Down: the empty slot under it').toBe('slot-2');
+    expect(landsOn(['Down', 'Right']), 'under it, then right: monster 13').toBe('13');
+    expect(landsOn(['Down', 'Down']), 'two rows down').toBe('slot-4');
+    expect(landsOn(['Down', 'Right', 'Up']), 'up from 13: slot 1').toBe('slot-1');
+    expect(landsOn(['Down', 'Right', 'Down']), 'down from 13: slot 5').toBe('slot-5');
+    expect(landsOn(['Down', 'Right', 'Left']), 'left of 13: slot 2').toBe('slot-2');
     expect(
       paintOf(vm, swallowed(vm, opened, ['Down', 'Right'])),
       'the paint carries the cursor',
