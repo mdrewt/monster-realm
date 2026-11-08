@@ -298,12 +298,16 @@ test.describe
 
       // ---- 5. Feed: the monster picker -----------------------------------------------------------
       await feed.click();
+      // uif-8 (named intentional change, UIF8.2): the picker is the Bag's ContextSheet (heading
+      // `#bagsheet-sheet-title`, rows under `#bag-sheet`), no longer `#bag-picker-title` /
+      // `#bag-picker`, and it ends with a Back row: the one monster, then Back.
       await expect(
-        page.locator('#bag-picker-title'),
+        page.locator('#bagsheet-sheet-title'),
         'a click on Feed opens the picker',
       ).toHaveText(t('bag.picker.title'));
-      const picker = page.locator('#bag-picker [role="option"]');
-      await expect(picker, 'the picker lists the one monster').toHaveCount(1);
+      const picker = page.locator('#bag-sheet [role="option"]');
+      await expect(picker, 'the picker lists the one monster, then Back').toHaveCount(2);
+      await expect(picker.last(), 'the last row is Back').toHaveText(t('kit.sheet.back'));
       await expect(picker.first()).toHaveText(name);
       await expect(picker.first(), 'the picker cursor is on the monster').toHaveAttribute(
         'aria-selected',
@@ -332,7 +336,9 @@ test.describe
         tf('box.feedback.fed', { name }),
       );
       await expect(fed).toHaveAttribute('data-feedback', 'ok');
-      await expect(page.locator('#bag-picker-title'), 'the picker closed').toBeHidden();
+      // uif-8: the picker is the ContextSheet; it closes with the send, heading and all.
+      await expect(page.locator('#bagsheet-sheet-title'), 'the picker closed').toBeHidden();
+      await expect(page.locator('#bag-sheet'), 'and the sheet with it').toBeHidden();
       expect(await stackNames(page), 'feeding left the frames as they were').toEqual([
         'world',
         'menuView',

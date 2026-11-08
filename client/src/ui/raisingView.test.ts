@@ -407,16 +407,22 @@ const QF9_RETIRED_ENGLISH = [
   'Bram',
 ] as const;
 
-const QF9_BAG_PART_IDS = [
-  'bag-tabs',
-  'bag-list',
-  'bag-empty',
-  'bag-sheet',
-  'bag-info',
-  'bag-picker-title',
-  'bag-picker',
-  'bag-status',
-] as const;
+// uif-8: the Bag parts are now the TabBar strip `#bag-tabs`, the list `#bag-list`, the ONE
+// ContextSheet `#bag-sheet` and the status line `#bag-status`. `#bag-info`, `#bag-picker-title` and
+// `#bag-picker` are retired (the sheet carries the picker and the Info page), and `#bag-empty` is no
+// longer a part that always exists (the EmptyState is built only for an empty pocket).
+const QF9_BAG_PART_IDS = ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-status'] as const;
+
+/** uif-8: a Bag part is hidden when it, or any ancestor below the frame root, carries the `hidden`
+ *  attribute or an inline `display:none` (the TabBar row and the ContextSheet hide through `hidden`,
+ *  the list and panel through inline display). The frame root itself is excluded. */
+function bagHidden(el: HTMLElement): boolean {
+  for (let n: HTMLElement | null = el; n !== null; n = n.parentElement) {
+    if (n.classList.contains('mr-shell') || n === document.body) return false;
+    if (n.hidden || n.style.display === 'none') return true;
+  }
+  return false;
+}
 
 describe('RaisingView qf-9: the raising root is inventory-only (QF9.2)', () => {
   it('QF9-2-VIEW-NO-MONSTER-SECTION: after show() and a refresh carrying monsters AND items the root holds no <button>, no #raising-feedback, no monster heading and none of the retired English (Care, Train:, Trust, HP, the five stat labels, the empty-monsters line, a nickname), and exactly one section heading: the Inventory one', () => {
@@ -463,7 +469,7 @@ describe('RaisingView qf-9: the raising root is inventory-only (QF9.2)', () => {
     expect(document.getElementById('raising-feedback')).toBeNull();
   });
 
-  it('QF9-2-VIEW-INVENTORY-REMAINS: the legacy grid still lists every item as "name (xN)" with its description, shown before any Bag paint, and all eight Bag parts still exist inside the root, hidden until a paint', () => {
+  it('QF9-2-VIEW-INVENTORY-REMAINS: the legacy grid still lists every item as "name (xN)" with its description, shown before any Bag paint, and the Bag parts (uif-8: tabs, list, sheet, status) still exist inside the root, hidden until a paint', () => {
     // WRONG IMPL KILLED: a rewrite that drops the inventory grid with the cards (the screen would
     // be empty); a grid that lost the description line; an inventory heading that left; Bag parts
     // removed or created lazily (the ctl-8f paint would throw on a missing node); a legacy grid
@@ -502,9 +508,13 @@ describe('RaisingView qf-9: the raising root is inventory-only (QF9.2)', () => {
       const part = document.getElementById(id);
       expect(part, `#${id} exists`).not.toBeNull();
       expect(root.contains(part), `#${id} is inside the raising root`).toBe(true);
+      // uif-8: hidden is judged through the part's ancestors (the TabBar row hides by `hidden`).
       if (id !== 'bag-status') {
-        expect((part as HTMLElement).style.display, `#${id} is hidden before a paint`).toBe('none');
+        expect(bagHidden(part as HTMLElement), `#${id} is hidden before a paint`).toBe(true);
       }
+    }
+    for (const retired of ['bag-info', 'bag-picker', 'bag-picker-title']) {
+      expect(document.getElementById(retired), `uif-8: #${retired} is retired`).toBeNull();
     }
     expect(parent.contains(root)).toBe(true);
   });
@@ -769,7 +779,10 @@ describe('RaisingView ctl-7b: the raising root is a class-styled frame, inline o
     const root = overlayRootOf(parent);
     const title = parent.querySelector('[data-testid="raising-title"]');
     expect(title, 'precondition: the title anchor exists').not.toBeNull();
-    expect(title?.parentElement, "the classed node is the title's parent").toBe(root);
+    // uif-8: the title sits in a header row that is the root's child (boxView's shape), so the
+    // classed node is the title's grandparent (it was its parent).
+    expect(title?.closest('.mr-frame'), 'the classed node is the title`s frame').toBe(root);
+    expect(title?.parentElement?.parentElement, 'title, header row, root').toBe(root);
     expect(
       root.className
         .split(/\s+/)
@@ -779,7 +792,9 @@ describe('RaisingView ctl-7b: the raising root is a class-styled frame, inline o
         'is the menu / help layer',
     ).toEqual(['mr-frame', 'mr-shell']);
 
-    const allowed = ['display', 'align-items'];
+    // uif-8: `align-items` is no longer written on the root (the measured literal that centred the
+    // old Bag column and shrank its tab strip); only the display toggle remains inline.
+    const allowed = ['display'];
     const sample = (when: string): number => {
       expect(
         [...ctl7bInline(root).keys()].filter((name) => !allowed.includes(name)),
@@ -790,8 +805,17 @@ describe('RaisingView ctl-7b: the raising root is a class-styled frame, inline o
       const all = [...root.querySelectorAll('*')];
       const offenders: string[] = [];
       for (const el of all) {
+        // uif-8: two kit-owned placements are exempt, exactly as boxView's are: the tab-content panel
+        // is the containing block of the sheet (`position:relative`) and the ContextSheet is anchored
+        // by `placeContextSheet` (inline left / top). Nothing else may place, layer or dim itself.
+        const exempt =
+          el.id === 'bag-panel'
+            ? ['position']
+            : el.hasAttribute('data-context-sheet')
+              ? ['left', 'top']
+              : [];
         for (const prop of ctl7bInline(el).keys()) {
-          if (CTL7B_BANNED_ON_DESCENDANTS.has(prop)) {
+          if (CTL7B_BANNED_ON_DESCENDANTS.has(prop) && !exempt.includes(prop)) {
             offenders.push(`<${el.tagName.toLowerCase()}> ${prop}`);
           }
         }
@@ -1577,15 +1601,17 @@ function ctl8fPaint(vm: BagVm, over: Partial<Ctl8fPaint> = {}): Ctl8fPaint {
   return { vm, nav: ctl8fNav(vm), phase: { kind: 'list' }, status: null, ...over };
 }
 
-const CTL8F_PARTS = ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-info', 'bag-picker'] as const;
+// uif-8: the Bag parts are the TabBar strip, the list and the one ContextSheet (see QF9_BAG_PART_IDS).
+const CTL8F_PARTS = ['bag-tabs', 'bag-list', 'bag-sheet'] as const;
 
 function ctl8fPart(id: string): HTMLElement {
   const el = document.getElementById(id);
   expect(el, `#${id} must exist in the raising root`).not.toBeNull();
   return el as HTMLElement;
 }
-/** Shown = the part's own inline display is not 'none'. */
-const ctl8fShown = (id: string): boolean => ctl8fPart(id).style.display !== 'none';
+/** uif-8: shown = neither the part nor an ancestor below the root is hidden (`hidden` attribute or
+ *  inline display:none): the TabBar row and the ContextSheet hide through `hidden`. */
+const ctl8fShown = (id: string): boolean => !bagHidden(ctl8fPart(id));
 const ctl8fRows = (id: string): HTMLElement[] => [
   ...ctl8fPart(id).querySelectorAll<HTMLElement>('.mr-nav-item'),
 ];
@@ -1599,11 +1625,12 @@ const ctl8fActive = (id: string): Array<string | undefined> =>
   ctl8fRows(id)
     .filter((r) => r.classList.contains('is-active'))
     .map((r) => r.dataset.navKey);
-/** Own-text lines `text` under the root outside the legacy inventory grid. */
+/** Own-text lines `text` under the root outside the legacy inventory grid. uif-8: only VISIBLE ones
+ *  count (a hidden EmptyState left behind is not a line the player is shown). */
 function ctl8fLinesOutsideGrid(root: HTMLElement, text: string): HTMLElement[] {
   const grid = document.getElementById('raising-inventory');
   return [...root.querySelectorAll<HTMLElement>('*')].filter(
-    (el) => ctl7bOwnText(el) === text && (grid === null || !grid.contains(el)),
+    (el) => ctl7bOwnText(el) === text && (grid === null || !grid.contains(el)) && !bagHidden(el),
   );
 }
 
@@ -1628,7 +1655,8 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
     const grid = ctl8fPart('raising-inventory');
     expect(grid.style.display, 'the legacy grid shows before any paint').not.toBe('none');
     for (const id of CTL8F_PARTS) {
-      expect(ctl8fPart(id).style.display, `#${id} is hidden before any paint`).toBe('none');
+      // uif-8: hidden is judged through the ancestors (the TabBar row and the sheet hide by `hidden`).
+      expect(bagHidden(ctl8fPart(id)), `#${id} is hidden before any paint`).toBe(true);
       expect(root.contains(ctl8fPart(id)), `#${id} is inside the raising root`).toBe(true);
     }
     expect(ctl8fPart('bag-status').textContent, 'the status line starts empty').toBe('');
@@ -1766,48 +1794,69 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
       ],
       ['list again', ctl8fPaint(vm, { nav: food }), { sheet: false, info: false, picker: false }],
     ];
+    // uif-8: the sheet, the Info page and the picker are ONE ContextSheet element: it shows in any
+    // of the three phases (its variant says which) and hides in the list phase.
+    const sheetEl = ctl8fPart('bag-sheet');
     for (const [name, p, want] of matrix) {
       view.paint(p);
-      expect(ctl8fShown('bag-sheet'), `${name}: #bag-sheet`).toBe(want.sheet);
-      expect(ctl8fShown('bag-info'), `${name}: #bag-info`).toBe(want.info);
-      expect(ctl8fShown('bag-picker'), `${name}: #bag-picker`).toBe(want.picker);
-      expect(ctl8fShown('bag-picker-title'), `${name}: #bag-picker-title`).toBe(want.picker);
+      expect(ctl8fPart('bag-sheet'), `${name}: the same sheet element`).toBe(sheetEl);
+      expect(ctl8fShown('bag-sheet'), `${name}: #bag-sheet`).toBe(
+        want.sheet || want.info || want.picker,
+      );
+      expect(
+        sheetEl.dataset.sheetVariant === 'detail' && !sheetEl.hidden,
+        `${name}: the detail variant shows only for Info`,
+      ).toBe(want.info);
+    }
+    for (const retired of ['bag-info', 'bag-picker', 'bag-picker-title']) {
+      expect(document.getElementById(retired), `uif-8: #${retired} is retired`).toBeNull();
     }
 
     // The sheet.
-    const sheetOf = (nav: NavState, itemId: number, action: 'feed' | 'use' | 'info', v = vm) => {
+    const sheetOf = (
+      nav: NavState,
+      itemId: number,
+      action: 'feed' | 'use' | 'info' | 'close',
+      v = vm,
+    ) => {
       view.paint(ctl8fPaint(v, { nav, phase: { kind: 'sheet', itemId, action } }));
       return ctl8fRows('bag-sheet');
     };
+    // uif-8: every sheet now ends with the Close row (kit.sheet.close), and the cursor can sit on it.
+    const CLOSE = i18nT('kit.sheet.close');
     let rows = sheetOf(food, 9, 'feed');
     expect(rows.map((r) => [r.dataset.navKey, r.textContent])).toEqual([
       ['feed', 'Feed'],
       ['info', 'Info'],
+      ['close', CLOSE],
     ]);
     expect(ctl8fActive('bag-sheet'), 'the cursor on Feed').toEqual(['feed']);
     expect(
       rows.map((r) => r.getAttribute('aria-disabled')),
-      'with monsters Feed is enabled',
-    ).toEqual([null, null]);
+      'with monsters Feed is enabled, and Close is enabled',
+    ).toEqual([null, null, null]);
     rows = sheetOf(food, 9, 'info');
     expect(ctl8fActive('bag-sheet'), 'the cursor follows the action').toEqual(['info']);
-    expect(rows.map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+    expect(rows.map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
+    rows = sheetOf(food, 9, 'close');
+    expect(ctl8fActive('bag-sheet'), 'the cursor can sit on Close').toEqual(['close']);
 
     rows = sheetOf(lure, 3, 'use');
     expect(rows.map((r) => [r.dataset.navKey, r.textContent])).toEqual([
       ['use', 'Use'],
       ['info', 'Info'],
+      ['close', CLOSE],
     ]);
     expect(
       rows.map((r) => r.getAttribute('aria-disabled')),
-      'Use is aria-disabled, Info is not',
-    ).toEqual(['true', null]);
+      'Use is aria-disabled, Info and Close are not',
+    ).toEqual(['true', null, null]);
     expect(ctl8fActive('bag-sheet')).toEqual(['use']);
     rows = sheetOf(shard, 20, 'info');
     expect(
       rows.map((r) => r.dataset.navKey),
-      'a shard offers Info alone',
-    ).toEqual(['info']);
+      'a shard offers Info, then Close',
+    ).toEqual(['info', 'close']);
 
     const lonely = ctl8fVm({ monsters: false });
     rows = sheetOf(food, 9, 'feed', lonely);
@@ -1817,46 +1866,58 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
     ).toEqual([
       ['feed', 'true'],
       ['info', null],
+      ['close', null],
     ]);
 
-    // The description: the item's own, the none-line when empty, never stale.
+    // The description: the item's own, the none-line when empty, never stale. uif-8: it is the
+    // detail ContextSheet's prose (`#bagsheet-sheet-prose`), not a `#bag-info` part.
+    const prose = (): string => document.getElementById('bagsheet-sheet-prose')?.textContent ?? '';
     view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'info', itemId: 9 } }));
-    expect(ctl8fPart('bag-info').textContent ?? '').toContain('Raises speed.');
+    expect(prose()).toContain('Raises speed.');
     view.paint(ctl8fPaint(vm, { nav: root5, phase: { kind: 'info', itemId: 5 } }));
-    expect(ctl8fPart('bag-info').textContent ?? '').toContain('Raises attack.');
-    expect(ctl8fPart('bag-info').textContent ?? '', 'not the previous item`s').not.toContain(
-      'Raises speed.',
-    );
+    expect(prose()).toContain('Raises attack.');
+    expect(prose(), 'not the previous item`s').not.toContain('Raises speed.');
     view.paint(ctl8fPaint(vm, { nav: shard, phase: { kind: 'info', itemId: 20 } }));
     const none = i18nT('shop.description.none');
     expect(none, 'precondition: the none-line is not blank').not.toBe('');
-    expect(ctl8fPart('bag-info').textContent ?? '', 'an empty description').toContain(none);
-    expect(ctl8fPart('bag-info').textContent ?? '').not.toContain('Raises');
+    expect(prose(), 'an empty description').toContain(none);
+    expect(prose()).not.toContain('Raises');
 
-    // The picker.
+    // The picker. uif-8: monsters, then the last Back row, in the one sheet.
+    const BACK = i18nT('kit.sheet.back');
     view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: '12' } }));
-    expect(ctl8fPart('bag-picker-title').textContent, 'the picker title').toBe(
-      'Feed which monster?',
-    );
-    expect(ctl8fRows('bag-picker').map((r) => [r.dataset.navKey, r.textContent])).toEqual([
+    expect(
+      document.getElementById('bagsheet-sheet-title')?.textContent,
+      'the picker title is the sheet heading',
+    ).toBe('Feed which monster?');
+    expect(ctl8fRows('bag-sheet').map((r) => [r.dataset.navKey, r.textContent])).toEqual([
       ['11', 'Kip'],
       ['12', 'Emberfang'],
       ['21', 'Sproutle'],
+      ['back', BACK],
     ]);
-    expect(ctl8fActive('bag-picker'), 'the cursor on the phase`s monster').toEqual(['12']);
-    expect(ctl8fRows('bag-picker').map((r) => r.getAttribute('aria-selected'))).toEqual([
+    expect(ctl8fActive('bag-sheet'), 'the cursor on the phase`s monster').toEqual(['12']);
+    expect(ctl8fRows('bag-sheet').map((r) => r.getAttribute('aria-selected'))).toEqual([
       'false',
       'true',
       'false',
+      'false',
     ]);
     view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: '21' } }));
-    expect(ctl8fActive('bag-picker')).toEqual(['21']);
+    expect(ctl8fActive('bag-sheet')).toEqual(['21']);
+    view.paint(
+      ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: 'back' } }),
+    );
+    expect(ctl8fActive('bag-sheet'), 'the cursor can sit on Back').toEqual(['back']);
     expect(() =>
       view.paint(
         ctl8fPaint(lonely, { nav: food, phase: { kind: 'picker', itemId: 9, monster: null } }),
       ),
     ).not.toThrow();
-    expect(ctl8fRows('bag-picker'), 'an empty roster lists nobody').toEqual([]);
+    expect(
+      ctl8fRows('bag-sheet').map((r) => r.dataset.navKey),
+      'an empty roster lists nobody, only Back',
+    ).toEqual(['back']);
 
     // The status line.
     view.paint(ctl8fPaint(vm));
@@ -1999,29 +2060,38 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
 
     expect(step('A')).toBe('consumed');
     expect(ctl8fShown('bag-sheet')).toBe(true);
-    expect(ctl8fRows('bag-sheet').map((r) => r.textContent)).toEqual(['Feed', 'Info']);
+    // uif-8: the sheet lists Feed, Info and the last Close row; the Info page and the picker are the
+    // same ContextSheet (detail / list variant), not separate parts.
+    expect(ctl8fRows('bag-sheet').map((r) => r.textContent)).toEqual([
+      'Feed',
+      'Info',
+      i18nT('kit.sheet.close'),
+    ]);
     expect(ctl8fActive('bag-sheet')).toEqual(['feed']);
 
     expect(step('Down')).toBe('consumed');
     expect(ctl8fActive('bag-sheet')).toEqual(['info']);
     expect(step('A')).toBe('consumed');
-    expect(ctl8fShown('bag-info')).toBe(true);
-    expect(ctl8fShown('bag-sheet')).toBe(false);
-    expect(ctl8fPart('bag-info').textContent ?? '').toContain('Raises speed.');
+    expect(ctl8fShown('bag-sheet'), 'the Info page is the sheet, in its detail variant').toBe(true);
+    expect(ctl8fPart('bag-sheet').dataset.sheetVariant).toBe('detail');
+    expect(document.getElementById('bagsheet-sheet-prose')?.textContent ?? '').toContain(
+      'Raises speed.',
+    );
     expect(step('B')).toBe('consumed');
-    expect(ctl8fShown('bag-info')).toBe(false);
+    expect(ctl8fPart('bag-sheet').dataset.sheetVariant, 'back on the list variant').toBe('list');
     expect(ctl8fActive('bag-sheet'), 'back on the sheet, on Info').toEqual(['info']);
 
     expect(step('Up')).toBe('consumed');
     expect(step('A')).toBe('consumed');
-    expect(ctl8fShown('bag-picker')).toBe(true);
-    expect(ctl8fPart('bag-picker-title').textContent).toBe('Feed which monster?');
-    expect(ctl8fActive('bag-picker')).toEqual(['11']);
+    expect(ctl8fShown('bag-sheet')).toBe(true);
+    expect(document.getElementById('bagsheet-sheet-title')?.textContent).toBe(
+      'Feed which monster?',
+    );
+    expect(ctl8fActive('bag-sheet')).toEqual(['11']);
     expect(step('Down')).toBe('consumed');
-    expect(ctl8fActive('bag-picker')).toEqual(['12']);
+    expect(ctl8fActive('bag-sheet')).toEqual(['12']);
     expect(step('A')).toEqual({ kind: 'train', monsterId: 12n, foodItemId: 9 });
-    expect(ctl8fShown('bag-picker'), 'the picker closes on the send').toBe(false);
-    expect(ctl8fShown('bag-sheet')).toBe(false);
+    expect(ctl8fShown('bag-sheet'), 'the sheet closes on the send').toBe(false);
     expect(ctl8fActive('bag-list'), 'the cursor is on the fed item').toEqual(['9']);
 
     // Use on a cure: the battleOnly line.
@@ -2060,7 +2130,7 @@ describe('RaisingView ctl-8f: the Bag panel teeth', () => {
     expect(ctl8fPart('bag-status').hasAttribute('data-feedback')).toBe(false);
   });
 
-  it('a sheet, description or picker phase for an item the view model does not list shows none of the three', () => {
+  it('a sheet, description or picker phase for an item the view model does not list shows no sheet (uif-8: the one ContextSheet stays hidden)', () => {
     // WRONG IMPL KILLED: a view that shows the sheet / description / picker for the phase kind
     // alone, so a paint that outlives its item (an adapter one batch late) draws an empty sheet
     // or a picker for nothing.
@@ -2075,34 +2145,36 @@ describe('RaisingView ctl-8f: the Bag panel teeth', () => {
     ];
     for (const [name, phase] of phases) {
       view.paint(ctl8fPaint(vm, { nav: food, phase }));
-      for (const id of ['bag-sheet', 'bag-info', 'bag-picker']) {
-        expect(ctl8fShown(id), `${name} phase for an unlisted item: #${id}`).toBe(false);
-      }
+      expect(ctl8fShown('bag-sheet'), `${name} phase for an unlisted item: #bag-sheet`).toBe(false);
     }
     // Control: the same phases for a listed item do show their part.
     view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'sheet', itemId: 9, action: 'feed' } }));
     expect(ctl8fShown('bag-sheet'), 'control: a listed item shows its sheet').toBe(true);
   });
 
-  it('#bag-empty shows for an empty pocket and with no pockets at all, and is hidden for a pocket that has items', () => {
+  it('the empty line shows for an empty pocket and with no pockets at all, and no visible empty line is left for a pocket that has items (uif-8: the line is the kit EmptyState, not #bag-empty)', () => {
     // WRONG IMPL KILLED: an empty line that is created once and never toggled (it shows over a
     // full pocket, or never shows), one keyed on the active pocket only (a bag with no definitions
     // at all would show a blank frame), and an empty line with no text.
     const { view } = s4Mount();
     view.show();
     const vm = ctl8fVm();
+    const visibleEmpties = (): HTMLElement[] =>
+      [...document.querySelectorAll<HTMLElement>('#bag-panel .mr-empty')].filter(
+        (e) => !bagHidden(e),
+      );
     view.paint(ctl8fPaint(vm));
-    expect(ctl8fShown('bag-empty'), 'a pocket with items: hidden').toBe(false);
+    expect(visibleEmpties(), 'a pocket with items: none shown').toHaveLength(0);
     const bare = ctl8fVm({ bareMedicine: true });
     view.paint(ctl8fPaint(bare, { nav: ctl8fNav(bare, ['RB', 'RB']) }));
-    expect(ctl8fShown('bag-empty'), 'an empty pocket: shown').toBe(true);
-    expect(ctl8fPart('bag-empty').textContent ?? '').toContain(i18nT('raising.inventory.empty'));
+    expect(visibleEmpties(), 'an empty pocket: one shown').toHaveLength(1);
+    expect(visibleEmpties()[0]?.textContent ?? '').toContain(i18nT('raising.inventory.empty'));
     view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
-    expect(ctl8fShown('bag-empty'), 'back on a full pocket: hidden again').toBe(false);
+    expect(visibleEmpties(), 'back on a full pocket: gone again').toHaveLength(0);
     const none: BagVm = { pockets: [], monsters: [] };
     view.paint(ctl8fPaint(none, { nav: ctl8fNav(none) }));
-    expect(ctl8fShown('bag-empty'), 'no pockets at all: shown').toBe(true);
-    expect(ctl8fPart('bag-empty').textContent ?? '').toContain(i18nT('raising.inventory.empty'));
+    expect(visibleEmpties(), 'no pockets at all: one shown').toHaveLength(1);
+    expect(visibleEmpties()[0]?.textContent ?? '').toContain(i18nT('raising.inventory.empty'));
   });
 
   it('the tab strip and the item list stay shown in the sheet, description and picker phases', () => {
@@ -2126,56 +2198,61 @@ describe('RaisingView ctl-8f: the Bag panel teeth', () => {
     }
   });
 
-  it('the picker is labelled by its title and the sheet by the list row of its item', () => {
-    // WRONG IMPL KILLED: a picker or sheet listbox with no accessible name; a picker named by the
-    // wrong element; a sheet named by a fixed element or by another item's row; a name that points
-    // at an id that does not exist.
+  it('the sheet`s rows are labelled by the sheet heading: the item`s name in the sheet phase, the picker title in the picker phase (uif-8: one ContextSheet heading, not a list row or #bag-picker-title)', () => {
+    // WRONG IMPL KILLED: a sheet or picker listbox with no accessible name; a sheet named by a
+    // fixed element or by another item's name; a name that points at an id that does not exist; a
+    // heading that keeps the previous phase's text.
     const { view } = s4Mount();
     view.show();
     const vm = ctl8fVm();
+    const labelOf = (): { id: string | null; text: string | null } => {
+      const rows = document.querySelector<HTMLElement>('#bag-sheet [aria-labelledby]');
+      const id = rows?.getAttribute('aria-labelledby') ?? null;
+      return { id, text: id === null ? null : (document.getElementById(id)?.textContent ?? null) };
+    };
     view.paint(
       ctl8fPaint(vm, {
         nav: ctl8fNav(vm, ['RB']),
         phase: { kind: 'picker', itemId: 9, monster: '11' },
       }),
     );
-    expect(ctl8fPart('bag-picker').getAttribute('aria-labelledby')).toBe('bag-picker-title');
-    expect(ctl8fPart('bag-picker-title'), 'the title it names exists').toBeTruthy();
+    expect(labelOf().id, 'the picker names its heading').toBe('bagsheet-sheet-title');
+    expect(labelOf().text, 'the picker title').toBe(i18nT('bag.picker.title'));
 
-    const cases: ReadonlyArray<readonly [string, NavState, number]> = [
-      ['the first food', ctl8fNav(vm, ['RB']), 9],
-      ['the second food', root5(vm), 5],
-      ['the bait', ctl8fNav(vm), 3],
+    const cases: ReadonlyArray<readonly [string, NavState, number, string]> = [
+      ['the first food', ctl8fNav(vm, ['RB']), 9, 'Glow Berry'],
+      ['the second food', root5(vm), 5, 'Power Root'],
+      ['the bait', ctl8fNav(vm), 3, 'Lure Berry'],
     ];
-    for (const [name, nav, itemId] of cases) {
+    for (const [name, nav, itemId, itemName] of cases) {
       view.paint(ctl8fPaint(vm, { nav, phase: { kind: 'sheet', itemId, action: 'info' } }));
-      const id = ctl8fPart('bag-sheet').getAttribute('aria-labelledby');
-      expect(id, `${name}: the sheet names something`).toBeTruthy();
-      const named = document.getElementById(id ?? '');
-      expect(named, `${name}: the named element exists`).not.toBeNull();
-      expect(named?.dataset.navKey, `${name}: it is that item's row`).toBe(String(itemId));
-      expect(ctl8fPart('bag-list').contains(named), `${name}: inside #bag-list`).toBe(true);
+      expect(labelOf().id, `${name}: the sheet names its heading`).toBe('bagsheet-sheet-title');
+      expect(labelOf().text, `${name}: the heading is the item's name`).toBe(itemName);
     }
   });
 
-  it('closing the sheet or the picker while it holds focus moves focus to the raising title, never to the body', () => {
-    // WRONG IMPL KILLED: a paint that hides the focused sheet / picker container and leaves focus
-    // stranded on <body> (the keyboard and the screen reader lose their place in the dialog).
+  it('closing the sheet while its rows hold focus moves focus to the raising title, never to the body, from the sheet phase and from the picker phase', () => {
+    // WRONG IMPL KILLED: a paint that hides the focused sheet container and leaves focus stranded on
+    // <body> (the keyboard and the screen reader lose their place in the dialog); a close that
+    // empties the rows but never reads the `hidden` ancestor as a hidden part (uif-8: the sheet hides
+    // through `hidden`, which the focus guard must count).
     const { view } = s4Mount();
     view.show();
     const vm = ctl8fVm();
     const food = ctl8fNav(vm, ['RB']);
     const title = document.querySelector<HTMLElement>('[data-testid="raising-title"]');
     expect(title, 'precondition: the raising title').not.toBeNull();
-    const phases: ReadonlyArray<readonly [string, Ctl8fPaint['phase'], string]> = [
-      ['sheet', { kind: 'sheet', itemId: 9, action: 'feed' }, 'bag-sheet'],
-      ['picker', { kind: 'picker', itemId: 9, monster: '11' }, 'bag-picker'],
+    const phases: ReadonlyArray<readonly [string, Ctl8fPaint['phase']]> = [
+      ['sheet', { kind: 'sheet', itemId: 9, action: 'feed' }],
+      ['picker', { kind: 'picker', itemId: 9, monster: '11' }],
     ];
-    for (const [name, phase, id] of phases) {
+    for (const [name, phase] of phases) {
       view.paint(ctl8fPaint(vm, { nav: food, phase }));
-      ctl8fPart(id).focus();
-      expect(document.activeElement, `${name}: precondition, the part holds focus`).toBe(
-        ctl8fPart(id),
+      const focusable = document.querySelector<HTMLElement>('#bag-sheet [tabindex]');
+      expect(focusable, `${name}: precondition, the sheet has its one tab stop`).not.toBeNull();
+      (focusable as HTMLElement).focus();
+      expect(document.activeElement, `${name}: precondition, the sheet holds focus`).toBe(
+        focusable,
       );
       view.paint(ctl8fPaint(vm, { nav: food }));
       expect(document.activeElement, `${name} closed: focus is on the title`).toBe(title);
@@ -2196,7 +2273,7 @@ describe('RaisingView ctl-8f: the Bag panel teeth', () => {
     view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) })); // a batch lands while hidden
     view.show();
     expect(ctl8fPart('raising-inventory').style.display, 'the legacy grid shows').not.toBe('none');
-    for (const id of ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-info', 'bag-picker']) {
+    for (const id of ['bag-tabs', 'bag-list', 'bag-sheet']) {
       expect(ctl8fShown(id), `#${id} is hidden after the reopen`).toBe(false);
     }
   });
@@ -2272,7 +2349,9 @@ function qf11InlineLayout(el: Element): string[] {
  *  clone KEEPS the id, so an id-keyed rule (C4) would still match it. */
 function qf11Probe(el: HTMLElement, dropClass = false): Qf11Snapshot {
   const probe = el.cloneNode(false) as HTMLElement;
-  if (dropClass) probe.classList.remove(QF11_STRIP_CLASS);
+  // uif-8: the TabBar strip wears two classes (the shared strip class and `mr-tabbar-strip`); the
+  // class-less sanity probe drops both.
+  if (dropClass) probe.classList.remove(QF11_STRIP_CLASS, 'mr-tabbar-strip');
   (el.parentElement ?? document.body).appendChild(probe);
   const style = getComputedStyle(probe);
   const first = style.flex.trim().split(/\s+/)[0] ?? '';
@@ -2331,7 +2410,7 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
     expectAdopted('refreshed');
     const vm = ctl8fVm();
     view.paint(ctl8fPaint(vm));
-    expect(strip.style.display, 'precondition: the strip is shown by the paint').not.toBe('none');
+    expect(bagHidden(strip), 'precondition: the strip is shown by the paint').toBe(false);
     expect(strip.children.length, 'precondition: four pocket tabs rendered').toBe(4);
     expectAdopted('painted');
     view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
@@ -2344,7 +2423,8 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
     );
     expectAdopted('painted in the sheet phase');
     view.hide();
-    expect(strip.style.display, 'precondition: hide() hides the strip').toBe('none');
+    // uif-8: the strip is hidden through its TabBar row (`hidden`), not an inline display.
+    expect(bagHidden(strip), 'precondition: hide() hides the strip').toBe(true);
     expectAdopted('hidden');
     view.show();
     expectAdopted('re-shown');
@@ -2372,11 +2452,14 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
       const now = qf11Probe(strip);
       expect(now.display, `${when}: a flex container`).toBe('flex');
       expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
-      expect(now.grow, `${when}: flex-grow`).toBe(0);
-      // WRONG IMPL KILLED: C1 `flex: 0 1 100%` (a basis that fills the column; the probe keeps the
-      // id so an id-keyed rule, C4, would also be seen); C9 an inline flex-grow / flex / height /
-      // flex-direction written by the view (the probe is a clone, so the live strip is checked too).
-      expect(now.flexBasis, `${when}: no length or percentage basis`).not.toMatch(/[\d%]/);
+      // uif-8 (named intentional change): the strip now sits in the TabBar's ROW, where the kit's
+      // `.mr-tabbar-strip` rule may grow it horizontally between the two chips, so the old
+      // "flex-grow 0 and no length basis" pins (written for a strip that was a child of the frame
+      // COLUMN) no longer describe the layout. The vertical half of that claim (the strip is as
+      // tall as its tabs, never absorbing free height) is measured in Chromium by
+      // e2e/ui-inventory.spec.ts UIF8.1.
+      // WRONG IMPL KILLED: C9 an inline flex-grow / flex / height / flex-direction written by the
+      // view (the probe is a clone, so the live strip is checked too).
       expect(qf11InlineLayout(strip), `${when}: no inline layout style on the strip`).toEqual([]);
       expect(strip.style.flexGrow, `${when}: no inline flex-grow`).toBe('');
     };
@@ -2394,21 +2477,29 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
     ).not.toBe('flex');
   });
 
-  it('#bag-tabs computes max-width 100% inside the align-items:center column root, so a nowrap strip scrolls inside the frame instead of overflowing it [QF11-2-BAG-MAXWIDTH]', () => {
-    // WRONG IMPL KILLED: the reviewer finding (RED until the strip rule gains `max-width: 100%`):
-    // the Bag root is `align-items: center` column, so a flex item with `white-space: nowrap` tabs is
-    // fit-content wide and, with four pockets in a narrow frame, wider than the frame (the
-    // `overflow-x: auto` never engages because the strip itself grows to its content); a max-width
-    // set on another selector or only inline; a max-width in px / vw (it must follow the frame).
+  it('the Bag root no longer centres its items inline, and the strip lives in the TabBar row, so a nowrap strip is bounded by its row, not by a centred column [QF11-2-BAG-MAXWIDTH, uif-8]', () => {
+    // uif-8 (named intentional change): this case pinned `max-width:100%` on a strip that was a
+    // direct child of an `align-items:center` column root (the reviewer finding: a centred
+    // fit-content strip overflowed the frame). The centring literal is DELETED (UIF8.1 / UIF8.5:
+    // the root is boxView's, so Chromium computes Monsters' numbers) and the strip is now inside
+    // the TabBar row, whose width the frame column gives it; what survives is that both causes of
+    // the overflow are gone.
+    // WRONG IMPL KILLED: the `align-items:center` literal left on the root (the strip would be
+    // fit-content wide again, and the computed spacing would differ from Monsters'); a strip left a
+    // bare child of the root instead of the TabBar row's.
     const { parent, view } = s4Mount();
     const root = overlayRootOf(parent);
     view.show();
     view.paint(ctl8fPaint(ctl8fVm()));
-    expect(root.style.alignItems, 'ANTI-VACUITY: the root centres its items').toBe('center');
+    expect(ctl7bInline(root).has('align-items'), 'no inline align-items on the root').toBe(false);
+    expect(root.style.alignItems, 'and none through the style object').toBe('');
     const strip = ctl8fPart('bag-tabs');
     expect(strip.children.length, 'ANTI-VACUITY: four pocket tabs rendered').toBe(4);
-    expect(qf11Probe(strip).maxWidth, 'computed max-width').toBe('100%');
-    expect(qf11Probe(strip, true).maxWidth, 'SANITY: not from a default').not.toBe('100%');
+    expect(
+      strip.parentElement?.classList.contains('mr-tabbar'),
+      'the strip is in the TabBar row',
+    ).toBe(true);
+    expect(strip.parentElement?.parentElement, 'the row is a child of the frame root').toBe(root);
   });
 
   it('with the strip class adopted, the Bag tab semantics are as shipped: tablist, four role=tab children with the nav ids, exactly one aria-selected tab that is also the is-active one, following LB / RB [QF11-3-BAG-SEMANTICS]', () => {
@@ -2453,10 +2544,368 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
           .map((x) => x.dataset.navTab),
         `${when}: exactly one aria-selected tab`,
       ).toEqual([expected]);
+      // uif-8 (named intentional change, UIF8.1): the selected tab carries the TabBar's
+      // `is-selected`, never the row cursor's `is-active` (it was `is-active`).
+      expect(
+        tabs.filter((tab) => tab.classList.contains('is-selected')).map((x) => x.dataset.navTab),
+        `${when}: the is-selected tab is the selected one`,
+      ).toEqual([expected]);
       expect(
         tabs.filter((tab) => tab.classList.contains('is-active')).map((x) => x.dataset.navTab),
-        `${when}: the is-active tab is the selected one`,
-      ).toEqual([expected]);
+        `${when}: no tab wears the row cursor's is-active`,
+      ).toEqual([]);
     }
+  });
+});
+
+// =============================================================================
+// uif-8 (UIF8.1, UIF8.2, UIF8.4, and R-uif-4-BAGSTATUS-EMPTY): the Inventory frame on the UI kit.
+//
+// happy-dom does no layout, so these cases prove the DOM contract (which kit parts the frame builds,
+// where they sit, what they hold); the computed spacing, the growth and the pseudo-scroll are
+// measured in Chromium by e2e/ui-inventory.spec.ts. The structure mirrors boxView.ts (uif-6/uif-7),
+// so Chromium computes the same numbers for both frames.
+// =============================================================================
+
+/** Calls `fn` with `HTMLElement.prototype.scrollIntoView` replaced by a recorder, restoring the
+ *  prototype exactly (own property or inherited) afterwards. */
+function uif8WithScrollSpy(
+  fn: (calls: Array<{ key: string | undefined; arg: unknown }>) => void,
+): void {
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  const hadOwn = Object.hasOwn(proto, 'scrollIntoView');
+  const original = proto.scrollIntoView;
+  const calls: Array<{ key: string | undefined; arg: unknown }> = [];
+  proto.scrollIntoView = function (this: HTMLElement, arg?: unknown): void {
+    calls.push({ key: this.dataset.navKey, arg });
+  };
+  try {
+    fn(calls);
+  } finally {
+    if (hadOwn) proto.scrollIntoView = original;
+    else delete proto.scrollIntoView;
+  }
+}
+
+describe('RaisingView uif-8: Inventory on the UI kit', () => {
+  it('UIF8.1 after a paint the pockets are the kit TabBar row (LB chip, tablist strip #bag-tabs, RB chip) placed after the title and before #bag-panel, the selected tab is is-selected and never is-active, and the root writes no align-items', () => {
+    // WRONG IMPL KILLED: today's bare `.mr-frame-tabstrip` root child (no chips, no row); chips
+    // that are not aria-hidden or are in the wrong order; the selected tab marked with the row
+    // cursor's is-active (the 060 / 169 feedback: "which tab" and "which row" must be separable);
+    // the bar placed below the panel or above the title; a panel that does not hold the list; the
+    // measured `align-items:center` literal left on the root (Chromium would compute a different
+    // layout than Monsters'); a bar that stays shown after hide().
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
+
+    const strip = ctl8fPart('bag-tabs');
+    const row = strip.parentElement as HTMLElement;
+    expect(row.classList.contains('mr-tabbar'), 'the strip sits in a TabBar row').toBe(true);
+    expect(row.hidden, 'the row is shown once painted').toBe(false);
+    expect(strip.getAttribute('role'), 'the strip is the tablist').toBe('tablist');
+    const kids = [...row.children] as HTMLElement[];
+    expect(kids, 'LB chip, strip, RB chip').toHaveLength(3);
+    expect(kids[1], 'the strip is the middle child').toBe(strip);
+    expect([kids[0]?.dataset.button, kids[2]?.dataset.button], 'the chips, in order').toEqual([
+      'LB',
+      'RB',
+    ]);
+    expect(
+      [kids[0]?.getAttribute('aria-hidden'), kids[2]?.getAttribute('aria-hidden')],
+      'the chips are hidden from assistive technology',
+    ).toEqual(['true', 'true']);
+
+    const tabs = ctl8fTabEls();
+    expect(
+      tabs.map((t) => t.classList.contains('is-selected')),
+      'only Food (the second pocket) is selected',
+    ).toEqual([false, true, false, false]);
+    expect(
+      tabs.filter((t) => t.classList.contains('is-active')),
+      'no tab wears the row cursor class',
+    ).toHaveLength(0);
+
+    const children = [...root.children];
+    const title = root.querySelector('[data-testid="raising-title"]');
+    const headerIdx = children.findIndex((c) => c.contains(title));
+    const barIdx = children.indexOf(row);
+    const panel = ctl8fPart('bag-panel');
+    const panelIdx = children.indexOf(panel);
+    expect(headerIdx, 'the title is in a root child').toBeGreaterThanOrEqual(0);
+    expect(barIdx, 'the bar row is a root child').toBeGreaterThanOrEqual(0);
+    expect(panelIdx, '#bag-panel is a root child').toBeGreaterThanOrEqual(0);
+    expect(headerIdx < barIdx, 'the bar is after the title').toBe(true);
+    expect(barIdx < panelIdx, 'the bar is before the panel').toBe(true);
+    expect(panel.contains(ctl8fPart('bag-list')), '#bag-panel holds #bag-list').toBe(true);
+    expect(ctl7bInline(root).has('align-items'), 'the root writes no align-items').toBe(false);
+
+    view.hide();
+    expect(row.hidden, 'a closed Inventory leaves no shown tab bar').toBe(true);
+  });
+
+  it('UIF8.1 #bag-list wears the kit pseudo-scroll class mr-scroll while its pocket has items and not while it is empty, with no inline background that would replace the cue', () => {
+    // WRONG IMPL KILLED: a list with no mr-scroll (no position cue, the Monsters/Inventory
+    // difference); mr-scroll on an empty list (a cue over nothing); the class added once and never
+    // removed when the pocket empties (or never re-added when it refills); a cue painted as an inline
+    // background (it would replace the kit's layered one).
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const bare = ctl8fVm({ bareMedicine: true });
+    const list = (): HTMLElement => ctl8fPart('bag-list');
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
+    expect(list().classList.contains('mr-scroll'), 'a pocket with items: scroll cue').toBe(true);
+    expect(list().getAttribute('style') ?? '', 'no inline background').not.toContain('background');
+    view.paint(ctl8fPaint(bare, { nav: ctl8fNav(bare, ['RB', 'RB']) }));
+    expect(list().classList.contains('mr-scroll'), 'an empty pocket: no scroll cue').toBe(false);
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
+    expect(list().classList.contains('mr-scroll'), 'refilled: the cue is back').toBe(true);
+    const none: BagVm = { pockets: [], monsters: [] };
+    view.paint(ctl8fPaint(none, { nav: ctl8fNav(none) }));
+    expect(list().classList.contains('mr-scroll'), 'no pocket at all: no scroll cue').toBe(false);
+  });
+
+  it('UIF8.1 a cursor move scrolls the new active row into view with block nearest, and only that row', () => {
+    // WRONG IMPL KILLED: a list that hides its overflow (pseudo-scroll) but never scrolls the
+    // cursor row into view (the D-pad walks off the visible rows); one that scrolls the FIRST row
+    // or the list container instead of the active row; `block:'center'`/'start' (the list would jump
+    // by a row on every step instead of moving the least that keeps the row in view).
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    uif8WithScrollSpy((calls) => {
+      view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
+      calls.length = 0;
+      view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB', 'Down']) }));
+      expect(ctl8fActive('bag-list'), 'precondition: the cursor is on the second food').toEqual([
+        '5',
+      ]);
+      expect(calls.length, 'the move scrolled something').toBeGreaterThan(0);
+      expect(
+        calls.map((c) => c.key),
+        'only the active row is scrolled',
+      ).toEqual(calls.map(() => '5'));
+      expect(calls.at(-1)?.arg, 'the least movement that keeps it visible').toEqual({
+        block: 'nearest',
+      });
+      calls.length = 0;
+      view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB', 'Down', 'Down']) }));
+      expect(
+        calls.at(-1)?.key,
+        'a wrap back to the first food scrolls that row (Down from the last wraps)',
+      ).toBe('9');
+    });
+  });
+
+  it('UIF8.2 in the sheet phase exactly one ContextSheet #bag-sheet shows in the list variant, headed by the item name, with its rows and a last Close row, and no #bag-picker or #bag-info part exists', () => {
+    // WRONG IMPL KILLED: today's bare `#bag-sheet` nav container (no `[data-context-sheet]`, no
+    // heading, no Close row); two sheets (one per phase); the sheet mounted outside the panel; a
+    // heading that is not the item's name; a Close row that is not last or not the kit's label; a
+    // retired `#bag-picker` / `#bag-info` / `#bag-picker-title` part left in the document.
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    const vm = ctl8fVm();
+    view.paint(
+      ctl8fPaint(vm, {
+        nav: ctl8fNav(vm, ['RB']),
+        phase: { kind: 'sheet', itemId: 9, action: 'feed' },
+      }),
+    );
+    const sheets = root.querySelectorAll<HTMLElement>('[data-context-sheet]');
+    expect(sheets, 'exactly one context sheet in the frame').toHaveLength(1);
+    const sheet = sheets[0] as HTMLElement;
+    expect(sheet.id, 'its id').toBe('bag-sheet');
+    expect(ctl8fPart('bag-panel').contains(sheet), 'mounted in the panel').toBe(true);
+    expect(sheet.hidden, 'shown').toBe(false);
+    expect(sheet.dataset.sheetVariant, 'the list variant').toBe('list');
+    const heading = document.getElementById('bagsheet-sheet-title') as HTMLElement;
+    expect(heading.textContent, 'headed by the item name').toBe('Glow Berry');
+    expect(heading.hidden).toBe(false);
+    const rows = ctl8fRows('bag-sheet');
+    expect(rows.map((r) => r.dataset.navKey)).toEqual(['feed', 'info', 'close']);
+    expect(rows.at(-1)?.textContent, 'the last row is Close').toBe(i18nT('kit.sheet.close'));
+    expect(
+      rows.map((r) => r.getAttribute('role')),
+      'rows are options (the e2e and the pointer key on role=option)',
+    ).toEqual(['option', 'option', 'option']);
+    expect(ctl8fActive('bag-sheet')).toEqual(['feed']);
+    for (const retired of ['bag-picker', 'bag-info', 'bag-picker-title']) {
+      expect(document.getElementById(retired), `#${retired} is retired`).toBeNull();
+    }
+  });
+
+  it('UIF8.2 in the picker phase the SAME sheet element lists the monsters then a last Back row under the picker title, and in the info phase it is the detail variant with the description as prose and one Back row; in the list phase it is hidden and empty', () => {
+    // WRONG IMPL KILLED: a second sheet built for the picker (the first one left open behind it) or
+    // a re-created sheet per phase (node identity changes, focus is lost); a picker with no Back
+    // row; a Back row that is not the kit's label; an Info page drawn as plain text outside the
+    // sheet, or with no Back row (nothing to press); the description not in the prose slot; a list
+    // phase that leaves the previous phase's rows in a hidden-but-populated sheet.
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const food = ctl8fNav(vm, ['RB']);
+    const BACK = i18nT('kit.sheet.back');
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'sheet', itemId: 9, action: 'feed' } }));
+    const sheet = ctl8fPart('bag-sheet');
+
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: '11' } }));
+    expect(ctl8fPart('bag-sheet'), 'the picker is the same sheet element').toBe(sheet);
+    expect(document.querySelectorAll('[data-context-sheet]'), 'still one sheet').toHaveLength(1);
+    expect(sheet.hidden).toBe(false);
+    expect(sheet.dataset.sheetVariant).toBe('list');
+    expect(document.getElementById('bagsheet-sheet-title')?.textContent).toBe(
+      i18nT('bag.picker.title'),
+    );
+    const rows = ctl8fRows('bag-sheet');
+    expect(rows.map((r) => r.dataset.navKey)).toEqual(['11', '12', '21', 'back']);
+    expect(rows.map((r) => r.textContent)).toEqual(['Kip', 'Emberfang', 'Sproutle', BACK]);
+    expect(ctl8fActive('bag-sheet')).toEqual(['11']);
+
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'info', itemId: 9 } }));
+    expect(ctl8fPart('bag-sheet'), 'the Info page is the same sheet element').toBe(sheet);
+    expect(sheet.hidden).toBe(false);
+    expect(sheet.dataset.sheetVariant, 'the detail variant').toBe('detail');
+    const prose = document.getElementById('bagsheet-sheet-prose') as HTMLElement;
+    expect(prose.textContent, 'the description is the prose').toBe('Raises speed.');
+    expect(prose.hidden).toBe(false);
+    expect(
+      ctl8fRows('bag-sheet').map((r) => [r.dataset.navKey, r.textContent]),
+      'one Back row',
+    ).toEqual([['back', BACK]]);
+
+    view.paint(
+      ctl8fPaint(vm, {
+        nav: ctl8fNav(vm, ['RB', 'RB', 'RB']),
+        phase: { kind: 'info', itemId: 20 },
+      }),
+    );
+    expect((document.getElementById('bagsheet-sheet-prose') as HTMLElement).textContent).toBe(
+      i18nT('shop.description.none'),
+    );
+
+    view.paint(ctl8fPaint(vm, { nav: food }));
+    expect(ctl8fPart('bag-sheet'), 'the list phase keeps the element').toBe(sheet);
+    expect(sheet.hidden, 'hidden in the list phase').toBe(true);
+    expect(ctl8fRows('bag-sheet'), 'and emptied').toHaveLength(0);
+    expect(document.querySelectorAll('[data-context-sheet]')).toHaveLength(1);
+  });
+
+  it('UIF8.4 an empty pocket shows the EmptyState in the panel with the reason, cue and next step lines, in en and again in fr after a locale switch, with the tab bar kept; so does a Bag with no pocket at all', () => {
+    // WRONG IMPL KILLED: today's bare one-line "No items." (no cue, no next step); an EmptyState
+    // built in en only and never re-resolved when the locale changes (the fr paint keeps English);
+    // the cue and next-step lines swapped, or one text reused for both; the tab bar lost with the
+    // content; the legacy `raising.inventory.empty` reason replaced by a new id (the reason must be
+    // the existing line); an EmptyState left in the panel for a pocket that has items.
+    const original = currentLocale();
+    try {
+      const { view } = s4Mount();
+      view.show();
+      const bare = ctl8fVm({ bareMedicine: true });
+      const emptyPaint = (): void =>
+        view.paint(ctl8fPaint(bare, { nav: ctl8fNav(bare, ['RB', 'RB']) }));
+      const lines = (): { reason: string; cue: string; next: string; count: number } => {
+        const empties = document.querySelectorAll<HTMLElement>('#bag-panel .mr-empty');
+        const text = (sel: string): string =>
+          empties[0]?.querySelector<HTMLElement>(sel)?.textContent ?? '(missing)';
+        return {
+          reason: text('.mr-empty-reason'),
+          cue: text('.mr-empty-cue'),
+          next: text('.mr-empty-next'),
+          count: empties.length,
+        };
+      };
+
+      setLocale('en');
+      emptyPaint();
+      const en = lines();
+      expect(en.count, 'one EmptyState in the panel').toBe(1);
+      expect(en.reason, 'the reason is the existing empty line').toBe(
+        i18nT('raising.inventory.empty'),
+      );
+      expect(en.cue, 'the cue').toBe(i18nT('bag.empty.cue'));
+      expect(en.next, 'the next step').toBe(i18nT('bag.empty.next'));
+      expect(new Set([en.reason, en.cue, en.next]).size, 'three different lines').toBe(3);
+      const empty = document.querySelector('#bag-panel .mr-empty') as HTMLElement;
+      expect(bagHidden(empty), 'the EmptyState is shown').toBe(false);
+      expect(
+        (ctl8fPart('bag-tabs').parentElement as HTMLElement).hidden,
+        'the tab bar is kept for an empty pocket',
+      ).toBe(false);
+      expect(ctl8fTabEls(), 'with all four pockets').toHaveLength(4);
+      expect(ctl8fKeys('bag-list'), 'and no rows').toEqual([]);
+
+      setLocale('fr');
+      emptyPaint();
+      const fr = lines();
+      expect(fr.count, 'still one EmptyState after the switch').toBe(1);
+      expect(fr.reason, 'fr reason').toBe(i18nT('raising.inventory.empty'));
+      expect(fr.cue, 'fr cue').toBe(i18nT('bag.empty.cue'));
+      expect(fr.next, 'fr next step').toBe(i18nT('bag.empty.next'));
+      expect(fr.reason, 'the fr reason is not the English line').not.toBe(en.reason);
+      expect(fr.cue, 'the fr cue is not the English line').not.toBe(en.cue);
+      expect(fr.next, 'the fr next step is not the English line').not.toBe(en.next);
+
+      // No pocket at all (no item definitions yet): the same three lines.
+      setLocale('en');
+      const none: BagVm = { pockets: [], monsters: [] };
+      view.paint(ctl8fPaint(none, { nav: ctl8fNav(none) }));
+      expect(lines(), 'no pocket at all: the same three lines').toEqual(en);
+
+      // A pocket with items shows none.
+      const vm = ctl8fVm();
+      view.paint(ctl8fPaint(vm));
+      expect(
+        [...document.querySelectorAll<HTMLElement>('#bag-panel .mr-empty')].filter(
+          (e) => !bagHidden(e),
+        ),
+        'a pocket with items shows no EmptyState',
+      ).toHaveLength(0);
+    } finally {
+      setLocale(original);
+    }
+  });
+
+  it('R-uif-4-BAGSTATUS-EMPTY #bag-status is display:none and empty while there is no status, shows the line when there is one, and stays a .mr-frame-feedback direct child of the root', () => {
+    // WRONG IMPL KILLED: the shipped strip that is always displayed (an empty bordered line sits
+    // under every Inventory screen, R-uif-4-BAGSTATUS-EMPTY); a strip hidden for good (a refusal or
+    // the Fed line never shows); one that hides but keeps the old text; one that moves into the
+    // panel or loses the feedback class (the feedback gate and the frame's strip styling key on
+    // both).
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    const vm = ctl8fVm();
+    const status = ctl8fPart('bag-status');
+    expect(status.parentElement, 'a direct child of the root').toBe(root);
+    expect(status.classList.contains('mr-frame-feedback'), 'the feedback class').toBe(true);
+
+    view.paint(ctl8fPaint(vm));
+    expect(status.style.display, 'no status: display none').toBe('none');
+    expect(status.textContent, 'and empty').toBe('');
+
+    view.paint(ctl8fPaint(vm, { status: { kind: 'noMonsters' } }));
+    expect(status.style.display, 'a status: shown').not.toBe('none');
+    expect(status.textContent).toBe(i18nT('bag.feed.noMonsters'));
+    expect(status.parentElement, 'still a direct child of the root').toBe(root);
+    expect(status.classList.contains('mr-frame-feedback')).toBe(true);
+
+    view.paint(ctl8fPaint(vm, { status: { kind: 'fed', name: 'Kip' } }));
+    expect(status.style.display).not.toBe('none');
+    expect(status.getAttribute('data-feedback'), 'Fed is the ok line').toBe('ok');
+
+    view.paint(ctl8fPaint(vm));
+    expect(status.style.display, 'cleared: hidden again').toBe('none');
+    expect(status.textContent, 'and emptied').toBe('');
+    expect(status.hasAttribute('data-feedback')).toBe(false);
+
+    view.paint(ctl8fPaint(vm, { status: { kind: 'battleOnly' } }));
+    view.hide();
+    view.show();
+    expect(status.style.display, 'a reopen drops the kept status line: hidden').toBe('none');
+    expect(status.textContent).toBe('');
   });
 });

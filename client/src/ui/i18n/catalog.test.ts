@@ -1134,6 +1134,11 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // are the kit's, reused by later slices with no further catalog edit.
   'kit.sheet.close': 'Close',
   'kit.sheet.back': 'Back',
+  // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next. The Bag's
+  // EmptyState says where items come from (cue) and what to do next; its reason line reuses
+  // `raising.inventory.empty` (no new key).
+  'bag.empty.cue': 'Items come from the shop and from battles in the wild.',
+  'bag.empty.next': 'Visit a shop, or press LB / RB to check another pocket.',
 };
 
 interface ParamOutputSpec {
@@ -2168,7 +2173,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // with the 1v1 view; `battle.title` and `battle.outcome.{victory,defeat,fled}` stay = 494.
     // RED TODAY: catalog.en.ts still carries the 31 keys (the roster below is 525 there).
     // uif-7 (named intentional change, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-7 roster is 496 keys').toHaveLength(496);
+    // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-8 roster is 498 keys').toHaveLength(498);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2592,6 +2598,43 @@ describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {
       Object.keys(EXPECTED_FR_CTL8K_PLAIN).length,
       'ANTI-VACUITY: both ctl-8k keys are pinned in French',
     ).toBe(2);
+  });
+});
+
+// =============================================================================
+// uif-8 (UIF8.4): the Bag's EmptyState cue and next-step lines exist in BOTH catalogs.
+// =============================================================================
+
+describe('uif-8: the Bag EmptyState keys in both catalogs', () => {
+  it('UIF8.4 bag.empty.cue and bag.empty.next are non-empty plain strings in en and in fr, the fr copy is a translation (not the en line), and the two lines differ from each other and from the reason line in each locale', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot and the whole Bag
+    // panel stays blank); a French entry left as the English copy; one sentence used for both the
+    // cue and the next step (the EmptyState would repeat itself); a cue or next step that just
+    // repeats the reason line `raising.inventory.empty` (no new information for the player).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    for (const key of ['bag.empty.cue', 'bag.empty.next']) {
+      expect(typeof en[key], `en ${key} is a plain string`).toBe('string');
+      expect((en[key] as string).trim().length, `en ${key} is non-empty`).toBeGreaterThan(0);
+      expect(en[key], `en ${key} is the pinned roster value`).toBe(EXPECTED_PLAIN[key]);
+      expect(typeof fr[key], `fr ${key} is a plain string`).toBe('string');
+      expect((fr[key] as string).trim().length, `fr ${key} is non-empty`).toBeGreaterThan(0);
+      expect(fr[key], `fr ${key} is a translation, not the English copy`).not.toBe(en[key]);
+    }
+    for (const [name, cat] of [
+      ['en', en],
+      ['fr', fr],
+    ] as const) {
+      const lines = [
+        cat['raising.inventory.empty'],
+        cat['bag.empty.cue'],
+        cat['bag.empty.next'],
+      ] as string[];
+      expect(
+        new Set(lines).size,
+        `${name}: reason, cue and next step are three different lines`,
+      ).toBe(3);
+    }
   });
 });
 
