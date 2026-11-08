@@ -14,6 +14,13 @@
 // Right-click and a touch long-press (500 ms within 10 px, with a fill ring) press B, or cancel a
 // remap capture. A mouse moving to new coordinates over a row makes it active (never A) and shows
 // the hover state until the next key press (`keyPressed`).
+//
+// An open context sheet (uif-5, UIF5.1-UIF5.3) never blocks a click elsewhere: in the CAPTURE phase,
+// before a native control's own handler, B is pressed until no sheet shows, then the same event
+// routes as if no sheet had been open. A world sheet's close is close-only: routing the click would
+// press A at the bare world and reopen the same sheet. A click inside the sheet routes to its row.
+// A wheel over the top frame's nav rows presses Up or Down once per notch (UIF5.4); anywhere else the
+// browser keeps its native scroll.
 import type { VButton } from './buttons';
 import { VBUTTONS } from './buttons';
 import {
@@ -61,6 +68,32 @@ const TOUCH_GRACE_MS = 1_000;
 const HOVER_CLASS = 'mr-pointer-hover';
 const NATIVE = 'button, input, select, textarea, a, label, [contenteditable]';
 const EDITABLE = 'input, textarea, select, [contenteditable]';
+const SHEET = '[data-context-sheet]';
+/** How many Bs a click may press closing a sheet: a sub-list in the one sheet root needs two. */
+const MAX_CLOSE_DEPTH = 3;
+
+/** One wheel notch in accumulator units: 100 px, 3 lines or 1 page (exact for integer deltas). */
+const NOTCH = 300;
+const UNITS_PER: Readonly<Record<number, number>> = { 0: 3, 1: 100, 2: 300 };
+/** A pathological delta presses at most this many times, its remainder dropped. */
+const MAX_WHEEL_STEPS = 5;
+
+/** The Up (negative) or Down presses one wheel event is worth, given the carried remainder `acc`:
+ *  a notch is 100 px (deltaMode 0), 3 lines (1) or 1 page (2). A direction reversal drops the
+ *  remainder first; a capped or non-finite event resets it. */
+export function wheelSteps(
+  acc: number,
+  deltaY: number,
+  deltaMode: number,
+): { steps: number; acc: number } {
+  const units = deltaY * (UNITS_PER[deltaMode] ?? UNITS_PER[0]);
+  if (!Number.isFinite(units) || !Number.isFinite(acc)) return { steps: 0, acc: 0 };
+  const total = (Math.sign(units) * Math.sign(acc) < 0 ? 0 : acc) + units;
+  const steps = Math.trunc(total / NOTCH);
+  if (Math.abs(steps) > MAX_WHEEL_STEPS)
+    return { steps: Math.sign(steps) * MAX_WHEEL_STEPS, acc: 0 };
+  return { steps: steps + 0, acc: total - steps * NOTCH };
+}
 
 const INVERSE: Readonly<Partial<Record<VButton, VButton>>> = {
   Up: 'Down',
@@ -102,6 +135,12 @@ export const tabPath = (from: number, to: number): VButton[] =>
 
 const isVButton = (s: string | undefined): s is VButton =>
   s !== undefined && (VBUTTONS as readonly string[]).includes(s);
+
+/** The hint-bar chip under `el`, if any. */
+const chipAt = (el: Element): HTMLElement | null => {
+  const chip = el.closest<HTMLElement>('[data-button]');
+  return chip?.closest('#hint-bar') != null ? chip : null;
+};
 
 const isActive = (el: Element): boolean =>
   el.classList.contains('is-active') || el.getAttribute('aria-selected') === 'true';
@@ -149,6 +188,11 @@ export class PointerSource {
   #lastHover: Element | null = null;
   /** A container a hover probe found undriven: no further hover probes it until a key or click. */
   #staleHover: HTMLElement | null = null;
+  /** The click whose capture step closed a world sheet: its bubble routes nothing. */
+  #closeOnly: Event | null = null;
+  /** The wheel remainder and the nav container it was gathered over. */
+  #wheelAcc = 0;
+  #wheelOver: HTMLElement | null = null;
 
   constructor(
     gameScreen: HTMLElement,
@@ -160,10 +204,12 @@ export class PointerSource {
     this.#canvas = canvas;
     this.#deps = deps;
     this.#clock = clock;
-    // The swallow runs in the CAPTURE phase: a native button or a view's own row listener inside
-    // the game screen would otherwise take a fired long-press's trailing click before the bubble.
-    gameScreen.addEventListener('click', (e) => this.#swallowClick(e), true);
+    // The swallow and the sheet close run in the CAPTURE phase: a native button or a view's own row
+    // listener inside the game screen would otherwise take the click before the bubble.
+    gameScreen.addEventListener('click', (e) => this.#onCaptureClick(e), true);
     gameScreen.addEventListener('click', (e) => this.#onClick(e));
+    // Not passive: the wheel's preventDefault must hold over nav rows.
+    gameScreen.addEventListener('wheel', (e) => this.#onWheel(e), { passive: false });
     gameScreen.addEventListener('contextmenu', (e) => this.#onContextMenu(e));
     gameScreen.addEventListener('pointerdown', (e) => this.#onPointerDown(e));
     gameScreen.addEventListener('pointermove', (e) => this.#onPointerMove(e));
@@ -176,18 +222,50 @@ export class PointerSource {
     this.#screen.classList.remove(HOVER_CLASS);
     this.#lastHover = null;
     this.#staleHover = null;
+    this.#wheelAcc = 0;
   }
 
-  #swallowClick(e: MouseEvent): void {
-    if (this.#clock.now() >= this.#swallowUntil) return;
-    this.#swallowUntil = -Infinity;
-    e.stopPropagation();
-    e.preventDefault();
+  #onCaptureClick(e: MouseEvent): void {
+    if (this.#clock.now() < this.#swallowUntil) {
+      this.#swallowUntil = -Infinity;
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+    this.#closeSheet(e);
+  }
+
+  /** The open sheet a click can close or route into: one shown in the top frame, or a world sheet
+   *  (top `other`); none at the bare world. */
+  #openSheet(top: PointerTop): HTMLElement | null {
+    if (top === 'world') return null;
+    for (const sheet of this.#screen.querySelectorAll<HTMLElement>(SHEET)) {
+      const shown = top === 'frame' ? this.#inTopFrame(sheet) : this.#shown(sheet);
+      if (shown) return sheet;
+    }
+    return null;
+  }
+
+  /** UIF5.1/UIF5.3: a click outside the open sheet (a hint chip aside) first presses B until no
+   *  sheet shows. The event is never stopped, so it then routes as if no sheet had been open. */
+  #closeSheet(e: MouseEvent): void {
+    if (this.#deps.capturing() || !(e.target instanceof Element)) return;
+    const target = e.target;
+    if (chipAt(target)) return;
+    const top = this.#deps.top();
+    const sheet = this.#openSheet(top);
+    if (sheet === null || sheet.contains(target)) return;
+    for (let i = 0; i < MAX_CLOSE_DEPTH && this.#openSheet(top) !== null; i += 1) {
+      this.#deps.press('B');
+    }
+    if (top === 'other') this.#closeOnly = e;
   }
 
   #onClick(e: MouseEvent): void {
     this.#staleHover = null;
-    if (this.#deps.capturing() || !(e.target instanceof Element)) return;
+    const closeOnly = this.#closeOnly === e;
+    this.#closeOnly = null;
+    if (closeOnly || this.#deps.capturing() || !(e.target instanceof Element)) return;
     const target = e.target;
     const shopBtn = target.closest<HTMLElement>('[data-shop-id]');
     if (shopBtn !== null) {
@@ -201,13 +279,21 @@ export class PointerSource {
       if (!Number.isNaN(idx)) this.#deps.choice(idx);
       return;
     }
-    const chip = target.closest<HTMLElement>('[data-button]');
-    if (chip?.closest('#hint-bar') != null) {
+    const chip = chipAt(target);
+    if (chip !== null) {
       if (isVButton(chip.dataset.button)) this.#deps.press(chip.dataset.button);
       return;
     }
     if (target.closest(NATIVE) !== null || target.closest('[data-pointer-own]') !== null) return;
-    switch (this.#deps.top()) {
+    const top = this.#deps.top();
+    // A row of the open sheet seeks before the top switch: a world sheet's top is `other`.
+    const sheet = this.#openSheet(top);
+    if (sheet?.contains(target)) {
+      const row = target.closest<HTMLElement>('[data-nav-key]');
+      if (row !== null && sheet.contains(row)) this.#seekItem(row, true);
+      return;
+    }
+    switch (top) {
       case 'world': {
         const canvas = this.#canvas();
         if (canvas?.contains(target)) this.#deps.press('A');
@@ -226,6 +312,37 @@ export class PointerSource {
       case 'other':
         return;
     }
+  }
+
+  /** UIF5.4: over the top frame's nav rows, Up or Down per notch instead of the native scroll. */
+  #onWheel(e: WheelEvent): void {
+    if (this.#deps.capturing() || !(e.target instanceof Element)) return;
+    const active = this.#screen.ownerDocument.activeElement;
+    if (e.target.closest(EDITABLE) !== null || active?.closest(EDITABLE) != null) return;
+    if (this.#deps.top() !== 'frame') return;
+    const container = this.#navContainerAt(e.target);
+    if (container === null) return;
+    e.preventDefault();
+    if (container !== this.#wheelOver) this.#wheelAcc = 0;
+    this.#wheelOver = container;
+    const { steps, acc } = wheelSteps(this.#wheelAcc, e.deltaY, e.deltaMode);
+    this.#wheelAcc = acc;
+    for (let i = 0; i < Math.abs(steps); i += 1) this.#deps.press(steps > 0 ? 'Down' : 'Up');
+  }
+
+  /** The top frame's nav container under `el`: a row's container, or an element holding rows. */
+  #navContainerAt(el: Element): HTMLElement | null {
+    const row = el.closest<HTMLElement>('[data-nav-key]');
+    if (row !== null) {
+      const c = containerOf(row);
+      return c !== null && this.#inTopFrame(row) ? c : null;
+    }
+    for (let n: Element | null = el; n !== null && n !== this.#screen; n = n.parentElement) {
+      if (!(n instanceof HTMLElement)) continue;
+      const rows = rowsOf(n);
+      if (rows.length > 0) return rows[0] !== undefined && this.#inTopFrame(rows[0]) ? n : null;
+    }
+    return null;
   }
 
   #onContextMenu(e: MouseEvent): void {
@@ -339,10 +456,18 @@ export class PointerSource {
     this.#ring = null;
   }
 
-  /** Whether `el` is shown inside the TOP frame: an `aria-modal` root, nothing inert (a covered
-   *  frame is), and no hidden, `display:none` or `visibility:hidden` ancestor. */
+  /** Whether `el` is shown inside the TOP frame: an `aria-modal` root and `#shown`; or, while a
+   *  world sheet is open, inside that sheet. */
   #inTopFrame(el: HTMLElement): boolean {
-    if (el.closest('[aria-modal="true"]') === null || el.closest('[inert]') !== null) return false;
+    if (el.closest('[aria-modal="true"]') !== null) return this.#shown(el);
+    const sheet = el.closest<HTMLElement>(SHEET);
+    return sheet !== null && this.#deps.top() === 'other' && this.#shown(el);
+  }
+
+  /** Nothing inert (a covered frame is), and no hidden, `display:none` or `visibility:hidden`
+   *  ancestor. */
+  #shown(el: HTMLElement): boolean {
+    if (el.closest('[inert]') !== null) return false;
     for (let n: HTMLElement | null = el; n !== null && n !== this.#screen; n = n.parentElement) {
       if (n.hidden || n.style.display === 'none' || n.style.visibility === 'hidden') return false;
     }
@@ -420,7 +545,9 @@ export class PointerSource {
     }
     // One row: driven only if every other shown container is a list a Down probe would move,
     // and none did.
-    const root = container.closest<HTMLElement>('[aria-modal="true"]');
+    const root =
+      container.closest<HTMLElement>('[aria-modal="true"]') ??
+      container.closest<HTMLElement>(SHEET);
     if (root === null) return false;
     const others = new Set<HTMLElement>();
     for (const row of root.querySelectorAll<HTMLElement>('[data-nav-key]')) {
