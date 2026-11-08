@@ -2165,3 +2165,135 @@ describe('TradeProposeView ctl-8e round 2: a commit is spent by the draft it was
     }
   });
 });
+
+// ===========================================================================================
+// uif-10 (UIF10.3, UIF10.4): the step header takes the TabBar's geometry by class and the
+// monsters list scrolls; what the wizard sends does not change.
+//
+// The header stays the `ol[data-testid=tradepropose-steps]` with `li[data-step]` and the one
+// `aria-current="step"` (the e2e specs and main.input key on those). No title bar is asserted:
+// the screen has no catalogued title (residual R-uif-10-TITLES), so the header is the overlay's
+// first element child.
+// ===========================================================================================
+
+/** A style property as written inline, normalised: '0' and '0px' both read as zero. */
+function uifInline(el: HTMLElement, prop: string): string {
+  // `list-style` may be written as the shorthand or as list-style-type; either reads as none.
+  const v = (
+    el.style.getPropertyValue(prop) ||
+    (prop === 'list-style' ? el.style.getPropertyValue('list-style-type') : '')
+  ).trim();
+  return v === '0' ? '0px' : v;
+}
+
+describe('TradeProposeView uif-10: the step header on the TabBar geometry (UIF10.3)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('UIF10.3 the step header stays an OL with the TabBar classes and a list reset, every item is an mr-nav-tab, exactly the aria-current item is is-selected (never is-active) and the mark moves with the step; it is the overlay`s first element child', () => {
+    // WRONG IMPL KILLED: a header left with the UA indent and bullets (its left edge 40px off the
+    // frame); a header without the TabBar classes (height and gap unlike every other frame); a
+    // selected mark on every item or none; the row cursor's is-active used for the step (the
+    // wireframes keep "which tab" and "which row" apart); a mark painted once and not moved on
+    // repaint; a header placed after the select.
+    const { view } = mountWizard();
+    const overlay = wizEl('tradepropose-overlay');
+    const header = (): HTMLElement => headerOf();
+    const expectShape = (when: string, current: string): void => {
+      const ol = header();
+      expect(ol.tagName, `${when}: still an ordered list`).toBe('OL');
+      for (const cls of ['mr-frame-tabs', 'mr-tabbar', 'mr-tabbar-strip']) {
+        expect(ol.classList.contains(cls), `${when}: class ${cls}`).toBe(true);
+      }
+      expect(uifInline(ol, 'list-style'), `${when}: list-style none`).toMatch(/^none/);
+      expect(uifInline(ol, 'margin'), `${when}: margin 0`).toBe('0px');
+      expect(uifInline(ol, 'padding'), `${when}: padding 0`).toBe('0px');
+      const items = Array.from(ol.querySelectorAll<HTMLElement>('li[data-step]'));
+      expect(items.length, `${when}: items exist`).toBeGreaterThan(0);
+      for (const li of items) {
+        const step = li.getAttribute('data-step');
+        expect(li.classList.contains('mr-nav-tab'), `${when}: ${step} is an mr-nav-tab`).toBe(true);
+        expect(li.classList.contains('is-active'), `${when}: ${step} is never is-active`).toBe(
+          false,
+        );
+        const isCurrent = li.getAttribute('aria-current') === 'step';
+        expect(
+          li.classList.contains('is-selected'),
+          `${when}: ${step} is-selected iff current`,
+        ).toBe(isCurrent);
+      }
+      expect(
+        items.filter((li) => li.classList.contains('is-selected')).map((li) => li.dataset.step),
+        `${when}: exactly the current step is selected`,
+      ).toEqual([current]);
+    };
+
+    expectShape('after render', 'target');
+    view.paint(wizPaint({ step: 'coins' }));
+    expectShape('on coins', 'coins');
+    view.paint(wizPaint({ step: 'review' }));
+    expectShape('on review', 'review');
+    view.paint(wizPaint({ steps: proposeSteps(true), step: 'offer' }));
+    expectShape('supplied target', 'offer');
+    expect(overlay.firstElementChild, 'the header is the first element child').toBe(header());
+  });
+
+  it('UIF10.3 #tradepropose-monsters is a .mr-scroll list so it grows and scrolls above the fields, through render and paint', () => {
+    // WRONG IMPL KILLED: a monsters list with no scroll class (thirty monsters push the submit
+    // button out of the frame); the class lost when the list is rebuilt by a paint.
+    const { view } = mountWizard();
+    expect(wizMonsters().classList.contains('mr-scroll'), 'after render').toBe(true);
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(wizMonsters().classList.contains('mr-scroll'), 'after paint').toBe(true);
+    view.hide();
+    view.render(WIZ_LISTS);
+    view.show();
+    expect(wizMonsters().classList.contains('mr-scroll'), 'after a reopen').toBe(true);
+  });
+});
+
+describe('TradeProposeView uif-10: what the wizard sends does not change (UIF10.4)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('UIF10.4 for one fixed draft (Bob, monsters 5 and 12, offer 5, ask 7) the args through the commit token equal the args through the button and equal the literal object the shipped code sends', async () => {
+    // NON-REGRESSION GUARD (passes today): kit adoption must not change the submission. WRONG IMPL
+    // KILLED: a header or list rebuild that drops a ticked box or the draft before the send; a
+    // commit path and a click path that build different args (an order, a field name, a bigint
+    // turned into a number or a string).
+    const expected: TradeProposeArgs = {
+      targetIdentity: WIZ_BOB.identity,
+      initiatorMonsterIds: [5n, 12n],
+      initiatorCurrency: 5n,
+      counterpartyCurrency: 7n,
+    };
+    const fill = (): void => {
+      userSelect(WIZ_BOB.identity);
+      userCheck(5, true);
+      userCheck(12, true);
+      userType(wizOffer(), '5');
+      userType(wizRequest(), '7');
+    };
+
+    const viaToken = mountWizard();
+    fill();
+    viaToken.view.paint(wizPaint({ step: 'review', commit: newCommit() }));
+    await flushPromises();
+    expect(viaToken.onSubmit, 'the commit token sends once').toHaveBeenCalledTimes(1);
+    const tokenArgs = viaToken.onSubmit.mock.calls[0]?.[0];
+
+    teardown();
+    const viaButton = mountWizard();
+    fill();
+    wizSubmit().click();
+    await flushPromises();
+    expect(viaButton.onSubmit, 'the button sends once').toHaveBeenCalledTimes(1);
+    const buttonArgs = viaButton.onSubmit.mock.calls[0]?.[0];
+
+    expect(tokenArgs, 'the token path sends the literal').toEqual(expected);
+    expect(buttonArgs, 'the button path sends the literal').toEqual(expected);
+    expect(tokenArgs, 'and the two paths agree').toEqual(buttonArgs);
+  });
+});

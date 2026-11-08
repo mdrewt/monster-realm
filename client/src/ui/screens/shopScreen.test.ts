@@ -1,6 +1,12 @@
+// @vitest-environment happy-dom
 // ui/screens/shopScreen.test.ts — ctl-8a (CTL8A.2): the shop frame's pure adapter.
 //
-// Node env, no DOM. `shopScreen` is driven only through `viewModel(ctx)`, `init(vm)`,
+// INTENTIONAL CHANGE (uif-10): this file ran in the node environment ("Node env, no DOM"); it now
+// runs under happy-dom because the uif-10 cases at the bottom paint the adapter into a REAL
+// ShopView (the confirm sheet's cursor seat and the quantity text are read off the DOM). The
+// ctl-8a cases below never touch `document` and are unchanged.
+//
+// `shopScreen` is driven only through `viewModel(ctx)`, `init(vm)`,
 // `onButton(vm, state, btn)`, `observe(vm, state, now)` and `paint(view, vm, state)` into a
 // recording fake view; every claim about the cursor, the tab, the description slot and the
 // quantity / confirm prompt is read off the paint (`ShopPaint`), never off the state's internals.
@@ -23,7 +29,7 @@
 //   confirm   Buy defaults to Yes, Sell to No; a fresh Up/Down flips it, a repeat never does;
 //             Yes issues buy / sell and returns to the list; No and B return with no command.
 //   settle    observe answers the SAME state when nothing changed and re-seats what a batch moved.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import type { VButton } from '../../input/buttons';
 import type {
@@ -33,6 +39,7 @@ import type {
   StoreShopRow,
   StoreWallet,
 } from '../../net/store';
+import { tf as i18nTf } from '../i18n/resolver';
 import type { NavInput } from '../nav';
 import {
   buildShopViewModel,
@@ -43,7 +50,7 @@ import {
   shopBuyKey,
   shopSellKey,
 } from '../shopModel';
-import type { ShopPaint, ShopView } from '../shopView';
+import { type ShopPaint, ShopView } from '../shopView';
 import {
   SHOP_BUY_MAX,
   type ShopScreenState,
@@ -734,5 +741,147 @@ describe('shopScreen — review-lens settle cases (ctl-8a, CTL8A.2)', () => {
       ...browse('buy', buyKey(soldOut, 0)),
       description: BAIT.description,
     });
+  });
+});
+
+// ===========================================================================================
+// uif-10 (UIF10.1, UIF10.4): the real adapter painting a REAL ShopView.
+//
+// The confirm is the ContextSheet's confirm variant; the cursor it seats is the shipped default
+// (Buy -> Yes, Sell -> No), read off the sheet's `is-active` row after the adapter paints. The
+// quantity row keeps its Left / Right clamping, and the view's `#shop-prompt-text` follows it.
+// ===========================================================================================
+
+let uifView: ShopView | null = null;
+
+afterEach(() => {
+  uifView?.hide();
+  uifView = null;
+  document.body.innerHTML = '';
+});
+
+/** A shown ShopView over a shell like index.html's, rendered from `vm`. */
+function mountShop(vm: ShopScreenVm): ShopView {
+  document.body.innerHTML = `
+    <div id="shop-overlay" role="dialog" aria-modal="true" style="display:none">
+      <div id="shop-title" tabindex="-1"></div>
+      <ul id="shop-for-sale"></ul>
+      <ul id="shop-inventory"></ul>
+    </div>
+  `;
+  const view = new ShopView({ onBuy: () => {}, onSell: () => {} });
+  view.render(vm.shop);
+  view.show();
+  uifView = view;
+  return view;
+}
+
+const uifEl = (id: string): HTMLElement => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is missing`);
+  return el;
+};
+
+/** The keys of the sheet's rows marked is-active. */
+const sheetActive = (): Array<string | undefined> =>
+  Array.from(uifEl('shop-confirm').querySelectorAll<HTMLElement>('.mr-sheet-rows [data-nav-key]'))
+    .filter((el) => el.classList.contains('is-active'))
+    .map((el) => el.dataset.navKey);
+
+describe('shopScreen uif-10: the confirm sheet seats the shipped default (UIF10.1)', () => {
+  it('UIF10.1 driving the real shopScreen into a real ShopView: A, A on a Buy row opens the confirm sheet with the cursor on Yes, A, A on a sellable Sell stack opens it on No, a fresh Down flips it, and B or Yes closes the sheet', () => {
+    // WRONG IMPL KILLED: the shipped Yes/No under #shop-prompt (no sheet at all); one default for
+    // both (a Sell confirm on Yes sells on a double-tap of A); a sheet that ignores the paint's
+    // `yes` and always seats the first row; a sheet left open after B or after Yes.
+    const vm = vmOf(world());
+    const view = mountShop(vm);
+    const paintState = (s: ShopScreenState): void => {
+      if (shopScreen.paint === undefined) throw new Error('shopScreen must define paint');
+      shopScreen.paint(view, vm, s);
+    };
+    const sheet = uifEl('shop-confirm');
+
+    const buy = swallowed(vm, shopScreen.init(vm), ['A', 'A']);
+    paintState(buy);
+    expect(sheet.hasAttribute('data-context-sheet'), '#shop-confirm is the sheet').toBe(true);
+    expect(sheet.hidden, 'Buy: the sheet is open').toBe(false);
+    expect(sheetActive(), 'Buy defaults to Yes').toEqual(['yes']);
+
+    paintState(swallowed(vm, buy, ['Down']));
+    expect(sheetActive(), 'a fresh Down flips Buy to No').toEqual(['no']);
+
+    const sell = swallowed(vm, shopScreen.init(vm), ['RB', 'A', 'A']);
+    paintState(sell);
+    expect(sheet.hidden, 'Sell: the sheet is open').toBe(false);
+    expect(sheetActive(), 'Sell defaults to No').toEqual(['no']);
+    paintState(swallowed(vm, sell, ['Up']));
+    expect(sheetActive(), 'a fresh Up flips Sell to Yes').toEqual(['yes']);
+
+    paintState(press(vm, buy, 'B').state);
+    expect(sheet.hidden, 'B closes the sheet').toBe(true);
+    expect(sheet.querySelectorAll('[data-nav-key]'), 'and empties it').toHaveLength(0);
+
+    paintState(buy);
+    expect(sheet.hidden, 'reopened').toBe(false);
+    const yes = press(vm, buy, 'A');
+    expect(yes.result, 'Yes sends the buy').toEqual({ kind: 'buy', shopId: 3, itemId: 7, qty: 1 });
+    paintState(yes.state);
+    expect(sheet.hidden, 'Yes closes the sheet').toBe(true);
+  });
+});
+
+describe('shopScreen uif-10: the quantity row keeps its clamping (UIF10.4)', () => {
+  it('UIF10.4 Left at quantity 1 stays 1, Right climbs and stops at the cap (99 on Buy, the stack count on Sell), repeat presses included, and the view`s #shop-prompt-text shows the clamped quantity after each paint', () => {
+    // NON-REGRESSION GUARD (passes today). WRONG IMPL KILLED: a quantity that wraps below 1 or
+    // above the cap (Left at 1 jumping to 99 would buy 99 in one press); repeats ignored; a view
+    // text that shows the raw or stale quantity rather than the painted one.
+    const vm = vmOf(world());
+    const view = mountShop(vm);
+    const text = (): string => uifEl('shop-prompt-text').textContent ?? '';
+    const paintState = (s: ShopScreenState): void => {
+      if (shopScreen.paint === undefined) throw new Error('shopScreen must define paint');
+      shopScreen.paint(view, vm, s);
+    };
+    const buyText = (n: number): string => i18nTf('shop.qty.buy', { name: 'Bait', qty: n });
+    const sellText = (n: number): string => i18nTf('shop.qty.sell', { name: 'Bait', qty: n });
+
+    let s = swallowed(vm, shopScreen.init(vm), ['A']);
+    paintState(s);
+    expect(uifEl('shop-prompt').hidden, 'the quantity row is shown').toBe(false);
+    expect(text(), 'opens at 1').toBe(buyText(1));
+    s = swallowed(vm, s, ['Left']);
+    paintState(s);
+    expect(text(), 'Left at 1 stays 1').toBe(buyText(1));
+    s = swallowed(vm, s, [rep('Left')]);
+    paintState(s);
+    expect(text(), 'a repeat Left at 1 stays 1').toBe(buyText(1));
+    s = swallowed(vm, s, ['Right', rep('Right'), rep('Right')]);
+    paintState(s);
+    expect(text(), 'Right x3 climbs to 4').toBe(buyText(4));
+    s = swallowed(
+      vm,
+      s,
+      Array.from({ length: SHOP_BUY_MAX + 5 }, (): Input => rep('Right')),
+    );
+    paintState(s);
+    expect(text(), 'stops at the Buy cap').toBe(buyText(SHOP_BUY_MAX));
+    s = swallowed(vm, s, ['Right']);
+    paintState(s);
+    expect(text(), 'a fresh Right at the cap stays').toBe(buyText(SHOP_BUY_MAX));
+
+    // Sell: the player owns 5 Bait.
+    let t = swallowed(vm, shopScreen.init(vm), ['RB', 'A', 'Left']);
+    paintState(t);
+    expect(text(), 'Sell: Left at 1 stays 1').toBe(sellText(1));
+    t = swallowed(vm, t, [
+      'Right',
+      rep('Right'),
+      rep('Right'),
+      rep('Right'),
+      rep('Right'),
+      'Right',
+    ]);
+    paintState(t);
+    expect(text(), 'Sell stops at the 5 owned').toBe(sellText(5));
   });
 });

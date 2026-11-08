@@ -17,9 +17,21 @@
 // only hide the inactive one and move the cursor. The kept paint is re-applied after every batch
 // render and reset to its opening value (Buy, the first row) by a render while hidden and by the
 // hidden→visible edge, so a reopened shop never sits under the last visit's confirm.
+//
+// THE KIT (uif-10, UIF10.1/UIF10.3). The frame is title bar → the kit TabBar (strip `#shop-tabs`) →
+// `#shop-body` (the lists, the description, the quantity row, the sheet). The confirm is the frame's
+// one ContextSheet (`#shop-confirm`, confirm variant), which replaces the quantity row while it shows
+// and is anchored away from the cursor row. As a sheet in the top frame it closes on a click outside
+// it (input/pointerSource.ts, UIF5.1); the click still reaches its target.
+import {
+  type ContextSheet,
+  closeContextSheet,
+  createContextSheet,
+  placeContextSheet,
+  renderContextSheet,
+} from './contextSheet';
 import { t, tf } from './i18n/resolver';
 import { list, tabs } from './nav';
-import { renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import {
   type ShopInventoryItemViewModel,
@@ -29,6 +41,7 @@ import {
   shopBuyKey,
   shopSellKey,
 } from './shopModel';
+import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 
 /** What the shop screen paints. `activeKey` is a `shopBuyKey` / `shopSellKey` of the active tab's
  *  list; `description` is `undefined` before Y (an empty slot) and `null` for an item with none
@@ -54,7 +67,10 @@ export interface ShopPaint {
  *  row", resolved against the list at apply time, so a render before any paint already shows it). */
 const OPENING: ShopPaint = { tab: 'buy', activeKey: null, description: undefined, prompt: null };
 
-/** The tab strip's layout: the two tabs, no rows (renderTabs reads only the keys). */
+/** The confirm sheet's frame id: its rows are `shopConfirm-yes` / `shopConfirm-no`. */
+const SHEET_FRAME = 'shopConfirm';
+
+/** The tab strip's layout: the two tabs, no rows (the TabBar reads only the keys). */
 const TAB_STRIP = tabs([
   { key: 'buy', layout: list([]) },
   { key: 'sell', layout: list([]) },
@@ -114,11 +130,12 @@ export class ShopView {
   readonly #forSaleList: HTMLElement;
   readonly #inventoryList: HTMLElement;
   readonly #balanceEl: HTMLElement;
-  readonly #tabStrip: HTMLElement;
+  readonly #tabBar: TabBar;
+  readonly #body: HTMLElement;
   readonly #description: HTMLElement;
   readonly #prompt: HTMLElement;
   readonly #promptText: HTMLElement;
-  readonly #confirm: HTMLElement;
+  readonly #sheet: ContextSheet;
   readonly #cbs: ShopCallbacks;
   // In-flight lock: prevents double-spend when a reducer Promise is pending.
   #pending = false;
@@ -174,17 +191,54 @@ export class ShopView {
       this.#title.insertAdjacentElement('beforebegin', bar);
       bar.append(this.#title, this.#balanceEl);
     }
-    const after = (anchor: Element) => (el: HTMLElement) =>
-      anchor.insertAdjacentElement('afterend', el);
-    this.#tabStrip = part('shop-tabs', 'div', (el) => {
-      el.className = 'mr-frame-tabstrip';
-      after(bar)(el);
+    // The frame anatomy (uif-10, UIF10.3): title bar, the kit TabBar (its strip keeps the id
+    // `shop-tabs`), then the body holding the lists, the description, the quantity prompt and the
+    // confirm sheet. Every part is located before it is created (a second view duplicates nothing).
+    const strip = document.getElementById('shop-tabs');
+    const stripRoot = strip?.parentElement;
+    this.#tabBar =
+      strip !== null && stripRoot?.classList.contains('mr-tabbar') === true
+        ? { root: stripRoot, strip }
+        : createTabBar(document, { id: 'shop-tabs' });
+    bar.after(this.#tabBar.root);
+    const tabRoot = this.#tabBar.root;
+    this.#body = part('shop-body', 'div', (el) => {
+      el.className = 'mr-frame-body';
+      // A flex column, so the shown list grows and scrolls (`.mr-scroll`) inside the body.
+      el.style.cssText = 'display:flex;flex-direction:column;';
+      tabRoot.after(el);
     });
-    this.#description = part('shop-description', 'p', after(this.#inventoryList));
-    this.#prompt = part('shop-prompt', 'div', after(this.#description));
+    // The lists lose the UA list indent and take the kit's scroll cue.
+    for (const listEl of [this.#forSaleList, this.#inventoryList]) {
+      listEl.classList.add('mr-scroll');
+      listEl.style.margin = '0';
+      listEl.style.padding = '0';
+    }
+    this.#body.append(this.#forSaleList, this.#inventoryList);
+    const body = this.#body;
+    this.#description = part('shop-description', 'p', (el) => body.append(el));
+    this.#prompt = part('shop-prompt', 'div', (el) => body.append(el));
     const prompt = this.#prompt;
     this.#promptText = part('shop-prompt-text', 'p', (el) => prompt.append(el));
-    this.#confirm = part('shop-confirm', 'div', (el) => prompt.append(el));
+    // The Buy/Sell confirm is the frame's one ContextSheet (UIF10.1), its root `#shop-confirm`.
+    const sheetRoot = document.getElementById('shop-confirm');
+    const sheetPart = (cls: string): HTMLElement | null =>
+      sheetRoot?.querySelector<HTMLElement>(`:scope > .${cls}`) ?? null;
+    const heading = sheetPart('mr-sheet-title');
+    const prose = sheetPart('mr-sheet-prose');
+    const rows = sheetPart('mr-sheet-rows');
+    if (sheetRoot !== null && heading !== null && prose !== null && rows !== null) {
+      this.#sheet = { frame: SHEET_FRAME, root: sheetRoot, heading, prose, rows };
+    } else {
+      this.#sheet = createContextSheet(document, { frame: SHEET_FRAME });
+      this.#sheet.root.id = 'shop-confirm';
+    }
+    body.append(this.#sheet.root);
+    // Re-place the open sheet when the body's size changes. Never disconnected: the view lives as
+    // long as the page, and a hidden frame places nothing.
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => this.#placeSheet()).observe(body);
+    }
     this.#cbs = cbs;
   }
 
@@ -273,7 +327,7 @@ export class ShopView {
   #apply(): void {
     const p = this.#paint;
     const navState = { tab: p.tab, item: null, perTab: {} };
-    renderTabs(this.#tabStrip, TAB_STRIP, navState, {
+    renderTabBar(this.#tabBar, TAB_STRIP, navState, {
       frame: 'shop',
       label: (tab) => (tab.key === 'buy' ? t('shop.tab.buy') : t('shop.tab.sell')),
     });
@@ -303,23 +357,36 @@ export class ShopView {
           ? t('shop.description.none')
           : p.description;
 
+    // The quantity row stays in flow under the lists; the confirm replaces it with the sheet.
     const prompt = p.prompt;
-    this.#prompt.hidden = prompt === null;
-    this.#confirm.hidden = prompt?.kind !== 'confirm';
-    this.#promptText.textContent = prompt === null ? '' : promptText(prompt);
-    if (prompt === null || prompt.kind !== 'confirm') return;
-    renderNav(
-      this.#confirm,
-      CONFIRM_LAYOUT,
-      { tab: null, item: prompt.yes ? 'yes' : 'no', perTab: {} },
-      {
-        frame: 'shopConfirm',
-        labelledBy: 'shop-prompt-text',
+    const confirming = prompt?.kind === 'confirm';
+    this.#prompt.hidden = prompt === null || confirming;
+    this.#promptText.textContent = prompt === null || confirming ? '' : promptText(prompt);
+    const hadFocus = this.#sheet.root.contains(document.activeElement);
+    if (prompt !== null && prompt.kind === 'confirm') {
+      renderContextSheet(this.#sheet, {
+        variant: 'confirm',
+        question: promptText(prompt),
+        layout: CONFIRM_LAYOUT,
+        state: { tab: null, item: prompt.yes ? 'yes' : 'no', perTab: {} },
         fill: (el, item) => {
           el.textContent = OPTION_LABELS[item.key]?.() ?? '';
         },
-      },
-    );
+      });
+      this.#placeSheet();
+    } else if (!this.#sheet.root.hidden) {
+      // Only a shown sheet is closed: closing renders an empty nav, which marks a tab stop.
+      closeContextSheet(this.#sheet);
+      // Focus inside a sheet that closes stays in the frame.
+      if (hadFocus) this.#title.focus();
+    }
+  }
+
+  /** Anchors the shown sheet away from the cursor row; a hidden frame (no width) places nothing. */
+  #placeSheet(): void {
+    if (this.#sheet.root.hidden || this.#body.getBoundingClientRect().width === 0) return;
+    const slot = this.#body.querySelector('li.is-active') ?? this.#body;
+    placeContextSheet(this.#sheet, this.#body, slot);
   }
 
   #makeBuyRow(shopId: number, item: ShopItemViewModel): HTMLElement {

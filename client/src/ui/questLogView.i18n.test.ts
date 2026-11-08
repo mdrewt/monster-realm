@@ -282,11 +282,23 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
       const empty = document.getElementById('quest-log-empty');
       expect(empty, 'the empty element exists').not.toBeNull();
       expect(empty?.textContent, 'exactly the resolver output').toBe('«journal.empty»');
-      expect(empty?.children.length, 'plain text, no child elements').toBe(0);
+      // INTENTIONAL CHANGE (uif-10, UIF10.2): the empty state is the kit's EmptyState, so the text
+      // sits in ONE child element (the `.mr-empty-reason` line), not as bare text. Was:
+      // `expect(empty?.children.length).toBe(0)` ("plain text, no child elements"). Kept: the text is
+      // exactly the resolver output, and the child is a plain line with no element inside it.
+      expect(empty?.children.length, 'one reason line').toBe(1);
+      expect(empty?.querySelector('.mr-empty-reason')?.children.length, 'plain text inside').toBe(
+        0,
+      );
       expect(i18nT).toHaveBeenCalledWith('journal.empty');
 
       view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
-      expect(empty?.textContent, 'cleared once a quest exists').toBe('');
+      // The element is re-read by id: the view may rebuild the kit root on a render, so a reference
+      // held from before is not the live one. Was: `empty?.textContent` on the held reference.
+      expect(
+        document.getElementById('quest-log-empty')?.textContent,
+        'cleared once a quest exists',
+      ).toBe('');
     } finally {
       vi.mocked(i18nT).mockRestore();
     }
@@ -333,5 +345,31 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
     expect(typeof fr, 'fr is a plain string').toBe('string');
     expect((fr as string).length > 0, 'fr is not blank').toBe(true);
     expect(fr, 'fr is a translation, not the English copy').not.toBe(en);
+  });
+
+  it('UIF10.2 under the fr locale the kit empty state`s one .mr-empty-reason line is the fr journal.empty and the title is the fr journal.title', () => {
+    // WRONG IMPL KILLED: a reason line written from the English catalog or a literal; a reason
+    // written once at construction (the locale is switched AFTER construction here); an extra cue
+    // or next-step line; a title lost when the title bar lands.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    try {
+      setLocale('fr');
+      view.render(questVm([]));
+      const fr = (CATALOG_FR as Record<string, unknown>)['journal.empty'];
+      const frTitle = (CATALOG_FR as Record<string, unknown>)['journal.title'];
+      const empty = document.getElementById('quest-log-empty') as HTMLElement;
+      expect(empty.classList.contains('mr-empty'), 'the kit root').toBe(true);
+      const reasons = empty.querySelectorAll('.mr-empty-reason');
+      expect(reasons, 'exactly one reason line').toHaveLength(1);
+      expect(reasons[0]?.textContent).toBe(fr);
+      expect(empty.querySelectorAll('.mr-empty-cue, .mr-empty-next'), 'reason only').toHaveLength(
+        0,
+      );
+      expect(document.getElementById('quest-log-title')?.textContent).toBe(frTitle);
+    } finally {
+      setLocale('en');
+    }
   });
 });

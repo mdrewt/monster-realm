@@ -72,6 +72,10 @@ export class HealView {
     this.overlay = document.getElementById('heal-overlay')!;
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('heal-list')!;
+    // Token spacing (uif-10, UIF10.3): no UA list indent, so the header line starts at the frame's
+    // content edge like every other screen's first row.
+    this.list.style.margin = '0';
+    this.list.style.padding = '0';
     // The prompt, after and outside the list. No strings here: text is written per render.
     this.#question = part(this.list, 'heal-question', 'p');
     this.#reason = part(this.#question, 'heal-reason', 'p');
