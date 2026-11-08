@@ -6161,6 +6161,27 @@ describe('BoxView uif-7: the sheet is the ContextSheet inside the panel (UIF7.1)
       'Emberfang',
     );
     expect(c8bHidden(boxGridOf(parent), root), 'the Storage grid is the shown one').toBe(false);
+
+    // The Feed… and Evolve… lists carry no card: their title is the CURSOR monster's name (activeKey),
+    // not the first card's. The cursor is on the SECOND party card, then on a Storage card.
+    for (const [tab, key, name] of [
+      ['party', '101', 'Mossling'],
+      ['storage', '300', 'Duskling'],
+      ['party', '100', 'Kip'],
+    ] as const) {
+      view.paint(
+        c8bPaint({
+          tab,
+          activeKey: key,
+          feed: { foods: [{ itemId: 7, name: 'Bait', count: 3 }], activeKey: '7' },
+        }),
+      );
+      expect(heading.textContent, `the food list on ${key} is titled ${name}`).toBe(name);
+      view.paint(
+        c8bPaint({ tab, activeKey: key, evolve: { mon: C8C_TWO_CHOICES, activeKey: '20' } }),
+      );
+      expect(heading.textContent, `the Evolve list on ${key} is titled ${name}`).toBe(name);
+    }
   });
 
   it('UIF7.1 closing the sheet hides the root and leaves it with no row, no heading text and no monster name; a later open shows it again and a reopened frame starts closed', () => {
@@ -6211,6 +6232,9 @@ describe('BoxView uif-7: the sheet is the ContextSheet inside the panel (UIF7.1)
       expect(root.contains(document.activeElement), `${when}: focus is inside the frame root`).toBe(
         true,
       );
+      // With no sheet left to hold it, focus is the title anchor (tightened: a heal to the rows of
+      // a hidden sheet would also be "in the frame").
+      expect(document.activeElement, `${when}: focus is the title anchor`).toBe(c8bAnchor(root));
     };
 
     open();
@@ -6228,8 +6252,13 @@ describe('BoxView uif-7: the sheet is the ContextSheet inside the panel (UIF7.1)
     expectInFrame('closed with focus on a row');
 
     // A swap to the food list keeps focus in the one sheet.
+    // Focus on a ROW that the swap removes (the Feed row): the heal must hand focus to the sheet's
+    // rows list (the sheet is still shown), never to the title anchor.
     open();
-    c8cListOf(root, 'monstersSheet-root-summary').focus();
+    const swapList = c8cListOf(root, 'monstersSheet-root-summary');
+    const feedRow = c8cById(root, 'monstersSheet-root-feed');
+    feedRow.focus();
+    expect(document.activeElement, 'fixture: focus is on the Feed row').toBe(feedRow);
     view.paint(
       c8bPaint({
         tab: 'party',
@@ -6238,10 +6267,11 @@ describe('BoxView uif-7: the sheet is the ContextSheet inside the panel (UIF7.1)
         feed: { foods: [{ itemId: 7, name: 'Bait', count: 3 }], activeKey: '7' },
       }),
     );
-    expect(
-      (document.activeElement as HTMLElement).closest('[data-context-sheet]'),
-      'focus is still in the sheet after the swap',
-    ).not.toBeNull();
+    expect(root.contains(feedRow), 'fixture: the swap removed the focused row').toBe(false);
+    const after = document.activeElement as HTMLElement;
+    expect(after.closest('[data-context-sheet]'), 'focus is still in the sheet').not.toBeNull();
+    expect(after, 'it is the sheet`s rows list').toBe(swapList);
+    expect(after, 'not the title anchor').not.toBe(c8bAnchor(root));
   });
 });
 

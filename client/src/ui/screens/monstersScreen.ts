@@ -157,9 +157,9 @@ export interface MonstersPaint {
     /** The monster's remaining care cooldown in ms; 0n = Care ready (qf-3). */
     readonly careRemainingMs: bigint;
   } | null;
-  /** The food list under the sheet. */
+  /** The food list, in the sheet's place (uif-7). */
   readonly feed: { readonly foods: readonly FoodVm[]; readonly activeKey: string | null } | null;
-  /** The Evolve list under the sheet: the monster's evolution view model. */
+  /** The Evolve list, in the sheet's place: the monster's evolution view model. */
   readonly evolve: {
     readonly mon: EvolutionMonsterViewModel;
     readonly activeKey: string | null;

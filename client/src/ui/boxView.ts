@@ -50,8 +50,8 @@
 //
 // ctl-8c: the sheet gains Care, Feed… and Evolve…; the food list, the Evolve list (every outgoing
 // path, only the choices enabled, the status line raw from the model's reason) and the Yes / No
-// confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
-// line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
+// confirm take the sheet's place (uif-7, below), and the "Fed {name}" line joins the feedback line.
+// A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
 //
 // uif-7: the sheet is the frame's one ContextSheet (ui/contextSheet.ts) inside the tab content area,
 // placed by the kit in a bottom corner away from the cursor cell (wf-1's verdict), nothing dimmed.
@@ -295,10 +295,9 @@ export class BoxView {
     header.appendChild(title);
     this.#root.appendChild(header);
 
-    // ctl-8b: the tabs, the sheet, its summary and typing row and the Move line, all BEFORE the
-    // panels and the hint. Typing mode's Escape focuses the frame's first enabled non-text
-    // control: the sheet's nav list (Enter there is the router's A); the cards carry no control
-    // of their own (qf-8).
+    // ctl-8b: the tabs, the typing row and the Move line sit BEFORE the panel and the hint; the
+    // sheet and the Summary page are in the panel (uif-7). Typing mode's Escape focuses the frame's
+    // first enabled non-text control; the cards carry no control of their own (qf-8).
     this.#tabBar = createTabBar(document, { id: 'monsters-tabs' });
     this.#root.appendChild(this.#tabBar.root);
 
@@ -359,7 +358,8 @@ export class BoxView {
 
     // uif-7: the Summary page (in place of both grids) and the one sheet, over the grid.
     panel.append(this.#summaryEl, this.#sheet.root);
-    // Re-place the open sheet when the panel's size changes (a window resize, a text step).
+    // Re-place the open sheet when the panel's size changes (a window resize, a text step). Never
+    // disconnected: the view lives as long as the page, and a hidden frame places nothing.
     if (typeof ResizeObserver === 'function') {
       new ResizeObserver(() => {
         if (this.#visible) this.#placeSheet();
