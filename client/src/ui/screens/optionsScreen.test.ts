@@ -21,6 +21,12 @@
 //   confirm  Up / Down move; A on Yes emits `{kind:'reset'}` and closes; A on No or B closes;
 //            Start pops to the base; the rest is consumed.
 //   request  a one-shot token: a NEW object per press, `null` after any other step.
+//
+// uif-13 (UIF13.1, UIF13.2) adds a third tab, Display (after Shortcuts): a list of the three text-size
+// steps `normal`, `large`, `xlarge`; A on one emits `{ kind: 'textStep', step }` (the same one-shot token
+// rule as clear / reset), and Reset all is NOT on it (Reset all resets bindings, not display). Display
+// expectations are compared with `toEqual` against literals, so this file needs no type from the new
+// request shape and stays typecheck-clean before the screen grows it.
 import { describe, expect, it } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../../input/buttons';
@@ -47,7 +53,8 @@ import type { ButtonStep, ScreenContext, ScreenResult } from './types';
 
 // --- fixtures --------------------------------------------------------------------------------
 
-type Tab = 'buttons' | 'shortcuts';
+// uif-13: the Display tab joins the two binding tabs (a screen-layer tab, not a controlsModel one).
+type Tab = 'buttons' | 'shortcuts' | 'display';
 
 const btnRow = (id: VButton): ControlsRow => ({ kind: 'button', id });
 const accRow = (id: Accel): ControlsRow => ({ kind: 'accel', id });
@@ -104,11 +111,12 @@ function tabLayout(tab: Tab): ItemLayout {
 
 const colsOf = (layout: ItemLayout): number => (layout.kind === 'grid' ? layout.cols : 1);
 
-/** Walk from a fresh screen onto `key` of `tab` with real presses: RB for the Shortcuts tab, then
- *  Down once per grid row and Right once per column. */
+/** Walk from a fresh screen onto `key` of `tab` with real presses: RB for the Shortcuts tab (RB RB
+ *  for Display), then Down once per grid row and Right once per column. */
 function walkTo(tab: Tab, key: string): ControlsState {
   let s = fresh();
   if (tab === 'shortcuts') s = walk(s, ['RB']);
+  if (tab === 'display') s = walk(s, ['RB', 'RB']);
   const layout = tabLayout(tab);
   const index = layout.items.findIndex((i) => i.key === key);
   expect(index, `fixture: ${tab} holds ${key}`).toBeGreaterThanOrEqual(0);
@@ -160,7 +168,7 @@ const ALL_BUTTONS: readonly VButton[] = VBUTTONS;
 // --- tests -----------------------------------------------------------------------------------
 
 describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
-  it('CTL12B-1-SCREEN-LAYOUT: two tabs, Buttons then Shortcuts; Buttons holds exactly the twelve button rows, each a Primary and an Alt slot and no Clear, then Reset all; every shortcut row holds Primary, Alt and Clear, then Reset all; controlsItem decodes every item and answers undefined for anything else; LB and RB switch the tabs', () => {
+  it('CTL12B-1-SCREEN-LAYOUT: three tabs (uif-13 added Display), Buttons, Shortcuts then Display; Buttons holds exactly the twelve button rows, each a Primary and an Alt slot and no Clear, then Reset all; every shortcut row holds Primary, Alt and Clear, then Reset all; controlsItem decodes every item and answers undefined for anything else; LB and RB switch the tabs', () => {
     // LEGACY BEHAVIOUR REPLACED: no Controls screen exists (a remap needed a hand-edited saved
     // table and a reload).
     // WRONG IMPL KILLED: a Shortcuts tab first (the screen would open on the shortcuts); a button
@@ -175,10 +183,12 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     const layout = CONTROLS_LAYOUT as NavLayout;
     expect(layout.kind, 'a tabbed layout').toBe('tabs');
     if (layout.kind !== 'tabs') return;
+    // INTENTIONAL CHANGE (uif-13, UIF13.2): the layout gains the Display tab after Shortcuts. Was:
+    // exactly `['buttons', 'shortcuts']`. Buttons stays first so opening Controls still lands there.
     expect(
       layout.tabs.map((x) => x.key),
-      'Buttons, then Shortcuts',
-    ).toEqual(['buttons', 'shortcuts']);
+      'Buttons, then Shortcuts, then Display',
+    ).toEqual(['buttons', 'shortcuts', 'display']);
 
     const buttons = tabLayout('buttons');
     expect(buttons, 'Buttons: a two-column grid, Primary then Alt per button').toEqual({
@@ -249,19 +259,29 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     }
 
     // LB and RB switch the tabs (fresh wraps, a repeat clamps), each remembering its own cursor.
+    // INTENTIONAL CHANGE (uif-13, UIF13.2): Shortcuts is no longer the last tab, so the wrap and
+    // clamp ends move to Display. Was: a fresh LB from the first tab wrapped to Shortcuts, a fresh RB
+    // from Shortcuts wrapped to Buttons, and a repeat RB at Shortcuts clamped there. The intents
+    // (fresh wraps at each end, a repeat clamps at the last tab) are kept, on the new ends.
     const start = fresh();
     expect(start.nav.tab).toBe('buttons');
     const right = press(start, 'RB');
     expect(right.result, 'RB is consumed').toBe('consumed');
     expect(right.state.nav.tab, 'RB: the Shortcuts tab').toBe('shortcuts');
     expect(right.state.nav.item, 'on its first cell').toBe('B_0');
-    expect(press(start, 'LB').state.nav.tab, 'a fresh LB from the first tab wraps').toBe(
-      'shortcuts',
-    );
-    expect(press(right.state, 'RB').state.nav.tab, 'a fresh RB from the last tab wraps').toBe(
+    expect(press(start, 'LB').state.nav.tab, 'a fresh LB from the first tab wraps').toBe('display');
+    const last = press(right.state, 'RB');
+    expect(last.state.nav.tab, 'RB from Shortcuts reaches Display').toBe('display');
+    expect(press(last.state, 'RB').state.nav.tab, 'a fresh RB from the last tab wraps').toBe(
       'buttons',
     );
-    expect(press(right.state, rep('RB')).state.nav.tab, 'a repeat RB clamps').toBe('shortcuts');
+    expect(press(last.state, rep('RB')).state.nav.tab, 'a repeat RB at the last tab clamps').toBe(
+      'display',
+    );
+    expect(
+      press(right.state, rep('RB')).state.nav.tab,
+      'a repeat RB below the last tab still moves',
+    ).toBe('display');
     expect(press(right.state, 'LB').state.nav.tab, 'LB: back on Buttons').toBe('buttons');
     const onAAlt = walkTo('buttons', 'A_1');
     const back = walk(onAAlt, ['RB', 'LB']);
@@ -718,5 +738,215 @@ describe('controlsScreen — Clear (ctl-12b, CTL12B.1, CTL12.7)', () => {
       const held = press(at, rep('A'));
       expect(held.state.request, `${accel}: a repeat A clears nothing`).toBeNull();
     }
+  });
+});
+
+// --- uif-13: the confirm keeps the grid under it, and the Display tab ----------------------------
+
+const STEP_KEYS = ['normal', 'large', 'xlarge'] as const;
+
+describe('controlsScreen — the Reset all confirm over the grid (uif-13, UIF13.1)', () => {
+  it('UIF13.1 while the confirm is up the paint still carries the grid cursor on Reset all and the confirm cursor on No, on both tabs, and A on No or B gives that same grid cursor back', () => {
+    // WRONG IMPL KILLED: a confirm that moves the grid cursor off Reset all (the view keeps
+    // `#controls-rows` as the grid and the sheet anchors away from the ACTIVE row: a cursor that has
+    // wandered would mislead both); a confirm that opens on Yes (navInit alone lands there: A twice
+    // resets); a paint that drops `confirm` (the sheet would never show); a close that leaves the
+    // cursor somewhere other than Reset all (the next A would not reopen the confirm).
+    for (const tab of ['buttons', 'shortcuts'] as const) {
+      const onReset = walkTo(tab, 'reset');
+      const opened = press(onReset, 'A').state;
+      const painted = paintOf(opened);
+      expect(painted.layout, `${tab}: still the tabbed layout`).toBe(CONTROLS_LAYOUT);
+      expect(painted.nav.tab, `${tab}: the grid tab`).toBe(tab);
+      expect(painted.nav.item, `${tab}: the grid cursor stays on Reset all`).toBe('reset');
+      expect(painted.confirm?.item, `${tab}: the confirm cursor is on No`).toBe('no');
+      expect(painted.request, `${tab}: nothing requested while asking`).toBeNull();
+
+      const afterNo = paintOf(press(opened, 'A').state);
+      expect(afterNo.confirm, `${tab}: A on No closes`).toBeNull();
+      expect(afterNo.nav.item, `${tab}: back on Reset all`).toBe('reset');
+      const afterB = paintOf(press(opened, 'B').state);
+      expect(afterB.confirm, `${tab}: B closes`).toBeNull();
+      expect(afterB.nav.item, `${tab}: back on Reset all`).toBe('reset');
+
+      // Reopening lands on No again, never on the Yes a previous visit may have reached.
+      const onYes = press(opened, 'Up').state;
+      expect(onYes.confirm?.item, `${tab}: precondition: the cursor moved to Yes`).toBe('yes');
+      const closed = press(press(onYes, 'B').state, 'A').state;
+      expect(closed.confirm?.item, `${tab}: reopened on No`).toBe('no');
+    }
+  });
+});
+
+describe('controlsScreen — the Display tab (uif-13, UIF13.2)', () => {
+  it('UIF13.2 the Display tab is a list of exactly Normal, Large and Extra large (keys normal, large, xlarge, all enabled), controlsItem decodes each to a textStep item and nothing else on that tab, no other tab decodes a step, and there is no Reset all on Display', () => {
+    // WRONG IMPL KILLED: a Display tab put first (the screen would open on it, moving every nav
+    // path); a grid where the spec says list (the nav-kit rows the view paints as a list); a step
+    // missing or out of order; a Reset all on Display (Reset all resets bindings, and would be
+    // mistaken for a display reset); a decode that reads a prototype name (`constructor`,
+    // `toString`, `__proto__`) as a step; a step key that decodes on the Buttons or Shortcuts tab
+    // (`normal` would be a binding cell); a tab key that is not exactly `display`.
+    const layout = CONTROLS_LAYOUT as NavLayout;
+    expect(layout.kind).toBe('tabs');
+    if (layout.kind !== 'tabs') return;
+    expect(layout.tabs.map((x) => x.key)).toEqual(['buttons', 'shortcuts', 'display']);
+    expect(tabLayout('display'), 'Display: a list of the three steps').toEqual({
+      kind: 'list',
+      items: STEP_KEYS.map((key) => ({ key, enabled: true })),
+    });
+    expect(
+      tabLayout('display').items.some((i) => i.key === 'reset'),
+      'no Reset all on Display',
+    ).toBe(false);
+    for (const step of STEP_KEYS) {
+      expect(controlsItem('display', step), `display / ${step}`).toEqual({
+        kind: 'textStep',
+        step,
+      });
+    }
+    const undecoded: ReadonlyArray<readonly [string | null, string]> = [
+      ['display', 'reset'],
+      ['display', 'A_0'],
+      ['display', 'Normal'],
+      ['display', 'huge'],
+      ['display', ''],
+      ['display', 'normal_0'],
+      ['display', 'constructor'],
+      ['display', 'toString'],
+      ['display', '__proto__'],
+      ['display', 'hasOwnProperty'],
+      ['buttons', 'normal'],
+      ['buttons', 'large'],
+      ['shortcuts', 'xlarge'],
+      ['Display', 'normal'],
+      [null, 'normal'],
+    ];
+    for (const [tab, key] of undecoded) {
+      expect(controlsItem(tab, key), `${String(tab)} / ${JSON.stringify(key)}`).toBeUndefined();
+    }
+  });
+
+  it('UIF13.2 from a fresh screen RB then RB reaches Display on Normal, LB from Buttons wraps to it, a repeat RB at Display clamps, a fresh RB wraps to Buttons, and each tab keeps its own cursor across the switches', () => {
+    // WRONG IMPL KILLED: a Display tab the shoulder buttons cannot reach (only a pointer could);
+    // an RB that skips over it; a wrap or clamp end left on Shortcuts; a Display cursor that does
+    // not start on Normal or is not remembered (the live step is the view's marker, the cursor is
+    // the player's); a tab switch that moves another tab's remembered cell.
+    const atButtons = fresh();
+    const atShortcuts = walk(atButtons, ['RB']);
+    expect(atShortcuts.nav.tab).toBe('shortcuts');
+    const atDisplay = walk(atShortcuts, ['RB']);
+    expect(atDisplay.nav.tab, 'RB RB: Display').toBe('display');
+    expect(atDisplay.nav.item, 'on Normal').toBe('normal');
+    expect(press(atButtons, 'LB').state.nav.tab, 'a fresh LB from Buttons wraps to Display').toBe(
+      'display',
+    );
+    expect(press(atDisplay, rep('RB')).state.nav.tab, 'a repeat RB at Display clamps').toBe(
+      'display',
+    );
+    expect(press(atDisplay, 'RB').state.nav.tab, 'a fresh RB at Display wraps').toBe('buttons');
+    expect(press(atDisplay, 'LB').state.nav.tab, 'LB from Display: Shortcuts').toBe('shortcuts');
+
+    const onLarge = walk(atDisplay, ['Down']);
+    const away = walk(onLarge, ['RB', 'RB']);
+    expect(away.nav.tab, 'RB from Display wraps to Buttons, RB again to Shortcuts').toBe(
+      'shortcuts',
+    );
+    const back = walk(away, ['RB']);
+    expect(back.nav.tab).toBe('display');
+    expect(back.nav.item, 'the Display cursor is remembered').toBe('large');
+    const onAAlt = walkTo('buttons', 'A_1');
+    expect(walk(onAAlt, ['LB', 'RB']).nav.item, 'a visit to Display leaves Buttons alone').toBe(
+      'A_1',
+    );
+  });
+
+  it('UIF13.2 on Display Down and Up walk Normal, Large, Extra large; a fresh press wraps at either end, a repeat clamps; Left and Right do nothing; every move is consumed and requests nothing', () => {
+    // WRONG IMPL KILLED: rows laid out as a grid (Left and Right would move); an order other than
+    // the display order; a wrap that lands on the wrong end or a clamp that wraps (the list rule is
+    // the nav kit's: fresh wraps, repeat clamps); a move that fires a request (a press of Down must
+    // never change the text size: only A does); a move that opens a capture or a confirm.
+    const normal = walkTo('display', 'normal');
+    expect(normal.nav.item).toBe('normal');
+    const large = walk(normal, ['Down']);
+    expect(large.nav.item, 'Down: Large').toBe('large');
+    const xlarge = walk(large, ['Down']);
+    expect(xlarge.nav.item, 'Down: Extra large').toBe('xlarge');
+    expect(walk(xlarge, ['Down']).nav.item, 'a fresh Down at the end wraps to Normal').toBe(
+      'normal',
+    );
+    expect(walk(xlarge, [rep('Down')]).nav.item, 'a repeat Down at the end clamps').toBe('xlarge');
+    expect(walk(xlarge, ['Up']).nav.item, 'Up: Large').toBe('large');
+    expect(walk(normal, ['Up']).nav.item, 'a fresh Up at the start wraps to Extra large').toBe(
+      'xlarge',
+    );
+    expect(walk(normal, [rep('Up')]).nav.item, 'a repeat Up at the start clamps').toBe('normal');
+    for (const s of [normal, large, xlarge]) {
+      for (const input of ['Left', 'Right', rep('Left'), rep('Right')] as const) {
+        const step = press(s, input);
+        expect(step.result, `${s.nav.item}: ${label(input)} is consumed`).toBe('consumed');
+        expect(step.state.nav, `${s.nav.item}: ${label(input)} moves nothing`).toEqual(s.nav);
+      }
+      for (const input of ['Down', 'Up', 'LB', 'RB'] as const) {
+        const step = press(s, input);
+        expect(step.state.request, `${s.nav.item}: ${input} requests nothing`).toBeNull();
+        expect(step.state.capturing).toBeNull();
+        expect(step.state.confirm).toBeNull();
+      }
+    }
+  });
+
+  it('UIF13.2 A on a step emits {kind:"textStep", step} for exactly that step, once and consumed, with the cursor unmoved and no capture or confirm; two presses give two distinct token objects; any other step drops the token; a repeat A requests nothing', () => {
+    // WRONG IMPL KILLED: an A that selects the cursor's NEIGHBOUR (an off-by-one index); a step
+    // read from the tab's first item whatever the cursor; a token reused across presses (the view
+    // applies a token once by identity, so the second Large would apply nothing: a failed save
+    // could never be retried); a token that outlives its step (the next paint applies it again);
+    // a held Enter that applies; an A that also starts a capture or opens the Reset all confirm.
+    for (const step of STEP_KEYS) {
+      const at = walkTo('display', step);
+      const first = press(at, 'A');
+      expect(first.result, `${step}: A is consumed`).toBe('consumed');
+      expect(first.state.request, `${step}: the request`).toEqual({ kind: 'textStep', step });
+      expect(first.state.nav, `${step}: the cursor stays`).toEqual(at.nav);
+      expect(first.state.capturing, `${step}: no capture`).toBeNull();
+      expect(first.state.confirm, `${step}: no confirm`).toBeNull();
+
+      const second = press(first.state, 'A');
+      expect(second.state.request).toEqual({ kind: 'textStep', step });
+      expect(second.state.request, `${step}: a NEW token per press`).not.toBe(first.state.request);
+
+      for (const button of ALL_BUTTONS) {
+        if (button === 'A') continue;
+        const next = press(first.state, button);
+        expect(next.state.request, `${step}: ${button} after A drops the token`).toBeNull();
+      }
+      const held = press(at, rep('A'));
+      expect(held.state.request, `${step}: a repeat A requests nothing`).toBeNull();
+    }
+  });
+
+  it('UIF13.2 B, Start, Select, X and Y on Display behave as on the binding tabs: B pops, Start pops to the base, Select toggles help, X and Y are the page`s; paint hands the view the textStep token by identity', () => {
+    // WRONG IMPL KILLED: a Display tab that swallows B (the frame could not be left from it), a
+    // Start that only pops one frame, a Select that is lost, an X or Y consumed; a paint that hands
+    // the view a COPY of the token (the view applies a token once by identity: a copy would apply
+    // the text size again on every repaint, spending a save per frame).
+    const at = walkTo('display', 'large');
+    expect(press(at, 'B').result).toEqual(POP);
+    expect(press(at, 'Start').result).toEqual(POP_TO_BASE);
+    expect(press(at, 'Select').result).toEqual(TOGGLE_HELP);
+    for (const button of ['X', 'Y'] as const) {
+      const step = press(at, button);
+      expect(step.result, `${button}`).toBe('unhandled');
+      expect(step.state.nav, `${button} moves nothing`).toEqual(at.nav);
+    }
+    const requested = press(at, 'A').state;
+    const p = paintOf(requested);
+    expect(p.request, 'the very token object').toBe(requested.request);
+    expect(p).toEqual({
+      layout: CONTROLS_LAYOUT,
+      nav: requested.nav,
+      capturing: null,
+      confirm: null,
+      request: { kind: 'textStep', step: 'large' },
+    });
   });
 });

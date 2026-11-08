@@ -524,6 +524,12 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { before: 1493, after: 1509, delta: '+16' },
   ],
   'tactics.results.ratingNew': [{ after: 1016 }, { after: 987 }],
+  // uif-13 (named intentional change, UIF13.2): +3 parameterised `controls.text.*` keys (the Display
+  // tab's row, its live row and the outcome line). `label` is a step label resolved by the caller
+  // (carried verbatim); the two sets differ.
+  'controls.text.row': [{ label: 'Normal' }, { label: 'Large' }],
+  'controls.text.current': [{ label: 'Large' }, { label: 'Extra large' }],
+  'controls.text.set': [{ label: 'Normal' }, { label: 'Extra large' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -1144,6 +1150,14 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose. The hint-bar's A
   // verb over a multi-row entity x action picker (a plain key under `interact.*`, not `chrome.*`).
   'interact.chip.choose': 'Choose',
+  // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain keys here (the Controls Display
+  // tab label and the three text-size step labels) and +3 parameterised ones in SAMPLE_PARAMS (the
+  // Display row, the live row and the outcome line). The en bytes are pinned HERE; the fr texts are
+  // pinned by the uif-13 describe at the end of this file.
+  'controls.tab.display': 'Display',
+  'controls.text.normal': 'Normal',
+  'controls.text.large': 'Large',
+  'controls.text.xlarge': 'Extra large',
 };
 
 interface ParamOutputSpec {
@@ -1944,6 +1958,25 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { after: 987 },
     outputB: 'Rating 987',
   },
+  // uif-13 (UIF13.2): the Display tab's three lines; the label sits once, verbatim.
+  'controls.text.row': {
+    inputA: { label: 'Normal' },
+    outputA: 'Text size: Normal',
+    inputB: { label: 'Large' },
+    outputB: 'Text size: Large',
+  },
+  'controls.text.current': {
+    inputA: { label: 'Large' },
+    outputA: 'Text size: Large (current)',
+    inputB: { label: 'Extra large' },
+    outputB: 'Text size: Extra large (current)',
+  },
+  'controls.text.set': {
+    inputA: { label: 'Normal' },
+    outputA: 'Text size: Normal.',
+    inputB: { label: 'Extra large' },
+    outputB: 'Text size: Extra large.',
+  },
 };
 
 /** The full 511-key roster (bt-12 increment B: +2 `tactics.*` keys — `tactics.deploy.wilds` plain,
@@ -2180,7 +2213,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // uif-7 (named intentional change, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next.
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-12 roster is 499 keys').toHaveLength(499);
+    // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-13 roster is 506 keys').toHaveLength(506);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3278,8 +3312,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 499 keys').toBe(499);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(499);
+    // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 506 keys').toBe(506);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(506);
   });
 });
 
@@ -3393,8 +3428,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 499 keys').toBe(499);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(499);
+    // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 506 keys').toBe(506);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(506);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3686,9 +3722,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 499 keys').toBe(499);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(499);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(499);
+    // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 506 keys').toBe(506);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(506);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(506);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4048,5 +4085,126 @@ describe('uif-12: the picker Choose verb in both catalogs', () => {
     expect(en[KEY], 'not the OK verb').not.toBe(en['chrome.chip.ok']);
     expect(EXPECTED_PLAIN[KEY], 'the pinned roster lists it as a plain key').toBe('Choose');
     expect(EXPECTED_KEYS.includes(KEY), 'and in the roster').toBe(true);
+  });
+});
+
+// =============================================================================
+// uif-13 (UIF13.2): the Controls Display tab's seven ids, in BOTH catalogs. Every expected byte is
+// typed here. Before a `:` the French text carries the catalog's U+00A0 or a plain space (the
+// ctl-12b `spaced` precedent accepts both); every other byte is exact.
+// =============================================================================
+
+/** U+00E8 (e grave), built by code point so the expected French text holds no pasted glyph. */
+const UIF13_E_GRAVE = String.fromCharCode(0x00e8);
+
+describe('uif-13: the Controls Display tab ids in both catalogs', () => {
+  const en = CATALOG_EN as Record<string, unknown>;
+  const fr = CATALOG_FR as Record<string, unknown>;
+  /** `before` + (U+00A0 or a plain space) + `after`. */
+  const spaced = (before: string, after: string): string[] => [
+    `${before}${NO_BREAK_SPACE}${after}`,
+    `${before} ${after}`,
+  ];
+
+  it('UIF13.2 controls.tab.display and the three step labels read Display / Affichage, Normal / Normale, Large / Grande and Extra large / Tres grande (accented) as plain strings, French different from English, the three labels different from each other, all in the pinned roster', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: the third tab or a row
+    // goes blank); a French value left as the English copy; a closure where the view calls t(); one
+    // label reused for two steps (the rows could not be told apart); the existing `controls.tab.*`
+    // edited instead of a new id added; a key missing from the pinned roster; a decomposed or
+    // missing grave accent in "Tres grande".
+    const PLAIN: ReadonlyArray<readonly [string, string, string]> = [
+      ['controls.tab.display', 'Display', 'Affichage'],
+      ['controls.text.normal', 'Normal', 'Normale'],
+      ['controls.text.large', 'Large', 'Grande'],
+      ['controls.text.xlarge', 'Extra large', `Tr${UIF13_E_GRAVE}s grande`],
+    ];
+    for (const [key, enText, frText] of PLAIN) {
+      expect(typeof en[key], `en ${key} is a plain string`).toBe('string');
+      expect(typeof fr[key], `fr ${key} is a plain string`).toBe('string');
+      expect(en[key], `en ${key}`).toBe(enText);
+      expect(fr[key], `fr ${key}`).toBe(frText);
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+      expect(EXPECTED_PLAIN[key], `the pinned roster lists ${key} as a plain key`).toBe(enText);
+      expect(EXPECTED_KEYS.includes(key), `${key} is in the roster`).toBe(true);
+    }
+    expect(PLAIN, 'ANTI-VACUITY: four plain keys').toHaveLength(4);
+    for (const catalog of [en, fr]) {
+      expect(
+        new Set([
+          catalog['controls.text.normal'],
+          catalog['controls.text.large'],
+          catalog['controls.text.xlarge'],
+        ]).size,
+        'three different step labels',
+      ).toBe(3);
+    }
+    // The siblings keep their own text.
+    expect(en['controls.tab.buttons']).toBe('Buttons');
+    expect(en['controls.tab.shortcuts']).toBe('Shortcuts');
+  });
+
+  it('UIF13.2 controls.text.row, controls.text.current and controls.text.set are closures carrying the label once and verbatim: "Text size: {label}", "Text size: {label} (current)", "Text size: {label}." in English and the "Taille du texte" forms in French, for differing labels', () => {
+    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the Display rows
+    // blank); a plain string where the label must be interpolated (every row reads the same); a
+    // French line left as the English copy; a closure that drops, repeats or hard-codes the label
+    // (three labels are fed); the live row and the plain row reading alike (the current step could
+    // not be told from the rest); the outcome line missing its closing full stop (it would read
+    // like the row); a French colon glued to its word; and a key missing from the roster or the
+    // two sample tables.
+    type Fn = (p: { label: string }) => string;
+    const LABELS = ['Normal', 'Large', 'Extra large'] as const;
+    const SPEC: ReadonlyArray<
+      readonly [string, (label: string) => string, (label: string) => string[]]
+    > = [
+      [
+        'controls.text.row',
+        (label) => `Text size: ${label}`,
+        (label) => spaced('Taille du texte', `: ${label}`),
+      ],
+      [
+        'controls.text.current',
+        (label) => `Text size: ${label} (current)`,
+        (label) => spaced('Taille du texte', `: ${label} (actuelle)`),
+      ],
+      [
+        'controls.text.set',
+        (label) => `Text size: ${label}.`,
+        (label) => spaced('Taille du texte', `: ${label}.`),
+      ],
+    ];
+    for (const [key, enLine, frLines] of SPEC) {
+      expect(typeof en[key], `en ${key} is a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} is a closure`).toBe('function');
+      const enFn = en[key] as Fn;
+      const frFn = fr[key] as Fn;
+      for (const label of LABELS) {
+        expect(enFn({ label }), `en ${key}(${label})`).toBe(enLine(label));
+        expect(frLines(label), `fr ${key}(${label}): ${JSON.stringify(frFn({ label }))}`).toContain(
+          frFn({ label }),
+        );
+        expect(frFn({ label }), `${key}(${label}): a translation, not the English line`).not.toBe(
+          enFn({ label }),
+        );
+        expect(enFn({ label }).split(label).length - 1, `en carries ${label} once`).toBe(1);
+        expect(frFn({ label }).split(label).length - 1, `fr carries ${label} once`).toBe(1);
+      }
+      expect(enFn({ label: 'Normal' }), `${key}: the labels change the line (en)`).not.toBe(
+        enFn({ label: 'Large' }),
+      );
+      expect(frFn({ label: 'Normal' }), `${key}: the labels change the line (fr)`).not.toBe(
+        frFn({ label: 'Large' }),
+      );
+      expect(EXPECTED_KEYS.includes(key), `the pinned roster lists ${key}`).toBe(true);
+      expect(SAMPLE_PARAMS[key], `${key} has two sample sets`).toHaveLength(2);
+      expect(EXPECTED_PARAM_OUTPUTS[key], `${key} has English output pins`).toBeDefined();
+    }
+    // The three lines differ from each other for one label.
+    const probe = { label: 'Large' };
+    const lines = SPEC.map(([key]) => (en[key] as Fn)(probe));
+    expect(new Set(lines).size, 'row, current and set read differently').toBe(3);
+    expect(
+      new Set(SPEC.map(([key]) => (fr[key] as Fn)(probe))).size,
+      'and so do the French lines',
+    ).toBe(3);
   });
 });

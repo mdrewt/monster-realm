@@ -73,6 +73,9 @@ const H = vi.hoisted(() => ({
   /** ctl-12b: what the stubbed wasm `interact_candidates_coded` answers (indices into the
    *  marshalled entity list). Reset to "no candidate" by every boot. */
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
+  /** uif-13 (UIF13.3): every `WorldRenderer.resize(...)` the page issued, oldest first (the stubbed
+   *  renderer records its arguments). Reset by every boot. */
+  resizes: [] as unknown[][],
 }));
 
 // ctl-12b: named fixture change: the interact export is driven by `H.interact` (default `[]`, reset
@@ -87,7 +90,18 @@ vi.mock('./observability/telemetry', async (importOriginal) =>
   telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
 );
 
-vi.mock('./render/world', () => worldRendererMock());
+// uif-13 (named harness change, UIF13.3): the stubbed renderer records its `resize` calls into
+// `H.resizes`, so "choosing a text size resizes nothing" is observable. Was: the shared stub's no-op
+// `resize()`. Every other method is the shared stub's.
+vi.mock('./render/world', () => {
+  const { WorldRenderer: Base } = worldRendererMock();
+  class WorldRenderer extends Base {
+    override resize(...args: unknown[]): void {
+      H.resizes.push(args);
+    }
+  }
+  return { WorldRenderer };
+});
 
 // --- harness ------------------------------------------------------------------------------
 interface Recorded {
@@ -142,6 +156,9 @@ function teardown(o: { readonly keepStorage?: boolean } = {}): void {
   vi.unstubAllGlobals();
   raf.cb = null;
   if (o.keepStorage !== true) localStorage.clear();
+  // uif-13 (named harness change): a boot writes `--mr-text-step` on the document root, which outlives
+  // the torn-down page; clearing it keeps every boot reading its own value, never the last one's.
+  document.documentElement.style.removeProperty('--mr-text-step');
   window.history.replaceState(null, '', '/');
   document.body.replaceChildren();
 }
@@ -151,6 +168,7 @@ async function boot(o: BootOptions = {}): Promise<void> {
   H.sends = [];
   H.calls = [];
   H.interact = () => [];
+  H.resizes = [];
   pressAt = 2000;
   clock.t = 1000;
   if (o.keepStorage !== true) {
@@ -686,6 +704,30 @@ const cellKeys = (): string[] =>
   Array.from(document.querySelectorAll('#controls-rows [data-nav-key]')).map(
     (el) => el.getAttribute('data-nav-key') ?? '',
   );
+/** uif-13 (UIF13.1): shown by `display:none` AND the `hidden` attribute, on the node or an ancestor (the
+ *  kit's sheet and tab row use `hidden`). */
+const visibleEl = (el: Element): boolean => {
+  for (let n: Element | null = el; n instanceof HTMLElement; n = n.parentElement) {
+    if (n.style.display === 'none' || n.hidden) return false;
+  }
+  return true;
+};
+/** uif-13 (UIF13.1): the context sheets on screen (the Reset all confirm is one). */
+const shownSheets = (): HTMLElement[] =>
+  Array.from(document.querySelectorAll<HTMLElement>('[data-context-sheet]')).filter(visibleEl);
+/** uif-13 (UIF13.1): the shown sheet's answer keys, and its cursor row. INTENTIONAL CHANGE: while
+ *  Reset all asks, the answers are the sheet's rows (`controlsActive` / `cellKeys` above read
+ *  `#controls-rows`, which stays the grid with the cursor on Reset all). */
+const sheetKeys = (): string[] =>
+  Array.from(shownSheets()[0]?.querySelectorAll('[data-nav-key]') ?? []).map(
+    (el) => el.getAttribute('data-nav-key') ?? '',
+  );
+const sheetActive = (): string | null =>
+  shownSheets()[0]?.querySelector('[aria-selected="true"]')?.getAttribute('data-nav-key') ?? null;
+/** uif-13: the root's inline custom property, '' when unset. */
+const rootProp = (name: string): string => document.documentElement.style.getPropertyValue(name);
+/** uif-13 (UIF13.3, UIF13.4): the raw `localStorage['mr.display']`, or null. */
+const displayRaw = (): string | null => localStorage.getItem('mr.display');
 /** The Controls frame's own hint strip (`#controls-feedback`). uif-4b (UIF4B.1): it carries ONLY the
  *  refused-key hint now; every other outcome line is a toast. Was: it carried every outcome line. */
 const controlsFeedback = (): string => byId('controls-feedback').textContent ?? '';
@@ -893,18 +935,22 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(byId('controls-title').textContent).toBe(i18nT('controls.title'));
 
     const tabs = Array.from(document.querySelectorAll('#controls-tabs [role="tab"]'));
+    // INTENTIONAL CHANGE (uif-13, UIF13.2): the strip gains the Display tab after Shortcuts. Was: two
+    // tabs `['controls-tab-buttons', 'controls-tab-shortcuts']`, their two labels and
+    // `['true', 'false']`. Buttons is still the tab the frame opens on.
     expect(
       tabs.map((tab) => tab.id),
-      'two tabs, Buttons then Shortcuts',
-    ).toEqual(['controls-tab-buttons', 'controls-tab-shortcuts']);
+      'three tabs, Buttons, Shortcuts then Display',
+    ).toEqual(['controls-tab-buttons', 'controls-tab-shortcuts', 'controls-tab-display']);
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       i18nT('controls.tab.buttons'),
       i18nT('controls.tab.shortcuts'),
+      'Display',
     ]);
     expect(
       tabs.map((tab) => tab.getAttribute('aria-selected')),
       'Buttons is the active tab',
-    ).toEqual(['true', 'false']);
+    ).toEqual(['true', 'false', 'false']);
 
     const grid = byId('controls-rows');
     expect(grid.getAttribute('role'), 'the slots are a grid').toBe('grid');
@@ -1329,27 +1375,34 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     press('KeyK', { key: 'k' });
     expect(savedTable().buttons.A[0], 'precondition: A := K').toBe('KeyK');
 
+    // INTENTIONAL CHANGE (uif-13, UIF13.1): the question is the confirm sheet's heading
+    // (`#controls-sheet-title`, was `#controls-question`, retired) and Yes / No are the sheet's rows
+    // (`sheetKeys` / `sheetActive`, was `cellKeys()` / `controlsActive()` over `#controls-rows`, which
+    // now stays the GRID with its cursor on Reset all while the sheet asks). Every old intent is kept.
     controlsMoveTo('reset');
     expect(cellText('reset')).toBe(i18nT('controls.resetAll'));
     press('KeyK'); // A
-    expect(visibleNow('controls-question'), 'Reset all asks').toBe(true);
-    expect(byId('controls-question').textContent).toBe(i18nT('controls.reset.question'));
-    expect(cellKeys(), 'the answers are Yes and No').toEqual(['yes', 'no']);
-    expect(controlsActive(), 'the cursor starts on No').toBe('no');
+    expect(visibleNow('controls-sheet-title'), 'Reset all asks').toBe(true);
+    expect(byId('controls-sheet-title').textContent).toBe(i18nT('controls.reset.question'));
+    expect(shownSheets(), 'in one sheet').toHaveLength(1);
+    expect(sheetKeys(), 'the answers are Yes and No').toEqual(['yes', 'no']);
+    expect(sheetActive(), 'the cursor starts on No').toBe('no');
+    expect(controlsActive(), 'the grid cursor stays on Reset all').toBe('reset');
     expect(savedTable().buttons.A[0], 'asking changes nothing').toBe('KeyK');
 
     press('KeyK'); // A on No
-    expect(visibleNow('controls-question'), 'No closes the question').toBe(false);
+    expect(visibleNow('controls-sheet-title'), 'No closes the question').toBe(false);
+    expect(shownSheets(), 'and the sheet').toHaveLength(0);
     expect(savedTable(), 'No changes nothing').toEqual(tableWith({ A: ['KeyK', 'NumpadEnter'] }));
     expect(cellText('A_0'), 'the slots are back, A still on K').toBe(primaryText(ROW_A, 'K'));
     expect(controlsActive(), 'the cursor is back on Reset all').toBe('reset');
 
     press('KeyK'); // ask again
-    expect(controlsActive(), 'again on No').toBe('no');
+    expect(sheetActive(), 'again on No').toBe('no');
     press('ArrowUp');
-    expect(controlsActive(), 'Up moves to Yes').toBe('yes');
+    expect(sheetActive(), 'Up moves to Yes').toBe('yes');
     press('KeyK'); // A on Yes
-    expect(visibleNow('controls-question'), 'Yes closes the question').toBe(false);
+    expect(visibleNow('controls-sheet-title'), 'Yes closes the question').toBe(false);
     // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the reset line is a toast (the strip stays empty). Was:
     // the strip's text.
     expect(toastNow(), 'the reset line, on the toast').toBe(i18nT('controls.reset.done'));
@@ -1359,10 +1412,10 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
 
     const k = press('KeyK');
     expect(k.defaultPrevented, 'live: K is no longer A').toBe(false);
-    expect(visibleNow('controls-question'), 'K asks nothing').toBe(false);
+    expect(visibleNow('controls-sheet-title'), 'K asks nothing').toBe(false);
     const enter = press('Enter');
     expect(enter.defaultPrevented, 'live: Enter is A again').toBe(true);
-    expect(visibleNow('controls-question'), 'Enter on Reset all asks again').toBe(true);
+    expect(visibleNow('controls-sheet-title'), 'Enter on Reset all asks again').toBe(true);
   });
 
   it('a Controls frame closed mid-capture by a server conversation leaves no capture behind: no key is bound meanwhile, and reopened it is browsing and keys route normally', async () => {
@@ -1908,5 +1961,303 @@ describe('main.ts Controls outcomes use their feedbackPolicy channel (runtime, u
       live.filter((w) => w.includes(i18nT('controls.refused.reserved'))),
       'and the first is not announced again',
     ).toHaveLength(1);
+  });
+});
+
+// ==========================================================================================
+// uif-13: Controls on the kit, and the text-size setting (UIF13.1 - UIF13.4)
+// ==========================================================================================
+//
+// Every case drives the real booted page by key presses (RB is KeyE, Down is ArrowDown, A is Enter,
+// B is Backspace, Start is Escape) and reads what a player sees: the confirm sheet, the Display tab's
+// rows and live marker, the toast, the root's inline `--mr-text-step`, and `localStorage['mr.display']`.
+// The en strings are typed here; nothing is read off the catalog for the new ids.
+
+/** Make `window.localStorage` answer a wrapper whose `getItem` and / or `setItem` throws for `key`
+ *  (the shell reads `window.localStorage` afresh per access; patching Storage.prototype is not routed
+ *  once a key was set directly in this worker). Records every write to `key`. */
+function throwingStorage(key: string, on: { readonly get?: boolean; readonly set?: boolean }) {
+  const real = window.localStorage;
+  const writes: string[] = [];
+  let refused = 0;
+  const wrapper: Storage = {
+    get length(): number {
+      return real.length;
+    },
+    key: (i: number): string | null => real.key(i),
+    getItem: (k: string): string | null => {
+      if (k === key && on.get === true) throw new Error('SecurityError: storage is denied');
+      return real.getItem(k);
+    },
+    setItem: (k: string, value: string): void => {
+      if (k === key) {
+        writes.push(value);
+        if (on.set === true) {
+          refused += 1;
+          throw new Error('QuotaExceededError: storage is full');
+        }
+      }
+      real.setItem(k, value);
+    },
+    removeItem: (k: string): void => real.removeItem(k),
+    clear: (): void => real.clear(),
+  };
+  const ownStorage = Object.getOwnPropertyDescriptor(window, 'localStorage');
+  Object.defineProperty(window, 'localStorage', { configurable: true, get: () => wrapper });
+  restorers.push(() => {
+    if (ownStorage !== undefined) Object.defineProperty(window, 'localStorage', ownStorage);
+    else delete (window as unknown as { localStorage?: unknown }).localStorage;
+  });
+  return { real, writes, refused: (): number => refused };
+}
+
+/** RB RB from the Buttons tab: the Display tab, cursor on Normal. */
+function openDisplayTab(): void {
+  press('KeyE');
+  press('KeyE');
+  expect(
+    byId('controls-tab-display').getAttribute('aria-selected'),
+    'precondition: RB RB reached the Display tab',
+  ).toBe('true');
+}
+
+/** The keys of the Display rows marked current. */
+const currentRows = (): string[] =>
+  Array.from(document.querySelectorAll('#controls-rows [data-current]')).map(
+    (el) => el.getAttribute('data-nav-key') ?? '',
+  );
+
+describe('main.ts Controls on the kit and the text-size setting (runtime, uif-13)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('UIF13.1 through real keys the Reset all confirm is one confirm sheet over the grid in the kit-tabbed frame: B closes the sheet and not the frame, writes nothing and leaves no #controls-root-yes, a reopen lands on No, and Start closes everything with no sheet left standing', async () => {
+    // WRONG IMPL KILLED: the shipped swap of `#controls-rows` to a Yes/No list under
+    // `#controls-question`; a bare `renderTabs` strip (no kit row); a B that pops the frame instead of
+    // the confirm (the frame is lost mid-question) or that resets; a sheet that stays in the document
+    // after it closes (a stale `#controls-root-yes`); a reopen on Yes; and a Start that closes the stack
+    // while the sheet's root is left shown, so a reopened Controls shows the old question.
+    await bootReady();
+    server(1000);
+    openControls();
+    const bar = byId('controls-tabs').parentElement as HTMLElement;
+    expect(bar.classList.contains('mr-tabbar'), 'the strip is the kit TabBar`s').toBe(true);
+    expect(bar.querySelectorAll('[data-button]'), 'with its two chips').toHaveLength(2);
+
+    controlsMoveTo('reset');
+    press('Enter'); // A: Reset all asks
+    expect(stackNames(), 'asking pushes no frame').toEqual([...CONTROLS_STACK]);
+    expect(shownSheets(), 'exactly one sheet').toHaveLength(1);
+    expect(shownSheets()[0]?.dataset.sheetVariant, 'the confirm variant').toBe('confirm');
+    expect(byId('controls-sheet-title').textContent).toBe(i18nT('controls.reset.question'));
+    expect(
+      document.getElementById('controls-question'),
+      '#controls-question is retired',
+    ).toBeNull();
+    expect(byId('controls-rows').getAttribute('role'), 'the grid stays under it').toBe('grid');
+
+    const back = press('Backspace'); // B
+    expect(back.defaultPrevented, 'B is routed').toBe(true);
+    expect(stackNames(), 'B closed the sheet, not the frame').toEqual([...CONTROLS_STACK]);
+    expect(shownSheets(), 'the sheet is gone').toHaveLength(0);
+    expect(
+      document.querySelectorAll('#controls-root-yes'),
+      'no Yes left in the document',
+    ).toHaveLength(0);
+    expect(savedRaw(), 'B reset nothing and wrote nothing').toBeNull();
+    expect(controlsActive(), 'the grid cursor is on Reset all').toBe('reset');
+
+    press('Enter'); // reopen
+    expect(sheetActive(), 'a reopen lands on No').toBe('no');
+    press('Escape'); // Start
+    expect(stackNames(), 'Start closes everything').toEqual(['world']);
+    expect(shownSheets(), 'and no sheet stands').toHaveLength(0);
+    expect(document.querySelectorAll('#controls-root-yes'), 'no Yes left').toHaveLength(0);
+    expect(savedRaw(), 'still nothing written').toBeNull();
+  });
+
+  it('UIF13.2 the Display tab is reachable by the D-pad and A: RB RB from Buttons, three rows reading "Text size: ..." with Normal current, Down walks Normal, Large, Extra large, a fresh Down at the end wraps, and A on Large moves the current mark to it', async () => {
+    // WRONG IMPL KILLED: a Display tab with no layout entry in the screen (RB RB lands back on
+    // Buttons: the setting is unreachable without a pointer); rows that are not the three steps; a
+    // current mark that does not follow the choice (a chosen size never shows as chosen); a list that
+    // does not wrap (the nav kit's rule) or a grid (Left / Right moving it).
+    await bootReady();
+    server(1000);
+    openControls();
+    press('KeyE');
+    expect(byId('controls-tab-shortcuts').getAttribute('aria-selected'), 'RB: Shortcuts').toBe(
+      'true',
+    );
+    press('KeyE');
+    expect(byId('controls-tab-display').getAttribute('aria-selected'), 'RB again: Display').toBe(
+      'true',
+    );
+    expect(cellKeys(), 'the three steps').toEqual(['normal', 'large', 'xlarge']);
+    expect(controlsActive(), 'the cursor starts on Normal').toBe('normal');
+    expect(cellText('normal')).toBe('Text size: Normal (current)');
+    expect(cellText('large')).toBe('Text size: Large');
+    expect(cellText('xlarge')).toBe('Text size: Extra large');
+    expect(currentRows(), 'Normal is the live step').toEqual(['normal']);
+
+    press('ArrowDown');
+    expect(controlsActive(), 'Down: Large').toBe('large');
+    press('ArrowDown');
+    expect(controlsActive(), 'Down: Extra large').toBe('xlarge');
+    press('ArrowDown');
+    expect(controlsActive(), 'a fresh Down at the end wraps').toBe('normal');
+    press('ArrowRight');
+    expect(controlsActive(), 'Right moves nothing in a list').toBe('normal');
+    expect(currentRows(), 'moving the cursor never changes the live step').toEqual(['normal']);
+
+    press('ArrowDown');
+    expect(controlsActive()).toBe('large');
+    const a = press('Enter');
+    expect(a.defaultPrevented, 'A on a step is consumed').toBe(true);
+    expect(currentRows(), 'A moved the current mark to Large').toEqual(['large']);
+    expect(cellText('large')).toBe('Text size: Large (current)');
+    expect(cellText('normal')).toBe('Text size: Normal');
+    expect(controlsActive(), 'the cursor stays on Large').toBe('large');
+    expect(stackNames(), 'choosing a size closes nothing').toEqual([...CONTROLS_STACK]);
+  });
+
+  it('UIF13.3 A on Large, Extra large and Normal sets --mr-text-step to 1.5, 2 and 1 at once (no frame flushed), saves exactly {"v":1,"textStep":...} to mr.display and toasts "Text size: <label>."; --mr-ui-scale, the root font-size, the renderer and the stage scale are never touched and mr.controls is not written', async () => {
+    // WRONG IMPL KILLED: a step that waits for the next frame to apply; one that writes the root
+    // font-size inline (it would mask the rem rule and break the viewport scale); one that writes
+    // `--mr-ui-scale` or calls the renderer's resize (the text size would be a second scale
+    // calculation); a handler that only knows 1.5 (Extra large or a return to Normal never lands); a
+    // save to `mr.controls` (it would be read as a binding table); a save in another shape; a toast
+    // that is not the outcome line; a cursor move that applies the step it passes over.
+    await bootReady();
+    server(1000);
+    openControls();
+    openDisplayTab();
+    expect(rootProp('--mr-text-step'), 'precondition: boot applied Normal').toBe('1');
+    expect(displayRaw(), 'precondition: nothing saved').toBeNull();
+    press('ArrowDown');
+    expect(controlsActive(), 'precondition: the cursor is on Large').toBe('large');
+    expect(rootProp('--mr-text-step'), 'moving onto a step applies nothing').toBe('1');
+    expect(displayRaw(), 'and saves nothing').toBeNull();
+    const scaleBefore = rootProp('--mr-ui-scale');
+    const resizesBefore = H.resizes.length;
+    const stageBefore = (game() as unknown as { stageScale?: unknown }).stageScale;
+    const untouched = (when: string): void => {
+      expect(rootProp('--mr-ui-scale'), `${when}: --mr-ui-scale is untouched`).toBe(scaleBefore);
+      expect(document.documentElement.style.fontSize, `${when}: no inline root font-size`).toBe('');
+      expect(H.resizes.length, `${when}: the renderer was not resized`).toBe(resizesBefore);
+      expect(
+        (game() as unknown as { stageScale?: unknown }).stageScale,
+        `${when}: the stage scale is untouched`,
+      ).toBe(stageBefore);
+      expect(savedRaw(), `${when}: mr.controls is not written`).toBeNull();
+    };
+
+    const large = press('Enter');
+    expect(large.defaultPrevented, 'A is consumed').toBe(true);
+    expect(rootProp('--mr-text-step'), 'Large applies at once').toBe('1.5');
+    expect(displayRaw(), 'Large is saved').toBe('{"v":1,"textStep":"large"}');
+    expect(toastNow(), 'the outcome line').toBe('Text size: Large.');
+    untouched('Large');
+
+    press('ArrowDown');
+    press('Enter');
+    expect(rootProp('--mr-text-step'), 'Extra large applies at once').toBe('2');
+    expect(displayRaw(), 'Extra large is saved').toBe('{"v":1,"textStep":"xlarge"}');
+    expect(toastNow()).toBe('Text size: Extra large.');
+    untouched('Extra large');
+
+    press('ArrowUp');
+    press('ArrowUp');
+    expect(controlsActive(), 'precondition: the cursor is back on Normal').toBe('normal');
+    expect(rootProp('--mr-text-step'), 'walking back applies nothing').toBe('2');
+    press('Enter');
+    expect(rootProp('--mr-text-step'), 'Normal applies at once').toBe('1');
+    expect(displayRaw(), 'Normal is saved').toBe('{"v":1,"textStep":"normal"}');
+    expect(toastNow()).toBe('Text size: Normal.');
+    untouched('Normal');
+  });
+
+  it('UIF13.3 when the save throws the step is still applied live and the toast carries the save failure: exactly one write was attempted, nothing reached storage, the live mark moved, and A did not throw', async () => {
+    // WRONG IMPL KILLED: a step applied only when the save succeeds (a denied or full storage makes
+    // the setting impossible); a save exception that escapes the key listener; a failure that is
+    // silent (the player believes it is saved and loses it on reload); a save retried in a loop; a
+    // live mark that waits for the save.
+    await bootReady();
+    server(1000);
+    const storage = throwingStorage('mr.display', { set: true });
+    expect(window.localStorage, 'precondition: the page reads the wrapper').not.toBe(storage.real);
+    openControls();
+    openDisplayTab();
+    press('ArrowDown');
+    expect(controlsActive(), 'precondition: the cursor is on Large').toBe('large');
+    const a = press('Enter');
+    expect(a.defaultPrevented, 'A is consumed and did not throw').toBe(true);
+    expect(storage.refused(), 'the injected failure really fired').toBeGreaterThanOrEqual(1);
+    expect(storage.writes, 'exactly one write was attempted').toEqual([
+      '{"v":1,"textStep":"large"}',
+    ]);
+    expect(rootProp('--mr-text-step'), 'the step is applied anyway').toBe('1.5');
+    expect(toastNow(), 'the line, a space, the save-failed suffix').toBe(
+      `Text size: Large. ${i18nT('controls.saveFailed')}`,
+    );
+    expect(storage.real.getItem('mr.display'), 'nothing reached the real storage').toBeNull();
+    expect(currentRows(), 'the live mark moved').toEqual(['large']);
+  });
+
+  it('UIF13.4 a saved text size is applied at boot before any frame: large reads 1.5, xlarge 2, normal and every missing, garbage, wrong-version, out-of-set or non-object value reads 1, the stored string is byte-identical afterwards, and the boot does not throw', async () => {
+    // WRONG IMPL KILLED: a size applied only when a frame runs (or on the first resize), so the page
+    // paints once at the wrong size; a size read after `installResizeHandler` ran; a value applied
+    // only when it is not normal (a stale or absent property reads '' instead of '1'); a clamp of an
+    // out-of-set step to the nearest one; a parse that trusts a prototype name or a bare string; a
+    // boot that "repairs" a bad value by rewriting it or seeds a default into an empty store; a
+    // parse error that escapes module scope (the page never starts). No frame is flushed anywhere
+    // here: every read comes straight after the import resolved, before the first rAF callback.
+    const scenarios: ReadonlyArray<readonly [string, string | null, string]> = [
+      ['large', '{"v":1,"textStep":"large"}', '1.5'],
+      ['xlarge', '{"v":1,"textStep":"xlarge"}', '2'],
+      ['normal', '{"v":1,"textStep":"normal"}', '1'],
+      ['missing', null, '1'],
+      ['garbage', '{not json', '1'],
+      ['an out-of-set step', '{"v":1,"textStep":"huge"}', '1'],
+      ['a wrong version', '{"v":2,"textStep":"large"}', '1'],
+      ['a prototype name', '{"v":1,"textStep":"constructor"}', '1'],
+      ['a bare string', '"large"', '1'],
+      ['an array', '["large"]', '1'],
+    ];
+    for (const [label, stored, expected] of scenarios) {
+      teardown();
+      if (stored !== null) localStorage.setItem('mr.display', stored);
+      await boot({ keepStorage: true });
+      expect(rootProp('--mr-text-step'), `${label}: applied before the first frame`).toBe(expected);
+      expect(displayRaw(), `${label}: the boot never rewrites the stored value`).toBe(stored);
+      expect(document.documentElement.style.fontSize, `${label}: no inline root font-size`).toBe(
+        '',
+      );
+    }
+    expect(scenarios, 'ANTI-VACUITY: every scenario ran').toHaveLength(10);
+  });
+
+  it('UIF13.4 a storage whose read throws boots at 1 without throwing, and no boot ever writes mr.display: not for a throwing read, not for garbage, not for an empty store', async () => {
+    // WRONG IMPL KILLED: a loader that lets the SecurityError out of module scope (the page never
+    // starts for a player whose browser denies storage); a boot that seeds `normal` into an empty
+    // store or "corrects" garbage in place (a write on every load, and a save the player never made);
+    // an apply that reads the storage twice and gets a different answer.
+    const modes: ReadonlyArray<readonly [string, string | null, boolean]> = [
+      ['a throwing read', null, true],
+      ['garbage', '{not json', false],
+      ['an empty store', null, false],
+    ];
+    for (const [label, stored, readThrows] of modes) {
+      teardown();
+      if (stored !== null) localStorage.setItem('mr.display', stored);
+      const storage = throwingStorage('mr.display', { get: readThrows });
+      await boot({ keepStorage: true });
+      expect(rootProp('--mr-text-step'), `${label}: reads as Normal`).toBe('1');
+      expect(storage.writes, `${label}: the boot wrote nothing to mr.display`).toEqual([]);
+      if (!readThrows) expect(displayRaw(), `${label}: the stored value is untouched`).toBe(stored);
+    }
+    expect(modes, 'ANTI-VACUITY: every mode ran').toHaveLength(3);
   });
 });

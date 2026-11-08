@@ -323,6 +323,23 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Appended to an Options › Controls feedback line when the browser refused to store
   // the new keys: they work now and are lost on reload. One sentence. ui/controlsView.ts
   'controls.saveFailed': 'Could not save: this lasts until you reload.',
+  // @desc: Tab of Controls holding the text-size setting. One word. ui/controlsView.ts
+  'controls.tab.display': 'Display',
+  // @desc: The default (x1) text size on the Controls › Display tab. One word. ui/controlsView.ts
+  'controls.text.normal': 'Normal',
+  // @desc: The x1.5 text size on the Controls › Display tab. One or two words. ui/controlsView.ts
+  'controls.text.large': 'Large',
+  // @desc: The x2 text size on the Controls › Display tab. Two words at most. ui/controlsView.ts
+  'controls.text.xlarge': 'Extra large',
+  // @desc: A row of the Controls › Display tab; {label} is a text size (Normal, Large, Extra
+  // large). ui/controlsView.ts
+  'controls.text.row': (p) => `Text size: ${p.label}`,
+  // @desc: The row of the Controls › Display tab for the size in use; {label} is that size.
+  // ui/controlsView.ts
+  'controls.text.current': (p) => `Text size: ${p.label} (current)`,
+  // @desc: Feedback line after a text size was chosen on Controls › Display; {label} is the size.
+  // One sentence. ui/controlsView.ts
+  'controls.text.set': (p) => `Text size: ${p.label}.`,
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html #help-title (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',

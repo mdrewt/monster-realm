@@ -125,6 +125,14 @@ export type MessageId =
   | 'controls.reset.done'
   | 'controls.cancel'
   | 'controls.saveFailed'
+  // uif-13: the Display tab of Controls (ui/controlsView.ts).
+  | 'controls.tab.display'
+  | 'controls.text.normal'
+  | 'controls.text.large'
+  | 'controls.text.xlarge'
+  | 'controls.text.row'
+  | 'controls.text.current'
+  | 'controls.text.set'
   | 'chrome.help.title'
   // qf-4: not `chrome.journal.title` — resolver.test.ts pins the exact plain `chrome.*` roster.
   | 'journal.title'
@@ -608,6 +616,10 @@ export interface MessageParams {
   readonly 'controls.slot.alt': { readonly label: string; readonly key: string };
   readonly 'controls.clear': { readonly label: string };
   readonly 'controls.cleared': { readonly label: string };
+  // uif-13: {label} is a catalogued text-size name (controls.text.normal / large / xlarge).
+  readonly 'controls.text.row': { readonly label: string };
+  readonly 'controls.text.current': { readonly label: string };
+  readonly 'controls.text.set': { readonly label: string };
   // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).
