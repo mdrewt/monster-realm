@@ -1028,20 +1028,6 @@
   padding: 0.0625rem 0.375rem;
   transform: translate(-50%, -100%);
 }
-/* A world sheet (uif-12, UIF12.1) is the kit's ContextSheet hung inside the interact prompt, where
- * the prompt hangs it: in the prompt's flow rather than anchored by the kit, and clickable (the chip
- * alone stays pointer-events:none). The prompt drops its own chrome while it holds one: one border. */
-#interact-prompt .mr-sheet {
-  position: static;
-  width: auto;
-  max-height: none;
-  pointer-events: auto;
-}
-#interact-prompt.mr-prompt--sheet {
-  padding: 0;
-  border-width: 0;
-  background: transparent;
-}
 .mr-frame--banner {
   z-index: 45;
   top: var(--mr-space-1);
@@ -1417,6 +1403,21 @@
   padding: var(--mr-space-2);
   font-size: var(--mr-font-body);
   line-height: var(--mr-font-body-line);
+}
+/* A world sheet (uif-12, UIF12.1) is the kit's ContextSheet hung inside the interact prompt, where
+ * the prompt hangs it: in the prompt's flow rather than anchored by the kit, and clickable (the chip
+ * alone stays pointer-events:none). main.ts sets `.mr-prompt--sheet` on the prompt while it shows
+ * one, and the prompt drops its own chrome then: one border. */
+.mr-prompt--sheet > .mr-sheet {
+  position: static;
+  width: auto;
+  max-height: none;
+  pointer-events: auto;
+}
+.mr-prompt--sheet {
+  padding: 0;
+  border-width: 0;
+  background: transparent;
 }
 .mr-empty {
   display: flex;
