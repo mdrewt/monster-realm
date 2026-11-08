@@ -904,6 +904,27 @@ const ELLIPSIS = String.fromCharCode(0x2026);
 /** 2^53 + 1: the first integer a JS number cannot hold (a `Number()` on the way prints ...992). */
 const PAST_2_53 = 9_007_199_254_740_993n;
 
+// uif-11 (UIF11.4, #586 D4): the battle menu's inventory row reads Items / Objets.
+describe('tactics strings: the Items row (uif-11, UIF11.4)', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('UIF11.4 menuItem() resolves Items in English and Objets in French, never Bag or Sac', () => {
+    // WRONG IMPL KILLED: the helper still resolving the old "Item" / "Bag" / "Sac" copy; the English
+    // fixed and the French left on "Sac" (a French boot keeps the old name); a menuItem() that
+    // returns a hard-coded literal instead of the locale's catalog text (the locale switch is read).
+    const fn = (s as unknown as Record<string, unknown>).menuItem;
+    expect(typeof fn, 'strings.ts exports menuItem()').toBe('function');
+    const call = (): string => (fn as () => string)();
+    setLocale('en');
+    expect(call(), 'en menuItem()').toBe('Items');
+    setLocale('fr');
+    expect(call(), 'fr menuItem()').toBe('Objets');
+    expect(call(), 'fr is not the English line').not.toBe('Items');
+  });
+});
+
 describe('tactics strings: the deploy and results panels (bt-12, BT12.6)', () => {
   afterEach(() => {
     setLocale('en');

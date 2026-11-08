@@ -585,6 +585,7 @@ describe('styles.css uif-4: toast layer, overlay strip, world line layer', () =>
     ]);
   });
 
+  // (uif-11 gating cases follow this describe, in their own describe below.)
   it('UIF4.5 .mr-status z-index is above every .mr-shell layer and below .mr-toast', () => {
     // WRONG IMPL KILLED: the shipped 45 (a persistent hint on the world line hides under any open
     // frame); a status line above the toast (a toast would paint under it).
@@ -594,5 +595,235 @@ describe('styles.css uif-4: toast layer, overlay strip, world line layer', () =>
     expect(zs.length, 'anti-vacuity: the shell layers read').toBeGreaterThanOrEqual(3);
     for (const z of zs) expect(statusZ).toBeGreaterThan(z);
     expect(statusZ).toBeLessThan(num('.mr-toast', 'z-index'));
+  });
+});
+
+// uif-11 (UIF11.1, UIF11.2, UIF11.3): the tactical screens on the kit. The sheet is parsed as text;
+// the first Chromium proof of the geometry is e2e/ui-tactics.spec.ts. BOARD ART (tile overlays, the
+// unit base mark, the sprite, the HP track, the ghost, the background, the grid and the sr-only title)
+// keeps its px: boardRender.test.ts (outside this slice's touches) pins those literals. Every other
+// rule whose selector names `tactics` is CHROME and must scale with the root rem.
+describe('styles.css uif-11: tactical chrome on the tokens, the one scale and the nav-row treatment', () => {
+  const css = readFileSync(STYLES_CSS_PATH, 'utf8');
+  const rules = ctl7bParseCss(ctl7bStripCssComments(css));
+
+  const ART_EXACT: ReadonlySet<string> = new Set([
+    '.tactics-unit',
+    '.tactics-unit::before',
+    '.tactics-unit--mine::before',
+    '.tactics-hp',
+    '.tactics-bg',
+    '.tactics-grid',
+    '.tactics-title',
+  ]);
+  const ART_PREFIX = ['.tactics-tile', '.tactics-sprite', '.tactics-ghost'];
+  const isArtSelector = (s: string): boolean =>
+    ART_EXACT.has(s) || ART_PREFIX.some((p) => s.startsWith(p));
+  const tacticsRules = rules.filter((r) => r.selectors.some((s) => s.includes('tactics')));
+  const artRules = tacticsRules.filter((r) => r.selectors.every(isArtSelector));
+  const chromeRules = tacticsRules.filter((r) => !r.selectors.every(isArtSelector));
+  const label = (r: Ctl7bCssRule): string =>
+    `${r.at.length > 0 ? `${r.at.join(' ')} ` : ''}${r.selectors.join(', ')}`;
+
+  /** The last value of `prop` across the rules naming exactly `selector` (any depth), source order. */
+  const eff = (selector: string, prop: string): string | undefined => {
+    let value: string | undefined;
+    for (const r of rules) {
+      if (!r.selectors.includes(selector)) continue;
+      for (const [p, v] of r.decls) if (p === prop) value = v;
+    }
+    return value;
+  };
+
+  const PX = /\d*\.?\d+px\b/i;
+  const SCALED_PROP =
+    /^(font-size|line-height|font|padding(-.+)?|margin(-.+)?|gap|row-gap|column-gap|min-width|min-height|width|height|top|bottom|left|right)$/;
+
+  it('UIF11.1 no tactical chrome rule declares a px length in a size, spacing or offset property, outside the pinned board-art allowlist', () => {
+    // WRONG IMPL KILLED: a chrome rule left on px (`font-size: 12px`, `padding: 4px 8px`, `gap: 6px`,
+    // `min-height: 56px`, a 12px clock ring, a 10px pip) so the one root scale never reaches it and the
+    // tactical screen stays at x1 when the window is x1.5; a px literal moved into a media block; a
+    // px chrome selector grouped into an art rule (a rule is exempt only when EVERY selector is art);
+    // the allowlist widened to a prefix that swallows chrome (`.tactics-unit-name` / `.tactics-intent`
+    // are chrome, not `.tactics-unit`).
+    expect(
+      chromeRules.length,
+      'anti-vacuity: the sheet has many tactical chrome rules',
+    ).toBeGreaterThan(40);
+    expect(artRules.length, 'anti-vacuity: the board-art allowlist matched rules').toBeGreaterThan(
+      8,
+    );
+    expect(
+      artRules.some((r) => r.selectors.includes('.tactics-sprite')),
+      'anti-vacuity: the sprite rule is art',
+    ).toBe(true);
+    expect(
+      chromeRules.some((r) => r.selectors.includes('.tactics-unit-name')),
+      'the unit name label is chrome, not board art',
+    ).toBe(true);
+    const violations: string[] = [];
+    for (const r of chromeRules) {
+      for (const [p, v] of r.decls) {
+        if (SCALED_PROP.test(p) && PX.test(v)) violations.push(`${label(r)} { ${p}: ${v} }`);
+      }
+    }
+    expect(violations, 'tactical chrome is rem / token sized, never px').toEqual([]);
+  });
+
+  it('UIF11.1 no tactics rule reads --mr-ui-scale, declares zoom or transforms with scale(), and every tactics font-size is a type-scale token or inherit', () => {
+    // WRONG IMPL KILLED: a battle-only scale (a second copy of the scale applied through `zoom`, a
+    // `transform: scale(var(--mr-ui-scale))` or a calc over --mr-ui-scale in a tactics rule) that
+    // would double-scale beside the root rem; a font-size left as a raw rem/px literal or an
+    // off-scale token (`--mr-font-title` is allowed only through the four named tokens).
+    const ALLOWED_FONT = new Set([
+      'var(--mr-font-small)',
+      'var(--mr-font-body)',
+      'var(--mr-font-header)',
+      'var(--mr-font-title)',
+      'inherit',
+    ]);
+    const scaleHits: string[] = [];
+    const fontHits: string[] = [];
+    let fontSizes = 0;
+    for (const r of tacticsRules) {
+      for (const s of r.selectors)
+        if (s.includes('--mr-ui-scale')) scaleHits.push(`${label(r)} (selector)`);
+      for (const [p, v] of r.decls) {
+        if (p.includes('--mr-ui-scale') || v.includes('--mr-ui-scale'))
+          scaleHits.push(`${label(r)} { ${p}: ${v} }`);
+        if (p === 'zoom') scaleHits.push(`${label(r)} { ${p}: ${v} }`);
+        if (/scale[a-z0-9]*\(/i.test(v)) scaleHits.push(`${label(r)} { ${p}: ${v} }`);
+        if (p === 'font-size') {
+          fontSizes += 1;
+          if (!ALLOWED_FONT.has(v)) fontHits.push(`${label(r)} { ${p}: ${v} }`);
+        }
+      }
+    }
+    expect(scaleHits, 'the only scale is the root rem (:root[style*="--mr-ui-scale"])').toEqual([]);
+    expect(fontSizes, 'anti-vacuity: the tactical sheet declares font sizes').toBeGreaterThan(8);
+    expect(fontHits, 'every tactics font-size is a type-scale token').toEqual([]);
+  });
+
+  it('UIF11.2 the HP bands and the clock bands draw from the state tokens (ok / warn / error) and the clock fill still reads --clock-color', () => {
+    // WRONG IMPL KILLED: the shipped hex bands (#4c4 / #ec3 / #e44, #3c9 / #fc6 / #f66) left in
+    // place; the tokens assigned in the wrong order (a green low band, a red full bar); a clock whose
+    // default or amber / red band is the token of another meaning; the conic fill rewritten to a
+    // literal so the band custom property is no longer what colours the ring (the meaning is lost).
+    const bg = (s: string): string | undefined =>
+      eff(s, 'background') ?? eff(s, 'background-color');
+    expect(bg('.tactics-hp--high .tactics-hp-fill'), 'HP high').toBe('var(--mr-state-ok)');
+    expect(bg('.tactics-hp--mid .tactics-hp-fill'), 'HP mid').toBe('var(--mr-state-warn)');
+    expect(bg('.tactics-hp--low .tactics-hp-fill'), 'HP low').toBe('var(--mr-state-error)');
+    expect(eff('.tactics-clock-ring', '--clock-color'), 'clock default (green)').toBe(
+      'var(--mr-state-ok)',
+    );
+    expect(eff('.tactics-clock-ring[data-band="amber"]', '--clock-color'), 'clock amber').toBe(
+      'var(--mr-state-warn)',
+    );
+    expect(eff('.tactics-clock-ring[data-band="red"]', '--clock-color'), 'clock red').toBe(
+      'var(--mr-state-error)',
+    );
+    expect(
+      eff('.tactics-clock-ring', 'background') ?? '',
+      'the ring is filled from --clock-color',
+    ).toContain('var(--clock-color)');
+  });
+
+  it('UIF11.2 no tactical chrome rule colours a text or border with a hex / rgb / hsl literal', () => {
+    // WRONG IMPL KILLED: a chrome colour left as a literal (`color: #eee`, `border: 1px solid #556`,
+    // `border-left: 3px solid #3c3`, `color: #fc6`) so it ignores the --mr-* tokens and the contrast
+    // tier (prefers-contrast: more) re-colours the kit but not the battle; a literal hidden in a border
+    // shorthand instead of `color`. Board art keeps its literals (allowlisted).
+    const LITERAL = /#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(/i;
+    const COLOURED = /^(color|border(-(top|right|bottom|left))?(-color)?)$/;
+    const hits: string[] = [];
+    for (const r of chromeRules) {
+      for (const [p, v] of r.decls) {
+        if (COLOURED.test(p) && LITERAL.test(v)) hits.push(`${label(r)} { ${p}: ${v} }`);
+      }
+    }
+    expect(hits, 'chrome colours are tokens').toEqual([]);
+  });
+
+  it('UIF11.3 the shared nav-row rules carry the tactical selector in the SAME rule: padding, cursor, ▶, disabled, active+disabled (compound) and the hover cue', () => {
+    // WRONG IMPL KILLED: a copied treatment (a second `.tactics-menu-row[aria-selected="true"]` rule
+    // beside the shared one, which drifts the moment the kit changes); a tactical selector in a
+    // separate rule that merely repeats today's values; the active+disabled pair written as a
+    // descendant selector instead of the COMPOUND `[aria-selected="true"][aria-disabled="true"]`
+    // (specificity (0,3,0), equal to the shared pair's, so the grey cursor row stays readable); the
+    // hover cue left off the tactical row; a shared rule stripped of its declarations.
+    const top = rules.filter((r) => r.at.length === 0);
+    const only = (shared: string): Ctl7bCssRule => {
+      const hits = top.filter((r) => r.selectors.includes(shared));
+      expect(hits.length, `exactly one top-level rule lists ${shared}`).toBe(1);
+      return hits[0] as Ctl7bCssRule;
+    };
+    const PAIRS: ReadonlyArray<readonly [string, string, readonly string[]]> = [
+      ['.mr-nav-item', '.tactics-menu-row', ['padding']],
+      [
+        '.mr-nav-item.is-active',
+        '.tactics-menu-row[aria-selected="true"]',
+        ['background', 'color', 'outline', 'outline-offset'],
+      ],
+      [
+        '.mr-nav-item.is-active::before',
+        '.tactics-menu-row[aria-selected="true"]::before',
+        ['content', 'margin-left', 'width', 'display'],
+      ],
+      ['.mr-nav-item.is-disabled', '.tactics-menu-row[aria-disabled="true"]', ['color']],
+      [
+        '.mr-nav-item.is-active.is-disabled',
+        '.tactics-menu-row[aria-selected="true"][aria-disabled="true"]',
+        ['color'],
+      ],
+      [
+        '.mr-pointer-hover .mr-nav-item:hover',
+        '.mr-pointer-hover .tactics-menu-row:hover',
+        ['text-decoration'],
+      ],
+    ];
+    for (const [shared, tactical, props] of PAIRS) {
+      const rule = only(shared);
+      expect(rule.selectors, `the rule listing ${shared} also lists ${tactical}`).toContain(
+        tactical,
+      );
+      const declared = rule.decls.map(([p]) => p);
+      for (const p of props) expect(declared, `${shared} still declares ${p}`).toContain(p);
+    }
+  });
+
+  it('UIF11.3 no other rule for a .tactics-menu-row selector declares the treatment: state rules declare no fill, colour, outline or padding, and the base row only resets the button', () => {
+    // WRONG IMPL KILLED: a tactical-only treatment kept beside the shared one (`.tactics-menu-row
+    // [aria-selected="true"] { background: #44445a; border-color: #fff }`, `[aria-disabled="true"]
+    // { color: #889 }`, `.tactics-menu-row { padding: 2px 6px; color: #eee }`); a row that pins
+    // `justify-content: space-between` (the label would move when the cursor adds the ▶). The base row
+    // may reset the UA button look (`background: transparent`, `color: inherit`) and nothing more.
+    const FORBIDDEN = /^(background(-color)?|color|outline(-.+)?|padding(-.+)?)$/;
+    const mine = rules.filter(
+      (r) =>
+        r.selectors.some((s) => s.includes('.tactics-menu-row')) &&
+        !r.selectors.some((s) => s.includes('.mr-nav-item')),
+    );
+    expect(mine.length, 'anti-vacuity: the tactical row has its own layout rule').toBeGreaterThan(
+      0,
+    );
+    const hits: string[] = [];
+    for (const r of mine) {
+      const stateful = r.selectors.some((s) => s.includes('[aria-') || s.includes(':hover'));
+      for (const [p, v] of r.decls) {
+        if (!FORBIDDEN.test(p)) continue;
+        const resetOk =
+          !stateful &&
+          ((/^background(-color)?$/.test(p) && (v === 'transparent' || v === 'none')) ||
+            (p === 'color' && v === 'inherit') ||
+            (p === 'outline' && v === 'none'));
+        if (!resetOk) hits.push(`${label(r)} { ${p}: ${v} }`);
+      }
+    }
+    expect(hits, 'the only treatment is the shared nav-row rules').toEqual([]);
+    expect(
+      eff('.tactics-menu-row', 'justify-content'),
+      'the label stays put between cursor and non-cursor rows',
+    ).not.toBe('space-between');
   });
 });
