@@ -307,10 +307,9 @@ export class RaisingView {
     if (content === null) this.#closeSheet();
     else renderContextSheet(this.#sheet, content);
     this.#placeSheet();
-    // Focus inside the sheet when its rows change or it closes stays in the frame.
-    if (hadFocus && !this.#sheet.root.contains(document.activeElement)) {
-      (this.#sheet.root.hidden ? this.#titleEl : this.#sheet.rows).focus();
-    }
+    // Focus inside a sheet that closes stays in the frame. (While it shows, its rows container is
+    // kept across repaints and is the only focusable part, so focus never leaves it.)
+    if (hadFocus && this.#sheet.root.hidden) this.#titleEl.focus();
 
     this.#setStatus(p.status);
 
