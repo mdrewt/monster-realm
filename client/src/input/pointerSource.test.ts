@@ -2050,3 +2050,275 @@ describe('PointerSource — uif-5 side effects', () => {
     expect(lp.presses, 'the trailing click is swallowed before any close').toEqual(['B']);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// uif-5 round 2 — review / red-team gaps (decisions D1 to D5, gaps G1 to G7)
+// ---------------------------------------------------------------------------------------------
+
+/** A wheel event with a full init (modifier keys, horizontal delta). */
+function wheelWith(el: Element, init: WheelEventInit): WheelEvent {
+  const e = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init });
+  // happy-dom gap: its WheelEvent extends UIEvent, not MouseEvent, so the init drops the modifier keys.
+  for (const k of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey'] as const) {
+    if (typeof (e as unknown as Record<string, unknown>)[k] !== 'boolean') {
+      Object.defineProperty(e, k, { value: init[k] ?? false });
+    }
+  }
+  el.dispatchEvent(e);
+  return e;
+}
+
+describe('PointerSource — uif-5 round 2 close and routing', () => {
+  it('UIF5.1 CHOICE-OUTSIDE-SHEET: with a frame sheet open, a dialogue choice button outside it presses B and then sends choice(idx) once', () => {
+    // WRONG IMPL KILLED: a close step that skips dialogue buttons (the sheet stays over the
+    // dialogue); a close that eats the click (choice never sent); a choice sent twice.
+    const fx = mount('frame');
+    const { body } = frameWithSheet(fx);
+    const pick = document.createElement('button');
+    pick.dataset.choiceIdx = '2';
+    body.appendChild(pick);
+    click(pick);
+    expect(fx.presses).toEqual(['B']);
+    expect(fx.choice.mock.calls).toEqual([[2]]);
+    expect(fx.shop).not.toHaveBeenCalled();
+  });
+
+  it('UIF5.1 POINTER-OWN-OUTSIDE-SHEET: with a frame sheet open, a click on a [data-pointer-own] row outside it presses B and nothing else', () => {
+    // WRONG IMPL KILLED: a close step that skips owned rows; a close followed by a seek or an A
+    // for a row the view owns (double dispatch with the owner's own listener).
+    const fx = mount('frame');
+    const { body } = frameWithSheet(fx);
+    const own = document.createElement('div');
+    own.setAttribute('data-pointer-own', '');
+    body.appendChild(own);
+    const owned = addList(own, ['o1', 'o2', 'o3'], 0);
+    click(item(owned, 2));
+    expect(fx.presses).toEqual(['B']);
+    expect(fx.choice).not.toHaveBeenCalled();
+    expect(fx.shop).not.toHaveBeenCalled();
+  });
+
+  it('UIF5.1 SHEET-OUTSIDE-MODAL-NOT-CLOSED: a shown sheet not under any aria-modal root while top is "frame" is not closed by a click in the frame', () => {
+    // WRONG IMPL KILLED: a frame-top close keyed on any shown sheet in the screen (a stale world
+    // sheet node would eat a B and pop the frame's own state).
+    const fx = mount('frame');
+    const base = addList(addFrame(fx), ['a', 'b', 'c'], 0);
+    const stray = addSheet(fx.layer, ['s1', 's2'], 0);
+    fx.drive = items(base);
+    fx.onPress = (b) => {
+      if (b === 'B') stray.root.hidden = true;
+    };
+    click(item(base, 2));
+    expect(fx.presses).toEqual(['Down', 'Down', 'A']);
+  });
+});
+
+describe('PointerSource — uif-5 round 2 world sheet', () => {
+  it('UIF5.3 TOP-FLIPS-ONE-B: when top() changes on the first B but the sheet stays painted, the close presses exactly one B and no A', () => {
+    // WRONG IMPL KILLED: a B loop that watches only the DOM (repaint lags: it presses up to 3
+    // Bs into whatever the new top is); an A after the close at the new world top.
+    const fx = mount('other');
+    const sheet = addSheet(fx.layer, ['s1', 's2'], 0);
+    fx.drive = items(sheet.rows);
+    fx.onPress = (b) => {
+      if (b === 'B') fx.top = 'world';
+    };
+    click(fx.canvas);
+    expect(fx.presses).toEqual(['B']);
+    expect(sheet.root.hidden, 'the DOM never repainted').toBe(false);
+  });
+
+  it('UIF5.3 SHEET-UNDER-MODAL-NOT-WORLD: with top "other", a sheet under an aria-modal root is not a world sheet, so a click outside it presses nothing', () => {
+    // WRONG IMPL KILLED: a world-sheet detector that accepts any shown sheet (a frame's sheet
+    // while a battle or text entry is on top gets a B pressed into the wrong layer).
+    const fx = mount('other');
+    addSheet(addFrame(fx), ['s1', 's2'], 0);
+    click(fx.canvas);
+    click(fx.layer);
+    click(fx.app);
+    expect(fx.presses).toEqual([]);
+  });
+
+  it('UIF5.3 NATIVE-OUTSIDE-WORLD-SHEET: a native button or link outside an open world sheet keeps its own click and the bubble, and only B is pressed', () => {
+    // WRONG IMPL KILLED: a world close done by stopPropagation or preventDefault (the button's
+    // own listener or a listener above #game-screen never hears the click); an A after the close.
+    for (const tag of ['button', 'a'] as const) {
+      const fx = mount('other');
+      worldSheet(fx, ['s1', 's2']);
+      const native = document.createElement(tag);
+      if (native instanceof HTMLAnchorElement) native.href = '#x';
+      fx.layer.appendChild(native);
+      const own = vi.fn();
+      const above = vi.fn();
+      native.addEventListener('click', own);
+      document.body.addEventListener('click', above);
+      const e = click(native);
+      expect(own, `${tag} own listener`).toHaveBeenCalledTimes(1);
+      expect(above, `${tag} bubble`).toHaveBeenCalledTimes(1);
+      expect(e.defaultPrevented, tag).toBe(false);
+      expect(fx.presses, tag).toEqual(['B']);
+      document.body.removeEventListener('click', above);
+    }
+  });
+});
+
+describe('PointerSource — uif-5 round 2 wheel', () => {
+  it('UIF5.4 WHEEL-MODIFIER-NOT-HANDLED: a wheel with ctrlKey or metaKey (zoom, pinch) over a row is not prevented and presses nothing', () => {
+    // WRONG IMPL KILLED: a wheel handler that hijacks browser zoom (ctrl+wheel moves the cursor and
+    // blocks the zoom); one that checks only ctrl, not meta; control: the plain wheel presses.
+    const { fx, l } = wheelFrame();
+    const row = item(l, 1);
+    expect(wheelWith(row, { deltaY: 100, ctrlKey: true }).defaultPrevented, 'ctrl').toBe(false);
+    expect(wheelWith(row, { deltaY: 100, metaKey: true }).defaultPrevented, 'meta').toBe(false);
+    expect(fx.presses).toEqual([]);
+    expect(wheelWith(row, { deltaY: 100 }).defaultPrevented, 'control').toBe(true);
+    expect(fx.presses).toEqual(['Down']);
+  });
+
+  it('UIF5.4 WHEEL-NO-VERTICAL-NOT-HANDLED: a horizontal-only (deltaY 0) or non-finite deltaY wheel over a row is not prevented and presses nothing', () => {
+    // WRONG IMPL KILLED: a horizontal trackpad swipe that is prevented (sideways scroll lost, no
+    // press); a NaN or Infinity delta that is prevented or presses.
+    const { fx, l } = wheelFrame();
+    const row = item(l, 1);
+    expect(wheelWith(row, { deltaX: 100, deltaY: 0 }).defaultPrevented, 'horizontal').toBe(false);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(wheelWith(row, { deltaY: bad }).defaultPrevented, String(bad)).toBe(false);
+    }
+    expect(fx.presses).toEqual([]);
+  });
+
+  it('UIF5.4 WHEEL-SHEET-OWNS: while a sheet is open in the top frame, a wheel over the stale base list is not prevented and presses nothing; once the sheet is closed the base list wheels again', () => {
+    // WRONG IMPL KILLED: a wheel over the stale base list that presses into the sheet's cursor
+    // (the list under the sheet scrolls the sheet); a wheel that ignores the sheet.
+    const fx = mount('frame');
+    const { base, sheet } = frameWithSheet(fx);
+    expect(wheel(item(base, 2), 100).defaultPrevented, 'base row').toBe(false);
+    expect(wheel(base, 100).defaultPrevented, 'base container').toBe(false);
+    expect(fx.presses).toEqual([]);
+    sheet.root.hidden = true;
+    fx.drive = items(base);
+    expect(wheel(item(base, 2), 100).defaultPrevented, 'control: sheet closed').toBe(true);
+    expect(fx.presses).toEqual(['Down']);
+  });
+
+  it('UIF5.4 WHEEL-INSIDE-SHEET: a wheel over a row (or the rows container) inside an open frame sheet is prevented and presses Down', () => {
+    // WRONG IMPL KILLED: a sheet excluded from the wheel (the sheet's own list cannot be wheeled);
+    // a wheel that is pressed but not prevented.
+    const fx = mount('frame');
+    const { sheet } = frameWithSheet(fx);
+    const e = wheel(item(sheet.rows, 1), 100);
+    expect(e.defaultPrevented).toBe(true);
+    expect(fx.presses).toEqual(['Down']);
+    expect(wheel(sheet.rows, 100).defaultPrevented).toBe(true);
+    expect(fx.presses).toEqual(['Down', 'Down']);
+  });
+
+  it('UIF5.4 WHEEL-LOWER-FRAMES: a wheel over rows (or the container) of a lower inert frame or a covered frame is not prevented and presses nothing', () => {
+    // WRONG IMPL KILLED: a wheel that finds the nav container without the top-frame test (a wheel
+    // over a stale lower menu moves the top frame's cursor and blocks the page).
+    const fx = mount('frame');
+    const lower = addList(addFrame(fx, { inert: true }), ['a', 'b', 'c'], 0);
+    const covered = addList(addFrame(fx, { covered: true }), ['m', 'n', 'o'], 0);
+    const live = addList(addFrame(fx), ['x', 'y', 'z'], 0);
+    fx.drive = items(live);
+    for (const [name, list] of [
+      ['inert', lower],
+      ['covered', covered],
+    ] as const) {
+      expect(wheel(item(list, 1), 100).defaultPrevented, `${name} row`).toBe(false);
+      expect(wheel(list, 100).defaultPrevented, `${name} container`).toBe(false);
+    }
+    expect(fx.presses).toEqual([]);
+    expect(wheel(item(live, 1), 100).defaultPrevented, 'control: the top frame').toBe(true);
+    expect(fx.presses).toEqual(['Down']);
+  });
+
+  it('UIF5.4 WHEEL-FOCUS-SELECT-EDITABLE: focus on a <select> or a [contenteditable] element makes a wheel over a row not prevented, with no press', () => {
+    // WRONG IMPL KILLED: a typing guard that knows only input and textarea (a focused select or
+    // rich-text field has its wheel stolen).
+    const { fx, l, body } = wheelFrame();
+    const select = document.createElement('select');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    editable.tabIndex = 0;
+    body.append(select, editable);
+    for (const el of [select, editable]) {
+      el.focus();
+      expect(document.activeElement, 'precondition: focused').toBe(el);
+      expect(wheel(item(l, 1), 100).defaultPrevented, el.tagName).toBe(false);
+    }
+    expect(fx.presses).toEqual([]);
+  });
+
+  it('UIF5.4 WHEEL-REGISTRATION-BUBBLE: the wheel listener has no capture and does not stop the event, so a listener above #game-screen still sees it', () => {
+    // WRONG IMPL KILLED: a capture-phase wheel listener (it runs before the views' own); a
+    // stopPropagation in the handler (an outer scroll or analytics listener goes deaf).
+    const spy = vi.spyOn(HTMLElement.prototype, 'addEventListener');
+    const { l } = wheelFrame();
+    const regs = (spy.mock.calls as unknown[][]).filter((c) => c[0] === 'wheel');
+    expect(regs).toHaveLength(1);
+    const opts = regs[0]?.[2] as { passive?: unknown; capture?: unknown };
+    expect(opts.passive).toBe(false);
+    expect(opts.capture ?? false).toBe(false);
+    const above = vi.fn();
+    document.body.addEventListener('wheel', above);
+    wheel(item(l, 1), 100);
+    expect(above).toHaveBeenCalledTimes(1);
+  });
+
+  it('UIF5.4 WHEEL-REMAINDER-EXPIRES: a carried remainder expires after 500 ms without a wheel event; within 100 ms it still carries', () => {
+    // WRONG IMPL KILLED: an accumulator that never expires (a stale 60 px from a minute ago turns
+    // the next small flick into a press); one that expires too eagerly (kills smooth scrolling).
+    const stale = wheelFrame();
+    wheel(item(stale.l, 1), 60);
+    stale.fx.clock.advance(600);
+    wheel(item(stale.l, 1), 60);
+    expect(stale.fx.presses, 'expired: 60 alone is no notch').toEqual([]);
+
+    const live = wheelFrame();
+    wheel(item(live.l, 1), 60);
+    live.fx.clock.advance(100);
+    wheel(item(live.l, 1), 60);
+    expect(live.fx.presses, 'control: 60 + 60 within 100 ms').toEqual(['Down']);
+  });
+});
+
+describe('wheelSteps (pure) round 2', () => {
+  it('UIF5.4 WHEELSTEPS-UNKNOWN-MODE: a deltaMode other than 0, 1 or 2 is read as pixels', () => {
+    // WRONG IMPL KILLED: an unknown mode read as pages or lines (100 would be 100 or 33 notches,
+    // capped to 5) or as 0 steps.
+    for (const mode of [3, -1, 99]) {
+      expect(wheelSteps(0, 100, mode).steps, `mode ${mode}`).toBe(1);
+      expect(wheelSteps(0, 40, mode).steps, `mode ${mode} sub-notch`).toBe(0);
+    }
+  });
+
+  it('UIF5.4 WHEELSTEPS-NEVER-NEGATIVE-ZERO: steps is never -0', () => {
+    // WRONG IMPL KILLED: Math.trunc(-0.4) leaking -0 as steps (Object.is distinguishes it).
+    expect(Object.is(wheelSteps(0, -40, 0).steps, -0)).toBe(false);
+    expect(Object.is(wheelSteps(0, 0, 0).steps, -0)).toBe(false);
+    expect(Object.is(wheelSteps(-30, 10, 0).steps, -0)).toBe(false);
+    expect(Object.is(wheelSteps(0, -1, 1).steps, -0)).toBe(false);
+  });
+
+  it('UIF5.4 WHEELSTEPS-NONFINITE-RESETS: a non-finite delta steps 0 and resets the accumulator to 0', () => {
+    // WRONG IMPL KILLED: a NaN that is ignored but keeps the old remainder (250 px leaves 50, and
+    // a following 60 would cross a notch only with it).
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const first = wheelSteps(0, 250, 0);
+      const mid = wheelSteps(first.acc, bad, 0);
+      expect(mid.steps + 0, String(bad)).toBe(0);
+      expect(wheelSteps(mid.acc, 60, 0).steps, `${bad} then 60`).toBe(0);
+    }
+  });
+
+  it('UIF5.4 WHEELSTEPS-CAP-DROPS-ALL: after a capped call no remainder survives, so a following 99 px steps 0', () => {
+    // WRONG IMPL KILLED: a cap that keeps a partial remainder (e.g. acc mod 100 of a huge delta)
+    // so a small flick right after a big one presses again.
+    for (const dy of [1050, 100_000, 123_457]) {
+      const big = wheelSteps(0, dy, 0);
+      expect(big.steps, `${dy}`).toBe(5);
+      expect(wheelSteps(big.acc, 99, 0).steps, `${dy} then 99`).toBe(0);
+    }
+  });
+});

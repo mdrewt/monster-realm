@@ -3,7 +3,7 @@
 // every screen adapter decide what a click means; game logic never sees a coordinate. The two
 // dialogue buttons the old document click delegate owned are the only commands it sends itself.
 //
-// A click on a row of the top frame is a SEEK: the D-pad presses that walk that container's cursor
+// A click on a row of the top frame (once any open sheet is closed, below) is a SEEK: the D-pad presses that walk that container's cursor
 // to the row, then A. The DOM cannot say which container the frame's adapter drives (a base list
 // stays visible, with a stale cursor, under its sheet or picker), so the first press is a probe: if
 // the clicked container's cursor did not move as planned, the press is undone with its inverse
@@ -19,8 +19,8 @@
 // before a native control's own handler, B is pressed until no sheet shows, then the same event
 // routes as if no sheet had been open. A world sheet's close is close-only: routing the click would
 // press A at the bare world and reopen the same sheet. A click inside the sheet routes to its row.
-// A wheel over the top frame's nav rows presses Up or Down once per notch (UIF5.4); anywhere else the
-// browser keeps its native scroll.
+// A wheel over the top frame's nav rows (only the sheet's, while one is open) presses Up or Down once
+// per notch (UIF5.4); anywhere else, and for a zoom or horizontal wheel, the browser keeps its own.
 import type { VButton } from './buttons';
 import { VBUTTONS } from './buttons';
 import {
@@ -77,6 +77,8 @@ const NOTCH = 300;
 const UNITS_PER: Readonly<Record<number, number>> = { 0: 3, 1: 100, 2: 300 };
 /** A pathological delta presses at most this many times, its remainder dropped. */
 const MAX_WHEEL_STEPS = 5;
+/** A wheel remainder older than this is dropped: a stale part-notch never fires a later press. */
+const WHEEL_IDLE_MS = 500;
 
 /** The Up (negative) or Down presses one wheel event is worth, given the carried remainder `acc`:
  *  a notch is 100 px (deltaMode 0), 3 lines (1) or 1 page (2). A direction reversal drops the
@@ -158,6 +160,20 @@ const rowsOf = (container: HTMLElement): HTMLElement[] =>
     (el) => containerOf(el) === container,
   );
 
+/** One of `container`'s own rows (a direct child, or a cell of a direct `role="row"` child), by a
+ *  child walk rather than a subtree query: the wheel asks this of every ancestor, per event. */
+function ownRow(container: HTMLElement): HTMLElement | null {
+  for (const child of container.children) {
+    if (!(child instanceof HTMLElement)) continue;
+    if (child.hasAttribute('data-nav-key')) return child;
+    if (child.getAttribute('role') !== 'row') continue;
+    for (const cell of child.children) {
+      if (cell instanceof HTMLElement && cell.hasAttribute('data-nav-key')) return cell;
+    }
+  }
+  return null;
+}
+
 /** Grid columns: the first `role="row"`'s cells, else a CSS grid's column tracks; null = a list. */
 function colsOf(container: HTMLElement, rows: readonly HTMLElement[]): number | null {
   const firstRow = rows[0]?.parentElement;
@@ -193,6 +209,7 @@ export class PointerSource {
   /** The wheel remainder and the nav container it was gathered over. */
   #wheelAcc = 0;
   #wheelOver: HTMLElement | null = null;
+  #wheelAt = -Infinity;
 
   constructor(
     gameScreen: HTMLElement,
@@ -239,15 +256,20 @@ export class PointerSource {
    *  (top `other`); none at the bare world. */
   #openSheet(top: PointerTop): HTMLElement | null {
     if (top === 'world') return null;
+    // A world sheet sits under no frame; covered layers are inert (ui/overlayA11y.ts).
     for (const sheet of this.#screen.querySelectorAll<HTMLElement>(SHEET)) {
-      const shown = top === 'frame' ? this.#inTopFrame(sheet) : this.#shown(sheet);
+      const shown =
+        top === 'frame'
+          ? this.#inTopFrame(sheet)
+          : sheet.closest('[aria-modal="true"]') === null && this.#shown(sheet);
       if (shown) return sheet;
     }
     return null;
   }
 
   /** UIF5.1/UIF5.3: a click outside the open sheet (a hint chip aside) first presses B until no
-   *  sheet shows. The event is never stopped, so it then routes as if no sheet had been open. */
+   *  sheet shows or the top changes (a world sheet's DOM may repaint a frame late). The event is
+   *  never stopped, so it then routes as if no sheet had been open. */
   #closeSheet(e: MouseEvent): void {
     if (this.#deps.capturing() || !(e.target instanceof Element)) return;
     const target = e.target;
@@ -255,7 +277,11 @@ export class PointerSource {
     const top = this.#deps.top();
     const sheet = this.#openSheet(top);
     if (sheet === null || sheet.contains(target)) return;
-    for (let i = 0; i < MAX_CLOSE_DEPTH && this.#openSheet(top) !== null; i += 1) {
+    for (
+      let i = 0;
+      i < MAX_CLOSE_DEPTH && this.#deps.top() === top && this.#openSheet(top) !== null;
+      i += 1
+    ) {
       this.#deps.press('B');
     }
     if (top === 'other') this.#closeOnly = e;
@@ -290,7 +316,7 @@ export class PointerSource {
     const sheet = this.#openSheet(top);
     if (sheet?.contains(target)) {
       const row = target.closest<HTMLElement>('[data-nav-key]');
-      if (row !== null && sheet.contains(row)) this.#seekItem(row, true);
+      if (row !== null) this.#seekItem(row, true);
       return;
     }
     switch (top) {
@@ -314,8 +340,10 @@ export class PointerSource {
     }
   }
 
-  /** UIF5.4: over the top frame's nav rows, Up or Down per notch instead of the native scroll. */
+  /** UIF5.4: over the top frame's nav rows, Up or Down per notch instead of the native scroll. A
+   *  zoom (ctrl or meta, a trackpad pinch) or a horizontal-only wheel stays the browser's. */
   #onWheel(e: WheelEvent): void {
+    if (e.ctrlKey || e.metaKey || e.deltaY === 0 || !Number.isFinite(e.deltaY)) return;
     if (this.#deps.capturing() || !(e.target instanceof Element)) return;
     const active = this.#screen.ownerDocument.activeElement;
     if (e.target.closest(EDITABLE) !== null || active?.closest(EDITABLE) != null) return;
@@ -323,26 +351,27 @@ export class PointerSource {
     const container = this.#navContainerAt(e.target);
     if (container === null) return;
     e.preventDefault();
-    if (container !== this.#wheelOver) this.#wheelAcc = 0;
+    const now = this.#clock.now();
+    if (container !== this.#wheelOver || now - this.#wheelAt > WHEEL_IDLE_MS) this.#wheelAcc = 0;
     this.#wheelOver = container;
+    this.#wheelAt = now;
     const { steps, acc } = wheelSteps(this.#wheelAcc, e.deltaY, e.deltaMode);
     this.#wheelAcc = acc;
     for (let i = 0; i < Math.abs(steps); i += 1) this.#deps.press(steps > 0 ? 'Down' : 'Up');
   }
 
-  /** The top frame's nav container under `el`: a row's container, or an element holding rows. */
+  /** The top frame's nav container under `el` (a row's container, or an element holding rows),
+   *  and only the open sheet's rows while a sheet shows: the base list under it is stale. */
   #navContainerAt(el: Element): HTMLElement | null {
-    const row = el.closest<HTMLElement>('[data-nav-key]');
-    if (row !== null) {
-      const c = containerOf(row);
-      return c !== null && this.#inTopFrame(row) ? c : null;
+    let row = el.closest<HTMLElement>('[data-nav-key]');
+    for (let n: Element | null = el; row === null && n !== null && n !== this.#screen; ) {
+      row = n instanceof HTMLElement ? ownRow(n) : null;
+      n = n.parentElement;
     }
-    for (let n: Element | null = el; n !== null && n !== this.#screen; n = n.parentElement) {
-      if (!(n instanceof HTMLElement)) continue;
-      const rows = rowsOf(n);
-      if (rows.length > 0) return rows[0] !== undefined && this.#inTopFrame(rows[0]) ? n : null;
-    }
-    return null;
+    const container = row === null ? null : containerOf(row);
+    if (row === null || container === null || !this.#inTopFrame(row)) return null;
+    const sheet = this.#openSheet('frame');
+    return sheet === null || sheet.contains(container) ? container : null;
   }
 
   #onContextMenu(e: MouseEvent): void {
