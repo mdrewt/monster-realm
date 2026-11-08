@@ -2011,6 +2011,147 @@ describe('LeaderboardView — the Rankings rows are display-only (qf-16, QF16.1)
   });
 });
 
+// ==========================================================================================
+// uif-9 (UIF9.5, UIF9.3): Rankings adopts the kit's shared scroll cue and the Social panels' row
+// spacing. A populated Rankings paint adds `mr-scroll` to `#leaderboard-list` (the shared rule of
+// styles.css: the position cue, overflow and flex shrink) beside the qf-16 marks, and writes inline
+// `margin: 0; padding: 0` on it (the `<ul>`'s UA margin and 40px start padding put the rows 40px
+// right of every other Social panel's rows). Both go with the paint: with none kept the list is
+// exactly the legacy board. The qf-16 pins above and below are unchanged.
+// ==========================================================================================
+
+describe('LeaderboardView — Rankings on the shared scroll rule and row spacing (uif-9)', () => {
+  const NOT_RANKED: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+  const zero = (v: string): boolean => v === '0' || v === '0px';
+
+  it('UIF9.5 a populated Rankings paint adds mr-scroll to the board list next to aria-readonly and the listbox marks (the rows never wear it, other classes are kept); hide, a Players paint, a hidden render or paint and the re-open edge each remove it, and the legacy board never has it [UIF9.5 shared cue]', () => {
+    // WRONG IMPL KILLED: a Rankings list with no `mr-scroll` (the shared position cue and overflow
+    // come only from the qf-16 `[aria-readonly]` selector: today's code); the class on the rows or
+    // the overlay root instead of the list; the class written by render() with no paint (the legacy
+    // board would carry it); the class left behind by hide(), a Players paint, a hidden render, a
+    // hidden paint or the re-open edge; a drop that overwrites className (the list's own class is
+    // lost) instead of removing the one token; the aria-readonly mark traded for the class (the
+    // qf-16 treatment keys on it).
+    const { overlay, list } = mountLeaderboardOverlay();
+    list.className = 'mr-nav-list';
+    const view = new LeaderboardView();
+    const scroll = (): boolean => list.classList.contains('mr-scroll');
+
+    view.render(makeVm(BOARD));
+    expect(scroll(), 'a hidden legacy board').toBe(false);
+    view.show();
+    view.render(makeVm(BOARD));
+    expect(scroll(), 'a shown legacy board with no paint').toBe(false);
+    expect(list.className, 'the legacy list class is untouched').toBe('mr-nav-list');
+
+    view.paintSocial(rankingsPaint('bb'));
+    expect(scroll(), 'a Rankings paint over rows').toBe(true);
+    expect(list.getAttribute('aria-readonly'), 'beside the qf-16 read-only mark').toBe('true');
+    expect(list.getAttribute('role'), 'and the listbox').toBe('listbox');
+    expect(list.classList.contains('mr-nav-list'), 'the list keeps its own class').toBe(true);
+    expect(
+      rowsOf().some((li) => li.classList.contains('mr-scroll')),
+      'a list class, not a row class',
+    ).toBe(false);
+    expect(overlay.classList.contains('mr-scroll'), 'and not the dialog root`s').toBe(false);
+    view.paintSocial(rankingsPaint('cc'));
+    expect(scroll(), 'a repaint with a new cursor keeps it').toBe(true);
+    view.render(makeVm(BOARD));
+    expect(scroll(), 'a re-render under the kept paint keeps it').toBe(true);
+
+    // hide() drops it and leaves exactly the list's own class.
+    view.hide();
+    expect(scroll(), 'after hide()').toBe(false);
+    expect(list.className, 'hide() leaves the list`s own class, exactly').toBe('mr-nav-list');
+
+    // A render and a paint while hidden carry none.
+    view.render(makeVm(BOARD));
+    expect(scroll(), 'a render while hidden').toBe(false);
+    view.paintSocial(rankingsPaint('bb'));
+    expect(scroll(), 'a paint made while hidden is not kept').toBe(false);
+
+    // A Players paint drops it; Rankings brings it back.
+    view.show();
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+    expect(scroll(), 'Rankings after the re-open').toBe(true);
+    view.paintSocial(playersPaint(NOT_RANKED, 'bb'));
+    expect(scroll(), 'a Players paint').toBe(false);
+    expect(list.className, 'a Players paint leaves the list`s own class, exactly').toBe(
+      'mr-nav-list',
+    );
+    view.paintSocial(rankingsPaint('bb'));
+    expect(scroll(), 'back on Rankings').toBe(true);
+
+    // The hidden -> visible edge drops a paint the view never saw closing.
+    overlay.style.display = 'none';
+    view.show();
+    expect(scroll(), 'the re-open edge').toBe(false);
+    expect(list.className, 'the re-open edge leaves the list`s own class, exactly').toBe(
+      'mr-nav-list',
+    );
+  });
+
+  it('UIF9.3 a populated Rankings paint writes inline margin 0 and padding 0 on the board list (so its rows start where the other Social panels` rows do); the drop removes both and leaves the other inline styles alone, hide, a Players paint and the re-open edge included; the legacy board never has them', () => {
+    // WRONG IMPL KILLED: today's list (no inline reset: the `<ul>` keeps the UA margin 14px 0 and
+    // padding-left 40px, rows at x=66 against 26 on the other panels); only the margin or only the
+    // padding reset; a reset written onto the rows or the overlay root; a reset written by render()
+    // with no paint (the legacy board is changed); a reset left behind by hide(), a Players paint
+    // or the re-open edge; a drop that wipes the whole style attribute (another inline style is
+    // lost).
+    const { overlay, list } = mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    const reset = (): { margin: string; padding: string } => ({
+      margin: list.style.getPropertyValue('margin'),
+      padding: list.style.getPropertyValue('padding'),
+    });
+    const isReset = (): boolean => zero(reset().margin) && zero(reset().padding);
+
+    view.render(makeVm(BOARD));
+    view.show();
+    view.render(makeVm(BOARD));
+    expect(reset(), 'the legacy board: no inline margin or padding').toEqual({
+      margin: '',
+      padding: '',
+    });
+
+    list.style.setProperty('letter-spacing', '1px'); // an inline style the paint does not own
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isReset(), `Rankings: margin and padding are 0 (${JSON.stringify(reset())})`).toBe(true);
+    expect(list.style.getPropertyValue('letter-spacing'), 'the other inline style is kept').toBe(
+      '1px',
+    );
+    for (const li of rowsOf()) {
+      expect(li.style.getPropertyValue('margin'), 'no reset on a row').toBe('');
+    }
+    expect(overlay.style.getPropertyValue('padding'), 'no reset on the dialog root').toBe('');
+    view.paintSocial(rankingsPaint('cc'));
+    expect(isReset(), 'a repaint keeps it').toBe(true);
+    view.render(makeVm(BOARD));
+    expect(isReset(), 'a re-render under the kept paint keeps it').toBe(true);
+
+    view.paintSocial(playersPaint(NOT_RANKED, 'bb'));
+    expect(reset(), 'a Players paint drops it').toEqual({ margin: '', padding: '' });
+    expect(list.style.getPropertyValue('letter-spacing'), 'and keeps the other style').toBe('1px');
+
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isReset(), 'Rankings again').toBe(true);
+    view.hide();
+    expect(reset(), 'hide() drops it').toEqual({ margin: '', padding: '' });
+    expect(list.style.getPropertyValue('letter-spacing'), 'hide() keeps the other style').toBe(
+      '1px',
+    );
+
+    view.show();
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isReset(), 'Rankings after a re-open').toBe(true);
+    overlay.style.display = 'none';
+    view.show();
+    expect(reset(), 'the re-open edge drops it').toEqual({ margin: '', padding: '' });
+  });
+});
+
 describe('LeaderboardView — the Rankings cursor row scrolls into view (qf-16, QF16.2)', () => {
   it('a Rankings paint scrolls the cursor row into view once per change of cursor row (block nearest, called on that row), never on a re-render or repaint of the same cursor, again after a hide or a Players tab, never on a detached list, and tolerates a missing scrollIntoView [QF16-2-SCROLL-ON-STEP]', () => {
     // WRONG IMPL KILLED: no scroll at all (RED today: Rankings marks rows by hand, so the nav kit's

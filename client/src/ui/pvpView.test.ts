@@ -1246,7 +1246,14 @@ describe('PvpView.paintCursor (ctl-8d, CTL8D.2)', () => {
     const children = [...root.children];
     const incoming = document.getElementById('pvp-challenge-incoming') as HTMLElement;
     const outgoing = document.getElementById('pvp-challenge-outgoing') as HTMLElement;
+    // NAMED INTENTIONAL CHANGE (uif-9, UIF9.3): was "a container carries mr-nav-item only while it
+    // holds the cursor" (ROW === UNMARKED here: no mark at all off the cursor); now a container
+    // that holds a row carries mr-nav-item while the view shows (ROW = [true, false, null]), so a
+    // row's padding does not change with the cursor, and only the cursor row adds is-active and
+    // aria-current (MARKED). An empty container, and every container once the view is hidden,
+    // carry nothing (UNMARKED). The cursor-moves / mark-survives-refresh / hide-clears teeth stay.
     const MARKED = [true, true, 'true'] as const;
+    const ROW = [true, false, null] as const;
     const UNMARKED = [false, false, null] as const;
     const marks = (): Array<[boolean, boolean, string | null]> =>
       [incoming, outgoing].map((el): [boolean, boolean, string | null] => [
@@ -1254,13 +1261,16 @@ describe('PvpView.paintCursor (ctl-8d, CTL8D.2)', () => {
         el.classList.contains('is-active'),
         el.getAttribute('aria-current'),
       ]);
-    expect(marks(), 'precondition: no mark before any paint').toEqual([UNMARKED, UNMARKED]);
+    expect(marks(), 'precondition: both rows are rows, neither holds the cursor').toEqual([
+      ROW,
+      ROW,
+    ]);
 
     // The incoming request.
     view.paintCursor('incoming');
-    expect(marks(), 'incoming: that container alone').toEqual([MARKED, UNMARKED]);
+    expect(marks(), 'incoming: the cursor on that container alone').toEqual([MARKED, ROW]);
     view.refresh(vm, true);
-    expect(marks(), 'a refresh of the same view model keeps it').toEqual([MARKED, UNMARKED]);
+    expect(marks(), 'a refresh of the same view model keeps it').toEqual([MARKED, ROW]);
     view.refresh(
       pvpVm({
         ...vm,
@@ -1272,29 +1282,29 @@ describe('PvpView.paintCursor (ctl-8d, CTL8D.2)', () => {
       document.querySelector('[data-testid="pvp-incoming-label"]')?.textContent,
       'precondition: the refresh rebuilt the incoming row',
     ).toBe(i18nTf('pvp.incoming.label', { challenger: 'Bobby' }));
-    expect(marks(), 'a refresh that rebuilds the row keeps it').toEqual([MARKED, UNMARKED]);
+    expect(marks(), 'a refresh that rebuilds the row keeps it').toEqual([MARKED, ROW]);
     const incomingLabel = incoming.querySelector('[data-testid="pvp-incoming-label"]');
     expect(incomingLabel, 'precondition: the incoming label is in its container').not.toBeNull();
 
     // The outgoing request.
     view.paintCursor('outgoing');
-    expect(marks(), 'outgoing: that container alone').toEqual([UNMARKED, MARKED]);
+    expect(marks(), 'outgoing: the cursor on that container alone').toEqual([ROW, MARKED]);
     expect(
       incoming.querySelector('[data-testid="pvp-incoming-label"]'),
       'paintCursor re-renders no row',
     ).toBe(incomingLabel);
 
-    // No row.
+    // No row under the cursor: both are still rows, neither is current.
     view.paintCursor(null);
-    expect(marks(), 'null: neither container').toEqual([UNMARKED, UNMARKED]);
+    expect(marks(), 'null: no cursor on either container').toEqual([ROW, ROW]);
 
-    // hide() clears it, and a reopened panel carries none.
+    // hide() clears every mark (the nav-item class too), and a reopened panel carries no cursor.
     view.paintCursor('incoming');
-    expect(marks(), 'precondition: incoming marked again').toEqual([MARKED, UNMARKED]);
+    expect(marks(), 'precondition: incoming marked again').toEqual([MARKED, ROW]);
     view.hide();
-    expect(marks(), 'hide(): neither container').toEqual([UNMARKED, UNMARKED]);
+    expect(marks(), 'hide(): neither container carries any mark').toEqual([UNMARKED, UNMARKED]);
     view.refresh(vm, true);
-    expect(marks(), 'reopened: no mark from the last visit').toEqual([UNMARKED, UNMARKED]);
+    expect(marks(), 'reopened: rows again, no cursor from the last visit').toEqual([ROW, ROW]);
 
     expect(root.children.length, 'paintCursor added no child to the root').toBe(children.length);
     children.forEach((child, i) => {
@@ -1377,5 +1387,195 @@ describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
         `qf-8: with live challenges, clicking everything calls no ${name}`,
       ).not.toHaveBeenCalled();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-9 (UIF9.4, UIF9.3): the Challenges rows as RowCards with a uniform row treatment.
+//
+// UIF9.4: each shown challenge renders as `createRowCard` output: ONE `.mr-card` that is the only
+// child of its container, its `.mr-card-title` the catalogued label, the e2e testid ON the card.
+// UIF9.3: a container that holds a row carries `mr-nav-item` (the kit's row padding) while the view
+// shows, whether or not the cursor is on it, so the row's padding never changes with the cursor;
+// the cursor adds `is-active` + aria-current alone; an empty container is not a row; hide() clears
+// every mark.
+// ---------------------------------------------------------------------------
+
+describe('PvpView challenge rows are RowCards (uif-9, UIF9.4)', () => {
+  const containers = (): { incoming: HTMLElement; outgoing: HTMLElement } => ({
+    incoming: document.getElementById('pvp-challenge-incoming') as HTMLElement,
+    outgoing: document.getElementById('pvp-challenge-outgoing') as HTMLElement,
+  });
+
+  it('UIF9.4 each shown challenge is ONE .mr-card, the only child of its container, whose .mr-card-title reads the catalogued label and which carries the pvp-incoming-label / pvp-outgoing-label testid itself; the card holds its title and nothing else', () => {
+    // WRONG IMPL KILLED: today's bare `<div data-testid>` label (no `.mr-card`); a card wrapped
+    // around the labelled div (the testid on an inner node, not on the card); the testid on the
+    // card's title instead of the card; a label written beside the card (two children); a title
+    // that is a hand-typed English string instead of the resolver's `pvp.*.label`; an extra line
+    // the kit's card was never given (`.mr-card-line` with a repeated label).
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(raPvpVm(), true);
+    const { incoming, outgoing } = containers();
+    const cases = [
+      {
+        name: 'incoming',
+        box: incoming,
+        testid: 'pvp-incoming-label',
+        title: i18nTf('pvp.incoming.label', { challenger: 'Bob' }),
+      },
+      {
+        name: 'outgoing',
+        box: outgoing,
+        testid: 'pvp-outgoing-label',
+        title: i18nTf('pvp.outgoing.label', { target: 'Carol' }),
+      },
+    ];
+    for (const c of cases) {
+      expect(c.box.children.length, `${c.name}: the card is the container's only child`).toBe(1);
+      const card = c.box.firstElementChild as HTMLElement;
+      expect(card.classList.contains('mr-card'), `${c.name}: the child is a .mr-card`).toBe(true);
+      expect(card.getAttribute('data-testid'), `${c.name}: the testid is ON the card`).toBe(
+        c.testid,
+      );
+      expect(
+        [...card.children].map((el) => el.className),
+        `${c.name}: the card holds its title alone`,
+      ).toEqual(['mr-card-title']);
+      expect(card.querySelector('.mr-card-title')?.textContent, `${c.name}: the title`).toBe(
+        c.title,
+      );
+      expect(card.textContent, `${c.name}: and the card reads only the title`).toBe(c.title);
+      expect(
+        c.box.querySelectorAll(`[data-testid="${c.testid}"]`).length,
+        `${c.name}: exactly one element carries the testid`,
+      ).toBe(1);
+    }
+    // The two requests are distinct cards.
+    expect(incoming.firstElementChild, 'two different cards').not.toBe(outgoing.firstElementChild);
+  });
+
+  it('UIF9.4 a refresh rebuilds each card (the label follows the view model), a cleared or non-Pending challenge leaves its container with no card, and the idle shell holds none', () => {
+    // WRONG IMPL KILLED: a card created once and never relabelled (a renamed challenger keeps the
+    // old title); a cleared incoming that leaves its empty card (a bordered box with no text); an
+    // outgoing that is no longer Pending but keeps its card; a second card appended per refresh
+    // (the container holds two after two batches).
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    const { incoming, outgoing } = containers();
+    const titleOf = (box: HTMLElement): string[] =>
+      [...box.querySelectorAll('.mr-card')].map(
+        (c) => c.querySelector('.mr-card-title')?.textContent ?? '',
+      );
+
+    view.refresh(raPvpVm(), true);
+    view.refresh(raPvpVm(), true);
+    expect(
+      incoming.querySelectorAll('.mr-card').length,
+      'two batches: still one incoming card',
+    ).toBe(1);
+    expect(
+      outgoing.querySelectorAll('.mr-card').length,
+      'two batches: still one outgoing card',
+    ).toBe(1);
+
+    view.refresh(
+      pvpVm({
+        ...raPvpVm(),
+        incoming: { challengeId: RA_INCOMING_ID, challengerId: '0xbbb', challengerName: 'Bobby' },
+      }),
+      true,
+    );
+    expect(titleOf(incoming), 'a renamed challenger relabels the card').toEqual([
+      i18nTf('pvp.incoming.label', { challenger: 'Bobby' }),
+    ]);
+
+    view.refresh(
+      pvpVm({
+        outgoing: {
+          challengeId: RA_OUTGOING_ID,
+          targetId: '0xccc',
+          targetName: 'Carol',
+          status: 'Accepted',
+        },
+      }),
+      true,
+    );
+    expect(incoming.querySelectorAll('.mr-card').length, 'a cleared incoming: no card').toBe(0);
+    expect(outgoing.querySelectorAll('.mr-card').length, 'a non-Pending outgoing: no card').toBe(0);
+    expect(incoming.children.length, 'a cleared incoming: no node at all').toBe(0);
+    expect(outgoing.children.length, 'a non-Pending outgoing: no node at all').toBe(0);
+
+    view.refresh(raPvpVm(), true);
+    view.refresh(null, true);
+    expect(document.querySelectorAll('.mr-card').length, 'the idle shell holds no card').toBe(0);
+  });
+});
+
+describe('PvpView rows carry the one row treatment whatever the cursor (uif-9, UIF9.3)', () => {
+  const rowState = (
+    el: HTMLElement,
+  ): { navItem: boolean; active: boolean; current: string | null } => ({
+    navItem: el.classList.contains('mr-nav-item'),
+    active: el.classList.contains('is-active'),
+    current: el.getAttribute('aria-current'),
+  });
+
+  it('UIF9.3 a visible view marks every container that holds a row mr-nav-item (the cursor row adds is-active and aria-current alone, the other row none), an empty container is no row, and hide() clears every mark while the rows stay in the DOM', () => {
+    // WRONG IMPL KILLED: today's marks (mr-nav-item only on the cursor row, so the other row's
+    // padding is 0 against 2px 8px 2px 20px on the cursor row and the rows do not line up); a mark
+    // on the cursor row that moves the other row's class too (is-active on both); mr-nav-item on
+    // an EMPTY container (a padded blank row); marks left after hide() (the hidden panel's rows
+    // keep their padding, and the next open starts decorated); marks written while the view is
+    // hidden.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    const { incoming, outgoing } = {
+      incoming: document.getElementById('pvp-challenge-incoming') as HTMLElement,
+      outgoing: document.getElementById('pvp-challenge-outgoing') as HTMLElement,
+    };
+    const ROW = { navItem: true, active: false, current: null };
+    const CURSOR = { navItem: true, active: true, current: 'true' };
+    const NONE = { navItem: false, active: false, current: null };
+
+    // Both rows, no cursor.
+    view.refresh(raPvpVm(), true);
+    expect([rowState(incoming), rowState(outgoing)], 'two rows, no cursor').toEqual([ROW, ROW]);
+    // The cursor on one, then the other: the other stays a plain row.
+    view.paintCursor('incoming');
+    expect([rowState(incoming), rowState(outgoing)], 'cursor on incoming').toEqual([CURSOR, ROW]);
+    view.paintCursor('outgoing');
+    expect([rowState(incoming), rowState(outgoing)], 'cursor on outgoing').toEqual([ROW, CURSOR]);
+
+    // An empty container is not a row, even with the cursor asked for on it.
+    view.refresh(pvpVm({ incoming: raPvpVm().incoming }), true);
+    expect(outgoing.children.length, 'precondition: the outgoing container is empty').toBe(0);
+    expect(rowState(outgoing).navItem, 'an empty container carries no mr-nav-item').toBe(false);
+    expect(rowState(incoming).navItem, 'the incoming row still does').toBe(true);
+
+    // The row going away takes its mark; the row arriving gains it.
+    view.paintCursor(null);
+    view.refresh(pvpVm(), true);
+    expect([rowState(incoming), rowState(outgoing)], 'no rows: no marks').toEqual([NONE, NONE]);
+    view.refresh(raPvpVm(), true);
+    expect([rowState(incoming), rowState(outgoing)], 'rows arrive: marked').toEqual([ROW, ROW]);
+
+    // hide(): every mark gone, the rows themselves kept.
+    view.paintCursor('incoming');
+    view.hide();
+    expect([rowState(incoming), rowState(outgoing)], 'hidden: no mark of any kind').toEqual([
+      NONE,
+      NONE,
+    ]);
+    expect(incoming.children.length + outgoing.children.length, 'hide() empties no row').toBe(2);
+    // refresh(vm, false) on a hidden view writes nothing either.
+    view.refresh(raPvpVm(), false);
+    expect([rowState(incoming), rowState(outgoing)], 'a refresh that keeps it hidden').toEqual([
+      NONE,
+      NONE,
+    ]);
+    // Reopened: rows again, cursor only where the screen puts it.
+    view.refresh(raPvpVm(), true);
+    expect([rowState(incoming), rowState(outgoing)], 'reopened').toEqual([ROW, ROW]);
   });
 });
