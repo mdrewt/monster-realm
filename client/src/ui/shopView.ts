@@ -5,9 +5,8 @@
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `shop.*` key from ui/i18n/catalog.en.ts;
 // the English bytes are unchanged (the catalog pins them, TRAILING SPACE of the buy/sell rows
-// included). `vm.shopName`, `vm.balance.label` and the `showFeedback` message are model data,
-// rendered raw; item names, counts and bigint prices flow through as params. Every `t(`/`tf(`
-// first argument is a string LITERAL, and the `emptyRow` helper stays (nested `emptyRow(t('…'))`).
+// included). `vm.shopName` and `vm.balance.label` are model data, rendered raw; item names,
+// counts and bigint prices flow through as params. Every `t(`/`tf(` first argument is a string LITERAL, and the `emptyRow` helper stays (nested `emptyRow(t('…'))`).
 // No constructor-time strings: this view renders into the static index.html shell.
 //
 // THE TABS, THE CURSOR AND THE PROMPTS (ctl-8a, CTL8A.2). The shop screen (ui/screens/
@@ -114,7 +113,6 @@ export class ShopView {
   readonly #title: HTMLElement;
   readonly #forSaleList: HTMLElement;
   readonly #inventoryList: HTMLElement;
-  readonly #feedbackEl: HTMLElement;
   readonly #balanceEl: HTMLElement;
   readonly #tabStrip: HTMLElement;
   readonly #description: HTMLElement;
@@ -146,11 +144,6 @@ export class ShopView {
       el.querySelector('#shop-inventory') ??
       (() => {
         throw new Error('shop-inventory missing');
-      })();
-    this.#feedbackEl =
-      el.querySelector('#shop-feedback') ??
-      (() => {
-        throw new Error('shop-feedback missing');
       })();
     // The gold readout is created here, not in index.html, and is
     // inserted directly after the shop title so it reads as part of the shop panel.
@@ -217,7 +210,6 @@ export class ShopView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    this.#feedbackEl.textContent = '';
     this.#pending = false;
     // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
@@ -267,11 +259,6 @@ export class ShopView {
       this.#inventoryList.replaceChildren(emptyRow(t('shop.inventory.empty')));
     }
     this.#apply();
-  }
-
-  /** Display a feedback message (reducer success/failure). */
-  showFeedback(message: string): void {
-    this.#feedbackEl.textContent = message;
   }
 
   /** The screen's paint: kept, so the next batch render re-applies it. */

@@ -13,8 +13,9 @@
 //      open (ctl-10b) locks that select and seats the wizard at once, so the Offer paint takes
 //      focus first and the defer, finding focus already inside, leaves it there.
 //   3. hide() resets the select→placeholder + unchecks all monsters + blanks both currency
-//      inputs + feedback + releases the in-flight lock (#pending=false, submit re-enabled —
-//      dead-button guard) so a stale draft/lock never survives a re-open.
+//      inputs + releases the in-flight lock (#pending=false, submit re-enabled — dead-button
+//      guard) so a stale draft/lock never survives a re-open. The view owns no message line: a
+//      proposal's outcome is a toast, routed by main.ts (uif-4b).
 //
 // D6: player-controlled name/nickname → option.textContent / label textContent / value
 // ONLY, NEVER innerHTML (XSS firewall; the dynamic checkbox-label path is the risk site).
@@ -116,7 +117,6 @@ export class TradeProposeView {
   readonly #offerInput: HTMLInputElement;
   readonly #requestInput: HTMLInputElement;
   readonly #submitBtn: HTMLButtonElement;
-  readonly #feedback: HTMLElement;
   readonly #cbs: TradeProposeCallbacks;
   // ctl-8e: the step header (before the select) and the review row (after the submit button).
   readonly #steps: HTMLOListElement;
@@ -158,10 +158,6 @@ export class TradeProposeView {
     const submitBtn = document.getElementById('tradepropose-submit');
     if (!submitBtn) throw new Error('tradepropose-submit missing');
     this.#submitBtn = submitBtn as HTMLButtonElement;
-
-    const feedback = document.getElementById('tradepropose-feedback');
-    if (!feedback) throw new Error('tradepropose-feedback missing');
-    this.#feedback = feedback;
 
     this.#cbs = cbs;
 
@@ -232,14 +228,13 @@ export class TradeProposeView {
   hide(): void {
     this.#overlay.style.display = 'none';
     // Stale-draft guard: reset the select to the placeholder + uncheck all monsters + blank
-    // both currency inputs + feedback so a prior open's draft never survives (red-team M-2).
+    // both currency inputs so a prior open's draft never survives (red-team M-2).
     this.#target.value = PLACEHOLDER_VALUE;
     for (const cb of this.#monsters.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) {
       cb.checked = false;
     }
     this.#offerInput.value = '';
     this.#requestInput.value = '';
-    this.#feedback.textContent = '';
     // Release the in-flight lock: onReconnect and the battle auto-show force-hide
     // this overlay, and the SDK never settles an in-flight reducer promise after a link drop —
     // so .finally() may never run. Without this reset, #pending stays true forever → dead button.
@@ -436,11 +431,6 @@ export class TradeProposeView {
     }
   }
 
-  /** Display a feedback message (reducer success / failure). textContent only (XSS). */
-  showFeedback(msg: string): void {
-    this.#feedback.textContent = msg;
-  }
-
   // Read the live draft from the DOM: selected target, checked monster ids, currency strings.
   #readDraft(): TradeProposeDraft {
     const selectedMonsterIds: bigint[] = [];
@@ -482,8 +472,6 @@ export class TradeProposeView {
       this.#cbs.maxMonstersPerSide,
     );
     if (!sub.canSubmit || sub.args === null) return; // invalid draft → no-op, no onSubmit call.
-    // Clear any prior feedback so a stale "Offer sent!" never lingers under a new submission.
-    this.#feedback.textContent = '';
     this.#pending = true;
     this.#submitBtn.disabled = true;
     // .finally() resets on BOTH resolve and reject — no dead-button-forever. .catch() swallows

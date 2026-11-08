@@ -514,18 +514,9 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
   // each button dispatches onChallenge with the identity" tested only the per-player Challenge
   // list, which is deleted; its survivor is CTL10B-2-PVP-NO-INITIATE below.
 
-  it('BITES: hide() clears the feedback line, and showFeedback() writes it via textContent', () => {
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    const feedback = document.getElementById('pvp-challenge-feedback') as HTMLElement;
-
-    view.show();
-    view.showFeedback('Challenge sent!');
-    expect(feedback.textContent).toBe('Challenge sent!');
-
-    view.hide();
-    expect(feedback.textContent).toBe('');
-  });
+  // NAMED REMOVAL (uif-4b, UIF4B.5): "hide() clears the feedback line, and showFeedback() writes it
+  // via textContent" tested the retired `showFeedback` and `#pvp-challenge-feedback`. Its survivor is
+  // the UIF4B.5 absence test at the top of this file.
 });
 
 // ---------------------------------------------------------------------------
@@ -736,12 +727,9 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
     // NAMED REMOVAL (ctl-10b, CTL10B.2): the "players empty" (pvp.players.none) and "players
     // present" (pvp.players.heading + raw-name button) blocks tested the deleted player list.
 
-    // showFeedback never touches the resolver.
-    vi.mocked(i18nT).mockClear();
-    vi.mocked(i18nTf).mockClear();
-    view.showFeedback('some feedback text');
-    expect(i18nT).not.toHaveBeenCalled();
-    expect(i18nTf).not.toHaveBeenCalled();
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the "showFeedback never touches the resolver" clause is
+    // dropped with the method (retired). Was: `view.showFeedback('some feedback text')` with no
+    // t()/tf() call after it. Survivor: pvpView UIF4B.5 (the view has no showFeedback).
   });
 
   it('m24s3 PV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {

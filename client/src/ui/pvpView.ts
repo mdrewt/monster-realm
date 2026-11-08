@@ -5,8 +5,9 @@
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `pvp.*` key from ui/i18n/catalog.en.ts;
-// the English bytes are unchanged. One sink stays raw on purpose: `showFeedback(msg)` renders text
-// that main.ts owns (S6 migrates it there). Every `t(`/`tf(` first argument is a string LITERAL.
+// the English bytes are unchanged. Every `t(`/`tf(` first argument is a string LITERAL. The view
+// owns no message line: its dead `showFeedback` and `#pvp-challenge-feedback` retired in uif-4b
+// (WF1-A5), and a challenge's outcome is main.ts's, on its policy channel.
 //
 // The panel only RESPONDS (ctl-10b, CTL10B.2): a challenge is started face to face from the world
 // (A on the player you face), never from a list here, so `#pvp-player-list` stays empty.
@@ -41,7 +42,6 @@ export class PvpView {
   readonly #statusEl: HTMLElement;
   readonly #incomingEl: HTMLElement;
   readonly #outgoingEl: HTMLElement;
-  readonly #feedbackEl: HTMLElement;
   readonly #root: HTMLElement;
   #visible = false;
 
@@ -64,11 +64,6 @@ export class PvpView {
     if (!outgoingEl)
       throw new Error('pvpView: #pvp-challenge-outgoing element missing from index.html');
     this.#outgoingEl = outgoingEl;
-
-    const feedbackEl = document.getElementById('pvp-challenge-feedback');
-    if (!feedbackEl)
-      throw new Error('pvpView: #pvp-challenge-feedback element missing from index.html');
-    this.#feedbackEl = feedbackEl;
   }
 
   get visible(): boolean {
@@ -94,7 +89,6 @@ export class PvpView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
-    this.#feedbackEl.textContent = '';
     this.paintCursor(null);
     // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
@@ -104,10 +98,6 @@ export class PvpView {
     // `visible === false`, skip, and leave a live capture listener plus a pending timer stranded
     // FOREVER. Unguarded, the next hide() clears it.
     closeOverlayA11y('pvpView', null);
-  }
-
-  showFeedback(msg: string): void {
-    this.#feedbackEl.textContent = msg;
   }
 
   /** Host the Social frame's shared chrome (CTL8S.3): `el` becomes this root's first child. A

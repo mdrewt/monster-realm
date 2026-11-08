@@ -239,7 +239,12 @@ test.describe
             .poll(() => stackNames(page), { message: `${label}: A opens Controls over the menu` })
             .toEqual(['world', 'menuView', 'controlsView']);
           await expect(page.locator('#controls-overlay')).toBeVisible();
-          await downTo(page, controlsActive, 'A_0', 13, `${label}: the Controls grid`);
+          // The X row's Alt slot (main.remap.test.ts's protected-refusal case): Down to X_0, Right.
+          await downTo(page, controlsActive, 'X_0', 13, `${label}: the Controls grid`);
+          await pressButton(page, 'Right');
+          await expect
+            .poll(() => controlsActive(page), { message: `${label}: Right moves onto X_1` })
+            .toBe('X_1');
           await pressButton(page, 'A');
           await expect(
             page.locator('#controls-capture'),
@@ -253,16 +258,18 @@ test.describe
           ).toBeHidden();
           const before = await rectsOf(page, BOXES);
 
-          // A refused key (Tab is reserved): the hint shows on the strip, on no other channel.
-          await page.keyboard.press('Tab');
+          // A PROTECTED refusal (Backspace would empty B, the only key it has): the key is
+          // prevented, so no browser default (a Tab would move focus and scroll the shell, and
+          // that scroll, not the hint, would be measured). The hint shows on the strip only.
+          await page.keyboard.press('Backspace');
           await expect(
             page.locator('#controls-feedback'),
             `${label}: the hint shows`,
           ).toBeVisible();
           await expect(
             page.locator('#controls-feedback'),
-            `${label}: the reserved reason`,
-          ).toHaveText(t('controls.refused.reserved'));
+            `${label}: the protected reason`,
+          ).toHaveText(t('controls.refused.protected'));
           await expect(page.locator('#toast'), `${label}: the hint is not a toast`).toBeHidden();
           const withHint = await rectsOf(page, BOXES);
           for (const [k, sel] of BOXES.entries()) {

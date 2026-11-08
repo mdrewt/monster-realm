@@ -3585,7 +3585,6 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
         return { state, result: issue.command };
       },
     });
-    const shop = stubView('ShopView');
     // Shop 12 (Bait at 17) is BOUND by a real greet-then-shop open; the commands below name
     // shop 11 (Bait at 13) as often as shop 12, and each is priced from the shop it names.
     startConversation(1030);

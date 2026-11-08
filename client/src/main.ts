@@ -155,7 +155,7 @@ import {
   type KeyStoreSnapshot,
   serializeBugBundle,
 } from './ui/bugBundle';
-import { performCare } from './ui/careAction';
+import { type CareOutcome, performCare } from './ui/careAction';
 import {
   buildClaimViewModel,
   CLAIM_INITIAL,
@@ -546,6 +546,8 @@ let privacyView: PrivacyView | undefined;
 // Options › Controls (ctl-12b): the remapping screen. Its `capturing` is what the keydown handler
 // reads to hand a key to the capture instead of the router.
 let controlsView: ControlsView | undefined;
+/** controlsView module's `savedLine`, bound with the view when it is built. */
+let controlsSavedLine: ((text: string, saved: boolean) => string) | undefined;
 let sessionView: SessionView | undefined;
 // The post-evolve reveal banner — runtime-constructed in main(), NOT a
 // registry overlay; read by the batch listener below and reset at the onReconnect tail.
@@ -1711,14 +1713,32 @@ const DONE: Promise<void> = Promise.resolve();
 /** The care in flight per monster (its token), set by the `care` arm of `dispatch`. */
 const careInFlight = new Map<bigint, object>();
 
-// Each feedback sink paints only while its overlay is visible: a late settle must not write a
-// stale line into a closed (and later reopened) overlay.
-const shopFeedback = (message: string): void => {
-  if (shopView?.visible) shopView.showFeedback(message);
-};
-const tradeFeedback = (message: string): void => {
-  if (tradeView?.visible) tradeView.showFeedback(message);
-};
+/** The kinds one feedback action's outcome takes: its own success kind, its own rejection, and the
+ *  shared link-down kind when no call was made (uif-4b). */
+interface ActionKinds {
+  readonly ok: SinkKind;
+  readonly rejected: SinkKind;
+}
+
+/** A feedback action's sink: the outcome goes to its kind's policy channel (the toast for every
+ *  action here). No overlay owns a message line, so a late settle after its overlay closed paints
+ *  nothing into it (UIF4B.3); the timed toast carries the outcome instead, as `reportError` does
+ *  for a frame that was left. */
+const actionFeedback =
+  (kinds: ActionKinds) =>
+  (message: string, outcome: CareOutcome): void => {
+    route(outcome === 'disconnected' ? 'link-down-send' : kinds[outcome], message);
+  };
+const SHOP_BUY = actionFeedback({ ok: 'shop-buy-ok', rejected: 'shop-rejected' });
+const SHOP_SELL = actionFeedback({ ok: 'shop-sell-ok', rejected: 'shop-rejected' });
+const TRADE_ANSWER = actionFeedback({ ok: 'trade-answered', rejected: 'trade-rejected' });
+const TRADE_SETTLE = actionFeedback({ ok: 'trade-settled', rejected: 'trade-rejected' });
+const TRADE_CANCEL = actionFeedback({ ok: 'trade-cancelled', rejected: 'trade-rejected' });
+const TRADE_PROPOSE = actionFeedback({
+  ok: 'trade-offer-sent',
+  rejected: 'trade-propose-rejected',
+});
+const RENAME = actionFeedback({ ok: 'rename-saved', rejected: 'rename-rejected' });
 const ownPartyIds = (): bigint[] =>
   store
     .ownMonsters(identity)
@@ -1810,9 +1830,17 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         call: () => liveReducers()?.care({ monsterId }),
         successMessage: cared,
         where: 'care',
-        showFeedback: (message) => {
-          if (line !== undefined) line(message, message === cared ? 'ok' : 'error');
-          else route(message === cared ? 'care-success' : 'care-rejected', message);
+        showFeedback: (message, outcome) => {
+          if (line !== undefined) line(message, outcome === 'ok' ? 'ok' : 'error');
+          else
+            route(
+              outcome === 'ok'
+                ? 'care-success'
+                : outcome === 'disconnected'
+                  ? 'link-down-send'
+                  : 'care-rejected',
+              message,
+            );
         },
       }).finally(() => {
         // Only this care's own token releases: a reconnect may have cleared it and a newer care
@@ -1875,7 +1903,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
             ? tf('shop.feedback.buy.item', { qty, name: moved.name, gold: moved.gold })
             : tf('shop.feedback.buy.count', { qty }),
         where: 'buy',
-        showFeedback: shopFeedback,
+        showFeedback: SHOP_BUY,
       });
     }
     case 'sell': {
@@ -1890,7 +1918,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
             ? tf('shop.feedback.sell.item', { qty, name: moved.name, gold: moved.gold })
             : tf('shop.feedback.sell.count', { qty }),
         where: 'sell',
-        showFeedback: shopFeedback,
+        showFeedback: SHOP_SELL,
       });
     }
     case 'respondTrade': {
@@ -1901,7 +1929,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
           ? i18nT('trade.feedback.accepted')
           : i18nT('trade.feedback.rejected'),
         where: 'respond-trade',
-        showFeedback: tradeFeedback,
+        showFeedback: TRADE_ANSWER,
         onRejected: releaseAnswered(`trade-${tradeId}`),
       });
     }
@@ -1911,7 +1939,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         call: () => liveReducers()?.confirmTrade({ tradeId }),
         successMessage: i18nT('trade.feedback.completed'),
         where: 'confirm-trade',
-        showFeedback: tradeFeedback,
+        showFeedback: TRADE_SETTLE,
       });
     }
     case 'cancelTrade': {
@@ -1920,7 +1948,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         call: () => liveReducers()?.cancelTrade({ tradeId }),
         successMessage: i18nT('trade.feedback.cancelled'),
         where: 'cancel-trade',
-        showFeedback: tradeFeedback,
+        showFeedback: TRADE_CANCEL,
       });
     }
     case 'proposeTrade': {
@@ -1942,9 +1970,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
           }),
         successMessage: i18nT('tradePropose.feedback.sent'),
         where: 'propose-trade',
-        showFeedback: (message) => {
-          if (tradeProposeView?.visible) tradeProposeView.showFeedback(message);
-        },
+        showFeedback: TRADE_PROPOSE,
       });
     }
     case 'challenge': {
@@ -1990,9 +2016,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         call: () => liveReducers()?.setProfileName({ name }),
         successMessage: i18nT('chrome.rename.updated'),
         where: 'set-profile-name',
-        showFeedback: (message) => {
-          if (renameView?.visible) renameView.showFeedback(message);
-        },
+        showFeedback: RENAME,
       });
     }
     case 'submitQueue': {
@@ -2205,10 +2229,13 @@ let worldHints: ReadonlyArray<{ readonly kind: MessageKind; readonly text: strin
 let saidHint: string | null = null;
 let menuHint: string | null = null;
 
-/** Show `text` on its policy channel. */
-function route(kind: SinkKind, text: string): void {
-  if (channelOf(kind) === 'hint') setWorldHint(kind, text);
-  else showToast(text);
+/** Show `text` on its policy channel: THE one seam every main.ts message goes through, so no view
+ *  picks a channel (UIF4B.1). A hint kind paints on `hintHost`, the open frame's own strip, when
+ *  the caller has one (Controls' refused key, uif-4b), else it is a world hint. */
+function route(kind: SinkKind, text: string, hintHost?: (text: string) => void): void {
+  if (channelOf(kind) !== 'hint') showToast(text);
+  else if (hintHost !== undefined) hintHost(text);
+  else setWorldHint(kind, text);
 }
 
 /** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
@@ -2899,9 +2926,14 @@ const endControlsCapture = (): void => {
 const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
   const step = captureStep(bindings, target, e);
   if (step.prevent) e.preventDefault();
-  const saved = step.bindings === undefined || applyBindings(step.bindings);
-  controlsView?.showFeedback(step.text, saved);
-  if (!step.done) return;
+  if (!step.done) {
+    // A refused key: the capture still waits, so its reason is a hint on the frame's strip.
+    route('controls-refused', step.text, (hint) => controlsView?.showHint(hint));
+    return;
+  }
+  if (step.bindings === undefined) toastControls('controls-cancelled', step.text);
+  else if (applyBindings(step.bindings)) toastControls('controls-saved', step.text);
+  else toastControls('controls-save-failed', step.text, false);
   // The captured key's OS repeats are not presses of its new button.
   navHeldCodes.add(e.code);
   endControlsCapture();
@@ -2911,8 +2943,14 @@ const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
 const cancelControlsCapture = (): void => {
   syncStack();
   if (controlsCapture() === null) return;
-  controlsView?.showFeedback(outcomeText({ kind: 'cancelled' }));
+  toastControls('controls-cancelled', outcomeText({ kind: 'cancelled' }));
   endControlsCapture();
+};
+
+// A Controls outcome on its policy channel (the toast); an unsaved change says so, through the
+// view module's `savedLine` (taken with the lazily loaded view at boot).
+const toastControls = (kind: SinkKind, text: string, saved = true): void => {
+  route(kind, controlsSavedLine?.(text, saved) ?? text);
 };
 
 // The pointer source (ctl-15): built at boot on #game-screen, it only presses virtual buttons.
@@ -4513,7 +4551,7 @@ async function main(): Promise<void> {
     { ClaimView: ClaimViewClass },
     { SessionView: SessionViewClass },
     { PrivacyView: PrivacyViewClass },
-    { ControlsView: ControlsViewClass },
+    { ControlsView: ControlsViewClass, savedLine },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/raisingView'),
@@ -4642,7 +4680,10 @@ async function main(): Promise<void> {
       onReset: () => applyBindings(DEFAULT_BINDINGS),
       onCancelCapture: cancelControlsCapture,
       announce: (text) => announceNow(text),
+      onOutcome: (text, saved) =>
+        toastControls(saved ? 'controls-saved' : 'controls-save-failed', text, saved),
     };
+    controlsSavedLine = savedLine;
     controlsView = new ControlsViewClass(controlsHandlers);
     tradeProposeView = new TradeProposeViewClass({
       maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,

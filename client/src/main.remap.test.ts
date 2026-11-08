@@ -1879,13 +1879,17 @@ describe('main.ts Controls outcomes use their feedbackPolicy channel (runtime, u
     server(1000);
     openControls();
     startCapture('X_1');
-    const live = watchLive();
     // Frames drive the live region (a write needs a frame past its 500 ms window).
     const settleLive = (): void => {
       const from = pressAt;
       for (let k = 1; k <= 30; k += 1) frame(from + k * 50);
       pressAt = from + 31 * 50;
     };
+    // The overlay-open edge ("Controls") is spoken on the first frame, long before any keypress in
+    // the real game; settle it BEFORE watching, or it replaces the pending hint in the coalescing
+    // window.
+    settleLive();
+    const live = watchLive();
 
     press('Tab', { key: 'Tab' });
     settleLive();
