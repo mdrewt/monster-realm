@@ -919,8 +919,10 @@ describe('tactics strings: the Items row (uif-11, UIF11.4)', () => {
     const call = (): string => (fn as () => string)();
     setLocale('en');
     expect(call(), 'en menuItem()').toBe('Items');
+    expect(/\bbag\b/i.test(call()), 'en menuItem() says no bag, any case').toBe(false);
     setLocale('fr');
     expect(call(), 'fr menuItem()').toBe('Objets');
+    expect(/\bsac\b/i.test(call()), 'fr menuItem() says no sac, any case').toBe(false);
     expect(call(), 'fr is not the English line').not.toBe('Items');
   });
 });

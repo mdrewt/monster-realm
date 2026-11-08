@@ -2678,11 +2678,11 @@ describe('uif-11: the tactical menu says Items, not Bag, in both catalogs', () =
     expect(enTexts.length, 'ANTI-VACUITY: many tactics.* texts were read').toBeGreaterThan(100);
     expect(frTexts.length, 'ANTI-VACUITY: many fr tactics.* texts were read').toBeGreaterThan(100);
     expect(
-      enTexts.filter((t) => /\bBag\b/.test(t)),
+      enTexts.filter((t) => /\bbag\b/i.test(t)),
       'no en tactics.* value says Bag',
     ).toEqual([]);
     expect(
-      frTexts.filter((t) => /\bSac\b/.test(t)),
+      frTexts.filter((t) => /\bsac\b/i.test(t)),
       'no fr tactics.* value says Sac',
     ).toEqual([]);
   });

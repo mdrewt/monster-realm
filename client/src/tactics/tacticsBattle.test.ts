@@ -2484,14 +2484,14 @@ describe('TacticsBattle: the command menu on the kit (uif-11)', () => {
     const k = rootMenu();
     expect(labelOf(menuRow(k.root, 'item')), 'en: the item row label').toBe('Items');
     const enMenu = q(k.root, '.tactics-menu').textContent ?? '';
-    expect(/\bBag\b/.test(enMenu), `no "Bag" in the English menu: ${enMenu}`).toBe(false);
+    expect(/\bbag\b/i.test(enMenu), `no "Bag" in the English menu: ${enMenu}`).toBe(false);
     expect(rowIds(k.root), 'fixture: the root rows are all there').toContain('item');
 
     setLocale('fr');
     const f = rootMenu();
     expect(labelOf(menuRow(f.root, 'item')), 'fr: the item row label').toBe('Objets');
     const frMenu = q(f.root, '.tactics-menu').textContent ?? '';
-    expect(/\bSac\b/.test(frMenu), `no "Sac" in the French menu: ${frMenu}`).toBe(false);
+    expect(/\bsac\b/i.test(frMenu), `no "Sac" in the French menu: ${frMenu}`).toBe(false);
   });
 
   it('UIF11.3 GUARD the menu DOM is unchanged: the cursor row is aria-selected, every greyed row is aria-disabled (never the disabled attribute) and keeps a non-empty one-line reason span', () => {

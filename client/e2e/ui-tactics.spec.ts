@@ -202,17 +202,23 @@ const UIF11_MOUNT = `(async () => {
   shell.ingest([1, 2, 3, 4, 5, 6].map((n) => ({ tag: 'RoundEnded', value: { round: n } })));
 
   const deploy = new deployMod.DeployPanel(app, { onDeploy: () => new Promise(() => {}) });
-  deploy.render(deployMod.deployVM({
-    mode: 'wild', battleId: 1n, remembered: [], slotCount: 2,
-    party: [
-      { monsterId: 1n, name: 'Kip', level: 5, hp: 10, maxHp: 10 },
-      { monsterId: 2n, name: 'Ember', level: 6, hp: 8, maxHp: 12 },
-    ],
-    wilds: [
-      { speciesId: 1, name: 'Mossback', level: 4 },
-      { speciesId: 2, name: 'Flameling', level: 4 },
-    ],
-  }));
+  let deployId = 1;
+  const deployFresh = () => {
+    deployId += 1;
+    deploy.render(deployMod.deployVM({
+      mode: 'wild', battleId: BigInt(deployId), remembered: [], slotCount: 2,
+      party: [
+        { monsterId: 1n, name: 'Kip', level: 5, hp: 10, maxHp: 10 },
+        { monsterId: 2n, name: 'Ember', level: 6, hp: 8, maxHp: 12 },
+      ],
+      wilds: [
+        { speciesId: 1, name: 'Mossback', level: 4 },
+        { speciesId: 2, name: 'Flameling', level: 4 },
+      ],
+    }));
+    return true;
+  };
+  deployFresh();
   const results = new resultsMod.ResultsPanel(app, { onContinue() {} });
   results.render({
     battleId: 1n, outcome: 'won', recruits: [], currency: 123n, rating: null, endHow: null,
@@ -310,6 +316,8 @@ const UIF11_MOUNT = `(async () => {
       lineHeight,
       tickerContent,
       dock: rect('.tactics-battle .tactics-dock'),
+      turnbar: rect('.tactics-battle .tactics-turnbar'),
+      rootScrollTop: q('.tactics-battle').scrollTop,
       probeH,
       rows: qa('.tactics-battle .tactics-menu .tactics-menu-row').map(rowRect),
       cursor: cur === null ? null : rowRect(cur),
@@ -356,6 +364,17 @@ const UIF11_MOUNT = `(async () => {
     op: (kind, dir) => op(kind, dir),
     setLocale: (l) => resolverMod.setLocale(l),
     repaint: () => { round += 1; shell.render(Object.assign({}, vm, { round })); },
+    deployFresh,
+    spanGaps: (selector) => {
+      const row = q(selector);
+      if (row === null) return null;
+      const kids = Array.from(row.children);
+      const gaps = [];
+      for (let i = 1; i < kids.length; i += 1) {
+        gaps.push(kids[i].getBoundingClientRect().left - kids[i - 1].getBoundingClientRect().right);
+      }
+      return { count: kids.length, gaps };
+    },
     deployShow: (on) => showRoot('.tactics-deploy', on),
     deployOp: (kind, dir) => deploy.applyBattleOp(dir === undefined ? { kind } : { kind, dir }),
     resultsShow: (on) => showRoot('.tactics-results', on),
@@ -388,6 +407,8 @@ interface Measure {
   /** The ticker's content-box height (clientHeight minus vertical padding). */
   tickerContent: number;
   dock: RectLike;
+  turnbar: RectLike;
+  rootScrollTop: number;
   probeH: number | null;
   rows: RowRect[];
   cursor: RowRect | null;
@@ -449,6 +470,7 @@ test.describe
       // Whatever a case left open, the next one starts from a closed menu, hidden deploy / results
       // panels, no clock ring, English and the x1 window.
       await ev('window.__uif11.setLocale("en")');
+      await ev('window.__uif11.deployFresh()');
       await ev('window.__uif11.deployShow(false)');
       await ev('window.__uif11.resultsShow(false)');
       await ev('window.__uif11.ring(null)');
@@ -767,6 +789,70 @@ test.describe
       expect(onCursor.inside, 'and inside the row').toBe(true);
     });
 
+    test('UIF11.3 the deploy menu uses the same treatment: the editor cursor row equals the active probe, a non-cursor row the plain probe, and a row holding a monster keeps its spans apart', async () => {
+      // WRONG IMPL KILLED: a deploy-only copy of the treatment (`.tactics-deploy [aria-selected="true"]
+      // { background: #44445a }`): padding, fill, colour, outline and arrow would differ from the
+      // shared probe; a deploy row left on the old padding; a row whose child spans run together
+      // ("Slot 1Kip Lv.5HP 10/10": the real defect a reviewer found once the row's
+      // `justify-content: space-between` went), measured as the gap between consecutive child rects
+      // (at least 4px at x1; the shipped rule gives 8px).
+      await setWindow(VIEWPORT, 16);
+      await ev('window.__uif11.deployFresh()');
+      expect(await ev<boolean>('window.__uif11.deployShow(true)'), 'the deploy root is there').toBe(
+        true,
+      );
+      // Confirm screen -> the formation editor, whose slot rows each hold a monster.
+      await ev('window.__uif11.deployOp("move", "Down")');
+      await ev('window.__uif11.deployOp("activate")');
+      const PARENT = '.tactics-deploy .tactics-menu';
+      const BOX = [
+        'padding',
+        'background-color',
+        'color',
+        'outline-style',
+        'outline-width',
+        'outline-color',
+        'outline-offset',
+      ] as const;
+      const probe = (className: string, props: readonly string[], pseudo?: '::before') =>
+        sampleProbe(page, { className, parent: PARENT }, props, pseudo);
+      const cursor = '.tactics-deploy .tactics-menu-row[aria-selected="true"]';
+      expect(
+        await ev<string | null>(
+          `(document.querySelector('${cursor}') || { getAttribute: () => null }).getAttribute("data-row")`,
+        ),
+        'the editor cursor is on slot 0',
+      ).toBe('slot-0');
+      expectSample(
+        await sampleStyle(page, cursor, BOX),
+        await probe('mr-nav-item is-active', BOX),
+        'the deploy cursor row equals a .mr-nav-item.is-active probe',
+      );
+      const arrow = await probe('mr-nav-item is-active', ['content', 'margin-left'], '::before');
+      expect(arrow.content, 'fixture: the active probe draws the arrow').not.toBe('none');
+      expectSample(
+        await sampleStyle(page, cursor, ['content', 'margin-left'], '::before'),
+        arrow,
+        'the deploy cursor row draws the same arrow',
+      );
+      expectSample(
+        await sampleStyle(page, '.tactics-deploy .tactics-menu-row[aria-selected="false"]', [
+          'padding',
+        ]),
+        await probe('mr-nav-item', ['padding']),
+        'a non-cursor deploy row has the plain .mr-nav-item padding',
+      );
+      const gaps = await ev<{ count: number; gaps: number[] } | null>(
+        `window.__uif11.spanGaps('${cursor}')`,
+      );
+      expect(gaps, 'the cursor row is measured').not.toBeNull();
+      const g = gaps as { count: number; gaps: number[] };
+      expect(g.count, 'fixture: label, name, level and HP spans').toBeGreaterThanOrEqual(4);
+      g.gaps.forEach((gap, i) => {
+        expect(gap, `span ${i} -> ${i + 1} do not touch (gap ${gap}px)`).toBeGreaterThanOrEqual(4);
+      });
+    });
+
     test('UIF11.4 the item row reads Items, no Bag appears anywhere in the tactical shell, and after switching to French and repainting it reads Objets with no Sac', async () => {
       // WRONG IMPL KILLED: the row still reading "Item" or "Bag" (catalog unchanged); English changed
       // and French left on "Sac" (a French boot keeps the old name); the word fixed in a title or
@@ -786,7 +872,7 @@ test.describe
       expect(await labelOf(), 'en: the item row').toBe('Items');
       const enText = await shellText();
       expect(enText.length, 'anti-vacuity: the shell text was read').toBeGreaterThan(40);
-      expect(/\bBag\b/.test(enText), `no "Bag" anywhere in the English shell: ${enText}`).toBe(
+      expect(/\bbag\b/i.test(enText), `no "Bag" anywhere in the English shell: ${enText}`).toBe(
         false,
       );
 
@@ -799,15 +885,17 @@ test.describe
       }
       expect(await labelOf(), 'fr: the item row').toBe('Objets');
       const frText = await shellText();
-      expect(/\bSac\b/.test(frText), `no "Sac" anywhere in the French shell: ${frText}`).toBe(
+      expect(/\bsac\b/i.test(frText), `no "Sac" anywhere in the French shell: ${frText}`).toBe(
         false,
       );
     });
 
     test('UIF11.6 at 1280x720 with the root doubled the board keeps 30% of the frame, the ticker shrinks to at least one line, every command row is one nav-row tall, and the cursor row stays inside the frame and the dock, for the root menu and the longest sub-list', async () => {
       // WRONG IMPL KILLED: a board that shrinks with the text until the field is a sliver (no 30%
-      // floor); a ticker that keeps its x1 height (it never yields) or collapses below one line (the
-      // log is unreadable); a command row taller or shorter than the shared nav row (a 1px border, a
+      // floor); a ticker that never yields (it still shows more than one line when the board is
+      // already below its preferred 70%: the priority oracle), or one that collapses below one line
+      // (the log is unreadable); a cursor row kept in view by scrolling the clipped ROOT (the turn bar
+      // moves and the root's scrollTop changes: only the dock may scroll); a command row taller or shorter than the shared nav row (a 1px border, a
       // px padding, a different line-height or font-size: 52.8px at a 32px root); a dock that grows
       // past the frame so the cursor row leaves it; a long sub-list (Skills) whose last row is
       // scrolled out of the dock with no scroll-into-view; a layout fixed only at x1.
@@ -898,6 +986,7 @@ test.describe
       ).toBeGreaterThanOrEqual(8);
       const last = skillRows[skillRows.length - 1] as string;
       await withRootFontSize(page, 32, async () => {
+        const before = await ev<Measure>('window.__uif11.measure()');
         expect(
           await ev<boolean>(`window.__uif11.menuTo("${last}")`),
           'the cursor reaches the last skill row',
@@ -906,6 +995,16 @@ test.describe
         expect((m.cursor as RowRect | null)?.id, 'the cursor is on the last row').toBe(last);
         expectFrameLayout(m, 'Skills sub-list, doubled, cursor on the last row');
         expectTickerFirst(m, 'Skills sub-list, doubled');
+        // Only the dock may scroll to keep the cursor row in view: the turn bar never moves and the
+        // clipped root never scrolls.
+        expectNear(m.turnbar.top, before.turnbar.top, 0.5, 'the turn bar top did not move');
+        expectNear(
+          m.turnbar.bottom,
+          before.turnbar.bottom,
+          0.5,
+          'the turn bar bottom did not move',
+        );
+        expect(m.rootScrollTop, 'the tactical root did not scroll').toBe(before.rootScrollTop);
       });
     });
   });

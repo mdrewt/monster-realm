@@ -455,8 +455,10 @@
  * The tactical battle (client/src/tactics, bt-10). The shell's root also wears the shared
  * `mr-frame mr-shell mr-shell--top mr-shell--battle` classes (they place it), but NO selector below
  * names those classes: styles.test.ts rosters their rules. Every rule hangs off a `tactics-`
- * class. The root is a column: turn bar, the field (70 % of the height, one shared background),
- * the ticker and the dock (a darker, bordered command band).
+ * class, except the command rows' treatment, which the shared `.mr-nav-item` rules carry (uif-11).
+ * The chrome is rem and tokens, so it grows with the one root scale; the board art below keeps its
+ * px. The root is a column: turn bar, the field (70 % of the height, a 30 % floor, one shared
+ * background), the ticker and the dock (a darker, bordered command band).
  */
 .tactics-battle {
   flex-direction: column;
@@ -787,10 +789,11 @@
   list-style: none;
   font-size: var(--mr-font-small);
 }
-/* The dock never shrinks; it caps at 40% of the frame and scrolls past that (UIF11.6: doubled text, a
- * long sub-list), and the shell keeps the cursor row in view. The ticker (basis 0) takes only the
- * leftover, so it gives up height first, down to one line; the field then gives up its 70% down to
- * a 30% floor. */
+/* Height priority (UIF11.6): the ticker (basis 0) takes only the leftover, so it gives up height
+ * first, down to one line; the field then gives up its 70% down to its 30% floor. The dock never
+ * shrinks but caps at 40% and scrolls past that (doubled text, a long sub-list), the shell keeping
+ * the cursor row in view. Measured at 1280x720 with the root doubled: 30% field + 40% dock + one
+ * ticker line + the turn bar fit the frame (e2e/ui-tactics.spec.ts). */
 .tactics-dock {
   flex: 0 0 auto;
   display: flex;
@@ -866,8 +869,15 @@
 .tactics-menu-row[data-sub="true"] .tactics-menu-label::after {
   content: " \25B8";
 }
-.tactics-reason {
+/* A row's parts (the deploy panel's name / level / HP spans, a command's reason) sit a space apart;
+ * the cursor marker is a pseudo-element, so it adds no gap. */
+.tactics-menu-row > span + span {
+  margin-left: var(--mr-space-2);
+}
+.tactics-menu-row > .tactics-reason {
   margin-left: auto;
+}
+.tactics-reason {
   padding-left: var(--mr-space-2);
   color: inherit;
   font-size: var(--mr-font-small);

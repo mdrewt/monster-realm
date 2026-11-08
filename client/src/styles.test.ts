@@ -617,8 +617,12 @@ describe('styles.css uif-11: tactical chrome on the tokens, the one scale and th
     '.tactics-title',
   ]);
   const ART_PREFIX = ['.tactics-tile', '.tactics-sprite', '.tactics-ghost'];
+  // A prefix matches only when the NEXT character is not [a-z0-9], so `.tactics-tilde` (chrome) is
+  // not swallowed by `.tactics-tile`.
+  const prefixMatches = (s: string, p: string): boolean =>
+    s.startsWith(p) && !/[a-z0-9]/i.test(s.charAt(p.length));
   const isArtSelector = (s: string): boolean =>
-    ART_EXACT.has(s) || ART_PREFIX.some((p) => s.startsWith(p));
+    ART_EXACT.has(s) || ART_PREFIX.some((p) => prefixMatches(s, p));
   const tacticsRules = rules.filter((r) => r.selectors.some((s) => s.includes('tactics')));
   const artRules = tacticsRules.filter((r) => r.selectors.every(isArtSelector));
   const chromeRules = tacticsRules.filter((r) => !r.selectors.every(isArtSelector));
@@ -637,7 +641,7 @@ describe('styles.css uif-11: tactical chrome on the tokens, the one scale and th
 
   const PX = /\d*\.?\d+px\b/i;
   const SCALED_PROP =
-    /^(font-size|line-height|font|padding(-.+)?|margin(-.+)?|gap|row-gap|column-gap|min-width|min-height|width|height|top|bottom|left|right)$/;
+    /^(font-size|line-height|font|padding(-.+)?|margin(-.+)?|gap|row-gap|column-gap|min-width|min-height|max-width|max-height|width|height|top|bottom|left|right|inset(-.+)?|flex|flex-basis)$/;
 
   it('UIF11.1 no tactical chrome rule declares a px length in a size, spacing or offset property, outside the pinned board-art allowlist', () => {
     // WRONG IMPL KILLED: a chrome rule left on px (`font-size: 12px`, `padding: 4px 8px`, `gap: 6px`,
@@ -645,7 +649,13 @@ describe('styles.css uif-11: tactical chrome on the tokens, the one scale and th
     // tactical screen stays at x1 when the window is x1.5; a px literal moved into a media block; a
     // px chrome selector grouped into an art rule (a rule is exempt only when EVERY selector is art);
     // the allowlist widened to a prefix that swallows chrome (`.tactics-unit-name` / `.tactics-intent`
-    // are chrome, not `.tactics-unit`).
+    // are chrome, not `.tactics-unit`); `.tactics-tilde { margin-right: 2px }` hiding behind the
+    // `.tactics-tile` prefix; `.tactics-forecast { max-width: 180px }` / `flex-basis: 180px` /
+    // `flex: 0 0 180px` / `inset: 4px` (properties the first cut did not scan).
+    expect(
+      chromeRules.some((r) => r.selectors.includes('.tactics-tilde')),
+      'anti-vacuity: .tactics-tilde is chrome, not board art',
+    ).toBe(true);
     expect(
       chromeRules.length,
       'anti-vacuity: the sheet has many tactical chrome rules',
@@ -674,7 +684,10 @@ describe('styles.css uif-11: tactical chrome on the tokens, the one scale and th
     // WRONG IMPL KILLED: a battle-only scale (a second copy of the scale applied through `zoom`, a
     // `transform: scale(var(--mr-ui-scale))` or a calc over --mr-ui-scale in a tactics rule) that
     // would double-scale beside the root rem; a font-size left as a raw rem/px literal or an
-    // off-scale token (`--mr-font-title` is allowed only through the four named tokens).
+    // off-scale token (`--mr-font-title` is allowed only through the four named tokens); the scale
+    // laundered through a custom property (`:root { --bs: var(--mr-ui-scale, 1) }` read by a tactics
+    // calc()): EVERY rule of the sheet is scanned, and the only one naming --mr-ui-scale is the
+    // `:root[style*="--mr-ui-scale"]` authority, declaring font-size alone.
     const ALLOWED_FONT = new Set([
       'var(--mr-font-small)',
       'var(--mr-font-body)',
@@ -685,12 +698,24 @@ describe('styles.css uif-11: tactical chrome on the tokens, the one scale and th
     const scaleHits: string[] = [];
     const fontHits: string[] = [];
     let fontSizes = 0;
-    for (const r of tacticsRules) {
+    const AUTHORITY = ':root[style*="--mr-ui-scale"]';
+    const authority = rules.filter((r) => r.selectors.includes(AUTHORITY));
+    expect(authority.length, 'the one rem authority rule exists exactly once').toBe(1);
+    expect(
+      (authority[0] as Ctl7bCssRule).decls.map(([p]) => p),
+      'and declares font-size only',
+    ).toEqual(['font-size']);
+    for (const r of rules) {
+      if (r.selectors.includes(AUTHORITY)) continue;
       for (const s of r.selectors)
         if (s.includes('--mr-ui-scale')) scaleHits.push(`${label(r)} (selector)`);
       for (const [p, v] of r.decls) {
         if (p.includes('--mr-ui-scale') || v.includes('--mr-ui-scale'))
           scaleHits.push(`${label(r)} { ${p}: ${v} }`);
+      }
+    }
+    for (const r of tacticsRules) {
+      for (const [p, v] of r.decls) {
         if (p === 'zoom') scaleHits.push(`${label(r)} { ${p}: ${v} }`);
         if (/scale[a-z0-9]*\(/i.test(v)) scaleHits.push(`${label(r)} { ${p}: ${v} }`);
         if (p === 'font-size') {
@@ -735,7 +760,12 @@ describe('styles.css uif-11: tactical chrome on the tokens, the one scale and th
     // tier (prefers-contrast: more) re-colours the kit but not the battle; a literal hidden in a border
     // shorthand instead of `color`. Board art keeps its literals (allowlisted).
     const LITERAL = /#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(/i;
-    const COLOURED = /^(color|border(-(top|right|bottom|left))?(-color)?)$/;
+    // WRONG IMPL KILLED (round 3): a literal laundered through a custom property (`--cd: #fc6;
+    // color: var(--cd)`), an outline (`.tactics-projected { outline: 1px dashed #fc6 }`), a
+    // box-shadow, a text-decoration colour or a text stroke / fill colour. Backgrounds stay exempt
+    // (surfaces; the dock hex is pinned by boardRender.test.ts outside this slice's touches).
+    const COLOURED =
+      /^(color|border(-(top|right|bottom|left))?(-color)?|outline(-color)?|box-shadow|text-decoration(-color)?|-webkit-text-stroke(-color)?|-webkit-text-fill-color|--.+)$/;
     const hits: string[] = [];
     for (const r of chromeRules) {
       for (const [p, v] of r.decls) {
