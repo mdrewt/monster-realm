@@ -2869,6 +2869,78 @@ describe('RaisingView uif-8: Inventory on the UI kit', () => {
     }
   });
 
+  it('UIF8.1 mr-scroll sits on exactly #bag-list among the non-sheet elements while its pocket has items, in the list phase and in the sheet phase, and on no non-sheet element for an empty pocket', () => {
+    // WRONG IMPL KILLED: the class also added to the EmptyState (#bag-empty), to #bag-panel or to
+    // the root (a second cue box); the class dropped from the list while the sheet is open (the
+    // list loses its position cue behind the sheet); the class left on an empty list or moved to
+    // the panel when the pocket is empty. The ContextSheet's own rows carry the kit's mr-scroll by
+    // construction, so elements inside `[data-context-sheet]` are excluded.
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    const vm = ctl8fVm();
+    const food = ctl8fNav(vm, ['RB']);
+    const nonSheetScroll = (): string[] =>
+      [...root.querySelectorAll<HTMLElement>('.mr-scroll')]
+        .filter((e) => e.closest('[data-context-sheet]') === null)
+        .map((e) => e.id || `<${e.tagName.toLowerCase()}>`);
+    view.paint(ctl8fPaint(vm, { nav: food }));
+    expect(nonSheetScroll(), 'list phase: only #bag-list').toEqual(['bag-list']);
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'sheet', itemId: 9, action: 'feed' } }));
+    expect(ctl8fShown('bag-sheet'), 'precondition: the sheet is open').toBe(true);
+    expect(nonSheetScroll(), 'sheet phase: still only #bag-list').toEqual(['bag-list']);
+    const bare = ctl8fVm({ bareMedicine: true });
+    view.paint(ctl8fPaint(bare, { nav: ctl8fNav(bare, ['RB', 'RB']) }));
+    expect(nonSheetScroll(), 'empty pocket: no non-sheet element carries it').toEqual([]);
+  });
+
+  it('UIF8.2 in the info phase the sheet heading is the item name, shown, and the rows are labelled by that heading', () => {
+    // WRONG IMPL KILLED: an Info heading left as the picker title or the previous phase's text; the
+    // description in the heading slot; an empty heading (hidden, so the rows lose their name); an
+    // uppercased or otherwise altered name; rows labelled by an element other than the heading.
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const cases: ReadonlyArray<readonly [NavState, number, string]> = [
+      [ctl8fNav(vm, ['RB']), 9, 'Glow Berry'],
+      [ctl8fNav(vm, ['RB', 'Down']), 5, 'Power Root'],
+    ];
+    // A picker first, so a stale picker title would show.
+    view.paint(
+      ctl8fPaint(vm, { nav: cases[0]?.[0], phase: { kind: 'picker', itemId: 9, monster: '11' } }),
+    );
+    for (const [nav, itemId, name] of cases) {
+      view.paint(ctl8fPaint(vm, { nav, phase: { kind: 'info', itemId } }));
+      const heading = document.getElementById('bagsheet-sheet-title') as HTMLElement;
+      expect(heading.textContent, `${name}: the heading is the item's name`).toBe(name);
+      expect(heading.hidden, `${name}: the heading is shown`).toBe(false);
+      const labelled = document.querySelector<HTMLElement>('#bag-sheet [aria-labelledby]');
+      expect(labelled?.getAttribute('aria-labelledby'), `${name}: rows name the heading`).toBe(
+        heading.id,
+      );
+    }
+  });
+
+  it('UIF8.2 the info prose is the whole description, exactly, for a long two-sentence description with an internal period', () => {
+    // WRONG IMPL KILLED: a prose truncated to a prefix (`description.slice(0, 20)`); one cut at the
+    // first period; one trimmed or reflowed. The fixture is built here, not in the shared ctl8fVm.
+    const LONG =
+      'Restores a great deal of stamina. Best given after a long battle, v1.5 is safe for all.';
+    expect(LONG.length, 'fixture: over 40 characters').toBeGreaterThan(40);
+    const base = ctl8fVm();
+    const vm: BagVm = {
+      ...base,
+      pockets: base.pockets.map((p) => ({
+        ...p,
+        items: p.items.map((i) => (i.itemId === 9 ? { ...i, description: LONG } : i)),
+      })),
+    };
+    const { view } = s4Mount();
+    view.show();
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']), phase: { kind: 'info', itemId: 9 } }));
+    expect((document.getElementById('bagsheet-sheet-prose') as HTMLElement).textContent).toBe(LONG);
+  });
+
   it('R-uif-4-BAGSTATUS-EMPTY #bag-status is display:none and empty while there is no status, shows the line when there is one, and stays a .mr-frame-feedback direct child of the root', () => {
     // WRONG IMPL KILLED: the shipped strip that is always displayed (an empty bordered line sits
     // under every Inventory screen, R-uif-4-BAGSTATUS-EMPTY); a strip hidden for good (a refusal or

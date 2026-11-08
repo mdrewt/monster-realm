@@ -75,8 +75,8 @@ import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 //
 // uif-8: the frame is built like Monsters' (boxView.ts), so Chromium computes the same spacing: a
 // header row holding the title, the kit's TabBar for the pockets, then the tab content area
-// `#bag-panel`, which grows to the frame and clips. It holds the list (pseudo-scrolled: the cursor
-// row is scrolled into view, the pointer source's wheel presses Up / Down over it, and `.mr-scroll`
+// `#bag-panel`, which grows to the frame and clips. It holds the list (pseudo-scrolled: renderNav
+// scrolls the cursor row into view, the pointer source's wheel presses Up / Down over it, and `.mr-scroll`
 // draws the cue), the EmptyState of an empty pocket, the legacy grid and the frame's one
 // ContextSheet: the item's actions ending with Close, the Feed picker ending with Back, or the Info
 // page (the detail variant, one Back row). The status line `#bag-status` is hidden while empty.
@@ -144,8 +144,6 @@ export class RaisingView {
   readonly #bagEmpty: HTMLDivElement;
   readonly #bagStatus: HTMLDivElement;
   #bagPaint: BagPaint | null = null;
-  /** The pocket and row last scrolled into view, so a repaint never scrolls again. */
-  #scrolledKey: string | null = null;
 
   /** `_retired` is accepted and never read: overlayA11yWiring.test.ts (outside qf-9's touches)
    *  still passes the deleted cards' `{ onTrain, onCare }` (R-qf-9-RAISINGVESTIGES). */
@@ -192,7 +190,8 @@ export class RaisingView {
     this.#panel.style.cssText = PANEL_STYLE;
     this.#root.appendChild(this.#panel);
 
-    // The list never shows a scrollbar: the cursor scrolls it (#applyBag).
+    // The list never shows a scrollbar: the cursor scrolls it (`renderNav` scrolls the active row
+    // into view, once per row).
     this.#bagList = document.createElement('div');
     this.#bagList.id = 'bag-list';
     this.#bagList.style.cssText = 'display:none;flex:1 1 auto;min-height:0;overflow-y:hidden;';
@@ -277,7 +276,6 @@ export class RaisingView {
       this.#tabBar.root.hidden = true;
       this.#closeSheet();
       this.#showEmpty(false);
-      this.#scrolledKey = null;
       this.#setStatus(null);
       return;
     }
@@ -303,7 +301,6 @@ export class RaisingView {
     const empty = pocket === undefined || pocket.items.length === 0;
     this.#bagList.classList.toggle('mr-scroll', !empty);
     this.#showEmpty(empty);
-    this.#scrollCursor(nav.tab, nav.item);
 
     const item = p.phase.kind === 'list' ? undefined : findItem(vm, p.phase.itemId);
     const content = item === undefined ? null : this.#sheetContent(p, vm, item);
@@ -380,16 +377,6 @@ export class RaisingView {
     if (this.#sheet.root.hidden || this.#panel.getBoundingClientRect().width <= 0) return;
     const row = this.#bagList.querySelector<HTMLElement>('[data-nav-key].is-active');
     if (row !== null) placeContextSheet(this.#sheet, this.#panel, row);
-  }
-
-  /** Scroll the cursor row into view once per pocket and row (a repaint never scrolls again). */
-  #scrollCursor(tab: string | null, key: string | null): void {
-    const at = `${tab}:${key}`;
-    if (key === null || this.#scrolledKey === at) return;
-    const row = this.#bagList.querySelector<HTMLElement>('[data-nav-key].is-active');
-    if (row === null) return;
-    this.#scrolledKey = at;
-    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
   }
 
   /** Show (rebuilt in the current locale) or hide and empty the pocket's EmptyState. */
