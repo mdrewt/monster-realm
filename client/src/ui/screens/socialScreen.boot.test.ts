@@ -1100,10 +1100,26 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
         [...chrome.children].map((c) => c.id),
         `${tab}: the chrome is the bar, then the sheet, then the prompt`,
       ).toEqual(['', 'social-sheet', 'social-prompt']);
+      // NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): was "exactly one `.mr-tabbar` in the document".
+      // That count is false by construction: boxView (#monsters-tabs), raisingView (#bag-tabs) and
+      // frame.ts createFrame (`<id>-tabs`) each build their own TabBar, always in the DOM. The
+      // oracle still kills a second SOCIAL bar: exactly one bar holds `#social-tabs`, there is one
+      // `#social-tabs`, and every bar outside the chrome has another strip id.
+      const bars = [...document.querySelectorAll<HTMLElement>('.mr-tabbar')];
       expect(
-        document.querySelectorAll('.mr-tabbar').length,
-        `${tab}: one TabBar in the document`,
+        bars.filter((b) => b.querySelector('#social-tabs') !== null),
+        `${tab}: exactly one TabBar holds #social-tabs, and it is the chrome's`,
+      ).toEqual([bar]);
+      expect(
+        document.querySelectorAll('#social-tabs').length,
+        `${tab}: one #social-tabs in the document`,
       ).toBe(1);
+      for (const other of bars.filter((b) => b !== bar)) {
+        expect(
+          other.querySelector('[role="tablist"]')?.id,
+          `${tab}: a TabBar outside the chrome has a strip id other than social-tabs`,
+        ).not.toBe('social-tabs');
+      }
       for (const rootId of SOCIAL_ROOTS) {
         expect(
           el(rootId).querySelectorAll('.mr-tabbar').length,

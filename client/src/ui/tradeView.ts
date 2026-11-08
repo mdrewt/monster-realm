@@ -11,8 +11,9 @@
 // outcome is a toast, routed by main.ts on its policy channel (uif-4b). No constructor-time strings: this view renders into the static index.html shell.
 //
 // THE SOCIAL FRAME'S PAINTER (ctl-8d, CTL8D.1-.2). The Social screen (ui/screens/socialScreen.ts)
-// paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the tab strip, the
-// action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
+// paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the kit TabBar (uif-9,
+// UIF9.1: LB chip, the `#social-tabs` strip, RB chip; the chrome's first child, so it tops whichever
+// panel shows), the action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
 // child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
 // the Players placeholder and the trade row's cursor on `#trade-status`: kept only while this root
 // is visible, re-applied after every batch render and dropped by `hide()`. This root's own
@@ -25,10 +26,11 @@
 // (the constructor requires it; Players hides it with the sides) and is never written.
 import { t, tf } from './i18n/resolver';
 import { list, tabs } from './nav';
-import { navTabId, renderNav, renderTabs } from './navRender';
+import { navTabId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { SocialTab } from './screens/types';
 import { SOCIAL_TABS, type SocialAction } from './socialModel';
+import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 import type { TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 /** The Yes / No question a Social action asks before it is sent. */
@@ -89,13 +91,26 @@ function socialPart(parent: HTMLElement, id: string, tag: 'div' | 'p'): HTMLElem
   return el;
 }
 
-/** Paint the Social frame's chrome: the tab strip, the sheet and the prompt. A closed sheet or
+/** The chrome's TabBar: the one already its first child, else a new one put first (a stale strip
+ *  outside a bar goes, so `#social-tabs` stays unique). */
+function socialTabBar(chrome: HTMLElement): TabBar {
+  const strip = chrome.querySelector<HTMLElement>('#social-tabs');
+  const root = strip?.parentElement;
+  if (strip && root?.parentElement === chrome && root.classList.contains('mr-tabbar')) {
+    if (chrome.firstElementChild !== root) chrome.prepend(root);
+    return { root, strip };
+  }
+  strip?.remove();
+  const bar = createTabBar(document, { id: 'social-tabs' });
+  chrome.prepend(bar.root);
+  return bar;
+}
+
+/** Paint the Social frame's chrome: the TabBar, the sheet and the prompt. A closed sheet or
  *  prompt is rendered EMPTY as well as hidden (the e2e helpers read a root's textContent). */
 function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
-  const strip = socialPart(chrome, 'social-tabs', 'div');
-  strip.className = 'mr-frame-tabstrip';
-  renderTabs(
-    strip,
+  renderTabBar(
+    socialTabBar(chrome),
     SOCIAL_TAB_STRIP,
     { tab: p.tab, item: null, perTab: {} },
     { frame: SOCIAL_FRAME_ID, label: (tab) => SOCIAL_TAB_LABELS[tab.key as SocialTab]() },

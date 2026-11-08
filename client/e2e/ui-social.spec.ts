@@ -7,6 +7,7 @@ import {
   test,
 } from '@playwright/test';
 import {
+  contrastRatio,
   effectiveBackground,
   expectNear,
   expectRect,
@@ -525,7 +526,6 @@ test.describe
       await expect(page.locator(incoming)).toBeVisible();
       await expect(page.locator(outgoing)).toBeVisible();
 
-      const panelBg = await effectiveBackground(page, '#pvp-challenge-overlay');
       const measure = (sel: string) =>
         page.evaluate((s) => {
           const el = document.querySelector<HTMLElement>(s);
@@ -547,12 +547,20 @@ test.describe
           card.width.every((w) => w > 0) && card.style !== 'none',
           `${name}: a border on every side`,
         ).toBe(true);
+        // NAMED INTENTIONAL CHANGE (uif-9, UIF9.4): was "the border colour is not the PANEL's
+        // background". Wrong for the cursor card by the kit's design: `.mr-nav-item.is-active` fills
+        // its row with --mr-frame-fg and `.mr-nav-item.is-active > .mr-card` draws the border in
+        // currentColor (the dark text colour), so the border is visible against the light row
+        // fill behind it, not against the panel. Now: the border is measured against the effective
+        // background directly BEHIND the card (its parent row), with a WCAG contrast ratio above
+        // 1.5 (a visibly distinct line, far below text's 4.5, honest for both cards).
         const border = parseRgb(card.colour);
         expect(border.a, `${name}: the border is painted`).toBeGreaterThan(0);
+        const backdrop = await effectiveBackground(page, `#pvp-challenge-${name}`);
         expect(
-          [border.r, border.g, border.b],
-          `${name}: the border colour is not the panel's background`,
-        ).not.toEqual([panelBg.r, panelBg.g, panelBg.b]);
+          contrastRatio({ ...border, a: 1 }, backdrop),
+          `${name}: the border colour contrasts with the backdrop behind the card`,
+        ).toBeGreaterThan(1.5);
       }
       expect(
         rectsOverlap(cards.incoming.rect, cards.outgoing.rect, 0),
