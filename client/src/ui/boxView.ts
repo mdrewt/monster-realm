@@ -38,10 +38,15 @@
 //
 // ctl-8b: this root is the Monsters frame. `paint(MonstersPaint)` (screens/monstersScreen.ts) is
 // kept and re-applied after every `refresh`, and reset to the opening (Storage, first card) on
-// the hidden→visible edge, so a KeyB open shows Storage before any button. Both panels stay in the
-// DOM (e2e reads the root's textContent); the inactive one and its heading are hidden by inline
-// display. The nickname is typed in an in-frame field (no `window.prompt`), sent once per commit
-// token the screen hands over.
+// the hidden→visible edge (the seated screen then paints the bound tab in the same open, uif-6).
+// Both panels stay in the DOM (e2e reads the root's textContent); the inactive one is hidden by
+// inline display. The nickname is typed in an in-frame field (no `window.prompt`), sent once per
+// commit token the screen hands over.
+//
+// uif-6: the kit's TabBar sits under the title; the tab content area `#monsters-panel` grows to the
+// frame (up to `--mr-content-max`) and clips, holding the Party (a 2-column grid of one cell per
+// slot) and Storage (a 3-column grid the cursor scrolls, with the kit's `.mr-scroll` cue, or the
+// EmptyState). Cells paint the tokens inline; the cursor cell takes the inverted row-cursor fill.
 //
 // ctl-8c: the sheet gains Care, Feed… and Evolve…; the food list, the Evolve list (every outgoing
 // path, only the choices enabled, the status line raw from the model's reason) and the Yes / No
@@ -56,6 +61,7 @@
 // own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
 // hide().
 import type { MonsterCardViewModel, MonsterStatsViewModel } from './boxModel';
+import { createEmptyState } from './emptyState';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
   cardName,
@@ -63,14 +69,18 @@ import {
   findPath,
   foodKey,
   foodLayoutOf,
+  PARTY_COLS,
   pathLayout,
   type SheetAction,
+  STORAGE_COLS,
   sheetLayout,
+  slotKey,
 } from './monstersModel';
 import { list, type NavTab, tabs } from './nav';
-import { navItemId, renderNav, renderTabs } from './navRender';
+import { navItemId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { MonstersFeedback, MonstersPaint, NicknameCommit } from './screens/monstersScreen';
+import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 
 const TAB_STRIP = tabs([
   { key: 'party', layout: list([]) },
@@ -134,6 +144,25 @@ const OPENING: MonstersPaint = {
 // colours, and the cards keep their own inline ones.
 const CURSOR_OUTLINE = '3px solid #fff';
 
+// uif-6: the cells' token colours (styles.css is the kit's; these are the same tokens inline). A
+// cell reads as the panel's darker fill; the cursor cell takes the kit's row-cursor INVERTED fill,
+// so it never looks like the selected tab (`.mr-nav-tab.is-selected`: the panel fill, bold, an
+// outline; feedback 060, 169). An empty slot's text is muted except under the cursor.
+const CELL_FILL = 'var(--mr-panel-bg)';
+const CELL_TEXT = 'var(--mr-frame-fg)';
+const CELL_EMPTY_TEXT = 'var(--mr-text-muted)';
+const CURSOR_FILL = 'var(--mr-frame-fg)';
+const CURSOR_TEXT = 'var(--mr-frame-bg)';
+const CELL_STYLE =
+  'box-sizing:border-box;min-width:0;overflow:hidden;' +
+  'border:var(--mr-border-thin) solid var(--mr-separator);padding:var(--mr-space-2);' +
+  `background:${CELL_FILL};color:${CELL_TEXT};`;
+// The grids' shared box: the padding keeps the 3px cursor outline inside the clip of an
+// overflow-hidden grid.
+const GRID_STYLE =
+  'display:grid;gap:var(--mr-space-2);padding:var(--mr-space-1);box-sizing:border-box;' +
+  'flex:1 1 auto;min-height:0;width:100%;';
+
 // Typing in the nickname field: these keys stop or commit it and must reach the page (Escape is
 // routed in the capture phase anyway; Enter becomes A). Every other key stays in the field, out
 // of the page's hotkey ladder.
@@ -179,9 +208,6 @@ export class BoxView {
   /** Static box-vs-party explainer; never toggled — it states an invariant.
    *  Its text is resolved in show(). */
   readonly #hintEl: HTMLDivElement;
-  /** The two section headings; text resolved in show(). */
-  readonly #partyLabelEl: HTMLHeadingElement;
-  readonly #boxLabelEl: HTMLHeadingElement;
   readonly #callbacks: BoxViewCallbacks;
   #visible = false;
   /** Bumped on each hidden→visible edge: an outcome sink paints only in the open it was taken in. */
@@ -189,7 +215,8 @@ export class BoxView {
   /** The last action's outcome (qf-2), shown while the screen paints no feedback of its own. */
   #outcome: { readonly text: string; readonly kind: 'ok' | 'error' } | null = null;
   // ctl-8b: the Monsters frame's parts and the kept paint.
-  readonly #tabStrip: HTMLDivElement;
+  /** uif-6: the kit's TabBar (LB chip, `#monsters-tabs`, RB chip) under the title. */
+  readonly #tabBar: TabBar;
   readonly #sheetEl: HTMLDivElement;
   readonly #sheetName: HTMLDivElement;
   readonly #sheetList: HTMLDivElement;
@@ -233,7 +260,7 @@ export class BoxView {
     // main.ts passes is inside it) and `.mr-frame` paints the frame tokens; inline is only the
     // display toggle and the centring.
     this.#root.className = 'mr-frame mr-shell';
-    this.#root.style.cssText = 'display:none;align-items:center;';
+    this.#root.style.cssText = 'display:none;';
 
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
@@ -254,9 +281,8 @@ export class BoxView {
     // panels and the hint. Typing mode's Escape focuses the frame's first enabled non-text
     // control: the sheet's nav list (Enter there is the router's A); the cards carry no control
     // of their own (qf-8).
-    this.#tabStrip = document.createElement('div');
-    this.#tabStrip.className = 'mr-frame-tabstrip';
-    this.#root.appendChild(this.#tabStrip);
+    this.#tabBar = createTabBar(document, { id: 'monsters-tabs' });
+    this.#root.appendChild(this.#tabBar.root);
 
     this.#sheetEl = document.createElement('div');
     this.#sheetEl.style.cssText = PART_STYLE;
@@ -307,28 +333,32 @@ export class BoxView {
     this.#feedbackEl.className = 'mr-frame-feedback';
     this.#root.appendChild(this.#feedbackEl);
 
-    // Its text (`box.section.party`) is resolved in show(), not here.
-    const partyLabel = document.createElement('h3');
-    partyLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
-    this.#partyLabelEl = partyLabel;
-    this.#root.appendChild(partyLabel);
+    // uif-6: the tab content area. It grows to the free height of the frame and to
+    // `--mr-content-max` wide even when empty (038, 045), and clips: a grid that outgrows it scrolls
+    // inside it by the cursor (039). The tab names the panel, so it has no heading (QF10.2).
+    const panel = document.createElement('div');
+    panel.id = 'monsters-panel';
+    panel.style.cssText =
+      'flex:1 1 auto;min-height:0;width:100%;max-width:var(--mr-content-max);align-self:center;' +
+      'box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;' +
+      'padding:var(--mr-space-2);';
+    this.#root.appendChild(panel);
 
-    // ctl-8b: one column, because the Party is a list (Up / Down step one monster).
+    // The Party: one cell per slot in a grid of PARTY_COLS (WF1-A3), rows sharing the height, so
+    // all six fit; the D-pad moves in the same grid (monstersModel). The rows are set per render.
     this.#partyEl = document.createElement('div');
-    this.#partyEl.style.cssText =
-      'display:grid;grid-template-columns:1fr;gap:8px;width:100%;max-width:600px;margin-bottom:16px;';
-    this.#root.appendChild(this.#partyEl);
+    this.#partyEl.style.cssText = `${GRID_STYLE}grid-template-columns:repeat(${PARTY_COLS},minmax(0,1fr));`;
+    panel.appendChild(this.#partyEl);
 
-    // Its text (`box.section.box`) is resolved in show(), not here.
-    const boxLabel = document.createElement('h3');
-    boxLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
-    this.#boxLabelEl = boxLabel;
-    this.#root.appendChild(boxLabel);
-
+    // Storage: the kit's position cue (`.mr-scroll`, a shadow where more rows hide) over a grid that
+    // never shows a scrollbar: the cursor scrolls it (`scrollIntoView` in #apply) and so does the
+    // wheel, which presses Up / Down over its cells (uif-5).
     this.#boxEl = document.createElement('div');
+    this.#boxEl.className = 'mr-scroll';
     this.#boxEl.style.cssText =
-      'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;max-width:600px;';
-    this.#root.appendChild(this.#boxEl);
+      `${GRID_STYLE}grid-template-columns:repeat(${STORAGE_COLS},minmax(0,1fr));` +
+      'align-content:start;overflow-y:hidden;';
+    panel.appendChild(this.#boxEl);
 
     // qf-10 (QF10.3): the hint sits BELOW the panels, the root's last child — never on the seam
     // between the tab strip and the tab contents. A direct #root child, so it cannot be wiped by
@@ -360,8 +390,6 @@ export class BoxView {
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('box.title');
     this.#hintEl.textContent = t('box.hint');
-    this.#partyLabelEl.textContent = t('box.section.party');
-    this.#boxLabelEl.textContent = t('box.section.box');
     this.#rowLabel.textContent = t('box.rename.prompt');
     this.#root.style.display = 'flex';
     if (wasVisible) return;
@@ -441,19 +469,14 @@ export class BoxView {
     const live = (card: MonsterCardViewModel): MonsterCardViewModel =>
       this.#cards.get(String(card.monsterId)) ?? card;
 
-    renderTabs(
-      this.#tabStrip,
+    renderTabBar(
+      this.#tabBar,
       TAB_STRIP,
       { tab: p.tab, item: null, perTab: {} },
-      {
-        frame: 'monsters',
-        label: tabLabel,
-      },
+      { frame: 'monsters', label: tabLabel },
     );
     const onParty = p.tab === 'party';
-    setShown(this.#partyLabelEl, onParty, '');
     setShown(this.#partyEl, onParty, 'grid');
-    setShown(this.#boxLabelEl, !onParty, '');
     setShown(this.#boxEl, !onParty, 'grid');
 
     const active = onParty ? this.#partyEl : this.#boxEl;
@@ -464,6 +487,12 @@ export class BoxView {
         const on = grid === active && el.dataset.navKey === key;
         el.classList.toggle('is-active', on);
         el.style.outline = on ? CURSOR_OUTLINE : '';
+        el.style.background = on ? CURSOR_FILL : CELL_FILL;
+        el.style.color = on
+          ? CURSOR_TEXT
+          : el.dataset.empty === undefined
+            ? CELL_TEXT
+            : CELL_EMPTY_TEXT;
         if (!on) {
           el.removeAttribute('aria-current');
           continue;
@@ -655,15 +684,18 @@ export class BoxView {
 
   #buildParty(slots: readonly (MonsterCardViewModel | null)[]): void {
     this.#partyEl.replaceChildren();
+    this.#partyEl.style.gridTemplateRows = `repeat(${Math.ceil(slots.length / PARTY_COLS)},minmax(0,1fr))`;
     for (let i = 0; i < slots.length; i++) {
       const card = slots[i];
       const el = document.createElement('div');
-      el.style.cssText =
-        'border:1px solid #444;border-radius:4px;padding:8px;min-height:80px;background:#1a1a2e;';
+      el.style.cssText = CELL_STYLE;
       if (card === null) {
+        // A cell the D-pad reaches like any other (the model's disabled `slot-<i>` item, uif-6).
+        // Dimmed by colour, never opacity (opacity 0.4 fell below AA).
+        el.dataset.navKey = slotKey(i);
+        el.dataset.empty = '';
         el.textContent = tf('box.party.emptySlot', { slot: i });
-        // Dimmed by colour, never opacity: #aaa keeps 7:1 on the card (opacity 0.4 fell below AA).
-        el.style.color = '#aaa';
+        el.style.color = CELL_EMPTY_TEXT;
       } else {
         el.dataset.navKey = String(card.monsterId);
         el.appendChild(this.#renderCard(card));
@@ -679,15 +711,20 @@ export class BoxView {
   #buildBox(monsters: readonly MonsterCardViewModel[]): void {
     this.#boxEl.replaceChildren();
     if (monsters.length === 0) {
-      const empty = document.createElement('div');
-      empty.textContent = t('box.box.empty');
-      empty.style.color = '#aaa';
+      // uif-6 (UIF6.6): why it is empty, where its monsters come from and what to do next; it
+      // spans the grid, and the frame and its tabs stay.
+      const empty = createEmptyState(document, {
+        reason: t('box.box.empty'),
+        cue: t('box.storage.emptyCue'),
+        nextStep: t('box.storage.emptyNext'),
+      });
+      empty.style.gridColumn = '1 / -1';
       this.#boxEl.appendChild(empty);
       return;
     }
     for (const card of monsters) {
       const el = document.createElement('div');
-      el.style.cssText = 'border:1px solid #444;border-radius:4px;padding:8px;background:#1a1a2e;';
+      el.style.cssText = CELL_STYLE;
       el.dataset.navKey = String(card.monsterId);
       el.appendChild(this.#renderCard(card));
       this.#boxEl.appendChild(el);
@@ -705,8 +742,9 @@ export class BoxView {
     nameRow.appendChild(nameSpan);
     wrap.appendChild(nameRow);
 
+    // Colour inherits from the cell, so the line follows the cursor's inverted fill.
     const info = document.createElement('div');
-    info.style.cssText = 'font-size:12px;margin-top:4px;color:#ccc;';
+    info.style.cssText = 'font-size:var(--mr-font-small);margin-top:var(--mr-space-1);';
     info.textContent = tf('box.card.stats', {
       species: card.speciesName,
       level: card.level,
@@ -726,8 +764,8 @@ export class BoxView {
       badge.setAttribute('data-testid', 'evo-choice-badge');
       badge.textContent = t('box.card.evolveBadge');
       badge.style.cssText =
-        'margin-top:4px;font-size:11px;color:#fbbf24;border:1px solid #fbbf24;' +
-        'border-radius:3px;padding:1px 4px;display:inline-block;';
+        'margin-top:var(--mr-space-1);font-size:var(--mr-font-small);' +
+        'border:var(--mr-border-thin) solid currentColor;padding:1px 4px;display:inline-block;';
       wrap.appendChild(badge);
     }
 

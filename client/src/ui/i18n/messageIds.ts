@@ -182,10 +182,10 @@ export type MessageId =
   // Box.* : the party / box screen (boxView.ts).
   | 'box.title'
   | 'box.hint'
-  | 'box.section.party'
-  | 'box.section.box'
   | 'box.party.emptySlot'
   | 'box.box.empty'
+  | 'box.storage.emptyCue'
+  | 'box.storage.emptyNext'
   | 'box.card.stats'
   | 'box.summary.stats'
   | 'box.card.evolveBadge'
