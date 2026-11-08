@@ -555,10 +555,28 @@ function assertNotTheHint(el: Element, label: string): void {
 function monstersPanelOf(parent: HTMLElement): HTMLElement {
   const panel = parent.querySelector<HTMLElement>('#monsters-panel');
   expect(panel, 'precondition: the tab content area #monsters-panel exists').not.toBeNull();
+  // uif-7 (UIF7.1, UIF7.4) named change: the panel also holds the Summary page and the one
+  // ContextSheet root, after the two grids (was: exactly the two grids). Party and Storage stay
+  // children[0] and children[1].
+  const kids = [...(panel as HTMLElement).children];
   expect(
-    (panel as HTMLElement).children.length,
-    'precondition: #monsters-panel holds exactly the Party grid and the Storage grid',
-  ).toBe(2);
+    kids.length,
+    'precondition: #monsters-panel holds the Party grid, the Storage grid, the Summary page and the sheet',
+  ).toBe(4);
+  expect(
+    kids.filter((el) => el.id === 'monsters-summary'),
+    'one Summary page',
+  ).toHaveLength(1);
+  expect(
+    kids.filter((el) => el.hasAttribute('data-context-sheet')),
+    'one sheet root',
+  ).toHaveLength(1);
+  expect(kids[0]?.hasAttribute('data-context-sheet') || kids[0]?.id === 'monsters-summary').toBe(
+    false,
+  );
+  expect(kids[1]?.hasAttribute('data-context-sheet') || kids[1]?.id === 'monsters-summary').toBe(
+    false,
+  );
   return panel as HTMLElement;
 }
 

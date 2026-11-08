@@ -3817,8 +3817,10 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
       'precondition: the sheet cursor is on Feed…',
     ).toBe('true');
     tap('Enter', 1060); // A on Feed…: the food list
+    // uif-7 (UIF7.3) named change: the food rows are the one sheet's rows,
+    // `monstersSheet-root-<itemId>` (was `monstersFeed-root-<itemId>`).
     expect(
-      byId('monstersFeed-root-4').getAttribute('aria-selected'),
+      byId('monstersSheet-root-4').getAttribute('aria-selected'),
       'precondition: the food list is open on the Bait row',
     ).toBe('true');
     expect(statusText(), 'precondition: the status line is empty').toBe('');
@@ -4016,8 +4018,9 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     tap('ArrowDown', 1040); // Care
     tap('ArrowDown', 1050); // Feed…
     tap('Enter', 1060); // A on Feed…: the food list
+    // uif-7 (UIF7.3) named change: `monstersSheet-root-<itemId>` (was `monstersFeed-root-<itemId>`).
     expect(
-      byId('monstersFeed-root-4').getAttribute('aria-selected'),
+      byId('monstersSheet-root-4').getAttribute('aria-selected'),
       'precondition: the food list is open on the Bait row',
     ).toBe('true');
     expect(statusText(), 'precondition: the status line is empty').toBe('');

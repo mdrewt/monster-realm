@@ -24,9 +24,10 @@ import { grid, type ItemLayout, list, type NavLayout, tabs } from './nav';
 import type { InventoryItemViewModel } from './raisingModel';
 
 export type MonstersTab = 'party' | 'storage';
-export type SheetAction = 'summary' | 'care' | 'feed' | 'evolve' | 'nickname' | 'move';
+export type SheetAction = 'summary' | 'care' | 'feed' | 'evolve' | 'nickname' | 'move' | 'close';
 
-/** The sheet's actions in display order (design §5 row 1). */
+/** The sheet's actions in display order (design §5 row 1); Close is last and acts as B (uif-7,
+ *  UIF7.2, feedback 049, 104). */
 export const SHEET_ACTIONS: readonly SheetAction[] = [
   'summary',
   'care',
@@ -34,7 +35,17 @@ export const SHEET_ACTIONS: readonly SheetAction[] = [
   'evolve',
   'nickname',
   'move',
+  'close',
 ];
+
+/** The Back row's key, last in the food and Evolve lists (UIF7.2): never a decimal string, so it
+ *  cannot collide with a food or path key. A on it acts as B. */
+export const BACK_KEY = 'back';
+
+const BACK_ITEM = { key: BACK_KEY, enabled: true } as const;
+
+/** Whether `key` is the Back row's. */
+export const isBackKey = (key: string | null): boolean => key === BACK_KEY;
 
 /** The Storage grid's columns: the three boxView draws. */
 export const STORAGE_COLS = 3;
@@ -61,6 +72,7 @@ export function sheetLayout(canFeed: boolean, canEvolve: boolean, canCare: boole
     evolve: canEvolve,
     nickname: true,
     move: true,
+    close: true,
   };
   return list(SHEET_ACTIONS.map((key) => ({ key, enabled: enabled[key] })));
 }
@@ -196,9 +208,9 @@ export function findMonster(
   return stored === undefined ? undefined : { tab: 'storage', card: stored };
 }
 
-/** The food list: every food in stock, all enabled. */
+/** The food list: every food in stock, all enabled, then Back. */
 export function foodLayoutOf(foods: readonly FoodVm[]): ItemLayout {
-  return list(foods.map((food) => ({ key: foodKey(food.itemId), enabled: true })));
+  return list([...foods.map((food) => ({ key: foodKey(food.itemId), enabled: true })), BACK_ITEM]);
 }
 
 export function foodLayout(vm: MonstersVm): ItemLayout {
@@ -232,7 +244,7 @@ export function findPath(
   return mon.paths.find((path) => pathKey(path.edgeId) === key);
 }
 
-/** The Evolve list: every outgoing path by edge id, only the choices enabled. */
+/** The Evolve list: every outgoing path by edge id, only the choices enabled, then Back. */
 export function pathLayout(mon: EvolutionMonsterViewModel): ItemLayout {
   const seen = new Set<string>();
   const items: { key: string; enabled: boolean }[] = [];
@@ -242,7 +254,7 @@ export function pathLayout(mon: EvolutionMonsterViewModel): ItemLayout {
     seen.add(key);
     items.push({ key, enabled: isChoice(mon, key) });
   }
-  return list(items);
+  return list([...items, BACK_ITEM]);
 }
 
 /** Where the Evolve list opens: the first choice, else the first path, else nothing. */

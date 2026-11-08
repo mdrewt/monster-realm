@@ -1170,7 +1170,7 @@ test.describe
       await expect(stats, 'the stats line is visible').toBeVisible();
       const inPanel = await stats.evaluate((el) => {
         const panel = document.getElementById('monsters-panel');
-        let page: HTMLElement = el;
+        let page: Element = el;
         while (page.parentElement !== null && page.parentElement !== panel)
           page = page.parentElement;
         if (panel === null || page.parentElement !== panel) return null;
