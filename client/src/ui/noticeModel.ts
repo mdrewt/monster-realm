@@ -4,6 +4,7 @@
 // The hint bar shows Y and B for them, Y opens a request's Accept / Decline / View sheet and B at
 // the world dismisses the top notice. Nothing here opens a frame or moves focus.
 import type { StoreBattleChallenge, StorePlayer, StoreTradeOffer } from '../net/store';
+import { CLOSE_KEY } from './actionSheetModel';
 import { list, type NavInput, type NavLayout, type NavState, navInit, navStep } from './nav';
 import { incomingChallenge } from './pvpModel';
 import type { Command } from './screens/types';
@@ -111,11 +112,13 @@ export function buildNotices(i: NoticeInput): readonly Notice[] {
 
 export type RequestAction = 'accept' | 'decline' | 'view';
 
-/** The sheet's rows, Accept first: Y then Enter accepts. */
+/** The sheet's rows, Accept first: Y then Enter accepts. Close last (uif-12, UIF12.2): A there is
+ *  B's step, for the pointer player who has no B. */
 export const requestSheetLayout: NavLayout = list([
   { key: 'accept', enabled: true },
   { key: 'decline', enabled: true },
   { key: 'view', enabled: true },
+  { key: CLOSE_KEY, enabled: true },
 ]);
 
 export interface RequestSheet {
@@ -130,7 +133,7 @@ export const openRequestSheet = (notice: RequestNotice): RequestSheet => ({
 
 /** One button on an open request sheet. A runs the row under the cursor and closes, but only while
  *  the sheet's request is still among `live`: a withdrawn or replaced request closes it with nothing
- *  run. B and Start close; a held one does nothing. */
+ *  run. A on the Close row, B and Start close without looking at `live`; a held one does nothing. */
 export function requestSheetStep(
   s: RequestSheet,
   btn: NavInput,
@@ -140,6 +143,7 @@ export function requestSheetStep(
     return btn.repeat ? { state: s } : { state: null };
   const { state: nav, outcome } = navStep(requestSheetLayout, s.nav, btn);
   if (outcome.kind !== 'activate') return { state: nav === s.nav ? s : { ...s, nav } };
+  if (outcome.key === CLOSE_KEY) return { state: null };
   if (!live.some((n) => n.key === s.notice.key)) return { state: null };
   return { state: null, run: outcome.key as RequestAction };
 }

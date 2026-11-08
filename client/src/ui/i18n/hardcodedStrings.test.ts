@@ -733,12 +733,15 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     // 257 sinks on 2026-11-08 (the Inventory's sheet, picker title, description and empty line moved
     // into the kit's ContextSheet/EmptyState, which write that text once each), rounded down to 255;
     // was 260 (uif-4b).
+    // uif-12 (named intentional change): re-measured 2026-11-08, 254 sinks — the request heading
+    // and the Challenge question moved into the kit's ContextSheet heading (contextSheet.ts writes
+    // it once); text moved, not removed; rounded down to 250; was 255 (uif-8).
     expect(SINK_FLOOR % 5, 'SINK_FLOOR is rounded down to a multiple of 5').toBe(0);
     expect(SINK_FLOOR, 'SINK_FLOOR is a real floor').toBeGreaterThan(0);
     expect(
       SINK_FLOOR,
       'SINK_FLOOR is an anti-vacuity guard, not a ratchet: edit it consciously when UI text legitimately shrinks, never auto-tighten or drive-by lower it',
-    ).toBe(255);
+    ).toBe(250);
 
     const tree = scan();
     const byFile = new Map(tree.perFile.map((p) => [p.file, p]));

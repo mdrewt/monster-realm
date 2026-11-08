@@ -924,6 +924,38 @@ covers the selected slot for some slots. Beside-the-slot moves with every slot, 
 the grid, so only the detail page was adopted (wf-1, M-ui-foundation-wireframes.md "Verdict: sheet placement"). A
 page gives Summary room for all stats without a second overlay.
 
-**Rules out.** A fixed corner, beside-the-slot placement, in-slot buttons, a dim layer, a second sheet root
-per sub-list, and a Summary implemented as a sheet or an overlay. Later sheets (Inventory uif-8, Social
-uif-12) reuse this placement and the `kit.sheet.close` / `kit.sheet.back` rows.
+**Rules out.** A fixed corner, beside-the-slot placement, in-slot buttons, a dim layer, a second sheet
+root per sub-list, and a Summary implemented as a sheet or an overlay. Later sheets (Inventory uif-8,
+Social uif-9) reuse this placement and the `kit.sheet.close` / `kit.sheet.back` rows; the world sheets
+(uif-12) reuse the Close row but keep their own anchor (see "Select is Help everywhere; a world sheet
+closes under it and ends with a Close row").
+
+## Select is Help everywhere; a world sheet closes under it and ends with a Close row
+
+**Decision.** Select opens Help over the bare world and over every world sheet: a fresh Select over a
+sheet closes it and falls through to the base, which answers `toggleHelp` (`worldButton` in
+`client/src/ui/screens/worldScreen.ts`, `baseButton` in `client/src/ui/screens/index.ts`); a held Select
+is consumed and changes nothing. The world sheets (the entity × action picker and the Y action sheet of
+`client/src/ui/actionSheetModel.ts`, the Accept / Decline / View request sheet of
+`client/src/ui/noticeModel.ts`, the Challenge party-size confirm) paint as the kit's `ContextSheet` (root
+`[data-context-sheet]`) inside `#interact-prompt`, hung where the prompt hangs; `placeContextSheet` is
+not used for them. That root is what lets the pointer source click a row and close the sheet from a click
+elsewhere. Every picker, action sheet and request sheet ends with a Close row (`CLOSE_KEY`, painted with
+`kit.sheet.close`): a layout row, not a `SheetEntry`, whose A is exactly B's step, so the sheet closes
+and nothing runs or is answered. The Challenge confirm keeps `No` last and gets no Close row. The hint
+bar reads A OK (Choose beside a multi-row picker), B Back, Start Close, Select Help over every world
+sheet.
+
+**Why.** An earlier rule let an open sheet swallow Select, so the hint bar's Select Help chip lied over
+every sheet. What that rule guarded against was Help opening under the sheet; closing the sheet first
+keeps that guarantee and makes Select one action everywhere. The Close row exists because a pointer
+player has no B: the chip-only prompt is `pointer-events:none`, so a world sheet could only be left from
+the keyboard (playtest 3 feedback). The confirm already has an exit row, No; a second one would make its
+shape ambiguous.
+
+**Rules out.** A world sheet that swallows Select; Help pushed over an open world sheet; a Close row
+modelled as a candidate action or `SheetEntry` (it would need a candidate and count toward the Choose
+verb); a Close row on the Challenge confirm; re-anchoring a world sheet with `placeContextSheet` (it must
+stay where the faced thing is); promoting a world sheet to a frame or `OverlayId` (a request is a
+non-modal banner and world sheet, never a frame: "Client UI: virtual buttons, one context stack, one
+overlay frame").

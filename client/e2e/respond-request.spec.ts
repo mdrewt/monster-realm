@@ -223,9 +223,10 @@ test.describe
       // Y opens the request's sheet on Accept; Enter accepts. Both are button presses through
       // the live binding table: no accelerator, no letter hotkey.
       await pressButton(pageA, 'Y');
+      // uif-12 (UIF12.2, named intentional change): the request sheet ends with a Close row.
       await expect
         .poll(async () => (await sheetRows(pageA)).map((r) => r.text), { timeout: 5_000 })
-        .toEqual(['Accept', 'Decline', 'View']);
+        .toEqual(['Accept', 'Decline', 'View', 'Close']);
       expect(
         (await sheetRows(pageA)).findIndex((r) => r.selected),
         'the cursor starts on Accept',
@@ -309,9 +310,10 @@ test.describe
       expect(await focusOf(pageA), 'A`s focus did not move').toBe(focusBefore);
 
       await pressButton(pageA, 'Y');
+      // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
       await expect
         .poll(async () => (await sheetRows(pageA)).map((r) => r.text), { timeout: 5_000 })
-        .toEqual(['Accept', 'Decline', 'View']);
+        .toEqual(['Accept', 'Decline', 'View', 'Close']);
       await pressButton(pageA, 'A');
 
       for (const page of [pageA, pageB]) {

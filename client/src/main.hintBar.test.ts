@@ -607,8 +607,8 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
     expect(stackNames(), 'precondition: the world sheet is not a frame').toEqual(['world']);
     expect(
       document.querySelectorAll('#interact-prompt [role="option"]').length,
-      'precondition: Y opened a ONE-row action sheet',
-    ).toBe(1);
+      'precondition: Y opened a ONE-entry action sheet (its row + Close)',
+    ).toBe(2); // uif-12 (UIF12.2, named intentional change): + the trailing Close row
     expect(
       chipsNow().map((c) => [c.button, c.verb]),
       'one-row action sheet',
@@ -628,8 +628,8 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
     frame();
     expect(
       document.querySelectorAll('#interact-prompt [role="option"]').length,
-      'precondition: A opened a multi-row picker',
-    ).toBe(2);
+      'precondition: A opened a multi-row picker (two rows + Close)',
+    ).toBe(3); // uif-12 (UIF12.2, named intentional change): + the trailing Close row
     expect(
       chipsNow().map((c) => [c.button, c.verb]),
       'multi-row picker',
@@ -709,7 +709,8 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       [...document.querySelectorAll('#interact-prompt [role="option"]')].map(
         (el) => el.textContent ?? '',
       );
-    expect(rowTexts().length, 'precondition: a two-row picker (Trade, Challenge)').toBe(2);
+    // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
+    expect(rowTexts().length, 'precondition: a two-row picker (Trade, Challenge, Close)').toBe(3);
     expect(chipOf('A').verb, 'the picker reads Choose').toBe(
       i18nT('interact.chip.choose' as never),
     );

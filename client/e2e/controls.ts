@@ -542,10 +542,6 @@ export async function openFaceToFace(
   }
 }
 
-/** The Challenge pick's rows as `text:selected`, read-only (bt-15 specs assert them directly). */
-export const readPickRows = async (page: Page): Promise<string[]> =>
-  (await readSheetRows(page)).map((r) => `${r.text}:${r.selected}`);
-
 /** How long a WANDERING NPC gets to reach the faced tile, per attempt (dialogue.spec and
  *  wallet-balance.spec talk to elder_oak from (6,3), facing (6,4)). qf-5 (#599) slowed
  *  wanderers to one decision a second (game-core NPC_STEP_TICKS = 5, a 1-in-5 stay), so his

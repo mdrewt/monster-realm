@@ -492,10 +492,12 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     // withdrawn or replaced by another id (a stale id sent).
     const sheetTrade = tf('notice.request.trade', { name: 'Bob' });
     const sheetChallenge = tf('notice.request.challenge', { name: 'Bob' });
+    // uif-12 (UIF12.2, named intentional change): the request sheet ends with a Close row.
     const ROWS = [
       i18nT('notice.sheet.accept'),
       i18nT('notice.sheet.decline'),
       i18nT('notice.sheet.view'),
+      i18nT('kit.sheet.close'),
     ];
 
     /** Boot, seed one request from Bob, press Y and read the open sheet. */
@@ -788,7 +790,8 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
     expect(sheet.hidden, 'the root is not hidden').toBe(false);
     expect(isShown(sheet), 'and shows').toBe(true);
     const rows = [...document.querySelectorAll('#interact-prompt [role="option"]')];
-    expect(rows.length, 'Accept / Decline / View').toBe(3);
+    // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
+    expect(rows.length, 'Accept / Decline / View / Close').toBe(4);
     for (const row of rows) {
       expect(sheet.contains(row), `row ${row.textContent} is inside the sheet root`).toBe(true);
     }
@@ -864,6 +867,88 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
     frame();
     expect(sheetShown(), 'control: the request still waits').toBe(true);
   }, 60_000);
+
+  it('UIF12.2 the request sheet`s rows are Accept / Decline / View / Close with Close the LAST option (data-nav-key="close"); Down x3 puts the cursor on it and Enter there does exactly what B does: the sheet closes, nothing is sent, the banner stays, the stack stays the bare world', async () => {
+    // WRONG IMPL KILLED: no Close row painted; a Close row painted with the raw key or another
+    // label; a Close row that is not last (Up from Accept would not reach it, Down x3 would land
+    // elsewhere); an Enter on Close that answers the request (the row before it, View, opens
+    // Social; or the default, Accept, sends respondTrade); an Enter on Close that DISMISSES the
+    // request (banner gone: B at an open sheet only closes it); an Enter that leaves the sheet up.
+    const line = tf('notice.request.trade', { name: 'Bob' });
+    await openRequestSheet('trade');
+    expect(sheetRows(), 'Accept / Decline / View / Close').toEqual([
+      i18nT('notice.sheet.accept'),
+      i18nT('notice.sheet.decline'),
+      i18nT('notice.sheet.view'),
+      i18nT('kit.sheet.close'),
+    ]);
+    const options = [...document.querySelectorAll('#interact-prompt [role="option"]')];
+    expect(
+      options.at(-1)?.getAttribute('data-nav-key'),
+      'Close is the last option, keyed close',
+    ).toBe('close');
+    expect(options.at(-1)?.textContent, 'labelled from the catalog').toBe(i18nT('kit.sheet.close'));
+    expect(sheetCursor(), 'precondition: the cursor starts on Accept').toBe('accept');
+
+    for (let i = 0; i < 3; i += 1) press('ArrowDown');
+    frame();
+    expect(sheetCursor(), 'Down x3: the cursor is on Close').toBe('close');
+    press(A);
+    await flush();
+    expect(H.calls, 'Enter on Close sends nothing').toEqual([]);
+    frame();
+    expect(sheetShown(), 'Enter on Close closes the sheet').toBe(false);
+    expect(stackNames(), 'and opens no frame').toEqual(['world']);
+    expect(openDialogs(), 'nor a dialog').toEqual([]);
+    const afterClose = { banner: bannerText(), stack: stackNames(), calls: [...H.calls] };
+    expect(afterClose.banner, 'the request still waits: its banner stays').toBe(line);
+
+    // The reference: B on the same sheet, reopened with Y.
+    press(Y);
+    frame();
+    expect(sheetShown(), 'precondition: Y reopens the request sheet').toBe(true);
+    press(B);
+    await flush();
+    frame();
+    expect(sheetShown(), 'B closes the sheet').toBe(false);
+    expect(
+      { banner: bannerText(), stack: stackNames(), calls: [...H.calls] },
+      'Enter on Close had exactly B`s effect',
+    ).toEqual(afterClose);
+
+    // ANTI-VACUITY: the sheet was live all along — Y then Enter on Accept answers the request.
+    press(Y);
+    frame();
+    press(A);
+    await flush();
+    expect(H.calls, 'control: Accept still sends the accept reducer').toEqual([
+      { name: 'respondTrade', args: { tradeId: 11n, accepted: true } },
+    ]);
+  }, 60_000);
+
+  it('UIF12.2 a pointer click on the request sheet`s Close row (not the cursor row) closes it and sends nothing, for a trade and a challenge; the request still waits', async () => {
+    // WRONG IMPL KILLED: a Close row with no pointer path (the very user the row exists for has no
+    // way to close the sheet but an outside click); a click that runs the CURSOR row (Accept) or
+    // the row before Close (View: Social opens); a click on Close that dismisses the request.
+    for (const [kind, line] of [
+      ['trade', tf('notice.request.trade', { name: 'Bob' })],
+      ['challenge', tf('notice.request.challenge', { name: 'Bob' })],
+    ] as const) {
+      teardown();
+      await openRequestSheet(kind);
+      expect(sheetCursor(), `${kind}: precondition: the cursor is on Accept`).toBe('accept');
+      leftClick(sheetRow('close'));
+      await flush();
+      expect(H.calls, `${kind}: a click on Close sends nothing`).toEqual([]);
+      frame();
+      expect(sheetShown(), `${kind}: the sheet closed`).toBe(false);
+      expect(stackNames(), `${kind}: still the bare world (no Social)`).toEqual(['world']);
+      expect(bannerText(), `${kind}: the request still waits`).toBe(line);
+      press(Y);
+      frame();
+      expect(sheetShown(), `${kind}: control: Y reopens it`).toBe(true);
+    }
+  }, 120_000);
 
   it('UIF12.5 (regression gate, may pass today) while a world sheet is open a held movement key sends no move; a key held while an outside click closes the sheet does not start a walk after the close; the next fresh press walks exactly one step', async () => {
     // WRONG IMPL KILLED: a sheet that lets a held direction through (the character walks under the
@@ -1018,7 +1103,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
         el.getAttribute('aria-selected'),
       ),
       'the first row is the only selected one',
-    ).toEqual(['true', 'false', 'false']);
+    ).toEqual(['true', 'false', 'false', 'false']); // uif-12 (UIF12.2): + the Close row
     expect(H.sends, 'nothing walks').toEqual([]);
     expect(H.calls, 'nothing was answered').toEqual([]);
   }, 60_000);
@@ -1079,7 +1164,8 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
 
     press(Y); // a faced target: Y opens its action sheet
     frame();
-    expect(sheetRows().length, 'precondition: the action sheet is up').toBe(1);
+    // uif-12 (UIF12.2, named intentional change): the one Talk row, then Close.
+    expect(sheetRows().length, 'precondition: the action sheet is up').toBe(2);
     expect(cls(), 'present over the action sheet').toBe(true);
     press(B);
     frame();

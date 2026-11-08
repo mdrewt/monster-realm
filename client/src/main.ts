@@ -113,7 +113,7 @@ import {
   type TacticsTuning,
 } from './tactics/wasm';
 import { t } from './ui/a11yCopy';
-import { challengeLayout, sheetLayout, sizeOfRow } from './ui/actionSheetModel';
+import { CLOSE_KEY, challengeLayout, sheetLayout, sizeOfRow } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
   armReseed,
@@ -1530,7 +1530,10 @@ function sizeRowLabel(key: string): string {
 }
 
 /** A request sheet row's word (ctl-13), each a literal catalog key (the catalog parity scan). */
+/** The Close row's word (uif-12, UIF12.2): the kit's, for the layout key that names no entry. */
+const closeRowLabel = (): string => i18nT('kit.sheet.close');
 function requestRowLabel(key: string): string {
+  if (key === CLOSE_KEY) return closeRowLabel();
   if (key === 'accept') return i18nT('notice.sheet.accept');
   return key === 'decline' ? i18nT('notice.sheet.decline') : i18nT('notice.sheet.view');
 }
@@ -5078,13 +5081,16 @@ async function main(): Promise<void> {
           state: sheet.nav,
           fill: (el, item) => {
             const row = byKey.get(item.key);
+            // The last row is Close (uif-12, UIF12.2): the kit's word, not an entry.
             el.textContent =
-              row === undefined
-                ? ''
-                : tf('interact.entry', {
+              row !== undefined
+                ? tf('interact.entry', {
                     verb: interactVerb(row.action),
                     name: interactName(row.candidate),
-                  });
+                  })
+                : item.key === CLOSE_KEY
+                  ? closeRowLabel()
+                  : '';
           },
         });
         // The listbox's accessible name: this variant has no visible title.

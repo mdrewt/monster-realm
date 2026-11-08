@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { t } from '../src/ui/i18n/resolver';
 import {
   closeAll,
   type Dir,
@@ -168,8 +169,10 @@ test.describe
         timeout: 5_000,
       });
       const rows = page.locator('#interact-prompt [data-context-sheet] [role="option"]');
-      await expect(rows, 'one action: the Shop row').toHaveCount(1);
+      // uif-12 (UIF12.2, named intentional change): the one action, then the Close row.
+      await expect(rows, 'one action, the Shop row, then Close').toHaveCount(2);
       await expect(rows.first()).toHaveText(SHOP_ROW);
+      await expect(rows.last()).toHaveText(t('kit.sheet.close'));
       await expect(sheet).toHaveClass(/mr-sheet/);
 
       // The sheet takes the pointer: the hit-test at the row's centre reaches the row.
@@ -250,5 +253,59 @@ test.describe
       // The next movement press walks exactly one tile (west, off the post).
       await pressButton(page, 'Left');
       await expectPosted(page, { x: 6, y: 1 }, 'West', 'uif-12 after the close');
+    });
+
+    // KILLS: no Close row on the action sheet (a pointer player has no in-sheet way out); a Close
+    // row that is not last or not labelled from the catalog; a Close row that is the cursor's start
+    // (A at once would close instead of shopping); a real click on Close that runs the Shop row
+    // (the greeting or the shop opens) or falls through the sheet to the canvas; a click that
+    // leaves the sheet up or pushes a frame; a close that hides the faced-target chip for good.
+    test('UIF12.2 a real click on the sheet`s last row, Close, closes it and runs nothing', async () => {
+      test.setTimeout(180_000);
+      await closeAll(page);
+      // UIF12.4 ends one tile west of the post: step back onto it, facing the shopkeeper.
+      expect(await faceTile(page, SHOP_POST, 'East', 'uif-12 close row')).toBe('arrived');
+      await expectPosted(page, SHOP_POST, 'East', 'uif-12 close row');
+      expect((await readWorld(page)).stackLength, 'precondition: a bare world base').toBe(1);
+      await pressButton(page, 'Y');
+      const sheet = page.locator('#interact-prompt [data-context-sheet]');
+      await expect(sheet, 'precondition: Y opened the action sheet').toBeVisible({
+        timeout: 10_000,
+      });
+      const rows = page.locator('#interact-prompt [data-context-sheet] [role="option"]');
+      await expect(rows, 'the Shop row, then Close').toHaveCount(2);
+      await expect(rows.first()).toHaveText(SHOP_ROW);
+      await expect(rows.last(), 'Close is the last row').toHaveText(t('kit.sheet.close'));
+      await expect(rows.last(), 'the cursor is on Shop, not Close').toHaveAttribute(
+        'aria-selected',
+        'false',
+      );
+
+      await rows.last().click({ timeout: 5_000 });
+
+      await expect(sheet, 'the click on Close closes the sheet').toBeHidden({ timeout: 5_000 });
+      expect(
+        await page.locator('#interact-prompt [role="option"]:visible').count(),
+        'no visible sheet row is left',
+      ).toBe(0);
+      expect((await readWorld(page)).stackLength, 'the stack is the bare world').toBe(1);
+      // Nothing ran: the Shop row would greet; the bounded waits are for the WRONG outcome.
+      const dialogueOpened = await page
+        .locator('#dialogue-overlay')
+        .waitFor({ state: 'visible', timeout: 3_000 })
+        .then(() => true)
+        .catch(() => false);
+      expect(dialogueOpened, 'Close must not run the Shop row (no greeting)').toBe(false);
+      const shopOpened = await page
+        .locator('#shop-overlay')
+        .waitFor({ state: 'visible', timeout: 1_000 })
+        .then(() => true)
+        .catch(() => false);
+      expect(shopOpened, 'and open no shop').toBe(false);
+      expect((await readWorld(page)).stackLength, 'still a bare world after the waits').toBe(1);
+      await expect(
+        page.locator('#interact-prompt'),
+        'the faced shopkeeper`s chip is back',
+      ).toBeVisible({ timeout: 5_000 });
     });
   });
