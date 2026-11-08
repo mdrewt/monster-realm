@@ -351,11 +351,10 @@ export class BoxView {
     this.#partyEl.style.cssText = `${GRID_STYLE}grid-template-columns:repeat(${PARTY_COLS},minmax(0,1fr));`;
     panel.appendChild(this.#partyEl);
 
-    // Storage: the kit's position cue (`.mr-scroll`, a shadow where more rows hide) over a grid that
-    // never shows a scrollbar: the cursor scrolls it (`scrollIntoView` in #apply) and so does the
-    // wheel, which presses Up / Down over its cells (uif-5).
+    // Storage: a grid that never shows a scrollbar: the cursor scrolls it (`scrollIntoView` in
+    // #apply) and so does the wheel, which presses Up / Down over its cells (uif-5). While it holds
+    // cards it wears the kit's position cue (`.mr-scroll`, a shadow where more rows hide; #buildBox).
     this.#boxEl = document.createElement('div');
-    this.#boxEl.className = 'mr-scroll';
     this.#boxEl.style.cssText =
       `${GRID_STYLE}grid-template-columns:repeat(${STORAGE_COLS},minmax(0,1fr));` +
       'align-content:start;overflow-y:hidden;';
@@ -711,6 +710,9 @@ export class BoxView {
 
   #buildBox(monsters: readonly MonsterCardViewModel[]): void {
     this.#boxEl.replaceChildren();
+    // The cue only over cards: an empty Storage has nothing to scroll, and its EmptyState text then
+    // sits on a plain fill (a11y.spec's contrast walk refuses a background-image ancestor).
+    this.#boxEl.classList.toggle('mr-scroll', monsters.length > 0);
     if (monsters.length === 0) {
       // uif-6 (UIF6.6): why it is empty, where its monsters come from and what to do next; it
       // spans the grid, and the frame and its tabs stay.
