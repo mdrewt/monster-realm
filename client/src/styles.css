@@ -282,16 +282,19 @@
 .mr-nav-row {
   display: grid;
 }
-.mr-nav-item {
+.mr-nav-item,
+.tactics-menu-row {
   padding: 0.125rem 0.5rem 0.125rem 1.25rem;
 }
-.mr-nav-item.is-active {
+.mr-nav-item.is-active,
+.tactics-menu-row[aria-selected="true"] {
   background: var(--mr-frame-fg);
   color: var(--mr-frame-bg);
   outline: 2px solid var(--mr-frame-bg);
   outline-offset: -4px;
 }
-.mr-nav-item.is-active::before {
+.mr-nav-item.is-active::before,
+.tactics-menu-row[aria-selected="true"]::before {
   content: "▶" / "";
   margin-left: -1rem;
   width: 1rem;
@@ -300,11 +303,13 @@
 .mr-nav-row .mr-nav-item.is-active {
   outline-width: 3px;
 }
-.mr-nav-item.is-disabled {
+.mr-nav-item.is-disabled,
+.tactics-menu-row[aria-disabled="true"] {
   color: var(--mr-text-disabled);
 }
-.mr-nav-item.is-active.is-disabled {
-  color: #55556a;
+.mr-nav-item.is-active.is-disabled,
+.tactics-menu-row[aria-selected="true"][aria-disabled="true"] {
+  color: var(--mr-text-disabled-active);
 }
 /*
  * The Rankings list (qf-16, QF16.1-QF16.2): a read-only listbox (leaderboardView.ts marks it
@@ -450,15 +455,17 @@
  * The tactical battle (client/src/tactics, bt-10). The shell's root also wears the shared
  * `mr-frame mr-shell mr-shell--top mr-shell--battle` classes (they place it), but NO selector below
  * names those classes: styles.test.ts rosters their rules. Every rule hangs off a `tactics-`
- * class. The root is a column: turn bar, the field (70 % of the height, one shared background),
- * the ticker and the dock (a darker, bordered command band).
+ * class, except the command rows' treatment, which the shared `.mr-nav-item` rules carry (uif-11).
+ * The chrome is rem and tokens, so it grows with the one root scale; the board art below keeps its
+ * px. The root is a column: turn bar, the field (70 % of the height, a 30 % floor, one shared
+ * background), the ticker and the dock (a darker, bordered command band).
  */
 .tactics-battle {
   flex-direction: column;
   padding: 0;
   overflow: hidden;
-  background: #0b0b12;
-  color: #eee;
+  background: var(--mr-frame-bg);
+  color: var(--mr-frame-fg);
 }
 .tactics-title {
   position: absolute;
@@ -472,39 +479,41 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  background: #15151f;
+  gap: var(--mr-space-2);
+  padding: var(--mr-space-1) var(--mr-space-2);
+  background: var(--mr-panel-bg);
 }
 .tactics-turnbar-chips {
   display: flex;
   flex: 1 1 auto;
-  gap: 4px;
+  gap: var(--mr-space-1);
   overflow-x: auto;
 }
 .tactics-turnbar-badge:empty {
   display: none;
 }
 .tactics-turnbar-badge {
-  padding: 1px 6px;
+  flex: none;
+  padding: 0.0625rem 0.375rem;
+  white-space: nowrap;
   border-radius: 3px;
   background: #5a2a6a;
   font-weight: bold;
 }
 .tactics-chip {
   flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid #556;
+  padding: 0.0625rem 0.375rem;
+  border: var(--mr-border-thin) solid var(--mr-separator);
   border-radius: 3px;
   background: #2a2a3a;
-  font-size: 12px;
+  font-size: var(--mr-font-small);
   white-space: nowrap;
 }
 .tactics-chip--mine {
-  border-color: #3c9;
+  border-color: var(--mr-state-ok);
 }
 .tactics-chip--current {
-  border-color: #fff;
+  border-color: var(--mr-frame-fg);
   background: #44445a;
   font-weight: bold;
 }
@@ -517,14 +526,14 @@
 }
 .tactics-chip-lock::before {
   content: "\1F512" / "";
-  margin-left: 4px;
+  margin-left: var(--mr-space-1);
 }
 
 .tactics-field {
   position: relative;
   height: 70%;
   flex: 0 1 auto;
-  min-height: 0;
+  min-height: 30%;
 }
 .tactics-board {
   height: 100%;
@@ -657,18 +666,18 @@
   transition: width 0.3s;
 }
 .tactics-hp--high .tactics-hp-fill {
-  background: #4c4;
+  background: var(--mr-state-ok);
 }
 .tactics-hp--mid .tactics-hp-fill {
-  background: #ec3;
+  background: var(--mr-state-warn);
 }
 .tactics-hp--low .tactics-hp-fill {
-  background: #e44;
+  background: var(--mr-state-error);
 }
 .tactics-unit-name {
   max-width: 100%;
   overflow: hidden;
-  font-size: 11px;
+  font-size: var(--mr-font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
   text-shadow: 0 0 2px #000;
@@ -676,10 +685,10 @@
 .tactics-intent {
   position: absolute;
   top: 0;
-  padding: 0 4px;
+  padding: 0 var(--mr-space-1);
   border-radius: 3px;
   background: #000;
-  font-size: 11px;
+  font-size: var(--mr-font-small);
 }
 
 .tactics-hud {
@@ -692,17 +701,17 @@
 }
 .tactics-info {
   z-index: 3;
-  margin: 4px;
-  padding: 4px 6px;
+  margin: var(--mr-space-1);
+  padding: var(--mr-space-1) 0.375rem;
   list-style: none;
   background: rgba(0, 0, 0, 0.6);
-  font-size: 12px;
+  font-size: var(--mr-font-small);
 }
 .tactics-info--own {
-  border-left: 3px solid #3c3;
+  border-left: 3px solid var(--mr-state-ok);
 }
 .tactics-info--foe {
-  border-left: 3px solid #e44;
+  border-left: 3px solid var(--mr-state-error);
 }
 .tactics-info:empty {
   display: none;
@@ -710,7 +719,7 @@
 .tactics-info-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .tactics-info-row--fainted {
   opacity: 0.5;
@@ -721,16 +730,16 @@
 .tactics-info-chips {
   display: flex;
   flex-basis: 100%;
-  gap: 4px;
+  gap: var(--mr-space-1);
 }
 .tactics-pips {
   display: flex;
-  gap: 3px;
+  gap: 0.1875rem;
   align-items: center;
 }
 .tactics-pip {
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
   border-radius: 50%;
 }
 .tactics-pip--full {
@@ -739,7 +748,7 @@
 /* Drafted = a hollow ring, so it differs from full by shape (not colour or blink). */
 .tactics-pip--drafted {
   box-sizing: border-box;
-  border: 2px solid #fc3;
+  border: 2px solid var(--mr-state-warn);
   background: transparent;
 }
 .tactics-pip--spent {
@@ -758,10 +767,10 @@
 }
 .tactics-banner {
   position: absolute;
-  bottom: 8px;
+  bottom: var(--mr-space-2);
   left: 50%;
   transform: translateX(-50%);
-  padding: 4px 12px;
+  padding: var(--mr-space-1) var(--mr-space-3);
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.75);
   font-weight: bold;
@@ -773,22 +782,29 @@
 
 .tactics-ticker {
   flex: 1 1 0;
-  min-height: 3em;
+  min-height: 1lh;
   margin: 0;
-  padding: 4px 8px;
+  padding: var(--mr-space-1) var(--mr-space-2);
   overflow-y: auto;
   list-style: none;
-  font-size: 12px;
+  font-size: var(--mr-font-small);
 }
+/* Height priority (UIF11.6): the ticker (basis 0) takes only the leftover, so it gives up height
+ * first, down to one line; the field then gives up its 70% down to its 30% floor. The dock never
+ * shrinks but caps at 40% and scrolls past that (doubled text, a long sub-list), the shell keeping
+ * the cursor row in view. Measured at 1280x720 with the root doubled: 30% field + 40% dock + one
+ * ticker line + the turn bar fit the frame (e2e/ui-tactics.spec.ts). */
 .tactics-dock {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 0.375rem 0.625rem;
   align-items: flex-start;
-  min-height: 56px;
-  padding: 4px 8px;
-  border-top: 2px solid #556;
+  min-height: 3.5rem;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: var(--mr-space-1) var(--mr-space-2);
+  border-top: var(--mr-border-width) solid var(--mr-separator);
   background: #0d0d16;
 }
 /* bt-11: the command dock's parts — the pointer twins of X / LB / RB, the hierarchical command menu
@@ -797,71 +813,82 @@
 .tactics-dock-buttons {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--mr-space-1);
 }
 .tactics-dock-buttons button {
-  padding: 2px 8px;
-  border: 1px solid #556;
+  padding: 0.125rem var(--mr-space-2);
+  border: var(--mr-border-thin) solid var(--mr-separator);
   border-radius: 3px;
   background: #2a2a3a;
-  color: #eee;
-  font-size: 12px;
+  color: var(--mr-frame-fg);
+  font-size: var(--mr-font-small);
   cursor: pointer;
 }
 .tactics-dock-buttons button[aria-pressed="true"] {
-  border-color: #c7f;
+  border-color: var(--mr-focus);
   background: #4a2a5a;
 }
 .tactics-menu {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 180px;
+  gap: 0.125rem;
+  min-width: 11.25rem;
   margin: 0;
-  padding: 4px;
-  border: 1px solid #556;
+  padding: var(--mr-space-1);
+  border: var(--mr-border-thin) solid var(--mr-separator);
   border-radius: 3px;
-  background: #15151f;
+  background: var(--mr-panel-bg);
 }
 .tactics-menu:focus {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--mr-frame-fg);
   outline-offset: 1px;
 }
+/* The row treatment is the shared nav row's (UIF11.3: the `.mr-nav-item` rules list this selector);
+ * this rule only lays the row out and resets the native button, so it declares no fill, colour,
+ * outline or padding of its own. Body type on one line: 0.25rem + 0.875rem x 1.6 = the 1.65rem nav-row
+ * height (WF1-A7). No gap and no space-between: the cursor's zero-net-width marker is a flex item,
+ * and the reason is pushed right by its own auto margin. */
 .tactics-menu-row {
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 6px;
-  border: 1px solid transparent;
-  border-radius: 3px;
+  gap: 0;
+  border: 0;
   background: transparent;
-  color: #eee;
-  font-size: 13px;
+  color: inherit;
+  font: inherit;
+  font-size: var(--mr-font-body);
+  line-height: var(--mr-font-body-line);
   text-align: left;
   cursor: pointer;
 }
-.tactics-menu-row[aria-selected="true"] {
-  border-color: #fff;
-  background: #44445a;
+.tactics-menu-row::before {
+  flex: none;
 }
 .tactics-menu-row[aria-disabled="true"] {
-  color: #889;
   cursor: default;
 }
 .tactics-menu-row[data-sub="true"] .tactics-menu-label::after {
   content: " \25B8";
 }
+/* A row's parts (the deploy panel's name / level / HP spans, a command's reason) sit a space apart;
+ * the cursor marker is a pseudo-element, so it adds no gap. */
+.tactics-menu-row > span + span {
+  margin-left: var(--mr-space-2);
+}
+.tactics-menu-row > .tactics-reason {
+  margin-left: auto;
+}
 .tactics-reason {
-  color: #aab;
-  font-size: 11px;
+  padding-left: var(--mr-space-2);
+  color: inherit;
+  font-size: var(--mr-font-small);
   font-style: italic;
 }
 .tactics-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  min-height: 22px;
-  padding: 2px 0;
+  gap: var(--mr-space-1);
+  min-height: 1.375rem;
+  padding: 0.125rem 0;
 }
 .tactics-strip--locked .tactics-chip {
   border-style: double;
@@ -888,49 +915,49 @@
 .tactics-strip .tactics-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 0.3125rem;
 }
 .tactics-strip .tactics-pips {
-  gap: 2px;
+  gap: 0.125rem;
 }
 .tactics-strip .tactics-pip {
-  width: 6px;
-  height: 6px;
+  width: 0.375rem;
+  height: 0.375rem;
 }
 .tactics-badge::before {
   font-weight: bold;
 }
 .tactics-badge--firm::before {
   content: "\2713" / "";
-  color: #3c9;
+  color: var(--mr-state-ok);
 }
 .tactics-badge--provisional::before {
   content: "~" / "";
-  color: #fc6;
+  color: var(--mr-state-warn);
 }
 .tactics-badge--stale::before {
   content: "\2717" / "";
-  color: #f66;
+  color: var(--mr-state-error);
 }
 .tactics-strip .tactics-chip:has(.tactics-badge--stale) {
-  color: #aab;
+  color: var(--mr-text-muted);
   text-decoration: line-through;
 }
 .tactics-chip-note {
-  color: #fc6;
-  font-size: 11px;
+  color: var(--mr-state-warn);
+  font-size: var(--mr-font-small);
   font-style: italic;
 }
 .tactics-forecast {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 180px;
-  padding: 4px 8px;
-  border: 1px solid #556;
+  gap: 0.125rem;
+  min-width: 11.25rem;
+  padding: var(--mr-space-1) var(--mr-space-2);
+  border: var(--mr-border-thin) solid var(--mr-separator);
   border-radius: 3px;
-  background: #15151f;
-  font-size: 12px;
+  background: var(--mr-panel-bg);
+  font-size: var(--mr-font-small);
 }
 .tactics-forecast-line {
   white-space: nowrap;
@@ -939,8 +966,8 @@
   font-weight: bold;
 }
 .tactics-tilde {
-  margin-right: 2px;
-  color: #fc6;
+  margin-right: 0.125rem;
+  color: var(--mr-state-warn);
 }
 .tactics-skull::before {
   content: "\1F480" / "";
@@ -948,21 +975,21 @@
 /* The hollow skull differs by SHAPE (an outline), not by opacity alone. */
 .tactics-skull--hollow::before {
   color: transparent;
-  -webkit-text-stroke: 1px #eee;
+  -webkit-text-stroke: 1px var(--mr-frame-fg);
 }
 .tactics-projected {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 4px;
-  border: 1px dashed #fc6;
+  gap: 0.125rem;
+  padding: var(--mr-space-1);
+  border: var(--mr-border-thin) dashed var(--mr-state-warn);
   border-radius: 3px;
 }
 .tactics-projected-label,
 .tactics-projected-assumes,
 .tactics-projected-enemies {
-  color: #fc6;
-  font-size: 11px;
+  color: var(--mr-state-warn);
+  font-size: var(--mr-font-small);
   font-style: italic;
 }
 
@@ -1137,12 +1164,18 @@
 .tactics-deploy,
 .tactics-results {
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--mr-space-3);
+}
+/* Native buttons do not inherit type: the editor's arrows and Continue take the frame's body font. */
+.tactics-deploy-prev,
+.tactics-deploy-next,
+.tactics-results-continue {
+  font: inherit;
 }
 .tactics-deploy-body {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--mr-space-3);
 }
 .tactics-deploy-formation {
   list-style: none;
@@ -1150,13 +1183,13 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--mr-space-1);
 }
 .tactics-deploy-slot,
 .tactics-deploy-candidate {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--mr-space-2);
 }
 .tactics-deploy-slot-label {
   font-weight: 600;
@@ -1177,7 +1210,7 @@
 }
 .tactics-deploy-status {
   margin: 0;
-  color: #e6b450;
+  color: var(--mr-state-warn);
   font-style: italic;
 }
 /* bt-12 B (BT12.2): the confirm screen's wild composition (one row per wild of the pack) and the
@@ -1189,26 +1222,26 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--mr-space-1);
 }
 .tactics-deploy-wild {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--mr-space-2);
 }
 .tactics-countdown {
   margin: 0;
-  color: #e6b450;
+  color: var(--mr-state-warn);
   font-weight: 600;
 }
 /* The shell's variant floats over the top of the field (the field is a fixed-height box whose board
    fills it; the banner floats at its bottom the same way). The deploy panel's stays in flow. */
 .tactics-field > .tactics-countdown {
   position: absolute;
-  top: 4px;
+  top: var(--mr-space-1);
   left: 50%;
   transform: translateX(-50%);
-  padding: 2px 10px;
+  padding: 0.125rem 0.625rem;
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.75);
   pointer-events: none;
@@ -1219,7 +1252,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--mr-space-1);
 }
 .tactics-results-line[data-line="currency"] {
   font-weight: 600;
@@ -1232,27 +1265,27 @@
    the strike-pip strip under the turn bar. The reduced-motion block below must stay last. */
 .tactics-clock-ring {
   display: inline-block;
-  width: 12px;
-  height: 12px;
-  margin-left: 4px;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-left: var(--mr-space-1);
   vertical-align: middle;
   border-radius: 50%;
-  --clock-color: #3c9;
+  --clock-color: var(--mr-state-ok);
   background: conic-gradient(var(--clock-color) calc(var(--clock-fraction, 0) * 360deg), #333 0);
 }
 .tactics-clock-ring[data-band="amber"] {
-  --clock-color: #fc6;
+  --clock-color: var(--mr-state-warn);
 }
 .tactics-clock-ring[data-band="red"] {
-  --clock-color: #f66;
+  --clock-color: var(--mr-state-error);
 }
 .tactics-players {
   flex: 0 0 auto;
   display: flex;
-  gap: 16px;
-  padding: 2px 8px;
-  font-size: 12px;
-  background: #15151f;
+  gap: var(--mr-space-4);
+  padding: 0.125rem var(--mr-space-2);
+  font-size: var(--mr-font-small);
+  background: var(--mr-panel-bg);
 }
 .tactics-players[hidden] {
   display: none;
@@ -1260,23 +1293,23 @@
 .tactics-player {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .tactics-player[data-mine="true"] .tactics-player-name {
-  color: #3c9;
+  color: var(--mr-state-ok);
 }
 .tactics-strikes {
   display: inline-flex;
-  gap: 3px;
+  gap: 0.1875rem;
 }
 .tactics-strike {
-  width: 7px;
-  height: 7px;
+  width: 0.4375rem;
+  height: 0.4375rem;
   border-radius: 1px;
   background: #444;
 }
 .tactics-strike--hit {
-  background: #f66;
+  background: var(--mr-state-error);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1284,7 +1317,8 @@
     animation: none;
   }
 }
-.mr-pointer-hover .mr-nav-item:hover {
+.mr-pointer-hover .mr-nav-item:hover,
+.mr-pointer-hover .tactics-menu-row:hover {
   text-decoration: underline;
 }
 /* A Rankings row does nothing on a click either (qf-16, QF16.1): no "clickable" hover cue. */
@@ -1428,6 +1462,9 @@
   --mr-separator: #6b6b82;
   --mr-text-muted: #b4b4c2;
   --mr-text-disabled: #8a8a9a;
+  /* A disabled row under the cursor's inverted fill (--mr-frame-fg): 4.5:1 or better there
+   * (ui-chrome.spec.ts pins the computed value). One value in both contrast tiers. */
+  --mr-text-disabled-active: #55556a;
   --mr-state-ok: #34d399;
   --mr-state-warn: #f59e0b;
   --mr-state-error: #f87171;

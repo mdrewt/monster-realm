@@ -1037,7 +1037,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tactics.menu.label': 'Command menu',
   'tactics.menu.move': 'Move',
   'tactics.menu.skills': 'Skills',
-  'tactics.menu.item': 'Item',
+  // NAMED INTENTIONAL CHANGE (uif-11, UIF11.4, #586 D4): the battle menu's inventory row reads
+  // "Items" (was "Item"); the key is unchanged.
+  'tactics.menu.item': 'Items',
   'tactics.menu.recruit': 'Recruit',
   'tactics.menu.flee': 'Flee',
   'tactics.menu.endTurn': 'End Turn',
@@ -2635,6 +2637,54 @@ describe('uif-8: the Bag EmptyState keys in both catalogs', () => {
         `${name}: reason, cue and next step are three different lines`,
       ).toBe(3);
     }
+  });
+});
+
+// =============================================================================
+// uif-11 (UIF11.4, #586 D4): the battle menu's inventory row is "Items" / "Objets"; no tactical
+// string still says Bag / Sac. `menu.disabled.battleBag` (the MAIN MENU's reason over a battle) is out
+// of scope: its literal is pinned by raisingView.test.ts and mainMenuScreen.test.ts (R-uif-11-BATTLEBAGREASON).
+// =============================================================================
+
+describe('uif-11: the tactical menu says Items, not Bag, in both catalogs', () => {
+  /** Every text a `tactics.*` key resolves to: a plain value, or a closure's output for BOTH sample sets. */
+  const tacticsTexts = (catalog: Record<string, unknown>): string[] => {
+    const out: string[] = [];
+    for (const [key, value] of Object.entries(catalog)) {
+      if (!key.startsWith('tactics.')) continue;
+      if (typeof value === 'function') {
+        const samples = SAMPLE_PARAMS[key];
+        if (samples === undefined) throw new Error(`${key} is parameterised with no sample set`);
+        for (const sample of samples)
+          out.push((value as (p: Record<string, unknown>) => string)(sample));
+      } else {
+        out.push(String(value));
+      }
+    }
+    return out;
+  };
+
+  it('UIF11.4 tactics.menu.item is Items in en and Objets in fr, and no tactics.* value says Bag (en) or Sac (fr)', () => {
+    // WRONG IMPL KILLED: the value left at "Item" or "Bag"/"Sac" (the old copy); en changed and fr
+    // left on "Sac" (a French boot keeps the old name); "Items" typed into another key; a wholesale
+    // rewrite that renames the key (the exact key is read); a reworded en such as "Bag (items)" that
+    // keeps the word; an accent-stripped "Objets" is the same bytes, so a decomposed "Objets" cannot occur.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(en['tactics.menu.item'], 'en tactics.menu.item').toBe('Items');
+    expect(fr['tactics.menu.item'], 'fr tactics.menu.item').toBe('Objets');
+    const enTexts = tacticsTexts(en);
+    const frTexts = tacticsTexts(fr);
+    expect(enTexts.length, 'ANTI-VACUITY: many tactics.* texts were read').toBeGreaterThan(100);
+    expect(frTexts.length, 'ANTI-VACUITY: many fr tactics.* texts were read').toBeGreaterThan(100);
+    expect(
+      enTexts.filter((t) => /\bbag\b/i.test(t)),
+      'no en tactics.* value says Bag',
+    ).toEqual([]);
+    expect(
+      frTexts.filter((t) => /\bsac\b/i.test(t)),
+      'no fr tactics.* value says Sac',
+    ).toEqual([]);
   });
 });
 

@@ -2461,6 +2461,74 @@ describe('TacticsBattle: the command menu (BT11.1)', () => {
   });
 });
 
+// uif-11 (UIF11.3, UIF11.4): the command menu on the kit. The DOM and aria of the rows are UNCHANGED
+// (the treatment is CSS, selector-listed with `.mr-nav-item`); only the inventory row's copy moves.
+describe('TacticsBattle: the command menu on the kit (uif-11)', () => {
+  /** The root menu of the own unit at (1,1), with Flee refused as BT11-1-SHELL-MENU does, so item,
+   *  recruit and flee are all greyed. */
+  function rootMenu(): Kit {
+    const k = make();
+    k.fake.script.refused.add(canon(['Flee']));
+    k.shell.render(tacVm('wild'));
+    openMenuAt(k, c(1, 1), 'uif-11');
+    return k;
+  }
+  const labelOf = (row: HTMLElement): string =>
+    q(row, '.tactics-menu-label').textContent?.trim() ?? '';
+
+  it('UIF11.4 the item row reads Items in English and Objets in French, and no row of the open menu says Bag or Sac', () => {
+    // WRONG IMPL KILLED: the row still reading the old "Item" (catalog value unchanged) or "Bag";
+    // English changed and French left on "Sac" (a French boot keeps the old name); the new word typed
+    // only into an aria-label or title while the visible label span keeps the old copy (the label
+    // span's own text is read); "Bag" surviving in another row's text (the whole menu is scanned).
+    const k = rootMenu();
+    expect(labelOf(menuRow(k.root, 'item')), 'en: the item row label').toBe('Items');
+    const enMenu = q(k.root, '.tactics-menu').textContent ?? '';
+    expect(/\bbag\b/i.test(enMenu), `no "Bag" in the English menu: ${enMenu}`).toBe(false);
+    expect(rowIds(k.root), 'fixture: the root rows are all there').toContain('item');
+
+    setLocale('fr');
+    const f = rootMenu();
+    expect(labelOf(menuRow(f.root, 'item')), 'fr: the item row label').toBe('Objets');
+    const frMenu = q(f.root, '.tactics-menu').textContent ?? '';
+    expect(/\bsac\b/i.test(frMenu), `no "Sac" in the French menu: ${frMenu}`).toBe(false);
+  });
+
+  it('UIF11.3 GUARD the menu DOM is unchanged: the cursor row is aria-selected, every greyed row is aria-disabled (never the disabled attribute) and keeps a non-empty one-line reason span', () => {
+    // WRONG IMPL KILLED: the kit treatment implemented by changing the DOM (rows rebuilt as divs or
+    // given a kit `is-active` class instead of aria-selected, so the shared selectors never match);
+    // greyed rows switched to the `disabled` attribute (the reason would become unreachable); a
+    // reason span dropped or emptied while the row stays grey (the player is not told why).
+    const k = rootMenu();
+    const rows = menuRowEls(k.root);
+    expect(rows.length, 'fixture: six root rows').toBe(6);
+    expect(selectedRowId(k.root), 'the cursor row is aria-selected').toBe('move');
+    expect(
+      rows.filter((r) => r.getAttribute('aria-selected') === 'true'),
+      'exactly one selected row',
+    ).toHaveLength(1);
+    const greyed = rows.filter((r) => r.getAttribute('aria-disabled') === 'true');
+    expect(
+      greyed.map((r) => r.getAttribute('data-row')),
+      'the greyed rows are exactly item, recruit, flee',
+    ).toEqual(['item', 'recruit', 'flee']);
+    for (const r of rows) {
+      expect(
+        r.hasAttribute('disabled'),
+        `${r.getAttribute('data-row')}: no disabled attribute`,
+      ).toBe(false);
+    }
+    for (const r of greyed) {
+      const reason = r.querySelector('span.tactics-reason');
+      expect(reason, `${r.getAttribute('data-row')}: a reason span`).not.toBeNull();
+      expect(
+        (reason?.textContent ?? '').trim().length,
+        `${r.getAttribute('data-row')}: a non-empty reason`,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
 /** Every text node, aria-label and title inside `el`, trimmed, non-empty. */
 function nodeTexts(el: Element): string[] {
   const out: string[] = [];

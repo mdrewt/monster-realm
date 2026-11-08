@@ -1651,6 +1651,15 @@ export class TacticsBattle implements BattleOpsView {
     // open / close edges and while open — never otherwise (the turn bar must never recentre).
     if (menuEl !== null) {
       menuEl.focus({ preventScroll: true });
+      // At large text the dock scrolls (UIF11.6): keep the cursor row on screen by scrolling the DOCK
+      // only (scrollIntoView would also move a clipped ancestor, and the turn bar must never move).
+      const cursorRow = menuEl.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (cursorRow !== null) {
+        const box = dock.getBoundingClientRect();
+        const row = cursorRow.getBoundingClientRect();
+        if (row.top < box.top) dock.scrollTop -= box.top - row.top;
+        else if (row.bottom > box.bottom) dock.scrollTop += row.bottom - box.bottom;
+      }
       this.#menuOpen = true;
     } else if (this.#menuOpen) {
       this.#menuOpen = false;
