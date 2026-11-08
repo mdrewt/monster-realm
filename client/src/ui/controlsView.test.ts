@@ -41,7 +41,14 @@ import { setLocale, t, tf } from './i18n/resolver';
 import { type NavState, navFocus, navInit } from './nav';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y } from './overlayRegistry';
-import { CONTROLS_LAYOUT, type ControlsPaint, type ControlsRequest } from './screens/optionsScreen';
+import {
+  CONTROLS_LAYOUT,
+  type ControlsPaint,
+  type ControlsRequest,
+  type ControlsState,
+  controlsScreen,
+} from './screens/optionsScreen';
+import { createTabBar, renderTabBar } from './tabBar';
 
 // --- the contract, spelled once ---------------------------------------------------------------
 
@@ -50,11 +57,20 @@ const TITLE_ID = 'controls-title';
 const TABS_ID = 'controls-tabs';
 const TAB_BUTTONS_ID = 'controls-tab-buttons';
 const TAB_SHORTCUTS_ID = 'controls-tab-shortcuts';
+const TAB_DISPLAY_ID = 'controls-tab-display';
 const ROWS_ID = 'controls-rows';
 const CAPTURE_ID = 'controls-capture';
 const CANCEL_ID = 'controls-cancel-btn';
+// INTENTIONAL CHANGE (uif-13, UIF13.1): `#controls-question` is RETIRED. The Reset all question is the
+// confirm ContextSheet's heading (`#controls-sheet-title`) and the answers are `#controls-yes` /
+// `#controls-no` in the sheet. The id stays here only for the assertions that it no longer exists.
 const QUESTION_ID = 'controls-question';
+const SHEET_TITLE_ID = 'controls-sheet-title';
+const YES_ID = 'controls-yes';
+const NO_ID = 'controls-no';
 const FEEDBACK_ID = 'controls-feedback';
+// INTENTIONAL CHANGE (uif-13, UIF13.1): QUESTION_ID leaves this roster (the node is gone). Was: it was
+// listed here as an id that must exist inside the frame root from construction.
 const ALL_IDS: readonly string[] = [
   OVERLAY_ID,
   TITLE_ID,
@@ -62,7 +78,6 @@ const ALL_IDS: readonly string[] = [
   ROWS_ID,
   CAPTURE_ID,
   CANCEL_ID,
-  QUESTION_ID,
   FEEDBACK_ID,
 ];
 
@@ -76,8 +91,8 @@ const btnRow = (id: VButton): ControlsRow => ({ kind: 'button', id });
 const accRow = (id: Accel): ControlsRow => ({ kind: 'accel', id });
 const slotOf = (row: ControlsRow, slot: Slot): SlotTarget => ({ row, slot });
 
-/** The cursor on `tab` (its first cell, or `item`). */
-const navOn = (tab: 'buttons' | 'shortcuts', item?: string): NavState =>
+/** The cursor on `tab` (its first cell, or `item`). uif-13: Display is the third tab. */
+const navOn = (tab: 'buttons' | 'shortcuts' | 'display', item?: string): NavState =>
   navFocus(CONTROLS_LAYOUT, navInit(CONTROLS_LAYOUT), item === undefined ? { tab } : { tab, item });
 /** The Reset all confirm's cursor over `confirmLayout` (Yes / No). */
 const confirmOn = (item: 'yes' | 'no'): NavState =>
@@ -101,10 +116,17 @@ const withButtons = (buttons: Partial<Record<VButton, readonly string[]>>): Bind
   accels: DEFAULT_BINDINGS.accels,
 });
 
+/** A text-size step, spelled here so this file imports nothing from the new `displayPrefs` module. */
+type Step = 'normal' | 'large' | 'xlarge';
+
 interface RigOptions {
   readonly bindings?: () => Bindings;
   readonly onClear?: (accel: Accel) => boolean;
   readonly onReset?: () => boolean;
+  /** uif-13: the live text-size step the view marks current (default: normal). */
+  readonly step?: () => Step;
+  /** uif-13: apply + save a step; false when the save failed (default: true). */
+  readonly onTextStep?: (step: Step) => boolean;
 }
 
 /** A fresh document and one view over it, every handler a spy. */
@@ -119,6 +141,10 @@ function rig(opts: RigOptions = {}) {
   // the Clear and Reset outcome lines to the seam (main routes them to the toast). Was: the view
   // wrote those lines itself through `showFeedback`.
   const onOutcome = vi.fn();
+  // uif-13 (UIF13.2, UIF13.3): the handlers gain `textStep()` (the live step, read on every paint)
+  // and `onTextStep(step)` (applied + saved, false when the save failed).
+  const textStep = vi.fn(opts.step ?? ((): Step => 'normal'));
+  const onTextStep = vi.fn(opts.onTextStep ?? ((_step: Step): boolean => true));
   const view = new ControlsView({
     bindings: opts.bindings ?? (() => DEFAULT_BINDINGS),
     onClear,
@@ -126,8 +152,10 @@ function rig(opts: RigOptions = {}) {
     onCancelCapture,
     announce,
     onOutcome,
+    textStep,
+    onTextStep,
   } as Handlers);
-  return { view, onClear, onReset, onCancelCapture, announce, onOutcome };
+  return { view, onClear, onReset, onCancelCapture, announce, onOutcome, textStep, onTextStep };
 }
 
 /** uif-4b: the strip (`#controls-feedback`) is out of sight: `hidden` or `display:none`, on itself or
@@ -157,6 +185,52 @@ function hiddenAncestorOf(start: Element | null): string | null {
     if (node.style.display === 'none') return node.id === '' ? node.tagName : `#${node.id}`;
   }
   return null;
+}
+
+/** Out of sight by `display:none` OR the `hidden` attribute, on the node or any ancestor (the kit's
+ *  TabBar root and ContextSheet root use `hidden`, which `hiddenAncestorOf` above does not read). A
+ *  missing node counts as hidden. */
+function isHidden(start: Element | null): boolean {
+  for (let node: Element | null = start; node instanceof HTMLElement; node = node.parentElement) {
+    if (node.hidden || node.style.display === 'none') return true;
+  }
+  return !(start instanceof HTMLElement);
+}
+
+/** Every context sheet in the document, shown or not. */
+const allSheets = (): HTMLElement[] =>
+  Array.from(document.querySelectorAll<HTMLElement>('[data-context-sheet]'));
+/** The context sheets a player can see. */
+const shownSheets = (): HTMLElement[] => allSheets().filter((sheet) => !isHidden(sheet));
+/** The one shown sheet (fails the test when there is not exactly one). */
+function theSheet(): HTMLElement {
+  const shown = shownSheets();
+  expect(shown, 'exactly one context sheet is shown').toHaveLength(1);
+  return shown[0] as HTMLElement;
+}
+/** The nav container of the shown confirm sheet: the one holding `#controls-no`. */
+const sheetRowsEl = (): HTMLElement => {
+  const rows = el(NO_ID).closest<HTMLElement>('[role="listbox"]');
+  expect(rows, 'the sheet answers sit in a listbox').not.toBeNull();
+  return rows as HTMLElement;
+};
+
+/** A real session: the view painted by the real `controlsScreen` as buttons are pressed on it. */
+function pilot(view: ControlsView) {
+  let state: ControlsState = controlsScreen.init(null);
+  const paint = (): void => controlsScreen.paint?.(view, null, state);
+  paint();
+  return {
+    press(...buttons: readonly VButton[]): void {
+      for (const button of buttons) {
+        state = controlsScreen.onButton(null, state, { button, repeat: false }).state;
+        paint();
+      }
+    },
+    get state(): ControlsState {
+      return state;
+    },
+  };
 }
 
 function cell(key: string): HTMLElement {
@@ -208,7 +282,7 @@ afterEach(() => {
 // --- tests -----------------------------------------------------------------------------------
 
 describe('ControlsView — rows and prompt (ctl-12b, CTL12B.1)', () => {
-  it('CTL12B-1-VIEW-ROWS: painted on the Buttons tab the view shows the two tabs and the twelve button rows, each one Primary and one Alt cell naming the row and its live keycap (an empty slot reads the none mark), no Clear cell, then Reset all; the Shortcuts tab shows Primary, Alt and Clear per row', () => {
+  it('CTL12B-1-VIEW-ROWS: painted on the Buttons tab the view shows the three tabs (uif-13 added Display) and the twelve button rows, each one Primary and one Alt cell naming the row and its live keycap (an empty slot reads the none mark), no Clear cell, then Reset all; the Shortcuts tab shows Primary, Alt and Clear per row', () => {
     // LEGACY BEHAVIOUR REPLACED: no Controls screen exists; the bindings are shown nowhere.
     // WRONG IMPL KILLED: a missing or extra row; Primary and Alt swapped; a cell that names the key
     // but not the row (the grid is read one cell at a time through aria-activedescendant); a raw
@@ -224,10 +298,13 @@ describe('ControlsView — rows and prompt (ctl-12b, CTL12B.1)', () => {
     // The tab strip.
     const strip = el(TABS_ID);
     expect(strip.getAttribute('role'), 'a tablist').toBe('tablist');
+    // INTENTIONAL CHANGE (uif-13, UIF13.2): the strip gains the Display tab after Shortcuts (its
+    // label and rows are pinned by the UIF13.2 cases at the end of this file). Was: exactly the two
+    // tabs `[TAB_BUTTONS_ID, TAB_SHORTCUTS_ID]`.
     expect(
       Array.from(strip.querySelectorAll('[role="tab"]')).map((x) => x.id),
-      'two tabs, Buttons then Shortcuts',
-    ).toEqual([TAB_BUTTONS_ID, TAB_SHORTCUTS_ID]);
+      'three tabs, Buttons, Shortcuts then Display',
+    ).toEqual([TAB_BUTTONS_ID, TAB_SHORTCUTS_ID, TAB_DISPLAY_ID]);
     expect(readable(el(TAB_BUTTONS_ID), 'the Buttons tab')).toBe(t('controls.tab.buttons'));
     expect(readable(el(TAB_SHORTCUTS_ID), 'the Shortcuts tab')).toBe(t('controls.tab.shortcuts'));
     expect(el(TAB_BUTTONS_ID).getAttribute('aria-selected')).toBe('true');
@@ -587,55 +664,65 @@ describe('ControlsView — capture state, focus and announcements (ctl-12b)', ()
     expect(hiddenAncestorOf(el(CAPTURE_ID)), 'no prompt on reopen').not.toBeNull();
     expect(hiddenAncestorOf(el(CANCEL_ID)), 'no Cancel chip on reopen').not.toBeNull();
 
+    // INTENTIONAL CHANGE (uif-13, UIF13.1): the question is the confirm sheet's heading, not
+    // `#controls-question` (retired). Was: `hiddenAncestorOf(el(QUESTION_ID))` before and after the
+    // hide / show. The intent is kept: no Reset all question stands on a re-shown frame.
     view.paint(paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('no') }));
-    expect(hiddenAncestorOf(el(QUESTION_ID)), 'precondition: the question is up').toBeNull();
+    expect(shownSheets(), 'precondition: the question is up (one confirm sheet)').toHaveLength(1);
+    expect(isHidden(el(SHEET_TITLE_ID)), 'precondition: its heading shows').toBe(false);
     view.hide();
     view.show();
-    expect(hiddenAncestorOf(el(QUESTION_ID)), 'no question on reopen').not.toBeNull();
+    expect(shownSheets(), 'no question on reopen').toHaveLength(0);
+    expect(document.getElementById(QUESTION_ID), 'and #controls-question is retired').toBeNull();
   });
 
-  it('the confirm renders the Yes / No listbox in #controls-rows, labelled by the shown #controls-question, aria-selected on the cursor row; its open edge announces the question once; closing it brings the grid back', () => {
-    // WRONG IMPL KILLED: a confirm drawn somewhere a keyboard user cannot reach (outside the one
-    // focusable container: aria-activedescendant would name nothing), a question left hidden, a
-    // cursor that is not marked (the default No reads like Yes), the grid cells left under the
-    // listbox, a question announced on every repaint, and a grid that never comes back.
+  it('the confirm renders the Yes / No listbox in the confirm sheet, labelled by the shown sheet heading, aria-selected on the cursor row; its open edge announces the question once; closing it hides the sheet', () => {
+    // INTENTIONAL CHANGE (uif-13, UIF13.1): the Yes / No listbox moves from `#controls-rows` (which
+    // swapped to it, labelled by `#controls-question`) into the confirm ContextSheet, labelled by
+    // the sheet heading `#controls-sheet-title`; `#controls-rows` stays the GRID throughout (pinned
+    // by the UIF13.1 grid case below). Was: `rows.getAttribute('role') === 'listbox'` on
+    // `#controls-rows`, `aria-labelledby === QUESTION_ID`, cells read from `#controls-rows`, and
+    // "the grid is back" after the close. Every old WRONG-IMPL-KILLED intent is kept below.
+    // WRONG IMPL KILLED: a confirm drawn somewhere a keyboard user cannot reach (aria-activedescendant
+    // would name nothing), a question left hidden, a cursor that is not marked (the default No reads
+    // like Yes), a question announced on every repaint, and a sheet that never closes.
     const { view, announce } = rig();
     view.show();
     view.paint(paintOf({ nav: navOn('buttons', 'reset') }));
     announce.mockClear();
 
     view.paint(paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('no') }));
-    const rows = el(ROWS_ID);
-    expect(rows.getAttribute('role'), 'a listbox').toBe('listbox');
-    expect(rows.getAttribute('aria-labelledby'), 'named by the question').toBe(QUESTION_ID);
+    const sheet = theSheet();
+    const rows = sheetRowsEl();
+    expect(sheet.contains(rows), 'the listbox is in the sheet').toBe(true);
+    expect(rows.getAttribute('aria-labelledby'), 'named by the question').toBe(SHEET_TITLE_ID);
     const options = Array.from(rows.querySelectorAll<HTMLElement>('[role="option"]'));
     expect(
-      options.map((o) => o.dataset.navKey),
+      options.map((o) => o.id),
       'Yes then No',
-    ).toEqual(['yes', 'no']);
-    expect(rows.querySelectorAll('[role="gridcell"]'), 'no grid cell under it').toHaveLength(0);
-    expect(cell('no').getAttribute('aria-selected'), 'the cursor on No').toBe('true');
-    expect(cell('yes').getAttribute('aria-selected')).toBe('false');
-    const yesText = readCell('yes');
-    const noText = readCell('no');
-    expect(yesText.length).toBeGreaterThan(0);
-    expect(noText.length).toBeGreaterThan(0);
-    expect(yesText, 'Yes and No read differently').not.toBe(noText);
-    expect(readable(el(QUESTION_ID), 'the question')).toBe(t('controls.reset.question'));
+    ).toEqual([YES_ID, NO_ID]);
+    expect(rows.querySelectorAll('[role="gridcell"]'), 'no grid cell in it').toHaveLength(0);
+    expect(el(NO_ID).getAttribute('aria-selected'), 'the cursor on No').toBe('true');
+    expect(el(YES_ID).getAttribute('aria-selected')).toBe('false');
+    const yesText = readable(el(YES_ID), 'Yes');
+    const noText = readable(el(NO_ID), 'No');
+    expect(yesText).toBe('Yes');
+    expect(noText).toBe('No');
+    expect(readable(el(SHEET_TITLE_ID), 'the question')).toBe(t('controls.reset.question'));
     expect(announce, 'the open edge announces the question').toHaveBeenCalledTimes(1);
     expect(announce).toHaveBeenCalledWith(t('controls.reset.question'));
 
     view.paint(paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('yes') }));
-    expect(cell('yes').getAttribute('aria-selected'), 'the cursor moved to Yes').toBe('true');
-    expect(cell('no').getAttribute('aria-selected')).toBe('false');
+    expect(el(YES_ID).getAttribute('aria-selected'), 'the cursor moved to Yes').toBe('true');
+    expect(el(NO_ID).getAttribute('aria-selected')).toBe('false');
     expect(
       announce,
       'a cursor move inside the confirm announces nothing more',
     ).toHaveBeenCalledTimes(1);
 
     view.paint(paintOf({ nav: navOn('buttons', 'reset') }));
-    expect(hiddenAncestorOf(el(QUESTION_ID)), 'the question goes').not.toBeNull();
-    expect(el(ROWS_ID).getAttribute('role'), 'the grid is back').toBe('grid');
+    expect(shownSheets(), 'the sheet goes').toHaveLength(0);
+    expect(el(ROWS_ID).getAttribute('role'), 'the grid is as it was').toBe('grid');
     expect(readCell('reset')).toBe(t('controls.resetAll'));
   });
 
@@ -873,10 +960,13 @@ describe('ControlsView — the frame (ctl-12b)', () => {
     view.paint(paintOf({ capturing: slotOf(btnRow('B'), 1) }));
     expect(hiddenAncestorOf(el(CAPTURE_ID)), 'the prompt while capturing').toBeNull();
     expect(hiddenAncestorOf(el(CANCEL_ID)), 'the Cancel chip while capturing').toBeNull();
+    // INTENTIONAL CHANGE (uif-13, UIF13.1): the question, Yes and No are the confirm sheet's heading
+    // and rows (the sheet and its heading use `hidden`, so `isHidden` reads both spellings). Was:
+    // `#controls-question` and the Yes / No cells of `#controls-rows`.
     view.paint(paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('no') }));
-    expect(hiddenAncestorOf(el(QUESTION_ID)), 'the question while confirming').toBeNull();
-    expect(hiddenAncestorOf(cell('yes')), 'Yes').toBeNull();
-    expect(hiddenAncestorOf(cell('no')), 'No').toBeNull();
+    expect(isHidden(el(SHEET_TITLE_ID)), 'the question while confirming').toBe(false);
+    expect(isHidden(el(YES_ID)), 'Yes').toBe(false);
+    expect(isHidden(el(NO_ID)), 'No').toBe(false);
     // INTENTIONAL CHANGE (uif-4b): the strip shows through `showHint` (was `showFeedback`) and is
     // hidden until then.
     view.showHint(t('controls.refused.reserved'));
@@ -1007,7 +1097,8 @@ describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
     view.show();
     expectAdopted('shown');
     view.paint(paintOf());
-    expect(strip.children.length, 'precondition: both tabs rendered').toBe(2);
+    // INTENTIONAL CHANGE (uif-13, UIF13.2): three tabs now (Display added). Was: `.toBe(2)`.
+    expect(strip.children.length, 'precondition: all three tabs rendered').toBe(3);
     expectAdopted('painted');
     view.paint(paintOf({ nav: navOn('shortcuts') }));
     expectAdopted('on Shortcuts');
@@ -1033,7 +1124,8 @@ describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
     view.show();
     view.paint(paintOf());
     const strip = el(TABS_ID);
-    expect(strip.children.length, 'ANTI-VACUITY: both tabs rendered').toBe(2);
+    // INTENTIONAL CHANGE (uif-13, UIF13.2): three tabs now (Display added). Was: `.toBe(2)`.
+    expect(strip.children.length, 'ANTI-VACUITY: all three tabs rendered').toBe(3);
     expect(hiddenAncestorOf(strip), 'ANTI-VACUITY: the strip is on screen').toBeNull();
     expect(el(OVERLAY_ID).classList.contains('mr-frame'), 'inside a .mr-frame column').toBe(true);
 
@@ -1065,7 +1157,7 @@ describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
     ).not.toBe('flex');
   });
 
-  it('with the strip class adopted, the Controls tab semantics are as shipped: tablist, two role=tab children with the nav ids, exactly one aria-selected tab that is also the is-active one, following the nav state [QF11-3-CONTROLS-SEMANTICS]', () => {
+  it('with the strip class adopted, the Controls tab semantics are as shipped: tablist, three role=tab children with the nav ids (uif-13 added Display), exactly one aria-selected tab that is also the is-selected one (uif-13: was is-active), following the nav state [QF11-3-CONTROLS-SEMANTICS]', () => {
     // WRONG IMPL KILLED: a new tab component or wrapper (the strip would hold something other than
     // the two tabs, or lose the tablist role); the roles or `aria-selected` dropped while
     // reshaping; an active mark that is colour-only (`is-active` without aria-selected, or the
@@ -1074,9 +1166,15 @@ describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
     // this block ties the semantics to).
     const { view } = rig();
     view.show();
+    // INTENTIONAL CHANGE (uif-13, UIF13.1/UIF13.2): the walk gains the Display tab, the strip holds
+    // three tabs, and the selected tab is marked `is-selected` (the kit TabBar clears `is-active` so
+    // "which tab" and "which row" can both be true). Was: two tabs and `is-active` as the selected
+    // mark. The intent is kept: exactly one selected tab, it follows the nav state, and the mark is
+    // never colour-only (aria-selected agrees).
     const walk: ReadonlyArray<readonly [string, string, NavState]> = [
       ['buttons', TAB_BUTTONS_ID, navOn('buttons')],
       ['shortcuts', TAB_SHORTCUTS_ID, navOn('shortcuts')],
+      ['display', TAB_DISPLAY_ID, navOn('display')],
       ['buttons', TAB_BUTTONS_ID, navOn('buttons')],
       ['buttons', TAB_BUTTONS_ID, navOn('buttons', 'reset')],
     ];
@@ -1094,15 +1192,586 @@ describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
       ).toEqual([
         ['tab', TAB_BUTTONS_ID, false],
         ['tab', TAB_SHORTCUTS_ID, false],
+        ['tab', TAB_DISPLAY_ID, false],
       ]);
       expect(
         tabs.filter((tab) => tab.getAttribute('aria-selected') === 'true').map((x) => x.id),
         `${when}: exactly one aria-selected tab`,
       ).toEqual([expectedId]);
       expect(
-        tabs.filter((tab) => tab.classList.contains('is-active')).map((x) => x.id),
-        `${when}: the is-active tab is the selected one`,
+        tabs.filter((tab) => tab.classList.contains('is-selected')).map((x) => x.id),
+        `${when}: the is-selected tab is the selected one`,
       ).toEqual([expectedId]);
+      expect(
+        tabs.filter((tab) => tab.classList.contains('is-active')).map((x) => x.id),
+        `${when}: no tab carries the row cursor's is-active`,
+      ).toEqual([]);
     }
+  });
+});
+
+// --- uif-13: Controls on the kit, and the Display tab ---------------------------------------------
+//
+// UIF13.1: the strip is the kit's TabBar and the Reset all confirm is the frame's ONE confirm
+// ContextSheet, over a grid that never swaps out. UIF13.2: the Display rows. UIF13.3: a request token
+// for a step is applied once, through `handlers.onTextStep`. Literals only: every expected string and
+// id is typed here. The sheet and the tab row use the `hidden` attribute, so these cases read
+// visibility through `isHidden` (display:none OR `hidden`, on the node or an ancestor).
+
+/** U+00A0 and U+00E8, built by code point (never a pasted invisible character). */
+const NBSP = String.fromCharCode(0x00a0);
+const E_GRAVE = String.fromCharCode(0x00e8);
+
+/** The en tab labels, by the kit tab key: the scratch bar reads them, never the view. */
+const EN_TAB_LABELS: Readonly<Record<string, string>> = {
+  buttons: 'Buttons',
+  shortcuts: 'Shortcuts',
+  display: 'Display',
+};
+
+/** What the kit alone paints for `nav` over the Controls layout: a scratch bar that was never near the
+ *  view, so a hand-rolled copy of the markup cannot equal it. */
+function scratchBarHtml(nav: NavState): string {
+  const bar = createTabBar(document, { id: TABS_ID });
+  renderTabBar(bar, CONTROLS_LAYOUT, nav, {
+    frame: 'controls',
+    label: (tab) => EN_TAB_LABELS[tab.key] ?? '',
+  });
+  return bar.root.outerHTML;
+}
+
+/** A text-size request token the screen would emit (typed loosely: the new request shape is the
+ *  implementation's to add). */
+const textStepRequest = (step: Step): ControlsRequest =>
+  ({ kind: 'textStep', step }) as unknown as ControlsRequest;
+
+/** The keys of every row marked current, in document order. */
+const currentKeys = (): string[] =>
+  Array.from(el(ROWS_ID).querySelectorAll<HTMLElement>('[data-current]')).map(
+    (node) => node.dataset.navKey ?? '',
+  );
+
+/** `Taille du texte : {suffix}` in the two spellings the catalog tables accept before the colon. */
+const frText = (suffix: string): string[] => [
+  `Taille du texte${NBSP}: ${suffix}`,
+  `Taille du texte : ${suffix}`,
+];
+
+describe('ControlsView uif-13: the kit TabBar and the confirm ContextSheet (UIF13.1)', () => {
+  it('UIF13.1 #controls-tabs is the kit TabBar strip: a tablist inside a .mr-tabbar row between the title and the rows, flanked by exactly two aria-hidden chips LB then RB, the selected tab is-selected and never is-active, and the row is byte-identical to a scratch createTabBar + renderTabBar in every state', () => {
+    // WRONG IMPL KILLED: the shipped bare `renderTabs` strip (no chips, no `.mr-tabbar` row); a
+    // hand-rolled copy of the kit's markup (the scratch compare reads every attribute and class); chips
+    // that are not hidden from assistive technology or are in the wrong order; the selected tab marked
+    // with the row cursor's `is-active`; the bar parked after the rows (Tab order) or before the title;
+    // a bar that is painted on the first paint only (the compare runs after every state); a label
+    // thunk missing for the third tab (an empty tab).
+    const { view } = rig();
+    view.show();
+    view.paint(paintOf());
+    const strip = el(TABS_ID);
+    expect(strip.getAttribute('role'), 'a tablist').toBe('tablist');
+    const bar = strip.parentElement as HTMLElement;
+    expect(bar.classList.contains('mr-tabbar'), 'the kit row').toBe(true);
+    expect(isHidden(bar), 'the row is shown').toBe(false);
+    const parts = Array.from(bar.children) as HTMLElement[];
+    expect(parts, 'chip, strip, chip').toHaveLength(3);
+    expect(parts[1], 'the strip is the middle part').toBe(strip);
+    expect(
+      parts.filter((part) => part.hasAttribute('data-button')).map((part) => part.dataset.button),
+      'exactly two chips, LB then RB',
+    ).toEqual(['LB', 'RB']);
+    expect(bar.querySelectorAll('[data-button]'), 'and no other chip').toHaveLength(2);
+    for (const chip of [parts[0], parts[2]]) {
+      expect(chip?.getAttribute('aria-hidden'), 'a chip is hidden from assistive tech').toBe(
+        'true',
+      );
+    }
+    const order = Array.from(el(OVERLAY_ID).querySelectorAll('*'));
+    expect(order.indexOf(el(TITLE_ID)), 'the title comes first').toBeLessThan(order.indexOf(bar));
+    expect(order.indexOf(bar), 'then the tab row').toBeLessThan(order.indexOf(el(ROWS_ID)));
+
+    const states: ReadonlyArray<readonly [string, ControlsPaint]> = [
+      ['browsing', paintOf()],
+      ['on Shortcuts', paintOf({ nav: navOn('shortcuts') })],
+      ['on Display', paintOf({ nav: navOn('display') })],
+      ['capturing', paintOf({ nav: navOn('buttons', 'A_0'), capturing: slotOf(btnRow('A'), 0) })],
+      ['confirming', paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('no') })],
+      ['back on Buttons', paintOf()],
+    ];
+    for (const [when, p] of states) {
+      view.paint(p);
+      expect(el(TABS_ID), `${when}: the same strip`).toBe(strip);
+      expect(
+        (el(TABS_ID).parentElement as HTMLElement).outerHTML,
+        `${when}: the kit's markup`,
+      ).toBe(scratchBarHtml(p.nav));
+      const tabs = Array.from(strip.querySelectorAll<HTMLElement>('[role="tab"]'));
+      expect(
+        tabs.filter((tab) => tab.classList.contains('is-selected')).map((tab) => tab.id),
+        `${when}: one selected tab`,
+      ).toEqual(
+        tabs.filter((tab) => tab.getAttribute('aria-selected') === 'true').map((x) => x.id),
+      );
+      expect(
+        tabs.filter((tab) => tab.classList.contains('is-active')),
+        `${when}: never is-active`,
+      ).toHaveLength(0);
+    }
+    expect(
+      scratchBarHtml(navOn('buttons')).includes('data-button="LB"'),
+      'ANTI-VACUITY: the scratch bar really is the kit row',
+    ).toBe(true);
+  });
+
+  it('UIF13.1 a second view over the same document duplicates nothing: one #controls-tabs, one tab row with two chips, and one context sheet even after a confirm is painted', () => {
+    // WRONG IMPL KILLED: a constructor that creates the tab row or the sheet without locating the
+    // existing one (a second view, or a re-created view after a hot path, leaves two strips with the
+    // same id and two sheets, so `getElementById` and every selector read the wrong one).
+    const { view } = rig();
+    view.show();
+    view.paint(paintOf());
+    const second = new ControlsView({
+      bindings: () => DEFAULT_BINDINGS,
+      onClear: () => true,
+      onReset: () => true,
+      onCancelCapture: () => {},
+      announce: () => {},
+      textStep: () => 'normal',
+      onTextStep: () => true,
+    } as Handlers);
+    second.paint(paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('no') }));
+    expect(document.querySelectorAll(`#${TABS_ID}`), 'one strip').toHaveLength(1);
+    expect(document.querySelectorAll('.mr-tabbar'), 'one tab row').toHaveLength(1);
+    expect(document.querySelectorAll('.mr-tabbar [data-button]'), 'two chips').toHaveLength(2);
+    expect(allSheets(), 'one context sheet').toHaveLength(1);
+    expect(document.querySelectorAll(`#${SHEET_TITLE_ID}`), 'one sheet heading').toHaveLength(1);
+  });
+
+  it('UIF13.1 Reset all asks in ONE confirm sheet: exactly one [data-context-sheet] shown, variant confirm, heading #controls-sheet-title is the question, rows #controls-yes then #controls-no with only No selected, no #controls-question, and the open edge announces the question once', () => {
+    // WRONG IMPL KILLED: the shipped swap of `#controls-rows` to a Yes/No list under a
+    // `#controls-question` paragraph; two sheets (a list sheet and a confirm sheet at once); the list
+    // variant (no heading, no question); a question that is not the heading (the sheet would be an
+    // unlabelled listbox); a cursor on Yes (one stray A resets every binding) or on both; the answers
+    // outside the sheet; a question announced on every repaint or never.
+    const { view, announce } = rig();
+    view.show();
+    const session = pilot(view);
+    session.press('Up');
+    announce.mockClear();
+    expect(shownSheets(), 'no sheet while browsing').toHaveLength(0);
+    session.press('A');
+    expect(session.state.confirm?.item, 'precondition: the screen opened the confirm on No').toBe(
+      'no',
+    );
+    const sheet = theSheet();
+    expect(allSheets(), 'one sheet in the document').toHaveLength(1);
+    expect(sheet.dataset.sheetVariant, 'the confirm variant').toBe('confirm');
+    expect(el(OVERLAY_ID).contains(sheet), 'inside the frame').toBe(true);
+    const heading = el(SHEET_TITLE_ID);
+    expect(sheet.contains(heading), 'the heading is the sheet`s').toBe(true);
+    expect(isHidden(heading), 'and shows').toBe(false);
+    expect(heading.textContent, 'the question').toBe('Reset every control to its default?');
+    expect(document.getElementById(QUESTION_ID), '#controls-question is retired').toBeNull();
+    expect(
+      Array.from(sheet.querySelectorAll('[role="option"]')).map((o) => o.id),
+      'Yes then No',
+    ).toEqual([YES_ID, NO_ID]);
+    expect(
+      Array.from(sheet.querySelectorAll('[aria-selected="true"]')).map((o) => o.id),
+      'only No is selected in the sheet',
+    ).toEqual([NO_ID]);
+    expect(el(YES_ID).getAttribute('aria-selected'), 'Yes is not').toBe('false');
+    expect(readable(el(YES_ID), 'Yes')).toBe('Yes');
+    expect(readable(el(NO_ID), 'No')).toBe('No');
+    expect(document.querySelectorAll(`#${YES_ID}`), 'one Yes row in the document').toHaveLength(1);
+    expect(announce, 'the open edge announces the question once').toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith('Reset every control to its default?');
+    session.press('Up');
+    expect(el(YES_ID).getAttribute('aria-selected'), 'Up reaches Yes').toBe('true');
+    expect(el(NO_ID).getAttribute('aria-selected')).toBe('false');
+    expect(announce, 'moving inside it announces nothing more').toHaveBeenCalledTimes(1);
+  });
+
+  it('UIF13.1 #controls-rows stays the grid while the confirm shows, on both tabs: the same grid role, every row, the Reset all cell still holding the cursor, no Yes/No option in it, and the sheet is not inside it', () => {
+    // WRONG IMPL KILLED: the shipped swap that replaced the grid with a Yes/No list (the sheet would
+    // float over an empty body, and the cursor row the sheet anchors away from would be gone); a
+    // grid that loses its cursor while asking; the answers rendered into the grid container too; a
+    // sheet nested in the grid (it would be re-rendered away by the next grid render).
+    for (const tab of ['buttons', 'shortcuts'] as const) {
+      const { view } = rig();
+      view.show();
+      const session = pilot(view);
+      if (tab === 'shortcuts') session.press('RB');
+      session.press('Up', 'A');
+      const sheet = theSheet();
+      const rows = el(ROWS_ID);
+      expect(rows.getAttribute('role'), `${tab}: still a grid`).toBe('grid');
+      expect(
+        rows.querySelectorAll('[role="option"]'),
+        `${tab}: no answers in the grid`,
+      ).toHaveLength(0);
+      expect(rows.contains(sheet), `${tab}: the sheet is not in the grid`).toBe(false);
+      expect(sheet.contains(rows), `${tab}: nor the grid in the sheet`).toBe(false);
+      const expectedRows = tab === 'buttons' ? 13 : ACCELS.length + 1;
+      expect(rows.querySelectorAll('[role="row"]'), `${tab}: every grid row is there`).toHaveLength(
+        expectedRows,
+      );
+      const reset = cell('reset');
+      expect(readCell('reset'), `${tab}: Reset all`).toBe('Reset all');
+      expect(reset.getAttribute('aria-selected'), `${tab}: the grid cursor is on Reset all`).toBe(
+        'true',
+      );
+      expect(
+        rows.querySelectorAll('[aria-selected="true"]'),
+        `${tab}: and only there`,
+      ).toHaveLength(1);
+      expect(rows.getAttribute('aria-activedescendant'), `${tab}: the grid names its cursor`).toBe(
+        reset.id,
+      );
+    }
+  });
+
+  it('UIF13.1 focus follows the sheet: with focus in the frame, opening the confirm focuses the sheet`s rows and closing it returns focus to #controls-rows', async () => {
+    // WRONG IMPL KILLED: a sheet that opens with focus left on the grid (the next Enter or arrow
+    // is read by the wrong container: aria-activedescendant names the grid's cell, not the answer
+    // under the cursor); a close that leaves focus on the now-hidden sheet rows (it falls to <body>,
+    // outside the dialog, and the focus trap goes inert); a focus move on every repaint.
+    const { view } = rig();
+    view.show();
+    await flushMacrotask();
+    const session = pilot(view);
+    session.press('Up');
+    const rows = el(ROWS_ID);
+    rows.focus();
+    expect(document.activeElement, 'precondition: the grid holds focus').toBe(rows);
+
+    session.press('A');
+    const sheet = theSheet();
+    const focused = document.activeElement as HTMLElement;
+    expect(focused, 'focus left the grid').not.toBe(rows);
+    expect(sheet.contains(focused), 'focus is inside the sheet').toBe(true);
+    expect(focused.contains(el(NO_ID)), 'on the container holding the answers').toBe(true);
+    session.press('Up');
+    expect(document.activeElement, 'a move inside the sheet keeps focus there').toBe(focused);
+
+    session.press('B');
+    expect(shownSheets(), 'the sheet closed').toHaveLength(0);
+    expect(document.activeElement, 'focus is back on #controls-rows').toBe(el(ROWS_ID));
+
+    session.press('A');
+    expect(sheet.contains(document.activeElement), 'reopened: focus in the sheet again').toBe(true);
+    session.press('A');
+    expect(shownSheets(), 'A on No closed it').toHaveLength(0);
+    expect(document.activeElement, 'and focus is back on #controls-rows').toBe(el(ROWS_ID));
+  });
+
+  it('UIF13.1 focus outside the frame is left alone: opening and closing the confirm never pulls focus off a control the player chose', () => {
+    // WRONG IMPL KILLED: a sheet that always focuses itself (it would steal focus from a field or
+    // button elsewhere on the page, e.g. the hint bar's chip the player just tabbed to).
+    const { view } = rig();
+    view.show();
+    const session = pilot(view);
+    session.press('Up');
+    const outside = document.createElement('button');
+    outside.id = 'controls-test-outside';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus is outside').toBe(outside);
+    session.press('A');
+    expect(shownSheets(), 'precondition: the sheet is up').toHaveLength(1);
+    expect(document.activeElement, 'opening leaves it').toBe(outside);
+    session.press('B');
+    expect(shownSheets(), 'precondition: the sheet closed').toHaveLength(0);
+    expect(document.activeElement, 'closing leaves it').toBe(outside);
+  });
+
+  it('UIF13.1 every way out of the confirm closes it for good: after A on No or B the sheet is hidden and empty, no #controls-yes remains in the document, the bindings and every handler are untouched, and reopening lands on No again; A on Yes resets once and closes it too', () => {
+    // WRONG IMPL KILLED: a close that only hides the sheet but leaves its rows in the document (a
+    // stale `#controls-yes` that `getElementById` and e2e would find); a No or B that resets anyway;
+    // a sheet re-created on every open (the document grows one sheet per visit); a reopen that
+    // remembers Yes (one stray A resets every binding); a Yes that resets twice (the token is
+    // repainted on every later step) or leaves the sheet up; a heading left holding the old question.
+    const frozenTable = withButtons({ A: ['KeyK', 'NumpadEnter'] });
+    const snapshot = JSON.stringify(frozenTable);
+    for (const [name, closer] of [
+      ['A on No', ['A']],
+      ['B', ['B']],
+    ] as const) {
+      const { view, onReset, onClear, onOutcome, onTextStep } = rig({
+        bindings: () => frozenTable,
+      });
+      view.show();
+      const session = pilot(view);
+      session.press('Up', 'A');
+      const sheet = theSheet();
+      session.press(...closer);
+      expect(shownSheets(), `${name}: the sheet is hidden`).toHaveLength(0);
+      expect(document.querySelectorAll(`#${YES_ID}`), `${name}: no Yes left`).toHaveLength(0);
+      expect(document.querySelectorAll(`#${NO_ID}`), `${name}: no No left`).toHaveLength(0);
+      expect(el(SHEET_TITLE_ID).textContent, `${name}: the question is gone`).toBe('');
+      expect(el(ROWS_ID).getAttribute('role'), `${name}: the grid`).toBe('grid');
+      expect(cell('reset').getAttribute('aria-selected'), `${name}: cursor on Reset all`).toBe(
+        'true',
+      );
+      expect(JSON.stringify(frozenTable), `${name}: the bindings are byte-identical`).toBe(
+        snapshot,
+      );
+      expect(onReset, `${name}: nothing reset`).not.toHaveBeenCalled();
+      expect(onClear, `${name}: nothing cleared`).not.toHaveBeenCalled();
+      expect(onTextStep, `${name}: no text size changed`).not.toHaveBeenCalled();
+      expect(onOutcome, `${name}: no outcome line`).not.toHaveBeenCalled();
+
+      session.press('Up', 'A');
+      expect(session.state.confirm?.item, `${name}: reopened on No`).toBe('no');
+      expect(theSheet(), `${name}: the same sheet is reused`).toBe(sheet);
+      expect(allSheets(), `${name}: still one sheet`).toHaveLength(1);
+      expect(el(NO_ID).getAttribute('aria-selected'), `${name}: No is selected`).toBe('true');
+      expect(el(YES_ID).getAttribute('aria-selected')).toBe('false');
+    }
+
+    const { view, onReset, onOutcome } = rig();
+    view.show();
+    const session = pilot(view);
+    session.press('Up', 'A', 'Up');
+    expect(el(YES_ID).getAttribute('aria-selected'), 'precondition: the cursor is on Yes').toBe(
+      'true',
+    );
+    session.press('A');
+    expect(onReset, 'A on Yes resets once').toHaveBeenCalledTimes(1);
+    expect(onOutcome).toHaveBeenCalledTimes(1);
+    expect(onOutcome).toHaveBeenLastCalledWith('All controls are back to their defaults.', true);
+    expect(shownSheets(), 'and closes the sheet').toHaveLength(0);
+    expect(document.querySelectorAll(`#${YES_ID}`), 'no Yes left').toHaveLength(0);
+    session.press('Down');
+    session.press('Up');
+    expect(onReset, 'later steps do not reset again').toHaveBeenCalledTimes(1);
+  });
+
+  it('UIF13.1 hide() while the confirm is up leaves no shown sheet and no #controls-yes, and a re-shown frame shows none', () => {
+    // WRONG IMPL KILLED: a hide() that only hides the frame root (the sheet and its rows stay in the
+    // document, so a reopened frame shows the question over a grid that is no longer asking, and
+    // `#controls-yes` is findable while Controls is closed); a sheet closed by hide() but re-shown by
+    // the next show().
+    const { view } = rig();
+    view.show();
+    const session = pilot(view);
+    session.press('Up', 'A');
+    expect(shownSheets(), 'precondition: the confirm is up').toHaveLength(1);
+    view.hide();
+    expect(shownSheets(), 'closed with the frame').toHaveLength(0);
+    expect(document.querySelectorAll(`#${YES_ID}`), 'no #controls-yes remains').toHaveLength(0);
+    expect(document.querySelectorAll(`#${NO_ID}`), 'no #controls-no remains').toHaveLength(0);
+    expect(
+      allSheets().every((sheet) => sheet.hidden),
+      'every sheet root is itself hidden (not just under a hidden frame)',
+    ).toBe(true);
+    view.show();
+    expect(shownSheets(), 'a re-shown frame shows no sheet').toHaveLength(0);
+    expect(document.querySelectorAll(`#${YES_ID}`)).toHaveLength(0);
+  });
+});
+
+describe('ControlsView uif-13: the Display tab rows (UIF13.2)', () => {
+  it('UIF13.2 painted on the Display tab the view shows the Display tab selected and three rows reading exactly "Text size: Normal (current)", "Text size: Large" and "Text size: Extra large" in English, no Reset all, no raw id and no {label}', () => {
+    // WRONG IMPL KILLED: a strip with no third tab or an empty label; rows still holding binding
+    // cells (the Buttons grid under a Display tab); a row text that is the bare step label, the raw
+    // catalog id (`controls.text.row`) or an unreplaced `{label}`; the live row not read as current;
+    // a Reset all cell on Display; text hidden from a screen reader (an aria-label override,
+    // aria-hidden content) or a row left display:none.
+    const { view } = rig({ step: () => 'normal' });
+    view.show();
+    view.paint(paintOf({ nav: navOn('display') }));
+    expect(
+      Array.from(el(TABS_ID).querySelectorAll('[role="tab"]')).map((x) => x.id),
+      'the three tabs',
+    ).toEqual([TAB_BUTTONS_ID, TAB_SHORTCUTS_ID, TAB_DISPLAY_ID]);
+    expect(readable(el(TAB_DISPLAY_ID), 'the Display tab'), 'the Display label').toBe('Display');
+    expect(el(TAB_DISPLAY_ID).getAttribute('aria-selected')).toBe('true');
+    expect(el(TAB_BUTTONS_ID).getAttribute('aria-selected')).toBe('false');
+
+    const rows = el(ROWS_ID);
+    expect(
+      Array.from(rows.querySelectorAll('[data-nav-key]')).map(
+        (n) => (n as HTMLElement).dataset.navKey,
+      ),
+      'exactly the three steps, in order',
+    ).toEqual(['normal', 'large', 'xlarge']);
+    expect(rows.querySelector('[data-nav-key="reset"]'), 'no Reset all on Display').toBeNull();
+    expect(rows.querySelectorAll('[data-slot]'), 'no binding cell').toHaveLength(0);
+    expect(readCell('normal')).toBe('Text size: Normal (current)');
+    expect(readCell('large')).toBe('Text size: Large');
+    expect(readCell('xlarge')).toBe('Text size: Extra large');
+    for (const key of ['normal', 'large', 'xlarge']) {
+      const text = readCell(key);
+      expect(text.includes('controls.'), `${key}: no raw catalog id`).toBe(false);
+      expect(text.includes('{'), `${key}: no unreplaced placeholder`).toBe(false);
+      expect(text.includes('undefined'), `${key}: no undefined`).toBe(false);
+    }
+    expect(cell('normal').getAttribute('aria-selected'), 'the cursor on Normal').toBe('true');
+    expect(rows.querySelectorAll('[aria-selected="true"]')).toHaveLength(1);
+  });
+
+  it('UIF13.2 in French the Display tab reads Affichage and the rows read "Taille du texte : Normale (actuelle)", "... Grande" and "... Très grande", resolved at paint time, with the colon before a no-break or plain space', () => {
+    // WRONG IMPL KILLED: labels resolved once at construction (an English frame under a French
+    // locale after a language change), a French row left in English, a row that drops the
+    // `(actuelle)` mark on the live step, a decomposed or missing grave accent in "Tres grande", and
+    // a frame that reads the English catalog for the step labels but French for the row template.
+    const { view } = rig({ step: () => 'normal' });
+    view.show();
+    view.paint(paintOf({ nav: navOn('display') }));
+    expect(readCell('large'), 'precondition: English before the switch').toBe('Text size: Large');
+    setLocale('fr');
+    view.paint(paintOf({ nav: navOn('display') }));
+    expect(readable(el(TAB_DISPLAY_ID), 'the Display tab')).toBe('Affichage');
+    expect(frText('Normale (actuelle)'), `normal: ${JSON.stringify(readCell('normal'))}`).toContain(
+      readCell('normal'),
+    );
+    expect(frText('Grande'), `large: ${JSON.stringify(readCell('large'))}`).toContain(
+      readCell('large'),
+    );
+    expect(
+      frText(`Tr${E_GRAVE}s grande`),
+      `xlarge: ${JSON.stringify(readCell('xlarge'))}`,
+    ).toContain(readCell('xlarge'));
+    for (const key of ['normal', 'large', 'xlarge']) {
+      expect(readCell(key).includes('Text size'), `${key}: no English left`).toBe(false);
+    }
+  });
+
+  it('UIF13.2 exactly one row is marked data-current="true" and it follows handlers.textStep() on every repaint and on a new view, independent of the cursor row', () => {
+    // WRONG IMPL KILLED: a current mark read once at construction (a chosen size would never show
+    // as current until reload); the mark on the CURSOR row instead of the live step (it would walk
+    // with Down); two rows marked, or none; a stale mark left on the old row after a repaint; an
+    // attribute written as "false" on the others (the attribute is present only on the current row).
+    let live: Step = 'normal';
+    const { view, textStep } = rig({ step: () => live });
+    view.show();
+    view.paint(paintOf({ nav: navOn('display', 'xlarge') }));
+    expect(currentKeys(), 'the live step is Normal').toEqual(['normal']);
+    expect(cell('normal').dataset.current, 'marked "true"').toBe('true');
+    expect(cell('xlarge').getAttribute('aria-selected'), 'the cursor is elsewhere').toBe('true');
+    expect(cell('xlarge').hasAttribute('data-current'), 'and carries no mark').toBe(false);
+    expect(readCell('normal')).toBe('Text size: Normal (current)');
+    const readsBefore = textStep.mock.calls.length;
+
+    live = 'large';
+    view.paint(paintOf({ nav: navOn('display', 'normal') }));
+    expect(textStep.mock.calls.length, 'the step is read again on a paint').toBeGreaterThan(
+      readsBefore,
+    );
+    expect(currentKeys(), 'the mark follows the live step').toEqual(['large']);
+    expect(readCell('large')).toBe('Text size: Large (current)');
+    expect(readCell('normal'), 'the old row reads plain again').toBe('Text size: Normal');
+    expect(cell('normal').hasAttribute('data-current'), 'and lost the attribute').toBe(false);
+    expect(cell('normal').getAttribute('aria-selected'), 'the cursor moved to Normal').toBe('true');
+
+    live = 'xlarge';
+    view.paint(paintOf({ nav: navOn('display', 'normal') }));
+    expect(currentKeys()).toEqual(['xlarge']);
+    expect(readCell('xlarge')).toBe('Text size: Extra large (current)');
+
+    // A new view over a fresh document reads the live step too, from its first paint.
+    const later = rig({ step: () => 'large' });
+    later.view.show();
+    later.view.paint(paintOf({ nav: navOn('display') }));
+    expect(currentKeys(), 'a new view marks its own live step').toEqual(['large']);
+  });
+});
+
+describe('ControlsView uif-13: choosing a text size (UIF13.3)', () => {
+  it('UIF13.3 a textStep request token calls onTextStep(step) exactly once however often it is painted and onOutcome gets "Text size: <label>." with saved=true; a new token applies again; the view writes no line of its own', () => {
+    // WRONG IMPL KILLED: a token applied on every paint (each repaint saves again: the host repaints
+    // after every step); one compared by shape (a second, distinct Large press would apply nothing,
+    // so a failed save could never be retried); the wrong step handed to the handler (the cursor
+    // neighbour, or always Large); an outcome line missing, not the catalog's, or missing its label;
+    // a textStep routed to onClear or onReset; and a view that paints its own strip line (a second
+    // channel for the same message).
+    const { view, onTextStep, onOutcome, onClear, onReset, announce } = rig();
+    view.show();
+    const nav = navOn('display', 'large');
+    const token = textStepRequest('large');
+    const p = paintOf({ nav, request: token });
+    view.paint(p);
+    expect(onTextStep).toHaveBeenCalledTimes(1);
+    expect(onTextStep).toHaveBeenCalledWith('large');
+    expect(onOutcome).toHaveBeenCalledTimes(1);
+    expect(onOutcome).toHaveBeenLastCalledWith('Text size: Large.', true);
+    expect(el(FEEDBACK_ID).textContent, 'no strip line of its own').toBe('');
+    expect(stripHidden(), 'and the strip stays hidden').toBe(true);
+    expect(announce, 'and no announcement of it (the toast speaks)').not.toHaveBeenCalledWith(
+      'Text size: Large.',
+    );
+
+    view.paint(p);
+    view.paint({ ...p });
+    view.paint(paintOf({ nav, request: token }));
+    expect(onTextStep, 'the same token, painted again, is not applied again').toHaveBeenCalledTimes(
+      1,
+    );
+    view.paint(paintOf({ nav }));
+    expect(onTextStep, 'a paint with no request applies nothing').toHaveBeenCalledTimes(1);
+    view.paint(paintOf({ nav, request: textStepRequest('large') }));
+    expect(onTextStep, 'a NEW token with the same shape applies again').toHaveBeenCalledTimes(2);
+    view.paint(paintOf({ nav: navOn('display', 'xlarge'), request: textStepRequest('xlarge') }));
+    expect(onTextStep).toHaveBeenCalledTimes(3);
+    expect(onTextStep).toHaveBeenLastCalledWith('xlarge');
+    expect(onOutcome).toHaveBeenLastCalledWith('Text size: Extra large.', true);
+    view.paint(paintOf({ nav: navOn('display', 'normal'), request: textStepRequest('normal') }));
+    expect(onTextStep).toHaveBeenLastCalledWith('normal');
+    expect(onOutcome).toHaveBeenLastCalledWith('Text size: Normal.', true);
+    expect(onOutcome, 'one outcome per applied token').toHaveBeenCalledTimes(4);
+    expect(onClear, 'a step is not a clear').not.toHaveBeenCalled();
+    expect(onReset, 'nor a reset').not.toHaveBeenCalled();
+  });
+
+  it('UIF13.3 when onTextStep answers false (the save failed) onOutcome gets saved=false with the plain line, so the seam composes the save-failed toast; in French the line is the French outcome', () => {
+    // WRONG IMPL KILLED: a failed save reported as a plain success (the size lasts only until a
+    // reload and the player is never told), the handler's result ignored, saved=false on every
+    // outcome, the save-failed suffix pre-appended (the seam's savedLine would double it), and an
+    // outcome line left in English under a French locale.
+    const failing = rig({ onTextStep: () => false });
+    failing.view.show();
+    failing.view.paint(
+      paintOf({ nav: navOn('display', 'large'), request: textStepRequest('large') }),
+    );
+    expect(failing.onTextStep).toHaveBeenCalledTimes(1);
+    expect(failing.onOutcome).toHaveBeenCalledTimes(1);
+    expect(failing.onOutcome).toHaveBeenLastCalledWith('Text size: Large.', false);
+    expect(savedLine('Text size: Large.', false), 'the seam`s composed line').toBe(
+      `Text size: Large. ${t('controls.saveFailed')}`,
+    );
+
+    setLocale('fr');
+    const french = rig();
+    french.view.show();
+    french.view.paint(
+      paintOf({ nav: navOn('display', 'large'), request: textStepRequest('large') }),
+    );
+    expect(french.onOutcome).toHaveBeenCalledTimes(1);
+    const [text, saved] = french.onOutcome.mock.calls[0] as [string, boolean];
+    expect(frText('Grande.'), `the French line: ${JSON.stringify(text)}`).toContain(text);
+    expect(saved, 'a saved write').toBe(true);
+  });
+
+  it('UIF13.3 the token is applied BEFORE the rows render: the same paint already marks the chosen step current', () => {
+    // WRONG IMPL KILLED: a paint that renders first and applies the request after (the screen shows
+    // the old size as current right after the player chose the new one, until some later step
+    // repaints), and a current mark read before the handler ran.
+    let live: Step = 'normal';
+    const { view } = rig({
+      step: () => live,
+      onTextStep: (step) => {
+        live = step;
+        return true;
+      },
+    });
+    view.show();
+    const nav = navOn('display', 'large');
+    view.paint(paintOf({ nav }));
+    expect(currentKeys(), 'before: Normal is current').toEqual(['normal']);
+    view.paint(paintOf({ nav, request: textStepRequest('large') }));
+    expect(currentKeys(), 'the same paint marks Large').toEqual(['large']);
+    expect(readCell('large')).toBe('Text size: Large (current)');
+    expect(readCell('normal')).toBe('Text size: Normal');
   });
 });
