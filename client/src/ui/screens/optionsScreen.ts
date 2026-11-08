@@ -3,11 +3,15 @@
 // The rules of a remap (swap, protected buttons, Clear) are `controlsModel.ts`'s: this file only
 // says which cell does what.
 //
-// Two tabs, each a grid whose rows are the model's rows: Buttons has a Primary and an Alt cell per
-// button, Shortcuts adds a Clear cell per accelerator, and each tab ends with a lone Reset all (in
-// the first column, so the D-pad reaches it from that column). A on a slot starts its capture; A
+// Two binding tabs, each a grid whose rows are the model's rows: Buttons has a Primary and an Alt
+// cell per button, Shortcuts adds a Clear cell per accelerator, and each ends with a lone Reset all
+// (in the first column, so the D-pad reaches it from that column). A on a slot starts its capture; A
 // on Clear or on the confirm's Yes hands the view a one-shot request token (a new object each
 // press, compared by identity: the profileScreen precedent), which the shell applies to the table.
+//
+// The third tab, Display (uif-13), is a screen-layer list of the text-size steps (`controlsModel`
+// knows only binding rows): A on a step hands the view a `textStep` token the same way. It has no
+// Reset all, which resets bindings only.
 //
 // While a slot waits for a key the shell takes every keydown before the router (`captureStep`
 // below says what that key does), so the only button that reaches this screen then is the B the
@@ -23,13 +27,27 @@ import {
   outcomeText,
   type SlotTarget,
 } from '../controlsModel';
-import { grid, type NavLayout, type NavState, navFocus, navInit, navStep, tabs } from '../nav';
+import { TEXT_STEPS, type TextStep } from '../displayPrefs';
+import {
+  grid,
+  list,
+  type NavLayout,
+  type NavState,
+  navFocus,
+  navInit,
+  navStep,
+  tabs,
+} from '../nav';
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
 /** What a press asks the shell to do to the table. */
 export type ControlsRequest =
   | { readonly kind: 'clear'; readonly accel: Accel }
-  | { readonly kind: 'reset' };
+  | { readonly kind: 'reset' }
+  | { readonly kind: 'textStep'; readonly step: TextStep };
+
+/** The screen's tabs: the model's binding tabs, then Display. */
+export type ControlsScreenTab = ControlsTab | 'display';
 
 export interface ControlsState {
   readonly nav: NavState;
@@ -53,7 +71,8 @@ export interface ControlsScreenView {
 export type ControlsItem =
   | { readonly kind: 'slot'; readonly target: SlotTarget }
   | { readonly kind: 'clear'; readonly accel: Accel }
-  | { readonly kind: 'reset' };
+  | { readonly kind: 'reset' }
+  | { readonly kind: 'textStep'; readonly step: TextStep };
 
 type ItemEntry = readonly [string, ControlsItem];
 
@@ -64,7 +83,7 @@ const slotEntries = (row: ControlsRow): ItemEntry[] => [
 const RESET: ItemEntry = ['reset', { kind: 'reset' }];
 
 /** Each tab's cells by key, in display order: the layout and the decode are built from it. */
-const ITEMS: Readonly<Record<ControlsTab, ReadonlyMap<string, ControlsItem>>> = {
+const ITEMS: Readonly<Record<ControlsScreenTab, ReadonlyMap<string, ControlsItem>>> = {
   buttons: new Map([...VBUTTONS.flatMap((id) => slotEntries({ kind: 'button', id })), RESET]),
   shortcuts: new Map([
     ...ACCELS.flatMap((id): ItemEntry[] => [
@@ -73,22 +92,25 @@ const ITEMS: Readonly<Record<ControlsTab, ReadonlyMap<string, ControlsItem>>> = 
     ]),
     RESET,
   ]),
+  display: new Map(TEXT_STEPS.map((step): ItemEntry => [step, { kind: 'textStep', step }])),
 };
 
-const tabGrid = (tab: ControlsTab, cols: number) =>
-  grid(
-    [...ITEMS[tab].keys()].map((key) => ({ key, enabled: true })),
-    cols,
-  );
+const itemsOf = (tab: ControlsScreenTab) =>
+  [...ITEMS[tab].keys()].map((key) => ({ key, enabled: true }));
+
+const tabGrid = (tab: ControlsTab, cols: number) => grid(itemsOf(tab), cols);
 
 export const CONTROLS_LAYOUT: NavLayout = tabs([
   { key: 'buttons', layout: tabGrid('buttons', 2) },
   { key: 'shortcuts', layout: tabGrid('shortcuts', 3) },
+  { key: 'display', layout: list(itemsOf('display')) },
 ]);
 
 /** The cell `key` of `tab`, or undefined when the layout has none. */
 export function controlsItem(tab: string | null, key: string): ControlsItem | undefined {
-  return tab !== null && Object.hasOwn(ITEMS, tab) ? ITEMS[tab as ControlsTab].get(key) : undefined;
+  return tab !== null && Object.hasOwn(ITEMS, tab)
+    ? ITEMS[tab as ControlsScreenTab].get(key)
+    : undefined;
 }
 
 export interface CaptureStep {
@@ -168,6 +190,8 @@ export const controlsScreen: ScreenAdapter<null, ControlsState, ControlsScreenVi
         return done('consumed', { ...base, capturing: item.target });
       case 'clear':
         return done('consumed', { ...base, request: { kind: 'clear', accel: item.accel } });
+      case 'textStep':
+        return done('consumed', { ...base, request: { kind: 'textStep', step: item.step } });
       case 'reset':
         // The confirm defaults to No (`navInit` alone lands on Yes, the list's first row).
         return done('consumed', {

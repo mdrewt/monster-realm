@@ -196,6 +196,7 @@ import type { ControlsView, ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
+import { applyTextStep, loadTextStep, saveTextStep } from './ui/displayPrefs';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
 import { ErrorRing, type ErrorSource, normalizeError } from './ui/errorRing';
@@ -402,6 +403,10 @@ let frameWindow = createFrameWindow(performance.now());
 // The ONE binding table every input path and keycap reads: the player's saved table, else the
 // defaults (CTL12.4). Read at boot; Options › Controls replaces it live (`applyBindings`).
 let bindings = loadBindings(browserStorage());
+// The player's text size (uif-13, UIF13.4): read and written on the root here, at import, so the
+// stored step is in place before the first frame; Controls › Display changes it live.
+let textStep = loadTextStep(browserStorage());
+applyTextStep(document.documentElement, textStep);
 // stepMs injected so the store can do burst detection + jitter EWMA.
 const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
@@ -4698,6 +4703,13 @@ async function main(): Promise<void> {
       bindings: () => bindings,
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
       onReset: () => applyBindings(DEFAULT_BINDINGS),
+      textStep: () => textStep,
+      // Only `--mr-text-step` moves: the UI scale, the renderer and the world are untouched.
+      onTextStep: (step) => {
+        textStep = step;
+        applyTextStep(document.documentElement, step);
+        return saveTextStep(browserStorage(), step);
+      },
       onCancelCapture: cancelControlsCapture,
       announce: (text) => announceNow(text),
       onOutcome: (text, saved) =>

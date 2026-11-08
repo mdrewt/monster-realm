@@ -2034,11 +2034,11 @@ describe('main.ts Controls on the kit and the text-size setting (runtime, uif-13
     teardown();
   });
 
-  it('UIF13.1 through real keys the Reset all confirm is one confirm sheet over the grid in the kit-tabbed frame: B closes the sheet and not the frame, writes nothing and leaves no #controls-yes, a reopen lands on No, and Start closes everything with no sheet left standing', async () => {
+  it('UIF13.1 through real keys the Reset all confirm is one confirm sheet over the grid in the kit-tabbed frame: B closes the sheet and not the frame, writes nothing and leaves no #controls-root-yes, a reopen lands on No, and Start closes everything with no sheet left standing', async () => {
     // WRONG IMPL KILLED: the shipped swap of `#controls-rows` to a Yes/No list under
     // `#controls-question`; a bare `renderTabs` strip (no kit row); a B that pops the frame instead of
     // the confirm (the frame is lost mid-question) or that resets; a sheet that stays in the document
-    // after it closes (a stale `#controls-yes`); a reopen on Yes; and a Start that closes the stack
+    // after it closes (a stale `#controls-root-yes`); a reopen on Yes; and a Start that closes the stack
     // while the sheet's root is left shown, so a reopened Controls shows the old question.
     await bootReady();
     server(1000);
@@ -2063,9 +2063,10 @@ describe('main.ts Controls on the kit and the text-size setting (runtime, uif-13
     expect(back.defaultPrevented, 'B is routed').toBe(true);
     expect(stackNames(), 'B closed the sheet, not the frame').toEqual([...CONTROLS_STACK]);
     expect(shownSheets(), 'the sheet is gone').toHaveLength(0);
-    expect(document.querySelectorAll('#controls-yes'), 'no Yes left in the document').toHaveLength(
-      0,
-    );
+    expect(
+      document.querySelectorAll('#controls-root-yes'),
+      'no Yes left in the document',
+    ).toHaveLength(0);
     expect(savedRaw(), 'B reset nothing and wrote nothing').toBeNull();
     expect(controlsActive(), 'the grid cursor is on Reset all').toBe('reset');
 
@@ -2074,7 +2075,7 @@ describe('main.ts Controls on the kit and the text-size setting (runtime, uif-13
     press('Escape'); // Start
     expect(stackNames(), 'Start closes everything').toEqual(['world']);
     expect(shownSheets(), 'and no sheet stands').toHaveLength(0);
-    expect(document.querySelectorAll('#controls-yes'), 'no Yes left').toHaveLength(0);
+    expect(document.querySelectorAll('#controls-root-yes'), 'no Yes left').toHaveLength(0);
     expect(savedRaw(), 'still nothing written').toBeNull();
   });
 
@@ -2090,7 +2091,10 @@ describe('main.ts Controls on the kit and the text-size setting (runtime, uif-13
     expect(byId('controls-tab-shortcuts').getAttribute('aria-selected'), 'RB: Shortcuts').toBe(
       'true',
     );
-    openDisplayTab();
+    press('KeyE');
+    expect(byId('controls-tab-display').getAttribute('aria-selected'), 'RB again: Display').toBe(
+      'true',
+    );
     expect(cellKeys(), 'the three steps').toEqual(['normal', 'large', 'xlarge']);
     expect(controlsActive(), 'the cursor starts on Normal').toBe('normal');
     expect(cellText('normal')).toBe('Text size: Normal (current)');

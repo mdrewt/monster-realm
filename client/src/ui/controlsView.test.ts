@@ -66,8 +66,9 @@ const CANCEL_ID = 'controls-cancel-btn';
 // `#controls-no` in the sheet. The id stays here only for the assertions that it no longer exists.
 const QUESTION_ID = 'controls-question';
 const SHEET_TITLE_ID = 'controls-sheet-title';
-const YES_ID = 'controls-yes';
-const NO_ID = 'controls-no';
+// The kit's id scheme for a tab-less list is `${frame}-root-${key}`.
+const YES_ID = 'controls-root-yes';
+const NO_ID = 'controls-root-no';
 const FEEDBACK_ID = 'controls-feedback';
 // INTENTIONAL CHANGE (uif-13, UIF13.1): QUESTION_ID leaves this roster (the node is gone). Was: it was
 // listed here as an id that must exist inside the frame root from construction.
@@ -1347,7 +1348,7 @@ describe('ControlsView uif-13: the kit TabBar and the confirm ContextSheet (UIF1
     expect(document.querySelectorAll(`#${SHEET_TITLE_ID}`), 'one sheet heading').toHaveLength(1);
   });
 
-  it('UIF13.1 Reset all asks in ONE confirm sheet: exactly one [data-context-sheet] shown, variant confirm, heading #controls-sheet-title is the question, rows #controls-yes then #controls-no with only No selected, no #controls-question, and the open edge announces the question once', () => {
+  it('UIF13.1 Reset all asks in ONE confirm sheet: exactly one [data-context-sheet] shown, variant confirm, heading #controls-sheet-title is the question, rows #controls-root-yes then #controls-root-no with only No selected, no #controls-question, and the open edge announces the question once', () => {
     // WRONG IMPL KILLED: the shipped swap of `#controls-rows` to a Yes/No list under a
     // `#controls-question` paragraph; two sheets (a list sheet and a confirm sheet at once); the list
     // variant (no heading, no question); a question that is not the heading (the sheet would be an
@@ -1485,7 +1486,7 @@ describe('ControlsView uif-13: the kit TabBar and the confirm ContextSheet (UIF1
     expect(document.activeElement, 'closing leaves it').toBe(outside);
   });
 
-  it('UIF13.1 every way out of the confirm closes it for good: after A on No or B the sheet is hidden and empty, no #controls-yes remains in the document, the bindings and every handler are untouched, and reopening lands on No again; A on Yes resets once and closes it too', () => {
+  it('UIF13.1 every way out of the confirm closes it for good: after A on No or B the sheet is hidden and empty, no #controls-root-yes remains in the document, the bindings and every handler are untouched, and reopening lands on No again; A on Yes resets once and closes it too', () => {
     // WRONG IMPL KILLED: a close that only hides the sheet but leaves its rows in the document (a
     // stale `#controls-yes` that `getElementById` and e2e would find); a No or B that resets anyway;
     // a sheet re-created on every open (the document grows one sheet per visit); a reopen that
@@ -1521,7 +1522,8 @@ describe('ControlsView uif-13: the kit TabBar and the confirm ContextSheet (UIF1
       expect(onTextStep, `${name}: no text size changed`).not.toHaveBeenCalled();
       expect(onOutcome, `${name}: no outcome line`).not.toHaveBeenCalled();
 
-      session.press('Up', 'A');
+      // The grid cursor is still on Reset all, so A alone reopens the confirm.
+      session.press('A');
       expect(session.state.confirm?.item, `${name}: reopened on No`).toBe('no');
       expect(theSheet(), `${name}: the same sheet is reused`).toBe(sheet);
       expect(allSheets(), `${name}: still one sheet`).toHaveLength(1);
@@ -1547,7 +1549,7 @@ describe('ControlsView uif-13: the kit TabBar and the confirm ContextSheet (UIF1
     expect(onReset, 'later steps do not reset again').toHaveBeenCalledTimes(1);
   });
 
-  it('UIF13.1 hide() while the confirm is up leaves no shown sheet and no #controls-yes, and a re-shown frame shows none', () => {
+  it('UIF13.1 hide() while the confirm is up leaves no shown sheet and no #controls-root-yes, and a re-shown frame shows none', () => {
     // WRONG IMPL KILLED: a hide() that only hides the frame root (the sheet and its rows stay in the
     // document, so a reopened frame shows the question over a grid that is no longer asking, and
     // `#controls-yes` is findable while Controls is closed); a sheet closed by hide() but re-shown by
@@ -1559,8 +1561,10 @@ describe('ControlsView uif-13: the kit TabBar and the confirm ContextSheet (UIF1
     expect(shownSheets(), 'precondition: the confirm is up').toHaveLength(1);
     view.hide();
     expect(shownSheets(), 'closed with the frame').toHaveLength(0);
-    expect(document.querySelectorAll(`#${YES_ID}`), 'no #controls-yes remains').toHaveLength(0);
-    expect(document.querySelectorAll(`#${NO_ID}`), 'no #controls-no remains').toHaveLength(0);
+    expect(document.querySelectorAll(`#${YES_ID}`), 'no #controls-root-yes remains').toHaveLength(
+      0,
+    );
+    expect(document.querySelectorAll(`#${NO_ID}`), 'no #controls-root-no remains').toHaveLength(0);
     expect(
       allSheets().every((sheet) => sheet.hidden),
       'every sheet root is itself hidden (not just under a hidden frame)',

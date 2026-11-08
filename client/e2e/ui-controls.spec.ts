@@ -23,8 +23,10 @@ import { closeAll, pressAccel, pressButton } from './controls';
 // WHAT IS PROVEN WHERE. The setting's pure parse / save / apply is displayPrefs.test.ts and the booted
 // unit proof (property at once, storage, no renderer resize) is main.remap.test.ts; this file proves
 // the two things only a real engine can: the CSS rule makes the root font-size follow the property
-// (UIF13.3), and the saved size is the root size at the FIRST animation frame (UIF13.4), and that the
-// UI still fits at Extra large (UIF13.5).
+// (UIF13.3), and the saved size is already in force the first time the scaled chrome can show
+// (UIF13.4: the first `--mr-ui-scale` write, and the first frame after it; frames before that write
+// are Pixi's and the rem rule does not match yet, by design), and that the UI still fits at Extra
+// large (UIF13.5).
 //
 // HYGIENE. Sorts after ui-chrome, before ui-feedback. ONE browser context, ONE player, closed in
 // afterAll (a second context would add a presence row; golden.spec.ts asserts an exact count). The
@@ -264,22 +266,48 @@ test.describe
         viewport: { width: 1280, height: 720 },
         deviceScaleFactor: 1,
       });
-      // The first-frame probe (UIF13.4): on EVERY navigation of this context, wrap
-      // requestAnimationFrame so the root's computed font-size and its inline custom properties are
-      // recorded when the FIRST callback is about to run, before that callback (the game's first
-      // frame) does. Registered before the first goto so no navigation escapes it.
+      // The scaled-chrome probe (UIF13.4): on EVERY navigation of this context, (a) a MutationObserver
+      // on the root's `style` attribute records {scale, step, px} after every style mutation, and (b) a
+      // requestAnimationFrame wrapper records the first callback at which `--mr-ui-scale` is
+      // non-empty (the first frame the uif-2 rem rule applies, so the first frame the scaled chrome
+      // can show). Frames before that write (Pixi's ticker) are deliberately not measured: the rule
+      // does not match until `--mr-ui-scale` is written, by design (UIF2.6). Registered before the
+      // first goto so no navigation escapes it.
       await ctx.addInitScript(() => {
-        const w = window as unknown as { __mrFirstFrame?: unknown };
+        type Rec = { scale: string; step: string; px: number };
+        const w = window as unknown as { __mrStyleRecords?: Rec[]; __mrScaledFrame?: Rec };
+        const records: Rec[] = [];
+        w.__mrStyleRecords = records;
+        const snap = (): Rec => {
+          const root = document.documentElement;
+          return {
+            scale: root.style.getPropertyValue('--mr-ui-scale'),
+            step: root.style.getPropertyValue('--mr-text-step'),
+            px: Number.parseFloat(getComputedStyle(root).fontSize),
+          };
+        };
+        const watch = (root: HTMLElement): void => {
+          new MutationObserver(() => {
+            records.push(snap());
+          }).observe(root, { attributes: true, attributeFilter: ['style'] });
+        };
+        if (document.documentElement !== null) {
+          watch(document.documentElement);
+        } else {
+          const boot = new MutationObserver(() => {
+            if (document.documentElement !== null) {
+              boot.disconnect();
+              watch(document.documentElement);
+            }
+          });
+          boot.observe(document, { childList: true });
+        }
         const original = window.requestAnimationFrame.bind(window);
         window.requestAnimationFrame = (cb: FrameRequestCallback): number =>
           original((t) => {
-            if (w.__mrFirstFrame === undefined) {
-              const root = document.documentElement;
-              w.__mrFirstFrame = {
-                px: Number.parseFloat(getComputedStyle(root).fontSize),
-                step: root.style.getPropertyValue('--mr-text-step'),
-                scale: root.style.getPropertyValue('--mr-ui-scale'),
-              };
+            if (w.__mrScaledFrame === undefined && document.documentElement !== null) {
+              const s = snap();
+              if (s.scale !== '') w.__mrScaledFrame = s;
             }
             cb(t);
           });
@@ -297,15 +325,47 @@ test.describe
       }
     });
 
-    const firstFrame = (): Promise<{ px: number; step: string; scale: string } | undefined> =>
-      page.evaluate(
-        () =>
-          (
-            window as unknown as {
-              __mrFirstFrame?: { px: number; step: string; scale: string };
-            }
-          ).__mrFirstFrame,
+    interface Rec {
+      readonly scale: string;
+      readonly step: string;
+      readonly px: number;
+    }
+    const probe = (): Promise<{ records: Rec[]; scaledFrame: Rec | undefined }> =>
+      page.evaluate(() => {
+        const w = window as unknown as { __mrStyleRecords?: Rec[]; __mrScaledFrame?: Rec };
+        return { records: w.__mrStyleRecords ?? [], scaledFrame: w.__mrScaledFrame };
+      });
+
+    /** The UIF13.4 oracle: when `--mr-ui-scale` is first non-empty (in the style mutations, and at the
+     *  first frame the rule applies) the step is already `step` and the root is already `px`; and no
+     *  record anywhere has the chrome scaled while the step is still empty. */
+    async function expectStepBeforeScaledChrome(
+      label: string,
+      step: string,
+      px: number,
+    ): Promise<void> {
+      const { records, scaledFrame } = await probe();
+      expect(records.length, `${label}: at least one style mutation was seen`).toBeGreaterThan(0);
+      const firstScaled = records.find((r) => r.scale !== '');
+      expect(firstScaled, `${label}: a mutation wrote --mr-ui-scale`).toBeDefined();
+      expect(firstScaled?.step, `${label}: (a) the step is set when the scale first lands`).toBe(
+        step,
       );
+      expect(
+        firstScaled?.px,
+        `${label}: (a) the root is stepped when the scale first lands`,
+      ).toBeCloseTo(px, 3);
+      expect(
+        records.filter((r) => r.scale !== '' && r.step === ''),
+        `${label}: the chrome is never scaled without the step`,
+      ).toEqual([]);
+      expect(scaledFrame, `${label}: a frame ran with the scale written`).toBeDefined();
+      expect(scaledFrame?.step, `${label}: (b) the step at the first scaled frame`).toBe(step);
+      expect(scaledFrame?.px, `${label}: (b) the root at the first scaled frame`).toBeCloseTo(
+        px,
+        3,
+      );
+    }
 
     test('UIF13.2 the Display tab is reached by the D-pad and A in the real frame: RB RB from Buttons, three rows, Down walks them, A on Large moves the current mark to it', async () => {
       // WRONG IMPL KILLED: a Display tab the shoulder buttons cannot reach; rows that are not the
@@ -422,25 +482,18 @@ test.describe
       ).toBeCloseTo(normalRow, 1);
     });
 
-    test('UIF13.4 a saved Large and a saved Extra large are the root size at the FIRST animation frame after a reload, with the property already set and no inline root font-size', async () => {
+    test('UIF13.4 a saved Large and a saved Extra large are the root size at the first frame the scaled chrome shows after a reload: the step is set before (or with) the first --mr-ui-scale write, and the chrome is never scaled without it', async () => {
       // WRONG IMPL KILLED: a size applied only when a frame runs, on the first resize, or after the
-      // wasm / connection is ready (the page paints once at the wrong size: the first-frame record
-      // would read 16px); a size that is applied but never read back by the rule; a boot that
-      // forgets the saved choice (16px); a size read from the wrong key.
+      // viewport scale landed (the chrome would show once at 16px: the record at the first scale
+      // write would read a missing step and 16px); a size that is applied but never read back by the
+      // rule; a boot that forgets the saved choice (16px); a size read from the wrong key.
       test.setTimeout(120_000);
       for (const [json, px, step] of [
         [LARGE_JSON, BASE_PX * 1.5, '1.5'],
         [XLARGE_JSON, BASE_PX * 2, '2'],
       ] as const) {
         await seedAndReload(page, json);
-        const first = await firstFrame();
-        expect(first, `${json}: the probe saw a first frame`).toBeDefined();
-        expect(
-          first?.scale,
-          `${json}: the viewport scale was already written at the first frame`,
-        ).toBe('1');
-        expect(first?.step, `${json}: the property was set at the first frame`).toBe(step);
-        expect(first?.px, `${json}: the root size at the first frame`).toBeCloseTo(px, 3);
+        await expectStepBeforeScaledChrome(json, step, px);
         const now = await readRoot(page);
         expect(now.px, `${json}: and it stays that size`).toBeCloseTo(px, 3);
         expect(now.inlineFont, `${json}: no inline root font-size`).toBe('');
@@ -448,17 +501,14 @@ test.describe
       }
     });
 
-    test('UIF13.4 a garbage, a wrong-version and an out-of-set saved value read as Normal (16px) at the first frame and are never rewritten by the boot', async () => {
+    test('UIF13.4 a garbage, a wrong-version and an out-of-set saved value read as Normal (16px) at the first frame the scaled chrome shows and are never rewritten by the boot', async () => {
       // WRONG IMPL KILLED: a clamp of an out-of-set step to the nearest one (it would not read 16px);
       // a parse error that stops the boot; a boot that "repairs" the value in place; a stale step
       // from the previous load (the property is read fresh by every document).
       test.setTimeout(120_000);
       for (const raw of ['{not json', '{"v":2,"textStep":"large"}', '{"v":1,"textStep":"huge"}']) {
         await seedAndReload(page, raw);
-        const first = await firstFrame();
-        expect(first, `${raw}: the probe saw a first frame`).toBeDefined();
-        expect(first?.step, `${raw}: the property reads 1 at the first frame`).toBe('1');
-        expect(first?.px, `${raw}: the root size at the first frame`).toBeCloseTo(BASE_PX, 3);
+        await expectStepBeforeScaledChrome(raw, '1', BASE_PX);
         expect(await stored(page), `${raw}: the stored string is byte-identical`).toBe(raw);
       }
     });
