@@ -384,7 +384,10 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     removeFacedNpc();
     frame();
 
-    // Y opens the request sheet: the bar reads A ok / B back / Start / Select.
+    // Y opens the request sheet: the bar reads A ok / B back / Start close.
+    // uif-12 INTENTIONAL CHANGE (UIF12.3, R-ctl-13-SHEETCHIPS): was A ok / B back / Start Menu
+    // (badged while the request waits) / Select Help. Start CLOSES a world sheet and Select is
+    // swallowed there, so the bar names Close (never badged) and carries no Select chip.
     press('KeyF');
     frame();
     expect(
@@ -393,8 +396,7 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     ).toEqual([
       ['A', 'Enter', i18nT('chrome.chip.ok'), null],
       ['B', BACKSPACE_GLYPH, i18nT('chrome.chip.back'), null],
-      ['Start', ESC, menuVerb, badgeText],
-      ['Select', 'R', helpVerb, null],
+      ['Start', ESC, i18nT('chrome.chip.close'), null],
     ]);
     press('Backspace'); // B closes the sheet
     frame();
@@ -489,6 +491,138 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       i18nT('key.slash'),
     );
     expect(chipOf('Start').verb, 'verbs are unaffected by a remap').toBe(menuVerb);
+  }, 120_000);
+});
+
+// ==========================================================================================
+// uif-12: the world-sheet hint bar (UIF12.3)
+// ==========================================================================================
+
+const NPC_B_ENTITY = 12n;
+/** A second dialogue NPC on (2, 5), so the stubbed rule can name TWO actionable candidates. */
+function seedSecondNpc(): void {
+  opts.store.upsertNpc({
+    entityId: NPC_B_ENTITY,
+    npcId: 'elder',
+    zoneId: 0,
+    homeX: 2,
+    homeY: 5,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction: { kind: 'dialogue' },
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId: NPC_B_ENTITY,
+      zoneId: 0,
+      tileX: 2,
+      tileY: 5,
+      facing: 'South',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    clock.t,
+  );
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4];
+    if (!Array.isArray(entities)) return [];
+    const ids = [NPC_ENTITY.toString(), NPC_B_ENTITY.toString()];
+    const out: number[] = [];
+    for (const id of ids) {
+      const at = entities.findIndex(
+        (e: { kind?: unknown; id?: unknown }) => e.kind === 'npc' && e.id === id,
+      );
+      if (at !== -1) out.push(at);
+    }
+    return out;
+  };
+  batch();
+}
+
+describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  it('UIF12.3 with the request sheet open the bar is A OK / B Back / Start Close (no badge) and no Select chip, even while the request waits', async () => {
+    // WRONG IMPL KILLED: the bar still reading Start Menu (badged) / Select Help over a world sheet
+    // (Start closes it and Select is swallowed there: the bar lies about both).
+    await bootReady();
+    batch();
+    frame();
+    opts.store.upsertPlayer({
+      identity: BOB,
+      entityId: 8n,
+      name: 'Bob',
+      online: true,
+      lastInputSeq: 0n,
+    });
+    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    batch();
+    frame();
+    expect(chipOf('Start').badge, 'precondition: a request waits (Start is badged)').toBe(
+      i18nT('chrome.badge.request'),
+    );
+    press('KeyF');
+    frame();
+    expect(
+      chipsNow().map((c) => [c.button, c.verb, c.badge]),
+      'the request sheet bar',
+    ).toEqual([
+      ['A', 'OK', null],
+      ['B', 'Back', null],
+      ['Start', 'Close', null],
+    ]);
+    expect(buttonsNow(), 'no Select chip over a world sheet').not.toContain('Select');
+  }, 120_000);
+
+  it('UIF12.3 over a two-candidate picker A reads Choose; over a one-row Y action sheet A reads OK; Start reads Close and Select is gone in both', async () => {
+    // WRONG IMPL KILLED: the picker flag never passed (A reads OK over a multi-row picker); the flag
+    // passed for every sheet (A reads Choose over a one-row action sheet that just runs its row);
+    // the old Start Menu / Select Help chips left on either sheet.
+    await bootReady();
+    batch();
+    seedFacedNpc();
+    frame();
+
+    // One-row Y action sheet (a single faced target).
+    press('KeyF');
+    frame();
+    expect(stackNames(), 'precondition: the world sheet is not a frame').toEqual(['world']);
+    expect(
+      document.querySelectorAll('#interact-prompt [role="option"]').length,
+      'precondition: Y opened a ONE-row action sheet',
+    ).toBe(1);
+    expect(
+      chipsNow().map((c) => [c.button, c.verb]),
+      'one-row action sheet',
+    ).toEqual([
+      ['A', i18nT('chrome.chip.ok')],
+      ['B', i18nT('chrome.chip.back')],
+      ['Start', i18nT('chrome.chip.close')],
+    ]);
+    press('Backspace'); // B closes the sheet
+    frame();
+
+    // Two actionable candidates: A opens the entity x action picker.
+    seedSecondNpc();
+    frame();
+    press('Enter');
+    frame();
+    expect(
+      document.querySelectorAll('#interact-prompt [role="option"]').length,
+      'precondition: A opened a multi-row picker',
+    ).toBe(2);
+    expect(
+      chipsNow().map((c) => [c.button, c.verb]),
+      'multi-row picker',
+    ).toEqual([
+      ['A', i18nT('interact.chip.choose' as never)],
+      ['B', i18nT('chrome.chip.back')],
+      ['Start', i18nT('chrome.chip.close')],
+    ]);
+    expect(chipOf('A').verb, 'Choose, in words').toBe('Choose');
   }, 120_000);
 });
 

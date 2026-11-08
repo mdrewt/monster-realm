@@ -725,3 +725,173 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     ).not.toBeNull();
   }, 60_000);
 });
+
+// ==========================================================================================
+// uif-12: the world sheets on the ContextSheet kit, pointer-live (UIF12.1, UIF12.4, UIF12.5)
+// ==========================================================================================
+
+const worldCanvas = (): Promise<HTMLElement> =>
+  vi.waitFor(
+    () => {
+      const c = document.querySelector<HTMLElement>('#game-screen canvas');
+      if (c === null) throw new Error('the world canvas is not mounted yet');
+      return c;
+    },
+    { timeout: 5_000, interval: 5 },
+  );
+/** A bubbling left click (the pointer dispatcher on #game-screen reads `click`). */
+const leftClick = (el: Element): void => {
+  clock.t = next(50);
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+};
+const sheetRow = (navKey: string): HTMLElement => {
+  const el = document.querySelector<HTMLElement>(
+    `#interact-prompt [role="option"][data-nav-key="${navKey}"]`,
+  );
+  if (el === null) throw new Error(`no world-sheet row ${navKey}`);
+  return el;
+};
+const sheetRoot = (): HTMLElement | null =>
+  document.querySelector<HTMLElement>('#interact-prompt [data-context-sheet]');
+
+/** Boot, seed one request from Bob, press Y and leave the request sheet open (no frame after the
+ *  last press other than the one that paints it). */
+async function openRequestSheet(kind: 'trade' | 'challenge'): Promise<void> {
+  await bootReady();
+  seedPlayer(BOB, 'Bob', 8n);
+  batch();
+  if (kind === 'trade') opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+  else opts.store.upsertChallenge(challengeFrom(BOB, 21n, 2_000n));
+  batch();
+  frame();
+  press(Y);
+  frame();
+  expect(sheetShown(), `${kind}: precondition: the request sheet is up`).toBe(true);
+}
+
+describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true }, () => {
+  afterEach(teardown);
+
+  it('UIF12.1 the request sheet`s heading and rows are inside the kit`s shown #interact-prompt [data-context-sheet] (.mr-sheet)', async () => {
+    // WRONG IMPL KILLED: the world sheet still painted with bare renderNav into a plain div (no
+    // [data-context-sheet] root, so the pointer source never sees it); a root left `hidden` while
+    // the rows show; a title painted outside the sheet root; a root that is not the kit's.
+    await openRequestSheet('trade');
+    const root = sheetRoot();
+    expect(
+      root,
+      'the request sheet has a [data-context-sheet] root inside #interact-prompt',
+    ).not.toBeNull();
+    const sheet = root as HTMLElement;
+    expect(sheet.classList.contains('mr-sheet'), 'the root is the ContextSheet kit`s').toBe(true);
+    expect(sheet.hidden, 'the root is not hidden').toBe(false);
+    expect(isShown(sheet), 'and shows').toBe(true);
+    const rows = [...document.querySelectorAll('#interact-prompt [role="option"]')];
+    expect(rows.length, 'Accept / Decline / View').toBe(3);
+    for (const row of rows) {
+      expect(sheet.contains(row), `row ${row.textContent} is inside the sheet root`).toBe(true);
+    }
+    const line = tf('notice.request.trade', { name: 'Bob' });
+    const heading = [...sheet.querySelectorAll('*')].filter(
+      (el) => el.children.length === 0 && el.textContent === line,
+    );
+    expect(heading.length, 'the request line is the sheet`s own heading, inside the root').toBe(1);
+    expect(
+      sheet.querySelector('[role="option"]') !== null && sheet.contains(heading[0] as Element),
+      'heading and rows share the one root',
+    ).toBe(true);
+  }, 60_000);
+
+  it('UIF12.1 a pointer click on the non-cursor Decline row sends exactly the decline reducer with no frame in between and closes the sheet; a click on View opens Social and sends nothing', async () => {
+    // WRONG IMPL KILLED: rows with no pointer path (the prompt is pointer-events:none / no
+    // [data-context-sheet], so the click does nothing); a world sheet that repaints only in the rAF
+    // tick (the pointer seek reads the cursor from the DOM straight after each press, so a click on
+    // a non-cursor row probes, misses, undoes and never presses A: review finding #1); a click that
+    // answers the CURSOR row (Accept) instead of the clicked one; a click on View that sends a
+    // reducer.
+    const answers: ReadonlyArray<{
+      readonly kind: 'trade' | 'challenge';
+      readonly call: { name: string; args: unknown };
+    }> = [
+      { kind: 'trade', call: { name: 'respondTrade', args: { tradeId: 11n, accepted: false } } },
+      { kind: 'challenge', call: { name: 'declineChallenge', args: { challengeId: 21n } } },
+    ];
+    for (const a of answers) {
+      teardown();
+      await openRequestSheet(a.kind);
+      expect(sheetCursor(), `${a.kind}: precondition: the cursor is on Accept`).toBe('accept');
+      leftClick(sheetRow('decline'));
+      // NO frame between the click and the read: the press itself must have repainted the sheet.
+      await flush();
+      expect(H.calls, `${a.kind}: exactly the decline reducer for that request`).toEqual([a.call]);
+      frame();
+      expect(sheetShown(), `${a.kind}: the sheet closed`).toBe(false);
+      expect(stackNames(), `${a.kind}: still the bare world`).toEqual(['world']);
+    }
+
+    for (const [kind, root] of [
+      ['trade', 'trade-overlay'],
+      ['challenge', 'pvp-challenge-overlay'],
+    ] as const) {
+      teardown();
+      await openRequestSheet(kind);
+      leftClick(sheetRow('view'));
+      await flush();
+      frame();
+      expect(H.calls, `${kind}: View sends nothing`).toEqual([]);
+      expect(stackNames().at(-1), `${kind}: View opened Social`).toBe('social');
+      expect(shownById(root), `${kind}: on the request's own root`).toBe(true);
+      expect(sheetShown(), `${kind}: the sheet closed`).toBe(false);
+    }
+  }, 120_000);
+
+  it('UIF12.4 a click on the world canvas outside the open request sheet closes it and sends nothing: no accept, no decline, the stack stays the bare world', async () => {
+    // WRONG IMPL KILLED: a world sheet with no [data-context-sheet] root (an outside click never
+    // closes it, so it hangs on); an outside click that is read as a canvas press of A (the faced
+    // action or the CURSOR row, Accept, runs); a close that also opens the menu or a frame.
+    await openRequestSheet('trade');
+    const canvas = await worldCanvas();
+    leftClick(canvas);
+    await flush();
+    expect(H.calls, 'an outside click answers nothing').toEqual([]);
+    frame();
+    expect(sheetShown(), 'the sheet is gone').toBe(false);
+    expect(stackNames(), 'the stack is the bare world').toEqual(['world']);
+    expect(openDialogs(), 'no dialog opened').toEqual([]);
+    // Control: the request still waits, so Y reopens the sheet (the close was not a dismissal).
+    press(Y);
+    frame();
+    expect(sheetShown(), 'control: the request still waits').toBe(true);
+  }, 60_000);
+
+  it('UIF12.5 (regression gate, may pass today) while a world sheet is open a held movement key sends no move; a key held while an outside click closes the sheet does not start a walk after the close; the next fresh press walks exactly one step', async () => {
+    // WRONG IMPL KILLED: a sheet that lets a held direction through (the character walks under the
+    // sheet); a sheet close that does not reset the held input (the key held through it resumes
+    // walking on the first frame after the close, with no new press); a reset that also swallows the
+    // next FRESH press (it must walk once).
+    await openRequestSheet('trade');
+    const canvas = await worldCanvas();
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true, cancelable: true }),
+    );
+    frame(300);
+    frame(300);
+    expect(H.sends, 'no movement while the world sheet is open').toEqual([]);
+
+    leftClick(canvas); // W is still held while the sheet closes
+    frame();
+    expect(sheetShown(), 'precondition: the outside click closed the sheet').toBe(false);
+    frame(300);
+    frame(300);
+    frame(300);
+    expect(H.sends, 'the key held through the close does not walk').toEqual([]);
+
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'KeyW', bubbles: true, cancelable: true }),
+    );
+    press('KeyW');
+    expect(H.sends, 'the next fresh press walks exactly one step').toHaveLength(1);
+    frame(300);
+    expect(H.sends, 'and a tapped key does not keep walking').toHaveLength(1);
+  }, 60_000);
+});
