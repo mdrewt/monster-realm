@@ -22,7 +22,9 @@
 // root is exactly the legacy board. Rankings marks the board's `<li>`s by hand with the nav kit's
 // contract (`renderNav` would own the list's children; an empty board stays a plain list) and
 // marks the list `aria-readonly` (qf-16: A there does nothing, so styles.css keys a display-only
-// cursor row and the list's scroll affordance on it). Players hides the board and renders
+// cursor row on it). The list's position cue is the kit's shared `.mr-scroll` rule (uif-9, UIF9.5),
+// and the paint zeroes the list's UA margin and padding so its rows start where every other Social
+// panel's rows do (UIF9.3, measured in e2e/ui-social.spec.ts). Players hides the board and renders
 // `#leaderboard-players` through the kit, with `#leaderboard-walkup` after it, both built by the
 // first Players paint. A list hidden under the focus hands it to the
 // root's anchor first (tradeView's rule). Player names stay out of the resolver here too: the
@@ -58,6 +60,8 @@ const LIST_MARKS = [
   'aria-readonly',
 ] as const;
 const ROW_MARKS = ['id', 'class', 'role', 'aria-selected'] as const;
+/** The kit's shared scroll-cue class (uif-3), worn by the list while Rankings shows. */
+const SCROLL_CLASS = 'mr-scroll';
 
 export class LeaderboardView {
   readonly #overlay: HTMLElement;
@@ -146,6 +150,18 @@ export class LeaderboardView {
       this.#overlay.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
     }
     this.#listEl.hidden = p?.tab === 'players';
+    // Any Rankings paint, an empty board included, takes the shared cue and the zeroed list box.
+    const rankings = p?.tab === 'rankings';
+    this.#listEl.classList.toggle(SCROLL_CLASS, rankings);
+    if (this.#listEl.classList.length === 0) this.#listEl.removeAttribute('class');
+    if (rankings) {
+      this.#listEl.style.margin = '0';
+      this.#listEl.style.padding = '0';
+    } else {
+      this.#listEl.style.removeProperty('margin');
+      this.#listEl.style.removeProperty('padding');
+      if (this.#listEl.style.length === 0) this.#listEl.removeAttribute('style');
+    }
     if (p?.tab === 'rankings' && ranked.length > 0) {
       const cursor = ranked.find((li) => li.dataset.identity === p.cursor) ?? ranked[0];
       this.#listEl.setAttribute('role', 'listbox');

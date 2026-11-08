@@ -17,9 +17,15 @@
 // The panel renders the two request labels; the Social frame (ui/screens/socialScreen.ts) hosts
 // its chrome in this root (`hostChrome`), marks the request's container with its cursor
 // (`paintCursor`) and answers the request from its sheet, by D-pad and by pointer.
+//
+// ROWS ON THE KIT (uif-9, UIF9.3-UIF9.4): each request renders as one RowCard (`ui/rowCard.ts`),
+// the only child of its container, carrying the `pvp-*-label` testid e2e keys on. While the panel
+// shows, a container holding a card is a nav row (`mr-nav-item`, the padding every Social row has)
+// and the cursor adds `is-active` + aria-current; an empty container is no row. `hide()` clears it all.
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
+import { createRowCard } from './rowCard';
 
 /**
  * UNREAD since qf-8 (QF8.1): the lifecycle buttons these fed are deleted (see the header), and
@@ -44,6 +50,8 @@ export class PvpView {
   readonly #outgoingEl: HTMLElement;
   readonly #root: HTMLElement;
   #visible = false;
+  /** The Social cursor's row, re-applied after every refresh; `hide()` drops it. */
+  #cursor: 'incoming' | 'outgoing' | null = null;
 
   constructor(_callbacks: PvpViewCallbacks) {
     const root = document.getElementById('pvp-challenge-overlay');
@@ -89,7 +97,8 @@ export class PvpView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
-    this.paintCursor(null);
+    this.#cursor = null;
+    this.#markRows();
     // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
@@ -107,16 +116,24 @@ export class PvpView {
   }
 
   /** The Social screen's cursor on a challenge row (ctl-8d): marks the container the row shows
-   *  in, by class AND aria-current, never colour alone. The containers outlive every refresh
-   *  (only their children are rebuilt), so the mark does too; `hide()` clears it. */
+   *  in with `is-active` AND aria-current, never colour alone (every shown row already wears
+   *  `mr-nav-item`, uif-9). The containers outlive every refresh
+   *  (only their children are rebuilt), and the cursor is re-applied after each; `hide()` clears it. */
   paintCursor(row: 'incoming' | 'outgoing' | null): void {
+    this.#cursor = row;
+    this.#markRows();
+  }
+
+  /** Mark the containers: a shown one holding a card is a row; the cursor's row is also active. */
+  #markRows(): void {
     const rows = [
       ['incoming', this.#incomingEl],
       ['outgoing', this.#outgoingEl],
     ] as const;
     for (const [name, el] of rows) {
-      const on = name === row;
-      el.classList.toggle('mr-nav-item', on);
+      const isRow = this.#visible && el.childElementCount > 0;
+      const on = isRow && name === this.#cursor;
+      el.classList.toggle('mr-nav-item', isRow);
       el.classList.toggle('is-active', on);
       if (on) el.setAttribute('aria-current', 'true');
       else el.removeAttribute('aria-current');
@@ -130,7 +147,7 @@ export class PvpView {
    * battle or other overlay (mutual exclusivity). main.ts only ever passes
    * true today: what closes the panel is its `hide()`, run by the context stack.
    *
-   * Both containers are rebuilt on every refresh: they hold plain labels (the buttons they
+   * Both containers are rebuilt on every refresh: they hold one RowCard each (the buttons they
    * carried are deleted, qf-8), and the Social cursor marks the containers themselves
    * (`paintCursor`), which outlive the rebuild.
    */
@@ -146,31 +163,35 @@ export class PvpView {
       this.#statusEl.textContent = t('pvp.title.idle');
       this.#renderIncoming(null);
       this.#renderOutgoing(null);
+      this.#markRows();
       return;
     }
 
     this.#statusEl.textContent = t('pvp.title.challenge');
     this.#renderIncoming(vm.incoming);
     this.#renderOutgoing(vm.outgoing);
+    this.#markRows();
   }
 
   #renderIncoming(incoming: PvpIncomingChallenge | null): void {
     this.#incomingEl.replaceChildren();
     if (!incoming) return;
 
-    const label = document.createElement('div');
-    label.setAttribute('data-testid', 'pvp-incoming-label');
-    label.textContent = tf('pvp.incoming.label', { challenger: incoming.challengerName });
-    this.#incomingEl.appendChild(label);
+    const card = createRowCard(document, {
+      title: tf('pvp.incoming.label', { challenger: incoming.challengerName }),
+    });
+    card.setAttribute('data-testid', 'pvp-incoming-label');
+    this.#incomingEl.appendChild(card);
   }
 
   #renderOutgoing(outgoing: PvpOutgoingChallenge | null): void {
     this.#outgoingEl.replaceChildren();
     if (outgoing?.status !== 'Pending') return;
 
-    const label = document.createElement('div');
-    label.setAttribute('data-testid', 'pvp-outgoing-label');
-    label.textContent = tf('pvp.outgoing.label', { target: outgoing.targetName });
-    this.#outgoingEl.appendChild(label);
+    const card = createRowCard(document, {
+      title: tf('pvp.outgoing.label', { target: outgoing.targetName }),
+    });
+    card.setAttribute('data-testid', 'pvp-outgoing-label');
+    this.#outgoingEl.appendChild(card);
   }
 }

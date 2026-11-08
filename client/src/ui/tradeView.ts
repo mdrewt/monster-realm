@@ -11,8 +11,9 @@
 // outcome is a toast, routed by main.ts on its policy channel (uif-4b). No constructor-time strings: this view renders into the static index.html shell.
 //
 // THE SOCIAL FRAME'S PAINTER (ctl-8d, CTL8D.1-.2). The Social screen (ui/screens/socialScreen.ts)
-// paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the tab strip, the
-// action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
+// paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the kit TabBar (uif-9,
+// UIF9.1: LB chip, the `#social-tabs` strip, RB chip; the chrome's first child, so it tops whichever
+// panel shows), the action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
 // child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
 // the Players placeholder and the trade row's cursor on `#trade-status`: kept only while this root
 // is visible, re-applied after every batch render and dropped by `hide()`. This root's own
@@ -25,10 +26,11 @@
 // (the constructor requires it; Players hides it with the sides) and is never written.
 import { t, tf } from './i18n/resolver';
 import { list, tabs } from './nav';
-import { navTabId, renderNav, renderTabs } from './navRender';
+import { navTabId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { SocialTab } from './screens/types';
 import { SOCIAL_TABS, type SocialAction } from './socialModel';
+import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 import type { TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 /** The Yes / No question a Social action asks before it is sent. */
@@ -89,13 +91,22 @@ function socialPart(parent: HTMLElement, id: string, tag: 'div' | 'p'): HTMLElem
   return el;
 }
 
-/** Paint the Social frame's chrome: the tab strip, the sheet and the prompt. A closed sheet or
+/** The chrome's TabBar: found again by its strip, else created as the chrome's first child (the
+ *  first paint makes it before the sheet and the prompt, and nothing else writes the chrome). */
+function socialTabBar(chrome: HTMLElement): TabBar {
+  const strip = chrome.querySelector<HTMLElement>('#social-tabs');
+  const root = strip?.parentElement;
+  if (strip && root) return { root, strip };
+  const bar = createTabBar(document, { id: 'social-tabs' });
+  chrome.prepend(bar.root);
+  return bar;
+}
+
+/** Paint the Social frame's chrome: the TabBar, the sheet and the prompt. A closed sheet or
  *  prompt is rendered EMPTY as well as hidden (the e2e helpers read a root's textContent). */
 function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
-  const strip = socialPart(chrome, 'social-tabs', 'div');
-  strip.className = 'mr-frame-tabstrip';
-  renderTabs(
-    strip,
+  renderTabBar(
+    socialTabBar(chrome),
     SOCIAL_TAB_STRIP,
     { tab: p.tab, item: null, perTab: {} },
     { frame: SOCIAL_FRAME_ID, label: (tab) => SOCIAL_TAB_LABELS[tab.key as SocialTab]() },
@@ -256,7 +267,8 @@ export class TradeView {
   /** Write the status line and apply the kept Social paint to this root. On the Players tab the
    *  status reads the placeholder and the sides and actions are hidden; the status stays shown
    *  (it is the dialog's focus anchor). The trade row's cursor is marked on the status by class AND aria-current, never
-   *  colour alone. With no paint the root is exactly the legacy trade overlay. */
+   *  colour alone. The Trades tab keeps this shape in uif-9: its row cards come with M-trade-sessions
+   *  `ts-3`, which rebuilds the tab (UIF9.4). With no paint the root is exactly the legacy trade overlay. */
   #applySocial(): void {
     const p = this.#social;
     const players = p?.tab === 'players';

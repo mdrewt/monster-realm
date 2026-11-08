@@ -1087,9 +1087,15 @@ function expectChildren(root: HTMLElement, expected: readonly Element[], label: 
   });
 }
 
-/** The tab strip inside `chrome`: one tablist with the frame's tab-strip class, first of the
- *  chrome's three parts (strip, sheet, prompt), the four tabs in order with their catalogued
- *  labels, exactly `active` selected; every chrome part at most once, and inside the chrome. */
+/** The tab strip inside `chrome`: one tablist with the frame's tab-strip class, held by the kit
+ *  TabBar that is the first of the chrome's three parts (TabBar, sheet, prompt), the four tabs in
+ *  order with their catalogued labels, exactly `active` selected; every chrome part at most once,
+ *  and inside the chrome.
+ *
+ *  NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): was the chrome's children
+ *  ['social-tabs', 'social-sheet', 'social-prompt'] (the bare strip first) and the selected tab
+ *  `is-active`; now the chrome's first child is the TabBar root (no id) that holds the strip, and
+ *  the selected tab is `is-selected` and never `is-active` (the row cursor's class). */
 function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): void {
   expect(document.querySelectorAll('#social-tabs').length, `${label}: one #social-tabs`).toBe(1);
   const strip = byId('social-tabs');
@@ -1103,8 +1109,16 @@ function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): voi
   ).toBe(true);
   expect(
     [...chrome.children].map((c) => c.id),
-    `${label}: the chrome holds the strip, then the sheet, then the prompt`,
-  ).toEqual(['social-tabs', 'social-sheet', 'social-prompt']);
+    `${label}: the chrome holds the TabBar (no id), then the sheet, then the prompt`,
+  ).toEqual(['', 'social-sheet', 'social-prompt']);
+  expect(
+    chrome.firstElementChild?.classList.contains('mr-tabbar'),
+    `${label}: the chrome's first child is the kit TabBar`,
+  ).toBe(true);
+  expect(
+    strip.parentElement,
+    `${label}: the strip is held by the TabBar root, the chrome's first child`,
+  ).toBe(chrome.firstElementChild);
   const tabs = [...strip.children] as HTMLElement[];
   expect(
     tabs.map((t) => t.id),
@@ -1123,9 +1137,13 @@ function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): voi
     `${label}: only ${active} is aria-selected`,
   ).toEqual(SOCIAL_TAB_ORDER.map((t) => (t === active ? 'true' : 'false')));
   expect(
-    tabs.map((t) => t.classList.contains('is-active')),
-    `${label}: only ${active} is-active`,
+    tabs.map((t) => t.classList.contains('is-selected')),
+    `${label}: only ${active} is-selected`,
   ).toEqual(SOCIAL_TAB_ORDER.map((t) => t === active));
+  expect(
+    tabs.map((t) => t.classList.contains('is-active')),
+    `${label}: no tab is is-active (the row cursor's class)`,
+  ).toEqual(SOCIAL_TAB_ORDER.map(() => false));
   for (const id of SOCIAL_PART_IDS) {
     const found = document.querySelectorAll(`#${id}`);
     expect(found.length, `${label}: #${id} at most once`).toBeLessThanOrEqual(1);
@@ -1182,7 +1200,7 @@ function expectNoPrompt(label: string): void {
 }
 
 describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
-  it('CTL8D-1-VIEW-TABS: paintSocial paints a tablist #social-tabs inside the chrome holding the four tabs Players, Trades, Challenges, Rankings in that order with their catalogued labels and exactly the painted tab selected (is-active and aria-selected); it paints on every call, with the trade root hidden and never rendered too, reuses its parts (one strip, no duplicate id) and never adds a child to #trade-overlay', () => {
+  it('CTL8D-1-VIEW-TABS: paintSocial paints a tablist #social-tabs inside the chrome holding the four tabs Players, Trades, Challenges, Rankings in that order with their catalogued labels and exactly the painted tab selected (is-selected and aria-selected, never is-active: NAMED INTENTIONAL CHANGE uif-9, UIF9.1, was is-active); it paints on every call, with the trade root hidden and never rendered too, reuses its parts (one strip, no duplicate id) and never adds a child to #trade-overlay', () => {
     // WRONG IMPL KILLED: a paintSocial that returns early while the trade root is hidden (on
     // Challenges and Rankings the strip would keep the last tab painted over the trade root); a
     // strip that keeps the first tab selected, or marks a tab by class only or by aria only; tabs
@@ -1585,6 +1603,143 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     view.render(offer);
     view.show();
     expect(statusMark(), 'reopened: no mark from the last visit').toEqual(UNMARKED);
+
+    removeOverlay(overlay);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-9 (UIF9.1): the Social tabs render through the ONE kit TabBar, held by the shared chrome.
+// The chrome's first child is the TabBar root (an LB chip, the `#social-tabs` tablist, an RB chip),
+// so the bar is the first thing in whichever panel hosts the chrome.
+//
+// UIF9.4 (Trades): the Trades tab's RowCard migration is DEFERRED to M-trade-sessions ts-3, which
+// rebuilds that tab; until then the trade root holds no `.mr-card` (pinned below so the deferral
+// is explicit, not an omission).
+// ---------------------------------------------------------------------------
+
+describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
+  it('UIF9.1 the chrome`s first child is the TabBar root (class mr-tabbar, not hidden) holding, in order, an LB chip, the #social-tabs tablist and an RB chip (chips aria-hidden, data-button, no text); the four tabs in order carry the catalogued labels with the painted one aria-selected and is-selected and never is-active; a repaint, on any tab and on a moved chrome, reuses the same bar and strip nodes; the chrome is [TabBar, #social-sheet, #social-prompt] and the trade root gains only the hosted chrome', () => {
+    // WRONG IMPL KILLED: the bare strip left as the chrome's first child (no `.mr-tabbar` root, no
+    // chips); a TabBar appended after the sheet or the prompt (not top-anchored); a second bar
+    // created on every paint or per panel (two `.mr-tabbar`, two `#social-tabs`); chips that carry
+    // text or are not aria-hidden (a screen reader reads "LB"); the selected tab marked `is-active`
+    // (the row cursor's class: two cursors on one screen) or by aria alone; a bar left `hidden`
+    // after a paint; a strip without role=tablist; a bar or tab created inside the trade root's own
+    // children instead of the chrome handed to the painter.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const shell = [...overlay.children];
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    const bar = chrome.firstElementChild as HTMLElement;
+    expect(bar, 'the chrome has a first child').not.toBeNull();
+    expect(bar.classList.contains('mr-tabbar'), 'the first child is the TabBar root').toBe(true);
+    expect(bar.hidden, 'a painted TabBar is not hidden').toBe(false);
+    expect(
+      [...bar.children].map((c) => c.getAttribute('data-button') ?? c.id),
+      'the bar holds LB, the #social-tabs strip, then RB',
+    ).toEqual(['LB', 'social-tabs', 'RB']);
+    const [lb, strip, rb] = [...bar.children] as HTMLElement[];
+    for (const chip of [lb, rb] as HTMLElement[]) {
+      expect(chip.getAttribute('aria-hidden'), 'a chip is hidden from assistive technology').toBe(
+        'true',
+      );
+      expect(chip.textContent, 'the kit writes no chip text (CSS draws the letters)').toBe('');
+      expect(chip.children.length, 'a chip holds no element').toBe(0);
+    }
+    expect(strip?.getAttribute('role'), 'the strip is the tablist').toBe('tablist');
+    expect(document.querySelectorAll('.mr-tabbar').length, 'one TabBar in the document').toBe(1);
+    expect(document.querySelectorAll('#social-tabs').length, 'one strip in the document').toBe(1);
+    expectStrip(chrome, 'challenges', 'first paint, Challenges');
+
+    // Every tab selected in turn: the same nodes, the selection moves.
+    for (const tab of SOCIAL_TAB_ORDER) {
+      view.paintSocial(chrome, socialPaint({ tab }));
+      expect(chrome.firstElementChild, `${tab}: the same bar`).toBe(bar);
+      expect(byId('social-tabs'), `${tab}: the same strip`).toBe(strip);
+      expect(bar.hidden, `${tab}: not hidden`).toBe(false);
+      expectStrip(chrome, tab, `repaint, ${tab}`);
+      expect(
+        [...(strip as HTMLElement).children].map((el) => el.classList.contains('is-selected')),
+        `${tab}: is-selected on the painted tab alone`,
+      ).toEqual(SOCIAL_TAB_ORDER.map((t) => t === tab));
+    }
+
+    // The trade root: only the hosted chrome was added.
+    expect(overlay.firstElementChild, 'the chrome is the trade root`s first child').toBe(chrome);
+    expect(overlay.children.length, 'the root gained the chrome and nothing else').toBe(
+      shell.length + 1,
+    );
+    for (const [i, child] of shell.entries()) {
+      expect(overlay.children[i + 1], `shell child ${i} is unchanged`).toBe(child);
+      expect(child.classList.contains('mr-tabbar'), `shell child ${i} is no TabBar`).toBe(false);
+      expect(child.querySelector('.mr-tabbar'), `shell child ${i} holds no TabBar`).toBeNull();
+    }
+
+    // The chrome moved to another root and painted there: still the one bar, still first.
+    const otherRoot = document.createElement('div');
+    document.body.appendChild(otherRoot);
+    otherRoot.prepend(chrome);
+    view.paintSocial(chrome, socialPaint({ tab: 'rankings' }));
+    expect(chrome.firstElementChild, 'moved chrome: the same bar, still first').toBe(bar);
+    expect(document.querySelectorAll('.mr-tabbar').length, 'moved chrome: still one TabBar').toBe(
+      1,
+    );
+    expectStrip(chrome, 'rankings', 'moved chrome, Rankings');
+
+    removeOverlay(overlay);
+  });
+
+  it('UIF9.1 the TabBar is created in the chrome handed to the painter even when the trade root is hidden and never rendered, and a chrome that already holds one bar is not given a second', () => {
+    // WRONG IMPL KILLED: a painter that returns early while the trade root is hidden (on
+    // Challenges and Rankings the chrome would hold no bar); a bar created into the document or the
+    // trade root instead of the chrome; a locate-by-id that misses the bar and builds a second one
+    // on the next paint (two chips pairs, two strips).
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const chrome = document.createElement('div');
+    const elsewhere = document.createElement('div');
+    document.body.appendChild(elsewhere);
+    elsewhere.appendChild(chrome);
+
+    expect(view.visible, 'precondition: the trade root is hidden').toBe(false);
+    view.paintSocial(chrome, socialPaint({ tab: 'rankings' }));
+    expect(chrome.querySelectorAll('.mr-tabbar').length, 'the hidden-root paint made one bar').toBe(
+      1,
+    );
+    expect(overlay.querySelector('.mr-tabbar'), 'none in the trade root').toBeNull();
+    const bar = chrome.firstElementChild;
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    view.paintSocial(chrome, socialPaint({ tab: 'rankings' }));
+    expect(chrome.querySelectorAll('.mr-tabbar').length, 'repaints made no second bar').toBe(1);
+    expect(chrome.firstElementChild, 'and kept the first').toBe(bar);
+    expect(chrome.querySelectorAll('[data-button]').length, 'two chips, no more').toBe(2);
+
+    removeOverlay(overlay);
+  });
+
+  it('UIF9.4 the Trades panel holds no RowCard: its migration is deferred to M-trade-sessions ts-3, which rebuilds that tab, so a rendered trade and an empty one both leave the root with no .mr-card', () => {
+    // The reason this is pinned: the Trades tab is rebuilt in M-trade-sessions ts-3 (feedback 086),
+    // so uif-9 migrates only the Challenges rows; a RowCard added here would be thrown away.
+    // WRONG IMPL KILLED: a card wrapped around the trade status or either side (migrating a tab
+    // whose rebuild is another slice's); a card the trade root keeps after a render.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const chrome = document.createElement('div');
+    view.show();
+    view.hostChrome(chrome);
+    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
+    expect(statusMark(), 'precondition: the Trades paint is live (cursor on the row)').toEqual(
+      MARKED,
+    );
+    expect(overlay.querySelectorAll('.mr-card').length, 'a trade offer: no card').toBe(0);
+    view.render(makeNoTradeVM());
+    expect(overlay.querySelectorAll('.mr-card').length, 'no trade: no card').toBe(0);
+    expect(overlay.querySelectorAll('.mr-card-title').length, 'and no card title').toBe(0);
 
     removeOverlay(overlay);
   });

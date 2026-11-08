@@ -65,6 +65,11 @@ vi.mock('../../../../client-wasm/pkg/client_wasm.js', () => {
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: (state: unknown) => state,
+    // uif-9 (named fixture change, additive): the two exports a RUNNING frame may read (the UIF9.5
+    // request case runs frames; the other cases never do): care readiness (always ready) and the
+    // interact candidates (none), as test-util/mainBootHarness.ts's wasmPkgStubMock answers them.
+    care_remaining_ms: (): bigint => 0n,
+    interact_candidates_coded: () => [],
     deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
@@ -188,6 +193,8 @@ function recordListeners(target: EventTarget): void {
 }
 
 const clock = { t: 0 };
+/** The frame loop's armed requestAnimationFrame callback (see `bootReady`). */
+let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 /** The i18n resolver instance main.ts runs on (imported AFTER the module reset, so it is shared). */
 let i18n: typeof import('../i18n/resolver');
@@ -203,7 +210,14 @@ async function bootReady(): Promise<void> {
   mountIndexHtmlShell();
   recordListeners(window);
   recordListeners(document);
-  vi.stubGlobal('requestAnimationFrame', (): number => 0);
+  // uif-9 (named intentional change to the harness): the callback is kept (was dropped) so the
+  // UIF9.5 request case can run a frame (the notice banner paints on the frame loop). No other
+  // case runs a frame, so none changes.
+  rafCallback = null;
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
+    rafCallback = cb;
+    return 0;
+  });
   vi.resetModules();
   await import('../../main');
   i18n = await import('../i18n/resolver');
@@ -223,6 +237,7 @@ function teardownBoot(): void {
   while (restorers.length > 0) restorers.pop()?.();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  rafCallback = null;
   H.calls = [];
   window.history.replaceState(null, '', '/');
   document.body.replaceChildren();
@@ -424,6 +439,16 @@ function expectSocialOn(
     chrome !== null && chrome !== strip && chrome.contains(strip),
     `${label}: the strip is in the chrome, the first child of #${rootId}`,
   ).toBe(true);
+  // NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): the strip is held by the kit TabBar, which is the
+  // chrome's first child (was: the bare strip directly under the chrome).
+  expect(
+    strip.parentElement,
+    `${label}: the strip is held by the TabBar, the chrome's first child`,
+  ).toBe(chrome?.firstElementChild);
+  expect(
+    chrome?.firstElementChild?.classList.contains('mr-tabbar'),
+    `${label}: that first child is the kit TabBar`,
+  ).toBe(true);
   const tabs = [...strip.querySelectorAll<HTMLElement>('[role="tab"]')];
   expect(
     tabs.map((t) => t.id),
@@ -437,10 +462,16 @@ function expectSocialOn(
     tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.id),
     `${label}: ${tab} alone is aria-selected`,
   ).toEqual([`social-tab-${tab}`]);
+  // NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): was "`tab` alone is-active"; now `tab` alone is
+  // `is-selected` and no tab is `is-active` (the TabBar's selected-tab class is not the row cursor's).
+  expect(
+    tabs.filter((t) => t.classList.contains('is-selected')).map((t) => t.id),
+    `${label}: ${tab} alone is-selected`,
+  ).toEqual([`social-tab-${tab}`]);
   expect(
     tabs.filter((t) => t.classList.contains('is-active')).map((t) => t.id),
-    `${label}: ${tab} alone is-active`,
-  ).toEqual([`social-tab-${tab}`]);
+    `${label}: no tab is is-active`,
+  ).toEqual([]);
 }
 
 /** The five trade-shell parts, in shell order, and which of them are `hidden` now. */
@@ -1015,5 +1046,144 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     }
     expect(driven, 'ANTI-VACUITY: three accelerators over four tabs were driven').toBe(12);
     expect(H.calls, 'closing Social sent nothing').toEqual([]);
+  });
+
+  it('UIF9.1 the booted Social chrome holds ONE kit TabBar (LB chip, #social-tabs, RB chip) as its first child, ahead of the sheet and the prompt, and the same bar is the first thing in each panel in turn: Trades, Challenges, Rankings, Players, with no second bar in any root', async () => {
+    // WRONG IMPL KILLED: the bare strip left in the booted chrome (no `.mr-tabbar`); a bar per
+    // panel (two bars in the document, or a bar left behind in the panel just left); a bar that is
+    // not the chrome's first child (the sheet or prompt above it: not top-anchored); a bar that is
+    // hidden or whose chips carry text; and a strip that is no longer the one `#social-tabs`.
+    await bootReady();
+    server(1000);
+    let at = 1100;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 10;
+    };
+
+    key('KeyU');
+    expectSocialOn('U', 'trades');
+    const bar = el(ROOT_OF.trades).firstElementChild?.firstElementChild as HTMLElement;
+    expect(
+      bar?.classList.contains('mr-tabbar'),
+      'precondition: the Trades chrome opens with a TabBar',
+    ).toBe(true);
+
+    const walk: ReadonlyArray<readonly [string, SocialTab]> = [
+      ['PageDown', 'challenges'],
+      ['PageDown', 'rankings'],
+      ['PageDown', 'players'],
+      ['PageDown', 'trades'],
+    ];
+    let checked = 0;
+    for (const [code, tab] of walk) {
+      key(code);
+      expectSocialOn(`RB to ${tab}`, tab);
+      const root = el(ROOT_OF[tab]);
+      const chrome = root.firstElementChild as HTMLElement;
+      expect(chrome.firstElementChild, `${tab}: the one bar, the chrome's first child`).toBe(bar);
+      expect(bar.hidden, `${tab}: the bar shows`).toBe(false);
+      expect(
+        [...bar.children].map((c) => c.getAttribute('data-button') ?? c.id),
+        `${tab}: LB, the strip, RB`,
+      ).toEqual(['LB', 'social-tabs', 'RB']);
+      expect(
+        [...bar.children]
+          .filter((c) => c.id !== 'social-tabs')
+          .map((c) => [c.getAttribute('aria-hidden'), c.textContent]),
+        `${tab}: the chips are aria-hidden and carry no text`,
+      ).toEqual([
+        ['true', ''],
+        ['true', ''],
+      ]);
+      expect(
+        [...chrome.children].map((c) => c.id),
+        `${tab}: the chrome is the bar, then the sheet, then the prompt`,
+      ).toEqual(['', 'social-sheet', 'social-prompt']);
+      // NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): was "exactly one `.mr-tabbar` in the document".
+      // That count is false by construction: boxView (#monsters-tabs), raisingView (#bag-tabs) and
+      // frame.ts createFrame (`<id>-tabs`) each build their own TabBar, always in the DOM. The
+      // oracle still kills a second SOCIAL bar: exactly one bar holds `#social-tabs`, there is one
+      // `#social-tabs`, and every bar outside the chrome has another strip id.
+      const bars = [...document.querySelectorAll<HTMLElement>('.mr-tabbar')];
+      expect(
+        bars.filter((b) => b.querySelector('#social-tabs') !== null),
+        `${tab}: exactly one TabBar holds #social-tabs, and it is the chrome's`,
+      ).toEqual([bar]);
+      expect(
+        document.querySelectorAll('#social-tabs').length,
+        `${tab}: one #social-tabs in the document`,
+      ).toBe(1);
+      for (const other of bars.filter((b) => b !== bar)) {
+        expect(
+          other.querySelector('[role="tablist"]')?.id,
+          `${tab}: a TabBar outside the chrome has a strip id other than social-tabs`,
+        ).not.toBe('social-tabs');
+      }
+      for (const rootId of SOCIAL_ROOTS) {
+        expect(
+          el(rootId).querySelectorAll('.mr-tabbar').length,
+          `${tab}: #${rootId} holds ${rootId === ROOT_OF[tab] ? 'the' : 'no'} bar`,
+        ).toBe(rootId === ROOT_OF[tab] ? 1 : 0);
+      }
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: four panel switches were checked').toBe(4);
+  });
+
+  it('UIF9.5 with no frame open, an incoming trade offer and an incoming challenge each show #notice-banner naming the sender and push no frame: the stack stays the bare world, no Social root shows, nothing is sent', async () => {
+    // WRONG IMPL KILLED: a request that opens the Social frame or a Social panel (a frame in the
+    // stack, a root shown: the retired auto-show, or uif-9's chrome work reintroducing it); a
+    // request with no banner (invisible); a request answered by itself (a reducer call).
+    // Requests stay a banner and the world's request sheet (main.notices.test.ts owns the sheet's
+    // rows), never a frame. This case is a regression guard: it holds before and after uif-9.
+    const bannerText = (): string | null => {
+      const banner = document.getElementById('notice-banner');
+      if (banner === null) return null;
+      for (let n: Element | null = banner; n instanceof HTMLElement; n = n.parentElement) {
+        if (n.style.display === 'none' || n.hidden) return null;
+      }
+      return banner.textContent ?? '';
+    };
+    const frameOnce = (): void => {
+      const cb = rafCallback;
+      if (cb === null) throw new Error('no rAF callback armed');
+      rafCallback = null;
+      clock.t += 50;
+      cb(clock.t);
+    };
+    const scenarios: ReadonlyArray<{ label: string; seed: () => void }> = [
+      {
+        label: 'an incoming challenge',
+        seed: () => opts.store.upsertChallenge(incomingChallenge(CHALLENGE_ID)),
+      },
+      {
+        label: 'an incoming trade offer',
+        seed: () => opts.store.upsertTradeOffer(waitingTrade(TRADE_ID)),
+      },
+    ];
+    let checked = 0;
+    for (const s of scenarios) {
+      teardownBoot();
+      await bootReady();
+      server(1000);
+      frameOnce();
+      expect(stackNow(), `${s.label}: precondition: the bare world`).toEqual([WORLD_FRAME]);
+      expect(bannerText(), `${s.label}: precondition: no banner before the request`).toBeNull();
+
+      otherPlayer(OTHER, 8n, 'Zed', 10);
+      s.seed();
+      server(1100);
+      frameOnce();
+      await flush();
+      frameOnce();
+
+      expect(bannerText(), `${s.label}: the banner names the sender`).toContain('Zed');
+      expect(stackNow(), `${s.label}: no frame was pushed`).toEqual([WORLD_FRAME]);
+      expect(shownRoots(), `${s.label}: no Social root shows`).toEqual([]);
+      expect(H.calls, `${s.label}: nothing was sent`).toEqual([]);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: both request kinds were checked').toBe(2);
   });
 });
