@@ -26,7 +26,7 @@ import type { WasmMoveInput } from './convert/convert';
 import { DEFAULT_BINDINGS } from './input/bindings';
 import { VBUTTONS } from './input/buttons';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreTradeOffer } from './net/store';
+import type { StoreMonsterPub, StoreTradeOffer } from './net/store';
 import { t as i18nT } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -640,6 +640,91 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       ['Select', i18nT('chrome.chip.help')],
     ]);
     expect(chipOf('A').verb, 'Choose, in words').toBe('Choose');
+  }, 120_000);
+
+  it('UIF12.3 a Challenge size confirm opened FROM a multi-row picker reads A OK (not Choose) and Start Close; the picker itself reads A Choose', async () => {
+    // WRONG IMPL KILLED: a picker flag that ignores the confirm (`entries.length > 1` alone): the
+    // confirm keeps all of the picker's entries, so A would read Choose over a size pick whose A
+    // simply picks the highlighted size.
+    const FACED_IDENTITY = 'fe'.repeat(32);
+    const FACED_ENTITY = 21n;
+    await bootReady();
+    H.interact = (...args: unknown[]) => {
+      const entities = args[4];
+      if (!Array.isArray(entities)) return [];
+      const at = entities.findIndex(
+        (e: { kind?: unknown; id?: unknown }) =>
+          e.kind === 'player' && e.id === FACED_ENTITY.toString(),
+      );
+      return at === -1 ? [] : [at];
+    };
+    opts.store.upsertPlayer({
+      identity: FACED_IDENTITY,
+      entityId: FACED_ENTITY,
+      name: 'Zed',
+      online: true,
+      lastInputSeq: 0n,
+    });
+    opts.store.upsertCharacter(
+      {
+        entityId: FACED_ENTITY,
+        zoneId: 0,
+        tileX: 3,
+        tileY: 6,
+        facing: 'West',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      clock.t,
+    );
+    opts.store.upsertMonster({
+      monsterId: 61n,
+      ownerIdentity: H.identity,
+      speciesId: 1,
+      nickname: 'm61',
+      level: 5,
+      xp: 0,
+      currentHp: 20,
+      statHp: 20,
+      statAttack: 5,
+      statDefense: 5,
+      statSpeed: 5,
+      statSpAttack: 5,
+      statSpDefense: 5,
+      partySlot: 0,
+      tier: 0,
+      essence: {} as StoreMonsterPub['essence'],
+      trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
+      qualityTimeTier: 0,
+      nutritionPct: 0,
+      lastCareAtMs: 0n,
+    });
+    batch();
+    frame();
+
+    press('Enter'); // A: the Trade / Challenge picker
+    frame();
+    const rowTexts = (): string[] =>
+      [...document.querySelectorAll('#interact-prompt [role="option"]')].map(
+        (el) => el.textContent ?? '',
+      );
+    expect(rowTexts().length, 'precondition: a two-row picker (Trade, Challenge)').toBe(2);
+    expect(chipOf('A').verb, 'the picker reads Choose').toBe(
+      i18nT('interact.chip.choose' as never),
+    );
+
+    press('ArrowDown');
+    press('Enter'); // A on Challenge: the size confirm
+    frame();
+    expect(rowTexts(), 'precondition: the size confirm (1 vs 1, No) is open').toEqual([
+      '1 vs 1',
+      'No',
+    ]);
+    expect(H.calls, 'precondition: nothing sent yet').toEqual([]);
+    expect(chipOf('A').verb, 'the confirm reads OK').toBe(i18nT('chrome.chip.ok'));
+    expect(chipOf('A').verb, 'and not Choose').not.toBe(i18nT('interact.chip.choose' as never));
+    expect(chipOf('Start').verb, 'Start reads Close').toBe(i18nT('chrome.chip.close'));
   }, 120_000);
 });
 

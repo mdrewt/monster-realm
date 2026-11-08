@@ -2978,8 +2978,9 @@ const pointerPress = (button: VButton): void => {
     routeEdge({ button, down: false });
   } finally {
     syncStack();
-    paintWorldPrompt?.();
   }
+  // After the press, not in the finally: a paint error must never mask the router's own.
+  paintWorldPrompt?.();
 };
 
 // What a click can reach: the canvas only at the bare world base (an open world sheet would take A
@@ -5107,9 +5108,8 @@ async function main(): Promise<void> {
     interactPromptEl.classList.toggle('mr-prompt--sheet', sheetShown);
     return { chip, pending };
   };
-  paintWorldPrompt = () => {
-    if (!sessionGateBlocks()) paintPrompt();
-  };
+  // pointerPress is dead under the session terminal, so this paint never runs there.
+  paintWorldPrompt = paintPrompt;
 
   const frame = (): void => {
     try {
