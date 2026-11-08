@@ -856,8 +856,11 @@ the listbox ring onto `--mr-focus` while the active row keeps its light fill.
 returns the integer `deviceScale` the world renders at, and the continuous `uiScale`, the shorter
 CSS axis over 720 clamped to [0.875, 3]. `installResizeHandler` writes `uiScale` to `--mr-ui-scale` on
 `documentElement` at the same event that resizes the renderer, and the one root rule,
-`:root[style*="--mr-ui-scale"] { font-size: calc(100% * var(--mr-ui-scale)); }`, carries it to every
-rem token. Until the first write the rule does not match, so the root stays at 100%, a scale of 1.
+`:root[style*="--mr-ui-scale"] { font-size: calc(100% * var(--mr-ui-scale) * var(--mr-text-step, 1)); }`,
+carries it to every rem token. Until the first write the rule does not match, so the root stays at 100%, a
+scale of 1. The player's text size (uif-13: ×1, ×1.5 or ×2 from Controls › Display, `client/src/ui/displayPrefs.ts`)
+is the second factor, written as `--mr-text-step` at import, before the seam's first write; it never moves
+`uiScale` or `deviceScale`.
 
 **Why.** Playtest 3 read the snapping world and the smoothly growing menu as two competing methods
 (#586 D1). Each half needs its own rounding: a fractional stage scale blurs the pixel art, and a
