@@ -873,3 +873,34 @@ remainder, because a box would change how much world each window shows. Integer 
 `uiScale`, a second scale calculation elsewhere, and a px root size, which would override the
 player's browser font setting. A dpr change with no size change fires no `resize` in Chromium, and
 the seam stays resize-driven, so the world catches up at the next resize.
+
+## Four message channels, chosen by one policy table
+
+**Decision.** Every message the client shows has a `MessageKind`, and `client/src/ui/feedbackPolicy.ts`
+assigns each kind to one of four channels. The **hint line** is a frame's feedback strip, or the world
+line (`#status`) when no frame hosts it. The **toast** is one timed `.mr-toast` region (`ui/toast.ts`)
+for outcomes. The **modal** is a confirm sheet for decisions. The **blocking text box** is the dialogue.
+The table is a `satisfies Record<MessageKind, PolicyRow>`, so a kind with no channel fails typecheck.
+`main.ts`'s sinks (`reportError`, `showNotice`, `sendGuarded` through `SEND_REJECT_KIND`, the battle
+refusal, care) name a kind and `route` it. A toast is announced once through `#a11y-live` (the qf-6
+notice pump) and hides after `TOAST_MS` of the frame clock. A persistent hint follows the top frame
+(WF1-A9). On the main menu's strip it outranks the menu's own line: an action-required hint comes
+first, then a persistent state, then a disabled reason, then a Y-description. Otherwise it sits on
+`#status`, which is layered above every shell and below the toast. The strip is an overlay with zero
+layout height: its height and negative bottom margin cancel, it sits in a 2rem bottom reserve on
+`.mr-frame` and `.mr-shell`, and it is sticky with `bottom: -2rem`, because Chromium measures sticky
+offsets inside the scroller's padding.
+
+**Why.** Playtest 3 found that the old strip pushed the frame's content when it appeared (058). It
+also found that the status line painted under every shell, so a rejection sent from the Monsters
+sheet, or a disconnect, never reached a player with a frame open. One table means a view never
+chooses its own channel, and the wireframes' channel table is checkable against the code. A toast is
+never the only carrier of something the player must act on. An action-required toast row names the
+on-screen state that also carries it, and the policy test pins that list.
+
+**Rules out.** A per-view channel choice. Holding a battle refusal until the battle ends: it is a
+timed toast now. A second live region: the toast is not one. New `.mr-frame*` or `.mr-shell*`
+selectors for the strip. A multi-line strip: a long hint ends in an ellipsis and the live region
+still says all of it. Frames whose strip is still view-owned (boxView, raisingView, and the per-view
+lines that uif-4b moves) carry a persistent hint on the raised world line until their strips join
+the seam.

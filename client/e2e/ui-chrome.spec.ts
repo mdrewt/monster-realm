@@ -1253,4 +1253,410 @@ test.describe
           .toBe(16);
       }
     });
+
+    // =========================================================================================
+    // uif-4 (UIF4.2, UIF4.3): the feedback strip is an overlay (zero layout height), and the toast
+    // paints above the top shell. The geometry runs on ALL THREE strip hosts (the main menu's kit
+    // frame, Monsters, Inventory) at 1280x720 AND 640x240, against the REAL stylesheet.
+    //
+    // Menu: the strip is made to show through a REAL flow (Y on a menu row paints its description).
+    // Monsters and Inventory: no real flow paints their strip without fixtures that need a monster
+    // in a state or an item pocket, so the strip is FORCED shown inside the probe's own page.evaluate
+    // (`hidden = false` plus text, undone in a finally, no frame between). The geometry measured is
+    // still the real CSS: nothing but the strip's own hidden/text is touched.
+    // =========================================================================================
+
+    type R = { x: number; y: number; width: number; height: number };
+    interface StripProbe {
+      readonly snap: {
+        readonly host: R;
+        readonly body: R | null;
+        readonly scrollHeight: number;
+        readonly hostScrollHeight: number;
+        readonly stripHidden: boolean;
+        readonly stripRect: R;
+        readonly others: readonly R[];
+      };
+      readonly containerRect: R;
+      readonly stripAtTop: R;
+      readonly stripAtMax: R;
+      readonly contentBottomAtMax: number;
+    }
+    interface ProbeCfg {
+      readonly which: 'menu' | 'box' | 'bag';
+      readonly force: boolean;
+      readonly text: string;
+    }
+
+    /** One synchronous in-page measurement of a strip host (no frame, no batch inside it). */
+    const probeStrip = (cfg: ProbeCfg): Promise<StripProbe> =>
+      page.evaluate((c: ProbeCfg): StripProbe => {
+        const q = (s: string): HTMLElement | null => document.querySelector<HTMLElement>(s);
+        let host: HTMLElement | null = null;
+        let strip: HTMLElement | null = null;
+        if (c.which === 'menu') {
+          host = q('#menu-overlay');
+          strip = host?.querySelector<HTMLElement>('.mr-frame-feedback') ?? null;
+        } else if (c.which === 'box') {
+          host = q('[data-testid="box-title"]')?.closest<HTMLElement>('.mr-shell') ?? null;
+          strip = host?.querySelector<HTMLElement>('.mr-frame-feedback') ?? null;
+        } else {
+          strip = q('#bag-status');
+          host = strip?.closest<HTMLElement>('.mr-shell') ?? null;
+        }
+        if (host === null || strip === null) {
+          throw new Error(`probeStrip(${c.which}): no host or no strip on screen`);
+        }
+        const h = host;
+        const s = strip;
+        const rectOf = (el: Element): R => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        };
+        const body = h.querySelector<HTMLElement>('.mr-frame-body');
+        let container: HTMLElement = h;
+        for (let n = s.parentElement; n !== null && n !== document.body; n = n.parentElement) {
+          if (getComputedStyle(n).overflowY !== 'visible') {
+            container = n;
+            break;
+          }
+        }
+        const scrollables = [
+          h,
+          container,
+          ...Array.from(h.querySelectorAll<HTMLElement>('*')),
+        ].filter((el, i, all) => {
+          return (
+            all.indexOf(el) === i && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+          );
+        });
+        const setScroll = (where: 'top' | 'max'): void => {
+          for (const el of scrollables) el.scrollTop = where === 'top' ? 0 : el.scrollHeight;
+        };
+        const underAbsolute = (el: Element): boolean => {
+          for (let n: Element | null = el; n !== null && n !== h; n = n.parentElement) {
+            const p = getComputedStyle(n).position;
+            if (p === 'absolute' || p === 'fixed') return true;
+          }
+          return false;
+        };
+        const contentBottom = (): number => {
+          let m = Number.NEGATIVE_INFINITY;
+          for (const el of Array.from(h.querySelectorAll<HTMLElement>('*'))) {
+            // uif-4 (named change): skip the strip, its descendants AND its ancestors (the frame root
+            // contains the strip, so its border box ends below it by construction); only content rows count.
+            if (el === s || s.contains(el) || el.contains(s) || el.closest('[hidden]') !== null)
+              continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden' || underAbsolute(el)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            m = Math.max(m, r.bottom);
+          }
+          return m;
+        };
+        const prior = {
+          hidden: s.hidden,
+          display: s.style.display,
+          text: s.textContent,
+          scroll: scrollables.map((e) => e.scrollTop),
+        };
+        try {
+          if (c.force) {
+            s.hidden = false;
+            s.style.display = '';
+            s.textContent = c.text;
+          }
+          setScroll('top');
+          const parent = s.parentElement ?? h;
+          const snap = {
+            host: rectOf(h),
+            body: body === null ? null : rectOf(body),
+            scrollHeight: container.scrollHeight,
+            hostScrollHeight: h.scrollHeight,
+            // collapsed = the hidden attribute OR display:none (boxView collapses with style.display).
+            stripHidden: s.hidden !== false || getComputedStyle(s).display === 'none',
+            stripRect: rectOf(s),
+            others: Array.from(parent.children)
+              .filter((k) => k !== s)
+              .map(rectOf),
+          };
+          const containerRect = rectOf(container);
+          const stripAtTop = rectOf(s);
+          setScroll('max');
+          const stripAtMax = rectOf(s);
+          const contentBottomAtMax = contentBottom();
+          return { snap, containerRect, stripAtTop, stripAtMax, contentBottomAtMax };
+        } finally {
+          if (c.force) {
+            s.hidden = prior.hidden;
+            s.style.display = prior.display;
+            s.textContent = prior.text;
+          }
+          scrollables.forEach((e, i) => {
+            e.scrollTop = prior.scroll[i] ?? 0;
+          });
+        }
+      }, cfg);
+
+    const inside = (inner: R, outer: R): boolean =>
+      inner.x >= outer.x - 0.5 &&
+      inner.y >= outer.y - 0.5 &&
+      inner.x + inner.width <= outer.x + outer.width + 0.5 &&
+      inner.y + inner.height <= outer.y + outer.height + 0.5;
+
+    /** The UIF4.3 clauses, empty -> shown, for one host at one window. */
+    const expectOverlay = (
+      before: StripProbe,
+      after: StripProbe,
+      label: string,
+      emptyCollapses = true,
+    ): void => {
+      // Residual R-uif-4-BAGSTATUS-EMPTY (for uif-8, which owns Inventory): raisingView never collapses
+      // an empty #bag-status (style.display = '' and textContent = '', as before uif-4; raisingView.ts is
+      // outside this slice's touches), so the Inventory host passes emptyCollapses = false and skips ONLY
+      // the empty-collapse clause. Every other clause below holds for it unchanged.
+      if (emptyCollapses) {
+        expect(before.snap.stripHidden, `${label}: the empty strip is collapsed`).toBe(true);
+        expect(
+          [before.snap.stripRect.width, before.snap.stripRect.height],
+          `${label}: the empty strip has a zero rect`,
+        ).toEqual([0, 0]);
+      }
+      expect(after.snap.stripHidden, `${label}: the shown strip is not hidden`).toBe(false);
+      expect(after.stripAtTop.height, `${label}: the shown strip has a height`).toBeGreaterThan(0);
+      expect(after.snap.host, `${label}: the host rect is exactly unchanged`).toEqual(
+        before.snap.host,
+      );
+      expect(after.snap.body, `${label}: the frame body rect is exactly unchanged`).toEqual(
+        before.snap.body,
+      );
+      expect(after.snap.scrollHeight, `${label}: the scroll height is exactly unchanged`).toBe(
+        before.snap.scrollHeight,
+      );
+      expect(after.snap.hostScrollHeight, `${label}: the host scroll height is unchanged`).toBe(
+        before.snap.hostScrollHeight,
+      );
+      expect(after.snap.others, `${label}: every other child's rect is unchanged`).toEqual(
+        before.snap.others,
+      );
+      expect(
+        inside(after.stripAtTop, after.containerRect),
+        `${label}: the strip is inside the scroll container's visible rect at scrollTop 0 ` +
+          `(${JSON.stringify(after.stripAtTop)} in ${JSON.stringify(after.containerRect)})`,
+      ).toBe(true);
+      expect(
+        inside(after.stripAtMax, after.containerRect),
+        `${label}: the strip is inside the scroll container's visible rect at the end ` +
+          `(${JSON.stringify(after.stripAtMax)} in ${JSON.stringify(after.containerRect)})`,
+      ).toBe(true);
+      expect(
+        after.contentBottomAtMax,
+        `${label}: after scrolling to the end the last content bottom is at or above the strip top`,
+      ).toBeLessThanOrEqual(after.stripAtMax.y + 0.5);
+    };
+
+    const WINDOWS = [
+      { width: 1280, height: 720, rem: 16 },
+      { width: 640, height: 240, rem: 14 },
+    ] as const;
+
+    const setWindow = async (w: { width: number; height: number; rem: number }): Promise<void> => {
+      await page.setViewportSize({ width: w.width, height: w.height });
+      await expect
+        .poll(() => page.evaluate(() => [window.innerWidth, window.innerHeight]))
+        .toEqual([w.width, w.height]);
+      await expect
+        .poll(
+          async () =>
+            Number.parseFloat(
+              (await sampleStyle(page, 'html', ['font-size']))['font-size'] as string,
+            ),
+          { message: `${w.width}x${w.height}: the root font size settles`, timeout: 10_000 },
+        )
+        .toBe(w.rem);
+    };
+
+    const restoreWindow = async (): Promise<void> => {
+      await closeAll(page);
+      await setWindow({ width: 1280, height: 720, rem: 16 });
+    };
+
+    test('UIF4.3 the main menu: its Y-description strip takes no layout height and keeps the last row clear, at both windows', async () => {
+      test.setTimeout(90_000);
+      try {
+        for (const w of WINDOWS) {
+          const label = `menu ${w.width}x${w.height}`;
+          await setWindow(w);
+          await openMenu(page);
+          const before = await probeStrip({ which: 'menu', force: false, text: '' });
+          await pressButton(page, 'Y'); // the real flow: Y on the cursor row paints its description
+          await expect(
+            page.locator('#menu-overlay .mr-frame-feedback'),
+            `${label}: Y shows the Y-description strip`,
+          ).toBeVisible();
+          const after = await probeStrip({ which: 'menu', force: false, text: '' });
+          expectOverlay(before, after, label);
+        }
+      } finally {
+        await restoreWindow();
+      }
+    });
+
+    test('UIF4.3 Monsters: a shown strip takes no layout height and stays inside the scrolling shell, at both windows', async () => {
+      test.setTimeout(90_000);
+      try {
+        for (const w of WINDOWS) {
+          const label = `monsters ${w.width}x${w.height}`;
+          await setWindow(w);
+          await openMenu(page);
+          await pressButton(page, 'A');
+          await expect
+            .poll(() => stackNames(page), { message: `${label}: A on Monsters pushes Monsters` })
+            .toEqual(['world', 'menuView', 'boxView']);
+          const before = await probeStrip({ which: 'box', force: false, text: '' });
+          const after = await probeStrip({ which: 'box', force: true, text: 'uif-4 strip probe' });
+          expectOverlay(before, after, label);
+        }
+      } finally {
+        await restoreWindow();
+      }
+    });
+
+    test('UIF4.3 Inventory: a shown #bag-status strip takes no layout height and stays inside the scrolling shell, at both windows', async () => {
+      test.setTimeout(90_000);
+      try {
+        for (const w of WINDOWS) {
+          const label = `inventory ${w.width}x${w.height}`;
+          await setWindow(w);
+          await closeAll(page);
+          await pressAccel(page, 'I');
+          await expect
+            .poll(() => stackNames(page), { message: `${label}: I opens Inventory over the menu` })
+            .toEqual(['world', 'menuView', 'raisingView']);
+          const before = await probeStrip({ which: 'bag', force: false, text: '' });
+          const after = await probeStrip({ which: 'bag', force: true, text: 'uif-4 strip probe' });
+          expectOverlay(before, after, label, false); // R-uif-4-BAGSTATUS-EMPTY, see expectOverlay
+        }
+      } finally {
+        await restoreWindow();
+      }
+    });
+
+    test('UIF4.2 the toast is the top hit over the open main menu (the .mr-shell--top layer)', async () => {
+      // No real flow paints a toast over the menu without fixtures, so the toast is FORCED shown
+      // inside one page.evaluate (hidden = false plus text, undone in a finally). Everything the
+      // check measures is real CSS: paint order is hit-tested with pointer-events toggled to `auto`
+      // INSIDE the same evaluate (pointer-events does not change paint order, only hit-testing).
+      await openMenu(page);
+      const result = await page.evaluate(() => {
+        const toast = document.getElementById('toast');
+        const shell = document.getElementById('menu-overlay');
+        if (toast === null || shell === null)
+          throw new Error('#toast and #menu-overlay must exist');
+        const prior = {
+          hidden: toast.hidden,
+          text: toast.textContent,
+          pe: toast.style.pointerEvents,
+        };
+        try {
+          toast.hidden = false;
+          toast.textContent = 'uif-4 toast probe';
+          toast.style.pointerEvents = 'auto';
+          const r = toast.getBoundingClientRect();
+          const s = shell.getBoundingClientRect();
+          const cx = r.x + r.width / 2;
+          const cy = r.y + r.height / 2;
+          const hit = document.elementFromPoint(cx, cy);
+          return {
+            hitInToast: hit !== null && toast.contains(hit),
+            hit: hit === null ? 'null' : `${hit.tagName}#${hit.id}.${hit.className}`,
+            overShell: cx >= s.x && cx <= s.x + s.width && cy >= s.y && cy <= s.y + s.height,
+            shellIsTop: shell.classList.contains('mr-shell--top'),
+          };
+        } finally {
+          toast.hidden = prior.hidden;
+          toast.textContent = prior.text;
+          toast.style.pointerEvents = prior.pe;
+        }
+      });
+      expect(result.shellIsTop, 'precondition: the menu is the .mr-shell--top layer').toBe(true);
+      expect(result.overShell, 'the toast centre lies over the open menu shell').toBe(true);
+      expect(result.hitInToast, `the toast is the top hit (hit: ${result.hit})`).toBe(true);
+      await closeAll(page);
+    });
+
+    test('S5T-FOCUS-SETTLED-BY-CLOSE-E2E: a menu close that restored focus to the Start chip never steals a later blur to the world canvas at the next frame edge', async () => {
+      // WRONG IMPL KILLED: the frame-time `a === document.body` clause of main.ts's world-edge focus
+      // return. The close restores focus to the visible #chip-start (settled); a blur in the SAME
+      // task, before any frame runs, leaves <body>; the next frame then misreads that <body> as "the
+      // close left focus adrift" and focuses the world CANVAS (measured: CANVAS on master and on the
+      // branch alike; the a11y.spec.ts real-keyboard spelling of this is a race, this one is not).
+      // Deterministic by construction: the Escape, the restore check and the blur all run inside ONE
+      // page.evaluate, so no animation frame can land between the close and the blur.
+      await closeAll(page);
+      try {
+        await page.locator('#chip-start').focus();
+        await expect(
+          page.locator('#chip-start'),
+          'precondition: the Start chip holds focus',
+        ).toBeFocused();
+        await page.keyboard.press('Space');
+        await expect
+          .poll(() => stackNames(page), { message: 'Space on the Start chip opens the menu' })
+          .toEqual(['world', 'menuView']);
+        await expect(
+          page.locator('#menu-rows'),
+          'the open menu took focus on its list',
+        ).toBeFocused();
+
+        const probe = await page.evaluate(() => {
+          const target = document.activeElement ?? document.body;
+          for (const type of ['keydown', 'keyup'] as const) {
+            target.dispatchEvent(
+              new KeyboardEvent(type, {
+                code: 'Escape',
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+          }
+          const menu = document.getElementById('menu-overlay');
+          const hidden = menu !== null && getComputedStyle(menu).display === 'none';
+          const active = document.activeElement;
+          const restoredTo = active === null ? 'null' : active.id || active.tagName;
+          if (active instanceof HTMLElement) active.blur();
+          const after = document.activeElement;
+          const afterBlur = after === null ? 'null' : after.tagName;
+          return { hidden, restoredTo, afterBlur };
+        });
+        expect(
+          probe.hidden,
+          'the synthetic Escape closed the menu (#menu-overlay display:none)',
+        ).toBe(true);
+        expect(probe.restoredTo, 'precondition: the close restored focus to the Start chip').toBe(
+          'chip-start',
+        );
+        expect(probe.afterBlur, 'precondition: the blur left focus on <body>').toBe('BODY');
+
+        // Two animation frames: the first is the world edge (menuView -> null). A HARD read after
+        // them, never a poll: a poll would pass on a pre-edge read and hide the theft.
+        await page.evaluate(
+          () =>
+            new Promise<undefined>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))),
+            ),
+        );
+        const focusedTag = await page.evaluate(() => document.activeElement?.tagName ?? 'null');
+        expect(
+          focusedTag,
+          'the frame edge must leave the player`s blur on <body>; CANVAS means the world-edge ' +
+            'focus return stole it after a close that had already settled focus on #chip-start',
+        ).toBe('BODY');
+      } finally {
+        await closeAll(page);
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      }
+    });
   });

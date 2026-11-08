@@ -42,6 +42,7 @@ import {
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { AuthoritativeStore, StoreCharacter } from './net/store';
+import { TOAST_MS } from './ui/toast';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -147,6 +148,10 @@ let liveWrites: string[] = [];
 /** Every value written to #status's textContent, oldest first (a notice, an error report, a
  *  clear): everything the status line was ever told. Recorded from after boot. */
 let statusWrites: string[] = [];
+/** uif-4 (named intentional change): every value written to #toast's textContent after boot. The
+ *  zone cue is a toast kind now, so what the player was told is read here, not off #status. The
+ *  toast re-renders every frame, so a write COUNT means nothing; the DISTINCT non-empty texts do. */
+let toastWrites: string[] = [];
 
 /** Wrap `node`'s own `textContent` setter so every write lands in `sink`. The node keeps working:
  *  the write is forwarded to the real accessor. */
@@ -208,6 +213,8 @@ async function bootReady(): Promise<void> {
   // main() builds #status before it calls connect(), so it exists by now.
   statusWrites = [];
   recordWrites(byId('status'), statusWrites);
+  toastWrites = [];
+  recordWrites(byId('toast'), toastWrites);
 }
 
 const EID = 7n;
@@ -276,6 +283,15 @@ function bootInHomeZone(): void {
 }
 
 const statusText = (): string => byId('status').textContent ?? '';
+/** uif-4: the toast's visible text, '' while it is hidden. */
+const toastText = (): string => {
+  const el = byId('toast');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
+/** The distinct non-empty texts #toast was ever painted with, in first-seen order. */
+const toastShown = (): string[] => [...new Set(toastWrites.filter((w) => w !== ''))];
+/** Everything either line was ever told (the status writes and the toast's distinct texts). */
+const anyLine = (): string[] => [...statusWrites, ...toastShown()];
 /** A write that announces a zone: the cue's sentence or any zone name. */
 const isZoneCue = (write: string): boolean =>
   write.startsWith('Entering') ||
@@ -283,7 +299,7 @@ const isZoneCue = (write: string): boolean =>
   write.includes(UMBER) ||
   write.includes(ASH);
 const spokenCues = (): string[] => liveWrites.filter(isZoneCue);
-const writtenCues = (): string[] => statusWrites.filter(isZoneCue);
+const writtenCues = (): string[] => anyLine().filter(isZoneCue);
 /** How many calls main.ts's console.error made whose first argument starts with `prefix`. */
 const errorsWith = (prefix: string): number =>
   (consoleError?.mock.calls ?? []).filter(
@@ -313,28 +329,27 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
     // cue spoken at once (it must wait out the coalescer, so the speak lands in the frames).
     await bootReady();
     bootInHomeZone();
-    expect(statusWrites, 'precondition: the boot batch wrote nothing to the status line').toEqual(
-      [],
-    );
+    // uif-4 (named intentional change, UIF4.2): the cue is a toast kind. Every read of the cue below
+    // is #toast's (was #status); the status line must never be told it. "Written exactly once" is
+    // now "the toast's only distinct text is the cue" (the toast re-renders each frame, so a raw
+    // write count is meaningless).
+    expect(anyLine(), 'precondition: the boot batch told the player nothing').toEqual([]);
     expect(spokenCues(), 'precondition: the boot batch said no zone').toEqual([]);
 
     // The live path: onOwnWarp from the character UPDATE, then the row is ingested and flushed.
     clock.t = 2000;
     ownWarp(ZONE_FEN);
-    expect(statusText(), 'the cue is on the status line at the warp').toBe(CUE_UMBER);
+    expect(toastText(), 'the cue is on the toast at the warp').toBe(CUE_UMBER);
     batch(2000, (s) => ownRows(s, 2000, ZONE_FEN));
-    expect(statusText(), 'and still the cue after the batch that confirms it').toBe(CUE_UMBER);
-    expect(
-      statusWrites.filter((w) => w === CUE_UMBER),
-      'the cue was written to the status line exactly once',
-    ).toHaveLength(1);
-    expect(statusWrites, 'and nothing else was written to it').toEqual([CUE_UMBER]);
+    expect(toastText(), 'and still the cue after the batch that confirms it').toBe(CUE_UMBER);
+    expect(toastShown(), 'the toast was only ever painted with the cue').toEqual([CUE_UMBER]);
+    expect(statusWrites, 'and the status line was told nothing').toEqual([]);
     expect(H.activeZones, 'one real zone change, one switch').toEqual([ZONE_FEN]);
 
     // The coalescer: queued at 2000, handed over at 2500, painted a full window later at 3000.
     frames(2050, 4000);
     expect(spokenCues(), 'the live region spoke the cue, once').toEqual([CUE_UMBER]);
-    expect(statusText(), 'the status line still shows it').toBe(CUE_UMBER);
+    expect(toastText(), 'the toast still shows it').toBe(CUE_UMBER);
   });
 
   it('a reconcile-only zone change announces each destination zone by its own name, once per change, in both directions [QF15-1-CUE-RECONCILE]', async () => {
@@ -345,14 +360,14 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
     // but not the live region (both are spoken, in order, once their windows have passed).
     await bootReady();
     bootInHomeZone();
-    expect(statusWrites, 'precondition: the boot batch wrote nothing to the status line').toEqual(
-      [],
-    );
+    // uif-4 (named intentional change, UIF4.2): the cue is read off #toast (was #status), and
+    // "one status write per change" is "the toast's distinct texts, in order".
+    expect(anyLine(), 'precondition: the boot batch told the player nothing').toEqual([]);
 
     // No onOwnWarp: the batch alone puts my character in zone 1, and the state-based sync follows.
     batch(2000, (s) => ownRows(s, 2000, ZONE_FEN));
-    expect(statusText(), 'the destination zone, by name').toBe(CUE_UMBER);
-    expect(statusWrites, 'exactly one status write for the change').toEqual([CUE_UMBER]);
+    expect(toastText(), 'the destination zone, by name').toBe(CUE_UMBER);
+    expect(toastShown(), 'exactly one cue for the change').toEqual([CUE_UMBER]);
     expect(H.activeZones, 'one switch, to zone 1').toEqual([ZONE_FEN]);
     // Frames until the first cue has been painted (queued 2000, handed over 2500, painted 3000).
     frames(2050, 3450);
@@ -360,18 +375,16 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
 
     // And back: the other direction, the other name.
     batch(3500, (s) => ownRows(s, 3500, ZONE_HOME));
-    expect(statusText(), 'the way back names the home zone').toBe(CUE_COBALT);
-    expect(statusWrites, 'one more status write, for the second change').toEqual([
-      CUE_UMBER,
-      CUE_COBALT,
-    ]);
+    expect(toastText(), 'the way back names the home zone').toBe(CUE_COBALT);
+    expect(toastShown(), 'one more cue, for the second change').toEqual([CUE_UMBER, CUE_COBALT]);
+    expect(statusWrites, 'and the status line was told nothing').toEqual([]);
     expect(H.activeZones, 'two switches, there and back').toEqual([ZONE_FEN, ZONE_HOME]);
     frames(3550, 5500);
     expect(spokenCues(), 'both cues were spoken, in order, each once').toEqual([
       CUE_UMBER,
       CUE_COBALT,
     ]);
-    expect(statusText(), 'the status line shows the newest').toBe(CUE_COBALT);
+    expect(toastText(), 'the toast shows the newest').toBe(CUE_COBALT);
   });
 
   it('no zone is announced for the boot batch, a same-zone batch, a zone with no name row or a failed switch, and a later batch never re-asserts the cue over an error report [QF15-1-CUE-SILENT]', async () => {
@@ -386,14 +399,17 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
     // announce and the negative is not vacuous).
     await bootReady();
     bootInHomeZone();
-    expect(statusWrites, 'the boot batch wrote nothing to the status line').toEqual([]);
+    // uif-4 (named intentional change, UIF4.2): every "wrote nothing to the status line" below is
+    // "told the player nothing on either line" (`anyLine`: the status writes and the toast's texts),
+    // and the cue itself is read off #toast.
+    expect(anyLine(), 'the boot batch told the player nothing').toEqual([]);
     expect(spokenCues(), 'and the live region said no zone').toEqual([]);
 
     // Two more batches in the zone the client already shows.
     batch(2050, (s) => ownRows(s, 2050, ZONE_HOME, 3, 6));
     batch(2100, (s) => ownRows(s, 2100, ZONE_HOME, 4, 6));
     frames(2150, 3500);
-    expect(statusWrites, 'same-zone batches write nothing to the status line').toEqual([]);
+    expect(anyLine(), 'same-zone batches tell the player nothing').toEqual([]);
     expect(spokenCues(), 'and say no zone').toEqual([]);
     expect(H.activeZones, 'and switch nothing').toEqual([]);
 
@@ -404,7 +420,7 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
     expect(H.activeZones, 'precondition: the switch to the nameless zone really ran').toEqual([
       ZONE_NAMELESS,
     ]);
-    expect(statusWrites, 'a zone with no name row writes nothing to the status line').toEqual([]);
+    expect(anyLine(), 'a zone with no name row tells the player nothing').toEqual([]);
     expect(spokenCues(), 'and says nothing').toEqual([]);
     expect(errorsWith('[zone-sync]'), 'it is not a failed switch').toBe(0);
     expect(errorsWith('[reconcile]'), 'and throws nothing out of the reconcile').toBe(
@@ -413,7 +429,7 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
 
     // A real change into the named fen: the cue, spoken, so what follows has something to lose.
     batch(5050, (s) => ownRows(s, 5050, ZONE_FEN));
-    expect(statusText(), 'precondition: the named zone announces').toBe(CUE_UMBER);
+    expect(toastText(), 'precondition: the named zone announces').toBe(CUE_UMBER);
     frames(5100, 7000);
     expect(spokenCues(), 'precondition: and the cue was spoken').toEqual([CUE_UMBER]);
 
@@ -425,15 +441,16 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
     batch(7150, (s) => ownRows(s, 7150, ZONE_FEN, 4, 6));
     frames(7200, 8500);
     expect(statusText(), 'two same-zone batches leave the report alone').toBe('x: boom');
-    expect(statusWrites, 'the cue once, then the report, nothing else').toEqual([
-      CUE_UMBER,
+    expect(statusWrites, 'the report is the only thing the status line was told').toEqual([
       'x: boom',
     ]);
+    expect(toastShown(), 'and the cue the only thing the toast was').toEqual([CUE_UMBER]);
     expect(spokenCues(), 'and the live region repeated no zone').toEqual([CUE_UMBER]);
 
     // A switch that fails: the wasm module cannot build zone 4, so the client keeps zone 1's map.
     H.throwZone = ZONE_BROKEN;
     const written = statusWrites.length;
+    const toasted = toastWrites.length;
     batch(8550, (s) => ownRows(s, 8550, ZONE_BROKEN));
     frames(8600, 11000);
     expect(errorsWith('[zone-sync]'), 'precondition: the switch really failed').toBeGreaterThan(0);
@@ -442,11 +459,111 @@ describe('main.ts zone cue (runtime, qf-15)', { sequential: true }, () => {
       ZONE_FEN,
     ]);
     expect(
-      statusWrites.slice(written).filter(isZoneCue),
-      'a failed switch writes no zone to the status line',
+      [...statusWrites.slice(written), ...toastWrites.slice(toasted)].filter(isZoneCue),
+      'a failed switch tells the player no zone on either line',
     ).toEqual([]);
     expect(statusText().startsWith('Entering'), 'and the status line is not a cue').toBe(false);
     expect(spokenCues(), 'and the live region says no new zone').toEqual([CUE_UMBER]);
     expect(writtenCues(), 'the only cue ever written is the fen').toEqual([CUE_UMBER]);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // uif-4 (UIF4.2): the toast channel
+  // ------------------------------------------------------------------------------------------
+
+  it('UIF4.2 a zone cue paints #toast with the cue and not #status', async () => {
+    // WRONG IMPL KILLED: the cue left on the status line (it paints at z-index 45, under an open
+    // frame); a cue painted on both lines.
+    await bootReady();
+    bootInHomeZone();
+    clock.t = 2000;
+    ownWarp(ZONE_FEN);
+    expect(toastText()).toBe(CUE_UMBER);
+    expect(statusText()).toBe('');
+  });
+
+  it('UIF4.2 the zone cue reaches #a11y-live exactly once across pumped frames', async () => {
+    // WRONG IMPL KILLED: a toast the live region never speaks; a cue spoken once by the toast path
+    // and again by the status path (two announcers); a cue re-queued by every frame's toast render.
+    await bootReady();
+    bootInHomeZone();
+    clock.t = 2000;
+    ownWarp(ZONE_FEN);
+    batch(2000, (s) => ownRows(s, 2000, ZONE_FEN));
+    frames(2050, 5500);
+    expect(spokenCues()).toEqual([CUE_UMBER]);
+  });
+
+  it('UIF4.2 #toast is still visible one millisecond before TOAST_MS has elapsed', async () => {
+    // WRONG IMPL KILLED: an early expiry (a dwell shorter than TOAST_MS, or an expiry off by one).
+    await bootReady();
+    bootInHomeZone();
+    clock.t = 2000;
+    ownWarp(ZONE_FEN);
+    batch(2000, (s) => ownRows(s, 2000, ZONE_FEN));
+    frame(2000 + TOAST_MS - 1);
+    expect(toastText()).toBe(CUE_UMBER);
+  });
+
+  it('UIF4.2 #toast is hidden once TOAST_MS has elapsed', async () => {
+    // WRONG IMPL KILLED: a toast that never expires, expires only on the next show, or lingers one
+    // frame past its time (`>` instead of `>=`).
+    await bootReady();
+    bootInHomeZone();
+    clock.t = 2000;
+    ownWarp(ZONE_FEN);
+    batch(2000, (s) => ownRows(s, 2000, ZONE_FEN));
+    frame(2000 + TOAST_MS);
+    expect(byId('toast').hidden).toBe(true);
+    expect(toastText()).toBe('');
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // uif-4 (UIF4.5): hint precedence with content-stale (WF1-A9). content-stale is raised by
+  // switchZone once three consecutive zone switches fail (zoneSyncGuard threshold 3): here the wasm
+  // mock refuses zone 4's map and the reconcile batch keeps asking for it.
+  // ------------------------------------------------------------------------------------------
+
+  /** Fail zone switches until the status line carries the content-stale hint; returns its text. */
+  function raiseContentStale(): string {
+    H.throwZone = ZONE_BROKEN;
+    let t = 3000;
+    for (let i = 0; i < 8 && statusText() === ''; i += 1) {
+      const at = t;
+      batch(at, (s) => ownRows(s, at, ZONE_BROKEN));
+      frames(at + 50, at + 250);
+      t += 300;
+    }
+    const stale = statusText();
+    expect(stale, 'precondition: repeated failed zone switches raised a status hint').not.toBe('');
+    expect(isZoneCue(stale), 'precondition: it is not a zone cue').toBe(false);
+    return stale;
+  }
+
+  it('UIF4.5 a content-stale hint followed by a link error keeps showing content-stale', async () => {
+    // WRONG IMPL KILLED: a hint precedence that lets a later, lower-ranked persistent state
+    // (world-disconnect, rank 2) overwrite an action-required content-stale (rank 3): the player
+    // would lose the "reload" prompt behind a link message.
+    await bootReady();
+    bootInHomeZone();
+    const stale = raiseContentStale();
+    opts.onError('link', 'zz-socket-closed');
+    frames(3600, 3900);
+    expect(statusText()).toBe(stale);
+    expect(toastShown().includes('link: zz-socket-closed')).toBe(false);
+  });
+
+  it('UIF4.5 after onReconnect the link error is gone and content-stale still shows', async () => {
+    // WRONG IMPL KILLED: a reconnect that clears the content-stale hint too (it is "until reload":
+    // a new link does not fix a client whose content is out of date), or one that leaves the link
+    // error up.
+    await bootReady();
+    bootInHomeZone();
+    const stale = raiseContentStale();
+    opts.onError('link', 'zz-socket-closed');
+    opts.onReconnect(H.identity);
+    frames(3600, 3900);
+    expect(statusText(), 'content-stale still shows').toBe(stale);
+    expect(statusText().includes('zz-socket-closed'), 'the link error is gone').toBe(false);
   });
 });

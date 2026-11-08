@@ -23,12 +23,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAppShellFromRealIndexHtml,
+  clock,
+  frame,
+  stubRaf,
   telemetryMock,
   wasmPkgStubMock,
   worldRendererMock,
 } from '../test-util/mainBootHarness';
+import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreMonsterPub } from './net/store';
+import type { StoreCharacter, StoreMonsterPub, StorePlayer } from './net/store';
 import { t } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => {
@@ -127,10 +131,67 @@ function monster(monsterId: bigint, partySlot: number): StoreMonsterPub {
 
 interface StoreHandle {
   reconcileMonstersFromView(rows: readonly StoreMonsterPub[]): void;
+  upsertPlayer(row: StorePlayer): void;
+  upsertCharacter(row: StoreCharacter, nowMs: number): void;
   flushBatch(): void;
 }
 
+/** uif-4: every value written to #a11y-live's textContent after boot, oldest first. */
+let liveWrites: string[] = [];
+function watchLive(): void {
+  const node = document.getElementById('a11y-live');
+  if (node === null) throw new Error('the shell must ship #a11y-live');
+  let proto: object | null = Object.getPrototypeOf(node);
+  let accessor: PropertyDescriptor | undefined;
+  while (proto !== null && accessor === undefined) {
+    accessor = Object.getOwnPropertyDescriptor(proto, 'textContent');
+    proto = Object.getPrototypeOf(proto);
+  }
+  const get = accessor?.get;
+  const set = accessor?.set;
+  if (get === undefined || set === undefined) throw new Error('textContent is not an accessor');
+  Object.defineProperty(node, 'textContent', {
+    configurable: true,
+    get() {
+      return get.call(this);
+    },
+    set(value: unknown) {
+      liveWrites.push(String(value));
+      set.call(this, value);
+    },
+  });
+}
+
+/** uif-4 (named harness change): the frame loop is pumped (stubRaf/frame on one controllable
+ *  clock) so the toast's live-region announcement and expiry can be observed; the player has a
+ *  character so the loop has a world to run over. */
+function seedOwnCharacter(): void {
+  const store = (opts as unknown as { store: StoreHandle }).store;
+  store.upsertPlayer({
+    identity: H.identity,
+    entityId: 7n,
+    name: 'P',
+    online: true,
+    lastInputSeq: 0n,
+  });
+  store.upsertCharacter(
+    {
+      entityId: 7n,
+      zoneId: 0,
+      tileX: 1,
+      tileY: 1,
+      facing: 'East',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    clock.t,
+  );
+  store.flushBatch();
+}
+
 let opts!: ConnectionOptions;
+let nowSpy: { mockRestore(): void } | undefined;
 let recorded: Recorded[] = [];
 let restoreWindowAdd: (() => void) | undefined;
 let restoreDocumentAdd: (() => void) | undefined;
@@ -169,13 +230,24 @@ function statusText(): string {
   return document.getElementById('status')?.textContent ?? '';
 }
 
+/** uif-4: the toast's visible text, '' while it is hidden. */
+function toastText(): string {
+  const el = document.getElementById('toast');
+  if (el === null) throw new Error('#toast must exist once booted');
+  return el.hidden ? '' : (el.textContent ?? '');
+}
+
 describe('main.ts Monsters sheet Move from Storage (BUG-party-full-to-party-silent-noop)', () => {
   beforeEach(async () => {
     recorded = [];
     H.connectOpts = null;
     H.setPartySlot.mockClear();
     buildAppShellFromRealIndexHtml();
-    vi.stubGlobal('requestAnimationFrame', (): number => 0);
+    clock.t = 1000;
+    nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
+    liveWrites = [];
+    watchLive();
+    stubRaf();
     restoreWindowAdd = recordListeners(window, recorded);
     restoreDocumentAdd = recordListeners(document, recorded);
     vi.resetModules();
@@ -188,6 +260,7 @@ describe('main.ts Monsters sheet Move from Storage (BUG-party-full-to-party-sile
       { timeout: 5_000, interval: 5 },
     )) as ConnectionOptions;
     opts.onReady(H.identity);
+    seedOwnCharacter();
   });
 
   afterEach(() => {
@@ -195,6 +268,9 @@ describe('main.ts Monsters sheet Move from Storage (BUG-party-full-to-party-sile
     recorded = [];
     restoreDocumentAdd?.();
     restoreWindowAdd?.();
+    // Not vi.restoreAllMocks(): on older vitest it would reset the hoisted setPartySlot vi.fn too.
+    nowSpy?.mockRestore();
+    nowSpy = undefined;
     vi.unstubAllGlobals();
     document.body.replaceChildren();
   });
@@ -217,6 +293,43 @@ describe('main.ts Monsters sheet Move from Storage (BUG-party-full-to-party-sile
       'a full party must not send the move-to-box fallback slot — the server accepts it as a ' +
         'no-op and the player sees nothing happen',
     ).not.toHaveBeenCalled();
-    expect(statusText()).toBe(t('chrome.status.partyFull'));
+    // uif-4 (named intentional change, UIF4.4): `party-full` is a toast kind, so the line is read
+    // off #toast (was #status), where it paints above the open Monsters frame.
+    expect(toastText()).toBe(t('chrome.status.partyFull'));
+  });
+
+  it('UIF4.4 with the Monsters frame open, party-full paints #toast and leaves #status empty', () => {
+    // WRONG IMPL KILLED: the pre-uif-4 sink (#status paints at z-index 45, under the open frame);
+    // a line painted on both channels.
+    deliverMonsters([monster(1n, 0), monster(2n, 1), monster(3n, 2), monster(4n, 255)]);
+    openStorageSheetOnMove('m4');
+    tap('Enter');
+    expect(toastText()).toBe(t('chrome.status.partyFull'));
+    expect(statusText()).toBe('');
+  });
+
+  it('UIF4.4 the party-full line reaches #a11y-live after pumped frames', () => {
+    // WRONG IMPL KILLED: a toast painted but never queued for the live region.
+    deliverMonsters([monster(1n, 0), monster(2n, 1), monster(3n, 2), monster(4n, 255)]);
+    openStorageSheetOnMove('m4');
+    tap('Enter');
+    for (let at = 1050; at <= 3000; at += 50) frame(at);
+    expect(liveWrites.some((w) => w.includes(t('chrome.status.partyFull')))).toBe(true);
+  });
+
+  it('UIF4.4 a rejected setPartySlot from the open Monsters frame paints #toast and not #status', async () => {
+    // WRONG IMPL KILLED: the sendGuarded rejection on #status (under the frame); a toast that
+    // drops the reducer's reason; a rejection swallowed.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    H.setPartySlot.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error('zz-slot-said-no'), { name: 'SenderError' })),
+    );
+    deliverMonsters([monster(1n, 0), monster(2n, 1), monster(3n, 255)]);
+    openStorageSheetOnMove('m3');
+    tap('Enter');
+    expect(H.setPartySlot, 'precondition: the move was sent').toHaveBeenCalledTimes(1);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(toastText()).toContain('zz-slot-said-no');
+    expect(statusText()).toBe('');
   });
 });

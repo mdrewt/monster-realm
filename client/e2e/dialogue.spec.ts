@@ -496,14 +496,81 @@ test.describe
     // the amount, and the new balance reported instead of the gain.
     // The conversation this talk opens is left open for the next test.
     // -------------------------------------------------------------------------
-    test('re-talking the elder completes quest_001 and the status line acknowledges its 50 gold', async () => {
+    test('UIF4.2 re-talking the elder completes quest_001 and the toast acknowledges its 50 gold above the open dialogue frame', async () => {
       test.setTimeout(TALK_TEST_TIMEOUT_MS);
+      // uif-4 (UIF4.2): a recorder armed BEFORE the talk captures, in the very microtask after the
+      // toast un-hides (the same synchronous batch that opens the dialogue), the dialogue frame's
+      // rect and a hit test at the toast's centre. pointer-events:none makes hit-testing skip the
+      // toast, so the recorder flips it to `auto` inside that one callback and restores it;
+      // pointer-events does not change paint order, so a hit inside #toast proves it paints above
+      // the open frame. Nothing is awaited between the un-hide and the read.
+      await a.evaluate(() => {
+        const toast = document.getElementById('toast');
+        if (toast === null) throw new Error('#toast must exist');
+        const w = window as unknown as { __mrUif4Toast?: unknown };
+        w.__mrUif4Toast = null;
+        new MutationObserver(() => {
+          if (toast.hidden || w.__mrUif4Toast !== null) return;
+          const dlg = document.getElementById('dialogue-overlay');
+          const d = dlg === null ? null : dlg.getBoundingClientRect();
+          const prior = toast.style.pointerEvents;
+          toast.style.pointerEvents = 'auto';
+          const r = toast.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          toast.style.pointerEvents = prior;
+          w.__mrUif4Toast = {
+            dialogueRect: d === null ? null : { x: d.x, y: d.y, width: d.width, height: d.height },
+            toastRect: { x: r.x, y: r.y, width: r.width, height: r.height },
+            hitInToast: hit !== null && toast.contains(hit),
+            hit: hit === null ? 'null' : `${hit.tagName}#${hit.id}.${hit.className}`,
+          };
+        }).observe(toast, { attributes: true, attributeFilter: ['hidden'] });
+      });
       await talkUntilOpen(a, playerEntityIds);
-      await expect(a.locator('#status')).toHaveText(
+      // uif-4 (named intentional change, UIF4.2): quest-complete is a toast kind, so the line is
+      // read off #toast (was #status), and the status line stays empty.
+      await expect(a.locator('#toast')).toHaveText(
         'Quest complete: quest_001. You received 50 gold.',
         { timeout: 20_000 },
       );
+      await expect(a.locator('#status')).toHaveText('');
       await expect(a.locator('#dialogue-overlay')).toBeVisible();
+      const seen = await a.evaluate(
+        () => (window as unknown as { __mrUif4Toast?: unknown }).__mrUif4Toast,
+      );
+      const rec = seen as {
+        dialogueRect: { x: number; y: number; width: number; height: number } | null;
+        toastRect: { x: number; y: number; width: number; height: number };
+        hitInToast: boolean;
+        hit: string;
+      } | null;
+      expect(rec, 'the recorder saw the toast un-hide').not.toBeNull();
+      if (rec === null || rec.dialogueRect === null) throw new Error('recorder missed the frame');
+      expect(
+        rec.hitInToast,
+        `UIF4.2: the toast is the top hit at its centre over the open frame (hit: ${rec.hit})`,
+      ).toBe(true);
+      const overlaps =
+        rec.toastRect.x < rec.dialogueRect.x + rec.dialogueRect.width &&
+        rec.toastRect.x + rec.toastRect.width > rec.dialogueRect.x &&
+        rec.toastRect.y < rec.dialogueRect.y + rec.dialogueRect.height &&
+        rec.toastRect.y + rec.toastRect.height > rec.dialogueRect.y;
+      expect(
+        overlaps,
+        'UIF4.2: the toast rect overlaps the open dialogue frame (not vacuous)',
+      ).toBe(true);
+      // Nothing moved: once the toast has expired, the frame's rect is exactly what it was while
+      // the toast showed (the toast is out of flow).
+      await expect(a.locator('#toast')).toBeHidden({ timeout: 15_000 });
+      const after = await a.evaluate(() => {
+        const el = document.getElementById('dialogue-overlay');
+        if (el === null) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      });
+      expect(after, 'UIF4.2: the frame did not move when the toast went away').toEqual(
+        rec.dialogueRect,
+      );
     });
 
     // -------------------------------------------------------------------------
@@ -564,7 +631,9 @@ test.describe
         .locator('#dialogue-choices')
         .getByText('I seek a quest.', { exact: true })
         .click({ timeout: 5_000 });
-      const status = a.locator('#status');
+      // uif-4 (named intentional change, UIF4.2): dialogue-ended is a toast kind, so the reason is
+      // read off #toast (was #status).
+      const status = a.locator('#toast');
       await expect(status).toHaveText('Conversation ended: you moved too far away.', {
         timeout: 20_000,
       });

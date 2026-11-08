@@ -112,6 +112,11 @@
   flex-direction: column;
   box-sizing: border-box;
   max-height: 100%;
+  /* The feedback strip's reserve (uif-4, UIF4.3): the strip sits here, so showing it moves nothing.
+   * Every other frame user (shells, the bottom box, the prompt and banner) declares its own padding;
+   * a shell that is also a frame reads the reserve back from `--mr-strip-reserve` (.mr-shell). */
+  padding-bottom: 2rem;
+  --mr-strip-reserve: 2rem;
   border: var(--mr-border-width) solid var(--mr-frame-border);
   background: var(--mr-frame-bg);
   color: var(--mr-frame-fg);
@@ -227,11 +232,29 @@
   /* The containing block of a `.mr-sheet` in this body. */
   position: relative;
 }
-/* Stays literal until the strip becomes an overlay (uif-4): ui/frame.test.ts pins these values. */
+/* The hint line (uif-4, UIF4.3; ui/frame.test.ts pins these values): an overlay with zero layout
+ * height, so showing it moves nothing. Its height and negative bottom margin cancel; it lands in the
+ * 2rem bottom padding its host reserves (`.mr-frame`, `.mr-shell`), last in the column (`order`).
+ * Sticky keeps it on screen while a shell scrolls; Chromium measures `bottom` inside the scroller's
+ * padding, so -2rem puts it in that reserve, below the last row. One line: a long hint ends in an
+ * ellipsis (the live region still says all of it). An empty line stays `hidden` (QF12.1). */
 .mr-frame-feedback {
-  min-height: 1.5em;
+  position: sticky;
+  bottom: -2rem;
+  order: 1;
+  flex: none;
+  align-self: stretch;
+  box-sizing: border-box;
+  height: 2rem;
+  margin-bottom: -2rem;
   padding: 0.25rem 0.5rem;
   border-top: 2px solid var(--mr-frame-border);
+  background: var(--mr-frame-bg);
+  line-height: calc(1.5rem - 2px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 .mr-frame-feedback[data-feedback="pending"]::before {
   content: "…" / "";
@@ -371,7 +394,10 @@
   left: var(--mr-space-2);
   overflow: auto;
   z-index: 100;
-  padding: var(--mr-space-3) var(--mr-space-4);
+  /* A shell that is also a frame (`mr-frame mr-shell`, which can host a feedback strip) keeps the
+   * strip's 2rem reserve at the bottom (uif-4, UIF4.3); a plain shell (the menu's) keeps its
+   * --mr-space-3, so wf-1's menu geometry does not move. */
+  padding: var(--mr-space-3) var(--mr-space-4) max(var(--mr-space-3), var(--mr-strip-reserve, 0px));
   font: var(--mr-font-body-weight) var(--mr-font-body) / var(--mr-font-body-line) monospace;
   pointer-events: auto;
 }
@@ -982,13 +1008,15 @@
   padding: 0.125rem var(--mr-space-2);
   transform: translateX(-50%);
 }
-/* The status line: out of the page flow, above the hint bar, on the frame background so it
- * reads over any terrain. Hidden while empty. */
+/* The status line, the world's hint line (uif-4): out of the page flow, above the hint bar, on the
+ * frame background so it reads over any terrain. Above every shell (100-120) and below the toast
+ * (130), so a persistent hint stays readable while a frame without a seam strip is open (UIF4.5).
+ * Hidden while empty. */
 .mr-status {
   position: absolute;
   left: var(--mr-space-2);
   bottom: 2.25rem;
-  z-index: 45;
+  z-index: 125;
   padding: 0.0625rem 0.375rem;
   font: var(--mr-font-small-weight) var(--mr-font-small) / var(--mr-font-small-line) monospace;
   color: var(--mr-frame-fg);
@@ -997,6 +1025,25 @@
 }
 .mr-status:empty {
   display: none;
+}
+/* The toast (uif-4, UIF4.2; ui/toast.ts): one anchored region for outcomes, above every frame and
+ * battle root, out of the flow and click-through. `max-content` so `left: 50%` does not halve its
+ * width. No `display`: the UA `[hidden]` rule collapses it. No animation. */
+.mr-toast {
+  position: absolute;
+  top: var(--mr-space-3);
+  left: 50%;
+  z-index: 130;
+  width: max-content;
+  max-width: min(40rem, 90%);
+  box-sizing: border-box;
+  padding: var(--mr-space-1) var(--mr-space-3);
+  border: var(--mr-border-thin) solid var(--mr-frame-border);
+  background: var(--mr-frame-bg);
+  color: var(--mr-frame-fg);
+  font: var(--mr-font-small-weight) var(--mr-font-small) / var(--mr-font-small-line) monospace;
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 .mr-hint-bar {
   position: absolute;

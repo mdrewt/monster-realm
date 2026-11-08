@@ -84,6 +84,9 @@ const H = vi.hoisted(() => ({
    *  module mock below). The Evolution screen has no key, so CTL3-3-BOOT-HIDE-ALL opens it through
    *  the view's own `show()`. Reset to null by every boot. */
   evolution: null as { show(): void; hide(): void } | null,
+  /** uif-4 (named fixture change): when not null, the `talk` reducer rejects with exactly this value
+   *  (the world-send rejection UIF4.5 reads). Reset to null by every boot. */
+  rejectTalk: null as unknown,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -210,6 +213,7 @@ vi.mock('./net/connection', () => {
         return (args: unknown) => {
           H.calls.push(String(name));
           H.callArgs.push({ name: String(name), args });
+          if (name === 'talk' && H.rejectTalk !== null) return Promise.reject(H.rejectTalk);
           return Promise.resolve();
         };
       },
@@ -331,6 +335,7 @@ async function boot(): Promise<void> {
   H.interact = () => [];
   H.blocked = new Set<string>();
   H.evolution = null;
+  H.rejectTalk = null;
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -4102,5 +4107,352 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     expect(faceAndRead(P2), 'the own target of that challenge offers only Trade too').toBe(
       tradeOnly(P2),
     );
+  });
+});
+
+// ==========================================================================================
+// uif-4 (UIF4.2, UIF4.5): the channels at the booted shell, with the real menu
+// ==========================================================================================
+//
+// Same harness: real keys open the real main menu (M) and Monsters (B, over the menu). The link
+// error is a persistent HINT kind (`world-disconnect`): on `#status` with no frame, on the menu's own
+// strip while the menu is the TOP frame, back on `#status` when another frame covers or closes it.
+// `#toast` is the timed channel and never carries it. Everything is observed on the real nodes.
+
+const UIF4_LINK_TEXT = 'link: zz-socket-closed';
+
+/** Every value written to #a11y-live's textContent from now on, oldest first. */
+function uif4WatchLive(): string[] {
+  const node = document.getElementById('a11y-live');
+  if (node === null) throw new Error('the shell must ship #a11y-live');
+  const writes: string[] = [];
+  let proto: object | null = Object.getPrototypeOf(node);
+  let accessor: PropertyDescriptor | undefined;
+  while (proto !== null && accessor === undefined) {
+    accessor = Object.getOwnPropertyDescriptor(proto, 'textContent');
+    proto = Object.getPrototypeOf(proto);
+  }
+  const get = accessor?.get;
+  const set = accessor?.set;
+  if (get === undefined || set === undefined) throw new Error('textContent is not an accessor');
+  Object.defineProperty(node, 'textContent', {
+    configurable: true,
+    get() {
+      return get.call(this);
+    },
+    set(value: unknown) {
+      writes.push(String(value));
+      set.call(this, value);
+    },
+  });
+  return writes;
+}
+
+const uif4Status = (): string => document.getElementById('status')?.textContent ?? '';
+const uif4Toast = (): string => {
+  const el = document.getElementById('toast');
+  if (el === null) throw new Error('#toast must exist once booted');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
+const uif4ToastNode = (): HTMLElement => {
+  const el = document.getElementById('toast');
+  if (el === null) throw new Error('#toast must exist once booted');
+  return el;
+};
+/** The main menu's own feedback strip: its visible text, '' while it is hidden. */
+const uif4MenuStrip = (): string => {
+  const el = document.querySelector<HTMLElement>('#menu-overlay .mr-frame-feedback');
+  if (el === null) throw new Error('the menu frame must have a .mr-frame-feedback strip');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
+const uif4MenuStripNode = (): HTMLElement => {
+  const el = document.querySelector<HTMLElement>('#menu-overlay .mr-frame-feedback');
+  if (el === null) throw new Error('the menu frame must have a .mr-frame-feedback strip');
+  return el;
+};
+
+describe('main.ts feedback channels at the booted shell (runtime, uif-4)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    H.rejectTalk = null;
+    raf.cb = null;
+    document.body.replaceChildren();
+  });
+
+  /** Boot with the console quiet (a link error is logged), the world seeded and one frame run. */
+  async function ready(): Promise<void> {
+    await bootReady();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedWorld(1000);
+    frame(1005);
+  }
+
+  it('UIF4.5 a link error with no frame open shows on #status and not on #toast', async () => {
+    // WRONG IMPL KILLED: a persistent hint routed to the toast (it would vanish after TOAST_MS
+    // while the link is still down); a hint painted on both channels.
+    await ready();
+    opts.onError('link', 'zz-socket-closed');
+    expect(uif4Status()).toBe(UIF4_LINK_TEXT);
+    expect(uif4Toast()).toBe('');
+  });
+
+  it('UIF4.5 a link error with the main menu on top shows on the menu strip and #status is empty', async () => {
+    // WRONG IMPL KILLED: the hint left on #status while the menu hosts a strip (two copies); a menu
+    // strip that never shows the standing hint.
+    await ready();
+    opts.onError('link', 'zz-socket-closed');
+    fire('keydown', 'KeyM', 1100);
+    fire('keyup', 'KeyM', 1102);
+    expect(overlayShown('menu-overlay'), 'precondition: the menu is open').toBe(true);
+    expect(uif4MenuStrip()).toBe(UIF4_LINK_TEXT);
+    expect(uif4Status()).toBe('');
+  });
+
+  it('UIF4.5 a link error raised while the menu is already open on top shows on the menu strip', async () => {
+    // WRONG IMPL KILLED: a hint only painted on a stack sync (a set while a frame is already open
+    // never reaches its strip).
+    await ready();
+    fire('keydown', 'KeyM', 1100);
+    fire('keyup', 'KeyM', 1102);
+    expect(overlayShown('menu-overlay'), 'precondition: the menu is open').toBe(true);
+    opts.onError('link', 'zz-socket-closed');
+    expect(uif4MenuStrip()).toBe(UIF4_LINK_TEXT);
+    expect(uif4Status()).toBe('');
+  });
+
+  it('UIF4.5 closing the menu returns the link error to #status and hides the menu strip', async () => {
+    // WRONG IMPL KILLED: a hint that stays on a closed menu's strip and leaves #status empty (the
+    // player sees nothing at the world while the link is down).
+    await ready();
+    opts.onError('link', 'zz-socket-closed');
+    fire('keydown', 'KeyM', 1100);
+    fire('keyup', 'KeyM', 1102);
+    fire('keydown', 'Escape', 1200);
+    fire('keyup', 'Escape', 1202);
+    expect(overlayShown('menu-overlay'), 'precondition: the menu closed').toBe(false);
+    expect(uif4Status()).toBe(UIF4_LINK_TEXT);
+    expect(uif4MenuStripNode().hidden, 'the menu strip is empty again').toBe(true);
+  });
+
+  it('UIF4.5 a link error with Monsters open over the menu (the menu covered) stays on #status', async () => {
+    // WRONG IMPL KILLED: a hint hosted on a strip that is not on top (the menu under Monsters),
+    // leaving no visible copy: the covered menu's strip is not what the player sees.
+    await ready();
+    opts.onError('link', 'zz-socket-closed');
+    fire('keydown', 'KeyB', 1100);
+    fire('keyup', 'KeyB', 1102);
+    expect(boxShown(), 'precondition: Monsters is open').toBe(true);
+    expect(uif4Status()).toBe(UIF4_LINK_TEXT);
+    expect(uif4MenuStripNode().hidden, 'the covered menu strip does not host it').toBe(true);
+  });
+
+  it('UIF4.5 the link-error hint reaches #a11y-live exactly once across set, open menu and close menu', async () => {
+    // WRONG IMPL KILLED: a hint re-announced every time it moves between hosts (the menu strip
+    // renders through the menu's own feedback announcer); a hint never announced.
+    await ready();
+    const live = uif4WatchLive();
+    opts.onError('link', 'zz-socket-closed');
+    for (let t = 1050; t <= 2000; t += 50) frame(t);
+    fire('keydown', 'KeyM', 2100);
+    fire('keyup', 'KeyM', 2102);
+    for (let t = 2150; t <= 3200; t += 50) frame(t);
+    fire('keydown', 'Escape', 3300);
+    fire('keyup', 'Escape', 3302);
+    for (let t = 3350; t <= 4500; t += 50) frame(t);
+    expect(live.filter((w) => w.includes('zz-socket-closed'))).toHaveLength(1);
+  });
+
+  it('UIF4.5 onReconnect hides the menu-strip hint and empties #status without advancing the clock', async () => {
+    // WRONG IMPL KILLED: a reconnect that clears only #status (a hint stuck on the menu strip while
+    // the link is back).
+    await ready();
+    opts.onError('link', 'zz-socket-closed');
+    fire('keydown', 'KeyM', 1100);
+    fire('keyup', 'KeyM', 1102);
+    expect(uif4MenuStrip(), 'precondition: the strip hosts the hint').toBe(UIF4_LINK_TEXT);
+    opts.onReconnect(H.identity);
+    expect(uif4MenuStripNode().hidden, 'the strip is hidden').toBe(true);
+    expect(uif4Status()).toBe('');
+  });
+
+  it('UIF4.5 onReconnect also hides a live toast without advancing the clock', async () => {
+    // WRONG IMPL KILLED: a reconnect that leaves a toast (a stale rejection from the dead session)
+    // up until its own timer.
+    await ready();
+    useRule(everyNpc);
+    seedWorld(1010);
+    frame(1015);
+    H.rejectTalk = Object.assign(new Error('zz-talk-said-no'), { name: 'SenderError' });
+    fire('keydown', 'Enter', 1100);
+    fire('keyup', 'Enter', 1102);
+    await flush();
+    expect(uif4Toast(), 'precondition: the rejection is on the toast').toContain('zz-talk-said-no');
+    opts.onReconnect(H.identity);
+    expect(uif4ToastNode().hidden).toBe(true);
+  });
+
+  it('UIF4.5 a rejected world send (talk) paints #toast with the reason and not #status', async () => {
+    // WRONG IMPL KILLED: a world-send rejection on the status line (under any open frame); a toast
+    // without the reducer's reason.
+    await ready();
+    useRule(everyNpc);
+    seedWorld(1010);
+    frame(1015);
+    H.rejectTalk = Object.assign(new Error('zz-talk-said-no'), { name: 'SenderError' });
+    fire('keydown', 'Enter', 1100);
+    fire('keyup', 'Enter', 1102);
+    await flush();
+    expect(talkCalls(), 'precondition: A talked once').toBe(1);
+    expect(uif4Toast()).toContain('zz-talk-said-no');
+    expect(uif4Status()).toBe('');
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // Round 5: red-team survivors.
+  // ---------------------------------------------------------------------------------------
+
+  it('UIF4.5 over two full open and close cycles of the menu a standing link hint reaches #a11y-live exactly once', async () => {
+    // WRONG IMPL KILLED: a hint re-announced on every menu open (the second open says it again,
+    // because the strip render or paintWorldHint announces instead of only setWorldHint).
+    await ready();
+    const live = uif4WatchLive();
+    opts.onError('link', 'zz-socket-closed');
+    let t = 1050;
+    const pump = (): void => {
+      for (let i = 0; i < 12; i += 1) {
+        frame(t);
+        t += 100;
+      }
+    };
+    pump();
+    for (const at of [0, 1]) {
+      fire('keydown', 'KeyM', t);
+      fire('keyup', 'KeyM', t + 2);
+      t += 10;
+      expect(uif4MenuStrip(), `cycle ${at}: the strip hosts the hint`).toBe(UIF4_LINK_TEXT);
+      pump();
+      fire('keydown', 'Escape', t);
+      fire('keyup', 'Escape', t + 2);
+      t += 10;
+      pump();
+    }
+    expect(live.filter((w) => w.includes('zz-socket-closed'))).toHaveLength(1);
+  });
+
+  it.each([
+    'subscribe',
+    'connect',
+  ])('UIF4.5 onError(%s) is a hint: it lands on #status and not on #toast', async (where) => {
+    // WRONG IMPL KILLED: an onError that maps non-link failures to a toast kind (the failure would
+    // vanish after TOAST_MS while the player still has no connection).
+    await ready();
+    opts.onError(where, 'zz-failed');
+    expect(uif4Status()).toBe(`${where}: zz-failed`);
+    expect(uif4Toast()).toBe('');
+  });
+
+  it('UIF4.5 after onReconnect the same link error text is shown on #status and announced again', async () => {
+    // WRONG IMPL KILLED: a reconnect that does not reset the "already said" memory (the second,
+    // identical error is shown but never announced, so a screen-reader player is not told the link
+    // dropped again). The menu is opened and closed between the two so that the live region's own
+    // last-written dedupe cannot be what swallows the repeat.
+    await ready();
+    const live = uif4WatchLive();
+    let t = 1050;
+    const pump = (): void => {
+      for (let i = 0; i < 12; i += 1) {
+        frame(t);
+        t += 100;
+      }
+    };
+    opts.onError('link', 'zz-socket-closed');
+    pump();
+    expect(
+      live.filter((w) => w.includes('zz-socket-closed')),
+      'precondition: said once',
+    ).toHaveLength(1);
+    opts.onReconnect(H.identity);
+    pump();
+    fire('keydown', 'KeyM', t);
+    fire('keyup', 'KeyM', t + 2);
+    t += 10;
+    pump();
+    fire('keydown', 'Escape', t);
+    fire('keyup', 'Escape', t + 2);
+    t += 10;
+    pump();
+    expect(uif4Status(), 'precondition: the reconnect cleared the hint').toBe('');
+    opts.onError('link', 'zz-socket-closed');
+    pump();
+    expect(uif4Status(), 'the same text is shown again').toBe(UIF4_LINK_TEXT);
+    expect(
+      live.filter((w) => w.includes('zz-socket-closed')),
+      'and announced again',
+    ).toHaveLength(2);
+  });
+
+  /** Make the F9 bug-bundle download throw, so it reports the `download-blocked` hint. Real flow:
+   *  the F9 key, with `URL.createObjectURL` blocked (as a CSP or sandbox policy would). The export
+   *  download shares the kind and the status-line sink; the bug-bundle path is the one this harness
+   *  reaches without export-chunk fixtures. */
+  function blockDownloads(): void {
+    const original = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: (): string => {
+        throw new Error('blocked');
+      },
+    });
+    restorers.push(() => {
+      if (original !== undefined) Object.defineProperty(URL, 'createObjectURL', original);
+      else delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+    });
+  }
+
+  it('UIF4.5 a download-blocked hint followed by a link error shows the link error (any later hint overwrites it)', async () => {
+    // WRONG IMPL KILLED: a download-blocked hint that sticks over a later link error (the table says
+    // "until overwritten"), or a link error dropped because of the earlier hint.
+    // SUBSTITUTION: the bug-bundle download (F9, URL.createObjectURL blocked), not the personal-data
+    // export: same `download-blocked` kind, reachable without export-chunk rows.
+    await ready();
+    blockDownloads();
+    fire('keydown', 'F9', 1100);
+    fire('keyup', 'F9', 1102);
+    const blocked = uif4Status();
+    expect(blocked, 'precondition: the blocked download is on the status line').not.toBe('');
+    expect(uif4Toast(), 'and not on the toast').toBe('');
+    opts.onError('link', 'zz-socket-closed');
+    expect(uif4Status()).toBe(UIF4_LINK_TEXT);
+    expect(uif4Status()).not.toBe(blocked);
+  });
+
+  // NOT WRITTEN (named, not silent): "content-stale then a link error keeps content-stale" and "after
+  // onReconnect the link error is gone and content-stale still shows". content-stale has no trigger the
+  // existing harnesses reach (no connection option, no key), and the download-blocked stand-in cannot
+  // stand in for it: the coordinator's own rule is that download-blocked is overwritten by a later
+  // hint, so it would assert the opposite of the rank-3 clause.
+
+  it('UIF4.5 a standing hint on the menu strip is not re-rendered by the frame loop', async () => {
+    // WRONG IMPL KILLED: a menu that repaints its strip on every frame (the text node would be
+    // replaced 60 times a second, and the live region would be fed the same line over and over).
+    await ready();
+    opts.onError('link', 'zz-socket-closed');
+    fire('keydown', 'KeyM', 1100);
+    fire('keyup', 'KeyM', 1102);
+    const strip = document.querySelector<HTMLElement>('#menu-overlay .mr-frame-feedback');
+    if (strip === null) throw new Error('the menu strip must exist');
+    expect(strip.textContent, 'precondition: the strip hosts the hint').toBe(UIF4_LINK_TEXT);
+    const node = strip.firstChild;
+    expect(node, 'precondition: the strip has a text node').not.toBeNull();
+    for (let t = 1150; t <= 1750; t += 50) frame(t);
+    expect(strip.firstChild, 'the same text node after several frames').toBe(node);
+    expect(strip.textContent).toBe(UIF4_LINK_TEXT);
   });
 });
