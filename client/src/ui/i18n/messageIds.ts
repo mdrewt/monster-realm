@@ -401,6 +401,8 @@ export type MessageId =
   | 'bag.action.info'
   | 'bag.picker.title'
   | 'bag.feed.noMonsters'
+  | 'bag.empty.cue'
+  | 'bag.empty.next'
   | 'journal.detail.step'
   | 'journal.empty'
   // qf-6 (QF6.2): the status line when a refused advance_dialogue ends the conversation —

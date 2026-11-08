@@ -3222,8 +3222,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 496 keys').toBe(496);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(496);
+    // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
+    expect(Object.keys(en).length, 'the English catalog holds exactly 498 keys').toBe(498);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(498);
   });
 });
 
@@ -3335,8 +3336,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 496 keys').toBe(496);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(496);
+    // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
+    expect(Object.keys(en).length, 'the English catalog holds exactly 498 keys').toBe(498);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(498);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3626,9 +3628,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // NAMED INTENTIONAL CHANGE (bt-15 B, BT15.2/BT15.3/BT15.5): 512 → 525, +13 tactics.*.
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 496 keys').toBe(496);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(496);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(496);
+    // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
+    expect(Object.keys(en).length, 'the English catalog holds exactly 498 keys').toBe(498);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(498);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(498);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );

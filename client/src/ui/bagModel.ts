@@ -45,7 +45,14 @@ export interface BagVm {
   readonly monsters: readonly BagMonsterVm[];
 }
 
-export type BagAction = 'feed' | 'use' | 'info';
+/** An item sheet's rows; `close` is its last row, whose A acts like B (uif-8, UIF8.2). */
+export type BagAction = 'feed' | 'use' | 'info' | 'close';
+
+/** The key of the last row of the Feed picker and of the Info page, whose A acts like B (uif-8,
+ *  UIF8.2). A monster key is its id in decimal, so it is never this. */
+export const BAG_BACK_KEY = 'back';
+export const isBagBackKey = (key: string | null): boolean => key === BAG_BACK_KEY;
+const BACK_ITEM = { key: BAG_BACK_KEY, enabled: true } as const;
 
 /** The pocket an item definition belongs to; an unknown definition is Other. */
 export function pocketOf(def: StoreItemRow | undefined): Pocket {
@@ -130,7 +137,7 @@ export function bagLayout(vm: BagVm): NavLayout {
 }
 
 /** The item's actions: Feed (food; disabled with no monster to feed), Use (battle items, always
- *  disabled here: they are used from the battle Bag command), then Info. */
+ *  disabled here: they are used from the battle Bag command), Info, then Close (uif-8). */
 export function actionLayout(item: BagItemVm, hasMonsters: boolean): ItemLayout {
   const rows: { key: BagAction; enabled: boolean; reason?: string }[] = [];
   if (item.canFeed) {
@@ -141,7 +148,7 @@ export function actionLayout(item: BagItemVm, hasMonsters: boolean): ItemLayout 
     );
   }
   if (item.battleUse) rows.push({ key: 'use', enabled: false, reason: 'battleOnly' });
-  rows.push({ key: 'info', enabled: true });
+  rows.push({ key: 'info', enabled: true }, { key: 'close', enabled: true });
   return list(rows);
 }
 
@@ -153,10 +160,13 @@ export function itemActions(vm: BagVm, item: BagItemVm): ItemLayout {
 /** A list cursor as a nav state (the sheet and the picker are lists stepped with the kit). */
 export const listNav = (item: string | null): NavState => ({ tab: null, item, perTab: {} });
 
-/** The Feed picker: one row per monster. */
+/** The Feed picker: one row per monster, then Back (uif-8). */
 export function pickerLayout(vm: BagVm): ItemLayout {
-  return list(vm.monsters.map((m) => ({ key: m.key, enabled: true })));
+  return list([...vm.monsters.map((m) => ({ key: m.key, enabled: true })), BACK_ITEM]);
 }
+
+/** The Info page's one row: Back (uif-8). */
+export const infoLayout: ItemLayout = list([BACK_ITEM]);
 
 export function findItem(vm: BagVm, itemId: number): BagItemVm | undefined {
   for (const p of vm.pockets) {

@@ -729,12 +729,16 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     // their textContent writes; the tree measured 264 sinks on 2026-11-08, rounded DOWN to a
     // multiple of 5 = 260. Was: 275 (bt-17). The exact pin, the % 5 check and the whole-tree
     // `>=` clause are unchanged.
+    // uif-8 (named intentional change, hidden dependency of the touches set): re-measured in uif-8,
+    // 257 sinks on 2026-11-08 (the Inventory's sheet, picker title, description and empty line moved
+    // into the kit's ContextSheet/EmptyState, which write that text once each), rounded down to 255;
+    // was 260 (uif-4b).
     expect(SINK_FLOOR % 5, 'SINK_FLOOR is rounded down to a multiple of 5').toBe(0);
     expect(SINK_FLOOR, 'SINK_FLOOR is a real floor').toBeGreaterThan(0);
     expect(
       SINK_FLOOR,
       'SINK_FLOOR is an anti-vacuity guard, not a ratchet: edit it consciously when UI text legitimately shrinks, never auto-tighten or drive-by lower it',
-    ).toBe(260);
+    ).toBe(255);
 
     const tree = scan();
     const byFile = new Map(tree.perFile.map((p) => [p.file, p]));
