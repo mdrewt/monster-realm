@@ -658,9 +658,16 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.hint':
     'Only monsters in your Party can battle or be swapped in. New recruits arrive in Storage ' +
     `${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`, // boxView.ts
-  'box.section.party': 'Party', // boxView.ts
-  'box.section.box': 'Storage', // boxView.ts
+  // uif-6 (named intentional change, UIF6.5 / UIF6.6): -2 plain keys (`box.section.party` 'Party' and
+  // `box.section.box` 'Storage', RETIRED with the two in-panel h3 headings, R-qf-10-QF10.2:
+  // catalogParity DEAD-KEY otherwise) and +2 plain keys (`box.storage.emptyCue`,
+  // `box.storage.emptyNext`, the empty Storage EmptyState's cue and next step; the reason line is
+  // the existing `box.box.empty`) = a net zero, the roster stays 494 keys. The en bytes of the two
+  // new keys are pinned HERE (the implementer copies them); the fr texts are pinned by the uif-6
+  // describe at the end of this file (plain strings, different from the en ones).
   'box.box.empty': 'No monsters in storage.', // boxView.ts
+  'box.storage.emptyCue': 'Monsters you recruit are kept here.', // boxView.ts
+  'box.storage.emptyNext': 'Recruit a wild monster in battle, then come back.', // boxView.ts
   'box.card.evolveBadge': '★ Ready to evolve — choose a path', // boxView.ts
   'box.rename.prompt': 'New nickname:', // boxView.ts (ctl-8b: the typing row's label; was prompt())
   // ctl-8b: the Monsters frame's tab labels, action-sheet rows and Move feedback lines. The check
@@ -3426,7 +3433,8 @@ const QF10_EN: Record<string, string> = {
   'box.hint':
     'Only monsters in your Party can battle or be swapped in. New recruits arrive in Storage ' +
     `${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`,
-  'box.section.box': 'Storage',
+  // uif-6 (named intentional change, UIF6.5): `box.section.box` is RETIRED with the Storage h3, so
+  // this table holds four keys (was five).
   'box.box.empty': 'No monsters in storage.',
   'raising.title': 'Inventory',
 };
@@ -3442,19 +3450,13 @@ const QF10_FR: Record<string, string> = {
     `Stockage ${EM_DASH} s${E_ACUTE}lectionnez-en une et choisissez ` +
     `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}D${E_ACUTE}placer${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET} ` +
     `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`,
-  'box.section.box': 'Stockage',
+  // uif-6 (named intentional change, UIF6.5): `box.section.box` is RETIRED (four keys, was five).
   'box.box.empty': 'Aucun monstre dans le stockage.',
   'raising.title': 'Inventaire',
 };
 
 /** The five values that named the Box / Raising screens (bt-17: `battle.swap.hint` deleted). */
-const QF10_NAMING_KEYS = [
-  'box.title',
-  'box.hint',
-  'box.section.box',
-  'box.box.empty',
-  'raising.title',
-] as const;
+const QF10_NAMING_KEYS = ['box.title', 'box.hint', 'box.box.empty', 'raising.title'] as const;
 
 /** True iff `word` occurs in `text` bounded on both sides by a non-letter, non-digit (or an edge):
  *  a hand-rolled scan (this file's helpers use no RegExp). A letter is ASCII or any code point
@@ -3486,7 +3488,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     for (const [key, expected] of Object.entries(QF10_EN)) {
       expect(en[key], `en ${key}: the exact qf-10 text`).toBe(expected);
     }
-    expect(Object.keys(QF10_EN), 'ANTI-VACUITY: five keys (bt-17: was seven)').toHaveLength(5);
+    expect(Object.keys(QF10_EN), 'ANTI-VACUITY: four keys (uif-6: was five)').toHaveLength(4);
     for (const key of QF10_NAMING_KEYS) {
       const value = String(en[key]);
       expect(value.includes('Party & Box'), `en ${key} no longer says "Party & Box"`).toBe(false);
@@ -3515,7 +3517,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     for (const [key, expected] of Object.entries(QF10_FR)) {
       expect(fr[key], `fr ${key}: the exact qf-10 text`).toBe(expected);
     }
-    expect(Object.keys(QF10_FR), 'ANTI-VACUITY: five keys (bt-17: was seven)').toHaveLength(5);
+    expect(Object.keys(QF10_FR), 'ANTI-VACUITY: four keys (uif-6: was five)').toHaveLength(4);
     for (const key of QF10_NAMING_KEYS) {
       const value = String(fr[key]);
       expect(value.includes(EQUIPE_ET_BOITE), `fr ${key} no longer says "${EQUIPE_ET_BOITE}"`).toBe(
@@ -3548,15 +3550,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // bt-17 (named intentional change, BT17.1): `battle.swap.hint` and `battle.command.bag` leave this
     // list — they are not renamed, they are DELETED with the 1v1 view (the roster census below and
     // CAT-01's `battle.*` census pin their absence).
-    const LEGACY_IDS = [
-      'box.title',
-      'box.hint',
-      'box.section.party',
-      'box.section.box',
-      'box.box.empty',
-      'raising.title',
-    ] as const;
-    expect(LEGACY_IDS, 'ANTI-VACUITY: six ids (bt-17: was eight)').toHaveLength(6);
+    const LEGACY_IDS = ['box.title', 'box.hint', 'box.box.empty', 'raising.title'] as const;
+    // uif-6 (named intentional change, UIF6.5): `box.section.party` and `box.section.box` leave this
+    // list, they are RETIRED with the two h3 headings (the uif-6 describe pins their absence).
+    expect(LEGACY_IDS, 'ANTI-VACUITY: four ids (uif-6: was six)').toHaveLength(4);
     for (const id of LEGACY_IDS) {
       expect(Object.hasOwn(en, id), `en keeps ${id}`).toBe(true);
       expect(Object.hasOwn(fr, id), `fr keeps ${id}`).toBe(true);
@@ -3583,8 +3580,64 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
-    // The Party heading is deliberately NOT revalued (the Party panel keeps its name).
-    expect(en['box.section.party'], 'en box.section.party is untouched').toBe('Party');
+    // uif-6 (named intentional change, UIF6.5): the Party heading id is RETIRED, not kept untouched
+    // (was: `en['box.section.party']` reads 'Party'); the tab label `box.tab.party` is the name.
+    expect(en['box.tab.party'], 'en box.tab.party names the Party tab').toBe('Party');
+  });
+});
+
+// =============================================================================
+// uif-6 (UIF6.5, UIF6.6): the empty Storage's EmptyState lines and the retired section headings.
+// =============================================================================
+
+describe('uif-6: the empty Storage copy and the retired headings, in both catalogs', () => {
+  const en = CATALOG_EN as Record<string, unknown>;
+  const fr = CATALOG_FR as Record<string, unknown>;
+  const NEW_KEYS = ['box.storage.emptyCue', 'box.storage.emptyNext'] as const;
+
+  it('UIF6.6 box.storage.emptyCue and box.storage.emptyNext exist in en and fr as plain non-empty strings, French different from English, each different from the reason line and from each other', () => {
+    // WRONG IMPL KILLED: a key added to en only (the French boot throws or shows the key: both
+    // catalogs must carry it); a closure value (the view reads it with t(), which a parameterised
+    // entry cannot serve); an empty string (the EmptyState would render an empty cue line); a
+    // French text left as the English copy (an untranslated line in a French boot); one text reused
+    // for the cue and the next step, or either reused as the reason line (three lines that read the
+    // same tell the player nothing new).
+    for (const [locale, catalog] of [
+      ['en', en],
+      ['fr', fr],
+    ] as const) {
+      const texts = [...NEW_KEYS, 'box.box.empty'].map((key) => catalog[key]);
+      for (const [i, value] of texts.entries()) {
+        expect(
+          typeof value,
+          `${locale} ${[...NEW_KEYS, 'box.box.empty'][i]} is a plain string`,
+        ).toBe('string');
+        expect(String(value).trim().length, `${locale}: not empty`).toBeGreaterThan(0);
+      }
+      expect(new Set(texts).size, `${locale}: three different lines`).toBe(3);
+    }
+    for (const key of NEW_KEYS) {
+      expect(fr[key], `fr ${key} is a translation, not the English copy`).not.toBe(en[key]);
+    }
+  });
+
+  it('UIF6.5 box.section.party and box.section.box are in neither catalog: the in-panel headings are retired with their ids', () => {
+    // WRONG IMPL KILLED: headings deleted from the view but their ids left in the catalogs
+    // (catalogParity DEAD-KEY, and the retired copy lingers); a key removed from en only (the
+    // French catalog keeps a key the typed table no longer has); the tab labels `box.tab.*`
+    // removed along with them (the control: they stay).
+    for (const [locale, catalog] of [
+      ['en', en],
+      ['fr', fr],
+    ] as const) {
+      for (const key of ['box.section.party', 'box.section.box']) {
+        expect(Object.hasOwn(catalog, key), `${locale} no longer has ${key}`).toBe(false);
+      }
+      expect(Object.hasOwn(catalog, 'box.tab.party'), `${locale} keeps box.tab.party`).toBe(true);
+      expect(Object.hasOwn(catalog, 'box.tab.storage'), `${locale} keeps box.tab.storage`).toBe(
+        true,
+      );
+    }
   });
 });
 

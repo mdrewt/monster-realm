@@ -547,20 +547,22 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // boxView.ts:94-96 (resolved in show())
   'box.hint':
     'Seuls les monstres de votre équipe peuvent combattre ou être échangés en cours de combat. Les nouvelles recrues arrivent dans le Stockage — sélectionnez-en une et choisissez « Déplacer » pour la placer dans un emplacement libre de l’équipe.',
-  // @desc: Section heading above the six party slots. One word.
-  // boxView.ts:101 (resolved in show())
-  'box.section.party': 'Équipe',
-  // @desc: Section heading above the stored monsters (Storage). One word.
-  // boxView.ts:111 (resolved in show())
-  'box.section.box': 'Stockage',
   // @desc: Placeholder text of an unoccupied party slot; {slot} is the slot index as shown today
   // (counted from 0). One short line, dimmed.
   // boxView.ts:160
   'box.party.emptySlot': (p) => `Emplacement ${p.slot} : (vide)`,
-  // @desc: Empty-state line of the box section when no monster is in storage. One short line,
-  // dimmed.
+  // @desc: The empty Storage panel's reason line (the EmptyState, uif-6) when no monster is in
+  // storage. One short line.
   // boxView.ts:173
   'box.box.empty': 'Aucun monstre dans le stockage.',
+  // @desc: The empty Storage panel's cue (uif-6, the EmptyState): where stored monsters come
+  // from. One short sentence, muted.
+  // boxView.ts (#buildBox)
+  'box.storage.emptyCue': 'Les monstres que vous recrutez sont gardés ici.',
+  // @desc: The empty Storage panel's next step (uif-6, the EmptyState): what the player can do to
+  // fill it. One short sentence.
+  // boxView.ts (#buildBox)
+  'box.storage.emptyNext': 'Recrutez un monstre sauvage en combat, puis revenez.',
   // @desc: Info line on a monster card in the party or box; {species} is the species name,
   // {level} the level ("Niv." abbreviates "Niveau"), {current}/{max} its hit points and
   // {percent} the same as a percentage. Keep the "PV {current}/{max}" shape. One line of small

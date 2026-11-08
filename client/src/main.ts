@@ -567,6 +567,9 @@ let boundHealLocationId: number | null = null;
 // The Social tab the last `openSocial` asked for (null: a plain open). Like the two ids above it
 // keeps its value after the frame closes and clears on reconnect.
 let boundSocialTab: SocialTab | null = null;
+// The Monsters tab the last Monsters open bound (uif-6): Party from the menu and V, Storage from B.
+// Read by the screen's `init` at the seated open; clears on reconnect (null opens Storage).
+let boundMonstersTab: MonstersTab | null = null;
 // The player the trade wizard was last opened for (the face-to-face Trade, ctl-10b). Every open
 // rebinds it, and the face-to-face Trade is the wizard's only open path.
 let boundProposeTarget: string | null = null;
@@ -1585,8 +1588,11 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
   if (identity === '') return;
   // Exhaustive switch, no default arm: a new target compiler-flags this site.
   switch (target) {
-    case 'boxView': {
-      const frame = openFrame(
+    case 'boxView':
+      // uif-6 (UIF6.2): the tab is bound before the open and the open is seated, so the screen's
+      // `init` opens on it and paints it at once: no synthesized button.
+      boundMonstersTab = monstersTab;
+      openSeated(
         'boxView',
         frameOpenOf(() => boxView),
         () => {
@@ -1594,12 +1600,7 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
           refreshBox();
         },
       );
-      // The view paints its own opening state, on Storage; the Party tab is one LB away.
-      if (monstersTab === 'party' && frame !== undefined) {
-        screenHost.button(contextStack, { button: 'LB', repeat: false }, screenCtx);
-      }
       break;
-    }
     case 'raisingView':
       // Seated at the open, so the Bag paints then and not at the next batch or button.
       openSeated(
@@ -1702,6 +1703,9 @@ const screenCtx: ScreenContext = {
   },
   get proposeTarget() {
     return boundProposeTarget;
+  },
+  get monstersTab() {
+    return boundMonstersTab;
   },
   get reduceMotion() {
     return motionPreference.reduceMotion;
@@ -4909,6 +4913,7 @@ async function main(): Promise<void> {
       boundHealLocationId = null;
       // The requested Social tab and what the screens remember go with the session too.
       boundSocialTab = null;
+      boundMonstersTab = null;
       boundProposeTarget = null;
       screenHost.forget();
       dismissedRequests.clear();

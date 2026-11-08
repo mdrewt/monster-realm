@@ -549,27 +549,29 @@ function assertNotTheHint(el: Element, label: string): void {
   ).not.toBe('box-party-hint');
 }
 
-function partyGridOf(parent: HTMLElement): HTMLElement {
-  const label = findByTag(parent, 'h3', 'Party');
-  const grid = label.nextElementSibling;
+/** uif-6 (named intentional change, UIF6.5): the "Party" / "Storage" h3 headings are deleted, so the
+ *  two grids are no longer found as the heading's next sibling. They are the two children of the
+ *  tab content area `#monsters-panel`, Party first and Storage second. */
+function monstersPanelOf(parent: HTMLElement): HTMLElement {
+  const panel = parent.querySelector<HTMLElement>('#monsters-panel');
+  expect(panel, 'precondition: the tab content area #monsters-panel exists').not.toBeNull();
   expect(
-    grid,
-    'precondition: the "Party" h3 must be immediately followed by #partyEl',
-  ).not.toBeNull();
-  assertNotTheHint(grid as Element, '#partyEl');
-  return grid as HTMLElement;
+    (panel as HTMLElement).children.length,
+    'precondition: #monsters-panel holds exactly the Party grid and the Storage grid',
+  ).toBe(2);
+  return panel as HTMLElement;
+}
+
+function partyGridOf(parent: HTMLElement): HTMLElement {
+  const grid = monstersPanelOf(parent).children[0] as HTMLElement;
+  assertNotTheHint(grid, '#partyEl');
+  return grid;
 }
 
 function boxGridOf(parent: HTMLElement): HTMLElement {
-  // qf-10 (named intentional change): the h3 reads "Storage" (was "Box").
-  const label = findByTag(parent, 'h3', 'Storage');
-  const grid = label.nextElementSibling;
-  expect(
-    grid,
-    'precondition: the "Storage" h3 must be immediately followed by #boxEl',
-  ).not.toBeNull();
-  assertNotTheHint(grid as Element, '#boxEl');
-  return grid as HTMLElement;
+  const grid = monstersPanelOf(parent).children[1] as HTMLElement;
+  assertNotTheHint(grid, '#boxEl');
+  return grid;
 }
 
 /** The header row (the `Monsters` h2's parent) — anchor for the insertion-point pins. */
@@ -986,9 +988,12 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
       'precondition (X6): the fresh-player state still renders its starter, so the empty button ' +
         'list above is not an empty render',
     ).toContain('Sproutle');
-    expect(boxGridOf(parent).textContent ?? '', 'precondition (X6): and the empty box line').toBe(
-      i18nT('box.box.empty'),
-    );
+    // uif-6 (named intentional change, UIF6.6): the empty box is an EmptyState; its reason line is
+    // the old "No monsters in storage." (the grid's textContent is reason + cue + next step now).
+    expect(
+      boxGridOf(parent).querySelector('.mr-empty-reason')?.textContent,
+      'precondition (X6): and the empty box line',
+    ).toBe(i18nT('box.box.empty'));
 
     // THE COPY HALF: the copy names no retired control, and the one it names is the sheet's Move.
     const text = hint!.textContent ?? '';
@@ -1374,9 +1379,12 @@ const M24S4_BX_PLAIN_KEYS = new Set([
   'box.title',
   // INTENTIONAL CHANGE (ctl-10a): `box.heal` leaves this roster with the Heal Party button.
   'box.hint',
-  'box.section.party',
-  'box.section.box',
+  // INTENTIONAL CHANGE (uif-6, UIF6.5 / UIF6.6): `box.section.party` and `box.section.box` leave this
+  // roster with the two h3 headings (a «box.section.party» span is now an unexpected sentinel); the
+  // empty Storage's EmptyState reads `box.box.empty` (reason) plus two new ids, its cue and next step.
   'box.box.empty',
+  'box.storage.emptyCue',
+  'box.storage.emptyNext',
   // INTENTIONAL CHANGE (ctl-8b): `box.card.rename` leaves this roster (the per-card Rename button
   // and window.prompt are deleted); seven keys join it (the tabs, the action sheet's rows and the
   // two Move feedback lines). `box.rename.prompt` stays: it is the typing row's label now.
@@ -1582,9 +1590,13 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     // INTENTIONAL CHANGE (ctl-10a): no Heal Party button, so `box.heal` is never resolved.
     expect(i18nT).not.toHaveBeenCalledWith('box.heal');
     expect(i18nT).toHaveBeenCalledWith('box.hint');
-    expect(i18nT).toHaveBeenCalledWith('box.section.party');
-    expect(i18nT).toHaveBeenCalledWith('box.section.box');
+    // INTENTIONAL CHANGE (uif-6, UIF6.5 / UIF6.6): the h3 headings are gone (their ids are never
+    // resolved) and the empty Storage resolves its EmptyState cue and next step as well.
+    expect(i18nT).not.toHaveBeenCalledWith('box.section.party');
+    expect(i18nT).not.toHaveBeenCalledWith('box.section.box');
     expect(i18nT).toHaveBeenCalledWith('box.box.empty');
+    expect(i18nT).toHaveBeenCalledWith('box.storage.emptyCue');
+    expect(i18nT).toHaveBeenCalledWith('box.storage.emptyNext');
     // INTENTIONAL CHANGE (qf-8): `box.card.toBox` / `box.card.toParty` left with the card buttons.
     expect(i18nT).not.toHaveBeenCalledWith('box.card.evolveBadge');
     expect(i18nTf).toHaveBeenCalledWith('box.party.emptySlot', { slot: 1 });
@@ -1663,8 +1675,9 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     // INTENTIONAL CHANGE (ctl-10a): `box.heal` is not resolved on a repeat show() either.
     expect(i18nT).not.toHaveBeenCalledWith('box.heal');
     expect(i18nT).toHaveBeenCalledWith('box.hint');
-    expect(i18nT).toHaveBeenCalledWith('box.section.party');
-    expect(i18nT).toHaveBeenCalledWith('box.section.box');
+    // INTENTIONAL CHANGE (uif-6, UIF6.5): the section headings are gone.
+    expect(i18nT).not.toHaveBeenCalledWith('box.section.party');
+    expect(i18nT).not.toHaveBeenCalledWith('box.section.box');
   });
 
   it('m24s4 BX-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
@@ -1695,9 +1708,13 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       // INTENTIONAL CHANGE (ctl-10a): the Heal Party button and its «box.heal» label are gone.
       expect(joined).not.toContain('«box.heal»');
       expect(joined).toContain('«box.hint»');
-      expect(joined).toContain('«box.section.party»');
-      expect(joined).toContain('«box.section.box»');
+      // INTENTIONAL CHANGE (uif-6, UIF6.5 / UIF6.6): no section headings; the empty Storage reads
+      // its three EmptyState lines.
+      expect(joined).not.toContain('«box.section.party»');
+      expect(joined).not.toContain('«box.section.box»');
       expect(joined).toContain('«box.box.empty»');
+      expect(joined).toContain('«box.storage.emptyCue»');
+      expect(joined).toContain('«box.storage.emptyNext»');
       // INTENTIONAL CHANGE (ctl-8b): no '«box.card.rename»': the per-card Rename button is gone.
       // INTENTIONAL CHANGE (qf-8): no '«box.card.toBox»' either: the card buttons are gone (the id
       // left M24S4_BX_PLAIN_KEYS, so such a span would be an unexpected sentinel).
@@ -2025,7 +2042,34 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
       empties.map((el) => ctl7bOwnText(el)),
       'precondition: three empty party slots and the empty storage line are rendered',
     ).toHaveLength(4);
-    ctl7bExpectReadableEmpties(empties, root);
+    // uif-6 (named intentional change, UIF6.5): the empty slots' colour is a TOKEN var
+    // (`var(--mr-text-muted)`), which happy-dom cannot resolve to a literal. An empty whose inline
+    // colour is a var must be EXACTLY one of the two readable text tokens (never a translucent or
+    // arbitrary var); the rest keep the literal 4.5:1 check. The measured contrast of the tokens in
+    // Chromium is the UIF6.5 e2e's (the cell colours) and ui-chrome's (the token table).
+    const READABLE_TOKEN_VARS = ['var(--mr-text-muted)', 'var(--mr-frame-fg)'];
+    const colourOf = (el: Element): string | undefined => {
+      for (let n: Element | null = el; n !== null && n !== root; n = n.parentElement) {
+        const colour = ctl7bInline(n).get('color');
+        if (colour !== undefined) return colour;
+      }
+      return undefined;
+    };
+    const tokenised = empties.filter((el) => colourOf(el)?.startsWith('var(') === true);
+    for (const el of tokenised) {
+      expect(
+        READABLE_TOKEN_VARS,
+        `the token var ${colourOf(el)} on ${JSON.stringify(ctl7bOwnText(el))} is a readable text token`,
+      ).toContain(colourOf(el));
+    }
+    expect(
+      tokenised.length,
+      'non-vacuity: the three empty slots carry a token colour',
+    ).toBeGreaterThanOrEqual(3);
+    ctl7bExpectReadableEmpties(
+      empties.filter((el) => !tokenised.includes(el)),
+      root,
+    );
   });
 });
 
@@ -2169,7 +2213,14 @@ const c8bSelected = (root: Element): (string | null)[] =>
 const c8bCards = (grid: Element): HTMLElement[] => [
   ...grid.querySelectorAll<HTMLElement>('[data-nav-key]'),
 ];
+// uif-6 (named intentional change, UIF6.8): the Party draws all six slots, and an empty slot's cell
+// carries `data-nav-key="slot-<i>"`. `c8bKeys` stays "the monsters' keys" (the slot cells are
+// filtered out); `c8bCellKeys` is every cell, slot cells included.
 const c8bKeys = (grid: Element): (string | undefined)[] =>
+  c8bCards(grid)
+    .map((el) => el.dataset.navKey)
+    .filter((key) => key === undefined || !key.startsWith('slot-'));
+const c8bCellKeys = (grid: Element): (string | undefined)[] =>
   c8bCards(grid).map((el) => el.dataset.navKey);
 const c8bMarked = (root: Element): HTMLElement[] => [
   ...root.querySelectorAll<HTMLElement>('[aria-current="true"]'),
@@ -2218,9 +2269,8 @@ describe('BoxView ctl-8b: the tabs and the cursor (CTL8B.1)', () => {
     const { parent, view, root } = c8bOpen();
     const party = partyGridOf(parent);
     const box = boxGridOf(parent);
-    const partyHeading = findByTag(parent, 'h3', 'Party');
-    // INTENTIONAL CHANGE (qf-10, QF10.4): the Box panel's heading reads "Storage" (was "Box").
-    const boxHeading = findByTag(parent, 'h3', 'Storage');
+    // INTENTIONAL CHANGE (uif-6, UIF6.5): the two h3 section headings are deleted, so the heading
+    // clauses below are gone; the tabs and the two grids carry the claim (UIF6.5 pins the h3s' absence).
 
     view.paint(c8bPaint({ tab: 'party' }));
     const tabs = c8bTabs(root);
@@ -2234,9 +2284,7 @@ describe('BoxView ctl-8b: the tabs and the cursor (CTL8B.1)', () => {
     ).toEqual(['Party', 'Storage']);
     expect(c8bSelected(root), 'Party painted: the first tab selected').toEqual(['true', 'false']);
     expect(c8bHidden(party, root), 'the Party grid shows').toBe(false);
-    expect(c8bHidden(partyHeading, root), 'the Party heading shows').toBe(false);
     expect(c8bHidden(box, root), 'the Box grid is hidden by inline display:none').toBe(true);
-    expect(c8bHidden(boxHeading, root), 'and so is its heading').toBe(true);
     expect(root.textContent ?? '', 'the hidden panel`s text stays in the root').toContain(
       'Emberfang',
     );
@@ -2248,9 +2296,7 @@ describe('BoxView ctl-8b: the tabs and the cursor (CTL8B.1)', () => {
       'true',
     ]);
     expect(c8bHidden(box, root)).toBe(false);
-    expect(c8bHidden(boxHeading, root)).toBe(false);
     expect(c8bHidden(party, root), 'the Party grid is hidden now').toBe(true);
-    expect(c8bHidden(partyHeading, root)).toBe(true);
     expect(root.textContent ?? '', 'the hidden Party panel`s text stays').toContain('Sproutle');
     expect(party.textContent ?? '').toContain('Mossling');
 
@@ -2596,7 +2642,14 @@ describe('BoxView qf-11: the Monsters tab strip (QF11.1)', () => {
 
     // ANTI-VACUITY: the strip is the painted, two-tab tablist in the column root.
     const strip = stripOf();
-    expect(strip.parentElement, 'a direct child of the frame root').toBe(root);
+    // uif-6 (named intentional change, UIF6.1): the strip is built through the TabBar, so it sits in
+    // the `.mr-tabbar` row (LB chip, strip, RB chip) and THAT row is the frame root's child.
+    expect(strip.parentElement?.classList.contains('mr-tabbar'), 'inside the TabBar row').toBe(
+      true,
+    );
+    expect(strip.parentElement?.parentElement, 'the row is a direct child of the frame root').toBe(
+      root,
+    );
     expect(root.classList.contains('mr-frame'), 'inside a .mr-frame column').toBe(true);
     expect(c8bTabs(root), 'two tabs rendered').toHaveLength(2);
 
@@ -4186,7 +4239,14 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
     const party = partyGridOf(parent);
     const box = boxGridOf(parent);
     const slotsBefore = [...Array.from(party.children), ...Array.from(box.children)];
-    const cardsBefore = [...c8bCards(party), ...c8bCards(box)];
+    // uif-6 (named intentional change, UIF6.8): an empty Party slot now carries
+    // `data-nav-key="slot-<i>"`, so "the monster cards" filter the slot cells out (they are still
+    // covered, as slots and as elements, by the slot and element identity clauses below).
+    const monsterCards = (): HTMLElement[] =>
+      [...c8bCards(party), ...c8bCards(box)].filter(
+        (el) => !(el.dataset.navKey ?? '').startsWith('slot-'),
+      );
+    const cardsBefore = monsterCards();
     const elementsBefore = [...p2Elements(party), ...p2Elements(box)];
     expect(slotsBefore, 'six party slots (two cards, four null) and two box cards').toHaveLength(8);
     expect(cardsBefore, 'four monster cards carry a nav key').toHaveLength(4);
@@ -4210,7 +4270,7 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
         slots.forEach((el, i) => {
           expect(el, `batch ${batch}: slot ${i} is the identical node`).toBe(slotsBefore[i]);
         });
-        const cards = [...c8bCards(party), ...c8bCards(box)];
+        const cards = monsterCards();
         cards.forEach((el, i) => {
           expect(el, `batch ${batch}: card ${i} is the identical node`).toBe(cardsBefore[i]);
         });
@@ -4262,14 +4322,22 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
 
     // The empty box: one line, kept across equal refreshes.
     view.refresh(p2Base().party, []);
-    expect(box.textContent, 'precondition: the box is empty now').toBe(i18nT('box.box.empty'));
+    // uif-6 (named intentional change, UIF6.6): the empty Storage is an EmptyState (a root plus its
+    // reason, cue and next-step lines), so the reason line is read from `.mr-empty-reason` and the
+    // kept nodes are all four elements (was: one line element).
+    expect(
+      box.querySelector('.mr-empty-reason')?.textContent,
+      'precondition: the box is empty now',
+    ).toBe(i18nT('box.box.empty'));
     const lineBefore = Array.from(box.querySelectorAll('*'));
-    expect(lineBefore, 'precondition: the empty line is one element').toHaveLength(1);
+    expect(lineBefore, 'precondition: the EmptyState is a root and three lines').toHaveLength(4);
     view.refresh(p2Base().party, []);
     view.refresh(p2Base().party, []);
     const lineAfter = Array.from(box.querySelectorAll('*'));
-    expect(lineAfter).toHaveLength(1);
-    expect(lineAfter[0], 'the empty-box line is the identical node').toBe(lineBefore[0]);
+    expect(lineAfter).toHaveLength(4);
+    lineAfter.forEach((el, i) => {
+      expect(el, `the empty-state element ${i} is the identical node`).toBe(lineBefore[i]);
+    });
   });
 
   interface P2Case {
@@ -4412,7 +4480,11 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
       to: () => ({ party: p2Base().party, box: [] }),
       check: ({ box }) => {
         expect(c8bKeys(box), 'no cards').toEqual([]);
-        expect(box.textContent, 'only the empty line').toBe(i18nT('box.box.empty'));
+        // uif-6 (named intentional change, UIF6.6): the empty Storage is an EmptyState (reason, cue
+        // and next step), so the grid holds the reason line, not that line alone.
+        expect(box.querySelector('.mr-empty-reason')?.textContent, 'the empty reason line').toBe(
+          i18nT('box.box.empty'),
+        );
       },
     },
     {
@@ -4740,17 +4812,21 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
       expect(box.textContent ?? '', 'no English Box stats are left').not.toContain(en.ember);
 
       // The empty box line: rendered in English first, then an equal refresh under fr.
+      // uif-6 (named intentional change, UIF6.6): the empty Storage is an EmptyState; its reason line
+      // is the old empty-box line.
+      const reasonOf = (): string | null | undefined =>
+        box.querySelector('.mr-empty-reason')?.textContent;
       p2SetLocale('en');
       view.refresh(cards().party, []);
-      expect(box.textContent).toBe(EN['box.box.empty']);
+      expect(reasonOf()).toBe(EN['box.box.empty']);
       p2SetLocale('fr');
       view.refresh(cards().party, []);
-      expect(box.textContent, 'the empty-box line is French').toBe(FR['box.box.empty']);
+      expect(reasonOf(), 'the empty-box line is French').toBe(FR['box.box.empty']);
 
       // And back: the switch is not one-way.
       p2SetLocale('en');
       view.refresh(cards().party, []);
-      expect(box.textContent).toBe(EN['box.box.empty']);
+      expect(reasonOf()).toBe(EN['box.box.empty']);
       expect(party.textContent ?? '', 'the empty slot copy is English again').toContain(en.slot);
       expect(party.textContent ?? '', 'no French empty slot is left').not.toContain(fr.slot);
     } finally {
@@ -5468,13 +5544,16 @@ describe('BoxView qf-10: the Monsters title and the Storage wording (QF10.4)', (
       p2SetLocale('en');
       view.show();
       expect(title!.textContent, 'English title').toBe('Monsters');
-      expect(grid.textContent, 'English empty Storage line').toBe('No monsters in storage.');
+      // uif-6 (named intentional change, UIF6.6): the empty line is the EmptyState's reason line.
+      const reasonOf = (): string | null | undefined =>
+        grid.querySelector('.mr-empty-reason')?.textContent;
+      expect(reasonOf(), 'English empty Storage line').toBe('No monsters in storage.');
 
       p2SetLocale('fr');
       view.show();
       view.refresh(makePartySlots(), []);
       expect(title!.textContent, 'French title').toBe('Monstres');
-      expect(grid.textContent, 'French empty Storage line').toBe('Aucun monstre dans le stockage.');
+      expect(reasonOf(), 'French empty Storage line').toBe('Aucun monstre dans le stockage.');
     } finally {
       p2SetLocale('en');
     }
@@ -5502,14 +5581,12 @@ describe('BoxView qf-10: the hint sits below the panels (QF10.3)', () => {
 
       const partyGrid = partyGridOf(parent);
       const boxGrid = boxGridOf(parent);
-      const partyHeading = partyGrid.previousElementSibling as HTMLElement;
-      const boxHeading = boxGrid.previousElementSibling as HTMLElement;
-      expect(partyHeading.tagName, `${tab}: the Party grid follows its h3`).toBe('H3');
-      expect(boxHeading.tagName, `${tab}: the Storage grid follows its h3`).toBe('H3');
+      // uif-6 (named intentional change, UIF6.5): the h3 headings are gone; the panel replaces them
+      // in this ordering claim.
+      const panel = monstersPanelOf(parent);
       for (const [name, el] of [
-        ['the Party heading', partyHeading],
+        ['the panel', panel],
         ['the Party grid', partyGrid],
-        ['the Storage heading', boxHeading],
         ['the Storage grid', boxGrid],
       ] as const) {
         expect(
@@ -5533,15 +5610,19 @@ describe('BoxView qf-10: the hint sits below the panels (QF10.3)', () => {
     const root = s4BoxRootOf(parent);
 
     const strip = root.querySelector('.mr-frame-tabstrip') as HTMLElement | null;
-    const firstHeading = root.querySelector('h3') as HTMLElement | null;
+    // uif-6 (named intentional change, UIF6.1/UIF6.5): the strip is in the TabBar row (the row is the
+    // root child) and the first panel heading is gone; the tab content area `#monsters-panel` is
+    // the first thing the hint must come after.
+    const firstHeading = root.querySelector('#monsters-panel') as HTMLElement | null;
     const hint = root.querySelector(BOX_PARTY_HINT_SELECTOR) as HTMLElement | null;
     expect(strip, 'precondition: the tab strip exists').not.toBeNull();
-    expect(firstHeading, 'precondition: a panel heading exists').not.toBeNull();
+    expect(firstHeading, 'precondition: the tab content area exists').not.toBeNull();
     expect(hint, 'precondition: the hint exists').not.toBeNull();
 
     const kids = [...root.children];
-    const at = (el: Element | null): number => kids.indexOf(el as Element);
-    expect(at(strip), 'the strip is a root child').toBeGreaterThanOrEqual(0);
+    const at = (el: Element | null): number =>
+      kids.indexOf(el === strip ? (strip?.parentElement as Element) : (el as Element));
+    expect(at(strip), 'the strip`s row is a root child').toBeGreaterThanOrEqual(0);
     expect(at(firstHeading), 'the first h3 is a root child after the strip').toBeGreaterThan(
       at(strip),
     );
@@ -5553,5 +5634,290 @@ describe('BoxView qf-10: the hint sits below the panels (QF10.3)', () => {
     expect(at(hint), 'the hint comes after the first panel heading').toBeGreaterThan(
       at(firstHeading),
     );
+  });
+});
+
+// =============================================================================
+// uif-6 (UIF6.1, UIF6.5, UIF6.6, UIF6.8): the Monsters frame's layout. happy-dom proves structure
+// only (no layout, no cascade): the geometry, the growth, the colours and the pseudo-scroll are
+// proved in Chromium by client/e2e/ui-monsters.spec.ts.
+// =============================================================================
+
+/** A party of six slots with monsters in slots 0 and 3 (a gap of two between them). */
+const uif6Gapped = (): (MonsterCardViewModel | null)[] => [
+  C8B_KIP,
+  null,
+  null,
+  makeCard({ monsterId: 101n, speciesName: 'Mossling', partySlot: 3 }),
+  null,
+  null,
+];
+
+describe('BoxView uif-6: the tabs are the TabBar (UIF6.1)', () => {
+  it('UIF6.1 the Monsters tabs are one .mr-tabbar row (LB chip, the role=tablist strip #monsters-tabs, RB chip) placed right after the title header and before the sheet parts and the panel, the tabs keep their ids and the selected one wears is-selected and never is-active', () => {
+    // WRONG IMPL KILLED: today's bare `.mr-frame-tabstrip` div (no chips, no row: the LB and RB
+    // chips are the kit's cue that Q and E switch tabs); chips present but in another order or
+    // outside the row; a strip without the id `monsters-tabs` (e2e and the kit key on strip ids);
+    // the row appended after the sheet parts or the panel (the tabs would sit under the sheet);
+    // tab ids renamed (`#monsters-tab-party` / `#monsters-tab-storage` are pointer and e2e
+    // anchors); a selected tab marked `is-active` (the row cursor's class: 'which tab' and 'which
+    // row' must both be expressible, UIF3.2) or marked by aria-selected alone (the visual cue is
+    // the class); both tabs selected; a row left `hidden`; the row rebuilt out of place by a
+    // batch refresh.
+    const { parent, view, root } = c8bOpen();
+    const expectBar = (when: string, selected: 'party' | 'storage'): void => {
+      const rows = root.querySelectorAll<HTMLElement>('.mr-tabbar');
+      expect(rows, `${when}: exactly one tab bar row`).toHaveLength(1);
+      const row = rows[0] as HTMLElement;
+      expect(row.hidden, `${when}: the row is shown`).toBe(false);
+      expect(row.parentElement, `${when}: a direct child of the frame root`).toBe(root);
+      expect(
+        [...row.children].map((el) => el.getAttribute('data-button') ?? el.getAttribute('role')),
+        `${when}: LB chip, tablist strip, RB chip, in one row`,
+      ).toEqual(['LB', 'tablist', 'RB']);
+      const [lb, strip, rb] = [...row.children] as HTMLElement[];
+      expect(strip?.id, `${when}: the strip id`).toBe('monsters-tabs');
+      for (const chip of [lb, rb]) {
+        expect(chip?.getAttribute('aria-hidden'), `${when}: a chip is hidden from AT`).toBe('true');
+      }
+      expect(
+        headerRowOf(parent).nextElementSibling,
+        `${when}: the row follows the title header directly`,
+      ).toBe(row);
+      for (const [name, later] of [
+        ['the sheet part', root.querySelector('#monsters-sheet-name')],
+        ['the tab content area', monstersPanelOf(parent)],
+        ['the hint', root.querySelector(BOX_PARTY_HINT_SELECTOR)],
+      ] as const) {
+        expect(later, `${when}: ${name} exists`).not.toBeNull();
+        expect(
+          row.compareDocumentPosition(later as Element) & Node.DOCUMENT_POSITION_FOLLOWING,
+          `${when}: the row comes before ${name}`,
+        ).not.toBe(0);
+      }
+
+      const party = root.querySelector<HTMLElement>('#monsters-tab-party');
+      const storage = root.querySelector<HTMLElement>('#monsters-tab-storage');
+      expect(party?.getAttribute('role'), `${when}: #monsters-tab-party is a tab`).toBe('tab');
+      expect(storage?.getAttribute('role'), `${when}: #monsters-tab-storage is a tab`).toBe('tab');
+      expect(party?.parentElement, `${when}: the tabs are the strip's children`).toBe(strip);
+      expect(storage?.parentElement).toBe(strip);
+      for (const [name, tab] of [
+        ['party', party],
+        ['storage', storage],
+      ] as const) {
+        const on = name === selected;
+        expect(tab?.classList.contains('is-selected'), `${when}: ${name} is-selected`).toBe(on);
+        expect(tab?.getAttribute('aria-selected'), `${when}: ${name} aria-selected`).toBe(
+          on ? 'true' : 'false',
+        );
+        expect(
+          tab?.classList.contains('is-active'),
+          `${when}: ${name} never wears the row cursor's is-active`,
+        ).toBe(false);
+      }
+    };
+
+    view.paint(c8bPaint({ tab: 'party' }));
+    expectBar('Party painted', 'party');
+    view.paint(c8bPaint({ tab: 'storage' }));
+    expectBar('Storage painted', 'storage');
+    view.refresh(c8bParty(), c8bBox());
+    expectBar('after a batch refresh', 'storage');
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
+    expectBar('with the sheet open', 'party');
+    view.hide();
+    view.show();
+    expectBar('after hide and show (the opening)', 'storage');
+  });
+});
+
+describe('BoxView uif-6: no in-panel headings (UIF6.5)', () => {
+  it('UIF6.5 the Monsters root has no h3 and no element outside the tab strip whose own text is the Party or the Storage heading, for a full, a gapped and an empty roster on both tabs, in en and fr', () => {
+    // WRONG IMPL KILLED: today's two `h3` headings (R-qf-10-QF10.2: they repeat the tabs and cost a
+    // row each); the headings hidden instead of deleted (display:none h3s still read as headings to
+    // AT); a heading moved into the grid or the panel as a div; a heading kept for one tab only;
+    // the strip's own tab labels counted as headings (the control: the tabs ARE there and read
+    // Party / Storage, so an over-broad "no Party text" check would fail on them).
+    try {
+      for (const locale of ['en', 'fr'] as const) {
+        p2SetLocale(locale);
+        const party = c8bT('box.tab.party');
+        const storage = c8bT('box.tab.storage');
+        const rosters: ReadonlyArray<
+          readonly [string, (MonsterCardViewModel | null)[], MonsterCardViewModel[]]
+        > = [
+          ['full', c8bParty(), c8bBox()],
+          ['gapped', uif6Gapped(), c8bBox()],
+          ['empty', [null, null, null, null, null, null], []],
+        ];
+        for (const [name, slots, boxed] of rosters) {
+          const { view, root } = c8bMount();
+          view.refresh(slots, boxed);
+          view.show();
+          for (const tab of ['party', 'storage'] as const) {
+            view.paint(c8bPaint({ tab }));
+            const when = `${locale} ${name} ${tab}`;
+            expect(root.querySelectorAll('h3'), `${when}: no h3 in the Monsters root`).toHaveLength(
+              0,
+            );
+            const strip = root.querySelector('[role="tablist"]') as HTMLElement;
+            expect(
+              [...strip.querySelectorAll('[role="tab"]')].map((el) => el.textContent),
+              `${when}: control: the tabs carry the two labels`,
+            ).toEqual([party, storage]);
+            const headings = [...root.querySelectorAll<HTMLElement>('*')].filter(
+              (el) => !strip.contains(el) && [party, storage].includes(ctl7bOwnText(el).trim()),
+            );
+            expect(
+              headings.map((el) => `${el.tagName}:${ctl7bOwnText(el)}`),
+              `${when}: no heading text outside the strip`,
+            ).toEqual([]);
+          }
+          document.body.replaceChildren();
+        }
+      }
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+});
+
+describe('BoxView uif-6: the empty Storage is an EmptyState (UIF6.6)', () => {
+  it('UIF6.6 with no boxed monster the Storage panel shows .mr-empty with a reason (box.box.empty), a cue (box.storage.emptyCue) and a next step (box.storage.emptyNext), each non-empty and different in en and fr, the frame title and both tabs kept, no card, and a boxed monster removes it', () => {
+    // WRONG IMPL KILLED: today's bare "No monsters in storage." div (no cue, no next step: the
+    // player is told what is missing but not where monsters come from or what to do); the kit's
+    // EmptyState rebuilt by hand with other class names (the stylesheet keys `.mr-empty-*`); a cue
+    // or next step written as an English literal (the en and fr texts must differ); one key used
+    // for two lines (the three texts must differ from each other); the EmptyState replacing the
+    // frame (title or tabs lost with it); a stale EmptyState left after the box fills; an
+    // EmptyState that carries a nav key (the cursor would land on it and A would act on nothing).
+    const texts: Record<'en' | 'fr', { reason: string; cue: string; next: string }> = {
+      en: { reason: '', cue: '', next: '' },
+      fr: { reason: '', cue: '', next: '' },
+    };
+    try {
+      for (const locale of ['en', 'fr'] as const) {
+        p2SetLocale(locale);
+        const { parent, view, root } = c8bMount();
+        view.refresh(c8bParty(), []);
+        view.show();
+        view.paint(c8bPaint({ tab: 'storage' }));
+        const box = boxGridOf(parent);
+        const empties = box.querySelectorAll('.mr-empty');
+        expect(empties, `${locale}: one EmptyState in the Storage grid`).toHaveLength(1);
+        expect(c8bHidden(empties[0] as Element, root), `${locale}: and it shows`).toBe(false);
+        const part = (cls: string): string =>
+          (empties[0] as Element).querySelector(cls)?.textContent ?? '';
+        const got = {
+          reason: part('.mr-empty-reason'),
+          cue: part('.mr-empty-cue'),
+          next: part('.mr-empty-next'),
+        };
+        expect(got.reason, `${locale}: the reason line`).toBe(c8bT('box.box.empty'));
+        expect(got.cue, `${locale}: the cue line`).toBe(c8bT('box.storage.emptyCue'));
+        expect(got.next, `${locale}: the next-step line`).toBe(c8bT('box.storage.emptyNext'));
+        for (const [line, text] of Object.entries(got)) {
+          expect(text.trim(), `${locale}: the ${line} line is not empty`).not.toBe('');
+        }
+        expect(
+          new Set(Object.values(got)).size,
+          `${locale}: the three lines are three different texts`,
+        ).toBe(3);
+        texts[locale] = got;
+
+        expect(c8bCards(box), `${locale}: no card in an empty Storage`).toHaveLength(0);
+        expect(
+          (empties[0] as Element).querySelector('[data-nav-key]'),
+          `${locale}: the EmptyState holds no cursor target`,
+        ).toBeNull();
+        expect(c8bAnchor(root).textContent, `${locale}: the frame title is kept`).toBe(
+          c8bT('box.title'),
+        );
+        expect(c8bTabs(root), `${locale}: both tabs are kept`).toHaveLength(2);
+        expect(
+          partyGridOf(parent).querySelector('.mr-empty'),
+          `${locale}: the Party grid has no EmptyState`,
+        ).toBeNull();
+
+        // A boxed monster takes it away.
+        view.refresh(c8bParty(), c8bBox());
+        expect(
+          box.querySelectorAll('.mr-empty'),
+          `${locale}: no EmptyState with monsters`,
+        ).toHaveLength(0);
+        expect(c8bKeys(box)).toEqual(['200', '300', '400']);
+        document.body.replaceChildren();
+      }
+    } finally {
+      p2SetLocale('en');
+    }
+    for (const line of ['reason', 'cue', 'next'] as const) {
+      expect(texts.fr[line], `fr differs from en: ${line}`).not.toBe(texts.en[line]);
+    }
+  });
+});
+
+describe('BoxView uif-6: the Party draws six cells (UIF6.8)', () => {
+  it('UIF6.8 the Party grid holds one cell per slot in slot order, every cell keyed (monsters by id, empty slots slot-<i>) and the cursor can rest on an empty slot', () => {
+    // WRONG IMPL KILLED: today's Party, whose empty slots carry no `data-nav-key` (the pointer and
+    // the cursor mark cannot reach them, and the D-pad would point at a cell the view cannot
+    // mark); cells drawn for the occupied monsters only (a monster in slot 3 would sit in the
+    // second cell); the monster cells in list order instead of slot order; an empty cell keyed by a
+    // bare index (could collide with a monster id); an empty cell that loses its "Slot i: (empty)"
+    // copy; a cursor mark that cannot land on an empty slot (is-active / aria-current only for
+    // monsters) or that marks two cells.
+    const { parent, view, root } = c8bMount();
+    view.refresh(uif6Gapped(), c8bBox());
+    view.show();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    const party = partyGridOf(parent);
+    expect(party.style.display, 'the Party grid shows as a grid').toBe('grid');
+    expect(c8bCards(party), 'six cells, one per slot').toHaveLength(6);
+    expect(c8bCellKeys(party), 'in slot order').toEqual([
+      '100',
+      'slot-1',
+      'slot-2',
+      '101',
+      'slot-4',
+      'slot-5',
+    ]);
+    const cells = c8bCards(party);
+    for (const slot of [1, 2, 4, 5]) {
+      expect(cells[slot]?.textContent, `slot ${slot}: its empty copy`).toBe(
+        i18nTf('box.party.emptySlot', { slot }),
+      );
+    }
+    expect(cells[3]?.textContent ?? '', 'slot 3 holds Mossling').toContain('Mossling');
+    // WRONG IMPL KILLED: empty cells that are not marked disabled (AT reads an empty slot as an
+    // actionable item, unlike the nav kit's disabled rows), or a monster cell wrongly disabled.
+    for (const cell of cells) {
+      const empty = (cell.dataset.navKey ?? '').startsWith('slot-');
+      expect(
+        cell.getAttribute('aria-disabled'),
+        `${cell.dataset.navKey}: ${empty ? 'an empty slot is aria-disabled' : 'a monster cell is not'}`,
+      ).toBe(empty ? 'true' : null);
+    }
+    expect(
+      c8bMarked(root).map((el) => el.dataset.navKey),
+      'the cursor on monster 100',
+    ).toEqual(['100']);
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: 'slot-2' }));
+    const marked = c8bMarked(root);
+    expect(marked, 'exactly one cell marked').toHaveLength(1);
+    expect(marked[0]?.dataset.navKey, 'the cursor rests on the empty slot 2').toBe('slot-2');
+    expect(marked[0]?.classList.contains('is-active'), 'with the cursor class').toBe(true);
+    expect(marked[0]?.style.outline, 'and the non-colour outline').not.toBe('');
+    expect(cells[0]?.classList.contains('is-active'), 'monster 100 is no longer marked').toBe(
+      false,
+    );
+
+    // A batch re-render keeps the empty-slot cursor on the same cell.
+    view.refresh(uif6Gapped(), c8bBox());
+    expect(
+      c8bMarked(root).map((el) => el.dataset.navKey),
+      'after a refresh',
+    ).toEqual(['slot-2']);
   });
 });

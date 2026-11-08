@@ -744,7 +744,10 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
         selected: all.filter(
           (t) => byId(`monsters-tab-${t}`).getAttribute('aria-selected') === 'true',
         ),
-        active: all.filter((t) => byId(`monsters-tab-${t}`).classList.contains('is-active')),
+        // uif-6 (named intentional change): the Monsters tabs are built through the TabBar, which
+        // never puts the row cursor's `is-active` on a tab (uif-3, UIF3.2); a selected tab wears
+        // `is-selected`. The probe keeps its `active` key and reads the new class.
+        active: all.filter((t) => byId(`monsters-tab-${t}`).classList.contains('is-selected')),
       };
     };
 
@@ -1180,28 +1183,25 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
         selected: all.filter(
           (t) => byId(`monsters-tab-${t}`).getAttribute('aria-selected') === 'true',
         ),
-        active: all.filter((t) => byId(`monsters-tab-${t}`).classList.contains('is-active')),
+        // uif-6 (named intentional change): the tabs are TabBar tabs, selected = `is-selected`
+        // (never `is-active`, uif-3 UIF3.2); the probe keeps its `active` key.
+        active: all.filter((t) => byId(`monsters-tab-${t}`).classList.contains('is-selected')),
       };
     };
-    /** Which of the Monsters frame's two panels show: each is a section heading and the grid after
-     *  it (the frame root is the title's grandparent, the chain the e2e helpers resolve). */
-    const panels = (): { party: boolean[]; storage: boolean[] } => {
-      const title = document.querySelector('[data-testid="box-title"]');
-      const root = title?.parentElement?.parentElement;
-      if (!(root instanceof HTMLElement))
-        throw new Error('the Monsters frame is not in the document');
-      const section = (heading: string): boolean[] => {
-        const h = Array.from(root.querySelectorAll('h3')).find((el) => el.textContent === heading);
-        const grid = h?.nextElementSibling;
-        if (h === undefined || grid === null || grid === undefined) {
-          throw new Error(`no "${heading}" section in the Monsters frame`);
-        }
-        return [isShown(h), isShown(grid)];
+    /** Which of the Monsters frame's two panels show. uif-6 (named intentional change): the h3
+     *  section headings are deleted (UIF6.5), so `panels()` no longer keys on them; each panel is
+     *  the grid inside `#monsters-panel` that holds that tab's `[data-nav-key]` cell (monster 31 is
+     *  in the Party, 32 in Storage), and it is shown unless it or an ancestor is display:none. */
+    const panels = (): { party: boolean; storage: boolean } => {
+      const panel = byId('monsters-panel');
+      const gridHolding = (key: string): HTMLElement => {
+        const cell = panel.querySelector(`[data-nav-key="${key}"]`);
+        if (cell === null) throw new Error(`no [data-nav-key="${key}"] cell in #monsters-panel`);
+        let n: HTMLElement = cell as HTMLElement;
+        while (n.parentElement !== null && n.parentElement !== panel) n = n.parentElement;
+        return n;
       };
-      return {
-        party: section(i18nT('box.section.party')),
-        storage: section(i18nT('box.section.box')),
-      };
+      return { party: isShown(gridHolding('31')), storage: isShown(gridHolding('32')) };
     };
     const expectTab = (label: string, tab: 'party' | 'storage'): void => {
       expect(monstersTabs(), `${label}: the ${tab} tab alone is selected`).toEqual({
@@ -1209,8 +1209,8 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
         active: [tab],
       });
       expect(panels(), `${label}: the ${tab} panel is the one shown`).toEqual({
-        party: tab === 'party' ? [true, true] : [false, false],
-        storage: tab === 'storage' ? [true, true] : [false, false],
+        party: tab === 'party',
+        storage: tab === 'storage',
       });
     };
     /** Monsters picked in the menu by keys: Start, the cursor to Monsters, A. */
@@ -1264,6 +1264,76 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     press('Escape');
     pickByClick();
     expectTab('a click on Monsters after an RB left Storage', 'party');
+  });
+
+  it('UIF6.2 a Monsters open by menu pick (keys and click), by V and by B hands the screen no button at all, no synthesized LB, and the bound tab is the one it opens on', async () => {
+    // WRONG IMPL KILLED: today's open (R-ctl-11a-MONSTERSTAB): `openMenuTarget` opens the box on
+    // Storage and then synthesizes `screenHost.button(... 'LB' ...)`, so the Monsters screen's
+    // `onButton` receives an LB on every V and every menu pick; a fix that keeps the synthesized
+    // press but swallows it later; a bound tab read from a module-level `let` the pick forgot to
+    // set (V opens Storage); a binding set for the pick but not for V (only V and the pick differ
+    // in path: the accelerator picks the menu key by key); a binding that makes B open Party too
+    // (B is Storage). The oracle is the screen adapter's own `onButton`, spied through the same
+    // module object main.ts's table holds: it answers exactly "which buttons reached the screen".
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(monster(31n, 0));
+    opts.store.upsertMonster(monster(32n, 255));
+    server(1010);
+    const { monstersScreen } = await import('./ui/screens/monstersScreen');
+    const seen: string[] = [];
+    const real = monstersScreen.onButton.bind(monstersScreen);
+    vi.spyOn(monstersScreen, 'onButton').mockImplementation((vm, state, btn) => {
+      seen.push(btn.button);
+      return real(vm, state, btn);
+    });
+    const selectedTab = (): string[] =>
+      ['party', 'storage'].filter(
+        (t) => byId(`monsters-tab-${t}`).getAttribute('aria-selected') === 'true',
+      );
+
+    // V.
+    press('KeyV');
+    expectLeafOpen(ROW('V'), 'V');
+    expect(selectedTab(), 'V: opens on Party').toEqual(['party']);
+    expect(seen, 'V: no button reached the Monsters screen (no synthesized LB)').toEqual([]);
+    // Escape is Start, a real player button that reaches the screen: reset the record AFTER it.
+    press('Escape');
+    seen.length = 0;
+
+    // The menu pick by keys.
+    press('KeyM');
+    for (let i = 0; i < 8 && navActive() !== 'monsters'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Monsters').toBe('monsters');
+    press('Enter');
+    expectLeafOpen(ROW('V'), 'A on Monsters');
+    expect(selectedTab(), 'a menu pick: opens on Party').toEqual(['party']);
+    expect(seen, 'a menu pick: no button reached the Monsters screen').toEqual([]);
+    press('Escape'); // Start reaches the screen: reset the record after it
+    seen.length = 0;
+
+    // The menu pick by a click on its row.
+    press('KeyM');
+    byId('menu-root-monsters').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    frame(pressAt + 10);
+    pressAt += 100;
+    expectLeafOpen(ROW('V'), 'a click on Monsters');
+    expect(selectedTab(), 'a click pick: opens on Party').toEqual(['party']);
+    expect(seen, 'a click pick: no button reached the Monsters screen').toEqual([]);
+    press('Escape'); // Start reaches the screen: reset the record after it
+    seen.length = 0;
+
+    // B: Storage, still with no button.
+    press('KeyB');
+    expectLeafOpen(ROW('B'), 'B');
+    expect(selectedTab(), 'B: opens on Storage').toEqual(['storage']);
+    expect(seen, 'B: no button reached the Monsters screen').toEqual([]);
+
+    // Control: a real button still reaches the screen (the spy is live, so the empty lists above
+    // are not a dead spy): RB goes to Party.
+    press('KeyE');
+    expect(seen, 'control: the player`s own RB reaches the screen').toEqual(['RB']);
+    expect(selectedTab(), 'control: and moved the tab').toEqual(['party']);
   });
 
   // The four tests below are the red-team lens's probes of this slice, ported as it wrote them.

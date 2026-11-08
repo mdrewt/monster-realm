@@ -6,6 +6,7 @@ import type { Bindings } from '../../input/bindings';
 import type { DeployPick, QueuedAction } from '../../module_bindings/types';
 import type { AuthoritativeStore } from '../../net/store';
 import type { LeaderboardView } from '../leaderboardView';
+import type { MonstersTab } from '../monstersModel';
 import type { NavInput } from '../nav';
 import type { PvpView } from '../pvpView';
 import type { TradeProposeArgs } from '../tradeProposeModel';
@@ -139,6 +140,10 @@ export interface ScreenContext {
   /** The player the trade wizard was opened for (the face-to-face Trade, ctl-10b), as a hex
    *  identity; absent or null when no target was supplied. Bound before the wizard shows. */
   readonly proposeTarget?: string | null;
+  /** The Monsters tab the last open path bound (uif-6: Party from the menu and V, Storage from B),
+   *  else null or absent, which open Storage. Bound before the frame is seated; optional like
+   *  `proposeTarget`, so a fixture need not build it. */
+  readonly monstersTab?: MonstersTab | null;
   /** The OS reduced-motion preference. */
   readonly reduceMotion: boolean;
 }

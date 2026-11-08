@@ -2,8 +2,9 @@
 // CTL8B.1-.4, CTL8C.1). No DOM, SDK, module state or ambient clock (the wall clock is the context's,
 // qf-3); `boxView.ts` paints what `paint` hands it.
 //
-// The frame is the box root: tabs Party (a list) and Storage (a grid), opening on Storage (the
-// legacy KeyB is "the box"), each tab keeping its own cursor. A on a monster opens its sheet
+// The frame is the box root: tabs Party (a grid of one cell per slot, an empty slot disabled) and
+// Storage (a grid), opening on the tab its open path bound (`ctx.monstersTab`, uif-6: Party from the
+// menu and V, Storage from B), else Storage, each tab keeping its own cursor. A on a monster opens its sheet
 // (Summary, Care, Feed…, Evolve…, Nickname, Move); B backs out one level and B at the list pops the
 // frame. Move sends `setPartySlot` (to the view model's boxed sentinel, or -1: dispatch picks the
 // next free slot); the "Moved" line is shown only once a batch shows the monster in the other tab,
@@ -64,10 +65,12 @@ import {
   type MonstersVm,
   monsterKey,
   monstersLayout,
+  partyKeys,
   pathKey,
   pathLayout,
   type SheetAction,
   sheetLayout,
+  storageKeys,
 } from '../monstersModel';
 import { type NavState, navInit, navReconcile, navStep } from '../nav';
 import { buildInventoryItems } from '../raisingModel';
@@ -120,8 +123,9 @@ export interface MonstersScreenState {
   readonly feedback: MonstersFeedback | null;
   /** The last nickname-row token handed out; each open of the row takes the next one. */
   readonly edit: number;
-  /** Each tab's monster keys when the cursor was last settled: the layout `observe` re-seats
-   *  from (compared by value, so an equal batch keeps the same state). */
+  /** Each tab's nav keys when the cursor was last settled (the Party's one per slot, an empty
+   *  slot's `slot-<i>`): the layout `observe` re-seats from (compared by value, so an equal batch
+   *  keeps the same state). */
   readonly keys: TabKeys;
   /** The painted sheet-derived data's signature ('' in the list phase); see the header. */
   readonly shown: string;
@@ -167,10 +171,7 @@ export interface MonstersPaint {
 
 const LIST: MonstersPhase = { kind: 'list' };
 
-const keysOf = (vm: MonstersVm): TabKeys => ({
-  party: vm.party.map((c) => monsterKey(c.monsterId)),
-  storage: vm.storage.map((c) => monsterKey(c.monsterId)),
-});
+const keysOf = (vm: MonstersVm): TabKeys => ({ party: partyKeys(vm), storage: storageKeys(vm) });
 
 const sameList = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((k, i) => k === b[i]);
@@ -301,12 +302,18 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
       new Map(
         monsters.map((m) => [monsterKey(m.monsterId), care_remaining_ms(m.lastCareAtMs, wallNow)]),
       ),
+      ctx.monstersTab ?? 'storage',
     );
   },
 
-  // CTL8B.4: the frame opens on Storage, the panel that holds the box root.
+  // uif-6 (UIF6.2): the frame opens on the tab its open path bound, the Party cursor on the first
+  // occupied slot (an empty first slot would seat it on a cell A cannot act on).
   init: (vm) => ({
-    nav: navInit(monstersLayout(vm), { tab: 'storage', item: null, perTab: {} }),
+    nav: navInit(monstersLayout(vm), {
+      tab: vm.openTab,
+      item: vm.openTab === 'party' ? firstOccupied(vm) : null,
+      perTab: {},
+    }),
     phase: LIST,
     commit: null,
     pendingMove: null,
@@ -529,6 +536,12 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
     });
   },
 };
+
+/** The Party tab's opening cursor: its first occupied slot, else null (the first slot). */
+function firstOccupied(vm: MonstersVm): string | null {
+  const first = vm.party[0];
+  return first === undefined ? null : monsterKey(first.monsterId);
+}
 
 function idOfKey(vm: MonstersVm, key: string): bigint | undefined {
   return [...vm.party, ...vm.storage].find((c) => monsterKey(c.monsterId) === key)?.monsterId;

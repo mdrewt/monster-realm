@@ -537,20 +537,22 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // boxView.ts:94-96 (resolved in show())
   'box.hint':
     'Only monsters in your Party can battle or be swapped in. New recruits arrive in Storage — select one there and choose "Move" to bring it into an open party slot.',
-  // @desc: Section heading above the six party slots. One word.
-  // boxView.ts:101 (resolved in show())
-  'box.section.party': 'Party',
-  // @desc: Section heading above the stored monsters (Storage). One word.
-  // boxView.ts:111 (resolved in show())
-  'box.section.box': 'Storage',
   // @desc: Placeholder text of an unoccupied party slot; {slot} is the slot index as shown today
   // (counted from 0). One short line, dimmed.
   // boxView.ts:160
   'box.party.emptySlot': (p) => `Slot ${p.slot}: (empty)`,
-  // @desc: Empty-state line of the box section when no monster is in storage. One short line,
-  // dimmed.
+  // @desc: The empty Storage panel's reason line (the EmptyState, uif-6) when no monster is in
+  // storage. One short line.
   // boxView.ts:173
   'box.box.empty': 'No monsters in storage.',
+  // @desc: The empty Storage panel's cue (uif-6, the EmptyState): where stored monsters come
+  // from. One short sentence, muted.
+  // boxView.ts (#buildBox)
+  'box.storage.emptyCue': 'Monsters you recruit are kept here.',
+  // @desc: The empty Storage panel's next step (uif-6, the EmptyState): what the player can do to
+  // fill it. One short sentence.
+  // boxView.ts (#buildBox)
+  'box.storage.emptyNext': 'Recruit a wild monster in battle, then come back.',
   // @desc: Info line on a monster card in the party or box; {species} is the species name,
   // {level} the level ("Lv" abbreviates "Level"), {current}/{max} its hit points and {percent}
   // the same as a percentage. Keep the "HP {current}/{max}" shape — tests read it. One line of

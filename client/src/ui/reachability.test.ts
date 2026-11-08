@@ -73,7 +73,7 @@ import type {
 import { EvolutionView } from './evolutionView';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import type { MenuTarget } from './menuModel';
-import { type FoodVm, layoutOfKeys } from './monstersModel';
+import { buildMonstersVm, type FoodVm, layoutOfKeys, monstersLayout } from './monstersModel';
 import {
   EMPTY_NAV_MEMORY,
   type NavLayout,
@@ -244,6 +244,89 @@ function stackAfterLeaf(target: MenuTarget): Stack {
   }
   return stack;
 }
+
+// uif-6 (UIF6.8): the Party is a 2-column, 3-row grid, so any of its six cells is at most two D-pad
+// presses from any other (the wrap makes the far row one press away), where the list it replaces
+// needed three. The distance is COMPUTED over the real `monstersLayout` + `navStep`, never typed
+// per cell; the one literal is the bound the geometry implies.
+function partyCell(monsterId: bigint, partySlot: number): StoreMonsterPub {
+  return {
+    monsterId,
+    ownerIdentity: 'player',
+    speciesId: 1,
+    nickname: '',
+    level: 5,
+    xp: 0,
+    currentHp: 30,
+    statHp: 40,
+    statAttack: 10,
+    statDefense: 10,
+    statSpeed: 10,
+    statSpAttack: 10,
+    statSpDefense: 10,
+    partySlot,
+    tier: 0,
+    essence: Object.fromEntries(
+      ['Fire', 'Water', 'Plant', 'Electric', 'Earth', 'Wind', 'Light', 'Dark'].map((n) => [n, 0]),
+    ) as unknown as EssenceByAffinity,
+    trustTier: 'Neutral',
+    qualityTimeTier: 0,
+    nutritionPct: 0,
+    lastCareAtMs: 0n,
+  };
+}
+
+describe('Party grid reachability over the real nav model (uif-6, UIF6.8)', () => {
+  it('UIF6.8 every one of the six Party cells, empty slots included, is reachable by the D-pad from the first occupied slot, and none is more than two presses away', () => {
+    // WRONG IMPL KILLED: today's Party list (the cell three rows away is THREE presses: Down x3, so
+    // the bound of two fails); a grid over the occupied monsters only (the empty slots are never
+    // reached, so the six-cell reachable count fails); a layout whose empty slots are unreachable
+    // because they are filtered out of the nav items; a search that finds nothing (the anti-vacuity
+    // counts). The roster has a gap (slots 0 and 3) so a layout keyed on monsters cannot pass.
+    const species = new Map<number, StoreSpeciesRow>([
+      [
+        1,
+        {
+          id: 1,
+          name: 'Sproutle',
+          baseHp: 45,
+          baseAttack: 49,
+          baseDefense: 49,
+          baseSpeed: 45,
+          baseSpAttack: 65,
+          baseSpDefense: 65,
+          affinity: 'Fire',
+          learnableSkillIds: [],
+        },
+      ],
+    ]);
+    const vm = buildMonstersVm([partyCell(11n, 0), partyCell(13n, 3)], species, 6, 255);
+    const layout = monstersLayout(vm);
+    const start = navInit(layout, { tab: 'party', item: null, perTab: {} });
+    expect(start.item, 'the Party opens on its first cell').toBe('11');
+
+    const dist = new Map<string, number>([[start.item as string, 0]]);
+    let frontier: NavState[] = [start];
+    for (let depth = 1; frontier.length > 0; depth += 1) {
+      const next: NavState[] = [];
+      for (const state of frontier) {
+        for (const button of ['Up', 'Down', 'Left', 'Right'] as const) {
+          const moved = navStep(layout, state, press(button)).state;
+          if (moved.item !== null && !dist.has(moved.item)) {
+            dist.set(moved.item, depth);
+            next.push(moved);
+          }
+        }
+      }
+      frontier = next;
+    }
+    expect([...dist.keys()].sort(), 'all six cells are reachable, the empty ones too').toEqual(
+      ['11', '13', 'slot-1', 'slot-2', 'slot-4', 'slot-5'].sort(),
+    );
+    expect(Math.max(...dist.values()), 'no cell is more than two presses from the start').toBe(2);
+    expect(dist.get('13'), 'the monster in slot 3 is two presses from slot 0').toBe(2);
+  });
+});
 
 describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)', () => {
   it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, Social > Challenges 7), and each path lands on its accelerator`s frame', () => {

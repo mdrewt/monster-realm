@@ -44,15 +44,20 @@ import {
   foodKey,
   foodLayout,
   isChoice,
+  isSlotKey,
+  layoutOfKeys,
   type MonstersVm,
   monsterKey,
   monstersLayout,
+  PARTY_COLS,
   pathKey,
   pathLayout,
   SHEET_ACTIONS,
   STORAGE_COLS,
   sheetLayout,
+  slotKey,
 } from './monstersModel';
+import { navInit, navStep } from './nav';
 import { buildInventoryItems, buildRaisingViewModel } from './raisingModel';
 
 function essence(): EssenceByAffinity {
@@ -291,17 +296,30 @@ describe('monstersLayout (ctl-8b, CTL8B.1)', () => {
     ).toEqual(['party', 'storage']);
 
     const [party, storage] = layout.tabs;
-    expect(party?.layout.kind).toBe('list');
+    // uif-6 (named intentional change, UIF6.8): the Party tab is a 2-column GRID over all six
+    // slots in slot order (was a list of the occupied monsters); an empty slot is a disabled item
+    // keyed `slot-<i>`. The mixed() party holds slots 0, 1 and 3.
+    expect(party?.layout.kind).toBe('grid');
     expect(storage?.layout.kind).toBe('grid');
     if (storage?.layout.kind !== 'grid') throw new Error('storage must be a grid');
+    if (party?.layout.kind !== 'grid') throw new Error('party must be a grid');
     expect(storage.layout.cols).toBe(STORAGE_COLS);
-    expect(party?.layout.items.map((i) => i.key)).toEqual(['11', '12', '13']);
+    expect(party.layout.cols).toBe(PARTY_COLS);
+    expect(party.layout.items.map((i) => i.key)).toEqual([
+      '11',
+      '12',
+      'slot-2',
+      '13',
+      'slot-4',
+      'slot-5',
+    ]);
     expect(storage.layout.items.map((i) => i.key)).toEqual(['31', '32', '33']);
-    for (const item of [...(party?.layout.items ?? []), ...storage.layout.items]) {
-      expect(item.enabled, `${item.key} is enabled`).toBe(true);
+    for (const item of [...party.layout.items, ...storage.layout.items]) {
+      expect(item.enabled, `${item.key} is enabled iff it is a monster`).toBe(!isSlotKey(item.key));
     }
-    // The keys are exactly monsterKey of each card, so a screen can seat the cursor by monster.
-    expect(party?.layout.items.map((i) => i.key)).toEqual(
+    // The monster keys are exactly monsterKey of each card, so a screen can seat the cursor by
+    // monster.
+    expect(party.layout.items.map((i) => i.key).filter((k) => !isSlotKey(k))).toEqual(
       vm.party.map((c) => monsterKey(c.monsterId)),
     );
     expect(storage.layout.items.map((i) => i.key)).toEqual(
@@ -327,7 +345,9 @@ describe('monstersLayout (ctl-8b, CTL8B.1)', () => {
     const emptyLayout = monstersLayout(empty);
     if (emptyLayout.kind !== 'tabs') throw new Error('tabs expected');
     expect(emptyLayout.tabs.map((t) => t.key)).toEqual(['party', 'storage']);
-    expect(emptyLayout.tabs.map((t) => t.layout.items.length)).toEqual([0, 0]);
+    // uif-6 (named intentional change): the Party grid always holds the six slots, all disabled.
+    expect(emptyLayout.tabs.map((t) => t.layout.items.length)).toEqual([SIX, 0]);
+    expect(emptyLayout.tabs[0]?.layout.items.every((i) => !i.enabled)).toBe(true);
     expect(emptyLayout.tabs[1]?.layout.kind).toBe('grid');
   });
 });
@@ -736,5 +756,134 @@ describe('the care_remaining_ms wasm export', () => {
       careRemainingMs(1_750_000_000_000n, 1_750_000_000_000n - 1n),
       'one millisecond behind: still one full cooldown',
     ).toBe(full);
+  });
+});
+
+// =============================================================================
+// uif-6 (UIF6.2, UIF6.8): the Party is a 2-column grid over ALL party slots, and the view model
+// carries the tab the frame opens on.
+// =============================================================================
+
+/** The Party tab's layout of `vm`, as a grid (the test throws if it is not one). */
+function partyGridLayout(vm: MonstersVm) {
+  const layout = monstersLayout(vm);
+  if (layout.kind !== 'tabs') throw new Error('the Monsters layout must be a tabs layout');
+  const party = layout.tabs[0];
+  if (party?.key !== 'party' || party.layout.kind !== 'grid') {
+    throw new Error('the first tab must be the Party grid');
+  }
+  return party.layout;
+}
+
+/** Monsters in slots 0 and 3 only: a gap (slots 1 and 2) between them and two empty slots after. */
+const gapped = (): StoreMonsterPub[] => [monster(11n, 1, 0), monster(13n, 2, 3)];
+
+describe('monstersModel uif-6: the Party grid over every slot (UIF6.8)', () => {
+  it('UIF6.8 the Party tab is a 2-column grid of one item per party SLOT in slot order, an empty slot a disabled item keyed slot-<i>, for any party size and a gapped roster', () => {
+    // WRONG IMPL KILLED: today's Party `list` of only the occupied monsters (a monster in slot 3
+    // would sit at index 1 while the view draws it at the fourth cell: the D-pad would point
+    // somewhere the cursor does not go); a grid over the occupied keys alone (same defect, now with
+    // two columns); a column count other than PARTY_COLS (2); a literal six instead of the party
+    // size (the size-4 and size-3 rows); an empty slot keyed by a bare index ('2' could collide with
+    // a monster whose id is 2); an empty slot that is ENABLED (A would open a sheet for nothing);
+    // a monster placed at its list position instead of its real slot; a `party` list that stopped
+    // being the occupied monsters every other reader (findMonster, idOfKey) uses.
+    expect(PARTY_COLS, 'two columns').toBe(2);
+    expect(slotKey(2), 'the slot key is slot-<i>').toBe('slot-2');
+    expect(slotKey(0)).toBe('slot-0');
+    expect(isSlotKey('slot-5')).toBe(true);
+    expect(isSlotKey('slot-0')).toBe(true);
+    expect(isSlotKey('12'), 'a decimal monster key is no slot key').toBe(false);
+    expect(isSlotKey('0')).toBe(false);
+
+    const vm = buildMonstersVm(gapped(), SPECIES, SIX, BOXED);
+    const layout = partyGridLayout(vm);
+    expect(layout.cols).toBe(PARTY_COLS);
+    expect(
+      layout.items.map((i) => [i.key, i.enabled]),
+      'every slot in slot order: monsters enabled at their slot, empties disabled',
+    ).toEqual([
+      ['11', true],
+      ['slot-1', false],
+      ['slot-2', false],
+      ['13', true],
+      ['slot-4', false],
+      ['slot-5', false],
+    ]);
+    expect(
+      vm.partySlots.map((c) => (c === null ? null : c.monsterId)),
+      'partySlots: the party size long, null for an empty slot, the monster at its real slot',
+    ).toEqual([11n, null, null, 13n, null, null]);
+    expect(ids(vm.party), 'party stays the occupied list').toEqual([11n, 13n]);
+
+    // The party size is the parameter: size 4 -> four slots, size 3 with a monster in slot 2.
+    const four = partyGridLayout(buildMonstersVm(gapped(), SPECIES, 4, BOXED));
+    expect(four.items.map((i) => i.key)).toEqual(['11', 'slot-1', 'slot-2', '13']);
+    const three = buildMonstersVm([monster(21n, 1, 2)], SPECIES, 3, BOXED);
+    expect(partyGridLayout(three).items.map((i) => i.key)).toEqual(['slot-0', 'slot-1', '21']);
+    expect(three.partySlots).toHaveLength(3);
+
+    // A monster id equal to a slot index does not collide with the slot keys.
+    const tricky = buildMonstersVm([monster(2n, 1, 0)], SPECIES, SIX, BOXED);
+    expect(partyGridLayout(tricky).items.map((i) => i.key)).toEqual([
+      '2',
+      'slot-1',
+      'slot-2',
+      'slot-3',
+      'slot-4',
+      'slot-5',
+    ]);
+
+    // The same layout over bare keys (what the screen re-seats from): slot keys stay disabled.
+    const bare = layoutOfKeys(['11', 'slot-1'], []);
+    if (bare.kind !== 'tabs') throw new Error('tabs expected');
+    expect(bare.tabs[0]?.layout.items.map((i) => [i.key, i.enabled])).toEqual([
+      ['11', true],
+      ['slot-1', false],
+    ]);
+  });
+
+  it('UIF6.8 over a gapped party the D-pad moves to the visually adjacent cell of the 2-column grid: Right the next slot, Down two slots, Up two slots, one fresh press wrapping at the edges', () => {
+    // WRONG IMPL KILLED: a list-shaped Party (Down would step one slot, not one row; Right would do
+    // nothing); a grid indexed over the occupied monsters (from monster 11 Right would land on 13,
+    // a cell that is not beside it on screen); a hard-coded three-row wrap; a Left/Right that
+    // crosses a row. The cells (index -> key): 0 '11', 1 'slot-1' / 2 'slot-2', 3 '13' /
+    // 4 'slot-4', 5 'slot-5'. Disabled cells are reachable (the nav kit's rule): the cursor must
+    // be able to land on an empty slot, because that is where the player's eyes say it goes.
+    const vm = buildMonstersVm(gapped(), SPECIES, SIX, BOXED);
+    const layout = monstersLayout(vm);
+    const at = (item: string) => ({ tab: 'party', item, perTab: {} });
+    const step = (from: string, button: 'Up' | 'Down' | 'Left' | 'Right'): string | null =>
+      navStep(layout, at(from), { button, repeat: false }).state.item;
+
+    expect(step('11', 'Right'), 'beside the first monster: the empty slot 1').toBe('slot-1');
+    expect(step('11', 'Down'), 'under it: slot 2, not the next monster').toBe('slot-2');
+    expect(step('slot-2', 'Down'), 'one more row').toBe('slot-4');
+    expect(step('slot-4', 'Down'), 'a fresh Down at the bottom wraps to the top row').toBe('11');
+    expect(step('11', 'Up'), 'a fresh Up at the top wraps to the bottom row').toBe('slot-4');
+    expect(step('13', 'Up'), 'above monster 13 is slot 1').toBe('slot-1');
+    expect(step('13', 'Down'), 'below it is slot 5').toBe('slot-5');
+    expect(step('13', 'Left'), 'left of it is slot 2').toBe('slot-2');
+    expect(step('13', 'Right'), 'a fresh Right wraps inside the two-cell row').toBe('slot-2');
+    expect(step('slot-5', 'Left'), 'left of slot 5 is slot 4').toBe('slot-4');
+    // The init seat on the Party tab: where navInit puts a Party-first cursor, with no item.
+    expect(navInit(layout, { tab: 'party', item: null, perTab: {} }).item).toBe('11');
+  });
+});
+
+describe('monstersModel uif-6: the tab the frame opens on (UIF6.2)', () => {
+  it('UIF6.2 buildMonstersVm carries openTab: storage by default, the given tab otherwise, and nothing else about the view model changes', () => {
+    // WRONG IMPL KILLED: a missing `openTab` (the screen cannot open on a bound tab: main.ts would
+    // have to keep synthesizing an LB); a default of party (B and every context-less caller would
+    // open Party); a trailing parameter that is ignored (always storage); an `openTab` that is a
+    // required parameter before the optional ones (the 7-argument callers would break); an
+    // `openTab` that rewrites the lists (Party vs Storage content must be identical either way).
+    const base = buildMonstersVm(mixed(), SPECIES, SIX, BOXED);
+    expect(base.openTab, 'default').toBe('storage');
+    const party = buildMonstersVm(mixed(), SPECIES, SIX, BOXED, [], [], new Map(), 'party');
+    expect(party.openTab).toBe('party');
+    const storage = buildMonstersVm(mixed(), SPECIES, SIX, BOXED, [], [], new Map(), 'storage');
+    expect(storage.openTab).toBe('storage');
+    expect({ ...party, openTab: 'storage' }, 'only the tab differs').toEqual(base);
   });
 });
