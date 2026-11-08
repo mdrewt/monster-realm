@@ -55,6 +55,7 @@ import type {
 import { CATALOG_FR } from './ui/i18n/catalog.fr';
 import { t as i18nT, tf as i18nTf } from './ui/i18n/resolver';
 import type { NavInput } from './ui/nav';
+import { TOAST_MS } from './ui/toast';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -769,6 +770,99 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     tap('KeyM', 1500);
     expect(menuShown(), 'and closes it').toBe(false);
     expect(stackNames()).toEqual(['world']);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // The close-edge focus return (ADR-0206 D4): judged at the CLOSE, acted on at the frame edge
+  // ------------------------------------------------------------------------------------------
+
+  it('S5T-FOCUS-SETTLED-BY-CLOSE: a close that restored focus to a visible control never steals it at the frame edge — the chip blurred before the frame leaves focus on <body>, not the canvas', async () => {
+    // WRONG IMPL KILLED: the frame-time `a === document.body` clause of the world-edge focus return
+    // (the focus theft a11y.spec.ts saw in Chromium: the close restored focus to #chip-start, a later
+    // blur in the same task left <body>, and the NEXT frame read that <body> as "the close left focus
+    // nowhere" and yanked it to the world canvas). Also kills a fix that judges "adrift" at the
+    // FRAME instead of at the close: at this frame focus IS on <body>, so only a judgement taken when
+    // the stack's top went null (focus then on the visible chip: settled) keeps the canvas out of it.
+    // S5T-FOCUS-ADRIFT-CLOSE-RETURNS below is the twin: the same edge, a close that left <body>.
+    await bootReady();
+    seedWorld(1000);
+    frame(1000);
+    expect(stackNames(), 'precondition: the world base').toEqual(['world']);
+    const canvas = document.querySelector<HTMLElement>('#app canvas');
+    expect(canvas, 'precondition: the mocked renderer mounted the world canvas').not.toBeNull();
+
+    const chip = byId('chip-start');
+    chip.focus();
+    expect(document.activeElement, 'anti-vacuity: the Start chip really holds focus').toBe(chip);
+    chip.click(); // the delegated [data-menu-launcher] front door
+    expect(stackNames(), 'the chip opened the menu over the world').toEqual(['world', 'menuView']);
+    expect(menuShown(), 'the menu is shown').toBe(true);
+
+    // ARMS the edge: the pump records menuView as the top overlay. Without this frame the final
+    // frame sees no top -> null transition and the test measures nothing (S5T-FOCUS-NO-STEAL's lesson).
+    frame(1100);
+
+    tap('Escape', 1200);
+    expect(stackNames(), 'Escape closed the menu back to the world').toEqual(['world']);
+    expect(menuShown(), 'the menu is hidden').toBe(false);
+    expect(
+      document.activeElement,
+      'precondition: closeOverlayA11y restored focus to the visible chip (the recorded return ' +
+        'target); if this fails the test is measuring something other than a settled close',
+    ).toBe(chip);
+
+    // A later, unrelated focus move in the same task, before any frame runs.
+    chip.blur();
+    expect(document.activeElement, 'precondition: the blur left focus on <body>').toBe(
+      document.body,
+    );
+
+    frame(1800); // the world edge (top menuView -> null)
+    expect(
+      document.activeElement,
+      'the frame edge must not move focus: the close had already settled it on #chip-start, so ' +
+        'the later blur to <body> is the player`s, not a close that left focus adrift',
+    ).toBe(document.body);
+    expect(
+      document.activeElement,
+      'focus was stolen to the world canvas (#app canvas) by the frame-edge focus return',
+    ).not.toBe(canvas);
+  });
+
+  it('S5T-FOCUS-ADRIFT-CLOSE-RETURNS: a close that left focus on <body> still returns it to the canvas at the frame edge (ADR-0206 D4 kept)', async () => {
+    // WRONG IMPL KILLED: a fix that deletes the frame-edge focus return, and one that judges every
+    // close "settled" (so a keyboard player who opened the menu from the world never gets focus
+    // back on the world region). The in-harness anti-vacuity twin of S5T-FOCUS-SETTLED-BY-CLOSE:
+    // the ONE difference between them is where the close left focus.
+    await bootReady();
+    seedWorld(1000);
+    frame(1000);
+    expect(stackNames(), 'precondition: the world base').toEqual(['world']);
+    const canvas = document.querySelector<HTMLElement>('#app canvas');
+    expect(canvas, 'precondition: the mocked renderer mounted the world canvas').not.toBeNull();
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    expect(document.activeElement, 'precondition: <body> holds focus at the world').toBe(
+      document.body,
+    );
+
+    tap('Escape', 1200); // Start at the world opens the menu; its return target is <body>
+    expect(stackNames(), 'Escape opened the menu over the world').toEqual(['world', 'menuView']);
+    expect(menuShown(), 'the menu is shown').toBe(true);
+    frame(1300); // ARMS the edge
+
+    tap('Escape', 1400);
+    expect(stackNames(), 'Escape closed the menu back to the world').toEqual(['world']);
+    expect(
+      document.activeElement,
+      'precondition: the close restored focus to <body> (happy-dom`s body.focus() succeeds): the ' +
+        'close left focus adrift',
+    ).toBe(document.body);
+
+    frame(1900); // the world edge
+    expect(
+      document.activeElement,
+      'the frame edge returns an adrift close`s focus to the world canvas (#app canvas)',
+    ).toBe(canvas);
   });
 
   it('CTL6B-2-MAIN-ONGOING-BATTLE: Escape and M on an Ongoing battle open the menu over it and close it again, Backspace stays inert, the battle is never hidden, W predicts no step, and the same Escape continues a terminal outcome', async () => {
@@ -1725,6 +1819,12 @@ function clickChoice(idx: string, t: number): void {
 }
 
 const statusText = (): string => byId('status').textContent ?? '';
+/** uif-4: the toast's visible text, '' while it is hidden. Toast kinds (battle-refused, train and
+ *  care rejections, heal-unavailable, ...) are read here, never off #status. */
+const toastText = (): string => {
+  const el = byId('toast');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
 
 /** What the one polite live region (`#a11y-live`, index.html) last painted. It may be adopted into
  *  an overlay root, so it is looked up by id, never by position. */
@@ -2267,10 +2367,13 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       callsOf('advanceDialogue'),
       'at a battle base the click reaches no reducer: still the one world call',
     ).toEqual([{ name: 'advanceDialogue', args: { choiceIdx: 1 } }]);
-    expect(statusText(), 'the status line shows the catalogued reason').toBe(
+    // uif-4 (named intentional change, UIF4.2): battle-refused is a toast kind: the reason is on
+    // #toast (was #status), and #status stays empty.
+    expect(toastText(), 'the toast shows the catalogued reason').toBe(
       i18nT('menu.disabled.inBattle'),
     );
-    expect(statusText(), 'fixture: and it is real text').not.toBe('');
+    expect(toastText(), 'fixture: and it is real text').not.toBe('');
+    expect(statusText(), 'and the status line is not told').toBe('');
     clickChoice('0', 1210);
     expect(callsOf('advanceDialogue'), 'a second click is refused too').toHaveLength(1);
     expect(
@@ -2326,7 +2429,9 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
 
     clickChoice('2', 1800); // the refusal's coalescing window opens at clock 1800
     expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
-    expect(statusText(), 'precondition: the status line shows the reason').toBe(reason);
+    // uif-4 (named intentional change, UIF4.2): battle-refused is a toast kind: the reason is read
+    // off #toast (was #status).
+    expect(toastText(), 'precondition: the toast shows the reason').toBe(reason);
     frame(1810); // age 10: inside the 500 ms window
     expect(liveText(), 'inside the window (age 10) the reason is not painted yet').toBe(before);
     frame(2100); // age 300: still inside it
@@ -2399,17 +2504,27 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // on a terminal outcome (a battle row that simply vanishes would leave the line); and a clear of
     // the whole status line on the base change (an error reported after the refusal, which the
     // player has not read yet, would be wiped with it).
+    // uif-4 (named intentional change, UIF4.2; REWRITTEN from the spec, not to fit the code): the
+    // `shownBattleRefusal` hold is retired. `battle-refused` is a toast kind whose table row says
+    // "timed after": the refusal is a TIMED toast, visible before TOAST_MS of pumped clock and hidden
+    // at TOAST_MS, and it is NOT held until the battle ends. The old "cleared when the base returns
+    // to the world" arms (a, b) become "the toast expires on its own clock whether or not the base
+    // changed", and arm (c) keeps the hint-kind error on #status, independent of the toast.
+    // WRONG IMPL KILLED: a refusal held until the battle ends (still shown at TOAST_MS while the
+    // battle goes on); a toast that expires early or never; a refusal that survives past TOAST_MS
+    // because a base change or batch re-showed it; an error hint replaced by (or wiping) the toast.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await bootReady();
     seedWorld(1000);
     startConversation(1010);
     const reason = i18nT('menu.disabled.inBattle');
 
-    // (a) The battle goes on: the reason stays. Then it ends: the reason is cleared.
+    // (a) The battle goes on: the toast is visible just before TOAST_MS and hidden at it, the
+    // battle still running (not held until it ends).
     putBattle(BATTLE_ID, 1100);
     clickChoice('1', 1200);
     expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
-    expect(statusText(), 'precondition: the refusal shows its reason').toBe(reason);
+    expect(toastText(), 'precondition: the refusal shows its reason').toBe(reason);
     server(1300);
     frame(1310);
     server(1400);
@@ -2417,38 +2532,46 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       kind: 'battle',
       battleId: '101',
     });
-    expect(statusText(), 'while the battle goes on the reason stays').toBe(reason);
-    putBattle(BATTLE_ID, 1500, 'SideAWins');
-    expect(stack()[0], 'precondition: the base is the world again').toEqual({ kind: 'world' });
-    expect(battleShown(), 'precondition: the outcome is shown').toBe(true);
-    expect(statusText(), 'the battle ended: the stale reason is cleared').toBe('');
-    tap('Backspace', 1600);
+    expect(toastText(), 'inside its dwell the reason stays').toBe(reason);
+    frame(1200 + TOAST_MS - 1);
+    expect(toastText(), 'visible at TOAST_MS - 1').toBe(reason);
+    frame(1200 + TOAST_MS);
+    expect(stack()[0], 'the battle is still going on').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    expect(toastText(), 'hidden at TOAST_MS: not held until the battle ends').toBe('');
+    expect(statusText(), 'and the status line never carried it').toBe('');
+
+    // (b) A second battle that ends before the dwell is over: the toast simply runs out on its own
+    // clock; the base change neither extends nor is needed to clear it.
+    putBattle(BATTLE_ID, 6000, 'SideAWins');
+    tap('Backspace', 6050);
     expect(battleShown(), 'precondition: B continued the outcome').toBe(false);
-
-    // (b) A second battle whose row vanishes with no outcome shown: cleared too.
-    putBattle(102n, 1700);
-    clickChoice('1', 1800);
-    expect(statusText(), 'precondition: refused at the second battle').toBe(reason);
+    putBattle(102n, 6100);
+    clickChoice('1', 6200);
+    expect(toastText(), 'precondition: refused at the second battle').toBe(reason);
     opts.store.removeBattle(102n);
-    server(1900);
+    server(6300);
     expect(stack()[0], 'precondition: the base is the world again').toEqual({ kind: 'world' });
-    expect(statusText(), 'the battle row vanished: the stale reason is cleared').toBe('');
+    frame(6200 + TOAST_MS - 1);
+    expect(toastText(), 'visible at TOAST_MS - 1 whatever the base did').toBe(reason);
+    frame(6200 + TOAST_MS);
+    expect(toastText(), 'hidden at TOAST_MS').toBe('');
 
-    // (c) An error reported after the refusal is not the refusal: the base change leaves it.
-    putBattle(103n, 2000);
-    clickChoice('1', 2100);
-    expect(statusText(), 'precondition: refused at the third battle').toBe(reason);
+    // (c) An error (a hint kind) reported after the refusal goes to #status and leaves the toast to
+    // its own clock.
+    putBattle(103n, 11000);
+    clickChoice('1', 11100);
+    expect(toastText(), 'precondition: refused at the third battle').toBe(reason);
     opts.onError('subscription', 'quota exceeded');
     const error = 'subscription: quota exceeded';
-    expect(statusText(), 'precondition: the error replaced the reason').toBe(error);
+    expect(statusText(), 'the error hint is on the status line').toBe(error);
+    expect(toastText(), 'and the toast is untouched by it').toBe(reason);
     expect(
       errorSpy.mock.calls.filter((c) => c[0] === '[status]').map((c) => c[1]),
       'precondition: it went through the error path',
     ).toEqual([error]);
-    opts.store.removeBattle(103n);
-    server(2200);
-    expect(stack()[0], 'precondition: the base is the world again').toEqual({ kind: 'world' });
-    expect(statusText(), 'the error stays: only the refusal line is cleared').toBe(error);
     expect(callsOf('advanceDialogue'), 'no refused click ever reached the reducer').toEqual([]);
   });
 
@@ -3925,7 +4048,10 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     expect(callsOf('train'), 'the Bag`s feed reached the train reducer once').toEqual([
       { name: 'train', args: { monsterId: 31n, foodItemId: 4 } },
     ]);
-    expect(statusText(), 'the rejection is on the status line').toBe('train: not enough food');
+    // uif-4 (named intentional change, UIF4.4): a Bag-fed train rejection (`feed-rejected`) is a
+    // toast kind: it is on #toast (was #status), and #status stays empty.
+    expect(toastText(), 'the rejection is on the toast').toBe('train: not enough food');
+    expect(statusText(), 'and not on the status line').toBe('');
     expect(boxLineText(), 'and the hidden Monsters frame`s line is untouched').toBe('');
     expect(
       errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),
@@ -4124,9 +4250,12 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     rejectTrain();
     await flush();
 
-    expect(statusText(), 'the late rejection falls back to the status line').toBe(
+    // uif-4 (named intentional change, UIF4.5): the per-sink guard sends a late `feed-rejected` to the
+    // toast (was: the status line); #status stays empty.
+    expect(toastText(), 'the late rejection falls back to the toast').toBe(
       'train: not enough food',
     );
+    expect(statusText(), 'and not to the status line').toBe('');
     expect(boxLineText(), 'the left frame`s line stays empty').toBe('');
     expect(
       errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),

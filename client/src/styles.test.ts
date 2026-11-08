@@ -417,3 +417,182 @@ describe('styles.css uif-3: the kit rules', () => {
     expect(['none', 'transparent']).toContain(bg);
   });
 });
+
+// uif-4 (UIF4.2, UIF4.3, UIF4.5): the toast layer, the overlay strip and the world line's layer.
+// Named intentional change: CTL7B-1-FRAME-CSS-ROSTER above is NOT edited; no new `.mr-frame*` /
+// `.mr-shell*` selector is allowed (it already fails any new one), so the strip and the reserves are
+// declarations on existing rules, and the toast is `.mr-toast` (outside the frame family).
+describe('styles.css uif-4: toast layer, overlay strip, world line layer', () => {
+  const css = readFileSync(STYLES_CSS_PATH, 'utf8');
+  const rules = ctl7bParseCss(ctl7bStripCssComments(css));
+  const topRules = (selector: string): Ctl7bCssRule[] =>
+    rules.filter((r) => r.at.length === 0 && r.selectors.includes(selector));
+  const eff = (selector: string, prop: string): string | undefined => {
+    let value: string | undefined;
+    for (const r of topRules(selector)) for (const [p, v] of r.decls) if (p === prop) value = v;
+    return value;
+  };
+  const num = (selector: string, prop: string): number => Number(eff(selector, prop));
+  const remOf = (v: string | undefined): number => {
+    const m = /^(-?\d*\.?\d+)rem$/.exec(v ?? '');
+    return m === null ? Number.NaN : Number(m[1]);
+  };
+  /** The effective padding-bottom of `selector`: the last of `padding-bottom` / the `padding`
+   *  shorthand (1 to 4 values), in source order. */
+  const paddingBottom = (selector: string): string | undefined => {
+    let value: string | undefined;
+    for (const r of topRules(selector)) {
+      for (const [p, v] of r.decls) {
+        if (p === 'padding-bottom') value = v;
+        else if (p === 'padding') {
+          const t = v.split(' ');
+          value = t.length === 1 ? t[0] : t.length === 2 ? t[0] : t[2];
+        }
+      }
+    }
+    return value;
+  };
+  const shellZs = (): number[] => {
+    const out: number[] = [];
+    for (const r of rules) {
+      if (r.at.length !== 0) continue;
+      if (!r.selectors.some((s) => /^\.mr-shell(--\w+)?$/.test(s))) continue;
+      for (const [p, v] of r.decls) if (p === 'z-index') out.push(Number(v));
+    }
+    return out;
+  };
+
+  it('UIF4.2 .mr-toast is absolutely positioned and click-through, outside any at-rule', () => {
+    // WRONG IMPL KILLED: a toast in flow (it moves the frame under it), one that catches the
+    // pointer (it blocks the row beneath), one only styled inside an @media block.
+    expect(topRules('.mr-toast').length, 'a top-level .mr-toast rule').toBeGreaterThan(0);
+    expect(
+      rules.filter((r) => r.at.length > 0 && r.selectors.some((s) => s.includes('mr-toast'))),
+      'no .mr-toast rule inside an at-rule',
+    ).toEqual([]);
+    expect(eff('.mr-toast', 'position')).toBe('absolute');
+    expect(eff('.mr-toast', 'pointer-events')).toBe('none');
+  });
+
+  it('UIF4.2 .mr-toast z-index is a number above .mr-shell--top (read from the sheet)', () => {
+    // WRONG IMPL KILLED: a toast under the menu or battle layer (a statusEl-style rejection
+    // landing beneath the frame), a non-numeric z-index.
+    const toastZ = num('.mr-toast', 'z-index');
+    const topZ = num('.mr-shell--top', 'z-index');
+    expect(Number.isFinite(toastZ), 'a numeric z-index').toBe(true);
+    expect(Number.isFinite(topZ), 'the shell layer reads').toBe(true);
+    expect(toastZ).toBeGreaterThan(topZ);
+    for (const z of shellZs()) expect(toastZ).toBeGreaterThan(z);
+  });
+
+  it('UIF4.2 .mr-toast declares no display and a max-content width', () => {
+    // WRONG IMPL KILLED: a `display` declaration (it beats the UA [hidden] rule, so a hidden toast
+    // still paints); a toast that shrink-wraps to a sliver at left: 50% (no max-content width).
+    expect(eff('.mr-toast', 'display')).toBeUndefined();
+    expect(eff('.mr-toast', 'width')).toBe('max-content');
+  });
+
+  it('UIF4.2 .mr-toast is declared before the prefers-contrast block, which stays the last block', () => {
+    // WRONG IMPL KILLED: a toast rule appended after the contrast block (the m23s9 X2 pin: it must
+    // stay LAST) or only inside it.
+    const first = rules.findIndex((r) => r.at[0] === '@media (prefers-contrast: more)');
+    const toast = rules.findIndex((r) => r.at.length === 0 && r.selectors.includes('.mr-toast'));
+    expect(toast).toBeGreaterThanOrEqual(0);
+    expect(first).toBeGreaterThan(toast);
+  });
+
+  it('UIF4.3 .mr-frame-feedback is a sticky overlay whose height and negative margin cancel', () => {
+    // WRONG IMPL KILLED: the shipped static strip (it takes layout height, so showing it moves the
+    // body); margin-top mode (the strip lands under the content); a sticky bottom of 0 (the last
+    // row would sit under the strip in Chromium); a catch-pointer strip.
+    const s = '.mr-frame-feedback';
+    expect(eff(s, 'position')).toBe('sticky');
+    expect(remOf(eff(s, 'height'))).toBeGreaterThan(0);
+    expect(remOf(eff(s, 'height')) + remOf(eff(s, 'margin-bottom'))).toBe(0);
+    expect(eff(s, 'margin-top')).toBeUndefined();
+    expect(remOf(eff(s, 'bottom'))).toBe(-remOf(eff(s, 'height')));
+    expect(eff(s, 'order')).toBe('1');
+    expect(eff(s, 'pointer-events')).toBe('none');
+    expect(eff(s, 'min-height')).toBeUndefined();
+  });
+
+  it('UIF4.3 .mr-frame-feedback declares no display, so the hidden attribute still collapses it', () => {
+    // WRONG IMPL KILLED: `display: block|flex` on the strip (QF12.1: an empty strip would paint).
+    for (const r of rules.filter((r) => r.selectors.some((s) => s.includes('mr-frame-feedback')))) {
+      expect(
+        r.decls.map(([p]) => p),
+        r.selectors.join(', '),
+      ).not.toContain('display');
+    }
+  });
+
+  it('UIF4.3 .mr-frame reserves a 2rem bottom padding for the strip', () => {
+    // WRONG IMPL KILLED: no reserve (the strip covers the last row of the kit frame body at
+    // scroll end); a reserve that does not match the strip height.
+    expect(paddingBottom('.mr-frame')).toBe('2rem');
+    expect(remOf(paddingBottom('.mr-frame'))).toBe(remOf(eff('.mr-frame-feedback', 'height')));
+  });
+
+  // uif-4 UIF4.3 (named intentional change, retargeted from an unconditional `.mr-shell` 2rem bottom
+  // padding): the reserve applies ONLY to shells that are frames, so wf-1's menu geometry (UIF1.5:
+  // the side frame stays 648 tall) does not move. `.mr-frame` declares the reserve as a custom
+  // property and `.mr-shell` reads it with a 0px fallback, so a plain shell keeps its 0.75rem.
+  it('UIF4.3 .mr-frame declares the strip reserve --mr-strip-reserve as 2rem', () => {
+    // WRONG IMPL KILLED: no reserve declared (a frame shell's last row sits under the strip), a
+    // reserve that differs from the strip's 2rem height.
+    expect(eff('.mr-frame', '--mr-strip-reserve')).toBe('2rem');
+    expect(remOf(eff('.mr-frame', '--mr-strip-reserve'))).toBe(
+      remOf(eff('.mr-frame-feedback', 'height')),
+    );
+  });
+
+  it('UIF4.3 .mr-shell padding bottom is exactly max(var(--mr-space-3), var(--mr-strip-reserve, 0px))', () => {
+    // WRONG IMPL KILLED: an unconditional 2rem on every shell (the plain menu shell shrinks and the
+    // UIF1.5 geometry moves), a reserve with no fallback, no max() against the base padding (a
+    // reserve of 0 would drop the 0.75rem), or a shell that never reads the reserve.
+    const padding = eff('.mr-shell', 'padding') ?? '';
+    const parts: string[] = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of padding) {
+      if (ch === '(') depth += 1;
+      if (ch === ')') depth -= 1;
+      if (ch === ' ' && depth === 0) {
+        if (cur !== '') parts.push(cur);
+        cur = '';
+      } else cur += ch;
+    }
+    if (cur !== '') parts.push(cur);
+    expect(parts, `the shell padding is a 3-value shorthand (${padding})`).toHaveLength(3);
+    expect(parts[2]).toBe('max(var(--mr-space-3), var(--mr-strip-reserve, 0px))');
+  });
+
+  it('UIF4.3 no frame or shell selector was added: the roster is the shipped set plus nothing', () => {
+    // WRONG IMPL KILLED: a new `.mr-frame-feedback--overlay` / `.mr-shell--strip` selector as the
+    // route to the overlay (CTL7B-1-FRAME-CSS-ROSTER is the full gate; this pins the count of
+    // distinct feedback selectors so the strip stays one class).
+    const names = new Set(
+      rules
+        .filter((r) => r.at.length === 0)
+        .flatMap((r) => r.selectors)
+        .filter((s) => /mr-frame-feedback/.test(s)),
+    );
+    expect([...names].sort()).toEqual([
+      '.mr-frame-feedback',
+      '.mr-frame-feedback[data-feedback="error"]::before',
+      '.mr-frame-feedback[data-feedback="ok"]::before',
+      '.mr-frame-feedback[data-feedback="pending"]::before',
+    ]);
+  });
+
+  it('UIF4.5 .mr-status z-index is above every .mr-shell layer and below .mr-toast', () => {
+    // WRONG IMPL KILLED: the shipped 45 (a persistent hint on the world line hides under any open
+    // frame); a status line above the toast (a toast would paint under it).
+    const statusZ = num('.mr-status', 'z-index');
+    expect(Number.isFinite(statusZ), 'a numeric z-index').toBe(true);
+    const zs = shellZs();
+    expect(zs.length, 'anti-vacuity: the shell layers read').toBeGreaterThanOrEqual(3);
+    for (const z of zs) expect(statusZ).toBeGreaterThan(z);
+    expect(statusZ).toBeLessThan(num('.mr-toast', 'z-index'));
+  });
+});

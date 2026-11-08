@@ -1365,37 +1365,46 @@ describe('qf-12 (QF12.1, QF12.2): computed style of the real feedback line', () 
     expect(open.borderTopWidth, 'probe: carries the shipped 2px top border').toBe(
       want.borderTopWidth,
     );
-    expect(want.minHeight, 'ANTI-VACUITY: the reference has a min-height').not.toBe('');
-    expect(open.minHeight, 'probe: carries the shipped min-height').toBe(want.minHeight);
+    // uif-4 UIF4.3 (named intentional change): the probe's min-height pair is retired with the
+    // declaration; the same proof (the sheet, not a default, styles the un-hidden line) now rides
+    // on the padding the strip still ships.
+    expect(want.paddingTop, 'ANTI-VACUITY: the reference has padding').not.toBe('');
+    expect(open.paddingTop, 'probe: carries the shipped padding').toBe(want.paddingTop);
+    expect(open.paddingLeft, 'probe: carries the shipped side padding').toBe(want.paddingLeft);
   });
 
-  it('a painted line computes as before: display not none, min-height 1.5em, padding 0.25rem 0.5rem, 2px solid top border; and the class block declares exactly those three values [QF12-2-COMPUTED-AS-BEFORE]', () => {
+  it('a painted line computes as before: display not none, padding 0.25rem 0.5rem, 2px solid top border (uif-4 UIF4.3: min-height retired) [QF12-2-COMPUTED-AS-BEFORE]', () => {
     // WRONG IMPL KILLED: `hidden` left on after a paint (display none); the class block edited to
     // fix the strip there instead (min-height/padding/border removed or changed, which also changes
     // every painted message); a fourth declaration added to the block (display, height, margin,
     // visibility...); the 2px border thinned or made conditional; the block duplicated with a later
     // override; a harness whose sheet install is a no-op (the classless div and the reference
     // element below prove the sheet, not a default, produces the values).
+    // uif-4 UIF4.3: the strip becomes an overlay (named intentional change). The shipped three
+    // declarations (min-height 1.5em / padding / border-top) are retargeted: min-height is GONE (the
+    // strip's height is now the fixed 2rem that the negative margin cancels, pinned by the
+    // "UIF4.3 .mr-frame-feedback ..." tests below), padding and border-top keep their shipped values.
     const top = qf11TopLevelRules(QF11_STYLES_CSS);
     const rules = top.filter(
       (r) => r.selectors.length === 1 && r.selectors[0] === '.mr-frame-feedback',
     );
     expect(rules.length, 'exactly one top-level rule for exactly .mr-frame-feedback').toBe(1);
-    expect(rules[0]?.decls).toEqual([
-      { prop: 'min-height', value: '1.5em' },
-      { prop: 'padding', value: '0.25rem 0.5rem' },
-      { prop: 'border-top', value: '2px solid var(--mr-frame-border)' },
-    ]);
-    // no other top-level or nested block redeclares those properties for the bare class
-    const redeclared = qf11AllBlocks(QF11_STYLES_CSS)
+    expect(qf11Effective(top, '.mr-frame-feedback', 'padding'), 'padding kept as shipped').toBe(
+      '0.25rem 0.5rem',
+    );
+    expect(
+      qf11Effective(top, '.mr-frame-feedback', 'border-top'),
+      'the 2px top rule kept as shipped',
+    ).toBe('2px solid var(--mr-frame-border)');
+    expect(
+      qf11Effective(top, '.mr-frame-feedback', 'min-height'),
+      'the shipped min-height is retired (the strip has a fixed overlay height)',
+    ).toBeUndefined();
+    // no other top-level or nested block restyles the bare class
+    const others = qf11AllBlocks(QF11_STYLES_CSS)
       .filter((b) => b.selectors.some((s) => s.includes('mr-frame-feedback')))
-      .filter((b) => !b.selectors.some((s) => s.includes('::before')))
-      .flatMap((b) => b.decls.map((d) => d.prop));
-    expect(redeclared.sort(), 'only the three declarations, once each').toEqual([
-      'border-top',
-      'min-height',
-      'padding',
-    ]);
+      .filter((b) => !b.selectors.some((s) => s.includes('::before')));
+    expect(others.length, 'one block names the class').toBe(1);
 
     const f = createFrame(document, { id: 'menu', size: 'side' });
     document.body.appendChild(f.root);
@@ -1415,11 +1424,9 @@ describe('qf-12 (QF12.1, QF12.2): computed style of the real feedback line', () 
     expect(shown.display, 'shown: an ordinary block like any other div').toBe(none.display);
     // ANTI-VACUITY: the reference carries values a classless div does not, so equality below is
     // the sheet's doing.
-    expect(want.minHeight, 'reference has a min-height').not.toBe('');
-    expect(none.minHeight, 'a classless div has none').not.toBe(want.minHeight);
+    // uif-4 UIF4.3 (named intentional change): the min-height pin is retired with the declaration.
     expect(want.paddingTop, 'reference has padding').not.toBe(none.paddingTop);
 
-    expect(shown.minHeight, 'min-height 1.5em').toBe(want.minHeight);
     expect(shown.paddingTop, 'padding-top').toBe(want.paddingTop);
     expect(shown.paddingBottom, 'padding-bottom').toBe(want.paddingBottom);
     expect(shown.paddingLeft, 'padding-left').toBe(want.paddingLeft);
@@ -1554,5 +1561,50 @@ describe('uif-3: frame anatomy', () => {
     expect(code).toContain('createFrame');
     expect(code).not.toContain('hintSlot');
     expect(code).not.toContain('mr-frame-hints');
+  });
+});
+
+// --- uif-4 UIF4.3: the strip becomes an overlay (named intentional change to the qf-12 pins) ------------
+//
+// The feedback strip no longer takes layout height: it is `position: sticky` to the scrollport bottom
+// and its fixed `height` is cancelled by an equal negative `margin-bottom`, so showing or hiding it
+// moves nothing. These pins read the effective declarations off the real sheet (comments stripped).
+describe('uif-4 UIF4.3: the feedback strip is a zero-layout-height overlay', () => {
+  const top = qf11TopLevelRules(QF11_STYLES_CSS);
+  const eff = (prop: string): string | undefined => qf11Effective(top, '.mr-frame-feedback', prop);
+  const rem = (value: string | undefined): number => {
+    const m = /^(-?\d*\.?\d+)rem$/.exec(value ?? '');
+    return m === null ? Number.NaN : Number(m[1]);
+  };
+
+  it('UIF4.3 .mr-frame-feedback is position sticky, last in the column (order 1) and click-through', () => {
+    // WRONG IMPL KILLED: a static strip (it keeps its layout height), an absolute one (it scrolls
+    // away with the content), a strip that catches the pointer (it blocks the last row's click).
+    expect(eff('position')).toBe('sticky');
+    expect(eff('order')).toBe('1');
+    expect(eff('pointer-events')).toBe('none');
+  });
+
+  it('UIF4.3 .mr-frame-feedback height and margin-bottom cancel to zero net layout height', () => {
+    // WRONG IMPL KILLED: a height with no cancelling margin (the body shrinks when it shows), a
+    // margin larger or smaller than the height (a net shift of one or the other sign), the
+    // margin-top mode the plan review rejected (it sticks the strip in the wrong place).
+    const h = rem(eff('height'));
+    const mb = rem(eff('margin-bottom'));
+    expect(h).toBeGreaterThan(0);
+    expect(h + mb).toBe(0);
+    expect(eff('margin-top')).toBeUndefined();
+  });
+
+  it('UIF4.3 .mr-frame-feedback sits in the reserved bottom padding (bottom equals minus the strip height)', () => {
+    // WRONG IMPL KILLED: `bottom: 0` (Chromium sticks to the padding-deflated box, so the strip
+    // would cover the last row), or a bottom unrelated to the reserve.
+    expect(rem(eff('bottom'))).toBe(-rem(eff('height')));
+  });
+
+  it('UIF4.3 .mr-frame-feedback declares no display (the UA [hidden] rule still collapses it)', () => {
+    // WRONG IMPL KILLED: `display: block|flex` on the class, which re-paints the strip while the
+    // hidden attribute is set (QF12.1).
+    expect(eff('display')).toBeUndefined();
   });
 });

@@ -93,6 +93,8 @@ import { COMMAND_BATTLE_POLICY, OUTCOME_CONTINUE_GRACE_MS } from './ui/battlePol
 // Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
 import { OVERLAY_IDS } from './ui/overlayRegistry';
 import type { SocialFrameView, SocialPanelId } from './ui/screens/types';
+// uif-4: the toast's dwell time (a toast expires at `nowMs >= untilMs`, untilMs = show + TOAST_MS).
+import { TOAST_MS } from './ui/toast';
 
 const H = vi.hoisted(() => {
   interface StubView {
@@ -819,6 +821,19 @@ const stackBase = (): unknown =>
   (window as unknown as { __game: () => { stack: unknown[] } }).__game().stack[0];
 
 const statusText = (): string => document.getElementById('status')?.textContent ?? '';
+/** uif-4: the toast's visible text, '' while it is hidden (a hidden toast shows nothing). */
+const toastText = (): string => {
+  const el = document.getElementById('toast');
+  if (el === null) throw new Error('#toast must exist once booted');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
+/** uif-4: let a shown toast expire, then put the clock back. The toast is a timed channel, so a
+ *  loop that reads it per row must clear it between rows or a stale line would satisfy every row. */
+const clearToast = (): void => {
+  const t0 = clock.t;
+  frame(t0 + TOAST_MS + 1);
+  clock.t = t0;
+};
 
 // The shop success lines (ctl-7d, CTL7D.4), as LITERAL bytes built here from code points: never
 // read off the catalog under test. U+2713 is the success mark, U+2212 the minus sign (never the
@@ -956,7 +971,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     handlerOf('BoxView', 'onSetPartySlot')(44n, -1);
     await flush();
     expect(H.calls, 'a full party has no slot to move into').toEqual([]);
-    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.partyFull'));
+    // uif-4 (named intentional change, UIF4.4): party-full is a toast kind, so the player is told on
+    // #toast (was #status); #status stays empty.
+    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.partyFull'));
+    expect(statusText(), 'and not on the status line').toBe('');
 
     handlerOf('BoxView', 'onSetPartySlot')(44n, 1);
     await flush();
@@ -1383,6 +1401,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     const act = async (view: string, handler: string): Promise<void> => {
       H.calls = [];
       status.textContent = '';
+      clearToast();
       handlerOf(view, handler)();
       await flush();
     };
@@ -1400,20 +1419,24 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       kind: 'battle',
       battleId: '101',
     });
+    // uif-4 (named intentional change, UIF4.2): `battle-refused` is a toast kind, so the reason is
+    // read off #toast (was #status), and the toast is cleared between rows (it is timed, so a stale
+    // reason from the previous row would satisfy every later row).
     for (const row of rows) {
       H.calls = [];
       status.textContent = '';
+      clearToast();
       const returned = handlerOf(row.view, row.handler)(...row.args);
       await flush();
       if (row.atBattle === 'refuse') {
         expect(H.calls, `${row.label}: at a battle base it reaches no reducer`).toEqual([]);
-        expect(statusText(), `${row.label}: and the status line shows the reason`).toBe(reason);
+        expect(toastText(), `${row.label}: and the toast shows the reason`).toBe(reason);
         refused.push(row.kind);
       } else {
         expect(H.calls, `${row.label}: a battle action still reaches its reducer`).toEqual(
           row.expected,
         );
-        expect(statusText(), `${row.label}: and is not reported as refused`).toBe('');
+        expect(toastText(), `${row.label}: and is not reported as refused`).toBe('');
       }
       expect(isThenable(returned), `${row.label}: the view still gets a promise`).toBe(true);
     }
@@ -1433,19 +1456,19 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // --- battle 101: the claim and privacy arms (claim-succeeded, delete armed) --------------
     await act('ClaimView', 'onSignIn');
     expect(H.signIns, 'claim sign-in: no sign-in starts at a battle base').toBe(0);
-    expect(statusText(), 'claim sign-in: the reason').toBe(reason);
+    expect(toastText(), 'claim sign-in: the reason').toBe(reason);
     refused.push('claimSignIn');
     await act('ClaimView', 'onJoin');
     expect(H.calls, 'claim join: no joinGame at a battle base').toEqual([]);
-    expect(statusText(), 'claim join: the reason').toBe(reason);
+    expect(toastText(), 'claim join: the reason').toBe(reason);
     refused.push('claimJoin');
     await act('PrivacyView', 'onDeleteConfirmed');
     expect(H.calls, 'privacy delete: no deleteAccount at a battle base').toEqual([]);
-    expect(statusText(), 'privacy delete: the reason').toBe(reason);
+    expect(toastText(), 'privacy delete: the reason').toBe(reason);
     refused.push('deleteAccount');
     await act('PrivacyView', 'onExportRequested');
     expect(H.calls, 'privacy export: no requestDataExport at a battle base').toEqual([]);
-    expect(statusText(), 'privacy export: the reason').toBe(reason);
+    expect(toastText(), 'privacy export: the reason').toBe(reason);
     refused.push('requestDataExport');
 
     // --- the world: every refused callback sends again in this boot --------------------------
@@ -1487,11 +1510,11 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     const refusedDecline = claimVm();
     expect(refusedDecline.actions.declineConfirm, 'claim decline: still armed').toBe(true);
     expect(refusedDecline.actions.join, 'claim decline: join is still not offered').toBe(false);
-    expect(statusText(), 'claim decline: the reason').toBe(reason);
+    expect(toastText(), 'claim decline: the reason').toBe(reason);
     refused.push('claimDecline');
     await act('PrivacyView', 'onCancelDeletion');
     expect(H.calls, 'privacy cancel: no cancelAccountDeletion at a battle base').toEqual([]);
-    expect(statusText(), 'privacy cancel: the reason').toBe(reason);
+    expect(toastText(), 'privacy cancel: the reason').toBe(reason);
     refused.push('cancelAccountDeletion');
 
     dropBattle(102n, 1600);
@@ -1583,6 +1606,323 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       [...new Set([...driven, ...Object.keys(safeNoViewCallback), ...stackMoves])].sort(),
       'every battle-safe kind is driven here, named as having no view callback, or a stack move',
     ).toEqual(policySafe);
+  });
+});
+
+// ==========================================================================================
+// uif-4: sendGuarded rejections and the per-sink guard land on the toast (UIF4.4, UIF4.5)
+// ==========================================================================================
+//
+// Same harness; the Monsters and evolution views are the recording stand-ins, so the rejections are
+// driven through their captured handlers (the Monsters frame itself is not open here: the real-frame
+// party-full flow is main.partyFull.test.ts's). The reducer promise rejects with a SenderError-shaped
+// error; the line is the toast, never the status line, and the live region speaks it.
+
+const UIF4_BOOM = 'zz-reducer-said-no';
+// (named: the three view-callback rejections use the stand-in views' captured handlers; the Monsters
+// frame is a stand-in here, so UIF4.4's "with the frame open" half lives in main.partyFull.test.ts)
+
+/** A reducer rejection as the SDK hands it over: an Error whose `name` is its class. */
+const uif4SenderError = (message: string): Error =>
+  Object.assign(new Error(message), { name: 'SenderError' });
+
+/** A rejected promise that is already handled (no unhandled-rejection noise before main.ts awaits it). */
+function uif4Rejected(message: string): Promise<void> {
+  const p = Promise.reject(uif4SenderError(message));
+  p.catch(() => undefined);
+  return p;
+}
+
+/** Every value written to #a11y-live's textContent from now on, oldest first. */
+function uif4WatchLive(): string[] {
+  const node = document.getElementById('a11y-live');
+  if (node === null) throw new Error('the shell must ship #a11y-live');
+  const writes: string[] = [];
+  let proto: object | null = Object.getPrototypeOf(node);
+  let accessor: PropertyDescriptor | undefined;
+  while (proto !== null && accessor === undefined) {
+    accessor = Object.getOwnPropertyDescriptor(proto, 'textContent');
+    proto = Object.getPrototypeOf(proto);
+  }
+  const get = accessor?.get;
+  const set = accessor?.set;
+  if (get === undefined || set === undefined) throw new Error('textContent is not an accessor');
+  Object.defineProperty(node, 'textContent', {
+    configurable: true,
+    get() {
+      return get.call(this);
+    },
+    set(value: unknown) {
+      writes.push(String(value));
+      set.call(this, value);
+    },
+  });
+  return writes;
+}
+
+const UIF4_REJECTIONS: ReadonlyArray<readonly [string, string, string, readonly unknown[]]> = [
+  ['evolve', 'EvolutionView', 'onEvolve', [73n, 88]],
+  ['setNickname', 'BoxView', 'onSetNickname', [61n, 'Zorp']],
+  ['setPartySlot', 'BoxView', 'onSetPartySlot', [62n, 2]],
+];
+
+describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
+  sequential: true,
+}, () => {
+  afterEach(teardownBoot);
+
+  it.each(
+    UIF4_REJECTIONS,
+  )('UIF4.4 a rejected %s paints #toast with the reason and not #status', async (_kind, view, handler, args) => {
+    // WRONG IMPL KILLED: a sendGuarded rejection still written to #status (the pre-uif-4 sink, which
+    // paints under an open frame); a toast without the reducer's reason; a rejection painted on both.
+    await bootReady();
+    server(1000);
+    seedDispatchFixture();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    H.gate = uif4Rejected(UIF4_BOOM);
+    await handlerOf(view, handler)(...args);
+    H.gate = null;
+    expect(toastText(), 'the toast carries the reason').toContain(UIF4_BOOM);
+    expect(statusText(), 'the status line stays empty').toBe('');
+  });
+
+  it.each(
+    UIF4_REJECTIONS,
+  )('UIF4.4 a rejected %s is announced through #a11y-live', async (_kind, view, handler, args) => {
+    // WRONG IMPL KILLED: a toast painted but never queued for the live region (a screen-reader
+    // user hears nothing); a toast that paints the live node itself instead of the one announcer.
+    await bootReady();
+    server(1000);
+    seedDispatchFixture();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const live = uif4WatchLive();
+    H.gate = uif4Rejected(UIF4_BOOM);
+    await handlerOf(view, handler)(...args);
+    H.gate = null;
+    for (let t = 1050; t <= 3000; t += 50) frame(t);
+    expect(live.some((w) => w.includes(UIF4_BOOM))).toBe(true);
+  });
+
+  it('UIF4.5 a train rejection that settles after its frame was left paints no box line and lands on #toast', async () => {
+    // WRONG IMPL KILLED: a late settle that paints the left frame's line anyway (the line sink
+    // returned false and the report ignored it); one that drops the report when the sink refuses
+    // (silent); one that falls back to #status instead of the toast.
+    await bootReady();
+    server(1000);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let open = true;
+    const painted: string[] = [];
+    const sink = (message: string): boolean => {
+      if (!open) return false;
+      painted.push(message);
+      return true;
+    };
+    for (const name of ['BoxView', 'RaisingView']) {
+      (stubView(name) as unknown as { feedbackLine: () => typeof sink }).feedbackLine = () => sink;
+    }
+    const issue: { command: unknown } = {
+      command: { kind: 'train', monsterId: 71n, foodItemId: 44 },
+    };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1010);
+    let rejectTrain: (err: unknown) => void = () => undefined;
+    H.gate = new Promise<void>((_resolve, reject) => {
+      rejectTrain = reject;
+    });
+    H.calls = [];
+    await pageUp(1100);
+    expect(H.calls, 'precondition: the train is in flight').toEqual([
+      { name: 'train', args: { monsterId: 71n, foodItemId: 44 } },
+    ]);
+    open = false; // the Monsters frame is closed before the reducer settles
+    rejectTrain(uif4SenderError(UIF4_BOOM));
+    H.gate = null;
+    await flush();
+    expect(painted, 'the left frame paints nothing').toEqual([]);
+    expect(toastText(), 'the toast carries the reason').toContain(UIF4_BOOM);
+    expect(statusText(), 'and the status line stays empty').toBe('');
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // Round 5: every remaining sendGuarded site lands on the toast, and the toast ticks anywhere.
+  // ------------------------------------------------------------------------------------------
+
+  /** Open the menu at the world with a stand-in that issues `command` on LB; returns the issuer. */
+  function menuIssuing(command: unknown): { command: unknown } {
+    const issue: { command: unknown } = { command };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1010);
+    return issue;
+  }
+
+  /** A rejected send for each site, driven through the surface that reaches it. */
+  const siteRows: ReadonlyArray<{
+    readonly label: string;
+    readonly reducer: string;
+    readonly run: () => Promise<unknown>;
+  }> = [
+    {
+      label: 'healParty with a locationId',
+      reducer: 'healParty',
+      run: async () => {
+        menuIssuing({ kind: 'healParty', locationId: 9 });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'pvp accept',
+      reducer: 'acceptChallenge',
+      run: async () => {
+        await handlerOf('PvpView', 'onAccept')(91n);
+      },
+    },
+    {
+      label: 'pvp decline',
+      reducer: 'declineChallenge',
+      run: async () => {
+        await handlerOf('PvpView', 'onDecline')(92n);
+      },
+    },
+    {
+      label: 'pvp cancel',
+      reducer: 'cancelChallenge',
+      run: async () => {
+        await handlerOf('PvpView', 'onCancel')(93n);
+      },
+    },
+    {
+      label: 'pvp challenge',
+      reducer: 'challengePvp',
+      run: async () => {
+        menuIssuing({ kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize: 1 });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'submitQueue',
+      reducer: 'submitQueue',
+      run: async () => {
+        menuIssuing({ kind: 'submitQueue', battleId: 101n, unitId: 1, entries: [] });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'cancelQueue',
+      reducer: 'cancelQueue',
+      run: async () => {
+        menuIssuing({ kind: 'cancelQueue', battleId: 101n, unitId: 1 });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'forfeit',
+      reducer: 'forfeit',
+      run: async () => {
+        menuIssuing({ kind: 'forfeit', battleId: 101n });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'deployUnits',
+      reducer: 'deployUnits',
+      run: async () => {
+        menuIssuing({
+          kind: 'deployUnits',
+          battleId: 101n,
+          picks: [{ monsterId: 51n, slot: 0 }] as never,
+        });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'advanceDialogue',
+      reducer: 'advanceDialogue',
+      run: async () => {
+        seedNpcs(1010);
+        startConversation(1020);
+        const button = document.createElement('button');
+        button.dataset.choiceIdx = '0';
+        document.getElementById('dialogue-overlay')?.appendChild(button);
+        clock.t = 1100;
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        button.remove();
+        await flush();
+      },
+    },
+    {
+      label: 'dismissDialogue',
+      reducer: 'dismissDialogue',
+      run: async () => {
+        seedNpcs(1010);
+        startConversation(1020);
+        const issue: { command: unknown } = { command: { kind: 'dismissDialogue' } };
+        swapAdapter('dialogueView', commandAdapter(issue));
+        await pageUp(1100);
+      },
+    },
+    // ackEvolutionNotices is UNREACHABLE here, named and not skipped silently: its only caller is
+    // the evolution-notice banner's acknowledge control, which needs a pending_evolution_notice row
+    // and the banner's own click path, neither of which this harness's stand-in views expose.
+  ];
+
+  it.each(
+    siteRows,
+  )('UIF4.5 a rejected $label send lands on #toast and leaves #status empty', async (row) => {
+    // WRONG IMPL KILLED: a SEND_REJECT_KIND entry mapped to a HINT kind (for example
+    // `heal: 'connect-failure'`): the rejection would paint #status (under any open frame) and
+    // persist as a standing hint instead of a timed toast. One row per sendGuarded site, so a
+    // single wrong entry fails exactly its own row.
+    await bootReady();
+    server(1000);
+    seedDispatchFixture();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    H.calls = [];
+    H.gate = uif4Rejected(UIF4_BOOM);
+    await row.run();
+    H.gate = null;
+    await flush();
+    expect(
+      H.calls.map((c) => c.name),
+      `precondition: ${row.label} reached its reducer`,
+    ).toContain(row.reducer);
+    expect(toastText(), 'the toast carries the reason').toContain(UIF4_BOOM);
+    expect(statusText(), 'the status line stays empty').toBe('');
+  });
+
+  it.each([
+    ['the main menu is open', false],
+    ['a battle is the base', true],
+  ] as const)('UIF4.2 a toast raised while %s is visible one ms before TOAST_MS and hidden at TOAST_MS', async (_name, atBattle) => {
+    // WRONG IMPL KILLED: a toast tick that runs only at the world base (`contextStack.length === 1`):
+    // under an open menu or a battle base the toast would never expire. Raised with a refused or
+    // unavailable command so the toast is real; the expiry is bracketed on the 5 ms the press spans,
+    // so it is sound whichever of the press's two events the command ran on.
+    await bootReady();
+    server(1000);
+    if (atBattle) {
+      putBattle(BATTLE_ID, 1100);
+      // The stand-in is swapped BEFORE the menu opens (the frame's adapter state starts from it).
+      const issue: { command: unknown } = { command: { kind: 'healParty' } };
+      swapAdapter('menuView', commandAdapter(issue));
+      press('Escape', 1200);
+      expect(stackNow(), 'precondition: the menu is open over a battle base').toEqual([
+        { kind: 'battle', battleId: '101' },
+        { kind: 'screen', id: 'menuView', overBattle: '101' },
+      ]);
+    } else {
+      menuIssuing({ kind: 'healParty' });
+      expect(stackNow(), 'precondition: the menu is open').toEqual([
+        WORLD_FRAME,
+        screenFrame('menuView'),
+      ]);
+    }
+    await pageUp(2000);
+    expect(toastText(), 'precondition: a toast is up').not.toBe('');
+    frame(2000 + TOAST_MS - 1);
+    expect(toastText(), 'still visible one ms before TOAST_MS').not.toBe('');
+    frame(2005 + TOAST_MS);
+    expect(toastText(), 'hidden once TOAST_MS has elapsed').toBe('');
   });
 });
 
@@ -1759,18 +2099,22 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     status.textContent = '';
     await pageUp(1100);
     expect(H.calls, 'control: no pad is loaded, the absent arm sends nothing').toEqual([]);
-    expect(statusText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
+    // uif-4 (named intentional change, UIF4.2): `heal-unavailable` is a toast kind: read #toast, not
+    // #status, here and at every statusText() below in this case. The toast is timed, so it is
+    // cleared before each read that expects nothing.
+    expect(toastText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
 
     // A present id with no pad loaded is still sent, and nothing is reported.
     issue.command = { kind: 'healParty', locationId: 9 };
     H.calls = [];
     status.textContent = '';
+    clearToast();
     const sent = await pageUp(1200);
     expect(sent.defaultPrevented, 'the routed press is consumed').toBe(true);
     expect(H.calls, 'the present id is sent with no pad loaded').toEqual([
       { name: 'healParty', args: { locationId: 9 } },
     ]);
-    expect(statusText(), 'and nothing is reported').toBe('');
+    expect(toastText(), 'and nothing is reported').toBe('');
 
     // Pads 7 and 9 loaded, 7 first: the present id wins over the store's first pad.
     seedDispatchFixture();
@@ -1802,7 +2146,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     status.textContent = '';
     await pageUp(1600);
     expect(H.calls, 'control: the absent arm sends nothing, pads or not').toEqual([]);
-    expect(statusText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
+    expect(toastText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
 
     // At a battle base the present arm is refused exactly like the absent one.
     press('Escape', 1700);
@@ -1828,10 +2172,11 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       issue.command = command;
       H.calls = [];
       status.textContent = '';
+      clearToast();
       await pageUp(t);
       t += 100;
       expect(H.calls, `${label}: at a battle base it reaches no reducer`).toEqual([]);
-      expect(statusText(), `${label}: and shows the battle's reason`).toBe(reason);
+      expect(toastText(), `${label}: and shows the battle's reason`).toBe(reason);
     }
   });
 
@@ -1855,7 +2200,8 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     const unloaded = await pageUp(1100);
     expect(unloaded.defaultPrevented, 'the routed press is consumed').toBe(true);
     expect(H.calls, 'no pad loaded: nothing is sent').toEqual([]);
-    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+    // uif-4 (named intentional change, UIF4.2): heal-unavailable is a toast kind (was #status).
+    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
 
     seedDispatchFixture();
     server(1200);
@@ -1870,7 +2216,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     status.textContent = '';
     await pageUp(1300);
     expect(H.calls, 'with pads loaded nothing is sent either').toEqual([]);
-    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
   });
 
   it('QF9-3-BOOT-CARE-TRAIN-COMMANDS: the care and train screen commands (the Monsters sheet`s and the Bag`s, no longer any view callback) send exactly their reducer with exactly their arguments at the world, and a battle base refuses both with its reason and sends nothing', async () => {
@@ -1922,10 +2268,11 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       issue.command = command;
       H.calls = [];
       status.textContent = '';
+      clearToast();
       await pageUp(t);
       t += 100;
       expect(H.calls, `${label}: at a battle base it reaches no reducer`).toEqual([]);
-      expect(statusText(), `${label}: and shows the battle's reason`).toBe(reason);
+      expect(toastText(), `${label}: and shows the battle's reason`).toBe(reason);
     }
   });
 
@@ -3015,8 +3362,13 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     frame(t);
     frame(t + 600);
     t += 1000;
-    const STATUS_SENTINEL = 'the status line before the rejected rows';
-    status.textContent = STATUS_SENTINEL;
+    // uif-4 (named intentional change): main.ts owns #status and repaints it on every stack sync, so
+    // a sentinel written into it is not stable. "Tells the player nothing" is now: #toast hidden or
+    // empty and #status empty (no world hint stands here).
+    const STATUS_SENTINEL = '';
+    clearToast();
+    expect(statusText(), 'precondition: no hint stands on the status line').toBe(STATUS_SENTINEL);
+    expect(toastText(), 'precondition: no toast is up').toBe('');
     const liveBefore = live.textContent;
 
     const invalid: ReadonlyArray<readonly [string, unknown]> = [
@@ -3064,6 +3416,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
         expect(statusText(), `${label}: the status line tells the player nothing`).toBe(
           STATUS_SENTINEL,
         );
+        expect(toastText(), `${label}: nor does the toast (uif-4)`).toBe('');
         expect(live.textContent, `${label}: nothing is announced`).toBe(liveBefore);
       }
     }
@@ -3435,14 +3788,17 @@ describe('main.ts the shop pick command (runtime, ctl-7d)', { sequential: true }
     const down = await pageUp(1300);
     expect(down.defaultPrevented, 'the command: the routed press is consumed').toBe(true);
     expect(H.calls, 'the command: no dismissDialogue at a battle base').toEqual([]);
-    expect(statusText(), 'the command: the battle reason').toBe(reason);
+    // uif-4 (named intentional change, UIF4.2): battle-refused is a toast kind: both reasons are read
+    // off #toast (was #status), with the toast cleared between the two reads.
+    expect(toastText(), 'the command: the battle reason').toBe(reason);
 
     H.calls = [];
     status.textContent = '';
+    clearToast();
     clickShop(1400, '9');
     await flush();
     expect(H.calls, 'the click: no dismissDialogue at a battle base').toEqual([]);
-    expect(statusText(), 'the click: the battle reason').toBe(reason);
+    expect(toastText(), 'the click: the battle reason').toBe(reason);
 
     // The battle ends with the conversation still open, then the conversation ends: nothing was
     // picked, so no shop opens.
@@ -4642,16 +4998,21 @@ describe('main.ts no Box heal (runtime, ctl-10a)', { sequential: true }, () => {
     const down = await pageUp(1100);
     expect(down.defaultPrevented, 'the routed press is consumed').toBe(true);
     expect(H.calls, 'no locationId: nothing is sent, pads loaded or not').toEqual([]);
-    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+    // uif-4 (named intentional change, UIF4.2): heal-unavailable is a toast kind: the line is on
+    // #toast (was #status), and #status stays empty.
+    expect(toastText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+    expect(statusText(), 'and not on the status line').toBe('');
 
     issue.command = { kind: 'healParty', locationId: 9 };
     H.calls = [];
     status.textContent = '';
+    clearToast();
     await pageUp(1200);
     expect(H.calls, 'control: a present id is sent').toEqual([
       { name: 'healParty', args: { locationId: 9 } },
     ]);
-    expect(statusText(), 'control: and nothing is reported').toBe('');
+    expect(toastText(), 'control: and nothing is reported').toBe('');
+    expect(statusText(), 'control: nor on the status line').toBe('');
   });
 });
 

@@ -208,6 +208,7 @@ import {
 } from './ui/evolutionNotice';
 import type { EvolutionView } from './ui/evolutionView';
 import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
+import { channelOf, type MessageKind, outranks, type SinkKind } from './ui/feedbackPolicy';
 import { feedbackAnnouncement } from './ui/frame';
 import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healModel';
 import type { HealView } from './ui/healView';
@@ -315,6 +316,14 @@ import {
   type StatusNoticeState,
   statusNoticeStep,
 } from './ui/statusModel';
+import {
+  createToast,
+  NO_TOAST,
+  renderToast,
+  type ToastChrome,
+  type ToastState,
+  toastStep,
+} from './ui/toast';
 import { buildTradeViewModel } from './ui/tradeModel';
 import { buildProposeLists, type TradeProposeArgs } from './ui/tradeProposeModel';
 import type { TradeProposeView } from './ui/tradeProposeView';
@@ -717,9 +726,6 @@ let outcomeShownAtMs: number | null = null;
 /** The shown edge (`outcomeShownAtMs`) the results auto-advance already popped for, so the pop runs
  *  once per edge (bt-12, BT12.4); null whenever the outcome is not on top, with the edge. */
 let autoContinuedAtMs: number | null = null;
-/** The reason of the last battle refusal written to the status line (CTL6C.3), until the base is
- *  the world again; else null. */
-let shownBattleRefusal: string | null = null;
 function syncStack(): void {
   const prevBase = contextStack[0];
   const ongoing = store.ongoingBattle(identity);
@@ -752,12 +758,10 @@ function syncStack(): void {
     outcomeShownAtMs = null;
     autoContinuedAtMs = null;
   } else outcomeShownAtMs ??= performance.now();
-  // The battle is over: its refusal reason is stale. Anything reported over it since stays.
-  if (shownBattleRefusal !== null && contextStack[0].kind === 'world') {
-    if (statusEl?.textContent === shownBattleRefusal) clearStatus();
-    shownBattleRefusal = null;
-  }
   menuView?.setCovered(menuPlace() === 'covered');
+  // The world hint follows the top frame (WF1-A9): the menu's strip while it is on top.
+  paintWorldHint();
+  judgeCloseFocus();
 }
 
 /** The frame ids of the stack's upper frames, bottom first (the base excluded). */
@@ -1042,7 +1046,7 @@ function downloadExportBundle(): void {
     // export, and logging it would retain it in the devtools buffer for the page's life and —
     // through reportError — put it on screen and into the ring the F9 bundle embeds.
     console.error('[data-export] download blocked');
-    reportError(i18nT('chrome.status.exportBlocked'));
+    reportError('download-blocked', i18nT('chrome.status.exportBlocked'));
   } finally {
     // A3-D8: in a `finally`, not inside the `try` after `click()` as the F9 precedent has it —
     // a throw there would pin the object URL, and with it the whole export Blob, for the page's
@@ -1093,7 +1097,7 @@ function sendPrivacy(
     () => applyPrivacy({ kind: 'request-succeeded', which }),
     (err: unknown) => {
       const message = reduceErrorMessage(err, where);
-      reportError(message);
+      reportError('world-send-rejected', message);
       applyPrivacy({ kind: 'request-failed', which, message });
     },
   );
@@ -1111,7 +1115,7 @@ function openPrivacy(): void {
   // discovering the deny afterwards would leave the player with NEITHER overlay and no message.
   const verdict = overlayVerdict('privacyView');
   if (verdict.kind === 'deny' && verdict.blockedBy !== 'claimView') {
-    reportError(i18nT('chrome.status.privacyOverlayBusy'));
+    reportError('privacy-busy', i18nT('chrome.status.privacyOverlayBusy'));
     return;
   }
   // Only now, with the privacy frame pushed. A2-D5: hiding claim BEFORE show() is what keeps
@@ -1543,7 +1547,15 @@ function interactChipText(chip: InteractChip): string {
 
 function renderMenu(): void {
   const vm = menuViewModel(menuState);
-  menuView?.render({ ...vm, labels: withRequestBadge(vm.labels, livePending().length > 0) });
+  // A standing world hint outranks the menu's own line (a persistent state over a disabled reason
+  // or a Y-description, WF1-A9). Painted here only, never into `menuState`, so applyMenuStep's
+  // once-per-change announcement never says it again (setWorldHint already did).
+  const hint = hintOnMenu();
+  menuView?.render({
+    ...vm,
+    feedback: hint === null ? vm.feedback : { kind: 'error', text: hint },
+    labels: withRequestBadge(vm.labels, livePending().length > 0),
+  });
 }
 
 /** Whether a request waited at the last batch: a batch that flips it repaints an open menu. */
@@ -1786,7 +1798,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
     case 'care': {
       // The whole decision (frozen gate / await / exactly-one message) lives in the tested
       // performCare core. The answer goes to the line of the frame that sent it (the Monsters
-      // sheet's, qf-2; a frame left since paints nothing), or with no such line to the status line.
+      // sheet's, qf-2; a frame left since paints nothing), or with no such line to the toast (uif-4).
       // qf-9: one care in flight per monster: a second A before the answer would flash "Cared!"
       // then the cooldown.
       const { monsterId } = command;
@@ -1800,7 +1812,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         where: 'care',
         showFeedback: (message) => {
           if (line !== undefined) line(message, message === cared ? 'ok' : 'error');
-          else if (statusEl !== undefined) statusEl.textContent = message;
+          else route(message === cared ? 'care-success' : 'care-rejected', message);
         },
       }).finally(() => {
         // Only this care's own token releases: a reconnect may have cleared it and a newer care
@@ -1834,7 +1846,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       const { monsterId } = command;
       const move = resolvePartySlot(command.slot, store.ownMonsters(identity), PARTY_SIZE);
       if (move.kind === 'partyFull') {
-        reportError(i18nT('chrome.status.partyFull'));
+        reportError('party-full', i18nT('chrome.status.partyFull'));
         return DONE;
       }
       const { slot } = move;
@@ -1846,7 +1858,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       // skipped, surfaced, never silent; the server still validates zone and cooldown.
       const locationId = command.locationId;
       if (locationId === undefined) {
-        reportError(i18nT('chrome.status.healUnavailable'));
+        reportError('heal-unavailable', i18nT('chrome.status.healUnavailable'));
         return DONE;
       }
       return sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
@@ -2013,7 +2025,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
           ?.reducers.cancelQueue({ battleId, unitId })
           ?.catch((err: unknown) => {
             if (!isAlreadyActing(err)) throw err;
-            showNotice(queueTooLate());
+            route('queue-too-late', queueTooLate());
           }),
       );
     }
@@ -2038,7 +2050,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       const { choiceIdx } = command;
       // qf-6: the server refuses a reply chosen too far from the NPC, in another zone, or with the
       // NPC gone — and writes nothing (an Err aborts the transaction). The client ends such a
-      // conversation itself: catalogued copy on the status line (QF6.2), then the ONE dismiss path,
+      // conversation itself: catalogued copy on the toast (QF6.2; uif-4), then the ONE dismiss path,
       // whose server-side delete closes the overlay (never hidden locally; QF6.1). Only for the
       // conversation the reply was sent for (a later talk or another tab is left alone); a dismiss
       // already in flight closes it and keeps a picked shop. Every other rejection keeps
@@ -2060,7 +2072,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
             ) {
               return;
             }
-            showNotice(endedLine(reason));
+            route('dialogue-ended', endedLine(reason));
             if (!shopOpen.dismissPending) void dispatch({ kind: 'dismissDialogue' });
           }),
       );
@@ -2114,15 +2126,16 @@ function refusedShopQty(kind: 'buy' | 'sell', qty: number): boolean {
 }
 
 /** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
- *  battle-safe. Its reason goes to the status line (until the battle is over, `syncStack`) and the
- *  live region; a refusal is not an error, so nothing reaches the error ring. No sync here: every
+ *  battle-safe. Its reason is a timed toast (uif-4: no longer held until the battle is over), spoken
+ *  through the live region; a refusal is not an error, so nothing reaches the error ring. No sync here: every
  *  batch re-derives the base (`reconcileStack`) before any listener that dispatches. A link drop
  *  can leave it a frame stale, where a refusal on the frozen link changes nothing. */
 function refusedInBattle(command: Command): boolean {
   if (!battleRefused(contextStack, command)) return false;
+  // A toast kind, painted on the toast; spoken at once, not through the notice pump, so the reason
+  // is said in the refusal's own coalescing window (CTL6C-3-ANNOUNCE-REFUSAL).
   const reason = i18nT('menu.disabled.inBattle');
-  if (statusEl !== undefined) statusEl.textContent = reason;
-  shownBattleRefusal = reason;
+  paintToast(reason);
   announceNow(reason);
   return true;
 }
@@ -2173,32 +2186,119 @@ let battleSynced = false;
 /** bt-17: the row-less anchor already reported (once per battle id) — see `refreshBattle`. */
 let unrenderableReported: bigint | null = null;
 
-// --- M13.5b status surface ------------------------------------------
-// A minimal dynamically-created status line (no toast system — a deliberate
-// consequence). `statusEl` is created in main() BEFORE `conn = connect(...)` is
-// assigned (C8: no lifecycle callback can ever report into the void) but held at
-// module scope because send sites OUTSIDE main() (the Escape-dismiss keydown handler
-// and the dialogue-choice click handler) report through it too.
+// --- the message sinks (M13.5b status surface; uif-4 channels) -------------------
+// Every message a main.ts sink shows names its `MessageKind`, and `feedbackPolicy` picks the
+// channel (UIF4.1): an outcome is a timed toast (`#toast`, above every frame), a persistent state
+// is the world hint (`#status`, the world line, or the main menu's strip while the menu is on
+// top, WF1-A9). `statusEl` and the toast are created in main() BEFORE `conn = connect(...)` is
+// assigned (C8: no lifecycle callback can ever report into the void) but held at module scope
+// because send sites OUTSIDE main() (the Escape-dismiss keydown handler and the dialogue-choice
+// click handler) report through them too. textContent ONLY: server-supplied SenderError text must
+// never become markup.
 let statusEl: HTMLElement | undefined;
+let toastChrome: ToastChrome | undefined;
+let toastState: ToastState = NO_TOAST;
+/** The standing world hints, one per kind, newest last; the shown one is the top of WF1-A9's
+ *  precedence (`topHint`). `saidHint` is the last hint text given to the live region, so a repaint
+ *  on another host never says it again; `menuHint` is the hint the menu's strip last painted. */
+let worldHints: ReadonlyArray<{ readonly kind: MessageKind; readonly text: string }> = [];
+let saidHint: string | null = null;
+let menuHint: string | null = null;
+
+/** Show `text` on its policy channel. */
+function route(kind: SinkKind, text: string): void {
+  if (channelOf(kind) === 'hint') setWorldHint(kind, text);
+  else showToast(text);
+}
 
 /** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
- *  is none or it no longer paints (the frame was left), on the status line: textContent ONLY —
- *  server-supplied SenderError text must never become markup (never innerHTML) — plus
- *  console.error for logs and the error ring either way. */
-function reportError(text: string, line?: OutcomeLine): void {
-  if (line?.(text, 'error') !== true && statusEl !== undefined) statusEl.textContent = text;
+ *  is none or it no longer paints (the frame was left: the per-sink guard), on its policy channel;
+ *  plus console.error for logs and the error ring either way. */
+function reportError(kind: SinkKind, text: string, line?: OutcomeLine): void {
+  if (line?.(text, 'error') !== true) route(kind, text);
   console.error('[status]', text);
   // unify UI/reducer failures into the error ring so the F9 bundle captures them.
   pushError('reducer', text);
 }
 
-/** Clear the status line (on reconnect: the frozen-link message is stale, A8). */
-function clearStatus(): void {
-  if (statusEl !== undefined) statusEl.textContent = '';
+/** Paint a toast and queue it for the live region: spoken once by the frame pump, clear of the
+ *  announcements that land beside it (qf-6, ui/statusModel.ts statusNoticeStep). */
+function showToast(text: string): void {
+  const nowMs = paintToast(text);
+  statusNotice = statusNoticeStep(
+    statusNotice,
+    { kind: 'queue', text, nowMs },
+    COALESCE_WINDOW_MS,
+  ).state;
+}
+
+/** Paint `text` on the toast, timed from now; returns that now. */
+function paintToast(text: string): number {
+  const nowMs = performance.now();
+  toastState = toastStep(toastState, { kind: 'show', text, nowMs });
+  if (toastChrome !== undefined) renderToast(toastChrome, toastState);
+  return nowMs;
+}
+
+/** The frame pump's toast expiry (UIF4.2: through the injected frame clock). */
+function tickToast(nowMs: number): void {
+  const next = toastStep(toastState, { kind: 'tick', nowMs });
+  if (next === toastState) return;
+  toastState = next;
+  if (toastChrome !== undefined) renderToast(toastChrome, toastState);
+}
+
+/** A persistent hint stands until its state ends; a new one of its kind replaces it, and any new
+ *  hint overwrites a `download-blocked` ("until overwritten"). The shown hint is said once per new
+ *  text and painted on the host the stack picks. */
+function setWorldHint(kind: MessageKind, text: string): void {
+  worldHints = [
+    ...worldHints.filter((h) => h.kind !== kind && h.kind !== 'download-blocked'),
+    { kind, text },
+  ];
+  paintWorldHint();
+}
+
+/** The shown world hint: the highest WF1-A9 rank, the newer of two equals; null when none stands. */
+function topHint(): string | null {
+  let top: { readonly kind: MessageKind; readonly text: string } | null = null;
+  for (const h of worldHints) if (top === null || outranks(h.kind, top.kind)) top = h;
+  return top?.text ?? null;
+}
+
+/** The world hint's text when the main menu, on top, hosts it on its strip; else null. */
+function hintOnMenu(): string | null {
+  return menuPlace() === 'top' ? topHint() : null;
+}
+
+/** Paint the world hint on its host: the menu's strip while the menu is on top, else `#status`
+ *  (above every shell, so it stays readable while a frame without a seam strip is open). Runs on
+ *  every stack sync, so it writes only on a change. */
+function paintWorldHint(): void {
+  const shown = topHint();
+  if (shown !== saidHint) {
+    saidHint = shown;
+    if (shown !== null) announceNow(shown);
+  }
+  const onMenu = hintOnMenu();
+  const text = shown === null || onMenu !== null ? '' : shown;
+  if (statusEl !== undefined && statusEl.textContent !== text) statusEl.textContent = text;
+  if (onMenu !== menuHint) {
+    menuHint = onMenu;
+    renderMenu();
+  }
+}
+
+/** On reconnect: the link states and the toast are stale (A8); `content-stale` stands until reload. */
+function resetFeedbackSinks(): void {
+  worldHints = worldHints.filter((h) => h.kind === 'content-stale');
+  toastState = NO_TOAST;
+  if (toastChrome !== undefined) renderToast(toastChrome, toastState);
+  paintWorldHint();
 }
 
 // qf-6: a status NOTICE is an outcome that is not an error — a conversation the server ended for
-// a reason, a quest completed. It goes to the status line (textContent only, never markup) and is
+// a reason, a quest completed. It goes to the toast (uif-4; textContent only, never markup) and is
 // queued for the live region, spoken by the frame pump clear of the announcements that land beside
 // it (ui/statusModel.ts statusNoticeStep: why and when).
 let statusNotice: StatusNoticeState = STATUS_NOTICE_INITIAL;
@@ -2211,17 +2311,6 @@ let announcedSinceFrame = false;
 function announceNow(text: string): void {
   liveRegion.announce(text, performance.now());
   announcedSinceFrame = true;
-}
-
-/** Show a notice on the status line and queue it for the live region. Not the error ring, not
- *  console.error: nothing failed. */
-function showNotice(text: string): void {
-  if (statusEl !== undefined) statusEl.textContent = text;
-  statusNotice = statusNoticeStep(
-    statusNotice,
-    { kind: 'queue', text, nowMs: performance.now() },
-    COALESCE_WINDOW_MS,
-  ).state;
 }
 
 /** The catalogued line for a conversation the server ended on a refused advance (QF6.2): it says
@@ -2310,25 +2399,47 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
  * answer releases its answeredRequests key); the frozen and dead-handle arms never
  * call it — no reducer ran, nothing settled. `line` is the sending frame's outcome line, where
- * both failure arms report instead of the status line while it still paints (qf-2).
+ * both failure arms report instead of the policy channel while it still paints (qf-2).
  */
 function sendGuarded(
-  where: string,
+  where: SendWhere,
   call: () => Promise<void> | undefined,
   onRejected?: () => void,
   line?: OutcomeLine,
 ): Promise<void> {
   if (conn === undefined || conn.linkFrozen()) {
-    reportError(tf('chrome.status.disconnected', { where }), line);
+    reportError('link-down-send', tf('chrome.status.disconnected', { where }), line);
     return Promise.resolve();
   }
   const p = call();
   if (p === undefined) return Promise.resolve();
   return p.catch((err: unknown) => {
-    reportError(reduceErrorMessage(err, where), line);
+    reportError(SEND_REJECT_KIND[where], reduceErrorMessage(err, where), line);
     onRejected?.();
   });
 }
+
+/** Every `sendGuarded` site, and the message kind its rejection is (the channel table). */
+const SEND_REJECT_KIND = {
+  talk: 'world-send-rejected',
+  dismiss: 'world-send-rejected',
+  advance: 'world-send-rejected',
+  ackEvolutionNotices: 'world-send-rejected',
+  train: 'feed-rejected',
+  evolve: 'evolve-rejected',
+  nickname: 'nickname-rejected',
+  party: 'party-move-rejected',
+  heal: 'heal-rejected',
+  'pvp-challenge': 'pvp-rejected',
+  'pvp-accept': 'pvp-rejected',
+  'pvp-decline': 'pvp-rejected',
+  'pvp-cancel': 'pvp-rejected',
+  'submit-queue': 'pvp-rejected',
+  'cancel-queue': 'battle-command-rejected',
+  forfeit: 'battle-command-rejected',
+  'deploy-units': 'battle-command-rejected',
+} as const satisfies Record<string, SinkKind>;
+type SendWhere = keyof typeof SEND_REJECT_KIND;
 
 /**
  * The live reducer handle for a performCare `call` thunk, or `undefined` when the link is
@@ -2415,11 +2526,11 @@ function switchZone(newZoneId: number): void {
     console.error('[zone-sync] zone switch to %s failed — keeping current zone', newZoneId, err);
     zoneSyncFailureCount++;
     if (shouldReportZoneSyncFailure(zoneSyncFailureCount)) {
-      reportError(i18nT('chrome.status.contentStale'));
+      reportError('content-stale', i18nT('chrome.status.contentStale'));
     }
   }
-  // qf-15 (QF15.1): name the zone the SERVER put the character in — status line + live region
-  // (showNotice) — only after a committed switch. Its own try keeps switchZone total (onOwnWarp calls
+  // qf-15 (QF15.1): name the zone the SERVER put the character in — toast + live region
+  // (route) — only after a committed switch. Its own try keeps switchZone total (onOwnWarp calls
   // it unguarded, before the warped row is ingested) and keeps a cue failure out of the zone-sync
   // failure streak. Both warp paths (onOwnWarp, the reconcile listener) converge here and the guard
   // above makes one real zone change exactly one cue. The name is content (zone_def rows in the
@@ -2428,7 +2539,7 @@ function switchZone(newZoneId: number): void {
   if (!switched) return;
   try {
     const name = store.zoneName(newZoneId);
-    if (name !== undefined) showNotice(tf('chrome.status.zoneEntered', { name }));
+    if (name !== undefined) route('zone-cue', tf('chrome.status.zoneEntered', { name }));
   } catch (err) {
     console.error('[zone-cue] announcing zone %s failed', newZoneId, err);
   }
@@ -2876,6 +2987,24 @@ const focusInsideHiddenSubtree = (): boolean => {
   }
   return false;
 };
+/** Focus nowhere a player can use it: on <body> (or nothing), or stranded in a hidden subtree. */
+const focusAdrift = (): boolean => {
+  const a = document.activeElement;
+  return a === null || a === document.body || focusInsideHiddenSubtree();
+};
+
+// A close is judged by the first sync that sees it (the closing task on every keydown, dispatch and
+// batch path), not by the frame edge a rAF later, where a move made since (the chip blurred, rb-19)
+// would read as a close that left focus adrift. Not while the session terminal holds the screen: the
+// terminal's own focus is not the close's, so the first sync after it lifts judges.
+let syncedTop: OverlayId | null = null;
+let closeLeftFocusAdrift = false;
+function judgeCloseFocus(): void {
+  if (sessionGateBlocks()) return;
+  const top = topOverlay();
+  if (syncedTop !== null && top === null) closeLeftFocusAdrift = focusAdrift();
+  syncedTop = top;
+}
 
 const onKeyDown = (e: KeyboardEvent): void => {
   // Every press teaches the keycap what this layout types on that key (CTL12.5).
@@ -3657,7 +3786,8 @@ store.onBatchApplied(() => {
     const ack = questCompletionAck(questAckBaseline, now);
     questAckBaseline = now;
     if (ack === undefined) return;
-    showNotice(
+    route(
+      'quest-complete',
       ack.reward === null
         ? tf('quest.complete.done', { name: ack.name })
         : tf('quest.complete.reward', { name: ack.name, amount: ack.reward }),
@@ -4355,7 +4485,7 @@ function downloadBugBundle(): void {
   } catch {
     // CSP/sandbox/serialize fallback: never silently no-op. Log whatever we have.
     console.log('[bug-bundle]', json || bundle);
-    reportError(i18nT('chrome.status.bugBundleBlocked'));
+    reportError('download-blocked', i18nT('chrome.status.bugBundleBlocked'));
   }
 }
 
@@ -4532,6 +4662,8 @@ async function main(): Promise<void> {
   status.className = 'mr-status';
   gameScreen.appendChild(status);
   statusEl = status;
+  // uif-4: the toast region, beside it and out of the flow (.mr-toast), above every frame.
+  toastChrome = createToast(document, gameScreen);
 
   // ONE pointer dispatcher on the game screen (ctl-15): clicks, right-clicks, long-presses and
   // hover become button presses; the dialogue's choice and shop buttons keep their commands. Not
@@ -4744,8 +4876,8 @@ async function main(): Promise<void> {
       // The SDK never settles a reducer promise after a drop: a care sent before it would hold its
       // monster's in-flight slot for the life of the page.
       careInFlight.clear();
-      // The "connection lost — reconnecting…" status line is now stale.
-      clearStatus();
+      // The "connection lost — reconnecting…" hint and any toast are now stale.
+      resetFeedbackSinks();
       // record the reconnect edge as a fresh connect (the refreshed identity).
       eventRing.push(makeConnect(identity));
       // A successful reconnect clears any session terminal overlay.
@@ -4766,7 +4898,10 @@ async function main(): Promise<void> {
     // Lifecycle failures become user-visible via the status
     // line (reportError also console.errors); pre-M13.5b this was console-only.
     onError: (where, message) => {
-      reportError(`${where}: ${message}`);
+      reportError(
+        where === 'link' ? 'world-disconnect' : 'connect-failure',
+        `${where}: ${message}`,
+      );
       // emit disconnect ONLY on the link-level edge — not for other `where`
       // values (which fire for non-link failures too).
       if (where === 'link') eventRing.push(makeDisconnect());
@@ -4804,6 +4939,8 @@ async function main(): Promise<void> {
   const frame = (): void => {
     try {
       syncStack(); // a server overlay shown, or a player view closed, outside a keydown or batch
+      // A toast expires on the frame clock even while the session terminal owns the screen.
+      tickToast(performance.now());
       // the session terminal also outranks the render/dispatch loop —
       // skip this frame's held-key re-issue so the predictor never ghost-walks into a dead link.
       // The rAF re-arm lives in this loop's finally, so an early return skips work, not the loop.
@@ -4850,9 +4987,8 @@ async function main(): Promise<void> {
       const worldEdge = lastA11ySnapshot.topOverlay !== null && top === null;
       if (worldEdge) {
         liveRegion.announce(t('a11y.world.region'), now);
-        // Never stolen from a visible control (a chip): only <body> or a hidden subtree's node.
-        const a = document.activeElement;
-        if (a === null || a === document.body || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
+        // Only a close that itself left focus adrift (judged at its sync), still adrift: never a chip.
+        if (closeLeftFocusAdrift && focusAdrift()) worldCanvasEl?.focus();
       }
       lastA11ySnapshot = nextSnapshot;
       if (countdownSaid !== null) liveRegion.announce(countdownSaid, now);

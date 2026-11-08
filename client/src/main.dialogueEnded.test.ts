@@ -359,7 +359,18 @@ const shopShown = (): boolean => {
   if (el === null) throw new Error('#shop-overlay is not in the shell');
   return el.style.display !== 'none';
 };
-const statusText = (): string => document.getElementById('status')?.textContent ?? '';
+// uif-4 (named intentional change, UIF4.2): the dialogue-ended lines, the quest-complete line and
+// every `advance:` rejection report are TOAST kinds (`dialogue-ended`, `quest-complete`,
+// `world-send-rejected`), so everything this file read off #status it now reads off #toast. The
+// helper keeps its old name so each assertion below stays the one it was, with the one retargeted
+// reader; the new "UIF4.2" cases at the end read BOTH lines by their real names.
+const toastLine = (): string => {
+  const el = document.getElementById('toast');
+  if (el === null) throw new Error('#toast is not in the shell');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
+const statusText = toastLine;
+const realStatusLine = (): string => document.getElementById('status')?.textContent ?? '';
 /** What reached main.ts's error report (`console.error('[status]', text)`), oldest first. */
 const statusReports = (): string[] =>
   (consoleError?.mock.calls ?? []).filter((c) => c[0] === '[status]').map((c) => String(c[1]));
@@ -816,5 +827,42 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
       liveWrites.filter((w) => w.startsWith('Quest complete')),
       'nothing about a quest is spoken',
     ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // uif-4 (UIF4.2): the ended and completion lines are toasts, not status-line text
+  // ------------------------------------------------------------------------------------------
+
+  it('UIF4.2 a walked-away refusal paints the ended line on #toast and leaves #status empty', async () => {
+    // WRONG IMPL KILLED: the ended line left on the status line (z-index 45: it can paint under
+    // the open dialogue frame); a line painted on both channels.
+    await bootReady();
+    openConversation(1000);
+    H.advanceRejection = senderError('walked too far away');
+    clickChoice(2000);
+    await settle();
+    expect(toastLine()).toBe(ENDED_WALKED_AWAY);
+    expect(realStatusLine()).toBe('');
+  });
+
+  it('UIF4.2 a completing talk paints the quest line on #toast and leaves #status empty', async () => {
+    // WRONG IMPL KILLED: the acknowledgement left on the status line; one painted on both.
+    await bootReady();
+    opts.onHydrated();
+    beforeCompletion(1000, 30n);
+    completingTalk(2000, 80n);
+    expect(toastLine()).toBe(QUEST_001_ACK);
+    expect(realStatusLine()).toBe('');
+  });
+
+  it('UIF4.2 a rejected advance that keeps the conversation reports on #toast and leaves #status empty', async () => {
+    // WRONG IMPL KILLED: a sendGuarded rejection (world-send-rejected) left on the status line.
+    await bootReady();
+    openConversation(1000);
+    H.advanceRejection = senderError('not joined');
+    clickChoice(2000);
+    await settle();
+    expect(toastLine()).toBe('advance: not joined');
+    expect(realStatusLine()).toBe('');
   });
 });
