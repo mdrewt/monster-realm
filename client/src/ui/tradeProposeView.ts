@@ -167,10 +167,10 @@ export class TradeProposeView {
     // frame's first non-text control) still lands on the select. Yes / No are marks, not buttons.
     // uif-10 (UIF10.3): the header takes the TabBar's slot (the frame's first child) and geometry by
     // class, but stays an `ol` whose current item is `aria-current="step"` (WF1-A6). No chips: the
-    // steps are not LB/RB-steppable.
+    // steps are not LB/RB-steppable. `mr-frame-tabstrip` lets a narrow frame scroll the steps.
     this.#steps = document.createElement('ol');
     this.#steps.setAttribute('data-testid', 'tradepropose-steps');
-    this.#steps.className = 'mr-frame-tabs mr-tabbar mr-tabbar-strip';
+    this.#steps.className = 'mr-frame-tabs mr-frame-tabstrip mr-tabbar mr-tabbar-strip';
     this.#steps.style.cssText = 'list-style:none;margin:0;padding:0;';
     overlay.prepend(this.#steps);
     this.#monsters.tabIndex = -1;

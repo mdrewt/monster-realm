@@ -2296,4 +2296,36 @@ describe('TradeProposeView uif-10: what the wizard sends does not change (UIF10.
     expect(buttonArgs, 'the button path sends the literal').toEqual(expected);
     expect(tokenArgs, 'and the two paths agree').toEqual(buttonArgs);
   });
+
+  it('UIF10.4 the target select and the two currency inputs carry their catalogued aria-labels (target, coins, ask: the two currency labels differ) after a render and after a paint, and both currency inputs keep an inline min-height of 1.5rem', () => {
+    // WRONG IMPL KILLED: coins and ask labels swapped (axe only checks that a label exists, and a
+    // screen reader would announce the offer field as the request); a label dropped from any of
+    // the three controls; a label written once and lost by the next paint; a currency input whose
+    // inline min-height is dropped or changed (the 24px target size axe's target-size rule needs).
+    const { view } = mountWizard();
+    const expected: ReadonlyArray<readonly [HTMLElement, string, string]> = [
+      [wizSelect(), i18nT('tradePropose.step.target'), 'target select'],
+      [wizOffer(), i18nT('tradePropose.step.coins'), 'offer-currency input'],
+      [wizRequest(), i18nT('tradePropose.step.ask'), 'request-currency input'],
+    ];
+    expect(expected[1]?.[1], 'fixture: the two currency labels differ').not.toBe(expected[2]?.[1]);
+    const expectLabels = (when: string): void => {
+      for (const [el, label, name] of expected) {
+        expect(label.length > 0, `${name}: the catalogued label is not blank`).toBe(true);
+        expect(el.getAttribute('aria-label'), `${when}: ${name} aria-label`).toBe(label);
+      }
+      for (const [el, name] of [
+        [wizOffer(), 'offer'],
+        [wizRequest(), 'request'],
+      ] as const) {
+        expect(el.style.minHeight, `${when}: ${name} input min-height`).toBe('1.5rem');
+      }
+    };
+
+    expectLabels('after render');
+    view.paint(wizPaint({ step: 'coins' }));
+    expectLabels('after a paint on coins');
+    view.paint(wizPaint({ step: 'review' }));
+    expectLabels('after a paint on review');
+  });
 });
