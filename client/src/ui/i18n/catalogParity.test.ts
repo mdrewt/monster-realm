@@ -848,6 +848,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // `prompt.yes` LEAVES main.ts (the Options / Controls confirms that still show Yes resolve it in
     // their own modules) and `interact.challenge.size` JOINS it (one literal `tf` call naming each
     // size row, `{ n }`). `prompt.no` stays: the pick's last row is No.
+    // uif-12 (named intentional change, UIF12.2): main.ts gains 1 literal key, `kit.sheet.close` —
+    // the Close row every world picker / action sheet / request sheet now ends with, painted
+    // through `closeRowLabel()` (the kit's existing word; no new catalog key).
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -873,6 +876,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'interact.verb.shop',
       'interact.verb.talk',
       'interact.verb.trade', // ctl-10b: the faced player's Trade row
+      'kit.sheet.close', // uif-12: the world sheets' Close row (UIF12.2)
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
       'notice.request.challenge', // ctl-13: the banner / sheet heading for a challenge
       'notice.request.trade', // ctl-13: the banner / sheet heading for a trade

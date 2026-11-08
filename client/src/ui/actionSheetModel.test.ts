@@ -29,6 +29,7 @@
 import { describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
 import {
+  CLOSE_KEY,
   challengeLayout,
   confirmLayout,
   openSheet,
@@ -36,6 +37,7 @@ import {
   type SheetEntry,
   type SheetState,
   sheetEntries,
+  sheetLayout,
   sheetStep,
   sizeOfRow,
 } from './actionSheetModel';
@@ -172,14 +174,26 @@ describe('the sheet stepper (ctl-10a, CTL10A.1 / CTL10A.2)', () => {
     expect(s0.nav.item, 'the cursor starts on row 0').toBe(ENTRIES[0]?.key);
 
     // Fresh Down walks and wraps past the last row; fresh Up wraps back.
+    // NAMED INTENTIONAL CHANGE — uif-12 (UIF12.2): the Close row is the last row. Down from the
+    // last entry lands on `close`, a fresh Down there wraps to the first, a fresh Up from the first
+    // wraps to `close`, and a repeat Down clamps on `close`. Was: the last ENTRY was the last row.
     const s1 = stay(s0, nav('Down'));
     expect(s1.nav.item).toBe(ENTRIES[1]?.key);
     const s3 = stay(stay(s1, nav('Down')), nav('Down'));
-    expect(s3.nav.item, 'the last row').toBe(ENTRIES[3]?.key);
-    expect(stay(s3, nav('Down')).nav.item, 'a fresh Down wraps to the first').toBe(ENTRIES[0]?.key);
-    expect(stay(s0, nav('Up')).nav.item, 'a fresh Up wraps to the last').toBe(ENTRIES[3]?.key);
+    expect(s3.nav.item, 'the last entry').toBe(ENTRIES[3]?.key);
+    const sClose = stay(s3, nav('Down'));
+    expect(sClose.nav.item, 'the last row is Close').toBe(CLOSE_KEY);
+    expect(stay(sClose, nav('Down')).nav.item, 'a fresh Down wraps to the first').toBe(
+      ENTRIES[0]?.key,
+    );
+    expect(stay(s0, nav('Up')).nav.item, 'a fresh Up wraps to the last, Close').toBe(CLOSE_KEY);
     // Repeats clamp at both ends.
-    expect(stay(s3, nav('Down', true)).nav.item, 'a repeat Down clamps').toBe(ENTRIES[3]?.key);
+    expect(stay(s3, nav('Down', true)).nav.item, 'a repeat Down still reaches Close').toBe(
+      CLOSE_KEY,
+    );
+    expect(stay(sClose, nav('Down', true)).nav.item, 'a repeat Down clamps on Close').toBe(
+      CLOSE_KEY,
+    );
     expect(stay(s0, nav('Up', true)).nav.item, 'a repeat Up clamps').toBe(ENTRIES[0]?.key);
     expect(stay(s0, nav('Down', true)).nav.item, 'a repeat still moves inside').toBe(
       ENTRIES[1]?.key,
@@ -217,7 +231,7 @@ describe('the sheet stepper (ctl-10a, CTL10A.1 / CTL10A.2)', () => {
       expect(r.state, `${button} changes nothing`).toEqual(s1);
     }
 
-    // A one-row sheet: Down / Up stay put, A runs the row.
+    // A one-row sheet (one entry, then Close since uif-12): A runs the entry.
     const single = openSheet(sheetEntries(NPC));
     if (single === null) throw new Error('fixture: a one-row sheet opens');
     expect(single.nav.item).toBe('npc:7|talk');
@@ -570,5 +584,145 @@ describe('player rows (ctl-10b, CTL10B.1)', () => {
       expect(r.run, 'nothing runs').toBeUndefined();
       expect(r.partySize).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UIF12.2 — the world picker / action sheet end with a Close row whose A acts exactly like B; the
+// Challenge confirm keeps `no` last (spec M-ui-foundation §uif-12). Close is a LAYOUT row, not a
+// SheetEntry: `openSheet(entries).entries` and the cursor's start are unchanged.
+// RED REASON: `CLOSE_KEY` is not exported and `sheetLayout` has no trailing `close` row.
+// ---------------------------------------------------------------------------
+
+describe('UIF12.2 the sheet`s Close row (uif-12)', () => {
+  const FIXTURES: ReadonlyArray<{
+    readonly name: string;
+    readonly entries: readonly SheetEntry[];
+    readonly current: readonly InteractCandidate[];
+  }> = [
+    { name: 'one entry (a Y sheet)', entries: sheetEntries(talkNpc(7n)), current: [talkNpc(7n)] },
+    {
+      name: 'two entries (a two-action Y sheet)',
+      entries: sheetEntries(twoActions(8n)),
+      current: [twoActions(8n)],
+    },
+    {
+      name: 'four entries (the picker)',
+      entries: pickerEntries([talkNpc(7n), healTile(3), twoActions(8n)]),
+      current: [talkNpc(7n), healTile(3), twoActions(8n)],
+    },
+  ];
+  const openOf = (entries: readonly SheetEntry[]): SheetState => {
+    const s = openSheet(entries);
+    if (s === null) throw new Error('fixture: a non-empty sheet opens');
+    return s;
+  };
+  /** The sheet with the cursor walked by fresh Downs onto the row after the last entry. */
+  const onClose = (entries: readonly SheetEntry[], current: readonly InteractCandidate[]) => {
+    let s = openOf(entries);
+    for (let i = 0; i < entries.length; i++) {
+      const r = sheetStep(s, nav('Down'), current);
+      expect(r.run, `Down ${i + 1} runs nothing`).toBeUndefined();
+      if (r.state === null) throw new Error(`Down ${i + 1} closed the sheet`);
+      s = r.state;
+    }
+    return s;
+  };
+
+  it('UIF12.2 sheetLayout of 1, 2 and 4 entries is the entries in order then one enabled `close` row; the sheet`s entries and its starting cursor (entry 0) are unchanged; Down from the last entry lands on Close', () => {
+    // WRONG IMPL KILLED: no Close row (the pointer user has no way out but B); a Close row FIRST
+    // (the cursor would start on Close and A would close instead of running the default); a Close
+    // row added only to the picker and not the one-entry Y sheet (or vice versa); a disabled Close
+    // row (A would report a reason instead of closing); Close pushed into `entries` as a fake
+    // SheetEntry (the stale guard, the hint bar's `entries.length > 1` and the shell's row labels
+    // all read entries); a Close row keyed anything but `close` (the shell paints by key); entries
+    // re-ordered around it.
+    expect(CLOSE_KEY, 'the Close row`s key').toBe('close');
+    for (const { name, entries, current } of FIXTURES) {
+      expect(sheetLayout(entries), `${name}: the entries then Close`).toEqual({
+        kind: 'list',
+        items: [
+          ...entries.map((e) => ({ key: e.key, enabled: true })),
+          { key: 'close', enabled: true },
+        ],
+      });
+      const s = openOf(entries);
+      expect(s.entries, `${name}: the entries are untouched`).toEqual(entries);
+      expect(
+        s.entries.some((e) => e.key === CLOSE_KEY),
+        `${name}: Close is not an entry`,
+      ).toBe(false);
+      expect(s.nav.item, `${name}: the cursor still starts on entry 0`).toBe(entries[0]?.key);
+      expect(s.confirm, `${name}: no confirm`).toBeNull();
+      expect(onClose(entries, current).nav.item, `${name}: Down past the last entry`).toBe(
+        CLOSE_KEY,
+      );
+    }
+  });
+
+  it('UIF12.2 a fresh A on the Close row returns exactly what B returns on the same sheet — { state: null }, no run, no partySize — with live candidates, with none, and on a player picker offered party sizes; a held A on Close returns the same state object', () => {
+    // WRONG IMPL KILLED: A on Close running the last entry (an index off by one: the "Close" row
+    // would shop or challenge); A on Close running entry 0 (the default); A on Close ignored or
+    // leaving the sheet open; A on Close opening the Challenge size pick on a player picker; a
+    // Close that checks the live candidates and behaves differently when they are gone (B does
+    // not check them); a Close that returns a `run` or `partySize` key at all; a held A (auto-
+    // repeat) that closes or moves.
+    const SIZES: readonly number[] = [3, 2, 1];
+    const rival = onlinePlayer(13n, RIVAL);
+    const cases = [
+      ...FIXTURES,
+      {
+        name: 'a player picker (Trade, Challenge)',
+        entries: pickerEntries([rival]),
+        current: [rival],
+      },
+    ];
+    for (const { name, entries, current } of cases) {
+      const atClose = onClose(entries, current);
+      expect(atClose.nav.item, `${name}: fixture on Close`).toBe(CLOSE_KEY);
+      for (const live of [current, []] as const) {
+        const label = `${name}, ${live.length === 0 ? 'nothing current' : 'live candidates'}`;
+        const a = sheetStep(atClose, nav('A'), live, SIZES);
+        const b = sheetStep(atClose, nav('B'), live, SIZES);
+        expect(b, `${label}: B closes (the reference)`).toStrictEqual({ state: null });
+        expect(a, `${label}: A on Close is B`).toStrictEqual(b);
+        expect(a.run, `${label}: nothing runs`).toBeUndefined();
+        expect(a.partySize, `${label}: no party size`).toBeUndefined();
+        const noSizes = sheetStep(atClose, nav('A'), live);
+        expect(noSizes, `${label}: no sizes either`).toStrictEqual({ state: null });
+      }
+      const held = sheetStep(atClose, nav('A', true), current, SIZES);
+      expect(held.run, `${name}: a held A runs nothing`).toBeUndefined();
+      expect(held.state, `${name}: a held A on Close changes nothing`).toBe(atClose);
+    }
+
+    // Up from entry 0 wraps onto Close, and A there closes too (the same row, another route).
+    const up = sheetStep(openOf(FIXTURES[2]?.entries ?? []), nav('Up'), FIXTURES[2]?.current ?? []);
+    expect(up.state?.nav.item, 'a fresh Up from entry 0 wraps to Close').toBe(CLOSE_KEY);
+    const viaUp = sheetStep(up.state as SheetState, nav('A'), FIXTURES[2]?.current ?? []);
+    expect(viaUp, 'A on Close reached by Up').toStrictEqual({ state: null });
+  });
+
+  it('UIF12.2 the Challenge confirm keeps its rows — size rows then `no` LAST, no Close row; Up from the largest size wraps to `no`', () => {
+    // WRONG IMPL KILLED: a Close row appended to the size pick too (the spec keeps `no` last — a
+    // Close there would sit after No, and Up from the default would land on Close); a Close row
+    // replacing No.
+    const rows = (sizes: readonly number[]): string[] => {
+      const l = challengeLayout(sizes);
+      return l.kind === 'list' ? l.items.map((i) => i.key) : [];
+    };
+    expect(rows([3, 2, 1]), 'three sizes then No').toEqual(['size-3', 'size-2', 'size-1', 'no']);
+    expect(rows([1]), 'one size then No').toEqual(['size-1', 'no']);
+    expect(rows([3, 2, 1]).includes(CLOSE_KEY), 'no Close row in the pick').toBe(false);
+
+    const rival = onlinePlayer(13n, RIVAL);
+    const cands = [rival];
+    const opened = openOf(pickerEntries(cands));
+    const onChallenge = sheetStep(opened, nav('Down'), cands).state as SheetState;
+    expect(onChallenge.nav.item, 'fixture: on the Challenge row').toBe('player:13|challenge');
+    const pick = sheetStep(onChallenge, nav('A'), cands, [3, 2, 1]).state as SheetState;
+    expect(pick.confirm?.nav.item, 'fixture: the pick is up on size-3').toBe('size-3');
+    const up = sheetStep(pick, nav('Up'), cands, [3, 2, 1]);
+    expect(up.state?.confirm?.nav.item, 'Up wraps to No, the last row').toBe('no');
   });
 });

@@ -3,6 +3,8 @@
 // module state or clock. Both are one list of entity × action rows over the candidates
 // `interact_candidates_coded` returned: A with several opens the picker (every actionable candidate's
 // actions), Y opens the primary candidate's sheet (its actions only). The cursor is nav.ts's list rule.
+// Every picker / action sheet ends with a Close row (uif-12, UIF12.2): a layout row, never an
+// entry, whose A is B's step.
 import type { InteractAction, InteractCandidate } from './interactModel';
 import { list, type NavInput, type NavLayout, type NavState, navInit, navStep } from './nav';
 
@@ -71,9 +73,14 @@ export function pickerEntries(cands: readonly InteractCandidate[]): readonly She
   return cands.flatMap(sheetEntries);
 }
 
-/** The rows as a nav list: what `sheetStep` steps and the shell renders. */
+/** The key of the Close row every world picker, action sheet and request sheet ends with (uif-12,
+ *  UIF12.2). A layout row, never a `SheetEntry`: A on it is B's step. Entry keys are
+ *  `<candidate>|<action>`, so it collides with none; `list` would throw if it did. */
+export const CLOSE_KEY = 'close';
+
+/** The rows as a nav list: what `sheetStep` steps and the shell renders — the entries, then Close. */
 export const sheetLayout = (entries: readonly SheetEntry[]): NavLayout =>
-  list(entries.map((e) => ({ key: e.key, enabled: true })));
+  list([...entries.map((e) => ({ key: e.key, enabled: true })), { key: CLOSE_KEY, enabled: true }]);
 
 /** A sheet on its first row; null when there is no row to show. */
 export function openSheet(entries: readonly SheetEntry[]): SheetState | null {
@@ -102,7 +109,8 @@ const liveAction = (
 ): InteractAction | undefined => pickerEntries(current).find((e) => e.key === key)?.action;
 
 /** One button on an open sheet. A runs the row under the cursor and closes, but only while that
- *  row is still one of `current`'s: otherwise the sheet closes with nothing run. A Challenge row
+ *  row is still one of `current`'s: otherwise the sheet closes with nothing run. A on the Close
+ *  row is B's step: the sheet closes, nothing runs (uif-12, UIF12.2). A Challenge row
  *  asks the party size first (bt-15, BT15.1): A opens the confirm on the largest of `sizes` — with
  *  no size to offer (nothing conscious to field) it closes and runs nothing; A on a size row runs
  *  the challenge (revalidated the same way, and only while that size is still among the LIVE
@@ -120,6 +128,7 @@ export function sheetStep(
   if (btn.button === 'B') return { state: null };
   const { state: nav, outcome } = navStep(sheetLayout(s.entries), s.nav, btn);
   if (outcome.kind !== 'activate') return { state: nav === s.nav ? s : { ...s, nav } };
+  if (outcome.key === CLOSE_KEY) return { state: null };
   const action = liveAction(outcome.key, current);
   if (action === undefined) return { state: null };
   if (action.kind !== 'challenge') return { state: null, run: action };

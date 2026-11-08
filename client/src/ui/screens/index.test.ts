@@ -3879,8 +3879,9 @@ describe('ScreenHost: the world sheet (ctl-10a)', () => {
     // sheet that survives a frame opening over it, a reconnect, or the shell's per-batch close; a
     // world arm that also answers over a pushed frame or a battle (A on a heal frame / battle
     // would send a talk); a world arm that swallows Start / Select when nothing is faced (the menu
-    // would stop opening); a Start over an open sheet that opens the menu instead of closing it;
-    // and a port-less host that changes its world answers.
+    // would stop opening); a Start over an open sheet that opens the menu instead of closing it; a
+    // Select over an open sheet that is swallowed, or that toggles Help while leaving the sheet open
+    // under it (uif-12); and a port-less host that changes its world answers.
     let cands: readonly InteractCandidate[] = [NPC];
     const runs: InteractAction[] = [];
     const port: WorldPort = {
@@ -3921,12 +3922,20 @@ describe('ScreenHost: the world sheet (ctl-10a)', () => {
     expect(host.sheet, 'and the sheet closed').toBeNull();
     expect(host.takesNav(WORLD_STACK)).toBe(false);
 
-    // Over an open sheet Start closes it (no menu) and Select is the sheet's (no help).
+    // Over an open sheet Start closes it (no menu). uif-12 (UIF12.3, named intentional change):
+    // Select is Help everywhere — a fresh Select over the sheet closes it and falls through to the
+    // base, so Help opens over the bare world, never under the sheet. Was: Select was the sheet's
+    // (consumed, no help, the sheet left open).
     host.button(WORLD_STACK, nav('A'), CTX, port);
-    expect(host.button(WORLD_STACK, nav('Select'), CTX, port), 'Select over the sheet').toBe(
-      'consumed',
-    );
-    expect(host.sheet, 'Select leaves the sheet open').not.toBeNull();
+    expect(host.sheet, 'fixture: the picker is open').not.toBeNull();
+    expect(
+      host.button(WORLD_STACK, nav('Select'), CTX, port),
+      'Select over the sheet toggles Help',
+    ).toEqual(TOGGLE_HELP);
+    expect(host.sheet, 'Select closed the sheet first').toBeNull();
+    expect(host.takesNav(WORLD_STACK), 'and the D-pad is the world`s again').toBe(false);
+    host.button(WORLD_STACK, nav('A'), CTX, port);
+    expect(host.sheet, 'fixture: A reopened the picker').not.toBeNull();
     expect(host.button(WORLD_STACK, nav('Start'), CTX, port), 'Start over the sheet').toBe(
       'consumed',
     );

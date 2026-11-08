@@ -32,6 +32,7 @@ import {
 import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
 import type { StoreBattleChallenge, StoreTradeOffer } from './net/store';
+import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import { t as i18nT, tf } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -491,10 +492,12 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     // withdrawn or replaced by another id (a stale id sent).
     const sheetTrade = tf('notice.request.trade', { name: 'Bob' });
     const sheetChallenge = tf('notice.request.challenge', { name: 'Bob' });
+    // uif-12 (UIF12.2, named intentional change): the request sheet ends with a Close row.
     const ROWS = [
       i18nT('notice.sheet.accept'),
       i18nT('notice.sheet.decline'),
       i18nT('notice.sheet.view'),
+      i18nT('kit.sheet.close'),
     ];
 
     /** Boot, seed one request from Bob, press Y and read the open sheet. */
@@ -723,5 +726,450 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       bannerText(),
       'after a reconnect the dismissals are gone: the request shows again',
     ).not.toBeNull();
+  }, 60_000);
+});
+
+// ==========================================================================================
+// uif-12: the world sheets on the ContextSheet kit, pointer-live (UIF12.1, UIF12.4, UIF12.5)
+// ==========================================================================================
+
+const worldCanvas = (): Promise<HTMLElement> =>
+  vi.waitFor(
+    () => {
+      const c = document.querySelector<HTMLElement>('#game-screen canvas');
+      if (c === null) throw new Error('the world canvas is not mounted yet');
+      return c;
+    },
+    { timeout: 5_000, interval: 5 },
+  );
+/** A bubbling left click (the pointer dispatcher on #game-screen reads `click`). */
+const leftClick = (el: Element): void => {
+  clock.t = next(50);
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+};
+const sheetRow = (navKey: string): HTMLElement => {
+  const el = document.querySelector<HTMLElement>(
+    `#interact-prompt [role="option"][data-nav-key="${navKey}"]`,
+  );
+  if (el === null) throw new Error(`no world-sheet row ${navKey}`);
+  return el;
+};
+const sheetRoot = (): HTMLElement | null =>
+  document.querySelector<HTMLElement>('#interact-prompt [data-context-sheet]');
+
+/** Boot, seed one request from Bob, press Y and leave the request sheet open (no frame after the
+ *  last press other than the one that paints it). */
+async function openRequestSheet(kind: 'trade' | 'challenge'): Promise<void> {
+  await bootReady();
+  seedPlayer(BOB, 'Bob', 8n);
+  batch();
+  if (kind === 'trade') opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+  else opts.store.upsertChallenge(challengeFrom(BOB, 21n, 2_000n));
+  batch();
+  frame();
+  press(Y);
+  frame();
+  expect(sheetShown(), `${kind}: precondition: the request sheet is up`).toBe(true);
+}
+
+describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true }, () => {
+  afterEach(teardown);
+
+  it('UIF12.1 the request sheet`s heading and rows are inside the kit`s shown #interact-prompt [data-context-sheet] (.mr-sheet)', async () => {
+    // WRONG IMPL KILLED: the world sheet still painted with bare renderNav into a plain div (no
+    // [data-context-sheet] root, so the pointer source never sees it); a root left `hidden` while
+    // the rows show; a title painted outside the sheet root; a root that is not the kit's.
+    await openRequestSheet('trade');
+    const root = sheetRoot();
+    expect(
+      root,
+      'the request sheet has a [data-context-sheet] root inside #interact-prompt',
+    ).not.toBeNull();
+    const sheet = root as HTMLElement;
+    expect(sheet.classList.contains('mr-sheet'), 'the root is the ContextSheet kit`s').toBe(true);
+    expect(sheet.hidden, 'the root is not hidden').toBe(false);
+    expect(isShown(sheet), 'and shows').toBe(true);
+    const rows = [...document.querySelectorAll('#interact-prompt [role="option"]')];
+    // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
+    expect(rows.length, 'Accept / Decline / View / Close').toBe(4);
+    for (const row of rows) {
+      expect(sheet.contains(row), `row ${row.textContent} is inside the sheet root`).toBe(true);
+    }
+    const line = tf('notice.request.trade', { name: 'Bob' });
+    const heading = [...sheet.querySelectorAll('*')].filter(
+      (el) => el.children.length === 0 && el.textContent === line,
+    );
+    expect(heading.length, 'the request line is the sheet`s own heading, inside the root').toBe(1);
+    expect(
+      sheet.querySelector('[role="option"]') !== null && sheet.contains(heading[0] as Element),
+      'heading and rows share the one root',
+    ).toBe(true);
+  }, 60_000);
+
+  it('UIF12.1 a pointer click on the non-cursor Decline row sends exactly the decline reducer with no frame in between and closes the sheet; a click on View opens Social and sends nothing', async () => {
+    // WRONG IMPL KILLED: rows with no pointer path (the prompt is pointer-events:none / no
+    // [data-context-sheet], so the click does nothing); a world sheet that repaints only in the rAF
+    // tick (the pointer seek reads the cursor from the DOM straight after each press, so a click on
+    // a non-cursor row probes, misses, undoes and never presses A: review finding #1); a click that
+    // answers the CURSOR row (Accept) instead of the clicked one; a click on View that sends a
+    // reducer.
+    const answers: ReadonlyArray<{
+      readonly kind: 'trade' | 'challenge';
+      readonly call: { name: string; args: unknown };
+    }> = [
+      { kind: 'trade', call: { name: 'respondTrade', args: { tradeId: 11n, accepted: false } } },
+      { kind: 'challenge', call: { name: 'declineChallenge', args: { challengeId: 21n } } },
+    ];
+    for (const a of answers) {
+      teardown();
+      await openRequestSheet(a.kind);
+      expect(sheetCursor(), `${a.kind}: precondition: the cursor is on Accept`).toBe('accept');
+      leftClick(sheetRow('decline'));
+      // NO frame between the click and the read: the press itself must have repainted the sheet.
+      await flush();
+      expect(H.calls, `${a.kind}: exactly the decline reducer for that request`).toEqual([a.call]);
+      frame();
+      expect(sheetShown(), `${a.kind}: the sheet closed`).toBe(false);
+      expect(stackNames(), `${a.kind}: still the bare world`).toEqual(['world']);
+    }
+
+    for (const [kind, root] of [
+      ['trade', 'trade-overlay'],
+      ['challenge', 'pvp-challenge-overlay'],
+    ] as const) {
+      teardown();
+      await openRequestSheet(kind);
+      leftClick(sheetRow('view'));
+      await flush();
+      frame();
+      expect(H.calls, `${kind}: View sends nothing`).toEqual([]);
+      expect(stackNames().at(-1), `${kind}: View opened Social`).toBe('social');
+      expect(shownById(root), `${kind}: on the request's own root`).toBe(true);
+      expect(sheetShown(), `${kind}: the sheet closed`).toBe(false);
+    }
+  }, 120_000);
+
+  it('UIF12.4 a click on the world canvas outside the open request sheet closes it and sends nothing: no accept, no decline, the stack stays the bare world', async () => {
+    // WRONG IMPL KILLED: a world sheet with no [data-context-sheet] root (an outside click never
+    // closes it, so it hangs on); an outside click that is read as a canvas press of A (the faced
+    // action or the CURSOR row, Accept, runs); a close that also opens the menu or a frame.
+    await openRequestSheet('trade');
+    const canvas = await worldCanvas();
+    leftClick(canvas);
+    await flush();
+    expect(H.calls, 'an outside click answers nothing').toEqual([]);
+    frame();
+    expect(sheetShown(), 'the sheet is gone').toBe(false);
+    expect(stackNames(), 'the stack is the bare world').toEqual(['world']);
+    expect(openDialogs(), 'no dialog opened').toEqual([]);
+    // Control: the request still waits, so Y reopens the sheet (the close was not a dismissal).
+    press(Y);
+    frame();
+    expect(sheetShown(), 'control: the request still waits').toBe(true);
+  }, 60_000);
+
+  it('UIF12.2 the request sheet`s rows are Accept / Decline / View / Close with Close the LAST option (data-nav-key="close"); Down x3 puts the cursor on it and Enter there does exactly what B does: the sheet closes, nothing is sent, the banner stays, the stack stays the bare world', async () => {
+    // WRONG IMPL KILLED: no Close row painted; a Close row painted with the raw key or another
+    // label; a Close row that is not last (Up from Accept would not reach it, Down x3 would land
+    // elsewhere); an Enter on Close that answers the request (the row before it, View, opens
+    // Social; or the default, Accept, sends respondTrade); an Enter on Close that DISMISSES the
+    // request (banner gone: B at an open sheet only closes it); an Enter that leaves the sheet up.
+    const line = tf('notice.request.trade', { name: 'Bob' });
+    await openRequestSheet('trade');
+    expect(sheetRows(), 'Accept / Decline / View / Close').toEqual([
+      i18nT('notice.sheet.accept'),
+      i18nT('notice.sheet.decline'),
+      i18nT('notice.sheet.view'),
+      i18nT('kit.sheet.close'),
+    ]);
+    const options = [...document.querySelectorAll('#interact-prompt [role="option"]')];
+    expect(
+      options.at(-1)?.getAttribute('data-nav-key'),
+      'Close is the last option, keyed close',
+    ).toBe('close');
+    expect(options.at(-1)?.textContent, 'labelled from the catalog').toBe(i18nT('kit.sheet.close'));
+    expect(sheetCursor(), 'precondition: the cursor starts on Accept').toBe('accept');
+
+    for (let i = 0; i < 3; i += 1) press('ArrowDown');
+    frame();
+    expect(sheetCursor(), 'Down x3: the cursor is on Close').toBe('close');
+    press(A);
+    await flush();
+    expect(H.calls, 'Enter on Close sends nothing').toEqual([]);
+    frame();
+    expect(sheetShown(), 'Enter on Close closes the sheet').toBe(false);
+    expect(stackNames(), 'and opens no frame').toEqual(['world']);
+    expect(openDialogs(), 'nor a dialog').toEqual([]);
+    const afterClose = { banner: bannerText(), stack: stackNames(), calls: [...H.calls] };
+    expect(afterClose.banner, 'the request still waits: its banner stays').toBe(line);
+
+    // The reference: B on the same sheet, reopened with Y.
+    press(Y);
+    frame();
+    expect(sheetShown(), 'precondition: Y reopens the request sheet').toBe(true);
+    press(B);
+    await flush();
+    frame();
+    expect(sheetShown(), 'B closes the sheet').toBe(false);
+    expect(
+      { banner: bannerText(), stack: stackNames(), calls: [...H.calls] },
+      'Enter on Close had exactly B`s effect',
+    ).toEqual(afterClose);
+
+    // ANTI-VACUITY: the sheet was live all along — Y then Enter on Accept answers the request.
+    press(Y);
+    frame();
+    press(A);
+    await flush();
+    expect(H.calls, 'control: Accept still sends the accept reducer').toEqual([
+      { name: 'respondTrade', args: { tradeId: 11n, accepted: true } },
+    ]);
+  }, 60_000);
+
+  it('UIF12.2 a pointer click on the request sheet`s Close row (not the cursor row) closes it and sends nothing, for a trade and a challenge; the request still waits', async () => {
+    // WRONG IMPL KILLED: a Close row with no pointer path (the very user the row exists for has no
+    // way to close the sheet but an outside click); a click that runs the CURSOR row (Accept) or
+    // the row before Close (View: Social opens); a click on Close that dismisses the request.
+    for (const [kind, line] of [
+      ['trade', tf('notice.request.trade', { name: 'Bob' })],
+      ['challenge', tf('notice.request.challenge', { name: 'Bob' })],
+    ] as const) {
+      teardown();
+      await openRequestSheet(kind);
+      expect(sheetCursor(), `${kind}: precondition: the cursor is on Accept`).toBe('accept');
+      leftClick(sheetRow('close'));
+      await flush();
+      expect(H.calls, `${kind}: a click on Close sends nothing`).toEqual([]);
+      frame();
+      expect(sheetShown(), `${kind}: the sheet closed`).toBe(false);
+      expect(stackNames(), `${kind}: still the bare world (no Social)`).toEqual(['world']);
+      expect(bannerText(), `${kind}: the request still waits`).toBe(line);
+      press(Y);
+      frame();
+      expect(sheetShown(), `${kind}: control: Y reopens it`).toBe(true);
+    }
+  }, 120_000);
+
+  it('UIF12.5 (regression gate, may pass today) while a world sheet is open a held movement key sends no move; a key held while an outside click closes the sheet does not start a walk after the close; the next fresh press walks exactly one step', async () => {
+    // WRONG IMPL KILLED: a sheet that lets a held direction through (the character walks under the
+    // sheet); a sheet close that does not reset the held input (the key held through it resumes
+    // walking on the first frame after the close, with no new press); a reset that also swallows the
+    // next FRESH press (it must walk once).
+    await openRequestSheet('trade');
+    const canvas = await worldCanvas();
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true, cancelable: true }),
+    );
+    frame(300);
+    frame(300);
+    expect(H.sends, 'no movement while the world sheet is open').toEqual([]);
+
+    leftClick(canvas); // W is still held while the sheet closes
+    frame();
+    expect(sheetShown(), 'precondition: the outside click closed the sheet').toBe(false);
+    frame(300);
+    frame(300);
+    frame(300);
+    expect(H.sends, 'the key held through the close does not walk').toEqual([]);
+
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'KeyW', bubbles: true, cancelable: true }),
+    );
+    press('KeyW');
+    expect(H.sends, 'the next fresh press walks exactly one step').toHaveLength(1);
+    frame(300);
+    expect(H.sends, 'and a tapped key does not keep walking').toHaveLength(1);
+  }, 60_000);
+
+  it('UIF12.5 a movement key held down (never released) through a KEYBOARD close of the world sheet (B or Start) starts no walk after the close, whether it was pressed before the sheet opened or while it was open; the next fresh press walks exactly one step', async () => {
+    // WRONG IMPL KILLED: a sheet open/close edge that does not clear the shell's held keys (the walk
+    // holder resumes the moment the sheet closes: the hold is committed and the server owes
+    // nothing), or does not reset the router's D-pad auto-repeat (the held direction keeps
+    // repeating into the world after the close). The close here is a keyboard B / Start, so the
+    // outside-click path (which resets input itself) is not what makes this pass.
+    const ackAt = (y: number): void => {
+      clock.t = next(50);
+      opts.store.upsertPlayer({
+        identity: H.identity,
+        entityId: EID,
+        name: 'P',
+        online: true,
+        lastInputSeq: BigInt(H.sends.length),
+      });
+      opts.store.upsertCharacter(
+        {
+          entityId: EID,
+          zoneId: 0,
+          tileX: 2,
+          tileY: y,
+          facing: 'North',
+          action: 'Idle',
+          moveStartedAtMs: 0n,
+          moveQueue: [] as WasmMoveInput[],
+        },
+        clock.t,
+      );
+      opts.store.flushBatch();
+    };
+    const down = (code: string): void => {
+      clock.t = next(50);
+      window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+    };
+    const up = (code: string): void => {
+      clock.t = next(5);
+      window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+    };
+    const LONG: readonly number[] = [HOLD_COMMIT_MS + 50, 400, 400, 400];
+
+    let checked = 0;
+    for (const closer of [B, 'Escape']) {
+      for (const when of ['before', 'during'] as const) {
+        const label = `${when} the sheet, closed by ${closer}`;
+        teardown();
+        await bootReady();
+        seedPlayer(BOB, 'Bob', 8n);
+        batch();
+        opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+        batch();
+        frame();
+        let base = 0;
+        if (when === 'before') {
+          down('KeyW'); // held since before the sheet opens
+          base = 1;
+          expect(H.sends, `${label}: precondition: the press stepped once`).toHaveLength(1);
+          frame(50);
+          ackAt(5); // the step is acked where it was drawn: the server owes nothing
+        }
+        press(Y);
+        frame();
+        expect(sheetShown(), `${label}: precondition: the request sheet is up`).toBe(true);
+        if (when === 'during') down('KeyW'); // pressed while the sheet is open, then held
+        for (const ms of LONG) frame(ms);
+        expect(H.sends, `${label}: nothing walks while the sheet is open`).toHaveLength(base);
+
+        press(closer);
+        frame();
+        expect(sheetShown(), `${label}: precondition: the keyboard closed the sheet`).toBe(false);
+        expect(stackNames(), `${label}: still the bare world`).toEqual(['world']);
+        for (const ms of LONG) frame(ms);
+        expect(
+          H.sends,
+          `${label}: the held key does not walk after the close (no fresh press)`,
+        ).toHaveLength(base);
+
+        up('KeyW');
+        down('KeyW');
+        up('KeyW');
+        expect(H.sends, `${label}: control: a fresh press walks exactly one step`).toHaveLength(
+          base + 1,
+        );
+        checked += 1;
+      }
+    }
+    expect(checked, 'ANTI-VACUITY: four cases').toBe(4);
+  }, 120_000);
+
+  it('UIF12.5 a D-pad key held down (never released) through a world sheet closing and reopening does not repeat into the reopened sheet: its cursor stays on the first row and nothing walks', async () => {
+    // WRONG IMPL KILLED: a sheet edge that does not reset the router's D-pad auto-repeat. The
+    // repeat is armed only while a sheet owns the D-pad; a held ArrowDown armed before B closes the
+    // sheet is stale, and it fires into the NEXT sheet as soon as nav is defined again, walking
+    // the new sheet's cursor with no new press.
+    await openRequestSheet('trade');
+    expect(sheetCursor(), 'precondition: the cursor starts on Accept').toBe('accept');
+    clock.t = next(50);
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ArrowDown', bubbles: true, cancelable: true }),
+    ); // held: no keyup
+    frame(10);
+    expect(sheetCursor(), 'precondition: the press moved the cursor once').toBe('decline');
+
+    // Close and reopen well inside the repeat delay (no long frame in between).
+    // A keyboard press repaints the world sheet on the next frame only: a short frame after each.
+    press(B);
+    frame(10);
+    expect(sheetShown(), 'precondition: B closed the sheet').toBe(false);
+    press(Y);
+    frame(10);
+    expect(sheetShown(), 'precondition: Y reopened the request sheet').toBe(true);
+    expect(sheetCursor(), 'precondition: the reopened sheet starts on Accept').toBe('accept');
+
+    // ArrowDown is STILL held. Run far past the repeat delay and several periods.
+    for (const ms of [400, 200, 200, 200, 200, 200]) frame(ms);
+    expect(sheetCursor(), 'the stale repeat did not walk the reopened sheet`s cursor').toBe(
+      'accept',
+    );
+    expect(
+      [...document.querySelectorAll('#interact-prompt [role="option"]')].map((el) =>
+        el.getAttribute('aria-selected'),
+      ),
+      'the first row is the only selected one',
+    ).toEqual(['true', 'false', 'false', 'false']); // uif-12 (UIF12.2): + the Close row
+    expect(H.sends, 'nothing walks').toEqual([]);
+    expect(H.calls, 'nothing was answered').toEqual([]);
+  }, 60_000);
+
+  it('UIF12.1 #interact-prompt carries mr-prompt--sheet exactly while a world sheet shows: present over the request sheet, absent after it closes and over the plain faced-target chip, present over the faced target`s action sheet, absent after it closes', async () => {
+    // WRONG IMPL KILLED: the class never toggled (the prompt keeps its own border and padding around
+    // the kit sheet: two borders); toggled on and never removed; set for the chip-only prompt.
+    const cls = (): boolean => byId('interact-prompt').classList.contains('mr-prompt--sheet');
+    await openRequestSheet('trade');
+    expect(cls(), 'present while the request sheet shows').toBe(true);
+    press(B);
+    frame();
+    expect(sheetShown(), 'precondition: B closed the request sheet').toBe(false);
+    expect(cls(), 'absent once it closes').toBe(false);
+
+    // A faced target: the plain chip.
+    const NPC = 11n;
+    opts.store.upsertNpc({
+      entityId: NPC,
+      npcId: 'guide',
+      zoneId: 0,
+      homeX: 3,
+      homeY: 6,
+      wanderRadius: 0,
+      dialogueTreeId: 'no-such-tree',
+      interaction: { kind: 'dialogue' },
+    });
+    opts.store.upsertCharacter(
+      {
+        entityId: NPC,
+        zoneId: 0,
+        tileX: 3,
+        tileY: 6,
+        facing: 'West',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      clock.t,
+    );
+    H.interact = (...args: unknown[]) => {
+      const entities = args[4];
+      if (!Array.isArray(entities)) return [];
+      const at = entities.findIndex(
+        (e: { kind?: unknown; id?: unknown }) => e.kind === 'npc' && e.id === NPC.toString(),
+      );
+      return at === -1 ? [] : [at];
+    };
+    batch();
+    frame();
+    expect(shownById('interact-prompt'), 'precondition: the plain chip shows').toBe(true);
+    expect(sheetRows(), 'precondition: no rows, only the chip').toEqual([]);
+    expect(
+      byId('interact-prompt').textContent,
+      'precondition: the chip names the target',
+    ).toContain('guide');
+    expect(cls(), 'absent over the plain faced-target chip').toBe(false);
+
+    press(Y); // a faced target: Y opens its action sheet
+    frame();
+    // uif-12 (UIF12.2, named intentional change): the one Talk row, then Close.
+    expect(sheetRows().length, 'precondition: the action sheet is up').toBe(2);
+    expect(cls(), 'present over the action sheet').toBe(true);
+    press(B);
+    frame();
+    expect(sheetRows(), 'precondition: B closed the action sheet').toEqual([]);
+    expect(cls(), 'absent once the action sheet closes').toBe(false);
   }, 60_000);
 });

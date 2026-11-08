@@ -25,6 +25,7 @@
 import { describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
 import type { StoreBattleChallenge, StorePlayer, StoreTradeOffer } from '../net/store';
+import { CLOSE_KEY } from './actionSheetModel';
 import type { NavInput } from './nav';
 import {
   buildNotices,
@@ -300,15 +301,18 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
     // closes on a repeat B / Start or runs on a held A; a D-pad that does not move or does not
     // clamp on a held edge; any other button that moves or closes it; and a command with the
     // wrong reducer, the wrong id or the opposite `accepted`.
+    // NAMED INTENTIONAL CHANGE — uif-12 (UIF12.2): the sheet ends with a Close row, so the last
+    // row (the wrap target of Up from Accept, the clamp of a held Down) is `close`, not `view`.
     expect(requestSheetLayout.kind).toBe('list');
     const rows = requestSheetLayout.kind === 'list' ? requestSheetLayout.items : [];
     expect(
       rows.map((r) => [r.key, r.enabled]),
-      'Accept, Decline, View, all enabled',
+      'Accept, Decline, View, Close, all enabled',
     ).toEqual([
       ['accept', true],
       ['decline', true],
       ['view', true],
+      ['close', true],
     ]);
 
     const sheet = openRequestSheet(REQ);
@@ -325,18 +329,22 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
       REQ,
     ]);
     expect(down2.state?.nav.item).toBe('view');
-    const wrapped = requestSheetStep(down2.state as NonNullable<typeof down2.state>, nav('Down'), [
+    const down3 = requestSheetStep(down2.state as NonNullable<typeof down2.state>, nav('Down'), [
+      REQ,
+    ]);
+    expect(down3.state?.nav.item, 'Down from View: Close, the last row').toBe('close');
+    const wrapped = requestSheetStep(down3.state as NonNullable<typeof down3.state>, nav('Down'), [
       REQ,
     ]);
     expect(wrapped.state?.nav.item, 'a fresh Down wraps').toBe('accept');
     const clamped = requestSheetStep(
-      down2.state as NonNullable<typeof down2.state>,
+      down3.state as NonNullable<typeof down3.state>,
       nav('Down', true),
       [REQ],
     );
-    expect(clamped.state?.nav.item, 'a held Down clamps at the end').toBe('view');
+    expect(clamped.state?.nav.item, 'a held Down clamps at the end, Close').toBe('close');
     const up = requestSheetStep(sheet, nav('Up'), [REQ]);
-    expect(up.state?.nav.item, 'Up from Accept wraps to View').toBe('view');
+    expect(up.state?.nav.item, 'Up from Accept wraps to Close').toBe('close');
 
     // --- A runs the row under the cursor ---------------------------------------------------
     const accept = requestSheetStep(sheet, nav('A'), [REQ]);
@@ -414,5 +422,57 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
       tradeId: 12n,
       accepted: true,
     });
+  });
+
+  it('UIF12.2 the request sheet ends with an enabled Close row (CLOSE_KEY); a fresh A on it returns exactly what B returns — { state: null }, no run — whether or not the request is still live; a held A on Close returns the same state object', () => {
+    // WRONG IMPL KILLED: no Close row; a Close row that is not last or not keyed `close`; the
+    // naive Close that falls through to the activate path (A on Close with the request live would
+    // return `run: 'close'`, which the shell would try to answer, or would run the row before it,
+    // View); a Close that checks `live` (B does not: the result must not depend on it); a Close
+    // that leaves the sheet open; a held A that closes or moves.
+    expect(CLOSE_KEY, 'the shared Close key').toBe('close');
+    const keys =
+      requestSheetLayout.kind === 'list' ? requestSheetLayout.items.map((r) => r.key) : [];
+    expect(keys, 'Accept, Decline, View, then Close').toEqual([
+      'accept',
+      'decline',
+      'view',
+      CLOSE_KEY,
+    ]);
+    const sheet = openRequestSheet(REQ);
+    expect(sheet.nav.item, 'the cursor still opens on Accept').toBe('accept');
+
+    let s: NonNullable<ReturnType<typeof requestSheetStep>['state']> = sheet;
+    for (let i = 0; i < 3; i++) {
+      const r = requestSheetStep(s, nav('Down'), [REQ]);
+      expect(r.run, `Down ${i + 1} runs nothing`).toBeUndefined();
+      if (r.state === null) throw new Error(`Down ${i + 1} closed the sheet`);
+      s = r.state;
+    }
+    expect(s.nav.item, 'fixture: three Downs reach Close').toBe(CLOSE_KEY);
+
+    for (const [label, live] of [
+      ['the request is live', [REQ]],
+      ['the request is live among others', [OTHER, REQ]],
+      ['nothing is live', []],
+      ['replaced by a challenge', [CHAL]],
+    ] as const) {
+      const a = requestSheetStep(s, nav('A'), live);
+      const b = requestSheetStep(s, nav('B'), live);
+      expect(b, `${label}: B closes (the reference)`).toStrictEqual({ state: null });
+      expect(a, `${label}: A on Close is B`).toStrictEqual(b);
+      expect(a.run, `${label}: nothing runs`).toBeUndefined();
+    }
+    const held = requestSheetStep(s, nav('A', true), [REQ]);
+    expect(held.run, 'a held A on Close runs nothing').toBeUndefined();
+    expect(held.state, 'and leaves the sheet as it was').toBe(s);
+
+    // Close reached by Up from Accept closes the same way.
+    const up = requestSheetStep(sheet, nav('Up'), [REQ]);
+    expect(up.state?.nav.item, 'fixture: Up wraps to Close').toBe(CLOSE_KEY);
+    expect(
+      requestSheetStep(up.state as NonNullable<typeof up.state>, nav('A'), [REQ]),
+      'A on Close reached by Up',
+    ).toStrictEqual({ state: null });
   });
 });

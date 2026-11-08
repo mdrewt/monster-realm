@@ -3069,15 +3069,22 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     tapKey('Enter', 1010);
     frame(1015);
     expect(chip().querySelector('[role="listbox"]'), 'the picker is a nav listbox').not.toBeNull();
-    expect(chipRowTexts(), 'one row per entity x action, in candidate order').toEqual([
+    // uif-12 (UIF12.2, named intentional change): every picker / action sheet ends with a Close
+    // row, so each row list and row count in the CTL10A-* cases below gains one trailing row.
+    expect(chipRowTexts(), 'one row per entity x action, in candidate order, then Close').toEqual([
       `Talk ${EM_DASH} guide`,
       `Heal ${EM_DASH} Healer`,
+      'Close',
     ]);
     expect(
       chipOptions().map((row) => row.getAttribute('aria-selected')),
       'the first row is selected',
-    ).toEqual(['true', 'false']);
-    expect(chipOptions().map((row) => row.classList.contains('is-active'))).toEqual([true, false]);
+    ).toEqual(['true', 'false', 'false']);
+    expect(chipOptions().map((row) => row.classList.contains('is-active'))).toEqual([
+      true,
+      false,
+      false,
+    ]);
     expect(promptShown(), 'the chip holding the picker is shown').toBe(true);
     expect(H.calls, 'opening the picker sends nothing').toEqual([]);
 
@@ -3086,8 +3093,12 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(
       chipOptions().map((row) => row.getAttribute('aria-selected')),
       'Down moves to the second row',
-    ).toEqual(['false', 'true']);
-    expect(chipOptions().map((row) => row.classList.contains('is-active'))).toEqual([false, true]);
+    ).toEqual(['false', 'true', 'false']);
+    expect(chipOptions().map((row) => row.classList.contains('is-active'))).toEqual([
+      false,
+      true,
+      false,
+    ]);
     expect(H.sends, 'Down under the picker walks nowhere').toHaveLength(0);
 
     tapKey('Enter', 1030);
@@ -3103,11 +3114,11 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     // Reopened: W under it walks nowhere; B closes it.
     tapKey('Enter', 1060);
     frame(1065);
-    expect(chipOptions(), 'precondition: A reopened the picker').toHaveLength(2);
+    expect(chipOptions(), 'precondition: A reopened the picker (+ Close)').toHaveLength(3);
     tapKey('KeyW', 1070);
     frame(1075);
     expect(H.sends, 'W under the picker sends no move').toHaveLength(0);
-    expect(chipOptions(), 'and the picker is still open').toHaveLength(2);
+    expect(chipOptions(), 'and the picker is still open (+ Close)').toHaveLength(3);
     tapKey('Backspace', 1080);
     frame(1085);
     expect(chipOptions(), 'B closed the picker').toEqual([]);
@@ -3117,7 +3128,7 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     tapKey('Enter', 1090);
     tapKey('ArrowDown', 1095);
     frame(1100);
-    expect(chipOptions(), 'precondition: the picker is open again').toHaveLength(2);
+    expect(chipOptions(), 'precondition: the picker is open again (+ Close)').toHaveLength(3);
     useRule(() => []);
     settle(1110);
     tapKey('Enter', 1120);
@@ -3180,9 +3191,11 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
 
     tapKey('Enter', 1010);
     frame(1015);
-    expect(chipRowTexts(), 'A: Trade first, then Challenge').toEqual([
+    // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
+    expect(chipRowTexts(), 'A: Trade first, then Challenge, then Close').toEqual([
       `Trade ${EM_DASH} Rival`,
       `Challenge ${EM_DASH} Rival`,
+      'Close',
     ]);
     expect(H.calls, 'opening the picker sends nothing').toEqual([]);
     tapKey('Backspace', 1020);
@@ -3190,9 +3203,10 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(chipOptions(), 'B closes the picker').toEqual([]);
     tapKey('KeyF', 1030);
     frame(1035);
-    expect(chipRowTexts(), 'Y: the same two rows').toEqual([
+    expect(chipRowTexts(), 'Y: the same two rows, then Close').toEqual([
       `Trade ${EM_DASH} Rival`,
       `Challenge ${EM_DASH} Rival`,
+      'Close',
     ]);
     expect(H.calls, 'Y sends nothing').toEqual([]);
     tapKey('Backspace', 1040);
@@ -3303,7 +3317,8 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(talkCalls(), 'precondition: A acted on the memoised candidate').toBe(1);
     tapKey('KeyF', 1070);
     frame(1075);
-    expect(chipOptions(), 'precondition: Y opened the guide`s sheet').toHaveLength(1);
+    // uif-12 (UIF12.2, named intentional change): Talk, then Close.
+    expect(chipOptions(), 'precondition: Y opened the guide`s sheet').toHaveLength(2);
     tapKey('Backspace', 1080);
     frame(1085);
     expect(calls(), 'A, Y and the frames after them reuse the memo').toBe(1);
@@ -3342,7 +3357,8 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1005);
     tapKey('Enter', 1010);
     frame(1015);
-    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
+    // uif-12 (UIF12.2, named intentional change): two rows + Close.
+    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(3);
 
     // ctl-11a: B opens the Box through the main menu, so the Box is a frame above the menu (was
     // [world, boxView]); B again, its own key, acts as Start and closes both.
@@ -3399,7 +3415,11 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1005);
     tapKey('KeyF', 1010);
     frame(1015);
-    expect(chipRowTexts(), 'the guide`s sheet: Talk').toEqual([`Talk ${EM_DASH} guide`]);
+    // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
+    expect(chipRowTexts(), 'the guide`s sheet: Talk, then Close').toEqual([
+      `Talk ${EM_DASH} guide`,
+      'Close',
+    ]);
     expect(chipOptions()[0]?.getAttribute('aria-selected')).toBe('true');
     expect(H.calls, 'Y sends nothing').toEqual([]);
     expect(H.sends, 'and walks nowhere').toHaveLength(0);
@@ -3416,13 +3436,86 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1035);
     tapKey('KeyF', 1040);
     frame(1045);
-    expect(chipRowTexts(), 'only the primary candidate`s actions').toEqual([
+    expect(chipRowTexts(), 'only the primary candidate`s actions, then Close').toEqual([
       `Heal ${EM_DASH} Healer`,
+      'Close',
     ]);
     tapKey('Enter', 1050);
     expect(stack(), 'its row opens the heal frame').toEqual(HEAL_STACK);
     expect(healListIds()).toEqual(['9']);
     expect(talkArgs(), 'no second talk').toEqual([{ npcEntityId: NPC_ENTITY }]);
+  });
+
+  it('UIF12.2 a faced NPC`s Y action sheet is [Talk — guide, Close] with Close the last row (data-nav-key close); Down then Enter on Close talks to nobody and closes the sheet; the plain chip is back and movement is live after; the two-candidate picker`s Close (reached by Up from the first row) runs nothing either', async () => {
+    // WRONG IMPL KILLED: no Close row on the action sheet (a one-row sheet has no way out but B);
+    // Close painted with the raw key `close` or a literal other than the catalog's; an Enter on Close
+    // that runs the row before it (talk sent) or the cursor's first row; an Enter on Close that
+    // leaves the sheet open (the D-pad stays captured: W would not walk); a picker whose Close is not
+    // the wrap target of Up (Close would not be the last row) or that runs the heal / talk.
+    await bootReady();
+    useRule(pick(['npc', '11']));
+    seedWorld(1000);
+    frame(1005);
+    tapKey('KeyF', 1010);
+    frame(1015);
+    expect(chipRowTexts(), 'the guide`s sheet: Talk, then Close').toEqual([
+      `Talk ${EM_DASH} guide`,
+      'Close',
+    ]);
+    expect(chipOptions().at(-1)?.getAttribute('data-nav-key'), 'Close is the last row').toBe(
+      'close',
+    );
+    expect(selectedFlags(), 'the cursor starts on Talk').toEqual(['true', 'false']);
+    tapKey('ArrowDown', 1020);
+    frame(1025);
+    expect(selectedFlags(), 'Down: the cursor is on Close').toEqual(['false', 'true']);
+    tapKey('Enter', 1030);
+    expect(talkCalls(), 'Enter on Close talks to nobody').toBe(0);
+    expect(H.calls, 'and sends nothing').toEqual([]);
+    frame(1035);
+    expect(chipOptions(), 'Enter on Close closed the sheet').toEqual([]);
+    expect(stack(), 'no frame opened').toEqual(WORLD_ONLY);
+    expect(promptShown(), 'the plain chip is back').toBe(true);
+    expect(chipText()).toBe(`[Enter] Talk ${EM_DASH} guide`);
+
+    // The picker over two candidates: Up from the first row wraps to Close; Enter runs nothing.
+    useRule(pick(['npc', '11'], ['heal', '9']));
+    healLocation(9, 2, 5);
+    settle(1100);
+    frame(1105);
+    tapKey('Enter', 1110);
+    frame(1115);
+    expect(chipRowTexts(), 'precondition: the picker, then Close').toEqual([
+      `Talk ${EM_DASH} guide`,
+      `Heal ${EM_DASH} Healer`,
+      'Close',
+    ]);
+    tapKey('ArrowUp', 1120);
+    frame(1125);
+    expect(selectedFlags(), 'Up from the first row wraps to Close').toEqual([
+      'false',
+      'false',
+      'true',
+    ]);
+    tapKey('Enter', 1130);
+    expect(talkCalls(), 'Enter on the picker`s Close talks to nobody').toBe(0);
+    expect(healShown(), 'and opens no heal frame').toBe(false);
+    expect(H.calls, 'and sends nothing').toEqual([]);
+    frame(1135);
+    expect(chipOptions(), 'the picker closed').toEqual([]);
+    expect(stack()).toEqual(WORLD_ONLY);
+
+    // ANTI-VACUITY: the same sheet's Talk row does talk.
+    tapKey('KeyF', 1140);
+    frame(1145);
+    tapKey('Enter', 1150);
+    expect(talkArgs(), 'control: Enter on Talk talks to the guide').toEqual([
+      { npcEntityId: NPC_ENTITY },
+    ]);
+    frame(1155);
+    expect(H.sends, 'precondition: nothing walked so far').toHaveLength(0);
+    tapKey('KeyW', 1160);
+    expect(dirs(), 'movement is live after the sheets closed').toEqual(['North']);
   });
 
   it('CTL10A-3-BOOT-T-NOOP: KeyT does nothing at all, with an NPC or a heal location faced: no reducer, no frame, the stack stays [world], no toast; A in the same state does act', async () => {
@@ -3592,7 +3685,8 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1005);
     tapKey('Enter', 1010);
     frame(1015);
-    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
+    // uif-12 (UIF12.2, named intentional change): two rows + Close.
+    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(3);
 
     startBattle(BATTLE_ID, 1200);
     frame(1210);
@@ -3648,14 +3742,15 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
 
     tapKey('Enter', 1020);
     frame(1025);
-    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
+    // uif-12 (UIF12.2, named intentional change): two rows + Close.
+    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(3);
     expect(chipAt(), 'the picker: over its first entry').toEqual(at(5, 2));
     tapKey('ArrowDown', 1030);
     frame(1035);
     expect(
       chipOptions().map((row) => row.getAttribute('aria-selected')),
       'precondition: the cursor is on the guide`s row',
-    ).toEqual(['false', 'true']);
+    ).toEqual(['false', 'true', 'false']);
     expect(chipAt(), 'still over the first entry, not the cursor row').toEqual(at(5, 2));
   });
 
@@ -3676,7 +3771,8 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     server(1020, { x: 3, y: 6, ack: 1 }); // the step acked where it was drawn: nothing owed
     tapKey('Enter', 1030);
     frame(1035);
-    expect(chipOptions(), 'precondition: A opened the picker').toHaveLength(2);
+    // uif-12 (UIF12.2, named intentional change): two rows + Close.
+    expect(chipOptions(), 'precondition: A opened the picker').toHaveLength(3);
     for (const t of [1300, 1500, 1700]) frame(t);
     expect(H.sends.length, 'nothing walks while the picker is open').toBe(1);
 
@@ -3811,10 +3907,11 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
 
     tapKey('Enter', 1020);
     frame(1025);
+    // uif-12 (UIF12.2, named intentional change): + the trailing Close row.
     expect(chipRowTexts(), 'A: the picker lists Trade then Challenge for the faced player').toEqual(
-      [`Trade ${EM_DASH} ${FACED_NAME}`, `Challenge ${EM_DASH} ${FACED_NAME}`],
+      [`Trade ${EM_DASH} ${FACED_NAME}`, `Challenge ${EM_DASH} ${FACED_NAME}`, 'Close'],
     );
-    expect(selectedFlags(), 'the cursor is on Trade').toEqual(['true', 'false']);
+    expect(selectedFlags(), 'the cursor is on Trade').toEqual(['true', 'false', 'false']);
     expect(H.calls, 'opening the picker sends nothing').toEqual([]);
     expect(shownById('tradepropose-overlay'), 'and opens no wizard yet').toBe(false);
 
@@ -3877,10 +3974,16 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     await bootFacingWithThree();
     tapKey('Enter', 1020);
     frame(1025);
-    expect(chipRowTexts(), 'precondition: the picker is open').toHaveLength(2);
+    // uif-12 (UIF12.2, named intentional change): Trade, Challenge + Close (the size pick below
+    // has no Close row: its four-row pins are unchanged).
+    expect(chipRowTexts(), 'precondition: the picker is open').toHaveLength(3);
     tapKey('ArrowDown', 1030);
     frame(1035);
-    expect(selectedFlags(), 'precondition: the cursor is on Challenge').toEqual(['false', 'true']);
+    expect(selectedFlags(), 'precondition: the cursor is on Challenge').toEqual([
+      'false',
+      'true',
+      'false',
+    ]);
 
     tapKey('Enter', 1040); // A on Challenge: the size pick, no send
     frame(1045);
@@ -3975,9 +4078,11 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     tapKey('Enter', 1060); // A on No
     frame(1065);
     expect(H.calls, 'A on No sends nothing').toEqual([]);
+    // uif-12 (UIF12.2, named intentional change): the picker rows end with Close; the pick does not.
     expect(chipRowTexts(), 'A on No returns to the picker rows').toEqual([
       `Trade ${EM_DASH} ${FACED_NAME}`,
       `Challenge ${EM_DASH} ${FACED_NAME}`,
+      'Close',
     ]);
 
     tapKey('Enter', 1070); // the row cursor was kept on Challenge: the pick again
@@ -4003,6 +4108,7 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     expect(chipRowTexts(), 'B returns to the picker rows').toEqual([
       `Trade ${EM_DASH} ${FACED_NAME}`,
       `Challenge ${EM_DASH} ${FACED_NAME}`,
+      'Close',
     ]);
 
     tapKey('Backspace', 1090); // B on the rows
@@ -4050,7 +4156,8 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     // Control: A in the same state does open the picker, so the harness could have opened it.
     tapKey('Enter', 1130);
     frame(1135);
-    expect(chipOptions(), 'control: A opens the picker').toHaveLength(2);
+    // uif-12 (UIF12.2, named intentional change): Trade, Challenge + Close.
+    expect(chipOptions(), 'control: A opens the picker').toHaveLength(3);
   });
 
   it('CTL10B-1-BOOT-BUSY: a player in a Pending challenge (as challenger OR target, and the own player as challenger) offers only Trade: the chip reads "Trade — <name>" with no Challenge row, A runs it at once; once the challenge is Declined both players offer Trade and Challenge again (Choose)', async () => {

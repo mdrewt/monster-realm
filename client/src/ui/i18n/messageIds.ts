@@ -55,6 +55,7 @@ export type MessageId =
   // interact.* / key.* : the world interaction chip and picker (main.ts, ctl-10a).
   | 'interact.chip'
   | 'interact.choose'
+  | 'interact.chip.choose'
   | 'interact.entry'
   | 'interact.verb.talk'
   | 'interact.verb.shop'

@@ -163,8 +163,10 @@ describe('worldButton: Y (ctl-10a, CTL10A.2)', () => {
 
     // Over an open sheet every button is consumed: Y / Select / X / LB / RB / Left leave it as it
     // was, Down moves, B and Start close, A runs.
+    // uif-12 INTENTIONAL CHANGE (UIF12.3): 'Select' leaves this loop: a fresh Select over a sheet
+    // now closes it and is 'unhandled' (so Help opens over the bare world); see the UIF12.3 test.
     const sheet = y.sheet as SheetState;
-    for (const button of ['Y', 'Select', 'X', 'LB', 'RB', 'Left', 'Right'] as const) {
+    for (const button of ['Y', 'X', 'LB', 'RB', 'Left', 'Right'] as const) {
       const r = worldButton(sheet, [npc, pad], nav(button));
       expect(r.result, `${button} over the sheet`).toBe('consumed');
       expect(r.run).toBeUndefined();
@@ -469,6 +471,9 @@ describe('worldButton: Y with a request waiting (ctl-13, CTL13.3)', () => {
     const owned = worldNotices({ request: open });
     for (const button of VBUTTONS) {
       for (const repeat of [false, true]) {
+        // uif-12 INTENTIONAL CHANGE (UIF12.3): a FRESH Select over the request sheet closes it and
+        // is 'unhandled' (Help opens over the bare world); a held Select is still consumed.
+        if (button === 'Select' && !repeat) continue;
         const r = worldButton(null, [npc], nav(button, repeat), owned);
         expect(r.result, `${button}${repeat ? ' (held)' : ''} over the request sheet`).toBe(
           'consumed',
@@ -480,8 +485,10 @@ describe('worldButton: Y with a request waiting (ctl-13, CTL13.3)', () => {
     const down = worldButton(null, [], nav('Down'), owned);
     expect(down.request?.nav.item, 'Down moves the cursor to Decline').toBe('decline');
     expect(down.command).toBeUndefined();
-    const select = worldButton(null, [], nav('Select'), owned);
-    expect(select.request, 'Select leaves the sheet as it was').toEqual(open);
+    // uif-12 INTENTIONAL CHANGE (UIF12.3): was "Select leaves the sheet as it was"; a held Select
+    // still does, a fresh one closes it (covered by the UIF12.3 test).
+    const select = worldButton(null, [], nav('Select', true), owned);
+    expect(select.request, 'a held Select leaves the sheet as it was').toEqual(open);
     const yAgain = worldButton(null, [], nav('Y'), owned);
     expect(yAgain.request, 'Y over the sheet does not reopen or close it').toEqual(open);
     for (const button of ['B', 'Start'] as const) {
@@ -537,6 +544,69 @@ describe('worldButton: Y with a request waiting (ctl-13, CTL13.3)', () => {
       expect(stale.request, `${label}: closed`).toBeNull();
       expect(stale.command, `${label}: nothing sent`).toBeUndefined();
       expect(stale.view, `${label}: nothing viewed`).toBeUndefined();
+    }
+  });
+});
+
+describe('worldButton: Select over a world sheet (uif-12, UIF12.3)', () => {
+  it('UIF12.3 a fresh Select over a picker sheet, a Challenge confirm or a request sheet closes it and is unhandled (Help opens over the bare world) with no run, command or dismiss; a held Select over each is consumed and changes nothing', () => {
+    // WRONG IMPL KILLED: a Select swallowed over the sheet (Help never opens, the hint bar's Select
+    // chip lies); a Select that closes the sheet but is 'consumed' (ScreenHost never falls through
+    // to toggleHelp); a Select that leaves the sheet open ('unhandled' with the sheet kept: Help
+    // opens UNDER it); a Select that runs the cursor row, sends a command or dismisses a notice; a
+    // held Select that closes or falls through; one sheet kind (confirm / request) missed.
+    const npc = talkNpc(7n);
+    const pad = healTile(3);
+    const SIZES = [3, 2, 1] as const;
+    const picker = worldButton(null, [npc, pad], nav('A')).sheet as SheetState;
+    const only = onlinePlayer(13n, ['challenge'] as const);
+    const confirm = worldButton(null, [only], nav('A'), undefined, SIZES).sheet as SheetState;
+    const request = openRequestSheet(TRADE_REQ);
+    expect(picker, 'fixture: a picker sheet').not.toBeNull();
+    expect(confirm.confirm, 'fixture: a Challenge confirm').not.toBeNull();
+
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly call: (repeat: boolean) => ReturnType<typeof worldButton>;
+      readonly sheet: SheetState | null;
+      readonly request: ReturnType<typeof openRequestSheet> | null;
+    }> = [
+      {
+        label: 'picker',
+        call: (repeat) => worldButton(picker, [npc, pad], nav('Select', repeat)),
+        sheet: picker,
+        request: null,
+      },
+      {
+        label: 'Challenge confirm',
+        call: (repeat) => worldButton(confirm, [only], nav('Select', repeat), undefined, SIZES),
+        sheet: confirm,
+        request: null,
+      },
+      {
+        label: 'request sheet',
+        call: (repeat) => worldButton(null, [], nav('Select', repeat), worldNotices({ request })),
+        sheet: null,
+        request,
+      },
+    ];
+    for (const c of cases) {
+      const fresh = c.call(false);
+      expect(fresh.result, `${c.label}: fresh Select falls through`).toBe('unhandled');
+      expect(fresh.sheet, `${c.label}: the interact sheet is closed`).toBeNull();
+      expect(fresh.request, `${c.label}: the request sheet is closed`).toBeNull();
+      expect(fresh.run, `${c.label}: nothing runs`).toBeUndefined();
+      expect(fresh.command, `${c.label}: no command`).toBeUndefined();
+      expect(fresh.dismiss, `${c.label}: no dismiss`).toBeUndefined();
+      expect(fresh.view, `${c.label}: no view`).toBeUndefined();
+
+      const held = c.call(true);
+      expect(held.result, `${c.label}: a held Select is consumed`).toBe('consumed');
+      expect(held.sheet, `${c.label}: held leaves the sheet`).toEqual(c.sheet);
+      expect(held.request, `${c.label}: held leaves the request sheet`).toEqual(c.request);
+      expect(held.run).toBeUndefined();
+      expect(held.command).toBeUndefined();
+      expect(held.dismiss).toBeUndefined();
     }
   });
 });

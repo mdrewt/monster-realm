@@ -1141,6 +1141,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // `raising.inventory.empty` (no new key).
   'bag.empty.cue': 'Items come from the shop and from battles in the wild.',
   'bag.empty.next': 'Visit a shop, or press LB / RB to check another pocket.',
+  // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose. The hint-bar's A
+  // verb over a multi-row entity x action picker (a plain key under `interact.*`, not `chrome.*`).
+  'interact.chip.choose': 'Choose',
 };
 
 interface ParamOutputSpec {
@@ -2176,7 +2179,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // RED TODAY: catalog.en.ts still carries the 31 keys (the roster below is 525 there).
     // uif-7 (named intentional change, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-8 roster is 498 keys').toHaveLength(498);
+    // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-12 roster is 499 keys').toHaveLength(499);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3273,8 +3277,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
-    expect(Object.keys(en).length, 'the English catalog holds exactly 498 keys').toBe(498);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(498);
+    // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 499 keys').toBe(499);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(499);
   });
 });
 
@@ -3387,8 +3392,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
-    expect(Object.keys(en).length, 'the English catalog holds exactly 498 keys').toBe(498);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(498);
+    // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 499 keys').toBe(499);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(499);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3679,9 +3685,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // NAMED INTENTIONAL CHANGE (bt-17, BT17.1): 525 → 494, -31 1v1 battle.*.
     // NAMED INTENTIONAL CHANGE (uif-7, UIF7.2): 494 → 496, +kit.sheet.close, +kit.sheet.back.
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
-    expect(Object.keys(en).length, 'the English catalog holds exactly 498 keys').toBe(498);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(498);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(498);
+    // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 499 keys').toBe(499);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(499);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(499);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4015,5 +4022,31 @@ describe('uif-7: the sheet Close and Back rows in both catalogs', () => {
     // The hint-bar verbs keep their own ids and text.
     expect(en['chrome.chip.close']).toBe('Close');
     expect(en['chrome.chip.back']).toBe('Back');
+  });
+});
+
+// =============================================================================
+// uif-12 (UIF12.3): the hint bar's Choose verb over a multi-row picker, in BOTH catalogs. Every
+// expected byte is typed here. The key lives under `interact.*`, not `chrome.*` (resolver.test.ts
+// pins the exact `chrome.*` plain-value snapshot).
+// =============================================================================
+
+describe('uif-12: the picker Choose verb in both catalogs', () => {
+  it('UIF12.3 interact.chip.choose reads Choose / Choisir as a plain string, French different from English, different from the OK verb, and in the pinned roster', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: the picker's A chip
+    // blanks); a French value left as the English copy; a closure where the model calls t(); the
+    // key missing from the pinned roster; the verb reusing `chrome.chip.ok` (A would read OK over a
+    // picker); and the `interact.choose` chip closure (`[key] Choose...`) edited instead.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const KEY = 'interact.chip.choose';
+    expect(en[KEY], 'en').toBe('Choose');
+    expect(fr[KEY], 'fr').toBe('Choisir');
+    expect(typeof en[KEY], 'en is a plain string').toBe('string');
+    expect(typeof fr[KEY], 'fr is a plain string').toBe('string');
+    expect(fr[KEY], 'a translation, not the English copy').not.toBe(en[KEY]);
+    expect(en[KEY], 'not the OK verb').not.toBe(en['chrome.chip.ok']);
+    expect(EXPECTED_PLAIN[KEY], 'the pinned roster lists it as a plain key').toBe('Choose');
+    expect(EXPECTED_KEYS.includes(KEY), 'and in the roster').toBe(true);
   });
 });

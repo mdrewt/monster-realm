@@ -6,7 +6,7 @@
 // Yes-default confirm, re-shaped by bt-15 BT15.1), and a confirmed pick leaves as a SIZED `challenge`
 // Command, never as a run. Notices (ctl-13): with no target, Y opens the oldest pending request's
 // Accept / Decline / View sheet, and B dismisses the top notice; the shell runs the returned command,
-// dismissal or view.
+// dismissal or view. Over any sheet, Select closes it and is left to the base (Help, uif-12).
 import {
   askConfirm,
   openSheet,
@@ -74,6 +74,13 @@ export function worldButton(
   n?: WorldNotices,
   sizes: readonly number[] = [],
 ): WorldStep {
+  // Select is Help everywhere (uif-12, UIF12.3): over any world sheet it closes the sheet and falls
+  // to the base, so Help opens over the bare world and never under the sheet. A held one does nothing.
+  if (btn.button === 'Select' && (sheet !== null || n?.request != null)) {
+    return btn.repeat
+      ? { sheet, request: n?.request ?? null, result: 'consumed' }
+      : { sheet: null, request: null, result: 'unhandled' };
+  }
   // An open request sheet owns every button.
   if (n?.request != null) {
     const step = requestSheetStep(n.request, btn, n.pending);
