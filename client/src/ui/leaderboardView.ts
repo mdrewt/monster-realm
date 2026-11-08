@@ -150,15 +150,24 @@ export class LeaderboardView {
       this.#overlay.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
     }
     this.#listEl.hidden = p?.tab === 'players';
+    // Any Rankings paint, an empty board included, takes the shared cue and the zeroed list box.
+    const rankings = p?.tab === 'rankings';
+    this.#listEl.classList.toggle(SCROLL_CLASS, rankings);
+    if (this.#listEl.classList.length === 0) this.#listEl.removeAttribute('class');
+    if (rankings) {
+      this.#listEl.style.margin = '0';
+      this.#listEl.style.padding = '0';
+    } else {
+      this.#listEl.style.removeProperty('margin');
+      this.#listEl.style.removeProperty('padding');
+      if (this.#listEl.style.length === 0) this.#listEl.removeAttribute('style');
+    }
     if (p?.tab === 'rankings' && ranked.length > 0) {
       const cursor = ranked.find((li) => li.dataset.identity === p.cursor) ?? ranked[0];
       this.#listEl.setAttribute('role', 'listbox');
       this.#listEl.setAttribute('tabindex', '0');
       this.#listEl.setAttribute('aria-labelledby', navTabId(SOCIAL_FRAME_ID, 'rankings'));
       this.#listEl.setAttribute('aria-readonly', 'true');
-      this.#listEl.classList.add(SCROLL_CLASS);
-      this.#listEl.style.margin = '0';
-      this.#listEl.style.padding = '0';
       for (const li of ranked) {
         const selected = li === cursor;
         li.id = navItemId(SOCIAL_FRAME_ID, 'rankings', li.dataset.identity ?? '');
@@ -179,11 +188,6 @@ export class LeaderboardView {
     } else {
       this.#scrolledTo = null;
       for (const name of LIST_MARKS) this.#listEl.removeAttribute(name);
-      this.#listEl.classList.remove(SCROLL_CLASS);
-      if (this.#listEl.classList.length === 0) this.#listEl.removeAttribute('class');
-      this.#listEl.style.removeProperty('margin');
-      this.#listEl.style.removeProperty('padding');
-      if (this.#listEl.style.length === 0) this.#listEl.removeAttribute('style');
       for (const li of rows) for (const name of ROW_MARKS) li.removeAttribute(name);
     }
     if (p?.tab === 'players') this.#paintPlayers(p);

@@ -91,16 +91,12 @@ function socialPart(parent: HTMLElement, id: string, tag: 'div' | 'p'): HTMLElem
   return el;
 }
 
-/** The chrome's TabBar: the one already its first child, else a new one put first (a stale strip
- *  outside a bar goes, so `#social-tabs` stays unique). */
+/** The chrome's TabBar: found again by its strip, else created as the chrome's first child (the
+ *  first paint makes it before the sheet and the prompt, and nothing else writes the chrome). */
 function socialTabBar(chrome: HTMLElement): TabBar {
   const strip = chrome.querySelector<HTMLElement>('#social-tabs');
   const root = strip?.parentElement;
-  if (strip && root?.parentElement === chrome && root.classList.contains('mr-tabbar')) {
-    if (chrome.firstElementChild !== root) chrome.prepend(root);
-    return { root, strip };
-  }
-  strip?.remove();
+  if (strip && root) return { root, strip };
   const bar = createTabBar(document, { id: 'social-tabs' });
   chrome.prepend(bar.root);
   return bar;
@@ -271,7 +267,8 @@ export class TradeView {
   /** Write the status line and apply the kept Social paint to this root. On the Players tab the
    *  status reads the placeholder and the sides and actions are hidden; the status stays shown
    *  (it is the dialog's focus anchor). The trade row's cursor is marked on the status by class AND aria-current, never
-   *  colour alone. With no paint the root is exactly the legacy trade overlay. */
+   *  colour alone. The Trades tab keeps this shape in uif-9: its row cards come with M-trade-sessions
+   *  `ts-3`, which rebuilds the tab (UIF9.4). With no paint the root is exactly the legacy trade overlay. */
   #applySocial(): void {
     const p = this.#social;
     const players = p?.tab === 'players';

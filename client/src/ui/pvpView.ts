@@ -116,7 +116,8 @@ export class PvpView {
   }
 
   /** The Social screen's cursor on a challenge row (ctl-8d): marks the container the row shows
-   *  in, by class AND aria-current, never colour alone. The containers outlive every refresh
+   *  in with `is-active` AND aria-current, never colour alone (every shown row already wears
+   *  `mr-nav-item`, uif-9). The containers outlive every refresh
    *  (only their children are rebuilt), and the cursor is re-applied after each; `hide()` clears it. */
   paintCursor(row: 'incoming' | 'outgoing' | null): void {
     this.#cursor = row;

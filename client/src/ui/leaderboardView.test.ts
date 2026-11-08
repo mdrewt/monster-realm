@@ -2150,6 +2150,64 @@ describe('LeaderboardView — Rankings on the shared scroll rule and row spacing
     view.show();
     expect(reset(), 'the re-open edge drops it').toEqual({ margin: '', padding: '' });
   });
+
+  it('UIF9.3 an EMPTY-board Rankings paint also zeroes the list margin and padding and wears mr-scroll, with none of the listbox marks; a Players paint, hide() and the re-open edge remove them while other inline styles and classes survive', () => {
+    // WRONG IMPL KILLED: a reset (and mr-scroll) gated on ranked rows, so the empty board's single
+    // "No ranked players yet" line keeps the UA `<ul>` margin 14px 0 and padding-left 40px; a drop
+    // that is skipped on the empty branch; marks that overwrite the other inline style or class.
+    const { overlay, list } = mountLeaderboardOverlay();
+    list.className = 'mr-nav-list';
+    const view = new LeaderboardView();
+    const reset = (): { margin: string; padding: string } => ({
+      margin: list.style.getPropertyValue('margin'),
+      padding: list.style.getPropertyValue('padding'),
+    });
+    const isReset = (): boolean => zero(reset().margin) && zero(reset().padding);
+    const CLEAR = { margin: '', padding: '' };
+
+    view.show();
+    view.render(makeVm([]));
+    expect(rowsOf()[0]?.textContent, 'precondition: the empty board line').toBe(
+      'No ranked players yet',
+    );
+    list.style.setProperty('letter-spacing', '1px');
+
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isReset(), `empty Rankings: margin and padding 0 (${JSON.stringify(reset())})`).toBe(
+      true,
+    );
+    expect(list.classList.contains('mr-scroll'), 'empty Rankings: mr-scroll').toBe(true);
+    expect(list.classList.contains('mr-nav-list'), 'the list keeps its own class').toBe(true);
+    expect(list.getAttribute('role'), 'no listbox role').toBeNull();
+    expect(list.getAttribute('tabindex'), 'no tab stop').toBeNull();
+    expect(list.getAttribute('aria-readonly'), 'no aria-readonly').toBeNull();
+    view.render(makeVm([]));
+    expect(isReset(), 'a re-render of the empty board under the kept paint keeps it').toBe(true);
+
+    view.paintSocial(playersPaint(NOT_RANKED, 'bb'));
+    expect(reset(), 'a Players paint drops the reset').toEqual(CLEAR);
+    expect(list.classList.contains('mr-scroll'), 'a Players paint drops mr-scroll').toBe(false);
+    expect(list.style.getPropertyValue('letter-spacing'), 'the other inline style survives').toBe(
+      '1px',
+    );
+    expect(list.className, 'the list`s own class survives, exactly').toBe('mr-nav-list');
+
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isReset(), 'empty Rankings again').toBe(true);
+    view.hide();
+    expect(reset(), 'hide() drops the reset').toEqual(CLEAR);
+    expect(list.classList.contains('mr-scroll'), 'hide() drops mr-scroll').toBe(false);
+
+    view.show();
+    view.render(makeVm([]));
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isReset(), 'empty Rankings after a re-open').toBe(true);
+    overlay.style.display = 'none';
+    view.show();
+    expect(reset(), 'the re-open edge drops the reset').toEqual(CLEAR);
+    expect(list.classList.contains('mr-scroll'), 'the re-open edge drops mr-scroll').toBe(false);
+    expect(list.style.getPropertyValue('letter-spacing'), 'and keeps the other style').toBe('1px');
+  });
 });
 
 describe('LeaderboardView — the Rankings cursor row scrolls into view (qf-16, QF16.2)', () => {
