@@ -24,16 +24,20 @@ import type {
 } from '../net/store';
 import {
   actionLayout,
+  BAG_BACK_KEY,
   type BagItemVm,
   type BagVm,
   bagLayout,
   bagMonsters,
   buildBagVm,
   findItem,
+  infoLayout,
+  isBagBackKey,
   type Pocket,
   pickerLayout,
   pocketOf,
 } from './bagModel';
+import { monsterKey } from './monstersModel';
 import type { ItemLayout } from './nav';
 
 const ME = 'ab'.repeat(32);
@@ -308,33 +312,42 @@ describe('actionLayout (ctl-8f, CTL8F.2)', () => {
     // Use row on a shard (a dead row on every item), a missing Info, Feed on a non-food, an order
     // other than feed, use, info, a Feed enabled with nobody to feed (A would open an empty
     // picker), a noMonsters reason on Use, and a Feed row that disappears instead of disabling.
+    // uif-8: every layout below now ENDS with an enabled `close` row (the ContextSheet's last Close
+    // row, UIF8.2); the rows before it are unchanged.
     const enabled = true;
+    const close = ['close', enabled, undefined] as const;
     expect(rows(actionLayout(itemOf(food(902)), true)), 'food, with monsters').toEqual([
       ['feed', enabled, undefined],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(rows(actionLayout(itemOf(cure(903)), true)), 'cure').toEqual([
       ['use', false, 'battleOnly'],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(rows(actionLayout(itemOf(bait(904)), true)), 'bait').toEqual([
       ['use', false, 'battleOnly'],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(rows(actionLayout(itemOf(plain(905)), true)), 'a shard').toEqual([
       ['info', enabled, undefined],
+      close,
     ]);
 
     expect(rows(actionLayout(itemOf(food(902)), false)), 'food, no monsters').toEqual([
       ['feed', false, 'noMonsters'],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(rows(actionLayout(itemOf(cure(903)), false)), 'no monsters never touches Use').toEqual([
       ['use', false, 'battleOnly'],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(rows(actionLayout(itemOf(plain(905)), false)), 'no monsters never touches Info').toEqual(
-      [['info', enabled, undefined]],
+      [['info', enabled, undefined], close],
     );
 
     const both = def(906, { trainStat: 'hp', cureStatus: 'Sleep' });
@@ -342,13 +355,50 @@ describe('actionLayout (ctl-8f, CTL8F.2)', () => {
       ['feed', enabled, undefined],
       ['use', false, 'battleOnly'],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(rows(actionLayout(itemOf(both), false)), 'food and cure, no monsters').toEqual([
       ['feed', false, 'noMonsters'],
       ['use', false, 'battleOnly'],
       ['info', enabled, undefined],
+      close,
     ]);
     expect(actionLayout(itemOf(food(902)), true).kind, 'a list').toBe('list');
+  });
+
+  it('UIF8.2 the item sheet layout ends with exactly one enabled close row, last, for food, battle and other items, with and without monsters', () => {
+    // WRONG IMPL KILLED: no Close row at all (the sheet has no last row whose A acts like B); a
+    // Close row placed first or before Info (A on the opening row would close); a Close that is
+    // disabled (A would be refused with a reason); a Close added only for food, or only when there
+    // are monsters; two Close rows.
+    for (const [label, d] of [
+      ['food', food(902)],
+      ['cure', cure(903)],
+      ['bait', bait(904)],
+      ['shard', plain(905)],
+      ['food and cure', def(906, { trainStat: 'hp', cureStatus: 'Sleep' })],
+    ] as const) {
+      const item = (() => {
+        const vm = buildBagVm([inv(1, d.id, 1)], defsOf(d), []);
+        const found = findItem(vm, d.id);
+        if (found === undefined) throw new Error('fixture: no item');
+        return found;
+      })();
+      for (const hasMonsters of [true, false]) {
+        const items = actionLayout(item, hasMonsters).items;
+        const where = `${label}, monsters=${hasMonsters}`;
+        expect(items.at(-1), `${where}: the last row is close`).toEqual({
+          key: 'close',
+          enabled: true,
+        });
+        expect(
+          items.filter((r) => r.key === 'close'),
+          `${where}: exactly one close row`,
+        ).toHaveLength(1);
+        expect(items.length, `${where}: close follows at least one real action`).toBeGreaterThan(1);
+        expect(items[0]?.key, `${where}: the first row is never close`).not.toBe('close');
+      }
+    }
   });
 });
 
@@ -384,9 +434,11 @@ describe('the Bag layouts, findItem and bagMonsters (ctl-8f)', () => {
     // only searches the first pocket or matches the key's string against a number.
     const picker = pickerLayout(vm);
     expect(picker.kind).toBe('list');
+    // uif-8: the picker now ENDS with an enabled `back` row after every monster (UIF8.2).
     expect(picker.items.map((i) => [i.key, i.enabled])).toEqual([
       ['11', true],
       ['12', true],
+      [BAG_BACK_KEY, true],
     ]);
     expect(findItem(vm, 902)?.name).toBe('Food 902');
     expect(findItem(vm, 903)?.name, 'the third pocket').toBe('Cure 903');
@@ -516,10 +568,49 @@ describe('the Bag layouts, findItem and bagMonsters (ctl-8f)', () => {
       'the view model keeps them',
     ).toEqual(keys);
     const picker = pickerLayout(vm);
+    // uif-8: the nine monsters, then the one Back row (UIF8.2): ten rows in all.
     expect(
       picker.items.map((i) => i.key),
-      'the picker lists them',
-    ).toEqual(keys);
-    expect(picker.items).toHaveLength(9);
+      'the picker lists them, then Back',
+    ).toEqual([...keys, BAG_BACK_KEY]);
+    expect(picker.items).toHaveLength(10);
+  });
+
+  it('UIF8.2 the picker layout ends with one enabled back row after every monster (also with none), the info layout is exactly one back row, and no monster key can be taken for the back key', () => {
+    // WRONG IMPL KILLED: a picker with no Back row (the sheet has no last row whose A acts like B);
+    // a Back row first or between monsters; a disabled Back; a Back key that a monster key can equal
+    // (A on that monster would back out instead of feeding); an info page with no row (the detail
+    // sheet has nothing to press) or with two; an isBagBackKey that matches every key or none.
+    const monsters = [
+      { key: monsterKey(11n), monsterId: 11n, name: 'Kip' },
+      { key: monsterKey(12n), monsterId: 12n, name: 'Ember' },
+    ];
+    const withMonsters = buildBagVm([inv(1, 902, 1)], defsOf(food(902)), monsters);
+    expect(pickerLayout(withMonsters).items, 'monsters, then one enabled back row').toEqual([
+      { key: monsterKey(11n), enabled: true },
+      { key: monsterKey(12n), enabled: true },
+      { key: BAG_BACK_KEY, enabled: true },
+    ]);
+    const nobody = buildBagVm([inv(1, 902, 1)], defsOf(food(902)), []);
+    expect(pickerLayout(nobody).items, 'with no monster: Back alone').toEqual([
+      { key: BAG_BACK_KEY, enabled: true },
+    ]);
+
+    // The plan names `infoLayout` without saying whether it is a value or a zero-arg function: both
+    // shapes are accepted, the layout read is the same.
+    const rawInfo: unknown = infoLayout;
+    const info = (typeof rawInfo === 'function' ? rawInfo() : rawInfo) as ItemLayout;
+    expect(info.kind, 'a list').toBe('list');
+    expect(info.items, 'exactly one enabled back row').toEqual([
+      { key: BAG_BACK_KEY, enabled: true },
+    ]);
+
+    expect(isBagBackKey(BAG_BACK_KEY)).toBe(true);
+    for (const other of ['11', 'feed', 'info', 'close', '', 'Back']) {
+      expect(isBagBackKey(other), `"${other}" is not the back key`).toBe(false);
+    }
+    for (const id of [0n, 1n, 11n, 255n, 9_007_199_254_740_993n]) {
+      expect(isBagBackKey(monsterKey(id)), `monster ${id}'s key is never the back key`).toBe(false);
+    }
   });
 });

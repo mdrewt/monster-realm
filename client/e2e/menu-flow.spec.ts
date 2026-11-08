@@ -357,14 +357,18 @@ test.describe
       );
 
       await pressButton(page, 'A');
-      await expect(page.locator('#bag-picker-title'), 'A on Feed opens the picker').toHaveText(
+      // uif-8 (named intentional change, UIF8.2): the picker is the Bag's ContextSheet (heading
+      // `#bagsheet-sheet-title`, rows under `#bag-sheet`), no longer `#bag-picker-title` /
+      // `#bag-picker`, and it ends with a Back row, so it lists the one monster THEN Back.
+      await expect(page.locator('#bagsheet-sheet-title'), 'A on Feed opens the picker').toHaveText(
         t('bag.picker.title'),
       );
-      const picker = page.locator('#bag-picker [role="option"]');
+      const picker = page.locator('#bag-sheet [role="option"]');
       await expect(
         picker,
-        'the picker lists the one monster (a second cannot be seeded)',
-      ).toHaveCount(1);
+        'the picker lists the one monster (a second cannot be seeded), then Back',
+      ).toHaveCount(2);
+      await expect(picker.last(), 'the last row is Back').toHaveText(t('kit.sheet.back'));
       await expect(picker.first(), 'by its name').toHaveText(name);
       await expect(picker.first(), 'with the cursor on it').toHaveAttribute(
         'aria-selected',
@@ -390,7 +394,9 @@ test.describe
         tf('box.feedback.fed', { name }),
       );
       await expect(fed).toHaveAttribute('data-feedback', 'ok');
-      await expect(page.locator('#bag-picker-title'), 'the picker closed').toBeHidden();
+      // uif-8: the picker is the ContextSheet; it closes with the send, heading and all.
+      await expect(page.locator('#bagsheet-sheet-title'), 'the picker closed').toBeHidden();
+      await expect(page.locator('#bag-sheet'), 'and the sheet with it').toBeHidden();
       await expect(
         berryRow,
         'the list shows the new count, the cursor still on the berry',

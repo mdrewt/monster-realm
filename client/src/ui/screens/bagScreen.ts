@@ -7,7 +7,8 @@
 // LB/RB switch pockets and each pocket keeps its cursor. A on an item opens its sheet: Feed (food;
 // disabled with no monster), Use (battle items: always refused here, the reason says where they are
 // used) and Info. Feed opens the monster picker; A on a monster sends `train` at once (no confirm),
-// closes the picker and leaves the cursor on the item. The "Fed {name}" line shows only once a
+// closes the picker and leaves the cursor on the item. uif-8: the sheet ends with Close and the
+// picker with Back, and A on either does exactly what B does there. The "Fed {name}" line shows only once a
 // batch shows that item's count below what it was at the press (a vanished item counts 0), and the
 // next button ends it with any feed still pending, so a refused feed never claims success. B backs
 // out one level; B at the list pops the frame.
@@ -22,6 +23,7 @@ import {
   bagMonsters,
   buildBagVm,
   findItem,
+  isBagBackKey,
   itemActions,
   listNav,
   pickerLayout,
@@ -117,7 +119,10 @@ function settle(vm: BagVm, state: BagScreenState): BagScreenState {
     const first = vm.monsters[0];
     if (first === undefined) {
       next = { ...next, phase: { kind: 'sheet', itemId: phase.itemId, action: 'feed' } };
-    } else if (phase.monster === null || !vm.monsters.some((m) => m.key === phase.monster)) {
+    } else if (
+      phase.monster === null ||
+      (!isBagBackKey(phase.monster) && !vm.monsters.some((m) => m.key === phase.monster))
+    ) {
       next = { ...next, phase: { ...phase, monster: first.key } };
     }
   }
@@ -207,6 +212,7 @@ export const bagScreen: ScreenAdapter<BagVm, BagScreenState, RaisingView> = {
           return done('consumed', { ...base, status });
         }
         if (outcome.kind === 'activate') {
+          if (outcome.key === 'close') return to(LIST);
           if (outcome.key === 'info') return to({ kind: 'info', itemId: item.itemId });
           if (outcome.key !== 'feed') return done('consumed');
           return to({ kind: 'picker', itemId: item.itemId, monster: vm.monsters[0]?.key ?? null });
@@ -221,10 +227,12 @@ export const bagScreen: ScreenAdapter<BagVm, BagScreenState, RaisingView> = {
         }
         return done('consumed');
       case 'picker': {
-        if (btn.button === 'B') return to({ kind: 'sheet', itemId: phase.itemId, action: 'feed' });
+        const back = () => to({ kind: 'sheet', itemId: phase.itemId, action: 'feed' });
+        if (btn.button === 'B') return back();
         const step = navStep(pickerLayout(vm), listNav(phase.monster), btn);
         if (step.outcome.kind === 'activate') {
           const key = step.outcome.key;
+          if (isBagBackKey(key)) return back();
           const monster = vm.monsters.find((m) => m.key === key);
           const item = findItem(vm, phase.itemId);
           if (monster === undefined || item === undefined) return done('consumed');

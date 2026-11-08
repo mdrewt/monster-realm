@@ -282,8 +282,10 @@ function testEl(testId: string): HTMLElement {
 }
 
 /** The raising root is on screen: the title's parent is the root and its inline display is not none. */
+// uif-8: the title now sits in a header row inside the root (as boxView does), so the root is the
+// title's nearest `.mr-frame`, not its parent.
 const raisingShown = (): boolean =>
-  (testEl('raising-title').parentElement as HTMLElement).style.display !== 'none';
+  (testEl('raising-title').closest('.mr-frame') as HTMLElement).style.display !== 'none';
 
 /** The whole context stack through the read-only `__game()` DEV hook, as base-first frame names. */
 const stackNames = (): string[] =>
@@ -318,7 +320,12 @@ function expectBaitPainted(label: string): void {
     ['food', 'Food', 'false'],
     ['medicine', 'Medicine', 'false'],
   ]);
-  expect(el('bag-tabs').style.display, `${label}: the tabs are shown`).not.toBe('none');
+  // uif-8: the tabs are the TabBar (its row hides through `hidden`, not an inline display), and the
+  // strip with id `bag-tabs` lives inside that row.
+  expect(
+    (el('bag-tabs').closest('.mr-tabbar') as HTMLElement | null)?.hidden,
+    `${label}: the tab bar row is shown`,
+  ).toBe(false);
   expect(el('bag-list').style.display, `${label}: the list is shown`).not.toBe('none');
   expect(rowTexts(), `${label}: Bait's one item`).toEqual([['1', 'Lure Berry (x4)']]);
   expect(
@@ -326,7 +333,8 @@ function expectBaitPainted(label: string): void {
     `${label}: with the cursor on it`,
   ).toEqual([true]);
   expect(el('raising-inventory').style.display, `${label}: the legacy grid is hidden`).toBe('none');
-  expect(el('bag-sheet').style.display, `${label}: no sheet on open`).toBe('none');
+  // uif-8: the sheet is the kit's ContextSheet, which hides through `hidden`, not an inline display.
+  expect((el('bag-sheet') as HTMLElement).hidden, `${label}: no sheet on open`).toBe(true);
 }
 
 describe('the Bag booted through main.ts over the real view and adapter table (ctl-8f)', {

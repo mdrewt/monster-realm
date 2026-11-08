@@ -465,31 +465,41 @@ describe('bagScreen — the item sheet (ctl-8f, CTL8F.2)', () => {
 
     const actionOf = (s: BagScreenState): string | null =>
       s.phase.kind === 'sheet' ? s.phase.action : null;
-    // Food [feed, info]: Down, Down wrap; Up wraps from the top.
+    // Food [feed, info, close]: Down x3 wraps; Up wraps from the top.
+    // uif-8: the sheet gained a last Close row, so the wrap point moved from Info to Close.
     const glow = walk(vm, TO.glowSheet);
     expect(actionOf(glow)).toBe('feed');
     expect(actionOf(swallowed(vm, glow, ['Down']))).toBe('info');
-    expect(actionOf(swallowed(vm, glow, ['Down', 'Down'])), 'a fresh Down wraps').toBe('feed');
-    expect(actionOf(swallowed(vm, glow, ['Up'])), 'a fresh Up wraps').toBe('info');
+    expect(actionOf(swallowed(vm, glow, ['Down', 'Down'])), 'Down twice reaches Close').toBe(
+      'close',
+    );
+    expect(actionOf(swallowed(vm, glow, ['Down', 'Down', 'Down'])), 'a fresh Down wraps').toBe(
+      'feed',
+    );
+    expect(actionOf(swallowed(vm, glow, ['Up'])), 'a fresh Up wraps to Close').toBe('close');
     expect(actionOf(swallowed(vm, glow, [rep('Up')])), 'a repeat Up at the top stays').toBe('feed');
     expect(
-      actionOf(swallowed(vm, glow, ['Down', rep('Down')])),
-      'a repeat Down at the end stays',
-    ).toBe('info');
+      actionOf(swallowed(vm, glow, ['Down', 'Down', rep('Down')])),
+      'a repeat Down at the end (Close) stays',
+    ).toBe('close');
     expect(swallowed(vm, glow, ['Down']).phase, 'the sheet stays on its item').toMatchObject({
       kind: 'sheet',
       itemId: GLOW,
     });
-    // Bait [use (disabled), info]: the disabled row is reachable.
+    // Bait [use (disabled), info, close]: the disabled row is reachable.
     const lure = walk(vm, TO.lureSheet);
     expect(actionOf(lure)).toBe('use');
     expect(actionOf(swallowed(vm, lure, ['Down'])), 'Use is reachable and Down leaves it').toBe(
       'info',
     );
-    expect(actionOf(swallowed(vm, lure, ['Up'])), 'Up from Use wraps to Info').toBe('info');
-    // A shard has Info only: every walk stays on it.
+    // uif-8: Up from Use wraps to the new last row, Close (it was Info).
+    expect(actionOf(swallowed(vm, lure, ['Up'])), 'Up from Use wraps to Close').toBe('close');
+    // A shard has Info and Close: it opens on Info (never Close) and Down reaches Close.
+    // uif-8: it had Info alone, so every walk used to stay on it.
     const shard = walk(vm, TO.shardSheet);
-    expect(actionOf(swallowed(vm, shard, ['Down', 'Up', rep('Down')]))).toBe('info');
+    expect(actionOf(shard), 'a shard still opens on Info, not Close').toBe('info');
+    expect(actionOf(swallowed(vm, shard, ['Down']))).toBe('close');
+    expect(actionOf(swallowed(vm, shard, ['Down', 'Up', rep('Down')]))).toBe('close');
 
     // A repeat A and an empty pocket open nothing; a repeat A in the sheet opens nothing either.
     const held = press(vm, fresh(vm), rep('A'));
@@ -533,21 +543,27 @@ describe('bagScreen — the item sheet (ctl-8f, CTL8F.2)', () => {
       s = swallowed(vm, s, ['Down']);
       seen.push(monsterOf(s));
     }
-    expect(seen, 'party in slot order, then storage; Down wraps').toEqual([
+    // uif-8: the picker gained a last Back row, so the fifth step lands on Back (it wrapped to the
+    // first monster) and a fresh Up from the top wraps to Back (it was the last monster).
+    expect(seen, 'party in slot order, then storage, then Back').toEqual([
       '11',
       '12',
       '21',
       '22',
-      '11',
+      'back',
     ]);
-    expect(monsterOf(swallowed(vm, picker, ['Up'])), 'a fresh Up wraps').toBe('22');
+    expect(
+      monsterOf(swallowed(vm, picker, ['Down', 'Down', 'Down', 'Down', 'Down'])),
+      'wraps',
+    ).toBe('11');
+    expect(monsterOf(swallowed(vm, picker, ['Up'])), 'a fresh Up wraps to Back').toBe('back');
     expect(monsterOf(swallowed(vm, picker, [rep('Up')])), 'a repeat Up at the top stays').toBe(
       '11',
     );
     expect(
-      monsterOf(swallowed(vm, picker, ['Down', 'Down', 'Down', rep('Down')])),
-      'a repeat Down at the end stays',
-    ).toBe('22');
+      monsterOf(swallowed(vm, picker, ['Down', 'Down', 'Down', 'Down', rep('Down')])),
+      'a repeat Down at the end (Back) stays',
+    ).toBe('back');
 
     // A on the second monster of Glow Berry, then on the third monster of Power Root.
     const sendGlow = press(vm, swallowed(vm, picker, ['Down']), 'A');
@@ -1071,5 +1087,197 @@ describe('bagScreen — expiry, stale presses and the picker under a batch (ctl-
     const refused = press(lonely, closed, 'A');
     expect(refused.result, 'no command').toBe('consumed');
     expect(refused.state.status).toEqual({ kind: 'noMonsters' });
+  });
+});
+
+// =============================================================================
+// uif-8 (UIF8.2): the item sheet and the Feed picker end with a Close / Back row whose A acts like
+// B. Every case compares the WHOLE resulting state and result of the A-path with the B-path
+// (toEqual), so a near-miss (a cursor left elsewhere, a status left set, a different phase) fails.
+// =============================================================================
+describe('bagScreen — UIF8.2 the sheet Close row and the picker Back row', () => {
+  const vm0 = vmOf(world());
+  const sameStep = (a: ButtonStep<BagScreenState>, b: ButtonStep<BagScreenState>, why: string) => {
+    expect(a.result, `${why}: the same result`).toEqual(b.result);
+    expect(a.state, `${why}: the same whole state`).toEqual(b.state);
+  };
+
+  it('UIF8.2 in the item sheet, Down to Close then A returns to the list exactly as B does: the same state and the same consumed result, the cursor still on that item, for a food, a bait, a cure and a shard', () => {
+    // WRONG IMPL KILLED: a Close row whose A does nothing (swallowed, sheet stays); one that pops the
+    // frame (`{kind:'pop'}`) instead of closing the sheet; one that resets the list cursor to the
+    // first item or first pocket; one that leaves a stale status (the Use refusal line) set; a Close
+    // that is reachable only by Up-wrap (not by Down walking the rows).
+    const cases: ReadonlyArray<readonly [string, readonly Input[], readonly Input[], number]> = [
+      ['a food', TO.glowSheet, ['Down', 'Down'], GLOW],
+      ['the second food', TO.rootSheet, ['Down', 'Down'], ROOT],
+      ['a bait', TO.lureSheet, ['Down', 'Down'], LURE],
+      ['a cure', TO.antidoteSheet, ['Down', 'Down'], ANTIDOTE],
+      ['a shard', TO.shardSheet, ['Down'], SHARD],
+    ];
+    for (const [name, opening, toClose, itemId] of cases) {
+      const sheet = walk(vm0, opening);
+      const onClose = swallowed(vm0, sheet, toClose);
+      expect(onClose.phase, `${name}: the sheet is open on Close`).toEqual({
+        kind: 'sheet',
+        itemId,
+        action: 'close',
+      });
+      const viaA = press(vm0, onClose, 'A');
+      const viaB = press(vm0, sheet, 'B');
+      expect(viaA.result, `${name}: A on Close is consumed (not a pop)`).toBe('consumed');
+      expect(viaA.state.phase, `${name}: back to the list`).toEqual({ kind: 'list' });
+      expect(where(viaA.state), `${name}: the cursor is still on the item`).toEqual(
+        where(viaB.state),
+      );
+      expect(viaA.state.nav.item, `${name}: on that item`).toBe(String(itemId));
+      sameStep(viaA, viaB, `${name}: A on Close == B`);
+      expect(paintOf(vm0, viaA.state).phase, `${name}: painted as the list`).toEqual({
+        kind: 'list',
+      });
+    }
+
+    // A held A on Close closes nothing (a repeat never acts), and Close is reachable by Up-wrap too.
+    const lure = walk(vm0, TO.lureSheet);
+    const closeViaUp = swallowed(vm0, lure, ['Up']);
+    expect(closeViaUp.phase, 'Up from the first row wraps onto Close').toMatchObject({
+      kind: 'sheet',
+      action: 'close',
+    });
+    const held = press(vm0, closeViaUp, rep('A'));
+    expect(held.state.phase, 'a repeat A on Close leaves the sheet open').toEqual(closeViaUp.phase);
+    expect(typeof held.result, 'and answers no command').toBe('string');
+
+    // A pending refusal status is cleared by the Close, as by B.
+    const refusedUse = press(vm0, lure, 'A').state;
+    expect(refusedUse.status, 'precondition: the battleOnly line is set').toEqual({
+      kind: 'battleOnly',
+    });
+    const onCloseWithStatus = swallowed(vm0, refusedUse, ['Up']);
+    const closed = press(vm0, onCloseWithStatus, 'A');
+    expect(closed.state.status, 'Close ends the line, as every button does').toBeNull();
+    expect(closed.state.phase).toEqual({ kind: 'list' });
+  });
+
+  it('UIF8.2 the item sheet always opens on its first real row, never on Close, and a sheet that settles keeps Close a legal cursor', () => {
+    // WRONG IMPL KILLED: an opening cursor on the LAST row (Close) because the layout now ends with
+    // it (`items.at(-1)`), so A on an item would close its own sheet at once; a settle that treats
+    // `close` as an unknown action and re-seats the cursor to the first row under the player's Down.
+    const opened = [
+      ['bait', TO.lureSheet, 'use'],
+      ['food', TO.glowSheet, 'feed'],
+      ['shard', TO.shardSheet, 'info'],
+      ['cure', TO.antidoteSheet, 'use'],
+    ] as const;
+    for (const [name, steps, first] of opened) {
+      const s = walk(vm0, steps);
+      expect(s.phase, `${name}: opens on ${first}`).toMatchObject({ kind: 'sheet', action: first });
+    }
+    const onClose = swallowed(vm0, walk(vm0, TO.glowSheet), ['Down', 'Down']);
+    const settled = observe(vm0, onClose);
+    expect(settled.phase, 'an observe keeps the cursor on Close').toMatchObject({
+      kind: 'sheet',
+      action: 'close',
+    });
+  });
+
+  it('UIF8.2 in the Feed picker, Down to Back then A returns to the item sheet on Feed exactly as B does, sends NO train command, and A on a monster still sends train', () => {
+    // WRONG IMPL KILLED: a Back row whose A does nothing; one that sends a train for a ghost monster
+    // keyed 'back' (`monster === undefined` slips through as a command); one that closes to the LIST
+    // (skipping the sheet) or to the sheet on Info; one that re-seats the cursor; and a Back row
+    // that breaks A on the real monsters.
+    for (const [name, steps, itemId] of [
+      ['Glow Berry', TO.glowPicker, GLOW],
+      ['Power Root', TO.rootPicker, ROOT],
+    ] as const) {
+      const picker = walk(vm0, steps);
+      const onBack = swallowed(vm0, picker, ['Down', 'Down', 'Down', 'Down']);
+      expect(onBack.phase, `${name}: the cursor is on Back`).toEqual({
+        kind: 'picker',
+        itemId,
+        monster: 'back',
+      });
+      const viaA = press(vm0, onBack, 'A');
+      const viaB = press(vm0, picker, 'B');
+      expect(typeof viaA.result, `${name}: A on Back sends no command`).toBe('string');
+      expect(viaA.result).toBe('consumed');
+      expect(viaA.state.phase, `${name}: back to the sheet on Feed`).toEqual({
+        kind: 'sheet',
+        itemId,
+        action: 'feed',
+      });
+      sameStep(viaA, viaB, `${name}: A on Back == B`);
+    }
+
+    // A held A on Back goes nowhere.
+    const onBack = swallowed(vm0, walk(vm0, TO.glowPicker), ['Up']);
+    expect(onBack.phase).toMatchObject({ kind: 'picker', monster: 'back' });
+    const held = press(vm0, onBack, rep('A'));
+    expect(held.state.phase, 'a repeat A leaves the picker on Back').toEqual(onBack.phase);
+    expect(typeof held.result).toBe('string');
+
+    // A on a monster still trains (the Back row did not disturb the real rows).
+    const picker = walk(vm0, TO.glowPicker);
+    expect(press(vm0, picker, 'A').result).toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: GLOW,
+    });
+    expect(press(vm0, swallowed(vm0, picker, ['Down', 'Down', 'Down']), 'A').result).toEqual({
+      kind: 'train',
+      monsterId: 22n,
+      foodItemId: GLOW,
+    });
+  });
+
+  it('UIF8.2 a picker cursor sitting on Back is never re-seated by a batch, while a cursor on a vanished monster still is', () => {
+    // WRONG IMPL KILLED: the shipped settle, which re-seats any cursor that is not a listed monster
+    // (`!vm.monsters.some(...)`), so Back is silently replaced by the first monster on the next
+    // store batch (A would then feed instead of going back); a fix that stops re-seating at all
+    // (the vanished-monster cursor would stay on a ghost).
+    const picker = walk(vm0, TO.glowPicker);
+    const onBack = swallowed(vm0, picker, ['Up']);
+    expect(onBack.phase).toMatchObject({ kind: 'picker', monster: 'back' });
+    const settled = observe(vm0, onBack);
+    expect(settled.phase, 'an equal batch keeps Back').toMatchObject({
+      kind: 'picker',
+      monster: 'back',
+    });
+    const other = observe(vmOf(withCount(world(), GLOW, 1)), onBack);
+    expect(other.phase, 'a count batch keeps Back too').toMatchObject({
+      kind: 'picker',
+      monster: 'back',
+    });
+    expect(paintOf(vm0, settled).phase, 'and paints it').toMatchObject({
+      kind: 'picker',
+      monster: 'back',
+    });
+    // A picker whose monster vanished is still re-seated to a listed one.
+    const onSecond = walk(vm0, [...TO.glowPicker, 'Down']);
+    const gone = observe(vmOf(withoutMonster(world(), 12n)), onSecond);
+    const monster = gone.phase.kind === 'picker' ? gone.phase.monster : null;
+    expect(['11', '21', '22'], 'a vanished monster is re-seated to a listed one').toContain(
+      monster,
+    );
+    // The only monster removed: the picker still closes to the sheet on Feed.
+    const lonely = observe(vmOf(world({ monsters: [] })), onBack);
+    expect(lonely.phase, 'no monsters: the sheet on Feed').toEqual({
+      kind: 'sheet',
+      itemId: GLOW,
+      action: 'feed',
+    });
+  });
+
+  it('UIF8.2 the Info page: A or B returns to the sheet on Info (a repeat is ignored), the same step for both buttons', () => {
+    // WRONG IMPL KILLED: an Info page whose Back row (A) differs from B in the state it leaves (a
+    // different cursor), and one that returns to the sheet's first row or to the list.
+    const info = walk(vm0, TO.glowInfo);
+    expect(info.phase).toEqual({ kind: 'info', itemId: GLOW });
+    sameStep(press(vm0, info, 'A'), press(vm0, info, 'B'), 'info: A == B');
+    expect(press(vm0, info, 'A').state.phase).toEqual({
+      kind: 'sheet',
+      itemId: GLOW,
+      action: 'info',
+    });
+    expect(press(vm0, info, rep('A')).state.phase, 'a repeat is ignored').toEqual(info.phase);
   });
 });

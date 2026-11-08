@@ -1289,6 +1289,13 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback-line reason Feed is disabled: the player owns no monster. Short phrase.
   // raisingView.ts (the Bag frame)
   'bag.feed.noMonsters': 'Aucun monstre à nourrir',
+  // @desc: Bag empty-pocket cue: where items come from. One short sentence. uif-8 (UIF8.4).
+  // raisingView.ts (the Bag frame's EmptyState)
+  'bag.empty.cue': 'Les objets s’obtiennent à la boutique et en combattant dans la nature.',
+  // @desc: Bag empty-pocket next step: what the player can do. One short sentence; LB / RB are
+  // the pocket-switch buttons. uif-8 (UIF8.4). raisingView.ts (the Bag frame's EmptyState)
+  'bag.empty.next':
+    'Rendez-vous dans une boutique, ou appuyez sur LB / RB pour voir une autre poche.',
   // @desc: Journal quest detail line; {step} is the quest's current step number counted from 0.
   // questLogView.ts (the Journal detail)
   'journal.detail.step': (p) => `Étape ${p.step}`,
