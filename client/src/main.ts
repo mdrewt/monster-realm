@@ -1529,9 +1529,12 @@ function sizeRowLabel(key: string): string {
   return n === null ? i18nT('prompt.no') : tf('interact.challenge.size', { n });
 }
 
-/** A request sheet row's word (ctl-13), each a literal catalog key (the catalog parity scan). */
 /** The Close row's word (uif-12, UIF12.2): the kit's, for the layout key that names no entry. */
-const closeRowLabel = (): string => i18nT('kit.sheet.close');
+function closeRowLabel(): string {
+  return i18nT('kit.sheet.close');
+}
+
+/** A request sheet row's word (ctl-13), each a literal catalog key (the catalog parity scan). */
 function requestRowLabel(key: string): string {
   if (key === CLOSE_KEY) return closeRowLabel();
   if (key === 'accept') return i18nT('notice.sheet.accept');
@@ -5080,17 +5083,15 @@ async function main(): Promise<void> {
           layout: sheetLayout(sheet.entries),
           state: sheet.nav,
           fill: (el, item) => {
+            // The one row that names no entry is Close (uif-12, UIF12.2): the kit's word.
             const row = byKey.get(item.key);
-            // The last row is Close (uif-12, UIF12.2): the kit's word, not an entry.
             el.textContent =
-              row !== undefined
-                ? tf('interact.entry', {
+              row === undefined
+                ? closeRowLabel()
+                : tf('interact.entry', {
                     verb: interactVerb(row.action),
                     name: interactName(row.candidate),
-                  })
-                : item.key === CLOSE_KEY
-                  ? closeRowLabel()
-                  : '';
+                  });
           },
         });
         // The listbox's accessible name: this variant has no visible title.
