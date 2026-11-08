@@ -1651,6 +1651,12 @@ export class TacticsBattle implements BattleOpsView {
     // open / close edges and while open — never otherwise (the turn bar must never recentre).
     if (menuEl !== null) {
       menuEl.focus({ preventScroll: true });
+      // At large text the dock scrolls (UIF11.6): keep the cursor row on screen. `nearest` is a no-op
+      // while the row is already visible. happy-dom has no scrollIntoView, hence the guard.
+      const cursorRow = menuEl.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (cursorRow !== null && typeof cursorRow.scrollIntoView === 'function') {
+        cursorRow.scrollIntoView({ block: 'nearest' });
+      }
       this.#menuOpen = true;
     } else if (this.#menuOpen) {
       this.#menuOpen = false;

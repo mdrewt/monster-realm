@@ -1468,7 +1468,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Command-menu row opening the unit's list of attack skills. One short word.
   'tactics.menu.skills': 'Skills',
   // @desc: Command-menu row for using an item (greyed in this phase of the game). One short word.
-  'tactics.menu.item': 'Item',
+  'tactics.menu.item': 'Items',
   // @desc: Command-menu row and plan chip: try to recruit an adjacent wild monster. One short
   // word.
   'tactics.menu.recruit': 'Recruit',

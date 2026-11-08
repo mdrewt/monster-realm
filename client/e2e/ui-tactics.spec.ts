@@ -294,10 +294,12 @@ const UIF11_MOUNT = `(async () => {
     }
     const ticker = q('.tactics-battle .tactics-ticker');
     let lineHeight = Number.NaN;
+    let tickerContent = Number.NaN;
     if (ticker !== null) {
       const cs = getComputedStyle(ticker);
       lineHeight = Number.parseFloat(cs.lineHeight);
       if (!Number.isFinite(lineHeight)) lineHeight = Number.parseFloat(cs.fontSize) * 1.2;
+      tickerContent = ticker.clientHeight - Number.parseFloat(cs.paddingTop) - Number.parseFloat(cs.paddingBottom);
     }
     const cur = q('.tactics-battle .tactics-menu-row[aria-selected="true"]');
     return {
@@ -306,6 +308,7 @@ const UIF11_MOUNT = `(async () => {
       ticker: rect('.tactics-battle .tactics-ticker'),
       tickerLines: ticker === null ? 0 : ticker.children.length,
       lineHeight,
+      tickerContent,
       dock: rect('.tactics-battle .tactics-dock'),
       probeH,
       rows: qa('.tactics-battle .tactics-menu .tactics-menu-row').map(rowRect),
@@ -382,6 +385,8 @@ interface Measure {
   ticker: RectLike;
   tickerLines: number;
   lineHeight: number;
+  /** The ticker's content-box height (clientHeight minus vertical padding). */
+  tickerContent: number;
   dock: RectLike;
   probeH: number | null;
   rows: RowRect[];
@@ -807,6 +812,15 @@ test.describe
       // past the frame so the cursor row leaves it; a long sub-list (Skills) whose last row is
       // scrolled out of the dock with no scroll-into-view; a layout fixed only at x1.
       await setWindow(VIEWPORT, 16);
+      // (b) The ticker YIELDS: with the menu closed at x1 it shows well over one line, so its floor
+      // with the menu open is a shrink and not its steady size. Priority oracle, no px compared across
+      // root sizes.
+      expect(await ev<boolean>('window.__uif11.idle()'), 'the menu is closed').toBe(true);
+      const closed1 = await ev<Measure>('window.__uif11.measure()');
+      expect(
+        closed1.tickerContent / closed1.lineHeight,
+        'x1, menu closed: the ticker shows more than one line (it has something to give up)',
+      ).toBeGreaterThan(1.5);
       expect(await ev<boolean>('window.__uif11.openMenu()'), 'the command menu opens').toBe(true);
       const at1 = await ev<Measure>('window.__uif11.measure()');
       expect(at1.tickerLines, 'fixture: the ticker holds several lines').toBeGreaterThan(2);
@@ -840,6 +854,24 @@ test.describe
         );
       };
 
+      // (c) The ticker yields FIRST: whenever the board is below its preferred 70% of the frame (it
+      // has yielded), the ticker must already be at its one-line floor. A board that gives up height
+      // while the ticker keeps two or more lines is the cheat. The premise is asserted, not assumed.
+      const expectTickerFirst = (m: Measure, label: string): void => {
+        expect(
+          m.board.height,
+          `${label}: premise: the board is below its preferred 70% of the frame`,
+        ).toBeLessThan(0.7 * m.frame.height - 4);
+        expect(
+          m.tickerContent,
+          `${label}: the ticker is at its one-line floor (content ${m.tickerContent}, line ${m.lineHeight})`,
+        ).toBeLessThanOrEqual(m.lineHeight + 0.5);
+        expect(m.tickerContent, `${label}: and no less than one line`).toBeGreaterThanOrEqual(
+          m.lineHeight - 0.5,
+        );
+      };
+      expectTickerFirst(at1, 'x1, root menu open');
+
       await withRootFontSize(page, 32, async () => {
         const m = await ev<Measure>('window.__uif11.measure()');
         expectFrameLayout(m, 'root menu, doubled');
@@ -847,9 +879,7 @@ test.describe
           m.ticker.height,
           'the ticker keeps at least one line of its text',
         ).toBeGreaterThanOrEqual(m.lineHeight - 0.5);
-        expect(m.ticker.height, 'the ticker shrank against its x1 height').toBeLessThan(
-          at1.ticker.height - 0.5,
-        );
+        expectTickerFirst(m, 'root menu, doubled');
         expect(m.probeH, 'the nav-row probe is measured').not.toBeNull();
         const probeH = m.probeH as number;
         expectNear(probeH, 52.8, 0.5, 'a .mr-nav-item at a 32px root is 52.8px');
@@ -875,6 +905,7 @@ test.describe
         const m = await ev<Measure>('window.__uif11.measure()');
         expect((m.cursor as RowRect | null)?.id, 'the cursor is on the last row').toBe(last);
         expectFrameLayout(m, 'Skills sub-list, doubled, cursor on the last row');
+        expectTickerFirst(m, 'Skills sub-list, doubled');
       });
     });
   });
