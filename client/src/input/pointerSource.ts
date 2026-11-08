@@ -3,24 +3,26 @@
 // every screen adapter decide what a click means; game logic never sees a coordinate. The two
 // dialogue buttons the old document click delegate owned are the only commands it sends itself.
 //
-// A click on a row of the top frame (once any open sheet is closed, below) is a SEEK: the D-pad presses that walk that container's cursor
-// to the row, then A. The DOM cannot say which container the frame's adapter drives (a base list
-// stays visible, with a stale cursor, under its sheet or picker), so the first press is a probe: if
-// the clicked container's cursor did not move as planned, the press is undone with its inverse
-// (fresh nav steps wrap, so one step is always invertible) and nothing is activated. A click on the
-// row that is already active is proven the same way, or by elimination when it is the container's
-// only row; a tie between single-row containers does nothing rather than activate the wrong one.
+// A click on a row of the top frame (once any open sheet is closed, below) is a SEEK: the D-pad
+// presses that walk that container's cursor to the row, then A. The DOM cannot say which container
+// the frame's adapter drives (a base list stays visible, with a stale cursor, under its sheet or
+// picker), so the first press is a probe: if the clicked container's cursor did not move as
+// planned, the press is undone with its inverse (fresh nav steps wrap, so one step is always
+// invertible) and nothing is activated. A click on the row that is already active is proven the
+// same way, or by elimination when it is the container's only row; a tie between single-row
+// containers does nothing rather than activate the wrong one.
 //
 // Right-click and a touch long-press (500 ms within 10 px, with a fill ring) press B, or cancel a
 // remap capture. A mouse moving to new coordinates over a row makes it active (never A) and shows
 // the hover state until the next key press (`keyPressed`).
 //
-// An open context sheet (uif-5, UIF5.1-UIF5.3) never blocks a click elsewhere: in the CAPTURE phase,
-// before a native control's own handler, B is pressed until no sheet shows, then the same event
-// routes as if no sheet had been open. A world sheet's close is close-only: routing the click would
-// press A at the bare world and reopen the same sheet. A click inside the sheet routes to its row.
-// A wheel over the top frame's nav rows (only the sheet's, while one is open) presses Up or Down once
-// per notch (UIF5.4); anywhere else, and for a zoom or horizontal wheel, the browser keeps its own.
+// An open context sheet (uif-5, UIF5.1-UIF5.3) never blocks a click elsewhere: in the CAPTURE
+// phase, before a native control's own handler, B is pressed until no sheet shows, then the same
+// event routes as if no sheet had been open. A world sheet's close is close-only: routing the click
+// would press A at the bare world and reopen the same sheet. A click inside the sheet routes to its
+// row. A wheel over the top frame's nav rows (only the sheet's, while one is open) presses Up or
+// Down once per notch (UIF5.4); anywhere else, and for a zoom or horizontal wheel, the browser
+// keeps its own.
 import type { VButton } from './buttons';
 import { VBUTTONS } from './buttons';
 import {
