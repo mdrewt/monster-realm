@@ -433,6 +433,155 @@ const sheetPhase = (monsterId: bigint, action: SheetAction) => ({
   action,
 });
 
+// =============================================================================
+// uif-6 (UIF6.2, UIF6.8): the bound tab and the Party grid. `ctx.monstersTab` is optional on the
+// ScreenContext (null or absent reads Storage); `viewModel` hands it to the view model as
+// `openTab`; `init` opens on it, the Party cursor on the first OCCUPIED slot.
+// =============================================================================
+
+/** The screen's view model with the context's bound tab set to `monstersTab`. */
+const vmBound = (w: World, monstersTab: 'party' | 'storage' | null | undefined): MonstersVm =>
+  monstersScreen.viewModel({ ...ctxOf(w), monstersTab } as unknown as ScreenContext);
+
+/** Monsters in slots 0 and 3 only (a gap of two between them), one boxed monster. */
+const gappedWorld = (): World =>
+  world({ monsters: [mon(11n, 0, 1, 'Kip'), mon(13n, 3, 2), mon(21n, NONE, 1)] });
+
+describe('monstersScreen uif-6: the bound tab (UIF6.2)', () => {
+  it('UIF6.2 viewModel reads the optional ctx.monstersTab into openTab: party and storage pass through, null and an absent field read storage', () => {
+    // WRONG IMPL KILLED: a viewModel that ignores the context (openTab always storage: V and the
+    // menu pick would still need a synthesized LB); one that hardcodes party; a null that is passed
+    // through as null (init would seat on no tab); an absent field that throws or reads party (the
+    // seven fixtures that build a ScreenContext without the field, and the B open, read storage).
+    const w = gappedWorld();
+    expect(vmBound(w, 'party').openTab).toBe('party');
+    expect(vmBound(w, 'storage').openTab).toBe('storage');
+    expect(vmBound(w, null).openTab, 'null: storage').toBe('storage');
+    expect(vmBound(w, undefined).openTab, 'absent: storage').toBe('storage');
+    expect(vmOf(w).openTab, 'a context built with no monstersTab at all: storage').toBe('storage');
+  });
+
+  it('UIF6.2 init opens on vm.openTab: Party with the cursor on the first OCCUPIED slot (empty slots skipped, slot-0 only when nothing is seated), Storage on its first monster, and the first paint is that tab', () => {
+    // WRONG IMPL KILLED: an init that always opens Storage (today's `tab: 'storage'`); one that
+    // opens Party but seats on the grid's first item (slot-0, an empty cell, while a monster sits
+    // in slot 3: A on the opening cursor would do nothing); an openTab read from a module-level
+    // value instead of the view model; an empty Party that opens on no cursor; a first paint that
+    // is not the tab the state is on.
+    const w = world({ monsters: [mon(13n, 3, 2), mon(15n, 5, 1), mon(21n, NONE, 1)] });
+    const party = vmBound(w, 'party');
+    const opened = monstersScreen.init(party);
+    expect(opened.nav.tab, 'the Party tab').toBe('party');
+    expect(opened.nav.item, 'the first occupied slot (slot 3), not slot-0').toBe('13');
+    expect(opened.phase.kind).toBe('list');
+    expect(paintOf(party, opened), 'the first paint is the bound tab and cursor').toMatchObject({
+      tab: 'party',
+      activeKey: '13',
+    });
+
+    const storage = vmBound(w, 'storage');
+    const box = monstersScreen.init(storage);
+    expect(box.nav.tab, 'the Storage tab').toBe('storage');
+    expect(box.nav.item, 'its first monster').toBe('21');
+    expect(monstersScreen.init(vmBound(w, null)).nav.tab, 'null reads storage').toBe('storage');
+
+    // Nothing in the party: Party still opens, on slot-0 (the one cell there is).
+    const none = vmBound(world({ monsters: [mon(21n, NONE, 1)] }), 'party');
+    const emptyParty = monstersScreen.init(none);
+    expect(cursorOf(emptyParty), 'no monster seated: the first slot').toEqual({
+      tab: 'party',
+      item: 'slot-0',
+    });
+
+    // From the bound Party the strip still works: RB goes to Storage, LB back to Party.
+    const toStorage = swallowed(party, opened, ['RB']);
+    expect(cursorOf(toStorage)).toEqual({ tab: 'storage', item: '21' });
+    expect(swallowed(party, toStorage, ['LB']).nav.item, 'back on the seated slot').toBe('13');
+  });
+});
+
+describe('monstersScreen uif-6: the Party grid (UIF6.8)', () => {
+  const open = (w: World = gappedWorld()) => {
+    const vm = vmBound(w, 'party');
+    return { vm, opened: monstersScreen.init(vm) };
+  };
+
+  it('UIF6.8 over a gapped party Right, Down and Up land on the visually adjacent cell of the two-column grid, empty slots included, and the paint follows the cursor', () => {
+    // WRONG IMPL KILLED: today's Party list (Down from monster 11 goes straight to 13, skipping the
+    // two cells the player sees between them; Right does nothing); a grid over the occupied
+    // monsters (Right from 11 lands on 13); a cursor that skips empty slots; a paint whose
+    // activeKey lags the state. Layout: 11 slot-1 / slot-2 13 / slot-4 slot-5.
+    const { vm, opened } = open();
+    expect(opened.nav.item).toBe('11');
+    const after = (inputs: readonly Input[]): string | null =>
+      swallowed(vm, opened, inputs).nav.item;
+    expect(after(['Right']), 'Right: the empty slot beside it').toBe('slot-1');
+    expect(after(['Down']), 'Down: the empty slot under it').toBe('slot-2');
+    expect(after(['Down', 'Right']), 'under it, then right: monster 13').toBe('13');
+    expect(after(['Down', 'Down']), 'two rows down').toBe('slot-4');
+    expect(after(['Down', 'Right', 'Up']), 'up from 13: slot 1').toBe('slot-1');
+    expect(after(['Down', 'Right', 'Down']), 'down from 13: slot 5').toBe('slot-5');
+    expect(after(['Down', 'Right', 'Left']), 'left of 13: slot 2').toBe('slot-2');
+    expect(
+      paintOf(vm, swallowed(vm, opened, ['Down', 'Right'])),
+      'the paint carries the cursor',
+    ).toMatchObject({ tab: 'party', activeKey: '13' });
+    expect(
+      paintOf(vm, swallowed(vm, opened, ['Right'])).activeKey,
+      'an empty slot is a real cursor position',
+    ).toBe('slot-1');
+  });
+
+  it('UIF6.8 A on an empty slot sends and opens nothing, A on a monster opens its sheet, and a held A on either does nothing', () => {
+    // WRONG IMPL KILLED: an A on `slot-1` that opens a sheet for undefined (a throw or a sheet for
+    // nothing), sends a command, or is answered `unhandled` (the world would walk under the open
+    // frame); an A that opens the sheet of the NEXT monster; a repeat A that opens the sheet.
+    const { vm, opened } = open();
+    const onEmpty = swallowed(vm, opened, ['Right']);
+    expect(onEmpty.nav.item).toBe('slot-1');
+    const a = press(vm, onEmpty, 'A');
+    expect(a.result, 'A on an empty slot is swallowed with no command').toBe('consumed');
+    expect(a.state.phase.kind, 'and opens no sheet').toBe('list');
+    expect(paintOf(vm, a.state).sheet, 'nothing painted as a sheet').toBeNull();
+    expect(cursorOf(a.state), 'the cursor stays on the empty slot').toEqual({
+      tab: 'party',
+      item: 'slot-1',
+    });
+
+    const onMonster = swallowed(vm, opened, ['Down', 'Right']);
+    const open13 = press(vm, onMonster, 'A');
+    expect(open13.result).toBe('consumed');
+    expect(open13.state.phase).toMatchObject({ kind: 'sheet', monsterId: 13n, action: 'summary' });
+    const held = press(vm, onMonster, rep('A'));
+    expect(held.state.phase.kind, 'a repeat A opens no sheet').toBe('list');
+  });
+
+  it('UIF6.8 a batch that seats a monster in the slot under the cursor re-seats the cursor on that monster, and one that empties it moves the cursor to the slot', () => {
+    // WRONG IMPL KILLED: a settle that keys the Party on the occupied monsters only (the cursor on
+    // the empty `slot-1` would jump to the first monster when monster 12 joined slot 1, or stay on
+    // a key that no longer exists, and A would then act on nothing); a re-seat that forgets the
+    // cursor's slot after the monster in it left (the cursor would fall to slot 0).
+    const { vm, opened } = open();
+    const onSlot1 = swallowed(vm, opened, ['Right']);
+    expect(onSlot1.nav.item).toBe('slot-1');
+    const joined = vmBound(
+      world({
+        monsters: [mon(11n, 0, 1, 'Kip'), mon(12n, 1, 2), mon(13n, 3, 2), mon(21n, NONE, 1)],
+      }),
+      'party',
+    );
+    const seated = observe(joined, onSlot1);
+    expect(seated.nav.item, 'monster 12 now sits in slot 1: the cursor is on it').toBe('12');
+
+    // The reverse: the cursor on monster 13 (slot 3); it leaves, the slot stays under the cursor.
+    const on13 = swallowed(vm, opened, ['Down', 'Right']);
+    expect(on13.nav.item).toBe('13');
+    const left = vmBound(world({ monsters: [mon(11n, 0, 1, 'Kip'), mon(21n, NONE, 1)] }), 'party');
+    expect(observe(left, on13).nav.item, 'slot 3 is empty now: the cursor is on slot-3').toBe(
+      'slot-3',
+    );
+  });
+});
+
 describe('monstersScreen — opens on Storage (ctl-8b, CTL8B.4)', () => {
   it('CTL8B-4-INIT-STORAGE: init opens the frame on the Storage tab with the cursor on the first storage monster, the list phase, no commit and no feedback; with an empty Storage the tab is still Storage and no monster is under the cursor; the first paint is that opening', () => {
     // WRONG IMPL KILLED: a frame that opens on Party (the first tab: KeyB would show the party
@@ -599,7 +748,9 @@ describe('monstersScreen — tabs and cursor (ctl-8b, CTL8B.1)', () => {
       item: partyKey(vm, 0),
     });
     expect(paintOf(vm, s)).toMatchObject({ tab: 'party', activeKey: '11' });
-    s = swallowed(vm, s, ['Down']);
+    // uif-6 (named intentional change): the Party is a 2-column grid, so the second monster (slot 1)
+    // is one Right from the first (was one Down in the list).
+    s = swallowed(vm, s, ['Right']);
     expect(cursorOf(s)).toEqual({ tab: 'party', item: '12' });
 
     s = swallowed(vm, s, ['LB']);
@@ -645,18 +796,21 @@ describe('monstersScreen — tabs and cursor (ctl-8b, CTL8B.1)', () => {
       '22',
     );
 
-    // Party: a list. Up / Down by one, Left / Right nothing; everything swallowed.
+    // Party (uif-6, named intentional change: a 2-column grid over the six slots, was a list of the
+    // occupied monsters; the per-layout cases are UIF6.8 below). Slots: 11 12 / slot-2 slot-3 /
+    // slot-4 slot-5. Right is the next slot, Down is a row; a repeat clamps; all swallowed.
     const inParty = swallowed(vm, opened, ['RB']);
     expect(inParty.nav.item).toBe('11');
-    expect(itemAfter(['Down'], inParty), 'Down: the next monster').toBe('12');
-    expect(itemAfter(['Down', 'Down'], inParty), 'a fresh Down wraps').toBe('11');
-    expect(itemAfter(['Up'], inParty), 'a fresh Up wraps').toBe('12');
+    expect(itemAfter(['Right'], inParty), 'Right: the next slot').toBe('12');
+    expect(itemAfter(['Down'], inParty), 'Down: one grid row').toBe('slot-2');
     expect(itemAfter([rep('Up')], inParty), 'a repeat Up stays').toBe('11');
-    expect(itemAfter(['Down', rep('Down')], inParty), 'a repeat Down at the end stays').toBe('12');
+    expect(itemAfter([rep('Left')], inParty), 'a repeat Left stays').toBe('11');
+    expect(itemAfter(['Right', rep('Right')], inParty), 'a repeat Right at the row end stays').toBe(
+      '12',
+    );
     for (const input of ['Left', 'Right', rep('Left'), rep('Right')] as const) {
       const step = press(vm, inParty, input);
-      expect(step.result, `${label(input)} in a list is swallowed`).toBe('consumed');
-      expect(step.state.nav.item, `${label(input)} moves nothing in a list`).toBe('11');
+      expect(step.result, `${label(input)} in the Party grid is swallowed`).toBe('consumed');
     }
   });
 
@@ -673,11 +827,15 @@ describe('monstersScreen — tabs and cursor (ctl-8b, CTL8B.1)', () => {
     }
     const party = swallowed(empty, opened, ['RB']);
     expect(party.nav.item).toBe('11');
+    // uif-6 (named intentional change): the one-monster Party is still a six-slot grid whose empty
+    // slots are reachable, so a D-pad press is swallowed and Right / Down move onto an empty slot
+    // (was: the cursor stuck on the only monster).
     for (const input of ['Up', 'Down', 'Left', 'Right'] as const) {
       const step = press(empty, party, input);
       expect(step.result, `${input} on one monster`).toBe('consumed');
-      expect(step.state.nav.item, `${input}: still on it`).toBe('11');
     }
+    expect(press(empty, party, 'Right').state.nav.item, 'Right: the empty slot 1').toBe('slot-1');
+    expect(press(empty, party, 'Down').state.nav.item, 'Down: the empty slot 2').toBe('slot-2');
     for (const input of ['Y', 'X'] as const) {
       expect(press(empty, opened, input).result, `${input} in the list phase`).toBe('unhandled');
     }
@@ -718,7 +876,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     // The sheet is for the monster under the cursor: the third storage monster, a party monster.
     const third = swallowed(vm, opened, ['Right', 'Right', 'A']);
     expect(third.phase).toMatchObject({ kind: 'sheet', monsterId: 23n, action: 'summary' });
-    const party = swallowed(vm, opened, ['RB', 'Down', 'A']);
+    const party = swallowed(vm, opened, ['RB', 'Right', 'A']);
     expect(party.phase).toMatchObject({ kind: 'sheet', monsterId: 12n, action: 'summary' });
     expect(paintOf(vm, party)).toMatchObject({
       tab: 'party',
@@ -800,7 +958,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     });
 
     // Party: the second monster.
-    const partySheet = swallowed(vm, opened, ['RB', 'Down', 'A']);
+    const partySheet = swallowed(vm, opened, ['RB', 'Right', 'A']);
     const partyBack = press(vm, partySheet, 'B');
     expect(partyBack.result).toBe('consumed');
     expect(partyBack.state.phase.kind).toBe('list');
@@ -862,7 +1020,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     expect(press(vm, b.state, 'B').state.phase.kind).toBe('list');
 
     // A Party monster's summary.
-    const partySummary = swallowed(vm, opened, ['RB', 'Down', 'A', 'A']);
+    const partySummary = swallowed(vm, opened, ['RB', 'Right', 'A', 'A']);
     expect(partySummary.phase).toMatchObject({ kind: 'summary', monsterId: 12n });
     expect(paintOf(vm, partySummary).summary).toEqual(cardOf(vm, 12n));
 
@@ -883,7 +1041,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     const opened = monstersScreen.init(vm);
 
     // Party monster 12 -> storage: the sentinel.
-    const partyMove = swallowed(vm, opened, ['RB', 'Down', ...SHEET_STEPS.move]);
+    const partyMove = swallowed(vm, opened, ['RB', 'Right', ...SHEET_STEPS.move]);
     expect(partyMove.phase).toMatchObject({ kind: 'sheet', monsterId: 12n, action: 'move' });
     const fromParty = press(vm, partyMove, 'A');
     expect(fromParty.result).toEqual({ kind: 'setPartySlot', monsterId: 12n, slot: NONE });
@@ -1179,7 +1337,7 @@ describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
     expect(rowPaint.nickname?.card).toEqual(cardOf(vm, 21n));
 
     // A Party monster too.
-    const partyRow = swallowed(vm, opened, ['RB', 'Down', ...SHEET_STEPS.nickname, 'A']);
+    const partyRow = swallowed(vm, opened, ['RB', 'Right', ...SHEET_STEPS.nickname, 'A']);
     expect(partyRow.phase).toMatchObject({ kind: 'nickname', monsterId: 12n });
     // ctl-8c (named intentional change): the sheet paint also carries whether Feed… and Evolve…
     // are enabled (the default world holds Bait and no evolution path), exactly.
@@ -1237,7 +1395,7 @@ describe('monstersScreen — settle (ctl-8b, CTL8B.1-.3)', () => {
     expect(observe(vmOf(w), summary), 'a summary').toBe(summary);
     const row = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(observe(vmOf(w), row), 'a nickname row').toBe(row);
-    const party = swallowed(vm, opened, ['RB', 'Down']);
+    const party = swallowed(vm, opened, ['RB', 'Right']);
     expect(observe(vmOf(w), party), 'the party, a moved cursor').toBe(party);
 
     // The cursor's monster (22, second in Storage) leaves: the neighbour takes the cursor.
@@ -1361,7 +1519,7 @@ describe('monstersScreen — Care and Feed (ctl-8c, CTL8C.1)', () => {
     const third = swallowed(vm, opened, ['Right', 'Right', ...SHEET_STEPS.care]);
     expect(press(vm, third, 'A').result).toEqual({ kind: 'care', monsterId: 23n });
     expect(press(vm, kipOn(vm, 'care'), 'A').result).toEqual({ kind: 'care', monsterId: 11n });
-    const second = swallowed(vm, opened, ['RB', 'Down', ...SHEET_STEPS.care]);
+    const second = swallowed(vm, opened, ['RB', 'Right', ...SHEET_STEPS.care]);
     expect(press(vm, second, 'A').result).toEqual({ kind: 'care', monsterId: 12n });
 
     const back = press(vm, cared.state, 'B');
