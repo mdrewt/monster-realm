@@ -1151,9 +1151,12 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     const arrivedInBox = observe(boxed, boxIssued.state);
     expect(arrivedInBox.feedback).toEqual({ kind: 'movedToBox' });
     expect(paintOf(boxed, arrivedInBox).feedback).toEqual({ kind: 'movedToBox' });
-    expect(cursorOf(arrivedInBox), 'Party re-seated on the monster that is left').toEqual({
+    // uif-6 (named intentional change, UIF6.8): the Party cursor is keyed by SLOT, so when the
+    // monster in slot 0 is boxed the cursor stays on that slot, now empty (`slot-0`), where the
+    // player's eyes are (was: it jumped to the next monster, 12, in the occupied-only list).
+    expect(cursorOf(arrivedInBox), 'Party re-seated on the slot that was left').toEqual({
       tab: 'party',
-      item: '12',
+      item: 'slot-0',
     });
 
     // A Move that never arrives (refused): nothing was painted, and a later arrival is not its.
@@ -1212,7 +1215,8 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
       'B',
       'B',
       'RB',
-      'Down',
+      // uif-6 (named intentional change, UIF6.8): the Party is a 2-column grid; slot 1 is Right.
+      'Right',
       ...SHEET_STEPS.nickname,
       'A',
     ]);
@@ -1872,7 +1876,8 @@ describe('monstersScreen — Evolve (ctl-8c, CTL8C.1)', () => {
     // Per monster: in the same world Emberfang (12, species 2) has no path out.
     const ember = swallowed(unmet, monstersScreen.init(unmet), [
       'RB',
-      'Down',
+      // uif-6 (named intentional change, UIF6.8): slot 1 of the Party grid is Right of slot 0.
+      'Right',
       ...SHEET_STEPS.evolve,
     ]);
     expect(ember.phase).toEqual(sheetPhase(12n, 'evolve'));

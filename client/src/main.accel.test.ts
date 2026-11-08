@@ -1297,7 +1297,9 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectLeafOpen(ROW('V'), 'V');
     expect(selectedTab(), 'V: opens on Party').toEqual(['party']);
     expect(seen, 'V: no button reached the Monsters screen (no synthesized LB)').toEqual([]);
+    // Escape is Start, a real player button that reaches the screen: reset the record AFTER it.
     press('Escape');
+    seen.length = 0;
 
     // The menu pick by keys.
     press('KeyM');
@@ -1307,7 +1309,8 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectLeafOpen(ROW('V'), 'A on Monsters');
     expect(selectedTab(), 'a menu pick: opens on Party').toEqual(['party']);
     expect(seen, 'a menu pick: no button reached the Monsters screen').toEqual([]);
-    press('Escape');
+    press('Escape'); // Start reaches the screen: reset the record after it
+    seen.length = 0;
 
     // The menu pick by a click on its row.
     press('KeyM');
@@ -1317,7 +1320,8 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectLeafOpen(ROW('V'), 'a click on Monsters');
     expect(selectedTab(), 'a click pick: opens on Party').toEqual(['party']);
     expect(seen, 'a click pick: no button reached the Monsters screen').toEqual([]);
-    press('Escape');
+    press('Escape'); // Start reaches the screen: reset the record after it
+    seen.length = 0;
 
     // B: Storage, still with no button.
     press('KeyB');

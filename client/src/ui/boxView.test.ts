@@ -988,9 +988,12 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
       'precondition (X6): the fresh-player state still renders its starter, so the empty button ' +
         'list above is not an empty render',
     ).toContain('Sproutle');
-    expect(boxGridOf(parent).textContent ?? '', 'precondition (X6): and the empty box line').toBe(
-      i18nT('box.box.empty'),
-    );
+    // uif-6 (named intentional change, UIF6.6): the empty box is an EmptyState; its reason line is
+    // the old "No monsters in storage." (the grid's textContent is reason + cue + next step now).
+    expect(
+      boxGridOf(parent).querySelector('.mr-empty-reason')?.textContent,
+      'precondition (X6): and the empty box line',
+    ).toBe(i18nT('box.box.empty'));
 
     // THE COPY HALF: the copy names no retired control, and the one it names is the sheet's Move.
     const text = hint!.textContent ?? '';
@@ -2039,7 +2042,34 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
       empties.map((el) => ctl7bOwnText(el)),
       'precondition: three empty party slots and the empty storage line are rendered',
     ).toHaveLength(4);
-    ctl7bExpectReadableEmpties(empties, root);
+    // uif-6 (named intentional change, UIF6.5): the empty slots' colour is a TOKEN var
+    // (`var(--mr-text-muted)`), which happy-dom cannot resolve to a literal. An empty whose inline
+    // colour is a var must be EXACTLY one of the two readable text tokens (never a translucent or
+    // arbitrary var); the rest keep the literal 4.5:1 check. The measured contrast of the tokens in
+    // Chromium is the UIF6.5 e2e's (the cell colours) and ui-chrome's (the token table).
+    const READABLE_TOKEN_VARS = ['var(--mr-text-muted)', 'var(--mr-frame-fg)'];
+    const colourOf = (el: Element): string | undefined => {
+      for (let n: Element | null = el; n !== null && n !== root; n = n.parentElement) {
+        const colour = ctl7bInline(n).get('color');
+        if (colour !== undefined) return colour;
+      }
+      return undefined;
+    };
+    const tokenised = empties.filter((el) => colourOf(el)?.startsWith('var(') === true);
+    for (const el of tokenised) {
+      expect(
+        READABLE_TOKEN_VARS,
+        `the token var ${colourOf(el)} on ${JSON.stringify(ctl7bOwnText(el))} is a readable text token`,
+      ).toContain(colourOf(el));
+    }
+    expect(
+      tokenised.length,
+      'non-vacuity: the three empty slots carry a token colour',
+    ).toBeGreaterThanOrEqual(3);
+    ctl7bExpectReadableEmpties(
+      empties.filter((el) => !tokenised.includes(el)),
+      root,
+    );
   });
 });
 
@@ -4209,7 +4239,14 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
     const party = partyGridOf(parent);
     const box = boxGridOf(parent);
     const slotsBefore = [...Array.from(party.children), ...Array.from(box.children)];
-    const cardsBefore = [...c8bCards(party), ...c8bCards(box)];
+    // uif-6 (named intentional change, UIF6.8): an empty Party slot now carries
+    // `data-nav-key="slot-<i>"`, so "the monster cards" filter the slot cells out (they are still
+    // covered, as slots and as elements, by the slot and element identity clauses below).
+    const monsterCards = (): HTMLElement[] =>
+      [...c8bCards(party), ...c8bCards(box)].filter(
+        (el) => !(el.dataset.navKey ?? '').startsWith('slot-'),
+      );
+    const cardsBefore = monsterCards();
     const elementsBefore = [...p2Elements(party), ...p2Elements(box)];
     expect(slotsBefore, 'six party slots (two cards, four null) and two box cards').toHaveLength(8);
     expect(cardsBefore, 'four monster cards carry a nav key').toHaveLength(4);
@@ -4233,7 +4270,7 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
         slots.forEach((el, i) => {
           expect(el, `batch ${batch}: slot ${i} is the identical node`).toBe(slotsBefore[i]);
         });
-        const cards = [...c8bCards(party), ...c8bCards(box)];
+        const cards = monsterCards();
         cards.forEach((el, i) => {
           expect(el, `batch ${batch}: card ${i} is the identical node`).toBe(cardsBefore[i]);
         });
@@ -4285,14 +4322,22 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', ()
 
     // The empty box: one line, kept across equal refreshes.
     view.refresh(p2Base().party, []);
-    expect(box.textContent, 'precondition: the box is empty now').toBe(i18nT('box.box.empty'));
+    // uif-6 (named intentional change, UIF6.6): the empty Storage is an EmptyState (a root plus its
+    // reason, cue and next-step lines), so the reason line is read from `.mr-empty-reason` and the
+    // kept nodes are all four elements (was: one line element).
+    expect(
+      box.querySelector('.mr-empty-reason')?.textContent,
+      'precondition: the box is empty now',
+    ).toBe(i18nT('box.box.empty'));
     const lineBefore = Array.from(box.querySelectorAll('*'));
-    expect(lineBefore, 'precondition: the empty line is one element').toHaveLength(1);
+    expect(lineBefore, 'precondition: the EmptyState is a root and three lines').toHaveLength(4);
     view.refresh(p2Base().party, []);
     view.refresh(p2Base().party, []);
     const lineAfter = Array.from(box.querySelectorAll('*'));
-    expect(lineAfter).toHaveLength(1);
-    expect(lineAfter[0], 'the empty-box line is the identical node').toBe(lineBefore[0]);
+    expect(lineAfter).toHaveLength(4);
+    lineAfter.forEach((el, i) => {
+      expect(el, `the empty-state element ${i} is the identical node`).toBe(lineBefore[i]);
+    });
   });
 
   interface P2Case {

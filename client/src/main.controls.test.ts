@@ -4696,8 +4696,10 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
       'boxView',
     ]);
     let t = 1030;
+    // uif-6 (named intentional change, UIF6.8): the Party is a 2-column grid over the six slots, so
+    // a later monster (slots 0 and 1 are on one row) is reached with ArrowRight, not ArrowDown.
     for (let i = 0; i < downs; i += 1) {
-      tap('ArrowDown', t); // step to a later monster
+      tap('ArrowRight', t); // step to a later monster
       t += 20;
     }
     tap('Enter', t); // A on the monster: its sheet, the cursor on Summary
@@ -4879,7 +4881,9 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
     ]);
 
     tap('Backspace', 1060); // out of the sheet
-    tap('ArrowDown', 1070); // the second monster
+    // uif-6 (named intentional change, UIF6.8): the Party is a 2-column grid over the six slots, so
+    // the monster in slot 1 is one ArrowRight from slot 0 (was one ArrowDown in the list).
+    tap('ArrowRight', 1070); // the second monster
     tap('Enter', 1080); // its sheet, the cursor on Summary
     tap('ArrowDown', 1090); // Care
     expect(
@@ -4894,7 +4898,7 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
 
     // Back to 31: its second care is blocked while its first is pending.
     tap('Backspace', 1110);
-    tap('ArrowUp', 1120);
+    tap('ArrowLeft', 1120); // uif-6 (named intentional change): slot 0 is Left of slot 1 (Up wraps)
     tap('Enter', 1130);
     tap('ArrowDown', 1140);
     tap('Enter', 1150);
@@ -4949,7 +4953,9 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
     tap('ArrowDown', 1040); // Care
     tap('Enter', 1050); // care 31 pending
     tap('Backspace', 1060); // out of the sheet
-    tap('ArrowDown', 1070); // the second monster
+    // uif-6 (named intentional change, UIF6.8): the Party is a 2-column grid over the six slots, so
+    // the monster in slot 1 is one ArrowRight from slot 0 (was one ArrowDown in the list).
+    tap('ArrowRight', 1070); // the second monster
     tap('Enter', 1080); // its sheet
     tap('ArrowDown', 1090); // Care
     tap('Enter', 1100); // care 32 pending
@@ -4987,7 +4993,9 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
     tap('ArrowDown', 1040); // Care
     tap('Enter', 1050); // care for 2^53 pending
     tap('Backspace', 1060); // out of the sheet
-    tap('ArrowDown', 1070); // the second monster
+    // uif-6 (named intentional change, UIF6.8): the Party is a 2-column grid over the six slots, so
+    // the monster in slot 1 is one ArrowRight from slot 0 (was one ArrowDown in the list).
+    tap('ArrowRight', 1070); // the second monster
     tap('Enter', 1080); // its sheet
     tap('ArrowDown', 1090); // Care
     tap('Enter', 1100); // care for 2^53 + 1 while the first is pending

@@ -567,7 +567,7 @@ test.describe
             baseSpAttack: 65, baseSpDefense: 65, affinity: 'Fire', learnableSkillIds: [],
           }]]);
           const monsters = [mon(1, 0)];
-          for (let i = 0; i < 24; i += 1) monsters.push(mon(100 + i, 255));
+          for (let i = 0; i < 60; i += 1) monsters.push(mon(100 + i, 255));
           const vm = modelMod.buildMonstersVm(monsters, species, 6, 255, [], [], new Map(), 'storage');
           let state = screenMod.monstersScreen.init(vm);
           view.show();
@@ -647,7 +647,7 @@ test.describe
         expect(first.overflowY, 'the Storage grid hides its overflow').toBe('hidden');
         expect(
           first.scrollHeight,
-          'fixture: the 8 rows of cards overflow the grid (non-vacuity)',
+          'fixture: the 20 rows of cards (60 boxed monsters) overflow the grid (non-vacuity)',
         ).toBeGreaterThan(first.clientHeight);
         expect(first.scrollbar, 'no scrollbar is drawn').toBe(0);
         expect(first.attachment, 'the kit`s position cue layers are in force').toBe(
@@ -693,7 +693,11 @@ test.describe
           );
         };
         inside(await gridState(), 'row 0');
-        for (let row = 1; row <= 7; row += 1) {
+        // Down once per grid row, derived from the fixture (three columns): the presses go well past
+        // the rows the grid shows (its content is taller than the grid, asserted above).
+        const lastRow = Math.ceil(keys.length / 3) - 1;
+        expect(lastRow, 'fixture: many more rows than fit').toBeGreaterThan(10);
+        for (let row = 1; row <= lastRow; row += 1) {
           await bare.evaluate(() =>
             (window as unknown as { __uif6: { press(b: string): void } }).__uif6.press('Down'),
           );

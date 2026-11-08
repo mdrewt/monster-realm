@@ -158,9 +158,10 @@ const CELL_STYLE =
   'border:var(--mr-border-thin) solid var(--mr-separator);padding:var(--mr-space-2);' +
   `background:${CELL_FILL};color:${CELL_TEXT};`;
 // The grids' shared box: the padding keeps the 3px cursor outline inside the clip of an
-// overflow-hidden grid.
+// overflow-hidden grid, and the scroll padding keeps it there when the cursor scrolls a cell in.
 const GRID_STYLE =
   'display:grid;gap:var(--mr-space-2);padding:var(--mr-space-1);box-sizing:border-box;' +
+  'scroll-padding:var(--mr-space-1);' +
   'flex:1 1 auto;min-height:0;width:100%;';
 
 // Typing in the nickname field: these keys stop or commit it and must reach the page (Escape is
