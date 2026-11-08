@@ -483,7 +483,9 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
             // Only a choice opens the confirm: an unmet path, or the single met path the server
             // applies itself, is listed to be read, never offered.
             const path = phase.path;
-            if (isBackKey(path) && !btn.repeat) return to(sheet(phase.monsterId, 'evolve'));
+            if (isBackKey(path)) {
+              return btn.repeat ? done('consumed') : to(sheet(phase.monsterId, 'evolve'));
+            }
             if (btn.repeat || mon === undefined || path === null || !isChoice(mon, path)) {
               return done('consumed');
             }
@@ -622,10 +624,7 @@ function sheetOf(
   canEvolve: boolean,
   careRemainingMs: bigint,
 ): MonstersPaint['sheet'] {
-  if (card === undefined) return null;
-  if (phase.kind === 'sheet')
-    return { card, action: phase.action, canFeed, canEvolve, careRemainingMs };
-  if (phase.kind === 'nickname')
-    return { card, action: 'nickname', canFeed, canEvolve, careRemainingMs };
-  return null;
+  if (card === undefined || (phase.kind !== 'sheet' && phase.kind !== 'nickname')) return null;
+  const action = phase.kind === 'sheet' ? phase.action : 'nickname';
+  return { card, action, canFeed, canEvolve, careRemainingMs };
 }
