@@ -49,7 +49,8 @@ import {
 //     nothing; `fightToOutcome` by buttons; the results panel, A continues (or the auto-advance) to
 //     the world; `ongoingBattle` null. A wild that steps away from adjacency (a kiting, Skittish
 //     wild) is recognised on the next fresh own turn and its battle fled and re-hunted (at most
-//     MAX_ADJACENT_HUNTS battles); every approach turn asserts the drafted Move executed.
+//     MAX_ADJACENT_HUNTS battles); every drafted approach Move is asserted executed on the next
+//     fresh own turn.
 //   - CTL8J-2-B: a second hunt to an outcome; B continues to the world.
 //
 // INPUT RULE. Every in-battle input goes through `pressButton` / `pressAccel` (the hunt, which walks
@@ -81,18 +82,20 @@ const SEED_XP = SEED_LEVEL * SEED_LEVEL * SEED_LEVEL;
 const MAX_WALK_STEPS = 120;
 /** Own turns a battle may take to an outcome (a hit KOs; the rest is closing in). */
 const MAX_OWN_TURNS = 16;
-/** Own turns CTL8J-2-A may spend closing in until the wild stands adjacent on a fresh turn. The
- *  fallback for geometry the kite judgement (`kitedAway`) cannot read: a far spawn behind rough
- *  ground may need an extra approach turn before adjacency is reached. */
+/** Own turns CTL8J-2-A may spend closing in until the wild stands adjacent on a fresh turn: the
+ *  bound for any approach `kitedAway` cannot read (a boxed-in unit, a Move that stopped short of
+ *  adjacency). */
 const MAX_APPROACH_TURNS = 12;
 /** CTL8J-2-A: battles to try for an own turn adjacent to the wild (tactics-wild's MAX_BATTLES
  *  precedent). The first battle is CTL8J-3x's. A battle whose wild steps away from adjacency (a
- *  kiting, Skittish wild) is given up at once (`kitedAway`), fled and the grass re-hunted. Zone 0's
- *  FROZEN encounter weights 10/7/5 make such a battle ≤ 5/22 ≈ 23 % of draws (pack slots roll
- *  independently; this identity owns one monster, so every battle is one wild), so 8 hunts fail
- *  only when 8 kiters come in a row, ≈ 7e-6 per run. Cost model (measured): a kiter hunt ≈ 10–15 s
- *  (recognised on own turn 2–3), a battle that runs the whole MAX_APPROACH_TURNS bound ≈ 37 s, so
- *  even 8 bound hunts plus the fight that follows stay under the 600 s test timeout. */
+ *  kiting, Skittish wild) is given up at once (`kitedAway`), fled and the grass re-hunted; a battle
+ *  that runs the whole MAX_APPROACH_TURNS bound or ends on its own consumes a hunt too. Zone 0's
+ *  FROZEN encounter weights 10/7/5 put its one Skittish entry (species 3, Sproutlet) at
+ *  ≤ 5/22 ≈ 23 % of draws (pack slots roll independently; this identity owns one monster, so every
+ *  battle is one wild), so 8 kiters in a row — the only way these hunts run out while every other
+ *  wild stands adjacent by own turn 3 — is ≈ 7e-6 per run. Cost model (measured): a kiter hunt
+ *  ≈ 10–15 s (recognised on own turn 2–3), a battle that runs the whole bound ≈ 37 s, so even 8
+ *  bound hunts plus the fight that follows stay under the 600 s test timeout. */
 const MAX_ADJACENT_HUNTS = 8;
 /** Menu moves one `menuTo` may spend. */
 const MAX_MENU_MOVES = 8;
@@ -326,7 +329,7 @@ function wildSpecies(battleId: string): string {
       'wild species',
     );
     rows.sort((a, b) => Number(a.wild_index) - Number(b.wild_index));
-    const text = rows.map((r) => `s${r.species_id}L${r.level}`).join('+');
+    const text = rows.map((r) => `s${r.species_id ?? '?'}L${r.level ?? '?'}`).join('+');
     return text === '' ? '?' : text;
   } catch {
     return '?';
