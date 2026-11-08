@@ -63,6 +63,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stripComments } from '../../test-util/stripComments';
+import { PointerSource } from '../input/pointerSource';
 import { t } from './a11yCopy';
 import { MenuView } from './menuView';
 import { EMPTY_NAV_MEMORY } from './nav';
@@ -254,6 +255,67 @@ describe('MenuView — construction', () => {
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
     expect(titleEl().textContent).toBe('Menu');
     expect(optionEls().length).toBe(7);
+  });
+});
+
+// ===========================================================================
+// uif-5 (UIF5.4): the wheel over the real menu, through the REAL PointerSource
+// ===========================================================================
+
+describe('MenuView — uif-5 wheel', () => {
+  /** The menu overlay inside a #game-screen with a real PointerSource at the top frame. */
+  function mountWithPointer(): { press: ReturnType<typeof vi.fn>; view: MenuView } {
+    const overlay = mountMenuOverlay();
+    const screen = document.createElement('div');
+    screen.id = 'game-screen';
+    document.body.appendChild(screen);
+    screen.appendChild(overlay);
+    const { view } = newView();
+    view.show();
+    view.render(rootVm());
+    const press = vi.fn();
+    new PointerSource(
+      screen,
+      () => null,
+      {
+        top: () => 'frame',
+        press,
+        capturing: () => false,
+        cancelCapture: () => undefined,
+        choice: () => undefined,
+        shop: () => undefined,
+      },
+      { now: () => 0, setTimeout: () => 0, clearTimeout: () => undefined },
+    );
+    return { press, view };
+  }
+
+  const wheelOn = (el: Element, deltaY: number): WheelEvent => {
+    const e = new WheelEvent('wheel', { deltaY, deltaMode: 0, bubbles: true, cancelable: true });
+    el.dispatchEvent(e);
+    return e;
+  };
+
+  it('UIF5.4 MENU-WHEEL-ROWS: a wheel over the menu rows (#menu-rows is data-pointer-own, which owns clicks only) is prevented and presses Down per notch, Up for a negative delta', () => {
+    // WRONG IMPL KILLED: a wheel that honors data-pointer-own (the menu, the most used list, could
+    // not be wheeled); a wheel that presses nothing or does not prevent the page scroll.
+    const { press } = mountWithPointer();
+    expect(rowsEl().hasAttribute('data-pointer-own')).toBe(true);
+    const down = wheelOn(optionEls()[2] as HTMLElement, 100);
+    expect(down.defaultPrevented).toBe(true);
+    expect(press.mock.calls).toEqual([['Down']]);
+    expect(wheelOn(rowsEl(), -100).defaultPrevented).toBe(true);
+    expect(press.mock.calls).toEqual([['Down'], ['Up']]);
+  });
+
+  it('UIF5.4 MENU-WHEEL-NON-ROWS: a wheel over a part of the menu frame that holds no nav rows (the title) is not prevented and presses nothing', () => {
+    // WRONG IMPL KILLED: a wheel hijacked over prose-like regions of a frame. (Help's Introduction
+    // and Journal prose views are not reachable from this file's fixtures; the frame title is the
+    // nearest no-rows region of the real menu.)
+    const { press } = mountWithPointer();
+    const e = wheelOn(titleEl(), 300);
+    expect(e.defaultPrevented).toBe(false);
+    expect(press).not.toHaveBeenCalled();
   });
 });
 
