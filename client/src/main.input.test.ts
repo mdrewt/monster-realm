@@ -1699,7 +1699,7 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
     expect(stack()).toEqual([{ kind: 'world' }]);
   });
 
-  it('CTL3-3-BOOT-HIDE-PATH: every dropped overlay closes through its OWN hide() (its a11y close runs), and an overlay that was not shown is not hidden', async () => {
+  it('UIF4B.5 CTL3-3-BOOT-HIDE-PATH: every dropped overlay closes through its OWN hide() (its a11y close runs), and an overlay that was not shown is not hidden', async () => {
     // WRONG IMPL KILLED: a close that only sets display:none (the root keeps role="dialog",
     // aria-modal="true" and its label while hidden, and its focus trap and live-region custody
     // leak: overlayA11y.ts's A13 note), a close that calls hide() on every overlay in the table
@@ -1714,18 +1714,31 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
     // ctl-11a: the quest log is opened by J (Q is LB now); the menu it opens through is shown with it.
     fire('keydown', 'KeyJ', 1010);
     expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
-    const sentinels = ['shop-feedback', 'trade-feedback', 'pvp-challenge-feedback'];
-    for (const id of sentinels) {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the sentinels were text in `#shop-feedback`,
+    // `#trade-feedback` and `#pvp-challenge-feedback`, the nodes those views' hide() cleared; the
+    // lines are retired (index.html no longer ships the shop and pvp ones; the trade one is an
+    // unwritten residual), so hide() clears nothing there. The sentinels are now the DRAFT VALUES
+    // of two hidden overlays whose hide() still resets them: the Name field and the trade wizard's
+    // offer-coins field. Was: `textContent = 'sentinel'` on the three feedback nodes. The numeric
+    // field takes a digit string (a number input drops a non-numeric value).
+    const sentinels: ReadonlyArray<readonly [string, string]> = [
+      ['rename-input', 'sentinel'],
+      ['tradepropose-offer-currency', '123'],
+    ];
+    for (const [id, draft] of sentinels) {
       expect(shownById(id), `precondition: the overlay holding #${id} is hidden`).toBe(false);
-      rootOf(id).textContent = 'sentinel';
+      (rootOf(id) as HTMLInputElement).value = draft;
+      expect((rootOf(id) as HTMLInputElement).value, `precondition: #${id} holds its draft`).toBe(
+        draft,
+      );
     }
     startBattle(BATTLE_ID, 1100);
     expect(shownById('quest-log-overlay'), 'the shown quest log is closed').toBe(false);
-    for (const id of sentinels) {
+    for (const [id, draft] of sentinels) {
       expect(
-        rootOf(id).textContent,
+        (rootOf(id) as HTMLInputElement).value,
         `#${id}: its overlay was not shown, so its hide() must not have run`,
-      ).toBe('sentinel');
+      ).toBe(draft);
     }
     endBattle(BATTLE_ID, 1150);
     expect(battleShown(), 'precondition: the battle ended').toBe(false);

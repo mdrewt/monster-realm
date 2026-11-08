@@ -79,7 +79,9 @@ test.describe
       await expect(page.locator('#pvp-challenge-incoming')).toHaveCount(1);
       await expect(page.locator('#pvp-challenge-outgoing')).toHaveCount(1);
       await expect(page.locator('#pvp-player-list')).toHaveCount(1);
-      await expect(page.locator('#pvp-challenge-feedback')).toHaveCount(1);
+      // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#pvp-challenge-feedback` is retired from index.html
+      // (every challenge message goes through the one seam, to the toast). Was: toHaveCount(1).
+      await expect(page.locator('#pvp-challenge-feedback')).toHaveCount(0);
     });
 
     // -------------------------------------------------------------------------

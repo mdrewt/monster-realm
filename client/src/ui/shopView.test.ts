@@ -139,9 +139,9 @@ function mountShopOverlay(): HTMLElement {
   inventory.id = 'shop-inventory';
   overlay.appendChild(inventory);
 
-  const feedback = document.createElement('div');
-  feedback.id = 'shop-feedback';
-  overlay.appendChild(feedback);
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the `#shop-feedback` line is retired (every shop message
+  // goes through the one seam, to the toast), so the fixture no longer mounts it and the view must
+  // not need it. Was: a `div#shop-feedback` appended here, which the constructor looked up or threw.
 
   document.body.appendChild(overlay);
   return overlay;
@@ -1246,7 +1246,9 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     view.show();
     const slot = ctl8aShopEl('shop-description');
     ctl8aExpectBefore(ctl8aShopEl('shop-inventory'), slot, 'the Sell list, then the slot');
-    ctl8aExpectBefore(slot, ctl8aShopEl('shop-feedback'), 'the slot, then the feedback line');
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#shop-feedback` is retired, so there is no feedback line
+    // to order the slot against. Was: `ctl8aExpectBefore(slot, #shop-feedback, 'the slot, then the
+    // feedback line')`. The slot still follows the Sell list (above).
     expect(slot.textContent, 'empty at the open').toBe('');
 
     view.paint(ctl8aPaint({ description: null }));
@@ -1276,7 +1278,9 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     expect(prompt.contains(text), '#shop-prompt-text is in the prompt').toBe(true);
     expect(prompt.contains(confirm), '#shop-confirm is in the prompt').toBe(true);
     ctl8aExpectBefore(ctl8aShopEl('shop-inventory'), prompt, 'the Sell list, then the prompt');
-    ctl8aExpectBefore(prompt, ctl8aShopEl('shop-feedback'), 'the prompt, then the feedback line');
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `#shop-feedback` is retired; the prompt is no longer
+    // ordered against it. Was: `ctl8aExpectBefore(prompt, #shop-feedback, 'the prompt, then the
+    // feedback line')`. The prompt still follows the Sell list (above).
     expect(prompt.hidden, 'no prompt at the open').toBe(true);
 
     view.paint(ctl8aPaint({ prompt: { kind: 'qty', tab: 'buy', name: 'Charm', qty: 3 } }));
@@ -1376,6 +1380,20 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     view.show();
     expectOpening('reopened by show alone');
 
+    removeOverlay(overlay);
+  });
+});
+
+describe('ShopView uif-4b: no view-owned message line (UIF4B.5)', () => {
+  it('UIF4B.5 the view has no showFeedback and creates no #shop-feedback line, whether or not the shell ships one', () => {
+    // WRONG IMPL KILLED: a surviving `showFeedback` (a second way for a caller to choose the
+    // channel), and a constructor that still creates (or throws on the lack of) the retired line.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+    view.render(CTL8A_SHOP);
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+    expect(document.getElementById('shop-feedback'), 'no retired line is created').toBeNull();
     removeOverlay(overlay);
   });
 });

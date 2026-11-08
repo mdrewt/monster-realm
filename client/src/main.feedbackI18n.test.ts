@@ -280,27 +280,40 @@ function findSellButton(): HTMLButtonElement {
   return btn as HTMLButtonElement;
 }
 
-function shopFeedbackText(): string {
-  return document.getElementById('shop-feedback')?.textContent ?? '';
+// INTENTIONAL CHANGE (uif-4b, UIF4B.1): every message of the shop, trade, rename and trade-propose
+// sites goes through the one seam, so it is read off `#toast` (visible text, '' while hidden). The
+// four reader names below are kept so each case's body still reads as before. Was:
+// `#shop-feedback`, `#trade-feedback`, `#rename-feedback` and `#tradepropose-feedback` (retired from
+// index.html, or no longer written).
+function toastText(): string {
+  const el = document.getElementById('toast');
+  expect(el, '#toast must exist in the real index.html shell').not.toBeNull();
+  return (el as HTMLElement).hidden ? '' : ((el as HTMLElement).textContent ?? '');
 }
 
-/** Waits for a non-empty `#shop-feedback` — the success arms await a reducer promise (a real
- *  microtask hop) before calling `showFeedback`, unlike the synchronous frozen-link arm. */
+function shopFeedbackText(): string {
+  return toastText();
+}
+
+/** Waits for a non-empty toast — the success arms await a reducer promise (a real microtask hop)
+ *  before reporting, unlike the synchronous frozen-link arm. */
 async function waitForFeedback(): Promise<void> {
   await vi.waitFor(
     () => {
-      if (shopFeedbackText() === '') throw new Error('shop-feedback has not rendered yet');
+      if (shopFeedbackText() === '') throw new Error('the toast has not shown yet');
     },
     { timeout: 2_000, interval: 5 },
   );
 }
 
-/** Empties `#shop-feedback` and lets one macrotask pass, so the view's in-flight lock (released
- *  once the previous click's promise settles) is free and the next click paints a fresh line. */
+/** Empties the toast (nothing ticks its clock here) and lets one macrotask pass, so the view's
+ *  in-flight lock (released once the previous click's promise settles) is free and the next click
+ *  paints a fresh line. */
 async function freshShopFeedback(): Promise<void> {
-  const el = document.getElementById('shop-feedback');
-  expect(el, 'shop-feedback must exist in the real index.html shell').not.toBeNull();
+  const el = document.getElementById('toast');
+  expect(el, '#toast must exist in the real index.html shell').not.toBeNull();
   (el as HTMLElement).textContent = '';
+  (el as HTMLElement).hidden = true;
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
@@ -380,15 +393,15 @@ function answerTradeOnSheet(action: 'accept' | 'reject' | 'confirm' | 'cancel'):
 }
 
 function tradeFeedbackText(): string {
-  return document.getElementById('trade-feedback')?.textContent ?? '';
+  return toastText();
 }
 
 function renameFeedbackText(): string {
-  return document.getElementById('rename-feedback')?.textContent ?? '';
+  return toastText();
 }
 
 function proposeFeedbackText(): string {
-  return document.getElementById('tradepropose-feedback')?.textContent ?? '';
+  return toastText();
 }
 
 async function bootMain(url: string): Promise<void> {
@@ -437,7 +450,7 @@ afterEach(() => {
 });
 
 describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, gate B1)', () => {
-  it('★★ BITES: under fr (?locale=fr), a frozen link shows CATALOG_FR["chrome.feedback.disconnected"] on Buy, not the hardcoded English literal', async () => {
+  it('UIF4B.1 ★★ BITES: under fr (?locale=fr), a frozen link toasts CATALOG_FR["chrome.feedback.disconnected"] on Buy, not the hardcoded English literal', async () => {
     await bootMain('/?locale=fr');
     openShopWithOneItem();
     H.linkFrozen = true;
@@ -450,7 +463,7 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
     expect(shopFeedbackText()).not.toBe(EN['chrome.feedback.disconnected']);
   });
 
-  it('★ BITES: under en, a frozen link still shows the exact pre-migration English line on Buy', async () => {
+  it('UIF4B.1 ★ BITES: under en, a frozen link still toasts the exact pre-migration English line on Buy', async () => {
     await bootMain('/');
     openShopWithOneItem();
     H.linkFrozen = true;
@@ -473,7 +486,7 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
   // main.dispatch.test.ts drives larger quantities through a screen adapter.
   // ---------------------------------------------------------------------------
 
-  it('CTL7D-4-BOOT-LINE-EN: under en a real Buy click and then a real Sell click each show the line naming the quantity, the item and the gold moved (1 Potion for 10g, then 1 Herb for 5g), and each sends its reducer with quantity 1', async () => {
+  it('UIF4B.1 CTL7D-4-BOOT-LINE-EN: under en a real Buy click and then a real Sell click each show the line naming the quantity, the item and the gold moved (1 Potion for 10g, then 1 Herb for 5g), and each sends its reducer with quantity 1', async () => {
     // WRONG IMPL KILLED: the old fixed "Purchase complete!" / "Sale complete!" lines, the buy
     // line on a sell (or the reverse), a price read from the wrong row (Potion buys at 10 and
     // sells at 0; Herb sells at 5), an ASCII hyphen for the minus sign, a missing quantity or
@@ -496,7 +509,7 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
     expect(shopFeedbackText(), 'the en sell line').toBe(`${CHECK} Sold 1 Herb (+5g)`);
   });
 
-  it('CTL7D-4-BOOT-LINE-FR: under fr (?locale=fr) a real Buy click and then a real Sell click each show the fr line naming the quantity, the item and the gold moved, which differs from the en line and from each other', async () => {
+  it('UIF4B.1 CTL7D-4-BOOT-LINE-FR: under fr (?locale=fr) a real Buy click and then a real Sell click each show the fr line naming the quantity, the item and the gold moved, which differs from the en line and from each other', async () => {
     // WRONG IMPL KILLED: an untranslated line (the en bytes under fr), a buy/sell id swap (the
     // sell line on a buy), the en "g" unit in a fr line, and the old fixed lines.
     await bootMain('/?locale=fr');
@@ -576,7 +589,7 @@ const TRADE_FR_KEYS = TRADE_CASES.map((c) => c.frKey);
 describe('main.ts trade feedback routes through the i18n catalog, per-action (slice 21r-b red-team S1)', () => {
   it.each(
     TRADE_CASES,
-  )('★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args', async ({
+  )('UIF4B.1 ★★ BITES: under fr, trade $action toasts CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args', async ({
     action,
     viewerIsInitiator,
     status,
@@ -621,7 +634,7 @@ describe('main.ts trade feedback routes through the i18n catalog, per-action (sl
     }
   });
 
-  it('★ BITES: under fr, a frozen link on trade Accept shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
+  it('UIF4B.1 ★ BITES: under fr, a frozen link on trade Accept toasts CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
     await bootMain('/?locale=fr');
     openTradeWithOffer({ viewerIsInitiator: false, status: 'Pending' });
     H.linkFrozen = true;
@@ -644,7 +657,7 @@ describe('main.ts trade feedback routes through the i18n catalog, per-action (sl
 // ---------------------------------------------------------------------------
 
 describe('main.ts rename + trade-propose feedback routes through the i18n catalog (slice 21r-b red-team S2)', () => {
-  it('★★ BITES: under fr, a successful rename shows CATALOG_FR["chrome.rename.updated"], not the hardcoded "Name updated!"', async () => {
+  it('UIF4B.1 ★★ BITES: under fr, a successful rename toasts CATALOG_FR["chrome.rename.updated"], not the hardcoded "Name updated!"', async () => {
     await bootMain('/?locale=fr');
     focusCanvasAndPressKey('KeyN');
 
@@ -665,7 +678,7 @@ describe('main.ts rename + trade-propose feedback routes through the i18n catalo
     expect(renameFeedbackText()).not.toBe(EN['chrome.rename.updated']);
   });
 
-  it('★★ BITES: under fr, a successful trade-propose submit shows CATALOG_FR["tradePropose.feedback.sent"], not the hardcoded "Offer sent!"', async () => {
+  it('UIF4B.1 ★★ BITES: under fr, a successful trade-propose submit toasts CATALOG_FR["tradePropose.feedback.sent"], not the hardcoded "Offer sent!"', async () => {
     await bootMain('/?locale=fr');
     const store = storeHandle();
     // ctl-10b (named intentional change): O is retired. The wizard opens face to face: the own

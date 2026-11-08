@@ -793,31 +793,32 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     /** The id of a DOM line the view's `hide()` clears and a test can dirty from outside. */
     readonly stale?: string;
   }
+  // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the five views that had a stale feedback line to dirty
+  // (`tradepropose-feedback`, `rename-feedback`, `shop-feedback`, `trade-feedback`,
+  // `pvp-challenge-feedback`) own no message line any more (the lines are retired or unwritten; every
+  // message is a toast), so their `stale` entries are gone: there is no view line for hide() to clear.
+  // The reset itself (the `hide()` call-count delta) is still pinned for all of them. Was: each of the
+  // five carried a `stale` id that was dirtied before the reconnect and read back '' after it.
   const PROTECTED_VIEWS: readonly ProtectedView[] = [
     {
       id: 'tradeProposeView',
       load: async () => (await import('./ui/tradeProposeView')).TradeProposeView,
-      stale: 'tradepropose-feedback',
     },
     {
       id: 'renameView',
       load: async () => (await import('./ui/renameView')).RenameView,
-      stale: 'rename-feedback',
     },
     {
       id: 'shopView',
       load: async () => (await import('./ui/shopView')).ShopView,
-      stale: 'shop-feedback',
     },
     {
       id: 'tradeView',
       load: async () => (await import('./ui/tradeView')).TradeView,
-      stale: 'trade-feedback',
     },
     {
       id: 'pvpView',
       load: async () => (await import('./ui/pvpView')).PvpView,
-      stale: 'pvp-challenge-feedback',
     },
     // bt-17 (named removal, BT17.1/BT17.2): the `battleView` row (the eager 1v1 BattleView's hide()
     // run by the reset pass) is deleted with the module; the tactical battle roots are built on first
@@ -833,7 +834,7 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
 
   it.each(
     PROTECTED_VIEWS,
-  )('SO1-2-BOOT-RESET-$id: onReconnect runs the view`s hide() (its lock and stale state reset) although nothing is open and the stack is the bare world', async ({
+  )('UIF4B.5 SO1-2-BOOT-RESET-$id: onReconnect runs the view`s hide() (its lock and stale state reset) although nothing is open and the stack is the bare world', async ({
     load,
     stale,
   }) => {
@@ -869,7 +870,10 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     expect(stack(), 'the stack is still the bare world').toEqual(WORLD_ONLY);
   });
 
-  it('SO1-2-BOOT-OFFSTACK-RENAME: a rename form with a half-typed draft and a stale line, forced hidden without hide() and popped off the stack by the mirror, is still reset by onReconnect', async () => {
+  it('UIF4B.5 SO1-2-BOOT-OFFSTACK-RENAME: a rename form with a half-typed draft, forced hidden without hide() and popped off the stack by the mirror, is still reset by onReconnect, and the retired #rename-feedback line is not in the shell', async () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the "stale line" half is dropped: `#rename-feedback` is
+    // retired from index.html (every rename message is a toast), so there is no line to dirty or to
+    // clear. Was: a stale line written into #rename-feedback was read back '' after the reconnect.
     // WRONG IMPL KILLED: the naive "close only what the stack holds": the rename frame is gone from
     // the stack (the mirror popped it when the overlay was hidden behind the view's back) and the
     // view is not shown, so only the unconditional reset can clear the draft and the line the next
@@ -880,8 +884,10 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     expect(renameShown(), 'precondition: the accelerator opened the rename form').toBe(true);
     const input = byId('rename-input') as HTMLInputElement;
     typeInto(input, 'half-typed draft');
-    const line = byId('rename-feedback');
-    line.textContent = 'stale line from before the drop';
+    expect(
+      document.getElementById('rename-feedback'),
+      'the retired line is not in the shell',
+    ).toBeNull();
     byId('rename-overlay').style.display = 'none';
     frame(1100);
     expect(stackNames(), 'precondition: the mirror popped the form, the menu stays').toEqual([
@@ -893,12 +899,14 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     reconnect();
 
     expect(input.value, 'the stale draft is cleared').toBe('');
-    expect(line.textContent, 'and the stale line').toBe('');
     expect(menuShown(), 'the menu beneath it is closed by the sweep').toBe(false);
     expect(stack(), 'the stack is the bare world').toEqual(WORLD_ONLY);
   });
 
-  it('SO1-2-BOOT-OFFSTACK-TRADE: a trade panel with a stale line, forced hidden without hide() and popped off the stack by the mirror, is still reset by onReconnect', async () => {
+  it('UIF4B.5 SO1-2-BOOT-OFFSTACK-TRADE: a trade panel forced hidden without hide() and popped off the stack by the mirror is still reset by onReconnect (the view`s hide() runs), and the reset writes nothing into the residual #trade-feedback node', async () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the view owns no feedback line, so "the stale line is
+    // cleared" becomes "the view's hide() ran" (a spy delta) and "a sentinel in the residual node is
+    // left alone" (nothing reads or clears it). Was: a stale line in #trade-feedback was read back ''.
     // WRONG IMPL KILLED: as the rename case, for a Social panel: the Social frame is gone from the
     // stack and no panel is shown, so a close driven only by the stack never reaches the trade
     // view whose double-send lock and feedback line the reset clears.
@@ -906,10 +914,13 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     server(1000);
     tap('KeyU', 1010);
     expect(tradeShown(), 'precondition: the accelerator opened the trade panel').toBe(true);
+    const { TradeView } = await import('./ui/tradeView');
+    const hide = vi.spyOn(TradeView.prototype, 'hide');
     const line = byId('trade-feedback');
-    line.textContent = 'stale line from before the drop';
+    line.textContent = 'sentinel the view must leave alone';
     byId('trade-overlay').style.display = 'none';
     frame(1100);
+    const before = hide.mock.calls.length;
     expect(stackNames(), 'precondition: the mirror popped Social, the menu stays').toEqual([
       'world',
       'menuView',
@@ -917,7 +928,13 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
 
     reconnect();
 
-    expect(line.textContent, 'the stale line is cleared').toBe('');
+    expect(
+      hide.mock.calls.length - before,
+      'the trade view`s hide() ran on the reconnect',
+    ).toBeGreaterThanOrEqual(1);
+    expect(line.textContent, 'the residual node is neither read nor cleared').toBe(
+      'sentinel the view must leave alone',
+    );
     expect(menuShown(), 'the menu beneath it is closed by the sweep').toBe(false);
     expect(stack(), 'the stack is the bare world').toEqual(WORLD_ONLY);
   });

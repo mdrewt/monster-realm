@@ -128,6 +128,9 @@ function mountTradeProposeOverlay(): {
       <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
   `;
+  // uif-4b note: this shared fixture still carries `#tradepropose-feedback` so the view's old lookup
+  // would find it; the UIF4B.5 tests below REMOVE it before constructing, which is what makes a view
+  // that still needs the node fail. (Kept, not deleted, so the older cases' DOM shape is unchanged.)
 
   return {
     overlay: document.getElementById('tradepropose-overlay') as HTMLElement,
@@ -601,15 +604,21 @@ describe('TradeProposeView PTC2-8: render() paints options and checkboxes via te
 // PTC2-8 / showFeedback: writes textContent to #tradepropose-feedback
 // ---------------------------------------------------------------------------
 
-describe('TradeProposeView showFeedback()', () => {
+describe('TradeProposeView has no showFeedback (uif-4b)', () => {
   beforeEach(() => mountTradeProposeOverlay());
   afterEach(() => teardown());
 
-  it('BITES: showFeedback() sets feedback textContent — kills no-op impl', () => {
+  it('UIF4B.5 the view has no showFeedback and works with no #tradepropose-feedback node in the shell', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): was "showFeedback() sets feedback textContent". The
+    // method and `#tradepropose-feedback` are retired (the wizard's messages go through the one
+    // seam, to the toast), so the node is removed from this fixture before construction: a view
+    // that still looks it up throws.
+    // WRONG IMPL KILLED: a surviving showFeedback, and a constructor that still needs the node.
+    document.getElementById('tradepropose-feedback')?.remove();
     const view = new TradeProposeView(noop());
-    view.showFeedback('Offer sent!');
-    const fb = document.getElementById('tradepropose-feedback') as HTMLElement;
-    expect(fb.textContent).toBe('Offer sent!');
+    view.show();
+    view.hide();
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
   });
 });
 
@@ -865,13 +874,17 @@ describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies
     vi.restoreAllMocks();
   });
 
-  it('BITES: hide() clears feedback textContent — kills impl that leaves stale feedback on re-open', () => {
+  it('UIF4B.5 hide() neither needs nor creates a #tradepropose-feedback line (no view-owned message text remains)', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): was "hide() clears feedback textContent" after
+    // `showFeedback('Offer rejected!')`. The line and its method are retired (the wizard's messages
+    // are toasts), so the stale-line risk is structural; UIF4B.3 pins it end to end. The node is
+    // removed from the fixture so a hide() that still clears it throws.
+    // WRONG IMPL KILLED: a hide() that still looks the retired line up (a TypeError on null).
+    document.getElementById('tradepropose-feedback')?.remove();
     const view = new TradeProposeView(noop());
     view.show();
-    view.showFeedback('Offer rejected!');
-    view.hide();
-    const fb = document.getElementById('tradepropose-feedback') as HTMLElement;
-    expect(fb.textContent).toBe('');
+    expect(() => view.hide()).not.toThrow();
+    expect(document.getElementById('tradepropose-feedback'), 'none is created').toBeNull();
   });
 
   it('BITES: hide() blanks offer currency input — kills impl that leaves stale draft', () => {

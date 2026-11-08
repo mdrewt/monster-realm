@@ -191,6 +191,14 @@ const H = vi.hoisted(() => {
           };
         }
       },
+    /** INTENTIONAL CHANGE (uif-4b, UIF4B.1 / UIF4B.5): the shop, trade, pvp, rename and trade-propose
+     *  views no longer have a `showFeedback` (their lines are retired; every message goes through the
+     *  one seam, to the toast). Their stand-ins drop the method, so a main.ts that still calls it
+     *  throws. Was: every stand-in recorded `showFeedback` into `feedback`. */
+    withoutShowFeedback: (cls: { prototype: object }) => {
+      delete (cls.prototype as { showFeedback?: unknown }).showFeedback;
+      return cls;
+    },
   };
   return h;
 });
@@ -198,13 +206,17 @@ const H = vi.hoisted(() => {
 vi.mock('./ui/boxView', () => ({ BoxView: H.makeStub('BoxView') }));
 vi.mock('./ui/raisingView', () => ({ RaisingView: H.makeStub('RaisingView') }));
 vi.mock('./ui/evolutionView', () => ({ EvolutionView: H.makeStub('EvolutionView') }));
-vi.mock('./ui/shopView', () => ({ ShopView: H.makeStub('ShopView') }));
-vi.mock('./ui/tradeView', () => ({ TradeView: H.makeStub('TradeView') }));
-vi.mock('./ui/pvpView', () => ({ PvpView: H.makeStub('PvpView') }));
+vi.mock('./ui/shopView', () => ({ ShopView: H.withoutShowFeedback(H.makeStub('ShopView')) }));
+vi.mock('./ui/tradeView', () => ({ TradeView: H.withoutShowFeedback(H.makeStub('TradeView')) }));
+vi.mock('./ui/pvpView', () => ({ PvpView: H.withoutShowFeedback(H.makeStub('PvpView')) }));
 vi.mock('./ui/claimView', () => ({ ClaimView: H.makeStub('ClaimView') }));
 vi.mock('./ui/privacyView', () => ({ PrivacyView: H.makeStub('PrivacyView') }));
-vi.mock('./ui/renameView', () => ({ RenameView: H.makeStub('RenameView') }));
-vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub('TradeProposeView') }));
+vi.mock('./ui/renameView', () => ({
+  RenameView: H.withoutShowFeedback(H.makeStub('RenameView')),
+}));
+vi.mock('./ui/tradeProposeView', () => ({
+  TradeProposeView: H.withoutShowFeedback(H.makeStub('TradeProposeView')),
+}));
 
 // bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
 // map the stub gives TWO spawn cells (every other map has the shipped three), so a deploy slot count
@@ -1118,11 +1130,16 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     ).toBe(false);
   });
 
-  it('each feedback action paints its own success line on its own overlay only while that overlay is shown', async () => {
-    // WRONG IMPL KILLED: a success line routed to the wrong overlay's sink (shop to trade), a swapped
-    // accepted/rejected line (the player is told the opposite of what they chose), the wrong message
-    // for confirm vs cancel, a sink that paints into a hidden overlay (a stale line on the next
-    // open), and a feedback that never reaches its view.
+  it('UIF4B.1 each feedback action puts its own success line on #toast, whether its view is shown or hidden, and on no view`s own line', async () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1 / UIF4B.3): was "each feedback action paints its own
+    // success line on its own overlay only while that overlay is shown": the stand-in views recorded
+    // `showFeedback` and the hidden pass expected nothing. Every per-view line is retired, so the
+    // line is the TOAST whatever the view's visibility (the toast is the seam's, not an overlay's),
+    // and the stand-ins (which no longer have `showFeedback`) must record nothing.
+    // WRONG IMPL KILLED: a success line routed to a view-owned sink (any stand-in would throw on the
+    // missing method, or record it), a swapped accepted/rejected line (the player is told the
+    // opposite of what they chose), the wrong message for confirm vs cancel, a late settle that is
+    // dropped silently when the view is hidden, and a feedback that never reaches the toast.
     //
     // ctl-7d (named intentional change, CTL7D.4): the shop's plain `shop.feedback.purchased` /
     // `.sold` ids are deleted. A buy or sell now shows a line naming the quantity, the item and the
@@ -1178,19 +1195,25 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
           view.visible = false;
         }
       }
-      // Hidden first: a late settle must not write into a closed overlay.
+      // Hidden first: a late settle is a toast, not a write into a closed overlay and not a drop.
+      clearToast();
       handlerOf(target, name)(...args);
       await flush();
-      expect(feedbackOf(target), `${target}.${name}: nothing paints while hidden`).toEqual([]);
+      expect(toastText(), `${target}.${name}: the toast while the view is hidden`).toBe(
+        expectedLine,
+      );
       const hiddenView = H.views[target];
       if (hiddenView !== undefined) hiddenView.visible = true;
+      clearToast();
       handlerOf(target, name)(...args);
       await flush();
+      expect(toastText(), `${target}.${name}: the toast while the view is shown`).toBe(
+        expectedLine,
+      );
       for (const v of all) {
-        expect(feedbackOf(v), `${target}.${name}: the feedback of ${v}`).toEqual(
-          v === target ? [expectedLine] : [],
-        );
+        expect(feedbackOf(v), `${target}.${name}: no view-owned line on ${v}`).toEqual([]);
       }
+      expect(statusText(), `${target}.${name}: and nothing on the status line`).toBe('');
     }
   });
 
@@ -1923,6 +1946,92 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
     expect(toastText(), 'still visible one ms before TOAST_MS').not.toBe('');
     frame(2005 + TOAST_MS);
     expect(toastText(), 'hidden once TOAST_MS has elapsed').toBe('');
+  });
+});
+
+// ==========================================================================================
+// uif-4b: every toast-kind settle of a per-view action is announced once (UIF4B.4)
+// ==========================================================================================
+//
+// Same harness and the uif-4 live-region watcher (`uif4WatchLive`: it records every write to
+// #a11y-live's textContent). The eight actions below are the shop, trade, rename and trade-propose
+// callbacks; each now ends in a toast through the one seam, and the toast is queued for the live
+// region exactly once. The eight texts are pairwise distinct on purpose: a repeated identical text is
+// deduped by the live region by design (R-uif-4-REPEATSAY), so distinct texts are the only fair way
+// to count one announcement per toast.
+
+describe('main.ts per-view settles are announced through the live region once (runtime, uif-4b)', {
+  sequential: true,
+}, () => {
+  afterEach(teardownBoot);
+
+  it('UIF4B.4 each of the eight shop, trade, rename and trade-propose settles reaches #a11y-live exactly once, with its own text', async () => {
+    // WRONG IMPL KILLED: a toast painted but never queued for the live region (a screen-reader user
+    // hears nothing), a settle announced twice (the toast AND a view line, or a repeated queue), a
+    // settle announced as a different text than the one shown, and one that paints the live node
+    // itself instead of the one announcer.
+    await bootReady();
+    server(1000);
+    const live = uif4WatchLive();
+    const line = (key: string): string => i18n.t(key as never);
+    const proposeArgs = {
+      targetIdentity: OTHER_IDENTITY,
+      initiatorMonsterIds: [51n],
+      initiatorCurrency: 3n,
+      counterpartyCurrency: 4n,
+    };
+    const cases: ReadonlyArray<readonly [string, string, readonly unknown[], string]> = [
+      ['TradeView', 'onAccept', [81n], line('trade.feedback.accepted')],
+      ['TradeView', 'onReject', [82n], line('trade.feedback.rejected')],
+      ['TradeView', 'onConfirm', [83n], line('trade.feedback.completed')],
+      ['TradeView', 'onCancel', [84n], line('trade.feedback.cancelled')],
+      ['ShopView', 'onBuy', [11, 22], enBoughtCount(1)],
+      ['ShopView', 'onSell', [23], enSoldCount(1)],
+      ['RenameView', 'onSubmit', ['Zed'], line('chrome.rename.updated')],
+      ['TradeProposeView', 'onSubmit', [proposeArgs], line('tradePropose.feedback.sent')],
+    ];
+    expect(new Set(cases.map((c) => c[3])).size, 'ANTI-VACUITY: eight distinct texts').toBe(8);
+    let base = 1100;
+    for (const [view, name, args, text] of cases) {
+      await handlerOf(view, name)(...args);
+      await flush();
+      expect(toastText(), `${view}.${name}: the toast shows it`).toBe(text);
+      for (let k = 1; k <= 30; k += 1) frame(base + k * 50);
+      base += 2000;
+      expect(
+        live.filter((w) => w.includes(text)),
+        `${view}.${name}: announced exactly once`,
+      ).toHaveLength(1);
+    }
+  });
+
+  it('UIF4B.4 a rejected and a frozen settle are announced once each too, with their own texts', async () => {
+    // WRONG IMPL KILLED: only the success arm queued for the live region (a rejection or a dead link
+    // is shown but never spoken: the player who most needs to hear it does not).
+    await bootReady();
+    server(1000);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const live = uif4WatchLive();
+
+    H.gate = uif4Rejected('zz-trade-refused');
+    await handlerOf('TradeView', 'onAccept')(81n);
+    H.gate = null;
+    await flush();
+    for (let k = 1; k <= 30; k += 1) frame(1100 + k * 50);
+    expect(
+      live.filter((w) => w.includes('zz-trade-refused')),
+      'the rejection is announced once',
+    ).toHaveLength(1);
+
+    H.frozen = true;
+    await handlerOf('RenameView', 'onSubmit')('Zed');
+    for (let k = 1; k <= 30; k += 1) frame(3100 + k * 50);
+    const disconnected = i18n.t('chrome.feedback.disconnected');
+    expect(toastText(), 'the frozen link shows the disconnected line').toBe(disconnected);
+    expect(
+      live.filter((w) => w.includes(disconnected)),
+      'and announces it once',
+    ).toHaveLength(1);
   });
 });
 
@@ -3291,7 +3400,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     }
   });
 
-  it('CTL7D-3-BOOT-QTY-REJECTED: a buy or sell quantity that is not an integer from 1 to 4294967295 sends nothing, paints no shop line and logs an error naming the command, without throwing; a valid quantity in the same setup sends and paints, before and after the rejected ones', async () => {
+  it('UIF4B.1 CTL7D-3-BOOT-QTY-REJECTED: a buy or sell quantity that is not an integer from 1 to 4294967295 sends nothing, paints no shop line and logs an error naming the command, without throwing; a valid quantity in the same setup sends and paints, before and after the rejected ones', async () => {
     // WRONG IMPL KILLED: no check at all (each row reaches its reducer), a clamp or a default in
     // place of a refusal (`Math.max(1, qty)`, `qty || 1`, `Math.trunc`, `qty | 0`, `qty >>> 0`:
     // 0, 1.5, -1 and 2^32 + 1 would each send an in-range quantity), a check that runs inside or
@@ -3335,7 +3444,6 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     const send = async (kind: 'buy' | 'sell', qty: unknown): Promise<KeyboardEvent> => {
       issue.command = commandOf(kind, qty);
       H.calls = [];
-      shop.feedback.length = 0;
       errorSpy.mockClear();
       const down = await pageUp(t);
       frame(t + 600);
@@ -3348,7 +3456,13 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
         const down = await send(kind, qty);
         expect(down.defaultPrevented, `${label}: the press is consumed`).toBe(true);
         expect(H.calls, `${label}: sent`).toEqual([callOf(kind, qty)]);
-        expect(shop.feedback.length, `${label}: one shop line painted`).toBe(1);
+        // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the success line is the TOAST (the exact count line
+        // for this quantity: no item row is loaded here), and no view-owned line is written. Was:
+        // `shop.feedback.length` was 1 (the stand-in's `showFeedback` record).
+        expect(toastText(), `${label}: the success line is on the toast`).toBe(
+          kind === 'buy' ? enBoughtCount(qty) : enSoldCount(qty),
+        );
+        expect(shop.feedback, `${label}: and no view-owned line`).toEqual([]);
       }
     };
 
@@ -3424,7 +3538,7 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     await control(4294967295, 'after the rows');
   });
 
-  it('CTL7D-4-BOOT-QTY-LINE: a successful screen buy or sell paints, on the shop only, the line naming the quantity, the item and the TOTAL gold, read from the store for the command`s own shop with bigint arithmetic, under en and fr, and the quantity-only line when a row it needs is missing', async () => {
+  it('UIF4B.1 CTL7D-4-BOOT-QTY-LINE: a successful screen buy or sell puts, on the toast only, the line naming the quantity, the item and the TOTAL gold, read from the store for the command`s own shop with bigint arithmetic, under en and fr, and the quantity-only line when a row it needs is missing', async () => {
     // WRONG IMPL KILLED: the unit price in place of the total (3 Bait at 13 is 39), `Number`
     // arithmetic (9007199254740993 x 3 is 27021597764222979; in doubles it ends in 976), the first
     // shop-item row for the item whatever its shop (shop 12's Bait row, at 17, is loaded FIRST),
@@ -3552,10 +3666,12 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
       for (const row of rows) {
         issue.command = row.command;
         H.calls = [];
-        shop.feedback.length = 0;
+        clearToast();
         await pageUp(t);
         t += 100;
-        expect(shop.feedback, `${locale}, ${row.label}: the line`).toEqual([row[locale]]);
+        // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the line is the TOAST, not the shop stand-in's
+        // `showFeedback` record. Was: `expect(shop.feedback).toEqual([row[locale]])`.
+        expect(toastText(), `${locale}, ${row.label}: the line`).toBe(row[locale]);
         expect(H.calls, `${locale}, ${row.label}: one reducer call`).toEqual([row.call]);
       }
     };
@@ -3574,12 +3690,14 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     expect(boundReads, 'precondition: shop 12 stayed bound for every command').toEqual(
       Array.from({ length: rows.length * 2 }, () => 12),
     );
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): was "no shop line on any view but ShopView" (the shop's
+    // own stand-in held the line). No view holds one now, the shop's included.
     for (const [name, view] of Object.entries(H.views)) {
-      if (name !== 'ShopView') expect(view.feedback, `no shop line on ${name}`).toEqual([]);
+      expect(view.feedback, `no view-owned line on ${name}`).toEqual([]);
     }
   });
 
-  it('CTL7D-4-BOOT-SEND-TIME: the success line comes from the store rows as they were when the command was sent: a buy and a sell-all held open while batches rename, reprice and remove their rows show the at-send line once they settle, and nothing while pending', async () => {
+  it('UIF4B.1 CTL7D-4-BOOT-SEND-TIME: the success line comes from the store rows as they were when the command was sent: a buy and a sell-all held open while batches rename, reprice and remove their rows show the at-send line once they settle, and nothing while pending', async () => {
     // WRONG IMPL KILLED: a line resolved when the reducer settles (after these batches it would
     // read removed rows and print the quantity-only line, or the new name and price), a line
     // resolved on the next batch after the send (Lure / Husk), and a line painted before the
@@ -3627,7 +3745,9 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
       H.calls.map((c) => c.name),
       'buy: precondition: one buy is in flight',
     ).toEqual(['buy']);
-    expect(shop.feedback, 'buy: nothing is painted while pending').toEqual([]);
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): this case reads the TOAST (cleared first: it is timed)
+    // instead of the shop stand-in's `showFeedback` record. Was: `expect(shop.feedback)`.
+    expect(toastText(), 'buy: nothing is painted while pending').toBe('');
     opts.store.upsertItemDef(itemDef(22, 'Lure', 70n));
     opts.store.upsertShopItem({ shopItemId: 1n, shopId: 11, itemId: 22, buyPrice: 130n });
     server(1200);
@@ -3635,15 +3755,13 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     opts.store.removeItemDef(22);
     server(1300);
     await flush();
-    expect(shop.feedback, 'buy: still nothing while pending').toEqual([]);
+    expect(toastText(), 'buy: still nothing while pending').toBe('');
     release();
     await flush();
-    expect(shop.feedback, 'buy: the line from the rows at send').toEqual([
-      enBought(3, 'Bait', 39n),
-    ]);
+    expect(toastText(), 'buy: the line from the rows at send').toBe(enBought(3, 'Bait', 39n));
 
     // --- sell all 3 Berry at 10: the inventory row goes, the definition is renamed, then removed
-    shop.feedback.length = 0;
+    clearToast();
     release = hold();
     issue.command = { kind: 'sell', itemId: 23, qty: 3 };
     H.calls = [];
@@ -3652,19 +3770,17 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
       H.calls.map((c) => c.name),
       'sell: precondition: one sell is in flight',
     ).toEqual(['sell']);
-    expect(shop.feedback, 'sell: nothing is painted while pending').toEqual([]);
+    expect(toastText(), 'sell: nothing is painted while pending').toBe('');
     opts.store.reconcileInventoryFromView([]);
     opts.store.upsertItemDef(itemDef(23, 'Husk', 1n));
     server(1500);
     opts.store.removeItemDef(23);
     server(1600);
     await flush();
-    expect(shop.feedback, 'sell: still nothing while pending').toEqual([]);
+    expect(toastText(), 'sell: still nothing while pending').toBe('');
     release();
     await flush();
-    expect(shop.feedback, 'sell: the line from the rows at send').toEqual([
-      enSold(3, 'Berry', 30n),
-    ]);
+    expect(toastText(), 'sell: the line from the rows at send').toBe(enSold(3, 'Berry', 30n));
   });
 });
 

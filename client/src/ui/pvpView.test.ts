@@ -201,6 +201,24 @@ afterEach(async () => {
 // Overlay a11y wiring on the show()/hide() edge
 // ---------------------------------------------------------------------------
 
+describe('PvpView — no view-owned message line (uif-4b, UIF4B.5)', () => {
+  it('UIF4B.5 the view has no showFeedback (it had no caller: WF1-A5) and works with no #pvp-challenge-feedback node in the shell', () => {
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): `showFeedback` and the `#pvp-challenge-feedback` lookup
+    // are retired (the line is gone from index.html with its roster row; challenge messages go
+    // through the one seam). The mount below drops the node the shared fixture still carries, so a
+    // constructor or refresh that needs it throws. Was: the view held the node and exposed a
+    // `showFeedback` nothing called.
+    // WRONG IMPL KILLED: a surviving showFeedback, and a constructor/refresh that still looks the
+    // retired node up.
+    const root = mountPvpOverlay();
+    document.getElementById('pvp-challenge-feedback')?.remove();
+    const view = new PvpView(makeCallbacks());
+    expect(() => view.refresh(pvpVm(), false)).not.toThrow();
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+    expect(root.querySelector('#pvp-challenge-feedback'), 'and none is created').toBeNull();
+  });
+});
+
 describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
   it('S3-pvpView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t(), and the view really starts hidden', () => {
     const root = mountPvpOverlay();

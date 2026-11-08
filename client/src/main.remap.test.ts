@@ -686,7 +686,27 @@ const cellKeys = (): string[] =>
   Array.from(document.querySelectorAll('#controls-rows [data-nav-key]')).map(
     (el) => el.getAttribute('data-nav-key') ?? '',
   );
+/** The Controls frame's own hint strip (`#controls-feedback`). uif-4b (UIF4B.1): it carries ONLY the
+ *  refused-key hint now; every other outcome line is a toast. Was: it carried every outcome line. */
 const controlsFeedback = (): string => byId('controls-feedback').textContent ?? '';
+/** uif-4b (UIF4B.1): the toast's visible text, '' while it is hidden. Nothing ticks the toast clock in
+ *  these cases except an explicit `frame()`, so a toast stays up until the next one replaces it. */
+const toastNow = (): string => {
+  const el = byId('toast');
+  return el.hidden ? '' : (el.textContent ?? '');
+};
+const statusNow = (): string => byId('status').textContent ?? '';
+/** The strip is out of sight: `hidden` or `display:none` on itself or an ancestor. */
+const stripGone = (): boolean => {
+  for (
+    let n: Element | null = byId('controls-feedback');
+    n instanceof HTMLElement;
+    n = n.parentElement
+  ) {
+    if (n.hidden || n.style.display === 'none') return true;
+  }
+  return false;
+};
 /** Whether a capture is waiting: the prompt line is shown. */
 const capturing = (): boolean => visibleNow('controls-capture');
 const captureText = (): string => byId('controls-capture').textContent ?? '';
@@ -931,7 +951,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(savedRaw(), 'starting a capture saves nothing').toBeNull();
   });
 
-  it('CTL12B-2-LIVE-REMAP: from the Confirm (A) Primary capture, K binds: the cell shows K, the feedback is the bound line, mr.controls holds the new table, and with NO reload K acts as A (it starts a capture on the slot; in the menu it picks the entry under the cursor) while Enter is not consumed and picks nothing', async () => {
+  it('UIF4B.1 CTL12B-2-LIVE-REMAP: from the Confirm (A) Primary capture, K binds: the cell shows K, the toast is the bound line, mr.controls holds the new table, and with NO reload K acts as A (it starts a capture on the slot; in the menu it picks the entry under the cursor) while Enter is not consumed and picks nothing', async () => {
     // LEGACY REPLACED (the Red): no Controls screen; a saved table applied only after a reload
     // (`KeyboardSource` took its table at construction).
     // WRONG IMPL KILLED: a capture that saves but never swaps the live table (Enter still picks, K
@@ -954,7 +974,12 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(cellText('A_1'), 'the Alt slot keeps Numpad Enter').toBe(
       altText(ROW_A, glyph('NumpadEnter')),
     );
-    expect(controlsFeedback(), 'the feedback is the bound line').toBe(i18nT('controls.bound'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the bound line is a toast, not the strip's text. Was:
+    // `controlsFeedback()` read `#controls-feedback`.
+    expect(toastNow(), 'the feedback is the bound line, on the toast').toBe(
+      i18nT('controls.bound'),
+    );
+    expect(controlsFeedback(), 'and the strip stays empty').toBe('');
     const raw = savedRaw();
     expect(raw, 'the table was saved at once').not.toBeNull();
     expect((JSON.parse(raw ?? 'null') as { v?: unknown }).v, 'as version 1').toBe(1);
@@ -972,7 +997,9 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(capturing(), 'K on the slot starts a capture').toBe(true);
     press('KeyK'); // the slot's own key: cancel
     expect(capturing(), 'the slot`s own key cancels').toBe(false);
-    expect(controlsFeedback()).toBe(i18nT('controls.cancelled'));
+    expect(toastNow(), 'the cancelled line is a toast (uif-4b; was the strip)').toBe(
+      i18nT('controls.cancelled'),
+    );
 
     // No reload: in the main menu K picks the entry under the cursor and Enter does not.
     press('Escape');
@@ -1066,7 +1093,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     ).toEqual([{ name: 'talk', args: { npcEntityId: NPC_ENTITY } }]);
   });
 
-  it('CTL12B-2-CAPTURE-ESCAPE: while the A row`s Alt slot captures, Escape is CAPTURED, not Start: prevented, nothing closes, A`s Alt becomes Escape and Start`s Primary the displaced Numpad Enter, live; Start`s remaining key M then closes everything', async () => {
+  it('UIF4B.1 CTL12B-2-CAPTURE-ESCAPE: while the A row`s Alt slot captures, Escape is CAPTURED, not Start: prevented, nothing closes, A`s Alt becomes Escape and Start`s Primary the displaced Numpad Enter, live; Start`s remaining key M then closes everything', async () => {
     // LEGACY REPLACED (the Red): no Controls screen; Escape was always Start (routed in the capture
     // phase before every view), so it could never be bound.
     // WRONG IMPL KILLED: a capture intercept placed after the Escape-as-Start / typing branches
@@ -1095,7 +1122,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     ).toEqual(tableWith({ A: ['Enter', 'Escape'], Start: ['NumpadEnter', 'KeyM'] }));
     expect(cellText('A_1')).toBe(altText(ROW_A, glyph('Escape')));
     expect(cellText('Start_0')).toBe(primaryText(buttonRow('Start'), glyph('NumpadEnter')));
-    expect(controlsFeedback(), 'the swap line names both rows').toBe(
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the swap line is a toast. Was: the strip's text.
+    expect(toastNow(), 'the swap line names both rows').toBe(
       outcomeText(
         captureKey(DEFAULT_BINDINGS, { row: ROW_A, slot: 1 }, { code: 'Escape', key: 'Escape' }),
       ),
@@ -1113,7 +1141,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(stackNames()).toEqual(['world']);
   });
 
-  it('pressing the capturing slot`s own key cancels: the cancelled line, the table and the storage untouched, and A still on Enter', async () => {
+  it('UIF4B.1 pressing the capturing slot`s own key cancels: the cancelled toast, the table and the storage untouched, and A still on Enter', async () => {
     // WRONG IMPL KILLED: a capture that binds the slot's own key again (a save of an unchanged
     // table), one that ignores it and keeps waiting, a cancel that is also routed as A (it would
     // start the next capture at once), a cancel line that is the bound line, and a cancel that is
@@ -1125,7 +1153,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const again = press('Enter');
     expect(again.defaultPrevented, 'the captured key is consumed').toBe(true);
     expect(capturing(), 'the slot`s own key ends the capture').toBe(false);
-    expect(controlsFeedback(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the cancelled line is a toast. Was: the strip's text.
+    expect(toastNow(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
     expect(savedRaw(), 'nothing is saved').toBeNull();
     expect(cellText('A_0'), 'the slot still shows Enter').toBe(primaryText(ROW_A, glyph('Enter')));
     expect(stackNames()).toEqual([...CONTROLS_STACK]);
@@ -1133,7 +1162,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(capturing(), 'Enter is still A: it starts the capture again').toBe(true);
   });
 
-  it('Tab while capturing is refused with the reserved reason, is NOT prevented, and the capture keeps waiting: the next K binds', async () => {
+  it('UIF4B.1 Tab while capturing is refused with the reserved reason on the strip, is NOT prevented, and the capture keeps waiting: the next K binds', async () => {
     // WRONG IMPL KILLED: a reserved key that ends the capture, one that is bound (Tab would be a
     // game key and keyboard users lose focus movement), one that is prevented (the browser's focus
     // move is swallowed), a refusal without its reason, and a capture that stops listening after
@@ -1144,7 +1173,15 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     startCapture('A_0');
     const tab = press('Tab', { key: 'Tab' });
     expect(tab.defaultPrevented, 'a reserved key stays the browser`s').toBe(false);
-    expect(controlsFeedback(), 'the reserved reason').toBe(i18nT('controls.refused.reserved'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the refused hint stays on the Controls strip (a hint
+    // kind painted on the frame's own host: visible, never on the toast or the status line), and the
+    // bound line that follows is a toast. Was: both read `#controls-feedback`.
+    expect(controlsFeedback(), 'the reserved reason, on the strip').toBe(
+      i18nT('controls.refused.reserved'),
+    );
+    expect(stripGone(), 'the strip is shown').toBe(false);
+    expect(toastNow(), 'not on the toast').toBe('');
+    expect(statusNow(), 'nor on the status line').toBe('');
     expect(capturing(), 'the capture keeps waiting').toBe(true);
     expect(captureText(), 'for the same row').toBe(capturePrompt(ROW_A));
     expect(savedRaw(), 'nothing is saved').toBeNull();
@@ -1152,11 +1189,13 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const k = press('KeyK', { key: 'k' });
     expect(k.defaultPrevented).toBe(true);
     expect(capturing(), 'the next key binds').toBe(false);
-    expect(controlsFeedback()).toBe(i18nT('controls.bound'));
+    expect(toastNow(), 'the bound line is a toast').toBe(i18nT('controls.bound'));
+    expect(controlsFeedback(), 'the capture ended: the strip is empty').toBe('');
+    expect(stripGone(), 'and hidden').toBe(true);
     expect(savedTable().buttons.A[0]).toBe('KeyK');
   });
 
-  it('a capture that would empty a protected button is refused with its reason, changes nothing, keeps capturing (Backspace is not B there), and the row`s own key then cancels', async () => {
+  it('UIF4B.1 a capture that would empty a protected button is refused with its reason on the strip, changes nothing, keeps capturing (Backspace is not B there), and the row`s own key then cancels', async () => {
     // WRONG IMPL KILLED: a protected refusal that still saves or applies the half-swap (B would be
     // left with no key), one that ends the capture, one whose Backspace is routed as B (the frame
     // pops mid-capture), and a refusal shown with the reserved reason.
@@ -1174,7 +1213,19 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
 
     const back = press('Backspace');
     expect(back.defaultPrevented, 'a refused (not reserved) key is still consumed').toBe(true);
-    expect(controlsFeedback(), 'the protected reason').toBe(i18nT('controls.refused.protected'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the protected refusal is a HINT on the Controls strip,
+    // not a toast and not the status line. The strip is the same node as before: the text is
+    // unchanged; its class, visibility and exclusivity are new.
+    expect(controlsFeedback(), 'the protected reason, on the strip').toBe(
+      i18nT('controls.refused.protected'),
+    );
+    expect(
+      byId('controls-feedback').classList.contains('mr-frame-feedback'),
+      'the strip class',
+    ).toBe(true);
+    expect(stripGone(), 'the strip is shown').toBe(false);
+    expect(toastNow(), 'not on the toast').toBe('');
+    expect(statusNow(), 'nor on the status line').toBe('');
     expect(capturing(), 'the capture keeps waiting').toBe(true);
     expect(stackNames(), 'Backspace was captured, not B: nothing closed').toEqual([
       ...CONTROLS_STACK,
@@ -1186,12 +1237,13 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
 
     press('Space'); // X's own key: cancel
     expect(capturing(), 'the row`s own key cancels').toBe(false);
-    expect(controlsFeedback()).toBe(i18nT('controls.cancelled'));
+    expect(toastNow(), 'the cancelled line is a toast').toBe(i18nT('controls.cancelled'));
+    expect(controlsFeedback(), 'and the refusal hint is gone with the capture').toBe('');
     press('Backspace');
     expect(stackNames(), 'B still pops Controls back to the menu').toEqual(['world', 'menuView']);
   });
 
-  it('an OS key-repeat of the Enter that started the capture neither cancels nor binds; the capture keeps waiting for a fresh press', async () => {
+  it('UIF4B.1 an OS key-repeat of the Enter that started the capture neither cancels nor binds, and shows neither a hint nor a toast; the capture keeps waiting for a fresh press', async () => {
     // WRONG IMPL KILLED: a capture intercept placed ahead of the OS-repeat branch (the held Enter's
     // first repeat, 30 ms after the press, is "the slot's own key" and cancels the capture before
     // the player can let go), and one that binds a repeat.
@@ -1204,7 +1256,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     fire('keydown', 'Enter', pressAt + 30, { repeat: true });
     fire('keydown', 'Enter', pressAt + 60, { repeat: true });
     expect(capturing(), 'the OS repeats did not end the capture').toBe(true);
-    expect(controlsFeedback(), 'and wrote no outcome line').toBe('');
+    expect(controlsFeedback(), 'and wrote no strip hint').toBe('');
+    expect(toastNow(), 'nor a toast (uif-4b)').toBe('');
     expect(savedRaw(), 'and saved nothing').toBeNull();
     fire('keyup', 'Enter', pressAt + 90);
     pressAt += 200;
@@ -1214,7 +1267,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(savedTable().buttons.A[0], 'the fresh press binds').toBe('KeyK');
   });
 
-  it('Clear on an accelerator row (Shortcuts, reached by RB) unbinds it at once: the cleared line, an empty slot, [] in storage, and back at the world its key opens nothing while J still does', async () => {
+  it('UIF4B.1 Clear on an accelerator row (Shortcuts, reached by RB) unbinds it at once: the cleared toast, an empty slot, [] in storage, and back at the world its key opens nothing while J still does', async () => {
     // WRONG IMPL KILLED: a Clear that is saved but not applied (I still opens the Bag), one that is
     // applied but not saved, one that clears the wrong row or every row (J is the control), a Clear
     // that starts a capture instead, a cleared line naming the wrong row, and an RB that does not
@@ -1235,9 +1288,12 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(clear.defaultPrevented, 'A on Clear is consumed').toBe(true);
     expect(capturing(), 'Clear starts no capture').toBe(false);
     const rowI: ControlsRow = { kind: 'accel', id: 'I' };
-    expect(controlsFeedback(), 'the cleared line names the row').toBe(
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the cleared line reaches the toast through the view's
+    // `onOutcome` handler, and the strip stays empty. Was: the view wrote it to the strip.
+    expect(toastNow(), 'the cleared line names the row, on the toast').toBe(
       tf('controls.cleared', { label: rowLabel(rowI) }),
     );
+    expect(controlsFeedback(), 'and the strip stays empty').toBe('');
     expect(cellText('I_0'), 'the Primary slot is empty now').toBe(
       primaryText(rowI, keycapOf(undefined)),
     );
@@ -1261,7 +1317,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     ]);
   });
 
-  it('Reset all asks Yes / No with the cursor on No: No changes nothing; Yes restores the defaults live and in storage', async () => {
+  it('UIF4B.1 Reset all asks Yes / No with the cursor on No: No changes nothing; Yes restores the defaults live and in storage and toasts the done line', async () => {
     // WRONG IMPL KILLED: a confirm that defaults to Yes (one stray A wipes a custom table), a No
     // that resets anyway, a Yes that saves the defaults but leaves the live table (K still A,
     // Enter dead), one that applies but does not save, a reset that leaves the question up, and a
@@ -1294,7 +1350,10 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(controlsActive(), 'Up moves to Yes').toBe('yes');
     press('KeyK'); // A on Yes
     expect(visibleNow('controls-question'), 'Yes closes the question').toBe(false);
-    expect(controlsFeedback(), 'the reset line').toBe(i18nT('controls.reset.done'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the reset line is a toast (the strip stays empty). Was:
+    // the strip's text.
+    expect(toastNow(), 'the reset line, on the toast').toBe(i18nT('controls.reset.done'));
+    expect(controlsFeedback(), 'and the strip stays empty').toBe('');
     expect(savedTable(), 'storage holds the defaults').toEqual(tableWith({}));
     expect(cellText('A_0'), 'A shows Enter again').toBe(primaryText(ROW_A, glyph('Enter')));
 
@@ -1345,7 +1404,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(capturing(), 'A on a slot starts a fresh capture').toBe(true);
   });
 
-  it('a save that throws still applies the table live, and the feedback line carries the save failure', async () => {
+  it('UIF4B.1 a save that throws still applies the table live, and the toast carries the save failure', async () => {
     // WRONG IMPL KILLED: a remap applied only when the save succeeds (a full or denied storage
     // makes remapping impossible), a save exception that escapes the key listener (the capture
     // never ends), and a failure that is silent (the player believes it was saved).
@@ -1385,8 +1444,15 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(refused, 'the injected save failure really fired').toBeGreaterThanOrEqual(1);
     expect(k.defaultPrevented).toBe(true);
     expect(capturing(), 'the capture ended').toBe(false);
-    expect(controlsFeedback(), 'the outcome line').toContain(i18nT('controls.bound'));
-    expect(controlsFeedback(), 'carries the save failure').toContain(i18nT('controls.saveFailed'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the save-failed outcome is a toast (kind
+    // controls-save-failed: the bound line plus the save-failed suffix), not a strip line. Was: both
+    // `toContain` reads were on `#controls-feedback`.
+    expect(toastNow(), 'the outcome line').toContain(i18nT('controls.bound'));
+    expect(toastNow(), 'carries the save failure').toContain(i18nT('controls.saveFailed'));
+    expect(toastNow(), 'exactly the bound line, a space, the suffix').toBe(
+      `${i18nT('controls.bound')} ${i18nT('controls.saveFailed')}`,
+    );
+    expect(controlsFeedback(), 'and the strip stays empty').toBe('');
     expect(savedRaw(), 'nothing reached storage').toBeNull();
     expect(real.getItem(STORAGE_KEY), 'nothing reached the real storage').toBeNull();
     expect(cellText('A_0'), 'the slot shows K').toBe(primaryText(ROW_A, 'K'));
@@ -1506,7 +1572,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(H.sends, 'and only one: no direction is left held').toHaveLength(2);
   });
 
-  it('a capture takes F9 and F8 like any key: on an accelerator slot each swaps (the swap line, the key consumed), F9 downloads no bug bundle and F8 leaves the error overlay up', async () => {
+  it('UIF4B.1 a capture takes F9 and F8 like any key: on an accelerator slot each swaps (the swap toast, the key consumed), F9 downloads no bug bundle and F8 leaves the error overlay up', async () => {
     // WRONG IMPL KILLED: a capture intercept placed below the F8 / F9 branch (F9 downloads a bug
     // bundle and the slot keeps waiting; F8 dismisses the error overlay and the slot keeps
     // waiting), and one that runs the F8 / F9 handler AND then captures (a download, or a
@@ -1531,7 +1597,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(downloads.urls, 'a captured F9 builds no bug bundle').toHaveLength(0);
     expect(downloads.clicks, 'and downloads nothing').toHaveLength(0);
     expect(capturing(), 'the swap ended the capture').toBe(false);
-    expect(controlsFeedback(), 'the swap line').toBe(outcomeText(f9Swap));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the swap lines are toasts. Was: the strip's text.
+    expect(toastNow(), 'the swap line').toBe(outcomeText(f9Swap));
     expect(savedTable(), 'Bag on F9, the bug report on I').toEqual(
       tableWith({}, { I: ['F9'], F9: ['KeyI'] }),
     );
@@ -1549,13 +1616,13 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(f8.defaultPrevented, 'the captured F8 is consumed').toBe(true);
     expect(errorOverlayShown(), 'a captured F8 dismisses nothing').toBe(true);
     expect(capturing(), 'the swap ended the capture').toBe(false);
-    expect(controlsFeedback(), 'the swap line').toBe(outcomeText(f8Swap));
+    expect(toastNow(), 'the swap line').toBe(outcomeText(f8Swap));
     expect(savedTable(), 'Journal on F8, dismiss-error on J').toEqual(
       tableWith({}, { I: ['F9'], F9: ['KeyI'], J: ['F8'], F8: ['KeyJ'] }),
     );
   });
 
-  it('the Cancel chip in the booted shell: with no capture waiting its click changes nothing; during a capture it ends the capture with the cancelled line, the table and storage untouched, and the frame stays open and browsing (B then pops it)', async () => {
+  it('UIF4B.1 the Cancel chip in the booted shell: with no capture waiting its click changes nothing; during a capture it ends the capture with the cancelled toast, the table and storage untouched, and the frame stays open and browsing (B then pops it)', async () => {
     // WRONG IMPL KILLED: a chip whose onCancelCapture is wired to nothing (the pointer cancel is
     // dead: the slot keeps waiting), a cancel that pops the frame (or closes everything) instead
     // of ending the capture, a cancel that ends the capture silently or with another line, one
@@ -1569,7 +1636,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
 
     chip.click();
     expect(stackNames(), 'no capture: the click closes nothing').toEqual([...CONTROLS_STACK]);
-    expect(controlsFeedback(), 'and writes no line').toBe('');
+    expect(controlsFeedback(), 'and writes no strip hint').toBe('');
+    expect(toastNow(), 'and no toast (uif-4b)').toBe('');
     expect(capturing(), 'and starts nothing').toBe(false);
     expect(savedRaw(), 'and saves nothing').toBeNull();
 
@@ -1579,7 +1647,9 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     );
     chip.click();
     expect(capturing(), 'the click ended the capture').toBe(false);
-    expect(controlsFeedback(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the Cancel chip's line is a toast. Was: the strip.
+    expect(toastNow(), 'with the cancelled toast').toBe(i18nT('controls.cancelled'));
+    expect(controlsFeedback(), 'and an empty strip').toBe('');
     expect(visibleNow('controls-cancel-btn'), 'the chip goes with the capture').toBe(false);
     expect(savedRaw(), 'nothing is saved').toBeNull();
     expect(cellText('A_0'), 'A still shows Enter').toBe(primaryText(ROW_A, glyph('Enter')));
@@ -1594,7 +1664,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     ]);
   });
 
-  it('only the Cancel chip`s own activation keys are exempt from a capture: Enter and Space at the focused chip are not taken (not prevented, the slot keeps waiting, nothing saved), while the same Enter at the hint bar`s Start chip, a native button outside the dialog, is captured and swaps onto the Y slot', async () => {
+  it('UIF4B.1 only the Cancel chip`s own activation keys are exempt from a capture: Enter and Space at the focused chip are not taken (not prevented, the slot keeps waiting, nothing saved), while the same Enter at the hint bar`s Start chip, a native button outside the dialog, is captured and swaps onto the Y slot', async () => {
     // WRONG IMPL KILLED: an exemption for EVERY focused native button (Enter on a hint chip, or on
     // any other button the player tabbed to, is silently swallowed: neither bound nor prevented;
     // the red-team's confirmed break), and no exemption at all (the chip's own Enter and Space are
@@ -1617,7 +1687,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(space.defaultPrevented, 'and so is its Space').toBe(false);
     expect(capturing(), 'neither was captured: the slot keeps waiting').toBe(true);
     expect(captureText(), 'for the same row').toBe(capturePrompt(rowY));
-    expect(controlsFeedback(), 'with no outcome line').toBe('');
+    expect(controlsFeedback(), 'with no strip hint').toBe('');
+    expect(toastNow(), 'and no toast (uif-4b)').toBe('');
     expect(savedRaw(), 'nothing is saved').toBeNull();
 
     const startChip = byId('chip-start');
@@ -1635,7 +1706,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const atStartChip = press('Enter', { key: 'Enter' }, startChip);
     expect(atStartChip.defaultPrevented, 'Enter at the Start chip is captured').toBe(true);
     expect(capturing(), 'and ends the capture').toBe(false);
-    expect(controlsFeedback(), 'with the swap line').toBe(outcomeText(swap));
+    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the swap line is a toast. Was: the strip's text.
+    expect(toastNow(), 'with the swap toast').toBe(outcomeText(swap));
     expect(savedTable(), 'Y on Enter, A on F').toEqual(
       tableWith({ Y: ['Enter'], A: ['KeyF', 'NumpadEnter'] }),
     );
@@ -1716,5 +1788,121 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const enter = press('Enter', { key: 'Enter' });
     expect(enter.defaultPrevented, 'control: at the window Enter is the F9 key').toBe(true);
     expect(downloads.urls, 'control: and downloads once').toHaveLength(1);
+  });
+});
+
+// ==========================================================================================
+// uif-4b: the Controls outcomes through the one seam (UIF4B.1, UIF4B.4)
+// ==========================================================================================
+//
+// A refused key is a HINT kind (`controls-refused`): it paints on the Controls frame's own strip,
+// `#controls-feedback` (visible, class mr-frame-feedback), and on no other channel: never the toast,
+// never `#status`. Every other Controls outcome (bound, swapped, cancelled, cleared, reset, save
+// failed) is a toast. The tests above read each outcome; these two pin the exclusivity of the hint
+// over a refusal sequence, and the announcement of the hint through the live region.
+
+/** Every value written to #a11y-live's textContent from now on, oldest first (main.dispatch.test.ts's
+ *  uif-4 watcher, copied: the mechanism is the same). */
+function watchLive(): string[] {
+  const node = byId('a11y-live');
+  const writes: string[] = [];
+  let proto: object | null = Object.getPrototypeOf(node);
+  let accessor: PropertyDescriptor | undefined;
+  while (proto !== null && accessor === undefined) {
+    accessor = Object.getOwnPropertyDescriptor(proto, 'textContent');
+    proto = Object.getPrototypeOf(proto);
+  }
+  const get = accessor?.get;
+  const set = accessor?.set;
+  if (get === undefined || set === undefined) throw new Error('textContent is not an accessor');
+  Object.defineProperty(node, 'textContent', {
+    configurable: true,
+    get() {
+      return get.call(this);
+    },
+    set(value: unknown) {
+      writes.push(String(value));
+      set.call(this, value);
+    },
+  });
+  return writes;
+}
+
+describe('main.ts Controls outcomes use their feedbackPolicy channel (runtime, uif-4b)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('UIF4B.1 a refused key is a hint on #controls-feedback only (visible, class mr-frame-feedback), each refusal replacing the last; never on #toast or #status; the capture ending empties and hides the strip', async () => {
+    // WRONG IMPL KILLED: a refusal routed to the toast (a timed channel for a state the capture is
+    // still in), or to the world hint on #status (painted under the open frame, z-order), or to both
+    // (two copies); a strip without the shared class (it would reflow the frame body); a refusal that
+    // stays standing after the capture it belongs to has ended.
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('X_1');
+    const strip = byId('controls-feedback');
+    expect(strip.classList.contains('mr-frame-feedback'), 'the shared strip class').toBe(true);
+    expect(controlsFeedback(), 'precondition: no hint before a refusal').toBe('');
+    expect(stripGone(), 'precondition: the strip is hidden while empty').toBe(true);
+
+    press('Tab', { key: 'Tab' });
+    expect(controlsFeedback(), 'reserved: on the strip').toBe(i18nT('controls.refused.reserved'));
+    expect(stripGone(), 'reserved: the strip is shown').toBe(false);
+    expect(toastNow(), 'reserved: not on the toast').toBe('');
+    expect(statusNow(), 'reserved: not on the status line').toBe('');
+
+    press('Backspace');
+    expect(controlsFeedback(), 'protected replaces it').toBe(i18nT('controls.refused.protected'));
+    expect(stripGone(), 'protected: still shown').toBe(false);
+    expect(toastNow(), 'protected: not on the toast').toBe('');
+    expect(statusNow(), 'protected: not on the status line').toBe('');
+    expect(capturing(), 'the capture is still waiting').toBe(true);
+
+    press('Space'); // X's own key: the capture ends (cancelled)
+    expect(capturing(), 'precondition: the capture ended').toBe(false);
+    expect(controlsFeedback(), 'the capture ended: the strip is empty').toBe('');
+    expect(stripGone(), 'and hidden').toBe(true);
+    expect(toastNow(), 'the cancel is the toast`s').toBe(i18nT('controls.cancelled'));
+  });
+
+  it('UIF4B.4 each refused-key hint is announced through #a11y-live exactly once per show, with its own text', async () => {
+    // WRONG IMPL KILLED: a hint painted on the strip but never announced (a screen-reader user hears
+    // nothing while the capture keeps refusing), one announced twice (the strip's announce AND a
+    // second route), and the toast route (the hint would be spoken as a toast, once, but painted
+    // elsewhere). Two DISTINCT reasons are used: an identical text repeated is deduped by the live
+    // region by design (R-uif-4-REPEATSAY).
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('X_1');
+    const live = watchLive();
+    // Frames drive the live region (a write needs a frame past its 500 ms window).
+    const settleLive = (): void => {
+      const from = pressAt;
+      for (let k = 1; k <= 30; k += 1) frame(from + k * 50);
+      pressAt = from + 31 * 50;
+    };
+
+    press('Tab', { key: 'Tab' });
+    settleLive();
+    expect(
+      live.filter((w) => w.includes(i18nT('controls.refused.reserved'))),
+      'the reserved hint is announced once',
+    ).toHaveLength(1);
+
+    press('Backspace');
+    settleLive();
+    expect(
+      live.filter((w) => w.includes(i18nT('controls.refused.protected'))),
+      'the protected hint is announced once',
+    ).toHaveLength(1);
+    expect(
+      live.filter((w) => w.includes(i18nT('controls.refused.reserved'))),
+      'and the first is not announced again',
+    ).toHaveLength(1);
   });
 });

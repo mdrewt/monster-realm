@@ -248,27 +248,34 @@ test.describe
         // Step 7: click the submit button.
         await page.click('[data-testid="rename-submit"]');
 
-        // Step 8: wait for the feedback element to show a success marker.
-        // The onSubmit in main.ts calls showFeedback with a success message after the
-        // reducer resolves. We wait for any non-empty textContent in the feedback div.
+        // Step 8: wait for the toast to show a success marker.
+        // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the rename outcome is a toast (the one seam), read
+        // from `#toast`. Was: the overlay's own `[data-testid="rename-feedback"]` line, retired from
+        // index.html. We wait for any non-empty, shown textContent in the toast.
         // Timeout 15s: local reducer round-trip is sub-second; add headroom for CI.
         await page.waitForFunction(
           () => {
-            const fb = document.querySelector('[data-testid="rename-feedback"]');
-            return fb !== null && (fb.textContent ?? '').trim().length > 0;
+            const fb = document.querySelector('#toast');
+            return (
+              fb !== null && !(fb as HTMLElement).hidden && (fb.textContent ?? '').trim().length > 0
+            );
           },
           null,
           { timeout: 15_000 },
         );
 
-        // Step 9: assert the feedback does NOT contain an error indicator.
-        // If the server rejected the name (e.g. too long, invalid chars), the feedback
+        // Step 9: assert the toast does NOT contain an error indicator.
+        // If the server rejected the name (e.g. too long, invalid chars), the toast
         // would contain an error. We check it is NOT a known error pattern.
-        const feedbackText = await page.textContent('[data-testid="rename-feedback"]');
+        const feedbackText = await page.textContent('#toast');
         expect(
           feedbackText ?? '',
-          'rename feedback must not contain "error" or "failed" after a valid rename',
+          'rename toast must not contain "error" or "failed" after a valid rename',
         ).not.toMatch(/error|failed|reject/i);
+        expect(
+          await page.locator('[data-testid="rename-feedback"]').count(),
+          'the retired rename line is not in the page (uif-4b)',
+        ).toBe(0);
 
         // Step 10: server-truth SQL assertion (PTC1B-9 / RT-RN-10).
         // Query the player table and filter to the own normalized identity only.
