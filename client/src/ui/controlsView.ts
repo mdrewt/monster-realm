@@ -70,7 +70,7 @@ export interface ControlsViewHandlers {
    *  the shell rigs that never paint Display; main.ts always passes it. */
   readonly textStep?: () => TextStep;
   /** Apply and save a text-size step; false when it could not be saved. Optional as above: absent,
-   *  a chosen step changes nothing and reads as unsaved. */
+   *  a chosen step changes nothing and raises no outcome line. */
   readonly onTextStep?: (step: TextStep) => boolean;
   /** The Cancel chip was pressed while a slot waits for a key. */
   readonly onCancelCapture: () => void;
@@ -288,7 +288,9 @@ export class ControlsView implements ControlsScreenView {
         this.#handlers.onOutcome?.(t('controls.reset.done'), this.#handlers.onReset());
         break;
       case 'textStep': {
-        const saved = this.#handlers.onTextStep?.(request.step) ?? false;
+        const onTextStep = this.#handlers.onTextStep;
+        if (onTextStep === undefined) break;
+        const saved = onTextStep(request.step);
         const label = STEP_LABELS[request.step]();
         this.#handlers.onOutcome?.(tf('controls.text.set', { label }), saved);
         break;

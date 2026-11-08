@@ -13,7 +13,8 @@ export const DISPLAY_STORAGE_KEY = 'mr.display';
 export const TEXT_STEPS = ['normal', 'large', 'xlarge'] as const;
 export type TextStep = (typeof TEXT_STEPS)[number];
 
-/** Each step's multiplier on the root font size (×1.5 is fine on a vector font; none is pixel). */
+/** Each step's multiplier on the root font size. ×1.5 is not an integer multiple, which only a
+ *  pixel font would need, and the UI ships none (#586 D1). */
 export const TEXT_STEP_SCALE: Readonly<Record<TextStep, number>> = Object.freeze({
   normal: 1,
   large: 1.5,

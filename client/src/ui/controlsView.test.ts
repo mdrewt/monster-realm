@@ -1779,3 +1779,133 @@ describe('ControlsView uif-13: choosing a text size (UIF13.3)', () => {
     expect(readCell('normal')).toBe('Text size: Normal');
   });
 });
+
+describe('ControlsView uif-13: sheet placement and the optional text-size handlers', () => {
+  it('UIF13.1 the confirm sheet is placed away from the cursor row when it opens and re-placed when the frame resizes, and nothing is placed while the frame has no area', () => {
+    // WRONG IMPL KILLED: a view that renders the confirm sheet but never calls `placeContextSheet`
+    // (the sheet would sit at the CSS origin, on top of the cursor row it must clear); one that
+    // places once and never again (a resize leaves it where the old frame size put it, possibly
+    // outside the new one); a placement written while the frame is hidden or collapsed to zero
+    // width (the writes are NaN or stale and survive into the next open). happy-dom rects are all
+    // zero, so the frame, the sheet and the slot are given real boxes here, and a fake
+    // ResizeObserver is installed BEFORE the view is constructed so its callback can be fired.
+    const callbacks: ResizeObserverCallback[] = [];
+    class FakeResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        callbacks.push(cb);
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    const host = globalThis as unknown as { ResizeObserver?: unknown };
+    const hadObserver = Object.hasOwn(host, 'ResizeObserver');
+    const previousObserver = host.ResizeObserver;
+    host.ResizeObserver = FakeResizeObserver;
+
+    let overlayWidth = 0;
+    const box = (x: number, y: number, w: number, h: number): DOMRect =>
+      ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h }) as DOMRect;
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement): DOMRect {
+        if (this.id === OVERLAY_ID) return box(0, 0, overlayWidth, overlayWidth === 0 ? 0 : 600);
+        if (this.hasAttribute('data-context-sheet')) return box(0, 0, 200, 100);
+        return box(0, 0, 50, 20);
+      });
+    // The rem the placement reads: happy-dom cannot compute the root font size.
+    const realComputed = globalThis.getComputedStyle;
+    const computedSpy = vi
+      .spyOn(globalThis, 'getComputedStyle')
+      .mockImplementation(
+        (el: Element, pseudo?: string | null): CSSStyleDeclaration =>
+          el === document.documentElement
+            ? ({ fontSize: '16px' } as CSSStyleDeclaration)
+            : realComputed(el, pseudo),
+      );
+    try {
+      const written = (sheet: HTMLElement): string[] => [sheet.style.left, sheet.style.top];
+
+      // The hidden-frame guard: a frame with no width places nothing.
+      overlayWidth = 0;
+      const guarded = rig();
+      guarded.view.show();
+      const guardedSession = pilot(guarded.view);
+      guardedSession.press('Up', 'A');
+      const guardedSheet = theSheet();
+      expect(written(guardedSheet), 'no placement while the frame has no width').toEqual(['', '']);
+      for (const cb of callbacks) cb([], {} as ResizeObserver);
+      expect(written(guardedSheet), 'nor on a resize while it has none').toEqual(['', '']);
+
+      // A real frame: the sheet is placed when it opens.
+      callbacks.length = 0;
+      overlayWidth = 800;
+      const { view } = rig();
+      expect(
+        callbacks.length,
+        'the view observes resizes (a ResizeObserver was made)',
+      ).toBeGreaterThan(0);
+      view.show();
+      const session = pilot(view);
+      session.press('Up');
+      session.press('A');
+      const sheet = theSheet();
+      const [left, top] = written(sheet);
+      expect(left, 'left is written in px').toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(top, 'top is written in px').toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(`${left}${top}`.includes('NaN'), 'no NaN placement').toBe(false);
+
+      // A resize re-places it.
+      sheet.style.left = '';
+      sheet.style.top = '';
+      sheet.style.height = '';
+      expect(written(sheet), 'precondition: the placement was cleared').toEqual(['', '']);
+      for (const cb of callbacks) cb([], {} as ResizeObserver);
+      const [left2, top2] = written(sheet);
+      expect(left2, 'a resize writes left again').toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(top2, 'a resize writes top again').toMatch(/^-?\d+(\.\d+)?px$/);
+    } finally {
+      rectSpy.mockRestore();
+      computedSpy.mockRestore();
+      if (hadObserver) host.ResizeObserver = previousObserver;
+      else delete host.ResizeObserver;
+    }
+  });
+
+  it('UIF13.3 a textStep request painted into a view built WITHOUT onTextStep and textStep does nothing: no onOutcome, no throw, and the Display rows still render with Normal current', () => {
+    // WRONG IMPL KILLED: a view that calls `handlers.onTextStep(...)` unguarded (a TypeError out of
+    // paint in every shell rig that never wires the setting), one that reports an outcome line for a
+    // step nothing applied (a toast "Text size: Large." with the size unchanged), and one that reads
+    // `handlers.textStep()` unguarded (the rows would not render without it: an absent reader reads
+    // as Normal).
+    closeOverlayA11y('controlsView', null);
+    document.body.replaceChildren();
+    const onOutcome = vi.fn();
+    const view = new ControlsView({
+      bindings: () => DEFAULT_BINDINGS,
+      onClear: () => true,
+      onReset: () => true,
+      onCancelCapture: () => {},
+      announce: () => {},
+      onOutcome,
+    } as Handlers);
+    view.show();
+    const token = textStepRequest('large');
+    const p = paintOf({ nav: navOn('display', 'large'), request: token });
+    expect(() => view.paint(p), 'the paint does not throw').not.toThrow();
+    expect(() => view.paint(p), 'nor does a repaint of the same token').not.toThrow();
+    expect(() =>
+      view.paint(paintOf({ nav: navOn('display', 'large'), request: textStepRequest('xlarge') })),
+    ).not.toThrow();
+    expect(onOutcome, 'no outcome line for a step nothing applied').not.toHaveBeenCalled();
+    expect(
+      Array.from(el(ROWS_ID).querySelectorAll('[data-nav-key]')).map(
+        (n) => (n as HTMLElement).dataset.navKey,
+      ),
+      'the three Display rows render',
+    ).toEqual(['normal', 'large', 'xlarge']);
+    expect(currentKeys(), 'an absent reader reads as Normal').toEqual(['normal']);
+    expect(readCell('normal')).toBe('Text size: Normal (current)');
+    expect(readCell('large')).toBe('Text size: Large');
+  });
+});
