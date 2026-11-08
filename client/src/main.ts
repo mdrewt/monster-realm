@@ -164,6 +164,7 @@ import {
   claimStep,
 } from './ui/claimModel';
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
+import { closeContextSheet, createContextSheet, renderContextSheet } from './ui/contextSheet';
 import {
   baseFor,
   blocksPlayerOpen,
@@ -235,7 +236,6 @@ import { type MenuTarget, withRequestBadge } from './ui/menuModel';
 import type { MenuPointerInput, MenuView } from './ui/menuView';
 import type { MonstersTab } from './ui/monstersModel';
 import { EMPTY_NAV_MEMORY } from './ui/nav';
-import { renderNav } from './ui/navRender';
 import {
   buildNotices,
   type Notice,
@@ -1391,6 +1391,11 @@ function hintChips(
             ? interactVerb(chip.action)
             : i18nT('chrome.chip.ok'),
       sheetOpen: screenHost.sheetOpen,
+      // uif-12 (UIF12.3): A chooses a row of a multi-row picker (not its Challenge confirm).
+      picker:
+        screenHost.sheet !== null &&
+        screenHost.sheet.confirm === null &&
+        screenHost.sheet.entries.length > 1,
       requestWaiting: pending.length > 0,
     },
     // bt-12: the shown tactical view's verbs — the shell's, else the deploy panel's (both screens).
@@ -2959,6 +2964,9 @@ const toastControls = (kind: SinkKind, text: string, saved = true): void => {
 
 // The pointer source (ctl-15): built at boot on #game-screen, it only presses virtual buttons.
 let pointerSource: PointerSource | null = null;
+// The world prompt's paint (uif-12), set at boot: a pointer press repaints the world sheet at once,
+// because the pointer source's seek reads the row cursor from the DOM right after each press.
+let paintWorldPrompt: (() => void) | null = null;
 
 // One pointer press: the button's down and up edges through the router, the stack synced on both
 // sides as a keydown does. Like every input path it is dead while the session terminal shows.
@@ -2970,6 +2978,7 @@ const pointerPress = (button: VButton): void => {
     routeEdge({ button, down: false });
   } finally {
     syncStack();
+    paintWorldPrompt?.();
   }
 };
 
@@ -4744,13 +4753,14 @@ async function main(): Promise<void> {
   interactPromptEl.className = 'mr-frame mr-frame--prompt';
   interactPromptEl.style.display = 'none';
   frameLayer.appendChild(interactPromptEl);
-  // ctl-10a: it holds either the chip text or, while the world sheet is open, its rows (a nav
-  // list rendered into one child). Memoized last-applied state: DOM writes happen ONLY when the
-  // (text or rows, screen position) key changes — never unconditionally per frame.
+  // ctl-10a: it holds either the chip text or, while a world sheet is open, that sheet: the kit's
+  // ContextSheet (uif-12, UIF12.1), hung where the prompt hangs and never placed by the kit. The
+  // `[data-context-sheet]` root is what lets the pointer source click its rows and close it from a
+  // click elsewhere. Memoized last-applied state: DOM writes happen ONLY when the (text or rows,
+  // screen position) key changes — never unconditionally per frame.
   const interactChipTextEl = document.createElement('span');
-  const interactSheetEl = document.createElement('div');
-  interactSheetEl.style.display = 'none';
-  interactPromptEl.append(interactChipTextEl, interactSheetEl);
+  const interactSheet = createContextSheet(document, { frame: 'interact' });
+  interactPromptEl.append(interactChipTextEl, interactSheet.root);
   let lastPromptKey = 'none';
 
   // The deletion-grace countdown banner — created at runtime beside
@@ -4982,6 +4992,125 @@ async function main(): Promise<void> {
   // Frame loop is wrapped in try/catch so a wasm/predictor throw does not
   // kill the loop permanently. rAF re-arm is in `finally` so it always fires, even
   // on error. The reconcile call is inside the batch-listener's try-catch (above).
+  // The world interaction chip (ctl-10a) and the world sheets (uif-12): what A does with what the
+  // character faces, or the open sheet. Hidden under any frame, on a battle base and under the
+  // session terminal. Painted by the frame tick and, so a pointer seek sees its row cursor move,
+  // after every pointer press. Answers what the hint bar needs from the same reads.
+  const paintPrompt = (): { chip: InteractChip | null; pending: readonly RequestNotice[] } => {
+    const live = worldBaseLive(); // first: it closes a sheet the world no longer owns
+    const pending = livePending();
+    screenHost.settleRequest(pending); // a withdrawn or answered request's sheet closes
+    const sheet = screenHost.sheet;
+    const request = screenHost.request;
+    const chip = facedChip(live);
+    const anchor =
+      sheet !== null
+        ? sheet.entries[0]?.candidate
+        : chip?.kind === 'single'
+          ? chip.candidate
+          : (chip ?? undefined);
+    // The request sheet (ctl-13) has no faced thing to hang from: it sits low and centred.
+    const promptPos =
+      request !== null
+        ? { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight * 0.7) }
+        : anchor !== undefined
+          ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
+          : undefined;
+    // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
+    const promptSig =
+      request !== null
+        ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
+        : sheet !== null
+          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
+          : chip !== null
+            ? interactChipText(chip)
+            : null;
+    const promptKey =
+      promptSig !== null && promptPos !== undefined
+        ? `${promptSig}|${promptPos.x}|${promptPos.y}`
+        : 'none';
+    if (promptKey === lastPromptKey) return { chip, pending };
+    lastPromptKey = promptKey;
+    const rows = interactSheet.rows;
+    let sheetShown = false;
+    if (promptSig !== null && promptPos !== undefined) {
+      const asked =
+        sheet?.confirm == null
+          ? undefined
+          : sheet.entries.find((e) => e.key === sheet.confirm?.key);
+      interactChipTextEl.textContent = '';
+      if (request !== null) {
+        // The request sheet (ctl-13): who asks what, then Accept / Decline / View.
+        const heading = requestLine(request.notice);
+        renderContextSheet(interactSheet, {
+          variant: 'list',
+          title: heading,
+          layout: requestSheetLayout,
+          state: request.nav,
+          fill: (el, item) => {
+            el.textContent = requestRowLabel(item.key);
+          },
+        });
+        // The listbox's own name, the heading's words (CTL13: read without the title's id).
+        rows.setAttribute('aria-label', heading);
+        sheetShown = true;
+      } else if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
+        // The Challenge confirm (ctl-10b; bt-15 BT15.1): the question, then the party-size rows
+        // (largest first) and No, each word a literal catalog key.
+        const question = tf('interact.confirm.challenge', { name: interactName(asked.candidate) });
+        renderContextSheet(interactSheet, {
+          variant: 'confirm',
+          question,
+          layout: challengeLayout(sheet.confirm.sizes),
+          state: sheet.confirm.nav,
+          fill: (el, item) => {
+            el.textContent = sizeRowLabel(item.key);
+          },
+        });
+        rows.setAttribute('aria-label', question);
+        sheetShown = true;
+      } else if (sheet !== null) {
+        const byKey = new Map(sheet.entries.map((e) => [e.key, e]));
+        renderContextSheet(interactSheet, {
+          variant: 'list',
+          layout: sheetLayout(sheet.entries),
+          state: sheet.nav,
+          fill: (el, item) => {
+            const row = byKey.get(item.key);
+            el.textContent =
+              row === undefined
+                ? ''
+                : tf('interact.entry', {
+                    verb: interactVerb(row.action),
+                    name: interactName(row.candidate),
+                  });
+          },
+        });
+        // The listbox's accessible name: this variant has no visible title.
+        rows.setAttribute('aria-label', tf('interact.choose', { key: interactKeycap() }));
+        sheetShown = true;
+      } else {
+        interactChipTextEl.textContent = promptSig;
+      }
+      interactPromptEl.style.left = `${promptPos.x}px`;
+      interactPromptEl.style.top = `${promptPos.y}px`;
+      interactPromptEl.style.display = 'block';
+    } else {
+      interactPromptEl.style.display = 'none';
+    }
+    // Rows never outlive their sheet, shown or not.
+    if (!sheetShown) {
+      closeContextSheet(interactSheet);
+      rows.removeAttribute('aria-label');
+    }
+    // One border: the prompt's own chrome steps aside while it holds a sheet (styles.css).
+    interactPromptEl.classList.toggle('mr-prompt--sheet', sheetShown);
+    return { chip, pending };
+  };
+  paintWorldPrompt = () => {
+    if (!sessionGateBlocks()) paintPrompt();
+  };
+
   const frame = (): void => {
     try {
       syncStack(); // a server overlay shown, or a player view closed, outside a keydown or batch
@@ -5164,113 +5293,9 @@ async function main(): Promise<void> {
               ),
         );
       }
-      // The world interaction chip (ctl-10a): what A does with what the character faces, or the
-      // open picker / action sheet. Hidden under any frame, on a battle base and under the
-      // session terminal. Positioned via renderer.screenFor — the exact camera offset +
-      // stageScale the stage applied THIS frame.
-      const live = worldBaseLive(); // first: it closes a sheet the world no longer owns
-      const pending = livePending();
-      screenHost.settleRequest(pending); // a withdrawn or answered request's sheet closes
-      const sheet = screenHost.sheet;
-      const request = screenHost.request;
-      const chip = facedChip(live);
-      const anchor =
-        sheet !== null
-          ? sheet.entries[0]?.candidate
-          : chip?.kind === 'single'
-            ? chip.candidate
-            : (chip ?? undefined);
-      // The request sheet (ctl-13) has no faced thing to hang from: it sits low and centred.
-      const promptPos =
-        request !== null
-          ? { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight * 0.7) }
-          : anchor !== undefined
-            ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
-            : undefined;
-      // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
-      const promptSig =
-        request !== null
-          ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
-          : sheet !== null
-            ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}|${sheet.confirm?.sizes.join(',') ?? ''}`
-            : chip !== null
-              ? interactChipText(chip)
-              : null;
-      const promptKey =
-        promptSig !== null && promptPos !== undefined
-          ? `${promptSig}|${promptPos.x}|${promptPos.y}`
-          : 'none';
-      if (promptKey !== lastPromptKey) {
-        lastPromptKey = promptKey;
-        if (promptSig !== null && promptPos !== undefined) {
-          const asked =
-            sheet?.confirm == null
-              ? undefined
-              : sheet.entries.find((e) => e.key === sheet.confirm?.key);
-          if (request !== null) {
-            // The request sheet (ctl-13): who asks what, then Accept / Decline / View.
-            const heading = requestLine(request.notice);
-            interactChipTextEl.textContent = heading;
-            renderNav(interactSheetEl, requestSheetLayout, request.nav, {
-              frame: 'interact',
-              fill: (el, item) => {
-                el.textContent = requestRowLabel(item.key);
-              },
-            });
-            interactSheetEl.setAttribute('aria-label', heading);
-            interactSheetEl.style.display = '';
-          } else if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
-            // The Challenge confirm (ctl-10b; bt-15 BT15.1): the question, then the party-size rows
-            // (largest first) and No as the listbox, each word a literal catalog key.
-            const question = tf('interact.confirm.challenge', {
-              name: interactName(asked.candidate),
-            });
-            interactChipTextEl.textContent = question;
-            renderNav(interactSheetEl, challengeLayout(sheet.confirm.sizes), sheet.confirm.nav, {
-              frame: 'interact',
-              fill: (el, item) => {
-                el.textContent = sizeRowLabel(item.key);
-              },
-            });
-            interactSheetEl.setAttribute('aria-label', question);
-            interactSheetEl.style.display = '';
-          } else if (sheet !== null) {
-            interactChipTextEl.textContent = '';
-            const rows = new Map(sheet.entries.map((e) => [e.key, e]));
-            renderNav(interactSheetEl, sheetLayout(sheet.entries), sheet.nav, {
-              frame: 'interact',
-              fill: (el, item) => {
-                const row = rows.get(item.key);
-                el.textContent =
-                  row === undefined
-                    ? ''
-                    : tf('interact.entry', {
-                        verb: interactVerb(row.action),
-                        name: interactName(row.candidate),
-                      });
-              },
-            });
-            // The listbox's accessible name (renderNav names only a tabbed container).
-            interactSheetEl.setAttribute(
-              'aria-label',
-              tf('interact.choose', { key: interactKeycap() }),
-            );
-            interactSheetEl.style.display = '';
-          } else {
-            interactChipTextEl.textContent = promptSig;
-          }
-          interactPromptEl.style.left = `${promptPos.x}px`;
-          interactPromptEl.style.top = `${promptPos.y}px`;
-          interactPromptEl.style.display = 'block';
-        } else {
-          interactPromptEl.style.display = 'none';
-        }
-        // Rows never outlive their sheet, shown or not.
-        if (sheet === null && request === null) {
-          interactSheetEl.replaceChildren();
-          interactSheetEl.style.display = 'none';
-        }
-      }
+      // Positioned via renderer.screenFor — the exact camera offset + stageScale the stage
+      // applied THIS frame.
+      const { chip, pending } = paintPrompt();
       // The live hint bar (ctl-13): the top context's buttons with their live keycaps, and the
       // request banner while the bare world shows. The view writes only what changed.
       const notices = buildNotices(noticeInput());

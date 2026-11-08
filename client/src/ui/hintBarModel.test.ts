@@ -161,9 +161,10 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
       ['Select', KEYCAPS.Select, verb('chrome.chip.help'), false],
     ]);
 
-    // A sheet is open: A ok, B back, Start CLOSE (no badge), NO Select, whatever else is true.
+    // A sheet is open: A ok, B back, Start CLOSE (no badge), Select help, whatever else is true.
     // uif-12 INTENTIONAL CHANGE (UIF12.3, R-ctl-13-SHEETCHIPS): this was A ok / B back / Start
-    // Menu (badged) / Select Help, but Start CLOSES the sheet and Select is swallowed there.
+    // Menu (badged) / Select Help; Start CLOSES the sheet (so it reads Close, never badged) and a
+    // fresh Select closes the sheet and opens Help, so the Select Help chip stays and is true.
     for (const extra of [
       world({ sheetOpen: true }),
       world({ sheetOpen: true, target: 'Talk' }),
@@ -176,6 +177,7 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
         ['A', KEYCAPS.A, verb('chrome.chip.ok'), false],
         ['B', KEYCAPS.B, verb('chrome.chip.back'), false],
         ['Start', KEYCAPS.Start, verb('chrome.chip.close'), false],
+        ['Select', KEYCAPS.Select, verb('chrome.chip.help'), false],
       ]);
     }
 
@@ -448,31 +450,34 @@ describe('hintBar: the deploy panel at the battle base (bt-12 B, BT12.2, R-bt-12
 });
 
 describe('hintBar: the world sheet bar (uif-12, UIF12.3, R-ctl-13-SHEETCHIPS)', () => {
-  it('UIF12.3 with a world sheet open the bar is A / B back / Start Close (never badged, never Select); a multi-row picker reads A Choose, any other sheet A OK; en and fr', () => {
+  it('UIF12.3 with a world sheet open the bar is A / B back / Start Close (never badged) / Select Help; a multi-row picker reads A Choose, any other sheet A OK; en and fr', () => {
     // WRONG IMPL KILLED: Start still reading Menu (it closes the sheet); the Start badge carried
-    // into the sheet bar when a request waits; a Select Help chip (Select is swallowed); the picker
-    // flag ignored (A reads OK over a multi-row picker) or leaking when no sheet is open; the
-    // Choose verb wired to the OK id; verbs resolved once at import.
-    const KEY = { A: 'Enter', B: BACKSPACE_GLYPH, Start: 'Esc' } as const;
+    // into the sheet bar when a request waits; the Select Help chip dropped (a fresh Select closes
+    // the sheet and opens Help); the picker flag ignored (A reads OK over a multi-row picker) or
+    // leaking when no sheet is open; the Choose verb wired to the OK id; verbs resolved once at
+    // import. Keycaps are read through glyph() under the ACTIVE locale (fr names differ).
+    const cap = (button: VButton): string => glyph(DEFAULT_BINDINGS.buttons[button][0] as string);
     const bar = (w: Partial<HintWorld>) =>
       rows(hintBar(WORLD, DEFAULT_BINDINGS, [REQUEST_NOTICE], world({ sheetOpen: true, ...w })));
-    const want = (a: string, b: string, start: string) => [
-      ['A', KEY.A, a, false],
-      ['B', KEY.B, b, false],
-      ['Start', KEY.Start, start, false],
+    const want = (a: string, b: string, start: string, select: string) => [
+      ['A', cap('A'), a, false],
+      ['B', cap('B'), b, false],
+      ['Start', cap('Start'), start, false],
+      ['Select', cap('Select'), select, false],
     ];
 
     setLocale('en');
-    expect(bar({}), 'en sheet').toEqual(want('OK', 'Back', 'Close'));
+    expect(bar({}), 'en sheet').toEqual(want('OK', 'Back', 'Close', 'Help'));
     expect(bar({ requestWaiting: true }), 'en sheet, a request waits: Start has no badge').toEqual(
-      want('OK', 'Back', 'Close'),
+      want('OK', 'Back', 'Close', 'Help'),
     );
-    expect(bar({ picker: true }), 'en picker').toEqual(want('Choose', 'Back', 'Close'));
-    expect(bar({ picker: true, requestWaiting: true })).toEqual(want('Choose', 'Back', 'Close'));
+    expect(bar({ picker: true }), 'en picker').toEqual(want('Choose', 'Back', 'Close', 'Help'));
+    expect(bar({ picker: true, requestWaiting: true })).toEqual(
+      want('Choose', 'Back', 'Close', 'Help'),
+    );
     expect(bar({ picker: false }), 'picker:false is an ordinary sheet').toEqual(
-      want('OK', 'Back', 'Close'),
+      want('OK', 'Back', 'Close', 'Help'),
     );
-    expect(bar({ picker: true }).some((r) => r[0] === 'Select')).toBe(false);
 
     // The picker flag means nothing without an open sheet.
     expect(
@@ -486,10 +491,10 @@ describe('hintBar: the world sheet bar (uif-12, UIF12.3, R-ctl-13-SHEETCHIPS)', 
 
     setLocale('fr');
     expect(bar({}), 'fr sheet').toEqual(
-      want(verb('chrome.chip.ok'), verb('chrome.chip.back'), 'Fermer'),
+      want(verb('chrome.chip.ok'), verb('chrome.chip.back'), 'Fermer', 'Aide'),
     );
     expect(bar({ picker: true }), 'fr picker').toEqual(
-      want('Choisir', verb('chrome.chip.back'), 'Fermer'),
+      want('Choisir', verb('chrome.chip.back'), 'Fermer', 'Aide'),
     );
     setLocale('en');
   });
@@ -517,16 +522,17 @@ describe('hintBar: keycaps (ctl-13, CTL13.1)', () => {
       Object.fromEntries(hintBar(stack, b, [REQUEST_NOTICE], w).map((c) => [c.button, c.keycap]));
 
     const sheet = world({ sheetOpen: true });
-    // uif-12 (UIF12.3): the sheet-open bar has no Select chip any more.
     expect(caps(WORLD, DEFAULT_BINDINGS, sheet)).toEqual({
       A: 'Enter',
       B: BACKSPACE_GLYPH,
       Start: 'Esc',
+      Select: 'R',
     });
     expect(caps(WORLD, remapped, sheet), 'the first key of each remapped row').toEqual({
       A: 'Z',
       B: 'X',
       Start: 'H',
+      Select: glyph('Slash'),
     });
     expect(glyph('Slash'), 'fixture: the Select keycap is not the default R').not.toBe('R');
     expect(caps(WORLD, remapped, world({ requestWaiting: true }))).toEqual({

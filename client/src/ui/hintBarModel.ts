@@ -24,6 +24,9 @@ export interface HintWorld {
   readonly target: string | null;
   /** Whether a world sheet (interact or request) is open. */
   readonly sheetOpen: boolean;
+  /** Whether that sheet is a multi-row entity × action picker (not its Challenge confirm, not the
+   *  request sheet): A chooses a row there (uif-12, UIF12.3). */
+  readonly picker?: boolean;
   /** Whether a trade or challenge request waits for the viewer, dismissed or not. */
   readonly requestWaiting: boolean;
 }
@@ -78,11 +81,13 @@ export function hintBar(
   const top = stack[stack.length - 1];
   switch (top.kind) {
     case 'world': {
+      // uif-12 (UIF12.3): what the buttons do over a world sheet — Start closes it (unbadged), Select
+      // closes it and opens Help (worldButton), and A chooses a row of a multi-row picker.
       if (world.sheetOpen)
         return [
-          chip('A', t('chrome.chip.ok')),
+          chip('A', world.picker === true ? t('interact.chip.choose') : t('chrome.chip.ok')),
           chip('B', t('chrome.chip.back')),
-          start(),
+          chip('Start', t('chrome.chip.close')),
           select(),
         ];
       const chips: HintChip[] = [];

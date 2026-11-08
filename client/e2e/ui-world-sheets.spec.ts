@@ -69,7 +69,11 @@ const readPromptGeometry = (p: Page): Promise<PromptGeometry> =>
     const left = Number.parseFloat(prompt.style.left);
     const top = Number.parseFloat(prompt.style.top);
     const root = prompt.querySelector<HTMLElement>('[data-context-sheet]');
-    const r = root === null ? null : root.getBoundingClientRect();
+    // The kit root exists from boot and is `hidden` while no sheet is open: a sheet is OPEN only
+    // when the root exists, is not `hidden`, and the prompt itself is displayed.
+    const open =
+      root !== null && !root.hidden && window.getComputedStyle(prompt).display !== 'none';
+    const r = open && root !== null ? root.getBoundingClientRect() : null;
     return {
       styleLeft: prompt.style.left,
       styleTop: prompt.style.top,
@@ -220,9 +224,10 @@ test.describe
 
       await expect(sheet, 'the outside click closes the sheet').toBeHidden({ timeout: 5_000 });
       expect(
-        await page.locator('#interact-prompt [role="option"]').count(),
-        'no sheet row is left',
+        await page.locator('#interact-prompt [role="option"]:visible').count(),
+        'no visible sheet row is left',
       ).toBe(0);
+      expect((await readPromptGeometry(page)).sheet, 'the sheet has no open box').toBeNull();
       expect((await readWorld(page)).stackLength, 'the stack is the bare world').toBe(1);
       // Nothing else fired: a canvas press of A would greet the shopkeeper; the bounded waits are
       // for the WRONG outcome.

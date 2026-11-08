@@ -384,10 +384,10 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     removeFacedNpc();
     frame();
 
-    // Y opens the request sheet: the bar reads A ok / B back / Start close.
+    // Y opens the request sheet: the bar reads A ok / B back / Start close / Select help.
     // uif-12 INTENTIONAL CHANGE (UIF12.3, R-ctl-13-SHEETCHIPS): was A ok / B back / Start Menu
-    // (badged while the request waits) / Select Help. Start CLOSES a world sheet and Select is
-    // swallowed there, so the bar names Close (never badged) and carries no Select chip.
+    // (badged while the request waits) / Select Help. Start CLOSES a world sheet, so it reads Close
+    // (never badged); Select Help stays: a fresh Select closes the sheet and opens Help.
     press('KeyF');
     frame();
     expect(
@@ -397,6 +397,7 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       ['A', 'Enter', i18nT('chrome.chip.ok'), null],
       ['B', BACKSPACE_GLYPH, i18nT('chrome.chip.back'), null],
       ['Start', ESC, i18nT('chrome.chip.close'), null],
+      ['Select', 'R', helpVerb, null],
     ]);
     press('Backspace'); // B closes the sheet
     frame();
@@ -545,9 +546,10 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
 }, () => {
   afterEach(teardown);
 
-  it('UIF12.3 with the request sheet open the bar is A OK / B Back / Start Close (no badge) and no Select chip, even while the request waits', async () => {
-    // WRONG IMPL KILLED: the bar still reading Start Menu (badged) / Select Help over a world sheet
-    // (Start closes it and Select is swallowed there: the bar lies about both).
+  it('UIF12.3 with the request sheet open the bar is A OK / B Back / Start Close (no badge) / Select Help, even while the request waits; a Select press closes the sheet and opens Help, sending nothing', async () => {
+    // WRONG IMPL KILLED: the bar still reading Start Menu (badged) over a world sheet (Start closes
+    // it); a Select chip that lies (Select swallowed, or Help opened UNDER the sheet, or the sheet
+    // left open); a Select that answers the request.
     await bootReady();
     batch();
     frame();
@@ -573,14 +575,27 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       ['A', 'OK', null],
       ['B', 'Back', null],
       ['Start', 'Close', null],
+      ['Select', 'Help', null],
     ]);
-    expect(buttonsNow(), 'no Select chip over a world sheet').not.toContain('Select');
+
+    // Select (its bound key) closes the sheet and opens Help over the bare world.
+    press('KeyR');
+    frame();
+    expect(
+      document.querySelectorAll('#interact-prompt [role="option"]').length,
+      'Select closed the request sheet',
+    ).toBe(0);
+    expect(stackNames(), 'Help is open over the bare world, never under the sheet').toEqual([
+      'world',
+      'helpView',
+    ]);
+    expect(H.calls, 'Select answers nothing and sends nothing').toEqual([]);
   }, 120_000);
 
-  it('UIF12.3 over a two-candidate picker A reads Choose; over a one-row Y action sheet A reads OK; Start reads Close and Select is gone in both', async () => {
+  it('UIF12.3 over a two-candidate picker A reads Choose; over a one-row Y action sheet A reads OK; Start reads Close and Select reads Help in both', async () => {
     // WRONG IMPL KILLED: the picker flag never passed (A reads OK over a multi-row picker); the flag
     // passed for every sheet (A reads Choose over a one-row action sheet that just runs its row);
-    // the old Start Menu / Select Help chips left on either sheet.
+    // the old Start Menu chip left on either sheet; the Select Help chip dropped.
     await bootReady();
     batch();
     seedFacedNpc();
@@ -601,6 +616,7 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       ['A', i18nT('chrome.chip.ok')],
       ['B', i18nT('chrome.chip.back')],
       ['Start', i18nT('chrome.chip.close')],
+      ['Select', i18nT('chrome.chip.help')],
     ]);
     press('Backspace'); // B closes the sheet
     frame();
@@ -621,6 +637,7 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       ['A', i18nT('interact.chip.choose' as never)],
       ['B', i18nT('chrome.chip.back')],
       ['Start', i18nT('chrome.chip.close')],
+      ['Select', i18nT('chrome.chip.help')],
     ]);
     expect(chipOf('A').verb, 'Choose, in words').toBe('Choose');
   }, 120_000);

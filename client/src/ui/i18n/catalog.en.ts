@@ -119,6 +119,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: The world interaction chip when A would open a picker of several things to act on; {key}
   // is the A button's keycap. main.ts (#interact-prompt)
   'interact.choose': (p) => `[${p.key}] Choose…`,
+  // @desc: The hint bar's A verb while the world picker of several things to act on is open (uif-12).
+  // One short word. ui/hintBarModel.ts (#hint-bar)
+  'interact.chip.choose': 'Choose',
   // @desc: One row of the world picker / action sheet: {verb} a resolved interact.verb.* word,
   // {name} the npc id or the healer name. main.ts (#interact-prompt rows)
   'interact.entry': (p) => `${p.verb} — ${p.name}`,
