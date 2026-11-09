@@ -1125,7 +1125,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // wap-1 (WAP1.6): Tiled GIDs 0..=9 are the class table's GIDs.
+    // Tiled GIDs 0..=9 are the TileKind class table's GIDs.
     // -----------------------------------------------------------------------
 
     /// WAP1.6: every class GID imports as its class glyph (hand-typed row from the

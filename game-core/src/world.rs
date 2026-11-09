@@ -1741,15 +1741,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // wap-1 — terrain grammar (M-world-art-pass WAP1.1–WAP1.3).
+    // Terrain grammar: ten tile classes, one grid, deep-water shore rule.
     //
     // Every expected value below is hand-typed from the spec's class table:
     //   Floor '.' walk · Wall '#' block · TallGrass '~' walk+encounter ·
     //   Path '=' walk · Sand ':' walk · ShallowWater 'w' block ·
     //   DeepWater 'W' block · Rock '^' block · Tree 'T' block · Bush '*' block.
-    // The tests in this first block compile against today's API (glyph rows +
-    // apply_move / is_grass / stepped_onto_grass / validate_zone_maps) and are
-    // behaviourally red until the new glyphs and the deep-water rule land.
     // -----------------------------------------------------------------------
 
     /// Ten-glyph fixture, width 2 × height 10 (non-square): column 0 is Floor,
@@ -2028,8 +2025,6 @@ mod tests {
             ))
         );
     }
-
-    // --- wap-1: needs the new TileKind API (compile-red before the slice) ---
 
     /// WAP1.1: the map keeps each tile's class; `terrain_at` reads it back exactly
     /// and is `None` off-map (never a default, never a panic).

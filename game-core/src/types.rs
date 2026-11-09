@@ -421,8 +421,6 @@ mod tests {
         assert_eq!(action_from_code(2), Some(ActionState::Jumping));
     }
 
-    // --- wap-1: needs the new TileKind API (compile-red before the slice) ---
-
     /// The terrain class table (M-world-art-pass spec, class table), HAND-TYPED:
     /// `(glyph, Tiled GID, walkable, encounter, wire name)`. Never derived from the
     /// implementation. An exhaustive `match` with no `_` arm, so an 11th variant

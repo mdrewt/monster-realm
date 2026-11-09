@@ -2379,8 +2379,6 @@ mod tests {
         );
     }
 
-    // --- wap-1: needs the new TileKind API (compile-red before the slice) ---
-    //
     // WAP1.4: the zone_map payload DTO. Expected values are hand-typed from the
     // spec class table (Floor '.' walk · Wall '#' · TallGrass '~' walk+grass ·
     // Path '=' walk · Sand ':' walk · ShallowWater 'w' · DeepWater 'W' · Rock '^' ·
