@@ -43,7 +43,7 @@ function uvm(o: Partial<UnitVM> & { readonly unitId: number }): UnitVM {
     side: 'A',
     mine: true,
     speciesName: 'Sprigg',
-    spriteSlug: 'sprigg',
+    spriteUrl: 'assets/monster-sprigg.png',
     hpPermille: 1000,
     hpBand: 'high',
     active: false,
@@ -55,6 +55,7 @@ function uvm(o: Partial<UnitVM> & { readonly unitId: number }): UnitVM {
 interface VmOpts {
   readonly cursor?: { readonly x: number; readonly y: number } | null;
   readonly overlays?: ReadonlyMap<string, readonly OverlayKind[]>;
+  readonly backdropUrl?: string | null;
 }
 
 /** A BoardVM built by hand: row-major tiles, overlays looked up by "x,y". */
@@ -70,7 +71,7 @@ function vmOf(width: number, height: number, units: readonly UnitVM[], opts: VmO
       });
     }
   }
-  return { width, height, tiles, units };
+  return { width, height, tiles, units, backdropUrl: opts.backdropUrl ?? null };
 }
 
 function mount(): HTMLElement {
@@ -90,6 +91,19 @@ function css(el: HTMLElement, camel: string, kebab: string): string {
   const direct = (el.style as unknown as Record<string, unknown>)[camel];
   if (typeof direct === 'string' && direct !== '') return direct;
   return el.style.getPropertyValue(kebab);
+}
+
+/** Every spelling of `background-image: url(<file>)` a DOM may report back for that file. */
+function urlForms(file: string): Set<string> {
+  const probe = document.createElement('div');
+  const raw = [`url("${file}")`, `url(${file})`, `url('${file}')`];
+  const out = new Set<string>(raw);
+  for (const form of raw) {
+    probe.style.backgroundImage = form;
+    const back = probe.style.backgroundImage;
+    if (back !== '') out.add(back);
+  }
+  return out;
 }
 
 const click = (el: Element): void => {
@@ -194,56 +208,74 @@ describe('renderBoard: the grid and the units (BT10.1)', () => {
     expect(read(4), 'unit 4 follows hpBand, not the width').toEqual(['low']);
   });
 
-  it('BT10-1-RENDER-SPRITE: a slug paints the CSS-cropped sheet exactly as assets/monster-<slug>.png on a div, and a null slug paints tactics-sprite--none with no background image', () => {
+  it('WAP3.2 a spriteUrl paints the CSS-cropped sheet exactly as that url on a div, and a null spriteUrl paints tactics-sprite--none with no background image', () => {
     // WRONG IMPL KILLED: an <img> or an Image() loader (the plan says no loader: frame 0 is a CSS
-    // crop); a hard-coded sprite for every unit; a slug-less unit that still requests a
-    // monster-null.png; the none class missing (the unit is invisible with no placeholder); a
-    // wrong directory or extension.
-    const probe = document.createElement('div');
-    const forms = (slug: string): Set<string> => {
-      const raw = [
-        `url("assets/monster-${slug}.png")`,
-        `url(assets/monster-${slug}.png)`,
-        `url('assets/monster-${slug}.png')`,
-      ];
-      const out = new Set<string>(raw);
-      for (const form of raw) {
-        probe.style.backgroundImage = form;
-        const back = probe.style.backgroundImage;
-        if (back !== '') out.add(back);
-      }
-      return out;
-    };
+    // crop); a hard-coded sprite for every unit; the old assets/monster-<slug>.png rebuild from
+    // the species name (Flameling would request monster-flameling.png, which does not exist); a
+    // url-less unit that still requests a monster-null.png; the none class missing (the unit is
+    // invisible with no placeholder); a wrong directory or extension.
     const parent = mount();
     const units = [
-      uvm({ unitId: 1, x: 0, y: 0, spriteSlug: 'sprigg' }),
-      uvm({ unitId: 2, x: 1, y: 0, spriteSlug: 'cindertail' }),
-      uvm({ unitId: 3, x: 2, y: 0, spriteSlug: null, speciesName: 'Mon2' }),
+      uvm({
+        unitId: 1,
+        x: 0,
+        y: 0,
+        speciesName: 'Flameling',
+        spriteUrl: 'assets/monster-emberkit.png',
+      }),
+      uvm({ unitId: 2, x: 1, y: 0, spriteUrl: 'assets/monster-tidecrag.png' }),
+      uvm({ unitId: 3, x: 2, y: 0, spriteUrl: null, speciesName: 'Mon2' }),
     ];
     renderBoard(parent, vmOf(7, 5, units), () => undefined);
 
-    for (const [id, slug] of [
-      [1, 'sprigg'],
-      [2, 'cindertail'],
+    for (const [id, file] of [
+      [1, 'assets/monster-emberkit.png'],
+      [2, 'assets/monster-tidecrag.png'],
     ] as const) {
       const sprite = q(parent, `.tactics-unit[data-unit-id="${id}"] .tactics-sprite`);
       const actual = sprite.style.backgroundImage;
       expect(
-        forms(slug).has(actual),
-        `unit ${id} background-image ${JSON.stringify(actual)} is the monster-${slug}.png url`,
+        urlForms(file).has(actual),
+        `unit ${id} background-image ${JSON.stringify(actual)} is the ${file} url`,
       ).toBe(true);
-      expect(actual.includes(`assets/monster-${slug}.png`), `${actual} names the asset`).toBe(true);
       expect(sprite.tagName, 'a div crop, not an <img>').not.toBe('IMG');
       expect(sprite.classList.contains('tactics-sprite--none'), `unit ${id} has a sprite`).toBe(
         false,
       );
     }
     const none = q(parent, '.tactics-unit[data-unit-id="3"] .tactics-sprite');
-    expect(none.classList.contains('tactics-sprite--none'), 'null slug -> the none class').toBe(
+    expect(none.classList.contains('tactics-sprite--none'), 'null url -> the none class').toBe(
       true,
     );
-    expect(none.style.backgroundImage, 'null slug -> no background image').toBe('');
+    expect(none.style.backgroundImage, 'null url -> no background image').toBe('');
     expect(parent.querySelectorAll('img'), 'no <img> anywhere on the board').toHaveLength(0);
+  });
+
+  it('WAP3.4 the shared .tactics-bg paints the view-model backdropUrl as its inline background image, and none when the url is null', () => {
+    // WRONG IMPL KILLED: a hard-coded backdrop path (the registry row is ignored); a backdrop
+    // painted on the grid or a tile instead of the one shared .tactics-bg; a null url that still
+    // paints a url("null") request; a stale backdrop left after a re-render with a null url.
+    const parent = mount();
+    renderBoard(
+      parent,
+      vmOf(7, 5, [], { backdropUrl: 'assets/battle-backdrop.png' }),
+      () => undefined,
+    );
+    const bg = q(parent, '.tactics-bg');
+    expect(
+      urlForms('assets/battle-backdrop.png').has(bg.style.backgroundImage),
+      `bg background-image ${JSON.stringify(bg.style.backgroundImage)}`,
+    ).toBe(true);
+    expect(parent.querySelectorAll('.tactics-bg'), 'still one background').toHaveLength(1);
+
+    renderBoard(parent, vmOf(7, 5, [], { backdropUrl: 'assets/other-bd.png' }), () => undefined);
+    expect(
+      urlForms('assets/other-bd.png').has(q(parent, '.tactics-bg').style.backgroundImage),
+      'the url follows the view-model',
+    ).toBe(true);
+
+    renderBoard(parent, vmOf(7, 5, [], { backdropUrl: null }), () => undefined);
+    expect(q(parent, '.tactics-bg').style.backgroundImage, 'null url -> no inline image').toBe('');
   });
 
   it('BT10-1-RENDER-SINK: a hostile species name never becomes markup', () => {
@@ -256,8 +288,8 @@ describe('renderBoard: the grid and the units (BT10.1)', () => {
     renderBoard(
       parent,
       vmOf(7, 5, [
-        uvm({ unitId: 1, x: 1, y: 1, speciesName: hostile, spriteSlug: null }),
-        uvm({ unitId: 2, x: 2, y: 1, speciesName: script, spriteSlug: null }),
+        uvm({ unitId: 1, x: 1, y: 1, speciesName: hostile, spriteUrl: null }),
+        uvm({ unitId: 2, x: 2, y: 1, speciesName: script, spriteUrl: null }),
       ]),
       () => undefined,
     );
@@ -533,12 +565,9 @@ describe('styles.css: the tactical board layout (BT10.1, A7)', () => {
       `the dock (${dockLum}) is darker than the field background (${bgLum})`,
     ).toBe(true);
 
+    // The sprite width/height/background-size literals were retired here by wap-3 (Constraint 7b):
+    // the e2e computed-style checks in e2e/tactics-wild.spec.ts (WAP3.3) now measure them.
     const sprite = declsOf('.tactics-sprite');
-    expect(sprite.get('width'), 'sprite width').toBe('64px');
-    expect(sprite.get('height'), 'sprite height').toBe('64px');
-    expect(sprite.get('background-size'), 'sprite background-size (96x128 sheet at 2x)').toBe(
-      '192px 256px',
-    );
     expect(
       ['0 0', '0px 0px', '0 0px', '0px 0'],
       'sprite background-position is the origin',

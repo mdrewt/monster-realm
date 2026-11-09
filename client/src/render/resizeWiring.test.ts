@@ -80,17 +80,23 @@ interface StyleWrite {
 }
 
 function makeFakeDocument() {
-  const writes: StyleWrite[] = [];
+  const all: StyleWrite[] = [];
   return {
     documentElement: {
       style: {
         setProperty(name: string, value: string): void {
-          writes.push({ name, value });
+          all.push({ name, value });
         },
       },
     },
+    /** The `--mr-ui-scale` writes only (wap-3: the seam also writes `--mr-world-scale`; the UIF2.3
+     *  tests below are about the UI scale and must not see the world-scale writes). */
     get writes(): StyleWrite[] {
-      return writes;
+      return all.filter((w) => w.name === '--mr-ui-scale');
+    },
+    /** Every write in call order, whatever the property. */
+    get allWrites(): StyleWrite[] {
+      return all;
     },
   };
 }
@@ -367,5 +373,74 @@ describe('UIF2.3 resize wiring writes --mr-ui-scale', () => {
         String(viewportScale(c.w, c.h, c.dpr).uiScale),
       );
     }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// wap-3 WAP3.3: the same event also writes `--mr-world-scale` (the world's source-px -> CSS-px
+// stage scale), so the board's CSS art sizes track the world at any dpr.
+// -----------------------------------------------------------------------------
+
+const WORLD_PROP = '--mr-world-scale';
+const worldWrites = (doc: ReturnType<typeof makeFakeDocument>): string[] =>
+  doc.allWrites.filter((w) => w.name === WORLD_PROP).map((w) => w.value);
+
+describe('WAP3.3 resize wiring writes --mr-world-scale', () => {
+  it('WAP3.3 writes the stage scale at install: 1280x720@1 is "2" and 1279x720@1.25 is "2.4", beside --mr-ui-scale', () => {
+    // WRONG IMPL KILLED: no world-scale write at all; the ui scale written under the world-scale
+    // name (1.25 / 1.2 instead of 2 / 2.4); the integer deviceScale written instead of the CSS-px
+    // stageScale (1279x720@1.25 would print 3, not 2.4); the dpr dropped (stageScale 3); the
+    // ui-scale write displaced.
+    for (const [w, h, dpr, world, ui] of [
+      [1280, 720, 1, '2', '1'],
+      [1279, 720, 1.25, '2.4', String(viewportScale(1279, 720, 1.25).uiScale)],
+    ] as const) {
+      const win = makeFakeWindow(w, h, dpr);
+      installResizeHandler(makeFakeRenderer(), win);
+      expect(worldWrites(win.document), `${w}x${h}@${dpr} world scale`).toEqual([world]);
+      expect(
+        win.document.writes.map((x) => x.value),
+        `${w}x${h}@${dpr} ui scale still written`,
+      ).toEqual([ui]);
+    }
+  });
+
+  it('WAP3.3 every event rewrites the world scale from the fire-time size and dpr, equal to String(viewportScale(w,h,dpr).stageScale)', () => {
+    // WRONG IMPL KILLED: a value captured at install (every later write repeats "2"); a write only
+    // at install and never on resize; the dpr read at install but the size at fire-time; a stage
+    // scale rounded to an integer; a write that happens only when the size changed (the
+    // dpr-only event below must still rewrite).
+    const win = makeFakeWindow(1280, 720, 1);
+    installResizeHandler(makeFakeRenderer(), win);
+    const steps: ReadonlyArray<readonly [number, number, number]> = [
+      [1279, 720, 1.25],
+      [1920, 1080, 1],
+      [1920, 1080, 2],
+      [960, 540, 1.5],
+      [1280, 720, 1],
+    ];
+    const want = ['2'];
+    for (const [w, h, dpr] of steps) {
+      win.innerWidth = w;
+      win.innerHeight = h;
+      win.devicePixelRatio = dpr;
+      win.fire();
+      want.push(String(viewportScale(w, h, dpr).stageScale));
+    }
+    expect(worldWrites(win.document)).toEqual(want);
+    expect(want[1], 'fixture: the fractional-dpr case is the literal 2.4').toBe('2.4');
+    expect(want[want.length - 1], 'back at 1280x720@1 the scale is 2 again').toBe('2');
+  });
+
+  it('WAP3.3 each event makes exactly one world-scale write and one ui-scale write', () => {
+    // WRONG IMPL KILLED: a double write per event (a flicker between two values); the world scale
+    // written on fire but not at install, or the reverse.
+    const win = makeFakeWindow(1280, 720, 1);
+    installResizeHandler(makeFakeRenderer(), win);
+    win.fire();
+    win.fire();
+    expect(worldWrites(win.document)).toHaveLength(3);
+    expect(win.document.writes).toHaveLength(3);
+    expect(win.document.allWrites).toHaveLength(6);
   });
 });
