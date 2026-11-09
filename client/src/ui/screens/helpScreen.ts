@@ -1,8 +1,9 @@
 // ui/screens/helpScreen.ts — How to Play as a pure screen over the nav kit (uif-14, UIF14.1,
 // UIF14.4-UIF14.5; uif-14b, UIF14B.1-UIF14B.2: A on the Introduction's Report a problem row returns
-// the `reportProblem` command). No DOM, SDK, module state, clock or resolver. The content is `helpModel.ts`'s,
-// bound into `helpView.ts` when the frame opens; this screen says which tab shows, where each tab's
-// cursor is (the nav kit keeps one per tab) and which Encyclopedia entry's detail is open.
+// the `reportProblem` command). No DOM, SDK, module state, clock or resolver. The content is
+// `helpModel.ts`'s, bound into `helpView.ts` when the frame opens; this screen says which tab shows,
+// where each tab's cursor is (the nav kit keeps one per tab) and which Encyclopedia entry's detail is
+// open.
 //
 // The detail is a phase of the frame, not a stack frame: A on an entry opens it, B (or A on its Back
 // row) closes it back to the same entry, and while it shows the tabs and the list underneath do not

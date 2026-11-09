@@ -722,7 +722,32 @@ describe('main.ts How to Play: Report a problem (runtime, uif-14b)', { sequentia
     await bootReady();
     batch();
     frame();
+    // WRONG IMPL KILLED (red-team measured): a forked bundle that keeps the keys but drops or
+    // blanks `events` / `errors` (a hand-rolled buildBugBundle, or an arm that passes empty rings),
+    // or a different `store` projection. SEED: the connect event comes from the boot's onReady; an
+    // error record is put in the error ring by making the FIRST createObjectURL throw:
+    // downloadBugBundle's catch calls reportError('download-blocked', t('chrome.status.bugBundleBlocked')),
+    // and reportError does pushError('reducer', text), so the record's message is the RESOLVED
+    // catalog text, not the thrown Error's. Containment is asserted, not array equality: the row's
+    // own save may append records of its own.
+    const MARKER = i18nT('chrome.status.bugBundleBlocked') as string;
     const watch = watchDownloads();
+    const recordingCreate = URL.createObjectURL;
+    let failuresLeft = 1;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (blob: Blob): string => {
+        if (failuresLeft > 0) {
+          failuresLeft -= 1;
+          throw new Error(MARKER);
+        }
+        return recordingCreate(blob);
+      },
+    });
+    press('F9'); // blocked once: seeds the error ring, saves nothing
+    frame();
+    expect(watch.blobs, 'precondition: the blocked F9 saved nothing').toHaveLength(0);
     press('F9');
     frame();
     expect(watch.blobs, 'precondition: F9 saved one bundle').toHaveLength(1);
@@ -739,6 +764,26 @@ describe('main.ts How to Play: Report a problem (runtime, uif-14b)', { sequentia
     expect(row.schema).toBe(f9.schema);
     expect(row.build).toEqual(f9.build);
     expect(row.identity).toBe(f9.identity);
+    // The store VALUES are the same projection (capturedAtMs may differ).
+    expect(row.store, 'the store snapshot has the same values').toEqual(f9.store);
+    // The diagnostic CONTENT: the marker is in BOTH error rings, and nothing F9 saw is missing.
+    const f9Errors = f9.errors as Array<{ message: string }>;
+    const rowErrors = row.errors as Array<{ message: string }>;
+    expect(
+      f9Errors.some((e) => e.message.includes(MARKER)),
+      'precondition: the F9 bundle carries the seeded error',
+    ).toBe(true);
+    expect(
+      rowErrors.some((e) => e.message.includes(MARKER)),
+      'the row`s bundle carries the seeded error too',
+    ).toBe(true);
+    for (const e of f9Errors) expect(rowErrors, 'no F9 error is missing').toContainEqual(e);
+    const f9Events = f9.events as unknown[];
+    const rowEvents = row.events as unknown[];
+    expect(f9Events.length, 'precondition: the event ring is not empty (connect)').toBeGreaterThan(
+      0,
+    );
+    for (const e of f9Events) expect(rowEvents, 'no F9 event is missing').toContainEqual(e);
     expect(watch.clicks.map((n) => BUNDLE_FILENAME.test(n))).toEqual([true, true]);
   }, 120_000);
 

@@ -75,9 +75,9 @@ export function popPlayerFramesOverBattle(stack: Stack): Stack {
 }
 
 /** Which screen commands a battle base allows (CTL6C.3): the stack moves, the battle's own actions,
- *  ending a conversation and saving the bug bundle (`reportProblem`, uif-14b, as F9 does). `pickShop` ends one only to open a shop, so it is refused. Total over
- *  the `Command` kinds, so a new arm (talk, bag use) fails client-typecheck until it is classified
- *  here. Reducer guards stay the authority. */
+ *  ending a conversation and saving the bug bundle (`reportProblem`, uif-14b, as F9 does). `pickShop`
+ *  ends one only to open a shop, so it is refused. Total over the `Command` kinds, so a new arm (talk,
+ *  bag use) fails client-typecheck until it is classified here. Reducer guards stay the authority. */
 export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe' | 'refuse'>> = {
   pop: 'safe',
   popToBase: 'safe',

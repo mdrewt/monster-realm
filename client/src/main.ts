@@ -538,8 +538,8 @@ let renameView: RenameView | undefined;
 // trade-PROPOSE overlay — the wizard Trade on a faced player opens (ctl-10b); wires
 // reducers.proposeTrade to let a human initiate a "sell my monster(s) + gold for your gold" trade.
 let tradeProposeView: TradeProposeView | undefined;
-// How to Play (Select; uif-14): display-only catalog copy. No reducer; its one handler is the
-// live-region announce.
+// How to Play (Select; uif-14): catalog copy. No reducer; its one handler is the live-region
+// announce. Its Report a problem row reaches `dispatch` as the `reportProblem` command (uif-14b).
 let helpView: HelpView | undefined;
 // The main menu (ctl-5): a nav-list screen that stays open beneath the overlay it opens.
 let menuView: MenuView | undefined;
@@ -4636,8 +4636,8 @@ async function main(): Promise<void> {
     // Leaderboard DOM shell. ZERO-arg construction — RL-15: the
     // leaderboard is a pure subscription view; there is no client write path to profile.
     leaderboardView = new LeaderboardViewClass();
-    // How to Play — display-only (no reducer callback): its one handler speaks a tab change or an
-    // opened entry through the live region. Opened by Select (R or Slash); `openHelp` binds its content.
+    // How to Play — no reducer callback: its one handler speaks a tab change or an opened entry
+    // through the live region (the Report a problem row is a screen command, uif-14b). Opened by Select (R or Slash); `openHelp` binds its content.
     helpView = new HelpViewClass({ announce: announceNow });
     // The menu view only paints and forwards clicks; keys reach the menu through the router.
     menuView = new MenuViewClass({ onInput: handleMenuPointer });
