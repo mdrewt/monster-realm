@@ -17,6 +17,7 @@ import {
   type Chunk,
   ChunkCache,
   type ChunkTextureOptions,
+  chunkTextureRequest,
   kitAtlasAsset,
   layoutTerrain,
   planChunks,
@@ -199,6 +200,33 @@ describe('deterministic variant pick (WAP4.2)', () => {
     expect(frames.size).toBeGreaterThanOrEqual(2);
   });
 
+  it('WAP4.2 varying only y (zone and x fixed) changes the variant', () => {
+    for (const zone of [0, 1, 9]) {
+      const seen = new Set<number>();
+      for (let y = 0; y < 64; y++) seen.add(variantIndex(zone, 5, y, 3));
+      expect(seen.size, `zone ${zone}`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('WAP4.2 varying only x (zone and y fixed) changes the variant', () => {
+    for (const zone of [0, 1, 9]) {
+      const seen = new Set<number>();
+      for (let x = 0; x < 64; x++) seen.add(variantIndex(zone, x, 5, 3));
+      expect(seen.size, `zone ${zone}`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('WAP4.2 every variant covers at least 20% of a 32x32 field (zones 0 and 1)', () => {
+    for (const zone of [0, 1]) {
+      const counts = [0, 0, 0];
+      for (let y = 0; y < 32; y++) {
+        for (let x = 0; x < 32; x++) counts[variantIndex(zone, x, y, 3)]++;
+      }
+      for (const [v, n] of counts.entries())
+        expect(n, `zone ${zone} variant ${v}`).toBeGreaterThanOrEqual(205);
+    }
+  });
+
   it('WAP4.2 different zone ids lay the same field out differently', () => {
     const layout = (zone: number) => kitTiles(uniform(zone, 10, 10, 'Floor')).map((t) => t.frame);
     expect(layout(1)).not.toEqual(layout(2));
@@ -350,6 +378,18 @@ describe('water frame clock (WAP4.4)', () => {
     expect(waterFrameIndex(P, false, 4, P / 2)).toBe(2);
   });
 
+  it('WAP4.4 a negative clock floors into a non-negative frame', () => {
+    expect(waterFrameIndex(-1, false, 4, 100)).toBe(3);
+    expect(waterFrameIndex(-100, false, 4, 100)).toBe(3);
+    expect(waterFrameIndex(-401, false, 4, 100)).toBe(3);
+  });
+
+  it('WAP4.4 a non-finite or non-positive frameCount or period yields frame 0', () => {
+    expect(waterFrameIndex(500, false, Number.POSITIVE_INFINITY, 100)).toBe(0);
+    expect(waterFrameIndex(500, false, 0, 100)).toBe(0);
+    expect(waterFrameIndex(500, false, 4, 0)).toBe(0);
+  });
+
   it('WAP4.4 non-finite time reads frame 0', () => {
     for (const t of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       expect(waterFrameIndex(t, false, 4)).toBe(0);
@@ -433,11 +473,15 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
     readonly id: number;
     readonly options: ChunkTextureOptions;
   }
-  function harness() {
+  /** `failOn`: the 1-based create call (across the whole harness) that throws. */
+  function harness(failOn?: number) {
     const created: Token[] = [];
     const destroyed: Token[] = [];
+    let calls = 0;
     const cache = new ChunkCache<Token>(
       (_chunk: Chunk, options) => {
+        calls++;
+        if (calls === failOn) throw new Error('create failed');
         const tok = { id: created.length, options };
         created.push(tok);
         return tok;
@@ -492,6 +536,49 @@ describe('chunk texture cache (WAP4.5/WAP4.6)', () => {
     expect(created).toHaveLength(9);
     expect(destroyed).toHaveLength(9);
     for (const tok of created) expect(destroyed.filter((d) => d === tok)).toHaveLength(1);
+  });
+
+  it('WAP4.5 building an empty chunk list after a build destroys both and leaves size 0', () => {
+    const { cache, created, destroyed } = harness();
+    cache.build(mkChunks().slice(0, 2), 1);
+    expect(cache.build([], 1)).toEqual([]);
+    expect(cache.size).toBe(0);
+    expect(destroyed).toHaveLength(2);
+    for (const tok of created) expect(destroyed.filter((d) => d === tok)).toHaveLength(1);
+  });
+
+  it('WAP4.5 a failed rebuild is atomic: new textures destroyed, previous set stays live', () => {
+    const { cache, created, destroyed } = harness(4);
+    const chunks = mkChunks().slice(0, 2);
+    cache.build(chunks, 1);
+    expect(() => cache.build(chunks, 1)).toThrow('create failed');
+    expect(created).toHaveLength(3);
+    expect(destroyed).toEqual([created[2]]);
+    expect(cache.size).toBe(2);
+    cache.clear();
+    expect(cache.size).toBe(0);
+    expect(destroyed).toHaveLength(3);
+    for (const tok of created) expect(destroyed.filter((d) => d === tok)).toHaveLength(1);
+  });
+
+  it('WAP4.5 a failed first build leaves size 0 and destroys what it created', () => {
+    const { cache, created, destroyed } = harness(2);
+    expect(() => cache.build(mkChunks().slice(0, 3), 1)).toThrow('create failed');
+    expect(created).toHaveLength(1);
+    expect(destroyed).toEqual([created[0]]);
+    expect(cache.size).toBe(0);
+  });
+
+  it('WAP4.6 chunkTextureRequest maps the cache options to Pixi generateTexture options', () => {
+    for (const scale of [1, 2, 3]) {
+      const { cache, created } = harness();
+      cache.build(mkChunks().slice(0, 1), scale);
+      const opts = (created[0] as Token).options;
+      expect(chunkTextureRequest(opts)).toEqual({
+        resolution: scale,
+        textureSourceOptions: { scaleMode: 'nearest' },
+      });
+    }
   });
 
   it('WAP4.6 every create call receives the deviceScale with nearest scaling', () => {

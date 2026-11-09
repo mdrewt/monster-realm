@@ -37,6 +37,7 @@ import {
   type Chunk,
   ChunkCache,
   type ChunkTextureOptions,
+  chunkTextureRequest,
   kitAtlasAsset,
   layoutTerrain,
   planChunks,
@@ -145,6 +146,7 @@ export class WorldRenderer {
     this.#map = map;
     this.#assets = new PlaceholderAssets(app.renderer);
     this.#kit = await loadKit();
+    if (this.#app !== app) return; // destroy() ran while the atlas loaded
     this.#chunks = new ChunkCache<Texture>(
       (chunk, options) => bakeChunk(app, this.#kit, chunk, options),
       (texture) => texture.destroy(true),
@@ -153,11 +155,6 @@ export class WorldRenderer {
   }
 
   #drawMap(map: TileMap): void {
-    // Destroy removed children to release GPU memory (M12.5d-5: removeChildren without
-    // destroy leaks Pixi Graphics resources on every zone switch). A chunk sprite's
-    // texture is NOT destroyed here — the chunk cache owns it.
-    for (const child of this.#bg.removeChildren()) child.destroy();
-    this.#water = [];
     const kit = this.#kit;
     const chunkCache = this.#chunks;
     const plan = layoutTerrain(
@@ -165,6 +162,7 @@ export class WorldRenderer {
       kit === undefined ? undefined : new Set(Object.keys(kit.textures)),
     );
     if (plan.kind === 'flat' || kit === undefined || chunkCache === undefined) {
+      this.#clearBg();
       chunkCache?.clear();
       if (plan.kind === 'flat') {
         const [warning] = plan.warnings;
@@ -175,8 +173,11 @@ export class WorldRenderer {
     }
     const { chunks, animated } = planChunks(map.width, map.height, plan.tiles);
     const deviceScale = this.#vs.deviceScale;
+    // Bake BEFORE tearing down: the build is atomic, so a Pixi/GPU throw here leaves
+    // the previous terrain on screen (RT-SZ-01) instead of a blank world.
     const textures = chunkCache.build(chunks, deviceScale);
     this.#chunkScale = deviceScale;
+    this.#clearBg();
     chunks.forEach((chunk, i) => {
       const sprite = new Sprite(textures[i]);
       sprite.position.set(chunk.x * TILE_PX, chunk.y * TILE_PX);
@@ -189,6 +190,14 @@ export class WorldRenderer {
       this.#bg.addChild(sprite);
       this.#water.push({ sprite, frames, shown: 0 });
     }
+  }
+
+  /** Destroy the background's children to release GPU memory (M12.5d-5: removeChildren
+   *  without destroy leaks Pixi Graphics resources on every zone switch). A chunk
+   *  sprite's texture is NOT destroyed here — the chunk cache owns it. */
+  #clearBg(): void {
+    for (const child of this.#bg.removeChildren()) child.destroy();
+    this.#water = [];
   }
 
   /** The pre-wap-4 flat look: wall rects + the tall-grass overlay over the floor clear. */
@@ -374,8 +383,7 @@ function bakeChunk(
   const texture = app.renderer.generateTexture({
     target: scratch,
     frame: new Rectangle(0, 0, chunk.w * TILE_PX, chunk.h * TILE_PX),
-    resolution: options.resolution,
-    textureSourceOptions: { scaleMode: options.scaleMode },
+    ...chunkTextureRequest(options),
   });
   // The scratch sprites go; their textures belong to the atlas.
   scratch.destroy({ children: true });

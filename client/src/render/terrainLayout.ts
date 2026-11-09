@@ -215,8 +215,9 @@ export function waterFrameIndex(
   frameCount: number,
   periodMs: number = WATER_FRAME_MS,
 ): number {
-  if (reduceMotion || !Number.isFinite(nowMs) || !(periodMs > 0) || !(frameCount >= 1)) return 0;
   const count = Math.floor(frameCount);
+  if (reduceMotion || !Number.isFinite(nowMs) || !Number.isFinite(count) || count < 1) return 0;
+  if (!Number.isFinite(periodMs) || periodMs <= 0) return 0;
   const k = Math.floor(nowMs / periodMs) % count;
   return k < 0 ? k + count : k;
 }
@@ -273,9 +274,20 @@ export function kitAtlasAsset(url: string): AtlasAsset {
   return { src: url, data: { textureOptions: { scaleMode: 'nearest' } } };
 }
 
-/** Owns every chunk texture it creates. `build` (the setMap / rescale path)
- *  destroys the previous set before creating the next; `clear` (the destroy
- *  path) destroys whatever is live. Each created texture is destroyed exactly once. */
+/** What world.ts spreads into Pixi's `renderer.generateTexture` for a chunk:
+ *  the device-scale resolution and nearest sampling of the baked texture. */
+export function chunkTextureRequest(options: ChunkTextureOptions): {
+  readonly resolution: number;
+  readonly textureSourceOptions: { readonly scaleMode: 'nearest' };
+} {
+  return { resolution: options.resolution, textureSourceOptions: { scaleMode: options.scaleMode } };
+}
+
+/** Owns every chunk texture it creates. `build` (the setMap / rescale path) is
+ *  atomic: it creates the next set first and only then destroys the previous one,
+ *  so a factory throw destroys the partial new set and leaves the previous set
+ *  live. `clear` (the destroy path) destroys whatever is live. Each created
+ *  texture is destroyed exactly once. */
 export class ChunkCache<T> {
   readonly #create: (chunk: Chunk, options: ChunkTextureOptions) => T;
   readonly #destroy: (texture: T) => void;
@@ -290,10 +302,18 @@ export class ChunkCache<T> {
   }
 
   build(chunks: readonly Chunk[], deviceScale: number): readonly T[] {
-    this.clear();
     const options: ChunkTextureOptions = { resolution: deviceScale, scaleMode: 'nearest' };
-    for (const chunk of chunks) this.#live.push(this.#create(chunk, options));
-    return [...this.#live];
+    const next: T[] = [];
+    try {
+      for (const chunk of chunks) next.push(this.#create(chunk, options));
+    } catch (err) {
+      for (const texture of next) this.#destroy(texture);
+      throw err;
+    }
+    const previous = this.#live;
+    this.#live = next;
+    for (const texture of previous) this.#destroy(texture);
+    return [...next];
   }
 
   clear(): void {
