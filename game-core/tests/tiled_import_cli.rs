@@ -100,3 +100,37 @@ fn cli_valid_input_emits_ron_on_stdout() {
         "the RON output must carry the zone_id argument (7); got stdout: {stdout:?}"
     );
 }
+
+/// wap-1 (WAP1.6) — the shipped binary imports the new water GIDs end to end:
+/// a 2×1 layer of GIDs 5 (shallow) and 6 (deep) emits the RON row `"wW"`.
+///
+/// Kills: a `main` wired to a different (stale) GID table than the unit-tested
+/// `parse_tiled_json`, an importer that still rejects GIDs above 2 (exit 1), and a
+/// shallow/deep swap (`"Ww"`). The quoted `"wW"` is the WHOLE RON row string.
+#[test]
+fn cli_water_gids_emit_the_whole_ron_row_wap1_6() {
+    let path = unique_temp_path("water_wap1_6");
+    let json =
+        r#"{"width":2,"height":1,"layers":[{"type":"tilelayer","name":"Tiles","data":[5,6]}]}"#;
+    std::fs::write(&path, json).expect("must be able to write the temp input file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tiled_import"))
+        .arg(&path)
+        .arg("7")
+        .output()
+        .expect("must be able to spawn the tiled_import binary");
+
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        output.status.success(),
+        "GIDs 5/6 are class GIDs and must import (exit 0); got status {:?}, stderr: {:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"wW\""),
+        "stdout must carry the RON row \"wW\" (shallow then deep); got stdout: {stdout:?}"
+    );
+}

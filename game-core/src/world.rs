@@ -87,11 +87,12 @@ const ZONE_0_ROWS: &[&str] = &[
 
 /// A zone-tagged, bounds-safe walkability grid (row-major).
 ///
-/// `Serialize` is one-way only (no `Deserialize`): the M3 `client-wasm`
-/// `zone_map()` export hands the renderer the SAME map the rule evaluates
-/// (visual-SSOT — a hard-coded TS map would visually desync). It is **not**
-/// deserialized back, so the `from_rows` parse-don't-validate constructor stays
-/// the sole way to build an invariant-holding `TileMap`.
+/// `Serialize` is one-way only (no `Deserialize`): the map is never deserialized
+/// back, so the `from_rows` parse-don't-validate constructor stays the sole way
+/// to build an invariant-holding `TileMap`. The renderer receives the SAME map
+/// the rule evaluates (visual-SSOT — a hard-coded TS map would visually desync)
+/// through `client-wasm`'s `zone_map()`, which re-expresses it field by field
+/// (plus `terrain` and `landmarks`) via the accessors below.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TileMap {
     pub zone_id: u32,
@@ -102,6 +103,10 @@ pub struct TileMap {
     /// `TallGrass` (M8). Rides the one-way `Serialize` so the TS renderer's grass
     /// overlay reads the SAME layer the rule evaluates (visual-SSOT).
     grass: Vec<bool>,
+    /// Parallel, row-major, SAME length as `walkable` — each tile's `TileKind`.
+    /// `walkable` and `grass` are derived from the same glyph in the same loop;
+    /// the renderer draws terrain from this layer (`terrain_at`).
+    terrain: Vec<TileKind>,
     /// M11c: warp overlay list — serializes through zone_map() wasm export
     /// (intentional ABI so the TS client always sees the warps field).
     /// `from_rows` produces `warps: vec![]`; `map_for` sets them from ZoneMapDef.
@@ -109,7 +114,8 @@ pub struct TileMap {
 }
 
 impl TileMap {
-    /// Build a map from string-art rows (`'.'` floor, `'#'` wall). Fails LOUD at
+    /// Build a map from string-art rows (one `TileKind` glyph per tile, see
+    /// `TileKind::from_char`). Fails LOUD at
     /// the single offending site on ragged rows or an unknown tile char
     /// (parse-don't-validate, not a silent default).
     ///
@@ -143,6 +149,17 @@ impl TileMap {
         }
         let idx = p.y as usize * self.width as usize + p.x as usize;
         self.grass.get(idx).copied().unwrap_or(false)
+    }
+
+    /// The tile's terrain class. Out-of-range → `None`, never a panic (mirrors
+    /// `is_grass`); every in-bounds tile has a class.
+    #[must_use]
+    pub fn terrain_at(&self, p: TilePos) -> Option<TileKind> {
+        if !self.in_bounds(p) {
+            return None;
+        }
+        let idx = p.y as usize * self.width as usize + p.x as usize;
+        self.terrain.get(idx).copied()
     }
 
     /// Returns the warp whose `from` tile equals `p`, or `None`.
@@ -187,6 +204,7 @@ fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
         .map_err(|_| "map too wide".to_string())?;
     let mut walkable = Vec::with_capacity((width * height).max(0) as usize);
     let mut grass = Vec::with_capacity((width * height).max(0) as usize);
+    let mut terrain = Vec::with_capacity((width * height).max(0) as usize);
     for (y, row) in rows.iter().enumerate() {
         let row_len = i32::try_from(row.chars().count()).unwrap_or(i32::MAX);
         if row_len != width {
@@ -197,7 +215,8 @@ fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
         for (x, c) in row.chars().enumerate() {
             let kind = TileKind::from_char(c).map_err(|e| format!("{e} at ({x},{y})"))?;
             walkable.push(kind.is_walkable());
-            grass.push(matches!(kind, TileKind::TallGrass));
+            grass.push(kind.is_encounter());
+            terrain.push(kind);
         }
     }
     Ok(TileMap {
@@ -206,6 +225,7 @@ fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
         height,
         walkable,
         grass,
+        terrain,
         warps: vec![],
     })
 }
@@ -231,7 +251,9 @@ pub fn map_for(zone_id: u32, zone_maps: &[crate::content::ZoneMapDef]) -> Result
 ///
 /// Checks (in order):
 ///
-/// 1. All rows build valid TileMaps (well-formedness).
+/// 1. All rows build valid TileMaps (well-formedness), then (check 1b) deep water
+///    borders only water: every in-bounds 8-neighbour of a `DeepWater` tile is
+///    `ShallowWater` or `DeepWater` — the shore band is shallow water's alone.
 /// 2. zone_ids within zone_maps are unique.
 /// 3. Every zone_id in zone_maps exists in the zones registry.
 /// 4. Map dims ≤ ZoneDef bounds.
@@ -259,6 +281,11 @@ pub fn validate_zone_maps(
                 .map_err(|e| format!("zone_map zone_id {}: {}", m.zone_id, e))
         })
         .collect::<Result<_, _>>()?;
+
+    // Check 1b: deep water borders only water.
+    for (m, tile_map) in zone_maps.iter().zip(built.iter()) {
+        check_deep_water_shore(m.zone_id, tile_map)?;
+    }
 
     // Check 2: unique zone_id
     {
@@ -354,6 +381,46 @@ pub fn validate_zone_maps(
         }
     }
 
+    Ok(())
+}
+
+/// Check 1b of `validate_zone_maps`: a `DeepWater` tile may border only water, so
+/// the shore band (where water meets land) is always shallow water's. Every
+/// IN-BOUNDS tile of the 3×3 window around each deep tile must be
+/// `ShallowWater` or `DeepWater`; a tile off the map is not a neighbour (a sea may
+/// run off the edge — there is no land there to meet). Names the deep tile and
+/// the first offending neighbour in row-major order.
+fn check_deep_water_shore(zone_id: u32, map: &TileMap) -> Result<(), String> {
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let p = TilePos { x, y };
+            if map.terrain_at(p) != Some(TileKind::DeepWater) {
+                continue;
+            }
+            for ny in (y - 1)..=(y + 1) {
+                for nx in (x - 1)..=(x + 1) {
+                    let q = TilePos { x: nx, y: ny };
+                    match map.terrain_at(q) {
+                        None | Some(TileKind::ShallowWater | TileKind::DeepWater) => {}
+                        Some(
+                            kind @ (TileKind::Floor
+                            | TileKind::Wall
+                            | TileKind::TallGrass
+                            | TileKind::Path
+                            | TileKind::Sand
+                            | TileKind::Rock
+                            | TileKind::Tree
+                            | TileKind::Bush),
+                        ) => {
+                            return Err(format!(
+                                "zone_map zone_id {zone_id}: deep water at {p:?} borders non-water {kind:?} at {q:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1671,5 +1738,337 @@ mod tests {
              `>`→`==` and `>`→`>=` both make 2==2 or 2>=2 true and wrongly Err. Error: {:?}",
             result.err()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Terrain grammar: ten tile classes, one grid, deep-water shore rule.
+    //
+    // Every expected value below is hand-typed from the spec's class table:
+    //   Floor '.' walk · Wall '#' block · TallGrass '~' walk+encounter ·
+    //   Path '=' walk · Sand ':' walk · ShallowWater 'w' block ·
+    //   DeepWater 'W' block · Rock '^' block · Tree 'T' block · Bush '*' block.
+    // -----------------------------------------------------------------------
+
+    /// Ten-glyph fixture, width 2 × height 10 (non-square): column 0 is Floor,
+    /// column 1 of row y holds the class of table row y.
+    const TEN_CLASS_ROWS: [&str; 10] = ["..", ".#", ".~", ".=", ".:", ".w", ".W", ".^", ".T", ".*"];
+
+    /// `(row y, class name, a step onto it MOVES)` — hand-typed from the table.
+    const TEN_CLASS_MOVES: [(i32, &str, bool); 10] = [
+        (0, "Floor", true),
+        (1, "Wall", false),
+        (2, "TallGrass", true),
+        (3, "Path", true),
+        (4, "Sand", true),
+        (5, "ShallowWater", false),
+        (6, "DeepWater", false),
+        (7, "Rock", false),
+        (8, "Tree", false),
+        (9, "Bush", false),
+    ];
+
+    fn ten_class_map() -> TileMap {
+        TileMap::from_rows(0, &TEN_CLASS_ROWS).expect("all ten class glyphs must build a map")
+    }
+
+    /// WAP1.1: an unknown glyph stays a load error naming the glyph AND its tile,
+    /// including when the rows also hold the new class glyphs.
+    /// Kills: an unknown glyph defaulted to Floor/Wall (silent), an error that drops
+    /// the coordinates or swaps x/y, and a `from_char` that still rejects the new
+    /// glyphs (the second map would then fail on `'='` at (0,0), not on `'X'`).
+    #[test]
+    fn unknown_glyph_is_a_load_error_naming_glyph_and_tile_wap1_1() {
+        assert_eq!(
+            TileMap::from_rows(0, &["..", ".Z"]),
+            Err("unknown tile char 'Z' at (1,1)".to_string())
+        );
+        assert_eq!(
+            TileMap::from_rows(0, &["=:", "wW", "^X"]),
+            Err("unknown tile char 'X' at (1,2)".to_string())
+        );
+    }
+
+    /// WAP1.2: stepping East from Floor onto each class moves onto ground, tall
+    /// grass, path and sand, and bumps on wall, both waters, rock, tree and bush.
+    /// Kills: water/rock/tree/bush made walkable (walk on the lake), path/sand made
+    /// blocking, or a map that cannot even hold the new glyphs.
+    #[test]
+    fn each_class_moves_or_bumps_by_the_class_table_wap1_2() {
+        let m = ten_class_map();
+        for (y, name, moves) in TEN_CLASS_MOVES {
+            let s = at(0, y, Direction::North);
+            let r = apply_move(&s, MoveInput::Step(Direction::East), &m, Millis(5));
+            assert_eq!(r.facing, Direction::East, "{name}: always turns to face");
+            if moves {
+                assert_eq!(r.pos, TilePos { x: 1, y }, "{name} must be walked onto");
+                assert_eq!(r.action, ActionState::Walking, "{name}: a move walks");
+            } else {
+                assert_eq!(r.pos, TilePos { x: 0, y }, "{name} must bump");
+                assert_eq!(r.action, ActionState::Idle, "{name}: a bump is idle");
+            }
+        }
+    }
+
+    /// WAP1.2: only tall grass reports `is_grass`, and only a move onto it fires the
+    /// encounter trigger; TallGrass→Path does not, Path→TallGrass does.
+    /// Kills: water or bush flagged as grass (`is_encounter` true on another class),
+    /// a grass layer built from walkability, or a trigger keyed on the tile left.
+    #[test]
+    fn only_tall_grass_reports_is_grass_and_triggers_on_entry_wap1_2() {
+        let m = ten_class_map();
+        for (y, name, _) in TEN_CLASS_MOVES {
+            assert_eq!(
+                m.is_grass(TilePos { x: 1, y }),
+                y == 2,
+                "{name}: is_grass only on the TallGrass row"
+            );
+            assert!(
+                !m.is_grass(TilePos { x: 0, y }),
+                "row {y} column 0 is Floor"
+            );
+            let from = TilePos { x: 0, y };
+            let r = apply_move(
+                &at(0, y, Direction::East),
+                MoveInput::Step(Direction::East),
+                &m,
+                Millis(1),
+            );
+            assert_eq!(
+                super::stepped_onto_grass(from, r.pos, &m),
+                y == 2,
+                "{name}: the trigger fires only on a move onto TallGrass"
+            );
+        }
+        let strip = TileMap::from_rows(0, &["~="]).expect("grass + path row builds");
+        let grass = TilePos { x: 0, y: 0 };
+        let path = TilePos { x: 1, y: 0 };
+        assert!(!strip.is_grass(path), "Path is not grass");
+        assert!(
+            !super::stepped_onto_grass(grass, path, &strip),
+            "TallGrass -> Path must not trigger"
+        );
+        assert!(
+            super::stepped_onto_grass(path, grass, &strip),
+            "Path -> TallGrass must trigger"
+        );
+    }
+
+    /// The exact WAP1.3 rejection text (contract format; `{:?}` of TilePos/TileKind).
+    fn deep_water_err(zone_id: u32, p: TilePos, q: TilePos) -> String {
+        let kind = crate::types::TileKind::Floor;
+        format!(
+            "zone_map zone_id {zone_id}: deep water at {p:?} borders non-water {kind:?} at {q:?}"
+        )
+    }
+
+    /// 5×5: `W` at (2,2), an 8-ring of `w`, an outer ring of `.` (Floor at
+    /// distance 2 from the deep water).
+    fn lagoon_5x5() -> Vec<Vec<char>> {
+        [".....", ".www.", ".wWw.", ".www.", "....."]
+            .iter()
+            .map(|r| r.chars().collect())
+            .collect()
+    }
+
+    fn rows_of(grid: &[Vec<char>]) -> Vec<String> {
+        grid.iter().map(|r| r.iter().collect()).collect()
+    }
+
+    fn validate_rows(zone_id: u32, rows: &[String], w: u32, h: u32) -> Result<(), String> {
+        let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+        validate_zone_maps(
+            &[zone_map_def(zone_id, refs, vec![])],
+            &[zone_def(zone_id, w, h)],
+        )
+    }
+
+    /// WAP1.3: a Floor at ANY of the eight neighbours of a deep-water tile rejects
+    /// the map, naming the deep tile, the neighbour's class and the neighbour.
+    /// Kills: a 4-neighbour-only check (misses the four diagonals), a window
+    /// shifted by one on either axis, a check that names the wrong tile, and a
+    /// validator with no deep-water rule at all.
+    #[test]
+    fn deep_water_with_floor_at_any_of_eight_neighbours_is_rejected_wap1_3() {
+        let offsets: [(i32, i32, &str); 8] = [
+            (0, -1, "N"),
+            (0, 1, "S"),
+            (1, 0, "E"),
+            (-1, 0, "W"),
+            (1, -1, "NE"),
+            (-1, -1, "NW"),
+            (1, 1, "SE"),
+            (-1, 1, "SW"),
+        ];
+        for (dx, dy, label) in offsets {
+            let mut grid = lagoon_5x5();
+            let q = TilePos {
+                x: 2 + dx,
+                y: 2 + dy,
+            };
+            grid[q.y as usize][q.x as usize] = '.';
+            assert_eq!(
+                validate_rows(4, &rows_of(&grid), 5, 5),
+                Err(deep_water_err(4, TilePos { x: 2, y: 2 }, q)),
+                "Floor at the {label} neighbour of the deep water must be rejected"
+            );
+        }
+    }
+
+    /// WAP1.3: deep water ringed by water is accepted — an all-shallow ring, and a
+    /// 3×3 core mixing deep and shallow — with Floor two tiles away.
+    /// Kills: a rule that rejects every deep tile, one that rejects deep-beside-
+    /// deep, and a window of radius 2 (would see the Floor at distance 2).
+    #[test]
+    fn deep_water_ringed_by_water_is_accepted_wap1_3() {
+        let ring = validate_rows(0, &rows_of(&lagoon_5x5()), 5, 5);
+        assert_eq!(ring, Ok(()), "W ringed by w, Floor at distance 2");
+        let mixed: Vec<String> = [
+            ".......", ".wwwww.", ".wWwWw.", ".wwWww.", ".wWwWw.", ".wwwww.", ".......",
+        ]
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
+        assert_eq!(
+            validate_rows(0, &mixed, 7, 7),
+            Ok(()),
+            "a mixed w/W core ringed by w is a legal lake"
+        );
+    }
+
+    /// WAP1.3 edge rule: out-of-bounds neighbours are IGNORED (no land off the
+    /// map), at the top-left corner, the bottom-right corner of a non-square map,
+    /// and mid-way down the right edge.
+    /// Kills: treating off-map as non-water (rejects every sea that touches the
+    /// edge), a `+1` that wraps onto the next row's first column (the right-edge
+    /// case would then see the Floor at column 0), and a width/height swap.
+    #[test]
+    fn deep_water_at_the_map_edge_ignores_out_of_bounds_neighbours_wap1_3() {
+        let cases: [(&str, &[&str], u32, u32); 3] = [
+            ("top-left (0,0)", &["Ww.", "ww."], 3, 2),
+            ("bottom-right (3,2)", &["....", "..ww", "..wW"], 4, 3),
+            ("right edge (3,1)", &["..ww", "..wW", "..ww"], 4, 3),
+        ];
+        for (label, rows, w, h) in cases {
+            let rows: Vec<String> = rows.iter().map(|r| r.to_string()).collect();
+            assert_eq!(
+                validate_rows(0, &rows, w, h),
+                Ok(()),
+                "deep water at the {label} with only in-bounds water neighbours"
+            );
+        }
+    }
+
+    /// WAP1.3: every non-water class beside deep water is rejected.
+    /// Kills: a rule that only rejects Floor (or only walkable classes) — wall,
+    /// rock, tree and bush are not water either.
+    #[test]
+    fn every_non_water_class_beside_deep_water_is_rejected_wap1_3() {
+        for glyph in ['.', '#', '~', '=', ':', '^', 'T', '*'] {
+            let mut grid = lagoon_5x5();
+            grid[2][3] = glyph;
+            let err = validate_rows(0, &rows_of(&grid), 5, 5)
+                .expect_err("a non-water East neighbour of deep water must be rejected");
+            assert!(
+                err.contains("deep water at TilePos { x: 2, y: 2 } borders non-water "),
+                "glyph {glyph:?}: names the deep tile; got {err}"
+            );
+            assert!(
+                err.ends_with(" at TilePos { x: 3, y: 2 }"),
+                "glyph {glyph:?}: names the offending neighbour; got {err}"
+            );
+        }
+    }
+
+    /// WAP1.3: with two deep tiles where only the SECOND (row-major) is bad, the
+    /// map is rejected naming the second.
+    /// Kills: a check that stops after the first deep tile, or that only looks at
+    /// the first deep tile it finds.
+    #[test]
+    fn only_the_second_deep_water_tile_bad_is_rejected_naming_it_wap1_3() {
+        let rows: Vec<String> = ["www.www", "wWw.wWw", "www.ww."]
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert_eq!(
+            validate_rows(2, &rows, 7, 3),
+            Err(deep_water_err(
+                2,
+                TilePos { x: 5, y: 1 },
+                TilePos { x: 6, y: 2 }
+            ))
+        );
+    }
+
+    /// WAP1.3: with two zone maps where only the SECOND zone is bad, validation
+    /// rejects naming that zone.
+    /// Kills: a deep-water check run only on the first map, or a message that
+    /// names the wrong zone id.
+    #[test]
+    fn only_the_second_zone_bad_is_rejected_naming_that_zone_wap1_3() {
+        let good = rows_of(&lagoon_5x5());
+        let mut bad_grid = lagoon_5x5();
+        bad_grid[2][3] = '.';
+        let bad = rows_of(&bad_grid);
+        let good_refs: Vec<&str> = good.iter().map(String::as_str).collect();
+        let bad_refs: Vec<&str> = bad.iter().map(String::as_str).collect();
+        let maps = vec![
+            zone_map_def(0, good_refs, vec![]),
+            zone_map_def(1, bad_refs, vec![]),
+        ];
+        let zones = vec![zone_def(0, 5, 5), zone_def(1, 5, 5)];
+        assert_eq!(
+            validate_zone_maps(&maps, &zones),
+            Err(deep_water_err(
+                1,
+                TilePos { x: 2, y: 2 },
+                TilePos { x: 3, y: 2 }
+            ))
+        );
+    }
+
+    /// WAP1.1: the map keeps each tile's class; `terrain_at` reads it back exactly
+    /// and is `None` off-map (never a default, never a panic).
+    /// Kills: a terrain layer indexed `x*height+y` / `y*height+x` (the 2×10 map is
+    /// non-square), a missing bounds check (`(2,0)` would read row 1's Floor), an
+    /// `unwrap_or(Floor)` off-map, and a terrain layer rebuilt from walkable/grass
+    /// (cannot tell water from rock).
+    #[test]
+    fn terrain_at_reports_each_class_and_none_off_map_wap1_1() {
+        use crate::types::TileKind;
+        let expected: [TileKind; 10] = [
+            TileKind::Floor,
+            TileKind::Wall,
+            TileKind::TallGrass,
+            TileKind::Path,
+            TileKind::Sand,
+            TileKind::ShallowWater,
+            TileKind::DeepWater,
+            TileKind::Rock,
+            TileKind::Tree,
+            TileKind::Bush,
+        ];
+        let m = ten_class_map();
+        for (y, kind) in (0i32..).zip(expected) {
+            assert_eq!(
+                m.terrain_at(TilePos { x: 1, y }),
+                Some(kind),
+                "row {y} column 1"
+            );
+            assert_eq!(
+                m.terrain_at(TilePos { x: 0, y }),
+                Some(TileKind::Floor),
+                "row {y} column 0"
+            );
+        }
+        for (x, y) in [
+            (-1, 0),
+            (2, 0),
+            (0, 10),
+            (0, -1),
+            (2, 9),
+            (i32::MAX, i32::MAX),
+        ] {
+            assert_eq!(m.terrain_at(TilePos { x, y }), None, "({x},{y}) is off-map");
+        }
     }
 }

@@ -178,13 +178,21 @@ fn zone_0_has_grass_but_spawn_is_plain_floor() {
 proptest! {
     /// EARS: `from_rows` builds a parallel grass layer of the SAME length as the
     /// walkable grid (width*height), and grass ⇒ walkable (you can step into grass).
+    /// wap-1 (WAP1.2): over art drawn from ALL ten class glyphs, every in-bounds
+    /// tile's terrain class is the glyph authored there, its walkability is that
+    /// class's, and it is grass iff the class is TallGrass.
     /// Kills: an impl whose `grass` vec length diverges from the grid (ragged
-    /// internal state), or that marks a grass tile non-walkable.
+    /// internal state), or that marks a grass tile non-walkable; a terrain layer
+    /// out of step with the walkable/grass layers (mis-indexed, or filled from a
+    /// different loop); a grass layer keyed on anything but TallGrass.
     #[test]
-    fn from_rows_grass_layer_total_and_grass_implies_walkable(
-        // Arbitrary small valid art rows: each cell is one of '.', '#', '~'.
+    fn every_tile_walkability_and_grass_follow_its_terrain_class_wap1_2(
+        // Arbitrary small valid art rows: each cell is one of the ten class glyphs.
         rows in prop::collection::vec(
-            prop::collection::vec(prop::sample::select(vec!['.', '#', '~']), 1usize..6),
+            prop::collection::vec(
+                prop::sample::select(vec!['.', '#', '~', '=', ':', 'w', 'W', '^', 'T', '*']),
+                1usize..6,
+            ),
             1usize..6,
         )
         .prop_map(|grid| {
@@ -213,6 +221,19 @@ proptest! {
                         "grass tile ({x},{y}) must be walkable"
                     );
                 }
+                let kind = m
+                    .terrain_at(p)
+                    .expect("every in-bounds tile has a terrain class");
+                let authored = rows[y as usize].chars().nth(x as usize);
+                prop_assert_eq!(Some(kind.glyph()), authored, "class at ({},{})", x, y);
+                prop_assert_eq!(m.is_walkable(p), kind.is_walkable(), "walkable at ({},{})", x, y);
+                prop_assert_eq!(
+                    m.is_grass(p),
+                    m.terrain_at(p) == Some(TileKind::TallGrass),
+                    "grass at ({},{})",
+                    x,
+                    y
+                );
             }
         }
     }

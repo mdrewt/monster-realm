@@ -83,18 +83,56 @@ pub enum MoveInput {
     Jump,
 }
 
-/// A tile's kind. Grows with its milestone; the exhaustive
-/// `match` will then compiler-flag every site (OCP-inverted).
+/// A tile's terrain class — THE class table (glyph, Tiled GID, walkability,
+/// encounter flag) that the zone-map RON rows, `tiled_import` and the style guide
+/// (`docs/art/style-guide.md`) cite; nothing else defines it. Variants are
+/// TAIL-APPENDED only: the `SpacetimeType` derive encodes them positionally (the
+/// spacetime-type-snapshot eval pins the order) and the wire name the client reads
+/// is the variant name (`serde`, no renames). Every method below is an exhaustive
+/// `match` with no wildcard on `TileKind`, so an eleventh class is a compile
+/// error at each site (OCP-inverted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum TileKind {
+    /// Ground (short grass): `.`, GID 1, walkable.
     Floor,
+    /// `#`, GID 0, blocks.
     Wall,
-    /// Walkable floor that can trigger a wild encounter when stepped onto (M8).
+    /// Walkable floor that can trigger a wild encounter when stepped onto (M8):
+    /// `~`, GID 2 — the only encounter class.
     TallGrass,
+    /// `=`, GID 3, walkable.
+    Path,
+    /// `:`, GID 4, walkable.
+    Sand,
+    /// `w`, GID 5, blocks; the shore band is drawn where it meets land.
+    ShallowWater,
+    /// `W`, GID 6, blocks; borders only water (`validate_zone_maps`).
+    DeepWater,
+    /// `^`, GID 7, blocks.
+    Rock,
+    /// `T`, GID 8, blocks.
+    Tree,
+    /// `*`, GID 9, blocks.
+    Bush,
 }
 
 impl TileKind {
+    /// Every class in declaration (= wire) order — the roster `client-wasm`'s
+    /// `terrain_kinds()` exports so the client's name list is pinned to this enum.
+    pub const ALL: [TileKind; 10] = [
+        TileKind::Floor,
+        TileKind::Wall,
+        TileKind::TallGrass,
+        TileKind::Path,
+        TileKind::Sand,
+        TileKind::ShallowWater,
+        TileKind::DeepWater,
+        TileKind::Rock,
+        TileKind::Tree,
+        TileKind::Bush,
+    ];
+
     /// Authoring char → tile kind (parse-don't-validate; unknown chars fail loud
     /// at the call site).
     ///
@@ -105,15 +143,81 @@ impl TileKind {
             '.' => Ok(TileKind::Floor),
             '#' => Ok(TileKind::Wall),
             '~' => Ok(TileKind::TallGrass),
+            '=' => Ok(TileKind::Path),
+            ':' => Ok(TileKind::Sand),
+            'w' => Ok(TileKind::ShallowWater),
+            'W' => Ok(TileKind::DeepWater),
+            '^' => Ok(TileKind::Rock),
+            'T' => Ok(TileKind::Tree),
+            '*' => Ok(TileKind::Bush),
             other => Err(format!("unknown tile char {other:?}")),
+        }
+    }
+
+    /// The authoring glyph (the inverse of `from_char`).
+    #[must_use]
+    pub fn glyph(self) -> char {
+        match self {
+            TileKind::Floor => '.',
+            TileKind::Wall => '#',
+            TileKind::TallGrass => '~',
+            TileKind::Path => '=',
+            TileKind::Sand => ':',
+            TileKind::ShallowWater => 'w',
+            TileKind::DeepWater => 'W',
+            TileKind::Rock => '^',
+            TileKind::Tree => 'T',
+            TileKind::Bush => '*',
+        }
+    }
+
+    /// Tiled GID → tile kind (`tiled_import`); `None` for a GID the table does
+    /// not own (the caller rejects it, never defaults).
+    #[must_use]
+    pub fn from_gid(gid: u32) -> Option<TileKind> {
+        match gid {
+            0 => Some(TileKind::Wall),
+            1 => Some(TileKind::Floor),
+            2 => Some(TileKind::TallGrass),
+            3 => Some(TileKind::Path),
+            4 => Some(TileKind::Sand),
+            5 => Some(TileKind::ShallowWater),
+            6 => Some(TileKind::DeepWater),
+            7 => Some(TileKind::Rock),
+            8 => Some(TileKind::Tree),
+            9 => Some(TileKind::Bush),
+            _ => None,
         }
     }
 
     #[must_use]
     pub fn is_walkable(self) -> bool {
         match self {
-            TileKind::Floor | TileKind::TallGrass => true,
-            TileKind::Wall => false,
+            TileKind::Floor | TileKind::TallGrass | TileKind::Path | TileKind::Sand => true,
+            TileKind::Wall
+            | TileKind::ShallowWater
+            | TileKind::DeepWater
+            | TileKind::Rock
+            | TileKind::Tree
+            | TileKind::Bush => false,
+        }
+    }
+
+    /// `true` for the one class that can start a wild encounter when stepped
+    /// onto (`TileMap::is_grass` reads this layer).
+    #[must_use]
+    pub fn is_encounter(self) -> bool {
+        match self {
+            TileKind::TallGrass => true,
+            TileKind::Floor
+            | TileKind::Wall
+            | TileKind::Path
+            | TileKind::Sand
+            | TileKind::ShallowWater
+            | TileKind::DeepWater
+            | TileKind::Rock
+            | TileKind::Tree
+            | TileKind::Bush => false,
         }
     }
 }
@@ -315,5 +419,128 @@ mod tests {
         // Valid boundary
         assert_eq!(action_from_code(0), Some(ActionState::Idle));
         assert_eq!(action_from_code(2), Some(ActionState::Jumping));
+    }
+
+    /// The terrain class table (M-world-art-pass spec, class table), HAND-TYPED:
+    /// `(glyph, Tiled GID, walkable, encounter, wire name)`. Never derived from the
+    /// implementation. An exhaustive `match` with no `_` arm, so an 11th variant
+    /// compile-fails this roster until the table here is extended too.
+    fn class_row(k: TileKind) -> (char, u32, bool, bool, &'static str) {
+        match k {
+            TileKind::Floor => ('.', 1, true, false, "Floor"),
+            TileKind::Wall => ('#', 0, false, false, "Wall"),
+            TileKind::TallGrass => ('~', 2, true, true, "TallGrass"),
+            TileKind::Path => ('=', 3, true, false, "Path"),
+            TileKind::Sand => (':', 4, true, false, "Sand"),
+            TileKind::ShallowWater => ('w', 5, false, false, "ShallowWater"),
+            TileKind::DeepWater => ('W', 6, false, false, "DeepWater"),
+            TileKind::Rock => ('^', 7, false, false, "Rock"),
+            TileKind::Tree => ('T', 8, false, false, "Tree"),
+            TileKind::Bush => ('*', 9, false, false, "Bush"),
+        }
+    }
+
+    /// The ten classes in the table's row order = the required declaration order
+    /// (serde / `SpacetimeType` positional order). Hand-typed.
+    const TABLE_ORDER: [TileKind; 10] = [
+        TileKind::Floor,
+        TileKind::Wall,
+        TileKind::TallGrass,
+        TileKind::Path,
+        TileKind::Sand,
+        TileKind::ShallowWater,
+        TileKind::DeepWater,
+        TileKind::Rock,
+        TileKind::Tree,
+        TileKind::Bush,
+    ];
+
+    /// WAP1.1: every class glyph parses to its `TileKind`, and `glyph()` is the
+    /// exact inverse.
+    /// Kills: a swapped glyph pair (`'w'`/`'W'`, `'^'`/`'*'`), a new glyph left
+    /// unmapped in `from_char` (still a load error), or a `glyph()` arm returning
+    /// another class's char.
+    #[test]
+    fn every_class_glyph_parses_to_its_tilekind_and_back_wap1_1() {
+        for k in TABLE_ORDER {
+            let (glyph, _, _, _, name) = class_row(k);
+            assert_eq!(
+                TileKind::from_char(glyph),
+                Ok(k),
+                "glyph {glyph:?} must parse to {name}"
+            );
+            assert_eq!(k.glyph(), glyph, "{name}.glyph() must be {glyph:?}");
+        }
+    }
+
+    /// WAP1.1: walkability and the encounter flag are exactly the class table's.
+    /// Kills: water/rock/tree/bush made walkable, path/sand left unwalkable, or any
+    /// class other than TallGrass flagged as an encounter tile (or TallGrass not).
+    #[test]
+    fn every_class_has_its_exact_walkable_and_encounter_flags_wap1_1() {
+        for k in TABLE_ORDER {
+            let (_, _, walkable, encounter, name) = class_row(k);
+            assert_eq!(
+                (k.is_walkable(), k.is_encounter()),
+                (walkable, encounter),
+                "{name}: (is_walkable, is_encounter)"
+            );
+        }
+    }
+
+    /// WAP1.1 / WAP1.4 wire contract: a class serializes under its bare variant
+    /// name (no serde rename) and parses back from it.
+    /// Kills: a `#[serde(rename)]` / `rename_all` on `TileKind` (the TS roster
+    /// `TERRAIN_KINDS` would no longer match the wire), or a lossy round-trip.
+    #[test]
+    fn every_class_serializes_under_its_variant_name_wap1_1() {
+        for k in TABLE_ORDER {
+            let (_, _, _, _, name) = class_row(k);
+            assert_eq!(
+                ron::to_string(&k).expect("TileKind serializes"),
+                name,
+                "{name} wire name"
+            );
+            assert_eq!(
+                ron::from_str::<TileKind>(name).expect("wire name parses back"),
+                k,
+                "{name} round-trip"
+            );
+        }
+    }
+
+    /// WAP1.1 (R1): declaration order is the table's row order (old variants keep
+    /// their positions; the seven new ones are tail-appended) and `TileKind::ALL`
+    /// lists all ten in that order.
+    /// Kills: a new variant inserted before `TallGrass` (shifts the serde /
+    /// `SpacetimeType` tags of stored values), two new variants swapped, or an
+    /// `ALL` that omits / reorders a class.
+    #[test]
+    fn all_lists_the_ten_classes_in_declaration_order_wap1_1() {
+        for (i, k) in TABLE_ORDER.iter().enumerate() {
+            assert_eq!(*k as usize, i, "{k:?} declaration position");
+        }
+        assert_eq!(TileKind::ALL.len(), 10);
+        assert_eq!(TileKind::ALL, TABLE_ORDER);
+        for (i, k) in TileKind::ALL.iter().enumerate() {
+            assert_eq!(*k as usize, i, "TileKind::ALL[{i}] = {k:?}");
+        }
+    }
+
+    /// WAP1.6: every class's Tiled GID maps to it; any other GID is `None`.
+    /// Kills: a GID off-by-one (e.g. 5 → DeepWater), a swapped pair, an open-ended
+    /// arm that accepts GID 10, or a default class for unknown GIDs.
+    #[test]
+    fn from_gid_maps_every_class_gid_and_rejects_the_rest_wap1_6() {
+        for k in TABLE_ORDER {
+            let (_, gid, _, _, name) = class_row(k);
+            assert_eq!(TileKind::from_gid(gid), Some(k), "GID {gid} is {name}");
+        }
+        assert_eq!(TileKind::from_gid(10), None, "GID 10 is not a class");
+        assert_eq!(
+            TileKind::from_gid(u32::MAX),
+            None,
+            "u32::MAX is not a class"
+        );
     }
 }
