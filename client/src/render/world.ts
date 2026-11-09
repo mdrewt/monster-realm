@@ -145,12 +145,16 @@ export class WorldRenderer {
     this.#app = app;
     this.#map = map;
     this.#assets = new PlaceholderAssets(app.renderer);
-    this.#kit = await loadKit();
+    const kit = await loadKit();
     if (this.#app !== app) return; // destroy() ran while the atlas loaded
-    this.#chunks = new ChunkCache<Texture>(
-      (chunk, options) => bakeChunk(app, this.#kit, chunk, options),
-      (texture) => texture.destroy(true),
-    );
+    this.#kit = kit;
+    // No kit ⟹ no chunk cache: #drawMap takes the flat fallback.
+    this.#chunks =
+      kit &&
+      new ChunkCache<Texture>(
+        (chunk, options) => bakeChunk(app, kit, chunk, options),
+        (texture) => texture.destroy(true),
+      );
     this.#drawMap(map);
   }
 
@@ -369,11 +373,10 @@ async function loadKit(): Promise<Spritesheet | undefined> {
 /** Bake one chunk's static tiles into a texture with the cache's options. */
 function bakeChunk(
   app: Application,
-  kit: Spritesheet | undefined,
+  kit: Spritesheet,
   chunk: Chunk,
   options: ChunkTextureOptions,
 ): Texture {
-  if (kit === undefined) throw new Error('render/world: chunk baked without a terrain kit');
   const scratch = new Container();
   for (const tile of chunk.tiles) {
     const sprite = new Sprite(kitTexture(kit, tile.frame));
