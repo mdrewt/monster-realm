@@ -269,14 +269,14 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
 });
 
 // qf-10 (QF10.4): the accessible names of the Monsters and Inventory overlays follow their visible
-// titles. The Help overlay's name is deliberately NOT moved here (its wording is a separate,
-// deferred change), so every existing 'Controls & Goals' pin stays.
+// titles. The Help overlay's name was deliberately NOT moved here (a separate, deferred change); it
+// moved later, in uif-15a, to 'How to Play' (pinned below).
 describe('a11yCopy — qf-10: the overlay names match the visible titles', () => {
-  it('the boxView and raisingView accessible names read Monsters and Inventory and equal the visible titles; the helpView name is unchanged [QF10-4-A11Y-TITLES]', () => {
+  it('the boxView and raisingView accessible names read Monsters and Inventory and equal the visible titles; the helpView name is the uif-15a one [QF10-4-A11Y-TITLES]', () => {
     // WRONG IMPL KILLED: names left on the shipped 'Party & Box' / 'Raising & Inventory' (a screen
     // reader announces a dialog the sighted player no longer sees named that); names typed here
     // that drift from the catalog titles the views draw (box.title, raising.title); and a
-    // sweeping change that also renames the Help overlay (deferred).
+    // sweeping change that also renames the Help overlay (it moved separately, in uif-15a).
     expect(a11yCopy['a11y.overlay.boxView.title'], 'boxView accessible name').toBe('Monsters');
     expect(a11yCopy['a11y.overlay.raisingView.title'], 'raisingView accessible name').toBe(
       'Inventory',
@@ -294,8 +294,25 @@ describe('a11yCopy — qf-10: the overlay names match the visible titles', () =>
     expect(t('a11y.overlay.raisingView.title'), 't() resolves the raisingView name').toBe(
       'Inventory',
     );
-    expect(a11yCopy['a11y.overlay.helpView.title'], 'helpView name is not part of qf-10').toBe(
-      'Controls & Goals',
+    expect(
+      a11yCopy['a11y.overlay.helpView.title'],
+      'helpView name was not part of qf-10 (it moved in uif-15a)',
+    ).toBe('How to Play');
+  });
+});
+
+// uif-15a (UIF15A.2): the Help overlay's accessible name follows the new visible title. The a11y
+// catalog is a flat en-only Record (`t(key)` takes no locale), so only the en name is pinned here;
+// the localized visible title (en + fr) is pinned in helpView.i18n.test.ts.
+describe('a11yCopy — uif-15a: the Help overlay name', () => {
+  it('UIF15A.2 the helpView accessible name reads How to Play, is the name the registry resolves, and equals the visible help title', () => {
+    // WRONG IMPL KILLED: a name left on 'Controls & Goals' while the visible title changed; a
+    // labelKey re-pointed at another entry; a name that drifts from chrome.help.title.
+    expect(a11yCopy['a11y.overlay.helpView.title']).toBe('How to Play');
+    expect(OVERLAY_A11Y.helpView.labelKey).toBe('a11y.overlay.helpView.title');
+    expect(t(OVERLAY_A11Y.helpView.labelKey)).toBe('How to Play');
+    expect(t(OVERLAY_A11Y.helpView.labelKey)).toBe(
+      (CATALOG_EN as Record<string, unknown>)['chrome.help.title'],
     );
   });
 });

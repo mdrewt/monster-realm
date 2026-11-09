@@ -236,7 +236,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'controls.accel.storage': 'Stockage',
   // @desc: Name of the shortcut that opens the Bag, a row of the Shortcuts tab in Options ›
   // Controls. One short word. ui/controlsModel.ts
-  'controls.accel.bag': 'Sac',
+  'controls.accel.bag': 'Inventaire',
   // @desc: Name of the shortcut that opens Monsters › Party, a row of the Shortcuts tab in Options ›
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.party': 'Équipe',
@@ -350,7 +350,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'controls.text.set': (p) => `Taille du texte : ${p.label}.`,
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html #help-title (resolved in HelpView show())
-  'chrome.help.title': 'Commandes et objectifs',
+  'chrome.help.title': 'Comment jouer',
   // @desc: Heading of the Journal overlay listing the player's active quests. One or two words.
   // questLogView.ts #quest-log-title (resolved in render())
   'journal.title': 'Journal',
@@ -1299,7 +1299,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'menu.monsters.desc': 'Voir votre équipe et vos monstres stockés.',
   // @desc: Main-menu entry opening the bag (items, feeding and care).
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.bag.title': 'Sac',
+  'menu.bag.title': 'Inventaire',
   // @desc: Feedback-line description of the Bag main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.bag.desc': 'Utiliser des objets et soigner vos monstres.',
@@ -1388,7 +1388,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback-line reason the Bag main-menu entry is disabled over a battle: use the
   // battle's own Bag command.
   // ui/screens/mainMenuScreen.ts (battleReason)
-  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Sac du combat',
+  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Objets du combat',
   // @desc: Bag pocket tab: items that help recruit a wild monster. One word.
   // raisingView.ts (the Bag frame)
   'bag.pocket.bait': 'Appâts',

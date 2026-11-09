@@ -4360,3 +4360,58 @@ describe('uif-14: the Help ids in both catalogs', () => {
     }
   });
 });
+
+// =============================================================================
+// uif-15a (UIF15A.3): no player-facing "Bag" / "Sac" in the menu, the shortcuts row or party-full
+// =============================================================================
+
+describe('uif-15a: the Bag / Sac wording is gone from the menu, the shortcuts row and the party-full lines', () => {
+  it('UIF15A.3 no menu.* value, controls.accel.bag or partyFull value reads Bag (en) or Sac (fr), and the shortcut and battle-reason values are exact', () => {
+    // WRONG IMPL KILLED: a relabel that changed the root title but left the description, the
+    // shortcuts row or the party-full line saying Bag / Sac; a key renamed instead of re-valued
+    // (the ids `menu.bag.*`, `controls.accel.bag`, `menu.disabled.battleBag` stay); a sweep that
+    // matches nothing (ANTI-VACUITY below); a French value still saying Sac.
+    const enAll = CATALOG_EN as unknown as Record<string, unknown>;
+    const frAll = CATALOG_FR as unknown as Record<string, unknown>;
+    const swept = (catalog: Record<string, unknown>): string[] =>
+      Object.keys(catalog).filter(
+        (k) => k.startsWith('menu.') || k === 'controls.accel.bag' || k.includes('partyFull'),
+      );
+    const enKeys = swept(enAll);
+    const frKeys = swept(frAll);
+    expect(
+      enKeys.filter((k) => k.startsWith('menu.')).length,
+      'ANTI-VACUITY: menu.*',
+    ).toBeGreaterThan(20);
+    expect(enKeys, 'the shortcuts key stays').toContain('controls.accel.bag');
+    expect(enKeys, 'the battle reason key stays').toContain('menu.disabled.battleBag');
+    expect(enKeys, 'the nav-key title stays').toContain('menu.bag.title');
+    expect(enKeys, 'the party-full line stays').toContain('chrome.status.partyFull');
+    expect(frKeys, 'fr has the same swept keys').toEqual(enKeys);
+
+    // A closure value is called with an empty-ish probe so its text is swept too.
+    const textOf = (value: unknown): string =>
+      typeof value === 'function'
+        ? String((value as (p: Record<string, unknown>) => unknown)({ n: 1, count: 1, name: 'X' }))
+        : String(value);
+    for (const key of enKeys) {
+      expect(textOf(enAll[key]), `en ${key} must not say Bag`).not.toMatch(/\bBag\b/);
+    }
+    for (const key of frKeys) {
+      expect(textOf(frAll[key]), `fr ${key} must not say Sac`).not.toMatch(/\bSac\b/);
+    }
+
+    expect(enAll['menu.bag.title']).toBe('Inventory');
+    expect(frAll['menu.bag.title']).toBe('Inventaire');
+    expect(enAll['controls.accel.bag'], 'en shortcuts row').toBe('Inventory');
+    expect(frAll['controls.accel.bag'], 'fr shortcuts row').toBe('Inventaire');
+    expect(enAll['menu.disabled.battleBag']).toBe('Use items from the battle Items command');
+    expect(frAll['menu.disabled.battleBag']).toBe(
+      'Utilisez les objets avec la commande Objets du combat',
+    );
+    expect(String(enAll['menu.disabled.battleBag'])).toContain(String(enAll['tactics.menu.item']));
+    expect(String(frAll['menu.disabled.battleBag'])).toContain(String(frAll['tactics.menu.item']));
+    expect(enAll['chrome.help.title']).toBe('How to Play');
+    expect(frAll['chrome.help.title']).toBe('Comment jouer');
+  });
+});
