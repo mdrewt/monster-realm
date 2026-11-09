@@ -648,7 +648,8 @@ describe('MenuView — uif-3 frame anatomy', () => {
     expect(feedbackEl().hidden, 'the none state hides the line again').toBe(true);
     expect(feedbackEl().textContent).toBe('');
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
-    expect(optionEls().length).toBe(3);
+    // uif-16b (named intentional change): 3 -> 2, the sub-list fixture is Options (help, controls).
+    expect(optionEls().length).toBe(2);
   });
 
   it('UIF3.6 the menu frame holds the title bar, a hidden tab bar, the body and the feedback line, with no hint element; the title bar holds only the title and the breadcrumb', () => {

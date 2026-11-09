@@ -114,14 +114,14 @@ const PRIVACY_HANDLERS = [
 ] as const;
 type PrivacyHandlerName = (typeof PRIVACY_HANDLERS)[number];
 
-type Spy = ReturnType<typeof vi.fn>;
+type Spy = ReturnType<typeof vi.fn<() => void>>;
 
 interface Built {
   readonly profile: ProfileView;
   readonly rename: RenameView;
   readonly claim: ClaimView;
   readonly privacy: PrivacyView;
-  readonly onSubmit: Spy;
+  readonly onSubmit: ReturnType<typeof vi.fn<(name: string) => Promise<void>>>;
   readonly claimH: Readonly<Record<ClaimHandlerName, Spy>>;
   readonly privacyH: Readonly<Record<PrivacyHandlerName, Spy>>;
   readonly root: () => HTMLElement;
@@ -148,17 +148,16 @@ function mountShell(): void {
 
 function build(): Built {
   mountShell();
-  const onSubmit = vi.fn().mockResolvedValue(undefined);
+  const onSubmit = vi.fn<(name: string) => Promise<void>>().mockResolvedValue(undefined);
   const rename = new RenameView({ onSubmit });
-  const claimH = Object.fromEntries(CLAIM_HANDLERS.map((n) => [n, vi.fn()])) as Record<
+  const claimH = Object.fromEntries(CLAIM_HANDLERS.map((n) => [n, vi.fn<() => void>()])) as Record<
     ClaimHandlerName,
     Spy
   >;
   const claim = new ClaimView(claimH);
-  const privacyH = Object.fromEntries(PRIVACY_HANDLERS.map((n) => [n, vi.fn()])) as Record<
-    PrivacyHandlerName,
-    Spy
-  >;
+  const privacyH = Object.fromEntries(
+    PRIVACY_HANDLERS.map((n) => [n, vi.fn<() => void>()]),
+  ) as Record<PrivacyHandlerName, Spy>;
   // main.ts wires the frame's Close as privacy's fallback row (plan § Sections, privacy).
   let frame: ProfileView | undefined;
   const privacy = new PrivacyView({ ...privacyH, fallbackRow: () => frame?.closeRow });

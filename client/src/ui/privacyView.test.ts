@@ -269,7 +269,8 @@ function vmOf(overrides: Partial<PrivacyViewModel> = {}): PrivacyViewModel {
 // deletion.
 // ---------------------------------------------------------------------------
 
-type HandlerName = keyof PrivacyViewHandlers;
+// uif-16b: `fallbackRow` is an optional wiring hook, not a spied handler.
+type HandlerName = Exclude<keyof PrivacyViewHandlers, 'fallbackRow'>;
 
 const HANDLER_NAMES: readonly HandlerName[] = [
   'onDeleteRequested',

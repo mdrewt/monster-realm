@@ -2261,7 +2261,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 plain
     // `menu.social.{trades,challenges,rankings}.{title,desc}` (the Social sub-list is gone).
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain `help.intro.report`.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-14b roster is 531 keys').toHaveLength(531);
+    // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-16b roster is 526 keys').toHaveLength(526);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',

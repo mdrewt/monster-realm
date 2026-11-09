@@ -81,6 +81,8 @@ export class RenameView implements RowSection {
     const input = document.getElementById('rename-input');
     if (!input) throw new Error('rename-input missing');
     this.#input = input as HTMLInputElement;
+    // The field is named by the section header above it ("Name"): it has no label of its own.
+    this.#input.setAttribute('aria-labelledby', this.#title.id);
 
     const submitBtn = document.getElementById('rename-submit');
     if (!submitBtn) throw new Error('rename-submit missing');
