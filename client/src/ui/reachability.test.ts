@@ -534,7 +534,9 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 
           // The frame's tab (uif-15b: Monsters' or Social's, each over its own real model):
           // replay the cheapest tab sequence and land on the path's tab.
-          if (path.tab !== undefined) {
+          // uif-16b (named intentional change): a profileView path's `tab` is a Profile SECTION the
+          // frame opens on, not a nav tab: it costs 0 presses and has no tab model to replay.
+          if (path.tab !== undefined && path.frame !== 'profileView') {
             const model = tabModelOf(path.frame);
             let nav = model.start;
             for (const button of tabPath(path.tab, path.frame)) {

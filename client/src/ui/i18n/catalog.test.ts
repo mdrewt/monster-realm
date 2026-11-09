@@ -837,12 +837,12 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // (`menu.social.{trades,challenges,rankings}.{title,desc}`; the root Social row opens the Social frame
   // directly, so no menu row reads them: catalogParity DEAD-KEY otherwise) = 530 keys. Was 536. Their
   // absence is pinned by the 'uif-15b' describe at the end of this file.
+  // uif-16b (named intentional change, UIF16B.1): -4 plain keys here, RETIRED with the Profile
+  // sub-list (`menu.profile.{name,account,privacy}.desc`, `menu.profile.privacy.title`; the
+  // Privacy section header reads `privacy.title`), plus `chrome.status.privacyOverlayBusy` above
+  // (WF1-A10) = 526 keys. Was 531. `menu.profile.{name,account}.title` stay: the section headers.
   'menu.profile.name.title': 'Name',
-  'menu.profile.name.desc': 'Change the name other players see.',
   'menu.profile.account.title': 'Account',
-  'menu.profile.account.desc': 'Sign in or keep this guest progress.',
-  'menu.profile.privacy.title': 'Privacy',
-  'menu.profile.privacy.desc': 'Export or delete your data.',
   'menu.options.help.title': 'How to play',
   'menu.options.help.desc': 'Controls and goals of the game.',
   // ctl-6c: 2 new plain keys — the reasons a main-menu entry is disabled over a battle
@@ -3382,8 +3382,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 531 keys').toBe(531);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(531);
+    // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 526 keys').toBe(526);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(526);
   });
 });
 
@@ -3501,8 +3502,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 531 keys').toBe(531);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(531);
+    // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 526 keys').toBe(526);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(526);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3628,6 +3630,8 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-14 (named intentional change, UIF14.1/UIF14.4): + the 36 plain Help ids, which are plain values not in EXPECTED_PLAIN.
     // uif-14b (named intentional change, UIF14B.1): + the plain `help.intro.report` id (653 -> 654
     // values read; help.intro.report is read once, a plain value not in EXPECTED_PLAIN).
+    // uif-16b (named intentional change): 654 -> 649 values read: the five retired plain ids leave
+    // EXPECTED_PLAIN (the four menu.profile.* sub-list ids and chrome.status.privacyOverlayBusy).
     const expectedTexts =
       Object.keys(EXPECTED_PLAIN).length +
       UIF14_PLAIN_IDS.length +
@@ -3804,9 +3808,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 531 keys').toBe(531);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(531);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(531);
+    // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 526 keys').toBe(526);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(526);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(526);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4482,9 +4487,51 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
       expect(EXPECTED_KEYS.includes(id), `the roster keeps ${id}`).toBe(true);
     }
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
-    expect(Object.keys(en), 'the English roster is 531 keys (was 536; uif-14b +1)').toHaveLength(
-      531,
-    );
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(531);
+    // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
+    expect(Object.keys(en), 'the English roster is 526 keys (uif-16b -5)').toHaveLength(526);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(526);
+  });
+});
+
+// =============================================================================
+// uif-16b: the Profile sub-list ids and the privacy-busy line are retired; the one frame's ids stay.
+// =============================================================================
+
+describe('uif-16b: the Profile sub-list ids and the privacy-busy line are retired in both catalogs', () => {
+  it('UIF16B.7 the five retired ids are in neither catalog nor the pinned roster, while the Profile title, description, section headers and Close row remain in en and fr', () => {
+    // WRONG IMPL KILLED: a retired id left as a dead key (catalogParity DEAD-KEY: no row and no
+    // `privacy-busy` toast reads it); an id removed from one locale only; the frame's own ids
+    // removed with the sub-list's (the title, a section header or the Close row would print a
+    // catalog id); a roster pin not lowered with the ids.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = [
+      'menu.profile.name.desc',
+      'menu.profile.account.desc',
+      'menu.profile.privacy.desc',
+      'menu.profile.privacy.title',
+      'chrome.status.privacyOverlayBusy',
+    ];
+    for (const id of RETIRED) {
+      expect(Object.hasOwn(en, id), `en still has ${id}`).toBe(false);
+      expect(Object.hasOwn(fr, id), `fr still has ${id}`).toBe(false);
+      expect(EXPECTED_KEYS.includes(id), `the roster still lists ${id}`).toBe(false);
+    }
+    const KEPT = [
+      'menu.profile.title',
+      'menu.profile.desc',
+      'menu.profile.name.title',
+      'menu.profile.account.title',
+      'privacy.title',
+      'privacy.close',
+    ];
+    for (const id of KEPT) {
+      expect(typeof en[id], `en keeps ${id}`).toBe('string');
+      expect(String(en[id]).trim().length, `en ${id} is not empty`).toBeGreaterThan(0);
+      expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
+      expect(String(fr[id]).trim().length, `fr ${id} is not empty`).toBeGreaterThan(0);
+      expect(EXPECTED_KEYS.includes(id), `the roster keeps ${id}`).toBe(true);
+    }
+    expect(en['menu.profile.title'], 'the frame title').toBe('Profile');
   });
 });

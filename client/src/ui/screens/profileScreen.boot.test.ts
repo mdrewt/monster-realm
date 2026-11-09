@@ -941,8 +941,9 @@ describe('the one Profile frame booted through main.ts over the real views and a
   });
 
   it('UIF16B.5 a claim lifecycle paint raised before onReady (onClaimPending, or onClaimAwaitingAccount) auto-opens Profile on Account once onReady runs', async () => {
-    // WRONG IMPL KILLED: a deferred claim paint that onReady never flushes (the prompt never
-    // opens: the code stays retained behind a veto the player cannot see); an auto-open on Name;
+    // WRONG IMPL KILLED: a lifecycle event that paints the section but never opens the frame (the
+    // prompt stays unseen: the code stays retained behind a veto the player cannot see), or an
+    // onReady that closes it again; an auto-open on Name;
     // an auto-open of the old claim frame alone; an auto-open with a menu beneath (it is not a
     // player's accelerator).
     const raisers: ReadonlyArray<readonly [string, () => void]> = [

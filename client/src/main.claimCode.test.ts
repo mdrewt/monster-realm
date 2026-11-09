@@ -376,11 +376,6 @@ describe('main.ts clears the stored claim code on a succeeded claim (polish-1 P4
     await bootReady();
     seed();
     must(opts.onClaimPending, 'onClaimPending')(SEEDED_CODE);
-    // uif-16b (named intentional change): connection.ts raises onClaimPending just before
-    // onReady / onReconnect, and main.ts now defers that paint to the cycle's tail (the reconnect
-    // sweep would otherwise close the Profile frame it opened). The cycle is completed here so the
-    // paint lands. Was: onClaimPending painted at once.
-    opts.onReconnect(H.identity);
     expect(lastClaimVm().actions.join, 'precondition: pending, join is not offered').toBe(false);
 
     must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);

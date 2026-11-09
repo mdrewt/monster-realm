@@ -8,7 +8,7 @@ import {
   test,
 } from '@playwright/test';
 import { t } from '../src/ui/a11yCopy';
-import { pressAccel } from './controls';
+import { closeAll, pressAccel } from './controls';
 
 // the axe-core + real-browser a11y tier that M23-accessibility.spec.md §5.7 DECIDED
 // should exist and that no M23 slice owned.
@@ -100,6 +100,11 @@ const PASSES_FLOOR_WORLD = 14;
 // both runs: 23 passes (floor 21; the tab strip has two tabs and the Introduction is prose). Was 25.
 const PASSES_FLOOR_HELP = 21;
 const PASSES_FLOOR_MENU = 23;
+// uif-16b: the one Profile dialog (Name, Account, Privacy). PROVISIONAL, NOT YET MEASURED: written
+// in the red phase by a tester that cannot run Chromium, set at the menu's floor minus three (the
+// dialog holds a labelled text field, three section headings and a column of buttons, so it should
+// clear the menu's rule set). The first green run re-measures it twice and pins it two below.
+const PASSES_FLOOR_PROFILE = 20;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
 // violation. On this client there is exactly one such rule, stable across runs:
@@ -125,6 +130,9 @@ const INCOMPLETE_ALLOWED_IDS = ['color-contrast'];
 const INCOMPLETE_CEILING_WORLD = 1;
 const INCOMPLETE_CEILING_HELP = 1;
 const INCOMPLETE_CEILING_MENU = 1;
+// uif-16b: PROVISIONAL, NOT YET MEASURED (as PASSES_FLOOR_PROFILE): the Profile frame is an opaque
+// .mr-frame like help and the menu, so #build-stamp is expected to stay the one undecidable node.
+const INCOMPLETE_CEILING_PROFILE = 1;
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -739,10 +747,12 @@ test.describe
       // first root entry (the cursor is remembered across opens within a page session).
       expect(first, 'menu opened with no active option').toBe('menu-root-monsters');
 
-      // ArrowDown x4 moves monsters -> bag -> journal -> social -> profile; A (Enter) enters the
-      // Profile sub-list; B (Backspace) backs out to the root with the cursor on Profile.
+      // ArrowDown x5 moves monsters -> bag -> journal -> social -> profile -> options; A (Enter)
+      // enters the Options sub-list; B (Backspace) backs out to the root with the cursor on Options.
       // uif-15b (named intentional change, UIF15B.1): Social is a root leaf that opens the Social
-      // frame, so the sub-list enter/back proof moves to Profile. Was: Social at x3.
+      // frame, so the sub-list enter/back proof moved to Profile. Was: Social at x3.
+      // uif-16b (named intentional change, UIF16B.1): Profile is a root leaf too (one Profile
+      // screen, no sub-list), so the proof moves to Options, the only group left. Was: Profile at x4.
       await page.keyboard.press('ArrowDown');
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-bag');
       await page.keyboard.press('ArrowDown');
@@ -750,10 +760,12 @@ test.describe
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
       await page.keyboard.press('ArrowDown');
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-profile');
+      await page.keyboard.press('ArrowDown');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-options');
       await page.keyboard.press('Enter');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuProfile-root-/);
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuOptions-root-/);
       await page.keyboard.press('Backspace');
-      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-profile');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-options');
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
 
@@ -827,8 +839,8 @@ test.describe
     // ctl-7a (CTL7A.1 to CTL7A.3), the real-browser half. The unit tier parses styles.css and
     // index.html; only Chromium can say where a frame really lands and what colour its text really
     // paints, so each of the three frame kinds is measured here: the menu (a .mr-shell holding the
-    // ui/frame.ts .mr-frame; the shell has no scrim), help (the shell IS the .mr-frame) and one index.html shell
-    // (rename). Per frame: the page does not scroll, the frame's box lies inside the viewport, and
+    // ui/frame.ts .mr-frame; the shell has no scrim), help (the shell IS the .mr-frame) and one
+    // constructed shell (Profile, uif-16b; was the index.html rename shell). Per frame: the page does not scroll, the frame's box lies inside the viewport, and
     // every visible text element reads at >= 4.5:1 against its computed background.
     test('CTL7A-E2E-MENU: with the Start chip pressing the menu open, the page does not scroll, the frame lies in the viewport, its text reads at >= 4.5:1, and the active row differs from a sibling by more than colour', async () => {
       await page.evaluate(() => {
@@ -874,27 +886,169 @@ test.describe
       await page.evaluate(() => {
         (document.activeElement as HTMLElement | null)?.blur();
       });
-      // N opens the rename shell through the main menu (ctl-11a: Profile > Name; the menu stays
-      // open beneath it, covered).
+      // N opens the Profile screen through the main menu on its Name section (ctl-11a; the menu
+      // stays open beneath it, covered).
+      // uif-16b (named intentional change): the rename form is no longer a shell of its own: it is
+      // the Name section of the ONE Profile dialog (#profile-overlay, a constructed .mr-frame
+      // .mr-shell), so the measured frame root moves from #rename-overlay to #profile-overlay and
+      // takes in all three sections (the title keeps its CTL7A id; the shell is now Profile's).
       await pressAccel(page, 'N');
+      await expect(page.locator('#profile-overlay')).toBeVisible();
       await expect(page.locator('#rename-overlay')).toBeVisible();
+      await expect(page.locator('#claim-overlay')).toBeVisible();
+      await expect(page.locator('#privacy-overlay')).toBeVisible();
       // A draft enables the submit button, so its label is measured as live (not inactive) text.
       await page.locator('#rename-input').fill('abc');
       await expect(page.locator('#rename-submit')).toBeEnabled();
 
-      const m = await page.evaluate(measureFrameInPage, '#rename-overlay');
-      expectFrameOk(m, 'rename shell');
+      const m = await page.evaluate(measureFrameInPage, '#profile-overlay');
+      expectFrameOk(m, 'profile shell');
 
-      // Close it for the next test. The first Escape in the text field only leaves typing mode
-      // (focus moves to #rename-submit, ctl-6b), and an N typed in the field is typed, not taken
-      // as the accelerator (ctl-11a), so blur to <body> and press N instead: N pressed while its
-      // own screen is on top acts as Start, which closes the rename shell and the menu beneath it.
-      await page.evaluate(() => {
-        (document.activeElement as HTMLElement | null)?.blur();
-      });
-      await pressAccel(page, 'N');
-      await expect(page.locator('#rename-overlay')).toBeHidden();
+      // Close it for the next test. uif-16b (named intentional change): an N with focus off the
+      // field now MOVES the cursor to the Name section of the open Profile (it no longer acts as
+      // Start there), so the old blur-then-N close would re-focus the field. closeAll presses
+      // Start until the base: the first press in the field only stops typing (ctl-6b), the next
+      // closes Profile and the menu beneath it.
+      await closeAll(page);
+      await expect(page.locator('#profile-overlay')).toBeHidden();
       await expect(page.locator('#menu-overlay')).toBeHidden();
+    });
+
+    // -----------------------------------------------------------------------------------------
+    // uif-16b (UIF16B.3), the real-browser half: Profile is ONE dialog holding the Name, Account
+    // and Privacy sections. These replace the per-overlay scans a rename / claim / privacy dialog
+    // would each have had (named change: none of the three is a dialog any more); the one Profile
+    // dialog is scanned once per distinct state: opened on Name (N), opened on Account (C), with
+    // the decline armed, and with the account deletion armed (or, when this account state refuses
+    // deletion, the Privacy section as it stands). Same tags, exclusion and non-vacuity floors as
+    // every other state here (`scanState`).
+    // -----------------------------------------------------------------------------------------
+
+    const blurFocus = async (): Promise<void> => {
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            (document.activeElement as HTMLElement | null)?.blur();
+            return document.activeElement?.tagName;
+          }),
+        )
+        .toBe('BODY');
+    };
+
+    /** The Profile dialog is the one, named dialog: Chromium's role query finds it by its name. */
+    const expectProfileDialog = async (): Promise<void> => {
+      await expect(page.locator('#profile-overlay')).toBeVisible({ timeout: 10_000 });
+      await expect(
+        page.getByRole('dialog', { name: t('a11y.overlay.profileView.title'), exact: true }),
+      ).toHaveAttribute('id', 'profile-overlay');
+    };
+
+    test('UIF16B.3 the Profile dialog opened on Name (N) is free of WCAG 2.x A/AA violations', async () => {
+      await closeAll(page);
+      await blurFocus();
+      await pressAccel(page, 'N');
+      await expectProfileDialog();
+      await expect(page.locator('#rename-input')).toBeFocused();
+      await scanState(
+        page,
+        'profile dialog on Name',
+        PASSES_FLOOR_PROFILE,
+        INCOMPLETE_CEILING_PROFILE,
+      );
+      await closeAll(page);
+      await expect(page.locator('#profile-overlay')).toBeHidden();
+    });
+
+    test('UIF16B.3 the Profile dialog opened on Account (C) is free of WCAG 2.x A/AA violations', async () => {
+      await closeAll(page);
+      await blurFocus();
+      await pressAccel(page, 'C');
+      await expectProfileDialog();
+      await expect(page.locator('#claim-overlay button:focus')).toHaveCount(1);
+      await expect(page.locator('#claim-overlay button:focus')).toBeVisible();
+      await scanState(
+        page,
+        'profile dialog on Account',
+        PASSES_FLOOR_PROFILE,
+        INCOMPLETE_CEILING_PROFILE,
+      );
+      await closeAll(page);
+      await expect(page.locator('#profile-overlay')).toBeHidden();
+    });
+
+    test('UIF16B.3 the Profile dialog with the decline armed is free of WCAG 2.x A/AA violations', async () => {
+      await closeAll(page);
+      await blurFocus();
+      await pressAccel(page, 'C');
+      await expectProfileDialog();
+      await page.locator('#claim-decline-btn').click();
+      // Armed: the confirm prompt and its Yes / No show, and a confirm defaults to No.
+      await expect(page.locator('#claim-confirm')).toBeVisible();
+      await expect(page.locator('#claim-decline-confirm-btn')).toBeVisible();
+      await expect(page.locator('#claim-decline-cancel-btn')).toBeFocused();
+      await scanState(
+        page,
+        'profile dialog, decline armed',
+        PASSES_FLOOR_PROFILE,
+        INCOMPLETE_CEILING_PROFILE,
+      );
+      // Disarm explicitly (No), never the confirm: this suite deletes nothing.
+      await page.locator('#claim-decline-cancel-btn').click();
+      await expect(page.locator('#claim-confirm')).toBeHidden();
+      await closeAll(page);
+      await expect(page.locator('#profile-overlay')).toBeHidden();
+    });
+
+    test('UIF16B.3 the Profile dialog on its Privacy section, with deletion armed when the account allows it, is free of WCAG 2.x A/AA violations', async () => {
+      await closeAll(page);
+      await blurFocus();
+      await pressAccel(page, 'C');
+      await expectProfileDialog();
+      // The door moves the cursor into the Privacy section of the same dialog (or onto Close when
+      // this account state refuses every privacy control).
+      await page.locator('#claim-privacy-btn').click();
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const el = document.activeElement;
+            return (
+              el !== null &&
+              (document.getElementById('privacy-overlay')?.contains(el) === true ||
+                el.id === 'profile-close-btn')
+            );
+          }),
+        )
+        .toBe(true);
+      const del = page.locator('#privacy-delete-btn');
+      if ((await del.isVisible()) && (await del.isEnabled())) {
+        await del.click();
+        await expect(page.locator('#privacy-confirm')).toBeVisible();
+        await expect(page.locator('#privacy-confirm-cancel-btn')).toBeFocused();
+        await scanState(
+          page,
+          'profile dialog, delete armed',
+          PASSES_FLOOR_PROFILE,
+          INCOMPLETE_CEILING_PROFILE,
+        );
+        // Disarm explicitly (Keep), never the confirm: this suite deletes nothing.
+        await page.locator('#privacy-confirm-cancel-btn').click();
+        await expect(page.locator('#privacy-confirm')).toBeHidden();
+      } else {
+        test.info().annotations.push({
+          type: 'uif-16b',
+          description:
+            'deletion is refused in this account state: the Privacy section is scanned as it stands',
+        });
+        await expect(page.locator('#privacy-title')).toBeVisible();
+        await scanState(
+          page,
+          'profile dialog, privacy section',
+          PASSES_FLOOR_PROFILE,
+          INCOMPLETE_CEILING_PROFILE,
+        );
+      }
+      await closeAll(page);
+      await expect(page.locator('#profile-overlay')).toBeHidden();
     });
 
     // -----------------------------------------------------------------------------------------
@@ -1143,7 +1297,9 @@ test.describe
               resultsPosition: position(results),
               deploy: z(deploy),
               results: z(results),
-              shell: z('#rename-overlay'),
+              // uif-16b (named intentional change): #rename-overlay is a section now (no shell
+              // class); the shell is the Profile frame that holds it. Was: z('#rename-overlay').
+              shell: z('#profile-overlay'),
               menu: z('#menu-overlay'),
               help: z('#help-overlay'),
             };

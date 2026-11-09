@@ -372,7 +372,8 @@ describe('MenuView — visibility', () => {
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
     expect(optionEls().length).toBe(7);
     view.render(profileVm());
-    expect(optionEls().length, 'a render after hide still paints').toBe(3);
+    // uif-16b (named intentional change): 3 -> 2, the sub-list fixture is Options (help, controls).
+    expect(optionEls().length, 'a render after hide still paints').toBe(2);
   });
 
   it('setCovered hides the overlay without un-showing it: visibility hidden while a child screen is above, restored after, and no other inline style is touched (plan A1)', () => {
@@ -419,8 +420,9 @@ describe('MenuView — render', () => {
     view.render(rootVm());
     expect(optionEls().length, 'ANTI-VACUITY: the root paints 7 rows').toBe(7);
     view.render(profileVm());
-    expect(optionEls().map((o) => o.dataset.navKey)).toEqual(['name', 'account', 'privacy']);
-    expect(rowsEl().children.length, 'no stale node survives').toBe(3);
+    // uif-16b (named intentional change): the sub-list fixture is Options; 3 -> 2 rows.
+    expect(optionEls().map((o) => o.dataset.navKey)).toEqual(['help', 'controls']);
+    expect(rowsEl().children.length, 'no stale node survives').toBe(2);
     view.render(rootVm());
     expect(rowsEl().children.length).toBe(7);
     view.render(rootVm());
@@ -501,7 +503,8 @@ describe('MenuView — render', () => {
       document.getElementById(rows.getAttribute('aria-labelledby') ?? ''),
       'still the live title, now naming the sub-list',
     ).toBe(titleEl());
-    expect(titleEl().textContent).toBe('Profile');
+    // uif-16b (named intentional change): the sub-list fixture is Options. Was 'Profile'.
+    expect(titleEl().textContent).toBe('Options');
   });
 
   it('MV-A11Y-OPTION-01: every row is role="option" with an explicit aria-selected (exactly one true), no aria-disabled, and never a tabindex', () => {
@@ -639,7 +642,8 @@ describe('MenuView — uif-3 frame anatomy', () => {
     expect(feedbackEl().hidden).toBe(false);
 
     second.view.render(profileVm());
-    expect(titleEl().textContent).toBe('Profile');
+    // uif-16b (named intentional change): the sub-list fixture is Options. Was 'Profile'.
+    expect(titleEl().textContent).toBe('Options');
     expect(crumbTexts()).toEqual(['Menu']);
     expect(feedbackEl().hidden, 'the none state hides the line again').toBe(true);
     expect(feedbackEl().textContent).toBe('');

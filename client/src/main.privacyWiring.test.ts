@@ -376,10 +376,24 @@ function openPrivacySurface(): void {
     privacyOverlayVisible(),
     'with the Profile frame open its Privacy section must be on screen',
   ).toBe(true);
+  // The door seats the Privacy section's first live row; when the section has none (an
+  // already-erased account), it falls back to the frame's Close row. Decided from the DOM.
+  const target = privacyDoorTarget();
   expect(
-    byId('privacy-overlay').contains(document.activeElement),
-    'the privacy door must move focus INTO the Privacy section',
-  ).toBe(true);
+    document.activeElement,
+    target.id === 'profile-close-btn'
+      ? 'the Privacy section has no live row: the door must seat the frame`s Close row'
+      : 'the privacy door must move focus INTO the Privacy section, onto its first live row',
+  ).toBe(target);
+}
+
+/** Where the privacy door must seat focus, read off the DOM: the Privacy section's first shown,
+ *  enabled button, else the frame's `#profile-close-btn`. */
+function privacyDoorTarget(): HTMLElement {
+  const live = Array.from(byId('privacy-overlay').querySelectorAll('button')).filter(
+    (b) => !b.disabled && hiddenAncestorOf(b) === null,
+  );
+  return live[0] ?? byId('profile-close-btn');
 }
 
 /** The one Profile frame (uif-16b) is on screen. */
@@ -761,6 +775,32 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     runFrame(600);
     expect(byId('privacy-notice').textContent, 'the notice must be cleared, not frozen').toBe('');
     expect(hiddenAncestorOf(byId('privacy-notice')), 'and hidden again').not.toBeNull();
+  });
+
+  it('UIF16B.3 for an already-erased account the Privacy section has no live row, so the privacy door seats the frame`s Close row (enabled, on screen), never a disabled or hidden Privacy control, and the frame stays the one live dialog', () => {
+    // WRONG IMPL KILLED: a door that focuses the Privacy section's first DOM button whatever its
+    // state (a disabled Delete or Cancel: focus on a dead control, the trap has nothing to keep);
+    // a door that focuses nothing when the section is empty (focus left on the door, or on the
+    // page); a fallback to a section root instead of the Close row.
+    H.account = ACCOUNT_TERMINAL;
+    runFrame(0);
+    pressKey({ code: 'KeyC' });
+    expect(profileFrameVisible(), 'precondition: KeyC opened the Profile frame').toBe(true);
+    const live = Array.from(byId('privacy-overlay').querySelectorAll('button')).filter(
+      (b) => !b.disabled && hiddenAncestorOf(b) === null,
+    );
+    expect(
+      live.map((b) => b.id),
+      'precondition: a terminal account leaves the Privacy section with no live row',
+    ).toEqual([]);
+
+    privacyOpener().click();
+    const close = byId('profile-close-btn') as HTMLButtonElement;
+    expect(document.activeElement, 'the door seats the frame`s Close row').toBe(close);
+    expect(close.disabled, 'Close is enabled').toBe(false);
+    expect(hiddenAncestorOf(close), 'Close is on screen').toBeNull();
+    expect(liveModalDialogs(), 'one live modal root').toEqual(['profile-overlay']);
+    expectOnlyReducer('none');
   });
 
   // ---------------------------------------------------------------------------------------

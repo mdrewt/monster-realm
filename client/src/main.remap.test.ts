@@ -1061,7 +1061,8 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     // No reload: in the main menu K picks the entry under the cursor and Enter does not.
     press('Escape');
     expect(stackNames(), 'Start closed everything').toEqual(['world']);
-    openMenuOnProfile();
+    // uif-16b (named intentional change): the group picked is Options (Profile is a leaf now).
+    openMenuOnOptions();
     const menuEnter = press('Enter');
     expect(menuEnter.defaultPrevented, 'Enter is not consumed in the menu').toBe(false);
     expect(menuTitle(), 'Enter picks nothing: the menu stays on its root').toBe(
@@ -1069,7 +1070,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     );
     const menuK = press('KeyK');
     expect(menuK.defaultPrevented, 'K is consumed as A').toBe(true);
-    expect(menuTitle(), 'K picked Profile').toBe(i18nT('menu.profile.title'));
+    expect(menuTitle(), 'K picked Options').toBe(i18nT('menu.options.title'));
     expect(H.sends, 'nothing walked').toHaveLength(0);
   });
 
@@ -1093,13 +1094,14 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     await bootReady({ keepStorage: true });
     expect(savedRaw(), 'precondition: the reload kept the saved table').not.toBeNull();
     server(1000);
-    openMenuOnProfile();
+    // uif-16b (named intentional change): the group picked is Options (Profile is a leaf now).
+    openMenuOnOptions();
     const enter = press('Enter');
     expect(enter.defaultPrevented, 'after the reload Enter is not A').toBe(false);
     expect(menuTitle(), 'Enter picks nothing').toBe(i18nT('menu.title'));
     const k = press('KeyK');
     expect(k.defaultPrevented, 'K is A').toBe(true);
-    expect(menuTitle(), 'K picks Profile').toBe(i18nT('menu.profile.title'));
+    expect(menuTitle(), 'K picks Options').toBe(i18nT('menu.options.title'));
   });
 
   it('CTL12B-2-KEYCAP: after the live remap the A keycap shown is K: the Controls Primary cell reads K, and on the next frame the world chip in front of an NPC reads the interact.chip text with keycap K (it read Enter before), and K is the key that talks', async () => {
@@ -1522,21 +1524,24 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(cellText('A_0'), 'the slot shows K').toBe(primaryText(ROW_A, 'K'));
 
     press('Escape');
-    openMenuOnProfile();
+    // uif-16b (named intentional change): the group picked is Options (Profile is a leaf now).
+    openMenuOnOptions();
     const enter = press('Enter');
     expect(enter.defaultPrevented, 'applied live: Enter is not A').toBe(false);
     expect(menuTitle()).toBe(i18nT('menu.title'));
     press('KeyK');
-    expect(menuTitle(), 'applied live: K picks Profile').toBe(i18nT('menu.profile.title'));
+    expect(menuTitle(), 'applied live: K picks Options').toBe(i18nT('menu.options.title'));
   });
 
-  it('typing mode is literal: with A bound to K, Enter in a focused text field inside the menu is prevented and commits as A (it picks Profile), while K in that field is typed: neither prevented nor routed', async () => {
+  it('typing mode is literal: with A bound to K, Enter in a focused text field inside the menu is prevented and commits as A (it picks Options), while K in that field is typed: neither prevented nor routed', async () => {
     // WRONG IMPL KILLED: a typing mode that routes Enter through the table (with A := K a nickname
     // or name could never be committed by Enter), one that lets the field's own letter K reach the
     // router as A (typing "k" picks a menu entry), and a commit that is not prevented.
+    // uif-16b (named intentional change): the group picked is Options (Profile is a leaf now).
+    // Was: Profile, here and in the two assertions below.
     await bootReady({ stored: storedTable((raw) => (raw.buttons.A = ['KeyK'])) });
     server(1000);
-    openMenuOnProfile();
+    openMenuOnOptions();
     const field = document.createElement('input');
     field.type = 'text';
     byId('menu-overlay').appendChild(field);
@@ -1546,11 +1551,11 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const k = press('KeyK', { key: 'k' }, field);
     expect(k.defaultPrevented, 'K is typed: the field owns it').toBe(false);
     expect(menuTitle(), 'and picks nothing').toBe(i18nT('menu.title'));
-    expect(navActive(), 'nor moves the cursor').toBe('profile');
+    expect(navActive(), 'nor moves the cursor').toBe('options');
 
     const enter = press('Enter', { key: 'Enter' }, field);
     expect(enter.defaultPrevented, 'Enter in a field commits').toBe(true);
-    expect(menuTitle(), 'commit = A: it picked Profile').toBe(i18nT('menu.profile.title'));
+    expect(menuTitle(), 'commit = A: it picked Options').toBe(i18nT('menu.options.title'));
   });
 
   it('the IME guard runs before F8 / F9: with Start on M and F9 on Escape, an Escape that cancels a composition in the focused Name field downloads nothing and is not prevented; the same Escape outside a field still downloads', async () => {
@@ -1565,10 +1570,12 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     const downloads = recordDownloads();
     server(1000);
     press('KeyN');
+    // uif-16b (named intentional change): the Name field is in the one Profile frame. Was:
+    // renameView (here and wherever this case reads the stack below).
     expect(stackNames(), 'precondition: the Name screen is open').toEqual([
       'world',
       'menuView',
-      'renameView',
+      'profileView',
     ]);
     const input = byId('rename-input') as HTMLInputElement;
     input.focus();
@@ -1578,7 +1585,7 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(ime.defaultPrevented, 'the IME`s Escape is left to the IME').toBe(false);
     expect(downloads.urls, 'no bug bundle is built').toHaveLength(0);
     expect(downloads.clicks, 'and none downloaded').toHaveLength(0);
-    expect(stackNames(), 'nothing closed').toEqual(['world', 'menuView', 'renameView']);
+    expect(stackNames(), 'nothing closed').toEqual(['world', 'menuView', 'profileView']);
     expect(document.activeElement, 'typing goes on').toBe(input);
 
     // Control: Escape IS the F9 key here once it is neither an IME's nor a field's.

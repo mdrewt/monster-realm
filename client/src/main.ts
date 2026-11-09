@@ -271,7 +271,6 @@ import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
 import { SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './ui/screens/index';
-import type { ProfileSection } from './ui/screens/profileScreen';
 import {
   type MainMenuStep,
   mainMenuPick,
@@ -280,6 +279,7 @@ import {
   openMainMenu,
 } from './ui/screens/mainMenuScreen';
 import { captureStep } from './ui/screens/optionsScreen';
+import type { ProfileSection } from './ui/screens/profileScreen';
 import type {
   Command,
   ScreenContext,

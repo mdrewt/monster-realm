@@ -64,7 +64,8 @@
  *  consciously when UI text legitimately shrinks, never auto-tighten it. */
 export const SINK_FLOOR = 250;
 
-/** The 18 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
+/** The 19 target files (the 18 spec-named ones, E6, plan R9, and since uif-16b the Profile frame
+ *  that holds three of them as its sections), relative to `client/src`, sorted. Each must be
  *  present in the walk and non-empty after comment stripping (I18N-HC-05); a missing one is a
  *  hard fail, never a skip. The SCAN scope is the whole non-test tree — this roster is the
  *  presence proof, not the scope. */
@@ -79,6 +80,7 @@ export const SCAN_TARGETS: readonly string[] = [
   'ui/helpView.ts',
   'ui/leaderboardView.ts',
   'ui/menuView.ts',
+  'ui/profileView.ts',
   'ui/pvpView.ts',
   'ui/questLogView.ts',
   'ui/raisingView.ts',

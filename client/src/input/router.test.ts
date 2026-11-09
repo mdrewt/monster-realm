@@ -2162,7 +2162,8 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
       'Controls under Help over a battle: open, not start',
     ).toEqual(open);
     expect(
-      accelDecision('Y', frozenStack(WORLD_BASE, textEntryFrame('renameView'))),
+      // uif-16b: the name field's typing frame is owned by Profile (renameView is a section now).
+      accelDecision('Y', frozenStack(WORLD_BASE, textEntryFrame('profileView'))),
       'under a text entry: denied',
     ).toEqual({ kind: 'denied' });
     expect(

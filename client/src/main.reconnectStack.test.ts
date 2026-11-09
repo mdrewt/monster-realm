@@ -744,11 +744,13 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     label,
     raise,
   }) => {
-    // WRONG IMPL KILLED: the claim callback painting (and so opening Profile) at once, before the
-    // sweep: `RECONNECT_CLOSES.profileView` is true, so the same reconnect closes the prompt the
-    // player was just shown and the code stays retained behind a veto with no UI; a deferred paint
-    // that is never flushed by the reconnect's tail (nothing opens); a flush that opens Profile on
-    // Name (focus left in the field, the claim prompt unread); and a callback main.ts never wired.
+    // The claim callback opens Profile on Account at once; `RECONNECT_CLOSES.profileView` is true,
+    // so the reconnect's sweep closes it, and `onReconnect` re-shows it at its tail because its own
+    // cycle raised a claim event.
+    // WRONG IMPL KILLED: a reconnect tail that never re-shows it (the prompt the player was just
+    // shown is swept away and the code stays retained behind a veto with no UI); a re-show that
+    // opens Profile on Name (focus left in the field, the claim prompt unread); and a callback
+    // main.ts never wired.
     await bootReady();
     server(1000);
     expect(
