@@ -396,7 +396,7 @@ export type MessageId =
   | 'evolutionNotice.species.fallback'
   | 'evolutionNotice.reveal.nicknamed'
   | 'evolutionNotice.reveal.anonymous'
-  // menu.* : the main menu and its sub-lists (menuModel.ts, screens/mainMenuScreen.ts).
+  // menu.* : the main menu (menuModel.ts, screens/mainMenuScreen.ts).
   | 'menu.title'
   | 'menu.monsters.title'
   | 'menu.monsters.desc'

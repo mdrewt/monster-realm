@@ -1264,7 +1264,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // species name and {to} the new one. One line in a small banner.
   // evolutionNotice.ts:95 (evolutionNoticeLabel return)
   'evolutionNotice.reveal.anonymous': (p) => `Your ${p.from} evolved into ${p.to}!`,
-  // @desc: Title of the main menu side panel and the first breadcrumb in its sub-lists.
+  // @desc: Title of the main menu side panel.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.title': 'Menu',
   // @desc: Main-menu entry opening the monster box (party and storage).
@@ -1291,7 +1291,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the Social main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.social.desc': 'Trades, challenges and rankings with other players.',
-  // @desc: Main-menu entry opening the Profile sub-list (name, account, privacy).
+  // @desc: Main-menu entry opening the Profile screen (name, account, privacy).
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.profile.title': 'Profile',
   // @desc: Feedback-line description of the Profile main-menu entry, shown on Y.
