@@ -96,7 +96,9 @@ const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 // ctl-14 re-measured help on its build in Chromium, twice, identical both runs: 25 passes (floor
 // 23; Help gained a tab strip of three role="tab" items and generated rows). Was 21 (floor 19).
 const PASSES_FLOOR_WORLD = 14;
-const PASSES_FLOOR_HELP = 23; // re-measure (uif-14 changed Help's structure; the implementer re-measures)
+// uif-14 re-measured help (How to Play on Introduction) on its build in Chromium, twice, identical
+// both runs: 23 passes (floor 21; the tab strip has two tabs and the Introduction is prose). Was 25.
+const PASSES_FLOOR_HELP = 21;
 const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
@@ -642,8 +644,6 @@ test.describe
       await expect(page.locator('#help-intro')).toBeVisible();
       await expect(page.locator('#help-intro p')).toHaveCount(2);
       await expect(page.locator('#help-encyclopedia')).toBeHidden();
-      // TODO(uif-14 implementer): re-measure PASSES_FLOOR_HELP / INCOMPLETE_CEILING_HELP on the new
-      // structure (twice, identical) and update the numbers and the comment above.
       await scanState(page, 'help overlay', PASSES_FLOOR_HELP, INCOMPLETE_CEILING_HELP);
       await page.keyboard.press('KeyE');
       await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');

@@ -124,9 +124,9 @@ const boxOf = (p: Page, selector: string): Promise<Box> =>
 
 const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 /** Non-vacuity floor for one scanned Help state: a page that failed to render passes ~0 rules.
- *  TODO(uif-14 implementer): re-measure on the built page (twice, identical) and raise to measured - 2,
- *  as a11y.spec.ts's PASSES_FLOOR_HELP is. */
-const AXE_PASSES_FLOOR = 10;
+ *  Measured on the uif-14 build in Chromium, twice, identical: Introduction 23, Encyclopedia 25, an
+ *  entry detail 25; the floor is the lowest minus 2, as a11y.spec.ts's PASSES_FLOOR_HELP is. */
+const AXE_PASSES_FLOOR = 21;
 
 async function expectAxeClean(p: Page, state: string): Promise<void> {
   const results = await new AxeBuilder({ page: p }).withTags(AXE_TAGS).exclude('canvas').analyze();

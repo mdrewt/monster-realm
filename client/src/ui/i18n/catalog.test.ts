@@ -3592,9 +3592,12 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     const en = scan('en', CATALOG_EN as Record<string, unknown>, EN_NEEDLES);
     const fr = scan('fr', CATALOG_FR as Record<string, unknown>, FR_NEEDLES);
     expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
-    // ANTI-VACUITY: every value was read, each closure twice (the 362-key roster is pinned above).
+    // ANTI-VACUITY: every value was read, each closure twice (the full roster is pinned above).
+    // uif-14 (named intentional change, UIF14.1/UIF14.4): + the 36 plain Help ids, which are plain values not in EXPECTED_PLAIN.
     const expectedTexts =
-      Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
+      Object.keys(EXPECTED_PLAIN).length +
+      UIF14_PLAIN_IDS.length +
+      2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);
   });
