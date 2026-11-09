@@ -436,6 +436,17 @@ hand button edges to `input/router.ts`, which decides walking, menu navigation o
 from the context on top. Two clicks skip the router: a main-menu row (the menu's own pick) and the
 dialogue's choice and shop buttons.
 
+The main menu (`ui/menuModel.ts` `MENU_ENTRIES`, drawn by `ui/menuView.ts`) is one flat list of
+eight root rows with no sub-lists: Monsters (`boxView`, Party and Storage tabs), Inventory
+(`raisingView`, one tab per pocket), Journal (`questLogView`), Social (the four-tab Social frame:
+Players, Trades, Challenges, Rankings), Profile (`profileView`, ONE dialog whose Name, Account and
+Privacy sections are one D-pad column), How to Play (`helpView`: Introduction and Encyclopedia
+tabs), Controls (`controlsView`: Buttons, Shortcuts and Display tabs, the text-size setting under
+Display) and Close. There is no Options group. Each leaf opens above the menu and B returns to the
+menu on that row; a menu left on Close reopens on Monsters. Tabs render through the one TabBar
+(`ui/tabBar.ts`) and per-item mini-menus through the ContextSheet (`ui/contextSheet.ts`);
+`client/e2e/ui-whole.spec.ts` walks the whole set by D-pad as the integrated proof of the kit.
+
 The context stack (`ui/contextStack.ts`) is the base (world or battle) plus the frames above it.
 `SCREEN_POLICY` says what a battle or a server conversation closes, and `reconcile` mirrors server
 truth into the stack. Each frame's screen adapter (`ui/screens/`, keyed by frame in

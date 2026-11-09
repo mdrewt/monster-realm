@@ -44,6 +44,12 @@ The default keys:
 | Start | `Escape` or `M` | Open the main menu; close everything |
 | Select | `R` or `/` | Help |
 
+The main menu (Start) is one list: **Monsters** (Party and Storage), **Inventory**, **Journal**,
+**Social**, **Profile** (one screen: Name, Account and Privacy, walked top to bottom with the
+D-pad), **How to Play** (Introduction and Encyclopedia), **Controls** (Buttons, Shortcuts and
+Display, where the text size is set) and **Close**. There is no Options entry. B in a screen goes
+back to the menu on the entry you left; after Close, the menu reopens on Monsters.
+
 Shortcut keys open a menu path directly: `B` Storage, `I` Inventory, `V` Party, `J` Journal,
 `U` Trades, `P` Challenges, `L` Rankings (each a tab of the Social screen), `N` Name, `C` Account.
 The main menu's Social entry opens that screen directly, on a waiting request's tab, else the tab it was left on (Players at
