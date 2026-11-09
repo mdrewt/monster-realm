@@ -5339,7 +5339,12 @@ async function main(): Promise<void> {
         lastCamX = ownEntity.x;
         lastCamY = ownEntity.y;
       }
-      renderer?.render(entities, lastCamX, lastCamY);
+      // wap-4: the terrain layer's water frame is a pure function of this frame's clock,
+      // held at frame 0 WHILE reduced motion is set (the one MotionPreference, A11Y-28).
+      renderer?.render(entities, lastCamX, lastCamY, {
+        nowMs: now,
+        reduceMotion: motionPreference.reduceMotion,
+      });
       const obsTick = frameTick(frameWindow, now);
       frameWindow = obsTick.state;
       if (obsTick.sample !== undefined) {

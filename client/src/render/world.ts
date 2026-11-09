@@ -8,16 +8,41 @@
 // clock, remote from the interpolation buffer), keeping `server -> store -> render`
 // one-way. The renderer's correctness is validated by the M5 e2e via
 // `window.__game()` (no pixel tests); its decision logic is the tested pure core
-// (map / interpolation / slideClock / zorder / viewRegistry).
-import { Application, Container, Graphics } from 'pixi.js';
+// (map / interpolation / slideClock / zorder / viewRegistry / terrainLayout).
+//
+// wap-4: the terrain is the kit atlas laid out by `terrainLayout.ts` — static tiles
+// baked into nearest-sampled chunk textures at the device scale, animated water as
+// per-tile sprites whose texture swaps only when its frame index changes. Without
+// the kit or a terrain layer it falls back to the flat wall/grass rects.
+import {
+  Application,
+  Assets,
+  Container,
+  Graphics,
+  Rectangle,
+  Sprite,
+  type Spritesheet,
+  type Texture,
+} from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
 import { t } from '../ui/a11yCopy';
+import { TERRAIN_KIT_FILE } from './art/packs/terrain';
 import { FollowCamera } from './camera';
 import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
 import { TILE_PX } from './config';
 import { type RawTileMap, TileMap } from './map';
 import { PlaceholderAssets } from './placeholderAssets';
+import {
+  type Chunk,
+  ChunkCache,
+  type ChunkTextureOptions,
+  kitAtlasAsset,
+  layoutTerrain,
+  planChunks,
+  type TerrainFrameInput,
+  waterFrameIndex,
+} from './terrainLayout';
 import { appInitOptions, type ViewportScale, viewportScale, worldToScreen } from './viewport';
 import { ViewRegistry } from './viewRegistry';
 import { zIndexForEntity } from './zorder';
@@ -28,6 +53,22 @@ const FLOOR_COLOR = 0x10131a;
 // encounter triggers on. Visual-SSOT: the overlay is driven by `map.isGrass`,
 // never a hard-coded grid.
 const GRASS_COLOR = 0x1f4d2b;
+/** The kit atlas json beside its png in `client/public/assets/` (served at `assets/`). */
+const KIT_ATLAS_URL = `assets/${TERRAIN_KIT_FILE.replace(/\.png$/, '.json')}`;
+
+/** An animated water tile: its sprite, its frame textures, and the frame it shows. */
+interface WaterTile {
+  readonly sprite: Sprite;
+  readonly frames: readonly Texture[];
+  shown: number;
+}
+
+/** A kit frame's texture; layoutTerrain has already checked every key it emits. */
+function kitTexture(kit: Spritesheet, key: string): Texture {
+  const texture = kit.textures[key];
+  if (texture === undefined) throw new Error(`render/world: terrain kit has no frame "${key}"`);
+  return texture;
+}
 
 /** A draw-ready entity: a FRACTIONAL tile position already resolved by the loop. */
 export interface RenderEntity {
@@ -56,6 +97,13 @@ export class WorldRenderer {
   // stashed so screenFor() reuses the exact stage transform (never a parallel
   // camera recomputation, which desyncs by the sub-tile slide amount).
   #lastOffset = { x: 0, y: 0 };
+  // wap-4 terrain: the loaded kit (undefined ⟹ flat fallback), the chunk textures it
+  // bakes (owned by the cache, destroyed on setMap / rescale / destroy), the device
+  // scale they were baked at, and the animated water tiles.
+  #kit: Spritesheet | undefined;
+  #chunks: ChunkCache<Texture> | undefined;
+  #chunkScale = 0;
+  #water: WaterTile[] = [];
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
@@ -96,13 +144,55 @@ export class WorldRenderer {
     this.#app = app;
     this.#map = map;
     this.#assets = new PlaceholderAssets(app.renderer);
+    this.#kit = await loadKit();
+    this.#chunks = new ChunkCache<Texture>(
+      (chunk, options) => bakeChunk(app, this.#kit, chunk, options),
+      (texture) => texture.destroy(true),
+    );
     this.#drawMap(map);
   }
 
   #drawMap(map: TileMap): void {
     // Destroy removed children to release GPU memory (M12.5d-5: removeChildren without
-    // destroy leaks Pixi Graphics resources on every zone switch).
+    // destroy leaks Pixi Graphics resources on every zone switch). A chunk sprite's
+    // texture is NOT destroyed here — the chunk cache owns it.
     for (const child of this.#bg.removeChildren()) child.destroy();
+    this.#water = [];
+    const kit = this.#kit;
+    const chunkCache = this.#chunks;
+    const plan = layoutTerrain(
+      map,
+      kit === undefined ? undefined : new Set(Object.keys(kit.textures)),
+    );
+    if (plan.kind === 'flat' || kit === undefined || chunkCache === undefined) {
+      chunkCache?.clear();
+      if (plan.kind === 'flat') {
+        const [warning] = plan.warnings;
+        console.warn(`render/world: flat terrain fallback (${warning.code}): ${warning.detail}`);
+      }
+      this.#drawFlat(map);
+      return;
+    }
+    const { chunks, animated } = planChunks(map.width, map.height, plan.tiles);
+    const deviceScale = this.#vs.deviceScale;
+    const textures = chunkCache.build(chunks, deviceScale);
+    this.#chunkScale = deviceScale;
+    chunks.forEach((chunk, i) => {
+      const sprite = new Sprite(textures[i]);
+      sprite.position.set(chunk.x * TILE_PX, chunk.y * TILE_PX);
+      this.#bg.addChild(sprite);
+    });
+    for (const tile of animated) {
+      const frames = (tile.animation ?? [tile.frame]).map((key) => kitTexture(kit, key));
+      const sprite = new Sprite(frames[0]);
+      sprite.position.set(tile.x * TILE_PX, tile.y * TILE_PX);
+      this.#bg.addChild(sprite);
+      this.#water.push({ sprite, frames, shown: 0 });
+    }
+  }
+
+  /** The pre-wap-4 flat look: wall rects + the tall-grass overlay over the floor clear. */
+  #drawFlat(map: TileMap): void {
     const g = new Graphics();
     // Floor/wall pass.
     for (let y = 0; y < map.height; y++) {
@@ -139,10 +229,27 @@ export class WorldRenderer {
 
   /** Render one frame: pool create/destroy (teardown on despawn — no ghost),
    *  mutate each view in place, apply a stable z-order, and scroll the
-   *  follow-camera to keep the own entity centred. */
-  render(entities: readonly RenderEntity[], ownTileX = 0, ownTileY = 0): void {
+   *  follow-camera to keep the own entity centred. `frame` (wap-4) carries the
+   *  injected clock + reduced-motion bit for the water animation; omitted ⟹ water holds. */
+  render(
+    entities: readonly RenderEntity[],
+    ownTileX = 0,
+    ownTileY = 0,
+    frame?: TerrainFrameInput,
+  ): void {
     const assets = this.#assets;
     if (assets === undefined) return; // not initialised yet
+    if (frame !== undefined) {
+      // Constraint 7: a texture swap only when a tile's frame index changes.
+      for (const water of this.#water) {
+        const k = waterFrameIndex(frame.nowMs, frame.reduceMotion, water.frames.length);
+        const texture = water.frames[k];
+        if (k !== water.shown && texture !== undefined) {
+          water.sprite.texture = texture;
+          water.shown = k;
+        }
+      }
+    }
     const { created, removed } = this.#registry.reconcile(entities.map((e) => e.entityId));
     for (const id of created) {
       const view = new CharacterView(assets);
@@ -199,6 +306,11 @@ export class WorldRenderer {
     if (app === undefined) return;
     app.renderer.resize(vs.cssW, vs.cssH, vs.dpr);
     app.stage.scale.set(vs.stageScale);
+    // Chunk textures are baked at the device scale (Constraint 7a): re-bake on a change.
+    const map = this.#map;
+    if (map !== undefined && (this.#chunks?.size ?? 0) > 0 && vs.deviceScale !== this.#chunkScale) {
+      this.#drawMap(map);
+    }
   }
 
   /** World (SOURCE px) → screen (CSS px) under the camera
@@ -226,7 +338,46 @@ export class WorldRenderer {
     // app.destroy(true) alone leaks them — release them explicitly first.
     this.#assets?.destroy?.();
     this.#assets = undefined;
+    // The baked chunk textures are not in the atlas cache: release them explicitly.
+    this.#chunks?.clear();
+    this.#water = [];
     this.#app?.destroy(true);
     this.#app = undefined;
   }
+}
+
+/** Load the terrain kit atlas, sampled `nearest` (Constraint 7a). A load failure is
+ *  not fatal: the map draws the flat fallback. */
+async function loadKit(): Promise<Spritesheet | undefined> {
+  try {
+    return await Assets.load<Spritesheet>(kitAtlasAsset(KIT_ATLAS_URL));
+  } catch (err) {
+    console.warn('render/world: terrain kit failed to load', err);
+    return undefined;
+  }
+}
+
+/** Bake one chunk's static tiles into a texture with the cache's options. */
+function bakeChunk(
+  app: Application,
+  kit: Spritesheet | undefined,
+  chunk: Chunk,
+  options: ChunkTextureOptions,
+): Texture {
+  if (kit === undefined) throw new Error('render/world: chunk baked without a terrain kit');
+  const scratch = new Container();
+  for (const tile of chunk.tiles) {
+    const sprite = new Sprite(kitTexture(kit, tile.frame));
+    sprite.position.set((tile.x - chunk.x) * TILE_PX, (tile.y - chunk.y) * TILE_PX);
+    scratch.addChild(sprite);
+  }
+  const texture = app.renderer.generateTexture({
+    target: scratch,
+    frame: new Rectangle(0, 0, chunk.w * TILE_PX, chunk.h * TILE_PX),
+    resolution: options.resolution,
+    textureSourceOptions: { scaleMode: options.scaleMode },
+  });
+  // The scratch sprites go; their textures belong to the atlas.
+  scratch.destroy({ children: true });
+  return texture;
 }
