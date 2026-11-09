@@ -38,22 +38,29 @@ cool and violet and highlights shifted warm and yellow. Never darken a single
 hue. Characters contrast the terrain: the teal-and-rust hero reads on green.
 
 **One value band per terrain class.** Each band is the mean relative luminance Y
-of a tile's opaque pixels. Every readability pair below is at least 0.06 apart
-from edge to edge. `wap-2` measures the shipped tiles, records the values here,
-and may move a band only if every pair keeps its gap.
+(Rec. 709, linearised sRGB) of the opaque pixels of a class's base frames, the three
+variants in the terrain kit (`terrain-kit.png`, `wap-2`). Every readability pair below is
+at least 0.06 apart from edge to edge. The measured column is what
+`client/src/render/art/terrainKit.test.ts` printed for the shipped kit. The test asserts
+the 0.06 pair gap on the atlas itself, never against this table. Move a band only if
+every pair keeps its gap.
 
-| Class | Value band (mean Y) |
-|---|---|
-| wall | 0.04–0.10 |
-| tree | 0.08–0.16 |
-| tall grass | 0.12–0.18 |
-| deep water | 0.12–0.20 |
-| ground | 0.24–0.30 |
-| path | 0.36–0.42 |
-| shallow water | 0.36–0.42 |
-| rock | 0.36–0.42 |
-| bush | 0.36–0.42 |
-| sand | 0.48–0.56 |
+| Class | Value band (mean Y) | Measured (wap-2) |
+|---|---|---|
+| tree | 0.04–0.06 | 0.051 |
+| wall | 0.05–0.07 | 0.063 |
+| tall grass | 0.08–0.10 | 0.090 |
+| deep water | 0.09–0.11 | 0.102 |
+| ground | 0.28–0.30 | 0.290 |
+| bush | 0.37–0.40 | 0.385 |
+| path | 0.40–0.42 | 0.411 |
+| shallow water | 0.40–0.42 | 0.411 |
+| rock | 0.47–0.49 | 0.480 |
+| sand | 0.57–0.60 | 0.583 |
+
+The tightest pairs are ground–bush (0.096), sand–rock (0.103), ground–path and
+ground–shallow water (0.121 each). Box-downsampled to 16×16, a 4×4-tile patch of
+shallow water still reads 0.13 lighter than ground (0.40 vs 0.27) and bluer than green.
 
 **Readability pairs** (adjacent classes that must separate by value): ground–tall
 grass, ground–path, ground–sand, path–sand, sand–shallow water, shallow–deep water,

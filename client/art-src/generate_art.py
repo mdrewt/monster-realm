@@ -2,15 +2,18 @@
 """
 generate_art.py — deterministic pixel-art generator for the Monster Realm POC.
 
-Produces two PixiJS-v8 spritesheets (PNG + JSON) plus 6x preview PNGs:
+Produces PixiJS-v8 spritesheets (PNG + JSON, each with a -normal map) plus 6x preview PNGs:
 
   ../public/assets/hero.png                 4-dir tamer, idle/walk/jump (20 frames)
   ../public/assets/hero.json
-  ../public/assets/tileset-edge-of-town.png 48 tiles: grass route <-> town
+  ../public/assets/tileset-edge-of-town.png 47 tiles: grass route <-> town
   ../public/assets/tileset-edge-of-town.json
+  ../public/assets/terrain-kit.png          50 tiles: ten terrain classes, water frames, shore band
+  ../public/assets/terrain-kit.json         (+ terrain-kit-normal.{png,json}; wap-2)
   ../public/assets/palette.png              the shared master palette swatch
   ./preview/hero@6x.png                     nearest-neighbour previews (not served)
   ./preview/tileset@6x.png
+  ./preview/terrain-kit@6x.png
 
 Art direction (locked with the user):
   - 3/4 oblique perspective, 32x32 px/tile (TILE_PX), "warm vibrant storybook" palette.

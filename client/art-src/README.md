@@ -23,6 +23,8 @@ then open <http://localhost:8080/art-src/demo/>. Details in [`demo/README.md`](.
 | `hero-normal.png` + `hero-normal.json` | 160×128, 20 frames | matching **normal map**, identical atlas layout |
 | `tileset-edge-of-town.png` + `.json` | 256×192, 47 tiles | grass route ↔ town: grass/tall-grass/flowers, grass↔dirt + grass↔water autotile sets, cobble/brick/window/door/roof, props (albedo) |
 | `tileset-edge-of-town-normal.png` + `.json` | 256×192, 47 tiles | matching **normal map**, identical atlas layout |
+| `terrain-kit.png` + `.json` | 256×224, 50 tiles | the terrain kit (`wap-2`): ten classes × 3 variants, 4 animation frames per water class, the shallow-water shore band (albedo, every frame opaque) |
+| `terrain-kit-normal.png` + `.json` | 256×224, 50 tiles | matching **normal map**, identical atlas layout |
 | `monster-emberkit.png` + `.json` | 96×128, 12 frames | wild creature "Emberkit" — 4 facings × {idle, walk0, walk1} (albedo) |
 | `monster-emberkit-normal.png` + `.json` | 96×128, 12 frames | matching **normal map**, identical atlas layout |
 | `palette.png` | 82×210 | the shared master palette swatch (13 ramps) |
@@ -72,6 +74,24 @@ Animations in the JSON: `walk_down/up/right/left`, `idle_down/up/right/left`.
 The autotile names follow a **marching-squares / blob** subset (center + 4 edges + 4 outer +
 4 inner corners). Pick the tile from a neighbour bitmask — the boundaries are jittered with
 *local* tile coords so adjacent same-type tiles stay **seamless**.
+
+## Terrain kit layout (`terrain-kit.json`), 8 cols
+
+The frame manifest the renderer reads is `src/render/art/packs/terrain.ts`
+(`TERRAIN_KIT_CLASSES`, `TERRAIN_KIT_SHORE`), keyed by `TileKind` wire name. Painters are the
+`kit_*` functions in `build_terrain_kit()`.
+
+- **Variants (3 per class):** `<class>_{0,1,2}` for `ground`, `tall_grass`, `path`, `sand`,
+  `shallow_water`, `deep_water`, `rock`, `tree`, `bush`, `wall`. Pick one per tile by an
+  integer hash of (zone, x, y).
+- **Water animation (4 per water class):** `shallow_water_f{0..3}`, `deep_water_f{0..3}`; the
+  json `animations` hold `shallow_water` and `deep_water`. Hold frame 0 under reduced motion.
+- **Shore band (12):** `shore_{n,e,s,w}` (land on that edge), `shore_{ne,nw,se,sw}` (outer
+  corners), `shore_inner_{ne,nw,se,sw}` (land only in that corner notch). Shallow water only:
+  deep water borders only water.
+
+Each class's value band is measured by `src/render/art/terrainKit.test.ts` and recorded in
+`docs/art/style-guide.md`; recolour a painter, re-run the generator, then re-run that test.
 
 ## Using it in the POC (PixiJS v8)
 
