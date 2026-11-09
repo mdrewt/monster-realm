@@ -96,3 +96,19 @@ export const INTERP_MIN_DELAY_STEPS = 0.5;
  *  WHY 2.5: beyond 2.5×stepMs (500 ms at 200 ms cadence) the remote-entity lag
  *  is user-perceptible; a catastrophically jittery connection shows lag not pops. */
 export const INTERP_MAX_DELAY_STEPS = 2.5;
+
+// ---------------------------------------------------------------------------
+// Terrain renderer (wap-4) — consumed by `terrainLayout.ts` (pure) and `world.ts`.
+// ---------------------------------------------------------------------------
+
+/** Milliseconds each water animation frame is held.
+ *  WHAT: frame index = floor(nowMs / WATER_FRAME_MS) mod frameCount (frame 0 under reduced motion).
+ *  WHY 400: the kit's four water frames cycle in 1.6 s — a slow swell that reads as motion
+ *  without flicker, and only one texture swap per 400 ms on the animated tiles. */
+export const WATER_FRAME_MS = 400;
+
+/** Edge length, in tiles, of one cached terrain chunk.
+ *  WHAT: the static terrain is baked into one texture per CHUNK×CHUNK tile block (edge chunks clipped).
+ *  WHY 16: a 16-tile chunk is 512 source px, so even at device scale 4 a chunk texture is
+ *  2048 px — inside every WebGL2 max-texture size — while a 40×28 zone needs only 6 chunks. */
+export const TERRAIN_CHUNK_TILES = 16;

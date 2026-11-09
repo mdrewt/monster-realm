@@ -88,6 +88,8 @@ const H = vi.hoisted(() => ({
   /** THE observation channel for this file: every `input` object main.ts's frame loop
    *  actually handed to `resolver.resolve(...)`, in call order, across the whole test. */
   resolveInputs: [] as ResolveInput[],
+  /** WAP4.4: the full argument list of every `WorldRenderer.render(...)` call, in call order. */
+  renderCalls: [] as unknown[][],
 }));
 
 // The wasm pkg — identical shape to the sanctioned precedents (every name main.ts imports,
@@ -128,7 +130,16 @@ vi.mock('./observability/telemetry', async (importOriginal) =>
 // under happy-dom is out of scope for this gate, so it is stubbed rather than trusted. No
 // canvas is appended (unlike main.a11yFocus.test.ts's WorldRenderer mock) — this file never
 // drives focus, and #app itself never exists here.
-vi.mock('./render/world', () => worldRendererNoCanvasMock());
+// WAP4.4: the same no-canvas stub, but render() also records its full argument list.
+vi.mock('./render/world', () => {
+  const base = worldRendererNoCanvasMock();
+  class RecordingWorldRenderer extends base.WorldRenderer {
+    render(...args: unknown[]): void {
+      H.renderCalls.push(args);
+    }
+  }
+  return { WorldRenderer: RecordingWorldRenderer };
+});
 
 // THE OBSERVATION CHANNEL FOR THIS FILE (mandatory design decision #2). A subclass of the
 // REAL RenderResolver, built from importOriginal() so RecordingRenderResolver is assembled
@@ -272,6 +283,7 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
   ): Promise<{ readonly opts: ConnectionOptions; readonly mm: MatchMediaStub }> {
     H.connectOpts = null;
     H.resolveInputs = [];
+    H.renderCalls = [];
 
     const mm = makeMatchMediaStub(initialMatches);
     vi.stubGlobal('matchMedia', mm.fn);
@@ -319,6 +331,7 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
     restoreWindowAdd = undefined;
     H.connectOpts = null;
     H.resolveInputs = [];
+    H.renderCalls = [];
     vi.unstubAllGlobals();
     rafCallback = null;
     document.body.innerHTML = '';
@@ -467,5 +480,62 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
         'fresh MotionPreference (and its listener) is being leaked repeatedly rather than ' +
         'built once and read live thereafter',
     ).toBe(1);
+  });
+
+  /** The 4th argument of each recorded render() call (the terrain frame input). */
+  const frameInputs = (): unknown[] => H.renderCalls.map((args) => args[3]);
+
+  // WRONG IMPL KILLED: render() still called with 3 args (no frame input); hardcoded
+  // reduceMotion false; a falsy-but-not-true value.
+  it('WAP4.4 reduced motion ON: every render call carries { reduceMotion: true, finite nowMs }', async () => {
+    await setupMain(true);
+    runFrame(1000);
+    runFrame(1250);
+    runFrame(1500);
+    const inputs = frameInputs();
+    expect(inputs.length, 'one render() call per frame').toBe(3);
+    for (const [i, input] of inputs.entries()) {
+      const o = input as { nowMs?: unknown; reduceMotion?: unknown } | undefined;
+      expect(o?.reduceMotion, `frame ${i}`).toBe(true);
+      expect(typeof o?.nowMs === 'number' && Number.isFinite(o.nowMs), `frame ${i}`).toBe(true);
+    }
+  });
+
+  // WRONG IMPL KILLED: unconditional reduceMotion true; key absent (undefined !== false).
+  it('WAP4.4 reduced motion OFF: every render call carries reduceMotion strictly false', async () => {
+    await setupMain(false);
+    runFrame(1000);
+    runFrame(1250);
+    const inputs = frameInputs();
+    expect(inputs.length, 'one render() call per frame').toBe(2);
+    for (const [i, input] of inputs.entries()) {
+      expect((input as { reduceMotion?: unknown } | undefined)?.reduceMotion, `frame ${i}`).toBe(
+        false,
+      );
+    }
+  });
+
+  // WRONG IMPL KILLED: read-once-at-boot boolean passed to render().
+  it('WAP4.4 a live preference change flips the very next frame render input', async () => {
+    const { mm } = await setupMain(false);
+    runFrame(1000);
+    mm.mql.matches = true;
+    for (const listener of mm.listeners) listener({ matches: true });
+    runFrame(1250);
+    const inputs = frameInputs() as Array<{ reduceMotion?: unknown } | undefined>;
+    expect(inputs.length).toBe(2);
+    expect(inputs[0]?.reduceMotion).toBe(false);
+    expect(inputs[1]?.reduceMotion).toBe(true);
+  });
+
+  // WRONG IMPL KILLED: a constant/zero nowMs, or Date.now() instead of the frame's
+  // performance.now() (runFrame stubs only performance.now to the frame time).
+  it('WAP4.4 render nowMs is the frame performance.now() reading', async () => {
+    await setupMain(false);
+    runFrame(1000);
+    runFrame(1250);
+    runFrame(1730);
+    const nows = frameInputs().map((i) => (i as { nowMs?: unknown } | undefined)?.nowMs);
+    expect(nows).toEqual([1000, 1250, 1730]);
   });
 });
