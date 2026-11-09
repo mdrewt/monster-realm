@@ -2423,8 +2423,8 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     // INTENTIONAL CHANGE (ctl-12b, CTL12B.1): the new `controlsView` frame id joins OVERLAY_IDS, so
     // it must lend ITS OWN view too (the closing anti-vacuity check lists every frame id). It is a
     // constructed REAL view (ui/controlsView.ts builds its shell, as privacyView does; no stand-in
-    // replaces it here), opened by its one real path: Start (M), the cursor to Options, A, Down
-    // onto Controls, A, so it opens over the main menu. It joins the real-view openers below and
+    // replaces it here), opened by its one real path: Start (M), the cursor to Controls (a root
+    // row since uif-15c), A, so it opens over the main menu. It joins the real-view openers below and
     // the `real` class table; every other frame id's case is as it was.
     await bootReady();
     useNpcRule(HEALER_ENTITY);
@@ -2579,18 +2579,18 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
           server(at);
         },
       },
-      // ctl-12b: Options > Controls, through the real menu (the menu's own nav drives the cursor:
+      // ctl-12b: Controls, through the real menu (the menu's own nav drives the cursor:
       // its adapter here is a painting stand-in without `nav`, so the router's menu path does).
+      // uif-15c (named intentional change, UIF15C.1): Controls is a root row; the walk is Down to
+      // it (8 presses at most), then A. Was: Down to Options, A, Down onto Controls, A.
       {
         id: 'controlsView',
         beneath: ['menuView'],
         open: (at) => {
           press('KeyM', at);
-          for (let i = 1; i <= 6 && menuCursorNow() !== 'options'; i += 1) {
+          for (let i = 1; i <= 8 && menuCursorNow() !== 'controls'; i += 1) {
             press('ArrowDown', at + i);
           }
-          press('Enter', at + 7);
-          if (menuCursorNow() !== 'controls') press('ArrowDown', at + 8);
           press('Enter', at + 9);
         },
         close: (at) => void press('Escape', at),

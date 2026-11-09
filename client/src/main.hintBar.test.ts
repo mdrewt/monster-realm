@@ -443,11 +443,10 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     frame();
     expect(chipOf('Select').key, 'precondition: Select is on R').toBe('R');
     press('Escape');
-    for (let i = 0; i < 8 && game().navActive !== 'options'; i += 1) press('ArrowDown');
-    expect(game().navActive, 'precondition: the menu cursor is on Options').toBe('options');
-    press('Enter');
-    for (let i = 0; i < 2 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
-    expect(game().navActive, 'precondition: the cursor is on Options > Controls').toBe('controls');
+    // uif-15c (named intentional change, UIF15C.1): Controls is a root entry, so the walk is Down
+    // to Controls, A (no group step). Was: Down to Options, A, Down to Controls, A.
+    for (let i = 0; i < 8 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
+    expect(game().navActive, 'precondition: the menu cursor is on Controls').toBe('controls');
     press('Enter');
     expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
       'world',
@@ -761,12 +760,12 @@ const mouseMove = (el: Element, x: number, y: number): void => {
 };
 const talks = (): number => H.calls.filter((c) => c.name === 'talk').length;
 
-/** From the bare world: Start, the menu to Options > Controls, A. */
+/** From the bare world: Start, the menu to Controls, A.
+ *  uif-15c (named intentional change, UIF15C.1): Controls is a root entry; no group step. Was:
+ *  Start, Down to Options, A, Down to Controls, A. */
 function openControls(): void {
   press('Escape');
-  for (let i = 0; i < 8 && game().navActive !== 'options'; i += 1) press('ArrowDown');
-  press('Enter');
-  for (let i = 0; i < 2 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
+  for (let i = 0; i < 8 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
   press('Enter');
   expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
     'world',

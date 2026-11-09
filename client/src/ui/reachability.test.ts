@@ -19,7 +19,8 @@
  * THE COUNT IS COMPUTED, NEVER TYPED. `searchMenu` is a breadth-first search over the REAL
  * `mainMenuStep` (the menu's wrapping lists, its groups, its remembered cursors): it presses every
  * D-pad button, A and B from every reachable menu state and records the cheapest press sequence that
- * ends in an `open` effect for each leaf. The Monsters tab count is a second search over the REAL
+ * ends in an `open` effect for each leaf (uif-15c: the menu is one flat list, so every leaf is
+ * `root/<key>`). The Monsters tab count is a second search over the REAL
  * `navStep` (LB / RB / D-pad over `monstersLayout`'s tabs). Start is the real `baseButton`. The
  * frame a path lands on is the real `mirrorEdges` + `contextStep`, and the accelerator's canonical
  * path is the real `ACCEL_PATHS` through `accelDecision`. A re-ordered, grown or re-nested menu
@@ -36,12 +37,17 @@
  * no leaf, or whose leaf opens another frame (the stack check). The exact counts below are the
  * design table's own (party 2, storage 3, bag 3, journal 4, rename 6, and, since uif-15b, the Social
  * tabs U 6, P 7, L 6: Social is a root leaf, Start, Down x3, A, then the tab presses). uif-16b: Profile
- * is a root leaf too (Start, Up x3, A) opened on its section, so rename (N) reads 5 and account (C) 5.
+ * is a root leaf too, opened on its section (rename N and account C). uif-15c (named intentional
+ * change, UIF15C.3): the root grows from 7 to 8 rows (Options gives way to How to Play and
+ * Controls), so Profile is Start plus 5 menu presses (Down x4 or Up x4, then A): N and C read 6.
+ * Was: Start, Up x3, A = 5. Y is Controls at the root: Start, Up, Up, A = 4 (was 6: through Options).
+ *
+ * THE CLOSE RULE (UIF15C.3) is what keeps the bound at 7 from every remembered cursor: a menu left
+ * on Close reopens on Monsters, because from Close the Social tab P would cost 8.
  *
  * Report a problem (F9's twin, design §5) is not a menu leaf: #586 D3's menu has no slot for it, so
- * the spec re-homes it on How to Play's Introduction tab (uif-14, UIF14.3, deferred). The Options
- * group is covered generically: every leaf the search discovers, an Options leaf included, is held
- * to the bound.
+ * the spec re-homes it on How to Play's Introduction tab (uif-14, UIF14.3, deferred). Every leaf
+ * the search discovers, How to Play and Controls included, is held to the bound.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -86,6 +92,7 @@ import {
   list as navList,
   navStep,
   tabs as navTabs,
+  rememberNav,
 } from './nav';
 import type { OverlayId } from './overlayRegistry';
 import { buildPvpChallengeViewModel, type PvpChallengeViewModel } from './pvpModel';
@@ -114,7 +121,7 @@ const MAX_PRESSES = 7;
 
 /** The accelerators that open a menu path (F8 and F9 are the shell's own keys). A HAND-WRITTEN
  *  manifest, edited by hand when an accelerator joins: qf-14 (named intentional change, QF14.3) adds
- *  'Y' (Options > Controls), 9 -> 10 menu accelerators. The QF14-3-REACH-MANIFEST case below holds it
+ *  'Y' (Controls; it was Options > Controls until uif-15c), 9 -> 10 menu accelerators. The QF14-3-REACH-MANIFEST case below holds it
  *  equal to the keys of `ACCEL_PATHS`, so it cannot drift from the router. */
 const MENU_ACCELS: readonly MenuAccel[] = ['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C', 'Y'];
 
@@ -126,12 +133,13 @@ const press = (button: VButton): { readonly button: VButton; readonly repeat: fa
   repeat: false,
 });
 
-/** One menu leaf, named by the level it sits on and its entry key (`root/bag`, `social/rankings`). */
-const leafId = (level: string, item: string | null): string => `${level}/${item}`;
+/** One menu leaf, named by its entry key under `root/` (`root/bag`, `root/controls`).
+ *  uif-15c (named intentional change, UIF15C.3): the menu has no level, so the id no longer reads
+ *  one. Was: `leafId(level, item)` -> `${level}/${item}` (`options/controls`). */
+const leafId = (item: string | null): string => `root/${item}`;
 
-/** The leaf an accelerator's canonical menu path ends on. */
-const leafOfPath = (path: AccelPath): string =>
-  leafId(path.menu.length === 1 ? 'root' : (path.menu[0] as string), path.menu.at(-1) ?? null);
+/** The leaf an accelerator's canonical menu path ends on (every path is one root key now). */
+const leafOfPath = (path: AccelPath): string => leafId(path.menu.at(-1) ?? null);
 
 interface Reach {
   /** Presses inside the menu, the final A included. */
@@ -140,11 +148,11 @@ interface Reach {
   readonly target: MenuTarget;
 }
 
-/** The menu's logical state: its level, its cursor, and every level's remembered cursor (entering a
- *  group lands on the remembered one, so two states with equal cursors but different memories are
- *  not the same state). */
+/** The menu's logical state: its cursor and its remembered cursors (a reopen lands on the
+ *  remembered one, so two states with equal cursors but different memories are not the same
+ *  state). uif-15c (named intentional change): no level. Was: `${s.level}|...`. */
 const stateKey = (s: MainMenuState): string =>
-  `${s.level}|${s.nav.item}|${[...s.memory]
+  `${s.nav.item}|${[...s.memory]
     .map(([frame, nav]) => `${frame}=${nav.item}`)
     .sort()
     .join(',')}`;
@@ -165,7 +173,7 @@ function searchMenu(start: MainMenuState): ReadonlyMap<string, Reach> {
         const step = mainMenuStep(state, press(button));
         const taken = [...path, button];
         if (step.effect.kind === 'open') {
-          const id = leafId(state.level, state.nav.item);
+          const id = leafId(state.nav.item);
           if (!best.has(id))
             best.set(id, { presses: taken.length, path: taken, target: step.effect.target });
         }
@@ -390,10 +398,12 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     }
   });
 
-  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 5, account 5, Social tabs U 6, P 7, L 6), and each path lands on its accelerator`s frame', () => {
+  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, account 6, Social tabs U 6, P 7, L 6, Controls 4), and each path lands on its accelerator`s frame', () => {
+    // uif-15c (named intentional change, UIF15C.3): rename and account 5 -> 6 (the root grew to
+    // eight rows, so Profile is Start plus 5 menu presses); Controls (Y) is the root leaf at 4.
     // WRONG IMPL KILLED: a menu grown or re-ordered so a target passes 7 presses (an entry added
     // ahead of Social: Challenges reads 8), a menu that no longer wraps (the upward routes to Profile
-    // and Close vanish: Rename reads 7), a Monsters entry that opens Storage first (storage reads 2,
+    // and Close vanish: Rename reads 8), a Monsters entry that opens Storage first (storage reads 2,
     // party 3: the design's pair swaps), a tab strip that gains a tab ahead of Storage, an
     // accelerator path naming a menu leaf that does not exist (the search throws), one whose leaf
     // opens a different frame than the path claims (the stack check), a Start that does not open the
@@ -408,13 +418,17 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     // uif-15b (named intentional change): 10 -> 9, the three Social sub-list leaves are one root leaf.
     // uif-16b (named intentional change): 9 -> 7, the three Profile sub-list leaves are one root leaf
     // (5 root leaves + 2 Options leaves).
+    // uif-15c (named intentional change, UIF15C.3): the 2 Options leaves are root leaves, still >= 7.
     expect(ids.length, 'ANTI-VACUITY: the search found the menu`s leaves').toBeGreaterThanOrEqual(
       7,
     );
+    // uif-15c (named intentional change): was "ids.some(startsWith('options/')) is true".
     expect(
       ids.some((id) => id.startsWith('options/')),
-      'ANTI-VACUITY: the Options group has a leaf',
-    ).toBe(true);
+      'the Options group is gone: no options/ leaf',
+    ).toBe(false);
+    expect(ids, 'ANTI-VACUITY: How to Play is a root leaf').toContain('root/help');
+    expect(ids, 'ANTI-VACUITY: Controls is a root leaf').toContain('root/controls');
 
     const counts: Partial<Record<MenuAccel, number>> = {};
     for (const accel of MENU_ACCELS) {
@@ -444,19 +458,32 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     expect(counts.I, 'open bag: Esc, S, Enter').toBe(3);
     expect(counts.J, 'check quests: Esc, S, S, Enter').toBe(4);
     // uif-16b (named intentional change, UIF16B.5): N and C are the one Profile leaf (menu
-    // ['profile']), opened on their section. The walker's cheapest sequence to root/profile is
-    // Up x3 (wrapping Monsters -> Close -> Options -> Profile) then A = 4 menu presses, plus Start:
-    // N 6 -> 5 (was Esc, W, W, W, Enter, Enter: into the Profile sub-list, then Name), and
-    // C 7 -> 5 (was Esc, W, W, W, Enter, S, Enter: into the sub-list, Down to Account, Enter).
-    expect(reach.get('root/profile')?.presses, 'the Profile leaf: Up x3, A').toBe(4);
-    expect(reach.get('root/profile')?.path, 'the walker`s own sequence').toEqual([
-      'Up',
+    // ['profile']), opened on their section: N 6 -> 5 and C 7 -> 5 (was Esc, W, W, W, Enter, Enter:
+    // into the Profile sub-list, then Name; and Esc, W, W, W, Enter, S, Enter for Account).
+    // uif-15c (named intentional change, UIF15C.3): the root has eight rows, so the walker's
+    // cheapest sequence to root/profile is 4 moves (Down x4, or Up x4 through Close, Controls and
+    // Help) then A = 5 menu presses, plus Start: N and C 5 -> 6. Was: Up x3 (wrapping Monsters ->
+    // Close -> Options -> Profile) then A = 4 menu presses. The direction is the walker's choice and
+    // not pinned; the length and the closing A are.
+    const profile = reach.get('root/profile');
+    expect(profile?.presses, 'the Profile leaf: four moves, A').toBe(5);
+    expect(profile?.path.length, 'the walker`s own sequence is five presses').toBe(5);
+    expect(profile?.path.at(-1), 'and ends on A').toBe('A');
+    expect(counts.N, 'rename: Start, four moves, A (Profile opens on Name)').toBe(6);
+    expect(counts.C, 'account: Start, four moves, A (Profile opens on Account)').toBe(6);
+    // uif-15c (UIF15C.3): the two former Options leaves are root leaves: Controls is Up, Up, A and
+    // How to Play Up x3, A (each through Close), so Y is Start plus 3 = 4.
+    expect(reach.get('root/controls')?.presses, 'the Controls leaf: Up, Up, A').toBe(3);
+    expect(reach.get('root/controls')?.path, 'the walker`s own sequence').toEqual([
       'Up',
       'Up',
       'A',
     ]);
-    expect(counts.N, 'rename: Esc, W, W, W, Enter (Profile opens on Name)').toBe(5);
-    expect(counts.C, 'account: Esc, W, W, W, Enter (Profile opens on Account)').toBe(5);
+    expect(reach.get('root/help')?.presses, 'the How to Play leaf: Up x3, A').toBe(4);
+    expect(counts.Y, 'controls: Start, Up, Up, A').toBe(4);
+    for (const id of ['options/help', 'options/controls']) {
+      expect(reach.has(id), `${id}: the Options sub-list leaf is gone`).toBe(false);
+    }
     for (const id of ['profile/name', 'profile/account', 'profile/privacy']) {
       expect(reach.has(id), `${id}: the Profile sub-list leaf is gone`).toBe(false);
     }
@@ -495,7 +522,17 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
         // Play the real menu: whatever the walk leaves is a state a session can reach.
         let played = openMainMenu(EMPTY_NAV_MEMORY);
         for (const button of walk) played = mainMenuStep(played, press(button)).state;
-        const reopened = openMainMenu(played.memory); // the last-used entry, every level remembered
+        const reopened = openMainMenu(played.memory); // the last-used entry, remembered
+        // uif-15c (UIF15C.3): a menu never reopens ON Close; one left on Close reopens on Monsters
+        // (the first entry), which is what keeps the bound from every remembered cursor.
+        expect(reopened.nav.item, `a reopen is never on close, after ${walk.join(',')}`).not.toBe(
+          'close',
+        );
+        if (played.nav.item === 'close') {
+          expect(reopened.nav.item, 'left on close: reopened on the first entry').toBe('monsters');
+        } else {
+          expect(reopened.nav.item, 'left elsewhere: reopened on that entry').toBe(played.nav.item);
+        }
         const reach = searchMenu(reopened);
 
         for (const accel of MENU_ACCELS) {
@@ -555,12 +592,14 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     );
   });
 
-  it('the hand-written MENU_ACCELS manifest is exactly the menu accelerators the router declares (ten, Y included), and the Controls accelerator Y reaches Options > Controls in 6 presses from the world, within the bound, landing on controlsView [QF14-3-REACH-MANIFEST]', () => {
+  it('the hand-written MENU_ACCELS manifest is exactly the menu accelerators the router declares (ten, Y included), and the Controls accelerator Y reaches the root Controls row in 4 presses from the world, within the bound, landing on controlsView [QF14-3-REACH-MANIFEST]', () => {
+    // uif-15c (named intentional change, UIF15C.3): Y is the root leaf ['controls'], Start, Up, Up,
+    // A = 4. Was: Options > Controls, Start, Up, Up (wrap to Options), A, Down (Controls), A = 6.
     // WRONG IMPL KILLED: a manifest that forgot Y (every CTL11B-2 case above would silently skip the
     // new target: the bound would be unchecked for the one accelerator qf-14 adds), a manifest
     // with a stale entry the router no longer has, a Y path naming a menu leaf that does not
     // exist (the search throws) or one whose leaf opens another frame (the stack check), and a
-    // menu grown so Options > Controls passes the bound (Start, Up, Up, A, Down, A = 6).
+    // menu grown so Controls passes the bound.
     const declared = Object.keys(ACCEL_PATHS).sort();
     expect([...MENU_ACCELS].sort(), 'the manifest is every ACCEL_PATHS key').toEqual(declared);
     expect(new Set(MENU_ACCELS).size, 'and lists none twice').toBe(MENU_ACCELS.length);
@@ -570,12 +609,17 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 
     const reach = searchMenu(openMainMenu(EMPTY_NAV_MEMORY));
     const path = pathOf('Y');
-    expect(path.menu, 'the Controls path').toEqual(['options', 'controls']);
-    expect(leafOfPath(path)).toBe('options/controls');
-    const leaf = reach.get('options/controls');
+    expect(path.menu, 'the Controls path').toEqual(['controls']);
+    expect(leafOfPath(path)).toBe('root/controls');
+    const leaf = reach.get('root/controls');
     expect(leaf?.target, 'the leaf opens the Controls view').toBe('controlsView');
+    expect(leaf?.path, 'the walker`s own sequence: Up, Up (wrap through Close), A').toEqual([
+      'Up',
+      'Up',
+      'A',
+    ]);
     const count = pressesTo('Y', reach);
-    expect(count, 'Start, Up, Up (wrap to Options), A, Down (Controls), A').toBe(6);
+    expect(count, 'Start, Up, Up (wrap to Controls), A').toBe(4);
     expect(count, 'Y: within the bound').toBeLessThanOrEqual(MAX_PRESSES);
 
     const stack = stackAfterLeaf((leaf as Reach).target);
@@ -584,6 +628,51 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
       'controlsView',
     );
     expect(accelDecision('Y', stack).kind, 'Y: its own screen on top is Start').toBe('start');
+  });
+
+  it('UIF15C.3 the bound of 7 presses holds for every accelerator and every leaf from EVERY remembered cursor (all eight rows, Close included, built by hand), and WITHOUT the Close rule the Social tab P from a menu on Close is 8', () => {
+    // WRONG IMPL KILLED: no Close rule (a menu left on Close reopens on Close: from there Social is
+    // 4 moves + A, so P is Start + 5 + RB RB = 8, past the bound: the proof below simulates that
+    // reopen by searching from the Up-wrapped state itself, and the loop proves the real
+    // openMainMenu escapes it); a rule that lives in the shell only (openMainMenu stays on Close:
+    // the loop reds); a rule that sends Close to the LAST enabled entry instead of the first (the
+    // reopened cursor is not Monsters); and a bound that holds only from the fresh cursor.
+    const memoryOn = (key: string) =>
+      rememberNav(EMPTY_NAV_MEMORY, 'menu', { tab: null, item: key, perTab: {} });
+    const KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'help', 'controls', 'close'];
+    let searched = 0;
+    for (const key of KEYS) {
+      const reopened = openMainMenu(memoryOn(key));
+      expect(
+        reopened.nav.item,
+        `${key}: reopens ${key === 'close' ? 'on the first entry' : 'there'}`,
+      ).toBe(key === 'close' ? 'monsters' : key);
+      const reach = searchMenu(reopened);
+      expect(reach.size, `${key}: ANTI-VACUITY: all seven leaves found`).toBe(7);
+      for (const accel of MENU_ACCELS) {
+        expect(pressesTo(accel, reach), `${accel} from a menu left on ${key}`).toBeLessThanOrEqual(
+          MAX_PRESSES,
+        );
+        searched += 1;
+      }
+      for (const [id, leaf] of reach) {
+        expect(1 + leaf.presses, `${id} from a menu left on ${key}`).toBeLessThanOrEqual(
+          MAX_PRESSES,
+        );
+        searched += 1;
+      }
+    }
+    expect(searched, 'ANTI-VACUITY: every cursor x (ten accelerators + seven leaves)').toBe(8 * 17);
+
+    // The rule is load-bearing: the very state a menu left on Close would reopen in (Up from the
+    // first row wraps to Close), searched as it stands, costs 8 for P.
+    const onClose = mainMenuStep(openMainMenu(EMPTY_NAV_MEMORY), press('Up')).state;
+    expect(onClose.nav.item, 'fixture: the cursor is on Close').toBe('close');
+    expect(pressesTo('P', searchMenu(onClose)), 'without the rule: past the bound').toBe(8);
+    expect(
+      pressesTo('P', searchMenu(openMainMenu(onClose.memory))),
+      'with the rule: the same memory reopens on Monsters',
+    ).toBe(7);
   });
 });
 

@@ -41,8 +41,8 @@ import {
 // never appear for a live battle. SURVIVING CHECKS, each named at its test:
 //   - CTL8J-3x: the tactical shell is the battle root; Start at the shell is End Turn (bt-11,
 //     BT11.6), so the main menu is opened mid-turn by the Monsters ACCELERATOR (CTL11A.1; Monsters is
-//     not battle-safe, so the menu stays the top frame); Options > How to play opens the third
-//     frame; ONE Start returns to the shell alone — the stack exactly [battle], `.tactics-battle`
+//     not battle-safe, so the menu stays the top frame); How to play (a root entry since uif-15c,
+//     UIF15C.4: Options is gone) opens the third frame; ONE Start returns to the shell alone — the stack exactly [battle], `.tactics-battle`
 //     visible, the same battle / round / turnIdx / events (nothing submitted), focus inside the shell.
 //   - CTL8J-2-A: on an own turn ADJACENT to the wild, Recruit opens its bait list; B backs out to
 //     the root menu and B closes the menu (the tactical equivalent of Yes / No + B×2), spending
@@ -425,9 +425,10 @@ test.describe
           { kind: 'screen', id: 'menuView', overBattle: id },
         ]);
 
-      // A second frame above the menu: Options, then How to play (the enabled entry over a battle).
-      await menuTo(page, 'options');
-      await pressButton(page, 'A');
+      // A second frame above the menu: How to play (the enabled entry over a battle).
+      // uif-15c (UIF15C.4, named intentional change): How to play is a root entry; no group A/Down
+      // step. Was: menuTo 'options', A (entered on How to play), A.
+      await menuTo(page, 'help');
       await expect.poll(() => navActive(page), { timeout: 5_000 }).toBe('help');
       await pressButton(page, 'A');
       await expect(page.locator('#help-overlay')).toBeVisible({ timeout: 5_000 });

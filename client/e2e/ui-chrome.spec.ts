@@ -176,11 +176,31 @@ async function openMenu(p: Page): Promise<void> {
     .toEqual(['world', 'menuView']);
   await expect(p.locator('#menu-overlay'), 'the menu is shown').toBeVisible();
   await expect(p.locator('#menu-overlay .mr-frame-title'), 'with its title').toBeVisible();
+  // uif-15c (UIF15C.4): the constant below is the LIVE root, in order: the DOM's `menu-root-*` rows.
+  expect(
+    await p.evaluate(() =>
+      Array.from(document.querySelectorAll('#menu-rows [id^="menu-root-"]')).map((el) =>
+        el.id.slice('menu-root-'.length),
+      ),
+    ),
+    'UIF15C.4: MENU_ROOT_KEYS is the live DOM root, in order',
+  ).toEqual([...MENU_ROOT_KEYS]);
   await seatMenuCursorOnMonsters(p);
 }
 
-/** The root list in display order (menuModel.ts MENU_ENTRIES). */
-const MENU_ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
+/** The root list in display order (menuModel.ts MENU_ENTRIES).
+ *  uif-15c (UIF15C.4, named intentional change): `options` is gone; `help` and `controls` are root
+ *  entries (7 -> 8). Was: [..., 'profile', 'options', 'close']. */
+const MENU_ROOT_KEYS = [
+  'monsters',
+  'bag',
+  'journal',
+  'social',
+  'profile',
+  'help',
+  'controls',
+  'close',
+];
 
 /** The `data-nav-key` of the menu's active row and the id of that row, or null when none. */
 const menuActiveRow = (p: Page): Promise<{ key: string; id: string } | null> =>
@@ -190,25 +210,17 @@ const menuActiveRow = (p: Page): Promise<{ key: string; id: string } | null> =>
   });
 
 /**
- * The menu remembers each level's cursor for the whole session (mainMenuScreen.ts NavMemory), so a
- * reopened menu lands on the LAST entry used, and an earlier test that opened Social leaves it on
- * the Social row (A there enters the sub-list instead of pushing a screen). Seat the cursor on
- * Monsters before any caller presses A: leave a sub-list with B, then Up one row at a time, each
- * landing asserted, bounded by the root list's length.
+ * The menu remembers its cursor for the whole session (mainMenuScreen.ts NavMemory), so a reopened
+ * menu lands on the LAST entry used (except Close: a menu last left on Close reopens on Monsters,
+ * UIF15C.3), and an earlier test that opened Social leaves it on the Social row. Seat the cursor on
+ * Monsters before any caller presses A: Up one row at a time, each landing asserted, bounded by
+ * the root list's length.
+ * uif-15c (UIF15C.4, named intentional change): no sub-list exists (Options was the last group;
+ * the `menuSocial` level is long gone), so the "leave a sub-list with B" step is deleted.
  */
 async function seatMenuCursorOnMonsters(p: Page): Promise<void> {
   let active = await menuActiveRow(p);
   expect(active, 'the menu has an active row').not.toBeNull();
-  // A sub-list's rows carry its own frame id (`menuSocial-root-trades`), not `menu-root-`.
-  if (active !== null && !active.id.startsWith('menu-root-')) {
-    await pressButton(p, 'B');
-    await expect
-      .poll(async () => (await menuActiveRow(p))?.id.startsWith('menu-root-') ?? false, {
-        message: 'B leaves the sub-list for the root list',
-      })
-      .toBe(true);
-    active = await menuActiveRow(p);
-  }
   for (let presses = 0; presses < MENU_ROOT_KEYS.length; presses += 1) {
     const index = MENU_ROOT_KEYS.indexOf(active?.key ?? '');
     expect(index, `the active row ${active?.key} is a root entry`).toBeGreaterThanOrEqual(0);

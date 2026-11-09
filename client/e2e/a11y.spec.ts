@@ -764,12 +764,16 @@ test.describe
       // first root entry (the cursor is remembered across opens within a page session).
       expect(first, 'menu opened with no active option').toBe('menu-root-monsters');
 
-      // ArrowDown x5 moves monsters -> bag -> journal -> social -> profile -> options; A (Enter)
-      // enters the Options sub-list; B (Backspace) backs out to the root with the cursor on Options.
+      // ArrowDown x6 moves monsters -> bag -> journal -> social -> profile -> help -> controls; A
+      // (Enter) opens Controls above the menu; B (Backspace) backs out to the menu with the cursor
+      // on Controls.
       // uif-15b (named intentional change, UIF15B.1): Social is a root leaf that opens the Social
       // frame, so the sub-list enter/back proof moved to Profile. Was: Social at x3.
       // uif-16b (named intentional change, UIF16B.1): Profile is a root leaf too (one Profile
       // screen, no sub-list), so the proof moves to Options, the only group left. Was: Profile at x4.
+      // uif-15c (UIF15C.4, named intentional change): Options is gone (no group, so no sub-list to
+      // enter or back out of); the enter/back proof is Help, then Controls, a root leaf that opens a
+      // screen. Was: Options at x5, Enter into `menuOptions-root-*`, Backspace back to Options.
       await page.keyboard.press('ArrowDown');
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-bag');
       await page.keyboard.press('ArrowDown');
@@ -778,11 +782,18 @@ test.describe
       await page.keyboard.press('ArrowDown');
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-profile');
       await page.keyboard.press('ArrowDown');
-      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-options');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-help');
+      await page.keyboard.press('ArrowDown');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-controls');
       await page.keyboard.press('Enter');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuOptions-root-/);
+      await expect(page.locator('#controls-overlay'), 'Enter opens Controls').toBeVisible();
       await page.keyboard.press('Backspace');
-      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-options');
+      await expect(page.locator('#controls-overlay'), 'Backspace closes Controls').toBeHidden();
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-controls');
+      await expect(
+        page.locator('[id^="menuOptions"]'),
+        'UIF15C.4: Options is gone, no menuOptions element exists',
+      ).toHaveCount(0);
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
 

@@ -546,9 +546,10 @@ test.describe
       expect((await snap(page)).ongoingBattle?.battleId, 'the same battle goes on').toBe(id);
       await expect.poll(() => focusInside(page, 'menu'), { timeout: 5_000 }).toBe(true);
 
-      // Options > How to play: help opens above the menu over the battle, and is what is seen.
-      await menuTo(page, 'options');
-      await pressButton(page, 'A');
+      // How to play: help opens above the menu over the battle, and is what is seen.
+      // uif-15c (UIF15C.4, named intentional change): How to play is a root entry; no group A/Down
+      // step. Was: menuTo 'options', A (entered on How to play), A.
+      await menuTo(page, 'help');
       await expect.poll(() => navActive(page), { timeout: 5_000 }).toBe('help');
       await pressButton(page, 'A');
       await expect(page.locator('#help-overlay')).toBeVisible({ timeout: 5_000 });

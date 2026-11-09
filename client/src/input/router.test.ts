@@ -1639,7 +1639,7 @@ describe('InputRouter: X under a nav-capable screen (bt-12 B, BT12.2)', () => {
 // ==========================================================================================
 //
 // `ACCEL_PATHS` is the canonical menu path of each of the ten menu accelerators (qf-14: nine -> ten
-// with Y, Options > Controls; F8 and F9 stay
+// with Y, Controls (uif-15c: a root entry; it was Options > Controls); F8 and F9 stay
 // the shell's own): the main-menu entry keys, root first, the frame the leaf opens, and (Monsters
 // only) the tab. `accelDecision(accel, stack)` is the pure verdict on one accelerator press:
 // `denied` while the top frame is server-owned, a textEntry or a prompt (`acceleratorsDenied`),
@@ -1679,8 +1679,10 @@ const EXPECTED_PATHS: Readonly<Record<MenuAccel, PathRow>> = {
   // renameView, C ['profile','account'] onto claimView, each with no tab.
   N: { menu: ['profile'], frame: 'profileView', tab: 'name' },
   C: { menu: ['profile'], frame: 'profileView', tab: 'account' },
-  // qf-14 (named intentional change): Y opens Options > Controls directly. 9 -> 10 menu accelerators.
-  Y: { menu: ['options', 'controls'], frame: 'controlsView' },
+  // qf-14 (named intentional change): Y opens Controls directly. 9 -> 10 menu accelerators.
+  // uif-15c (named intentional change, UIF15C.2): Options is gone and Controls is a root leaf, so
+  // Y is the one key ['controls'] onto the same controlsView frame. Was: Y ['options', 'controls'].
+  Y: { menu: ['controls'], frame: 'controlsView' },
 };
 const MENU_ACCELS: readonly MenuAccel[] = ACCELS.filter(
   (a): a is MenuAccel => a !== 'F8' && a !== 'F9',
@@ -1701,8 +1703,8 @@ const frozenStack = (base: BaseFrame, ...upper: UpperFrame[]): Stack => {
 };
 
 /** The fifteen player-owned frame ids (spelled out, never read from SCREEN_POLICY): every frame id
- *  but the two server-owned ones. ctl-12b (named intentional change): `controlsView` (Options ›
- *  Controls) joins, a player screen an accelerator replaces like any other. Was: sixteen.
+ *  but the two server-owned ones. ctl-12b (named intentional change): `controlsView` (the
+ *  Controls row) joins, a player screen an accelerator replaces like any other. Was: sixteen.
  *  uif-16b (named intentional change): 17 -> 15: renameView, claimView, privacyView left,
  *  profileView joined at renameView's slot. */
 const PLAYER_FRAMES: readonly FrameId[] = [
@@ -1728,19 +1730,12 @@ const openOf = (accel: MenuAccel): AccelDecision => ({
   path: EXPECTED_PATHS[accel],
 });
 
-/** The menu entry a path's keys name, root first; undefined when a key is not on its level. */
+/** The menu entry a path's keys name; undefined when the path is not exactly one root key on the
+ *  list. uif-15c (named intentional change, UIF15C.2): the menu has no group, so a path is one
+ *  key deep and a deeper path names nothing. Was: a walk through `kind: 'group'` children. */
 function leafOf(menu: readonly string[]): MenuEntry | undefined {
-  let rows: readonly MenuEntry[] = MENU_ENTRIES;
-  let entry: MenuEntry | undefined;
-  for (const [i, key] of menu.entries()) {
-    entry = rows.find((r) => r.key === key);
-    if (entry === undefined) return undefined;
-    if (i < menu.length - 1) {
-      if (entry.kind !== 'group') return undefined;
-      rows = entry.children;
-    }
-  }
-  return entry;
+  if (menu.length !== 1) return undefined;
+  return MENU_ENTRIES.find((r) => r.key === menu[0]);
 }
 
 describe('accelerator paths and decisions (ctl-11a)', () => {
@@ -1776,12 +1771,13 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     }
   });
 
-  it('UIF15B.3 U, P and L are the one-key path [social] onto the social frame with the tab trades, challenges and rankings; every other row is unchanged and Y stays options > controls', () => {
+  it('UIF15B.3 U, P and L are the one-key path [social] onto the social frame with the tab trades, challenges and rankings; every other row is unchanged and Y is the one-key path [controls]', () => {
     // WRONG IMPL KILLED: a U/P/L row still two keys deep (the menu has no `trades` leaf any more:
     // the walk picks nothing and the menu opens with nothing under it); a row with no tab (all
     // three would open the Social frame on one tab); swapped tabs (P on Rankings); a tab keyed to
-    // the wrong frame (the tab rides on a Monsters row); a Y row that moved with this slice (it is
-    // deferred with Options); a B or V row that lost its Monsters tab.
+    // the wrong frame (the tab rides on a Monsters row); a B or V row that lost its Monsters tab.
+    // uif-15c (named intentional change, UIF15C.2): Y is ['controls'] now; this clause was "Y stays
+    // options > controls" (deferred with Options until uif-15c).
     expect(ACCEL_PATHS.U).toEqual({ menu: ['social'], frame: 'social', tab: 'trades' });
     expect(ACCEL_PATHS.P).toEqual({ menu: ['social'], frame: 'social', tab: 'challenges' });
     expect(ACCEL_PATHS.L).toEqual({ menu: ['social'], frame: 'social', tab: 'rankings' });
@@ -1792,7 +1788,8 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
         'social',
       );
     }
-    expect(ACCEL_PATHS.Y).toEqual({ menu: ['options', 'controls'], frame: 'controlsView' });
+    // uif-15c (named intentional change, UIF15C.2). Was: { menu: ['options', 'controls'], ... }.
+    expect(ACCEL_PATHS.Y).toEqual({ menu: ['controls'], frame: 'controlsView' });
     expect(ACCEL_PATHS.B).toEqual({ menu: ['monsters'], frame: 'boxView', tab: 'storage' });
     expect(ACCEL_PATHS.V).toEqual({ menu: ['monsters'], frame: 'boxView', tab: 'party' });
     // The decision carries the new row verbatim.
@@ -1801,6 +1798,34 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
       path: { menu: ['social'], frame: 'social', tab: 'trades' },
     });
     expect(accelDecision('L', frozenStack(WORLD_BASE, screenFrame('social')))).toEqual({
+      kind: 'start',
+    });
+  });
+
+  it('UIF15C.2 Y is the one-key path [controls] onto the controlsView frame, with no tab; the path ends on the root controls leaf that opens controlsView, and every accelerator path is exactly one key deep', () => {
+    // WRONG IMPL KILLED: Y still two keys deep ['options', 'controls'] (the menu has no `options`
+    // entry any more: the shell's pick walk would find nothing and the menu would open with Y
+    // dead); Y onto helpView (the neighbouring root leaf); a tab riding on Y; a path that names
+    // the right frame through a wrong key; and any accelerator row left two levels deep once no
+    // group exists.
+    expect(ACCEL_PATHS.Y).toEqual({ menu: ['controls'], frame: 'controlsView' });
+    expect(ACCEL_PATHS.Y.tab, 'Controls has no tab').toBeUndefined();
+    const leaf = leafOf(ACCEL_PATHS.Y.menu);
+    expect(leaf?.kind).toBe('open');
+    expect(leaf?.kind === 'open' ? leaf.target : undefined).toBe('controlsView');
+    expect(MENU_ENTRIES.map((e) => e.key)).not.toContain('options');
+    for (const accel of MENU_ACCELS) {
+      expect(ACCEL_PATHS[accel].menu.length, `${accel}: a one-key path`).toBe(1);
+    }
+    expect(MENU_ACCELS, 'ANTI-VACUITY: ten menu accelerators were walked').toHaveLength(10);
+    // The verdict carries the new row verbatim, at the world and over a menu.
+    const open: AccelDecision = {
+      kind: 'open',
+      path: { menu: ['controls'], frame: 'controlsView' },
+    };
+    expect(accelDecision('Y', frozenStack(WORLD_BASE))).toEqual(open);
+    expect(accelDecision('Y', frozenStack(WORLD_BASE, screenFrame('menuView')))).toEqual(open);
+    expect(accelDecision('Y', frozenStack(WORLD_BASE, screenFrame('controlsView')))).toEqual({
       kind: 'start',
     });
   });
@@ -2089,20 +2114,22 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     }
   });
 
-  it('opens Options > Controls directly: ACCEL_PATHS.Y is the options/controls path onto controlsView with no tab, and the accelerator verdict for Y is that path at the world, a start with Controls on top and denied under a text entry [QF14-1-ACCEL-PATH]', () => {
+  it('opens Controls directly: ACCEL_PATHS.Y is the controls path onto controlsView with no tab, and the accelerator verdict for Y is that path at the world, a start with Controls on top and denied under a text entry [QF14-1-ACCEL-PATH]', () => {
+    // uif-15c (named intentional change, UIF15C.2): Y_PATH is ['controls'] (a root leaf). Was:
+    // ['options', 'controls'], and the title said "Options > Controls".
     // WRONG IMPL KILLED: a Y row that is missing (accelDecision reads an undefined path), a path
     // through the wrong leaf (`help` instead of `controls`: the Help screen would open), a path
     // whose frame is not the leaf's overlay (the own-screen Start test would never fire, and a
     // second Y would stack another Controls view), a stray Monsters `tab` on a screen that has none,
     // a Y that is denied at the world, and a Y that re-opens instead of acting as Start when the
     // Controls view is already on top.
-    const Y_PATH: PathRow = { menu: ['options', 'controls'], frame: 'controlsView' };
+    const Y_PATH: PathRow = { menu: ['controls'], frame: 'controlsView' };
     expect(ACCEL_PATHS.Y).toEqual(Y_PATH);
     expect(ACCEL_PATHS.Y?.tab, 'Controls has no tab').toBeUndefined();
 
     // The path walks the real menu table to the leaf that opens controlsView.
     const leaf = leafOf(Y_PATH.menu);
-    expect(leaf?.kind, 'options > controls ends on an open leaf').toBe('open');
+    expect(leaf?.kind, 'controls ends on an open leaf').toBe('open');
     expect(leaf?.kind === 'open' ? leaf.target : undefined, 'and opens the Controls view').toBe(
       'controlsView',
     );

@@ -189,138 +189,138 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Keycap label of a numeric keypad digit key; {key} is the digit. Must differ from the bare
   // digit key. input/glyphs.ts
   'key.numpad': (p) => `Num ${p.key}`,
-  // @desc: Name of the D-pad Up button in Options › Controls (a row label). One short word.
+  // @desc: Name of the D-pad Up button in Controls (a row label). One short word.
   // ui/controlsModel.ts
   'controls.button.up': 'Up',
-  // @desc: Name of the D-pad Down button in Options › Controls (a row label). One short word.
+  // @desc: Name of the D-pad Down button in Controls (a row label). One short word.
   // ui/controlsModel.ts
   'controls.button.down': 'Down',
-  // @desc: Name of the D-pad Left button in Options › Controls (a row label). One short word.
+  // @desc: Name of the D-pad Left button in Controls (a row label). One short word.
   // ui/controlsModel.ts
   'controls.button.left': 'Left',
-  // @desc: Name of the D-pad Right button in Options › Controls (a row label). One short word.
+  // @desc: Name of the D-pad Right button in Controls (a row label). One short word.
   // ui/controlsModel.ts
   'controls.button.right': 'Right',
-  // @desc: Name of the A button (confirm / interact) in Options › Controls; keep the button letter
+  // @desc: Name of the A button (confirm / interact) in Controls; keep the button letter
   // in parentheses. ui/controlsModel.ts
   'controls.button.a': 'Confirm (A)',
-  // @desc: Name of the B button (back / cancel) in Options › Controls; keep the button letter in
+  // @desc: Name of the B button (back / cancel) in Controls; keep the button letter in
   // parentheses. ui/controlsModel.ts
   'controls.button.b': 'Back (B)',
-  // @desc: Name of the X button (jump) in Options › Controls; keep the button letter in parentheses.
+  // @desc: Name of the X button (jump) in Controls; keep the button letter in parentheses.
   // ui/controlsModel.ts
   'controls.button.x': 'Jump (X)',
-  // @desc: Name of the Y button (more / info) in Options › Controls; keep the button letter in
+  // @desc: Name of the Y button (more / info) in Controls; keep the button letter in
   // parentheses. ui/controlsModel.ts
   'controls.button.y': 'Info (Y)',
-  // @desc: Name of the LB button (previous tab) in Options › Controls; keep the button name in
+  // @desc: Name of the LB button (previous tab) in Controls; keep the button name in
   // parentheses. ui/controlsModel.ts
   'controls.button.lb': 'Previous tab (LB)',
-  // @desc: Name of the RB button (next tab) in Options › Controls; keep the button name in
+  // @desc: Name of the RB button (next tab) in Controls; keep the button name in
   // parentheses. ui/controlsModel.ts
   'controls.button.rb': 'Next tab (RB)',
-  // @desc: Name of the Start button (opens the main menu) in Options › Controls; keep the button
+  // @desc: Name of the Start button (opens the main menu) in Controls; keep the button
   // name in parentheses. ui/controlsModel.ts
   'controls.button.start': 'Menu (Start)',
-  // @desc: Name of the Select button (opens help) in Options › Controls; keep the button name in
+  // @desc: Name of the Select button (opens help) in Controls; keep the button name in
   // parentheses. ui/controlsModel.ts
   'controls.button.select': 'Help (Select)',
-  // @desc: Name of the shortcut that opens Monsters › Storage, a row of the Shortcuts tab in Options
-  // › Controls. One short word. ui/controlsModel.ts
+  // @desc: Name of the shortcut that opens Monsters › Storage, a row of the Shortcuts tab in
+  // Controls. One short word. ui/controlsModel.ts
   'controls.accel.storage': 'Storage',
-  // @desc: Name of the shortcut that opens the Inventory, a row of the Shortcuts tab in Options ›
+  // @desc: Name of the shortcut that opens the Inventory, a row of the Shortcuts tab in
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.bag': 'Inventory',
-  // @desc: Name of the shortcut that opens Monsters › Party, a row of the Shortcuts tab in Options ›
+  // @desc: Name of the shortcut that opens Monsters › Party, a row of the Shortcuts tab in
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.party': 'Party',
-  // @desc: Name of the shortcut that opens the Journal, a row of the Shortcuts tab in Options ›
+  // @desc: Name of the shortcut that opens the Journal, a row of the Shortcuts tab in
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.journal': 'Journal',
-  // @desc: Name of the shortcut that opens Social › Trades, a row of the Shortcuts tab in Options ›
+  // @desc: Name of the shortcut that opens Social › Trades, a row of the Shortcuts tab in
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.trades': 'Trades',
   // @desc: Name of the shortcut that opens Social › Challenges, a row of the Shortcuts tab in
-  // Options › Controls. One short word. ui/controlsModel.ts
+  // Controls. One short word. ui/controlsModel.ts
   'controls.accel.challenges': 'Challenges',
-  // @desc: Name of the shortcut that opens Social › Rankings, a row of the Shortcuts tab in Options
-  // › Controls. One short word. ui/controlsModel.ts
+  // @desc: Name of the shortcut that opens Social › Rankings, a row of the Shortcuts tab in
+  // Controls. One short word. ui/controlsModel.ts
   'controls.accel.rankings': 'Rankings',
-  // @desc: Name of the shortcut that opens Profile › Name, a row of the Shortcuts tab in Options ›
+  // @desc: Name of the shortcut that opens Profile › Name, a row of the Shortcuts tab in
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.name': 'Name',
-  // @desc: Name of the shortcut that opens Profile › Account, a row of the Shortcuts tab in Options
-  // › Controls. One short word. ui/controlsModel.ts
+  // @desc: Name of the shortcut that opens Profile › Account, a row of the Shortcuts tab in
+  // Controls. One short word. ui/controlsModel.ts
   'controls.accel.account': 'Account',
-  // @desc: Name of the shortcut that opens Options › Controls, a row of the Shortcuts tab in
-  // Options › Controls. One short word. ui/controlsModel.ts
+  // @desc: Name of the shortcut that opens Controls, a row of the Shortcuts tab in
+  // Controls. One short word. ui/controlsModel.ts
   'controls.accel.controls': 'Controls',
   // @desc: Name of the shortcut that saves the local bug-report bundle, a row of the Shortcuts tab
-  // in Options › Controls. ui/controlsModel.ts
+  // in Controls. ui/controlsModel.ts
   'controls.accel.bugReport': 'Save bug report',
   // @desc: Name of the shortcut that dismisses the error notice, a row of the Shortcuts tab in
-  // Options › Controls. ui/controlsModel.ts
+  // Controls. ui/controlsModel.ts
   'controls.accel.dismissError': 'Dismiss error',
-  // @desc: Line shown in Options › Controls while a slot waits for a key press; {label} is the row
+  // @desc: Line shown in Controls while a slot waits for a key press; {label} is the row
   // name (e.g. Confirm (A)). ui/controlsModel.ts
   'controls.capture.prompt': (p) => `Press a key for ${p.label}…`,
-  // @desc: Feedback line in Options › Controls when the pressed key is reserved (Tab, F5, F11, F12,
+  // @desc: Feedback line in Controls when the pressed key is reserved (Tab, F5, F11, F12,
   // a modifier or a Ctrl/Alt/Meta chord). One sentence. ui/controlsModel.ts
   'controls.refused.reserved': 'That key belongs to the browser and cannot be bound.',
-  // @desc: Feedback line in Options › Controls when a change would leave a protected button (D-pad,
+  // @desc: Feedback line in Controls when a change would leave a protected button (D-pad,
   // A, B, Start) with no key. One sentence. ui/controlsModel.ts
   'controls.refused.protected': 'Movement, Confirm, Back and Menu must always keep a key.',
-  // @desc: Feedback line in Options › Controls when key capture ends without a change. One or two
+  // @desc: Feedback line in Controls when key capture ends without a change. One or two
   // words. ui/controlsModel.ts
   'controls.cancelled': 'Unchanged.',
-  // @desc: Feedback line in Options › Controls when a free key has been bound. One or two words.
+  // @desc: Feedback line in Controls when a free key has been bound. One or two words.
   // ui/controlsModel.ts
   'controls.bound': 'Saved.',
-  // @desc: Feedback line in Options › Controls when the pressed key was bound elsewhere and the two
+  // @desc: Feedback line in Controls when the pressed key was bound elsewhere and the two
   // bindings swapped; {key}/{otherKey} are keycaps, {label}/{otherLabel} row names.
   // ui/controlsModel.ts
   'controls.swapped': (p) =>
     `Swapped: ${p.key} is now ${p.label}, ${p.otherKey} is now ${p.otherLabel}`,
-  // @desc: Feedback line in Options › Controls when the pressed key moved from another row into an
+  // @desc: Feedback line in Controls when the pressed key moved from another row into an
   // empty slot, leaving that row without a key; {key} is a keycap, {label}/{otherLabel} row names.
   // ui/controlsModel.ts
   'controls.swappedUnbound': (p) =>
     `Swapped: ${p.key} is now ${p.label}, ${p.otherLabel} has no key`,
-  // @desc: Feedback line in Options › Controls when a row's Primary and Alt keys traded places;
+  // @desc: Feedback line in Controls when a row's Primary and Alt keys traded places;
   // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
   'controls.swappedSlots': (p) => `Swapped: ${p.key} and ${p.otherKey} on ${p.label}`,
-  // @desc: Heading of the Options › Controls screen (key remapping). ui/controlsView.ts
+  // @desc: Heading of the Controls screen (key remapping). ui/controlsView.ts
   'controls.title': 'Controls',
-  // @desc: Tab of Options › Controls listing the twelve virtual buttons. ui/controlsView.ts
+  // @desc: Tab of Controls listing the twelve virtual buttons. ui/controlsView.ts
   'controls.tab.buttons': 'Buttons',
-  // @desc: Tab of Options › Controls listing the optional shortcut keys. ui/controlsView.ts
+  // @desc: Tab of Controls listing the optional shortcut keys. ui/controlsView.ts
   'controls.tab.shortcuts': 'Shortcuts',
-  // @desc: A row's Primary key cell in Options › Controls; {label} is the row name
+  // @desc: A row's Primary key cell in Controls; {label} is the row name
   // (e.g. Confirm (A)), {key} its keycap or the no-key mark. ui/controlsView.ts
   'controls.slot.primary': (p) => `${p.label}: ${p.key}`,
-  // @desc: A row's Alt (second) key cell in Options › Controls; {label} is the row name, {key}
+  // @desc: A row's Alt (second) key cell in Controls; {label} is the row name, {key}
   // its keycap or the no-key mark. ui/controlsView.ts
   'controls.slot.alt': (p) => `${p.label} (alt): ${p.key}`,
-  // @desc: Mark shown in an Options › Controls key cell that holds no key. ui/controlsView.ts
+  // @desc: Mark shown in an Controls key cell that holds no key. ui/controlsView.ts
   'controls.slot.none': '—',
-  // @desc: Cell on a shortcut row of Options › Controls that removes the shortcut's keys; {label}
+  // @desc: Cell on a shortcut row of Controls that removes the shortcut's keys; {label}
   // is the row name. ui/controlsView.ts
   'controls.clear': (p) => `Clear ${p.label}`,
-  // @desc: Feedback line in Options › Controls after a shortcut's keys were removed; {label} is
+  // @desc: Feedback line in Controls after a shortcut's keys were removed; {label} is
   // the row name. One sentence. ui/controlsView.ts
   'controls.cleared': (p) => `${p.label} has no key now.`,
-  // @desc: Last row of each Options › Controls tab: restore every default key. ui/controlsView.ts
+  // @desc: Last row of each Controls tab: restore every default key. ui/controlsView.ts
   'controls.resetAll': 'Reset all',
-  // @desc: Yes / No question asked before Options › Controls restores every default key.
+  // @desc: Yes / No question asked before Controls restores every default key.
   // ui/controlsView.ts
   'controls.reset.question': 'Reset every control to its default?',
-  // @desc: Feedback line in Options › Controls after every default key was restored. One
+  // @desc: Feedback line in Controls after every default key was restored. One
   // sentence. ui/controlsView.ts
   'controls.reset.done': 'All controls are back to their defaults.',
-  // @desc: Button shown in Options › Controls while a slot waits for a key press; it ends the
+  // @desc: Button shown in Controls while a slot waits for a key press; it ends the
   // wait with nothing changed. One word. ui/controlsView.ts
   'controls.cancel': 'Cancel',
-  // @desc: Appended to an Options › Controls feedback line when the browser refused to store
+  // @desc: Appended to an Controls feedback line when the browser refused to store
   // the new keys: they work now and are lost on reload. One sentence. ui/controlsView.ts
   'controls.saveFailed': 'Could not save: this lasts until you reload.',
   // @desc: Tab of Controls holding the text-size setting. One word. ui/controlsView.ts
@@ -1264,7 +1264,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // species name and {to} the new one. One line in a small banner.
   // evolutionNotice.ts:95 (evolutionNoticeLabel return)
   'evolutionNotice.reveal.anonymous': (p) => `Your ${p.from} evolved into ${p.to}!`,
-  // @desc: Title of the main menu side panel and the first breadcrumb in its sub-lists.
+  // @desc: Title of the main menu side panel.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.title': 'Menu',
   // @desc: Main-menu entry opening the monster box (party and storage).
@@ -1291,18 +1291,12 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the Social main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.social.desc': 'Trades, challenges and rankings with other players.',
-  // @desc: Main-menu entry opening the Profile sub-list (name, account, privacy).
+  // @desc: Main-menu entry opening the Profile screen (name, account, privacy).
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.profile.title': 'Profile',
   // @desc: Feedback-line description of the Profile main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.profile.desc': 'Your name, account and privacy settings.',
-  // @desc: Main-menu entry opening the Options sub-list (how to play).
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.title': 'Options',
-  // @desc: Feedback-line description of the Options main-menu entry, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.desc': 'Help on how to play the game.',
   // @desc: Main-menu entry that closes the menu and returns to the world.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.close.title': 'Close',
@@ -1315,18 +1309,19 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Header of the Account section of the Profile screen (sign-in and guest claim).
   // ui/claimView.ts
   'menu.profile.account.title': 'Account',
-  // @desc: Options sub-list entry opening the how-to-play help screen.
+  // @desc: Main-menu entry opening the How to Play help screen (uif-15c: a root entry; it was in
+  // the retired Options sub-list).
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.help.title': 'How to play',
-  // @desc: Feedback-line description of the How to play entry in the Options sub-list, shown on Y.
+  'menu.help.title': 'How to Play',
+  // @desc: Feedback-line description of the How to Play main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.help.desc': 'Controls and goals of the game.',
-  // @desc: Options sub-list entry opening the Controls screen (key remapping).
+  'menu.help.desc': 'Controls and goals of the game.',
+  // @desc: Main-menu entry opening the Controls screen (key remapping; uif-15c: a root entry).
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.controls.title': 'Controls',
-  // @desc: Feedback-line description of the Controls entry in the Options sub-list, shown on Y.
+  'menu.controls.title': 'Controls',
+  // @desc: Feedback-line description of the Controls main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.controls.desc': 'Choose which key presses each button.',
+  'menu.controls.desc': 'Choose which key presses each button.',
   // @desc: Reason a main-menu entry is disabled while the menu is open over a battle (feedback
   // line); also the status-line and announced reason when an action is refused during a battle.
   // ui/screens/mainMenuScreen.ts (battleReason); main.ts (refusedInBattle)

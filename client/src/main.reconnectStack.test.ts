@@ -871,7 +871,10 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     // progress; a reconnect must not eat the screen the player is remapping on).
     await bootReady();
     server(1000);
-    openByMenuClicks(['options', 'controls'], 1100);
+    // uif-15c (named intentional change, UIF15C.1): Controls is a root row (the title keeps its old
+    // "Options > Controls" wording), so one click on it opens the screen. Was: clicks on 'options'
+    // then 'controls'.
+    openByMenuClicks(['controls'], 1100);
     expect(controlsShown(), 'precondition: the Controls row opened the screen').toBe(true);
     expect(stackNames(), 'precondition: the screen is over the menu').toEqual([
       'world',

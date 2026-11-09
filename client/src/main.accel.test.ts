@@ -18,11 +18,11 @@
  * a bare battle (R-ctl-8j-SELECTINERT), and Monsters picked in the menu opens on Party
  * (R-ctl-8b-CTL8B.4).
  *
- * The menu's level and cursor are read off what the menu view paints: a root cursor is the id
- * `menu-root-<key>` (Social included: uif-15b made it a root leaf, so there is no Social sub-list
- * and no `menuSocial` frame id; Profile too since uif-16b: N and C open the one Profile frame, the
- * cursor on `menu-root-profile`) and an Options cursor `menuOptions-root-<key>`, under the matching
- * frame title (and the translated `Menu` crumb).
+ * The menu's cursor is read off what the menu view paints: the id `menu-root-<key>` (Social
+ * included: uif-15b made it a root leaf, so there is no Social sub-list and no `menuSocial` frame
+ * id; Profile too since uif-16b: N and C open the one Profile frame, the cursor on
+ * `menu-root-profile`; Controls too since uif-15c: Options is gone, Y puts the cursor on
+ * `menu-root-controls`), under the one root title and no crumb.
  *
  * Harness: main.controls.test.ts's pattern, copied (vi.resetModules + a fresh import per test,
  * recorded window / document listeners detached in afterEach, one controllable clock, a controllable
@@ -454,7 +454,7 @@ const LEAF_ROOTS: ReadonlyArray<readonly [string, () => boolean]> = [
     },
   ],
   ['help', () => shownById('help-overlay')],
-  // qf-14: Options > Controls (the Y accelerator's leaf). Looked up tolerantly, so a shell that
+  // qf-14: Controls (the Y accelerator's leaf; a root menu entry since uif-15c). Looked up tolerantly, so a shell that
   // constructs the Controls frame lazily reads as "not shown" until it is first opened.
   [
     'controls',
@@ -494,17 +494,14 @@ const menuCrumbs = (): string[] =>
 const menuFeedback = (): string =>
   byId('menu-overlay').querySelector('.mr-frame-feedback')?.textContent ?? '';
 
-// qf-14: the `options` level joins (Options > Controls is the Y accelerator's path).
+// qf-14: the `options` level joined (Options > Controls was the Y accelerator's path).
 // uif-15b (UIF15B.1, named intentional change): no `social` level (Social is a root leaf).
 // uif-16b (UIF16B.1, named intentional change): no `profile` level (Profile is a root leaf: one
 // frame, no sub-list). 3 -> 2 levels.
-type Level = 'root' | 'options';
-const CURSOR_PREFIX: Readonly<Record<Level, string>> = {
-  root: 'menu',
-  options: 'menuOptions',
-};
-const levelTitle = (level: Level): string =>
-  level === 'root' ? i18nT('menu.title') : i18nT('menu.options.title');
+// uif-15c (named intentional change, UIF15C.2): no `options` level either: the menu is one flat
+// root, every cursor id is `menu-root-<key>`, the title is the root title and there is no crumb.
+// 2 -> 1 levels: the `Level` type, CURSOR_PREFIX and levelTitle are deleted, and a Row no longer
+// carries a `level`.
 
 /** One accelerator and where its canonical path lands (spelled out here, never read from the
  *  module under test). */
@@ -515,58 +512,37 @@ interface Row {
   readonly frame: string;
   /** The leaf root that is the one thing shown (a `LEAF_ROOTS` name). */
   readonly root: string;
-  /** The menu key the cursor ends on, and the level it is on. */
+  /** The menu key the cursor ends on (a root row: `menu-root-<key>`). */
   readonly key: string;
-  readonly level: Level;
 }
 const ROWS: readonly Row[] = [
-  { accel: 'B', code: 'KeyB', frame: 'boxView', root: 'box', key: 'monsters', level: 'root' },
-  { accel: 'I', code: 'KeyI', frame: 'raisingView', root: 'raising', key: 'bag', level: 'root' },
-  { accel: 'V', code: 'KeyV', frame: 'boxView', root: 'box', key: 'monsters', level: 'root' },
+  { accel: 'B', code: 'KeyB', frame: 'boxView', root: 'box', key: 'monsters' },
+  { accel: 'I', code: 'KeyI', frame: 'raisingView', root: 'raising', key: 'bag' },
+  { accel: 'V', code: 'KeyV', frame: 'boxView', root: 'box', key: 'monsters' },
   {
     accel: 'J',
     code: 'KeyJ',
     frame: 'questLogView',
     root: 'questLog',
     key: 'journal',
-    level: 'root',
   },
   // uif-15b (UIF15B.3, named intentional change): U, P and L pick the one root Social row, so the
   // menu beneath stays on its ROOT with the cursor on `social` (the tab rides in the accelerator's
   // path). The frame and the shown root are unchanged. Was: key trades / challenges / rankings on
   // the `social` level.
-  { accel: 'U', code: 'KeyU', frame: 'social', root: 'trade', key: 'social', level: 'root' },
-  { accel: 'P', code: 'KeyP', frame: 'social', root: 'pvp', key: 'social', level: 'root' },
-  { accel: 'L', code: 'KeyL', frame: 'social', root: 'leaderboard', key: 'social', level: 'root' },
+  { accel: 'U', code: 'KeyU', frame: 'social', root: 'trade', key: 'social' },
+  { accel: 'P', code: 'KeyP', frame: 'social', root: 'pvp', key: 'social' },
+  { accel: 'L', code: 'KeyL', frame: 'social', root: 'leaderboard', key: 'social' },
   // uif-16b (UIF16B.5, named intentional change): N and C both pick the one root Profile row and
   // open the one Profile frame (N on its Name section, C on Account: the UIF16B.5 cases), so the
   // menu beneath stays on its ROOT with the cursor on `profile`. Was: frame renameView / claimView,
   // root rename / claim, key name / account on the `profile` level.
-  {
-    accel: 'N',
-    code: 'KeyN',
-    frame: 'profileView',
-    root: 'profile',
-    key: 'profile',
-    level: 'root',
-  },
-  {
-    accel: 'C',
-    code: 'KeyC',
-    frame: 'profileView',
-    root: 'profile',
-    key: 'profile',
-    level: 'root',
-  },
-  // qf-14 (named intentional change): Y opens Options > Controls. 9 -> 10 accelerator rows.
-  {
-    accel: 'Y',
-    code: 'KeyY',
-    frame: 'controlsView',
-    root: 'controls',
-    key: 'controls',
-    level: 'options',
-  },
+  { accel: 'N', code: 'KeyN', frame: 'profileView', root: 'profile', key: 'profile' },
+  { accel: 'C', code: 'KeyC', frame: 'profileView', root: 'profile', key: 'profile' },
+  // qf-14 (named intentional change): Y opens Controls. 9 -> 10 accelerator rows.
+  // uif-15c (named intentional change, UIF15C.2): the cursor is the ROOT `controls` row (Options
+  // is gone; the path is ['controls']). Was: `level: 'options'`, cursor `menuOptions-root-controls`.
+  { accel: 'Y', code: 'KeyY', frame: 'controlsView', root: 'controls', key: 'controls' },
 ];
 const ROW = (accel: string): Row => {
   const row = ROWS.find((r) => r.accel === accel);
@@ -586,14 +562,10 @@ function expectLeafOpen(row: Row, label: string): void {
   expect(menuShown(), `${label}: the menu is open beneath it`).toBe(true);
   expect(navActive(), `${label}: the menu cursor is on ${row.key}`).toBe(row.key);
   expect(menuCursor(), `${label}: the menu paints its cursor on the leaf`).toBe(
-    `${CURSOR_PREFIX[row.level]}-root-${row.key}`,
+    `menu-root-${row.key}`,
   );
-  expect(menuTitle(), `${label}: the menu is on its ${row.level} level`).toBe(
-    levelTitle(row.level),
-  );
-  expect(menuCrumbs(), `${label}: and its crumb`).toEqual(
-    row.level === 'root' ? [] : [i18nT('menu.title')],
-  );
+  expect(menuTitle(), `${label}: the menu is on its one level`).toBe(i18nT('menu.title'));
+  expect(menuCrumbs(), `${label}: and has no crumb`).toEqual([]);
 }
 
 /** Nothing is open: the bare world, no menu, no leaf, no active menu entry. */
@@ -706,14 +678,13 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     // uif-15b: the sub-level the menu is left on is Profile (Social is a leaf now).
     // uif-16b (named intentional change): Profile is a leaf too, so the sub-level the menu is left
     // on is Options. Was: Profile.
-    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-    press('Enter');
-    expect(menuTitle(), 'precondition: A entered the Options sub-level').toBe(
-      levelTitle('options'),
-    );
+    // uif-15c (named intentional change, UIF15C.2): no sub-level exists; the menu is left with its
+    // cursor on the root Controls entry (a different entry than J's, so the pick must move it).
+    // Was: five Downs, A into the Options sub-level, J from there.
+    for (let i = 0; i < 8 && navActive() !== 'controls'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
     press('KeyJ');
-    expectLeafOpen(ROW('J'), 'J from a menu left on the Options level');
+    expectLeafOpen(ROW('J'), 'J from a menu left with its cursor on Controls');
   });
 
   it('UIF15B.3 U, P and L each push world, menuView, social and show the Social frame on the Trades, Challenges and Rankings tab respectively, with the menu cursor beneath on Social; Y still lands on the Controls frame', async () => {
@@ -952,9 +923,7 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
       expect(battleShown(), `${label}: the battle stays shown`).toBe(true);
       expect(navActive(), `${label}: the cursor is on ${key}`).toBe(key);
       expect(menuCursor(), `${label}: and the menu paints it`).toBe(`menu-root-${key}`);
-      expect(menuTitle(), `${label}: on the root level (a disabled group is not entered)`).toBe(
-        levelTitle('root'),
-      );
+      expect(menuTitle(), `${label}: on the root`).toBe(i18nT('menu.title'));
       expect(menuFeedback(), `${label}: the feedback line shows the reason`).toBe(reason);
     };
     for (const [code, key, reason] of cases) {
@@ -1664,9 +1633,69 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   // qf-14: the Controls accelerator (Y opens Options > Controls)
   // ------------------------------------------------------------------------------------------
 
+  it('UIF15C.2 a real Y keypress from a menu last left on Close, on Bag and on Controls ends with the stack world, menuView, controlsView and the menu cursor on menu-root-controls, with Controls alone shown', async () => {
+    // WRONG IMPL KILLED: a Y path that still walks ['options', 'controls'] (the pick of `options`
+    // is a no-op on the flat root: nothing opens, or the cursor stays on the remembered entry); a
+    // path that opens Controls but leaves the cursor on the remembered entry (Close or Bag); a
+    // remembered Close cursor that the pick starts from and wraps past (the cursor lands off
+    // Controls); a Y that opens no menu beneath the frame.
+    await bootReady();
+    server(1000);
+    // The entry the menu is left on (walked to by Down from wherever the reopen lands).
+    const lefts = ['close', 'bag', 'controls'];
+    let checked = 0;
+    for (const left of lefts) {
+      expectBareWorld(`${left}: precondition`);
+      press('KeyM');
+      for (let i = 0; i < 9 && navActive() !== left; i += 1) press('ArrowDown');
+      expect(navActive(), `${left}: precondition: the menu is left on it`).toBe(left);
+      press('Backspace');
+      expectBareWorld(`${left}: B at the root closed the menu`);
+
+      const e = press('KeyY');
+      expect(e.defaultPrevented, `${left}: Y is consumed`).toBe(true);
+      expect(stackNames(), `${left}: the menu, then the Controls frame`).toEqual([
+        'world',
+        'menuView',
+        'controlsView',
+      ]);
+      expect(navActive(), `${left}: the menu cursor is on controls`).toBe('controls');
+      expect(menuCursor(), `${left}: and painted on the root row`).toBe('menu-root-controls');
+      expect(openRoots(), `${left}: Controls alone is shown`).toEqual(['controls']);
+      press('Escape');
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: three remembered cursors were driven').toBe(3);
+  });
+
+  it('UIF15C.2 over an Ongoing battle Y opens the read-only menu with the cursor on the disabled root Controls row and the in-battle reason on the feedback line, and opens no Controls screen', async () => {
+    // WRONG IMPL KILLED: a Y that opens Controls over the battle (the shell is not battle-safe);
+    // a Y whose disabled row gives no reason (a dead key with no word); a Y that opens the menu
+    // with Controls enabled; a menu not stamped with the battle.
+    await bootReady();
+    seedWorld(1000);
+    putBattle(BATTLE_ID, 1100);
+    await flush();
+    const BATTLE_BASE = { kind: 'battle', battleId: '101' };
+    expect(stack(), 'precondition: the base is the battle').toEqual([BATTLE_BASE]);
+
+    press('KeyY');
+    expect(stack(), 'the menu stamped with the battle, no controls frame').toEqual([
+      BATTLE_BASE,
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    expect(openRoots(), 'nothing opened').toEqual([]);
+    expect(navActive()).toBe('controls');
+    expect(menuCursor()).toBe('menu-root-controls');
+    expect(menuFeedback()).toBe(i18nT('menu.disabled.inBattle'));
+    expect(menuFeedback()).not.toBe('');
+  });
+
   it('Y at the world opens Options > Controls directly: the key is consumed, the stack is the world, the menu, then the Controls frame, with the menu on its Options level and its cursor on Controls, Controls alone is shown, a second Y returns to the bare world, and the Y BUTTON key (KeyF) opens nothing [QF14-1-BOOT-OPENS-CONTROLS]', async () => {
+    // uif-15c (named intentional change, UIF15C.2): "Options > Controls" in the title is the
+    // qf-14 name (the tag below is what filters match); the path is now the root Controls entry.
     // WRONG IMPL KILLED: a Y accelerator that is missing from the shell (the key is dead), one
-    // that opens the Help leaf beside it (the Options list has Help first), one that pushes the
+    // that opens the Help leaf beside it (Help is the root entry above Controls), one that pushes the
     // Controls frame with no menu beneath it (Backspace could never back out into the menu), a
     // menu left on its root (the cursor is not on the leaf), a key that is not prevented, a second
     // Y that re-opens the screen instead of acting as Start, a Y that does not replace another open
@@ -1783,15 +1812,14 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   // qf-14 round 2: a cleared Y, a pre-Y saved table, and Y over a battle
   // ------------------------------------------------------------------------------------------
 
-  /** Options > Controls opened by hand (no accelerator): Start, down to Options, A, down to
-   *  Controls, A. Leaves the stack world, menuView, controlsView. */
+  /** Controls opened by hand (no accelerator): Start, down to the root Controls entry, A. Leaves
+   *  the stack world, menuView, controlsView.
+   *  uif-15c (named intentional change, UIF15C.2): Options is gone, so there is no group step.
+   *  Was: down to Options, A, down to Controls, A. */
   const openControlsByHand = (): void => {
     press('KeyM');
     expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-    press('Enter');
-    for (let i = 0; i < 2 && navActive() !== 'controls'; i += 1) press('ArrowDown');
+    for (let i = 0; i < 8 && navActive() !== 'controls'; i += 1) press('ArrowDown');
     expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
     press('Enter');
     expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
@@ -1922,6 +1950,9 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
     const sent = H.sends.length;
 
+    // uif-15c (named intentional change, UIF15C.2): Options is gone, so the read-only menu paints
+    // the ROOT row `menu-root-controls` under the root title with no crumb. Was: the cursor id
+    // `menuOptions-root-controls`, the Options level title and the crumb [Menu].
     const expectOptionsMenu = (label: string): void => {
       expect(stack(), `${label}: the battle base, the menu stamped with it`).toEqual([
         BATTLE_BASE,
@@ -1931,11 +1962,11 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
       expect(openRoots(), `${label}: no screen opened over the battle`).toEqual([]);
       expect(battleShown(), `${label}: the battle stays shown`).toBe(true);
       expect(navActive(), `${label}: the cursor is on controls`).toBe('controls');
-      expect(menuCursor(), `${label}: and the menu paints it on the Options level`).toBe(
-        'menuOptions-root-controls',
+      expect(menuCursor(), `${label}: and the menu paints it on the root`).toBe(
+        'menu-root-controls',
       );
-      expect(menuTitle(), `${label}: the Options level`).toBe(levelTitle('options'));
-      expect(menuCrumbs(), `${label}: and its crumb`).toEqual([i18nT('menu.title')]);
+      expect(menuTitle(), `${label}: the root title`).toBe(i18nT('menu.title'));
+      expect(menuCrumbs(), `${label}: and no crumb`).toEqual([]);
       expect(menuFeedback(), `${label}: the in-battle reason`).toBe(
         i18nT('menu.disabled.inBattle'),
       );

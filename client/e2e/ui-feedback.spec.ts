@@ -223,16 +223,18 @@ test.describe
             timeout: 15_000,
           });
 
-          // Start, Options, A, Down to Controls, A: the Controls frame above the menu (remap.spec).
+          // Start, Down to Controls, A: the Controls frame above the menu (remap.spec).
+          // uif-15c (UIF15C.4, named intentional change): Controls is a root entry, no Options
+          // group and no Down-into-sub-list step. Was: Start, Options, A, Down to Controls, A.
           await pressButton(page, 'Start');
           await expect
             .poll(() => stackNames(page), { message: `${label}: Start opens the menu` })
             .toEqual(['world', 'menuView']);
-          await downTo(page, navActive, 'options', 8, `${label}: the main menu`);
-          await pressButton(page, 'A');
-          await pressButton(page, 'Down');
+          await downTo(page, navActive, 'controls', 7, `${label}: the main menu`);
           await expect
-            .poll(() => navActive(page), { message: `${label}: Down moves onto Controls` })
+            .poll(() => navActive(page), {
+              message: `${label}: the cursor is on Controls before A`,
+            })
             .toBe('controls');
           await pressButton(page, 'A');
           await expect
