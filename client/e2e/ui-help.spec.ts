@@ -26,6 +26,11 @@ import { closeAll, pressButton } from './controls';
 //
 // REDS AT MASTER: everything. Help opens three tabs (This screen, All controls, Goals) with no
 // Encyclopedia, no entry cursor and no detail sheet.
+//
+// LATE DEFERRED FOCUS (ci-fix-20261109T0400). The last test proves the FIXTURE, not the product:
+// `openHelp` must return only once the open has settled (the overlay's deferred initial focus on
+// `#help-title` has landed), else that focus can land after the keys and scroll the frame back to
+// its top. It holds the page's zero-delay timers back so the late focus is deterministic, not luck.
 
 interface GameSnap {
   identity: string;
@@ -358,5 +363,93 @@ test.describe
       await expect(page.locator(SHEET)).toBeVisible();
       await expectAxeClean(page, 'How to Play: entry detail');
       await closeAll(page);
+    });
+
+    test('UIF14.5 fixture: with the late deferred focus held back past the keys, at the Extra large text step the Help frame stays scrolled to the cursor on the last entry once the heading has its focus', async () => {
+      // WRONG FIXTURE KILLED: an `openHelp` that returns before the open's deferred focus has
+      // landed — RB and Up race it, the focus lands on the heading after the cursor moved and
+      // scrolls the frame back to its top (master CI run 42555008331: scrollTop 0 on `ranked`); and
+      // its silent twin, the focus landing after the XL test's guard but before A, which makes that
+      // test's sheet geometry pass vacuously at scrollTop 0.
+      // The hold: the unsettled fixture's open-to-Up latency measured 31-75 ms, so 1500 ms keeps
+      // its keys ahead of the focus even on a loaded machine. It cannot be "until released": a
+      // settled `openHelp` waits for that very focus.
+      const ZERO_DELAY_HOLD_MS = 1500;
+      const scrollTop = (): Promise<number> =>
+        page.evaluate(() => document.getElementById('help-overlay')?.scrollTop ?? 0);
+      const heldFocus = (): Promise<boolean> =>
+        page.evaluate(() => {
+          const w = window as unknown as { __mrHeldFocus?: boolean };
+          return w.__mrHeldFocus === true;
+        });
+      try {
+        await page.evaluate((hold) => {
+          type Timer = (handler: unknown, delay?: number, ...args: unknown[]) => number;
+          const w = window as unknown as {
+            setTimeout: Timer;
+            __mrRealSetTimeout?: Timer;
+            __mrHeldFocus?: boolean;
+          };
+          const real = w.setTimeout;
+          w.__mrRealSetTimeout = real;
+          w.__mrHeldFocus = false;
+          // Delegates to the real timer and returns ITS id (overlayA11y clears it on a re-open).
+          w.setTimeout = (handler, delay, ...args) => {
+            if (typeof handler !== 'function' || (delay !== undefined && delay !== 0)) {
+              return real.call(window, handler, delay, ...args);
+            }
+            const fn = handler as (...a: unknown[]) => void;
+            const held = (): void => {
+              const before = document.activeElement;
+              try {
+                fn(...args);
+              } finally {
+                const title = document.getElementById('help-title');
+                if (title !== null && before !== title && document.activeElement === title) {
+                  w.__mrHeldFocus = true;
+                }
+              }
+            };
+            return real.call(window, held, hold);
+          };
+          document.documentElement.style.setProperty('--mr-text-step', '2');
+        }, ZERO_DELAY_HOLD_MS);
+        await openEncyclopedia(page, 'late focus');
+        await pressButton(page, 'Up');
+        await expect
+          .poll(() => cursorKey(page), { message: 'late focus: Up wraps to the last entry' })
+          .toBe('ranked');
+        expect(
+          await scrollTop(),
+          'FIXTURE: the overlay is scrolled to the cursor (else this test is vacuous)',
+        ).toBeGreaterThan(0);
+
+        await expect(
+          page.locator('#help-title'),
+          'late focus: the heading receives the open initial focus',
+        ).toBeFocused();
+        expect(
+          await heldFocus(),
+          'FIXTURE: the hold did not carry the overlay initial focus, so this test no longer exercises the late-focus ordering',
+        ).toBe(true);
+        expect(
+          await scrollTop(),
+          'the frame is still scrolled to the cursor after the late focus landed',
+        ).toBeGreaterThan(0);
+        expect(await cursorKey(page), 'late focus: the cursor is still on the last entry').toBe(
+          'ranked',
+        );
+      } finally {
+        try {
+          await page.evaluate(() => {
+            const w = window as unknown as { setTimeout: unknown; __mrRealSetTimeout?: unknown };
+            if (w.__mrRealSetTimeout !== undefined) w.setTimeout = w.__mrRealSetTimeout;
+            w.__mrRealSetTimeout = undefined;
+            document.documentElement.style.removeProperty('--mr-text-step');
+          });
+        } finally {
+          await closeAll(page);
+        }
+      }
     });
   });
