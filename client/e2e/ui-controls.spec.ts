@@ -521,11 +521,14 @@ test.describe
       expect(root.scaleText, 'the viewport scale is still 1').toBe('1');
     });
 
-    test('UIF13.5 at Extra large every one of the seven main-menu rows is unclipped when the cursor is on it: inside every overflow ancestor and the viewport, hit-testable at its centre, its text within its box', async () => {
+    test('UIF13.5 at Extra large every one of the eight main-menu rows is unclipped when the cursor is on it: inside every overflow ancestor and the viewport, hit-testable at its centre, its text within its box', async () => {
+      // uif-15c (named intentional change, UIF15C.1): the root has eight rows (How to Play and
+      // Controls replace the Options group); the title, the count pin and the loop bound say eight.
+      // Was: seven rows, `toHaveCount(7)`, `i < 7`, and the last-row Down guard `i < 6`.
       // WRONG IMPL KILLED: a menu body that does not scroll (the last rows sit below the frame: the
       // clipping ancestor check), a row whose text spills its box (scrollWidth), a row covered by
       // the frame's own footer or another element (elementFromPoint), a scroll that never follows
-      // the cursor (the active row stays out of view), a row count that quietly changed (7 pinned).
+      // the cursor (the active row stays out of view), a row count that quietly changed (8 pinned).
       test.setTimeout(120_000);
       await seedAndReload(page, XLARGE_JSON);
       expect((await readRoot(page)).px, 'PREMISE: Extra large is in force').toBeCloseTo(
@@ -538,19 +541,20 @@ test.describe
         .poll(() => stackNames(page), { message: 'Start opens the menu' })
         .toEqual(['world', 'menuView']);
       const rows = page.locator('#menu-rows [role="option"]');
-      await expect(rows, 'the main menu has seven rows').toHaveCount(7);
+      const ROW_COUNT = 8;
+      await expect(rows, 'the main menu has eight rows').toHaveCount(ROW_COUNT);
       const activeIndex = (): Promise<number> =>
         page.evaluate(() =>
           [...document.querySelectorAll('#menu-rows [role="option"]')].findIndex(
             (e) => e.getAttribute('aria-selected') === 'true',
           ),
         );
-      for (let guard = 0; guard < 8 && (await activeIndex()) !== 0; guard += 1) {
+      for (let guard = 0; guard < ROW_COUNT && (await activeIndex()) !== 0; guard += 1) {
         const before = await activeIndex();
         await pressButton(page, 'Down');
         await expect.poll(activeIndex, { message: 'Down moves the cursor' }).not.toBe(before);
       }
-      for (let i = 0; i < 7; i += 1) {
+      for (let i = 0; i < ROW_COUNT; i += 1) {
         await expect.poll(activeIndex, { message: `the cursor is on row ${i}` }).toBe(i);
         await expectUnclipped(
           page,
@@ -558,7 +562,7 @@ test.describe
           `main menu row ${i} at Extra large`,
           ['#menu-overlay'],
         );
-        if (i < 6) await pressButton(page, 'Down');
+        if (i < ROW_COUNT - 1) await pressButton(page, 'Down');
       }
       await closeAll(page);
     });

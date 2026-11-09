@@ -447,7 +447,10 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       i18nT('menu.journal.title'),
       `${social} (${badge})`,
       i18nT('menu.profile.title'),
-      i18nT('menu.options.title'),
+      // uif-15c (named intentional change, UIF15C.1): Options is gone; the root lists How to Play and
+      // Controls in its place (7 -> 8 rows). Was: i18nT('menu.options.title').
+      i18nT('menu.help.title'),
+      i18nT('menu.controls.title'),
       i18nT('menu.close.title'),
     ]);
     // The request is withdrawn while the menu is open: the row follows the BATCH (no frame).

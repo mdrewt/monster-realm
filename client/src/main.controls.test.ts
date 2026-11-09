@@ -3393,7 +3393,9 @@ const SO2_OPENS: readonly So2Open[] = [
     id: 'controlsView',
     views: [{ load: so2Controls, method: 'show' }],
     shown: () => shownById('controls-overlay'),
-    drive: () => so2OpenByClicks(['options', 'controls'], 1100),
+    // uif-15c (named intentional change, UIF15C.1): Controls is a root row, so one click on it opens
+    // the frame (no Options group click first). Was: ['options', 'controls'].
+    drive: () => so2OpenByClicks(['controls'], 1100),
   },
   {
     tag: 'ACCOUNT-ACCEL',
