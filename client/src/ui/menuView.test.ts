@@ -83,7 +83,12 @@ const rootVm = (): Vm => menuViewModel(openMainMenu(EMPTY_NAV_MEMORY));
 // uif-15b (UIF15B.1, named intentional change): Social is a root leaf now, so the sub-list these
 // fixtures render is Profile (three rows: name, account, privacy), frame id 'menuProfile'.
 // Was: the Social sub-list (trades, challenges, rankings) under 'menuSocial'.
-const profileState = () => mainMenuPick(openMainMenu(EMPTY_NAV_MEMORY), 'profile').state;
+// uif-16b (UIF16B.1, named intentional change): Profile is a root leaf too, so the sub-list these
+// fixtures render is Options, the only group left (two rows: help, controls), frame id
+// 'menuOptions'. Was: the Profile sub-list (name, account, privacy) under 'menuProfile'. The
+// fixture names keep `profile` only where renaming them would touch every case; every behaviour the
+// cases pin is unchanged, now on Options.
+const profileState = () => mainMenuPick(openMainMenu(EMPTY_NAV_MEMORY), 'options').state;
 const profileVm = (): Vm => menuViewModel(profileState());
 
 const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
@@ -232,15 +237,15 @@ describe('MenuView — construction', () => {
     expect(optionEls().map((o) => o.textContent)).toEqual(ROOT_LABELS);
     expect(rowsEl().getAttribute('aria-activedescendant')).toBe('menu-root-monsters');
 
+    // uif-16b: the sub-list fixture is Options (see profileState).
     view.render(profileVm());
-    expect(titleEl().textContent, 'the title follows the level').toBe('Profile');
+    expect(titleEl().textContent, 'the title follows the level').toBe('Options');
     expect(crumbTexts(), 'breadcrumb Menu then the group title').toEqual(['Menu']);
     expect(optionEls().map((o) => o.id)).toEqual([
-      'menuProfile-root-name',
-      'menuProfile-root-account',
-      'menuProfile-root-privacy',
+      'menuOptions-root-help',
+      'menuOptions-root-controls',
     ]);
-    expect(optionEls().map((o) => o.textContent)).toEqual(['Name', 'Account', 'Privacy']);
+    expect(optionEls().map((o) => o.textContent)).toEqual(['How to play', 'Controls']);
     expect(overlay.querySelectorAll('.mr-frame').length, 'still one frame').toBe(1);
   });
 
@@ -367,7 +372,8 @@ describe('MenuView — visibility', () => {
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
     expect(optionEls().length).toBe(7);
     view.render(profileVm());
-    expect(optionEls().length, 'a render after hide still paints').toBe(3);
+    // uif-16b (named intentional change): 3 -> 2, the sub-list fixture is Options (help, controls).
+    expect(optionEls().length, 'a render after hide still paints').toBe(2);
   });
 
   it('setCovered hides the overlay without un-showing it: visibility hidden while a child screen is above, restored after, and no other inline style is touched (plan A1)', () => {
@@ -414,8 +420,9 @@ describe('MenuView — render', () => {
     view.render(rootVm());
     expect(optionEls().length, 'ANTI-VACUITY: the root paints 7 rows').toBe(7);
     view.render(profileVm());
-    expect(optionEls().map((o) => o.dataset.navKey)).toEqual(['name', 'account', 'privacy']);
-    expect(rowsEl().children.length, 'no stale node survives').toBe(3);
+    // uif-16b (named intentional change): the sub-list fixture is Options; 3 -> 2 rows.
+    expect(optionEls().map((o) => o.dataset.navKey)).toEqual(['help', 'controls']);
+    expect(rowsEl().children.length, 'no stale node survives').toBe(2);
     view.render(rootVm());
     expect(rowsEl().children.length).toBe(7);
     view.render(rootVm());
@@ -496,7 +503,8 @@ describe('MenuView — render', () => {
       document.getElementById(rows.getAttribute('aria-labelledby') ?? ''),
       'still the live title, now naming the sub-list',
     ).toBe(titleEl());
-    expect(titleEl().textContent).toBe('Profile');
+    // uif-16b (named intentional change): the sub-list fixture is Options. Was 'Profile'.
+    expect(titleEl().textContent).toBe('Options');
   });
 
   it('MV-A11Y-OPTION-01: every row is role="option" with an explicit aria-selected (exactly one true), no aria-disabled, and never a tabindex', () => {
@@ -539,14 +547,15 @@ describe('MenuView — render', () => {
 
     view.render(profileVm());
     const inGroup = rowsEl().getAttribute('aria-activedescendant');
-    expect(inGroup, 'descending changes the pointer value').toBe('menuProfile-root-name');
+    // uif-16b: the sub-list fixture is Options (see profileState).
+    expect(inGroup, 'descending changes the pointer value').toBe('menuOptions-root-help');
     expect(inGroup).not.toBe(second);
     expect(document.getElementById(inGroup ?? '')?.getAttribute('aria-selected')).toBe('true');
 
     const back = mainMenuStep(profileState(), { button: 'B', repeat: false }).state;
     view.render(menuViewModel(back));
     expect(rowsEl().getAttribute('aria-activedescendant'), 'B lands on the group entry').toBe(
-      'menu-root-profile',
+      'menu-root-options',
     );
   });
 
@@ -633,12 +642,14 @@ describe('MenuView — uif-3 frame anatomy', () => {
     expect(feedbackEl().hidden).toBe(false);
 
     second.view.render(profileVm());
-    expect(titleEl().textContent).toBe('Profile');
+    // uif-16b (named intentional change): the sub-list fixture is Options. Was 'Profile'.
+    expect(titleEl().textContent).toBe('Options');
     expect(crumbTexts()).toEqual(['Menu']);
     expect(feedbackEl().hidden, 'the none state hides the line again').toBe(true);
     expect(feedbackEl().textContent).toBe('');
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
-    expect(optionEls().length).toBe(3);
+    // uif-16b (named intentional change): 3 -> 2, the sub-list fixture is Options (help, controls).
+    expect(optionEls().length).toBe(2);
   });
 
   it('UIF3.6 the menu frame holds the title bar, a hidden tab bar, the body and the feedback line, with no hint element; the title bar holds only the title and the breadcrumb', () => {
@@ -730,11 +741,12 @@ describe('MenuView — input', () => {
     );
     expect(onInput, 'padding clicks and hovers emit nothing').not.toHaveBeenCalled();
 
+    // uif-16b: the sub-list fixture is Options (see profileState); its last row is Controls.
     view.render(profileVm());
-    (document.getElementById('menuProfile-root-privacy') as HTMLElement).dispatchEvent(
+    (document.getElementById('menuOptions-root-controls') as HTMLElement).dispatchEvent(
       new MouseEvent('click', { bubbles: true }),
     );
-    expect(onInput).toHaveBeenCalledWith({ kind: 'pick', key: 'privacy' });
+    expect(onInput).toHaveBeenCalledWith({ kind: 'pick', key: 'controls' });
     expect(onInput).toHaveBeenCalledTimes(1);
   });
 

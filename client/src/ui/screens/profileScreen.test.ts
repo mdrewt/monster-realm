@@ -14,6 +14,11 @@
  * - CTL8H-2-TOKEN-ONE-SHOT: through the REAL ScreenHost over the SHIPPED table (a spy view lent
  *   for the frame): an A paints `applyRowOp(activate)` once, and no later step (LB, Y, X, Left,
  *   Start, Select, a repeat A) paints it again. Up then Down paint two distinct objects.
+ *
+ * uif-16b (UIF16B.2): the three adapters (`nameScreen`, `accountScreen`, `privacyScreen`) collapse
+ * to ONE `profileScreen` answering the one `profileView` frame (ProfileView walks the one column of
+ * rows across the three sections); `RowSection` gains `armed`. Every key-table, token, axis and
+ * walkSection tooth below is kept, now over the one adapter.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { VBUTTONS, type VButton } from '../../input/buttons';
@@ -21,9 +26,7 @@ import type { FrameId, Stack } from '../contextStack';
 import type { NavInput } from '../nav';
 import { SCREEN_ADAPTERS, ScreenHost } from './index';
 import {
-  accountScreen,
-  nameScreen,
-  privacyScreen,
+  profileScreen,
   type RowOp,
   type RowSection,
   type RowsView,
@@ -36,11 +39,11 @@ interface ProfileState {
 }
 type ProfileAdapter = ScreenAdapter<unknown, ProfileState, RowsView>;
 
-/** The three adapters with the frame each one answers. */
+/** The adapters with the frame each one answers.
+ *  uif-16b (named intentional change): 3 -> 1: nameScreen/renameView, accountScreen/claimView and
+ *  privacyScreen/privacyView left, profileScreen/profileView joined. */
 const PROFILE: ReadonlyArray<readonly [string, FrameId, ProfileAdapter]> = [
-  ['nameScreen', 'renameView', nameScreen as unknown as ProfileAdapter],
-  ['accountScreen', 'claimView', accountScreen as unknown as ProfileAdapter],
-  ['privacyScreen', 'privacyView', privacyScreen as unknown as ProfileAdapter],
+  ['profileScreen', 'profileView', profileScreen as unknown as ProfileAdapter],
 ];
 
 /** A context that fails the run if anything reads it: these adapters ignore the context. */
@@ -160,7 +163,8 @@ describe('the Profile row adapters (ctl-8h)', () => {
       expect(seen, `${name}: the token reaches the view`).toHaveLength(1);
       expect(seen[0], `${name}: the very token object`).toBe(act1.state.op);
     }
-    expect(steps, 'ANTI-VACUITY: 3 adapters x 12 buttons x 2 (repeat) x 2 (state)').toBe(144);
+    // uif-16b (named intentional change): 144 -> 48: three adapters collapse to profileScreen.
+    expect(steps, 'ANTI-VACUITY: 1 adapter x 12 buttons x 2 (repeat) x 2 (state)').toBe(48);
   });
 
   it('CTL8H-2-TOKEN-ONE-SHOT: through the real ScreenHost over the shipped table, A paints applyRowOp(activate) once and LB, Y, X, Left, Start, Select and a repeat A paint it no more; Up then Down paint two distinct move tokens; and the host answers every result', () => {
@@ -239,7 +243,9 @@ describe('qf-13 (QF13.2): the Account adapter walks the vertical axis only', () 
     // walked sideways); one that drops Up/Down for Left/Right; a Left/Right that is unhandled (the
     // arrows would scroll the page) or that carries a leftover token; a Down that moves -1 (axis
     // inverted); a paint that applies a token for a horizontal press.
-    const adapter = accountScreen as unknown as ProfileAdapter;
+    // uif-16b (named fixture change): the Account adapter IS profileScreen now (one column, the
+    // axis matching the layout, 102). Was: accountScreen.
+    const adapter = profileScreen as unknown as ProfileAdapter;
     const vm = adapter.viewModel(NO_CTX);
     const fresh = adapter.init(vm);
     const stale: ProfileState = { op: { kind: 'move', delta: 1 } };
@@ -284,6 +290,24 @@ describe('qf-13 (QF13.2): the Account adapter walks the vertical axis only', () 
   });
 });
 
+describe('uif-16b: one Profile adapter', () => {
+  it('UIF16B.2 the shipped table answers profileView with profileScreen, and the three retired frames are gone from it', () => {
+    // WRONG IMPL KILLED: the old three adapters kept beside the new one (a stale `renameView`
+    // frame would still route the D-pad to a section-scoped walk); profileView answered by a
+    // non-row adapter (B would not pop, Up/Down would not walk the one column).
+    const table = SCREEN_ADAPTERS as unknown as Readonly<Record<string, unknown>>;
+    expect(table.profileView, 'profileView is answered by profileScreen').toBe(profileScreen);
+    for (const retired of ['renameView', 'claimView', 'privacyView']) {
+      expect(retired in table, `${retired} has no adapter`).toBe(false);
+    }
+    const adapter = profileScreen as unknown as ProfileAdapter;
+    const vm = adapter.viewModel(NO_CTX);
+    expect(adapter.onButton(vm, adapter.init(vm), nav('B')).result, 'B pops the frame').toEqual({
+      kind: 'pop',
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // uif-16a: walkSection, the one walk over a RowSection (UIF16A.2). Pure, node env: a row is a
 // plain object with focus/click spies, cast to HTMLElement.
@@ -298,6 +322,8 @@ const fakeRow = (name: string): FakeRow => ({ name, focus: vi.fn(), click: vi.fn
 const asEl = (r: FakeRow): HTMLElement => r as unknown as HTMLElement;
 const sectionOf = (rows: () => readonly FakeRow[], def: () => FakeRow | undefined): RowSection => ({
   sectionRoot: {} as unknown as HTMLElement,
+  // uif-16b: RowSection gains `armed` (walkSection does not read it).
+  armed: false,
   sectionRows: () => rows().map(asEl),
   defaultRow: () => {
     const d = def();

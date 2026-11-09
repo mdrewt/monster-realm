@@ -35,11 +35,24 @@
 // matches comment text; the former blinds this repo's own comment strippers). String scanning
 // is indexOf/split only. NO numeric duplicate of the grace window: every value is synthetic.
 // NO `innerHTML` — DOM reads are `textContent` only.
+//
+// uif-16b (UIF16B.1-UIF16B.4) — THE OVERLAY IS NOW A SECTION. PrivacyView is Profile's Privacy
+// section: no a11y of its own (ProfileView owns the one dialog), no `mr-frame`/`mr-shell`
+// (`mr-button-rows`), `h2#privacy-title.mr-section-header` leads it, and the close anchor
+// `#privacy-close-btn` RETIRES (the frame's `#profile-close-btn` replaces it). Its place as the
+// reseat target goes to the new optional `fallbackRow` handler (main.ts wires the frame's Close):
+// a render that hides/disables the FOCUSED control while the confirm is not armed seats it, never
+// the section's first action. `applyRowOp` retires (the frame walks the one column; the `walk`
+// helper below is the frame's rule over this section alone). The close-anchor tests
+// (RB52V-FOCUS-ANCHOR, RB52V-ANCHOR-NEVER-DISABLED) are replaced by section-level equivalents
+// here and by ui/profileView.test.ts UIF16B.3's every-phase anchor matrix (Close as the fallback).
+// Every view here is built with `fallbackRow` pointing at a stand-in for the frame's Close: a
+// button OUTSIDE the section (`#frame-close-standin`).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y } from './overlayA11y';
-import { OVERLAY_A11Y } from './overlayRegistry';
+import { OVERLAY_IDS } from './overlayRegistry';
 import {
   buildPrivacyViewModel,
   PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
@@ -55,7 +68,40 @@ import {
   SERVER_ALREADY_DELETED_MESSAGE,
 } from './privacyModel';
 import { PrivacyView, type PrivacyViewHandlers } from './privacyView';
-import type { RowOp, RowSection } from './screens/profileScreen';
+import { type RowOp, type RowSection, walkSection } from './screens/profileScreen';
+
+/** The frame's Close, stood in for: a button OUTSIDE the section that `fallbackRow` returns. */
+const FALLBACK_ID = 'frame-close-standin';
+function fallbackStandin(): HTMLButtonElement {
+  const found = document.getElementById(FALLBACK_ID);
+  if (found instanceof HTMLButtonElement) return found;
+  const btn = document.createElement('button');
+  btn.id = FALLBACK_ID;
+  btn.type = 'button';
+  btn.textContent = 'Close';
+  document.body.appendChild(btn);
+  return btn;
+}
+
+/** A section built the way main.ts builds it: the spies plus the frame's Close as fallbackRow. */
+function makePrivacyView(handlers: Record<string, unknown>): PrivacyView {
+  return new PrivacyView({
+    ...(handlers as unknown as PrivacyViewHandlers),
+    fallbackRow: () => fallbackStandin(),
+  });
+}
+
+/** uif-16b: the frame's one-token rule over THIS section alone (`walkSection` over its
+ *  RowSection, a pressed button clicked). The token-once memo is the frame's
+ *  (ui/profileView.test.ts UIF16B.2). */
+function walk(section: RowSection, op: RowOp): void {
+  const press = walkSection(section, document.activeElement, op);
+  if (press instanceof HTMLButtonElement) press.click();
+}
+
+function sweepA11y(): void {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+}
 
 /** PRV1-4's distinct terminal notice — the en catalog entry, asserted to be a string (client specs
  *  are not typechecked, so a mistyped key would otherwise read `undefined`). */
@@ -80,7 +126,8 @@ const STATUS_ID = 'privacy-status';
 const NOTICE_ID = 'privacy-notice';
 const DISCLOSURE_ID = 'privacy-disclosure';
 const CONFIRM_ID = 'privacy-confirm';
-const CLOSE_BTN_ID = 'privacy-close-btn';
+// uif-16b: the retired close anchor's id, kept only to assert its ABSENCE.
+const RETIRED_CLOSE_BTN_ID = 'privacy-close-btn';
 const DELETE_BTN_ID = 'privacy-delete-btn';
 const CONFIRM_BTN_ID = 'privacy-confirm-btn';
 const CONFIRM_CANCEL_BTN_ID = 'privacy-confirm-cancel-btn';
@@ -94,9 +141,9 @@ const EXPORT_STATUS_ID = 'privacy-export-status';
 
 /** Every id the shell owns, so a census can assert none of them leaked into index.html and
  *  every one of them really exists after construction. */
+// uif-16b (named roster change): 14 -> 13 ids, `privacy-close-btn` retired (the frame's Close).
 const ALL_PRIVACY_IDS: readonly string[] = [
   OVERLAY_ID,
-  CLOSE_BTN_ID,
   TITLE_ID,
   STATUS_ID,
   NOTICE_ID,
@@ -222,7 +269,8 @@ function vmOf(overrides: Partial<PrivacyViewModel> = {}): PrivacyViewModel {
 // deletion.
 // ---------------------------------------------------------------------------
 
-type HandlerName = keyof PrivacyViewHandlers;
+// uif-16b: `fallbackRow` is an optional wiring hook, not a spied handler.
+type HandlerName = Exclude<keyof PrivacyViewHandlers, 'fallbackRow'>;
 
 const HANDLER_NAMES: readonly HandlerName[] = [
   'onDeleteRequested',
@@ -333,7 +381,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   beforeEach(() => {
     document.body.replaceChildren();
     spies = freshSpies();
-    view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+    view = makePrivacyView(spies);
   });
 
   afterEach(() => {
@@ -341,7 +389,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     // with no record is a documented pure no-op (ui/overlayA11y.ts), and the module exports no
     // reset hook by design. Without this the deferred-focus timer and the focus trap from one
     // test leak into the next.
-    closeOverlayA11y('privacyView', null);
+    sweepA11y();
     document.body.replaceChildren();
   });
 
@@ -411,44 +459,50 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     }
   });
 
-  it('RB52V-FOCUS-ANCHOR: the registry initialFocusSelector resolves to a native <button> inside the overlay root', () => {
-    // WRONG IMPL KILLED (A2-D3): a `tabindex`-ed heading anchor. `openOverlayA11y` resolves
-    // `initialFocusSelector` with `root.querySelector(...)`, so an anchor that does not resolve
-    // INSIDE the root leaves an opened modal with focus still outside it.
-    const selector = OVERLAY_A11Y.privacyView.initialFocusSelector;
-    expect(selector, 'the registry must point at the always-enabled close button').toBe(
-      `#${CLOSE_BTN_ID}`,
-    );
-    const anchor = el(OVERLAY_ID).querySelector(selector);
-    expect(anchor, 'the anchor must resolve INSIDE the overlay root').not.toBeNull();
-    expect((anchor as HTMLElement).tagName).toBe('BUTTON');
+  // uif-16b: RB52V-FOCUS-ANCHOR (the registry's `#privacy-close-btn` anchor resolves to a native
+  // button inside this root) and RB52V-ANCHOR-NEVER-DISABLED (that anchor enabled in every phase)
+  // pinned a close anchor that RETIRES with this view's own dialog. Replaced by the two tests
+  // below (the anchor is gone; the section's anchor, defaultRow() ?? the frame's Close, is a shown
+  // enabled control in every phase) and by ui/profileView.test.ts UIF16B.3's matrix over every
+  // claim x privacy phase x section (the Close fallback included).
+  it('UIF16B.2 the retired close anchor is gone: no #privacy-close-btn in the document, no button in the section that hides it, and the section opens no dialog of its own', () => {
+    // WRONG IMPL KILLED: the old close anchor kept (two Close rows in one column, and a privacy
+    // Close that hides the Privacy section ALONE inside an open Profile); a section that still
+    // writes role/aria-modal/aria-label on show().
+    view.show();
+    view.render(vmOf({ confirmPrompt: 'SYNTHETIC CONFIRM PROMPT', downloadEnabled: true }));
+    expect(document.getElementById(RETIRED_CLOSE_BTN_ID), 'the anchor retired').toBeNull();
+    for (const b of Array.from(el(OVERLAY_ID).querySelectorAll('button'))) {
+      b.click();
+      expect(view.visible, `#${b.id}: no section button hides the section`).toBe(true);
+    }
+    for (const attr of ['role', 'aria-modal', 'aria-label']) {
+      expect(el(OVERLAY_ID).hasAttribute(attr), `no ${attr} on the section`).toBe(false);
+    }
+    expect(el(OVERLAY_ID).classList.contains('mr-button-rows'), 'the column class').toBe(true);
   });
 
-  it('RB52V-ANCHOR-NEVER-DISABLED: the initial-focus anchor is enabled in EVERY phase, incl. grace and terminal', () => {
-    // WRONG IMPL KILLED: pointing `initialFocusSelector` at
-    // `#privacy-delete-btn`. `deletePermitted` is true ONLY in phase `active`, so in `grace`
-    // (PRV1-3's own state) and `terminal` (PRV1-4's) the anchor carries `disabled` — and a
-    // disabled control is unfocusable, so `openOverlayA11y`'s `.focus()` is a silent no-op,
-    // focus stays on <body>, and `focusTrap`'s capture listener on the root NEVER fires: Tab
-    // walks the page behind an open modal. In `terminal` every other control is disabled or
-    // hidden, so the trap would have no focusable content at all.
-    //
-    // happy-dom will happily "focus" a disabled node, so asserting activeElement here would be
-    // green against the very bug this kills. The honest oracle is the `disabled` property on the
-    // anchor across every phase.
-    const anchorId = OVERLAY_A11Y.privacyView.initialFocusSelector.slice(1);
+  it('UIF16B.3 in EVERY phase, incl. grace and terminal, the section`s anchor (defaultRow(), else the frame`s Close) is a shown, enabled control', () => {
+    // WRONG IMPL KILLED: a default row that is a disabled Delete (grace/terminal: deletePermitted
+    // is false outside `active`, so a focus on it is a dead control and the trap has nothing to
+    // hand on); a default row on a hidden confirm button; a defaultRow() that is never undefined
+    // when every row is refused (then the frame's Close cannot take over). happy-dom focuses a
+    // disabled node, so the oracle is the control's own `disabled` and display, never focus.
+    view.show();
     let checked = 0;
     const phasesSeen = new Set<string>();
     for (const [label, state] of RB52_MATRIX) {
       view.render(buildPrivacyViewModel(state));
-      const anchor = el(anchorId) as HTMLButtonElement;
-      expect(anchor.disabled, `${label}: the initial-focus anchor must never be disabled`).toBe(
-        false,
-      );
-      expect(
-        anchor.style.display,
-        `${label}: the initial-focus anchor must never be display:none`,
-      ).not.toBe('none');
+      const anchor = (view.defaultRow() ?? fallbackStandin()) as HTMLButtonElement;
+      expect(anchor.disabled, `${label}: the anchor must never be disabled`).toBe(false);
+      expect(hiddenAncestorOf(anchor), `${label}: the anchor must be on screen`).toBeNull();
+      if (view.sectionRows().length === 0) {
+        expect(view.defaultRow(), `${label}: no rows, so no default (Close takes it)`).toBe(
+          undefined,
+        );
+      } else {
+        expect(view.sectionRows(), `${label}: the default is a row`).toContain(anchor);
+      }
       phasesSeen.add(state.countdown.phase);
       checked += 1;
     }
@@ -1076,7 +1130,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
 //
 // The rows are the overlay's real shown AND enabled buttons in DOM order (close, delete, [confirm,
 // keep while armed], cancel, export, download); the cursor IS document.activeElement. privacyScreen
-// hands the view one-shot row tokens through `view.applyRowOp(op)` (see renameView.test.ts for the
+// hands the view one-shot row tokens through `walk(view,op)` (see renameView.test.ts for the
 // contract's wording). Re-seating on a render happens ONLY when the overlay was already visible
 // before it: the arm edge focuses Keep (#privacy-confirm-cancel-btn), never Confirm; the disarm
 // edge focuses the arming button (#privacy-delete-btn); a focused control that the render hid or
@@ -1086,17 +1140,23 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
 // INTENTIONAL CHANGE (ctl-8h): privacyView.ts's header said "NO .focus() ANYWHERE IN THIS FILE";
 // the view now moves focus in applyRowOp and on the arm / disarm / hidden-control re-seat. Nothing in
 // this file pinned that sentence.
+//
+// INTENTIONAL CHANGE (uif-16b): the close anchor retires, so every row list below loses its first
+// entry (`privacy-close-btn`) and the unarmed default row is the first ACTION (Delete when
+// enabled); a focused control that a render disables while unarmed now goes to `fallbackRow()`
+// (the frame's Close, stood in for here), never the first row; the walk is the `walk` helper
+// (applyRowOp retires) and its identity-memo segment moved to ui/profileView.test.ts UIF16B.2.
 // ===========================================================================================
 
 describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
   beforeEach(() => {
     document.body.replaceChildren();
     spies = freshSpies();
-    view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+    view = makePrivacyView(spies);
   });
 
   afterEach(() => {
-    closeOverlayA11y('privacyView', null);
+    sweepA11y();
     document.body.replaceChildren();
   });
 
@@ -1112,11 +1172,11 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
    *  walk to the first row (clamped), then walk down until the cursor stops. */
   function walkRows(): string[] {
     blurAll();
-    view.applyRowOp(move(-1));
-    for (let i = 0; i < 12; i += 1) view.applyRowOp(move(-1));
+    walk(view, move(-1));
+    for (let i = 0; i < 12; i += 1) walk(view, move(-1));
     const out = [focusedId()];
     for (let i = 0; i < 12; i += 1) {
-      view.applyRowOp(move(1));
+      walk(view, move(1));
       const id = focusedId();
       if (id === out[out.length - 1]) break;
       out.push(id);
@@ -1124,7 +1184,7 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     return out;
   }
 
-  it('CTL8H-4-VIEW-ROW-OPS: applyRowOp walks the shown AND enabled buttons in DOM order with focus as the cursor (disabled and hidden ones skipped, clamped, no wrap), no row focused seats the first row, activate clicks the focused button once and fires nothing when no row is focused, and the same op object applies once', () => {
+  it('CTL8H-4-VIEW-ROW-OPS: the section walk covers the shown AND enabled buttons in DOM order with focus as the cursor (disabled and hidden ones skipped, clamped, no wrap), no row focused seats the first row (Delete: the close anchor retired), activate clicks the focused button once and fires nothing when no row is focused', () => {
     // WRONG IMPL KILLED: rows that include a disabled control (the disabled Cancel in the active
     // phase, the disabled Download until an artifact arrives: focus() on them is a no-op and the
     // cursor sticks) or a hidden Confirm / Keep row while disarmed (a bare "Confirm" one key from
@@ -1135,7 +1195,6 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     view.render(vmOf());
 
     expect(walkRows(), 'rows: Download is disabled, Confirm / Keep are hidden').toEqual([
-      CLOSE_BTN_ID,
       DELETE_BTN_ID,
       CANCEL_BTN_ID,
       EXPORT_BTN_ID,
@@ -1143,27 +1202,22 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
 
     // --- no row focused: the first row, for either direction; the ends clamp ---------------------
     blurAll();
-    view.applyRowOp(move(1));
-    expect(focusedId(), 'move +1 with nothing focused: the first row').toBe(CLOSE_BTN_ID);
+    walk(view, move(1));
+    expect(focusedId(), 'move +1 with nothing focused: the first row').toBe(DELETE_BTN_ID);
     blurAll();
-    view.applyRowOp(move(-1));
-    expect(focusedId(), 'move -1 with nothing focused: the first row').toBe(CLOSE_BTN_ID);
-    view.applyRowOp(move(-1));
-    expect(focusedId(), 'no wrap above the first row').toBe(CLOSE_BTN_ID);
+    walk(view, move(-1));
+    expect(focusedId(), 'move -1 with nothing focused: the first row').toBe(DELETE_BTN_ID);
+    walk(view, move(-1));
+    expect(focusedId(), 'no wrap above the first row').toBe(DELETE_BTN_ID);
     btn(EXPORT_BTN_ID).focus();
-    view.applyRowOp(move(1));
+    walk(view, move(1));
     expect(focusedId(), 'no wrap below the last row (Download is disabled)').toBe(EXPORT_BTN_ID);
 
     // --- disabled rows are skipped, enabled ones appear ---------------------------------------
     view.render(vmOf({ cancelEnabled: false }));
-    expect(walkRows(), 'a disabled Cancel is not a row').toEqual([
-      CLOSE_BTN_ID,
-      DELETE_BTN_ID,
-      EXPORT_BTN_ID,
-    ]);
+    expect(walkRows(), 'a disabled Cancel is not a row').toEqual([DELETE_BTN_ID, EXPORT_BTN_ID]);
     view.render(vmOf({ downloadEnabled: true, exportStatusLabel: 'SYNTHETIC EXPORT COMPLETE' }));
     expect(walkRows(), 'an enabled Download is the last row').toEqual([
-      CLOSE_BTN_ID,
       DELETE_BTN_ID,
       CANCEL_BTN_ID,
       EXPORT_BTN_ID,
@@ -1171,7 +1225,6 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     ]);
     view.render(vmOf({ confirmPrompt: ARMED }));
     expect(walkRows(), 'armed: Confirm and Keep join the rows, in DOM order').toEqual([
-      CLOSE_BTN_ID,
       DELETE_BTN_ID,
       CONFIRM_BTN_ID,
       CONFIRM_CANCEL_BTN_ID,
@@ -1190,38 +1243,20 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     for (const [id, handler] of presses) {
       clearSpies();
       btn(id).focus();
-      view.applyRowOp(activate());
+      walk(view, activate());
       expectOnly(handler);
     }
 
     // --- activate with no row focused: seat the first row, fire nothing --------------------------
     clearSpies();
     blurAll();
-    view.applyRowOp(activate());
-    expect(focusedId(), 'A with no row focused seats the first row').toBe(CLOSE_BTN_ID);
+    walk(view, activate());
+    expect(focusedId(), 'A with no row focused seats the first row').toBe(DELETE_BTN_ID);
     expect(fired(), 'and fires nothing (not even the row it seated)').toEqual([]);
-
-    // --- the identity memo ----------------------------------------------------------------
-    const hop = move(1);
-    btn(CLOSE_BTN_ID).focus();
-    view.applyRowOp(hop);
-    expect(focusedId(), 'the first application moves').toBe(DELETE_BTN_ID);
-    btn(CLOSE_BTN_ID).focus();
-    view.applyRowOp(hop);
-    expect(focusedId(), 'the same op object is not applied twice').toBe(CLOSE_BTN_ID);
-    view.applyRowOp(move(1));
-    expect(focusedId(), 'an equal but fresh op is a new press').toBe(DELETE_BTN_ID);
-
-    clearSpies();
-    const press = activate();
-    view.applyRowOp(press);
-    view.applyRowOp(press);
-    expect(spies.onDeleteRequested, 'the same activate token clicks once').toHaveBeenCalledTimes(1);
-    view.applyRowOp(activate());
-    expect(spies.onDeleteRequested, 'a fresh token clicks again').toHaveBeenCalledTimes(2);
+    // uif-16b: the identity-memo segment moved to ui/profileView.test.ts UIF16B.2.
   });
 
-  it('CTL8H-4-DEFAULT-NO: arming focuses Keep and never Confirm (from Delete, from another control, from the page), disarming focuses Delete, a focused control that a render disabled goes to the default row, a re-render with the same vm moves nothing, the open edge moves nothing, and an armed overlay with no focused row seats Keep on move and on A without confirming', () => {
+  it('UIF16B.4 CTL8H-4-DEFAULT-NO: arming focuses Keep and never Confirm (from Delete, from another control, from the page), disarming focuses Delete, a focused control that a render disabled goes to the fallback row (the frame`s Close), a re-render with the same vm moves nothing, the open edge moves nothing, and an armed overlay with no focused row seats Keep on move and on A without confirming', () => {
     // WRONG IMPL KILLED: a default-No on the click edge only (the arm edge is a render: the
     // Delete button stays but the player's next Enter lands on whatever holds focus); a focus on
     // Confirm (one Enter deletes the account); a re-seat on every render (the export status
@@ -1279,42 +1314,46 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     btn(EXPORT_BTN_ID).focus();
     view.render(vmOf({ exportEnabled: false }));
     expect(btn(EXPORT_BTN_ID).disabled, 'precondition: Export is now disabled').toBe(true);
-    expect(
-      el(OVERLAY_ID).contains(document.activeElement),
-      'focus stays inside the overlay, not on the page',
-    ).toBe(true);
+    // uif-16b (named change): was "focus stays inside the overlay ... the default row: the first"
+    // (the close anchor). The fallback is the frame's Close (outside this section), never Delete.
+    expect(document.activeElement === document.body, 'focus is not dropped to the page').toBe(
+      false,
+    );
     expect((document.activeElement as HTMLButtonElement).disabled, 'on an enabled control').toBe(
       false,
     );
-    expect(focusedId(), 'the default row: the first').toBe(CLOSE_BTN_ID);
+    expect(focusedId(), 'the fallback row: the frame`s Close').toBe(FALLBACK_ID);
+    expect(focusedId(), 'never the first action').not.toBe(DELETE_BTN_ID);
     view.render(vmOf({ downloadEnabled: true }));
     btn(DOWNLOAD_BTN_ID).focus();
     view.render(vmOf({ downloadEnabled: false }));
-    expect(focusedId(), 'Download disabled under focus (the reaped export): the first row').toBe(
-      CLOSE_BTN_ID,
+    expect(focusedId(), 'Download disabled under focus (the reaped export): the fallback').toBe(
+      FALLBACK_ID,
     );
 
     // (g) armed, with no row focused: the default row is Keep.
     view.render(vmOf({ confirmPrompt: ARMED }));
     clearSpies();
     blurAll();
-    view.applyRowOp(move(1));
+    walk(view, move(1));
     expect(focusedId(), 'armed, nothing focused: move seats Keep, not the first row').toBe(
       CONFIRM_CANCEL_BTN_ID,
     );
     blurAll();
-    view.applyRowOp(move(-1));
+    walk(view, move(-1));
     expect(focusedId(), 'armed, nothing focused: move -1 seats Keep too').toBe(
       CONFIRM_CANCEL_BTN_ID,
     );
     blurAll();
-    view.applyRowOp(activate());
+    walk(view, activate());
     expect(focusedId(), 'armed, nothing focused: A seats Keep').toBe(CONFIRM_CANCEL_BTN_ID);
     expect(fired(), 'and confirms nothing, cancels nothing').toEqual([]);
     expect(spies.onDeleteConfirmed).not.toHaveBeenCalled();
   });
 
-  it('CTL8H-4-B3-ANCHOR: the overlay is attached under #frame-layer when present, else under #game-screen, else directly under <body>, and carries the classes mr-frame and mr-shell with all its controls inside it', () => {
+  it('UIF16B.1 the section is constructed under #frame-layer when present, else under #game-screen, else directly under <body>, carries mr-button-rows and NOT mr-frame / mr-shell, with all its controls inside it', () => {
+    // INTENTIONAL CHANGE (uif-16b): was CTL8H-4-B3-ANCHOR, "... carries the classes mr-frame and
+    // mr-shell". The construction anchor is unchanged (ProfileView re-parents the root).
     // WRONG IMPL KILLED: an overlay appended to <body> whatever the page has (fixed + inset:0
     // over the canvas instead of a frame in the game screen: B3); an anchor by a parent id alone;
     // a frame-layer lookup that only works inside #game-screen; a lookup that prefers
@@ -1326,11 +1365,12 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     };
     const build = (...nodes: HTMLElement[]): HTMLElement => {
       document.body.replaceChildren(...nodes);
-      const fresh = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+      const fresh = makePrivacyView(spies);
       expect(fresh.visible, 'constructed hidden').toBe(false);
       const overlay = el(OVERLAY_ID);
-      expect(overlay.classList.contains('mr-frame'), 'class mr-frame').toBe(true);
-      expect(overlay.classList.contains('mr-shell'), 'class mr-shell').toBe(true);
+      expect(overlay.classList.contains('mr-frame'), 'no class mr-frame').toBe(false);
+      expect(overlay.classList.contains('mr-shell'), 'no class mr-shell').toBe(false);
+      expect(overlay.classList.contains('mr-button-rows'), 'class mr-button-rows').toBe(true);
       for (const id of ALL_PRIVACY_IDS) {
         if (id === OVERLAY_ID) continue;
         expect(overlay.contains(el(id)), `#${id} is inside the overlay`).toBe(true);
@@ -1370,9 +1410,9 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     // disabled, falls back to the last or the first row instead of seating nothing.
     const open = (vm: PrivacyViewModel): void => {
       blurAll();
-      closeOverlayA11y('privacyView', null);
+      sweepA11y();
       document.body.replaceChildren();
-      view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+      view = makePrivacyView(spies);
       view.show();
       view.render(vm);
     };
@@ -1447,8 +1487,39 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     view.render(vmOf({ deleteEnabled: false }));
     expect(btn(DELETE_BTN_ID).disabled, 'precondition: Delete is disabled').toBe(true);
     expect(focusedId(), 'the disarm does not fall back to the last row').not.toBe(EXPORT_BTN_ID);
-    expect(focusedId(), 'nor to the first row').not.toBe(CLOSE_BTN_ID);
+    // uif-16b (named change): the first row is Cancel now (the close anchor retired); and a
+    // disarm never uses the fallback either (reseatRow's disarm rule seats nothing).
+    expect(focusedId(), 'nor to the first row').not.toBe(CANCEL_BTN_ID);
+    expect(focusedId(), 'nor to the fallback').not.toBe(FALLBACK_ID);
     expect(focusedId(), 'nor to the disabled Delete').not.toBe(DELETE_BTN_ID);
+  });
+
+  it('UIF16B.4 fallbackRow: a render that disables or hides the FOCUSED control while unarmed seats fallbackRow(), never the section`s first action; armed it seats Keep; with no fallbackRow handler the section seats nothing rather than Delete', () => {
+    // WRONG IMPL KILLED: the pre-uif-16b reseat to the first row (Delete: a second Enter starts
+    // an account deletion); a fallback consulted while armed (Keep must win); a fallback read
+    // once at construction (main.ts wires the frame's Close after building the section); a
+    // section that, without a fallback, falls back to its first action.
+    view.show();
+    view.render(vmOf());
+    btn(CANCEL_BTN_ID).focus();
+    view.render(vmOf({ cancelEnabled: false }));
+    expect(focusedId(), 'Cancel disabled under focus: the fallback').toBe(FALLBACK_ID);
+
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    btn(EXPORT_BTN_ID).focus();
+    view.render(vmOf({ confirmPrompt: ARMED, exportEnabled: false }));
+    expect(focusedId(), 'armed: Keep, not the fallback').toBe(CONFIRM_CANCEL_BTN_ID);
+
+    // No fallbackRow handler at all: nothing is seated, and certainly not Delete.
+    sweepA11y();
+    document.body.replaceChildren();
+    const bare = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+    bare.show();
+    bare.render(vmOf());
+    btn(EXPORT_BTN_ID).focus();
+    bare.render(vmOf({ exportEnabled: false }));
+    expect(focusedId(), 'no fallback: never the first action').not.toBe(DELETE_BTN_ID);
+    expect(focusedId(), 'nor the next action').not.toBe(CANCEL_BTN_ID);
   });
 });
 
@@ -1471,13 +1542,13 @@ describe('PrivacyView uif-16a: the shared section interface', () => {
   beforeEach(() => {
     document.body.replaceChildren();
     spies = freshSpies();
-    view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+    view = makePrivacyView(spies);
     view.show();
     view.render(vmOf());
     blur16();
   });
   afterEach(() => {
-    closeOverlayA11y('privacyView', null);
+    sweepA11y();
     document.body.replaceChildren();
   });
 
@@ -1487,8 +1558,8 @@ describe('PrivacyView uif-16a: the shared section interface', () => {
   });
 
   it('UIF16A.1 sectionRows is the shown, enabled buttons in DOM order: idle, armed, and with a control disabled', () => {
+    // uif-16b (named change): every list below loses `privacy-close-btn` (the anchor retired).
     expect(ids16(view.sectionRows()), 'idle').toEqual([
-      CLOSE_BTN_ID,
       DELETE_BTN_ID,
       CANCEL_BTN_ID,
       EXPORT_BTN_ID,
@@ -1497,68 +1568,67 @@ describe('PrivacyView uif-16a: the shared section interface', () => {
     expect(
       ids16(view.sectionRows()),
       'armed: Confirm and Keep join, between Delete and Cancel',
-    ).toEqual([
-      CLOSE_BTN_ID,
-      DELETE_BTN_ID,
-      CONFIRM_BTN_ID,
-      CONFIRM_CANCEL_BTN_ID,
-      CANCEL_BTN_ID,
-      EXPORT_BTN_ID,
-    ]);
+    ).toEqual([DELETE_BTN_ID, CONFIRM_BTN_ID, CONFIRM_CANCEL_BTN_ID, CANCEL_BTN_ID, EXPORT_BTN_ID]);
     view.render(vmOf({ deleteEnabled: false, downloadEnabled: true }));
     expect(
       ids16(view.sectionRows()),
       'Delete disabled is excluded, Download enabled is included',
-    ).toEqual([CLOSE_BTN_ID, CANCEL_BTN_ID, EXPORT_BTN_ID, DOWNLOAD_BTN_ID]);
+    ).toEqual([CANCEL_BTN_ID, EXPORT_BTN_ID, DOWNLOAD_BTN_ID]);
   });
 
   it('UIF16A.1 sectionRows drops an ENABLED but display:none button, and a move from its DOM neighbour skips it', () => {
     // The real render disables every button it hides, so the display half of the filter needs a
-    // forged control: enabled, yet hidden. Idle rows are [close, delete, cancel, export].
+    // forged control: enabled, yet hidden. Idle rows are [delete, cancel, export].
     const cancel = byId16(CANCEL_BTN_ID) as HTMLButtonElement;
     cancel.style.display = 'none';
     expect(cancel.disabled, 'precondition: the forged button is still enabled').toBe(false);
     expect(ids16(view.sectionRows()), 'a hidden enabled button is not a row').toEqual([
-      CLOSE_BTN_ID,
       DELETE_BTN_ID,
       EXPORT_BTN_ID,
     ]);
     byId16(DELETE_BTN_ID).focus();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'a move from the preceding row skips the hidden one').toBe(EXPORT_BTN_ID);
   });
 
-  it('UIF16A.1 defaultRow is Keep while the deletion confirm is armed, else the first row (the Close anchor)', () => {
-    expect(view.defaultRow(), 'idle').toBe(byId16(CLOSE_BTN_ID));
+  it('UIF16A.1 defaultRow is Keep while the deletion confirm is armed, else the first row (Delete since the close anchor retired; none when every control is refused)', () => {
+    expect(view.defaultRow(), 'idle').toBe(byId16(DELETE_BTN_ID));
     view.render(vmOf({ confirmPrompt: ARMED16 }));
     expect(view.defaultRow(), 'armed').toBe(byId16(CONFIRM_CANCEL_BTN_ID));
     view.render(vmOf());
-    expect(view.defaultRow(), 'disarmed again').toBe(byId16(CLOSE_BTN_ID));
+    expect(view.defaultRow(), 'disarmed again').toBe(byId16(DELETE_BTN_ID));
+    view.render(vmOf({ deleteEnabled: false, cancelEnabled: false, exportEnabled: false }));
+    expect(view.defaultRow(), 'every control refused: no default (the frame`s Close)').toBe(
+      undefined,
+    );
   });
 
-  it('UIF16A.2 applyRowOp seats defaultRow() when no row is focused: an overridden default wins', () => {
+  // uif-16b (named change): the UIF16A.2 tests below drove `view.applyRowOp`, which retires; they
+  // now drive the `walk` helper (the frame's rule over this section). The frame walk itself is
+  // gated in ui/profileView.test.ts UIF16B.2.
+  it('UIF16A.2 the section walk seats defaultRow() when no row is focused: an overridden default wins', () => {
     override16({ defaultRow: () => byId16(EXPORT_BTN_ID) });
     blur16();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'the override, not a private Keep / first-row fallback').toBe(
       EXPORT_BTN_ID,
     );
     blur16();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(focusedId16()).toBe(EXPORT_BTN_ID);
     expect(spies.onExportRequested, 'seating presses nothing').not.toHaveBeenCalled();
   });
 
-  it('UIF16A.2 applyRowOp walks the rows sectionRows() returns: an overridden list sets the order, the clamp and what A presses', () => {
-    // Real rows: [close, delete, cancel, export]. Override: export first, close second.
-    override16({ sectionRows: () => [byId16(EXPORT_BTN_ID), byId16(CLOSE_BTN_ID)] });
+  it('UIF16A.2 the section walk follows the rows sectionRows() returns: an overridden list sets the order, the clamp and what A presses', () => {
+    // Real rows: [delete, cancel, export]. Override: export first, cancel second.
+    override16({ sectionRows: () => [byId16(EXPORT_BTN_ID), byId16(CANCEL_BTN_ID)] });
     byId16(EXPORT_BTN_ID).focus();
-    view.applyRowOp(move16(1));
-    expect(focusedId16(), 'down from the first overridden row').toBe(CLOSE_BTN_ID);
-    view.applyRowOp(move16(1));
-    expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe(CLOSE_BTN_ID);
-    view.applyRowOp(move16(-1));
-    view.applyRowOp(activate16());
+    walk(view, move16(1));
+    expect(focusedId16(), 'down from the first overridden row').toBe(CANCEL_BTN_ID);
+    walk(view, move16(1));
+    expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe(CANCEL_BTN_ID);
+    walk(view, move16(-1));
+    walk(view, activate16());
     expect(
       spies.onExportRequested,
       'A presses the focused overridden row once',
@@ -1567,7 +1637,7 @@ describe('PrivacyView uif-16a: the shared section interface', () => {
     // A real row the interface does not list is not a row: no press.
     clearSpies();
     byId16(DELETE_BTN_ID).focus();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(
       spies.onDeleteRequested,
       'A on an unlisted control presses nothing',
@@ -1577,30 +1647,63 @@ describe('PrivacyView uif-16a: the shared section interface', () => {
   it('UIF16A.2 through the real interface: focus on the page while armed seats Keep and presses nothing; the clamp holds at both ends', () => {
     view.render(vmOf({ confirmPrompt: ARMED16 }));
     blur16();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(focusedId16(), 'armed, nothing focused: A seats Keep').toBe(CONFIRM_CANCEL_BTN_ID);
     expect(spies.onDeleteConfirmed, 'and confirms nothing').not.toHaveBeenCalled();
     expect(spies.onConfirmCancelled, 'and does not press Keep either').not.toHaveBeenCalled();
 
     byId16(EXPORT_BTN_ID).focus();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'no wrap past the last row').toBe(EXPORT_BTN_ID);
-    byId16(CLOSE_BTN_ID).focus();
-    view.applyRowOp(move16(-1));
-    expect(focusedId16(), 'no wrap past the first row').toBe(CLOSE_BTN_ID);
+    byId16(DELETE_BTN_ID).focus();
+    walk(view, move16(-1));
+    expect(focusedId16(), 'no wrap past the first row').toBe(DELETE_BTN_ID);
   });
 
-  it('UIF16A.2 the render-time reseat reads sectionRows(): a focused control the interface does not list is moved to its first row on a plain re-render', () => {
+  it('UIF16B.4 the render-time reseat reads sectionRows(): a focused control the interface does not list is moved to the fallback row (the frame`s Close) on a plain re-render, never to the first row', () => {
+    // INTENTIONAL CHANGE (uif-16b): was UIF16A.2 "... is moved to its first row". The unarmed
+    // third reseat rule now seats fallbackRow() (plan § Sections, privacy).
     byId16(DELETE_BTN_ID).focus();
     view.render(vmOf());
     expect(
       focusedId16(),
       'precondition: the real rows keep Delete, so a plain re-render moves nothing',
     ).toBe(DELETE_BTN_ID);
-    override16({ sectionRows: () => [byId16(EXPORT_BTN_ID), byId16(CLOSE_BTN_ID)] });
+    override16({ sectionRows: () => [byId16(EXPORT_BTN_ID), byId16(CANCEL_BTN_ID)] });
     view.render(vmOf());
-    expect(focusedId16(), 'the render hid nothing, but the interface does not list Delete').toBe(
-      EXPORT_BTN_ID,
-    );
+    expect(focusedId16(), 'the interface does not list Delete: the fallback').toBe(FALLBACK_ID);
+    expect(focusedId16(), 'not the first listed row').not.toBe(EXPORT_BTN_ID);
+  });
+
+  it('UIF16B.1 the section leads with h2.mr-section-header#privacy-title as its first element child, reading privacy.title', () => {
+    // WRONG IMPL KILLED: a header without the class; a header that is not the first child (the
+    // retired close anchor or the status line above it); a header text hard-coded.
+    const title = byId16(TITLE_ID);
+    expect(el(OVERLAY_ID).firstElementChild, 'the header leads the section').toBe(title);
+    expect(title.tagName).toBe('H2');
+    expect(title.classList.contains('mr-section-header'), 'the section-header class').toBe(true);
+    const want = (CATALOG_EN as unknown as Readonly<Record<string, unknown>>)['privacy.title'];
+    expect(typeof want, 'ANTI-VACUITY: a catalogue title').toBe('string');
+    expect(title.textContent).toBe(want);
+    expect(hiddenAncestorOf(title), 'on screen').toBeNull();
+  });
+
+  it('UIF16B.4 armed is public and true exactly while the deletion confirm is armed; hide() still calls onDismissed once', () => {
+    // WRONG IMPL KILLED: `armed` left private (ProfileView.defaultRow cannot prefer Keep); one
+    // stuck after a disarm; a hide() that lost its dismissal now that the frame also hides it.
+    expect(view.armed, 'idle').toBe(false);
+    view.render(vmOf({ confirmPrompt: ARMED16 }));
+    expect(view.armed, 'armed').toBe(true);
+    view.render(vmOf());
+    expect(view.armed, 'disarmed').toBe(false);
+    clearSpies();
+    view.hide();
+    expect(spies.onDismissed).toHaveBeenCalledTimes(1);
+  });
+
+  it('UIF16B.2 the section no longer walks itself: it has no applyRowOp', () => {
+    // WRONG IMPL KILLED: a section that keeps `applyRowOp` + `#lastOp` (a second identity memo
+    // over the frame's token, or a section-scoped walk clamping at the section edge).
+    expect('applyRowOp' in view, 'no section-level applyRowOp').toBe(false);
   });
 });

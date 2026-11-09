@@ -92,6 +92,7 @@ import { renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { PrivacyView } from './privacyView';
+import { ProfileView } from './profileView';
 import { PvpView } from './pvpView';
 import { QuestLogView } from './questLogView';
 import { RaisingView } from './raisingView';
@@ -239,6 +240,10 @@ const asyncNoop = async (): Promise<void> => {};
  *     `render(null)`, whereas `main.ts:366-367` closes both with `hide()`. The mixed-door sequence
  *     (render-open -> hide-close -> render-reopen) is covered by each view's own
  *     `S3-<view>-REOPEN-AFTER-HIDE`.
+ *
+ * uif-16b: the `claimView` notes above are history: claimView, renameView and privacyView are
+ * Profile's sections, not overlays, and `profileView` (one door, `show(section)`) replaces all
+ * three, so the counts in this file are sixteen ids, ten static shells and two native anchors.
  */
 const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   // bt-17 (named fixture change, BT17.1): the 1v1 BattleView is purged; the `battleView` overlay id
@@ -383,13 +388,40 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       reopen: () => view.show(),
     };
   },
-  renameView: () => {
-    const view = new RenameView({ onSubmit: noop });
-    view.show();
+  // uif-16b (named intentional change): renameView, claimView and privacyView leave the roster;
+  // profileView joins at renameView's slot. Profile is ONE dialog (`#profile-overlay`, constructed)
+  // whose sections are the REAL three views over the shipped `#rename-overlay` plus the two
+  // constructed sections; the anchor is `#rename-input`, opened by show() (the 'name' door, the
+  // one N and the menu leaf drive).
+  profileView: () => {
+    const rename = new RenameView({ onSubmit: noop });
+    const claim = new ClaimView({
+      onSignIn: noop,
+      onJoin: noop,
+      onDeclineRequested: noop,
+      onDeclineConfirmed: noop,
+      onDeclineCancelled: noop,
+      onPrivacy: noop,
+      onDismissed: noop,
+    } as ConstructorParameters<typeof ClaimView>[0]);
+    let frame: ProfileView | undefined;
+    const privacy = new PrivacyView({
+      onDeleteRequested: noop,
+      onDeleteConfirmed: noop,
+      onConfirmCancelled: noop,
+      onCancelDeletion: noop,
+      onExportRequested: noop,
+      onExportDownload: noop,
+      onDismissed: noop,
+      fallbackRow: () => frame?.closeRow,
+    } as ConstructorParameters<typeof PrivacyView>[0]);
+    const view = new ProfileView({ name: rename, account: claim, privacy });
+    frame = view;
+    view.show('name');
     return {
-      root: capturedRoot('renameView'),
+      root: capturedRoot('profileView'),
       close: () => view.hide(),
-      reopen: () => view.show(),
+      reopen: () => view.show('name'),
     };
   },
   tradeProposeView: () => {
@@ -405,23 +437,6 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     const view = new HelpView();
     view.show();
     return { root: capturedRoot('helpView'), close: () => view.hide(), reopen: () => view.show() };
-  },
-  // The privacy overlay's shell is JS-created, like claimView's.
-  privacyView: () => {
-    const view = new PrivacyView({
-      onDeleteRequested: noop,
-      onDeleteConfirmed: noop,
-      onConfirmCancelled: noop,
-      onCancelDeletion: noop,
-      onExportRequested: noop,
-      onDismissed: noop,
-    } as ConstructorParameters<typeof PrivacyView>[0]);
-    view.show();
-    return {
-      root: capturedRoot('privacyView'),
-      close: () => view.hide(),
-      reopen: () => view.show(),
-    };
   },
   // ctl-12b (named intentional change): Options › Controls, a JS-created shell like privacyView's,
   // opened by `show()` (the door main.ts's openControls calls). Its anchor `#controls-rows` carries
@@ -446,17 +461,6 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     view.show();
     return { root: capturedRoot('menuView'), close: () => view.hide(), reopen: () => view.show() };
   },
-  claimView: () => {
-    const view = new ClaimView({
-      onSignIn: noop,
-      onJoin: noop,
-      onDeclineRequested: noop,
-      onDeclineConfirmed: noop,
-      onDeclineCancelled: noop,
-    } as ConstructorParameters<typeof ClaimView>[0]);
-    view.show();
-    return { root: capturedRoot('claimView'), close: () => view.hide(), reopen: () => view.show() };
-  },
 };
 
 /**
@@ -479,8 +483,10 @@ function capturedRoot(id: OverlayId): HTMLElement {
   return calls[calls.length - 1][1];
 }
 
-/** The eleven static shells plus the three JS-created ones (`claimView`, `privacyView` and, since
- *  ctl-12b, `controlsView`): the roots that ARE addressable by id. */
+/** The ten static shells plus the two JS-created ones (`profileView` since uif-16b and, since
+ *  ctl-12b, `controlsView`): the roots that ARE addressable by id.
+ *  uif-16b (named intentional change): renameView ('rename-overlay', now Profile's Name section),
+ *  claimView and privacyView left; profileView ('profile-overlay') joined. */
 const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   dialogueView: 'dialogue-overlay',
   questLogView: 'quest-log-overlay',
@@ -489,12 +495,10 @@ const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   tradeView: 'trade-overlay',
   pvpView: 'pvp-challenge-overlay',
   leaderboardView: 'leaderboard-overlay',
-  renameView: 'rename-overlay',
+  profileView: 'profile-overlay',
   tradeProposeView: 'tradepropose-overlay',
   helpView: 'help-overlay',
   menuView: 'menu-overlay',
-  claimView: 'claim-overlay',
-  privacyView: 'privacy-overlay',
   controlsView: 'controls-overlay',
 };
 
@@ -561,9 +565,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     // Compile-time totality is the primary device (Record<OverlayId, _>); these are the runtime
     // belts, so an `as` cast or a `@ts-expect-error` cannot quietly shrink the parameterisation.
     // ctl-12b (named intentional change): seventeen -> eighteen, `controlsView` joined.
-    expect(OVERLAY_IDS.length, 'the manifest must hold eighteen mutual-exclusion overlays').toBe(
-      18,
-    );
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
+    expect(OVERLAY_IDS.length, 'the manifest must hold sixteen mutual-exclusion overlays').toBe(16);
     expect(Object.keys(OPENERS).sort()).toEqual([...OVERLAY_IDS].sort());
     expect(Object.keys(OVERLAY_A11Y).sort()).toEqual([...OVERLAY_IDS].sort());
 
@@ -572,7 +576,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     // `A11YCOPY-OVERLAY-NAMESPACE-EXACT` pins KEY set-equality, not VALUE distinctness, so nothing
     // asserted this before.
     const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
-    expect(new Set(names).size, 'the eighteen accessible names must be pairwise distinct').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
+    expect(new Set(names).size, 'the sixteen accessible names must be pairwise distinct').toBe(16);
 
     // SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
     // reopen-after-close teeth possible, and since vitest runs without typechecking (see the
@@ -607,14 +613,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     let checkedAnchors = 0;
     for (const id of OVERLAY_IDS) {
       const rootId = ROOT_IDS[id];
-      // claim's, privacy's and (ctl-12b) controls' shells are JS-created, so their anchors cannot
-      // resolve in the shipped markup — the eleven STATIC shells are what this clause is about.
-      if (
-        rootId === undefined ||
-        id === 'claimView' ||
-        id === 'privacyView' ||
-        id === 'controlsView'
-      ) {
+      // profile's (uif-16b) and controls' (ctl-12b) shells are JS-created, so their roots cannot
+      // resolve in the shipped markup — the ten STATIC shells are what this clause is about.
+      if (rootId === undefined || id === 'profileView' || id === 'controlsView') {
         continue;
       }
       const root = requireElement(rootId);
@@ -629,7 +630,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
       ).toBe(true);
       checkedAnchors++;
     }
-    expect(checkedAnchors, 'eleven static shells must have been checked').toBe(11);
+    // uif-16b (named intentional change): 11 -> 10: #rename-overlay is no longer a static dialog
+    // shell (it is Profile's Name section; the dialog #profile-overlay is constructed).
+    expect(checkedAnchors, 'ten static shells must have been checked').toBe(10);
   });
 
   it('S10-WIRE-VACUITY-CONTROL BITES: the weak oracle §5.5 warns about passes on a decorative wrapper, and each of the four conjuncts that replaces it rejects it', () => {
@@ -966,17 +969,23 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
       checked,
       'S10-WIRE-FOCUS-IDENTITY must have executed once per OverlayId — a loop that never ran ' +
         'reports success in exactly the same way as one that passed',
-    ).toBe(18);
+      // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+      // profileView joined.
+    ).toBe(16);
     // Siblings, in the SAME hook rather than a second one, so the rationale above stays
     // co-located and a future reader cannot delete one half. Not redundant with the compile-time
     // `Record<OverlayId, …>` (which forces the openers to EXIST) nor with `checked` (which only
     // proves the FOCUS-IDENTITY loop ran): neither notices an `it.skip` on one id's repeat tooth,
     // and nothing else in the run would catch it.
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
     expect(repeatChecked, 'S10-WIRE-REPEAT-NO-REOPEN must have executed once per OverlayId').toBe(
-      18,
+      16,
     );
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
     expect(reopenChecked, 'S10-WIRE-REOPEN-AFTER-CLOSE must have executed once per OverlayId').toBe(
-      18,
+      16,
     );
   });
 });
@@ -1440,7 +1449,7 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(fill, 'the is-active fill and outline must be different colours').not.toEqual(outline);
   });
 
-  it('QF1-1-HEADING-ROSTER BITES: the live anchor classes include boxView and raisingView as headings, menuView as a nav container and the four native controls — a reclassification reds', async () => {
+  it('QF1-1-HEADING-ROSTER BITES: the live anchor classes include boxView and raisingView as headings, menuView as a nav container and the two native controls — a reclassification reds', async () => {
     // WRONG IMPL KILLED: a retype that quietly moves an anchor out of the class its paint rule is
     // written for (e.g. a heading given a listbox role, or a native control given tabindex=-1),
     // which would leave the QF1.1 / QF1.2 teeth below iterating a list that no longer holds it.
@@ -1452,10 +1461,11 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(classOf('raisingView')).toBe('heading');
     expect(classOf('menuView')).toBe('nav');
     expect(classOf('questLogView')).toBe('nav');
-    expect(classOf('renameView')).toBe('native');
+    // uif-16b (named intentional change): the native anchors 4 -> 2: renameView's #rename-input
+    // is profileView's anchor now; claimView's #claim-signin-btn and privacyView's
+    // #privacy-close-btn left with their overlays.
+    expect(classOf('profileView')).toBe('native');
     expect(classOf('tradeProposeView')).toBe('native');
-    expect(classOf('claimView')).toBe('native');
-    expect(classOf('privacyView')).toBe('native');
   });
 
   it('QF1-1-TABINDEX-MINUS-ONE-NO-RING BITES: EVERY focused [tabindex="-1"] element that is not a listbox/grid — anchor or not — computes outline-style none', async () => {
@@ -1501,17 +1511,14 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(offenders, 'interactive-role elements at tabindex=-1').toEqual([]);
   });
 
-  it('QF1-1-SCOPE-NATIVE-ANCHORS BITES: the four native-control anchors (#rename-input, #tradepropose-target, #claim-signin-btn, #privacy-close-btn) do NOT compute outline-style none when focused', async () => {
+  it('QF1-1-SCOPE-NATIVE-ANCHORS BITES: the native-control anchors (#rename-input, now profileView`s, and #tradepropose-target) do NOT compute outline-style none when focused', async () => {
     // WRONG IMPL KILLED: `*:focus { outline: none }`, `input:focus, select:focus, button:focus
     // { outline: none }` or `:focus-visible { outline: none }` — blanket suppression that strips
     // the browser's own ring from the controls a keyboard player actually types into.
     const s = await survey();
-    const natives: readonly OverlayId[] = [
-      'renameView',
-      'tradeProposeView',
-      'claimView',
-      'privacyView',
-    ];
+    // uif-16b (named intentional change): 4 -> 2 native anchors (profileView's #rename-input,
+    // tradeProposeView's #tradepropose-target); claimView and privacyView left.
+    const natives: readonly OverlayId[] = ['profileView', 'tradeProposeView'];
     const offenders = natives
       .map((id) => ({ id, e: anchorFor(s, id) }))
       .filter(({ e }) => e.ring === null || e.ring.style === 'none')
@@ -1636,7 +1643,8 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(counts.heading + counts.nav + counts.native).toBe(OVERLAY_IDS.length);
     expect(counts.heading, 'at least boxView and raisingView').toBeGreaterThanOrEqual(2);
     expect(counts.nav, 'at least menuView').toBeGreaterThanOrEqual(1);
-    expect(counts.native, 'the four native controls').toBeGreaterThanOrEqual(4);
+    // uif-16b (named intentional change): 4 -> 2: the claim and privacy anchors left.
+    expect(counts.native, 'the two native controls').toBeGreaterThanOrEqual(2);
 
     const unclassifiable = document.createElement('div');
     unclassifiable.setAttribute('tabindex', '0');

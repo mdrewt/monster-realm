@@ -8,7 +8,7 @@ import {
 } from '@playwright/test';
 import { CLAIM_CODE_KEY_PREFIX } from '../src/net/claimCode';
 import { t } from '../src/ui/i18n/resolver';
-import { pressAccel } from './controls';
+import { closeAll, pressAccel } from './controls';
 
 // accounts.spec.ts — the BROWSER surface of the guest-claim flow (de-bloat Phase 3 smoke).
 //
@@ -19,12 +19,15 @@ import { pressAccel } from './controls';
 // registration (startSignIn -> start_guest_claim before the redirect) is gated by
 // client/src/net/connection.runtime.test.ts (CLAIM-START*):
 //   A1  C opens the claim overlay (prompt copy, sign-in button, privacy door, first-run nudge);
-//       ctl-11a: through the main menu (Profile > Account), and C again, with its own screen on
-//       top, acts as Start (A2 closes it that way)
+//       uif-16b: through the main menu's Profile LEAF, opening the one Profile dialog
+//       (#profile-overlay) with focus in its Account section (#claim-overlay); C again, with focus
+//       already in Account, acts as Start (A2 closes it that way)
 //   A2  Sign-in with an unreachable auth service fails SAFE: failure copy, a well-formed claim
 //       code minted into per-tab sessionStorage (claimCode.ts), identity/party/presence
 //       unchanged, the world still plays
 //   A3  Declining is two-step: arm -> cancel keeps the code; arm -> confirm deletes it
+//   A4  (uif-16b, UIF16B.3) the privacy door moves the cursor into the Privacy section of the SAME
+//       dialog (the Account section stays shown; no second dialog); the frame's Close row closes it
 //
 // The claim copy is model English in client/src/ui/claimModel.ts (NOT in the i18n catalog), so
 // those strings are literals pinned to that file; catalogued strings go through t().
@@ -134,6 +137,10 @@ test.describe
       await focusWorld(page);
       await pressAccel(page, 'C');
       await expect(page.locator('#claim-overlay')).toBeVisible({ timeout: 10_000 });
+      // uif-16b (named intentional change): the claim prompt is the Account section of the one
+      // Profile dialog, not a dialog of its own.
+      await expect(page.locator('#profile-overlay')).toBeVisible();
+      await expect(page.locator('#profile-overlay #claim-overlay')).toHaveCount(1);
       await expect(page.locator('#claim-title')).toHaveText(PROMPT_TITLE);
       // B2 (ctl-8h): the title and the body are ON SCREEN, not just present in the DOM. They used to
       // be created display:none and never un-hidden, so toHaveText alone passed against an overlay
@@ -175,8 +182,12 @@ test.describe
 
       // Closing the overlay hands the world back: one step still moves the character. ctl-11a: C
       // with its own screen on top acts as Start, which closes the overlay and the menu beneath it.
+      // uif-16b (named intentional change): C acts as Start only while focus is ALREADY in the
+      // Account section (elsewhere in Profile it moves the cursor there), so that is asserted first.
+      await expect(page.locator('#claim-overlay :focus')).toHaveCount(1);
       await pressAccel(page, 'C');
       await expect(page.locator('#claim-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect(page.locator('#profile-overlay')).toBeHidden();
       await expect.poll(() => stackLength(page), { timeout: 5_000 }).toBe(1);
       const from = after.ownAuthTile;
       if (from === null) throw new Error('A2: own tile missing');
@@ -214,5 +225,53 @@ test.describe
       await page.locator('#claim-decline-confirm-btn').click();
       await expect(confirm).toBeHidden();
       await expect.poll(() => storedCodes(page), { timeout: 5_000 }).toEqual([]);
+    });
+
+    // uif-16b (named intentional change): the privacy door used to open a separate privacy overlay
+    // (and close the claim overlay); `#privacy-close-btn` closed it. Both retire: the door is a jump
+    // row inside the ONE Profile dialog, and the frame's own Close row closes it.
+    test('UIF16B.3 the privacy door moves focus into the Privacy section of the same Profile dialog, the Account section stays shown, and the frame Close row closes it', async () => {
+      await closeAll(page);
+      await focusWorld(page);
+      await pressAccel(page, 'C');
+      await expect(page.locator('#profile-overlay')).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('#claim-overlay :focus')).toHaveCount(1);
+
+      await page.locator('#claim-privacy-btn').click();
+      // Where the door lands (ProfileView.focusSection('privacy')): the Privacy section's first
+      // shown, enabled button, or the frame's Close row when that account state refuses them all.
+      const landing = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('#privacy-overlay button')].filter(
+          (b) =>
+            (b as HTMLButtonElement).style.display !== 'none' && !(b as HTMLButtonElement).disabled,
+        );
+        return rows[0]?.id ?? 'profile-close-btn';
+      });
+      expect(landing, 'the landing row has an id').not.toBe('');
+      await expect(page.locator(`#${landing}`)).toBeFocused();
+      if (landing !== 'profile-close-btn') {
+        await expect(page.locator('#privacy-overlay :focus')).toHaveCount(1);
+      }
+      // ONE dialog: the Account section is still shown beside it, both inside #profile-overlay.
+      await expect(page.locator('#profile-overlay')).toBeVisible();
+      await expect(page.locator('#claim-overlay')).toBeVisible();
+      await expect(page.locator('#privacy-overlay')).toBeVisible();
+      await expect(page.locator('#profile-overlay #privacy-overlay')).toHaveCount(1);
+      await expect(page.locator('#privacy-close-btn'), 'the retired close anchor').toHaveCount(0);
+      expect(
+        await page.evaluate(() =>
+          (window as unknown as { __game: () => { stack: Array<{ kind: string; id?: string }> } })
+            .__game()
+            .stack.filter((f) => f.kind === 'screen')
+            .map((f) => f.id),
+        ),
+      ).toEqual(['menuView', 'profileView']);
+
+      await page.locator('#profile-close-btn').click();
+      await expect(page.locator('#profile-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect(page.locator('#claim-overlay')).toBeHidden();
+      await expect(page.locator('#privacy-overlay')).toBeHidden();
+      await closeAll(page);
+      await expect.poll(() => stackLength(page), { timeout: 5_000 }).toBe(1);
     });
   });

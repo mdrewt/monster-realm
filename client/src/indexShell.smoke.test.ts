@@ -41,10 +41,16 @@ const CONSTRUCTED: ReadonlySet<OverlayId> = new Set<OverlayId>([
   'boxView',
   'raisingView',
   'evolutionView',
-  'claimView',
-  'privacyView',
+  // uif-16b (named intentional change): 7 -> 5: claimView and privacyView left the roster (they
+  // are Profile's sections now, not overlays). profileView is in CONSTRUCTED_ROOT_STATIC_ANCHOR.
   'controlsView',
 ]);
+
+/** uif-16b (UIF16B.1): an overlay whose dialog ROOT is constructed at runtime but whose anchor is
+ *  static markup: `profileView` builds `#profile-overlay` and re-parents the shipped
+ *  `#rename-overlay` (its Name section, no dialog ARIA of its own) into it, so `#rename-input`
+ *  resolves in index.html while no static node may claim to be its dialog. */
+const CONSTRUCTED_ROOT_STATIC_ANCHOR: ReadonlySet<OverlayId> = new Set<OverlayId>(['profileView']);
 
 const NATIVE_FOCUSABLE = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'A']);
 
@@ -97,6 +103,19 @@ describe('index.html shell contract', () => {
     }
     expect(anchor, `${id}: ${meta.initialFocusSelector} must resolve in index.html`).not.toBeNull();
     if (anchor === null) return;
+    if (CONSTRUCTED_ROOT_STATIC_ANCHOR.has(id)) {
+      // uif-16b: the static section holding the anchor is NOT a dialog; the dialog is built.
+      const section = shellRoot(anchor);
+      expect(section, `${id}: the anchor sits in a direct #frame-layer child`).not.toBeNull();
+      for (const attr of ['role', 'aria-modal', 'aria-label']) {
+        expect(section?.hasAttribute(attr), `${id}: the static section carries no ${attr}`).toBe(
+          false,
+        );
+      }
+      expect(NATIVE_FOCUSABLE.has(anchor.tagName), `${id}: a native anchor`).toBe(true);
+      expect(anchor.getAttribute('tabindex'), `${id}: with no tabindex`).toBeNull();
+      return;
+    }
     const root = shellRoot(anchor);
     expect(root, `${id}: anchor must sit inside a direct #frame-layer child`).not.toBeNull();
     expect(root?.getAttribute('role')).toBe(meta.role);
@@ -414,7 +433,11 @@ function must(id: string): HTMLElement {
   return el;
 }
 
-const NINE_SHELL_IDS = [
+// uif-16b (named intentional change): 9 -> 8 shells (11 -> 10 static aria-modal dialog roots in
+// #frame-layer): `rename-overlay` is no longer a static dialog shell. It is Profile's Name
+// section (class mr-button-rows, no role / aria-modal / mr-frame / mr-shell), still a direct
+// #frame-layer child in the markup (ProfileView re-parents it at runtime): SECTION_IDS below.
+const EIGHT_SHELL_IDS = [
   'dialogue-overlay',
   'quest-log-overlay',
   'heal-overlay',
@@ -422,13 +445,16 @@ const NINE_SHELL_IDS = [
   'trade-overlay',
   'pvp-challenge-overlay',
   'leaderboard-overlay',
-  'rename-overlay',
   'tradepropose-overlay',
 ] as const;
-/** The ten roots that carry `.mr-frame`: the nine shells plus help. */
-const FRAMED_IDS: readonly string[] = [...NINE_SHELL_IDS, 'help-overlay'];
-/** Every root inside #frame-layer; the menu hosts its own ui/frame.ts `.mr-frame`. */
+/** The nine roots that carry `.mr-frame`: the eight shells plus help. */
+const FRAMED_IDS: readonly string[] = [...EIGHT_SHELL_IDS, 'help-overlay'];
+/** Every dialog root inside #frame-layer; the menu hosts its own ui/frame.ts `.mr-frame`. */
 const FRAME_LAYER_IDS: readonly string[] = [...FRAMED_IDS, 'menu-overlay'];
+/** The static Profile sections in #frame-layer (uif-16b): not dialogs. */
+const SECTION_IDS: readonly string[] = ['rename-overlay'];
+/** Every direct #frame-layer child in the markup: the dialog roots and the sections. */
+const LAYER_CHILD_IDS: readonly string[] = [...FRAME_LAYER_IDS, ...SECTION_IDS];
 
 /** Every id-bearing descendant each root shipped before ctl-7a (client/index.html at 8e4d49b7).
  *
@@ -566,7 +592,7 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
     }
   });
 
-  it('CTL7A-2-SHELLS-FRAMED: the nine index.html shells, help and the menu are children of #frame-layer, class-styled, hidden by display:none alone, with every id and data-testid unchanged', () => {
+  it('CTL7A-2-SHELLS-FRAMED: the eight index.html shells (uif-16b: rename left, see UIF16B.1), help and the menu are children of #frame-layer, class-styled, hidden by display:none alone, with every id and data-testid unchanged', () => {
     // WRONG IMPL KILLED: a shell left as a body child (it renders below the fold again); a shell
     // without .mr-frame / .mr-shell (it keeps the dark-on-dark default); .mr-frame ON the menu
     // overlay (menuView's `rows.closest('.mr-frame')` would then return the overlay itself and
@@ -603,20 +629,21 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
     }
 
     // Ids and test ids: nothing lost, nothing added, each under its own root.
-    for (const id of FRAME_LAYER_IDS) {
+    // uif-16b (named change): the walk covers the ten dialog roots AND the Name section.
+    for (const id of LAYER_CHILD_IDS) {
       for (const inner of INNER_IDS[id]) {
         expect(must(id).querySelector(`#${inner}`), `#${inner} stays inside #${id}`).not.toBeNull();
       }
     }
     const expectedIds = [
-      ...FRAME_LAYER_IDS,
-      ...FRAME_LAYER_IDS.flatMap((id) => INNER_IDS[id]),
+      ...LAYER_CHILD_IDS,
+      ...LAYER_CHILD_IDS.flatMap((id) => INNER_IDS[id]),
     ].sort();
     expect(
       Array.from(layer.querySelectorAll('[id]'))
         .map((el) => el.id)
         .sort(),
-      'the ids inside #frame-layer are exactly the eleven roots and their original inner ids',
+      'the ids inside #frame-layer are exactly the ten roots, the Name section and their inner ids',
     ).toEqual(expectedIds);
     expect(
       Array.from(layer.querySelectorAll('[data-testid]'))
@@ -630,6 +657,31 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
         `data-testid="${testId}" still sits on #${testId}`,
       ).toBe(testId);
     }
+  });
+
+  it('UIF16B.1 #rename-overlay ships as Profile`s Name section: a direct #frame-layer child, class mr-button-rows, NOT mr-frame / mr-shell, no role / aria-modal / aria-label, hidden by display:none alone; and no #profile-overlay is static markup', () => {
+    // WRONG IMPL KILLED: the old static dialog shell left in place (a second aria-modal dialog in
+    // the markup beside the constructed #profile-overlay: two traps, and a Name section that styles
+    // as a framed absolute box inside the frame); a missing column class; a static
+    // #profile-overlay (the frame's root is constructed by ProfileView).
+    const section = must('rename-overlay');
+    expect(section.parentElement?.id, 'a direct #frame-layer child').toBe('frame-layer');
+    expect(section.classList.contains('mr-button-rows'), 'class mr-button-rows').toBe(true);
+    expect(section.classList.contains('mr-frame'), 'no mr-frame').toBe(false);
+    expect(section.classList.contains('mr-shell'), 'no mr-shell').toBe(false);
+    for (const attr of ['role', 'aria-modal', 'aria-label', 'aria-labelledby']) {
+      expect(section.hasAttribute(attr), `no ${attr}`).toBe(false);
+    }
+    const style = (section.getAttribute('style') ?? '').replace(/\s+/g, '').replace(/;$/, '');
+    expect(style, 'inline style is display:none and nothing else').toBe('display:none');
+    expect(doc.getElementById('profile-overlay'), 'the dialog root is constructed').toBeNull();
+    // uif-16b (named intentional change): 11 -> 10 static aria-modal shells in the markup.
+    expect(
+      Array.from(doc.querySelectorAll('[aria-modal="true"]'))
+        .map((el) => el.id)
+        .sort(),
+      'the static aria-modal dialog roots are exactly the ten shells',
+    ).toEqual([...FRAME_LAYER_IDS].sort());
   });
 
   it('CTL7A-2-FRAME-IN-VIEWPORT-CSS: the base .mr-shell is absolutely placed with all four insets set to non-negative lengths and scrolls its own overflow, a .mr-shell--* modifier only ever re-positions to absolute (or, for --top alone, fixed) and never touches an inset or the overflow, and .mr-frame-layer fills the screen', () => {
@@ -828,12 +880,13 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
     }
   });
 
-  it('CTL7A-3-NO-INLINE-COLOUR: none of the eleven frame roots or their descendants carries an inline colour or background', () => {
+  it('CTL7A-3-NO-INLINE-COLOUR: none of the eleven frame-layer children (ten dialog roots and the Name section) or their descendants carries an inline colour or background', () => {
     // WRONG IMPL KILLED: a root that keeps its old inline `color:#e0e0e0;background:rgba(...)`
     // (the inline declaration beats the class rule, so the token pair never applies); an inline
     // `bgcolor` / `color` attribute; a descendant with its own inline `color`.
+    // uif-16b (named change): the same eleven nodes, now ten roots + the Name section.
     let checked = 0;
-    for (const id of FRAME_LAYER_IDS) {
+    for (const id of LAYER_CHILD_IDS) {
       const root = must(id);
       for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
         const style = (el.getAttribute('style') ?? '').toLowerCase();

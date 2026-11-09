@@ -1,4 +1,4 @@
-// ui/overlayRegistry.ts — the pure modality core for the 18 mutual-exclusion overlays.
+// ui/overlayRegistry.ts — the pure modality core for the 16 mutual-exclusion overlays.
 //
 // FUNCTIONAL CORE. No DOM, no SDK, no import from `main.ts`, no view handles,
 // no thunks — every export here is a data table, a total pure function, or
@@ -24,7 +24,7 @@
 // `SCREEN_POLICY` in ui/contextStack.ts. What deliberately did NOT ship — zero consumers,
 // the A7/A15 precedent — is per-id `open` thunks, `isVisible(id)` and `anyVisibleExcept()`.
 
-/** The 18 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
+/** The 16 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
  *  mutual exclusion. Pinned by OR-MANIFEST-COMPLETE against `ui/*View.ts`. */
 export type OverlayId =
@@ -39,18 +39,16 @@ export type OverlayId =
   | 'tradeView'
   | 'pvpView'
   | 'leaderboardView'
-  | 'renameView'
+  // Profile (uif-16b): ONE dialog whose sections are the rename form, the claim prompt and the
+  // privacy surface (`renameView.ts`, `claimView.ts`, `privacyView.ts` are its sections, not
+  // overlays). GUARD_ONLY: it owns a text input and two two-step confirmations, one of them for an
+  // irreversible action, so nothing may open over it or dismiss it from under a confirmation.
+  // sessionView is DELIBERATELY NOT a member (a second EXCLUSIVE_TOP breaks decide(); D17): it is
+  // driven by conn.sessionState().
+  | 'profileView'
   | 'tradeProposeView'
   | 'helpView'
   | 'menuView'
-  // the claim overlay owns a text input, so it must GUARD movement
-  // input while open — GUARD_ONLY registration gives that for free. sessionView is DELIBERATELY
-  // NOT a member (a second EXCLUSIVE_TOP breaks decide(); D17): it is driven by conn.sessionState().
-  | 'claimView'
-  // the privacy surface. GUARD_ONLY, like every other modal a player
-  // OPENS — it owns a two-step confirmation for an irreversible action, so it must never be
-  // dismissed out from under that confirmation by a stray keypress.
-  | 'privacyView'
   // Options › Controls (ctl-12b). GUARD_ONLY: while a slot waits for a key the screen takes every
   // keydown, so nothing may open over it or dismiss it from under the capture.
   | 'controlsView';
@@ -87,12 +85,10 @@ export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>> = {
   tradeView: 'GUARD_ONLY',
   pvpView: 'GUARD_ONLY',
   leaderboardView: 'GUARD_ONLY',
-  renameView: 'GUARD_ONLY',
+  profileView: 'GUARD_ONLY',
   tradeProposeView: 'GUARD_ONLY',
   helpView: 'GUARD_ONLY',
   menuView: 'GUARD_ONLY',
-  claimView: 'GUARD_ONLY',
-  privacyView: 'GUARD_ONLY',
   controlsView: 'GUARD_ONLY',
 };
 
@@ -231,9 +227,12 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     initialFocusSelector: '#leaderboard-title',
     dismissible: true,
   },
-  renameView: {
+  profileView: {
     role: 'dialog',
-    labelKey: 'a11y.overlay.renameView.title',
+    labelKey: 'a11y.overlay.profileView.title',
+    // The name field: the first row of the column, never hidden and never disabled, so the anchor
+    // holds in every claim and privacy phase. An open on Account or Privacy seats that section's
+    // own row at once (ui/profileView.ts), before this deferred anchor would land.
     initialFocusSelector: '#rename-input',
     dismissible: true,
   },
@@ -253,27 +252,6 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     role: 'dialog',
     labelKey: 'a11y.overlay.menuView.title',
     initialFocusSelector: '#menu-rows',
-    dismissible: true,
-  },
-  claimView: {
-    role: 'dialog',
-    labelKey: 'a11y.overlay.claimView.title',
-    initialFocusSelector: '#claim-signin-btn',
-    dismissible: true,
-  },
-  privacyView: {
-    role: 'dialog',
-    labelKey: 'a11y.overlay.privacyView.title',
-    // A NATIVE <button>, not a tabindex-ed heading.
-    //
-    // THE CLOSE BUTTON, NOT THE DELETE BUTTON (A2-D10). `#privacy-delete-btn` carries `disabled`
-    // in every phase except `active` — and a disabled control is unfocusable, so in `grace`
-    // (PRV1-3's own state) `.focus()` would be a silent no-op leaving focus on <body>, where
-    // `focusTrap`'s capture listener on the root never fires and Tab walks the page behind the
-    // modal. In `terminal` — this criterion's flagship state — every other control is disabled or
-    // hidden, so the trap would have NO focusable content at all. The close control is the one
-    // thing enabled in all five phases.
-    initialFocusSelector: '#privacy-close-btn',
     dismissible: true,
   },
   controlsView: {

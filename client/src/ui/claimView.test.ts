@@ -34,12 +34,23 @@
 // behaviour rather than hiding it — the fix needs claimModel.ts (a new ClaimEvent)
 // or main.ts (route KeyC through applyClaim), BOTH outside this slice's touches:,
 // and main.ts is reserved for S5 by spec §4.
+//
+// uif-16b (UIF16B.1-UIF16B.4) — THE OVERLAY IS NOW A SECTION. ClaimView is Profile's Account
+// section: it opens no a11y of its own (the one dialog is ProfileView's), `render(vm)` NO LONGER
+// writes the root's display (`show()` / `hide()` own it; `vm.visible` is main.ts's auto-open
+// signal only), the frame title bar becomes `h2#claim-frame-title.mr-section-header`, the frame
+// classes go (`mr-button-rows` stays), `applyRowOp` retires (the frame walks the one column), the
+// new REQUIRED `onDismissed` handler is called from every `hide()`, and `armed` is public. So the
+// m23-s4 block below is REPLACED: its open/close/trap/focus teeth live at frame level in
+// ui/profileView.test.ts UIF16B.3 and ui/overlayA11yWiring.test.ts (S10-WIRE-*:profileView); the
+// three-doors shape is gone (one door: show()); and the DOCUMENTED RESIDUAL above
+// (S4-claimView-REOPEN-AFTER-HIDE) is moot: render() cannot re-show the section, and hide()'s
+// onDismissed is the dismissal the model lacked. What stays here is section behaviour.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { t } from './a11yCopy';
 import {
   buildClaimViewModel,
   CLAIM_INITIAL,
@@ -51,8 +62,8 @@ import {
 import { ClaimView, type ClaimViewHandlers } from './claimView';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
-import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
-import type { RowOp, RowSection } from './screens/profileScreen';
+import { OVERLAY_IDS } from './overlayRegistry';
+import { type RowOp, type RowSection, walkSection } from './screens/profileScreen';
 
 // The m23-s4 MECHANISM oracle. `{ spy: true }` records every call AND calls through
 // to the real implementation, so the VALUE oracle (real attribute writes, real focus
@@ -82,8 +93,19 @@ afterEach(async () => {
   await flushMacrotask();
 });
 
-const S4_ID: OverlayId = 'claimView';
-const S4_META = OVERLAY_A11Y[S4_ID];
+/** Close every overlay record (sync; the file-level hooks also flush a macrotask). */
+function sweepA11y(): void {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+}
+
+/** uif-16b: the section's own `applyRowOp` retires (ProfileView walks the one column). This is
+ *  the frame's one-token rule over THIS section alone: `walkSection` over its RowSection, a
+ *  pressed row clicked when it is a button. The token-once memo is the frame's
+ *  (ui/profileView.test.ts UIF16B.2). */
+function walk(section: RowSection, op: RowOp): void {
+  const press = walkSection(section, document.activeElement, op);
+  if (press instanceof HTMLButtonElement) press.click();
+}
 
 /** A focusable OUTSIDE the overlay: the "pre-open" element a close must restore focus to. */
 function outsideSentinel(): HTMLButtonElement {
@@ -91,30 +113,6 @@ function outsideSentinel(): HTMLButtonElement {
   btn.id = 'outside-sentinel';
   document.body.appendChild(btn);
   return btn;
-}
-
-/** A focusable INSIDE the overlay, as a DIRECT child of the root. */
-function insideSentinel(root: HTMLElement): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.id = 'inside-sentinel';
-  root.appendChild(btn);
-  return btn;
-}
-
-/** OPEN-LAST capture (plan §8 A3/A5 — applied to the render() door specifically, not
- *  only show(), per D5's real production sequence). See battleView.test.ts's file
- *  header for the full mechanism rationale: a post-hoc read of
- *  mock.calls[...][1].style.display is provably vacuous; this spies on the FIRST
- *  attribute write (`role`) and delegates to the real setAttribute. NEVER
- *  vi.importActual('./overlayA11y'). */
-function captureDisplayAtOpen(root: HTMLElement): { display: () => string | undefined } {
-  let captured: string | undefined;
-  const real = root.setAttribute.bind(root);
-  vi.spyOn(root, 'setAttribute').mockImplementation((name: string, value: string) => {
-    if (name === 'role' && captured === undefined) captured = root.style.display;
-    real(name, value);
-  });
-  return { display: () => captured };
 }
 
 function makeHandlers(): ClaimViewHandlers {
@@ -127,6 +125,8 @@ function makeHandlers(): ClaimViewHandlers {
     // Every required handler is spelled out: vitest does not typecheck, so a missing one would
     // stay silent in the test run until something clicks the button and calls `undefined()`.
     onPrivacy: vi.fn(),
+    // uif-16b: the new REQUIRED dismissal, called from every hide().
+    onDismissed: vi.fn(),
   };
 }
 
@@ -156,188 +156,70 @@ function s4Mount(): { view: ClaimView; handlers: ClaimViewHandlers; overlay: HTM
   return { view, handlers, overlay };
 }
 
-describe('ClaimView — m23-s4 overlay a11y wiring on the show()/hide()/render()/toggle() doors', () => {
-  it('S4-claimView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t()', () => {
-    const { view, overlay } = s4Mount();
-    expect(
-      view.visible,
-      'the shell must start hidden (ensureElement sets display:none), so show() IS an edge',
-    ).toBe(false);
+// uif-16b: the nine m23-s4 tests that stood here (OPEN-ARIA, ANCHOR-FOCUS, HELPER-CALLED,
+// CLOSE-RESTORE-UNGUARDED, REPEAT-NO-REOPEN, OPEN-LAST, TOGGLE, THREE-DOORS, REOPEN-AFTER-HIDE)
+// pinned this view's OWN overlay a11y on three doors. The section opens nothing now; the frame's
+// equivalents are ui/profileView.test.ts UIF16B.3 (one dialog via the helper, labelled from
+// a11yCopy; close strips and restores; a repeat show() neither re-opens nor moves focus; the
+// unguarded close; the Account section's anchor seated by show('account')). The residual
+// REOPEN-AFTER-HIDE pinned is moot (header). The section-level halves follow.
 
-    view.show();
-
-    expect(overlay.getAttribute('role')).toBe(S4_META.role);
-    expect(overlay.getAttribute('aria-modal')).toBe('true');
-    expect(overlay.getAttribute('aria-label')).toBe(t(S4_META.labelKey));
-  });
-
-  it('S4-claimView-ANCHOR-FOCUS BITES: the anchor resolves to the EXISTING #claim-signin-btn <button> with NO tabindex attribute at all, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
+describe('ClaimView (uif-16b): a section with one door', () => {
+  it('UIF16B.3 show(), render() of every phase, a repeat show() and hide() never call openOverlayA11y or closeOverlayA11y, and the root never carries role, aria-modal or aria-label', async () => {
+    // WRONG IMPL KILLED: a section that still opens its own dialog from show() or from render()
+    // (two traps cannot coexist; a claim event would re-open a second dialog inside Profile); a
+    // hand-written dialog attribute; a hide() that still closes `claimView`.
     const { view, overlay } = s4Mount();
     view.show();
-
-    const anchor = overlay.querySelector<HTMLElement>(S4_META.initialFocusSelector);
-    expect(
-      anchor,
-      `the anchor selector ${S4_META.initialFocusSelector} must resolve`,
-    ).not.toBeNull();
-    expect(anchor!.tagName).toBe('BUTTON');
-    expect(
-      anchor!.hasAttribute('tabindex'),
-      'a NATIVELY focusable control must carry NO tabindex attribute at all — unlike the ' +
-        'four <h2> anchors, #claim-signin-btn is a real <button> (claimView.ts:52)',
-    ).toBe(false);
-
-    expect(document.activeElement, 'not focused synchronously').not.toBe(anchor);
+    for (const [, state] of CLAIM_PHASES.map((c) => [c.label, c.state] as const)) {
+      view.render(buildClaimViewModel(state));
+    }
+    view.show();
     await flushMacrotask();
-    expect(document.activeElement, 'focused by IDENTITY after one real macrotask').toBe(anchor);
-  });
-
-  it('S4-claimView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
-    const { view, overlay } = s4Mount();
-
-    view.show();
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S4_ID, overlay);
-
+    for (const attr of ['role', 'aria-modal', 'aria-label']) {
+      expect(overlay.hasAttribute(attr), `no ${attr}`).toBe(false);
+    }
     view.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+    expect(vi.mocked(openOverlayA11y), 'the section opens nothing').not.toHaveBeenCalled();
+    expect(vi.mocked(closeOverlayA11y), 'nor closes anything').not.toHaveBeenCalled();
   });
 
-  it('S4-claimView-CLOSE-RESTORE-UNGUARDED BITES: hide() strips all three attributes and restores focus to the pre-open element; hide() on a never-shown view still closes without throwing; show/hide/hide yields exactly two closes', async () => {
-    const outside = outsideSentinel();
-    outside.focus();
+  it('UIF16B.1 render(vm) never writes the root display: a render of a hidden section leaves it hidden (vm.visible true or false), a render of a shown section leaves it shown; only show() and hide() move it', () => {
+    // WRONG IMPL KILLED: the old `display = vm.visible ? 'block' : 'none'` kept (a claim event
+    // would show the Account section ALONE outside the frame, or hide it inside an open Profile:
+    // a hole in the one screen); a show() that leaves the root hidden.
     const { view, overlay } = s4Mount();
-
-    view.show();
-    await flushMacrotask();
-    expect(document.activeElement, 'precondition: the open moved focus into the overlay').not.toBe(
-      outside,
-    );
-
-    view.hide();
-    expect(
-      overlay.getAttribute('role'),
-      'a display:none root must not keep claiming to be a dialog',
-    ).toBeNull();
-    expect(overlay.getAttribute('aria-modal')).toBeNull();
-    expect(overlay.getAttribute('aria-label')).toBeNull();
-    expect(document.activeElement, 'focus must return to the pre-open element').toBe(outside);
-
-    // hide() on a never-shown view: still closes, does not throw (D2's self-heal). Reuses
-    // the SAME underlying DOM (ensureElement finds the existing #claim-overlay), which is
-    // fine — a NEW ClaimView instance whose visible is already false is what this pins.
-    const fresh = new ClaimView(makeHandlers());
-    expect(fresh.visible, 'precondition: already hidden from the previous hide() above').toBe(
-      false,
-    );
-    expect(() => fresh.hide()).not.toThrow();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
-
-    // show/hide/hide => exactly TWO close calls (D2's deliberate asymmetry).
-    vi.clearAllMocks();
-    const cycle = new ClaimView(makeHandlers());
-    cycle.show();
-    cycle.hide();
-    cycle.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
-  });
-
-  it('S4-claimView-REPEAT-NO-REOPEN BITES: show() on an already-visible overlay neither re-opens nor yanks focus off a sentinel parked inside the root', async () => {
-    const { view, overlay } = s4Mount();
-    view.show();
-    await flushMacrotask();
-
-    const inside = insideSentinel(overlay);
-    inside.focus();
-    expect(document.activeElement).toBe(inside);
-
-    view.show();
-    await flushMacrotask();
-
-    expect(document.activeElement, 'a repeat open must NOT re-run the deferred focus').toBe(inside);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('S4-claimView-OPEN-LAST BITES: render(vm.visible=true) from a hidden shell invokes openOverlayA11y AFTER the display write is painted (neither "none" nor "") — never open-before-paint, and applied to the render() door specifically, not only show()', () => {
-    const { view, overlay } = s4Mount();
-    const capture = captureDisplayAtOpen(overlay);
-
+    expect(view.visible, 'constructed hidden').toBe(false);
     view.render(makeVm({ visible: true }));
-
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(
-      capture.display(),
-      'overlay.style.display AT THE INSTANT of the first setAttribute call inside ' +
-        'openOverlayA11y, invoked from render() rather than show()',
-    ).not.toBe('none');
-    expect(capture.display()).not.toBe('');
-  });
-
-  it('S4-claimView-TOGGLE BITES: toggle() from hidden opens exactly once; toggle() again closes exactly once', () => {
-    const { view } = s4Mount();
-    expect(view.visible).toBe(false);
-
-    view.toggle();
-    expect(view.visible).toBe(true);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-
-    view.toggle();
-    expect(view.visible).toBe(false);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('S4-claimView-THREE-DOORS BITES: replaying the real production sequence main.ts:446->457->458 (render(visible:true) -> show() -> render(visible:true), inside openClaim()) opens EXACTLY once; then hide() -> render(visible:false) closes exactly once and open stays at one', () => {
-    const { view } = s4Mount();
-    const vm = makeVm({ visible: true });
-
-    view.render(vm); // main.ts:446 — applyClaim's trailing renderClaim(), BEFORE show()
-    view.show(); // main.ts:457 — openClaim's own claimView?.show()
-    view.render(vm); // main.ts:458 — openClaim's trailing renderClaim()
-
-    expect(
-      vi.mocked(openOverlayA11y),
-      'D5: render() and show() must guard on the SAME derived wasVisible source — an ' +
-        'unguarded show() (a second open in the same tick) or an unguarded render() open ' +
-        '(re-opening on every render) both fail this count',
-    ).toHaveBeenCalledTimes(1);
-
-    view.hide();
+    expect(view.visible, 'a visible vm does not show a hidden section').toBe(false);
+    expect(overlay.style.display).toBe('none');
+    view.show();
+    expect(view.visible, 'show() shows it').toBe(true);
+    expect(overlay.style.display).toBe('block');
     view.render(makeVm({ visible: false }));
-
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(
-      vi.mocked(openOverlayA11y),
-      'the close arm of render() must not have re-opened the overlay',
-    ).toHaveBeenCalledTimes(1);
+    expect(view.visible, 'a hidden vm does not hide a shown section').toBe(true);
+    expect(overlay.style.display).toBe('block');
+    view.render(ARMED_VM);
+    expect(view.visible).toBe(true);
+    view.hide();
+    expect(view.visible, 'hide() hides it').toBe(false);
+    view.render(makeVm({ visible: true }));
+    expect(view.visible, 'and a later render cannot re-show it (the old residual)').toBe(false);
   });
 
-  it("S4-claimView-REOPEN-AFTER-HIDE BITES [DOCUMENTED RESIDUAL — pinned, not fixed here; upstream owner: claimModel.ts (a new ClaimEvent) or main.ts (route KeyC through applyClaim), both outside this slice's touches: and reserved for S5]: after hide(), a LATER render(visible=true) — which really happens on reconnect, because ClaimPhase never returns to 'hidden' — re-opens EXACTLY once", () => {
-    const { view } = s4Mount();
-
-    view.render(makeVm({ visible: true }));
-    view.show();
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-
-    // main.ts's KeyC close calls hide() DIRECTLY, never through applyClaim — so the model
-    // still believes the overlay is open.
+  it('UIF16B.4 every hide() calls onDismissed exactly once (shown or not), and nothing else fires', () => {
+    // WRONG IMPL KILLED: no dismissal (an armed decline stays armed behind a closed Profile, one
+    // Down away from the Name field next time: plan review RT-1); a dismissal guarded on
+    // visibility (a reconnect's force-hide of an already-hidden frame would skip it); a dismissal
+    // wired to Decline cancel (it would send a model event the player never chose).
+    const { view, handlers } = s4Mount();
     view.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
-
-    vi.clearAllMocks();
-    // A LATER reconnect-driven onClaimPending/onClaimAwaitingAccount/onClaimResult calls
-    // applyClaim -> render(vm) with vm.visible === true, because ClaimPhase never
-    // transitions back to 'hidden' (verified: no claimStep arm produces it).
-    view.render(makeVm({ visible: true }));
-
-    expect(
-      vi.mocked(openOverlayA11y),
-      'PINNED, not an aspiration: the a11y layer is behaving correctly for the DOM state it ' +
-        'observes (hidden -> visible IS a real edge); the defect is upstream, in a model that ' +
-        'cannot represent "dismissed". Today this silently re-shows the overlay (a ' +
-        'pre-existing display bug); after S4 it also announces and steals focus. Flagged ' +
-        'upward, not fixed.',
-    ).toHaveBeenCalledTimes(1);
+    expect(handlers.onDismissed, 'a hide() of a never-shown section').toHaveBeenCalledTimes(1);
+    view.show();
+    view.render(ARMED_VM);
+    view.hide();
+    expect(handlers.onDismissed, 'a hide() of a shown, armed section').toHaveBeenCalledTimes(2);
+    expect(firedNames(handlers), 'only the dismissal').toEqual(['onDismissed']);
   });
 });
 
@@ -409,8 +291,16 @@ describe('ClaimView — action buttons are shown per vm.actions and labelled', (
     expect(shown(IDS.declineCancel)).toBe(true);
   });
 
-  it('the initial-focus anchor #claim-signin-btn is VISIBLE when the prompt opens, and focus lands on it', async () => {
+  it('UIF16B.3 in the sign-in prompt the section`s default row (the anchor show(`account`) seats) is the VISIBLE #claim-signin-btn, and a render alone moves no focus', async () => {
+    // INTENTIONAL CHANGE (uif-16b): was "the initial-focus anchor #claim-signin-btn is VISIBLE
+    // when the prompt opens, and focus lands on it" (render() opened this overlay's own a11y,
+    // whose deferred anchor focused it). The Account anchor is now the frame's
+    // focusSection('account') = this section's defaultRow() (ui/profileView.test.ts UIF16B.3).
+    // WRONG IMPL KILLED: a default row on a hidden button; a render that still focuses (a claim
+    // event would pull the player out of the Name field).
     const { view } = s4Mount();
+    const outside = outsideSentinel();
+    outside.focus();
     view.render(
       makeVm({
         actions: {
@@ -425,7 +315,8 @@ describe('ClaimView — action buttons are shown per vm.actions and labelled', (
     await flushMacrotask();
     const anchor = btn(IDS.signIn);
     expect(anchor.style.display).not.toBe('none');
-    expect(document.activeElement).toBe(anchor);
+    expect(view.defaultRow()).toBe(anchor);
+    expect(document.activeElement, 'a render moves no focus').toBe(outside);
   });
 });
 
@@ -434,7 +325,7 @@ describe('ClaimView — action buttons are shown per vm.actions and labelled', (
 //
 // The rows are the overlay's real shown action buttons plus #claim-privacy-btn, in DOM order; the
 // cursor IS document.activeElement. accountScreen hands the view one-shot row tokens through
-// `view.applyRowOp(op)` (see renameView.test.ts for the contract's wording). Re-seating on a
+// `walk(view,op)` (see renameView.test.ts for the contract's wording). Re-seating on a
 // render happens ONLY when the overlay was already visible before it: the arm edge (confirmPrompt
 // undefined -> defined) focuses No (#claim-decline-cancel-btn), the disarm edge focuses the arming
 // button (#claim-decline-btn), and a focused control that the render hid goes to the default row.
@@ -576,13 +467,17 @@ const CLAIMED_VM: ClaimViewModel = makeVm({
   },
 });
 
-/** A brand new DOM and view, rendered once with `vm` (the overlay is visible afterwards). */
+/** A brand new DOM and view, rendered once with `vm` and then shown (the section is visible
+ *  afterwards). uif-16b (named fixture change): render() no longer shows the section, so the
+ *  fixture paints and then calls show(), the order main.ts's showProfile thunk uses (paint, then
+ *  ProfileView.show()). Was: render(vm) alone. */
 function freshVisible(vm: ClaimViewModel): { view: ClaimView; handlers: ClaimViewHandlers } {
-  closeOverlayA11y('claimView', null);
+  sweepA11y();
   document.body.replaceChildren();
   const handlers = makeHandlers();
   const view = new ClaimView(handlers);
   view.render(vm);
+  view.show();
   return { view, handlers };
 }
 
@@ -590,11 +485,11 @@ function freshVisible(vm: ClaimViewModel): { view: ClaimView; handlers: ClaimVie
  *  walk to the first row (clamped), then walk down until the cursor stops. */
 function walkRows(view: ClaimView): string[] {
   blurAll();
-  view.applyRowOp(moveOp(-1));
-  for (let i = 0; i < 12; i += 1) view.applyRowOp(moveOp(-1));
+  walk(view, moveOp(-1));
+  for (let i = 0; i < 12; i += 1) walk(view, moveOp(-1));
   const out = [focusedId()];
   for (let i = 0; i < 12; i += 1) {
-    view.applyRowOp(moveOp(1));
+    walk(view, moveOp(1));
     const id = focusedId();
     if (id === out[out.length - 1]) break;
     out.push(id);
@@ -609,7 +504,11 @@ const div = (id: string): HTMLElement => {
 };
 
 describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
-  it('CTL8H-3-B2-TITLE-BODY-VISIBLE: in every visible claim phase (prompt, code-pending, awaiting-account, each rejection, sign-in-failed, claimed, armed decline) a render alone shows #claim-title and #claim-body, with the vm text, all the way up to <body>', () => {
+  it('UIF16B.1 in every visible claim phase (prompt, code-pending, awaiting-account, each rejection, sign-in-failed, claimed, armed decline) a render un-hides #claim-title and #claim-body with the vm text (only the still-hidden section root hides them), and once show() runs they are on screen all the way up to <body>', () => {
+    // INTENTIONAL CHANGE (uif-16b): was CTL8H-3-B2-TITLE-BODY-VISIBLE, "a render alone shows ...
+    // all the way up to <body>". render() no longer writes the root's display, so a render alone
+    // leaves the nearest hidden ancestor the section root itself; the B2 bite (the nodes' OWN
+    // ensureElement display:none) is kept by pinning that ancestor's id exactly.
     // WRONG IMPL KILLED: today's shell (ensureElement creates both display:none and render()
     // only writes their text: a player reads an empty box, B2); an un-hide done in show() only
     // (the production sequence is render -> show -> render, but a reconnect-driven render alone
@@ -630,7 +529,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       ]),
     );
     for (const { label, state } of CLAIM_PHASES) {
-      closeOverlayA11y('claimView', null);
+      sweepA11y();
       document.body.replaceChildren();
       const view = new ClaimView(makeHandlers());
       const title = document.getElementById('claim-title');
@@ -644,7 +543,15 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
 
       const vm = buildClaimViewModel(state);
       view.render(vm);
-      expect(view.visible, `${label}: the overlay is visible`).toBe(true);
+      expect(view.visible, `${label}: a render alone does not show the section`).toBe(false);
+      expect(hiddenAncestorOf(title), `${label}: only the root hides #claim-title`).toBe(
+        '#claim-overlay',
+      );
+      expect(hiddenAncestorOf(body), `${label}: only the root hides #claim-body`).toBe(
+        '#claim-overlay',
+      );
+      view.show();
+      expect(view.visible, `${label}: the section is visible`).toBe(true);
       expect(hiddenAncestorOf(title), `${label}: #claim-title on screen`).toBeNull();
       expect(hiddenAncestorOf(body), `${label}: #claim-body on screen`).toBeNull();
       expect(title?.textContent, `${label}: the title text`).toBe(vm.title);
@@ -654,7 +561,10 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     }
   });
 
-  it('CTL8H-3-B3-ANCHOR: the overlay is attached under #frame-layer when present, else under #game-screen, else directly under <body>, and carries the classes mr-frame and mr-shell with all its controls inside it', () => {
+  it('UIF16B.1 the section is constructed under #frame-layer when present, else under #game-screen, else directly under <body>, carries mr-button-rows and NOT mr-frame / mr-shell, with all its controls inside it', () => {
+    // INTENTIONAL CHANGE (uif-16b): was CTL8H-3-B3-ANCHOR, "... carries the classes mr-frame and
+    // mr-shell". A section styled as a frame is a bordered absolute shell inside Profile's shell.
+    // The construction anchor is unchanged (ProfileView re-parents the root into its frame).
     // WRONG IMPL KILLED: an overlay appended to <body> whatever the page has (it renders in flow
     // below the canvas, black on near-black: B3); one anchored by a parent id alone (always
     // #game-screen, or the first child of <body>); a frame-layer lookup that only works inside
@@ -666,8 +576,9 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       expect(view.visible, 'constructed hidden').toBe(false);
       const overlay = document.getElementById('claim-overlay');
       if (overlay === null) throw new Error('#claim-overlay must exist after construction');
-      expect(overlay.classList.contains('mr-frame'), 'class mr-frame').toBe(true);
-      expect(overlay.classList.contains('mr-shell'), 'class mr-shell').toBe(true);
+      expect(overlay.classList.contains('mr-frame'), 'no class mr-frame').toBe(false);
+      expect(overlay.classList.contains('mr-shell'), 'no class mr-shell').toBe(false);
+      expect(overlay.classList.contains('mr-button-rows'), 'class mr-button-rows').toBe(true);
       for (const id of ['claim-title', 'claim-body', 'claim-signin-btn', 'claim-privacy-btn']) {
         expect(overlay.contains(document.getElementById(id)), `#${id} is inside the overlay`).toBe(
           true,
@@ -702,7 +613,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     expect(app.contains(overlay), 'and not inside an unrelated node').toBe(false);
   });
 
-  it('CTL8H-3-VIEW-ROW-OPS: applyRowOp walks the shown buttons in DOM order with focus as the cursor (hidden buttons skipped, clamped, no wrap), no row focused seats the default row (the first, or No when armed), activate clicks the focused button once and fires nothing when no row is focused, and the same op object applies once', () => {
+  it('CTL8H-3-VIEW-ROW-OPS: the section walk covers the shown buttons in DOM order with focus as the cursor (hidden buttons skipped, clamped, no wrap), no row focused seats the default row (the first, or No when armed), activate clicks the focused button once and fires nothing when no row is focused', () => {
     // WRONG IMPL KILLED: rows that include a display:none button (focus() on it is a no-op: the
     // cursor sticks); a wrap; a move from nothing that lands on the second row; an activate that
     // fires the default row when nothing is focused (an armed reopen would CONFIRM the decline
@@ -712,16 +623,16 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
 
     // --- no row focused: the default row, for either direction ---------------------------------
     blurAll();
-    view.applyRowOp(moveOp(1));
+    walk(view, moveOp(1));
     expect(focusedId(), 'move +1 with nothing focused: the first row').toBe('claim-signin-btn');
     blurAll();
-    view.applyRowOp(moveOp(-1));
+    walk(view, moveOp(-1));
     expect(focusedId(), 'move -1 with nothing focused: the first row').toBe('claim-signin-btn');
 
     // --- the walk: hidden join / confirm / cancel buttons are skipped, the ends clamp ---------
     const down: string[] = [];
     for (let i = 0; i < 4; i += 1) {
-      view.applyRowOp(moveOp(1));
+      walk(view, moveOp(1));
       down.push(focusedId());
     }
     expect(down, 'down, then clamped on the privacy door').toEqual([
@@ -732,7 +643,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     ]);
     const up: string[] = [];
     for (let i = 0; i < 4; i += 1) {
-      view.applyRowOp(moveOp(-1));
+      walk(view, moveOp(-1));
       up.push(focusedId());
     }
     expect(up, 'up, then clamped on the first row').toEqual([
@@ -743,14 +654,14 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     ]);
 
     // --- activate clicks the focused button, once ----------------------------------------------
-    view.applyRowOp(moveOp(1));
+    walk(view, moveOp(1));
     expect(focusedId()).toBe('claim-decline-btn');
-    view.applyRowOp(activateOp());
+    walk(view, activateOp());
     expect(firedNames(handlers), 'A on Decline').toEqual(['onDeclineRequested']);
     expect(handlers.onDeclineRequested).toHaveBeenCalledTimes(1);
-    view.applyRowOp(moveOp(1));
+    walk(view, moveOp(1));
     expect(focusedId()).toBe('claim-privacy-btn');
-    view.applyRowOp(activateOp());
+    walk(view, activateOp());
     expect(handlers.onPrivacy, 'A on the privacy door').toHaveBeenCalledTimes(1);
     expect(handlers.onDeclineRequested, 'and nothing else fired again').toHaveBeenCalledTimes(1);
 
@@ -759,49 +670,29 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       vi.mocked(handlers[name]).mockClear();
     }
     blurAll();
-    view.applyRowOp(activateOp());
+    walk(view, activateOp());
     expect(focusedId(), 'A with no row focused seats the first row').toBe('claim-signin-btn');
     expect(firedNames(handlers), 'and fires nothing').toEqual([]);
 
     // --- armed: the default row is No, never Confirm ------------------------------------------
     view.render(ARMED_VM);
     blurAll();
-    view.applyRowOp(moveOp(1));
+    walk(view, moveOp(1));
     expect(focusedId(), 'armed, nothing focused: move seats No, not the first row').toBe(
       'claim-decline-cancel-btn',
     );
     blurAll();
-    view.applyRowOp(activateOp());
+    walk(view, activateOp());
     expect(focusedId(), 'armed, nothing focused: A seats No').toBe('claim-decline-cancel-btn');
     expect(firedNames(handlers), 'and neither confirms nor cancels').toEqual([]);
-    view.applyRowOp(moveOp(-1));
+    walk(view, moveOp(-1));
     expect(focusedId(), 'up from No: Confirm').toBe('claim-decline-confirm-btn');
-    view.applyRowOp(moveOp(1));
-    view.applyRowOp(moveOp(1));
+    walk(view, moveOp(1));
+    walk(view, moveOp(1));
     expect(focusedId(), 'down past No: the privacy door').toBe('claim-privacy-btn');
 
-    // --- the identity memo ----------------------------------------------------------------
-    view.render(PROMPT_VM);
-    const hop = moveOp(1);
-    (document.getElementById('claim-signin-btn') as HTMLElement).focus();
-    view.applyRowOp(hop);
-    expect(focusedId(), 'the first application moves').toBe('claim-decline-btn');
-    (document.getElementById('claim-signin-btn') as HTMLElement).focus();
-    view.applyRowOp(hop);
-    expect(focusedId(), 'the same op object is not applied twice').toBe('claim-signin-btn');
-    view.applyRowOp(moveOp(1));
-    expect(focusedId(), 'an equal but fresh op is a new press').toBe('claim-decline-btn');
-
-    vi.mocked(handlers.onDeclineRequested).mockClear();
-    const press = activateOp();
-    view.applyRowOp(press);
-    view.applyRowOp(press);
-    expect(
-      handlers.onDeclineRequested,
-      'the same activate token clicks once',
-    ).toHaveBeenCalledTimes(1);
-    view.applyRowOp(activateOp());
-    expect(handlers.onDeclineRequested, 'a fresh token clicks again').toHaveBeenCalledTimes(2);
+    // uif-16b: the identity-memo segment that stood here moved with `applyRowOp` to the frame:
+    // ui/profileView.test.ts UIF16B.2 "a token is applied once".
   });
 
   it('CTL8H-3-ROWS: in every claim phase the rows the D-pad walks are exactly the shown buttons in DOM order, the privacy door last', () => {
@@ -836,8 +727,8 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     // hidden and shown again while still armed, an activate that fires Confirm for focus on <body>.
     const id = (x: string): HTMLButtonElement => document.getElementById(x) as HTMLButtonElement;
 
-    // --- the open edge moves nothing (overlayA11y owns the initial focus) -----------------------
-    closeOverlayA11y('claimView', null);
+    // --- a render of a hidden section moves nothing (the frame's show() owns the anchor) ------
+    sweepA11y();
     document.body.replaceChildren();
     const outside = outsideSentinel();
     outside.focus();
@@ -911,21 +802,25 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
     }
     // --- hidden, then shown again while armed, focus on the page: A seats No, confirms nothing --
     {
+      // uif-16b (named fixture change): the section is hidden and re-shown through hide() /
+      // show() (render no longer writes the display). Was: render({visible:false}), render(ARMED).
       const { view, handlers } = freshVisible(ARMED_VM);
-      view.render(makeVm({ visible: false }));
+      view.hide();
       expect(view.visible, 'precondition: the overlay is hidden').toBe(false);
+      vi.mocked(handlers.onDismissed).mockClear();
       blurAll();
       view.render(ARMED_VM);
+      view.show();
       expect(view.visible, 'shown again, still armed').toBe(true);
       expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
-      view.applyRowOp(activateOp());
+      walk(view, activateOp());
       expect(focusedId(), 'A seats No').toBe('claim-decline-cancel-btn');
       expect(
         handlers.onDeclineConfirmed,
         'and does not confirm the decline',
       ).not.toHaveBeenCalled();
       expect(firedNames(handlers), 'it fired nothing at all').toEqual([]);
-      view.applyRowOp(activateOp());
+      walk(view, activateOp());
       expect(
         handlers.onDeclineCancelled,
         'the next A is the real press on No',
@@ -1059,7 +954,7 @@ describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
       }
 
       blurAll();
-      view.applyRowOp(activateOp());
+      walk(view, activateOp());
       expect(focusedId(), `${where}: A with no row focused seats the first row, Join`).toBe(
         'claim-join-btn',
       );
@@ -1100,7 +995,7 @@ function qf13EnglishAccountTitle(): string {
 
 /** A brand new DOM and view, NOT rendered (the overlay is hidden and unwritten afterwards). */
 function qf13Fresh(): { view: ClaimView; overlay: HTMLElement; handlers: ClaimViewHandlers } {
-  closeOverlayA11y('claimView', null);
+  sweepA11y();
   document.body.replaceChildren();
   const handlers = makeHandlers();
   const view = new ClaimView(handlers);
@@ -1133,18 +1028,14 @@ function qf13ExpectPainted(style: CSSStyleDeclaration, label: string): void {
   expect(style.display, `${label}: display`).not.toBe('none');
 }
 
-/** The structural contract of the Account title bar, asserted on the overlay as it stands. Returns
- *  the title node. */
+/** The structural contract of the Account section header, asserted on the section as it stands.
+ *  Returns the header node.
+ *  INTENTIONAL CHANGE (uif-16b, UIF16B.1): was the frame title bar contract (a
+ *  `div.mr-frame-titlebar` first child holding `div.mr-frame-title#claim-frame-title`). The
+ *  section leads with `h2.mr-section-header#claim-frame-title`, same key; no title bar at all. */
 function qf13AssertAccountBar(label: string, overlay: HTMLElement): HTMLElement {
-  const bar = overlay.firstElementChild;
-  expect(bar, `${label}: the overlay has a first element child`).not.toBeNull();
-  expect(bar?.tagName, `${label}: the titlebar is a div`).toBe('DIV');
-  expect(
-    [...(bar?.classList ?? [])],
-    `${label}: the titlebar carries exactly the frame-chrome class`,
-  ).toEqual(['mr-frame-titlebar']);
-  expect(bar?.children.length, `${label}: the titlebar holds exactly one child`).toBe(1);
-
+  expect(overlay.querySelector('.mr-frame-titlebar'), `${label}: no frame title bar`).toBeNull();
+  expect(overlay.querySelector('.mr-frame-title'), `${label}: no frame title`).toBeNull();
   const titles = overlay.querySelectorAll('#claim-frame-title');
   expect(titles.length, `${label}: exactly one #claim-frame-title in the overlay`).toBe(1);
   expect(
@@ -1152,12 +1043,13 @@ function qf13AssertAccountBar(label: string, overlay: HTMLElement): HTMLElement 
     `${label}: and one in the document`,
   ).toBe(1);
   const title = titles[0] as HTMLElement;
-  expect(title.parentElement, `${label}: the title sits directly in the titlebar`).toBe(bar);
-  expect(title.tagName, `${label}: the title is a div`).toBe('DIV');
+  const bar = title;
+  expect(overlay.firstElementChild, `${label}: the header leads the section`).toBe(title);
+  expect(title.tagName, `${label}: the header is an h2`).toBe('H2');
   expect(
     [...title.classList],
-    `${label}: the title carries exactly the frame-chrome class`,
-  ).toEqual(['mr-frame-title']);
+    `${label}: the header carries exactly the section-header class`,
+  ).toEqual(['mr-section-header']);
   expect(title.hasAttribute('tabindex'), `${label}: the title is not focusable`).toBe(false);
   expect(title.hasAttribute('role'), `${label}: the title carries no role`).toBe(false);
   expect(bar?.hasAttribute('tabindex'), `${label}: the titlebar is not focusable`).toBe(false);
@@ -1181,7 +1073,10 @@ function qf13AssertAccountBar(label: string, overlay: HTMLElement): HTMLElement 
 }
 
 describe('qf-13 (QF13.1): the Account frame title', () => {
-  it('in every visible claim phase, a render alone gives a div.mr-frame-titlebar as the first child holding the single div.mr-frame-title#claim-frame-title reading the catalogue Account title (independent of vm.title), on screen, not a row, with #claim-title still showing vm.title AFTER the bar; show() alone does the same; no second view duplicates it [QF13-1-ACCOUNT-TITLE]', () => {
+  it('UIF16B.1 in every visible claim phase, a paint gives the single h2.mr-section-header#claim-frame-title as the first child reading the catalogue Account title (independent of vm.title), on screen, not a row, with #claim-title still showing vm.title AFTER it; show() alone does the same; no second view duplicates it', () => {
+    // INTENTIONAL CHANGE (uif-16b): was [QF13-1-ACCOUNT-TITLE] over the frame title bar; the
+    // contract helper above carries the change. "A render alone" became render + show
+    // (freshVisible): render no longer shows the section.
     // WRONG IMPL KILLED: no title (today); a title appended AFTER #claim-title or the buttons (the
     // bar must lead the overlay); the per-phase heading #claim-title reused or overwritten as the
     // frame title (it must keep vm.title); a title that is the vm's text; bare element/classes or a
@@ -1232,8 +1127,8 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
       const again = new ClaimView(makeHandlers());
       again.render(vm);
       expect(
-        overlay.querySelectorAll('.mr-frame-titlebar').length,
-        `${label}: still one titlebar after a second view`,
+        overlay.querySelectorAll('.mr-section-header').length,
+        `${label}: still one section header after a second view`,
       ).toBe(1);
       expect(overlay.firstElementChild, `${label}: the same bar still leads`).toBe(bar);
       expect(
@@ -1273,37 +1168,29 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
       sheet = null;
     });
 
-    it('the shown Account titlebar computes a flex row with a bottom border line and the title computes bold, from the stylesheet and not from inline style, in the prompt and the armed-decline phases [QF13-1-ACCOUNT-TITLE-COMPUTED]', () => {
-      // WRONG IMPL KILLED: no bar (today); a wrong class name on the bar or the title (a plain div
-      // computes block and normal weight); an inline style standing in for the class; a title
-      // hidden by the stylesheet. happy-dom caches computed style per element: every element is
-      // read once, from a brand new DOM per phase.
+    it('UIF16B.1 the shown Account section header paints from the stylesheet and not from inline style, and the section is not an absolute frame shell, in the prompt and the armed-decline phases', () => {
+      // INTENTIONAL CHANGE (uif-16b): was [QF13-1-ACCOUNT-TITLE-COMPUTED] (the title bar a flex row
+      // with a bottom border, the title bold). The header is the type scale's section level.
+      // WRONG IMPL KILLED: a header hidden by the sheet; an inline style standing in for the class;
+      // a section still classed mr-shell (an absolutely placed box inside Profile's box).
+      // happy-dom caches computed style per element: each is read once, from a fresh DOM.
       for (const [label, vm] of [
         ['prompt', PROMPT_VM],
         ['armed', ARMED_VM],
       ] as const) {
         freshVisible(vm);
         const overlay = document.getElementById('claim-overlay') as HTMLElement;
-        const bar = overlay.firstElementChild as HTMLElement | null;
         const title = document.getElementById('claim-frame-title') as HTMLElement | null;
-        expect(bar, `${label}: the overlay has a first element child`).not.toBeNull();
-        expect(title, `${label}: the title exists`).not.toBeNull();
-        if (bar === null || title === null) continue;
-
-        expect(bar.style.cssText, `${label}: the bar carries no inline style`).toBe('');
-        expect(title.style.cssText, `${label}: the title carries no inline style`).toBe('');
-
-        const barStyle = getComputedStyle(bar);
-        expect(barStyle.display, `${label}: the titlebar is the sheet-driven flex row`).toBe(
-          'flex',
-        );
-        expect(barStyle.borderBottomStyle, `${label}: a bottom border line`).not.toBe('none');
-        qf13ExpectPainted(barStyle, `${label}: titlebar`);
+        expect(title, `${label}: the header exists`).not.toBeNull();
+        if (title === null) continue;
+        expect(title.style.cssText, `${label}: the header carries no inline style`).toBe('');
         const titleStyle = getComputedStyle(title);
-        expect(['bold', '700'], `${label}: the title is bold`).toContain(titleStyle.fontWeight);
-        expect(titleStyle.display, `${label}: the title is displayed`).not.toBe('none');
-        expect(titleStyle.visibility, `${label}: the title is visible`).not.toBe('hidden');
-        qf13ExpectPainted(titleStyle, `${label}: title`);
+        expect(titleStyle.display, `${label}: the header is displayed`).not.toBe('none');
+        expect(titleStyle.visibility, `${label}: the header is visible`).not.toBe('hidden');
+        qf13ExpectPainted(titleStyle, `${label}: header`);
+        expect(getComputedStyle(overlay).position, `${label}: not an absolute shell`).not.toBe(
+          'absolute',
+        );
       }
     });
 
@@ -1355,10 +1242,13 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
         freshVisible(vm);
         const overlay = document.getElementById('claim-overlay') as HTMLElement;
         const overlayStyle = getComputedStyle(overlay);
+        // uif-16b (named change): the section is no longer `.mr-frame`, so the old anti-vacuity
+        // ("the sheet reaches the overlay: .mr-frame is a column") is gone with the class; the
+        // sheet's reach is proved by the per-button `display: block` below (`.mr-button-rows`).
         expect(
-          overlayStyle.flexDirection,
-          `${label}: ANTI-VACUITY: the sheet reaches the overlay (.mr-frame is a column)`,
-        ).toBe('column');
+          overlay.classList.contains('mr-button-rows'),
+          `${label}: ANTI-VACUITY: the section carries the column class`,
+        ).toBe(true);
         const buttons = [...overlay.querySelectorAll('button')];
         expect(
           buttons.filter((b) => b.style.display !== 'none').map((b) => b.id),
@@ -1528,6 +1418,8 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     const handlers = makeHandlers();
     const view = new ClaimView(handlers);
     view.render(vm);
+    // uif-16b (named fixture change): render no longer shows the section; show() does.
+    view.show();
     return { view, handlers };
   };
   const override16 = (view: ClaimView, patch: Partial<RowSection>): void => {
@@ -1578,37 +1470,40 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     );
   });
 
-  it('UIF16A.2 applyRowOp seats defaultRow() when no row is focused: an overridden default wins', () => {
+  // uif-16b (named change): the UIF16A.2 tests below drove `view.applyRowOp`, which retires; they
+  // now drive the `walk` helper (walkSection over this RowSection, the frame's rule). The
+  // frame-level walk is gated in ui/profileView.test.ts UIF16B.2.
+  it('UIF16A.2 the section walk seats defaultRow() when no row is focused: an overridden default wins', () => {
     const { view, handlers } = open16(PROMPT16);
     override16(view, { defaultRow: () => byId16('claim-privacy-btn') });
     blur16();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'the override, not a private No / first-row fallback').toBe(
       'claim-privacy-btn',
     );
     blur16();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(focusedId16()).toBe('claim-privacy-btn');
     expect(handlers.onPrivacy, 'seating presses nothing').not.toHaveBeenCalled();
   });
 
-  it('UIF16A.2 applyRowOp walks the rows sectionRows() returns: an overridden list sets the order, the clamp and what A presses', () => {
+  it('UIF16A.2 the section walk follows the rows sectionRows() returns: an overridden list sets the order, the clamp and what A presses', () => {
     const { view, handlers } = open16(PROMPT16);
     // Real rows: [signin, decline, privacy]. Override: privacy first, signin last.
     override16(view, {
       sectionRows: () => [byId16('claim-privacy-btn'), byId16('claim-signin-btn')],
     });
     byId16('claim-privacy-btn').focus();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'down from the first overridden row').toBe('claim-signin-btn');
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe('claim-signin-btn');
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(handlers.onSignIn, 'A presses the focused overridden row once').toHaveBeenCalledTimes(1);
 
     // A real row the interface does not list is not a row: no press, the default is seated.
     byId16('claim-decline-btn').focus();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(
       handlers.onDeclineRequested,
       'A on an unlisted control presses nothing',
@@ -1619,16 +1514,16 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     const { view, handlers } = open16(PROMPT16);
     view.render(ARMED16);
     blur16();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(focusedId16(), 'armed, nothing focused: A seats No').toBe('claim-decline-cancel-btn');
     expect(handlers.onDeclineConfirmed, 'and confirms nothing').not.toHaveBeenCalled();
     expect(handlers.onDeclineCancelled, 'and does not press No either').not.toHaveBeenCalled();
 
     byId16('claim-privacy-btn').focus();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'no wrap past the last row').toBe('claim-privacy-btn');
     byId16('claim-decline-confirm-btn').focus();
-    view.applyRowOp(move16(-1));
+    walk(view, move16(-1));
     expect(focusedId16(), 'no wrap past the first row').toBe('claim-decline-confirm-btn');
   });
 
@@ -1647,5 +1542,29 @@ describe('ClaimView uif-16a: the shared section interface', () => {
     expect(focusedId16(), 'the render hid nothing, but the interface does not list Decline').toBe(
       'claim-signin-btn',
     );
+  });
+
+  it('UIF16B.4 armed is public and true exactly while the decline confirm is armed, across real phases', () => {
+    // WRONG IMPL KILLED: `armed` left private (ProfileView.defaultRow cannot prefer No); an
+    // `armed` that reads the Decline button (true in the plain prompt); one that is stuck after a
+    // disarm.
+    const { view } = open16(PROMPT16);
+    let armedSeen = 0;
+    for (const { label, state } of CLAIM_PHASES) {
+      const vm = buildClaimViewModel(state);
+      view.render(vm);
+      expect(view.armed, label).toBe(vm.actions.declineCancel);
+      if (view.armed) armedSeen += 1;
+    }
+    expect(armedSeen, 'ANTI-VACUITY: the armed phase was reached').toBe(1);
+    view.render(PROMPT16);
+    expect(view.armed, 'disarmed again').toBe(false);
+  });
+
+  it('UIF16B.2 the section no longer walks itself: it has no applyRowOp', () => {
+    // WRONG IMPL KILLED: a section that keeps `applyRowOp` + `#lastOp` (a second identity memo
+    // over the frame's token, or a section-scoped walk clamping at the section edge).
+    const view = new ClaimView(makeHandlers());
+    expect('applyRowOp' in view, 'no section-level applyRowOp').toBe(false);
   });
 });

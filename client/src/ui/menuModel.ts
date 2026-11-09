@@ -7,8 +7,9 @@
 // whichever locale is active when it is read, and catalogParity's DYNAMIC-KEY / DEAD-KEY checks see
 // each id at its call site.
 //
-// Each leaf opens one frame; the groups are one-level sub-lists inside the menu frame. Social is a
+// Each leaf opens one frame; a group is a one-level sub-list inside the menu frame. Social is a
 // leaf (uif-15b, #586 D3): it opens the 4-tab Social frame directly, on the tab the screen picks.
+// Profile is a leaf too (uif-16b): it opens the one Profile screen, on its Name section.
 // No leaf starts a trade or a challenge: both start face to face (A on the player you face,
 // ctl-10b); Social only answers them.
 import type { FrameId } from './contextStack';
@@ -21,14 +22,12 @@ export type MenuTarget = Extract<
   | 'raisingView'
   | 'questLogView'
   | 'social'
-  | 'renameView'
-  | 'claimView'
-  | 'privacyView'
+  | 'profileView'
   | 'helpView'
   | 'controlsView'
 >;
 
-export type MenuGroupKey = 'profile' | 'options';
+export type MenuGroupKey = 'options';
 
 interface MenuRowText {
   readonly key: string;
@@ -83,33 +82,11 @@ export const MENU_ENTRIES: readonly MenuEntry[] = [
     target: 'social',
   },
   {
-    kind: 'group',
+    kind: 'open',
     key: 'profile',
     title: () => t('menu.profile.title'),
     description: () => t('menu.profile.desc'),
-    children: [
-      {
-        kind: 'open',
-        key: 'name',
-        title: () => t('menu.profile.name.title'),
-        description: () => t('menu.profile.name.desc'),
-        target: 'renameView',
-      },
-      {
-        kind: 'open',
-        key: 'account',
-        title: () => t('menu.profile.account.title'),
-        description: () => t('menu.profile.account.desc'),
-        target: 'claimView',
-      },
-      {
-        kind: 'open',
-        key: 'privacy',
-        title: () => t('menu.profile.privacy.title'),
-        description: () => t('menu.profile.privacy.desc'),
-        target: 'privacyView',
-      },
-    ],
+    target: 'profileView',
   },
   {
     kind: 'group',

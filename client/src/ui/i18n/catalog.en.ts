@@ -488,10 +488,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Status-strip error shown when the browser blocked the account data-export download.
   // main.ts:582
   'chrome.status.exportBlocked': 'data export: download blocked by the browser',
-  // @desc: Status-strip error shown when the player opens the privacy overlay while another
-  // overlay is already open.
-  // main.ts:651
-  'chrome.status.privacyOverlayBusy': 'privacy: close the other overlay first',
   // @desc: Status-strip error shown when an action failed because the connection dropped;
   // {where} is the name of the action or view that was in progress (e.g. "shop").
   // main.ts:961
@@ -1145,9 +1141,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // English as claim.privacyButton today, but a different key: this is a HEADING. One short line.
   // privacyView.ts:145 (resolved in show())
   'privacy.title': 'Privacy & Account Data',
-  // @desc: Button that closes the privacy & account-data overlay; it is the first control and
-  // always enabled. Short verb, fits a very narrow button.
-  // privacyView.ts:151 (resolved in show())
+  // @desc: Button that closes the Profile screen; it is the last row and always enabled. Short
+  // verb, fits a very narrow button.
+  // ui/profileView.ts (resolved in show())
   'privacy.close': 'Close',
   // @desc: Second-step button that confirms the player's account deletion request, shown only
   // after they asked to delete. Two words, fits a narrow button.
@@ -1313,24 +1309,12 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the Close main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.close.desc': 'Close the menu and return to the world.',
-  // @desc: Profile sub-list entry opening the rename form.
-  // ui/menuModel.ts (MENU_ENTRIES)
+  // @desc: Header of the Name section of the Profile screen (the rename form).
+  // ui/renameView.ts
   'menu.profile.name.title': 'Name',
-  // @desc: Feedback-line description of the Name entry in the Profile sub-list, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.profile.name.desc': 'Change the name other players see.',
-  // @desc: Profile sub-list entry opening the account and sign-in screen.
-  // ui/menuModel.ts (MENU_ENTRIES)
+  // @desc: Header of the Account section of the Profile screen (sign-in and guest claim).
+  // ui/claimView.ts
   'menu.profile.account.title': 'Account',
-  // @desc: Feedback-line description of the Account entry in the Profile sub-list, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.profile.account.desc': 'Sign in or keep this guest progress.',
-  // @desc: Profile sub-list entry opening the privacy screen (data export, deletion).
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.profile.privacy.title': 'Privacy',
-  // @desc: Feedback-line description of the Privacy entry in the Profile sub-list, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.profile.privacy.desc': 'Export or delete your data.',
   // @desc: Options sub-list entry opening the how-to-play help screen.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.options.help.title': 'How to play',

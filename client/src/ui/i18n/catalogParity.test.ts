@@ -791,6 +791,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/menuModel.ts',
       'ui/privacyBanner.ts',
       'ui/privacyView.ts',
+      // uif-16b (named intentional change): the one Profile frame resolves its title and Close row
+      // (`menu.profile.title`, `privacy.close`); the three section files keep their rows.
+      'ui/profileView.ts',
       'ui/pvpView.ts',
       'ui/questLogView.ts',
       'ui/raisingView.ts',
@@ -860,7 +863,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.exportBlocked',
       'chrome.status.healUnavailable',
       'chrome.status.partyFull',
-      'chrome.status.privacyOverlayBusy',
+      // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' leaves
+      // main.ts with `reportError('privacy-busy', …)` (Profile is one dialog).
       'chrome.status.zoneEntered', // qf-15: the destination zone's name after a real zone change
       'dialogue.ended.leftZone', // qf-6: a refused advance ends the conversation, and says why
       'dialogue.ended.npcGone',

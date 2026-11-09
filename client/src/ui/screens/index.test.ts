@@ -90,7 +90,7 @@ import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
 import { controlsScreen } from './optionsScreen';
-import { accountScreen, nameScreen, privacyScreen } from './profileScreen';
+import { profileScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
 import { tradeProposeScreen } from './tradeProposeScreen';
@@ -229,9 +229,9 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   // ctl-8h (named intentional change): the rename, claim and privacy frames hold the Profile row
   // adapters (nav-capable, no observe, no memory). Like the Bag and the Journal they can no longer
   // stand for "a legacy frame" in this file.
-  ['renameView', nameScreen],
-  ['claimView', accountScreen],
-  ['privacyView', privacyScreen],
+  // uif-16b (named intentional change): those three frames are ONE, profileView, holding the one
+  // `profileScreen` row adapter (the three adapter exports collapse to it). CONVERTED 13 -> 11.
+  ['profileView', profileScreen],
   // ctl-12b (named intentional change): the new Options › Controls frame holds its own nav-capable
   // screen from the start (it never had a legacy adapter); its view model reads nothing.
   ['controlsView', controlsScreen],
@@ -253,7 +253,9 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     // adapter, and a host over SCREEN_ADAPTERS that does not answer a legacy screen as the
     // legacy adapter does.
     expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...FRAME_IDS].sort());
-    expect(FRAME_IDS, 'ANTI-VACUITY: 18 overlay ids and the Social frame').toHaveLength(19);
+    // uif-16b (named intentional change): 18 + 1 = 19 -> 16 + 1 = 17: renameView, claimView,
+    // privacyView left, profileView joined.
+    expect(FRAME_IDS, 'ANTI-VACUITY: 16 overlay ids and the Social frame').toHaveLength(17);
     expect(SCREEN_ADAPTERS.controlsView, 'the Controls frame is the ctl-12b Controls screen').toBe(
       controlsScreen,
     );
@@ -266,14 +268,9 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(SCREEN_ADAPTERS.questLogView, 'the quest log frame is the ctl-8f Journal').toBe(
       journalScreen,
     );
-    expect(SCREEN_ADAPTERS.renameView, 'the rename frame is the ctl-8h Name screen').toBe(
-      nameScreen,
-    );
-    expect(SCREEN_ADAPTERS.claimView, 'the claim frame is the ctl-8h Account screen').toBe(
-      accountScreen,
-    );
-    expect(SCREEN_ADAPTERS.privacyView, 'the privacy frame is the ctl-8h Privacy screen').toBe(
-      privacyScreen,
+    // uif-16b (named intentional change): the three ctl-8h rows are one.
+    expect(SCREEN_ADAPTERS.profileView, 'the Profile frame is the uif-16b profileScreen').toBe(
+      profileScreen,
     );
     expect(SCREEN_ADAPTERS.helpView, 'the help frame is the ctl-14 Help screen').toBe(helpScreen);
     expect(helpScreen.nav, 'and it is nav-capable').toBe(true);
@@ -470,8 +467,9 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
 });
 
 describe('typing mode (ctl-6b, CTL6B.5)', () => {
+  // uif-16b: the name field's owner is Profile (renameView is a section of it now).
   const OWNER_COMMANDS: Record<string, ScreenResult> = {
-    renameView: { kind: 'setProfileName', name: 'Zed' },
+    profileView: { kind: 'setProfileName', name: 'Zed' },
     tradeProposeView: { kind: 'proposeTrade', args: { marker: 'offer' } as never },
   };
 
@@ -529,7 +527,7 @@ describe('typing mode (ctl-6b, CTL6B.5)', () => {
     // Control: a screen frame (no text entry) on top routes A to its own adapter all the same.
     const rec = newRecorder();
     const adapters = stubAdapters(rec, () => ({ kind: 'claimJoin' }));
-    expect(hostOf(adapters).button(stackOf(WORLD, screen('claimView')), nav('A'), CTX)).toEqual({
+    expect(hostOf(adapters).button(stackOf(WORLD, screen('profileView')), nav('A'), CTX)).toEqual({
       kind: 'claimJoin',
     });
   });
@@ -785,7 +783,8 @@ describe('ScreenHost (ctl-7c)', () => {
       tableWith({
         boxView: counting('boxView', log),
         questLogView: counting('questLogView', log),
-        renameView: counting('renameView', log),
+        // uif-16b: the text-entry owner fixture is Profile (renameView is a section of it now).
+        profileView: counting('profileView', log),
       }),
     );
     const box = stackOf(WORLD, screen('boxView'));
@@ -850,12 +849,12 @@ describe('ScreenHost (ctl-7c)', () => {
     expect(lastStep(log).state, 'the owner resumes from its last state').toBe(lastBox.next);
 
     // An owner never stepped before: its first A inits it once, the second resumes it.
-    const renameTyping = stackOf(WORLD, screen('renameView'), textEntry('renameView'));
+    const renameTyping = stackOf(WORLD, screen('profileView'), textEntry('profileView'));
     host.button(renameTyping, nav('A'), CTX);
     const r1 = lastStep(log);
     host.button(renameTyping, nav('A'), CTX);
-    expect(log.inits.filter((i) => i.id === 'renameView').length, 'the owner inits once').toBe(1);
-    expect(r1.state).toBe(log.inits.find((i) => i.id === 'renameView')?.state);
+    expect(log.inits.filter((i) => i.id === 'profileView').length, 'the owner inits once').toBe(1);
+    expect(r1.state).toBe(log.inits.find((i) => i.id === 'profileView')?.state);
     expect(lastStep(log).state).toBe(r1.next);
 
     // One fresh view model per step: the object onButton saw is the one built for that step.
@@ -958,10 +957,11 @@ describe('ScreenHost (ctl-7c)', () => {
     // into the paint-error sink), and a throwing paint that escapes (a broken view would make B
     // and Start unable to close its frame), loses the result, or loses the state.
     const log = newLog();
+    // uif-16b: the text-entry owner fixture is Profile (renameView is a section of it now).
     const VIEWS: Partial<Record<FrameId, object>> = {
       boxView: { view: 'box' },
       questLogView: { view: 'quest' },
-      renameView: { view: 'rename' },
+      profileView: { view: 'profile' },
       leaderboardView: { view: 'leaderboard' },
       helpView: { view: 'help' },
       tradeView: { view: 'trade' },
@@ -971,7 +971,7 @@ describe('ScreenHost (ctl-7c)', () => {
       tableWith({
         boxView: counting('boxView', log, { paint: 'record' }),
         questLogView: counting('questLogView', log, { paint: 'record' }),
-        renameView: counting('renameView', log, { paint: 'record' }),
+        profileView: counting('profileView', log, { paint: 'record' }),
         leaderboardView: counting('leaderboardView', log, { paint: 'record', keepState: true }),
         helpView: counting('helpView', log),
         tradeView: counting('tradeView', log, { paint: 'throw' }),
@@ -1002,10 +1002,15 @@ describe('ScreenHost (ctl-7c)', () => {
       VIEWS.questLogView,
     );
     expect(log.paints.at(-1)?.state).toBe(lastStep(log).next);
-    const typing = stackOf(WORLD, screen('boxView'), screen('renameView'), textEntry('renameView'));
+    const typing = stackOf(
+      WORLD,
+      screen('boxView'),
+      screen('profileView'),
+      textEntry('profileView'),
+    );
     host.button(typing, nav('A'), CTX);
     expect(log.paints.at(-1)?.view, 'A over a text entry paints the owner`s view').toBe(
-      VIEWS.renameView,
+      VIEWS.profileView,
     );
     expect(log.paints.length).toBe(5);
     host.button(typing, nav('B'), CTX);
@@ -2045,26 +2050,27 @@ describe('ScreenHost.observe (ctl-7d)', () => {
     expect(lastStep(stepLog).state).toBe(helpFirst.next);
 
     // A text-entry frame is not a frame to observe: its owner is observed through its own frame.
+    // uif-16b: the text-entry owner is Profile (renameView is a section of it now).
     const typingLog = newObsLog();
     const typingHost = new ScreenHost(
       tableWith({
         boxView: observing('boxView', typingLog),
-        renameView: observing('renameView', typingLog),
+        profileView: observing('profileView', typingLog),
       }),
       noViews,
       record,
     );
-    typingHost.observe(stackOf(WORLD, screen('boxView'), textEntry('renameView')), clock.ctx);
+    typingHost.observe(stackOf(WORLD, screen('boxView'), textEntry('profileView')), clock.ctx);
     expect(
-      typingLog.order.filter((call) => call.endsWith(':renameView')),
+      typingLog.order.filter((call) => call.endsWith(':profileView')),
       'an owner that is not open is not observed through a text entry',
     ).toEqual([]);
     expect(typingLog.observes.map((o) => o.id)).toEqual(['boxView']);
-    typingHost.observe(stackOf(WORLD, screen('renameView'), textEntry('renameView')), clock.ctx);
+    typingHost.observe(stackOf(WORLD, screen('profileView'), textEntry('profileView')), clock.ctx);
     expect(
       typingLog.observes.map((o) => o.id),
       'the owner is observed once, through its own frame',
-    ).toEqual(['boxView', 'renameView']);
+    ).toEqual(['boxView', 'profileView']);
 
     // A stack of only a base runs nothing (battleView's adapter would observe if it were asked).
     const baseLog = newObsLog();
@@ -2701,7 +2707,8 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
         social: remembering('social', log, { remember: true }),
         boxView: remembering('boxView', log, { remember: true, observe: true }),
         questLogView: remembering('questLogView', log),
-        renameView: remembering('renameView', log, { remember: true }),
+        // uif-16b: the text-entry owner fixture is Profile (renameView is a section of it now).
+        profileView: remembering('profileView', log, { remember: true }),
       }),
     );
     const social = stackOf(WORLD, screen('social'));
@@ -2794,11 +2801,11 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
     // --- memory is per frame id ---------------------------------------------------------------
     // Social and the box both hold a memory now; the rename frame, opened for the first time,
     // remembers nothing of theirs.
-    const rename = stackOf(WORLD, screen('renameView'));
-    host.opened(screen('renameView'));
+    const rename = stackOf(WORLD, screen('profileView'));
+    host.opened(screen('profileView'));
     host.button(rename, nav('A'), CTX);
     expect(
-      memInitsOf(log, 'renameView')[0]?.remembered,
+      memInitsOf(log, 'profileView')[0]?.remembered,
       'another frame`s memory never seats this one',
     ).toBeUndefined();
     let remembered = 0;
@@ -2812,22 +2819,22 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
     expect(remembered, 'ANTI-VACUITY: Social and the box were each seated from memory').toBe(5);
 
     // --- a text entry types over its owner: its open neither remembers nor forgets the owner ---
-    const typing = stackOf(WORLD, screen('renameView'), textEntry('renameView'));
+    const typing = stackOf(WORLD, screen('profileView'), textEntry('profileView'));
     const live = lastMemStep(log).next;
-    const renameInits = memInitsOf(log, 'renameView').length;
-    host.opened(textEntry('renameView'));
+    const renameInits = memInitsOf(log, 'profileView').length;
+    host.opened(textEntry('profileView'));
     host.button(typing, nav('A'), CTX);
-    expect(lastMemStep(log).id).toBe('renameView');
+    expect(lastMemStep(log).id).toBe('profileView');
     expect(lastMemStep(log).state, 'the owner keeps its live state through the field`s open').toBe(
       live,
     );
-    expect(memInitsOf(log, 'renameView').length, 'and is not started over').toBe(renameInits);
+    expect(memInitsOf(log, 'profileView').length, 'and is not started over').toBe(renameInits);
     const closedRename = lastMemStep(log).next;
-    host.opened(screen('renameView'));
-    host.opened(textEntry('renameView'));
+    host.opened(screen('profileView'));
+    host.opened(textEntry('profileView'));
     host.button(typing, nav('A'), CTX);
     expect(
-      memInitsOf(log, 'renameView').at(-1)?.remembered,
+      memInitsOf(log, 'profileView').at(-1)?.remembered,
       'a field opened over the reopened owner did not forget the owner`s memory',
     ).toBe(closedRename);
   });
@@ -3602,21 +3609,22 @@ describe('the Bag and the Journal over the shipped table (ctl-8f, CTL8F.4)', () 
 // proves the table.
 
 describe('the Profile frames over the shipped table (ctl-8h, CTL8H.3)', () => {
-  it('CTL8H-3-ADAPTERS-REGISTERED: the shipped table holds nameScreen for the rename frame, accountScreen for the claim frame and privacyScreen for the privacy frame, each nav-capable, so each takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above one, or a text entry over it, takes the D-pad back; and no other frame holds them', () => {
-    // WRONG IMPL KILLED: screens written but never wired into SCREEN_ADAPTERS (KeyN, KeyC and the
-    // Profile list would still open frames whose arrows are swallowed and whose focus the player
-    // cannot move); a swap into the wrong slot (the Account screen on the privacy frame); an
-    // adapter without its nav mark (the router would keep the D-pad for the page under the open
-    // frame); a frame that keeps the D-pad under a legacy child; and one that keeps it while its
-    // typing row (the rename field) owns the keys.
-    const profile = [
-      ['renameView', nameScreen],
-      ['claimView', accountScreen],
-      ['privacyView', privacyScreen],
-    ] as const;
-    expect(SCREEN_ADAPTERS.renameView, 'the rename frame').toBe(nameScreen);
-    expect(SCREEN_ADAPTERS.claimView, 'the claim frame').toBe(accountScreen);
-    expect(SCREEN_ADAPTERS.privacyView, 'the privacy frame').toBe(privacyScreen);
+  // uif-16b (named intentional change, UIF16B.7): the three ctl-8h rows (renameView/nameScreen,
+  // claimView/accountScreen, privacyView/privacyScreen) are ONE row, profileView/profileScreen; the
+  // roster below is rewritten once to it and every behaviour it pinned is kept for that one frame.
+  it('UIF16B.7 CTL8H-3-ADAPTERS-REGISTERED: the shipped table holds profileScreen for the one Profile frame, nav-capable, so it takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above it, or a text entry over it, takes the D-pad back; and no other frame holds it', () => {
+    // WRONG IMPL KILLED: the screen written but never wired into SCREEN_ADAPTERS (KeyN, KeyC and
+    // the Profile leaf would open a frame whose arrows are swallowed and whose focus the player
+    // cannot move); a swap into the wrong slot; an adapter without its nav mark (the router would
+    // keep the D-pad for the page under the open frame); a frame that keeps the D-pad under a
+    // legacy child; and one that keeps it while its typing row (the name field) owns the keys.
+    const profile = [['profileView', profileScreen]] as const;
+    expect(SCREEN_ADAPTERS.profileView, 'the Profile frame').toBe(profileScreen);
+    for (const gone of ['renameView', 'claimView', 'privacyView']) {
+      expect(Object.keys(SCREEN_ADAPTERS), `no ${gone} row (a section, not a frame)`).not.toContain(
+        gone,
+      );
+    }
     const host = hostOf(SCREEN_ADAPTERS);
     for (const [id, adapter] of profile) {
       expect(adapter.nav, `${id}: nav-capable`).toBe(true);
@@ -3772,7 +3780,7 @@ describe('the battle base over the host (ctl-8i)', () => {
     expect(shipped.takesNav(stackOf(battle('7'), screen('boxView')))).toBe(true);
     expect(shipped.takesNav(stackOf(battle('7'), screen('evolutionView')))).toBe(false);
     expect(
-      shipped.takesNav(stackOf(battle('7'), screen('renameView'), textEntry('renameView'))),
+      shipped.takesNav(stackOf(battle('7'), screen('profileView'), textEntry('profileView'))),
     ).toBe(false);
   });
 

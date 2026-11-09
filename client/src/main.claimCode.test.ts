@@ -68,6 +68,13 @@ const H = vi.hoisted(() => {
         refresh(): void {}
         hostChrome(): void {}
         showFeedback(): void {}
+        // uif-16b: the Profile frame's own surface (ui/profileView.ts), which main.ts calls on the
+        // one ProfileView it builds over the three section stand-ins.
+        focusSection(): void {}
+        sectionOf(): undefined {
+          return undefined;
+        }
+        readonly closeRow: HTMLButtonElement = document.createElement('button');
       },
   };
   return h;
@@ -84,6 +91,10 @@ vi.mock('./ui/pvpView', () => ({ PvpView: H.makeStub() }));
 vi.mock('./ui/claimView', () => ({ ClaimView: H.makeStub('ClaimView') }));
 vi.mock('./ui/privacyView', () => ({ PrivacyView: H.makeStub() }));
 vi.mock('./ui/renameView', () => ({ RenameView: H.makeStub() }));
+// uif-16b (named intentional change): main.ts builds one ProfileView over the three section views;
+// over these stand-in sections the real frame would read members they do not have, so it is a
+// stand-in too.
+vi.mock('./ui/profileView', () => ({ ProfileView: H.makeStub() }));
 vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub() }));
 
 vi.mock('../../client-wasm/pkg/client_wasm.js', () =>

@@ -386,12 +386,30 @@ function privacyOpener(): HTMLButtonElement {
   return doors[0] as HTMLButtonElement;
 }
 
-/** Open the surface through the real production path and assert it actually opened. */
+/** Open the surface through the real production path and assert it actually opened.
+ *  uif-16b (named intentional change): the privacy surface is the Privacy SECTION of the one
+ *  Profile frame, shown whenever the frame is, so the production path is KeyC (Profile, on
+ *  Account) and then the Account section's privacy door, which moves focus into the section. Was:
+ *  the door alone opened a separate privacy dialog. */
 function openPrivacySurface(): void {
+  const frame = document.getElementById('profile-overlay');
+  const frameOpen = frame !== null && frame.style.display !== 'none' && frame.style.display !== '';
+  if (!frameOpen) {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'KeyC', bubbles: true, cancelable: true }),
+    );
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'KeyC', bubbles: true, cancelable: true }),
+    );
+  }
   privacyOpener().click();
   expect(
     privacyOverlayVisible(),
-    'clicking the account overlay`s privacy door must open #privacy-overlay',
+    'with the Profile frame open its Privacy section must be on screen',
+  ).toBe(true);
+  expect(
+    byId('privacy-overlay').contains(document.activeElement),
+    'the privacy door must move focus INTO the Privacy section',
   ).toBe(true);
 }
 
@@ -888,6 +906,12 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
     ).not.toBe(H.identity);
     opts.onReconnect(rotatedIdentity);
     runFrame(1);
+    // uif-16b (named intentional change): the privacy surface is a section of the Profile frame,
+    // which a reconnect now CLOSES (RECONNECT_CLOSES.profileView is rename's `true`), so the player
+    // reaches the control again by re-opening it; the open renders from current state. Was: the
+    // privacy surface survived the reconnect and was repainted in place.
+    expect(privacyOverlayVisible(), 'the reconnect closed the Profile frame').toBe(false);
+    openPrivacySurface();
 
     expect(
       downloadBtn().disabled,

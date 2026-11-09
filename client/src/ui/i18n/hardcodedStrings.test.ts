@@ -703,19 +703,25 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     check('[t(), t()].join() stays exempt', RB130_ARRAY_JOIN_T, { sinks: 1, failing: 0 }, []);
   });
 
-  it('m24s2 I18N-17: the real scan reads every non-test client/src/**/*.ts, finds all 18 SCAN_TARGETS present and non-empty, observes >= SINK_FLOOR sinks, and trips no unterminated/truncated/masked tripwire', () => {
+  it('m24s2 I18N-17: the real scan reads every non-test client/src/**/*.ts, finds all 19 SCAN_TARGETS present and non-empty, observes >= SINK_FLOOR sinks, and trips no unterminated/truncated/masked tripwire', () => {
     // bt-17 (named intentional change, BT17.1): ui/battleView.ts is deleted, so the roster is 18
-    // (main.ts + 17 ui/*View.ts), was 19 / 18. RED TODAY: SCAN_TARGETS still lists it.
-    // The roster is main.ts + 17 ui/*View.ts, sorted, no duplicates.
-    expect(SCAN_TARGETS.length).toBe(18);
+    // (main.ts + 17 ui/*View.ts), was 19 / 18.
+    // uif-16b (named intentional change): 18 -> 19 (main.ts + 18 ui/*View.ts): ui/profileView.ts
+    // joins; the three section files keep their rows. Sorted, no duplicates.
+    expect(SCAN_TARGETS.length).toBe(19);
     expect([...SCAN_TARGETS].sort()).toEqual([...SCAN_TARGETS]);
-    expect(new Set(SCAN_TARGETS).size).toBe(18);
+    // uif-16b (named intentional change): 18 -> 19 distinct targets, profileView joined.
+    expect(new Set(SCAN_TARGETS).size).toBe(19);
     expect(SCAN_TARGETS).toContain('main.ts');
+    expect(SCAN_TARGETS, 'uif-16b: the one Profile frame is scanned').toContain(
+      'ui/profileView.ts',
+    );
     expect(SCAN_TARGETS, 'bt-17: the deleted 1v1 view is no scan target').not.toContain(
       'ui/battleView.ts',
     );
+    // uif-16b (named intentional change): 17 -> 18 ui/*View.ts targets, profileView joined.
     expect(SCAN_TARGETS.filter((f) => f.startsWith('ui/') && f.endsWith('View.ts')).length).toBe(
-      17,
+      18,
     );
     // SINK_FLOOR and the 18-file roster above are anti-vacuity guards, not ratchets: they prove
     // the scan still sees the tree. The floor is edited consciously when UI text legitimately

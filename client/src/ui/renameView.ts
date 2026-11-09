@@ -1,18 +1,16 @@
-// ui/renameView.ts — thin DOM shell for the profile-rename overlay: Profile › Name (ctl-8h). Its
-// rows are [the field, Save], the cursor being DOM focus (`applyRowOp`, the Name screen's tokens,
-// walked through its `RowSection`, uif-16a); it opens typing (overlayA11y focuses the field) and
-// commits through `onSubmit`.
+// ui/renameView.ts — thin DOM shell for the rename form: the Name section of the Profile screen
+// (uif-16b; ui/profileView.ts owns the dialog, its a11y and the row walk). Its rows are [the field,
+// Save] (`RowSection`); it commits through `onSubmit`.
 //
-// First overlay with a text <input>. Three input-hygiene mechanisms the read-only
-// overlays never needed:
+// The one section with a text <input>. Three input-hygiene mechanisms:
 //   1. The input's OWN keydown listener calls e.stopPropagation() so field keystrokes
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). It also
-//      handles Enter=submit / Escape=cancel locally.
-//   2. The deferred initial focus is NO LONGER OWNED HERE. `ui/overlayA11y.ts` is the
-//      single owner of the setTimeout(…, 0) defer for every overlay, and it targets this
-//      overlay's `initialFocusSelector` (#rename-input) from OVERLAY_A11Y. The defer itself is
-//      still load-bearing for the same reason it always was: it lets the opening key event (KeyN)
-//      fully complete so the `n` does not land in the field it just opened.
+//      handles Enter=submit locally. Escape is main.ts's typing rule (it stops typing); the
+//      section never hides itself, since a section is never shown or hidden alone.
+//   2. The deferred initial focus is `ui/overlayA11y.ts`'s: the Profile frame's
+//      `initialFocusSelector` is this field (#rename-input, OVERLAY_A11Y.profileView). The defer
+//      is load-bearing: it lets the opening key event (KeyN) fully complete so the `n` does not
+//      land in the field it just opened.
 //   3. hide() resets the input value so a stale draft never survives a re-open. The view owns
 //      no message line: a rename's outcome is a toast, routed by main.ts (uif-4b).
 //
@@ -24,31 +22,25 @@
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever,
 // shopView precedent).
 //
-// The submit label and the frame title (qf-13, QF13.1) are the strings this view owns. They are
-// resolved through the i18n resolver (`t('chrome.rename.submit')`, `t('menu.profile.name.title')`,
+// The submit label and the section header are the strings this view owns. They are resolved
+// through the i18n resolver (`t('chrome.rename.submit')`, `t('menu.profile.name.title')`,
 // ui/i18n/resolver.ts) in show(), on every show(); `index.html` ships neither, so both are EMPTY
-// until the first show(). The title borrows the Profile menu leaf's key on purpose (a new key would
-// move the pinned catalogue roster), so renaming the leaf retitles the frame: one decision, not two.
-// The current display name is model data, rendered raw.
+// until the first show(). The current display name is model data, rendered raw.
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './i18n/resolver';
-import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
-import { type RowOp, type RowSection, type RowsView, walkSection } from './screens/profileScreen';
+import type { RowSection } from './screens/profileScreen';
 
-/** The frame-chrome title bar (ui/frame.ts, CTL4.6) as `overlay`'s first child, holding the
- *  `#rename-title` it returns: index.html ships none, so it is created once and found after. */
-function titleBar(overlay: HTMLElement): HTMLElement {
+/** The section header `#rename-title` as `section`'s first child: index.html ships none, so it is
+ *  created once and found after. */
+function sectionHeader(section: HTMLElement): HTMLElement {
   const found = document.getElementById('rename-title');
   if (found) return found;
-  const bar = document.createElement('div');
-  bar.className = 'mr-frame-titlebar';
-  const title = document.createElement('div');
-  title.id = 'rename-title';
-  title.className = 'mr-frame-title';
-  bar.appendChild(title);
-  overlay.prepend(bar);
-  return title;
+  const header = document.createElement('h2');
+  header.id = 'rename-title';
+  header.className = 'mr-section-header';
+  section.prepend(header);
+  return header;
 }
 
 /** Whether `code` leaves the focused submit button for the router: only the keys `b` binds to the
@@ -64,9 +56,9 @@ export interface RenameCallbacks {
   readonly bindings?: () => Bindings;
 }
 
-export class RenameView implements RowsView, RowSection {
-  // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
-  #lastOp: RowOp | null = null;
+export class RenameView implements RowSection {
+  /** The section has no two-step confirm. */
+  readonly armed = false;
   readonly #overlay: HTMLElement;
   readonly #title: HTMLElement;
   readonly #current: HTMLElement;
@@ -80,7 +72,7 @@ export class RenameView implements RowsView, RowSection {
     const overlay = document.getElementById('rename-overlay');
     if (!overlay) throw new Error('rename-overlay element not found in DOM');
     this.#overlay = overlay;
-    this.#title = titleBar(overlay);
+    this.#title = sectionHeader(overlay);
 
     const current = document.getElementById('rename-current');
     if (!current) throw new Error('rename-current missing');
@@ -89,6 +81,8 @@ export class RenameView implements RowsView, RowSection {
     const input = document.getElementById('rename-input');
     if (!input) throw new Error('rename-input missing');
     this.#input = input as HTMLInputElement;
+    // The field is named by the section header above it ("Name"): it has no label of its own.
+    this.#input.setAttribute('aria-labelledby', this.#title.id);
 
     const submitBtn = document.getElementById('rename-submit');
     if (!submitBtn) throw new Error('rename-submit missing');
@@ -97,11 +91,10 @@ export class RenameView implements RowsView, RowSection {
     this.#cbs = cbs;
 
     // Input hygiene (D3 mechanism 1): stop the keydown at the input so it never bubbles
-    // to the window keydown listener (movement + letter hotkeys). Enter/Escape handled here.
+    // to the window keydown listener (movement + letter hotkeys). Enter is handled here.
     this.#input.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.code === 'Enter' || e.code === 'NumpadEnter') this.#submit();
-      else if (e.code === 'Escape') this.hide();
     });
 
     // Live-update the submit-enabled state as the user types: render() only runs on
@@ -115,8 +108,8 @@ export class RenameView implements RowsView, RowSection {
     // The submit button is a second focus target (Tab from the input, a mouse click, or
     // the D-pad leaves it focused). Its keydown stops every hotkey so a letter pressed
     // while the button holds focus never reaches the window listener (red-team Finding 1),
-    // EXCEPT the live table's D-pad and B codes (B5, CTL8H.2): the router hands those to the Name
-    // screen, which walks the rows and pops the frame. stopPropagation does not
+    // EXCEPT the live table's D-pad and B codes (B5, CTL8H.2): the router hands those to the
+    // Profile screen, which walks the rows and pops the frame. stopPropagation does not
     // preventDefault, so Enter/Space still fire the click.
     this.#submitBtn.addEventListener('keydown', (e) => {
       const table = this.#cbs.bindings?.() ?? DEFAULT_BINDINGS;
@@ -139,16 +132,11 @@ export class RenameView implements RowsView, RowSection {
   }
 
   show(): void {
-    // Only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
-    // overlayA11y's deferred focus and steal focus back from wherever the player put it.
-    const wasVisible = this.visible;
-    // The title and the submit label are resolved HERE, on EVERY show() — unconditionally,
-    // after the `wasVisible` read, before the display write (see
-    // evolutionView.show() for the boot-order / locale-switch reasoning).
+    // The header and the submit label are resolved HERE, on EVERY show(), before the display
+    // write (see evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#title.textContent = t('menu.profile.name.title');
     this.#submitBtn.textContent = t('chrome.rename.submit');
     this.#overlay.style.display = '';
-    if (!wasVisible) openOverlayA11y('renameView', this.#overlay);
   }
 
   hide(): void {
@@ -156,13 +144,11 @@ export class RenameView implements RowsView, RowSection {
     // Stale-draft guard (RT-RN-02): a value from a prior open must not survive.
     this.#input.value = '';
     // Release the in-flight lock (shopView/tradeView precedent): onReconnect and the
-    // battle auto-show force-hide this overlay, and the SDK never settles an in-flight
+    // battle auto-show force-hide the frame, and the SDK never settles an in-flight
     // reducer promise after a link drop — so .finally() may never run.
     // Without this reset, #pending stays true forever → dead submit button (reviewer B-1).
     this.#pending = false;
     this.#submitBtn.disabled = false;
-    // DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
-    closeOverlayA11y('renameView', null);
   }
 
   toggle(): void {
@@ -176,17 +162,7 @@ export class RenameView implements RowsView, RowSection {
     this.#submitBtn.disabled = !vm.canSubmit;
   }
 
-  /** One press on the rows [the field, Save] (the Name screen, CTL8H.2). The cursor is DOM focus;
-   *  with no row focused it only seats the field. A on the field keeps typing; on Save it clicks,
-   *  so #submit's own empty/pending gates hold. A disabled Save is not a row. */
-  applyRowOp(op: RowOp): void {
-    if (op === this.#lastOp) return;
-    this.#lastOp = op;
-    const press = walkSection(this, document.activeElement, op);
-    if (press === this.#submitBtn) press.click();
-  }
-
-  /** The section root (uif-16a): this overlay's. */
+  /** The section root. */
   get sectionRoot(): HTMLElement {
     return this.#overlay;
   }

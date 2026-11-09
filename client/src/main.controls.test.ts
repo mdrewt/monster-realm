@@ -661,7 +661,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       { name: 'setProfileName', args: { name: 'Zed' } },
     ]);
     await flush();
-    tap('KeyN', 1300); // the same key closes it
+    // uif-16b (named intentional change): over the one Profile frame a second N is Start only when
+    // focus is already in the Name section (else it moves focus there, UIF16B.5), so the frame is
+    // closed with Start itself. Was: `tap('KeyN', 1300)`, the same key.
+    tap('Escape', 1300);
     expect(renameShown(), 'precondition: the rename overlay closed').toBe(false);
 
     // --- dialogue: choice clicks (a pair) and the pop command's dismiss ------------------------
@@ -721,23 +724,24 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     fire('keyup', 'KeyW', 1605);
   });
 
-  it('Escape from a menu sub-list child pops straight to the world: the privacy screen over Profile > Privacy closes with the menu', async () => {
+  it('Escape from a menu sub-list child pops straight to the world: the Controls screen over Options > Controls closes with the menu', async () => {
     // WRONG IMPL KILLED: a pop-to-base that stops at the menu's sub-list level, and one that closes
     // the child and leaves the menu painted.
     // uif-15b (named intentional change, UIF15B.1): Social is a root leaf with no sub-list, so the
     // sub-list child is Profile > Privacy. Was: Social > Rankings (the leaderboard).
-    await bootAtMenu(4);
-    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
+    // uif-16b (named intentional change, UIF16B.1): Profile is a root leaf too (one frame), so the
+    // sub-list child is Options > Controls. Was: Profile > Privacy (the privacy screen).
+    await bootAtMenu(5);
+    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
     tap('Enter', 1500);
-    expect(navActive(), 'precondition: the sub-list starts on Name').toBe('name');
+    expect(navActive(), 'precondition: the sub-list starts on Help').toBe('help');
     tap('ArrowDown', 1600);
-    tap('ArrowDown', 1700);
-    expect(navActive(), 'precondition: the cursor is on Privacy').toBe('privacy');
+    expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
     tap('Enter', 1800);
-    expect(stackNames(), 'precondition: the privacy screen opened over the menu').toEqual([
+    expect(stackNames(), 'precondition: the Controls screen opened over the menu').toEqual([
       'world',
       'menuView',
-      'privacyView',
+      'controlsView',
     ]);
 
     tap('Escape', 1900);
@@ -1069,7 +1073,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     server(1000);
     tap('KeyC', 1010);
     expect(claimShown(), 'precondition: C opened the claim overlay').toBe(true);
-    expect(stackNames()).toEqual(['world', 'menuView', 'claimView']);
+    // uif-16b (named intentional change): C opens the one Profile frame (the Account section
+    // inside it). Was: claimView.
+    expect(stackNames()).toEqual(['world', 'menuView', 'profileView']);
     const esc = tap('Escape', 1100);
     expect(esc.defaultPrevented).toBe(true);
     expect(claimShown(), 'Escape closes the claim overlay').toBe(false);
@@ -1173,10 +1179,12 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       fire('keyup', code, 1025 + i * 10, { target: input });
     }
     expect(boxShown(), 'typing b opens no box').toBe(false);
+    // uif-16b (named intentional change): the Name field lives in the one Profile frame, here and in
+    // the stop-typing stack below. Was: renameView.
     expect(
       stackNames(),
       'typing m (Start) opens or closes no menu: the one beneath the Name screen stays',
-    ).toEqual(['world', 'menuView', 'renameView']);
+    ).toEqual(['world', 'menuView', 'profileView']);
     expect(helpShown(), 'typing r or / opens no help').toBe(false);
     expect(questLogShown(), 'typing q opens no quest log').toBe(false);
     expect(renameShown(), 'the overlay is still up').toBe(true);
@@ -1196,7 +1204,7 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(
       stackNames(),
       'stopping typing is not Start: the menu beneath the Name screen is not popped with it',
-    ).toEqual(['world', 'menuView', 'renameView']);
+    ).toEqual(['world', 'menuView', 'profileView']);
 
     // Escape #2 acts as Start on whatever now has focus.
     const active = document.activeElement as HTMLElement;
@@ -1395,7 +1403,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(input.value, 'the draft survives').toBe('Alice');
     // ctl-11a: N opened the Name screen over the main menu, so the stack carries `menuView` beneath
     // it; "nothing else opened" is that same stack, unchanged (no pop, no replace, no extra frame).
-    expect(stackNames(), 'nothing else opened').toEqual(['world', 'menuView', 'renameView']);
+    // uif-16b (named intentional change): the Name section is in the one Profile frame. Was:
+    // renameView.
+    expect(stackNames(), 'nothing else opened').toEqual(['world', 'menuView', 'profileView']);
     expect(helpShown() || boxShown() || questLogShown()).toBe(false);
   });
 
@@ -1469,7 +1479,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
         shown: renameShown,
         // ctl-11a: N opens the Name screen over the main menu, so its stack carries `menuView`
         // beneath it and that menu is shown; the face-to-face wizard has no menu under it.
-        stack: ['world', 'menuView', 'renameView'],
+        // uif-16b (named intentional change): the Name field is in the one Profile frame. Was:
+        // renameView.
+        stack: ['world', 'menuView', 'profileView'],
         menu: true,
       },
       {
@@ -1742,10 +1754,14 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(stackNames()).toEqual(['world', 'tradeProposeView']);
   });
 
-  it('stop typing in the rename field lands on the enabled submit button when there is a draft, and on the page when the draft is empty and submit is disabled, with the overlay open both times', async () => {
+  it('UIF16B.4 stop typing in the rename field lands on the enabled submit button when there is a draft, and with an empty draft (submit disabled) on a SHOWN, ENABLED control inside the Profile frame, with the frame open both times', async () => {
+    // uif-16b (named intentional change): the empty-draft arm read "no enabled control: focus ends
+    // on the page". In the one Profile column there is always an enabled row after the field (the
+    // Account and Privacy rows, Close), so stop-typing lands inside the frame. Was: focusOnPage().
     // WRONG IMPL KILLED: a stop-typing that leaves focus in the field (the second Escape would be
-    // typed into it), one that focuses the disabled submit (a dead target), one that falls back to
-    // closing the overlay when it finds no control, and one that picks the overlay root.
+    // typed into it), one that focuses the disabled submit (a dead target) or a hidden button (the
+    // armed-only decline rows sit in the column's DOM order), one that falls back to closing the
+    // overlay when it finds no control, and one that picks the overlay root.
     await bootReady();
     server(1000);
     tap('KeyN', 1010);
@@ -1759,12 +1775,21 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     const empty = fire('keydown', 'Escape', 1100, { target: input });
     fire('keyup', 'Escape', 1105, { target: input });
     expect(empty.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
-    expect(focusOnPage(), 'no enabled control: focus ends on the page').toBe(true);
+    const landed = document.activeElement as HTMLButtonElement | null;
+    expect(
+      landed !== null && byId('profile-overlay').contains(landed),
+      'an empty draft: focus lands inside the Profile frame',
+    ).toBe(true);
+    expect(landed, 'not the field').not.toBe(input);
+    expect(landed, 'not the disabled submit').not.toBe(submit);
+    expect(landed?.disabled, 'on an enabled control').toBe(false);
+    expect(isShown(landed as Element), 'that is on screen').toBe(true);
     expect(renameShown(), 'the overlay stays open').toBe(true);
     expect(input.value, 'the (empty) draft is untouched').toBe('');
     // ctl-11a: N opened the Name screen over the main menu, so the stack carries `menuView` beneath
     // it; stopping typing is not Start, which would have popped both to the world.
-    expect(stackNames()).toEqual(['world', 'menuView', 'renameView']);
+    // uif-16b (named intentional change): the frame is profileView. Was: renameView.
+    expect(stackNames()).toEqual(['world', 'menuView', 'profileView']);
     expect(menuShown(), 'stopping typing is not Start: the menu beneath stays').toBe(true);
 
     input.focus();
@@ -3186,16 +3211,19 @@ function so2OpenHeal(): void {
 
 /** Every player frame with a shown predicate (the Social frame stands for its three panels). The
  *  server trio is read separately: a dialogue and a battle are not player frames. */
+/** uif-16b: the one Profile frame's root is on screen (its three sections are inside it). */
+const so2ProfileShown = (): boolean => shownById('profile-overlay');
+
+// uif-16b (named intentional change): 13 -> 11 rows: renameView, claimView and privacyView left
+// (they are sections of the one Profile frame, never frames of their own), profileView joined.
 const SO2_SHOWN: ReadonlyArray<readonly [string, () => boolean]> = [
   ['menuView', menuShown],
   ['helpView', helpShown],
-  ['renameView', renameShown],
+  ['profileView', so2ProfileShown],
   ['tradeProposeView', proposeShown],
   ['shopView', () => shownById('shop-overlay')],
   ['healView', () => shownById('heal-overlay')],
   ['questLogView', questLogShown],
-  ['claimView', claimShown],
-  ['privacyView', () => shownById('privacy-overlay')],
   ['controlsView', () => shownById('controls-overlay')],
   ['boxView', boxShown],
   ['raisingView', () => shownByTestId('raising-title')],
@@ -3240,7 +3268,8 @@ interface So2Open {
   readonly drive: () => void;
 }
 const so2Menu = (): Promise<So2ViewClass> => import('./ui/menuView').then((m) => m.MenuView);
-const so2Rename = (): Promise<So2ViewClass> => import('./ui/renameView').then((m) => m.RenameView);
+const so2Profile = (): Promise<So2ViewClass> =>
+  import('./ui/profileView').then((m) => m.ProfileView);
 const so2Box = (): Promise<So2ViewClass> => import('./ui/boxView').then((m) => m.BoxView);
 const so2Raising = (): Promise<So2ViewClass> =>
   import('./ui/raisingView').then((m) => m.RaisingView);
@@ -3249,9 +3278,6 @@ const so2QuestLog = (): Promise<So2ViewClass> =>
 const so2Help = (): Promise<So2ViewClass> => import('./ui/helpView').then((m) => m.HelpView);
 const so2Controls = (): Promise<So2ViewClass> =>
   import('./ui/controlsView').then((m) => m.ControlsView);
-const so2Privacy = (): Promise<So2ViewClass> =>
-  import('./ui/privacyView').then((m) => m.PrivacyView);
-const so2Claim = (): Promise<So2ViewClass> => import('./ui/claimView').then((m) => m.ClaimView);
 const so2Shop = (): Promise<So2ViewClass> => import('./ui/shopView').then((m) => m.ShopView);
 const so2Heal = (): Promise<So2ViewClass> => import('./ui/healView').then((m) => m.HealView);
 const so2Propose = (): Promise<So2ViewClass> =>
@@ -3272,20 +3298,33 @@ const SO2_OPENS: readonly So2Open[] = [
     shown: menuShown,
     drive: () => void tap('KeyM', 1100),
   },
+  // uif-16b (named intentional change): the NAME-ROW-CLICK, NAME-ROW-KEY, PRIVACY-ROW-CLICK,
+  // CLAIM-ACCEL, CLAIM-ROW-KEY, CLAIM-PENDING and SIGNIN-FAILED rows (frames renameView, claimView,
+  // privacyView, through the retired Profile sub-list rows `name` / `account` / `privacy`) are
+  // rewritten once around the ONE Profile frame: every distinct open path of `profileView` is its own
+  // row (the Profile row by click and by key, N, C, a pending claim, an account wait, a failed
+  // sign-in), each spying ProfileView.show (the frame's one open edge). 20 -> 20 rows.
   {
-    // The click path no sync follows: the Name row's open shows the form and returns.
-    tag: 'NAME-ROW-CLICK',
-    id: 'renameView',
-    views: [{ load: so2Rename, method: 'show' }],
-    shown: renameShown,
-    drive: () => so2OpenByClicks(['profile', 'name'], 1100),
+    // The click path no sync follows: the Profile row's open shows the frame and returns.
+    tag: 'PROFILE-ROW-CLICK',
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
+    drive: () => so2OpenByClicks(['profile'], 1100),
   },
   {
-    tag: 'NAME-ROW-KEY',
-    id: 'renameView',
-    views: [{ load: so2Rename, method: 'show' }],
-    shown: renameShown,
-    drive: () => so2OpenByKeys(['profile', 'name'], 1100),
+    tag: 'PROFILE-ROW-KEY',
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
+    drive: () => so2OpenByKeys(['profile'], 1100),
+  },
+  {
+    tag: 'NAME-ACCEL',
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
+    drive: () => void tap('KeyN', 1100),
   },
   {
     tag: 'BOX-ACCEL',
@@ -3344,52 +3383,34 @@ const SO2_OPENS: readonly So2Open[] = [
     drive: () => so2OpenByClicks(['options', 'controls'], 1100),
   },
   {
-    tag: 'PRIVACY-ROW-CLICK',
-    id: 'privacyView',
-    views: [{ load: so2Privacy, method: 'show' }],
-    shown: () => shownById('privacy-overlay'),
-    drive: () => so2OpenByClicks(['profile', 'privacy'], 1100),
-  },
-  {
-    tag: 'CLAIM-ACCEL',
-    id: 'claimView',
-    views: [
-      { load: so2Claim, method: 'show' },
-      { load: so2Claim, method: 'render' },
-    ],
-    shown: claimShown,
+    tag: 'ACCOUNT-ACCEL',
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
     drive: () => void tap('KeyC', 1100),
   },
   {
-    tag: 'CLAIM-ROW-KEY',
-    id: 'claimView',
-    views: [
-      { load: so2Claim, method: 'show' },
-      { load: so2Claim, method: 'render' },
-    ],
-    shown: claimShown,
-    drive: () => so2OpenByKeys(['profile', 'account'], 1100),
-  },
-  {
-    // The claim lifecycle shows the view with no key or click: a pending claim's paint.
+    // The claim lifecycle opens Profile on Account with no key or click: a pending claim...
     tag: 'CLAIM-PENDING',
-    id: 'claimView',
-    views: [
-      { load: so2Claim, method: 'show' },
-      { load: so2Claim, method: 'render' },
-    ],
-    shown: claimShown,
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
     drive: () => void opts.onClaimPending?.('claim-code'),
   },
   {
-    // ...and a failed first sign-in (`show()` first, then the paint).
+    // ...an account wait...
+    tag: 'CLAIM-AWAITING',
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
+    drive: () => void opts.onClaimAwaitingAccount?.(),
+  },
+  {
+    // ...and a failed first sign-in.
     tag: 'SIGNIN-FAILED',
-    id: 'claimView',
-    views: [
-      { load: so2Claim, method: 'show' },
-      { load: so2Claim, method: 'render' },
-    ],
-    shown: claimShown,
+    id: 'profileView',
+    views: [{ load: so2Profile, method: 'show' }],
+    shown: so2ProfileShown,
     drive: () => void opts.onSignInFailed?.('sign-in failed'),
   },
   {
@@ -3489,9 +3510,15 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
     // one that re-pushes after a pop, and a lifecycle paint that reorders or rebuilds the stack.
     await bootReady();
     seedWorld(1000);
+    // uif-16b (named intentional change): the claim view is the Account section of the one Profile
+    // frame, so the frame that must not be listed twice is `profileView`. Was: claimView.
     tap('KeyC', 1100);
     expect(claimShown(), 'precondition: C opened the claim view').toBe(true);
-    expect(stackNames(), 'precondition: over the menu').toEqual(['world', 'menuView', 'claimView']);
+    expect(stackNames(), 'precondition: over the menu').toEqual([
+      'world',
+      'menuView',
+      'profileView',
+    ]);
     const open = JSON.stringify(stack());
 
     const steps: ReadonlyArray<readonly [string, () => void]> = [
@@ -3503,8 +3530,8 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
       run();
       expect(claimShown(), `${label}: the view is still shown`).toBe(true);
       expect(
-        stackNames().filter((id) => id === 'claimView'),
-        `${label}: exactly one claim frame`,
+        stackNames().filter((id) => id === 'profileView'),
+        `${label}: exactly one Profile frame`,
       ).toHaveLength(1);
       expect(JSON.stringify(stack()), `${label}: the stack is unchanged`).toBe(open);
     }
@@ -3515,9 +3542,12 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
   // SO2.3: the mirror sees only the server trio
   // ------------------------------------------------------------------------------------------
 
+  // uif-16b (named intentional change): 13 -> 11 rows: RENAME, CLAIM and PRIVACY left (section
+  // roots inside the hidden Profile frame cannot be on screen alone: the UIF16B.1 case after this
+  // table pins that a section made visible alone is not a frame either), PROFILE joined.
   const FORCED = [
     { tag: 'HELP', root: 'help-overlay' },
-    { tag: 'RENAME', root: 'rename-overlay' },
+    { tag: 'PROFILE', root: 'profile-overlay' },
     { tag: 'TRADE-PROPOSE', root: 'tradepropose-overlay' },
     { tag: 'SHOP', root: 'shop-overlay' },
     { tag: 'HEAL', root: 'heal-overlay' },
@@ -3525,8 +3555,6 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
     { tag: 'TRADE-PANEL', root: 'trade-overlay' },
     { tag: 'PVP-PANEL', root: 'pvp-challenge-overlay' },
     { tag: 'RANKINGS-PANEL', root: 'leaderboard-overlay' },
-    { tag: 'CLAIM', root: 'claim-overlay' },
-    { tag: 'PRIVACY', root: 'privacy-overlay' },
     { tag: 'CONTROLS', root: 'controls-overlay' },
     { tag: 'MENU', root: 'menu-overlay' },
   ] as const;
@@ -3549,6 +3577,30 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
     expect(stack(), 'a frame does not adopt it').toEqual([{ kind: 'world' }]);
     server(1200);
     expect(stack(), 'nor does a batch').toEqual([{ kind: 'world' }]);
+  });
+
+  it('UIF16B.1 a Profile section root made visible alone (its own display set, the frame root still hidden) is no frame: the next frame and batch push nothing and show no Profile frame', async () => {
+    // WRONG IMPL KILLED: a mirror or probe that still reads a section's own display as an open
+    // overlay (the old claimView / privacyView / renameView probes left in place: a ghost frame for
+    // a section, or the whole Profile frame shown because one section's flag flipped).
+    await bootReady();
+    seedWorld(1000);
+    expect(stack(), 'precondition: the bare world').toEqual([{ kind: 'world' }]);
+    let driven = 0;
+    for (const root of ['rename-overlay', 'claim-overlay', 'privacy-overlay']) {
+      byId(root).style.display = 'block';
+      expect(byId(root).style.display, `${root}: precondition: its own display is set`).toBe(
+        'block',
+      );
+      frame(1100 + driven * 200);
+      expect(stack(), `${root}: a frame does not adopt it`).toEqual([{ kind: 'world' }]);
+      server(1200 + driven * 200);
+      expect(stack(), `${root}: nor does a batch`).toEqual([{ kind: 'world' }]);
+      expect(shownById('profile-overlay'), `${root}: no Profile frame is shown for it`).toBe(false);
+      byId(root).style.display = 'none';
+      driven += 1;
+    }
+    expect(driven, 'ANTI-VACUITY: all three section roots were driven').toBe(3);
   });
 
   it('SO2-3-BOOT-TRIO-STILL-MIRRORED: a server dialogue row, a battle and its terminal outcome still self-show and still reach the stack with no open path, and a player overlay forced visible beside them is still not adopted', async () => {

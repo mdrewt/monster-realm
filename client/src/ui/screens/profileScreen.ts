@@ -1,18 +1,17 @@
-// ui/screens/profileScreen.ts — the Profile children as pure screens (design §5 row 5, CTL8H.2-4):
-// Name (the rename frame), Account (the claim frame) and Privacy & data (the privacy frame). The
-// adapters touch no DOM, SDK, module state or clock; the three views apply what `paint` hands them,
-// each walking its rows through the shared `RowSection` (uif-16a), whose `walkSection` is the one
-// place here that focuses an element it is handed.
+// ui/screens/profileScreen.ts — Profile as one pure screen (design §5 row 5; uif-16b): ONE frame
+// whose three sections are Name (the rename form), Account (the claim prompt) and Privacy & data,
+// then Close. The adapter touches no DOM, SDK, module state or clock; the frame's view
+// (ui/profileView.ts) applies what `paint` hands it, walking one column of rows through the shared
+// `RowSection`, whose `walkSection` is the one place here that focuses an element it is handed.
 //
-// The rows are each view's REAL controls and the cursor IS DOM focus, so the mouse, Tab, a native
+// The rows are the sections' REAL controls and the cursor IS DOM focus, so the mouse, Tab, a native
 // Enter or Space on a button and the D-pad all move and press the same thing, and no control is
 // drawn twice. Which controls show is the claim and privacy models' (held by main.ts, out of the
-// screen's reach), so an adapter keeps no cursor: a press becomes a one-shot row TOKEN (a new object
+// screen's reach), so the adapter keeps no cursor: a press becomes a one-shot row TOKEN (a new object
 // each press, compared by identity: the tradeProposeScreen precedent) that the view applies once.
 // Every step's state holds the new token or null, so the host's paint after a later button never
-// re-applies an old one. B pops the frame, which never confirms anything: privacy disarms on close;
-// a claim decline stays armed (claimModel cannot represent a dismissal), but a re-shown armed frame
-// seats No on the first press and presses nothing.
+// re-applies an old one. B pops the frame, which never confirms anything: every close disarms both
+// two-step confirms (each section's `hide()`), and with no row focused a press only seats a row.
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
 /** One press on the rows: move the focus up or down, or press the focused row. */
@@ -20,19 +19,25 @@ export type RowOp =
   | { readonly kind: 'move'; readonly delta: -1 | 1 }
   | { readonly kind: 'activate' };
 
-/** What the three views implement. */
+/** The Profile frame's sections, in their column order. */
+export type ProfileSection = 'name' | 'account' | 'privacy';
+
+/** What the frame's view implements. */
 export interface RowsView {
   applyRowOp(op: RowOp): void;
 }
 
-/** One Profile section (uif-16a): its root and its rows, apart from the overlay that shows it
- *  (a11y, show, hide). The three views are each still one overlay whose root is their section's. */
+/** A column of rows: one Profile section (its root and its rows; the frame that shows it,
+ *  ui/profileView.ts, owns the a11y), and the frame itself, whose column is its sections' rows and
+ *  then Close. */
 export interface RowSection {
   readonly sectionRoot: HTMLElement;
   /** The rows: the shown, enabled controls, in DOM order. */
   sectionRows(): readonly HTMLElement[];
   /** Where a token lands with no row focused: a confirm's No while armed, else the first row. */
   defaultRow(): HTMLElement | undefined;
+  /** Whether a two-step confirm here is armed (its default row is then that confirm's No). */
+  readonly armed: boolean;
 }
 
 /** One token on `section` (`rowStep` over its rows, read afresh): focuses the step's row and
@@ -122,9 +127,6 @@ const rowsScreen = (): ScreenAdapter<null, RowsState, RowsView> => ({
   },
 });
 
-/** Profile › Name: rows [the name field, Save]; it opens typing (overlayA11y focuses the field). */
-export const nameScreen = rowsScreen();
-/** Profile › Account: the claim frame's shown actions, then the privacy door. */
-export const accountScreen = rowsScreen();
-/** Profile › Privacy & data: the privacy frame's shown, enabled buttons. */
-export const privacyScreen = rowsScreen();
+/** Profile: one column across the three sections, then Close. It opens typing on Name unless the
+ *  open names another section (ui/profileView.ts). */
+export const profileScreen = rowsScreen();

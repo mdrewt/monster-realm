@@ -183,6 +183,16 @@ const H = vi.hoisted(() => {
         // (`feedbackLine`); the stand-in's sink records on `feedback`, as `showFeedback` does, so
         // the existing feedback assertions keep their meaning.
         clearOutcome(): void {}
+        // uif-16b: the Profile frame's own surface (ui/profileView.ts): main.ts moves focus between
+        // its sections (the privacy door, a failed sign-in, N and C) and wires its Close row as the
+        // privacy section's reseat fallback. The stand-in records the section it was asked for.
+        focusSection(section: unknown): void {
+          this.renders.push({ focusSection: section });
+        }
+        sectionOf(): undefined {
+          return undefined;
+        }
+        readonly closeRow: HTMLButtonElement = document.createElement('button');
         feedbackLine(): (message: string, kind: string) => boolean {
           // The sink reports whether it painted (true iff it did): the stand-in always paints.
           return (message: string): boolean => {
@@ -217,6 +227,10 @@ vi.mock('./ui/renameView', () => ({
 vi.mock('./ui/tradeProposeView', () => ({
   TradeProposeView: H.withoutShowFeedback(H.makeStub('TradeProposeView')),
 }));
+// uif-16b (named intentional change): main.ts builds ONE ProfileView over the three section views
+// (rename, claim, privacy). Over their stand-ins the real frame would read members they lack, so
+// it is a recording stand-in too: its constructor's argument is the sections record.
+vi.mock('./ui/profileView', () => ({ ProfileView: H.makeStub('ProfileView') }));
 
 // bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
 // map the stub gives TWO spawn cells (every other map has the shipped three), so a deploy slot count
@@ -2123,9 +2137,9 @@ const STAND_IN_CLASS: Readonly<Record<string, string>> = {
   shopView: 'ShopView',
   tradeView: 'TradeView',
   pvpView: 'PvpView',
-  claimView: 'ClaimView',
-  privacyView: 'PrivacyView',
-  renameView: 'RenameView',
+  // uif-16b (named intentional change): 10 -> 8 rows: claimView, privacyView and renameView left
+  // (they are sections of the one Profile frame, no frame ids of their own), profileView joined.
+  profileView: 'ProfileView',
   tradeProposeView: 'TradeProposeView',
 };
 
@@ -2468,13 +2482,12 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
           endConversation(at + 20);
         },
       },
-      { id: 'claimView', beneath: ['menuView'], open: (at) => void press('KeyC', at) },
-      {
-        id: 'privacyView',
-        beneath: ['menuView'],
-        open: (at) => so2WalkMenu(['profile', 'privacy'], at),
-      },
-      { id: 'renameView', beneath: ['menuView'], open: (at) => void press('KeyN', at) },
+      // uif-16b (named intentional change): 7 -> 5 stand-in rows. The claimView (KeyC), privacyView
+      // (Profile > Privacy) and renameView (KeyN) rows left with those frame ids; the ONE Profile
+      // frame joined, opened by its menu leaf (Start, the cursor to Profile, ONE A) over the main
+      // menu, and its adapter is lent the ProfileView main.ts built (the three sections are inside
+      // it, never lent on their own).
+      { id: 'profileView', beneath: ['menuView'], open: (at) => so2WalkMenu(['profile'], at) },
       { id: 'tradeProposeView', open: (at) => so2OpenFacedTrade(at) },
     ];
     const evolution = stubView('EvolutionView');
@@ -2705,8 +2718,11 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
     // disables Monsters there) and a view shown off every open path is never a frame, so the
     // not-battle-safe frame is the CLAIM view, which the auth lifecycle (`onSignInFailed`) opens at
     // any time, over a battle too, stamped and above the stamped menu. Same shape and same drop.
+    // uif-16b (named intentional change): the sign-in failure opens the one Profile frame
+    // (`profileView`, on Account), so the swapped adapter, the view and the stack ids below are the
+    // Profile frame's. Was: claimView / ClaimView.
     const seen: Pressed[] = [];
-    swapAdapter('claimView', {
+    swapAdapter('profileView', {
       nav: true,
       viewModel: () => undefined,
       init: () => undefined,
@@ -2741,15 +2757,15 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
       { kind: 'battle', battleId: '101' },
       { kind: 'screen', id: 'menuView', overBattle: '101' },
     ]);
-    const box = H.views.ClaimView;
-    if (box === undefined) throw new Error('ClaimView was never constructed by main.ts');
+    const box = H.views.ProfileView;
+    if (box === undefined) throw new Error('ProfileView was never constructed by main.ts');
     // a nav screen that is not battle-safe, above the battle-safe menu
     must(opts.onSignInFailed, 'onSignInFailed')('sign-in failed');
     const held = keyDown('ArrowDown', 1800);
     expect(stackNow(), 'b, precondition: the claim view is a frame above the menu').toEqual([
       { kind: 'battle', battleId: '101' },
       { kind: 'screen', id: 'menuView', overBattle: '101' },
-      { kind: 'screen', id: 'claimView', overBattle: '101' },
+      { kind: 'screen', id: 'profileView', overBattle: '101' },
     ]);
     expect(seen, 'b, precondition: the press reached the claim view').toEqual([
       { button: 'Down', repeat: false },
@@ -4747,17 +4763,19 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     // own flag, adopted by a batch's mirror. A view shown off every open path is never a frame now,
     // so the claim view opens through the auth lifecycle (`onSignInFailed`), which pushes its frame
     // over Social; the view closing itself (its flag off) takes the frame with it on the next sync.
+    // uif-16b (named intentional change): the sign-in failure opens the one Profile frame, so the
+    // covering frame and its stand-in are profileView / ProfileView. Was: claimView / ClaimView.
     must(opts.onSignInFailed, 'onSignInFailed')('sign-in failed');
     expect(stackNow(), 'precondition: the claim frame covers Social').toEqual([
       ...SOCIAL_STACK,
-      screenFrame('claimView'),
+      screenFrame('profileView'),
     ]);
     const forcedBefore = pvp.forced.length;
     view.show('pvpView');
     expect(socialShown(), 'covered: nothing switched').toEqual(['trades']);
     expect(pvp.forced.length, 'covered: the pvp panel was not refreshed').toBe(forcedBefore);
-    expect(stackNow()).toEqual([...SOCIAL_STACK, screenFrame('claimView')]);
-    stubView('ClaimView').visible = false;
+    expect(stackNow()).toEqual([...SOCIAL_STACK, screenFrame('profileView')]);
+    stubView('ProfileView').visible = false;
     server(1400);
     expect(stackNow(), 'precondition: the claim frame closed').toEqual(SOCIAL_STACK);
     view.show('pvpView');
@@ -5046,8 +5064,10 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       // so-2 (named intentional change, SO2.3): the claim frame was pushed by flipping its stand-in's
       // flag and letting a batch's mirror adopt it (`visible = true; server(t + 10)`). A view shown
       // off every open path is never a frame now: the auth lifecycle opens it over Social.
+      // uif-16b (named intentional change): the sign-in failure opens the one Profile frame, so the
+      // covering frame and its stand-in are profileView / ProfileView. Was: claimView / ClaimView.
       must(opts.onSignInFailed, 'onSignInFailed')('sign-in failed');
-      const COVERED = [...SOCIAL_STACK, screenFrame('claimView')];
+      const COVERED = [...SOCIAL_STACK, screenFrame('profileView')];
       expect(stackNow(), `covered ${code}: precondition: the claim frame covers Social`).toEqual(
         COVERED,
       );
@@ -5055,7 +5075,9 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       expect(stackNow(), `covered: ${code} opens Social afresh over the menu`).toEqual(
         SOCIAL_STACK,
       );
-      expect(stubView('ClaimView').visible, `covered: ${code} closed the claim frame`).toBe(false);
+      expect(stubView('ProfileView').visible, `covered: ${code} closed the claim frame`).toBe(
+        false,
+      );
       expect(socialShown(), `covered: ${code} shows its own ${tab} root`).toEqual([tab]);
       expect(socialTabNow(), `covered: ${code} binds ${tab}`).toBe(tab);
       key(code, t + 30);

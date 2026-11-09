@@ -55,7 +55,15 @@ function makeHandlers(): ClaimViewHandlers {
     onDeclineConfirmed: vi.fn(),
     onDeclineCancelled: vi.fn(),
     onPrivacy: vi.fn(),
+    // uif-16b: the new REQUIRED dismissal, called from every hide().
+    onDismissed: vi.fn(),
   };
+}
+
+/** uif-16b: `claimView` is no longer an OverlayId (the section opens no a11y of its own), so the
+ *  per-id close this file used becomes the all-id sweep. */
+function sweepA11y(): void {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
 }
 
 /** vm strings deliberately avoid the roster word "Privacy". */
@@ -175,7 +183,7 @@ describe('m24s5 (ADR-0261): claimView.ts routes claim.privacyButton through t() 
     ).toHaveBeenCalledWith('claim.privacyButton');
 
     // Clean DOM + overlay-a11y record before a second, FRESH view (claimView.test.ts idiom).
-    closeOverlayA11y('claimView', null);
+    sweepA11y();
     await flushMacrotask();
     document.body.innerHTML = '';
 
@@ -201,7 +209,7 @@ describe('m24s5 (ADR-0261): claimView.ts routes claim.privacyButton through t() 
     // privacyView key from claimView.ts.
     expect(i18nT).not.toHaveBeenCalledWith('privacy.title');
 
-    closeOverlayA11y('claimView', null);
+    sweepA11y();
     await flushMacrotask();
   });
 
@@ -285,7 +293,7 @@ describe('qf-13 (QF13.1): the Account frame title routes menu.profile.account.ti
     }
 
     // Door 2: a FRESH view, render() alone, no show().
-    closeOverlayA11y('claimView', null);
+    sweepA11y();
     await flushMacrotask();
     document.body.innerHTML = '';
     vi.mocked(i18nT).mockClear();
@@ -322,7 +330,7 @@ describe('qf-13 (QF13.1): the Account frame title routes menu.profile.account.ti
       vi.mocked(i18nT).mockRestore();
     }
 
-    closeOverlayA11y('claimView', null);
+    sweepA11y();
     await flushMacrotask();
   });
 });

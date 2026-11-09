@@ -1,70 +1,33 @@
-// ui/claimView.ts — DOM shell for the guest-claim overlay.
-// DOM shell — coverage-excluded (all logic lives in claimModel.ts). Joins overlayRegistry as
-// GUARD_ONLY, so `anyOverlayVisible()` suppresses movement input for free while it is open.
-// It is Profile › Account (ctl-8h): a class-styled frame in the game screen (B3), its title and
-// body shown in every phase (B2), and its shown buttons the Account screen's rows, the cursor being
-// DOM focus (`applyRowOp`). On an already-open frame a render moves focus only on the decline
-// confirm's arm edge (No: a confirm defaults to No), its disarm edge (Decline) or off a control it
-// hid (`reseatRow`, ui/screens/profileScreen.ts); the open edge's focus stays overlayA11y's.
+// ui/claimView.ts — DOM shell for the guest-claim prompt: the Account section of the Profile screen
+// (uif-16b; ui/profileView.ts owns the dialog, its a11y and the row walk).
+// DOM shell — coverage-excluded (all logic lives in claimModel.ts). Its heading and body show in
+// every phase (B2), and its shown buttons are rows of the Profile column (`RowSection`), the cursor
+// being DOM focus. On an already-open frame a render moves focus only on the decline confirm's arm
+// edge (No: a confirm defaults to No), its disarm edge (Decline) or off a control it hid
+// (`reseatRow`, ui/screens/profileScreen.ts), and never focus that is in another section.
 //
-// Overlay a11y wiring. THREE DOORS, ONE NULLITY SOURCE.
-// This shell is opened and closed through `show()`, `hide()` AND `render(vm)` (whose `vm.visible`
-// drives `display` directly), so all three must agree. They do, because they all read the SAME
-// existing derived `visible` getter below — never a shadow field. A `#lastRenderVisible` field
-// would never see `hide()`, so after a manual dismiss the next `render(vm)` is not a field
-// transition and the re-opened overlay would ship no role, no label, no focus and no trap, while
-// passing every single-cycle test (the failure `ui/questLogView.ts` documents for S3).
+// SHOWN IFF THE FRAME IS. `show()` and `hide()` own this section's `display`; `render(vm)` never
+// writes it. `vm.visible` is main.ts's signal that a claim phase wants the screen opened (the
+// auto-open), not this section's visibility: inside an open Profile the section always shows.
 //
-// THE REAL OPEN EDGE FIRES IN `render()`, NOT `show()`. `main.ts`'s `openClaim()` runs
-// `renderClaim()` -> `claimView.show()` -> `renderClaim()`, and the claim phase has already moved
-// by the first of those, so `render()` sees the hidden->visible transition one statement before
-// `show()` is even called. Both are therefore guarded on `wasVisible`, read BEFORE the display
-// write; an unguarded `render()` would re-open on every claim event (feedback update, decline
-// prompt), tearing down and re-scheduling the deferred focus and yanking the player back to
-// `#claim-signin-btn` mid-interaction.
+// EVERY CLOSE DISARMS. `hide()` calls `onDismissed`, on every close path including the battle and
+// reconnect force-hides, and main.ts cancels an armed decline there: in one column an armed "Yes"
+// would otherwise be the next row under the name field of a re-opened screen.
 //
-// THE GUARDS ARE ASYMMETRIC ON PURPOSE. `render()`'s close arm IS guarded; `hide()`'s is NOT.
-// `closeOverlayA11y` with no record is a documented pure no-op, so the unguarded `hide()` is the
-// self-healing path for a record that desynchronised from the DOM, while a guarded one would leak
-// a live capture listener, a pending timer and an expiring return target permanently.
-//
-// The open is the LAST statement of each door, after the display and `textContent` writes: in a
-// real browser `.focus()` on a `display:none` node is a silent no-op, and the deferred
-// `querySelector('#claim-signin-btn')` must resolve against a painted root.
-//
-// KNOWN RESIDUAL, PINNED NOT FIXED (S4-claimView-REOPEN-AFTER-HIDE). `ClaimPhase` never returns to
-// `'hidden'` and `main.ts`'s `KeyC` close calls `hide()` directly rather than through `applyClaim`,
-// so the model still believes the overlay is open. A later reconnect-driven render then arrives
-// with `vm.visible === true` while the DOM reads hidden, and re-opens. That already re-showed the
-// overlay before this slice; it now also announces and moves focus. The a11y layer is correct for
-// the DOM state it observes — the defect is upstream, in a model that cannot represent "dismissed".
-// Fixing it needs `claimModel.ts` (a new `ClaimEvent`) or `client/src/main.ts` (route the `KeyC`
-// close through `applyClaim`), both outside this slice's scope and `main.ts` reserved for S5.
-//
-// Button labels and the frame title are the strings this view owns, resolved through the i18n
-// resolver (`t('claim.privacyButton')`, the five `claim.*Button` action labels and, since qf-13
-// (QF13.1), the title-bar `t('menu.profile.account.title')`, the Profile menu leaf's own key, so
-// renaming the leaf retitles the frame) in BOTH open doors —
-// `render()` (whose `vm.visible` is the real open edge) and `show()` (`main.ts`'s
-// `onSignInFailed` calls `show()` BEFORE `renderClaim()`) — unconditionally, on every call, never
-// in the constructor (the locale may be negotiated after this view is constructed). The privacy
-// label shares its English bytes with `privacy.title` today but is a DIFFERENT key (a button
-// label, not a heading). WHICH action buttons are shown is `vm.actions` (claimModel owns the
-// rule); `render()` writes each one's display, so the initial-focus anchor `#claim-signin-btn`
-// is painted whenever the prompt offers sign-in.
+// Button labels and the section header are the strings this view owns, resolved through the i18n
+// resolver (`t('claim.privacyButton')`, the five `claim.*Button` action labels and the header
+// `t('menu.profile.account.title')`) in BOTH `render()` and `show()` — unconditionally, on every
+// call, never in the constructor (the locale may be negotiated after this view is constructed).
+// The privacy label shares its English bytes with `privacy.title` today but is a DIFFERENT key (a
+// button label, not a heading); the button is the door to the Privacy section below (it moves the
+// cursor there). WHICH action buttons are shown is `vm.actions` (claimModel owns the rule);
+// `render()` writes each one's display.
 // The vm strings (`title`, `body`, `nudge`, `feedback`, `confirmPrompt`) are model copy from
-// `claimModel.ts`, rendered raw; `vm.title` is the phase heading `#claim-title`, below the bar.
+// `claimModel.ts`, rendered raw; `vm.title` is the phase heading `#claim-title`, below the header.
 // The shown buttons stack as a column (`.mr-button-rows`, QF13.2), the axis the Up/Down rows walk.
 import type { ClaimActions, ClaimViewModel } from './claimModel';
 import { t } from './i18n/resolver';
-import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
-import {
-  type RowOp,
-  type RowSection,
-  type RowsView,
-  reseatRow,
-  walkSection,
-} from './screens/profileScreen';
+import { type RowSection, reseatRow } from './screens/profileScreen';
 
 export interface ClaimViewHandlers {
   readonly onSignIn: () => void;
@@ -72,9 +35,11 @@ export interface ClaimViewHandlers {
   readonly onDeclineRequested: () => void;
   readonly onDeclineConfirmed: () => void;
   readonly onDeclineCancelled: () => void;
-  /** the front door to the privacy surface: account deletion and data export are account
-   *  management, so they open from the account claim. */
+  /** The door to the Privacy section: account deletion and data export are account management,
+   *  so the account prompt points at them. */
   readonly onPrivacy: () => void;
+  /** Called from `hide()` — every close path, including the battle force-hide. */
+  readonly onDismissed: () => void;
 }
 
 /** Find an existing element or create a hidden one appended to `parent` (<body> by default), so
@@ -89,8 +54,8 @@ function ensureElement(id: string, tag = 'div', parent: HTMLElement = document.b
   return el;
 }
 
-/** Where a constructed frame lives (B3, CTL8H.1): the frame layer inside #game-screen, else the
- *  game screen, else <body> for a shell-less boot. */
+/** Where the section is built before the Profile frame takes it (B3, CTL8H.1): the frame layer
+ *  inside #game-screen, else the game screen, else <body> for a shell-less boot. */
 function frameAnchor(): HTMLElement {
   return (
     document.getElementById('frame-layer') ??
@@ -99,22 +64,19 @@ function frameAnchor(): HTMLElement {
   );
 }
 
-/** The frame-chrome title bar (ui/frame.ts, CTL4.6) as `overlay`'s first child, holding the
- *  `#claim-frame-title` it returns: created once, found by a later construction. */
-function titleBar(overlay: HTMLElement): HTMLElement {
+/** The section header `#claim-frame-title` as `section`'s first child: created once, found by a
+ *  later construction. */
+function sectionHeader(section: HTMLElement): HTMLElement {
   const found = document.getElementById('claim-frame-title');
   if (found) return found;
-  const bar = document.createElement('div');
-  bar.className = 'mr-frame-titlebar';
-  const title = document.createElement('div');
-  title.id = 'claim-frame-title';
-  title.className = 'mr-frame-title';
-  bar.appendChild(title);
-  overlay.prepend(bar);
-  return title;
+  const header = document.createElement('h2');
+  header.id = 'claim-frame-title';
+  header.className = 'mr-section-header';
+  section.prepend(header);
+  return header;
 }
 
-export class ClaimView implements RowsView, RowSection {
+export class ClaimView implements RowSection {
   readonly #overlay: HTMLElement;
   readonly #frameTitle: HTMLElement;
   readonly #title: HTMLElement;
@@ -124,13 +86,12 @@ export class ClaimView implements RowsView, RowSection {
   readonly #confirm: HTMLElement;
   readonly #privacyBtn: HTMLButtonElement;
   readonly #actionBtns: Readonly<Record<keyof ClaimActions, HTMLButtonElement>>;
-  // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
-  #lastOp: RowOp | null = null;
+  readonly #onDismissed: () => void;
 
   constructor(handlers: ClaimViewHandlers) {
     this.#overlay = ensureElement('claim-overlay', 'div', frameAnchor());
-    this.#overlay.classList.add('mr-frame', 'mr-shell', 'mr-button-rows');
-    this.#frameTitle = titleBar(this.#overlay);
+    this.#overlay.classList.add('mr-button-rows');
+    this.#frameTitle = sectionHeader(this.#overlay);
     this.#title = ensureElement('claim-title', 'h2');
     this.#body = ensureElement('claim-body', 'p');
     this.#nudge = ensureElement('claim-nudge', 'p');
@@ -140,7 +101,7 @@ export class ClaimView implements RowsView, RowSection {
       if (child.parentElement !== this.#overlay) this.#overlay.appendChild(child);
     }
     // The five action buttons start hidden (`ensureElement`) and are shown per `vm.actions` by
-    // every `render()`; labels are written by both open doors (header).
+    // every `render()`; labels are written by every render and show (header).
     this.#actionBtns = {
       signIn: this.#wireButton('claim-signin-btn', handlers.onSignIn),
       join: this.#wireButton('claim-join-btn', handlers.onJoin),
@@ -149,13 +110,14 @@ export class ClaimView implements RowsView, RowSection {
       declineCancel: this.#wireButton('claim-decline-cancel-btn', handlers.onDeclineCancelled),
     };
     this.#privacyBtn = this.#wireButton('claim-privacy-btn', handlers.onPrivacy);
+    this.#onDismissed = handlers.onDismissed;
     // The privacy door is always offered, so it is un-hidden once here. Its label is NOT
     // written here: `render()` and `show()` each resolve it (header), so pre-open the button is
     // visible but empty.
     this.#privacyBtn.style.display = '';
   }
 
-  /** Write the frame title and every button label (both open doors, every call — header). */
+  /** Write the section header and every button label (every render and show — header). */
   #writeLabels(): void {
     this.#frameTitle.textContent = t('menu.profile.account.title');
     this.#privacyBtn.textContent = t('claim.privacyButton');
@@ -177,10 +139,7 @@ export class ClaimView implements RowsView, RowSection {
   /** Render from the pure VM (textContent only — the claim body is never player-controlled, but
    *  the discipline mirrors the rest of the UI: never innerHTML with data). */
   render(vm: ClaimViewModel): void {
-    // Read the ONE nullity source FIRST, before the display write below flips it (header).
-    const wasVisible = this.visible;
-    const wasArmed = this.#armed;
-    this.#overlay.style.display = vm.visible ? 'block' : 'none';
+    const wasArmed = this.armed;
     // B2: the title and body are shown in every phase (ensureElement creates them hidden).
     this.#title.textContent = vm.title;
     this.#title.style.display = '';
@@ -195,21 +154,18 @@ export class ClaimView implements RowsView, RowSection {
     for (const action of Object.keys(this.#actionBtns) as (keyof ClaimActions)[]) {
       this.#actionBtns[action].style.display = vm.actions[action] ? '' : 'none';
     }
-    // Door 1 of 2 for the labels — every render, unconditionally.
+    // Every render, unconditionally.
     this.#writeLabels();
-    // Only on a frame already open: the open edge's focus is overlayA11y's.
-    if (wasVisible && vm.visible) this.#reseat(wasArmed);
-    // LAST, after every write above, so the deferred focus resolves against a painted root.
-    if (vm.visible && !wasVisible) openOverlayA11y('claimView', this.#overlay);
-    else if (!vm.visible && wasVisible) closeOverlayA11y('claimView', null);
+    // Only while the section shows: the open edge's focus is the frame's.
+    if (this.visible) this.#reseat(wasArmed);
   }
 
   /** The decline confirm is armed: its No is shown. */
-  get #armed(): boolean {
+  get armed(): boolean {
     return this.#actionBtns.declineCancel.style.display !== 'none';
   }
 
-  /** The section root (uif-16a): this overlay's. */
+  /** The section root. */
   get sectionRoot(): HTMLElement {
     return this.#overlay;
   }
@@ -223,11 +179,11 @@ export class ClaimView implements RowsView, RowSection {
 
   /** No while the decline is armed, else the first row. */
   defaultRow(): HTMLElement | undefined {
-    return this.#armed ? this.#actionBtns.declineCancel : this.sectionRows()[0];
+    return this.armed ? this.#actionBtns.declineCancel : this.sectionRows()[0];
   }
 
-  /** A render moved focus only on the arm and disarm edges, or off a control it hid; never focus
-   *  that is outside the frame (`reseatRow`). */
+  /** A render moves focus only on the arm and disarm edges, or off a control it hid; never focus
+   *  that is outside this section (`reseatRow`). */
   #reseat(wasArmed: boolean): void {
     const active = document.activeElement;
     const onPage = !(active instanceof HTMLElement) || active === document.body;
@@ -236,20 +192,11 @@ export class ClaimView implements RowsView, RowSection {
     const target = reseatRow(
       this.sectionRows(),
       onPage ? null : active,
-      { was: wasArmed, now: this.#armed },
+      { was: wasArmed, now: this.armed },
       b.declineCancel,
       b.decline,
     );
     target?.focus();
-  }
-
-  /** One press on the rows (the Account screen, CTL8H.3). The cursor is DOM focus; with no row
-   *  focused it only seats the default row (No while armed, else the first), so an A never
-   *  confirms a decline nobody chose. */
-  applyRowOp(op: RowOp): void {
-    if (op === this.#lastOp) return;
-    this.#lastOp = op;
-    walkSection(this, document.activeElement, op)?.click();
   }
 
   get visible(): boolean {
@@ -257,17 +204,15 @@ export class ClaimView implements RowsView, RowSection {
   }
 
   show(): void {
-    const wasVisible = this.visible;
-    // Door 2 of 2 for the labels — every show(), unconditionally,
-    // after the `wasVisible` read and before the display write.
+    // Every show(), unconditionally, before the display write.
     this.#writeLabels();
     this.#overlay.style.display = 'block';
-    if (!wasVisible) openOverlayA11y('claimView', this.#overlay);
   }
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    closeOverlayA11y('claimView', null);
+    // Every close disarms (header), including a force-hide that reaches this method alone.
+    this.#onDismissed();
   }
 
   toggle(): void {

@@ -458,18 +458,20 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
 
     // uif-15b (UIF15B.1, named intentional change): the sub-list that proves French is Profile
     // (Social is a root leaf with no sub-list). Was: Social's Trades, Challenges, Rankings.
-    for (let i = 0; i < 4; i += 1) tap('ArrowDown', 1200 + i * 100);
-    expect(navActive()).toBe('profile');
-    tap('Enter', 1600);
+    // uif-16b (UIF16B.1, named intentional change): Profile is a root leaf too (one frame, no
+    // sub-list), so the sub-list that proves French is Options (Help, Controls), five Downs from
+    // Monsters. Was: Profile's Name, Account, Privacy and the Name description.
+    for (let i = 0; i < 5; i += 1) tap('ArrowDown', 1200 + i * 100);
+    expect(navActive()).toBe('options');
+    tap('Enter', 1700);
     expect(optionTexts(), 'the sub-list is French').toEqual([
-      FR['menu.profile.name.title'],
-      FR['menu.profile.account.title'],
-      FR['menu.profile.privacy.title'],
+      FR['menu.options.help.title'],
+      FR['menu.options.controls.title'],
     ]);
-    expect(menuTitle()).toBe(FR['menu.profile.title']);
+    expect(menuTitle()).toBe(FR['menu.options.title']);
     expect(menuCrumbs(), 'the breadcrumb is the translated Menu').toEqual([FR['menu.title']]);
-    tap('KeyF', 1700);
-    expect(feedbackText()).toBe(FR['menu.profile.name.desc']);
+    tap('KeyF', 1800);
+    expect(feedbackText()).toBe(FR['menu.options.help.desc']);
   });
 
   it('a sub-list is a level inside the one menu frame: A enters it, A on a child opens that screen above the menu, B backs out one level at a time, and Escape closes the whole menu', async () => {
@@ -480,44 +482,46 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     // A on it opens the Social frame, covered by the UIF15B.1 boot case in
     // ui/screens/socialScreen.boot.test.ts). Its last child is Privacy, which opens the privacy
     // screen. Was: Social's sub-list, ending on Rankings (the leaderboard).
-    await bootAtMenu(4);
-    expect(navActive()).toBe('profile');
+    // uif-16b (UIF16B.1, named intentional change): Profile is a root leaf (the one Profile frame),
+    // so the sub-list is Options, whose last child is Controls, which opens the Controls screen.
+    // Was: Profile's sub-list, ending on Privacy (the privacy screen).
+    await bootAtMenu(5);
+    expect(navActive()).toBe('options');
     tap('Enter', 1500);
-    expect(navActive(), 'the sub-list starts on its first entry').toBe('name');
-    expect(cursor()).toBe('menuProfile-root-name');
-    expect(menuTitle()).toBe('Profile');
+    expect(navActive(), 'the sub-list starts on its first entry').toBe('help');
+    expect(cursor()).toBe('menuOptions-root-help');
+    expect(menuTitle()).toBe(EN['menu.options.title']);
     expect(menuCrumbs()).toEqual(['Menu']);
     expect(stackNames(), 'one menu frame').toEqual(['world', 'menuView']);
 
     tap('ArrowDown', 1600);
-    tap('ArrowDown', 1700);
-    expect(navActive()).toBe('privacy');
+    expect(navActive()).toBe('controls');
     tap('Enter', 1800);
     expect(menuShown(), 'the sub-list stays open beneath it').toBe(true);
-    expect(stackNames(), 'the privacy screen is a frame above the menu').toEqual([
+    expect(stackNames(), 'the Controls screen is a frame above the menu').toEqual([
       'world',
       'menuView',
-      'privacyView',
+      'controlsView',
     ]);
 
     tap('Backspace', 1900);
     expect(stackNames(), 'B closes the child').toEqual(['world', 'menuView']);
-    expect(navActive(), 'back on the sub-list entry').toBe('privacy');
-    expect(cursor()).toBe('menuProfile-root-privacy');
+    expect(navActive(), 'back on the sub-list entry').toBe('controls');
+    expect(cursor()).toBe('menuOptions-root-controls');
 
     tap('Backspace', 2000);
-    expect(navActive(), 'B at a sub-list pops to the root, on the group entry').toBe('profile');
+    expect(navActive(), 'B at a sub-list pops to the root, on the group entry').toBe('options');
     expect(menuShown()).toBe(true);
-    expect(cursor()).toBe('menu-root-profile');
+    expect(cursor()).toBe('menu-root-options');
 
     tap('Enter', 2100);
-    expect(navActive(), 'the sub-list cursor was remembered').toBe('privacy');
+    expect(navActive(), 'the sub-list cursor was remembered').toBe('controls');
     tap('Escape', 2200);
     expect(menuShown(), 'Escape closes the whole menu from a sub-list').toBe(false);
     expect(stackNames()).toEqual(['world']);
   });
 
-  it('UIF15B.5 every root leaf (Monsters, Inventory, Journal, Social) opens from the root and B returns to the menu root with the cursor on that same entry; a second B closes the menu', async () => {
+  it('UIF15B.5 every root leaf (Monsters, Inventory, Journal, Social, Profile) opens from the root and B returns to the menu root with the cursor on that same entry; a second B closes the menu', async () => {
     // WRONG IMPL KILLED: a leaf whose B closes the whole menu (the child's pop takes the menu with
     // it); a return that lands on the first entry or on the group-less default (the cursor is
     // forgotten across the child); a Social leaf whose B lands in a Social sub-list (the old
@@ -525,11 +529,14 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     // hidden after the return; a leaf list that is a literal here instead of the table's `open`
     // rows (a new root leaf would escape the check: the ANTI-VACUITY count pins the roster).
     const leaves = MENU_ENTRIES.filter((e) => e.kind === 'open').map((e) => e.key);
+    // uif-16b (named intentional change): 4 -> 5 root leaves: profile joined (one Profile frame,
+    // no sub-list, UIF16B.1).
     expect(leaves, 'ANTI-VACUITY: the root leaves, from the table').toEqual([
       'monsters',
       'bag',
       'journal',
       'social',
+      'profile',
     ]);
     await bootAtMenu();
     let at = 1200;
@@ -557,7 +564,8 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
       expect(menuCrumbs(), `${key}: no breadcrumb`).toEqual([]);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all four leaves were driven').toBe(4);
+    // uif-16b (named intentional change): 4 -> 5 leaves driven (profile joined).
+    expect(checked, 'ANTI-VACUITY: all five leaves were driven').toBe(5);
     expect(socialRootShown(), 'the Social root is closed after its B').toBe(false);
 
     step('Backspace');
@@ -595,98 +603,106 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     expect(after.defaultPrevented, 'after the keyup the rule is gone').toBe(false);
   });
 
-  it('Profile > Privacy from the menu opens the privacy overlay above the menu: the stack ends menuView then privacyView', async () => {
-    // WRONG IMPL KILLED: an `overlayVerdict` that does not filter the open menu out of the visible
-    // set (openPrivacy consults the verdict, the menu is GUARD_ONLY, so the open is silently
-    // refused and the player presses A on Privacy and nothing happens).
+  // uif-16b (named intentional change): "Profile > Privacy from the menu opens the privacy overlay"
+  // and "Profile > Account opens the claim overlay over the menu" are REPLACED by the two UIF16B
+  // cases below: Profile has no sub-list, A on it opens ONE frame (`profileView`) holding all three
+  // sections, and B / Start close that frame. The overlay-verdict pin of the first (the open menu
+  // must not refuse the child) is kept by the UIF16B.1 case: one A must open the frame.
+
+  it('UIF16B.1 A on Profile opens ONE frame above the menu with no second A: the stack ends menuView then profileView, the frame and its Name, Account and Privacy sections are all shown, and the menu stays on Profile beneath it', async () => {
+    // WRONG IMPL KILLED: a Profile entry that is still a group (A enters a sub-list: the stack stays
+    // [world, menuView] and the cursor reads `name`); a leaf that opens one section alone (the old
+    // renameView / claimView / privacyView frame ids, or a frame with the other sections hidden);
+    // an `overlayVerdict` that does not filter the open menu out (the GUARD_ONLY menu refuses the
+    // child and A on Profile does nothing); and a menu cursor reset by the open.
     await bootAtMenu(4);
     expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
-    tap('Enter', 1500);
-    expect(navActive(), 'precondition: the Profile sub-list starts on Name').toBe('name');
-    tap('ArrowDown', 1600);
-    tap('ArrowDown', 1700);
-    expect(navActive(), 'precondition: the cursor is on Privacy').toBe('privacy');
     expect(stackNames(), 'precondition: no child yet').toEqual(['world', 'menuView']);
 
-    tap('Enter', 1800);
-    expect(stackNames(), 'privacy opened above the menu').toEqual([
+    tap('Enter', 1500);
+    expect(stackNames(), 'one A: the Profile frame above the menu').toEqual([
       'world',
       'menuView',
-      'privacyView',
+      'profileView',
     ]);
+    expect(
+      ['profile-overlay', 'rename-overlay', 'claim-overlay', 'privacy-overlay'].map(shownById),
+      'the frame and its three sections are shown together',
+    ).toEqual([true, true, true, true]);
+    const frameRoot = document.getElementById('profile-overlay') as HTMLElement;
+    expect(
+      ['rename-overlay', 'claim-overlay', 'privacy-overlay'].map((id) =>
+        frameRoot.contains(document.getElementById(id)),
+      ),
+      'every section lives inside the one frame',
+    ).toEqual([true, true, true]);
     expect(menuShown(), 'the menu stays open beneath it').toBe(true);
+    expect(navActive(), 'with its cursor on Profile').toBe('profile');
+    expect(cursor()).toBe('menu-root-profile');
   });
 
-  it('Profile > Account opens the claim overlay over the menu: Backspace closes only the claim and returns to the menu, and Escape (Start) closes the claim and the menu together', async () => {
-    // WRONG IMPL KILLED: a B that does not pop the claim, a B that pops the menu with it, an Escape
-    // that closes only the claim (the ctl-5 reading, retired by ctl-6b: the menu would be left
-    // beneath it), and an Escape that leaves the claim orphaned over the world.
-    // ctl-6b CTL6B.2 / CTL6B.3: Escape is Start now. It used to leave the menu open beneath the claim
-    // (claim had no Escape branch); it now pops to the base. Backspace (B) still closes only the claim.
+  it('UIF16B.2 B on the Profile frame pops it back to the menu with the cursor on Profile (uncovered, at the root); Start (Escape) pops the frame and the menu together', async () => {
+    // WRONG IMPL KILLED: a B that does not pop the frame, a B that pops the menu with it, a return
+    // that lands on the first entry or inside a stale Profile sub-list (the menu title and cursor id
+    // would name `menuProfile`), a menu left covered, an Escape that closes only the frame, and a
+    // frame left on screen behind a closed stack.
     await bootAtMenu(4);
     tap('Enter', 1500);
-    tap('ArrowDown', 1600);
-    expect(navActive(), 'precondition: the cursor is on Account').toBe('account');
-
-    tap('Enter', 1700);
-    expect(stackNames(), 'the claim opened above the menu').toEqual([
+    expect(stackNames(), 'precondition: Profile is above the menu').toEqual([
       'world',
       'menuView',
-      'claimView',
+      'profileView',
     ]);
-    expect(menuShown(), 'precondition: the menu is open beneath it').toBe(true);
 
-    tap('Backspace', 1800);
-    expect(stackNames(), 'B closes the claim and returns to the menu').toEqual([
-      'world',
-      'menuView',
-    ]);
+    tap('Backspace', 1600);
+    expect(stackNames(), 'B pops the frame back to the menu').toEqual(['world', 'menuView']);
+    expect(shownById('profile-overlay'), 'the frame is closed').toBe(false);
     expect(menuShown()).toBe(true);
     expect(
       (document.getElementById('menu-overlay') as HTMLElement).style.visibility,
       'and the menu is uncovered',
     ).not.toBe('hidden');
-    expect(navActive(), 'the sub-list cursor is where it was').toBe('account');
+    expect(navActive(), 'the cursor is on Profile').toBe('profile');
+    expect(cursor(), 'on the root row').toBe('menu-root-profile');
+    expect(menuTitle(), 'at the root level').toBe(EN['menu.title']);
 
-    // Open the claim again, then Escape: both close.
-    tap('Enter', 1900);
-    expect(stackNames(), 'precondition: the claim is over the menu again').toEqual([
+    tap('Enter', 1700);
+    expect(stackNames(), 'precondition: Profile is above the menu again').toEqual([
       'world',
       'menuView',
-      'claimView',
+      'profileView',
     ]);
-    tap('Escape', 2000);
-    expect(stackNames(), 'Escape closes the claim and the menu together').toEqual(['world']);
+    tap('Escape', 1800);
+    expect(stackNames(), 'Start pops the frame and the menu together').toEqual(['world']);
     expect(menuShown(), 'the menu is closed').toBe(false);
     expect(
-      (document.getElementById('claim-overlay') as HTMLElement).style.display,
-      'and so is the claim overlay',
-    ).toBe('none');
+      ['profile-overlay', 'rename-overlay', 'claim-overlay', 'privacy-overlay'].map(shownById),
+      'and so are the frame and every section',
+    ).toEqual([false, false, false, false]);
   });
 
-  it('a screen opened over the menu is announced: after A on Profile > Account and the 500 ms live-region window, #a11y-live reads the claim label, not the menu label', async () => {
-    // WRONG IMPL KILLED: an announcement top derived from the overlay registry order alone (the
-    // claim overlay is registered AFTER the menu in OVERLAY_IDS, so a registry-first pick lands on
-    // the covered menu beneath the child instead of the screen the player is actually on).
+  it('UIF16B.3 a screen opened over the menu is announced: after A on Profile and the 500 ms live-region window, #a11y-live reads the one Profile frame`s label, not the menu label', async () => {
+    // uif-16b (named intentional change): was "after A on Profile > Account ... reads the claim
+    // label": the frame announced is the one Profile dialog (its single title), not a section.
+    // WRONG IMPL KILLED: an announcement top derived from the overlay registry order alone (a
+    // registry-first pick lands on the covered menu beneath the child instead of the screen the
+    // player is actually on), and a frame that announces nothing (no a11y record of its own).
     await bootAtMenu(4);
     tap('Enter', 1500);
-    tap('ArrowDown', 1600);
-    expect(navActive(), 'precondition: the cursor is on Account').toBe('account');
-    tap('Enter', 1700);
-    expect(stackNames(), 'precondition: the claim is above the menu').toEqual([
+    expect(stackNames(), 'precondition: Profile is above the menu').toEqual([
       'world',
       'menuView',
-      'claimView',
+      'profileView',
     ]);
-    const claimLabel = t(OVERLAY_A11Y.claimView.labelKey);
+    const profileLabel = t(OVERLAY_A11Y.profileView.labelKey);
     const menuLabel = t(OVERLAY_A11Y.menuView.labelKey);
-    expect(claimLabel, 'fixture: the two labels differ').not.toBe(menuLabel);
+    expect(profileLabel, 'fixture: the two labels differ').not.toBe(menuLabel);
 
     // Frames spaced past the 500 ms live-region window (ui/liveRegion.ts flush).
     for (const at of [2300, 2900, 3500, 4100]) frame(at);
     const region = document.getElementById('a11y-live');
     expect(region, '#a11y-live must exist (client/index.html)').not.toBeNull();
-    expect(region?.textContent).toBe(claimLabel);
+    expect(region?.textContent).toBe(profileLabel);
     expect(region?.textContent).not.toBe(menuLabel);
   });
 
@@ -696,25 +712,28 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     // cursor off its first entry with no new press).
     // uif-15b: the sub-list entered is Profile (Social is a leaf now). Was: Journal, Down onto
     // Social, Enter into its sub-list (trades, then challenges).
-    await bootAtMenu(3);
-    expect(navActive(), 'precondition: the cursor is on Social').toBe('social');
+    // uif-16b (named intentional change): the sub-list entered is Options (Profile is a leaf now):
+    // from Profile a held Down moves onto Options and Enter enters it on Help; the fresh press
+    // moves to Controls. Was: from Social onto Profile, entered on Name, then Account.
+    await bootAtMenu(4);
+    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
     const t0 = 2000;
     fire('keydown', 'ArrowDown', t0);
-    expect(navActive(), 'the held Down moved onto Profile').toBe('profile');
+    expect(navActive(), 'the held Down moved onto Options').toBe('options');
     fire('keydown', 'Enter', t0 + 100);
-    expect(navActive(), 'Enter (Down still held) entered the Profile sub-list').toBe('name');
-    expect(cursor()).toBe('menuProfile-root-name');
+    expect(navActive(), 'Enter (Down still held) entered the Options sub-list').toBe('help');
+    expect(cursor()).toBe('menuOptions-root-help');
 
     for (const dt of [349, 350, 449, 450, 550, 1000]) {
       frame(t0 + dt);
-      expect(navActive(), `${dt} ms after the Down press, with no new press`).toBe('name');
+      expect(navActive(), `${dt} ms after the Down press, with no new press`).toBe('help');
     }
 
     // Contrast: a fresh press still moves the cursor in the new level.
     fire('keyup', 'ArrowDown', t0 + 1100);
     fire('keyup', 'Enter', t0 + 1105);
     fire('keydown', 'ArrowDown', t0 + 1200);
-    expect(navActive(), 'a new press moves').toBe('account');
+    expect(navActive(), 'a new press moves').toBe('controls');
     fire('keyup', 'ArrowDown', t0 + 1205);
   });
 

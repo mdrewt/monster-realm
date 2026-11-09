@@ -39,17 +39,19 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
     // ANTI-VACUITY, ASSERTED FIRST. ctl-12b (named intentional change): 17 -> 18, `controlsView`
     // (Options › Controls) joined the manifest, so `a11y.overlay.controlsView.title` joins the
     // derived key set.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left, profileView joined.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 16 mutual-exclusion overlays').toBe(16);
     expect(
       Object.keys(a11yCopy as Record<string, unknown>).length > 0,
       'ANTI-VACUITY: a11yCopy must not be empty, or every set-equality check below is vacuous',
     ).toBe(true);
 
     const derivedKeys = OVERLAY_IDS.map((id) => `a11y.overlay.${id}.title`);
+    // uif-16b (named intentional change): 18 -> 16 derived keys, same three out, profileView in.
     expect(
       new Set(derivedKeys).size,
-      'ANTI-VACUITY: the 18 derived keys must be pairwise distinct',
-    ).toBe(18);
+      'ANTI-VACUITY: the 16 derived keys must be pairwise distinct',
+    ).toBe(16);
     expect(derivedKeys, 'the Controls overlay`s derived key').toContain(
       'a11y.overlay.controlsView.title',
     );
@@ -92,7 +94,8 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
       ).toBe(true);
       resolved += 1;
     }
-    expect(resolved, 'ANTI-VACUITY: all 18 ids must have been resolved').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left, profileView joined.
+    expect(resolved, 'ANTI-VACUITY: all 16 ids must have been resolved').toBe(16);
   });
 
   it('A11YCOPY-VALUES-ICU-FREE BITES: every catalog value, regardless of namespace, is non-empty after trim and brace-free', () => {
@@ -313,6 +316,35 @@ describe('a11yCopy — uif-15a: the Help overlay name', () => {
     expect(t(OVERLAY_A11Y.helpView.labelKey)).toBe('How to Play');
     expect(t(OVERLAY_A11Y.helpView.labelKey)).toBe(
       (CATALOG_EN as Record<string, unknown>)['chrome.help.title'],
+    );
+  });
+});
+
+// uif-16b (UIF16B.3): Profile is ONE dialog with ONE name. The three section overlays' names leave
+// the a11y.overlay.* namespace (they are sections now, with no a11y of their own) and Profile's joins.
+describe('a11yCopy — uif-16b: the one Profile dialog name', () => {
+  it('UIF16B.3 the overlay-title namespace is exactly 16 keys, Profile is named Profile (the visible title), and the three section names are gone', () => {
+    // WRONG IMPL KILLED: a section name left behind as a stowaway (a screen reader would have two
+    // candidate names for one dialog), Profile named after one of its sections ('Name'/'Account'),
+    // a name that drifts from the visible frame title (menu.profile.title), or a labelKey pointed
+    // at a section's old key.
+    const overlayNamespace = Object.keys(a11yCopy as Record<string, unknown>)
+      .filter((k) => k.startsWith('a11y.overlay.'))
+      .sort();
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left, profileView joined.
+    expect(overlayNamespace).toHaveLength(16);
+    expect(overlayNamespace).toContain('a11y.overlay.profileView.title');
+    for (const gone of ['renameView', 'claimView', 'privacyView']) {
+      expect(
+        Object.hasOwn(a11yCopy, `a11y.overlay.${gone}.title`),
+        `a11y.overlay.${gone}.title must retire with the ${gone} overlay`,
+      ).toBe(false);
+    }
+    expect(a11yCopy['a11y.overlay.profileView.title']).toBe('Profile');
+    expect(OVERLAY_A11Y.profileView.labelKey).toBe('a11y.overlay.profileView.title');
+    expect(t(OVERLAY_A11Y.profileView.labelKey)).toBe('Profile');
+    expect(t(OVERLAY_A11Y.profileView.labelKey)).toBe(
+      (CATALOG_EN as Record<string, unknown>)['menu.profile.title'],
     );
   });
 });

@@ -817,14 +817,18 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // which calls `dialogueView?.render(dialogueVm)` on EVERY batch — `dialogueVm` is
     // null once the conversation row is gone, and `render`'s `!vm` branch display:nones the
     // overlay, blurring a focused choice <button> the same way this test does on renameView.
-    pressKey({ code: 'KeyN' }); // renameView — GUARD_ONLY, no identity requirement
+    // uif-16b (named intentional change): KeyN opens the one Profile frame (`profileView`, its
+    // anchor still `#rename-input`), and the root force-hidden below is the frame's own
+    // `#profile-overlay` (the Name section is no dialog of its own). Was: renameView,
+    // `#rename-overlay`.
+    pressKey({ code: 'KeyN' }); // profileView — GUARD_ONLY, no identity requirement
     // Flush the REAL setTimeout(0) deferred-focus macrotask before
-    // touching focus ourselves. renameView is a STATIC shell: opening it schedules a focus
+    // touching focus ourselves. Opening Profile on Name schedules a focus
     // move to `#rename-input` the instant KeyN's handler returns. Letting that settle first
     // — rather than racing a synchronous `.focus()` call against a pending macrotask — is
     // what makes the SUBMIT-button focus below deterministic instead of timing-dependent.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(overlayIsOpen('renameView')).toBe(true);
+    expect(overlayIsOpen('profileView')).toBe(true);
     // `#rename-input`, NOT `#rename-submit`: the submit button ships `disabled` until a name is
     // typed (client/index.html), and `.focus()` on a disabled control is a silent no-op — the
     // precondition below would then fail for a fixture reason rather than a behavioural one.
@@ -837,7 +841,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // The raw force-hide write (NOT renameView.hide()/closeOverlayA11y() — this simulates a
     // store-driven `render(null)`-style close, which does not route through the view's own
     // close path and therefore never restores focus itself).
-    const overlayRoot = document.getElementById('rename-overlay');
+    const overlayRoot = document.getElementById('profile-overlay');
     expect(overlayRoot).not.toBeNull();
     overlayRoot!.style.display = 'none';
     // happy-dom does not reliably implement the browser's automatic blur-to-<body> when a

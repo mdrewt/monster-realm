@@ -216,18 +216,39 @@ test.describe
           'unique name must be <= 24 chars (server MAX_NAME_LEN)',
         ).toBeLessThanOrEqual(24);
 
-        // Step 4: open the rename overlay via N.
-        // ctl-11a: N opens it through the main menu (Profile > Name), from the bare world or over
-        // any other open screen (which it replaces); closeAll still leaves a known base first.
+        // Step 4: open the Name section via N.
+        // ctl-11a: N opens it through the main menu, from the bare world or over any other open
+        // screen (which it replaces); closeAll still leaves a known base first.
+        // uif-16b (named intentional change): Profile is a menu LEAF opening ONE dialog
+        // (#profile-overlay) whose first section is the rename form; there is no Profile > Name
+        // second level. Was: Profile > Name, the rename form being its own dialog.
         await closeAll(page); // dismiss any stale overlay first
         await pressAccel(page, 'N');
 
         // Step 5: wait for the rename input to be visible (overlay opened).
-        // data-testid="rename-input" matches the index.html shell (ADR-0133 §index.html shell).
+        // data-testid="rename-input" matches the index.html markup (ADR-0133 §index.html shell).
         await page.waitForSelector('[data-testid="rename-input"]', {
           state: 'visible',
           timeout: 10_000,
         });
+        // Step 5a (uif-16b): the field sits in the Name section INSIDE the Profile dialog, and the
+        // stack's top screen is that frame.
+        await expect(page.locator('#profile-overlay')).toBeVisible();
+        await expect(page.locator('#profile-overlay [data-testid="rename-input"]')).toHaveCount(1);
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              (
+                window as unknown as {
+                  __game: () => { stack: Array<{ kind: string; id?: string }> };
+                }
+              )
+                .__game()
+                .stack.filter((f) => f.kind === 'screen')
+                .map((f) => f.id),
+            ),
+          )
+          .toEqual(['menuView', 'profileView']);
 
         // Step 5b (ctl-8h, CTL8H.5): N opens the Name screen in typing mode, so the deferred
         // initial focus puts the caret in the field (ctl-11a: with the menu opened beneath it).

@@ -1651,7 +1651,16 @@ describe('InputRouter: X under a nav-capable screen (bt-12 B, BT12.2)', () => {
 type PathRow = {
   readonly menu: readonly string[];
   readonly frame: FrameId;
-  readonly tab?: 'party' | 'storage' | 'trades' | 'challenges' | 'rankings';
+  // uif-16b: the union widens by the Profile sections (`ProfileSection`), the SocialTab precedent.
+  readonly tab?:
+    | 'party'
+    | 'storage'
+    | 'trades'
+    | 'challenges'
+    | 'rankings'
+    | 'name'
+    | 'account'
+    | 'privacy';
 };
 const EXPECTED_PATHS: Readonly<Record<MenuAccel, PathRow>> = {
   B: { menu: ['monsters'], frame: 'boxView', tab: 'storage' },
@@ -1665,8 +1674,11 @@ const EXPECTED_PATHS: Readonly<Record<MenuAccel, PathRow>> = {
   U: { menu: ['social'], frame: 'social', tab: 'trades' },
   P: { menu: ['social'], frame: 'social', tab: 'challenges' },
   L: { menu: ['social'], frame: 'social', tab: 'rankings' },
-  N: { menu: ['profile', 'name'], frame: 'renameView' },
-  C: { menu: ['profile', 'account'], frame: 'claimView' },
+  // uif-16b (UIF16B.5, named intentional change): N and C are the one-key path ['profile'] onto the
+  // one Profile frame, the section they land on riding in `tab`. Was: N ['profile','name'] onto
+  // renameView, C ['profile','account'] onto claimView, each with no tab.
+  N: { menu: ['profile'], frame: 'profileView', tab: 'name' },
+  C: { menu: ['profile'], frame: 'profileView', tab: 'account' },
   // qf-14 (named intentional change): Y opens Options > Controls directly. 9 -> 10 menu accelerators.
   Y: { menu: ['options', 'controls'], frame: 'controlsView' },
 };
@@ -1688,9 +1700,11 @@ const frozenStack = (base: BaseFrame, ...upper: UpperFrame[]): Stack => {
   return Object.freeze([base, ...upper]) as unknown as Stack;
 };
 
-/** The seventeen player-owned frame ids (spelled out, never read from SCREEN_POLICY): every frame id
+/** The fifteen player-owned frame ids (spelled out, never read from SCREEN_POLICY): every frame id
  *  but the two server-owned ones. ctl-12b (named intentional change): `controlsView` (Options ›
- *  Controls) joins, a player screen an accelerator replaces like any other. Was: sixteen. */
+ *  Controls) joins, a player screen an accelerator replaces like any other. Was: sixteen.
+ *  uif-16b (named intentional change): 17 -> 15: renameView, claimView, privacyView left,
+ *  profileView joined at renameView's slot. */
 const PLAYER_FRAMES: readonly FrameId[] = [
   'boxView',
   'raisingView',
@@ -1701,12 +1715,10 @@ const PLAYER_FRAMES: readonly FrameId[] = [
   'tradeView',
   'pvpView',
   'leaderboardView',
-  'renameView',
+  'profileView',
   'tradeProposeView',
   'helpView',
   'menuView',
-  'claimView',
-  'privacyView',
   'controlsView',
   'social',
 ];
@@ -1748,7 +1760,7 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     expect(Object.keys(ACCEL_PATHS), 'F8 and F9 are the shell`s own').not.toContain('F8');
     expect(Object.keys(ACCEL_PATHS)).not.toContain('F9');
     for (const accel of MENU_ACCELS) {
-      expect(ACCEL_PATHS[accel].tab, `${accel}: only B, V, U, P and L carry a tab`).toBe(
+      expect(ACCEL_PATHS[accel].tab, `${accel}: only B, V, U, P, L, N and C carry a tab`).toBe(
         EXPECTED_PATHS[accel].tab,
       );
     }
@@ -1791,6 +1803,67 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     expect(accelDecision('L', frozenStack(WORLD_BASE, screenFrame('social')))).toEqual({
       kind: 'start',
     });
+  });
+
+  it('UIF16B.5 N and C are the one-key path [profile] onto the one profileView frame on the name and account sections; with Profile the top frame BOTH answer start, and otherwise each opens its own path', () => {
+    // WRONG IMPL KILLED: a row still two keys deep (the menu has no `profile > name` leaf any more:
+    // the walk picks nothing); a row onto a section's old overlay (renameView / claimView); no tab
+    // (both would open Profile on one section); swapped sections; a `start` keyed to the path
+    // instead of the frame (C over an open Profile would re-open it instead of closing / moving to
+    // Account); a Profile buried under Help read as the top; and a typed N in the name field (a
+    // text entry owned by Profile) read as start instead of denied.
+    expect(ACCEL_PATHS.N).toEqual({ menu: ['profile'], frame: 'profileView', tab: 'name' });
+    expect(ACCEL_PATHS.C).toEqual({ menu: ['profile'], frame: 'profileView', tab: 'account' });
+    for (const accel of ['N', 'C'] as const) {
+      const leaf = leafOf(ACCEL_PATHS[accel].menu);
+      expect(leaf?.kind, `${accel}: the one-key path ends on an open leaf`).toBe('open');
+      expect(leaf?.kind === 'open' ? leaf.target : undefined, `${accel}: it opens Profile`).toBe(
+        'profileView',
+      );
+      const open: AccelDecision = { kind: 'open', path: ACCEL_PATHS[accel] };
+      const start: AccelDecision = { kind: 'start' };
+      // Profile on top: start, for both keys, at the world, over the menu, over a battle.
+      expect(accelDecision(accel, frozenStack(WORLD_BASE, screenFrame('profileView')))).toEqual(
+        start,
+      );
+      expect(
+        accelDecision(
+          accel,
+          frozenStack(WORLD_BASE, screenFrame('menuView'), screenFrame('profileView')),
+        ),
+      ).toEqual(start);
+      expect(
+        accelDecision(
+          accel,
+          frozenStack(
+            battleBase('7'),
+            stampedFrame('menuView', '7'),
+            stampedFrame('profileView', '7'),
+          ),
+        ),
+      ).toEqual(start);
+      // Otherwise: open with the path.
+      expect(accelDecision(accel, frozenStack(WORLD_BASE)), `${accel} at the world`).toEqual({
+        kind: 'open',
+        path: { menu: ['profile'], frame: 'profileView', tab: accel === 'N' ? 'name' : 'account' },
+      });
+      expect(accelDecision(accel, frozenStack(WORLD_BASE, screenFrame('menuView')))).toEqual(open);
+      expect(accelDecision(accel, frozenStack(WORLD_BASE, screenFrame('helpView')))).toEqual(open);
+      expect(
+        accelDecision(
+          accel,
+          frozenStack(WORLD_BASE, screenFrame('profileView'), screenFrame('helpView')),
+        ),
+        `${accel}: Profile under Help is not the top`,
+      ).toEqual(open);
+      // Typing in the name field: denied, never start.
+      expect(
+        accelDecision(
+          accel,
+          frozenStack(WORLD_BASE, screenFrame('profileView'), textEntryFrame('profileView')),
+        ),
+      ).toEqual({ kind: 'denied' });
+    }
   });
 
   it('CTL11A-1-DECIDE: an accelerator opens its path at the world, over a battle base, over any other player screen and over the menu, and acts as Start (never a re-open) when its own screen is the top frame, including V with the Monsters frame up and P with Social up', () => {
@@ -1908,7 +1981,8 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     const tops: ReadonlyArray<readonly [string, UpperFrame]> = [
       ['a dialogue screen', screenFrame('dialogueView')],
       ['a battle outcome screen', screenFrame('battleView')],
-      ['a rename text entry', textEntryFrame('renameView')],
+      // uif-16b: the name field's typing frame is owned by Profile (renameView is a section now).
+      ['a rename text entry', textEntryFrame('profileView')],
       ['a text entry owned by the Monsters frame', textEntryFrame('boxView')],
       ['a pvp prompt', promptFrame('pvpView')],
       ['a Social prompt', promptFrame('social')],
@@ -2088,7 +2162,8 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
       'Controls under Help over a battle: open, not start',
     ).toEqual(open);
     expect(
-      accelDecision('Y', frozenStack(WORLD_BASE, textEntryFrame('renameView'))),
+      // uif-16b: the name field's typing frame is owned by Profile (renameView is a section now).
+      accelDecision('Y', frozenStack(WORLD_BASE, textEntryFrame('profileView'))),
       'under a text entry: denied',
     ).toEqual({ kind: 'denied' });
     expect(

@@ -74,9 +74,11 @@ test.describe('ctl-6a controls.ts', () => {
 
   test('CTL6A.1 stuck textEntry frame', async ({ page }) => {
     test.setTimeout(60_000);
+    // uif-16b (named intentional change): the text-entry owner renameView -> profileView: the name
+    // field is a section of the one Profile frame, which owns its typing frame.
     await installFake(
       page,
-      [WORLD, screen('menuView'), { kind: 'textEntry', owner: 'renameView' }],
+      [WORLD, screen('menuView'), { kind: 'textEntry', owner: 'profileView' }],
       [],
     );
     const failure = await closeAll(page).then(
@@ -84,7 +86,8 @@ test.describe('ctl-6a controls.ts', () => {
       (e: unknown) => (e instanceof Error ? e.message : String(e)),
     );
     expect(failure, 'closeAll must reject on a stuck stack').not.toBeNull();
-    expect(failure).toContain('renameView');
+    // uif-16b (named intentional change): renameView -> profileView, the owner above.
+    expect(failure).toContain('profileView');
     expect(failure, 'the message names the stuck TOP frame only').not.toContain('menuView');
     expect((await keysSeen(page)).length).toBe(CLOSE_ALL_MAX_PRESSES);
   });

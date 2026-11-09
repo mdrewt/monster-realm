@@ -180,7 +180,9 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
     // that stops being true, and forces a real per-id role assertion to be added then.
     // ctl-12b (named intentional change): 17 -> 18 with `controlsView`; the tag keeps its
     // historical name.
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(16);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
       const { root } = mountRootFor(id);
@@ -196,7 +198,9 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
       closeOverlayA11y(id, null);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 18 ids must have been exercised').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
+    expect(checked, 'ANTI-VACUITY: all 16 ids must have been exercised').toBe(16);
   });
 
   it('S1-ARIA-STRIPPED-ON-CLOSE BITES: role, aria-modal and aria-label are all removed on close — a display:none node must not keep claiming to be a dialog', () => {
@@ -287,11 +291,13 @@ describe('closeOverlayA11y — return-focus map, detached-target fallback, and n
     document.body.appendChild(opener2);
     opener2.focus();
 
-    const { root: root2 } = mountRootFor('claimView');
-    openOverlayA11y('claimView', root2);
+    // uif-16b (named fixture change): `claimView` is no longer an OverlayId; `profileView` (a
+    // native-anchor id like it) takes its place. Was: 'claimView'.
+    const { root: root2 } = mountRootFor('profileView');
+    openOverlayA11y('profileView', root2);
     opener2.remove();
 
-    expect(() => closeOverlayA11y('claimView', null)).not.toThrow();
+    expect(() => closeOverlayA11y('profileView', null)).not.toThrow();
     expect(
       document.activeElement,
       'with no fallback and a detached returnFocus target there must be NO focus call at all — ' +
@@ -386,7 +392,9 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
 describe('openOverlayA11y — live-region custody: adoption into the open root (LRC-ADOPT, X1)', () => {
   it('LRC-ADOPT BITES: opening each of the 18 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
     // ctl-12b (named intentional change): 17 -> 18 with `controlsView`.
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(16);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
       const node = mountLiveNode();
@@ -422,7 +430,9 @@ describe('openOverlayA11y — live-region custody: adoption into the open root (
       closeOverlayA11y(id, null);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 18 ids must have been exercised').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left,
+    // profileView joined.
+    expect(checked, 'ANTI-VACUITY: all 16 ids must have been exercised').toBe(16);
   });
 
   it('LRC-ADOPT-REOPEN-REHOMES BITES: re-opening the SAME id on a DIFFERENT root re-homes the live region into the new root — a re-open is not exempt from custody', () => {
@@ -564,16 +574,17 @@ describe('openOverlayA11y/closeOverlayA11y — live-region custody: no-op edges 
 
   it('LRC-EDGE-NO-CHURN-SAME-ROOT BITES: re-opening the SAME id on the SAME root does not remove+re-insert the live region (sentinel-order proxy, R8)', () => {
     const node = mountLiveNode();
-    const { root } = mountRootFor('claimView');
+    // uif-16b (named fixture change): `claimView` -> `profileView` (claimView left the roster).
+    const { root } = mountRootFor('profileView');
 
-    openOverlayA11y('claimView', root);
+    openOverlayA11y('profileView', root);
     expect(root.lastElementChild, 'sanity: adopted as the last child').toBe(node);
 
     const sentinel = document.createElement('div');
     sentinel.id = 'churn-sentinel';
     root.appendChild(sentinel);
 
-    openOverlayA11y('claimView', root);
+    openOverlayA11y('profileView', root);
 
     expect(
       root.lastElementChild,
@@ -583,7 +594,7 @@ describe('openOverlayA11y/closeOverlayA11y — live-region custody: no-op edges 
     ).toBe(sentinel);
     expect(node.parentElement, 'the region is still inside root, just no longer last').toBe(root);
 
-    closeOverlayA11y('claimView', null);
+    closeOverlayA11y('profileView', null);
   });
 });
 

@@ -56,8 +56,10 @@ function mount(): {
   currentEl: HTMLElement;
   submitBtn: HTMLButtonElement;
 } {
+  // uif-16b (named fixture change): the new index.html ships #rename-overlay as Profile's Name
+  // section (class mr-button-rows, no role / aria-modal). Was: role="dialog" aria-modal="true".
   document.body.innerHTML = `
-    <div id="rename-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div id="rename-overlay" class="mr-button-rows" style="display:none">
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit" type="button"></button>
@@ -224,7 +226,9 @@ describe('qf-13 (QF13.1): the Name frame title routes menu.profile.name.title th
 
     expect(i18nT, 'the constructor must not resolve the title').not.toHaveBeenCalledWith(KEY);
     const pre = document.getElementById('rename-title');
-    expect(pre, 'ANTI-VACUITY: the bar exists before the first show').not.toBeNull();
+    // uif-16b: the title is the section header (h2.mr-section-header), same key, same doors.
+    expect(pre, 'ANTI-VACUITY: the section header exists before the first show').not.toBeNull();
+    expect(pre?.classList.contains('mr-section-header'), 'and is the section header').toBe(true);
     expect(pre?.textContent, 'and is empty until a show() writes it').toBe('');
 
     view.show();
