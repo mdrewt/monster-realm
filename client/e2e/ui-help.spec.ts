@@ -79,7 +79,7 @@ const rowText = (p: Page, key: string): Promise<string> =>
 
 const SHEET = '#help-overlay [data-context-sheet]';
 
-/** Select opens How to Play at the world; waits for the overlay. */
+/** Select opens How to Play at the world; waits for the overlay and for its open to settle. */
 async function openHelp(p: Page, label: string): Promise<void> {
   await closeAll(p);
   await pressButton(p, 'Select');
@@ -91,9 +91,9 @@ async function openHelp(p: Page, label: string): Promise<void> {
   // initial focus of ui/overlayA11y.ts), and that focus scrolls the heading into view. A key sent
   // before it lands races it: the cursor moves, the frame scrolls to it, then the late focus scrolls
   // the frame back to its top. The open is over once the heading has the focus (the pending timer
-  // is inert from then on), and it always gets it here: focus is outside the overlay at every open,
-  // because main.ts heals focus stranded in a closed overlay at the keydown. A retried predicate
-  // with the expect timeout as its bound, not a sleep.
+  // is inert from then on). The heading does get it in this spec: every open here starts with focus
+  // outside the overlay, because main.ts heals focus stranded in a closed overlay at the keydown.
+  // A retried predicate with the expect timeout as its bound, not a sleep.
   await expect(p.locator('#help-title'), `${label}: the open settled on the heading`).toBeFocused();
 }
 
@@ -373,15 +373,19 @@ test.describe
       await closeAll(page);
     });
 
-    test('UIF14.5 fixture: with the late deferred focus held back past the keys, at the Extra large text step the Help frame stays scrolled to the cursor on the last entry once the heading has its focus', async () => {
-      // WRONG FIXTURE KILLED: an `openHelp` that returns before the open's deferred focus has
-      // landed — RB and Up race it, the focus lands on the heading after the cursor moved and
-      // scrolls the frame back to its top (master CI run 42555008331: scrollTop 0 on `ranked`); and
-      // its silent twin, the focus landing after the XL test's guard but before A, which makes that
-      // test's sheet geometry pass vacuously at scrollTop 0.
+    test('UIF14.5 fixture: openHelp waits out a late deferred focus on the heading before any further key is sent, so at the Extra large text step the Help frame is still scrolled to the cursor on the last entry once the heading has its focus', async () => {
+      // The two orderings. SETTLED fixture: `openHelp` waits out the hold, the heading takes its
+      // focus, and only then are RB and Up sent, so the frame stays scrolled to the cursor.
+      // UNSETTLED fixture: RB and Up run inside the hold, then the late focus lands on the heading
+      // and scrolls the frame back to its top (the master CI flake, run 42555008331).
+      // WRONG FIXTURE KILLED: no settle; a settle on visibility instead of focus; a fixed sleep
+      // shorter than the hold; a one-shot unretried focus check; a settle that lives only in
+      // `openEncyclopedia`; and (through G2) a focus forced from the test.
       // The hold: the unsettled fixture's open-to-Up latency measured 31-75 ms, so 1500 ms keeps
       // its keys ahead of the focus even on a loaded machine. It cannot be "until released": a
-      // settled `openHelp` waits for that very focus.
+      // settled `openHelp` waits for that very focus. The hold is inside the PAGE (it delays the
+      // product's own zero-delay timer); the test itself never sleeps, every wait in it is a
+      // retried predicate.
       const ZERO_DELAY_HOLD_MS = 1500;
       const scrollTop = (): Promise<number> =>
         page.evaluate(() => document.getElementById('help-overlay')?.scrollTop ?? 0);
@@ -422,7 +426,18 @@ test.describe
           };
           document.documentElement.style.setProperty('--mr-text-step', '2');
         }, ZERO_DELAY_HOLD_MS);
-        await openEncyclopedia(page, 'late focus');
+        // Not `openEncyclopedia`: the settle under test is `openHelp`'s own, and a settle placed
+        // anywhere later must not satisfy this test.
+        await openHelp(page, 'late focus');
+        await pressButton(page, 'RB');
+        await expect(
+          page.locator('#help-tab-encyclopedia'),
+          'late focus: RB reaches the Encyclopedia',
+        ).toHaveAttribute('aria-selected', 'true');
+        await expect(
+          page.locator('#help-encyclopedia'),
+          'late focus: its list is shown',
+        ).toBeVisible();
         await pressButton(page, 'Up');
         await expect
           .poll(() => cursorKey(page), { message: 'late focus: Up wraps to the last entry' })
