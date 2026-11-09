@@ -630,9 +630,9 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     // path that opens the leaf's frame but not the menu (the stack lacks `menuView`), a menu opened
     // on the first entry (the cursor is not on the leaf), a cursor remembered from the previous
     // accelerator instead of picked (the ten run in one session, so the memory is stale each time),
-    // a menu opened at the group's sub-level but with the root painted (U, P, L, N and C: the title,
-    // crumb and cursor id name the level), a picked group that is not entered (the cursor stays on
-    // Social), a swapped pair of leaves (P opens Rankings, L Challenges), a leaf that is not the one
+    // a menu opened at the group's sub-level but with the root painted (N and C: the title, crumb
+    // and cursor id name the Profile level; U, P and L stay on the root, cursor on the Social leaf:
+    // uif-15b), a picked group that is not entered (the cursor stays on Profile), a swapped pair of leaves (P opens Rankings, L Challenges), a leaf that is not the one
     // shown alone (a stale root left up), and a key that is not prevented (the opening `n` would be
     // typed into the Name field).
     await bootReady();
@@ -653,8 +653,8 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     // one is up), an accelerator that opens its leaf on top of the open one (two leaves stacked), a
     // pop that leaves the old leaf's root displayed (two roots shown), a second `menuView` pushed
     // over the first (the stack lists the menu twice), a menu that is reused as it stands (opened at
-    // the Social sub-level, so picking the Journal on that level is a no-op and the cursor stays on
-    // Trades), and a popToBase that runs only when the key's own screen is up.
+    // the Profile sub-level, so picking the Journal on that level is a no-op and the cursor stays on
+    // Name), and a popToBase that runs only when the key's own screen is up.
     await bootReady();
     server(1000);
 
@@ -737,6 +737,64 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
       'menuView',
       'controlsView',
     ]);
+    press('Escape');
+    expectBareWorld('after Y');
+
+    // C3 (red-team): B and V still open the Monsters frame, on Storage and Party respectively. A
+    // tab table in main.ts that bound Social's tabs for every accelerator, or lost the Monsters
+    // tab, would open both on the same tab.
+    for (const [code, tab] of [
+      ['KeyB', 'storage'],
+      ['KeyV', 'party'],
+    ] as const) {
+      press(code);
+      expect(stackNames(), `${code}: the menu, then the Monsters frame`).toEqual([
+        'world',
+        'menuView',
+        'boxView',
+      ]);
+      expect(
+        ['party', 'storage'].filter(
+          (t) => byId(`monsters-tab-${t}`).getAttribute('aria-selected') === 'true',
+        ),
+        `${code}: the ${tab} tab alone is selected`,
+      ).toEqual([tab]);
+      expect(navActive(), `${code}: the menu cursor beneath is on Monsters`).toBe('monsters');
+      press('Escape');
+      expectBareWorld(`after ${code}`);
+    }
+  });
+
+  it('UIF15B.3 over an Ongoing battle U, P and L push no social frame: the menu opens read-only above the battle with its cursor on the disabled Social row and the in-battle reason on the feedback line', async () => {
+    // WRONG IMPL KILLED (C19): an accelerator that opens the Social frame over a battle (its panels
+    // are not battle-safe: a `social` frame on the stack and a Social root shown); a menu that opens
+    // with the Social row enabled; a dropped reason (a dead key with no word); a menu not stamped
+    // with the battle (the next batch closes it).
+    await bootReady();
+    seedWorld(1000);
+    putBattle(BATTLE_ID, 1100);
+    await flush();
+    const BATTLE_BASE = { kind: 'battle', battleId: '101' };
+    expect(stack(), 'precondition: the base is the battle').toEqual([BATTLE_BASE]);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    const inBattle = i18nT('menu.disabled.inBattle');
+
+    for (const code of ['KeyU', 'KeyP', 'KeyL']) {
+      const e = press(code);
+      expect(e.defaultPrevented, `${code}: the accelerator is consumed`).toBe(true);
+      expect(stack(), `${code}: the menu stamped with the battle, and no social frame`).toEqual([
+        BATTLE_BASE,
+        { kind: 'screen', id: 'menuView', overBattle: '101' },
+      ]);
+      expect(openRoots(), `${code}: no Social root (or any screen) is shown`).toEqual([]);
+      expect(navActive(), `${code}: the cursor is on the disabled Social row`).toBe('social');
+      expect(menuCursor(), `${code}: and the menu paints it`).toBe('menu-root-social');
+      expect(menuFeedback(), `${code}: the in-battle reason is on the feedback line`).toBe(
+        inBattle,
+      );
+      press('Escape');
+      expect(stack(), `${code}: Start returns to the bare battle`).toEqual([BATTLE_BASE]);
+    }
   });
 
   it('CTL11A-1-BOOT-OWN-START: an accelerator pressed while its own screen is on top acts as Start and returns the stack to the bare world, for all ten, and for the accelerators that share a frame (B with V, U with P with L)', async () => {

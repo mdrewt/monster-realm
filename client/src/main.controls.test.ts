@@ -2577,7 +2577,7 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(callsOf('advanceDialogue'), 'no refused click ever reached the reducer').toEqual([]);
   });
 
-  it('CTL6C-3-MAIN-MENU-DISABLED: over a battle every root row but Options and Close is aria-disabled; A or a click on Monsters, Bag or Journal opens nothing and shows the reason, A on the disabled Social group does not enter it, and Q and L open no Journal or Rankings either; Options > How to play opens help above the menu over the battle, it survives a batch and a frame, and Backspace closes just help', async () => {
+  it('CTL6C-3-MAIN-MENU-DISABLED: over a battle every root row but Options and Close is aria-disabled; A or a click on Monsters, Bag or Journal opens nothing and shows the reason, A on the disabled Social row opens nothing, and Q and L open no Journal or Rankings either; Options > How to play opens help above the menu over the battle, it survives a batch and a frame, and Backspace closes just help', async () => {
     // WRONG IMPL KILLED: a menu opened over a battle with every row enabled (Monsters would open
     // the box over the battle); the pre-decision menu that disables only the non-battleSafe rows
     // (Journal and Social stay enabled: A on Journal opens the quest log, whose in-flow shell the
@@ -2609,10 +2609,9 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
     // battle until ctl-7a anchors their shells): Journal and Social were enabled here.
     expect(aria('journal'), 'Journal is aria-disabled over a battle').toBe('true');
-    expect(
-      aria('social'),
-      'the Social group (Trades, Challenges and Rankings all disabled) is aria-disabled',
-    ).toBe('true');
+    expect(aria('social'), 'the Social row (its frame is not battle-safe) is aria-disabled').toBe(
+      'true',
+    );
     for (const key of ['options', 'close']) {
       expect(aria(key), `${key} stays enabled`).toBeNull();
     }
@@ -2662,16 +2661,16 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(navActive(), 'the click moved the cursor to Journal').toBe('journal');
     expect(stackNames()).toEqual(['battle', 'menuView']);
 
-    // The disabled Social group is not entered: the root rows stay painted.
+    // The disabled Social row opens nothing: no social frame is pushed (uif-15b: Social is a leaf).
     tap('ArrowDown', 1900);
     expect(navActive(), 'precondition: the cursor is on Social').toBe('social');
     expect(menuFeedback(), 'precondition: the reason is cleared').toBe('');
     tap('Enter', 1950);
-    expect(navActive(), 'A on the disabled Social group leaves the cursor on it').toBe('social');
-    expect(
-      document.getElementById('menu-root-monsters'),
-      'the root list is still painted: Social was not entered',
-    ).not.toBeNull();
+    expect(navActive(), 'A on the disabled Social row leaves the cursor on it').toBe('social');
+    expect(stackNames(), 'no social frame was pushed: the menu is still the only frame').toEqual([
+      'battle',
+      'menuView',
+    ]);
     expect(menuFeedback(), 'it shows the reason').toBe(i18nT('menu.disabled.inBattle'));
 
     // The legacy letter hotkeys cannot reach the Journal or the Rankings behind the menu's back.

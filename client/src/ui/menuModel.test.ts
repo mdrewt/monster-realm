@@ -274,6 +274,17 @@ describe('MENU_ENTRIES', () => {
       children?: unknown;
     };
     expect(social, 'the Social row').toBeDefined();
+    // C26/C27 (red-team): title and description are the Social row's own catalog text, not swapped
+    // with each other or with a neighbour's, in both locales.
+    const row = MENU_ENTRIES.find((e) => e.key === 'social') as Row;
+    setLocale('en');
+    expect(row.title(), 'en title').toBe(EN['menu.social.title']);
+    expect(row.description(), 'en description').toBe(EN['menu.social.desc']);
+    expect(row.title()).not.toBe(row.description());
+    setLocale('fr');
+    expect(row.title(), 'fr title').toBe(FR['menu.social.title']);
+    expect(row.description(), 'fr description').toBe(FR['menu.social.desc']);
+    setLocale('en');
     expect(social.kind, 'an open leaf, not a group').toBe('open');
     expect(social.target, 'it opens the Social frame').toBe('social');
     expect(social.children, 'a leaf has no children').toBeUndefined();
@@ -327,7 +338,7 @@ describe('withRequestBadge (ctl-13, CTL13.2)', () => {
     // mutates the labels it was given (the menu's own table would keep the badge after the request
     // is gone); a badge painted when nothing waits; a fresh object when nothing changes (the
     // menu's re-render memo would see a change every frame); a throw when the labels have no
-    // Social entry (a sub-list level); and a locale frozen at import.
+    // Social entry (a Profile or Options sub-list level); and a locale frozen at import.
     const labels = {
       monsters: 'Monsters',
       social: 'Social',

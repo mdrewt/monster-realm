@@ -1172,6 +1172,23 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     key('Enter');
     expectSocialOn('menu row, second open', 'challenges');
 
+    // C10 (red-team): a stale bound tab. U binds Trades; the player then switches to Rankings and
+    // closes. The menu row binds NO tab, so its open lands on the screen's own pick, the
+    // remembered Rankings, never U's stale Trades.
+    key('Escape');
+    expect(stackNow(), 'Start closed Social and the menu').toEqual([WORLD_FRAME]);
+    key('KeyU');
+    expectSocialOn('U binds Trades', 'trades');
+    key('PageDown');
+    key('PageDown');
+    expectSocialOn('RB twice from Trades', 'rankings');
+    key('Escape');
+    expect(stackNow(), 'Start closed Social and the menu again').toEqual([WORLD_FRAME]);
+    key('Escape');
+    expect(stackNow(), 'Start opens the menu').toEqual([WORLD_FRAME, MENU_FRAME]);
+    key('Enter');
+    expectSocialOn('menu row after U: the remembered tab, not U`s stale Trades', 'rankings');
+
     // A waiting request beats the remembered tab (a fresh session, nothing remembered either).
     teardownBoot();
     await bootReady();
