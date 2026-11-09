@@ -17,8 +17,9 @@ import { closeAll, pressButton } from './controls';
 // the two tabs and the D-pad over the real list with the cursor remembered per tab (UIF14.1, UIF14.4),
 // the detail sheet CENTRED over the still-visible list, B back to the same entry and a mouse click
 // outside the sheet closing it through the kit's pointer rule (UIF14.5), and axe clean on Help in all
-// three states (UIF14.7). The Report a problem row and UIF14.3 are deferred (hidden dependency:
-// ui/battlePolicy.ts), so nothing here touches them.
+// three states (UIF14.7). UIF14.3 stays deferred. INTENTIONAL CHANGE (uif-14b): the Report a problem
+// row is no longer deferred; the UIF14B tests below press it by A and by click, observe one saved bug
+// bundle download each time, and scan the Introduction with the row in axe.
 //
 // HYGIENE. Sorts after ui-controls. ONE browser context, ONE player, closed in afterAll (a second
 // context would add a presence row; golden.spec.ts asserts an exact count). Every test starts from a
@@ -370,6 +371,110 @@ test.describe
       await pressButton(page, 'A');
       await expect(page.locator(SHEET)).toBeVisible();
       await expectAxeClean(page, 'How to Play: entry detail');
+      await closeAll(page);
+    });
+
+    // ------------------------------------------------------------------------------------------
+    // uif-14b: the Report a problem row (UIF14B.1, UIF14B.2, UIF14B.4).
+    // ------------------------------------------------------------------------------------------
+
+    /** The F9 bug bundle's download name: `mr-bug-<sanitised sha>-<capturedAtMs>.json`. */
+    const BUNDLE_NAME = /^mr-bug-[A-Za-z0-9_-]*-\d+\.json$/;
+
+    /** Count every download the page starts from now on, by suggested filename. */
+    function watchDownloads(p: Page): { readonly names: string[]; stop: () => void } {
+      const names: string[] = [];
+      const onDownload = (d: { suggestedFilename(): string }): void => {
+        names.push(d.suggestedFilename());
+      };
+      p.on('download', onDownload);
+      return { names, stop: () => p.off('download', onDownload) };
+    }
+
+    /** Two animation frames: a bounded round trip through the page that lets any second, wrongly
+     *  scheduled download arrive before the count is read (a sync point, not a sleep). */
+    const settleFrames = (p: Page): Promise<void> =>
+      p.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+
+    test('UIF14B.1 the Introduction ends with the Report a problem row, after both paragraphs, with the cursor on it', async () => {
+      // WRONG IMPL KILLED: no row; a row before the paragraphs; a row the D-pad cannot reach (no
+      // cursor mark); a hint bar with no A chip.
+      await openHelp(page, 'report row');
+      const row = page.locator('#help-intro [data-nav-key="report"]');
+      await expect(row, 'the row is shown').toBeVisible();
+      await expect(row).toHaveText('Report a problem');
+      await expect(row, 'the cursor opens on it').toHaveClass(/is-active/);
+      const lastIsList = await page.evaluate(
+        () => document.getElementById('help-intro')?.lastElementChild?.id === 'help-intro-rows',
+      );
+      expect(lastIsList, 'the row list is the last element of the Introduction').toBe(true);
+      const afterParagraphs = await page.evaluate(() => {
+        const ps = document.querySelectorAll('#help-intro p');
+        const list = document.getElementById('help-intro-rows');
+        if (list === null || ps.length === 0) return false;
+        return Array.from(ps).every(
+          (p) => (p.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+        );
+      });
+      expect(afterParagraphs, 'and it follows every paragraph').toBe(true);
+      await expect(
+        page.locator('#hint-bar [data-button="A"]'),
+        'the hint bar labels A while Help is open',
+      ).toBeVisible();
+      await closeAll(page);
+    });
+
+    test('UIF14B.4 A on the Report a problem row downloads exactly one bug bundle named like F9`s, and Help stays open', async () => {
+      // WRONG IMPL KILLED: A swallowed (no download); a download of another name (a second bundle
+      // path); two downloads per A; a report that closes Help.
+      await openHelp(page, 'report A');
+      const seen = watchDownloads(page);
+      try {
+        const downloaded = page.waitForEvent('download');
+        await pressButton(page, 'A');
+        const download = await downloaded;
+        expect(download.suggestedFilename()).toMatch(BUNDLE_NAME);
+        await settleFrames(page);
+        expect(seen.names, 'exactly one download for one A').toHaveLength(1);
+        expect(await stackNames(page), 'Help is still the top frame').toEqual([
+          'world',
+          'helpView',
+        ]);
+      } finally {
+        seen.stop();
+        await closeAll(page);
+      }
+    });
+
+    test('UIF14B.4 a mouse click on the Report a problem row downloads exactly one bug bundle', async () => {
+      // WRONG IMPL KILLED: a row the pointer cannot press (a click only moves the cursor); a click
+      // that downloads twice (seek A plus a row listener).
+      await openHelp(page, 'report click');
+      const seen = watchDownloads(page);
+      try {
+        const downloaded = page.waitForEvent('download');
+        await page.locator('#help-intro [data-nav-key="report"]').click();
+        const download = await downloaded;
+        expect(download.suggestedFilename()).toMatch(BUNDLE_NAME);
+        await settleFrames(page);
+        expect(seen.names, 'exactly one download for one click').toHaveLength(1);
+      } finally {
+        seen.stop();
+        await closeAll(page);
+      }
+    });
+
+    test('UIF14B.4 axe finds no WCAG 2.x A/AA violation on the Introduction with the Report a problem row', async () => {
+      // WRONG IMPL KILLED: a row with no accessible role/name, an aria-selected item outside a
+      // listbox, or a low-contrast row. Non-vacuity: the row is asserted before the scan.
+      await openHelp(page, 'axe report');
+      await expect(page.locator('#help-intro [data-nav-key="report"]')).toBeVisible();
+      await expectAxeClean(page, 'How to Play: Introduction with Report a problem');
       await closeAll(page);
     });
 

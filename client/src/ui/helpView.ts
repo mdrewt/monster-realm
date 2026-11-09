@@ -1,12 +1,15 @@
-// ui/helpView.ts — thin DOM shell for How to Play (uif-14, UIF14.1, UIF14.4-UIF14.6): the kit's
-// TabBar, the Introduction's paragraphs, the Encyclopedia's list and one ContextSheet for an entry's
-// detail.
+// ui/helpView.ts — thin DOM shell for How to Play (uif-14, UIF14.1, UIF14.4-UIF14.6; uif-14b,
+// UIF14B.1): the kit's TabBar, the Introduction's paragraphs and its Report a problem row, the
+// Encyclopedia's list and one ContextSheet for an entry's detail.
 //
-// Display-only: no text <input>, no submit, no reducer. `render()` binds `helpModel`'s view model when
-// the frame opens; `paint()` (from `helpScreen`) draws the tabs, the active panel, the list's cursor
-// and the detail. The panels are the shell's `#help-intro` and `#help-encyclopedia` (static, ids
-// kept); the inactive one carries `hidden`. The detail is the sheet's detail variant mounted in the
-// overlay, which CSS centers over the list it keeps behind it: a phase of this frame, not a frame.
+// Display-only: no text <input>, no submit, no reducer (A on the Introduction's Report a problem row
+// is `helpScreen`'s `reportProblem` command, which `main.ts` dispatches). `render()` binds
+// `helpModel`'s view model when the frame opens; `paint()` (from `helpScreen`) draws the tabs, the
+// active panel, the lists' cursors and the detail. The panels are the shell's `#help-intro` and
+// `#help-encyclopedia` (static, ids kept); the inactive one carries `hidden`. The Introduction's row
+// is a kit list built here, `#help-intro-rows`, kept as the panel's last child after the paragraphs.
+// The detail is the sheet's detail variant mounted in the overlay, which CSS centers over the list it
+// keeps behind it: a phase of this frame, not a frame.
 //
 // The live region (ui/liveRegion.ts owns the only one) hears a tab change (its title) and an opened
 // entry (its term) through the optional `announce` handler, never the first paint after an open.
@@ -38,6 +41,7 @@ import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 
 const FRAME = 'help';
 const TAB_STRIP_ID = 'help-tabs';
+const INTRO_ROWS_ID = 'help-intro-rows';
 
 export interface HelpViewHandlers {
   /** Say `text` through the live region. */
@@ -49,6 +53,9 @@ export class HelpView {
   /** The heading; text resolved in show(). */
   readonly #titleEl: HTMLElement;
   readonly #intro: HTMLElement;
+  /** The Introduction's one-row list (Report a problem), after its paragraphs. */
+  readonly #introRows: HTMLElement;
+  #reportLabel = '';
   readonly #encyclopedia: HTMLElement;
   readonly #tabBar: TabBar;
   readonly #sheet: ContextSheet;
@@ -80,6 +87,12 @@ export class HelpView {
     // A second construction over the same shell replaces the kit parts rather than adding more.
     document.getElementById(TAB_STRIP_ID)?.closest('.mr-tabbar')?.remove();
     for (const old of overlay.querySelectorAll('[data-context-sheet]')) old.remove();
+    document.getElementById(INTRO_ROWS_ID)?.remove();
+    const introRows = document.createElement('ul');
+    introRows.id = INTRO_ROWS_ID;
+    introRows.className = 'mr-nav-list';
+    intro.append(introRows);
+    this.#introRows = introRows;
     this.#tabBar = createTabBar(document, { id: TAB_STRIP_ID });
     this.#tabBar.strip.setAttribute('aria-labelledby', 'help-title');
     title.after(this.#tabBar.root);
@@ -124,17 +137,18 @@ export class HelpView {
     else this.show();
   }
 
-  /** Bind `vm`: the Introduction's paragraphs now (one <p> each, rebuilt authoritatively), and the
-   *  tab titles and entries for `paint`. textContent ONLY (XSS firewall). */
+  /** Bind `vm`: the Introduction's paragraphs now (one <p> each, rebuilt authoritatively, then its
+   *  row list), and the tab titles, entries and row label for `paint`. textContent ONLY (XSS firewall). */
   render(vm: HelpViewModel): void {
     this.#titles = new Map(vm.tabs.map((tab) => [tab.tab, tab.title]));
     this.#entries = new Map(vm.entries.map((entry) => [entry.key, entry]));
+    this.#reportLabel = vm.intro.report;
     const paragraphs = vm.intro.paragraphs.map((text) => {
       const p = document.createElement('p');
       p.textContent = text;
       return p;
     });
-    this.#intro.replaceChildren(...paragraphs);
+    this.#intro.replaceChildren(...paragraphs, this.#introRows);
   }
 
   /** Draw the tabs, the active panel (the other `hidden`), the Encyclopedia's cursor and the open
@@ -147,7 +161,14 @@ export class HelpView {
     });
     this.#intro.hidden = tab !== 'intro';
     this.#encyclopedia.hidden = tab !== 'encyclopedia';
-    // The list is the Encyclopedia's, at its remembered cursor while another tab shows.
+    // Each tab's list at its remembered cursor while another tab shows.
+    const introNav = tab === 'intro' ? p.nav : navFocus(p.layout, p.nav, { tab: 'intro' });
+    renderNav(this.#introRows, p.layout, introNav, {
+      frame: FRAME,
+      fill: (el) => {
+        el.textContent = this.#reportLabel;
+      },
+    });
     const listNav =
       tab === 'encyclopedia' ? p.nav : navFocus(p.layout, p.nav, { tab: 'encyclopedia' });
     renderNav(this.#encyclopedia, p.layout, listNav, {

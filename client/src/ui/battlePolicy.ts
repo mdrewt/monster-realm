@@ -74,15 +74,17 @@ export function popPlayerFramesOverBattle(stack: Stack): Stack {
   return [base, ...upper.filter((f) => f.kind !== 'textEntry' && f.id === 'dialogueView')];
 }
 
-/** Which screen commands a battle base allows (CTL6C.3): the stack moves, the battle's own actions
- *  and ending a conversation. `pickShop` ends one only to open a shop, so it is refused. Total over
- *  the `Command` kinds, so a new arm (talk, bag use) fails client-typecheck until it is classified
- *  here. Reducer guards stay the authority. */
+/** Which screen commands a battle base allows (CTL6C.3): the stack moves, the battle's own actions,
+ *  ending a conversation and saving the bug bundle (`reportProblem`, uif-14b, as F9 does). `pickShop`
+ *  ends one only to open a shop, so it is refused. Total over the `Command` kinds, so a new arm (talk,
+ *  bag use) fails client-typecheck until it is classified here. Reducer guards stay the authority. */
 export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe' | 'refuse'>> = {
   pop: 'safe',
   popToBase: 'safe',
   openMenu: 'safe',
   toggleHelp: 'safe',
+  // uif-14b: F9's parity (F9 saves the bundle under any overlay, and Help opens over a battle).
+  reportProblem: 'safe',
   care: 'refuse',
   train: 'refuse',
   evolve: 'refuse',

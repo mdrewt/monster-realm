@@ -445,8 +445,9 @@ which overlay may open over which (`canOpen`), its accessibility metadata (`OVER
 which are visible. Frames are built from `ui/frame.ts` and `ui/navRender.ts` inside
 `#game-screen`'s frame layer. The hint bar (`ui/hintBarModel.ts`, `ui/hintBar.ts`) is generated
 from the context table, the live bindings and the catalog. How to Play (`ui/helpModel.ts`,
-`ui/screens/helpScreen.ts`, `ui/helpView.ts`) is catalog copy: an Introduction and an Encyclopedia
-of the game's terms, whose entries open as the ContextSheet's detail variant in the same frame. At
+`ui/screens/helpScreen.ts`, `ui/helpView.ts`) is catalog copy: an Introduction, ending in a Report a
+problem row, and an Encyclopedia of the game's terms, whose entries open as the ContextSheet's detail
+variant in the same frame. At
 the world base, A acts on the target that the wasm `interact_candidates_coded` export picks (an NPC, a
 shop or a heal tile within talk range). The server re-checks the range.
 
@@ -473,10 +474,12 @@ root, so opening one never closes a sibling.
 
 ### Diagnostics
 
-- `F9` downloads a bug bundle (`ui/bugBundle.ts`) assembled locally from the recent
-  event ring (`eventRing.ts`), captured errors (`errorRing.ts`), a projected store
-  snapshot without names, and the build stamp (git short SHA and build time injected
-  by `vite.config.ts`, `net/buildInfo.ts`). Nothing is sent over the network.
+- `F9`, or How to Play's Report a problem row (the battle-safe `reportProblem` command, which
+  calls the same `downloadBugBundle` in `main.ts`), downloads a bug bundle (`ui/bugBundle.ts`)
+  assembled locally from the recent event ring (`eventRing.ts`), captured errors
+  (`errorRing.ts`), a projected store snapshot without names, and the build stamp (git
+  short SHA and build time injected by `vite.config.ts`, `net/buildInfo.ts`). Nothing is
+  sent over the network.
 - Uncaught errors show a non-blocking toast that `B` at the world base or `F8` dismisses.
 - DEV builds expose debug hooks (`__game`, `__mrTrade`, `__mrPvp`) inside an
   `import.meta.env.DEV` branch; `scripts/verify-build-hooks.mjs` checks that a

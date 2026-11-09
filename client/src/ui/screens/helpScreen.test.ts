@@ -265,7 +265,7 @@ describe('helpScreen (uif-14)', () => {
     }
   });
 
-  it('UIF14.1 with no detail B pops, Start pops to the base and Select toggles Help from every tab, X and Y are the page`s, and A on Introduction`s one item is swallowed with no state change', () => {
+  it('UIF14.1 with no detail B pops, Start pops to the base and Select toggles Help from every tab, X and Y are the page`s, and A on Introduction`s one item changes no state', () => {
     // WRONG IMPL KILLED: a B that is not a pop (Help would stick open); a Start that pops one frame
     // instead of all; a Select that does nothing (it is the Help key: the second press must
     // close Help); an X / Y that is swallowed (Space and F belong to the page); an A on Introduction
@@ -282,9 +282,59 @@ describe('helpScreen (uif-14)', () => {
         expect(step.state, `${tab}: ${button} changes nothing`).toEqual(at);
       }
     }
+    // INTENTIONAL CHANGE (uif-14b): A on Introduction's one item was swallowed ('consumed'); it is now
+    // the Report a problem row and returns the command (pinned in the UIF14B.2 tests below). The state
+    // is still unchanged.
     const a = press(fresh(), 'A');
-    expect(a.result, 'A on Introduction is swallowed').toBe('consumed');
-    expect(a.state, 'and changes nothing').toEqual(fresh());
+    expect(a.state, 'A on Introduction changes no state').toEqual(fresh());
+  });
+
+  it('UIF14B.1 the Introduction layout is exactly one enabled item keyed `report`, and the D-pad on it keeps the cursor there', () => {
+    // WRONG IMPL KILLED: the old `rows` key kept (the view and A look the row up by `report`); a
+    // second item; a disabled row (A would report a reason instead of acting).
+    // INTENTIONAL CHANGE (uif-14b): the intro item key `rows` -> `report`.
+    if (HELP_LAYOUT.kind !== 'tabs') throw new Error('HELP_LAYOUT must be a tabs layout');
+    const intro = HELP_LAYOUT.tabs[0];
+    expect(intro?.key).toBe('intro');
+    expect(intro?.layout.items.map((i) => i.key)).toEqual(['report']);
+    expect(intro?.layout.items[0]?.enabled).toBe(true);
+    expect(itemOf(fresh()), 'the cursor opens on the row').toBe('report');
+    for (const button of ['Up', 'Down', 'Left', 'Right'] as const) {
+      expect(itemOf(press(fresh(), button).state), `${button} keeps the row`).toBe('report');
+    }
+  });
+
+  it('UIF14B.2 A on the Report a problem row returns the reportProblem command with the state unchanged', () => {
+    // WRONG IMPL KILLED: A still swallowed; a result of another kind (openHelp/pop); a state mutation
+    // (a detail opened); a screen that returns the command as a bare string.
+    const step = press(fresh(), 'A');
+    expect(step.result).toEqual({ kind: 'reportProblem' });
+    expect(step.state).toEqual(fresh());
+  });
+
+  it('UIF14B.2 a held A on the row is swallowed and never reports (no download spam)', () => {
+    // WRONG IMPL KILLED: a repeat A that reports every key-repeat tick.
+    const step = press(fresh(), 'A', true);
+    expect(step.result).toBe('consumed');
+    expect(step.state).toEqual(fresh());
+  });
+
+  it('UIF14B.2 A on an Encyclopedia entry opens its detail and A with a detail open closes it; neither reports', () => {
+    // WRONG IMPL KILLED: a report keyed on A regardless of tab/phase.
+    const at = onEntry(0);
+    const open = press(at, 'A');
+    expect(open.result).toBe('consumed');
+    expect(open.state.detail).toBe('party');
+    const closed = press(open.state, 'A');
+    expect(closed.result).toBe('consumed');
+    expect(closed.state.detail).toBeNull();
+  });
+
+  it('UIF14B.2 B, X and Y on the row never report', () => {
+    // WRONG IMPL KILLED: reportProblem bound to the wrong button.
+    expect(press(fresh(), 'B').result).toEqual(POP);
+    expect(press(fresh(), 'X').result).toBe('unhandled');
+    expect(press(fresh(), 'Y').result).toBe('unhandled');
   });
 
   it('paint: hands the lent view exactly one { layout: HELP_LAYOUT, nav, detail } with the state it was given, whichever tab or phase', () => {

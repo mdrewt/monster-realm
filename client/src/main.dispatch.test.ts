@@ -1610,6 +1610,12 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       forfeit:
         'no view constructor callback: TacticsBattle`s onForfeit dep dispatches it (the bt-15 B ' +
         'BOOT forfeit case in this file drives the shell to Yes and reads the reducer call)',
+      // uif-14b (named intentional change, UIF14B.3): the safe roster grows 9 -> 10 kinds (35 in
+      // all) by the How to Play Report a problem row. It has no view callback and no reducer: the
+      // Help screen adapter returns it and main.help.test.ts proves the single bundle download.
+      reportProblem:
+        'no view constructor callback and no reducer: the Help screen adapter returns it and ' +
+        'dispatch saves the bug bundle (main.help.test.ts UIF14B.2 proves the download)',
     };
     const stackMoves = ['pop', 'popToBase', 'openMenu', 'toggleHelp', 'dismissDialogue'];
     expect(COMMAND_BATTLE_POLICY.submitQueue, 'submitQueue is battle-safe').toBe('safe');
@@ -1620,7 +1626,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     expect(
       [...driven, ...Object.keys(safeNoViewCallback)],
       'the battle-safe actions: the four tactical ones, none view-driven (bt-17)',
-    ).toEqual(['submitQueue', 'cancelQueue', 'deployUnits', 'forfeit']);
+    ).toEqual(['submitQueue', 'cancelQueue', 'deployUnits', 'forfeit', 'reportProblem']);
+    expect(COMMAND_BATTLE_POLICY.reportProblem, 'UIF14B.3 reportProblem is battle-safe').toBe(
+      'safe',
+    );
     const policySafe = Object.entries(COMMAND_BATTLE_POLICY)
       .filter(([, verdict]) => verdict === 'safe')
       .map(([kind]) => kind)

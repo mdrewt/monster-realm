@@ -27,6 +27,8 @@ export type Command =
   | { readonly kind: 'popToBase' }
   | { readonly kind: 'openMenu' }
   | { readonly kind: 'toggleHelp' }
+  /** How to Play's Report a problem row (uif-14b): save the bug bundle, as F9 does. */
+  | { readonly kind: 'reportProblem' }
   // Monsters.
   | { readonly kind: 'care'; readonly monsterId: bigint }
   | { readonly kind: 'train'; readonly monsterId: bigint; readonly foodItemId: number }

@@ -3,7 +3,8 @@
 // game's special terms and mechanics, each with a definition and the entries related to it). Every
 // string is a catalog id read in the active locale, through a thunk over a LITERAL id (the catalog
 // parity scan cannot follow a computed one), so a locale switch shows at the next build. The model is
-// display-only: no callback or reducer field.
+// display-only: no callback or reducer field (the Introduction's Report a problem row is acted on by
+// `helpScreen`, uif-14b).
 import { t } from './i18n/resolver';
 
 export const HELP_TABS = ['intro', 'encyclopedia'] as const;
@@ -40,7 +41,8 @@ export interface HelpEntry {
 
 export interface HelpViewModel {
   readonly tabs: readonly { readonly tab: HelpTab; readonly title: string }[];
-  readonly intro: { readonly paragraphs: readonly string[] };
+  /** The Introduction: its paragraphs, then the Report a problem row's label (uif-14b). */
+  readonly intro: { readonly paragraphs: readonly string[]; readonly report: string };
   readonly entries: readonly HelpEntry[];
 }
 
@@ -144,7 +146,7 @@ const ENTRIES: Readonly<Record<EntryKey, EntrySource>> = {
 export function buildHelpViewModel(): HelpViewModel {
   return {
     tabs: HELP_TABS.map((tab) => ({ tab, title: TAB_TITLES[tab]() })),
-    intro: { paragraphs: PARAGRAPHS.map((p) => p()) },
+    intro: { paragraphs: PARAGRAPHS.map((p) => p()), report: t('help.intro.report') },
     entries: ENTRY_KEYS.map((key) => ({
       key,
       term: ENTRIES[key].term(),

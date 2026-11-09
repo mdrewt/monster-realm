@@ -368,6 +368,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // ui/helpModel.ts
   'help.intro.p2':
     'Faites grandir votre équipe par l’entraînement, les soins et l’essence que vous récoltez, et voyez-la prendre des formes inédites. Préparez chaque coup sur la grille tactique, puis partagez le monde avec d’autres joueurs : échangez, défiez-les et grimpez au classement. Votre royaume vous attend.',
+  // @desc: How to Play's Introduction row that saves a bug report bundle (as F9 does). A short action label.
+  // ui/helpModel.ts
+  'help.intro.report': 'Signaler un problème',
   // @desc: Encyclopedia entry name (party): a game term. One to three words.
   // ui/helpModel.ts
   'help.entry.party.term': 'Équipe',

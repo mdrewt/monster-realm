@@ -187,6 +187,20 @@ describe('hintBar: the world base (ctl-13, CTL13.1)', () => {
   });
 });
 
+describe('hintBar: Help on the Introduction (uif-14b, UIF14B.1)', () => {
+  it('UIF14B.1 with Help (a prompt frame) open the generated bar labels A ok beside B back, Start close, Select help, with the keycaps from the bindings, over the world and over a battle', () => {
+    // WRONG IMPL KILLED: a Help bar with no A chip (the Report a problem row would be reachable but
+    // unlabelled); A labelled with a hard-coded word instead of the catalog verb; an unbound keycap.
+    for (const base of [PROMPT, [{ kind: 'battle', battleId: '9' }, PROMPT[1]] as Stack]) {
+      const chips = hintBar(base, DEFAULT_BINDINGS, NO_NOTICES);
+      expect(chips.map((c) => c.button)).toEqual(['A', 'B', 'Start', 'Select']);
+      const a = chips[0] as HintChip;
+      expect(a.verb).toBe(verb('chrome.chip.ok'));
+      expect(a.keycap).toBe('Enter');
+    }
+  });
+});
+
 describe('hintBar: every other top of stack (ctl-13, CTL13.1)', () => {
   it('CTL13-1-MODEL-FRAMES: a battle base shows A ok / Start / Select; any screen or prompt frame over either base shows A ok / B back / Start close / Select; a text entry on top shows only A ok and Start done; the Start badge follows a waiting request at both bases; and the verbs follow the active locale', () => {
     // WRONG IMPL KILLED: a bar that ignores the stack top (the world chips under a menu); a battle

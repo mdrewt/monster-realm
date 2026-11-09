@@ -74,7 +74,10 @@ const FIXTURE_VM: HelpViewModel = {
     { tab: 'intro', title: 'Fixture one' },
     { tab: 'encyclopedia', title: 'Fixture two' },
   ],
-  intro: { paragraphs: ['Fixture opening line.', 'Fixture closing line.'] },
+  intro: {
+    paragraphs: ['Fixture opening line.', 'Fixture closing line.'],
+    report: 'Fixture report row',
+  },
   entries: ENTRY_KEYS.map((key, i) => ({
     key,
     term: `Fixture term ${key}`,
@@ -269,6 +272,26 @@ function relatedFrame(catalog: object): { before: string; after: string } {
 }
 
 describe('Help under fr (uif-14, UIF14.4)', () => {
+  it('UIF14B.1 under fr the rendered Report a problem row reads the fr catalog word, built after a construction under en, and the English label is not in the overlay', () => {
+    // WRONG IMPL KILLED: a row label hard-coded or resolved at construction (stays English under fr);
+    // an fr catalog entry copy-pasted from English.
+    const overlay = mount();
+    const view = new HelpView();
+    setLocale('fr');
+    view.render(buildHelpViewModel());
+    view.show();
+    view.paint(paintOf('intro'));
+    const frLabel = asText(CATALOG_FR['help.intro.report' as never]);
+    const enLabel = asText(CATALOG_EN['help.intro.report' as never]);
+    expect(frLabel).not.toBe(enLabel);
+    expect(
+      Array.from(overlay.querySelectorAll('#help-intro [data-nav-key="report"]')).map(
+        (r) => r.textContent,
+      ),
+    ).toEqual([frLabel]);
+    expect(overlay.textContent ?? '').not.toContain(enLabel);
+  });
+
   it('UIF14.4 UIF14-FR: under fr the rendered Help shows the fr catalog for the tab labels, both Introduction paragraphs, every Encyclopedia row, and an opened entry`s heading, definition, related terms, related-line frame and Back row, and none of the English strings', () => {
     // LEGACY REPLACED: the This-screen / All-controls / Goals copy of CTL14-1-FR.
     // WRONG IMPL KILLED: a view that keeps English literals for the sheet`s Back row or the "Related"
