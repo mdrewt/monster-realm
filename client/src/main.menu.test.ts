@@ -13,8 +13,9 @@
  * Harness: main.input.test.ts's pattern, copied (vi.resetModules + a fresh import per test,
  * recorded window/document listeners detached in afterEach, one controllable clock, a controllable
  * rAF, a stubbed wasm pkg and SDK connection, the real client/index.html shell mounted first).
- * The entries are the design §5 list: Monsters, Bag, Journal, Social, Profile, Options, Close,
- * so from a fresh menu two Downs stand on Journal and three on Social.
+ * The entries (uif-15c, UIF15C.1: Options is gone, Help and Controls are root leaves): Monsters,
+ * Bag, Journal, Social, Profile, Help, Controls, Close, so from a fresh menu two Downs stand on
+ * Journal and three on Social.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -228,7 +229,9 @@ const stackNames = (): string[] =>
   game().stack.map((f) => (f.kind === 'screen' ? (f.id as string) : f.kind));
 const navActive = (): string | null => game().navActive;
 
-const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
+// uif-15c (named intentional change, UIF15C.1): 7 -> 8 root keys: `options` is gone, `help` and
+// `controls` are root entries. Was: [..., 'profile', 'options', 'close'].
+const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'help', 'controls', 'close'];
 const EN = CATALOG_EN as unknown as Record<string, string>;
 const FR = CATALOG_FR as unknown as Record<string, string>;
 
@@ -400,19 +403,24 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
       [549, 'social'],
       [550, 'profile'],
       [649, 'profile'],
-      [650, 'options'],
+      // uif-15c (named intentional change, UIF15C.1): the walk continues Help (650), Controls (750)
+      // because the root has two more entries before Close. Was: [650, 'options'] then the
+      // release at +660 stood on Options.
+      [650, 'help'],
+      [749, 'help'],
+      [750, 'controls'],
     ];
     for (const [dt, expected] of schedule) {
       frame(t0 + dt);
       expect(navActive(), `${dt} ms after the press`).toBe(expected);
     }
 
-    fire('keyup', 'ArrowDown', t0 + 660);
-    frame(t0 + 750);
+    fire('keyup', 'ArrowDown', t0 + 760);
+    frame(t0 + 850);
     frame(t0 + 2000);
-    expect(navActive(), 'a released key stops repeating').toBe('options');
+    expect(navActive(), 'a released key stops repeating').toBe('controls');
 
-    // A fresh hold from Options: the press steps onto Close, then repeat edges clamp there.
+    // A fresh hold from Controls: the press steps onto Close, then repeat edges clamp there.
     const t1 = t0 + 3000;
     fire('keydown', 'ArrowDown', t1);
     expect(navActive()).toBe('close');
@@ -459,66 +467,113 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     // uif-15b (UIF15B.1, named intentional change): the sub-list that proves French is Profile
     // (Social is a root leaf with no sub-list). Was: Social's Trades, Challenges, Rankings.
     // uif-16b (UIF16B.1, named intentional change): Profile is a root leaf too (one frame, no
-    // sub-list), so the sub-list that proves French is Options (Help, Controls), five Downs from
-    // Monsters. Was: Profile's Name, Account, Privacy and the Name description.
+    // sub-list), so the sub-list that proves French was Options (Help, Controls).
+    // uif-15c (UIF15C.1, named intentional change): Options is gone, no sub-list remains; Help and
+    // Controls are root entries (already French in the optionTexts check above), so the French
+    // proof past the first entry is Y on Help, five Downs from Monsters. Was: five Downs onto
+    // Options, Enter, the French sub-list rows, title menu.options.title, the crumb [menu.title]
+    // and the menu.options.help.desc line.
     for (let i = 0; i < 5; i += 1) tap('ArrowDown', 1200 + i * 100);
-    expect(navActive()).toBe('options');
-    tap('Enter', 1700);
-    expect(optionTexts(), 'the sub-list is French').toEqual([
-      FR['menu.options.help.title'],
-      FR['menu.options.controls.title'],
-    ]);
-    expect(menuTitle()).toBe(FR['menu.options.title']);
-    expect(menuCrumbs(), 'the breadcrumb is the translated Menu').toEqual([FR['menu.title']]);
+    expect(navActive()).toBe('help');
     tap('KeyF', 1800);
-    expect(feedbackText()).toBe(FR['menu.options.help.desc']);
+    expect(feedbackText()).toBe(FR['menu.help.desc']);
+    expect(menuCrumbs(), 'no breadcrumb at the one level').toEqual([]);
   });
 
-  it('a sub-list is a level inside the one menu frame: A enters it, A on a child opens that screen above the menu, B backs out one level at a time, and Escape closes the whole menu', async () => {
-    // WRONG IMPL KILLED: a sub-list pushed as a separate frame or closed with the menu, a child
-    // opened from a sub-list that closes the sub-list, a B that skips the sub-list level, a
-    // sub-list cursor that is lost on return, and an Escape in a sub-list that only pops a level.
-    // uif-15b (UIF15B.1, named intentional change): the sub-list is Profile (Social is a root leaf:
-    // A on it opens the Social frame, covered by the UIF15B.1 boot case in
-    // ui/screens/socialScreen.boot.test.ts). Its last child is Privacy, which opens the privacy
-    // screen. Was: Social's sub-list, ending on Rankings (the leaderboard).
-    // uif-16b (UIF16B.1, named intentional change): Profile is a root leaf (the one Profile frame),
-    // so the sub-list is Options, whose last child is Controls, which opens the Controls screen.
-    // Was: Profile's sub-list, ending on Privacy (the privacy screen).
-    await bootAtMenu(5);
-    expect(navActive()).toBe('options');
-    tap('Enter', 1500);
-    expect(navActive(), 'the sub-list starts on its first entry').toBe('help');
-    expect(cursor()).toBe('menuOptions-root-help');
-    expect(menuTitle()).toBe(EN['menu.options.title']);
-    expect(menuCrumbs()).toEqual(['Menu']);
-    expect(stackNames(), 'one menu frame').toEqual(['world', 'menuView']);
+  it('UIF15C.1 the menu is one flat level of eight rows in order, Close last, with no Options row and no menuOptions element; A on Help opens helpView and A on Controls opens controlsView above the menu, B returns to the same root row, and Escape closes the whole menu', async () => {
+    // uif-15c (named intentional change, UIF15C.1): replaces "a sub-list is a level inside the one
+    // menu frame" (A enters Options, A on a child opens it, B backs out a level, Escape closes):
+    // Options is gone, so Help and Controls are root rows, A on one opens its screen straight away
+    // and B returns to the root row (no sub-list level to back out of). Was: Options' sub-list,
+    // `menuOptions-root-*` ids, title menu.options.title and the crumb ['Menu'].
+    // WRONG IMPL KILLED: a root that still carries an Options row or group (the row list is not
+    // the eight), a sub-list frame id `menuOptions*` left in the DOM, Help or Controls that are not
+    // wired as open leaves (A does nothing or lands in a sub-list), a B from a child that lands on
+    // a stale group level (the title would read Options and a crumb would be painted), and an
+    // Escape that only pops a level.
+    await bootAtMenu();
+    const rowIds = Array.from(rowsEl().querySelectorAll('[id^="menu-root-"]')).map((r) => r.id);
+    expect(rowIds, 'eight root rows in order').toEqual(ROOT_KEYS.map((k) => `menu-root-${k}`));
+    expect(rowIds[rowIds.length - 1], 'Close is last').toBe('menu-root-close');
+    expect(optionTexts()).toEqual(ROOT_KEYS.map((k) => EN[`menu.${k}.title`]));
+    expect(optionTexts(), 'no Options row').not.toContain('Options');
+    expect(document.querySelector('[id^="menuOptions"]'), 'no menuOptions element').toBeNull();
+    expect(menuTitle()).toBe(EN['menu.title']);
+    expect(menuCrumbs(), 'no breadcrumb').toEqual([]);
 
-    tap('ArrowDown', 1600);
+    for (let i = 0; i < 5; i += 1) tap('ArrowDown', 1100 + i * 100);
+    expect(navActive()).toBe('help');
+    expect(cursor()).toBe('menu-root-help');
+    tap('Enter', 1700);
+    expect(stackNames(), 'A on Help opens helpView straight above the menu').toEqual([
+      'world',
+      'menuView',
+      'helpView',
+    ]);
+    tap('Backspace', 1800);
+    expect(stackNames(), 'B closes only the Help screen').toEqual(['world', 'menuView']);
+    expect(navActive(), 'back on the Help entry').toBe('help');
+    expect(cursor()).toBe('menu-root-help');
+    expect(menuTitle(), 'the root level').toBe(EN['menu.title']);
+
+    tap('ArrowDown', 1900);
     expect(navActive()).toBe('controls');
-    tap('Enter', 1800);
-    expect(menuShown(), 'the sub-list stays open beneath it').toBe(true);
-    expect(stackNames(), 'the Controls screen is a frame above the menu').toEqual([
+    expect(cursor()).toBe('menu-root-controls');
+    tap('Enter', 2000);
+    expect(menuShown(), 'the menu stays open beneath it').toBe(true);
+    expect(stackNames(), 'A on Controls opens controlsView above the menu').toEqual([
       'world',
       'menuView',
       'controlsView',
     ]);
 
-    tap('Backspace', 1900);
+    tap('Backspace', 2100);
     expect(stackNames(), 'B closes the child').toEqual(['world', 'menuView']);
-    expect(navActive(), 'back on the sub-list entry').toBe('controls');
-    expect(cursor()).toBe('menuOptions-root-controls');
+    expect(navActive(), 'back on the Controls entry').toBe('controls');
+    expect(cursor()).toBe('menu-root-controls');
+    expect(menuCrumbs(), 'still no breadcrumb').toEqual([]);
+    expect(document.querySelector('[id^="menuOptions"]')).toBeNull();
 
-    tap('Backspace', 2000);
-    expect(navActive(), 'B at a sub-list pops to the root, on the group entry').toBe('options');
-    expect(menuShown()).toBe(true);
-    expect(cursor()).toBe('menu-root-options');
-
-    tap('Enter', 2100);
-    expect(navActive(), 'the sub-list cursor was remembered').toBe('controls');
-    tap('Escape', 2200);
-    expect(menuShown(), 'Escape closes the whole menu from a sub-list').toBe(false);
+    tap('Enter', 2200);
+    tap('Escape', 2300);
+    expect(menuShown(), 'Escape closes the whole menu').toBe(false);
     expect(stackNames()).toEqual(['world']);
+  });
+
+  it('UIF15C.3 the Close rule: A on Close then Start reopens the menu on Monsters; B with the cursor on Controls then Start reopens it on Controls; Up-wrapping to Close then B then Start reopens on Monsters', async () => {
+    // WRONG IMPL KILLED: a reopen that restores the remembered Close cursor (the player lands on
+    // the leave-the-menu row and a stray A closes it again), a rule that resets EVERY cursor to the
+    // first entry (Controls would come back as Monsters), a rule that fires only for A on Close
+    // (the Up-wrap-then-B route still reopens on Close), and a B that moves the cursor off the row
+    // it was on.
+    await bootAtMenu(7);
+    expect(navActive(), 'precondition: the cursor is on Close').toBe('close');
+    tap('Enter', 1900);
+    expect(menuShown(), 'precondition: A on Close closed the menu').toBe(false);
+    tap('Escape', 2000);
+    expect(menuShown(), 'Start reopens the menu').toBe(true);
+    expect(cursor(), 'on the first entry, not Close').toBe('menu-root-monsters');
+    expect(navActive()).toBe('monsters');
+
+    for (let i = 0; i < 6; i += 1) tap('ArrowDown', 2100 + i * 100);
+    expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
+    tap('Backspace', 2800);
+    expect(menuShown(), 'precondition: B closed the menu').toBe(false);
+    tap('Escape', 2900);
+    expect(menuShown()).toBe(true);
+    expect(cursor(), 'a non-Close cursor is remembered').toBe('menu-root-controls');
+    expect(navActive()).toBe('controls');
+
+    // Up-wrap route: walk to Monsters, one Up wraps onto Close, B closes, Start reopens.
+    for (let i = 0; i < 6; i += 1) tap('ArrowUp', 3000 + i * 100);
+    expect(navActive(), 'precondition: the cursor is on Monsters').toBe('monsters');
+    tap('ArrowUp', 3700);
+    expect(navActive(), 'precondition: Up wrapped onto Close').toBe('close');
+    tap('Backspace', 3800);
+    expect(menuShown(), 'precondition: B closed the menu').toBe(false);
+    tap('Escape', 3900);
+    expect(menuShown()).toBe(true);
+    expect(cursor(), 'the wrapped-onto-Close cursor is not restored').toBe('menu-root-monsters');
   });
 
   it('UIF15B.5 every root leaf (Monsters, Inventory, Journal, Social, Profile) opens from the root and B returns to the menu root with the cursor on that same entry; a second B closes the menu', async () => {
@@ -531,12 +586,16 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     const leaves = MENU_ENTRIES.filter((e) => e.kind === 'open').map((e) => e.key);
     // uif-16b (named intentional change): 4 -> 5 root leaves: profile joined (one Profile frame,
     // no sub-list, UIF16B.1).
+    // uif-15c (named intentional change, UIF15C.1): 5 -> 7 root leaves: help and controls joined
+    // as open entries (no Options group). Was: [..., 'profile'].
     expect(leaves, 'ANTI-VACUITY: the root leaves, from the table').toEqual([
       'monsters',
       'bag',
       'journal',
       'social',
       'profile',
+      'help',
+      'controls',
     ]);
     await bootAtMenu();
     let at = 1200;
@@ -565,7 +624,8 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
       checked += 1;
     }
     // uif-16b (named intentional change): 4 -> 5 leaves driven (profile joined).
-    expect(checked, 'ANTI-VACUITY: all five leaves were driven').toBe(5);
+    // uif-15c (named intentional change, UIF15C.1): 5 -> 7 leaves driven (help, controls joined).
+    expect(checked, 'ANTI-VACUITY: all seven leaves were driven').toBe(7);
     expect(socialRootShown(), 'the Social root is closed after its B').toBe(false);
 
     step('Backspace');
@@ -706,32 +766,36 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     expect(region?.textContent).not.toBe(menuLabel);
   });
 
-  it('a level change resets the repeat: a held ArrowDown does not keep scrolling the sub-list that Enter just entered', async () => {
-    // WRONG IMPL KILLED: an applyMenuStep that does not reset the router's repeat when the menu
-    // level changes (the Down still held from the root repeats into the new sub-list and walks the
-    // cursor off its first entry with no new press).
-    // uif-15b: the sub-list entered is Profile (Social is a leaf now). Was: Journal, Down onto
-    // Social, Enter into its sub-list (trades, then challenges).
-    // uif-16b (named intentional change): the sub-list entered is Options (Profile is a leaf now):
-    // from Profile a held Down moves onto Options and Enter enters it on Help; the fresh press
-    // moves to Controls. Was: from Social onto Profile, entered on Name, then Account.
+  it('UIF15C.1 a held ArrowDown does not keep scrolling the menu under the screen that Enter just opened: Down held onto Help, Enter opens helpView, and frames move nothing', async () => {
+    // uif-15c (named intentional change, UIF15C.1): replaces "a level change resets the repeat"
+    // (Down held onto Options, Enter entered its sub-list on Help, no scroll without a new press).
+    // No menu level exists any more, so the repeat reset that remains is the child push: Enter on
+    // Help opens helpView and the Down still held must not scroll the covered menu. Was: Options'
+    // sub-list, cursor id `menuOptions-root-help`, and a fresh press moving to Controls in it.
+    // WRONG IMPL KILLED: a push that does not reset the router's repeat (the Down still held keeps
+    // scrolling the covered menu: Help drifts onto Controls with no new press).
     await bootAtMenu(4);
     expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
     const t0 = 2000;
     fire('keydown', 'ArrowDown', t0);
-    expect(navActive(), 'the held Down moved onto Options').toBe('options');
+    expect(navActive(), 'the held Down moved onto Help').toBe('help');
     fire('keydown', 'Enter', t0 + 100);
-    expect(navActive(), 'Enter (Down still held) entered the Options sub-list').toBe('help');
-    expect(cursor()).toBe('menuOptions-root-help');
+    expect(stackNames(), 'Enter (Down still held) opened helpView').toEqual([
+      'world',
+      'menuView',
+      'helpView',
+    ]);
 
     for (const dt of [349, 350, 449, 450, 550, 1000]) {
       frame(t0 + dt);
       expect(navActive(), `${dt} ms after the Down press, with no new press`).toBe('help');
     }
 
-    // Contrast: a fresh press still moves the cursor in the new level.
+    // Contrast: after the screen closes, a fresh press still moves the cursor.
     fire('keyup', 'ArrowDown', t0 + 1100);
     fire('keyup', 'Enter', t0 + 1105);
+    tap('Backspace', t0 + 1150);
+    expect(stackNames(), 'precondition: B closed helpView').toEqual(['world', 'menuView']);
     fire('keydown', 'ArrowDown', t0 + 1200);
     expect(navActive(), 'a new press moves').toBe('controls');
     fire('keyup', 'ArrowDown', t0 + 1205);

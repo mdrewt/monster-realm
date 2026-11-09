@@ -829,8 +829,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.social.desc': 'Trades, challenges and rankings with other players.',
   'menu.profile.title': 'Profile',
   'menu.profile.desc': 'Your name, account and privacy settings.',
-  'menu.options.title': 'Options',
-  'menu.options.desc': 'Help on how to play the game.',
+  // NAMED INTENTIONAL CHANGE (uif-15c, UIF15C.5): -2 plain keys here, `menu.options.{title,desc}`
+  // ('Options', 'Help on how to play the game.'), RETIRED with the Options group (no menu row reads
+  // them: catalogParity DEAD-KEY otherwise). Their absence is pinned by the 'UIF15C.5' test at the
+  // end of this file.
   'menu.close.title': 'Close',
   'menu.close.desc': 'Close the menu and return to the world.',
   // NAMED INTENTIONAL CHANGE (uif-15b, UIF15B.1): -6 plain keys here, RETIRED with the Social sub-list
@@ -843,8 +845,11 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // (WF1-A10) = 526 keys. Was 531. `menu.profile.{name,account}.title` stay: the section headers.
   'menu.profile.name.title': 'Name',
   'menu.profile.account.title': 'Account',
-  'menu.options.help.title': 'How to play',
-  'menu.options.help.desc': 'Controls and goals of the game.',
+  // NAMED INTENTIONAL CHANGE (uif-15c, UIF15C.5): `menu.options.help.{title,desc}` is RE-HOMED as
+  // `menu.help.{title,desc}` (the root How to Play row), a net zero. The title VALUE changes to match
+  // the frame it opens (`chrome.help.title`); was 'How to play'. The desc is unchanged.
+  'menu.help.title': 'How to Play',
+  'menu.help.desc': 'Controls and goals of the game.',
   // ctl-6c: 2 new plain keys — the reasons a main-menu entry is disabled over a battle
   // (ui/screens/mainMenuScreen.ts), the first also the dispatch refusal line (main.ts).
   'menu.disabled.inBattle': 'Not during a battle',
@@ -974,8 +979,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.reset.done': 'All controls are back to their defaults.',
   'controls.cancel': 'Cancel',
   'controls.saveFailed': 'Could not save: this lasts until you reload.',
-  'menu.options.controls.title': 'Controls',
-  'menu.options.controls.desc': 'Choose which key presses each button.',
+  // NAMED INTENTIONAL CHANGE (uif-15c, UIF15C.5): `menu.options.controls.{title,desc}` is RE-HOMED as
+  // `menu.controls.{title,desc}` (the root Controls row), values unchanged, a net zero.
+  'menu.controls.title': 'Controls',
+  'menu.controls.desc': 'Choose which key presses each button.',
   // ctl-13 (named intentional change): +10 plain keys — the hint bar's six verbs
   // (`chrome.chip.{ok,back,close,view,dismiss,done}`), the "New" badge (`chrome.badge.request`,
   // shown on the Start chip and in the Social menu row as real text) and the request sheet's three
@@ -2262,7 +2269,10 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // `menu.social.{trades,challenges,rankings}.{title,desc}` (the Social sub-list is gone).
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain `help.intro.report`.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-16b roster is 526 keys').toHaveLength(526);
+    // uif-15c (named intentional change, UIF15C.5): 526 -> 524: -2 plain `menu.options.{title,desc}`
+    // (the Options group is gone); the `menu.options.{help,controls}.*` pairs are re-homed as
+    // `menu.{help,controls}.*` (a net zero).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-15c roster is 524 keys').toHaveLength(524);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2962,8 +2972,10 @@ describe('ctl-12b: the Controls keys in both catalogs', () => {
           `: ce r${E_ACUTE}glage dure jusqu${RIGHT_QUOTE}au rechargement.`,
         ),
       ],
-      ['menu.options.controls.title', ['Commandes']],
-      ['menu.options.controls.desc', ['Choisir la touche de chaque bouton.']],
+      // uif-15c (named intentional change, UIF15C.5): the ids are re-homed, the values unchanged.
+      // Was: 'menu.options.controls.title' / 'menu.options.controls.desc'.
+      ['menu.controls.title', ['Commandes']],
+      ['menu.controls.desc', ['Choisir la touche de chaque bouton.']],
     ];
     /** The French output for sample A, then sample B (the English SAMPLE_PARAMS sets). */
     const FR_PARAMS: ReadonlyArray<readonly [string, readonly string[], readonly string[]]> = [
@@ -3384,8 +3396,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 526 keys').toBe(526);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(526);
+    // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
+    // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
   });
 });
 
@@ -3504,8 +3518,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 526 keys').toBe(526);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(526);
+    // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
+    // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3810,9 +3826,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 526 keys').toBe(526);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(526);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(526);
+    // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
+    // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(524);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -3920,8 +3938,10 @@ describe('qf-14: the Controls accelerator label in both catalogs', () => {
     // The frame title and the Options leaf already read Controls / Commandes and stay so.
     expect(en['controls.title']).toBe('Controls');
     expect(fr['controls.title']).toBe('Commandes');
-    expect(en['menu.options.controls.title']).toBe('Controls');
-    expect(fr['menu.options.controls.title']).toBe('Commandes');
+    // uif-15c (named intentional change, UIF15C.5): the menu row's ids are re-homed. Was:
+    // 'menu.options.controls.title'.
+    expect(en['menu.controls.title']).toBe('Controls');
+    expect(fr['menu.controls.title']).toBe('Commandes');
   });
 });
 
@@ -4489,8 +4509,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     }
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
-    expect(Object.keys(en), 'the English roster is 526 keys (uif-16b -5)').toHaveLength(526);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(526);
+    // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}`.
+    expect(Object.keys(en), 'the English roster is 524 keys (uif-15c -2)').toHaveLength(524);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(524);
   });
 });
 
@@ -4534,5 +4555,77 @@ describe('uif-16b: the Profile sub-list ids and the privacy-busy line are retire
       expect(EXPECTED_KEYS.includes(id), `the roster keeps ${id}`).toBe(true);
     }
     expect(en['menu.profile.title'], 'the frame title').toBe('Profile');
+  });
+});
+
+// =============================================================================
+// uif-15c (UIF15C.5): the Options group's two ids are retired, and the help / controls pairs are
+// re-homed from `menu.options.*` to `menu.*`, in both catalogs.
+// =============================================================================
+
+describe('uif-15c: the Options menu ids are retired and re-homed in both catalogs', () => {
+  it('UIF15C.5 the six menu.options.* ids are in neither catalog nor the pinned roster, and menu.help.* and menu.controls.* hold the exact re-homed text in en and fr', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key (catalogParity DEAD-KEY: no row reads
+    // it any more); an id removed from one locale only; the help / controls rows left reading
+    // `menu.options.help.*` / `menu.options.controls.*` (the old ids kept AND the new ones missing);
+    // the new help title left at 'How to play' (it must match the frame it opens, 'How to Play'); an
+    // fr title that drifted ('Comment jouer' / 'Commandes' are pinned); the new ids missing from the
+    // roster; a pair swapped with its sibling's text (every byte is pinned).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = [
+      'menu.options.title',
+      'menu.options.desc',
+      'menu.options.help.title',
+      'menu.options.help.desc',
+      'menu.options.controls.title',
+      'menu.options.controls.desc',
+    ];
+    expect(RETIRED, 'ANTI-VACUITY: six retired ids').toHaveLength(6);
+    for (const id of RETIRED) {
+      expect(Object.hasOwn(en, id), `en still has ${id}`).toBe(false);
+      expect(Object.hasOwn(fr, id), `fr still has ${id}`).toBe(false);
+      expect(EXPECTED_KEYS.includes(id), `the roster still lists ${id}`).toBe(false);
+    }
+    expect(
+      Object.keys(en).filter((k) => k.startsWith('menu.options')),
+      'no menu.options.* id of any kind in en',
+    ).toEqual([]);
+    expect(
+      Object.keys(fr).filter((k) => k.startsWith('menu.options')),
+      'no menu.options.* id of any kind in fr',
+    ).toEqual([]);
+
+    const NEW: ReadonlyArray<readonly [string, string, string]> = [
+      ['menu.help.title', 'How to Play', 'Comment jouer'],
+      ['menu.help.desc', 'Controls and goals of the game.', 'Commandes et objectifs du jeu.'],
+      ['menu.controls.title', 'Controls', 'Commandes'],
+      [
+        'menu.controls.desc',
+        'Choose which key presses each button.',
+        'Choisir la touche de chaque bouton.',
+      ],
+    ];
+    expect(NEW, 'ANTI-VACUITY: four new ids').toHaveLength(4);
+    for (const [id, enText, frText] of NEW) {
+      expect(en[id], `en ${id}`).toBe(enText);
+      expect(fr[id], `fr ${id}`).toBe(frText);
+      expect(typeof en[id], `en ${id} is a plain string`).toBe('string');
+      expect(typeof fr[id], `fr ${id} is a plain string`).toBe('string');
+      expect(EXPECTED_KEYS.includes(id), `the roster lists ${id}`).toBe(true);
+      expect(EXPECTED_PLAIN[id], `the plain table pins ${id}`).toBe(enText);
+    }
+    // The help row names the frame it opens.
+    expect(en['menu.help.title'], 'the help row reads like the frame title').toBe(
+      en['chrome.help.title'],
+    );
+    expect(fr['menu.help.title']).toBe(fr['chrome.help.title']);
+    // The rest of the menu is untouched (a wholesale menu.* deletion would pass the loops above).
+    for (const id of ['menu.title', 'menu.close.title', 'menu.close.desc', 'menu.social.title']) {
+      expect(typeof en[id], `en keeps ${id}`).toBe('string');
+      expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
+    }
+    expect(Object.keys(en), 'the English roster is 524 keys').toHaveLength(524);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(524);
   });
 });

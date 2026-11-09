@@ -160,4 +160,85 @@ test.describe
         .poll(() => stackNames(page), { message: 'B at the menu root closes it' })
         .toEqual(['world']);
     });
+
+    test('UIF15C.4 Help and Controls are root rows with no Options group: A on Help opens helpView and A on Controls opens controlsView above the menu, B returns to the menu on that same row each time, and no menuOptions element exists', async () => {
+      // WRONG IMPL KILLED: a root that still carries an Options group (the Help / Controls rows are
+      // not reachable at the root, or A enters a sub-list and the stack stays [world, menuView]); a
+      // `menuOptions-*` element left in the DOM; a B from either screen that lands in a stale
+      // sub-list or closes the whole menu; a Controls row that is not wired to controlsView.
+      test.setTimeout(90_000);
+      await closeAll(page);
+      await pressButton(page, 'Start');
+      await expect
+        .poll(() => stackNames(page), { message: 'Start opens the menu' })
+        .toEqual(['world', 'menuView']);
+
+      const ROWS: ReadonlyArray<readonly [string, string]> = [
+        ['help', 'helpView'],
+        ['controls', 'controlsView'],
+      ];
+      let checked = 0;
+      for (const [key, frame] of ROWS) {
+        await downTo(page, navActive, key, 8, `${key}: the main menu`);
+        await expect(
+          page.locator(`#menu-root-${key}`),
+          `${key}: the row is a root row of the menu`,
+        ).toHaveCount(1);
+        await pressButton(page, 'A');
+        await expect
+          .poll(() => stackNames(page), { message: `${key}: A opens ${frame} over the menu` })
+          .toEqual(['world', 'menuView', frame]);
+        await pressButton(page, 'B');
+        await expect
+          .poll(() => stackNames(page), { message: `${key}: B closes only the child` })
+          .toEqual(['world', 'menuView']);
+        await expect
+          .poll(() => navActive(page), { message: `${key}: the cursor is back on ${key}` })
+          .toBe(key);
+        await expect(
+          page.locator('[id^="menuOptions"]'),
+          `${key}: no Options sub-list element exists`,
+        ).toHaveCount(0);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: both rows were driven').toBe(2);
+
+      await pressButton(page, 'B');
+      await expect
+        .poll(() => stackNames(page), { message: 'B at the menu root closes it' })
+        .toEqual(['world']);
+    });
+
+    test('UIF15C.3 the Close rule: A on Close closes the menu, and Start then reopens it with the cursor on Monsters, not Close', async () => {
+      // WRONG IMPL KILLED: a reopen that restores the remembered Close cursor (the player lands on
+      // the leave-the-menu row); a close that is not closing (A on Close leaves the menu up); a
+      // reopen that lands on any entry but the first.
+      test.setTimeout(90_000);
+      await closeAll(page);
+      await pressButton(page, 'Start');
+      await expect
+        .poll(() => stackNames(page), { message: 'Start opens the menu' })
+        .toEqual(['world', 'menuView']);
+      await downTo(page, navActive, 'close', 8, 'the main menu');
+      await pressButton(page, 'A');
+      await expect
+        .poll(() => stackNames(page), { message: 'A on Close closes the menu' })
+        .toEqual(['world']);
+
+      await pressButton(page, 'Start');
+      await expect
+        .poll(() => stackNames(page), { message: 'Start reopens the menu' })
+        .toEqual(['world', 'menuView']);
+      await expect
+        .poll(() => navActive(page), { message: 'the reopened cursor is on Monsters, not Close' })
+        .toBe('monsters');
+      await expect(page.locator('#menu-rows')).toHaveAttribute(
+        'aria-activedescendant',
+        'menu-root-monsters',
+      );
+      await pressButton(page, 'Start');
+      await expect
+        .poll(() => stackNames(page), { message: 'Start closes it again' })
+        .toEqual(['world']);
+    });
   });

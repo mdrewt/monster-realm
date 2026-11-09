@@ -166,19 +166,17 @@ test.describe
       await closeAll(page);
       expect(await stackNames(page), 'precondition: the bare world').toEqual(['world']);
 
-      // ---- 1. Start, Options, A, Controls, A: the Controls frame above the menu -----------------
+      // ---- 1. Start, Down to Controls, A: the Controls frame above the menu ---------------------
+      // uif-15c (UIF15C.4, named intentional change): Controls is a root entry, so there is no
+      // Options group and no Down-into-sub-list step. Was: Start, Options, A (onto How to play),
+      // Down onto Options > Controls, A.
       await pressButton(page, 'Start');
       await expect
         .poll(() => stackNames(page), { message: 'Start opens the menu' })
         .toEqual(['world', 'menuView']);
-      await downTo(page, navActive, 'options', 8, 'the main menu');
-      await pressButton(page, 'A');
+      await downTo(page, navActive, 'controls', 7, 'the main menu');
       await expect
-        .poll(() => navActive(page), { message: 'A enters Options on How to play' })
-        .toBe('help');
-      await pressButton(page, 'Down');
-      await expect
-        .poll(() => navActive(page), { message: 'Down moves onto Options > Controls' })
+        .poll(() => navActive(page), { message: 'the cursor is on Controls before A' })
         .toBe('controls');
       await pressButton(page, 'A');
       await expect

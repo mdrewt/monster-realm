@@ -45,9 +45,10 @@ import { closeAll, pressButton, readWorld, safeTile, stepTile, walkTo } from './
 //    Downs away (ui/monstersModel.ts SHEET_ACTIONS). Each Down is asserted by the row it lands on.
 //    uif-7 (UIF7.2) named change: the sheet gained its last row, Close (one Down past Move, and
 //    the Up that wraps from Summary), so the helper below also walks Move -> Close -> Move.
-//  - NO "Menu > Bag" BREADCRUMB. The Bag paints the raising frame's own title; the menu paints a
-//    breadcrumb only inside its groups (Profile, Options; uif-15b made Social a root leaf). The step asserts that title and
-//    that the menu is still open underneath instead.
+//  - NO "Menu > Bag" BREADCRUMB. The Bag paints the raising frame's own title; the menu paints no
+//    breadcrumb at all (uif-15c, UIF15C.4: Options, the last group, is gone, so the menu is one flat
+//    root with no crumb; uif-15b made Social a root leaf, uif-16b Profile). The step asserts that
+//    title and that the menu is still open underneath instead.
 //  - THE BAG OPENS ON ITS FIRST POCKET (Bait, the lowest item id), so RB reaches Food as designed.
 //  - A SETUP WALK BEFORE THE FLOW. The final press is Up (W, North), as the criterion says. At the
 //    zone-0 spawn (1,1) the tile to the north is a wall (a bump changes no position), so before

@@ -731,11 +731,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     // sub-list child is Profile > Privacy. Was: Social > Rankings (the leaderboard).
     // uif-16b (named intentional change, UIF16B.1): Profile is a root leaf too (one frame), so the
     // sub-list child is Options > Controls. Was: Profile > Privacy (the privacy screen).
-    await bootAtMenu(5);
-    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-    tap('Enter', 1500);
-    expect(navActive(), 'precondition: the sub-list starts on Help').toBe('help');
-    tap('ArrowDown', 1600);
+    // uif-15c (named intentional change, UIF15C.1): Options is gone; Controls is a root entry, six
+    // Downs from Monsters (the title keeps its old name). Was: five Downs onto Options, A, Down.
+    await bootAtMenu(6);
     expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
     tap('Enter', 1800);
     expect(stackNames(), 'precondition: the Controls screen opened over the menu').toEqual([
@@ -2095,12 +2093,12 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     const openHelpOverBattle = async (pass: string, t0: number): Promise<void> => {
       tap('Escape', t0);
       expect(menuShown(), `${pass}, precondition: Start opened the menu`).toBe(true);
-      for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) {
+      // uif-15c (named intentional change, UIF15C.1): How to play is a root entry; no group step.
+      // Was: Down to Options, A (entered on How to play), then A.
+      for (let i = 0; i < 8 && navActive() !== 'help'; i += 1) {
         tap('ArrowDown', t0 + 100 + i * 100);
       }
-      expect(navActive(), `${pass}, precondition: the cursor is on Options`).toBe('options');
-      tap('Enter', t0 + 1000);
-      expect(navActive(), `${pass}, precondition: A entered Options`).toBe('help');
+      expect(navActive(), `${pass}, precondition: the cursor is on How to play`).toBe('help');
       tap('Enter', t0 + 1100);
       await flush();
       // Control: before the drop help really is up, above the menu, both stamped with the battle.
@@ -2637,9 +2635,13 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(aria('social'), 'the Social row (its frame is not battle-safe) is aria-disabled').toBe(
       'true',
     );
-    for (const key of ['options', 'close']) {
+    // uif-15c (named intentional change, UIF15C.1): Options is gone: Help (battle-safe) and Close stay
+    // enabled, and Controls (its shell is not battle-safe) is aria-disabled. Was: ['options',
+    // 'close'] both enabled.
+    for (const key of ['help', 'close']) {
       expect(aria(key), `${key} stays enabled`).toBeNull();
     }
+    expect(aria('controls'), 'Controls is aria-disabled over a battle').toBe('true');
     expect(menuFeedback(), 'precondition: no reason is shown yet').toBe('');
 
     // A on Monsters (the first entry).
@@ -2710,20 +2712,21 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       { kind: 'screen', id: 'menuView', overBattle: '101' },
     ]);
 
-    // Options is enabled: it enters, and How to play opens help above the menu over the battle.
+    // uif-15c (named intentional change, UIF15C.1): How to play is a root entry, enabled over a
+    // battle: Social, Down (Profile), Down (How to play), then A opens help above the menu over the
+    // battle. Was: two Downs onto Options, A to enter it (on How to play), anti-vacuity that the
+    // sub-list repainted the rows, `menuOptions-root-help` enabled, then A.
     tap('ArrowDown', 2100);
     tap('ArrowDown', 2150);
-    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-    expect(aria('options'), 'precondition: Options is enabled').toBeNull();
-    tap('Enter', 2200);
-    expect(navActive(), 'A on Options enters it, on How to play').toBe('help');
+    expect(navActive(), 'precondition: the cursor is on How to play').toBe('help');
+    expect(aria('help'), 'precondition: How to play is enabled').toBeNull();
     expect(
       document.getElementById('menu-root-monsters'),
-      'anti-vacuity: entering a sub-list repaints the rows',
-    ).toBeNull();
+      'anti-vacuity: the one flat root keeps every row',
+    ).not.toBeNull();
     expect(
-      byId('menuOptions-root-help').getAttribute('aria-disabled'),
-      'How to play is enabled over a battle',
+      document.querySelector('[id^="menuOptions"]'),
+      'no Options sub-list exists to repaint the rows',
     ).toBeNull();
     expect(menuFeedback(), 'and no reason is shown').toBe('');
     tap('Enter', 2300);
@@ -2753,6 +2756,16 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(menuShown(), 'the menu is back on top').toBe(true);
     expect(battleShown(), 'over the battle').toBe(true);
     expect(stackNames()).toEqual(['battle', 'menuView']);
+
+    // uif-15c (UIF15C.1): Controls, the next root entry, is disabled over a battle: A shows the
+    // reason and opens nothing.
+    tap('ArrowDown', 2600);
+    expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
+    tap('Enter', 2700);
+    expect(menuFeedback(), 'A on the disabled Controls row shows the reason').toBe(
+      i18nT('menu.disabled.inBattle'),
+    );
+    expect(stackNames(), 'and opens nothing').toEqual(['battle', 'menuView']);
   });
 });
 

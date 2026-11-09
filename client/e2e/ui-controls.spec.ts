@@ -142,18 +142,18 @@ async function seedAndReload(p: Page, value: string | null): Promise<void> {
   await ready(p);
 }
 
-/** Start, Options, A, Down to Controls, A: the Controls frame above the menu (ui-feedback.spec.ts). */
+/** Start, Down to Controls, A: the Controls frame above the menu (ui-feedback.spec.ts).
+ *  uif-15c (UIF15C.4, named intentional change): Controls is a root menu entry; no Options group
+ *  and no Down-into-sub-list step. Was: Start, down to Options, A, Down to Controls, A. */
 async function openControls(p: Page, label: string): Promise<void> {
   await closeAll(p);
   await pressButton(p, 'Start');
   await expect
     .poll(() => stackNames(p), { message: `${label}: Start opens the menu` })
     .toEqual(['world', 'menuView']);
-  await downTo(p, navActive, 'options', 8, `${label}: the main menu`);
-  await pressButton(p, 'A');
-  await pressButton(p, 'Down');
+  await downTo(p, navActive, 'controls', 7, `${label}: the main menu`);
   await expect
-    .poll(() => navActive(p), { message: `${label}: Down moves onto Controls` })
+    .poll(() => navActive(p), { message: `${label}: the cursor is on Controls before A` })
     .toBe('controls');
   await pressButton(p, 'A');
   await expect

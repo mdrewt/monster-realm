@@ -504,16 +504,19 @@ describe('main.ts How to Play over the real shell (runtime, uif-14)', { sequenti
   }, 120_000);
 
   it('Options > How to play opens the same Help over the menu: two tabs on Introduction, B closes only Help and the menu stays', async () => {
+    // uif-15c (named intentional change, UIF15C.1): the title keeps its old name; Options is gone,
+    // so the walk is Start, Down to the root Help entry, A (no group step). Was: Down to Options,
+    // A, then A on How to play in the sub-list.
     // WRONG IMPL KILLED: a menu leaf that still opens an old Help; a B that closes the menu with it.
     await bootReady();
     batch();
     frame();
     press('Escape');
     expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-    for (let i = 0; i < 8 && game().navActive !== 'options'; i += 1) press('ArrowDown');
-    expect(game().navActive, 'precondition: the menu cursor is on options').toBe('options');
-    press('Enter');
-    expect(game().navActive, 'precondition: the Options list opens on How to play').toBe('help');
+    for (let i = 0; i < 8 && game().navActive !== 'help'; i += 1) press('ArrowDown');
+    expect(game().navActive, 'precondition: the menu cursor is on the root help entry').toBe(
+      'help',
+    );
     press('Enter');
     frame();
     expect(stackNames(), 'How to play opened Help above the menu').toEqual([

@@ -66,10 +66,10 @@ import { stripComments } from '../../test-util/stripComments';
 import { PointerSource } from '../input/pointerSource';
 import { t } from './a11yCopy';
 import { MenuView } from './menuView';
-import { EMPTY_NAV_MEMORY } from './nav';
+import { EMPTY_NAV_MEMORY, list, navInit } from './nav';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
-import { mainMenuPick, mainMenuStep, menuViewModel, openMainMenu } from './screens/mainMenuScreen';
+import { mainMenuStep, menuViewModel, openMainMenu } from './screens/mainMenuScreen';
 
 // MECHANISM oracle: records every call AND calls through to the real implementation.
 vi.mock('./overlayA11y', { spy: true });
@@ -84,15 +84,43 @@ const rootVm = (): Vm => menuViewModel(openMainMenu(EMPTY_NAV_MEMORY));
 // fixtures render is Profile (three rows: name, account, privacy), frame id 'menuProfile'.
 // Was: the Social sub-list (trades, challenges, rankings) under 'menuSocial'.
 // uif-16b (UIF16B.1, named intentional change): Profile is a root leaf too, so the sub-list these
-// fixtures render is Options, the only group left (two rows: help, controls), frame id
-// 'menuOptions'. Was: the Profile sub-list (name, account, privacy) under 'menuProfile'. The
-// fixture names keep `profile` only where renaming them would touch every case; every behaviour the
-// cases pin is unchanged, now on Options.
-const profileState = () => mainMenuPick(openMainMenu(EMPTY_NAV_MEMORY), 'options').state;
-const profileVm = (): Vm => menuViewModel(profileState());
+// fixtures render was Options, the only group left (two rows: help, controls).
+// uif-15c (named intentional change, UIF15C.1): Options is gone, so NO real view model has a
+// sub-list, a breadcrumb or a second frame id any more. The view's crumb / own-ids / title-follows-
+// the-frame path is still the view's contract (MenuViewModel is unchanged), so these fixtures
+// render a HAND-BUILT two-row view model under a made-up frame id 'menuSub' with a 'Menu'
+// breadcrumb. Was: `mainMenuPick(open, 'options').state` under 'menuOptions'. The fixture names
+// keep `profile` only where renaming them would touch every case.
+const subVm = (): Vm => {
+  const layout = list([
+    { key: 'help', enabled: true },
+    { key: 'controls', enabled: true },
+  ]);
+  return {
+    frameId: 'menuSub',
+    title: 'Sub-list',
+    crumbs: ['Menu'],
+    layout,
+    nav: navInit(layout, undefined),
+    labels: { help: 'How to Play', controls: 'Controls' },
+    feedback: { kind: 'none' },
+  };
+};
+const profileVm = (): Vm => subVm();
 
-const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
-const ROOT_LABELS = ['Monsters', 'Inventory', 'Journal', 'Social', 'Profile', 'Options', 'Close'];
+const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'help', 'controls', 'close'];
+// uif-15c (named intentional change, UIF15C.1): Options is replaced by How to Play + Controls.
+// Was: [..., 'Profile', 'Options', 'Close'].
+const ROOT_LABELS = [
+  'Monsters',
+  'Inventory',
+  'Journal',
+  'Social',
+  'Profile',
+  'How to Play',
+  'Controls',
+  'Close',
+];
 
 /** ONE REAL macrotask boundary (the deferred focus is a real `setTimeout(0)`). */
 async function flushMacrotask(): Promise<void> {
@@ -203,7 +231,7 @@ describe('MenuView — construction', () => {
     expect(MenuView.length).toBe(1);
   });
 
-  it('CTL5-1-SIDE-PANEL: the menu is one `side` frame in the overlay holding the nav list, titled Menu with no breadcrumb, listing the seven entries; a sub-list renders under a Menu breadcrumb with its own ids; the old heading and back hint are hidden', () => {
+  it('CTL5-1-SIDE-PANEL: the menu is one `side` frame in the overlay holding the nav list, titled Menu with no breadcrumb, listing the eight entries; a view model with a breadcrumb renders under it with its own ids; the old heading and back hint are hidden', () => {
     // WRONG IMPL KILLED: a menu still painted as the full-screen bare list (no frame, no title
     // bar), a frame of another size, a frame that is not pushed to the right-hand side, the nav
     // container left outside the frame body (the registry anchor must stay the single tab stop),
@@ -237,15 +265,13 @@ describe('MenuView — construction', () => {
     expect(optionEls().map((o) => o.textContent)).toEqual(ROOT_LABELS);
     expect(rowsEl().getAttribute('aria-activedescendant')).toBe('menu-root-monsters');
 
-    // uif-16b: the sub-list fixture is Options (see profileState).
+    // uif-15c (named intentional change): the fixture is the hand-built subVm. Was: Options
+    // ('Options', 'menuOptions-root-help', 'How to play').
     view.render(profileVm());
-    expect(titleEl().textContent, 'the title follows the level').toBe('Options');
-    expect(crumbTexts(), 'breadcrumb Menu then the group title').toEqual(['Menu']);
-    expect(optionEls().map((o) => o.id)).toEqual([
-      'menuOptions-root-help',
-      'menuOptions-root-controls',
-    ]);
-    expect(optionEls().map((o) => o.textContent)).toEqual(['How to play', 'Controls']);
+    expect(titleEl().textContent, 'the title follows the view model').toBe('Sub-list');
+    expect(crumbTexts(), 'breadcrumb Menu then the title').toEqual(['Menu']);
+    expect(optionEls().map((o) => o.id)).toEqual(['menuSub-root-help', 'menuSub-root-controls']);
+    expect(optionEls().map((o) => o.textContent)).toEqual(['How to Play', 'Controls']);
     expect(overlay.querySelectorAll('.mr-frame').length, 'still one frame').toBe(1);
   });
 
@@ -262,7 +288,30 @@ describe('MenuView — construction', () => {
     second.view.render(rootVm());
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
     expect(titleEl().textContent).toBe('Menu');
-    expect(optionEls().length).toBe(7);
+    // uif-15c (named intentional change, UIF15C.1): 7 -> 8 root rows.
+    expect(optionEls().length).toBe(8);
+  });
+
+  it('UIF15C.1 the real root paints exactly eight [id^="menu-root-"] rows in order, Close last, and no id, key or label names Options', () => {
+    // WRONG IMPL KILLED: an Options row kept beside How to Play / Controls (nine rows, or an
+    // 'Options' label); help / controls painted under a second frame id (a 'menuOptions-*' id);
+    // Close not last; the old seven-row root.
+    mountMenuOverlay();
+    const { view } = newView();
+    view.render(rootVm());
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('[id^="menu-root-"]'));
+    expect(rows.map((r) => r.id)).toEqual(ROOT_KEYS.map((k) => `menu-root-${k}`));
+    expect(rows.length, 'ANTI-VACUITY: eight rows').toBe(8);
+    expect(rows[rows.length - 1]?.id, 'Close is last').toBe('menu-root-close');
+    expect(rows.map((r) => r.textContent)).toEqual(ROOT_LABELS);
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('[id]'))) {
+      expect(/options/i.test(el.id), `no id names options: ${el.id}`).toBe(false);
+    }
+    for (const el of rows) {
+      expect(/options/i.test(el.dataset.navKey ?? ''), `no nav key names options`).toBe(false);
+      expect(/options/i.test(el.textContent ?? ''), `no label names Options`).toBe(false);
+    }
+    expect(rowsEl().getAttribute('aria-activedescendant')).toBe('menu-root-monsters');
   });
 });
 
@@ -370,9 +419,10 @@ describe('MenuView — visibility', () => {
     view.hide();
     expect(document.querySelectorAll('.mr-frame').length).toBe(1);
     expect(rowsEl().closest('.mr-frame')).toBe(frameEl());
-    expect(optionEls().length).toBe(7);
+    // uif-15c (named intentional change, UIF15C.1): 7 -> 8 root rows. Was: 7.
+    expect(optionEls().length).toBe(8);
     view.render(profileVm());
-    // uif-16b (named intentional change): 3 -> 2, the sub-list fixture is Options (help, controls).
+    // uif-16b (named intentional change): 3 -> 2, the sub-list fixture (help, controls).
     expect(optionEls().length, 'a render after hide still paints').toBe(2);
   });
 
@@ -418,18 +468,21 @@ describe('MenuView — render', () => {
     // a sub-list that leaves the root's rows behind.
     const { view } = newView();
     view.render(rootVm());
-    expect(optionEls().length, 'ANTI-VACUITY: the root paints 7 rows').toBe(7);
+    // uif-15c (named intentional change, UIF15C.1): the root paints 8 rows. Was: 7.
+    expect(optionEls().length, 'ANTI-VACUITY: the root paints 8 rows').toBe(8);
     view.render(profileVm());
-    // uif-16b (named intentional change): the sub-list fixture is Options; 3 -> 2 rows.
+    // uif-16b (named intentional change): the sub-list fixture; 3 -> 2 rows.
     expect(optionEls().map((o) => o.dataset.navKey)).toEqual(['help', 'controls']);
     expect(rowsEl().children.length, 'no stale node survives').toBe(2);
     view.render(rootVm());
-    expect(rowsEl().children.length).toBe(7);
+    expect(rowsEl().children.length).toBe(8);
     view.render(rootVm());
-    expect(rowsEl().children.length, 'the same render twice does not grow it').toBe(7);
+    expect(rowsEl().children.length, 'the same render twice does not grow it').toBe(8);
   });
 
-  it('UIF15A.1 the root rows paint Monsters, Inventory, Journal, Social, Profile, Options, Close with the unchanged nav keys, and Inventaire / Fermer in fr', async () => {
+  it('UIF15A.1 the root rows paint Monsters, Inventory, Journal, Social, Profile, How to Play, Controls, Close with the unchanged nav keys, and Inventaire / Fermer in fr', async () => {
+    // uif-15c (named intentional change, UIF15C.1): Options -> How to Play + Controls; fr 'Options'
+    // -> 'Comment jouer' + 'Commandes'. Was: [..., 'Profile', 'Options', 'Close'].
     // WRONG IMPL KILLED: a painted row still reading Bag / Sac; a relabel that changes the nav key
     // or row order (the Inventory row keeps id menu-root-bag).
     const { view } = newView();
@@ -440,7 +493,8 @@ describe('MenuView — render', () => {
       'Journal',
       'Social',
       'Profile',
-      'Options',
+      'How to Play',
+      'Controls',
       'Close',
     ]);
     expect(optionEls().map((o) => o.dataset.navKey)).toEqual(ROOT_KEYS);
@@ -454,7 +508,8 @@ describe('MenuView — render', () => {
         'Journal',
         'Social',
         'Profil',
-        'Options',
+        'Comment jouer',
+        'Commandes',
         'Fermer',
       ]);
     } finally {
@@ -503,8 +558,8 @@ describe('MenuView — render', () => {
       document.getElementById(rows.getAttribute('aria-labelledby') ?? ''),
       'still the live title, now naming the sub-list',
     ).toBe(titleEl());
-    // uif-16b (named intentional change): the sub-list fixture is Options. Was 'Profile'.
-    expect(titleEl().textContent).toBe('Options');
+    // uif-15c (named intentional change): the sub-list fixture is the hand-built subVm. Was 'Options'.
+    expect(titleEl().textContent).toBe('Sub-list');
   });
 
   it('MV-A11Y-OPTION-01: every row is role="option" with an explicit aria-selected (exactly one true), no aria-disabled, and never a tabindex', () => {
@@ -514,7 +569,8 @@ describe('MenuView — render', () => {
     const { view } = newView();
     view.render(rootVm());
     const options = optionEls();
-    expect(options.length).toBe(7);
+    // uif-15c (named intentional change, UIF15C.1): 7 -> 8 rows. Was: 7.
+    expect(options.length).toBe(8);
     for (const option of options) {
       expect(option.hasAttribute('tabindex'), `${option.id}: no tabindex`).toBe(false);
       expect(option.hasAttribute('aria-disabled'), `${option.id}: nothing is disabled`).toBe(false);
@@ -547,15 +603,16 @@ describe('MenuView — render', () => {
 
     view.render(profileVm());
     const inGroup = rowsEl().getAttribute('aria-activedescendant');
-    // uif-16b: the sub-list fixture is Options (see profileState).
-    expect(inGroup, 'descending changes the pointer value').toBe('menuOptions-root-help');
+    // uif-15c (named intentional change): the fixture is the hand-built subVm. Was: Options
+    // ('menuOptions-root-help'), then B from it landed on 'menu-root-options'; no real B pops a
+    // level now, so the return is the root view model again with the cursor still on Inventory.
+    expect(inGroup, 'a frame change changes the pointer value').toBe('menuSub-root-help');
     expect(inGroup).not.toBe(second);
     expect(document.getElementById(inGroup ?? '')?.getAttribute('aria-selected')).toBe('true');
 
-    const back = mainMenuStep(profileState(), { button: 'B', repeat: false }).state;
-    view.render(menuViewModel(back));
-    expect(rowsEl().getAttribute('aria-activedescendant'), 'B lands on the group entry').toBe(
-      'menu-root-options',
+    view.render(menuViewModel(moved));
+    expect(rowsEl().getAttribute('aria-activedescendant'), 'back on the root cursor').toBe(
+      'menu-root-bag',
     );
   });
 
@@ -642,8 +699,8 @@ describe('MenuView — uif-3 frame anatomy', () => {
     expect(feedbackEl().hidden).toBe(false);
 
     second.view.render(profileVm());
-    // uif-16b (named intentional change): the sub-list fixture is Options. Was 'Profile'.
-    expect(titleEl().textContent).toBe('Options');
+    // uif-15c (named intentional change): the sub-list fixture is the hand-built subVm. Was 'Options'.
+    expect(titleEl().textContent).toBe('Sub-list');
     expect(crumbTexts()).toEqual(['Menu']);
     expect(feedbackEl().hidden, 'the none state hides the line again').toBe(true);
     expect(feedbackEl().textContent).toBe('');
@@ -741,9 +798,10 @@ describe('MenuView — input', () => {
     );
     expect(onInput, 'padding clicks and hovers emit nothing').not.toHaveBeenCalled();
 
-    // uif-16b: the sub-list fixture is Options (see profileState); its last row is Controls.
+    // uif-15c (named intentional change): the sub-list fixture is the hand-built subVm; its last
+    // row is Controls. Was: 'menuOptions-root-controls'.
     view.render(profileVm());
-    (document.getElementById('menuOptions-root-controls') as HTMLElement).dispatchEvent(
+    (document.getElementById('menuSub-root-controls') as HTMLElement).dispatchEvent(
       new MouseEvent('click', { bubbles: true }),
     );
     expect(onInput).toHaveBeenCalledWith({ kind: 'pick', key: 'controls' });

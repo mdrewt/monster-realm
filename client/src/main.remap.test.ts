@@ -300,19 +300,22 @@ const navActive = (): string | null => game().navActive;
 const menuTitle = (): string =>
   document.querySelector('#menu-overlay .mr-frame-title')?.textContent ?? '';
 
-/** Open the main menu by Start (Escape) and walk the cursor onto Options: A on it enters the Options
- *  level, the one visible effect of "the menu entry under the cursor was picked".
+/** Open the main menu by Start (Escape) and walk the cursor onto Help: A on it opens the Help screen
+ *  above the menu, the one visible effect of "the menu entry under the cursor was picked".
  *  uif-15b (named intentional change, UIF15B.1): was `openMenuOnSocial`; Social is a root leaf that
- *  opens a frame (a push that would change focus and what K does next), so the pick that stays in
- *  the menu is a group, Profile.
+ *  opens a frame (a push that would change focus and what K does next), so the pick that stayed in
+ *  the menu was a group, Profile.
  *  uif-16b (named intentional change, UIF16B.1): was `openMenuOnProfile`; Profile is a root leaf too
- *  (it opens the one Profile frame), so the group whose pick stays in the menu is Options. */
-function openMenuOnOptions(): void {
+ *  (it opens the one Profile frame), so the group whose pick stayed in the menu was Options.
+ *  uif-15c (named intentional change, UIF15C.1): was `openMenuOnOptions`; Options is gone and no
+ *  group remains, so a pick can only open a screen. Help is the entry whose screen is battle-safe
+ *  and has no focus side effect: the pick shows as helpView on the stack. */
+function openMenuOnHelp(): void {
   press('Escape');
   expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-  for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
-  expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-  expect(menuTitle(), 'precondition: the menu is on its root level').toBe(i18nT('menu.title'));
+  for (let i = 0; i < 8 && navActive() !== 'help'; i += 1) press('ArrowDown');
+  expect(navActive(), 'precondition: the cursor is on Help').toBe('help');
+  expect(menuTitle(), 'precondition: the menu is on its one level').toBe(i18nT('menu.title'));
 }
 
 /** The default table as plain data, for a stored table that changes a few entries. */
@@ -366,25 +369,28 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     // unbound Enter that is still prevented as if the router had consumed it.
     await bootReady({ stored: storedTable((raw) => (raw.buttons.A = ['KeyK'])) });
     server(1000);
-    openMenuOnOptions();
+    openMenuOnHelp();
 
     const enter = press('Enter');
     expect(enter.defaultPrevented, 'an unbound Enter is not an A press').toBe(false);
-    expect(menuTitle(), 'Enter picks nothing: the menu stays on its root level').toBe(
-      i18nT('menu.title'),
-    );
-    expect(navActive()).toBe('options');
-    expect(stackNames()).toEqual(['world', 'menuView']);
+    expect(stackNames(), 'Enter picks nothing: no Help above the menu').toEqual([
+      'world',
+      'menuView',
+    ]);
+    expect(navActive()).toBe('help');
     const numpadEnter = press('NumpadEnter');
     expect(numpadEnter.defaultPrevented, 'the old alias is gone with it').toBe(false);
-    expect(menuTitle()).toBe(i18nT('menu.title'));
+    expect(stackNames()).toEqual(['world', 'menuView']);
 
     const k = press('KeyK');
     expect(k.defaultPrevented, 'K is consumed as A').toBe(true);
-    // uif-16b (named intentional change): the group picked is Options (was Profile).
-    expect(menuTitle(), 'K picked Options: the menu is on the Options level').toBe(
-      i18nT('menu.options.title'),
-    );
+    // uif-15c (named intentional change, UIF15C.1): the entry picked is Help (was Options, seen as
+    // the menu title turning to the Options level): K opens helpView above the menu.
+    expect(stackNames(), 'K picked Help: helpView is above the menu').toEqual([
+      'world',
+      'menuView',
+      'helpView',
+    ]);
     expect(H.calls, 'picking a menu entry sends nothing').toEqual([]);
     expect(H.sends, 'and walks nothing').toHaveLength(0);
   });
@@ -403,11 +409,16 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
       teardown();
       await bootReady(o);
       server(1000);
-      openMenuOnOptions();
+      openMenuOnHelp();
       const enter = press('Enter');
       expect(enter.defaultPrevented, `${label}: Enter is consumed as A`).toBe(true);
-      // uif-16b (named intentional change): the group picked is Options (was Profile).
-      expect(menuTitle(), `${label}: Enter picked Options`).toBe(i18nT('menu.options.title'));
+      // uif-15c (named intentional change, UIF15C.1): the entry picked is Help (was Options, seen
+      // as the Options menu title): Enter opens helpView above the menu.
+      expect(stackNames(), `${label}: Enter picked Help`).toEqual([
+        'world',
+        'menuView',
+        'helpView',
+      ]);
       press('Escape'); // Start pops everything to the world
       expect(stackNames(), `${label}: Start closes the menu`).toEqual(['world']);
       const k = press('KeyK');
@@ -792,17 +803,15 @@ const menuOptionTexts = (): string[] =>
     (o) => o.textContent ?? '',
   );
 
-/** Start, the cursor to Options, A, the cursor to Controls, A (`a` is the key A is bound to): the
- *  Controls frame opens above the menu. Works on a reopen too: the menu reopens on the last entry
- *  used and Options on its last child. */
+/** Start, the cursor to Controls, A (`a` is the key A is bound to): the Controls frame opens above
+ *  the menu. Works on a reopen too: the menu reopens on the last entry used.
+ *  uif-15c (named intentional change, UIF15C.1): Controls is a root entry; no group step. Was:
+ *  Start, Down to Options, A, Down to Controls, A. */
 function openControls(a = 'Enter'): void {
   press('Escape');
   expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-  for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
-  expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-  press(a);
-  for (let i = 0; i < 2 && navActive() !== 'controls'; i += 1) press('ArrowDown');
-  expect(navActive(), 'precondition: the cursor is on Options > Controls').toBe('controls');
+  for (let i = 0; i < 8 && navActive() !== 'controls'; i += 1) press('ArrowDown');
+  expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
   press(a);
   expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([...CONTROLS_STACK]);
 }
@@ -927,15 +936,18 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
 
     press('Escape');
     expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-    press('Enter');
-    expect(navActive(), 'A entered Options on its first child, How to play').toBe('help');
+    // uif-15c (named intentional change, UIF15C.1): Options is gone; How to play and Controls are
+    // adjacent root entries (after Profile, before Close). Was: Down to Options, A (entered on How
+    // to play), Down to Controls, with the sub-list texts menu.options.help/controls.title.
+    for (let i = 0; i < 8 && navActive() !== 'help'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on the root How to play').toBe('help');
     press('ArrowDown');
-    expect(navActive(), 'Down moves onto Options > Controls').toBe('controls');
-    expect(menuOptionTexts(), 'Options lists How to play, then Controls').toEqual([
-      i18nT('menu.options.help.title'),
-      i18nT('menu.options.controls.title'),
+    expect(navActive(), 'Down moves onto the root Controls').toBe('controls');
+    const rootTexts = menuOptionTexts();
+    expect(rootTexts.slice(-3), 'the root lists How to play, Controls, then Close').toEqual([
+      i18nT('menu.help.title'),
+      i18nT('menu.controls.title'),
+      i18nT('menu.close.title'),
     ]);
     const open = press('Enter');
     expect(open.defaultPrevented, 'the A that opened Controls is consumed').toBe(true);

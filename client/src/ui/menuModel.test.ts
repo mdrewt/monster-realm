@@ -5,12 +5,12 @@
 // rewritten for the new table. What a consumer may rely on is pinned here:
 //
 //   MENU_ENTRIES: readonly Row[]        the ROOT list, in display order
-//   Row = { key, title(): string, description(): string, children?: readonly Row[] }
+//   Row = { key, title(): string, description(): string }
 //
 // `title` / `description` are THUNKS that resolve through the catalog at CALL time (never at
-// import), so the same table renders in en and fr. A row with `children` is a group (a sub-list
-// one level deep); the leaf rows carry the overlay they open (proved through the screen reducer
-// in `screens/mainMenuScreen.test.ts`, where A on each leaf emits its `open` target).
+// import), so the same table renders in en and fr. The leaf rows carry the overlay they open
+// (proved through the screen reducer in `screens/mainMenuScreen.test.ts`, where A on each leaf
+// emits its `open` target). uif-15c: no row has children, the table has no group at all.
 //
 // RETIRED TEST IDS (this file) -> reason -> survivor:
 //   MM-TREE-SHAPE, MM-NAV-*, MM-ESCAPE-TOP-CLOSES, MM-LEFT-AT-TOP-IS-NOOP, MM-CLICK-*,
@@ -22,12 +22,19 @@
 //        reducer cases (wrap, A, B, Y, repeat clamp) in screens/mainMenuScreen.test.ts.
 //   MM-KEYGLYPH-FROM-HELP-SSOT
 //     -> none needed (milestone survivor table): leaves stop carrying key glyphs, so the
-//        invariant "every glyph is documented in helpModel" is vacuous; Options › Controls
+//        invariant "every glyph is documented in helpModel" is vacuous; the Controls row
 //        (controlsView.test.ts) lists the accelerators.
+//   ctl-12b "the Options group holds How to play then Controls ..." (uif-15c, UIF15C.1)
+//     -> the Options group is gone; survivor: UIF15C.1 help and controls are root open leaves.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { stripComments } from '../../test-util/stripComments';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
 import { setLocale, t } from './i18n/resolver';
+import * as menuModel from './menuModel';
 import { MENU_ENTRIES, withRequestBadge } from './menuModel';
 
 interface Row {
@@ -39,38 +46,23 @@ interface Row {
 
 const ROOT: readonly Row[] = MENU_ENTRIES;
 
-const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
-// ctl-12b (named intentional change): Options gains its Controls leaf, SECOND, after How to play.
-// The order is load-bearing: e2e/battle-dpad.spec.ts and encounter-battle.spec.ts press A on
-// Options and expect the cursor on How to play. Was: options: ['help'].
+// uif-15c (UIF15C.1, named intentional change): the Options group is replaced by two root leaves,
+// How to Play (help) then Controls, in that order. Was:
+// ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'] with
+// options: ['help', 'controls'].
 // uif-15b (UIF15B.1, named intentional change): Social is a root LEAF that opens the Social frame,
 // so it is no longer a group. Was: social: ['trades', 'challenges', 'rankings'].
 // uif-16b (UIF16B.1, named intentional change): Profile is a root LEAF that opens the one Profile
 // frame, so it is no longer a group. Was: profile: ['name', 'account', 'privacy'].
-const GROUP_CHILD_KEYS: Readonly<Record<string, readonly string[]>> = {
-  options: ['help', 'controls'],
-};
+const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'help', 'controls', 'close'];
 
-/** Every row (root, then each group's children) with the catalog ids it must resolve through. */
-const EXPECTED_IDS: ReadonlyArray<{ readonly path: string; readonly title: string }> = [
-  ...ROOT_KEYS.map((key) => ({ path: key, title: `menu.${key}.title` })),
-  ...Object.entries(GROUP_CHILD_KEYS).flatMap(([group, kids]) =>
-    kids.map((kid) => ({ path: `${group}/${kid}`, title: `menu.${group}.${kid}.title` })),
-  ),
-];
+/** Every row with the catalog id its title must resolve through. */
+const EXPECTED_IDS: ReadonlyArray<{ readonly path: string; readonly title: string }> =
+  ROOT_KEYS.map((key) => ({ path: key, title: `menu.${key}.title` }));
 
 /** The rows in the same order as EXPECTED_IDS. */
 function flatRows(): Array<{ readonly path: string; readonly row: Row }> {
-  const out: Array<{ readonly path: string; readonly row: Row }> = ROOT.map((row) => ({
-    path: row.key,
-    row,
-  }));
-  for (const group of ROOT) {
-    for (const child of group.children ?? []) {
-      out.push({ path: `${group.key}/${child.key}`, row: child });
-    }
-  }
-  return out;
+  return ROOT.map((row) => ({ path: row.key, row }));
 }
 
 const EN = CATALOG_EN as unknown as Record<string, string>;
@@ -82,36 +74,29 @@ afterEach(() => {
 });
 
 describe('MENU_ENTRIES', () => {
-  it('CTL5-1-ENTRIES: the root is Monsters, Bag, Journal, Social, Profile, Options, Close; Options holds one sub-list level (Social and Profile are leaves); every title and description is the English catalog text', () => {
-    // WRONG IMPL KILLED: the old five-category tree; a root in a different order (design §5);
-    // a leaf that carries children, or a third level (depth is structural: sub-lists are leaves
-    // only); a group with the wrong members; a title/description swap or a row wired to another
-    // row's catalog id (the literals below are per row, so a mis-map reds); and any entry that
-    // is missing a title or a description.
+  it('UIF15C.1 CTL5-1-ENTRIES: the root is Monsters, Bag, Journal, Social, Profile, How to Play, Controls, Close with no group and no children; every title and description is the English catalog text', () => {
+    // WRONG IMPL KILLED: the seven-row root with an Options group; a root in a different order
+    // (How to Play after Controls, Close not last); a row that carries children, or a kind:'group'
+    // entry kept "for later"; a title/description swap or a row wired to another row's catalog id
+    // (the literals below are per row, so a mis-map reds); and any entry that is missing a title
+    // or a description.
     expect(
       ROOT.map((r) => r.key),
-      'the root list, in design §5 order',
+      'the root list, in order',
     ).toEqual(ROOT_KEYS);
     expect(new Set(ROOT.map((r) => r.key)).size, 'root keys are unique').toBe(ROOT_KEYS.length);
+    expect(ROOT.length, 'ANTI-VACUITY: eight root rows').toBe(8);
 
     for (const row of ROOT) {
-      const kids = row.children ?? [];
-      const expected = GROUP_CHILD_KEYS[row.key] ?? [];
-      expect(
-        kids.map((c) => c.key),
-        `children of ${row.key}`,
-      ).toEqual(expected);
-      for (const kid of kids) {
-        expect(
-          (kid.children ?? []).length,
-          `${row.key}/${kid.key} is a leaf (two levels only)`,
-        ).toBe(0);
-      }
+      expect(row.children, `${row.key} has no children`).toBeUndefined();
+      expect((row as unknown as { kind?: string }).kind, `${row.key} is not a group`).not.toBe(
+        'group',
+      );
     }
-    // uif-16b (named intentional change): Profile is a leaf. Was: ['profile', 'options'].
-    expect(ROOT.filter((r) => (r.children ?? []).length > 0).map((r) => r.key)).toEqual([
-      'options',
-    ]);
+    expect(
+      ROOT.filter((r) => (r as unknown as { kind?: string }).kind === 'group'),
+      'no group remains',
+    ).toEqual([]);
 
     const TITLES: Readonly<Record<string, string>> = {
       monsters: 'Monsters',
@@ -119,10 +104,9 @@ describe('MENU_ENTRIES', () => {
       journal: 'Journal',
       social: 'Social',
       profile: 'Profile',
-      options: 'Options',
+      help: 'How to Play',
+      controls: 'Controls',
       close: 'Close',
-      'options/help': 'How to play',
-      'options/controls': 'Controls',
     };
     const DESCRIPTIONS: Readonly<Record<string, string>> = {
       monsters: 'See your party and stored monsters.',
@@ -130,37 +114,69 @@ describe('MENU_ENTRIES', () => {
       journal: 'Review your quests and their progress.',
       social: 'Trades, challenges and rankings with other players.',
       profile: 'Your name, account and privacy settings.',
-      options: 'Help on how to play the game.',
+      help: 'Controls and goals of the game.',
+      controls: 'Choose which key presses each button.',
       close: 'Close the menu and return to the world.',
-      'options/help': 'Controls and goals of the game.',
-      'options/controls': 'Choose which key presses each button.',
     };
     const rows = flatRows();
-    // ctl-12b (named intentional change): + the Controls leaf. Was: 7 + 7 = 14.
-    // uif-15b (named intentional change, UIF15B.1): the Social sub-list's three rows are gone.
-    // Was: 7 + 8 = 15.
-    // uif-16b (named intentional change, UIF16B.1): 12 -> 9: the Profile sub-list's three rows
-    // (Name, Account, Privacy) are gone. Was: 7 + 5 = 12.
-    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 2 sub-list rows').toBe(9);
-    for (const { path, row } of rows) {
-      expect(row.title(), `${path} title`).toBe(TITLES[path]);
-      expect(row.description(), `${path} description`).toBe(DESCRIPTIONS[path]);
+    expect(rows.length, 'ANTI-VACUITY: 8 root rows, no sub-list rows').toBe(8);
+    for (const { path: p, row } of rows) {
+      expect(row.title(), `${p} title`).toBe(TITLES[p]);
+      expect(row.description(), `${p} description`).toBe(DESCRIPTIONS[p]);
     }
   });
 
-  it('UIF15A.1 the root entries read Monsters, Inventory, Journal, Social, Profile, Options, Close in en and Monstres, Inventaire, Journal, Social, Profil, Options, Fermer in fr, in that order, and the keys are unchanged', () => {
+  it('UIF15C.1 menuModel exports no group machinery: no menuGroup function, no kind:"group" entry, and the source (comments stripped) names no group, MenuGroup or options', () => {
+    // WRONG IMPL KILLED: a deleted-in-name-only group (menuGroup still exported and returning
+    // undefined; the MenuGroup / MenuGroupKey types kept "for later"); the retired menu.options.*
+    // catalog ids still read by a thunk; a dead 'options' key left in the table.
+    expect('menuGroup' in menuModel, 'menuGroup is not exported').toBe(false);
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'menuModel.ts'),
+      'utf8',
+    );
+    const code = stripComments(src);
+    expect(code.length, 'ANTI-VACUITY: the stripped source is real').toBeGreaterThan(500);
+    expect(code).toContain('MENU_ENTRIES');
+    expect(code).not.toMatch(/group/i);
+    expect(code).not.toContain('MenuGroup');
+    expect(code).not.toMatch(/options/i);
+  });
+
+  it('UIF15A.1 the root entries read Monsters, Inventory, Journal, Social, Profile, How to Play, Controls, Close in en and Monstres, Inventaire, Journal, Social, Profil, Comment jouer, Commandes, Fermer in fr, in that order, and the keys are unchanged', () => {
+    // uif-15c (named intentional change, UIF15C.1): Options is replaced by How to Play + Controls
+    // (fr: Comment jouer + Commandes). Was: [..., 'Profile', 'Options', 'Close'] / [..., 'Profil',
+    // 'Options', 'Fermer'].
     // WRONG IMPL KILLED: a root still labelled Bag / Sac; a relabel that renames the nav key
     // (`bag` stays); a locale frozen at import; a French list that kept an English word.
     setLocale('en');
     expect(
       ROOT.map((r) => r.title()),
       'en root titles',
-    ).toEqual(['Monsters', 'Inventory', 'Journal', 'Social', 'Profile', 'Options', 'Close']);
+    ).toEqual([
+      'Monsters',
+      'Inventory',
+      'Journal',
+      'Social',
+      'Profile',
+      'How to Play',
+      'Controls',
+      'Close',
+    ]);
     setLocale('fr');
     expect(
       ROOT.map((r) => r.title()),
       'fr root titles',
-    ).toEqual(['Monstres', 'Inventaire', 'Journal', 'Social', 'Profil', 'Options', 'Fermer']);
+    ).toEqual([
+      'Monstres',
+      'Inventaire',
+      'Journal',
+      'Social',
+      'Profil',
+      'Comment jouer',
+      'Commandes',
+      'Fermer',
+    ]);
     expect(
       ROOT.map((r) => r.key),
       'keys keep their ids',
@@ -168,6 +184,8 @@ describe('MENU_ENTRIES', () => {
   });
 
   it('CTL5-1-CATALOG-EN-FR: every title and description resolves through the catalog id for its own row in en and in fr, at call time', () => {
+    // uif-15c (named intentional change, UIF15C.1): the help / controls rows resolve through
+    // menu.help.* / menu.controls.* (EXPECTED_IDS is built from the row keys). Was: menu.options.*.
     // WRONG IMPL KILLED: a table that resolves `t()` once at import (every row frozen in en, so
     // `fr` renders English, today's defect); a title thunk wired to another row's id; a row whose
     // description is missing in one locale; and titles that never change between locales.
@@ -177,8 +195,8 @@ describe('MENU_ENTRIES', () => {
 
     const read = (): string[] => rows.flatMap(({ row }) => [row.title(), row.description()]);
     const expectedFor = (catalog: Record<string, string>): string[] =>
-      rows.flatMap(({ path }) => {
-        const titleId = idsByPath.get(path) as string;
+      rows.flatMap(({ path: p }) => {
+        const titleId = idsByPath.get(p) as string;
         return [catalog[titleId] as string, catalog[descId(titleId)] as string];
       });
 
@@ -191,50 +209,39 @@ describe('MENU_ENTRIES', () => {
     expect(fr, 'fr: each row reads its own catalog ids').toEqual(expectedFor(FR));
     // The French titles really are French (not the English bytes) for the rows whose catalog
     // values differ, and the table is not frozen to the first locale it was read in.
-    const frTitle = (path: string): string =>
-      (rows.find((r) => r.path === path) as { row: Row }).row.title();
+    const frTitle = (p: string): string =>
+      (rows.find((r) => r.path === p) as { row: Row }).row.title();
     expect(frTitle('monsters')).toBe('Monstres');
     expect(frTitle('bag')).toBe('Inventaire');
     expect(frTitle('close')).toBe('Fermer');
-    expect(frTitle('options/controls'), 'ctl-12b: the Controls leaf in French').toBe('Commandes');
+    // uif-15c (named intentional change): the key is 'controls' now. Was: 'options/controls'.
+    expect(frTitle('controls'), 'ctl-12b: the Controls row in French').toBe('Commandes');
+    expect(frTitle('help'), 'uif-15c: the How to Play row in French').toBe('Comment jouer');
     expect(fr, 'fr differs from en').not.toEqual(en);
 
     setLocale('en');
     expect(read(), 'back to en: nothing was memoized in fr').toEqual(en);
   });
 
-  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade wizard, every leaf opens exactly one of the eleven viewers, and the Challenges leaf describes answering only (it no longer says "Challenge a player")', () => {
+  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade wizard, every leaf opens exactly one of the seven viewers, and the Social row describes answering only (it no longer says "Challenge a player")', () => {
     // WRONG IMPL KILLED: a menu leaf (Social, Trades, Challenges or any other) whose target is
     // tradeProposeView (a menu way to start a trade, r2-025); a leaf that opens some other
-    // initiating surface (the target set is closed, so a new one reds); a Challenges description
-    // that still advertises starting a challenge; and a walk that only reads the root (the
-    // leaves live inside the groups: ANTI-VACUITY below counts them).
+    // initiating surface (the target set is closed, so a new one reds); a Social description
+    // that still advertises starting a challenge; and a walk that misses the help / controls
+    // leaves (ANTI-VACUITY below counts them).
     const leaves: Array<{ readonly path: string; readonly target: unknown }> = [];
-    for (const group of ROOT) {
-      for (const leaf of group.children ?? []) {
-        leaves.push({
-          path: `${group.key}/${leaf.key}`,
-          target: (leaf as unknown as { target?: unknown }).target,
-        });
-      }
-    }
     for (const root of ROOT) {
       if ((root as unknown as { kind?: string }).kind === 'open') {
         leaves.push({ path: root.key, target: (root as unknown as { target?: unknown }).target });
       }
     }
-    // ctl-12b (named intentional change): + the Controls leaf, which opens controlsView. Was: 7 + 3
-    // = 10 leaves over ten viewers.
-    // uif-15b (named intentional change, UIF15B.1): the three Social sub-list leaves (tradeView,
-    // pvpView, leaderboardView) are gone and the root Social row is a fourth root leaf opening the
-    // `social` frame. Was: 8 sub-list leaves + 3 root leaves = 11 over eleven viewers.
-    // uif-16b (named intentional change, UIF16B.1): 9 -> 7: the three Profile sub-list leaves
-    // (renameView, claimView, privacyView) are gone and the root Profile row is a fifth root leaf
-    // opening the one `profileView` frame. Was: 5 sub-list leaves + 4 root leaves = 9.
-    expect(leaves.length, 'ANTI-VACUITY: 2 sub-list leaves + 5 root leaves').toBe(7);
-    for (const { path, target } of leaves) {
-      expect(target, `${path} opens something`).toBeTypeOf('string');
-      expect(target, `${path} must not open the trade wizard`).not.toBe('tradeProposeView');
+    // uif-15c (named intentional change, UIF15C.1): the two Options sub-list leaves (helpView,
+    // controlsView) are root leaves now. Was: 2 sub-list leaves + 5 root leaves = 7. Still 7.
+    // uif-16b (named intentional change, UIF16B.1): 9 -> 7. uif-15b: 11 -> 9.
+    expect(leaves.length, 'ANTI-VACUITY: 7 root leaves').toBe(7);
+    for (const { path: p, target } of leaves) {
+      expect(target, `${p} opens something`).toBeTypeOf('string');
+      expect(target, `${p} must not open the trade wizard`).not.toBe('tradeProposeView');
     }
     expect(
       leaves.map((l) => l.target).sort(),
@@ -287,21 +294,20 @@ describe('MENU_ENTRIES', () => {
     expect(social.kind, 'an open leaf, not a group').toBe('open');
     expect(social.target, 'it opens the Social frame').toBe('social');
     expect(social.children, 'a leaf has no children').toBeUndefined();
-    // uif-16b (named intentional change): Profile is a leaf too. Was: ['profile', 'options'].
+    // uif-15c (named intentional change, UIF15C.1): no group remains at all. Was: ['options'].
     expect(
-      MENU_ENTRIES.filter((e) => e.kind === 'group').map((e) => e.key),
-      'only Options remains a group',
-    ).toEqual(['options']);
-    const allKeys = MENU_ENTRIES.flatMap((e) => [
-      e.key,
-      ...((e as Row).children ?? []).map((c) => c.key),
-    ]);
+      MENU_ENTRIES.filter((e) => (e as unknown as { kind?: string }).kind === 'group').map(
+        (e) => e.key,
+      ),
+      'no group remains',
+    ).toEqual([]);
+    const allKeys = MENU_ENTRIES.map((e) => e.key);
     for (const retired of ['trades', 'challenges', 'rankings']) {
       expect(allKeys, `${retired} is not a menu row any more`).not.toContain(retired);
     }
   });
 
-  it('UIF16B.1 the root Profile row is an open leaf for the one profileView frame with no children; Options is the only group; the Name, Account and Privacy sub-list rows are not in the table', () => {
+  it('UIF16B.1 the root Profile row is an open leaf for the one profileView frame with no children; the Name, Account and Privacy sub-list rows are not in the table', () => {
     // WRONG IMPL KILLED: Profile still a group (A would enter the Name / Account / Privacy
     // sub-list, the path UIF16B.1 retires); a leaf that opens one section's old overlay (renameView,
     // claimView) instead of the combined frame; a leaf that keeps a vestigial children array; a
@@ -316,14 +322,12 @@ describe('MENU_ENTRIES', () => {
     expect(profile.kind, 'an open leaf, not a group').toBe('open');
     expect(profile.target, 'it opens the one Profile frame').toBe('profileView');
     expect(profile.children, 'a leaf has no children').toBeUndefined();
+    // uif-15c (named intentional change, UIF15C.1): help and controls join the root open leaves.
+    // Was: ['monsters', 'bag', 'journal', 'social', 'profile'].
     expect(
       MENU_ENTRIES.filter((e) => e.kind === 'open').map((e) => e.key),
-      'the root open leaves, in order: Profile joins them',
-    ).toEqual(['monsters', 'bag', 'journal', 'social', 'profile']);
-    expect(
-      MENU_ENTRIES.filter((e) => e.kind === 'group').map((e) => e.key),
-      'Options is the only group',
-    ).toEqual(['options']);
+      'the root open leaves, in order',
+    ).toEqual(['monsters', 'bag', 'journal', 'social', 'profile', 'help', 'controls']);
     const row = MENU_ENTRIES.find((e) => e.key === 'profile') as Row;
     setLocale('en');
     expect(row.title()).toBe(EN['menu.profile.title']);
@@ -332,40 +336,56 @@ describe('MENU_ENTRIES', () => {
     expect(row.title()).toBe(FR['menu.profile.title']);
     expect(row.description()).toBe(FR['menu.profile.desc']);
     setLocale('en');
-    const allKeys = MENU_ENTRIES.flatMap((e) => [
-      e.key,
-      ...((e as Row).children ?? []).map((c) => c.key),
-    ]);
+    const allKeys = MENU_ENTRIES.map((e) => e.key);
     for (const retired of ['name', 'account', 'privacy']) {
       expect(allKeys, `${retired} is not a menu row any more`).not.toContain(retired);
     }
   });
 
-  it('ctl-12b: the Options group holds How to play then Controls, and the Controls leaf opens the controlsView frame', () => {
-    // LEGACY BEHAVIOUR REPLACED: Options held How to play alone; no menu path reached a Controls
-    // screen.
-    // WRONG IMPL KILLED: a Controls leaf missing (no way to the remap screen by the menu), placed
-    // FIRST (two e2e specs press A on Options and expect How to play under the cursor), placed in
-    // another group, or opening another overlay (help); and a leaf that is itself a group.
-    const options = ROOT.find((r) => r.key === 'options');
-    expect(options, 'the Options group').toBeDefined();
-    const kids = (options?.children ?? []) as ReadonlyArray<
-      Row & { kind?: string; target?: string }
-    >;
-    expect(
-      kids.map((k) => k.key),
-      'How to play first, Controls second',
-    ).toEqual(['help', 'controls']);
-    const controls = kids[1];
-    expect(controls?.kind, 'an open leaf').toBe('open');
-    expect(controls?.target, 'it opens the Controls frame').toBe('controlsView');
-    expect(kids[0]?.target, 'How to play still opens help').toBe('helpView');
-    for (const group of ROOT.filter((r) => r.key !== 'options')) {
-      expect(
-        (group.children ?? []).map((k) => k.key),
-        `${group.key} holds no Controls leaf`,
-      ).not.toContain('controls');
-    }
+  it('UIF15C.1 help is a root open leaf for helpView and controls a root open leaf for controlsView, How to Play first; neither is a group or nested, and they resolve through menu.help.* / menu.controls.* in en and fr', () => {
+    // LEGACY BEHAVIOUR REPLACED: ctl-12b's "the Options group holds How to play then Controls"; A on
+    // Options entered a sub-list and two presses reached either screen.
+    // WRONG IMPL KILLED: help / controls still reachable only inside a group (an Options entry kept);
+    // Controls placed before How to Play; a leaf opening the other's frame (help <-> controls
+    // swapped); a leaf that is itself a group or carries children; a thunk still reading the
+    // retired menu.options.help.* / menu.options.controls.* ids (the resolved text would match but
+    // the id would not: the fr / en comparison below is against the NEW ids).
+    const help = MENU_ENTRIES.find((e) => e.key === 'help') as unknown as {
+      kind?: string;
+      target?: string;
+      children?: unknown;
+    } & Row;
+    const controls = MENU_ENTRIES.find((e) => e.key === 'controls') as unknown as {
+      kind?: string;
+      target?: string;
+      children?: unknown;
+    } & Row;
+    expect(help, 'a root help row').toBeDefined();
+    expect(controls, 'a root controls row').toBeDefined();
+    expect(help.kind).toBe('open');
+    expect(help.target).toBe('helpView');
+    expect(help.children).toBeUndefined();
+    expect(controls.kind).toBe('open');
+    expect(controls.target).toBe('controlsView');
+    expect(controls.children).toBeUndefined();
+    const keys = MENU_ENTRIES.map((e) => e.key);
+    expect(keys.indexOf('help'), 'How to Play first').toBe(keys.indexOf('controls') - 1);
+    expect(keys.indexOf('controls'), 'Controls just before Close').toBe(keys.length - 2);
+    expect(keys, 'no options entry').not.toContain('options');
+
+    setLocale('en');
+    expect(help.title()).toBe(EN['menu.help.title']);
+    expect(help.description()).toBe(EN['menu.help.desc']);
+    expect(controls.title()).toBe(EN['menu.controls.title']);
+    expect(controls.description()).toBe(EN['menu.controls.desc']);
+    expect(help.title(), 'fixture: the id exists').toBe('How to Play');
+    setLocale('fr');
+    expect(help.title()).toBe(FR['menu.help.title']);
+    expect(help.description()).toBe(FR['menu.help.desc']);
+    expect(controls.title()).toBe(FR['menu.controls.title']);
+    expect(controls.description()).toBe(FR['menu.controls.desc']);
+    expect(help.title(), 'fixture: the id exists').toBe('Comment jouer');
+    setLocale('en');
   });
 });
 
@@ -378,7 +398,7 @@ describe('withRequestBadge (ctl-13, CTL13.2)', () => {
     // mutates the labels it was given (the menu's own table would keep the badge after the request
     // is gone); a badge painted when nothing waits; a fresh object when nothing changes (the
     // menu's re-render memo would see a change every frame); a throw when the labels have no
-    // Social entry (a Profile or Options sub-list level); and a locale frozen at import.
+    // Social entry; and a locale frozen at import.
     const labels = {
       monsters: 'Monsters',
       social: 'Social',
