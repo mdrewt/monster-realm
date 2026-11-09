@@ -27,8 +27,8 @@ the playtest database. Resets, environment overrides and troubleshooting are in
 ## 2. Controls
 
 The game is played with a small set of console-style buttons. Each button is pressed by
-one or two keys, and you can change the keys in Options › Controls. **In-game Help is
-the reference** (Select, or Options › How to play): it is generated from the live keys,
+one or two keys, and you can change the keys in the main menu's Controls. **In-game Help is
+the reference** (Select, or the main menu's How to Play): it is generated from the live keys,
 and its tabs show this screen's buttons, every button and shortcut, and some goals.
 
 The default keys:

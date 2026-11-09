@@ -135,7 +135,9 @@ export const ACCEL_PATHS: Readonly<Record<MenuAccel, AccelPath>> = {
   L: { menu: ['social'], frame: 'social', tab: 'rankings' },
   N: { menu: ['profile'], frame: 'profileView', tab: 'name' },
   C: { menu: ['profile'], frame: 'profileView', tab: 'account' },
-  Y: { menu: ['options', 'controls'], frame: 'controlsView' },
+  // uif-15c (UIF15C.2): Controls is a root entry now that the Options sub-list is gone. Was
+  // ['options', 'controls'].
+  Y: { menu: ['controls'], frame: 'controlsView' },
 };
 
 export type AccelDecision =

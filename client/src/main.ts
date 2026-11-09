@@ -404,7 +404,7 @@ let telemetry: ClientTelemetry = NOOP_TELEMETRY;
 let frameWindow = createFrameWindow(performance.now());
 
 // The ONE binding table every input path and keycap reads: the player's saved table, else the
-// defaults (CTL12.4). Read at boot; Options › Controls replaces it live (`applyBindings`).
+// defaults (CTL12.4). Read at boot; Controls replaces it live (`applyBindings`).
 let bindings = loadBindings(browserStorage());
 // The player's text size (uif-13, UIF13.4): read and written on the root here, at import, so the
 // stored step is in place before the first frame; Controls › Display changes it live.
@@ -554,7 +554,7 @@ let menuView: MenuView | undefined;
 // at module scope.
 let claimView: ClaimView | undefined;
 let privacyView: PrivacyView | undefined;
-// Options › Controls (ctl-12b): the remapping screen. Its `capturing` is what the keydown handler
+// Controls (ctl-12b): the remapping screen. Its `capturing` is what the keydown handler
 // reads to hand a key to the capture instead of the router.
 let controlsView: ControlsView | undefined;
 /** controlsView module's `savedLine`, bound with the view when it is built. */
@@ -1387,7 +1387,7 @@ function hintChips(
   );
 }
 
-/** Options › Controls: seated at the open, so its rows paint then and not at the first button. */
+/** Controls: seated at the open, so its rows paint then and not at the first button. */
 function openControls(): void {
   openSeated(
     'controlsView',
@@ -1645,11 +1645,10 @@ function openMenuTarget(target: MenuTarget, tab?: AccelPath['tab']): void {
   }
 }
 
-/** Apply one menu step: a level change resets auto-repeat, then the effect, then a repaint.
+/** Apply one menu step: the effect, then a repaint.
  *  `tab` is the tab an accelerator's path names (none from the menu: Monsters opens on Party,
  *  design §5, and Social on the tab its screen picks). */
 function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
-  if (step.state.level !== menuState.level) inputRouter.resetRepeat();
   // The feedback line is not a live region: a Y description or a disabled entry's reason is said
   // here, once per change of the line.
   const said = feedbackAnnouncement(menuState.feedback, step.state.feedback);
@@ -2941,7 +2940,7 @@ const applyBindings = (next: Bindings): boolean => {
   return saved;
 };
 
-// The slot of Options › Controls waiting for a key, while that frame is the top one; else null.
+// The slot of Controls waiting for a key, while that frame is the top one; else null.
 const controlsCapture = (): SlotTarget | null => {
   const top = contextStack[contextStack.length - 1];
   if (top.kind !== 'screen' || top.id !== 'controlsView') return null;
@@ -3098,7 +3097,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
     if (navHeldCodes.has(e.code)) e.preventDefault();
     return;
   }
-  // Options › Controls is waiting for a key (CTL12B.1): this press is the capture's, ahead of
+  // Controls is waiting for a key (CTL12B.1): this press is the capture's, ahead of
   // every path below, so Escape, Enter and Backspace can be bound like any key. The one exception
   // is the Cancel chip's own activation key (Enter or Space with the chip focused): it presses
   // the chip, so a capture can always be left from the keyboard.
@@ -4723,7 +4722,7 @@ async function main(): Promise<void> {
       account: claimView,
       privacy: privacyView,
     });
-    // Options › Controls: the view reads the live table, and its requests replace it at once.
+    // Controls: the view reads the live table, and its requests replace it at once.
     const controlsHandlers: ControlsViewHandlers = {
       bindings: () => bindings,
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),

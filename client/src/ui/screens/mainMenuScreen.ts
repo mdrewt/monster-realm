@@ -2,28 +2,22 @@
 // CTL5.1-CTL5.5). No DOM, SDK, module state or clock: main.ts feeds it the router's nav inputs and
 // applies the returned effect; `menuView.ts` paints `menuViewModel(state)`.
 //
-// A on a leaf opens that entry's overlay ABOVE the menu and leaves the state where it is, so when
-// the child closes by any path the menu is still there with the cursor on that entry. A on a group
-// enters its sub-list (a level inside the one menu frame); B backs out to the root on the group's
-// entry, and B at the root closes. Y shows the entry's description on the feedback line; a move
-// clears it. The cursor of every level is remembered in a session `NavMemory` on every step, so a
-// reopened menu lands on the last entry used.
+// The menu is one flat list (#586 D3, uif-15c: no sub-list is left). A on a leaf opens that entry's
+// overlay ABOVE the menu and leaves the state where it is, so when the child closes by any path the
+// menu is still there with the cursor on that entry. B closes. Y shows the entry's description on
+// the feedback line; a move clears it. The cursor is remembered in a session `NavMemory` on every
+// step, so a reopened menu lands on the last entry used, except that a menu left on Close reopens
+// on its first entry (UIF15C.3: on the 8-entry ring Close sits 4 moves from Social both ways, which
+// would break the 7-press bound).
 //
 // Opened over a battle the menu is read-only (CTL6C.3): an entry whose screen is not battleSafe or
-// would open hidden under the battle, and a group whose entries are all disabled, is disabled; A on
-// it opens nothing and shows its reason on the feedback line.
+// would open hidden under the battle is disabled; A on it opens nothing and shows its reason on the
+// feedback line.
 import { SCREEN_POLICY } from '../contextStack';
 import type { FeedbackState } from '../frame';
 import { feedbackStep, NO_FEEDBACK } from '../frame';
 import { t } from '../i18n/resolver';
-import {
-  MENU_ENTRIES,
-  type MenuEntry,
-  type MenuGroupKey,
-  type MenuTarget,
-  menuGroup,
-  menuTitle,
-} from '../menuModel';
+import { MENU_ENTRIES, type MenuEntry, type MenuTarget, menuTitle } from '../menuModel';
 import {
   list,
   type NavInput,
@@ -38,13 +32,10 @@ import {
 } from '../nav';
 import type { ScreenStep } from './types';
 
-export type MenuLevel = 'root' | MenuGroupKey;
-
 export interface MainMenuState {
-  readonly level: MenuLevel;
-  /** The cursor of the level on show. */
+  /** The cursor. */
   readonly nav: NavState;
-  /** Every level's cursor, keyed by its frame id; held by the session across opens. */
+  /** The cursor, keyed by the menu's frame id; held by the session across opens. */
   readonly memory: NavMemory;
   readonly feedback: FeedbackState;
   /** Opened over a battle: the entries that are not battleSafe are disabled. */
@@ -58,24 +49,13 @@ export type MenuEffect =
 
 export type MainMenuStep = ScreenStep<MainMenuState, MenuEffect>;
 
-/** Nav ids are `{frame}-root-{key}`, so each level gets its own frame id. */
-const FRAME_IDS: Readonly<Record<MenuLevel, string>> = {
-  root: 'menu',
-  options: 'menuOptions',
-};
+/** Nav ids are `{frame}-root-{key}`. */
+const FRAME_ID = 'menu';
 
 const NONE: MenuEffect = { kind: 'none' };
 
-const rowsAt = (level: MenuLevel): readonly MenuEntry[] =>
-  level === 'root' ? MENU_ENTRIES : (menuGroup(level)?.children ?? []);
-
-/** Each level's world list, built once from the static table. No entry is disabled there. */
-const LAYOUTS = Object.fromEntries(
-  (Object.keys(FRAME_IDS) as MenuLevel[]).map((level) => [
-    level,
-    list(rowsAt(level).map((row) => ({ key: row.key, enabled: true }))),
-  ]),
-) as Readonly<Record<MenuLevel, NavLayout>>;
+/** The world list, built once from the static table. No entry is disabled there. */
+const WORLD_LAYOUT: NavLayout = list(MENU_ENTRIES.map((row) => ({ key: row.key, enabled: true })));
 
 /** battleSafe screens whose shells are still in the page flow, below the fold and so under the
  *  battle overlay: their entries stay disabled over a battle for as long as the shells do not
@@ -83,8 +63,7 @@ const LAYOUTS = Object.fromEntries(
 const HIDDEN_UNDER_BATTLE: ReadonlySet<MenuTarget> = new Set(['questLogView']);
 
 /** Why `row` is disabled over a battle, or undefined when it is not. Inventory points at the
- *  battle's own Items command; Social (not battleSafe) reads the in-battle reason; a group is
- *  disabled only when every entry in it is. */
+ *  battle's own Items command; Social (not battleSafe) reads the in-battle reason. */
 function battleReason(row: MenuEntry): string | undefined {
   switch (row.kind) {
     case 'open':
@@ -94,21 +73,17 @@ function battleReason(row: MenuEntry): string | undefined {
       return row.target === 'raisingView'
         ? t('menu.disabled.battleBag')
         : t('menu.disabled.inBattle');
-    case 'group':
-      return row.children.every((child) => battleReason(child) !== undefined)
-        ? t('menu.disabled.inBattle')
-        : undefined;
     case 'close':
       return undefined;
   }
 }
 
-/** `level`'s list: the static one at the world; over a battle built per call, so the reasons are
- *  in the current locale. */
-function layoutAt(level: MenuLevel, battle: boolean): NavLayout {
-  if (!battle) return LAYOUTS[level];
+/** The list: the static one at the world; over a battle built per call, so the reasons are in the
+ *  current locale. */
+function layoutAt(battle: boolean): NavLayout {
+  if (!battle) return WORLD_LAYOUT;
   return list(
-    rowsAt(level).map((row) => {
+    MENU_ENTRIES.map((row) => {
       const reason = battleReason(row);
       return reason === undefined
         ? { key: row.key, enabled: true }
@@ -117,34 +92,26 @@ function layoutAt(level: MenuLevel, battle: boolean): NavLayout {
   );
 }
 
-/** A state on `level`, with that level's cursor remembered. */
+/** A state on `nav`, with the cursor remembered. */
 function at(
-  level: MenuLevel,
   nav: NavState,
   memory: NavMemory,
   feedback: FeedbackState,
   battle: boolean,
 ): MainMenuState {
-  return { level, nav, memory: rememberNav(memory, FRAME_IDS[level], nav), feedback, battle };
+  return { nav, memory: rememberNav(memory, FRAME_ID, nav), feedback, battle };
 }
 
-/** `level` with its remembered cursor (else its first entry) and a clear feedback line. */
-const enter = (level: MenuLevel, memory: NavMemory, battle: boolean): MainMenuState =>
-  at(
-    level,
-    navInit(layoutAt(level, battle), recallNav(memory, FRAME_IDS[level])),
-    memory,
-    NO_FEEDBACK,
-    battle,
-  );
-
-/** The menu as it opens: the root, on the last entry used this session; read-only over a battle. */
+/** The menu as it opens, read-only over a battle: on the last entry used this session, or on its
+ *  first entry when that was Close (UIF15C.3) or nothing was used yet. */
 export function openMainMenu(memory: NavMemory, battle = false): MainMenuState {
-  return enter('root', memory, battle);
+  const recalled = recallNav(memory, FRAME_ID);
+  const resume = recalled?.item === 'close' ? undefined : recalled;
+  return at(navInit(layoutAt(battle), resume), memory, NO_FEEDBACK, battle);
 }
 
 const rowAt = (state: MainMenuState): MenuEntry | undefined =>
-  rowsAt(state.level).find((row) => row.key === state.nav.item);
+  MENU_ENTRIES.find((row) => row.key === state.nav.item);
 
 /** A on the entry under the cursor. A disabled entry only shows its reason. */
 function activate(state: MainMenuState): MainMenuStep {
@@ -157,8 +124,6 @@ function activate(state: MainMenuState): MainMenuStep {
   switch (row?.kind) {
     case 'open':
       return { state, effect: { kind: 'open', target: row.target } };
-    case 'group':
-      return { state: enter(row.key, state.memory, state.battle), effect: NONE };
     case 'close':
       return { state, effect: { kind: 'close' } };
     case undefined:
@@ -172,21 +137,15 @@ export function mainMenuStep(state: MainMenuState, input: NavInput): MainMenuSte
     case 'Down':
     case 'Left':
     case 'Right': {
-      const { state: nav, outcome } = navStep(
-        layoutAt(state.level, state.battle),
-        state.nav,
-        input,
-      );
+      const { state: nav, outcome } = navStep(layoutAt(state.battle), state.nav, input);
       if (outcome.kind !== 'moved') return { state, effect: NONE };
       const feedback = feedbackStep(state.feedback, { kind: 'clear' });
-      return { state: at(state.level, nav, state.memory, feedback, state.battle), effect: NONE };
+      return { state: at(nav, state.memory, feedback, state.battle), effect: NONE };
     }
     case 'A':
       return input.repeat ? { state, effect: NONE } : activate(state);
     case 'B':
-      if (input.repeat) return { state, effect: NONE };
-      if (state.level === 'root') return { state, effect: { kind: 'close' } };
-      return { state: enter('root', state.memory, state.battle), effect: NONE };
+      return input.repeat ? { state, effect: NONE } : { state, effect: { kind: 'close' } };
     case 'Y': {
       const row = rowAt(state);
       if (input.repeat || row === undefined) return { state, effect: NONE };
@@ -198,13 +157,11 @@ export function mainMenuStep(state: MainMenuState, input: NavInput): MainMenuSte
   }
 }
 
-/** A pointer pick: the cursor moves to `key`, then A. A key not on this level does nothing. */
+/** A pointer pick: the cursor moves to `key`, then A. A key not in the menu does nothing. */
 export function mainMenuPick(state: MainMenuState, key: string): MainMenuStep {
-  if (!rowsAt(state.level).some((row) => row.key === key)) return { state, effect: NONE };
-  const nav = navFocus(layoutAt(state.level, state.battle), state.nav, { item: key });
-  return activate(
-    nav === state.nav ? state : at(state.level, nav, state.memory, NO_FEEDBACK, state.battle),
-  );
+  if (!MENU_ENTRIES.some((row) => row.key === key)) return { state, effect: NONE };
+  const nav = navFocus(layoutAt(state.battle), state.nav, { item: key });
+  return activate(nav === state.nav ? state : at(nav, state.memory, NO_FEEDBACK, state.battle));
 }
 
 export interface MenuViewModel {
@@ -218,15 +175,16 @@ export interface MenuViewModel {
   readonly feedback: FeedbackState;
 }
 
+const NO_CRUMBS: readonly string[] = [];
+
 export function menuViewModel(state: MainMenuState): MenuViewModel {
-  const group = state.level === 'root' ? undefined : menuGroup(state.level);
   return {
-    frameId: FRAME_IDS[state.level],
-    title: group === undefined ? menuTitle() : group.title(),
-    crumbs: group === undefined ? [] : [menuTitle()],
-    layout: layoutAt(state.level, state.battle),
+    frameId: FRAME_ID,
+    title: menuTitle(),
+    crumbs: NO_CRUMBS,
+    layout: layoutAt(state.battle),
     nav: state.nav,
-    labels: Object.fromEntries(rowsAt(state.level).map((row) => [row.key, row.title()])),
+    labels: Object.fromEntries(MENU_ENTRIES.map((row) => [row.key, row.title()])),
     feedback: state.feedback,
   };
 }

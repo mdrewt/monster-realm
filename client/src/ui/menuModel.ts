@@ -7,9 +7,10 @@
 // whichever locale is active when it is read, and catalogParity's DYNAMIC-KEY / DEAD-KEY checks see
 // each id at its call site.
 //
-// Each leaf opens one frame; a group is a one-level sub-list inside the menu frame. Social is a
-// leaf (uif-15b, #586 D3): it opens the 4-tab Social frame directly, on the tab the screen picks.
-// Profile is a leaf too (uif-16b): it opens the one Profile screen, on its Name section.
+// The menu is one flat list (#586 D3): each leaf opens one frame and Close closes the menu. Social
+// opens the 4-tab Social frame directly, on the tab the screen picks (uif-15b); Profile opens the one
+// Profile screen, on its Name section (uif-16b); How to Play and Controls sit at the root where the
+// Options sub-list was (uif-15c).
 // No leaf starts a trade or a challenge: both start face to face (A on the player you face,
 // ctl-10b); Social only answers them.
 import type { FrameId } from './contextStack';
@@ -27,8 +28,6 @@ export type MenuTarget = Extract<
   | 'controlsView'
 >;
 
-export type MenuGroupKey = 'options';
-
 interface MenuRowText {
   readonly key: string;
   readonly title: () => string;
@@ -39,17 +38,11 @@ export interface MenuLeaf extends MenuRowText {
   readonly kind: 'open';
   readonly target: MenuTarget;
 }
-/** A to enter a one-level sub-list. */
-export interface MenuGroup extends MenuRowText {
-  readonly kind: 'group';
-  readonly key: MenuGroupKey;
-  readonly children: readonly MenuLeaf[];
-}
 /** A to close the menu. */
 export interface MenuClose extends MenuRowText {
   readonly kind: 'close';
 }
-export type MenuEntry = MenuLeaf | MenuGroup | MenuClose;
+export type MenuEntry = MenuLeaf | MenuClose;
 
 /** The root list, in display order. */
 export const MENU_ENTRIES: readonly MenuEntry[] = [
@@ -89,26 +82,18 @@ export const MENU_ENTRIES: readonly MenuEntry[] = [
     target: 'profileView',
   },
   {
-    kind: 'group',
-    key: 'options',
-    title: () => t('menu.options.title'),
-    description: () => t('menu.options.desc'),
-    children: [
-      {
-        kind: 'open',
-        key: 'help',
-        title: () => t('menu.options.help.title'),
-        description: () => t('menu.options.help.desc'),
-        target: 'helpView',
-      },
-      {
-        kind: 'open',
-        key: 'controls',
-        title: () => t('menu.options.controls.title'),
-        description: () => t('menu.options.controls.desc'),
-        target: 'controlsView',
-      },
-    ],
+    kind: 'open',
+    key: 'help',
+    title: () => t('menu.help.title'),
+    description: () => t('menu.help.desc'),
+    target: 'helpView',
+  },
+  {
+    kind: 'open',
+    key: 'controls',
+    title: () => t('menu.controls.title'),
+    description: () => t('menu.controls.desc'),
+    target: 'controlsView',
   },
   {
     kind: 'close',
@@ -118,13 +103,8 @@ export const MENU_ENTRIES: readonly MenuEntry[] = [
   },
 ];
 
-/** The menu's title (the root's frame title and every sub-list's breadcrumb). */
+/** The menu's title (its frame title). */
 export const menuTitle = (): string => t('menu.title');
-
-/** The group entry for `key`, or undefined. */
-export function menuGroup(key: MenuGroupKey): MenuGroup | undefined {
-  return MENU_ENTRIES.find((e): e is MenuGroup => e.kind === 'group' && e.key === key);
-}
 
 /** `labels` with the Social row badged while a trade or challenge request waits (ctl-13, CTL13.2):
  *  the badge is text, so a screen reader reads it. The SAME object when nothing changes. */
