@@ -35,7 +35,8 @@
  * Profile and Close disappears, so Rename reads 7); and a path in `ACCEL_PATHS` whose menu keys name
  * no leaf, or whose leaf opens another frame (the stack check). The exact counts below are the
  * design table's own (party 2, storage 3, bag 3, journal 4, rename 6, and, since uif-15b, the Social
- * tabs U 6, P 7, L 6: Social is a root leaf, Start, Down x3, A, then the tab presses).
+ * tabs U 6, P 7, L 6: Social is a root leaf, Start, Down x3, A, then the tab presses). uif-16b: Profile
+ * is a root leaf too (Start, Up x3, A) opened on its section, so rename (N) reads 5 and account (C) 5.
  *
  * Report a problem (F9's twin, design §5) is not a menu leaf: #586 D3's menu has no slot for it, so
  * the spec re-homes it on How to Play's Introduction tab (uif-14, UIF14.3, deferred). The Options
@@ -261,6 +262,11 @@ function pressesTo(accel: MenuAccel, reach: ReadonlyMap<string, Reach>): number 
   if (leaf === undefined) {
     throw new Error(`${accel}: the menu model has no leaf at ${path.menu.join(' > ')}`);
   }
+  // uif-16b (named intentional change): a Profile path's `tab` names a SECTION of the one Profile
+  // frame (`ProfileSection`: name, account, privacy), not a tab strip; the frame opens on that
+  // section (`openMenuTarget('profileView', tab)`), so there is no tab model to walk and it costs
+  // no press. Every other frame's tab is walked as before.
+  if (path.frame === 'profileView') return 1 + leaf.presses;
   return 1 + leaf.presses + (path.tab === undefined ? 0 : tabPresses(path.tab, path.frame));
 }
 
@@ -384,7 +390,7 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     }
   });
 
-  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, Social tabs U 6, P 7, L 6), and each path lands on its accelerator`s frame', () => {
+  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 5, account 5, Social tabs U 6, P 7, L 6), and each path lands on its accelerator`s frame', () => {
     // WRONG IMPL KILLED: a menu grown or re-ordered so a target passes 7 presses (an entry added
     // ahead of Social: Challenges reads 8), a menu that no longer wraps (the upward routes to Profile
     // and Close vanish: Rename reads 7), a Monsters entry that opens Storage first (storage reads 2,
@@ -400,8 +406,10 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     const reach = searchMenu(openMainMenu(EMPTY_NAV_MEMORY));
     const ids = [...reach.keys()];
     // uif-15b (named intentional change): 10 -> 9, the three Social sub-list leaves are one root leaf.
+    // uif-16b (named intentional change): 9 -> 7, the three Profile sub-list leaves are one root leaf
+    // (5 root leaves + 2 Options leaves).
     expect(ids.length, 'ANTI-VACUITY: the search found the menu`s leaves').toBeGreaterThanOrEqual(
-      9,
+      7,
     );
     expect(
       ids.some((id) => id.startsWith('options/')),
@@ -435,7 +443,23 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     expect(counts.B, 'open storage: Esc, Enter, E').toBe(3);
     expect(counts.I, 'open bag: Esc, S, Enter').toBe(3);
     expect(counts.J, 'check quests: Esc, S, S, Enter').toBe(4);
-    expect(counts.N, 'rename: Esc, W, W, W, Enter, Enter').toBe(6);
+    // uif-16b (named intentional change, UIF16B.5): N and C are the one Profile leaf (menu
+    // ['profile']), opened on their section. The walker's cheapest sequence to root/profile is
+    // Up x3 (wrapping Monsters -> Close -> Options -> Profile) then A = 4 menu presses, plus Start:
+    // N 6 -> 5 (was Esc, W, W, W, Enter, Enter: into the Profile sub-list, then Name), and
+    // C 7 -> 5 (was Esc, W, W, W, Enter, S, Enter: into the sub-list, Down to Account, Enter).
+    expect(reach.get('root/profile')?.presses, 'the Profile leaf: Up x3, A').toBe(4);
+    expect(reach.get('root/profile')?.path, 'the walker`s own sequence').toEqual([
+      'Up',
+      'Up',
+      'Up',
+      'A',
+    ]);
+    expect(counts.N, 'rename: Esc, W, W, W, Enter (Profile opens on Name)').toBe(5);
+    expect(counts.C, 'account: Esc, W, W, W, Enter (Profile opens on Account)').toBe(5);
+    for (const id of ['profile/name', 'profile/account', 'profile/privacy']) {
+      expect(reach.has(id), `${id}: the Profile sub-list leaf is gone`).toBe(false);
+    }
     // uif-15b (UIF15B.4, named design-table count changes): Social is a root leaf and its three
     // accelerators ride the Social tab presses from the fresh landing (Players): Start, Down x3, A
     // = 5, then RB (Trades) 1, RB RB (Challenges) 2, LB wrap (Rankings) 1. U 6 (new row), P 7

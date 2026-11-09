@@ -14,6 +14,9 @@
  * The results are interpreted through the REAL pure stack rules (`popTop`, `popToBase`), so each
  * case asserts what the stack becomes, not just which tag came back. Nothing here reads the DOM,
  * the SDK or a clock.
+ *
+ * uif-16b (named intentional change): the frame-id fixtures `claimView` and `renameView` (sections
+ * of the one Profile frame now, no longer frame ids) are `profileView`; every claim is unchanged.
  */
 import { describe, expect, it } from 'vitest';
 import { VBUTTONS, type VButton } from '../../input/buttons';
@@ -132,7 +135,7 @@ describe('legacyAdapter (ctl-6b)', () => {
         },
         {
           name: 'the menu with a child above it returns to the menu',
-          from: stackOf(WORLD, screen('menuView'), screen('claimView')),
+          from: stackOf(WORLD, screen('menuView'), screen('profileView')),
           to: stackOf(WORLD, screen('menuView')),
         },
         {
@@ -142,7 +145,7 @@ describe('legacyAdapter (ctl-6b)', () => {
         },
         {
           name: 'over a battle base the base survives',
-          from: stackOf(battle('7'), screen('menuView'), screen('claimView')),
+          from: stackOf(battle('7'), screen('menuView'), screen('profileView')),
           to: stackOf(battle('7'), screen('menuView')),
         },
       ];
@@ -176,7 +179,7 @@ describe('legacyAdapter (ctl-6b)', () => {
         },
         {
           name: 'a lone frame closes',
-          from: stackOf(WORLD, screen('claimView')),
+          from: stackOf(WORLD, screen('profileView')),
           to: WORLD_STACK,
         },
         {
@@ -186,13 +189,13 @@ describe('legacyAdapter (ctl-6b)', () => {
             screen('menuView'),
             screen('tradeView'),
             { kind: 'prompt', id: 'pvpView' },
-            { kind: 'textEntry', owner: 'renameView' },
+            { kind: 'textEntry', owner: 'profileView' },
           ),
           to: WORLD_STACK,
         },
         {
           name: 'over a battle base the base survives',
-          from: stackOf(battle('9'), screen('menuView'), screen('claimView')),
+          from: stackOf(battle('9'), screen('menuView'), screen('profileView')),
           to: stackOf(battle('9')),
         },
       ];

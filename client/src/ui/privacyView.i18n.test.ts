@@ -22,12 +22,24 @@
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/revisions
 // only.
+//
+// uif-16b (named key move): `#privacy-close-btn` RETIRES with the privacy overlay's own dialog, so
+// `privacy.close` is no longer this view's key: ProfileView paints it onto `#profile-close-btn`
+// on every show() (the last describe below). `privacy.title` stays this view's (the section
+// header). The per-id close `closeOverlayA11y('privacyView', …)` becomes the all-id sweep
+// (`privacyView` is no longer an OverlayId).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { t as i18nT } from './i18n/resolver';
+import { ClaimView } from './claimView';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { t as i18nT, setLocale } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
+import { OVERLAY_IDS } from './overlayRegistry';
 import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE, type PrivacyViewModel } from './privacyBanner';
 import { PrivacyView, type PrivacyViewHandlers } from './privacyView';
+import { ProfileView } from './profileView';
+import { RenameView } from './renameView';
 
 // MECHANISM oracle: records every t() call AND calls through to the real resolver, so PV-01's DOM
 // byte-identity assertions still work under the real (call-through) path.
@@ -77,7 +89,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  closeOverlayA11y('privacyView', null);
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
   await flushMacrotask();
   document.body.replaceChildren();
 });
@@ -161,38 +173,33 @@ function pvAssertNoRosterWord(texts: readonly string[], label: string): void {
 }
 
 describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and confirm-row through render()', () => {
-  it('m24s5 PV-01: privacy.title/privacy.close resolve ONLY in show(); privacy.confirm.delete/.keep resolve in render() unconditionally; render() alone is not a door; model strings and the disclosure stay raw; repeat calls re-request; no cross-alias to claim.privacyButton', () => {
+  it('m24s5 PV-01: privacy.title resolves ONLY in show() and privacy.close NOT AT ALL (uif-16b: the frame owns Close); privacy.confirm.delete/.keep resolve in render() unconditionally; render() alone is not a door; model strings and the disclosure stay raw; repeat calls re-request; no cross-alias to claim.privacyButton', () => {
+    // uif-16b (named key move): the close-anchor half of this test retires with
+    // #privacy-close-btn; `privacy.close` is asserted NEVER requested by this view (the frame's
+    // describe below owns it). Was: the anchor's pre-show invariants and its 'Close' label.
     const view = new PrivacyView(freshHandlers());
     const title = document.getElementById('privacy-title')!;
-    const closeBtn = document.getElementById('privacy-close-btn') as HTMLButtonElement;
+    expect(document.getElementById('privacy-close-btn'), 'the close anchor retired').toBeNull();
 
-    // Pre-show anchor invariants: the constructor still owns these (D4), unchanged by the migration.
+    // Pre-show: the constructor still owns the title's un-hide (D4), not its text.
     expect(title.textContent, 'the constructor must no longer write the title literal').toBe('');
-    expect(closeBtn.textContent, 'the constructor must no longer write the close literal').toBe('');
-    expect(
-      closeBtn.disabled,
-      'the anchor stays enabled pre-show (RB52V-ANCHOR-NEVER-DISABLED)',
-    ).toBe(false);
-    expect(closeBtn.style.display, 'the anchor stays un-hidden pre-show').toBe('');
     expect(title.style.display, 'the title stays un-hidden pre-show').toBe('');
     expect(i18nT).not.toHaveBeenCalledWith('privacy.title');
-    expect(i18nT).not.toHaveBeenCalledWith('privacy.close');
 
     view.show();
     expect(i18nT).toHaveBeenCalledWith('privacy.title');
-    expect(i18nT).toHaveBeenCalledWith('privacy.close');
+    expect(i18nT, 'the section no longer resolves the frame`s Close').not.toHaveBeenCalledWith(
+      'privacy.close',
+    );
     expect(title.textContent).toBe('Privacy & Account Data');
-    expect(closeBtn.textContent).toBe('Close');
 
-    // A FRESH view: render() ALONE is NOT a door for the title/close pair.
+    // A FRESH view: render() ALONE is NOT a door for the title.
     document.body.replaceChildren();
     vi.mocked(i18nT).mockClear();
     const freshView = new PrivacyView(freshHandlers());
     const freshTitle = document.getElementById('privacy-title')!;
-    const freshClose = document.getElementById('privacy-close-btn') as HTMLButtonElement;
     freshView.render(vmOf());
     expect(freshTitle.textContent, 'render() alone must not open the title door').toBe('');
-    expect(freshClose.textContent, 'render() alone must not open the close door').toBe('');
     expect(i18nT).not.toHaveBeenCalledWith('privacy.title');
     expect(i18nT).not.toHaveBeenCalledWith('privacy.close');
 
@@ -241,11 +248,11 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
     expect(confirmBtn.style.display).toBe('none');
     expect(confirmCancelBtn.style.display).toBe('none');
 
-    // Repeat show() on the FIRST view re-requests title+close (RT2).
+    // Repeat show() on the FIRST view re-requests the title (RT2), and still never Close.
     vi.mocked(i18nT).mockClear();
     view.show();
     expect(i18nT).toHaveBeenCalledWith('privacy.title');
-    expect(i18nT).toHaveBeenCalledWith('privacy.close');
+    expect(i18nT).not.toHaveBeenCalledWith('privacy.close');
 
     // D2 cross-alias tooth: the coincident English 'Privacy & Account Data' must never satisfy
     // claim.privacyButton from this file's call sites.
@@ -267,7 +274,8 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
       pvAssertNoRosterWord(texts, 'privacy overlay (armed)');
       let joined = texts.join('\n');
       expect(joined).toContain('«privacy.title»');
-      expect(joined).toContain('«privacy.close»');
+      // uif-16b (named key move): Close is the frame's now, not in this section.
+      expect(joined).not.toContain('«privacy.close»');
       expect(joined).toContain('«privacy.confirm.delete»');
       expect(joined).toContain('«privacy.confirm.keep»');
       expect(joined, 'PRIVACY_PSEUDONYMIZATION_DISCLOSURE stays raw').toContain(
@@ -288,5 +296,81 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('How to Play');
+  });
+});
+
+describe('uif-16b: ProfileView paints privacy.close on #profile-close-btn and menu.profile.title on #profile-title', () => {
+  const plain = (catalog: object, key: string): string => {
+    const entry = (catalog as Record<string, unknown>)[key];
+    if (typeof entry !== 'string') throw new Error(`${key} must be a plain message`);
+    return entry;
+  };
+
+  function buildFrame(): ProfileView {
+    document.body.innerHTML = `
+      <div id="game-screen"><div id="app"></div><div id="frame-layer">
+        <div id="rename-overlay" class="mr-button-rows" style="display:none">
+          <div id="rename-current"></div>
+          <input id="rename-input" type="text" maxlength="24" />
+          <button id="rename-submit" type="button"></button>
+        </div>
+      </div></div>`;
+    const rename = new RenameView({ onSubmit: async () => {} });
+    const claim = new ClaimView({
+      onSignIn: vi.fn(),
+      onJoin: vi.fn(),
+      onDeclineRequested: vi.fn(),
+      onDeclineConfirmed: vi.fn(),
+      onDeclineCancelled: vi.fn(),
+      onPrivacy: vi.fn(),
+      onDismissed: vi.fn(),
+    });
+    let frame: ProfileView | undefined;
+    const privacy = new PrivacyView({ ...freshHandlers(), fallbackRow: () => frame?.closeRow });
+    frame = new ProfileView({ name: rename, account: claim, privacy });
+    return frame;
+  }
+
+  it('UIF16B.2 the frame`s Close label and title are requested on every show() (a repeat included), never by the constructor, render as the «key» sentinel, and follow the fr locale', () => {
+    // WRONG IMPL KILLED: a Close label written once in the constructor (stale after a locale
+    // switch, empty if the locale is negotiated after boot); a write gated on the open edge (a
+    // repeat show() would not re-resolve); hard-coded English (the sentinel and fr checks never
+    // see a resolver result); a Close labelled with the claim door's coincident key.
+    const frame = buildFrame();
+    expect(i18nT, 'the constructor does not resolve Close').not.toHaveBeenCalledWith(
+      'privacy.close',
+    );
+    const close = document.getElementById('profile-close-btn') as HTMLButtonElement;
+    const title = document.getElementById('profile-title') as HTMLElement;
+    expect(close.textContent, 'empty until a show()').toBe('');
+
+    frame.show('account');
+    expect(i18nT).toHaveBeenCalledWith('privacy.close');
+    expect(i18nT).toHaveBeenCalledWith('menu.profile.title');
+    expect(close.textContent).toBe(plain(CATALOG_EN, 'privacy.close'));
+    expect(title.textContent).toBe(plain(CATALOG_EN, 'menu.profile.title'));
+
+    vi.mocked(i18nT).mockClear();
+    frame.show('account');
+    expect(i18nT, 'a repeat show() re-resolves Close').toHaveBeenCalledWith('privacy.close');
+    expect(i18nT, 'and the title').toHaveBeenCalledWith('menu.profile.title');
+
+    try {
+      setLocale('fr');
+      frame.show('account');
+      expect(close.textContent, 'fr Close').toBe(plain(CATALOG_FR, 'privacy.close'));
+      expect(title.textContent, 'fr title').toBe(plain(CATALOG_FR, 'menu.profile.title'));
+    } finally {
+      setLocale('en');
+    }
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      frame.show('account');
+      expect(close.textContent, 'exactly the sentinel').toBe('«privacy.close»');
+      expect(title.textContent, 'exactly the sentinel').toBe('«menu.profile.title»');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+    }
   });
 });

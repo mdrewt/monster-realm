@@ -45,8 +45,9 @@ const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options',
 // Options and expect the cursor on How to play. Was: options: ['help'].
 // uif-15b (UIF15B.1, named intentional change): Social is a root LEAF that opens the Social frame,
 // so it is no longer a group. Was: social: ['trades', 'challenges', 'rankings'].
+// uif-16b (UIF16B.1, named intentional change): Profile is a root LEAF that opens the one Profile
+// frame, so it is no longer a group. Was: profile: ['name', 'account', 'privacy'].
 const GROUP_CHILD_KEYS: Readonly<Record<string, readonly string[]>> = {
-  profile: ['name', 'account', 'privacy'],
   options: ['help', 'controls'],
 };
 
@@ -81,7 +82,7 @@ afterEach(() => {
 });
 
 describe('MENU_ENTRIES', () => {
-  it('CTL5-1-ENTRIES: the root is Monsters, Bag, Journal, Social, Profile, Options, Close; Profile and Options hold one sub-list level (Social is a leaf); every title and description is the English catalog text', () => {
+  it('CTL5-1-ENTRIES: the root is Monsters, Bag, Journal, Social, Profile, Options, Close; Options holds one sub-list level (Social and Profile are leaves); every title and description is the English catalog text', () => {
     // WRONG IMPL KILLED: the old five-category tree; a root in a different order (design §5);
     // a leaf that carries children, or a third level (depth is structural: sub-lists are leaves
     // only); a group with the wrong members; a title/description swap or a row wired to another
@@ -107,8 +108,8 @@ describe('MENU_ENTRIES', () => {
         ).toBe(0);
       }
     }
+    // uif-16b (named intentional change): Profile is a leaf. Was: ['profile', 'options'].
     expect(ROOT.filter((r) => (r.children ?? []).length > 0).map((r) => r.key)).toEqual([
-      'profile',
       'options',
     ]);
 
@@ -120,9 +121,6 @@ describe('MENU_ENTRIES', () => {
       profile: 'Profile',
       options: 'Options',
       close: 'Close',
-      'profile/name': 'Name',
-      'profile/account': 'Account',
-      'profile/privacy': 'Privacy',
       'options/help': 'How to play',
       'options/controls': 'Controls',
     };
@@ -134,9 +132,6 @@ describe('MENU_ENTRIES', () => {
       profile: 'Your name, account and privacy settings.',
       options: 'Help on how to play the game.',
       close: 'Close the menu and return to the world.',
-      'profile/name': 'Change the name other players see.',
-      'profile/account': 'Sign in or keep this guest progress.',
-      'profile/privacy': 'Export or delete your data.',
       'options/help': 'Controls and goals of the game.',
       'options/controls': 'Choose which key presses each button.',
     };
@@ -144,7 +139,9 @@ describe('MENU_ENTRIES', () => {
     // ctl-12b (named intentional change): + the Controls leaf. Was: 7 + 7 = 14.
     // uif-15b (named intentional change, UIF15B.1): the Social sub-list's three rows are gone.
     // Was: 7 + 8 = 15.
-    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 5 sub-list rows').toBe(12);
+    // uif-16b (named intentional change, UIF16B.1): 12 -> 9: the Profile sub-list's three rows
+    // (Name, Account, Privacy) are gone. Was: 7 + 5 = 12.
+    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 2 sub-list rows').toBe(9);
     for (const { path, row } of rows) {
       expect(row.title(), `${path} title`).toBe(TITLES[path]);
       expect(row.description(), `${path} description`).toBe(DESCRIPTIONS[path]);
@@ -231,7 +228,10 @@ describe('MENU_ENTRIES', () => {
     // uif-15b (named intentional change, UIF15B.1): the three Social sub-list leaves (tradeView,
     // pvpView, leaderboardView) are gone and the root Social row is a fourth root leaf opening the
     // `social` frame. Was: 8 sub-list leaves + 3 root leaves = 11 over eleven viewers.
-    expect(leaves.length, 'ANTI-VACUITY: 5 sub-list leaves + 4 root leaves').toBe(9);
+    // uif-16b (named intentional change, UIF16B.1): 9 -> 7: the three Profile sub-list leaves
+    // (renameView, claimView, privacyView) are gone and the root Profile row is a fifth root leaf
+    // opening the one `profileView` frame. Was: 5 sub-list leaves + 4 root leaves = 9.
+    expect(leaves.length, 'ANTI-VACUITY: 2 sub-list leaves + 5 root leaves').toBe(7);
     for (const { path, target } of leaves) {
       expect(target, `${path} opens something`).toBeTypeOf('string');
       expect(target, `${path} must not open the trade wizard`).not.toBe('tradeProposeView');
@@ -240,15 +240,14 @@ describe('MENU_ENTRIES', () => {
       leaves.map((l) => l.target).sort(),
       'the closed set of viewers a menu leaf opens',
     ).toEqual(
+      // uif-16b (named intentional change): claimView, privacyView, renameView -> profileView.
       [
         'boxView',
-        'claimView',
         'controlsView',
         'helpView',
-        'privacyView',
+        'profileView',
         'questLogView',
         'raisingView',
-        'renameView',
         'social',
       ].sort(),
     );
@@ -288,15 +287,56 @@ describe('MENU_ENTRIES', () => {
     expect(social.kind, 'an open leaf, not a group').toBe('open');
     expect(social.target, 'it opens the Social frame').toBe('social');
     expect(social.children, 'a leaf has no children').toBeUndefined();
+    // uif-16b (named intentional change): Profile is a leaf too. Was: ['profile', 'options'].
     expect(
       MENU_ENTRIES.filter((e) => e.kind === 'group').map((e) => e.key),
-      'only Profile and Options remain groups',
-    ).toEqual(['profile', 'options']);
+      'only Options remains a group',
+    ).toEqual(['options']);
     const allKeys = MENU_ENTRIES.flatMap((e) => [
       e.key,
       ...((e as Row).children ?? []).map((c) => c.key),
     ]);
     for (const retired of ['trades', 'challenges', 'rankings']) {
+      expect(allKeys, `${retired} is not a menu row any more`).not.toContain(retired);
+    }
+  });
+
+  it('UIF16B.1 the root Profile row is an open leaf for the one profileView frame with no children; Options is the only group; the Name, Account and Privacy sub-list rows are not in the table', () => {
+    // WRONG IMPL KILLED: Profile still a group (A would enter the Name / Account / Privacy
+    // sub-list, the path UIF16B.1 retires); a leaf that opens one section's old overlay (renameView,
+    // claimView) instead of the combined frame; a leaf that keeps a vestigial children array; a
+    // sub-list row kept somewhere in the table; and a title or description swapped with a
+    // neighbour's, in either locale.
+    const profile = MENU_ENTRIES.find((e) => e.key === 'profile') as unknown as {
+      kind?: string;
+      target?: string;
+      children?: unknown;
+    };
+    expect(profile, 'the Profile row').toBeDefined();
+    expect(profile.kind, 'an open leaf, not a group').toBe('open');
+    expect(profile.target, 'it opens the one Profile frame').toBe('profileView');
+    expect(profile.children, 'a leaf has no children').toBeUndefined();
+    expect(
+      MENU_ENTRIES.filter((e) => e.kind === 'open').map((e) => e.key),
+      'the root open leaves, in order: Profile joins them',
+    ).toEqual(['monsters', 'bag', 'journal', 'social', 'profile']);
+    expect(
+      MENU_ENTRIES.filter((e) => e.kind === 'group').map((e) => e.key),
+      'Options is the only group',
+    ).toEqual(['options']);
+    const row = MENU_ENTRIES.find((e) => e.key === 'profile') as Row;
+    setLocale('en');
+    expect(row.title()).toBe(EN['menu.profile.title']);
+    expect(row.description()).toBe(EN['menu.profile.desc']);
+    setLocale('fr');
+    expect(row.title()).toBe(FR['menu.profile.title']);
+    expect(row.description()).toBe(FR['menu.profile.desc']);
+    setLocale('en');
+    const allKeys = MENU_ENTRIES.flatMap((e) => [
+      e.key,
+      ...((e as Row).children ?? []).map((c) => c.key),
+    ]);
+    for (const retired of ['name', 'account', 'privacy']) {
       expect(allKeys, `${retired} is not a menu row any more`).not.toContain(retired);
     }
   });

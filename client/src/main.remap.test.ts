@@ -300,16 +300,18 @@ const navActive = (): string | null => game().navActive;
 const menuTitle = (): string =>
   document.querySelector('#menu-overlay .mr-frame-title')?.textContent ?? '';
 
-/** Open the main menu by Start (Escape) and walk the cursor onto Profile: A on it enters the Profile
+/** Open the main menu by Start (Escape) and walk the cursor onto Options: A on it enters the Options
  *  level, the one visible effect of "the menu entry under the cursor was picked".
  *  uif-15b (named intentional change, UIF15B.1): was `openMenuOnSocial`; Social is a root leaf that
  *  opens a frame (a push that would change focus and what K does next), so the pick that stays in
- *  the menu is a group, Profile. */
-function openMenuOnProfile(): void {
+ *  the menu is a group, Profile.
+ *  uif-16b (named intentional change, UIF16B.1): was `openMenuOnProfile`; Profile is a root leaf too
+ *  (it opens the one Profile frame), so the group whose pick stays in the menu is Options. */
+function openMenuOnOptions(): void {
   press('Escape');
   expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-  for (let i = 0; i < 8 && navActive() !== 'profile'; i += 1) press('ArrowDown');
-  expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
+  for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
+  expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
   expect(menuTitle(), 'precondition: the menu is on its root level').toBe(i18nT('menu.title'));
 }
 
@@ -364,14 +366,14 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     // unbound Enter that is still prevented as if the router had consumed it.
     await bootReady({ stored: storedTable((raw) => (raw.buttons.A = ['KeyK'])) });
     server(1000);
-    openMenuOnProfile();
+    openMenuOnOptions();
 
     const enter = press('Enter');
     expect(enter.defaultPrevented, 'an unbound Enter is not an A press').toBe(false);
     expect(menuTitle(), 'Enter picks nothing: the menu stays on its root level').toBe(
       i18nT('menu.title'),
     );
-    expect(navActive()).toBe('profile');
+    expect(navActive()).toBe('options');
     expect(stackNames()).toEqual(['world', 'menuView']);
     const numpadEnter = press('NumpadEnter');
     expect(numpadEnter.defaultPrevented, 'the old alias is gone with it').toBe(false);
@@ -379,8 +381,9 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
 
     const k = press('KeyK');
     expect(k.defaultPrevented, 'K is consumed as A').toBe(true);
-    expect(menuTitle(), 'K picked Profile: the menu is on the Profile level').toBe(
-      i18nT('menu.profile.title'),
+    // uif-16b (named intentional change): the group picked is Options (was Profile).
+    expect(menuTitle(), 'K picked Options: the menu is on the Options level').toBe(
+      i18nT('menu.options.title'),
     );
     expect(H.calls, 'picking a menu entry sends nothing').toEqual([]);
     expect(H.sends, 'and walks nothing').toHaveLength(0);
@@ -400,10 +403,11 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
       teardown();
       await bootReady(o);
       server(1000);
-      openMenuOnProfile();
+      openMenuOnOptions();
       const enter = press('Enter');
       expect(enter.defaultPrevented, `${label}: Enter is consumed as A`).toBe(true);
-      expect(menuTitle(), `${label}: Enter picked Profile`).toBe(i18nT('menu.profile.title'));
+      // uif-16b (named intentional change): the group picked is Options (was Profile).
+      expect(menuTitle(), `${label}: Enter picked Options`).toBe(i18nT('menu.options.title'));
       press('Escape'); // Start pops everything to the world
       expect(stackNames(), `${label}: Start closes the menu`).toEqual(['world']);
       const k = press('KeyK');
@@ -576,10 +580,12 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     const typed = recordDownloads();
     server(1000);
     press('KeyN');
+    // uif-16b (named intentional change): the Name field is in the one Profile frame. Was:
+    // renameView.
     expect(stackNames(), 'precondition: the Name screen is open').toEqual([
       'world',
       'menuView',
-      'renameView',
+      'profileView',
     ]);
     const input = byId('rename-input') as HTMLInputElement;
     input.focus();
@@ -637,10 +643,12 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     await bootReady({ stored });
     server(1000);
     press('KeyN');
+    // uif-16b (named intentional change): the Name field is in the one Profile frame. Was:
+    // renameView, here and in the last assertion.
     expect(stackNames(), 'precondition: the Name screen is open').toEqual([
       'world',
       'menuView',
-      'renameView',
+      'profileView',
     ]);
     const input = byId('rename-input') as HTMLInputElement;
     input.focus();
@@ -650,7 +658,7 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
 
     press('Escape', { key: 'Escape' }, input);
     expect(document.activeElement, 'typing stopped: focus left the field').not.toBe(input);
-    expect(stackNames().at(-1), 'the Name screen is still open').toBe('renameView');
+    expect(stackNames().at(-1), 'the Name screen is still open').toBe('profileView');
     expect(errorOverlayShown(), 'the error overlay was not dismissed by that Escape').toBe(true);
   });
 });

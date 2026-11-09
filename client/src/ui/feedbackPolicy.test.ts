@@ -9,6 +9,10 @@
  * Named discrepancy: the brief and plan say "63 kinds"; the table has 64 rows
  * (16 hint + 37 toast + 10 modal + 1 blocking). The table is the contract, so the roster below
  * is the table, and no test pins a bare count.
+ *
+ * uif-16b (named intentional change, WF1-A10): the `privacy-busy` toast retires (Profile is one
+ * dialog, so the privacy surface can never be "busy behind" the account one): 64 -> 63 rows
+ * (16 hint + 36 toast + 10 modal + 1 blocking), 23 -> 22 action-required rows.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -69,7 +73,7 @@ const EXPECTED_CHANNEL: Record<MessageKind, Channel> = {
   'pvp-rejected': 'toast',
   'link-down-send': 'toast',
   'link-down-view': 'toast',
-  'privacy-busy': 'toast',
+  // uif-16b (named intentional change, WF1-A10): 'privacy-busy': 'toast' retired.
   'zone-cue': 'toast',
   'dialogue-ended': 'toast',
   'quest-complete': 'toast',
@@ -94,7 +98,8 @@ const TABLE_KINDS = Object.keys(EXPECTED_CHANNEL) as MessageKind[];
 const kindsOf = (channel: Channel): MessageKind[] =>
   TABLE_KINDS.filter((k) => EXPECTED_CHANNEL[k] === channel);
 
-/** The table's "Player must act = yes" rows, literally (7 hint, 5 toast, 10 modal, 1 blocking). */
+/** The table's "Player must act = yes" rows, literally (7 hint, 4 toast, 10 modal, 1 blocking).
+ *  uif-16b (named intentional change, WF1-A10): 5 -> 4 toast, 'privacy-busy' retired. */
 const ACTION_REQUIRED: readonly MessageKind[] = [
   'capture-prompt',
   'controls-refused',
@@ -106,7 +111,6 @@ const ACTION_REQUIRED: readonly MessageKind[] = [
   'party-full',
   'link-down-send',
   'link-down-view',
-  'privacy-busy',
   'battle-command-rejected',
   'evolution-reveal',
   'evolve-confirm',
@@ -157,7 +161,7 @@ describe('feedbackPolicy (uif-4)', () => {
     expect(actual).toEqual(EXPECTED_CHANNEL);
   });
 
-  it('UIF4.1 the four channels hold 16 hint, 37 toast, 10 modal and 1 blocking kind', () => {
+  it('UIF4.1 the four channels hold 16 hint, 36 toast, 10 modal and 1 blocking kind', () => {
     // WRONG IMPL KILLED: a table typed to compile but with a channel emptied or bloated.
     expect(kindsOf('hint')).toHaveLength(16);
     expect(
@@ -166,7 +170,8 @@ describe('feedbackPolicy (uif-4)', () => {
         .map(([k]) => k)
         .sort(),
     ).toEqual(kindsOf('hint').sort());
-    expect(rows().filter(([, r]) => r.channel === 'toast')).toHaveLength(37);
+    // uif-16b (named intentional change, WF1-A10): 37 -> 36 toast kinds, 'privacy-busy' retired.
+    expect(rows().filter(([, r]) => r.channel === 'toast')).toHaveLength(36);
     expect(rows().filter(([, r]) => r.channel === 'modal')).toHaveLength(10);
     expect(rows().filter(([, r]) => r.channel === 'blocking')).toHaveLength(1);
   });
@@ -222,7 +227,8 @@ describe('feedbackPolicy (uif-4)', () => {
   it('UIF4.1 hintRank is -1 for every kind that is not a hint (never on a strip)', () => {
     // WRONG IMPL KILLED: a toast or modal kind given a hint rank (it could take the strip).
     const nonHint = TABLE_KINDS.filter((k) => EXPECTED_CHANNEL[k] !== 'hint');
-    expect(nonHint).toHaveLength(48);
+    // uif-16b (named intentional change, WF1-A10): 48 -> 47, 'privacy-busy' retired.
+    expect(nonHint).toHaveLength(47);
     for (const kind of nonHint) expect(hintRank(kind), kind).toBe(-1);
   });
 
@@ -261,13 +267,21 @@ describe('feedbackPolicy (uif-4)', () => {
       'link-down-send',
       'link-down-view',
       'party-full',
-      'privacy-busy',
+      // uif-16b (named intentional change, WF1-A10): 'privacy-busy' retired.
     ]);
     for (const kind of toastYes) {
       const carried = FEEDBACK_POLICY[kind].alsoCarriedBy;
       expect(typeof carried, kind).toBe('string');
       expect((carried ?? '').trim().length, kind).toBeGreaterThan(0);
     }
+  });
+
+  it('UIF16B.7 the privacy-busy kind is retired: no MESSAGE_KINDS entry, no policy row (WF1-A10)', () => {
+    // WRONG IMPL KILLED: the kind left in the roster after its only producer (openPrivacy's
+    // hide-claim verdict) is gone (a dead row the table no longer has), or left in the policy alone.
+    expect(MESSAGE_KINDS as readonly string[]).not.toContain('privacy-busy');
+    expect(Object.keys(FEEDBACK_POLICY)).not.toContain('privacy-busy');
+    expect(MESSAGE_KINDS, 'ANTI-VACUITY: 63 kinds remain (16 + 36 + 10 + 1)').toHaveLength(63);
   });
 
   it('UIF4.6 every row that does not need the player to act has alsoCarriedBy null', () => {

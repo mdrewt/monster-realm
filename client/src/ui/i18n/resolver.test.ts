@@ -94,7 +94,8 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'chrome.rename.submit': 'Rename',
       'chrome.tradePropose.submit': 'Offer',
       'chrome.status.exportBlocked': 'data export: download blocked by the browser',
-      'chrome.status.privacyOverlayBusy': 'privacy: close the other overlay first',
+      // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' retired
+      // with the `privacy-busy` kind (Profile is one dialog).
       'chrome.status.contentStale': 'content out of date — reload',
       'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
       'chrome.status.healUnavailable': 'heal: no heal location available',

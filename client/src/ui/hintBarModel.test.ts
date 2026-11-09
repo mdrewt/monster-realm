@@ -55,10 +55,12 @@ const OVER_BATTLE_SCREEN: Stack = [
   { kind: 'screen', id: 'menuView', overBattle: '9' },
 ];
 const PROMPT: Stack = [{ kind: 'world' }, { kind: 'prompt', id: 'helpView' }];
+// uif-16b (named intentional change): the typing fixture's owner was 'renameView', which is a
+// section of the one Profile frame now; the name field is typed inside 'profileView'.
 const TYPING: Stack = [
   { kind: 'world' },
-  { kind: 'screen', id: 'renameView' },
-  { kind: 'textEntry', owner: 'renameView' },
+  { kind: 'screen', id: 'profileView' },
+  { kind: 'textEntry', owner: 'profileView' },
 ];
 
 const NO_NOTICES: readonly Notice[] = [];

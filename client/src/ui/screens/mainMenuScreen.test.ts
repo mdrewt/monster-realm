@@ -7,8 +7,9 @@
 // place, B pops a group or closes at the root, Y describes, memory recalls the last entry).
 //
 // The contract the shell relies on:
-//   levels         'root' | 'profile' | 'options' (uif-15b: Social is a root leaf, no level); the
-//                  root cursor is on the group's entry after B from that group.
+//   levels         'root' | 'options' (uif-15b: Social is a root leaf, no level; uif-16b: Profile
+//                  is a root leaf too, no level); the root cursor is on the group's entry after B
+//                  from that group.
 //   effects        none | { open, target } | close. A on a leaf leaves the STATE where it is
 //                  (the menu stays open beneath the child).
 //   memory         updated on every step, immutable (a step never mutates the map it was given).
@@ -32,8 +33,10 @@ const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options',
 // specs outside this slice rely on: A on Options lands on How to play). Was: options: ['help'].
 // uif-15b (UIF15B.1, named intentional change): Social is a root leaf, not a group, so the
 // 'menuSocial' sub-list level is gone. Was: social: ['trades', 'challenges', 'rankings'].
+// uif-16b (UIF16B.1, named intentional change): Profile is a root leaf that opens the one Profile
+// frame, so the 'menuProfile' sub-list level is gone and Options is the only group (every sub-list
+// case below runs on it). Was: profile: ['name', 'account', 'privacy'].
 const GROUPS: Readonly<Record<string, readonly string[]>> = {
-  profile: ['name', 'account', 'privacy'],
   options: ['help', 'controls'],
 };
 
@@ -117,10 +120,9 @@ describe('mainMenu — open and wrap', () => {
       'monsters',
     ]);
 
-    // uif-15b: the sub-list that proves wrapping is Profile now (Social's three rows are gone).
-    const profile = intoGroup('profile');
-    expect(press(profile, 'Up').state.nav.item, 'a sub-list wraps upward').toBe('privacy');
-    expect(press(press(profile, 'Up').state, 'Down').state.nav.item).toBe('name');
+    // uif-15b: the sub-list that proved wrapping was Profile (Social's three rows are gone).
+    // uif-16b (named intentional change): Profile is a leaf, so Options (below) is the sub-list
+    // that proves wrapping, in both directions.
     // ctl-12b (named intentional change): Options is a two-entry list now (How to play, Controls),
     // so it wraps like the others instead of staying put. Was: "a one-entry list stays put" (Down
     // and Up both 'help').
@@ -154,14 +156,15 @@ describe('mainMenu — open and wrap', () => {
     // A repeat in the middle still moves one entry (clamping is only at the ends).
     expect(press(atFirst, 'Down', true).state.nav.item).toBe('bag');
 
-    // uif-15b: Profile is the three-row sub-list (was Social: trades .. rankings).
-    const profile = intoGroup('profile');
-    expect(press(profile, 'Up', true).state.nav.item, 'repeat Up at the first child').toBe('name');
-    const lastChild = toKey(profile, 'privacy');
+    // uif-15b: Profile was the three-row sub-list (was Social: trades .. rankings).
+    // uif-16b (named intentional change): Profile is a leaf; the sub-list is Options (help, controls).
+    const options = intoGroup('options');
+    expect(press(options, 'Up', true).state.nav.item, 'repeat Up at the first child').toBe('help');
+    const lastChild = toKey(options, 'controls');
     expect(press(lastChild, 'Down', true).state.nav.item, 'repeat Down at the last child').toBe(
-      'privacy',
+      'controls',
     );
-    expect(press(lastChild, 'Down', false).state.nav.item, 'contrast: fresh wraps').toBe('name');
+    expect(press(lastChild, 'Down', false).state.nav.item, 'contrast: fresh wraps').toBe('help');
 
     const onJournal = toKey(fresh(), 'journal');
     const repeatA = press(onJournal, 'A', true);
@@ -184,6 +187,8 @@ describe('mainMenu — A, B and the sub-lists', () => {
       ['journal', 'questLogView'],
       // uif-15b (UIF15B.1, named intentional change): Social is a root leaf for the Social frame.
       ['social', 'social'],
+      // uif-16b (UIF16B.1, named intentional change): Profile is a root leaf for the Profile frame.
+      ['profile', 'profileView'],
     ];
     const targets: MenuTarget[] = [];
     for (const [key, target] of rootLeaves) {
@@ -196,10 +201,9 @@ describe('mainMenu — A, B and the sub-lists', () => {
       targets.push(target);
     }
 
+    // uif-16b (named intentional change): the three Profile sub-list leaves (renameView,
+    // claimView, privacyView) are gone.
     const groupLeaves: ReadonlyArray<readonly [string, string, MenuTarget]> = [
-      ['profile', 'name', 'renameView'],
-      ['profile', 'account', 'claimView'],
-      ['profile', 'privacy', 'privacyView'],
       ['options', 'help', 'helpView'],
       // ctl-12b (named intentional change): the Controls leaf opens the Controls frame.
       ['options', 'controls', 'controlsView'],
@@ -214,13 +218,16 @@ describe('mainMenu — A, B and the sub-lists', () => {
     }
     // uif-15b: 4 root leaves + 5 sub-list leaves. Was: 3 + 8 = 11 (tradeView, pvpView and
     // leaderboardView left; the `social` frame joined).
-    expect(new Set(targets).size, 'nine distinct targets, one per leaf').toBe(9);
+    // uif-16b (named intentional change): 9 -> 7: 5 root leaves + 2 sub-list leaves (the three
+    // Profile sub-list targets left; profileView joined as a root leaf).
+    expect(new Set(targets).size, 'seven distinct targets, one per leaf').toBe(7);
+    expect(targets, 'ANTI-VACUITY: every leaf was pressed').toHaveLength(7);
 
     const close = press(toKey(fresh(), 'close'), 'A');
     expect(close.effect, 'A on Close closes the menu').toEqual(CLOSE);
   });
 
-  it('CTL5-2-GROUP-PUSH-B-RETURNS: A on Profile or Options enters its sub-list on the first child with a Menu breadcrumb; B returns to the root with the cursor on that group entry and the sub-list cursor is remembered', () => {
+  it('CTL5-2-GROUP-PUSH-B-RETURNS: A on Options (uif-16b: the only group) enters its sub-list on the first child with a Menu breadcrumb; B returns to the root with the cursor on that group entry and the sub-list cursor is remembered', () => {
     // WRONG IMPL KILLED: A on a group that emits `open` or `close`, a sub-list that starts on
     // the wrong child, a B that closes the menu from a sub-list (two presses to leave one),
     // a B that returns to the first root entry instead of the group, a sub-list cursor that is
@@ -256,7 +263,8 @@ describe('mainMenu — A, B and the sub-lists', () => {
       const step = press(toKey(fresh(), key), 'B');
       expect(step.effect, `B at root on ${key}`).toEqual(CLOSE);
     }
-    const inGroup = intoGroup('profile');
+    // uif-16b: the sub-list is Options (Profile is a leaf).
+    const inGroup = intoGroup('options');
     const popped = press(inGroup, 'B');
     expect(popped.effect).toEqual(NONE);
     expect(press(popped.state, 'B').effect, 'the second B, now at the root, closes').toEqual(CLOSE);
@@ -277,12 +285,13 @@ describe('mainMenu — A, B and the sub-lists', () => {
         }
       }
     }
-    const inside = toKey(intoGroup('profile'), 'account');
+    // uif-16b: the sub-list is Options (Profile is a leaf).
+    const inside = toKey(intoGroup('options'), 'controls');
     for (const button of ['Right', 'Left'] as const) {
       const step = press(inside, button);
       expect(step.effect).toEqual(NONE);
-      expect(step.state.level, 'a sub-list is not left by Left').toBe('profile');
-      expect(step.state.nav.item).toBe('account');
+      expect(step.state.level, 'a sub-list is not left by Left').toBe('options');
+      expect(step.state.nav.item).toBe('controls');
     }
   });
 });
@@ -310,12 +319,13 @@ describe('mainMenu — memory and Y', () => {
     expect(openMainMenu(moved.memory).nav.item, 'the most recent cursor wins').toBe('social');
 
     // Closed from inside a sub-list: reopening lands on the ROOT, on the group's entry.
-    const inProfile = toKey(intoGroup('profile'), 'privacy');
-    const reopenedFromGroup = openMainMenu(inProfile.memory);
+    // uif-16b: the sub-list is Options (Profile is a leaf).
+    const inOptions = toKey(intoGroup('options'), 'controls');
+    const reopenedFromGroup = openMainMenu(inOptions.memory);
     expect(reopenedFromGroup.level).toBe('root');
-    expect(reopenedFromGroup.nav.item).toBe('profile');
+    expect(reopenedFromGroup.nav.item).toBe('options');
     // ... and the sub-list remembers its own cursor for the next entry.
-    expect(press(reopenedFromGroup, 'A').state.nav.item).toBe('privacy');
+    expect(press(reopenedFromGroup, 'A').state.nav.item).toBe('controls');
 
     // The memory is keyed by the frame the view model names, not by an unrelated key.
     const vm = menuViewModel(onJournal);
@@ -359,13 +369,15 @@ describe('mainMenu — memory and Y', () => {
     expect(cleared.state.feedback, 'a move clears the feedback').toEqual({ kind: 'none' });
 
     // Sub-list children describe themselves.
-    // uif-15b: the sub-list child that describes itself is Profile > Privacy (was Social > Rankings).
-    const privacy = press(toKey(intoGroup('profile'), 'privacy'), 'Y');
-    expect(privacy.state.feedback).toEqual({
+    // uif-15b: the sub-list child that describes itself was Profile > Privacy (was Social > Rankings).
+    // uif-16b (named intentional change): Profile > Privacy is gone (its description retires with
+    // the sub-list); the child is Options > Controls.
+    const controls = press(toKey(intoGroup('options'), 'controls'), 'Y');
+    expect(controls.state.feedback).toEqual({
       kind: 'info',
-      text: 'Export or delete your data.',
+      text: 'Choose which key presses each button.',
     });
-    expect(privacy.state.level).toBe('profile');
+    expect(controls.state.level).toBe('options');
 
     // Resolved at press time: under fr the French description appears.
     setLocale('fr');
@@ -395,6 +407,25 @@ describe('mainMenu — pick, view model and inert buttons', () => {
     expect(openMainMenu(step.state.memory).nav.item, 'a reopen lands on Social').toBe('social');
   });
 
+  it('UIF16B.1 A on the root Profile row opens the one Profile frame and leaves the menu on the root with the cursor on Profile; no level or frame id for a Profile sub-list exists', () => {
+    // WRONG IMPL KILLED: Profile still a group (A enters a 'profile' level: effect none, level
+    // changes, the Name / Account / Privacy sub-list UIF16B.1 retires); an open aimed at one
+    // section's old overlay (renameView, claimView); an A that also moves the cursor or the level
+    // (B from Profile would not return to the same menu); a view model that ever names a
+    // 'menuProfile' frame; a root cursor memory that loses Profile.
+    const on = toKey(fresh(), 'profile');
+    const step = press(on, 'A');
+    expect(step.effect, 'A on Profile opens the Profile frame').toEqual(open('profileView'));
+    expect(step.state.level, 'the menu stays on the root').toBe('root');
+    expect(step.state.nav.item, 'the cursor stays on Profile').toBe('profile');
+    expect(step.state.feedback, 'nothing else changed').toEqual(on.feedback);
+    expect(menuViewModel(step.state).frameId, 'the root frame id, never menuProfile').toBe('menu');
+    expect(openMainMenu(step.state.memory).nav.item, 'a reopen lands on Profile').toBe('profile');
+    const picked = mainMenuPick(fresh(), 'profile');
+    expect(picked.effect, 'a pick is the same leaf').toEqual(open('profileView'));
+    expect(picked.state.level).toBe('root');
+  });
+
   it('a pick moves the cursor to the key and then behaves as A: a leaf opens, a group enters, Close closes', () => {
     // WRONG IMPL KILLED: a pick that opens without moving the cursor (the menu would return to
     // the wrong entry), a pick that needs the cursor to be there already, and a pick that is not
@@ -407,17 +438,20 @@ describe('mainMenu — pick, view model and inert buttons', () => {
     // uif-15b: a pick of Social now opens the Social frame (was: entered the Social sub-list);
     // Profile is the group the pick enters.
     expect(mainMenuPick(fresh(), 'social').effect).toEqual(open('social'));
-    const group = mainMenuPick(fresh(), 'profile');
+    // uif-16b (named intentional change): a pick of Profile opens the Profile frame (was: entered
+    // the Profile sub-list); Options is the group the pick enters.
+    expect(mainMenuPick(fresh(), 'profile').effect).toEqual(open('profileView'));
+    const group = mainMenuPick(fresh(), 'options');
     expect(group.effect).toEqual(NONE);
-    expect(group.state.level).toBe('profile');
-    expect(group.state.nav.item).toBe('name');
+    expect(group.state.level).toBe('options');
+    expect(group.state.nav.item).toBe('help');
 
     expect(mainMenuPick(fresh(), 'close').effect).toEqual(CLOSE);
 
-    const viaPick = mainMenuPick(group.state, 'privacy');
-    const viaKeys = press(toKey(group.state, 'privacy'), 'A');
+    const viaPick = mainMenuPick(group.state, 'controls');
+    const viaKeys = press(toKey(group.state, 'controls'), 'A');
     expect(viaPick.effect).toEqual(viaKeys.effect);
-    expect(viaPick.effect).toEqual(open('privacyView'));
+    expect(viaPick.effect).toEqual(open('controlsView'));
     expect(viaPick.state.nav).toEqual(viaKeys.state.nav);
     expect(viaPick.state.level).toBe(viaKeys.state.level);
   });
@@ -435,12 +469,14 @@ describe('mainMenu — pick, view model and inert buttons', () => {
       expect(step.state.nav.item, `pick '${key}' keeps the cursor`).toBe('journal');
     }
 
-    const inside = toKey(intoGroup('profile'), 'account');
-    for (const key of ['journal', 'monsters', 'close', 'help']) {
+    // uif-16b: the sub-list is Options (Profile is a leaf); 'name' (a retired Profile sub-list key)
+    // takes the place 'help' (now a key of this level) had as the foreign key.
+    const inside = toKey(intoGroup('options'), 'controls');
+    for (const key of ['journal', 'monsters', 'close', 'name', 'profile']) {
       const step = mainMenuPick(inside, key);
-      expect(step.effect, `pick '${key}' inside Profile`).toEqual(NONE);
-      expect(step.state.level, 'the sub-list is still showing').toBe('profile');
-      expect(step.state.nav.item, 'and the cursor did not move').toBe('account');
+      expect(step.effect, `pick '${key}' inside Options`).toEqual(NONE);
+      expect(step.state.level, 'the sub-list is still showing').toBe('options');
+      expect(step.state.nav.item, 'and the cursor did not move').toBe('controls');
     }
   });
 
@@ -467,11 +503,8 @@ describe('mainMenu — pick, view model and inert buttons', () => {
     expect(root.feedback).toEqual({ kind: 'none' });
 
     const frames = new Set<string>([root.frameId]);
+    // uif-16b (named intentional change): the Profile sub-list level is gone.
     const expected: Record<string, { title: string; labels: Record<string, string> }> = {
-      profile: {
-        title: 'Profile',
-        labels: { name: 'Name', account: 'Account', privacy: 'Privacy' },
-      },
       options: { title: 'Options', labels: { help: 'How to play', controls: 'Controls' } },
     };
     for (const [group, want] of Object.entries(expected)) {
@@ -483,8 +516,10 @@ describe('mainMenu — pick, view model and inert buttons', () => {
       frames.add(vm.frameId);
     }
     // uif-15b: root + Profile + Options. Was four (the Social sub-list's 'menuSocial' is gone).
-    expect(frames.size, 'three distinct frame ids').toBe(3);
+    // uif-16b (named intentional change): 3 -> 2: root + Options ('menuProfile' is gone).
+    expect(frames.size, 'two distinct frame ids').toBe(2);
     expect([...frames], 'no menuSocial frame id exists').not.toContain('menuSocial');
+    expect([...frames], 'no menuProfile frame id exists').not.toContain('menuProfile');
 
     setLocale('fr');
     expect(menuViewModel(fresh()).labels.monsters, 'labels follow the locale').toBe('Monstres');
@@ -524,7 +559,9 @@ describe('mainMenu — pick, view model and inert buttons', () => {
 
 // uif-15b: no 'social' level (the Social sub-list is gone; the root Social leaf is disabled over a
 // battle with the same in-battle reason the group showed).
-type Level = 'root' | 'profile' | 'options';
+// uif-16b (named intentional change): no 'profile' level either (the root Profile leaf is disabled
+// over a battle with the in-battle reason, as the group was).
+type Level = 'root' | 'options';
 const IN_BATTLE = 'inBattle';
 const BAG_REASON = 'battleBag';
 type ReasonKind = typeof IN_BATTLE | typeof BAG_REASON;
@@ -539,11 +576,6 @@ const DISABLED_OVER_BATTLE: Readonly<Record<Level, ReadonlyArray<readonly [strin
       ['social', IN_BATTLE],
       ['profile', IN_BATTLE],
     ],
-    profile: [
-      ['name', IN_BATTLE],
-      ['account', IN_BATTLE],
-      ['privacy', IN_BATTLE],
-    ],
     // ctl-12b (named intentional change): Controls is not battle-safe, so it is disabled over a
     // battle with the in-battle reason; How to play stays enabled, and so does the Options group
     // (one enabled child is enough). Was: [].
@@ -551,23 +583,16 @@ const DISABLED_OVER_BATTLE: Readonly<Record<Level, ReadonlyArray<readonly [strin
   };
 const LEVEL_KEYS: Readonly<Record<Level, readonly string[]>> = {
   root: ROOT_KEYS,
-  profile: GROUPS.profile as readonly string[],
   options: GROUPS.options as readonly string[],
 };
 
 const battleMenu = (): MainMenuState => openMainMenu(EMPTY_NAV_MEMORY, true);
-/** The state on `level` over a battle. The disabled Social and Profile groups cannot be ENTERED
- *  over a battle, so their sub-lists are built directly (on their first child): the layout still
- *  has to say what their rows are. Options is entered for real, so a menu that disabled it fails
- *  here. */
+/** The state on `level` over a battle. Options is entered for real, so a menu that disabled it
+ *  fails here. uif-16b: no disabled group is left to build directly (Social and Profile are both
+ *  root leaves now). */
 function battleLevel(level: Level): MainMenuState {
   if (level === 'root') return battleMenu();
-  if (level === 'options') return intoGroup('options', battleMenu());
-  return {
-    ...battleMenu(),
-    level,
-    nav: { tab: null, item: LEVEL_KEYS[level][0] as string, perTab: {} },
-  };
+  return intoGroup('options', battleMenu());
 }
 const reasonText = (kind: ReasonKind): string =>
   kind === BAG_REASON ? t('menu.disabled.battleBag') : t('menu.disabled.inBattle');
@@ -594,7 +619,8 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       itemsOf(menuViewModel(s).layout).map((i) => [i.key, i.enabled] as const);
 
     // --- the layouts ------------------------------------------------------------------------
-    for (const level of ['root', 'profile', 'options'] as const) {
+    // uif-16b (named intentional change): two levels (the Profile level is gone). Was three.
+    for (const level of ['root', 'options'] as const) {
       const vm = menuViewModel(battleLevel(level));
       const items = itemsOf(vm.layout);
       expect(
@@ -657,9 +683,8 @@ describe('mainMenu over a battle (ctl-6c)', () => {
     ).toBe(true);
 
     // --- the world menu is unchanged ---------------------------------------------------------
-    for (const level of ['root', 'profile', 'options'] as const) {
-      const world =
-        level === 'root' ? fresh() : level === 'profile' ? intoGroup('profile') : intoGroup(level);
+    for (const level of ['root', 'options'] as const) {
+      const world = level === 'root' ? fresh() : intoGroup(level);
       expect(
         itemsOf(menuViewModel(world).layout).every((i) => i.enabled && i.reason === undefined),
         `${level}: every world row is enabled with no reason`,
@@ -677,9 +702,13 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       open('social'),
     );
     expect(mainMenuPick(fresh(), 'social').effect).toEqual(open('social'));
+    // uif-16b: Profile at the world opens the Profile frame (was: entered a sub-list).
+    expect(press(toKey(fresh(), 'profile'), 'A').effect, 'world: Profile opens').toEqual(
+      open('profileView'),
+    );
 
     // --- A and a pick on a disabled row ------------------------------------------------------
-    for (const level of ['root', 'profile', 'options'] as const) {
+    for (const level of ['root', 'options'] as const) {
       for (const [key, kind] of DISABLED_OVER_BATTLE[level]) {
         const at = (from: MainMenuState): MainMenuState => toKey(from, key);
         const state = at(battleLevel(level));
@@ -807,6 +836,29 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       const picked = mainMenuPick(battleMenu(), 'social');
       expect(picked.effect, `${locale}: a pick opens nothing`).toEqual(NONE);
       expect(picked.state.feedback).toEqual({ kind: 'info', text: reason });
+    }
+  });
+
+  it('UIF16B.1 over a battle the Profile row is disabled with the in-battle reason; A and a pick open nothing, enter no level and show it, in en and fr', () => {
+    // WRONG IMPL KILLED: a Profile leaf that ignores the battle flag (A emits open profileView over
+    // a battle: the claim and privacy actions it hosts are refused there); a disabled leaf that
+    // still enters a 'profile' level; a reason other than t('menu.disabled.inBattle') (the Bag's
+    // own, or none); a pick that bypasses the check; a reason frozen in en under fr.
+    for (const locale of ['en', 'fr'] as const) {
+      setLocale(locale);
+      const reason = t('menu.disabled.inBattle');
+      const row = itemsOf(menuViewModel(battleMenu()).layout).find((i) => i.key === 'profile');
+      expect(row?.enabled, `${locale}: Profile is disabled over a battle`).toBe(false);
+      expect(row?.reason, `${locale}: the in-battle reason`).toBe(reason);
+      const a = press(toKey(battleMenu(), 'profile'), 'A');
+      expect(a.effect, `${locale}: A opens nothing`).toEqual(NONE);
+      expect(a.state.feedback).toEqual({ kind: 'info', text: reason });
+      expect(a.state.level, `${locale}: no level is entered`).toBe('root');
+      expect(a.state.nav.item).toBe('profile');
+      const picked = mainMenuPick(battleMenu(), 'profile');
+      expect(picked.effect, `${locale}: a pick opens nothing`).toEqual(NONE);
+      expect(picked.state.feedback).toEqual({ kind: 'info', text: reason });
+      expect(picked.state.level).toBe('root');
     }
   });
 

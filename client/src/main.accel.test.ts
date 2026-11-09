@@ -20,7 +20,8 @@
  *
  * The menu's level and cursor are read off what the menu view paints: a root cursor is the id
  * `menu-root-<key>` (Social included: uif-15b made it a root leaf, so there is no Social sub-list
- * and no `menuSocial` frame id) and a Profile cursor `menuProfile-root-<key>`, under the matching
+ * and no `menuSocial` frame id; Profile too since uif-16b: N and C open the one Profile frame, the
+ * cursor on `menu-root-profile`) and an Options cursor `menuOptions-root-<key>`, under the matching
  * frame title (and the translated `Menu` crumb).
  *
  * Harness: main.controls.test.ts's pattern, copied (vi.resetModules + a fresh import per test,
@@ -442,8 +443,16 @@ const LEAF_ROOTS: ReadonlyArray<readonly [string, () => boolean]> = [
   ['trade', () => shownById('trade-overlay')],
   ['pvp', () => shownById('pvp-challenge-overlay')],
   ['leaderboard', () => shownById('leaderboard-overlay')],
-  ['rename', () => shownById('rename-overlay')],
-  ['claim', () => shownById('claim-overlay')],
+  // uif-16b (named intentional change): the `rename` and `claim` roots are one `profile` root (the
+  // one Profile frame, its three sections inside it), looked up tolerantly like Controls (the frame
+  // is constructed). Was: `rename` (#rename-overlay) and `claim` (#claim-overlay) as two roots.
+  [
+    'profile',
+    () => {
+      const el = document.getElementById('profile-overlay');
+      return el !== null && isShown(el);
+    },
+  ],
   ['help', () => shownById('help-overlay')],
   // qf-14: Options > Controls (the Y accelerator's leaf). Looked up tolerantly, so a shell that
   // constructs the Controls frame lazily reads as "not shown" until it is first opened.
@@ -487,18 +496,15 @@ const menuFeedback = (): string =>
 
 // qf-14: the `options` level joins (Options > Controls is the Y accelerator's path).
 // uif-15b (UIF15B.1, named intentional change): no `social` level (Social is a root leaf).
-type Level = 'root' | 'profile' | 'options';
+// uif-16b (UIF16B.1, named intentional change): no `profile` level (Profile is a root leaf: one
+// frame, no sub-list). 3 -> 2 levels.
+type Level = 'root' | 'options';
 const CURSOR_PREFIX: Readonly<Record<Level, string>> = {
   root: 'menu',
-  profile: 'menuProfile',
   options: 'menuOptions',
 };
 const levelTitle = (level: Level): string =>
-  level === 'root'
-    ? i18nT('menu.title')
-    : level === 'profile'
-      ? i18nT('menu.profile.title')
-      : i18nT('menu.options.title');
+  level === 'root' ? i18nT('menu.title') : i18nT('menu.options.title');
 
 /** One accelerator and where its canonical path lands (spelled out here, never read from the
  *  module under test). */
@@ -532,14 +538,25 @@ const ROWS: readonly Row[] = [
   { accel: 'U', code: 'KeyU', frame: 'social', root: 'trade', key: 'social', level: 'root' },
   { accel: 'P', code: 'KeyP', frame: 'social', root: 'pvp', key: 'social', level: 'root' },
   { accel: 'L', code: 'KeyL', frame: 'social', root: 'leaderboard', key: 'social', level: 'root' },
-  { accel: 'N', code: 'KeyN', frame: 'renameView', root: 'rename', key: 'name', level: 'profile' },
+  // uif-16b (UIF16B.5, named intentional change): N and C both pick the one root Profile row and
+  // open the one Profile frame (N on its Name section, C on Account: the UIF16B.5 cases), so the
+  // menu beneath stays on its ROOT with the cursor on `profile`. Was: frame renameView / claimView,
+  // root rename / claim, key name / account on the `profile` level.
+  {
+    accel: 'N',
+    code: 'KeyN',
+    frame: 'profileView',
+    root: 'profile',
+    key: 'profile',
+    level: 'root',
+  },
   {
     accel: 'C',
     code: 'KeyC',
-    frame: 'claimView',
-    root: 'claim',
-    key: 'account',
-    level: 'profile',
+    frame: 'profileView',
+    root: 'profile',
+    key: 'profile',
+    level: 'root',
   },
   // qf-14 (named intentional change): Y opens Options > Controls. 9 -> 10 accelerator rows.
   {
@@ -687,14 +704,16 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     press('KeyM');
     expect(stackNames(), 'precondition: M opened the menu').toEqual(['world', 'menuView']);
     // uif-15b: the sub-level the menu is left on is Profile (Social is a leaf now).
-    for (let i = 0; i < 8 && navActive() !== 'profile'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
+    // uif-16b (named intentional change): Profile is a leaf too, so the sub-level the menu is left
+    // on is Options. Was: Profile.
+    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
     press('Enter');
-    expect(menuTitle(), 'precondition: A entered the Profile sub-level').toBe(
-      levelTitle('profile'),
+    expect(menuTitle(), 'precondition: A entered the Options sub-level').toBe(
+      levelTitle('options'),
     );
     press('KeyJ');
-    expectLeafOpen(ROW('J'), 'J from a menu left on the Profile level');
+    expectLeafOpen(ROW('J'), 'J from a menu left on the Options level');
   });
 
   it('UIF15B.3 U, P and L each push world, menuView, social and show the Social frame on the Trades, Challenges and Rankings tab respectively, with the menu cursor beneath on Social; Y still lands on the Controls frame', async () => {
@@ -805,7 +824,12 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     // shown after the stack is the world.
     await bootReady();
     server(1000);
-    for (const row of ROWS) {
+    // uif-16b (named intentional change): N leaves this loop (10 -> 9 rows driven). Over the
+    // Profile frame N is Start only when focus is already in the Name section; pressed again before
+    // the deferred focus lands it moves focus to the Name field and the frame stays (UIF16B.5).
+    // Both halves are the UIF16B.5 N / C toggle case below. C stays: it seats focus in Account at
+    // once, so C again is Start.
+    for (const row of ROWS.filter((r) => r.accel !== 'N')) {
       press(row.code);
       expectLeafOpen(row, `${row.accel}: precondition`);
       press(row.code);
@@ -1027,13 +1051,16 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
       expect(down.defaultPrevented, `${row.accel} typed in the field is left to the field`).toBe(
         false,
       );
+      // uif-16b (named intentional change): the Name field lives in the one Profile frame, so the
+      // frame on the stack is `profileView` and the one shown root is `profile`. Was: renameView,
+      // rename.
       expect(stackNames(), `${row.accel} typed in the field: the stack is unchanged`).toEqual([
         'world',
         'menuView',
-        'renameView',
+        'profileView',
       ]);
       expect(openRoots(), `${row.accel} typed in the field: the Name screen stays alone`).toEqual([
-        'rename',
+        'profile',
       ]);
       expect(document.activeElement, `${row.accel}: the field keeps focus`).toBe(input);
     }
@@ -1502,61 +1529,135 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   // ctl-11b: residual R-ctl-11a-POPGUARD
   // ------------------------------------------------------------------------------------------
 
-  it('POPGUARD-CLOSE-SURFACES-FRAME: with the privacy screen open over Profile and a claim paint deferred behind it, an accelerator pops to the base, the privacy dismissal flushes the claim paint so the claim screen surfaces, and the menu does NOT open over it: no menu, no Journal, the stack is the world with the claim frame; Start then closes the claim and the same accelerator opens its path as usual', async () => {
-    // WRONG IMPL KILLED (R-ctl-11a-POPGUARD, the line `if (contextStack.length > 1) return;` in
-    // openAccelPath): an accelerator that opens the menu and picks its path right after the pop,
-    // whatever the pop left. Privacy's dismissal (`onDismissed`) flushes the claim paint it deferred
-    // while it owned the screen (`claimRenderPending`), and `popToBase` closes frames top first, so
-    // the claim screen is shown by the time the pop is done and `applyStack`'s re-mirror puts it on
-    // the stack. Without the guard the menu opens over that claim frame and the Journal over the
-    // menu (this test's stack would read world, claimView, menuView, questLogView and the menu and
-    // the Journal would be shown). The surfaced frame must instead be left to the player, who
-    // closes it with Start: the control after it proves the same key opens its path from the bare
-    // world, so the refusal above is the guard's and not a dead accelerator.
+  // uif-16b (named intentional change): POPGUARD-CLOSE-SURFACES-FRAME is DELETED and REPLACED by
+  // the first UIF16B.5 case below. It built "the privacy screen open over Profile with a claim
+  // paint deferred behind it (`claimRenderPending`), so the accelerator's pop surfaces the claim
+  // screen" (R-ctl-11a-POPGUARD, the `if (contextStack.length > 1) return;` guard in
+  // openAccelPath). That state no longer exists: privacy is the Privacy section of the one Profile
+  // frame, a claim event with Profile open paints the Account section in place, and no pop can
+  // surface a claim frame. What the guard still protects (an accelerator over an open Profile pops
+  // it and opens ITS path, never over a leftover frame) is pinned there.
+
+  it('UIF16B.5 with Profile open and focus in its Privacy section, a claim event paints the Account section in place (no frame surfaces, the stack and focus are unchanged), and J then pops Profile and opens the Journal path as usual', async () => {
+    // WRONG IMPL KILLED: a claim event that re-opens or re-shows Profile over itself (a second
+    // frame on the stack, or focus yanked to Account: `renderClaim` must only paint the section
+    // while Profile is open); a claim paint still deferred behind the privacy surface (the Account
+    // title stays stale); and an accelerator over the frame that leaves it, or opens its path over
+    // it (R-ctl-11a-POPGUARD's stacked menu).
     await bootReady();
     server(1000);
+    press('KeyC');
+    expectLeafOpen(ROW('C'), 'C');
+    byId('claim-privacy-btn').click();
+    const privacyRoot = byId('privacy-overlay');
+    expect(privacyRoot.contains(document.activeElement), 'precondition: focus in Privacy').toBe(
+      true,
+    );
+    const focusedBefore = document.activeElement;
+    const before = stackNames();
 
-    // Profile > Privacy by keys: Start, down to Profile, A, down to Privacy, A.
-    press('KeyM');
-    expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-    for (let i = 0; i < 8 && navActive() !== 'profile'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
-    press('Enter');
-    expect(menuTitle(), 'precondition: A entered the Profile level').toBe(levelTitle('profile'));
-    for (let i = 0; i < 4 && navActive() !== 'privacy'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Privacy & data').toBe('privacy');
-    press('Enter');
-    expect(stackNames(), 'precondition: the privacy screen is open over the menu').toEqual([
-      'world',
-      'menuView',
-      'privacyView',
-    ]);
+    opts.onClaimResult?.({ ok: false, message: 'close your other tab, then retry' } as never);
+    expect(byId('claim-title').textContent, 'the Account section shows the refusal').toBe(
+      i18nT('claim.reject.transient.title'),
+    );
+    expect(stackNames(), 'no frame surfaced').toEqual(before);
+    expect(document.activeElement, 'focus stays where the player put it').toBe(focusedBefore);
 
-    // A claim paint arrives while privacy owns the screen: it is deferred, nothing shows yet.
-    opts.onClaimPending?.('claim-code-1');
-    expect(shownById('claim-overlay'), 'precondition: the claim paint is deferred').toBe(false);
-    expect(stackNames(), 'precondition: the stack is unchanged').toEqual([
-      'world',
-      'menuView',
-      'privacyView',
-    ]);
-
-    // The accelerator: pops to the base; the pop surfaces the claim screen.
     const e = press('KeyJ');
     expect(e.defaultPrevented, 'the accelerator press is consumed').toBe(true);
-    expect(shownById('claim-overlay'), 'the privacy dismissal flushed the claim paint').toBe(true);
-    expect(menuShown(), 'the menu is not opened over the surfaced claim screen').toBe(false);
-    expect(questLogShown(), 'and the accelerator`s own screen is not opened over it').toBe(false);
-    expect(
-      stackNames(),
-      'the stack is the world and the surfaced claim frame, nothing more',
-    ).toEqual(['world', 'claimView']);
+    expectLeafOpen(ROW('J'), 'J over Profile');
+    expect(shownById('claim-overlay'), 'Profile and its sections are closed').toBe(false);
+  });
 
-    // Control: Start closes the claim; the same key then opens its path from the bare world.
+  it('UIF16B.5 N at the world opens [world, menuView, profileView] with focus on #rename-input once the deferred focus lands and the opening n not typed; C opens the same frame with focus inside the Account section AT ONCE, still there after the deferred focus', async () => {
+    // WRONG IMPL KILLED: an N that opens Profile on Account (the claim model's first step painting
+    // the auto-open first); an N whose focus is moved synchronously into the field (the opening `n`
+    // would be typed: the defer is load-bearing); a C that waits for the deferred anchor (focus on
+    // `#rename-input`, the frame's registry anchor, instead of Account); a C whose synchronous focus
+    // the deferred anchor then steals; and N / C opening different frames.
+    await bootReady();
+    server(1000);
+    press('KeyN');
+    expectLeafOpen(ROW('N'), 'N');
+    const field = byId('rename-input') as HTMLInputElement;
+    await flush();
+    expect(document.activeElement, 'N: focus is on the Name field').toBe(field);
+    expect(field.value, 'N: the opening n was not typed').toBe('');
     press('Escape');
-    expectBareWorld('after Start');
-    press('KeyJ');
-    expectLeafOpen(ROW('J'), 'J from the bare world');
+    // Escape in the field stops typing; a second Start (from the control it lands on) closes.
+    if (stackNames().length > 1) press('Escape');
+    expectBareWorld('after N');
+
+    press('KeyC');
+    expectLeafOpen(ROW('C'), 'C');
+    const account = byId('claim-overlay');
+    const seat = document.activeElement as HTMLButtonElement | null;
+    expect(seat !== null && account.contains(seat), 'C: focus is in Account at once').toBe(true);
+    expect(seat?.tagName, 'C: on an Account row').toBe('BUTTON');
+    expect(seat?.disabled, 'C: an enabled one').toBe(false);
+    expect(isShown(seat as Element), 'C: that is on screen').toBe(true);
+    await flush();
+    expect(account.contains(document.activeElement), 'C: still in Account after the defer').toBe(
+      true,
+    );
+  });
+
+  it('UIF16B.5 with Profile on top N and C move focus between the Name and Account sections (the frame stays), and only the pressed key`s own section closes: C, N (to Name), N (closes); N, C (to Account), C (closes)', async () => {
+    // WRONG IMPL KILLED: today's `start` on any accelerator whose frame is on top (N over Profile
+    // opened by C would close it instead of moving to Name); a move that re-opens the frame (a
+    // second profileView, or the menu rebuilt beneath it); a move that lands on the Name field but
+    // leaves the frame closed; an N that never closes (Start lost once the section move exists).
+    await bootReady();
+    server(1000);
+    const field = byId('rename-input') as HTMLInputElement;
+    const account = byId('claim-overlay');
+    const OPEN = ['world', 'menuView', 'profileView'];
+
+    press('KeyC');
+    expect(stackNames(), 'C: Profile').toEqual(OPEN);
+    expect(account.contains(document.activeElement), 'C: focus in Account').toBe(true);
+    const n = press('KeyN');
+    expect(n.defaultPrevented, 'N over Profile is consumed').toBe(true);
+    expect(stackNames(), 'N from Account: the frame stays').toEqual(OPEN);
+    expect(document.activeElement, 'N from Account: focus on the Name field').toBe(field);
+    await flush();
+    expect(document.activeElement, 'and it stays there').toBe(field);
+    expect(field.value, 'nothing was typed').toBe('');
+    press('KeyN');
+    expectBareWorld('N on Name closes to the base');
+
+    press('KeyN');
+    expect(stackNames(), 'N: Profile').toEqual(OPEN);
+    await flush();
+    expect(document.activeElement, 'N: focus on the Name field').toBe(field);
+    press('KeyC');
+    expect(stackNames(), 'C from Name: the frame stays').toEqual(OPEN);
+    expect(account.contains(document.activeElement), 'C from Name: focus in Account').toBe(true);
+    expect((document.activeElement as HTMLButtonElement).disabled, 'on an enabled row').toBe(false);
+    press('KeyC');
+    expectBareWorld('C on Account closes to the base');
+  });
+
+  it('UIF16B.5 before join (no identity) C opens Profile on Account with no menu beneath, and N opens nothing', async () => {
+    // WRONG IMPL KILLED: an N that opens the frame before join (the Name field would send a rename
+    // with no player row); a C refused before join (a failed first sign-in could never be retried);
+    // a C that opens the menu path before join (the Start path refuses the menu then); a C that
+    // opens Profile on Name.
+    await boot(); // no onReady: identity is ''
+    press('KeyN');
+    expect(stackNames(), 'N before join: nothing').toEqual(['world']);
+    expect(openRoots(), 'N before join: no root shown').toEqual([]);
+    press('KeyC');
+    expect(stackNames(), 'C before join: Profile alone over the world').toEqual([
+      'world',
+      'profileView',
+    ]);
+    expect(menuShown(), 'C before join: no menu').toBe(false);
+    expect(openRoots(), 'C before join: the Profile root').toEqual(['profile']);
+    expect(
+      byId('claim-overlay').contains(document.activeElement),
+      'C before join: focus in Account',
+    ).toBe(true);
   });
 
   // ------------------------------------------------------------------------------------------

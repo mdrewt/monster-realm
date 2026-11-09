@@ -87,18 +87,28 @@
 //                                                        -> evals/overlay-a11y-manifest.eval.mjs [A11Y-15]
 //                                                           (real-file divergence tooth: comment-stripped
 //                                                           vs comment+string-stripped must agree on all 18)
+//
+// ---------------------------------------------------------------------------
+// uif-16b (UIF16B.1-UIF16B.4): the rename view is Profile's Name SECTION, not an overlay. It opens
+// no a11y of its own (the one dialog, trap and deferred `#rename-input` anchor are ProfileView's,
+// gated in ui/profileView.test.ts UIF16B.3), carries no frame classes, leads with an
+// `h2#rename-title.mr-section-header` instead of a frame title bar, and is walked by the frame
+// (its `applyRowOp` retires: the walk, the clamp, the token-once memo and "A on the field presses
+// nothing" are gated at frame level in ui/profileView.test.ts UIF16B.2). Its own Escape no longer
+// hides it (a section never hides alone; main.ts's typing rule owns Escape). The m23-s3 a11y
+// block above is therefore REPLACED by UIF16B.3's section-level "opens nothing" test below; the
+// index above stays as the record of what the frame-level suite now kills.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
-import { t } from './a11yCopy';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
-import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import { OVERLAY_IDS } from './overlayRegistry';
 import { RenameView } from './renameView';
-import type { RowOp, RowSection } from './screens/profileScreen';
+import { type RowOp, type RowSection, walkSection } from './screens/profileScreen';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
@@ -124,8 +134,11 @@ function mountRenameOverlay(): {
   // is a real tooth: only closeOverlayA11y can remove them. No
   // `tabindex` is added: this overlay's OVERLAY_A11Y anchor is #rename-input, natively focusable,
   // exactly as index.html:59 has it.
+  // uif-16b (named fixture change): the new index.html ships #rename-overlay as Profile's Name
+  // section: class `mr-button-rows`, NO role / aria-modal (the one dialog is #profile-overlay).
+  // Was: `role="dialog" aria-modal="true"` and no class.
   document.body.innerHTML = `
-    <div id="rename-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div id="rename-overlay" class="mr-button-rows" style="display:none">
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit">Rename</button>
@@ -145,6 +158,16 @@ function mountRenameOverlay(): {
 
 function teardown(): void {
   document.body.innerHTML = '';
+}
+
+/** uif-16b: the section's own `applyRowOp` retires (ProfileView walks the one column). This is the
+ *  frame's one-token rule over THIS section alone (`walkSection` over its RowSection; a pressed row
+ *  is clicked only when it is a button, so A on the field presses nothing), so the section's rows
+ *  and default row stay pinned here. The token-once identity memo is the frame's now
+ *  (ui/profileView.test.ts UIF16B.2). */
+function walk(section: RowSection, op: RowOp): void {
+  const press = walkSection(section, document.activeElement, op);
+  if (press instanceof HTMLButtonElement) press.click();
 }
 
 // Minimal ViewModel shape that RenameView.render() accepts.
@@ -190,178 +213,36 @@ afterEach(async () => {
   await s3FlushMacrotask();
 });
 
-const S3_ID: OverlayId = 'renameView';
-const S3_META = OVERLAY_A11Y[S3_ID];
+// uif-16b: the six m23-s3 tests that stood here (OPEN-ARIA, DEFER-FOCUS, CLOSE-RESTORE,
+// REPEAT-NO-REOPEN, HELPER-CALLED, CLOSE-UNGUARDED) pinned this view's OWN overlay a11y, which
+// retires: the section opens nothing. Their frame-level equivalents are ui/profileView.test.ts
+// UIF16B.3 (one dialog labelled from a11yCopy via the helper, the deferred #rename-input anchor in
+// both polarities, close strips and restores focus, a repeat show() neither re-opens nor moves
+// focus, the unguarded close) and S10-WIRE-*:profileView in ui/overlayA11yWiring.test.ts. What is
+// left to assert HERE is the section half: it calls neither helper and carries no dialog ARIA.
 
-/** A focusable OUTSIDE the overlay: the "pre-overlay" element a close must restore focus to. */
-function s3OutsideSentinel(): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.id = 's3-outside-sentinel';
-  document.body.appendChild(btn);
-  return btn;
-}
-
-/** A focusable INSIDE the overlay, as a DIRECT child of the root — render() only touches
- *  #rename-current / #rename-submit, so if this loses focus something RE-OPENED the overlay. */
-function s3InsideSentinel(root: HTMLElement): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.id = 's3-inside-sentinel';
-  root.appendChild(btn);
-  return btn;
-}
-
-describe('RenameView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
-  it('S3-renameView-OPEN-ARIA BITES: the first show() from a display:none shell labels the root from OVERLAY_A11Y/t()', () => {
+describe('RenameView (uif-16b): a section opens no a11y of its own', () => {
+  it('UIF16B.3 show(), a repeat show() and hide() never call openOverlayA11y or closeOverlayA11y, and the section root never carries role, aria-modal or aria-label', async () => {
+    // WRONG IMPL KILLED: a section that still opens its own dialog (two traps cannot coexist: the
+    // frame's would be suspended under the section's, and Tab would be caught in the Name section
+    // alone); a section that writes the dialog attributes by hand; a hide() that still closes
+    // `renameView` (an id that no longer exists in the registry).
     const { overlay } = mountRenameOverlay();
     const view = new RenameView({ onSubmit: async () => {} });
-
-    // VACUITY ATTACK V4, closed here: without `display:none` the FIRST show() is a NO-EDGE and
-    // every open assertion below is silently vacuous. This also pins WIK-3 — an impl that reads
-    // `this.visible` AFTER writing `style.display` sees a constant `true` and never opens.
-    expect(view.visible, 'V4: the shell must start hidden, so the first show() IS an edge').toBe(
-      false,
-    );
-
+    expect(view.visible, 'precondition: the section starts hidden').toBe(false);
     view.show();
-
-    // Every expectation is DERIVED from the table at assert time — never a literal (V5).
-    expect(overlay.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S3_META.role);
-    expect(overlay.getAttribute('aria-modal')).toBe('true');
-    expect(
-      overlay.getAttribute('aria-label'),
-      'THE tooth: role/aria-modal are static literals in index.html:57 and pass a view that calls ' +
-        'nothing; aria-label is absent from every shell, so only a real open can produce it — and ' +
-        'because all 16 catalog values are distinct, this also kills the wrong-OverlayId impl',
-    ).toBe(t(S3_META.labelKey));
-  });
-
-  it('S3-renameView-DEFER-FOCUS BITES: both polarities — NOT focused synchronously, focused after ONE real macrotask, and the defer is owned by openOverlayA11y (NOT by renameView.ts:102)', async () => {
-    const { overlay } = mountRenameOverlay();
-    const target = overlay.querySelector<HTMLElement>(S3_META.initialFocusSelector);
-    expect(target, `the fixture must contain ${S3_META.initialFocusSelector}`).not.toBeNull();
-    const view = new RenameView({ onSubmit: async () => {} });
-
-    view.show();
-
-    // NEGATIVE polarity — a synchronous focus reintroduces the exact bug ui/renameView.ts:101's
-    // rationale comment describes: the `n` of the KeyN hotkey that OPENED the overlay lands in the
-    // field it just opened.
-    expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
-      target,
-    );
-
-    // LOAD-BEARING for THIS view specifically: renameView.ts:102 ALREADY defers its own focus, so
-    // the two polarities alone are GREEN on the unwired code and prove nothing. Only this call
-    // assertion shows the defer moved into overlayA11y.ts (A11Y-15 / plan T5's deletion).
-    expect(
-      vi.mocked(openOverlayA11y),
-      'the deferred focus must be scheduled by openOverlayA11y, not by renameView.ts:102',
-    ).toHaveBeenCalledTimes(1);
-
-    await s3FlushMacrotask();
-
-    // POSITIVE polarity, by IDENTITY — never `root.contains(activeElement)`.
-    expect(document.activeElement).toBe(target);
-  });
-
-  it('S3-renameView-CLOSE-RESTORE BITES: hide() strips role, aria-modal AND aria-label from the root and hands focus back to the pre-overlay element', async () => {
-    const { overlay } = mountRenameOverlay();
-    const outside = s3OutsideSentinel();
-    outside.focus();
-    expect(document.activeElement, 'precondition: focus starts OUTSIDE the overlay').toBe(outside);
-
-    const view = new RenameView({ onSubmit: async () => {} });
     view.show();
     await s3FlushMacrotask();
-    expect(
-      document.activeElement,
-      'precondition: the open moved focus INTO the overlay, so the restore below is a real move',
-    ).not.toBe(outside);
-
+    expect(view.visible, 'ANTI-VACUITY: the section was shown').toBe(true);
+    for (const attr of ['role', 'aria-modal', 'aria-label']) {
+      expect(overlay.hasAttribute(attr), `shown: no ${attr}`).toBe(false);
+    }
     view.hide();
-
-    // VACUITY ATTACK V1: the two static literals can only be ABSENT if closeOverlayA11y really ran.
-    expect(
-      overlay.getAttribute('role'),
-      'a display:none node must not keep claiming to be a dialog',
-    ).toBeNull();
-    expect(overlay.getAttribute('aria-modal')).toBeNull();
-    expect(overlay.getAttribute('aria-label')).toBeNull();
-
-    expect(document.activeElement, 'focus must return to the pre-overlay element').toBe(outside);
-  });
-
-  it('S3-renameView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer.
-    const { overlay } = mountRenameOverlay();
-    const view = new RenameView({ onSubmit: async () => {} });
-
-    view.show();
-    await s3FlushMacrotask();
-
-    const inside = s3InsideSentinel(overlay);
-    inside.focus();
-    expect(document.activeElement, 'precondition: focus is parked INSIDE the overlay').toBe(inside);
-
-    view.show();
-    await s3FlushMacrotask();
-
-    expect(document.activeElement, 'a repeat show() must NOT re-run the deferred focus').toBe(
-      inside,
-    );
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('S3-renameView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
-    // THE MECHANISM ORACLE (plan A3): a view that hand-writes the three attributes with the correct
-    // copied literal passes every VALUE assertion here while shipping NO trap, NO return-focus
-    // record and NO timer. The literal `null` pins ADR-0205 A3 / plan D8. This test also executes
-    // BOTH new branches, which matters because this file is in the coverage denominator (R5).
-    const { overlay } = mountRenameOverlay();
-    const view = new RenameView({ onSubmit: async () => {} });
-
-    view.show();
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S3_ID, overlay);
-
-    view.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
-  });
-
-  it('S3-renameView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
-    // Plan D2's deliberate asymmetry, and plan ANTI-PATTERN #3. Measured by red-team: wrapping
-    // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
-    // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
-    // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
-    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
-    // AND is force-hidden on reconnect, so main.ts drives its close
-    // through exactly the desync D2 cites — and this view owns a TEXT INPUT, so a leaked capture
-    // trap here is the worst case in the set. Unguarded, hide() HEALS it, and a close with no
-    // record is a documented pure no-op, so nothing is risked.
-    mountRenameOverlay();
-    const view = new RenameView({ onSubmit: async () => {} });
-    expect(view.visible, 'precondition: never opened').toBe(false);
-
-    expect(() => view.hide()).not.toThrow();
-    expect(
-      vi.mocked(closeOverlayA11y),
-      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
-    ).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
-
-    view.hide();
-    expect(
-      vi.mocked(closeOverlayA11y),
-      'unguarded means unguarded: every hide() calls the close',
-    ).toHaveBeenCalledTimes(2);
-
-    // And the same holds after a real open/close cycle: the second hide() still calls it.
-    vi.clearAllMocks();
-    view.show();
-    view.hide();
-    view.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+    expect(view.visible).toBe(false);
+    expect(vi.mocked(openOverlayA11y), 'the section opens nothing').not.toHaveBeenCalled();
+    expect(vi.mocked(closeOverlayA11y), 'nor closes anything').not.toHaveBeenCalled();
+    expect(overlay.classList.contains('mr-frame'), 'no frame class').toBe(false);
+    expect(overlay.classList.contains('mr-shell'), 'no shell class').toBe(false);
   });
 });
 
@@ -578,10 +459,10 @@ describe('★★ RenameView PTC1B-5: input keydown stopPropagation prevents hotk
 
 // ---------------------------------------------------------------------------
 // Enter key: calls onSubmit with trimmed value
-// Escape key: hides overlay, does NOT call onSubmit
+// Escape key: does NOT call onSubmit and (uif-16b) no longer hides the section
 // ---------------------------------------------------------------------------
 
-describe('RenameView keyboard: Enter submits; Escape hides without submitting (PTC1B-2/6)', () => {
+describe('RenameView keyboard: Enter submits; Escape neither submits nor hides (PTC1B-2/6, uif-16b)', () => {
   beforeEach(() => {
     mountRenameOverlay();
   });
@@ -643,9 +524,14 @@ describe('RenameView keyboard: Enter submits; Escape hides without submitting (P
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('BITES: Escape on input hides the overlay AND does NOT call onSubmit (PTC1B-6)', async () => {
-    // WRONG IMPL KILLED: an impl where Escape calls onSubmit (cancels but submits),
-    // or where Escape does not hide the overlay.
+  it('UIF16B.4 Escape in the field does NOT hide the section root, does NOT call onSubmit, keeps the draft, and still stops at the input', async () => {
+    // INTENTIONAL CHANGE (uif-16b): was "Escape on input hides the overlay AND does NOT call
+    // onSubmit (PTC1B-6)". A section never hides alone (the Name section hidden inside an open
+    // Profile frame would leave Account and Privacy floating under a title with no field);
+    // main.ts's typing rule owns Escape and closes the whole frame (main.* boot suites).
+    // WRONG IMPL KILLED: the old local Escape -> this.hide() kept; an Escape that submits; an
+    // Escape that clears the draft; an Escape that bubbles to the window listener (the router
+    // would then act on it twice).
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const view = new RenameView({ onSubmit });
     view.show();
@@ -653,12 +539,20 @@ describe('RenameView keyboard: Enter submits; Escape hides without submitting (P
 
     const input = document.getElementById('rename-input') as HTMLInputElement;
     input.value = 'SomeName';
-
+    const overlay = document.getElementById('rename-overlay') as HTMLElement;
+    const shownDisplay = overlay.style.display;
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
     input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+    window.removeEventListener('keydown', spy);
     await flushPromises();
 
-    expect(view.visible).toBe(false);
+    expect(view.visible, 'the section is still shown').toBe(true);
+    expect(overlay.style.display, 'its display is untouched').toBe(shownDisplay);
+    expect(overlay.style.display).not.toBe('none');
+    expect(input.value, 'the draft survives').toBe('SomeName');
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(spy, 'Escape is still stopped at the field').not.toHaveBeenCalled();
   });
 });
 
@@ -1044,15 +938,16 @@ describe('RenameView review-hardening: live submit-enable, hide() lock reset, bu
 //
 // The rows are the view's REAL controls: [#rename-input, #rename-submit], the shown and enabled
 // ones in DOM order. The cursor IS document.activeElement. nameScreen (ui/screens/profileScreen.ts)
-// hands the view one-shot row tokens through `view.applyRowOp(op)`:
+// hands one-shot row tokens to the walk (uif-16b: ProfileView's, here the `walk` helper above,
+// which is the frame's rule over this section alone):
 //   move     focus the next/previous row from the focused one, clamped (no wrap); with no row
 //            focused, focus the default row (#rename-input);
 //   activate on a focused button click it once; on the focused input keep focus there (typing);
 //            with NO row focused focus the default row and fire NOTHING.
-// The same op object applied twice is applied once (identity memo, tradeProposeView #lastToggle).
+// The token-once identity memo is the frame's since uif-16b (ui/profileView.test.ts UIF16B.2).
 // ---------------------------------------------------------------------------
 
-describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
+describe('RenameView ctl-8h: the section rows and the submit key shield', () => {
   const ENABLED: RenameViewModel = {
     displayCurrentName: 'X',
     trimmedDraft: 'Bob',
@@ -1071,7 +966,7 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
     teardown();
   });
 
-  it('CTL8H-2-VIEW-ROWS: move walks [#rename-input, #rename-submit] with the focus as the cursor, clamped, a disabled submit is skipped, with no row focused move seats the default row (the input), activate clicks the focused submit once with the trimmed draft, keeps focus on the input, and with no row focused seats the input and submits nothing; the same op object applies once', async () => {
+  it('CTL8H-2-VIEW-ROWS: move walks [#rename-input, #rename-submit] with the focus as the cursor, clamped, a disabled submit is skipped, with no row focused move seats the default row (the input), activate clicks the focused submit once with the trimmed draft, keeps focus on the input, and with no row focused seats the input and submits nothing', async () => {
     // WRONG IMPL KILLED: a move that wraps (the clamp pins the ends); a move from "nothing
     // focused" that goes to the SECOND row (+1 from index -1 is the first row, but the default row
     // is named, and -1 must also land on the input); a disabled submit among the rows (focus() on
@@ -1091,27 +986,27 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
     // --- no row focused: the default row, for either direction -----------------------------
     blurAll();
     expect(focusedId(), 'precondition: no row has focus').toBe('');
-    view.applyRowOp(move(1));
+    walk(view, move(1));
     expect(focusedId(), 'move +1 with nothing focused: the default row').toBe('rename-input');
     blurAll();
-    view.applyRowOp(move(-1));
+    walk(view, move(-1));
     expect(focusedId(), 'move -1 with nothing focused: the default row').toBe('rename-input');
 
     // --- from the focused row, clamped -------------------------------------------------------
-    view.applyRowOp(move(1));
+    walk(view, move(1));
     expect(focusedId(), 'down from the input: the save button').toBe('rename-submit');
-    view.applyRowOp(move(1));
+    walk(view, move(1));
     expect(focusedId(), 'no wrap past the last row').toBe('rename-submit');
-    view.applyRowOp(move(-1));
+    walk(view, move(-1));
     expect(focusedId(), 'up from the save button: the input').toBe('rename-input');
-    view.applyRowOp(move(-1));
+    walk(view, move(-1));
     expect(focusedId(), 'no wrap past the first row').toBe('rename-input');
 
     // --- a disabled submit is not a row ---------------------------------------------------------
     view.render(DISABLED);
     expect(submit.disabled, 'precondition: an empty draft disables submit').toBe(true);
     input.focus();
-    view.applyRowOp(move(1));
+    walk(view, move(1));
     expect(focusedId(), 'move skips the disabled save button: the input is the only row').toBe(
       'rename-input',
     );
@@ -1120,7 +1015,7 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
 
     // --- activate on the save button: one submit with the trimmed draft ------------------------
     submit.focus();
-    view.applyRowOp(activate());
+    walk(view, activate());
     expect(onSubmit, 'A on the save button submits once').toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith('Bob');
     await flushPromises();
@@ -1128,37 +1023,18 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
     // --- activate on the input: typing, not submitting ---------------------------------------
     onSubmit.mockClear();
     input.focus();
-    view.applyRowOp(activate());
+    walk(view, activate());
     expect(focusedId(), 'A on the field keeps focus in it').toBe('rename-input');
     expect(onSubmit, 'and never submits the draft').not.toHaveBeenCalled();
 
     // --- activate with no row focused: seat the default, fire nothing ----------------------------
     blurAll();
-    view.applyRowOp(activate());
+    walk(view, activate());
     expect(focusedId(), 'A with no row focused seats the default row').toBe('rename-input');
     expect(onSubmit, 'and submits nothing, though the draft is valid').not.toHaveBeenCalled();
 
-    // --- the identity memo: the same object once, an equal fresh one applies -----------------
-    const hop = move(1);
-    input.focus();
-    view.applyRowOp(hop);
-    expect(focusedId(), 'the first application moves').toBe('rename-submit');
-    input.focus();
-    view.applyRowOp(hop);
-    expect(focusedId(), 'the same op object is not applied twice').toBe('rename-input');
-    view.applyRowOp(move(1));
-    expect(focusedId(), 'an equal but fresh op is a new press').toBe('rename-submit');
-
-    const press = activate();
-    submit.focus();
-    view.applyRowOp(press);
-    await flushPromises();
-    view.applyRowOp(press);
-    await flushPromises();
-    expect(onSubmit, 'the same activate token clicks once').toHaveBeenCalledTimes(1);
-    view.applyRowOp(activate());
-    await flushPromises();
-    expect(onSubmit, 'a fresh activate token clicks again').toHaveBeenCalledTimes(2);
+    // uif-16b: the identity-memo segment that stood here (the same op object applied once) moved
+    // with `applyRowOp` to the frame: ui/profileView.test.ts UIF16B.2 "a token is applied once".
   });
 
   it('CTL8H-2-B5-SUBMIT-PROPAGATES: a keydown on #rename-submit with a D-pad or Backspace code reaches the window listener, any other key (hotkeys, Enter, Space) is still stopped, and the disabled state of the button is unchanged', () => {
@@ -1231,13 +1107,13 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
 
     const submitFocus = vi.spyOn(submit, 'focus');
     try {
-      view.applyRowOp(move(1));
+      walk(view, move(1));
       expect(
         submitFocus,
         'a move never asks the disabled Save to take focus',
       ).not.toHaveBeenCalled();
       expect(focusedId(), 'and focus stays on the field').toBe('rename-input');
-      view.applyRowOp(activate());
+      walk(view, activate());
       expect(submitFocus, 'nor does an A').not.toHaveBeenCalled();
       expect(focusedId(), 'and focus stays on the field').toBe('rename-input');
 
@@ -1245,7 +1121,7 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
       view.render(ENABLED);
       expect(submit.disabled, 'precondition: a draft enables Save').toBe(false);
       input.focus();
-      view.applyRowOp(move(1));
+      walk(view, move(1));
       expect(submitFocus, 'an enabled Save is focused by a move').toHaveBeenCalledTimes(1);
       expect(focusedId()).toBe('rename-submit');
     } finally {
@@ -1350,6 +1226,12 @@ describe('RenameView ctl-12b: the submit key shield follows the live table', () 
 // client/index.html, so the view builds the bar in its constructor, over whatever shell it finds.
 // The title is chrome, not a row: it is not focusable, carries no role, and applyRowOp never
 // reaches it.
+//
+// INTENTIONAL CHANGE (uif-16b, UIF16B.1): the Name frame is now Profile's Name SECTION, so its
+// title is a SECTION HEADER: an `h2#rename-title.mr-section-header` as the section root's FIRST
+// element child (no `div.mr-frame-titlebar`: one title bar per dialog, ProfileView's), same key,
+// same every-show() write. The two tests below are rewritten to that contract; the styles.css
+// `.mr-frame-title` block pin stays as it was (the frame title still exists, on #profile-title).
 // ---------------------------------------------------------------------------
 
 const QF13_STYLES_CSS = readFileSync(
@@ -1458,36 +1340,32 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
     ]);
   });
 
-  it('after show() the overlay opens with a div.mr-frame-titlebar holding exactly one div.mr-frame-title#rename-title reading the catalogue Name title, on screen all the way up, not focusable, no role, not duplicated by a second view, not a row, and rewritten by every show() [QF13-1-NAME-TITLE]', () => {
-    // WRONG IMPL KILLED: no title at all (today); a title appended AFTER the form controls (the
-    // titlebar must lead the overlay); a bare <div> or <h2> instead of the frame-chrome classes; a
-    // wrong id; hard-coded English instead of the catalogue value; a title created display:none
-    // (ensureElement's default) or under a hidden ancestor; a tabindex or role on the title (it
-    // would join the tab order or be announced as a control); a constructor that prepends a fresh
-    // bar each time (two views over one DOM); a title that is pushed into the applyRowOp rows
-    // (the cursor would land on it); and a title written once in the constructor (a stale or empty
-    // label after a locale switch or a hide/show).
+  it('UIF16B.1 after show() the section leads with exactly one h2.mr-section-header#rename-title as its FIRST element child, reading the catalogue Name title, on screen all the way up, not focusable, no role, not duplicated by a second view, not a row, no frame title bar anywhere, and rewritten by every show()', () => {
+    // INTENTIONAL CHANGE (uif-16b): was [QF13-1-NAME-TITLE], "a div.mr-frame-titlebar holding
+    // exactly one div.mr-frame-title#rename-title". The section header replaces the frame chrome.
+    // WRONG IMPL KILLED: the old title bar kept (a frame title bar per section: three title bars in
+    // one dialog); a header appended AFTER the form controls; a div or a frame-title class instead
+    // of h2.mr-section-header; a wrong id; hard-coded English instead of the catalogue value; a
+    // header created display:none or under a hidden ancestor; a tabindex or role on it; a
+    // constructor that prepends a fresh header each time (two views over one DOM); a header in the
+    // rows (the cursor would land on it); and a header written once in the constructor.
     const overlay = document.getElementById('rename-overlay') as HTMLElement;
     const view = new RenameView({ onSubmit: async () => {} });
     view.show();
 
-    const bar = overlay.firstElementChild;
-    expect(bar, 'the overlay has a first element child').not.toBeNull();
-    expect(bar?.tagName, 'the titlebar is a div').toBe('DIV');
-    expect(
-      [...(bar?.classList ?? [])],
-      'the titlebar carries exactly the frame-chrome class',
-    ).toEqual(['mr-frame-titlebar']);
-    expect(bar?.children.length, 'the titlebar holds exactly one child').toBe(1);
-
+    expect(overlay.querySelector('.mr-frame-titlebar'), 'no frame title bar in the section').toBe(
+      null,
+    );
+    expect(overlay.querySelector('.mr-frame-title'), 'no frame title in the section').toBe(null);
     const titles = overlay.querySelectorAll('#rename-title');
-    expect(titles.length, 'exactly one #rename-title in the overlay').toBe(1);
+    expect(titles.length, 'exactly one #rename-title in the section').toBe(1);
     expect(document.querySelectorAll('[id="rename-title"]').length, 'and in the document').toBe(1);
     const title = titles[0] as HTMLElement;
-    expect(title.parentElement, 'the title sits directly in the titlebar').toBe(bar);
-    expect(title.tagName, 'the title is a div').toBe('DIV');
-    expect([...title.classList], 'the title carries exactly the frame-chrome class').toEqual([
-      'mr-frame-title',
+    const bar = title;
+    expect(overlay.firstElementChild, 'the header leads the section').toBe(title);
+    expect(title.tagName, 'the header is an h2').toBe('H2');
+    expect([...title.classList], 'the header carries exactly the section-header class').toEqual([
+      'mr-section-header',
     ]);
     const expected = qf13EnglishNameTitle();
     expect(expected.length, 'ANTI-VACUITY: the catalogue has a Name title to show').toBeGreaterThan(
@@ -1518,33 +1396,33 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
       expect(node?.hasAttribute('inert'), `${label}: not inert`).toBe(false);
     }
 
-    // A second view over the same DOM neither duplicates nor replaces the bar.
+    // A second view over the same DOM neither duplicates nor replaces the header.
     const second = new RenameView({ onSubmit: async () => {} });
     second.show();
-    expect(overlay.querySelectorAll('.mr-frame-titlebar').length, 'still one titlebar').toBe(1);
-    expect(overlay.querySelectorAll('.mr-frame-title').length, 'still one title').toBe(1);
-    expect(overlay.firstElementChild, 'the same bar still leads the overlay').toBe(bar);
+    expect(overlay.querySelectorAll('.mr-section-header').length, 'still one header').toBe(1);
+    expect(overlay.firstElementChild, 'the same header still leads the section').toBe(bar);
     expect(document.getElementById('rename-title'), 'and the same title node').toBe(title);
 
     // The rows are still exactly [input, submit]: the title is not a row.
+    expect(view.sectionRows().includes(title), 'the header is not a row').toBe(false);
     const input = document.getElementById('rename-input') as HTMLInputElement;
     const submit = document.getElementById('rename-submit') as HTMLButtonElement;
     const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
     view.render({ displayCurrentName: 'X', trimmedDraft: 'Bob', canSubmit: true });
     input.value = 'Bob';
     input.focus();
-    view.applyRowOp({ kind: 'move', delta: -1 });
+    walk(view, { kind: 'move', delta: -1 });
     expect(focusedId(), 'up from the field clamps on the field, never the title').toBe(
       'rename-input',
     );
-    view.applyRowOp({ kind: 'move', delta: 1 });
+    walk(view, { kind: 'move', delta: 1 });
     expect(focusedId(), 'down from the field: Save').toBe('rename-submit');
-    view.applyRowOp({ kind: 'move', delta: 1 });
+    walk(view, { kind: 'move', delta: 1 });
     expect(focusedId(), 'down from Save clamps on Save').toBe('rename-submit');
-    view.applyRowOp({ kind: 'move', delta: -1 });
+    walk(view, { kind: 'move', delta: -1 });
     expect(focusedId(), 'up from Save: the field').toBe('rename-input');
     (document.activeElement as HTMLElement | null)?.blur();
-    view.applyRowOp({ kind: 'move', delta: 1 });
+    walk(view, { kind: 'move', delta: 1 });
     expect(focusedId(), 'with nothing focused a move seats the default row, the field').toBe(
       'rename-input',
     );
@@ -1558,7 +1436,7 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
       expected,
     );
     view.hide();
-    expect(overlay.firstElementChild, 'hide() keeps the bar in place').toBe(bar);
+    expect(overlay.firstElementChild, 'hide() keeps the header in place').toBe(bar);
     view.show();
     expect(title.textContent, 'hide() then show(): the title reads the catalogue value').toBe(
       expected,
@@ -1578,34 +1456,30 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
       sheet = null;
     });
 
-    it('the shown titlebar computes a flex row with a bottom border line and the title computes bold, from the stylesheet and not from inline style [QF13-1-NAME-TITLE-COMPUTED]', () => {
-      // WRONG IMPL KILLED: no bar (today); a wrong class name on the bar or title (the sheet's
-      // .mr-frame-titlebar / .mr-frame-title rules do not reach it: a plain div computes block and
-      // normal weight); an inline style standing in for the class (the check below that the bar
-      // and title carry no inline style); a title hidden by the stylesheet. happy-dom caches the
-      // computed style per element, so each element is read once.
+    it('UIF16B.1 the shown section header paints from the stylesheet and not from inline style, and the section computes no frame box of its own', () => {
+      // INTENTIONAL CHANGE (uif-16b): was [QF13-1-NAME-TITLE-COMPUTED] (the titlebar a flex row
+      // with a bottom border, the title bold). The header is the type scale's section level; the
+      // section is a plain block in the frame's column (no `.mr-frame` border, no `.mr-shell`
+      // absolute box inside the dialog's own box).
+      // WRONG IMPL KILLED: a header hidden by the sheet; an inline style standing in for the class;
+      // a section still classed `mr-frame` / `mr-shell` (it computes a bordered, absolutely placed
+      // box inside the frame). happy-dom caches computed style per element: each is read once.
       const overlay = document.getElementById('rename-overlay') as HTMLElement;
       const view = new RenameView({ onSubmit: async () => {} });
       view.show();
-      const bar = overlay.firstElementChild as HTMLElement | null;
-      expect(bar, 'the overlay has a first element child').not.toBeNull();
       const title = document.getElementById('rename-title') as HTMLElement | null;
-      expect(title, 'the title exists').not.toBeNull();
-      if (bar === null || title === null) return;
-
-      expect(bar.style.cssText, 'the bar carries no inline style').toBe('');
-      expect(title.style.cssText, 'the title carries no inline style').toBe('');
-
-      const barStyle = getComputedStyle(bar);
-      expect(barStyle.display, 'the titlebar is the sheet-driven flex row').toBe('flex');
-      expect(barStyle.display, 'and is displayed').not.toBe('none');
-      expect(barStyle.borderBottomStyle, 'the titlebar has a bottom border line').not.toBe('none');
-      qf13ExpectPainted(barStyle, 'titlebar');
+      expect(title, 'the header exists').not.toBeNull();
+      if (title === null) return;
+      expect(title.style.cssText, 'the header carries no inline style').toBe('');
       const titleStyle = getComputedStyle(title);
-      expect(['bold', '700'], 'the title is bold').toContain(titleStyle.fontWeight);
-      expect(titleStyle.display, 'the title is displayed').not.toBe('none');
-      expect(titleStyle.visibility, 'the title is visible').not.toBe('hidden');
-      qf13ExpectPainted(titleStyle, 'title');
+      expect(titleStyle.display, 'the header is displayed').not.toBe('none');
+      expect(titleStyle.visibility, 'the header is visible').not.toBe('hidden');
+      qf13ExpectPainted(titleStyle, 'header');
+      const sectionStyle = getComputedStyle(overlay);
+      expect(sectionStyle.position, 'the section is not an absolute shell').not.toBe('absolute');
+      expect(sectionStyle.flexDirection, 'the section is not a frame flex column').not.toBe(
+        'column',
+      );
     });
   });
 });
@@ -1667,18 +1541,22 @@ describe('RenameView uif-16a: the shared section interface', () => {
     expect(view.defaultRow()).toBe(document.getElementById('rename-input'));
   });
 
-  it('UIF16A.2 applyRowOp seats defaultRow() when no row is focused: an overridden default wins over the field', () => {
+  // uif-16b (named change): the four UIF16A.2 tests below drove `view.applyRowOp`, which retires;
+  // they now drive the `walk` helper (walkSection over this RowSection, the frame's rule), so they
+  // still pin that the walk reads THIS section's interface. The frame-level walk is gated in
+  // ui/profileView.test.ts UIF16B.2.
+  it('UIF16A.2 the section walk seats defaultRow() when no row is focused: an overridden default wins over the field', () => {
     const view = new RenameView({ onSubmit: async () => {} });
     view.show();
     view.render(ENABLED16);
     const submit = document.getElementById('rename-submit') as HTMLElement;
     override16(view, { defaultRow: () => submit });
     blur16();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'the override, not a private #input fallback').toBe('rename-submit');
   });
 
-  it('UIF16A.2 applyRowOp walks the rows sectionRows() returns: an overridden list is clamped against and decides what A presses', async () => {
+  it('UIF16A.2 the section walk follows the rows sectionRows() returns: an overridden list is clamped against and decides what A presses', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const view = new RenameView({ onSubmit });
     view.show();
@@ -1690,12 +1568,12 @@ describe('RenameView uif-16a: the shared section interface', () => {
     // The real rows are [input, submit]; the override is the input alone.
     override16(view, { sectionRows: () => [input] });
     submit.focus();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'submit is not an overridden row: the default (field) is seated').toBe(
       'rename-input',
     );
     submit.focus();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     await flushPromises();
     expect(
       onSubmit,
@@ -1705,9 +1583,9 @@ describe('RenameView uif-16a: the shared section interface', () => {
     // A reordered override: the clamp follows the overridden order.
     override16(view, { sectionRows: () => [submit, input] });
     submit.focus();
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'down from the first overridden row is the field').toBe('rename-input');
-    view.applyRowOp(move16(1));
+    walk(view, move16(1));
     expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe('rename-input');
   });
 
@@ -1721,7 +1599,7 @@ describe('RenameView uif-16a: the shared section interface', () => {
       view.render(EMPTY16);
       input.focus();
       expect(focusedId16(), 'precondition: focus is on the field').toBe('rename-input');
-      view.applyRowOp(activate16());
+      walk(view, activate16());
       expect(clickSpy, 'empty draft: the field is never clicked').not.toHaveBeenCalled();
       expect(focusedId16(), 'empty draft: focus stays on the field').toBe('rename-input');
       expect(onSubmit, 'empty draft: nothing submitted').not.toHaveBeenCalled();
@@ -1729,7 +1607,7 @@ describe('RenameView uif-16a: the shared section interface', () => {
       input.value = 'Bob';
       view.render(ENABLED16);
       input.focus();
-      view.applyRowOp(activate16());
+      walk(view, activate16());
       await flushPromises();
       expect(clickSpy, 'submittable draft: the field is never clicked').not.toHaveBeenCalled();
       expect(focusedId16(), 'submittable draft: focus stays on the field').toBe('rename-input');
@@ -1749,12 +1627,12 @@ describe('RenameView uif-16a: the shared section interface', () => {
     view.render(ENABLED16);
 
     input.focus();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     expect(focusedId16(), 'A on the field keeps focus on it').toBe('rename-input');
     expect(onSubmit, 'and presses nothing').not.toHaveBeenCalled();
 
     submit.focus();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     await flushPromises();
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith('Bob');
@@ -1763,8 +1641,32 @@ describe('RenameView uif-16a: the shared section interface', () => {
     input.value = '   ';
     view.render(ENABLED16); // Save stays an enabled row, so the press reaches #submit's own gate
     submit.focus();
-    view.applyRowOp(activate16());
+    walk(view, activate16());
     await flushPromises();
     expect(onSubmit, 'an empty-after-trim draft never submits').not.toHaveBeenCalled();
+  });
+
+  it('UIF16B.4 the Name section is never armed, whatever its draft or pending state', () => {
+    // WRONG IMPL KILLED: a missing `armed` (undefined reads as falsy in a frame `some`, but a
+    // truthy placeholder would make ProfileView.defaultRow() treat the field as an armed No); an
+    // `armed` that follows the in-flight submit lock.
+    const view = new RenameView({ onSubmit: () => new Promise<void>(() => {}) });
+    view.show();
+    expect(view.armed, 'fresh').toBe(false);
+    view.render(ENABLED16);
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = 'Bob';
+    (document.getElementById('rename-submit') as HTMLButtonElement).click();
+    expect(view.armed, 'with a submit in flight').toBe(false);
+    view.render(EMPTY16);
+    expect(view.armed, 'empty draft').toBe(false);
+  });
+
+  it('UIF16B.2 the section no longer walks itself: it has no applyRowOp (the frame applies the token once, over the whole column)', () => {
+    // WRONG IMPL KILLED: a section that keeps its own `applyRowOp` + `#lastOp` (two identity memos
+    // over one token: the frame and a section could each apply it, or a section-scoped walk could
+    // still be wired and clamp at the section's edge).
+    const view = new RenameView({ onSubmit: async () => {} });
+    expect('applyRowOp' in view, 'no section-level applyRowOp').toBe(false);
   });
 });

@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
 /**
  * main.reconnectStack.test.ts: a reconnect closes its frames through the context stack (so-1,
- * SO1.1 to SO1.4), and keeps the unconditional view-state resets.
+ * SO1.1 to SO1.4), and keeps the unconditional view-state resets. uif-16b: the rename form, the
+ * claim view and the privacy surface are the three sections of ONE Profile frame (`profileView`),
+ * which a reconnect closes (rename's roster row wins); a claim lifecycle raised in the same cycle
+ * re-opens it on Account after the sweep (the UIF16B.6 cases).
  *
  * The pure sweep (`reconnectSweep`) and the closing roster (`RECONNECT_CLOSES`) are proven in
  * ui/contextStack.test.ts. This file proves the SHELL: that a freshly imported main.ts, with the
@@ -451,7 +454,9 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     { tag: 'TRADE', key: 'KeyU', frameId: 'social', shown: tradeShown },
     { tag: 'PVP', key: 'KeyP', frameId: 'social', shown: pvpShown },
     { tag: 'RANKINGS', key: 'KeyL', frameId: 'social', shown: rankingsShown },
-    { tag: 'RENAME', key: 'KeyN', frameId: 'renameView', shown: renameShown },
+    // uif-16b (named intentional change): KeyN opens the one Profile frame (`profileView`, whose
+    // RECONNECT_CLOSES row is rename's `true`); the Name section is shown inside it. Was: renameView.
+    { tag: 'RENAME', key: 'KeyN', frameId: 'profileView', shown: renameShown },
     { tag: 'BAG', key: 'KeyI', frameId: 'raisingView', shown: raisingShown },
   ] as const;
 
@@ -535,13 +540,15 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
       clock.t = t;
       row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     };
+    // uif-16b (named intentional change): Profile is a root leaf (no Name row beneath it), so ONE
+    // click on the Profile row opens the one Profile frame, the Name section inside it. Was: the
+    // Profile row, then the Name row, opened `renameView`.
     clickRow('profile', 1200);
-    clickRow('name', 1300);
-    expect(renameShown(), 'precondition: the Name row opened the rename form').toBe(true);
+    expect(renameShown(), 'precondition: the Profile row opened the frame, Name inside').toBe(true);
     // so-2 (named intentional change): push-then-show lists the click-opened form at once
     // (SO2.1/SO2.4); was: not yet mirrored
     expect(stackNames(), 'precondition: push-then-show listed the form at once').toContain(
-      'renameView',
+      'profileView',
     );
 
     reconnect();
@@ -676,77 +683,153 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     ]);
   });
 
-  it('SO1-1-BOOT-SURVIVE-CLAIM: the claim view opened by its accelerator is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
-    // WRONG IMPL KILLED: a roster with the claim row true, a sweep that clears every upper frame,
-    // and the claim view added to the reset pass (the view is only ever hidden by the player or by
-    // its own lifecycle).
+  // uif-16b (named intentional change): SO1-1-BOOT-SURVIVE-CLAIM, -SURVIVE-CLAIM-PENDING and
+  // -SURVIVE-PRIVACY are REPLACED by the four UIF16B.6 cases below. The Account and Privacy
+  // surfaces are sections of the ONE Profile frame, whose RECONNECT_CLOSES row is rename's `true`
+  // (the strictest of the three wins), so a reconnect now CLOSES them; a claim lifecycle the same
+  // reconnect cycle raised re-opens Profile on Account after the sweep instead of surviving it.
+  // Was: claimView and privacyView were frames of their own whose rows were `false`.
+
+  /** The three Profile sections and the frame root, shown or not, in one read. */
+  const profileShown = (): Record<string, boolean> => ({
+    frame: shownById('profile-overlay'),
+    name: renameShown(),
+    account: claimShown(),
+    privacy: privacyShown(),
+  });
+  const ALL_SHOWN = { frame: true, name: true, account: true, privacy: true };
+  const ALL_HIDDEN = { frame: false, name: false, account: false, privacy: false };
+
+  it('UIF16B.6 Profile opened by KeyC (on Account, over the menu) or by the menu`s Profile row click is closed by onReconnect, all three sections with it, and the stack read at once is the bare world; a reconnect that raised no claim event re-opens nothing', async () => {
+    // WRONG IMPL KILLED: a roster that kept claim's `false` for the merged frame (Profile survives
+    // the drop with a draft or an armed confirm behind it); a sweep that closes the frame but leaves
+    // a section shown (a section hid alone, or never); a reconnect tail that re-opens Profile with
+    // no claim event raised (the deferred claim paint flushed unconditionally: every reconnect would
+    // throw the Account section at the player); and a click-opened frame missing the sweep.
     await bootReady();
     server(1000);
     tap('KeyC', 1010);
-    expect(claimShown(), 'precondition: the accelerator opened the claim view').toBe(true);
-    expect(stackNames(), 'precondition: the claim view is over the menu').toEqual([
+    expect(profileShown(), 'precondition: KeyC opened the whole frame').toEqual(ALL_SHOWN);
+    expect(stackNames(), 'precondition: over the menu').toEqual([
       'world',
       'menuView',
-      'claimView',
+      'profileView',
     ]);
 
     reconnect();
 
-    expect(menuShown(), 'the menu beneath it is closed').toBe(false);
-    expect(claimShown(), 'the claim view is still shown').toBe(true);
-    expect(stack(), 'and is the one frame left on the stack, read at once').toEqual([
-      { kind: 'world' },
-      { kind: 'screen', id: 'claimView' },
-    ]);
+    expect(profileShown(), 'every section is closed with the frame').toEqual(ALL_HIDDEN);
+    expect(menuShown(), 'and so is the menu').toBe(false);
+    expect(stack(), 'the stack, read at once, is the bare world').toEqual(WORLD_ONLY);
+    frame(1100);
+    expect(profileShown(), 'a frame afterwards re-opens nothing').toEqual(ALL_HIDDEN);
+    expect(stack()).toEqual(WORLD_ONLY);
+
+    openByMenuClicks(['profile'], 1200);
+    expect(profileShown(), 'precondition: the Profile row click opened the frame').toEqual(
+      ALL_SHOWN,
+    );
+    reconnect();
+    expect(profileShown(), 'the click-opened frame is closed too').toEqual(ALL_HIDDEN);
+    expect(stack(), 'the bare world').toEqual(WORLD_ONLY);
   });
 
-  it('SO1-1-BOOT-SURVIVE-CLAIM-PENDING: a claim prompt the connection layer just opened (onClaimPending, which fires right before onReconnect and shows the view with no stack sync) is still shown and listed on the stack right after onReconnect', async () => {
-    // WRONG IMPL KILLED: the claim view added to the reset pass (it would close a claim prompt that
-    // was opened a moment before, in the same reconnect: the player loses the prompt and the code
-    // stays retained behind a veto); a roster with the claim row true; and a reconnect that sweeps
-    // the stack as it stands without a sync first (the prompt is shown but the stack cannot yet
-    // list it, so the read at once would be the bare world over a shown overlay).
+  it.each([
+    { label: 'onClaimPending', raise: (o: ConnectionOptions) => o.onClaimPending?.('claim-code') },
+    {
+      label: 'onClaimAwaitingAccount',
+      raise: (o: ConnectionOptions) => o.onClaimAwaitingAccount?.(),
+    },
+  ])('UIF16B.6 a reconnect cycle that raised $label BEFORE onReconnect (connection.ts order) leaves Profile open on Account AFTER onReconnect returns: the frame alone on the world, every section shown, focus inside the Account section', async ({
+    label,
+    raise,
+  }) => {
+    // WRONG IMPL KILLED: the claim callback painting (and so opening Profile) at once, before the
+    // sweep: `RECONNECT_CLOSES.profileView` is true, so the same reconnect closes the prompt the
+    // player was just shown and the code stays retained behind a veto with no UI; a deferred paint
+    // that is never flushed by the reconnect's tail (nothing opens); a flush that opens Profile on
+    // Name (focus left in the field, the claim prompt unread); and a callback main.ts never wired.
     await bootReady();
     server(1000);
-    const onClaimPending = opts.onClaimPending;
-    if (onClaimPending === undefined) throw new Error('onClaimPending was not wired by main.ts');
-    onClaimPending('claim-code');
-    expect(claimShown(), 'precondition: the claim prompt is shown').toBe(true);
-    // so-2 (named intentional change): push-then-show lists the claim prompt at once (SO2.1/SO2.4);
-    // was: not yet mirrored
-    expect(stackNames(), 'precondition: push-then-show listed it at once').toEqual([
-      'world',
-      'claimView',
-    ]);
-
+    expect(
+      label === 'onClaimPending' ? opts.onClaimPending : opts.onClaimAwaitingAccount,
+      `${label} must be wired by main.ts`,
+    ).toBeTypeOf('function');
+    raise(opts);
     reconnect();
 
-    expect(claimShown(), 'the claim prompt is still shown').toBe(true);
-    expect(stack(), 'and listed on the stack, read at once').toEqual([
+    expect(profileShown(), `${label}: Profile is open after the reconnect`).toEqual(ALL_SHOWN);
+    expect(stack(), `${label}: the frame alone over the world, read at once`).toEqual([
       { kind: 'world' },
-      { kind: 'screen', id: 'claimView' },
+      { kind: 'screen', id: 'profileView' },
     ]);
+    const focused = document.activeElement as HTMLButtonElement | null;
+    expect(
+      focused !== null && byId('claim-overlay').contains(focused),
+      `${label}: focus is inside the Account section`,
+    ).toBe(true);
+    expect(focused?.tagName, `${label}: on an Account row`).toBe('BUTTON');
+    expect(focused?.disabled, `${label}: an enabled one`).toBe(false);
+    expect(isShown(focused as Element), `${label}: that is on screen`).toBe(true);
+    await flush();
+    expect(
+      byId('claim-overlay').contains(document.activeElement),
+      `${label}: the deferred Name anchor does not pull focus out of Account`,
+    ).toBe(true);
   });
 
-  it('SO1-1-BOOT-SURVIVE-PRIVACY: the privacy surface opened from the menu (its row click, which no stack sync follows) is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
-    // WRONG IMPL KILLED: a roster with the privacy row true, a sweep that clears every upper frame,
-    // the privacy view added to the reset pass (its hide() runs onDismissed and disarms an armed
-    // delete confirmation: a reconnect must not close a surface the player is reading), and a
-    // reconnect that does not sync first (the surface is shown but not yet listed).
+  it('UIF16B.6 a battle arriving with Profile open closes it: all three sections hidden, the stack back to the bare battle base, and an armed decline is disarmed by the close (its Yes and No are painted away)', async () => {
+    // WRONG IMPL KILLED: a battle policy row for the merged frame that is not PLAYER_DROP (Profile
+    // left over the battle, or suspended beneath it); a force-hide that hides a section but not the
+    // frame (or the frame but not its sections); and a close that leaves the claim decline armed
+    // behind the hidden frame (one column makes the armed Yes reachable from the Name field the next
+    // time Profile opens: plan review RT-1).
     await bootReady();
     server(1000);
-    openByMenuClicks(['profile', 'privacy'], 1100);
-    expect(privacyShown(), 'precondition: the Privacy row opened the surface').toBe(true);
-    expect(menuShown(), 'precondition: the menu stays open beneath it').toBe(true);
+    tap('KeyC', 1010);
+    expect(profileShown(), 'precondition: Profile is open').toEqual(ALL_SHOWN);
+    const decline = byId('claim-decline-btn');
+    expect(isShown(decline), 'precondition: Decline is offered').toBe(true);
+    decline.click();
+    expect(isShown(byId('claim-decline-cancel-btn')), 'precondition: the decline is armed').toBe(
+      true,
+    );
+
+    putBattle(BATTLE_ID, 1100);
+
+    expect(battleShown(), 'the battle is on screen').toBe(true);
+    expect(profileShown(), 'Profile and every section are closed').toEqual(ALL_HIDDEN);
+    expect(stack(), 'the stack is the bare battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+    expect(
+      byId('claim-decline-confirm-btn').style.display,
+      'the armed Yes is painted away by the close',
+    ).toBe('none');
+    expect(byId('claim-decline-cancel-btn').style.display, 'and its No').toBe('none');
+    expect(byId('claim-confirm').textContent, 'no confirm prompt is left').toBe('');
+  });
+
+  it('UIF16B.6 SO1-2 for the merged frame: onReconnect runs ProfileView`s own hide() (the owning view, which clears the Name draft through its section) although nothing is open and the stack is the bare world', async () => {
+    // uif-16b (named intentional change): the rename row of RECONNECT_RESETS becomes the owning
+    // frame's hide (a section never hides alone). The RenameView row of PROTECTED_VIEWS above still
+    // holds (the frame's hide hides every section); this pins that the reset goes through the frame.
+    // WRONG IMPL KILLED: a reset row that still calls `renameView.hide()` directly (the frame's own
+    // close, and with it the privacy and decline disarm, never runs on a drop with nothing open).
+    await bootReady();
+    server(1000);
+    const { ProfileView } = await import('./ui/profileView');
+    const hide = vi.spyOn(ProfileView.prototype, 'hide');
+    expect(stackNames(), 'precondition: nothing is open: the bare world').toEqual(['world']);
+    const before = hide.mock.calls.length;
 
     reconnect();
 
-    expect(menuShown(), 'the menu beneath it is closed').toBe(false);
-    expect(privacyShown(), 'the privacy surface is still shown').toBe(true);
-    expect(stack(), 'and is the one frame left on the stack, read at once').toEqual([
-      { kind: 'world' },
-      { kind: 'screen', id: 'privacyView' },
-    ]);
+    expect(
+      hide.mock.calls.length - before,
+      'ProfileView.hide() ran on the reconnect',
+    ).toBeGreaterThanOrEqual(1);
+    expect(stack(), 'the stack is still the bare world').toEqual(WORLD_ONLY);
   });
 
   it('SO1-1-BOOT-SURVIVE-CONTROLS: Options > Controls opened from the menu is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
@@ -888,7 +971,10 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
       document.getElementById('rename-feedback'),
       'the retired line is not in the shell',
     ).toBeNull();
-    byId('rename-overlay').style.display = 'none';
+    // uif-16b (named intentional change): the root forced hidden is the owning frame's
+    // `#profile-overlay` (the Name section is no frame of its own: hiding only it pops nothing).
+    // Was: `#rename-overlay`.
+    byId('profile-overlay').style.display = 'none';
     frame(1100);
     expect(stackNames(), 'precondition: the mirror popped the form, the menu stays').toEqual([
       'world',

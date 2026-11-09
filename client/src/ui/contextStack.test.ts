@@ -139,7 +139,10 @@ function deepFrozen(s: Stack): Stack {
 const BOX: OverlayId = 'boxView';
 const PVP: OverlayId = 'pvpView';
 const TRADE: OverlayId = 'tradeView';
-const RENAME: OverlayId = 'renameView';
+// uif-16b (named intentional change): the generic text-entry owner fixture was `RENAME`
+// ('renameView'); that id is now a section of Profile, so the fixture is the frame that owns the
+// name field. Every row that used it keeps its claim.
+const PROFILE: OverlayId = 'profileView';
 
 describe('context stack: pure core (ctl-2)', () => {
   it('CTL2-1-STEP: push appends a new id once, a duplicate push is a no-op, pop removes a frame wherever it sits, a base edge keeps the frames above it', () => {
@@ -172,8 +175,8 @@ describe('context stack: pure core (ctl-2)', () => {
       {
         name: 'push text entry over a screen (owner is a different id)',
         from: stackOf(WORLD, screen(BOX)),
-        edge: pushEdge(textEntry(RENAME)),
-        to: stackOf(WORLD, screen(BOX), textEntry(RENAME)),
+        edge: pushEdge(textEntry(PROFILE)),
+        to: stackOf(WORLD, screen(BOX), textEntry(PROFILE)),
         commands: CLEAR,
       },
       {
@@ -192,9 +195,9 @@ describe('context stack: pure core (ctl-2)', () => {
       },
       {
         name: 'text entry whose owner is already on the stack is a no-op',
-        from: stackOf(WORLD, screen(RENAME)),
-        edge: pushEdge(textEntry(RENAME)),
-        to: stackOf(WORLD, screen(RENAME)),
+        from: stackOf(WORLD, screen(PROFILE)),
+        edge: pushEdge(textEntry(PROFILE)),
+        to: stackOf(WORLD, screen(PROFILE)),
         commands: NONE,
       },
       {
@@ -234,8 +237,8 @@ describe('context stack: pure core (ctl-2)', () => {
       },
       {
         name: 'pop a text-entry frame by its owner id',
-        from: stackOf(WORLD, textEntry(RENAME)),
-        edge: popEdge(RENAME),
+        from: stackOf(WORLD, textEntry(PROFILE)),
+        edge: popEdge(PROFILE),
         to: WORLD_STACK,
         commands: NONE,
       },
@@ -411,7 +414,7 @@ describe('context stack: pure core (ctl-2)', () => {
       'pops come before pushes',
     ).toEqual([popEdge(BOX), pushEdge(screen('questLogView'))]);
     expect(
-      mirrorEdges(stackOf(WORLD, prompt('shopView'), textEntry(RENAME)), ['shopView', RENAME]),
+      mirrorEdges(stackOf(WORLD, prompt('shopView'), textEntry(PROFILE)), ['shopView', PROFILE]),
       'a prompt or text-entry frame already holding a visible id is left alone',
     ).toEqual([]);
     expect(
@@ -504,7 +507,7 @@ describe('context stack: pure core (ctl-2)', () => {
     expect(movementEnabled(WORLD_STACK, true), 'bare world, session gate set').toBe(false);
     expect(movementEnabled(stackOf(WORLD, screen(BOX)), false), 'world + screen').toBe(false);
     expect(movementEnabled(stackOf(WORLD, prompt(PVP)), false), 'world + prompt').toBe(false);
-    expect(movementEnabled(stackOf(WORLD, textEntry(RENAME)), false), 'world + text entry').toBe(
+    expect(movementEnabled(stackOf(WORLD, textEntry(PROFILE)), false), 'world + text entry').toBe(
       false,
     );
     expect(
@@ -527,7 +530,7 @@ describe('context stack: pure core (ctl-2)', () => {
       ['no frames', []],
       ['screen', [screen(BOX)]],
       ['prompt', [prompt(PVP)]],
-      ['text entry', [textEntry(RENAME)]],
+      ['text entry', [textEntry(PROFILE)]],
       ['two screens', [screen(BOX), screen(PVP)]],
       ['battleView outcome frame', [screen('battleView')]],
     ];
@@ -566,7 +569,7 @@ describe('context stack: pure core (ctl-2)', () => {
       {
         name: 'push new text entry',
         from: WORLD_STACK,
-        edge: pushEdge(textEntry(RENAME)),
+        edge: pushEdge(textEntry(PROFILE)),
         commands: CLEAR,
       },
       {
@@ -678,11 +681,12 @@ const upperIdsOf = (s: Stack): readonly FrameId[] =>
   (s.slice(1) as readonly UpperFrame[]).map(frameId);
 const sortedIds = (xs: readonly string[]): string[] => [...xs].sort();
 
-/** The 16 ids a battle (or an outcome frame) drops and a conversation takes: every overlay but the
+/** The 14 ids a battle (or an outcome frame) drops and a conversation takes: every overlay but the
  *  two server-owned ones. HARD-CODED. ctl-12b (named intentional change): `controlsView` (Options ›
  *  Controls, a player frame, not battle-safe) joins. Was: 15. so-2 (named intentional change):
- *  this is also the openFrame-owned set, the frames that reach the stack only through `openFrame`;
- *  the count stays 16. */
+ *  this is also the openFrame-owned set, the frames that reach the stack only through `openFrame`.
+ *  uif-16b (named intentional change): 16 -> 14: renameView, claimView, privacyView left (sections of
+ *  Profile now), profileView joined at renameView's slot. */
 const PLAYER_IDS: ReadonlyArray<Exclude<OverlayId, 'battleView' | 'dialogueView'>> = [
   'boxView',
   'raisingView',
@@ -693,16 +697,15 @@ const PLAYER_IDS: ReadonlyArray<Exclude<OverlayId, 'battleView' | 'dialogueView'
   'tradeView',
   'pvpView',
   'leaderboardView',
-  'renameView',
+  'profileView',
   'tradeProposeView',
   'helpView',
   'menuView',
-  'claimView',
-  'privacyView',
   'controlsView',
 ];
-/** One frame per player id, in PLAYER_IDS order, in all three frame kinds (pvp is a prompt, rename a
- *  text entry) so a pop-by-id is exercised for each kind. */
+/** One frame per player id, in PLAYER_IDS order, in all three frame kinds (pvp is a prompt, Profile
+ *  a text entry: it owns the name field) so a pop-by-id is exercised for each kind.
+ *  uif-16b (named intentional change): 16 -> 14, the same three out and profileView in. */
 const PLAYER_FRAMES: readonly UpperFrame[] = [
   screen('boxView'),
   screen('raisingView'),
@@ -713,12 +716,10 @@ const PLAYER_FRAMES: readonly UpperFrame[] = [
   screen('tradeView'),
   prompt('pvpView'),
   screen('leaderboardView'),
-  textEntry('renameView'),
+  textEntry('profileView'),
   screen('tradeProposeView'),
   screen('helpView'),
   screen('menuView'),
-  screen('claimView'),
-  screen('privacyView'),
   screen('controlsView'),
 ];
 
@@ -756,7 +757,7 @@ function scenarioArb(
 }
 
 describe('context stack: reconcile server truth (ctl-3)', () => {
-  it('CTL3-2-DROP-EXACT: a battle drops EXACTLY the 16 player ids, in stack order, and nothing else; a world with no battle and no outcome frame drops nothing', () => {
+  it('CTL3-2-DROP-EXACT: a battle drops EXACTLY the 14 player ids, in stack order, and nothing else; a world with no battle and no outcome frame drops nothing', () => {
     // WRONG IMPL KILLED: the old 9-id list (shop, trade, pvp, quest log, heal and claim left
     // painted under the battle); a drop list derived from the policy table; a drop that also takes
     // dialogueView or battleView; a drop keyed to the id table's order instead of the stack's; one
@@ -768,7 +769,8 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     // set (every frame that reaches the stack only through `openFrame`; the count stays 16) and
     // pinned equal to OVERLAY_IDS minus the hand-spelled mirrored pair (battleView, dialogueView),
     // not to the literal plus that pair. `MIRRORED_IDS` must be that pair.
-    expect(PLAYER_IDS).toHaveLength(16);
+    // uif-16b (named intentional change): 16 -> 14: renameView, claimView, privacyView left, profileView joined.
+    expect(PLAYER_IDS).toHaveLength(14);
     expect(PLAYER_FRAMES.map(frameId)).toEqual([...PLAYER_IDS]);
     expect(
       sortedIds(OVERLAY_IDS.filter((id) => id !== 'battleView' && id !== 'dialogueView')),
@@ -779,20 +781,22 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       'dialogueView',
     ]);
 
-    // A new battle over every player frame: all 16 popped, 16 closes in stack order, one clearHeld.
+    // A new battle over every player frame: all 14 popped, 14 closes in stack order, one clearHeld.
     const a = reconcile(deepFrozen(stackOf(WORLD, ...PLAYER_FRAMES)), serverView('7', false));
     expect(a.stack, 'A: only the battle base is left').toEqual(stackOf(battle('7')));
     expect(closeIds(a.commands), 'A: one close per player id, in stack order').toEqual([
       ...PLAYER_IDS,
     ]);
     expect(clearHeldCount(a.commands), 'A: the base kind change clears held once').toBe(1);
-    expect(a.commands, 'A: nothing but those 17 commands').toHaveLength(17);
+    // uif-16b (named intentional change): 17 -> 15 (14 closes + 1 clearHeld): the same three out, profileView in.
+    expect(a.commands, 'A: nothing but those 15 commands').toHaveLength(15);
 
     // The same frames over an ALREADY-ongoing battle: same drops, no base change, no clearHeld.
     const b = reconcile(deepFrozen(stackOf(battle('7'), ...PLAYER_FRAMES)), serverView('7', false));
     expect(b.stack, 'B: only the battle base is left').toEqual(stackOf(battle('7')));
     expect(closeIds(b.commands)).toEqual([...PLAYER_IDS]);
-    expect(b.commands, 'B: no clearHeld without a base kind change').toHaveLength(16);
+    // uif-16b (named intentional change): 16 -> 14 closes: the same three out, profileView in.
+    expect(b.commands, 'B: no clearHeld without a base kind change').toHaveLength(14);
 
     // Stack order, not table order: the reversed stack closes in the reversed order.
     const reversedFrames = [...PLAYER_FRAMES].reverse();
@@ -849,6 +853,9 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     // a battle drops, and is checked against the 18 frame ids. Was: 17 overlay ids.
     // ctl-12b INTENTIONAL CHANGE: the literal gains `controlsView` (Options › Controls), a player
     // frame a battle drops; 19 frame ids. Was: 18.
+    // uif-16b INTENTIONAL CHANGE (UIF16B.6): renameView, claimView and privacyView (all three
+    // player/drop) leave and the one profileView row takes their shared player/drop; 17 frame ids.
+    // Was: 19.
     const expected: ReadonlyArray<
       readonly [FrameId, 'player' | 'server', 'drop' | 'suspend' | undefined]
     > = [
@@ -863,16 +870,15 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       ['tradeView', 'player', 'drop'],
       ['pvpView', 'player', 'drop'],
       ['leaderboardView', 'player', 'drop'],
-      ['renameView', 'player', 'drop'],
+      ['profileView', 'player', 'drop'],
       ['tradeProposeView', 'player', 'drop'],
       ['helpView', 'player', 'drop'],
       ['menuView', 'player', 'drop'],
-      ['claimView', 'player', 'drop'],
-      ['privacyView', 'player', 'drop'],
       ['controlsView', 'player', 'drop'],
       ['social', 'player', 'drop'],
     ];
-    expect(expected, 'ANTI-VACUITY: the literal covers all 19 frame ids').toHaveLength(19);
+    // uif-16b (named intentional change): 19 -> 17: renameView, claimView, privacyView left, profileView joined.
+    expect(expected, 'ANTI-VACUITY: the literal covers all 17 frame ids').toHaveLength(17);
     expect(sortedIds(expected.map(([id]) => id))).toEqual(sortedIds(FRAME_IDS));
     for (const [id, owner, onBattle] of expected) {
       expect(SCREEN_POLICY[id].owner, `${id}.owner`).toBe(owner);
@@ -1091,19 +1097,20 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       'popped by both rules, closed once each, in stack order, no other command',
     ).toEqual([closeCmd('boxView'), closeCmd('helpView'), closeCmd('shopView')]);
 
+    // uif-16b: the text-entry owner is Profile (renameView is a section now); the claim is unchanged.
     const kinds = reconcile(
-      deepFrozen(stackOf(WORLD, prompt('pvpView'), textEntry('renameView'))),
+      deepFrozen(stackOf(WORLD, prompt('pvpView'), textEntry('profileView'))),
       serverView('3', false),
     );
     expect(kinds.stack).toEqual(stackOf(battle('3')));
     expect(closeIds(kinds.commands), 'a prompt and a text-entry frame close by their id').toEqual([
       'pvpView',
-      'renameView',
+      'profileView',
     ]);
     expect(
       kinds.commands.filter((c) => c.kind === 'close'),
       'the close payload is exactly { kind, id }',
-    ).toEqual([closeCmd('pvpView'), closeCmd('renameView')]);
+    ).toEqual([closeCmd('pvpView'), closeCmd('profileView')]);
 
     const none = reconcile(
       deepFrozen(stackOf(WORLD, screen('boxView'))),
@@ -1171,13 +1178,13 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     );
     expect(unflagged.commands).toEqual([]);
 
-    // Every player id, in every frame kind: the flag drops all 16 exactly as a battle does.
+    // Every player id, in every frame kind: the flag drops all 14 exactly as a battle does.
     const all = reconcile(
       deepFrozen(stackOf(WORLD, ...PLAYER_FRAMES)),
       serverView(undefined, false, true),
     );
     expect(all.stack).toEqual(WORLD_STACK);
-    expect(all.commands, 'exactly the 16 closes in stack order').toEqual(PLAYER_IDS.map(closeCmd));
+    expect(all.commands, 'exactly the 14 closes in stack order').toEqual(PLAYER_IDS.map(closeCmd));
 
     // It never pushes: a bare world stays bare.
     const bare = reconcile(deepFrozen(WORLD_STACK), serverView(undefined, false, true));
@@ -1208,7 +1215,7 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     expect(again.commands).toEqual([]);
   });
 
-  it('CTL3-4-CONV-APPEARS: a server conversation pops and closes all 16 player frames, keeps the dialogue frame, and reconcile never pushes one', () => {
+  it('CTL3-4-CONV-APPEARS: a server conversation pops and closes all 14 player frames, keeps the dialogue frame, and reconcile never pushes one', () => {
     // WRONG IMPL KILLED: a conversation that leaves some player overlay painted behind the
     // dialogue (a second modal root; only the menu was preempted before), one that pops the
     // dialogue frame it is there to serve, one that pushes a dialogue frame itself (the mirror
@@ -1218,7 +1225,7 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       serverView(undefined, true),
     );
     expect(withDialogue.stack).toEqual(stackOf(WORLD, screen('dialogueView')));
-    expect(withDialogue.commands, 'exactly the 16 closes in stack order, nothing else').toEqual(
+    expect(withDialogue.commands, 'exactly the 14 closes in stack order, nothing else').toEqual(
       PLAYER_IDS.map(closeCmd),
     );
 
@@ -1338,12 +1345,14 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
         blocks: true,
       },
       { name: 'world + prompt', stack: stackOf(WORLD, prompt('pvpView')), blocks: true },
-      { name: 'world + text entry', stack: stackOf(WORLD, textEntry('renameView')), blocks: true },
+      { name: 'world + text entry', stack: stackOf(WORLD, textEntry('profileView')), blocks: true },
     ];
     for (const id of PLAYER_IDS) {
       rows.push({ name: `world + ${id}`, stack: stackOf(WORLD, screen(id)), blocks: true });
     }
-    expect(rows, 'ANTI-VACUITY: 9 named rows + 16 player ids').toHaveLength(25);
+    // uif-16b (named intentional change): 9 + 16 = 25 -> 9 + 14 = 23: renameView, claimView,
+    // privacyView left PLAYER_IDS, profileView joined.
+    expect(rows, 'ANTI-VACUITY: 9 named rows + 14 player ids').toHaveLength(23);
     for (const row of rows) {
       expect(blocksPlayerOpen(deepFrozen(row.stack)), row.name).toBe(row.blocks);
     }
@@ -1376,7 +1385,7 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
       [
         {
           name: 'three frames of three kinds over the world',
-          from: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(RENAME)),
+          from: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(PROFILE)),
           to: WORLD_STACK,
         },
         { name: 'one frame over the world', from: stackOf(WORLD, screen(BOX)), to: WORLD_STACK },
@@ -1430,15 +1439,16 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
           to: stackOf(WORLD, screen(BOX), screen(PVP)),
         },
         {
+          // uif-16b: the frame over the menu is Profile (claimView is a section now).
           name: 'two frames: back to the first',
-          from: stackOf(WORLD, screen('menuView'), screen('claimView')),
+          from: stackOf(WORLD, screen('menuView'), screen('profileView')),
           to: stackOf(WORLD, screen('menuView')),
         },
         { name: 'one frame closes', from: stackOf(WORLD, screen(BOX)), to: WORLD_STACK },
         {
           name: 'a text-entry frame sharing its owner`s id leaves the owner standing',
-          from: stackOf(WORLD, screen(RENAME), textEntry(RENAME)),
-          to: stackOf(WORLD, screen(RENAME)),
+          from: stackOf(WORLD, screen(PROFILE), textEntry(PROFILE)),
+          to: stackOf(WORLD, screen(PROFILE)),
         },
         {
           name: 'a prompt on top',
@@ -1504,21 +1514,22 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
     }> = [
       {
         name: 'everything closes, top first',
-        prev: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(RENAME)),
+        prev: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(PROFILE)),
         next: stackOf(WORLD),
-        closed: [textEntry(RENAME), prompt(PVP), screen(BOX)],
+        closed: [textEntry(PROFILE), prompt(PVP), screen(BOX)],
       },
       {
         name: 'the top two close, top first',
-        prev: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(RENAME)),
+        prev: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(PROFILE)),
         next: stackOf(WORLD, screen(BOX)),
-        closed: [textEntry(RENAME), prompt(PVP)],
+        closed: [textEntry(PROFILE), prompt(PVP)],
       },
       {
+        // uif-16b: the frame over the menu is Profile (claimView is a section now).
         name: 'a single pop',
-        prev: stackOf(WORLD, screen('menuView'), screen('claimView')),
+        prev: stackOf(WORLD, screen('menuView'), screen('profileView')),
         next: stackOf(WORLD, screen('menuView')),
-        closed: [screen('claimView')],
+        closed: [screen('profileView')],
       },
       {
         name: 'nothing changed',
@@ -1540,15 +1551,15 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
       },
       {
         name: 'a text entry is a different frame from a screen of the same owner',
-        prev: stackOf(WORLD, screen(RENAME)),
-        next: stackOf(WORLD, textEntry(RENAME)),
-        closed: [screen(RENAME)],
+        prev: stackOf(WORLD, screen(PROFILE)),
+        next: stackOf(WORLD, textEntry(PROFILE)),
+        closed: [screen(PROFILE)],
       },
       {
         name: 'the text entry closes alone and the owner screen stays',
-        prev: stackOf(WORLD, screen(RENAME), textEntry(RENAME)),
-        next: stackOf(WORLD, screen(RENAME)),
-        closed: [textEntry(RENAME)],
+        prev: stackOf(WORLD, screen(PROFILE), textEntry(PROFILE)),
+        next: stackOf(WORLD, screen(PROFILE)),
+        closed: [textEntry(PROFILE)],
       },
       {
         name: 'a screen is a different frame from a prompt of the same id',
@@ -1659,8 +1670,10 @@ const SAFE_OVER_BATTLE: readonly FrameId[] = [
   'helpView',
   'menuView',
 ];
-/** The other twelve player overlays: not battleSafe. HARD-CODED. ctl-12b (named intentional
- *  change): `controlsView` joins (the menu disables Controls over a battle). Was: eleven. */
+/** The other ten player overlays: not battleSafe. HARD-CODED. ctl-12b (named intentional
+ *  change): `controlsView` joins (the menu disables Controls over a battle). Was: eleven.
+ *  uif-16b (named intentional change): twelve -> ten: renameView, claimView, privacyView (none
+ *  battle-safe) left, profileView (not battle-safe: the strictest of the three) joined. */
 const UNSAFE_OVER_BATTLE: readonly FrameId[] = [
   'boxView',
   'raisingView',
@@ -1669,10 +1682,8 @@ const UNSAFE_OVER_BATTLE: readonly FrameId[] = [
   'shopView',
   'tradeView',
   'pvpView',
-  'renameView',
+  'profileView',
   'tradeProposeView',
-  'claimView',
-  'privacyView',
   'controlsView',
 ];
 
@@ -1846,10 +1857,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     expect(b.commands, 'b: nothing closed').toEqual([]);
 
     // (c) every non-safe id is dropped even when stamped; one close each, in stack order.
-    expect(UNSAFE_OVER_BATTLE, 'ANTI-VACUITY: twelve non-safe ids').toHaveLength(12);
+    // uif-16b (named intentional change): 12 -> 10: renameView, claimView, privacyView left, profileView joined.
+    expect(UNSAFE_OVER_BATTLE, 'ANTI-VACUITY: ten non-safe ids').toHaveLength(10);
     expect(
       sortedIds([...SAFE_OVER_BATTLE, ...UNSAFE_OVER_BATTLE]),
-      'ANTI-VACUITY: safe plus non-safe is the 16 player ids',
+      'ANTI-VACUITY: safe plus non-safe is the 14 player ids',
     ).toEqual(sortedIds(PLAYER_IDS));
     const unsafe = UNSAFE_OVER_BATTLE.map((id) => stamped(id, '7'));
     const c = reconcile(deepFrozen(stackOf(battle('7'), ...unsafe)), serverView('7', false));
@@ -1857,7 +1869,8 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     expect(closeIds(c.commands), 'c: one close each, in stack order').toEqual([
       ...UNSAFE_OVER_BATTLE,
     ]);
-    expect(c.commands, 'c: nothing but the closes').toHaveLength(12);
+    // uif-16b (named intentional change): 12 -> 10 closes, the same three out and profileView in.
+    expect(c.commands, 'c: nothing but the closes').toHaveLength(10);
     const mixed = reconcile(
       deepFrozen(stackOf(battle('7'), M7, stamped('boxView', '7'), stamped('questLogView', '7'))),
       serverView('7', false),
@@ -1994,7 +2007,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
 
   it('the SCREEN_POLICY battleSafe column is exactly the literal table: battleView, questLogView, leaderboardView, helpView and menuView are battle-safe and no other frame id is', () => {
     // WRONG IMPL KILLED: any single flag flipped. The reconcile cases above see the column only
-    // through the 16 player ids; battleView's and dialogueView's flags are observable nowhere else,
+    // through the 14 player ids; battleView's and dialogueView's flags are observable nowhere else,
     // and a dialogue marked battle-safe would read as a screen the battle allows. A box, a shop or a
     // trade marked battle-safe would stay open over a battle; a menu or help that is not would close
     // on the next batch after Start opened it (CTL6C.1). A row that goes missing fails the totality.
@@ -2004,6 +2017,9 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // ctl-12b INTENTIONAL CHANGE: the literal and the totality span the 19 frame ids; Options ›
     // Controls is NOT battle-safe (the menu disables it over a battle), so the battle-safe count
     // stays five. Was: 18.
+    // uif-16b INTENTIONAL CHANGE (UIF16B.6): renameView, claimView and privacyView (all false)
+    // leave; profileView is false (the strictest of the three, all not battle-safe); 17 frame ids,
+    // still exactly five battle-safe. Was: 19.
     const expected: Readonly<Record<FrameId, boolean>> = {
       battleView: true,
       boxView: false,
@@ -2016,12 +2032,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       tradeView: false,
       pvpView: false,
       leaderboardView: true,
-      renameView: false,
+      profileView: false,
       tradeProposeView: false,
       helpView: true,
       menuView: true,
-      claimView: false,
-      privacyView: false,
       controlsView: false,
       social: false,
     };
@@ -2072,7 +2086,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       { name: 'a battle with a prompt', stack: stackOf(battle('7'), prompt(PVP)), bare: false },
       {
         name: 'a battle with a text entry',
-        stack: stackOf(battle('7'), textEntry(RENAME)),
+        stack: stackOf(battle('7'), textEntry(PROFILE)),
         bare: false,
       },
       {
@@ -2389,7 +2403,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       },
       {
         name: 'a battle with a prompt and a text entry',
-        stack: stackOf(battle('7'), prompt('pvpView'), textEntry('renameView')),
+        stack: stackOf(battle('7'), prompt('pvpView'), textEntry('profileView')),
       },
     ];
     for (const { name, stack } of battleStacks) {
@@ -2580,7 +2594,7 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
         screen('boxView'),
         prompt('pvpView'),
         stampedDialogue,
-        textEntry('renameView'),
+        textEntry('profileView'),
         stamped('menuView', '7'),
       ),
     );
@@ -2868,9 +2882,9 @@ describe('context stack: the one Social frame (ctl-8s, CTL8S.3)', () => {
     ).toEqual([popEdge('social')]);
     // A frame shown beside a standing Social frame is pushed alone.
     expect(
-      mirrorEdges(deepFrozen(stackOf(WORLD, SOCIAL)), ['pvpView', 'claimView']),
+      mirrorEdges(deepFrozen(stackOf(WORLD, SOCIAL)), ['pvpView', 'profileView']),
       'a new frame above Social',
-    ).toEqual([pushEdge(screen('claimView'))]);
+    ).toEqual([pushEdge(screen('profileView'))]);
 
     // Generated: whatever the start stack and the visible list, no panel frame is pushed, social
     // is pushed once exactly when a panel shows and it is not on the stack, the folded stack holds
@@ -3076,7 +3090,7 @@ describe('context stack: the accelerator denial (ctl-11a, CTL11A.2)', () => {
       },
       {
         name: 'a text entry under a player screen',
-        stack: stackOf(WORLD, textEntry(RENAME), screen('helpView')),
+        stack: stackOf(WORLD, textEntry(PROFILE), screen('helpView')),
         deny: false,
       },
       {
@@ -3151,9 +3165,13 @@ describe('context stack: the accelerator denial (ctl-11a, CTL11A.2)', () => {
  *  True: the ten views the legacy block hid (the Social frame standing for its three panels) plus
  *  the outcome frame of `battleView`. False: the frames opened at the world that read no store
  *  state and hold no lock (they survive a drop, as they always have), and the dialogue. */
+// uif-16b (named intentional change, UIF16B.6): 19 -> 17 rows. renameView (true), claimView
+// (false) and privacyView (false) leave; profileView joins TRUE (rename's row wins: the Name section
+// holds a draft and a submit lock a drop must clear), so the closing rows stay eleven (11 true / 8
+// false -> 11 true / 6 false).
 const SO1_ROSTER: Readonly<Record<FrameId, boolean>> = {
   menuView: true,
-  renameView: true,
+  profileView: true,
   tradeProposeView: true,
   shopView: true,
   social: true,
@@ -3167,8 +3185,6 @@ const SO1_ROSTER: Readonly<Record<FrameId, boolean>> = {
   questLogView: false,
   healView: false,
   helpView: false,
-  claimView: false,
-  privacyView: false,
   controlsView: false,
   dialogueView: false,
 };
@@ -3200,9 +3216,10 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
       },
       {
         name: 'four closing ids, one of them a prompt',
+        // uif-16b: Profile stands where rename stood (renameView is a section now).
         from: stackOf(
           WORLD,
-          screen('renameView'),
+          screen('profileView'),
           prompt('tradeProposeView'),
           screen('evolutionView'),
           screen('raisingView'),
@@ -3212,7 +3229,7 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
           so1Close('raisingView'),
           so1Close('evolutionView'),
           so1Close('tradeProposeView'),
-          so1Close('renameView'),
+          so1Close('profileView'),
         ],
       },
       {
@@ -3286,21 +3303,23 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
         commands: [so1Close('menuView')],
       },
       {
-        name: 'heal and privacy and controls and claim, one closing frame between',
+        // uif-16b: privacy and claim were two of the non-closing rows; they are sections of Profile
+        // now (and Profile closes), so the survivors are the other non-closing ids, help and box.
+        name: 'heal and help and controls and box, one closing frame between',
         from: stackOf(
           WORLD,
           screen('healView'),
-          screen('privacyView'),
+          screen('helpView'),
           screen('pvpView'),
           screen('controlsView'),
-          screen('claimView'),
+          screen('boxView'),
         ),
         to: stackOf(
           WORLD,
           screen('healView'),
-          screen('privacyView'),
+          screen('helpView'),
           screen('controlsView'),
-          screen('claimView'),
+          screen('boxView'),
         ),
         commands: [so1Close('pvpView')],
       },
@@ -3365,8 +3384,10 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
         keptChecked += 1;
       }
     }
-    expect(stampedChecked, 'ANTI-VACUITY: eighteen ids, three stamped shapes each').toBe(54);
-    expect(keptChecked, 'ANTI-VACUITY: the seven non-closing, non-dialogue ids stay').toBe(7);
+    // uif-16b (named intentional change): 18x3 = 54 -> 16x3 = 48, and 7 -> 5 kept (claimView and
+    // privacyView, two non-closing ids, left; profileView joined as a closing one).
+    expect(stampedChecked, 'ANTI-VACUITY: sixteen ids, three stamped shapes each').toBe(48);
+    expect(keptChecked, 'ANTI-VACUITY: the five non-closing, non-dialogue ids stay').toBe(5);
 
     // The named case: help over battle '7' goes, with the menu it was opened from.
     const named = so1Sweep(
@@ -3419,7 +3440,7 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
       stackOf(WORLD, screen('menuView'), screen('helpView')),
       stackOf(battle('7'), stamped('menuView', '7'), stamped('helpView', '7')),
       stackOf(WORLD, screen('boxView'), screen('menuView'), screen('questLogView')),
-      stackOf(WORLD, textEntry('renameView'), screen('helpView')),
+      stackOf(WORLD, textEntry('profileView'), screen('helpView')),
       stackOf(WORLD, screen('dialogueView'), screen('menuView'), prompt('shopView')),
       stackOf(battle('7'), stamped('dialogueView', '7'), stamped('boxView', '7')),
     ];
@@ -3448,10 +3469,11 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
       readonly commands: readonly Command[];
     }> = [
       {
-        name: 'a text entry owned by rename',
-        from: stackOf(WORLD, textEntry('renameView')),
+        // uif-16b: the name field's typing frame is owned by Profile (renameView is a section now).
+        name: 'a text entry owned by Profile',
+        from: stackOf(WORLD, textEntry('profileView')),
         to: stackOf(WORLD),
-        commands: [so1Close('renameView')],
+        commands: [so1Close('profileView')],
       },
       {
         name: 'a text entry owned by the trade wizard, over the menu',
@@ -3544,23 +3566,25 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
 });
 
 describe('context stack: what a reconnect closes (so-1, SO1.1 roster)', () => {
-  it('SO1-1-ROSTER-LITERAL: RECONNECT_CLOSES is true for exactly the eleven frame ids a reconnect closes and false for the other eight, on every one of the nineteen ids, with no extra key', () => {
+  it('SO1-1-ROSTER-LITERAL: RECONNECT_CLOSES is true for exactly the eleven frame ids a reconnect closes and false for the other six, on every one of the seventeen ids, with no extra key', () => {
     // WRONG IMPL KILLED: a table missing a row (a frame the reconnect no longer closes), a row
-    // flipped to true for a frame opened at the world (help, box, quest log, heal, claim, privacy,
-    // controls would be ripped out from under the player on every drop: CTL6C-1 pins help
-    // surviving), a row flipped to false for one of the ten views the legacy block hid, the
+    // flipped to true for a frame opened at the world (help, box, quest log, heal, controls would
+    // be ripped out from under the player on every drop: CTL6C-1 pins help surviving), a row
+    // flipped to false for one of the ten views the legacy block hid (Profile included: rename's
+    // true row wins, uif-16b), the
     // dialogue row true (the client never closes a conversation), the Social frame left out while
     // its three panel rows say true (the mirror only ever holds `social`), a stray extra key, and
     // a table derived from SCREEN_POLICY (whose rows are exact-pinned elsewhere and say nothing
     // about a reconnect). Every row is spelled out above and compared one by one.
+    // uif-16b (named intentional change): 19 -> 17: renameView, claimView, privacyView left, profileView joined.
     expect(Object.keys(SO1_ROSTER), 'ANTI-VACUITY: the literal names every frame id').toHaveLength(
-      19,
+      17,
     );
     expect(
       Object.values(SO1_ROSTER).filter((v) => v),
       'ANTI-VACUITY: the literal has eleven closing rows',
     ).toHaveLength(11);
-    expect([...Object.keys(RECONNECT_CLOSES)].sort(), 'the same nineteen keys').toEqual(
+    expect([...Object.keys(RECONNECT_CLOSES)].sort(), 'the same seventeen keys').toEqual(
       [...FRAME_IDS].sort(),
     );
     for (const id of FRAME_IDS) {
@@ -3595,7 +3619,9 @@ describe('context stack: what a reconnect closes (so-1, SO1.1 roster)', () => {
         checked += 1;
       }
     }
-    expect(checked, 'ANTI-VACUITY: nineteen ids, three shapes each').toBe(57);
+    // uif-16b (named intentional change): 19x3 = 57 -> 17x3 = 51: renameView, claimView,
+    // privacyView left, profileView joined.
+    expect(checked, 'ANTI-VACUITY: seventeen ids, three shapes each').toBe(51);
   });
 });
 
@@ -3772,7 +3798,9 @@ describe('context stack: openFrame pushes first (so-2, SO2.1 / SO2.2)', () => {
     // wrong battle; a stamp read from an upper frame instead of the base; a second open that
     // pushes a duplicate (the dedup is contextStep's, so the edge must name the same frame id);
     // and an edge that mutates its frozen input.
-    expect(OPENABLE_IDS, 'ANTI-VACUITY: sixteen player ids and the Social frame').toHaveLength(17);
+    // uif-16b (named intentional change): 16 + 1 = 17 -> 14 + 1 = 15: renameView, claimView,
+    // privacyView left, profileView joined.
+    expect(OPENABLE_IDS, 'ANTI-VACUITY: fourteen player ids and the Social frame').toHaveLength(15);
     for (const id of OPENABLE_IDS) {
       const atWorld = openEdge(deepFrozen(stackOf(WORLD)), id);
       expect(atWorld, `${id} at the world`).toEqual(pushEdge(screen(id)));
@@ -3884,7 +3912,8 @@ describe('context stack: the mirror sees only the server trio (so-2, SO2.3)', ()
     // unstamped, or one first mirrored in the sync that brought the battle stamped; and a trio
     // frame that is never popped.
     const PLAYER_STAMPED = PLAYER_IDS.map((id) => stamped(id, '7'));
-    expect(PLAYER_IDS, 'ANTI-VACUITY: sixteen player ids').toHaveLength(16);
+    // uif-16b (named intentional change): 16 -> 14: renameView, claimView, privacyView left, profileView joined.
+    expect(PLAYER_IDS, 'ANTI-VACUITY: fourteen player ids').toHaveLength(14);
     for (const id of PLAYER_IDS) {
       expect(
         mirrorServerEdges(deepFrozen(WORLD_STACK), [id]),
@@ -3901,7 +3930,7 @@ describe('context stack: the mirror sees only the server trio (so-2, SO2.3)', ()
     }
     expect(
       mirrorServerEdges(deepFrozen(WORLD_STACK), [...PLAYER_IDS]),
-      'all sixteen visible at once: nothing',
+      'all fourteen visible at once: nothing',
     ).toEqual([]);
     expect(
       mirrorServerEdges(deepFrozen(WORLD_STACK), [
@@ -3910,7 +3939,7 @@ describe('context stack: the mirror sees only the server trio (so-2, SO2.3)', ()
         ...PLAYER_IDS.slice(8),
         'battleView',
       ]),
-      'the trio is pushed in visible order beside sixteen visible player ids',
+      'the trio is pushed in visible order beside fourteen visible player ids',
     ).toEqual([pushEdge(screen('dialogueView')), pushEdge(screen('battleView'))]);
 
     // A player frame on the stack is never popped by the mirror, whatever is visible.
@@ -4072,13 +4101,13 @@ describe('context stack: the mirror sees only the server trio (so-2, SO2.3)', ()
           screen('menuView'),
           screen('social'),
           screen(BOX),
-          textEntry(RENAME),
+          textEntry(PROFILE),
           prompt('helpView'),
         ),
         [BOX],
       ),
       'every hidden player frame, in stack order, social and both non-screen kinds included',
-    ).toEqual([popEdge('menuView'), popEdge('social'), popEdge(RENAME), popEdge('helpView')]);
+    ).toEqual([popEdge('menuView'), popEdge('social'), popEdge(PROFILE), popEdge('helpView')]);
     expect(
       pops(stackOf(WORLD, screen('dialogueView'), screen('menuView'), screen('battleView')), []),
       'a trio frame is never popped here',
@@ -4088,8 +4117,8 @@ describe('context stack: the mirror sees only the server trio (so-2, SO2.3)', ()
       'only trio frames: nothing',
     ).toEqual([]);
     expect(
-      pops(stackOf(WORLD, textEntry(RENAME), prompt('shopView'), screen('social')), [
-        RENAME,
+      pops(stackOf(WORLD, textEntry(PROFILE), prompt('shopView'), screen('social')), [
+        PROFILE,
         'shopView',
         'social',
       ]),
@@ -4103,7 +4132,7 @@ describe('context stack: the mirror sees only the server trio (so-2, SO2.3)', ()
       pops(stackOf(battle('7'), stamped('menuView', '7'), stamped('social', '7')), ['social']),
       'stamped frames pop by id too',
     ).toEqual([popEdge('menuView')]);
-    expect(pops(stackOf(WORLD, ...PLAYER_FRAMES), []), 'all sixteen hidden').toEqual(
+    expect(pops(stackOf(WORLD, ...PLAYER_FRAMES), []), 'all fourteen hidden').toEqual(
       PLAYER_IDS.map(popEdge),
     );
 
@@ -4177,7 +4206,9 @@ describe('context stack: the movement gate under every upper frame (so-2, SO2.5)
         }
       }
     }
-    expect(falseCells, 'ANTI-VACUITY: 2 bases x 2 gates x 19 ids x 4 shapes').toBe(304);
+    // uif-16b (named intentional change): 2x2x19x4 = 304 -> 2x2x17x4 = 272: renameView, claimView,
+    // privacyView left, profileView joined.
+    expect(falseCells, 'ANTI-VACUITY: 2 bases x 2 gates x 17 ids x 4 shapes').toBe(272);
     expect(walkable, 'exactly the bare world with the session gate clear').toEqual([
       'world bare / gate false',
     ]);
@@ -4185,7 +4216,7 @@ describe('context stack: the movement gate under every upper frame (so-2, SO2.5)
 });
 
 describe('context stack: the roster of who owns a frame (so-2, SO2.7)', () => {
-  it('SO2-7-ROSTER: MIRRORED_IDS (the two server-trio overlays) and the sixteen openFrame-owned player ids are disjoint and together are exactly OVERLAY_IDS', () => {
+  it('SO2-7-ROSTER: MIRRORED_IDS (the two server-trio overlays) and the fourteen openFrame-owned player ids are disjoint and together are exactly OVERLAY_IDS', () => {
     // WRONG IMPL KILLED: a mirrored list that gained a player id (the mirror would again push
     // views it does not own), one that lost battleView or dialogueView (a terminal outcome or a
     // conversation never reaches the stack), a duplicate entry, a player id listed in both rosters,
@@ -4194,8 +4225,10 @@ describe('context stack: the roster of who owns a frame (so-2, SO2.7)', () => {
     const trio: readonly MirroredId[] = ['battleView', 'dialogueView'];
     expect([...MIRRORED_IDS], 'the mirrored ids, hand-spelled').toEqual(trio);
     expect(MIRRORED_IDS, 'ANTI-VACUITY: two mirrored ids').toHaveLength(2);
-    expect(PLAYER_IDS, 'ANTI-VACUITY: sixteen openFrame-owned ids').toHaveLength(16);
-    expect(OVERLAY_IDS, 'ANTI-VACUITY: eighteen overlay ids').toHaveLength(18);
+    // uif-16b (named intentional change): 16 -> 14 openFrame-owned ids and 18 -> 16 overlay ids:
+    // renameView, claimView, privacyView left, profileView joined.
+    expect(PLAYER_IDS, 'ANTI-VACUITY: fourteen openFrame-owned ids').toHaveLength(14);
+    expect(OVERLAY_IDS, 'ANTI-VACUITY: sixteen overlay ids').toHaveLength(16);
     const players = PLAYER_IDS as readonly string[];
     expect(
       MIRRORED_IDS.filter((id) => players.includes(id)),
@@ -4205,6 +4238,145 @@ describe('context stack: the roster of who owns a frame (so-2, SO2.7)', () => {
       sortedIds([...MIRRORED_IDS, ...PLAYER_IDS]),
       'together exactly the overlay ids (a duplicate or a missing id breaks the multiset)',
     ).toEqual(sortedIds(OVERLAY_IDS));
+  });
+});
+
+// ==========================================================================================
+// uif-16b: Profile is ONE frame (UIF16B.6)
+// ==========================================================================================
+//
+// `renameView`, `claimView` and `privacyView` were three frames, all `player / drop / not
+// battle-safe`; they are sections of the one `profileView` frame now, so it takes that shared
+// (strictest) row. Their reconnect rows disagreed (rename true, claim and privacy false): rename's
+// `true` wins, so a reconnect closes Profile. Every expectation is a hand-spelled literal.
+
+describe('context stack: the one Profile frame (uif-16b, UIF16B.6)', () => {
+  it('UIF16B.6 SCREEN_POLICY.profileView is player / drop / not battle-safe and RECONNECT_CLOSES.profileView is true; the three section ids have no row in either table', () => {
+    // WRONG IMPL KILLED: a battle-safe Profile (the claim and privacy actions it hosts are refused
+    // over a battle, so it would stand there inert), a `suspend` row (it would come back after the
+    // battle with a stale claim phase), a server-owned row (reconcile would never close it), the
+    // claim/privacy reconnect row (false) winning (a drop would leave a half-typed name and its lock
+    // standing), and a section row left behind as a stray key.
+    expect(SCREEN_POLICY.profileView).toEqual({
+      owner: 'player',
+      onBattle: 'drop',
+      battleSafe: false,
+    });
+    expect(RECONNECT_CLOSES.profileView).toBe(true);
+    for (const gone of ['renameView', 'claimView', 'privacyView']) {
+      expect(Object.keys(SCREEN_POLICY), `SCREEN_POLICY has no ${gone} row`).not.toContain(gone);
+      expect(Object.keys(RECONNECT_CLOSES), `RECONNECT_CLOSES has no ${gone} row`).not.toContain(
+        gone,
+      );
+    }
+  });
+
+  it('UIF16B.6 a battle arriving with Profile open drops it with one close command: at the world, above the menu, stamped over the battle it was opened over, and under a shown outcome; with nothing arriving it stays', () => {
+    // WRONG IMPL KILLED: a Profile frame kept over a battle (battle-safe, or not in the drop set), a
+    // drop with no `close` (the dialog would stay painted with its trap while the stack forgets
+    // it), a close per section instead of one for the frame, a close under a section id, and a drop
+    // over a quiet world.
+    const atWorld = reconcile(
+      deepFrozen(stackOf(WORLD, screen('profileView'))),
+      serverView('7', false),
+    );
+    expect(atWorld.stack, 'the battle base alone is left').toEqual(stackOf(battle('7')));
+    expect(atWorld.commands, 'clearHeld for the base change, then ONE close for Profile').toEqual([
+      { kind: 'clearHeld' },
+      closeCmd('profileView'),
+    ]);
+
+    const overMenu = reconcile(
+      deepFrozen(stackOf(WORLD, screen('menuView'), screen('profileView'))),
+      serverView('7', false),
+    );
+    expect(overMenu.stack).toEqual(stackOf(battle('7')));
+    expect(closeIds(overMenu.commands), 'the menu and Profile, in stack order').toEqual([
+      'menuView',
+      'profileView',
+    ]);
+
+    const stampedOver = reconcile(
+      deepFrozen(stackOf(battle('7'), stamped('menuView', '7'), stamped('profileView', '7'))),
+      serverView('7', false),
+    );
+    expect(stampedOver.stack, 'not battle-safe: dropped even over its own battle').toEqual(
+      stackOf(battle('7'), stamped('menuView', '7')),
+    );
+    expect(stampedOver.commands, 'one close, no clearHeld (same base)').toEqual([
+      closeCmd('profileView'),
+    ]);
+
+    const outcome = reconcile(
+      deepFrozen(stackOf(WORLD, screen('profileView'))),
+      serverView(undefined, false, true),
+    );
+    expect(outcome.stack, 'a shown outcome drops it too').toEqual(WORLD_STACK);
+    expect(outcome.commands).toEqual([closeCmd('profileView')]);
+
+    const quiet = reconcile(
+      deepFrozen(stackOf(WORLD, screen('profileView'))),
+      serverView(undefined, false),
+    );
+    expect(quiet.stack, 'control: nothing arrives, Profile stays').toEqual(
+      stackOf(WORLD, screen('profileView')),
+    );
+    expect(quiet.commands).toEqual([]);
+  });
+
+  it('UIF16B.6 a reconnect sweep closes Profile with one close for the frame (as a screen, as its typing frame, stamped, and above a frame that survives), top first', () => {
+    // WRONG IMPL KILLED: a Profile that survives the drop (the claim/privacy `false` row winning:
+    // the name draft and its submit lock would outlive the connection they belong to), a sweep that
+    // closes it under a section id, one that ignores its text-entry frame, and one that takes the
+    // help frame beneath it along.
+    const alone = so1Sweep(stackOf(WORLD, screen('profileView')));
+    expect(alone.stack).toEqual(WORLD_STACK);
+    expect(alone.commands).toEqual([so1Close('profileView')]);
+
+    const typing = so1Sweep(stackOf(WORLD, textEntry('profileView')));
+    expect(typing.stack, 'the typing frame stands for Profile').toEqual(WORLD_STACK);
+    expect(typing.commands).toEqual([so1Close('profileView')]);
+
+    const overMenu = so1Sweep(stackOf(WORLD, screen('menuView'), screen('profileView')));
+    expect(overMenu.stack).toEqual(WORLD_STACK);
+    expect(overMenu.commands, 'top first').toEqual([so1Close('profileView'), so1Close('menuView')]);
+
+    const overHelp = so1Sweep(stackOf(WORLD, screen('helpView'), screen('profileView')));
+    expect(overHelp.stack, 'help beneath it survives').toEqual(stackOf(WORLD, screen('helpView')));
+    expect(overHelp.commands).toEqual([so1Close('profileView')]);
+
+    const unstampedOverBattle = so1Sweep(stackOf(battle('7'), screen('profileView')));
+    expect(unstampedOverBattle.stack, 'its id closes, stamp or not').toEqual(stackOf(battle('7')));
+    expect(unstampedOverBattle.commands).toEqual([so1Close('profileView')]);
+  });
+
+  it('UIF16B.6 a server conversation pops Profile with one close and keeps the dialogue frame, at the world and over a battle base', () => {
+    // WRONG IMPL KILLED: a Profile left standing behind a dialogue (two modal roots, two focus
+    // traps), a close emitted for the dialogue, and a Profile pop that emits no close (the dialog
+    // would stay painted with its trap while the stack forgets it).
+    const atWorld = reconcile(
+      deepFrozen(stackOf(WORLD, screen('menuView'), screen('profileView'), screen('dialogueView'))),
+      serverView(undefined, true),
+    );
+    expect(atWorld.stack).toEqual(stackOf(WORLD, screen('dialogueView')));
+    expect(atWorld.commands, 'one close each, in stack order, none for the dialogue').toEqual([
+      closeCmd('menuView'),
+      closeCmd('profileView'),
+    ]);
+
+    const noDialogueYet = reconcile(
+      deepFrozen(stackOf(WORLD, textEntry('profileView'))),
+      serverView(undefined, true),
+    );
+    expect(noDialogueYet.stack, 'the typing frame goes with it').toEqual(WORLD_STACK);
+    expect(noDialogueYet.commands).toEqual([closeCmd('profileView')]);
+
+    const underBattle = reconcile(
+      deepFrozen(stackOf(battle('7'), screen('dialogueView'), stamped('profileView', '7'))),
+      serverView('7', true),
+    );
+    expect(underBattle.stack).toEqual(stackOf(battle('7'), screen('dialogueView')));
+    expect(underBattle.commands).toEqual([closeCmd('profileView')]);
   });
 });
 

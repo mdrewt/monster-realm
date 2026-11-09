@@ -83,7 +83,7 @@ describe('announcementsFor — message and overlay transition rules (S1-ANN, spe
     expect(announcementsFor(prev, next)).toEqual([]);
   });
 
-  it('S1-ANN-OVERLAY-OPENED-DERIVED BITES: topOverlay transitioning to each of the 18 ids emits the id-DERIVED catalog title, never a literal', () => {
+  it('S1-ANN-OVERLAY-OPENED-DERIVED BITES: topOverlay transitioning to each of the 16 ids emits the id-DERIVED catalog title, never a literal', () => {
     // WRONG IMPL KILLED: a hardcoded copy string (e.g. always 'Battle', or a switch statement
     // with a typo'd branch) would only coincidentally match ONE of the seventeen ids. Compared
     // against the DERIVED value (`a11yCopy['a11y.overlay.' + id + '.title']`)
@@ -91,7 +91,8 @@ describe('announcementsFor — message and overlay transition rules (S1-ANN, spe
     // way the implementation itself would could hide a labelKey/catalog mismatch that a
     // differently-derived expectation would still catch.
     // ctl-12b (named intentional change): 17 -> 18, `controlsView` joined the manifest.
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY: the manifest must hold 18 overlays').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16: renameView, claimView, privacyView left, profileView joined.
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY: the manifest must hold 16 overlays').toBe(16);
 
     let checked = 0;
     for (const id of OVERLAY_IDS) {
@@ -102,7 +103,8 @@ describe('announcementsFor — message and overlay transition rules (S1-ANN, spe
       expect(announcementsFor(prev, next), `topOverlay -> ${id}`).toEqual([expected]);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: every one of the 18 ids must have been exercised').toBe(18);
+    // uif-16b (named intentional change): 18 -> 16, same three out, profileView in.
+    expect(checked, 'ANTI-VACUITY: every one of the 16 ids must have been exercised').toBe(16);
   });
 
   it('S1-ANN-OVERLAY-TO-NULL-SILENT BITES: topOverlay transitioning to null emits nothing — the declared a11y.world.region copy gap', () => {

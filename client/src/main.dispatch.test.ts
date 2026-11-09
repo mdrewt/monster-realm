@@ -183,6 +183,16 @@ const H = vi.hoisted(() => {
         // (`feedbackLine`); the stand-in's sink records on `feedback`, as `showFeedback` does, so
         // the existing feedback assertions keep their meaning.
         clearOutcome(): void {}
+        // uif-16b: the Profile frame's own surface (ui/profileView.ts): main.ts moves focus between
+        // its sections (the privacy door, a failed sign-in, N and C) and wires its Close row as the
+        // privacy section's reseat fallback. The stand-in records the section it was asked for.
+        focusSection(section: unknown): void {
+          this.renders.push({ focusSection: section });
+        }
+        sectionOf(): undefined {
+          return undefined;
+        }
+        readonly closeRow: HTMLButtonElement = document.createElement('button');
         feedbackLine(): (message: string, kind: string) => boolean {
           // The sink reports whether it painted (true iff it did): the stand-in always paints.
           return (message: string): boolean => {
@@ -217,6 +227,10 @@ vi.mock('./ui/renameView', () => ({
 vi.mock('./ui/tradeProposeView', () => ({
   TradeProposeView: H.withoutShowFeedback(H.makeStub('TradeProposeView')),
 }));
+// uif-16b (named intentional change): main.ts builds ONE ProfileView over the three section views
+// (rename, claim, privacy). Over their stand-ins the real frame would read members they lack, so
+// it is a recording stand-in too: its constructor's argument is the sections record.
+vi.mock('./ui/profileView', () => ({ ProfileView: H.makeStub('ProfileView') }));
 
 // bt-12: what the stubbed `tactics_map` was asked for (every mapId, oldest first). Map 17 is the one
 // map the stub gives TWO spawn cells (every other map has the shipped three), so a deploy slot count
@@ -2123,9 +2137,9 @@ const STAND_IN_CLASS: Readonly<Record<string, string>> = {
   shopView: 'ShopView',
   tradeView: 'TradeView',
   pvpView: 'PvpView',
-  claimView: 'ClaimView',
-  privacyView: 'PrivacyView',
-  renameView: 'RenameView',
+  // uif-16b (named intentional change): 10 -> 8 rows: claimView, privacyView and renameView left
+  // (they are sections of the one Profile frame, no frame ids of their own), profileView joined.
+  profileView: 'ProfileView',
   tradeProposeView: 'TradeProposeView',
 };
 
@@ -2468,13 +2482,11 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
           endConversation(at + 20);
         },
       },
-      { id: 'claimView', beneath: ['menuView'], open: (at) => void press('KeyC', at) },
-      {
-        id: 'privacyView',
-        beneath: ['menuView'],
-        open: (at) => so2WalkMenu(['profile', 'privacy'], at),
-      },
-      { id: 'renameView', beneath: ['menuView'], open: (at) => void press('KeyN', at) },
+      // uif-16b (named intentional change): 7 -> 5 stand-in rows. The claimView (KeyC), privacyView
+      // (Profile > Privacy) and renameView (KeyN) rows left with those frame ids; the ONE Profile
+      // frame joined, opened by KeyN over the main menu, and its adapter is lent the ProfileView
+      // main.ts built (the three sections are inside it, never lent on their own).
+      { id: 'profileView', beneath: ['menuView'], open: (at) => void press('KeyN', at) },
       { id: 'tradeProposeView', open: (at) => so2OpenFacedTrade(at) },
     ];
     const evolution = stubView('EvolutionView');

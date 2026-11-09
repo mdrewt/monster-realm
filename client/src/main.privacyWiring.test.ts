@@ -14,6 +14,9 @@
  * Design record: `docs/adr/0231-client-privacy-cores-request-wide-chunk-assembly.md`,
  * Amendment A2 — A2-D5 (the open path + the claim-hidden-FIRST ordering), A2-D6 (the ROW
  * route), A2-D8 (non-delivery must be observable), A2-D9 (change-detected dispatch).
+ * uif-16b: the surface is now the Privacy SECTION of the one Profile frame (`#profile-overlay`),
+ * reached by KeyC then the Account section's door, which moves focus and hides nothing; A2-D5's
+ * hide-first ordering is superseded by the UIF16B.3 "one dialog, one trap" case.
  *
  * THE TERMINAL NOTICE is read from the en catalog (`privacy.notice.terminal`): 21r-b2 moved the
  * sentence into the i18n catalog and removed the `PRIVACY_TERMINAL_NOTICE` export. The read is
@@ -360,13 +363,45 @@ function privacyOpener(): HTMLButtonElement {
   return doors[0] as HTMLButtonElement;
 }
 
-/** Open the surface through the real production path and assert it actually opened. */
+/** Open the surface through the real production path and assert it actually opened.
+ *  uif-16b (named intentional change): the privacy surface is the Privacy SECTION of the one
+ *  Profile frame, shown whenever the frame is. The production path is therefore KeyC (Profile,
+ *  on Account) and then the Account section's privacy door, which moves focus into the Privacy
+ *  section. Was: the door alone opened a separate privacy dialog (and hid the account one). */
 function openPrivacySurface(): void {
+  if (!profileFrameVisible()) pressKey({ code: 'KeyC' });
+  expect(profileFrameVisible(), 'KeyC must open the Profile frame').toBe(true);
   privacyOpener().click();
   expect(
     privacyOverlayVisible(),
-    'clicking the account overlay`s privacy door must open #privacy-overlay',
+    'with the Profile frame open its Privacy section must be on screen',
   ).toBe(true);
+  expect(
+    byId('privacy-overlay').contains(document.activeElement),
+    'the privacy door must move focus INTO the Privacy section',
+  ).toBe(true);
+}
+
+/** The one Profile frame (uif-16b) is on screen. */
+function profileFrameVisible(): boolean {
+  const frame = document.getElementById('profile-overlay');
+  return frame !== null && frame.style.display !== 'none' && frame.style.display !== '';
+}
+
+/** Every `[role="dialog"][aria-modal="true"]` root that is on screen and not suspended (no inert
+ *  or aria-hidden on it or an ancestor, no hidden visibility), by id. */
+function liveModalDialogs(): string[] {
+  return Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+    .filter((d) => {
+      if (hiddenAncestorOf(d) !== null) return false;
+      for (let n: Element | null = d; n instanceof HTMLElement; n = n.parentElement) {
+        if (n.hasAttribute('inert')) return false;
+        if (n.getAttribute('aria-hidden') === 'true') return false;
+        if (n.style.visibility === 'hidden') return false;
+      }
+      return true;
+    })
+    .map((d) => d.id);
 }
 
 interface KeySpec {
@@ -500,42 +535,44 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('RB52T-OPEN-ORDER: opening hides the account overlay FIRST, so closing the privacy surface never strands focus in a hidden subtree', async () => {
-    // ★ ADR-0231 A2-D5, and the ordering is the whole tooth. `openOverlayA11y` captures
-    // `document.activeElement` as its return target and `closeOverlayA11y` restores it whenever
-    // the node is still `isConnected` — which a `display:none` node is. Showing the privacy
-    // overlay BEFORE hiding the account one therefore captures `#claim-signin-btn`, and closing
-    // the privacy surface parks focus inside a hidden subtree, where `worldHasFocus()` is false
-    // and EVERY overlay hotkey is dead until the player clicks the canvas.
-    // WRONG IMPL KILLED (1) ★: `privacyView?.show()` before `claimView?.hide()`.
-    // WRONG IMPL KILLED (2): a close path that never restores focus at all — the final
-    // assertion pins where focus actually landed, not merely that it is not stranded.
-    // THE `await` IS LOAD-BEARING: without it the deferred initial focus (a real
-    // `setTimeout(..., 0)` in ui/overlayA11y.ts) has not fired, `document.activeElement` is
-    // still <body>, and the mutant captures the same harmless target the correct code does —
-    // the test would pass against both.
+  it('UIF16B.3 one dialog, one trap: with Profile open on Account the privacy door moves focus into the Privacy section and opens nothing; the account section stays on screen, exactly one aria-modal root (the Profile frame) is live, and closing never strands focus in a hidden subtree', async () => {
+    // uif-16b (named intentional change, SUPERSEDES RB52T-OPEN-ORDER): the old pin "the account
+    // overlay must be CLOSED once the privacy surface is up — two aria-modal roots and two focus
+    // traps cannot both be correct" is replaced. Its reason still holds, and is now met the other
+    // way round: Account and Privacy are sections of ONE dialog (`#profile-overlay`) with ONE focus
+    // trap, so the door hides nothing and opens nothing; it only moves focus. ADR-0231 A2-D5's
+    // hide-claim-first ordering has no subject left (`openPrivacy`'s verdict retired).
+    // WRONG IMPL KILLED: a door that still hides the Account section (the old verdict left in);
+    // a door that opens a second dialog or pushes a frame (two live aria-modal roots, or a
+    // `privacyView` frame on the stack); a section that kept its own role="dialog"; a door that
+    // focuses nothing (focus left on the door, outside the Privacy section); a close that parks
+    // focus in the hidden frame.
     pressKey({ code: 'KeyC' });
-    expect(claimOverlayVisible()).toBe(true);
-    const claimAnchor = document.querySelector(OVERLAY_A11Y.claimView.initialFocusSelector);
-    expect(claimAnchor, 'the account overlay`s focus anchor must resolve').not.toBeNull();
-    // Let the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts) fire, so focus is
-    // genuinely INSIDE the account overlay when the privacy surface opens. That is the state in
-    // which the two orderings differ; without this wait they are indistinguishable.
-    await vi.waitFor(
-      () => {
-        expect(document.activeElement).toBe(claimAnchor);
-      },
-      { timeout: 2_000, interval: 5 },
-    );
+    expect(claimOverlayVisible(), 'KeyC shows the Account section').toBe(true);
+    expect(profileFrameVisible(), 'inside the one Profile frame').toBe(true);
+    expect(
+      byId('claim-overlay').contains(document.activeElement),
+      'focus is inside the Account section at once',
+    ).toBe(true);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0)); // the deferred focus settles
+    const stackOf = (): unknown =>
+      (window as unknown as { __game: () => { stack: unknown } }).__game().stack;
+    const before = JSON.stringify(stackOf());
+    expect(liveModalDialogs(), 'one live modal root: the Profile frame').toEqual([
+      'profile-overlay',
+    ]);
 
     openPrivacySurface();
-    expect(
-      claimOverlayVisible(),
-      'the account overlay must be CLOSED once the privacy surface is up — two aria-modal ' +
-        'roots and two focus traps cannot both be correct',
-    ).toBe(false);
+    expect(claimOverlayVisible(), 'the Account section is still on screen').toBe(true);
+    expect(JSON.stringify(stackOf()), 'the door pushed and popped nothing').toBe(before);
+    expect(liveModalDialogs(), 'still exactly one live modal root').toEqual(['profile-overlay']);
+    const focused = document.activeElement as HTMLButtonElement;
+    expect(focused.tagName, 'focus is on a Privacy row').toBe('BUTTON');
+    expect(focused.disabled, 'an enabled one').toBe(false);
+    expect(hiddenAncestorOf(focused), 'that is on screen').toBeNull();
 
     pressKey({ code: 'Escape' });
+    expect(profileFrameVisible(), 'Start closes the Profile frame').toBe(false);
     expect(privacyOverlayVisible(), 'Escape must close the privacy surface').toBe(false);
     expect(
       hiddenAncestorOf(document.activeElement),
@@ -566,13 +603,17 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
         `#${id} must carry a non-empty label`,
       ).toBeGreaterThan(0);
     }
-    const anchor = byId('privacy-overlay').querySelector(
-      OVERLAY_A11Y.privacyView.initialFocusSelector,
+    // uif-16b (named intentional change): the Privacy section has no registry anchor of its own
+    // (`OVERLAY_A11Y.privacyView` retired with the overlay id); the frame's anchor is `#rename-input`.
+    // What a player reaching the surface needs is focus inside it: the door seats it on the
+    // section's first live control, Delete for an Active account. Was: the privacyView
+    // initialFocusSelector resolved inside #privacy-overlay.
+    expect(document.activeElement, 'the door seats focus on Delete').toBe(
+      byId('privacy-delete-btn'),
     );
     expect(
-      anchor,
-      'the registry initialFocusSelector must resolve INSIDE the overlay root — openOverlayA11y ' +
-        'queries the root, so an anchor outside it leaves an opened modal with focus still out',
+      byId('profile-overlay').querySelector(OVERLAY_A11Y.profileView.initialFocusSelector),
+      'the frame`s registry anchor resolves INSIDE the frame root',
     ).not.toBeNull();
   });
 

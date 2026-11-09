@@ -1,50 +1,57 @@
 // @vitest-environment happy-dom
 /**
- * profileScreen.boot.test.ts: the Profile frames (ctl-8h) booted through main.ts over the REAL
- * client/index.html shell, the REAL RenameView / ClaimView / PrivacyView and the REAL screen-adapter
- * table (`SCREEN_ADAPTERS` is whatever ui/screens/index.ts ships: no stand-in is swapped in).
+ * profileScreen.boot.test.ts: the ONE Profile frame (uif-16b) booted through main.ts over the REAL
+ * client/index.html shell, the REAL ProfileView and its three REAL sections (RenameView, ClaimView,
+ * PrivacyView) and the REAL screen-adapter table (`SCREEN_ADAPTERS` is whatever ui/screens/index.ts
+ * ships: no stand-in is swapped in).
  *
- * - CTL8H-2-STOP-TYPING-IN-FRAME: KeyN, then Escape in the Name field stops typing without losing
- *   the text. With a draft focus lands on the save button INSIDE the frame; ArrowUp / KeyW put it
- *   back in the field (the D-pad now reaches the router from the save button, B5), and Enter in the
- *   field commits `set_profile_name` once. With an EMPTY draft the save button is disabled, so
- *   Escape leaves focus on the page; the D-pad then seats focus back inside the frame.
- * - CTL8H-2-BOOT-TYPING-COMMIT: Name opened through the main menu (Profile, Name): the field has
- *   focus after the deferred focus, and a typed name commits once.
- * - CTL8H-3-BOOT-DPAD: KeyC opens Account; the D-pad moves focus between the shown buttons; Enter on
- *   Decline arms and focus lands on No; B pops the frame and the decline path never ran.
- * - CTL8H-4-BOOT-TWO-STEP: Profile, Privacy through the menu; Delete arms (focus on Keep), Enter on
- *   Keep disarms (no reducer call), arming again then Confirm calls `delete_account` once.
- * - CTL8H-5-N-OPENS-NAME-TYPING / CTL8H-5-C-OPENS-ACCOUNT: the legacy KeyN / KeyC reach the new
- *   screens, and the D-pad drives them.
- *
- * ctl-11a (named intentional change, every KeyN / KeyC case): an accelerator pops to the base and
- * opens its menu path, so the Name and Account frames sit OVER the menu (the world, the menu, then
- * the frame; was: the world, then the frame) and B pops ONE frame, leaving the menu on top (was: the
- * world). The frames' own behaviour (focus, the D-pad, the commit, the two-step) is unchanged.
+ * uif-16b (named intentional change, every case): Profile is one frame (`profileView`,
+ * `#profile-overlay`) holding the Name, Account and Privacy sections and a Close row, in one
+ * column. Was (ctl-8h): three frames of their own (renameView, claimView, privacyView) picked from a
+ * Profile sub-list. Each ctl-8h case is REPLACED by its frame-level equivalent, named in the case:
+ * - UIF16B.1: one A on Profile opens the one frame, the three sections shown inside it, with their
+ *   section headers, the Close row last and the retired `#privacy-close-btn` gone.
+ * - UIF16B.2: the D-pad walks one column (Name field, Save, the Account rows, the privacy door, the
+ *   enabled Privacy rows, Close), clamped; B pops the frame to the menu on Profile, Start to the base.
+ * - UIF16B.3: exactly one live aria-modal root (the frame); the privacy door moves focus and opens
+ *   nothing.
+ * - UIF16B.4: the commands and guards of the three surfaces (replaces CTL8H-2, -3, -4): a saved
+ *   name, Sign in, the two-step decline and delete; every close disarms both confirms; the Name
+ *   field's typing rule and its Escape (focus lands on a SHOWN, ENABLED control in the frame, the
+ *   No / Keep row when a confirm is armed).
+ * - UIF16B.5: where the frame opens (replaces CTL8H-5-N / -C, whose accelerator halves are
+ *   main.accel.test.ts's UIF16B.5 cases): the menu on a FRESH session opens on Name, a failed
+ *   sign-in and a claim lifecycle paint open on Account, and a claim event never pulls the player
+ *   out of the Name field.
+ * UIF16B.6 (battle, reconnect) is main.reconnectStack.test.ts's.
  *
  * EVERY key is dispatched ON `document.activeElement` (or on `window` for the main menu's own
- * keys), bubbling, like a real browser, and a focused <button> is CLICKED on Enter's keydown when
- * the page did not prevent it: happy-dom does not synthesize that native activation, a browser
- * does. The deferred initial focus (one macrotask after an open, from ui/overlayA11y.ts) is
- * flushed before the first key.
+ * keys and the accelerators), bubbling, like a real browser, and a focused <button> is CLICKED on
+ * Enter's keydown when the page did not prevent it: happy-dom does not synthesize that native
+ * activation, a browser does. The deferred initial focus (one macrotask after an open, from
+ * ui/overlayA11y.ts) is flushed before the first key. happy-dom "focuses" disabled and
+ * `display:none` nodes, so every focus assertion on a control also asserts it is enabled and shown
+ * (`expectSafeFocus`).
  *
  * Harness: journalScreen.boot.test.ts's (the real shell mounted, main.ts imported fresh per boot,
- * only the wasm pkg, the connection, telemetry and the world renderer stubbed), with three deltas:
- * every reducer call is recorded with its arguments, the claim code's `clear` is a spy (the
- * decline path's one local effect), and the account row is injected into the store (the privacy
- * lattice is derived from it, and the controllable rAF pumps it).
+ * only the wasm pkg, the connection, telemetry and the world renderer stubbed), with four deltas:
+ * every reducer call is recorded with its arguments, `startSignIn` is counted, the claim code's
+ * `clear` is a spy (the decline path's one local effect), and the account row is injected into the
+ * store (the privacy lattice is derived from it, and the controllable rAF pumps it).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mountIndexHtmlShell } from '../../../test-util/mainBootHarness';
 import type { WasmMoveInput } from '../../convert/convert';
 import type { Connection, ConnectionOptions } from '../../net/connection';
+import { t } from '../i18n/resolver';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
   connectOpts: null as ConnectionOptions | null,
   /** Every reducer call except enqueueMove, oldest first, with the exact argument object. */
   calls: [] as Array<{ name: string; args: unknown }>,
+  /** How many times the connection was asked to start a sign-in (the claim's Sign in). */
+  signIns: 0,
   /** The injected `store.ownAccount(identity)` row; undefined falls through to the real one. */
   account: undefined as unknown,
   /** The claim code's `clear`: what the decline path runs when it is confirmed. */
@@ -80,9 +87,9 @@ vi.mock('../../../../client-wasm/pkg/client_wasm.js', () => {
 });
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
-// name and arguments and resolves at once. sessionState() must be 'hidden' or the session gate
-// swallows every key. The ONE store read the privacy lattice is derived from is wrapped so a case
-// can inject an account row (main.privacyWiring.test.ts's injection point).
+// name and arguments and resolves at once; startSignIn is counted. sessionState() must be 'hidden'
+// or the session gate swallows every key. The ONE store read the privacy lattice is derived from
+// is wrapped so a case can inject an account row (main.privacyWiring.test.ts's injection point).
 vi.mock('../../net/connection', () => {
   const reducers = new Proxy(
     {},
@@ -104,7 +111,9 @@ vi.mock('../../net/connection', () => {
     linkFrozen: () => false,
     continueAnonymously: () => undefined,
     sessionState: () => 'hidden',
-    startSignIn: () => undefined,
+    startSignIn: () => {
+      H.signIns += 1;
+    },
     reconnectNow: () => undefined,
   } as unknown as Connection;
   return {
@@ -196,10 +205,11 @@ let tick = 1000;
 let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
-/** Boot a fresh main.ts over the real shell and wait for it to connect. */
-async function bootReady(): Promise<void> {
+/** Boot a fresh main.ts over the real shell and wait for it to connect (no onReady yet). */
+async function bootConnected(): Promise<void> {
   H.connectOpts = null;
   H.calls = [];
+  H.signIns = 0;
   H.account = undefined;
   H.claimClear.mockClear();
   tick = 1000;
@@ -223,6 +233,11 @@ async function bootReady(): Promise<void> {
     },
     { timeout: 5_000, interval: 5 },
   );
+}
+
+/** Boot and join (onReady). */
+async function bootReady(): Promise<void> {
+  await bootConnected();
   opts.onReady(H.identity);
 }
 
@@ -303,7 +318,7 @@ function press(code: string, target?: EventTarget): KeyboardEvent {
   return down;
 }
 
-/** A key aimed at `window` itself: the main menu's own keys. */
+/** A key aimed at `window` itself: the main menu's own keys and the accelerators. */
 const pressWindow = (code: string): KeyboardEvent => press(code, window);
 
 function el(id: string): HTMLElement {
@@ -321,6 +336,16 @@ const isShown = (node: Element): boolean => {
 };
 const shown = (id: string): boolean => isShown(el(id));
 
+/** The frame root and its three sections, shown or not, in one read. */
+const frameShown = (): Record<string, boolean> => ({
+  frame: shown('profile-overlay'),
+  name: shown('rename-overlay'),
+  account: shown('claim-overlay'),
+  privacy: shown('privacy-overlay'),
+});
+const ALL_SHOWN = { frame: true, name: true, account: true, privacy: true };
+const ALL_HIDDEN = { frame: false, name: false, account: false, privacy: false };
+
 /** Put `text` into a field the way a user does: set the value, then fire its input event. */
 function typeInto(field: HTMLInputElement, text: string): void {
   field.value = text;
@@ -328,38 +353,74 @@ function typeInto(field: HTMLInputElement, text: string): void {
 }
 
 const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
-const focusOnPage = (): boolean =>
-  document.activeElement === null || document.activeElement === document.body;
+
+/** Focus is on a control a player can see and operate, INSIDE the Profile frame: inside
+ *  `#profile-overlay`, not disabled, and neither it nor any ancestor is `display:none` (happy-dom
+ *  "focuses" both, so the bare focus would prove nothing). Returns the focused element. */
+function expectSafeFocus(label: string): HTMLElement {
+  const active = document.activeElement;
+  expect(
+    active instanceof HTMLElement && el('profile-overlay').contains(active),
+    `${label}: focus is inside the Profile frame (was #${focusedId()})`,
+  ).toBe(true);
+  const node = active as HTMLElement;
+  expect((node as HTMLButtonElement).disabled === true, `${label}: on an enabled control`).toBe(
+    false,
+  );
+  expect(isShown(node), `${label}: that is on screen`).toBe(true);
+  return node;
+}
+
+/** Which section holds focus: 'name' | 'account' | 'privacy' | 'close' | 'outside'. */
+function focusSection(): string {
+  const a = document.activeElement;
+  if (a === null) return 'outside';
+  if (el('rename-overlay').contains(a)) return 'name';
+  if (el('claim-overlay').contains(a)) return 'account';
+  if (el('privacy-overlay').contains(a)) return 'privacy';
+  if (a.id === 'profile-close-btn') return 'close';
+  return 'outside';
+}
+
+/** Press `code` up to `n` times on the focused element, recording the focused id after each (and
+ *  asserting each landing is a safe control inside the frame). */
+function walk(code: string, n: number): string[] {
+  const seen: string[] = [];
+  for (let i = 0; i < n; i += 1) {
+    press(code);
+    expectSafeFocus(`${code} #${i + 1}`);
+    seen.push(focusedId());
+  }
+  return seen;
+}
 
 /** The whole context stack through the read-only `__game()` DEV hook, as base-first frame names. */
+interface GameHook {
+  readonly stack: Array<{ kind: string; id?: string }>;
+  readonly navActive: string | null;
+}
+const game = (): GameHook => (window as unknown as { __game: () => GameHook }).__game();
 const stackNames = (): string[] =>
-  (
-    window as unknown as {
-      __game: () => { stack: Array<{ kind: string; id?: string }> };
-    }
-  )
-    .__game()
-    .stack.map((f) => (f.kind === 'screen' || f.kind === 'prompt' ? (f.id as string) : f.kind));
+  game().stack.map((f) => (f.kind === 'screen' || f.kind === 'prompt' ? (f.id as string) : f.kind));
+const OVER_MENU = ['world', 'menuView', 'profileView'];
 
 const callsOf = (name: string): Array<{ name: string; args: unknown }> =>
   H.calls.filter((c) => c.name === name);
 
-/** M opens the main menu; four Downs reach Profile (Monsters, Bag, Journal, Social, Profile); A
- *  enters it; `childDowns` Downs reach Name (0), Account (1) or Privacy (2); A opens that child
- *  above the menu. The menu's own keys are aimed at the window. */
-function openFromProfileMenu(childDowns: number): void {
+/** M opens the main menu; four Downs reach Profile (Monsters, Bag, Journal, Social, Profile); ONE A
+ *  opens the frame above the menu. The menu's own keys are aimed at the window. */
+function openProfileFromMenu(): void {
   pressWindow('KeyM');
   expect(shown('menu-overlay'), 'precondition: M opened the main menu').toBe(true);
   for (let i = 0; i < 4; i += 1) pressWindow('ArrowDown');
-  pressWindow('Enter');
-  for (let i = 0; i < childDowns; i += 1) pressWindow('ArrowDown');
+  expect(game().navActive, 'precondition: the cursor is on Profile').toBe('profile');
   pressWindow('Enter');
 }
 
 /** A whole `StoreAccount`-shaped row for an Active account: delete and export permitted. */
 const accountActive = (): Record<string, unknown> => ({
   identity: H.identity,
-  authIssuer: 'ctl8h-test-issuer',
+  authIssuer: 'uif16b-test-issuer',
   createdAtMs: 1n,
   lastLoginAtMs: 2n,
   status: 'Active',
@@ -369,282 +430,562 @@ const accountActive = (): Record<string, unknown> => ({
   terminalAtMs: undefined,
 });
 
-describe('the Profile frames booted through main.ts over the real views and adapter table (ctl-8h)', {
+/** Every `[role="dialog"][aria-modal="true"]` root on screen and not suspended (no inert, no
+ *  aria-hidden="true" and no hidden visibility on it or an ancestor), by id. */
+function liveModalDialogs(): string[] {
+  return Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+    .filter((d) => {
+      if (!isShown(d)) return false;
+      for (let n: Element | null = d; n instanceof HTMLElement; n = n.parentElement) {
+        if (n.hasAttribute('inert')) return false;
+        if (n.getAttribute('aria-hidden') === 'true') return false;
+        if (n.style.visibility === 'hidden') return false;
+      }
+      return true;
+    })
+    .map((d) => d.id);
+}
+
+/** KeyC: Profile on Account, then the D-pad onto Decline and Enter: the decline is armed and focus
+ *  is on No. */
+function armDecline(label: string): void {
+  pressWindow('KeyC');
+  expect(focusedId(), `${label}: KeyC seats Sign in`).toBe('claim-signin-btn');
+  press('ArrowDown');
+  expect(focusedId(), `${label}: Down to Decline`).toBe('claim-decline-btn');
+  press('Enter');
+  expect(focusedId(), `${label}: armed, focus on No`).toBe('claim-decline-cancel-btn');
+  expect(shown('claim-decline-confirm-btn'), `${label}: Yes is shown`).toBe(true);
+}
+
+/** KeyC, the privacy door, Enter on Delete: the deletion is armed and focus is on Keep (an Active
+ *  account must be injected and pumped first). */
+function armDelete(label: string): void {
+  pressWindow('KeyC');
+  el('claim-privacy-btn').focus();
+  press('Enter');
+  expect(focusedId(), `${label}: the door seats Delete`).toBe('privacy-delete-btn');
+  press('Enter');
+  expect(focusedId(), `${label}: armed, focus on Keep`).toBe('privacy-confirm-cancel-btn');
+  expect((el('privacy-confirm').textContent ?? '').length, `${label}: the prompt`).toBeGreaterThan(
+    0,
+  );
+}
+
+describe('the one Profile frame booted through main.ts over the real views and adapter table (uif-16b)', {
   sequential: true,
 }, () => {
   afterEach(teardownBoot);
 
-  it('CTL8H-2-STOP-TYPING-IN-FRAME: Escape in the Name field keeps the text and leaves the field; with a draft focus is on the save button inside the frame and ArrowUp or KeyW put it back in the field, where Enter commits set_profile_name once; with an empty draft focus is on the page and ArrowDown or ArrowUp seat it back inside the frame', async () => {
-    // WRONG IMPL KILLED: a save button that shields the D-pad (B5: ArrowUp / KeyW pressed on it
-    // never reach the router and the player is stuck there); a legacy adapter on the rename frame
-    // (the D-pad is swallowed and nothing moves focus); an empty-draft Escape that strands the
-    // player on the page with no way back (the residual of CTL6B.5): the D-pad must seat focus
-    // inside the frame; a stop-typing that wipes the draft; and a commit sent twice or with the
-    // untrimmed text.
-    // ctl-11a (named intentional change): RETIRED the stacks `['world', 'renameView']` (here and
-    // after the empty-draft Escape); REPLACED by `['world', 'menuView', 'renameView']`, the menu
-    // beneath the Name frame (CTL11A.1). Escape stops typing and closes nothing, so the stack must
-    // be exactly that after it too.
+  // ------------------------------------------------------------------------------------------
+  // UIF16B.1: one frame, three sections
+  // ------------------------------------------------------------------------------------------
+
+  it('UIF16B.1 Start, walk to Profile, ONE A opens ONE frame: the stack is [world, menuView, profileView], #profile-overlay shows the Name, Account and Privacy sections in that order with their section headers and the Close row last, and the retired #privacy-close-btn is gone', async () => {
+    // Replaces CTL8H-2-BOOT-TYPING-COMMIT's "Menu, Profile, Name" open (its commit half is the
+    // UIF16B.4 name case below).
+    // WRONG IMPL KILLED: a Profile sub-list (one A lands on `name`, no frame); a frame showing one
+    // section (the old one-frame-per-surface shape); sections constructed outside the frame root
+    // (a section shown alone in the frame layer); a section order other than Name, Account,
+    // Privacy, Close; a missing or wrong section header; a frame title not written; the old privacy
+    // close anchor left beside the frame's Close (two Close rows in one column).
     await bootReady();
     server();
-    press('KeyN');
-    expect(shown('rename-overlay'), 'KeyN shows the Name frame').toBe(true);
-    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'renameView']);
-    await flush();
-    const field = el('rename-input') as HTMLInputElement;
-    const save = el('rename-submit') as HTMLButtonElement;
-    const frameRoot = el('rename-overlay');
-    expect(document.activeElement, 'precondition: the deferred focus is in the field').toBe(field);
-    expect(save.disabled, 'precondition: an empty draft disables save').toBe(true);
+    openProfileFromMenu();
+    expect(stackNames(), 'one A: the frame over the menu').toEqual(OVER_MENU);
+    expect(frameShown(), 'the frame and all three sections are shown').toEqual(ALL_SHOWN);
+    expect(game().navActive, 'the menu beneath is on Profile').toBe('profile');
 
-    // --- an EMPTY draft: Escape leaves focus on the page, the D-pad seats it back in the frame ---
-    const empty = press('Escape');
-    expect(empty.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
-    expect(focusOnPage(), 'no enabled control: focus ends on the page').toBe(true);
-    expect(shown('rename-overlay'), 'the frame stays open').toBe(true);
-    expect(stackNames(), 'and on the stack, over the menu').toEqual([
-      'world',
-      'menuView',
-      'renameView',
-    ]);
-    press('ArrowDown');
+    const root = el('profile-overlay');
     expect(
-      frameRoot.contains(document.activeElement),
-      'ArrowDown seats focus inside the frame',
-    ).toBe(true);
-    expect(document.activeElement, 'on the default row, the field').toBe(field);
-    press('Escape');
-    expect(focusOnPage(), 'stop typing again: back on the page').toBe(true);
-    press('ArrowUp');
-    expect(document.activeElement, 'ArrowUp seats focus inside the frame too').toBe(field);
-    expect(shown('rename-overlay')).toBe(true);
-
-    // --- a DRAFT: Escape lands on the enabled save button, the D-pad walks back to the field ---
-    typeInto(field, 'Bob');
-    expect(save.disabled, 'precondition: a draft enables save').toBe(false);
-    const typed = press('Escape');
-    expect(typed.defaultPrevented).toBe(true);
-    expect(document.activeElement, 'with a draft focus lands on save, inside the frame').toBe(save);
-    expect(field.value, 'the draft is kept').toBe('Bob');
-    expect(shown('rename-overlay')).toBe(true);
-
-    press('ArrowUp');
-    expect(document.activeElement, 'ArrowUp from the save button: back in the field').toBe(field);
-    expect(field.value, 'the draft survives the round trip').toBe('Bob');
-    press('Escape');
-    expect(document.activeElement, 'stop typing once more: save').toBe(save);
-    press('KeyW');
-    expect(document.activeElement, 'KeyW from the save button: back in the field').toBe(field);
-    expect(callsOf('setProfileName'), 'nothing was sent while moving around').toEqual([]);
-
-    press('Enter');
-    expect(callsOf('setProfileName'), 'Enter in the field commits the trimmed name once').toEqual([
-      { name: 'setProfileName', args: { name: 'Bob' } },
-    ]);
-    await flush();
-    expect(callsOf('setProfileName'), 'and only once').toHaveLength(1);
+      [
+        ...root.querySelectorAll(
+          '#rename-overlay, #claim-overlay, #privacy-overlay, #profile-close-btn',
+        ),
+      ].map((n) => n.id),
+      'the sections, then Close, inside the one frame, in order',
+    ).toEqual(['rename-overlay', 'claim-overlay', 'privacy-overlay', 'profile-close-btn']);
+    expect(el('profile-title').textContent, 'the one frame title').toBe(t('menu.profile.title'));
+    const headers: ReadonlyArray<readonly [string, string, string]> = [
+      ['rename-title', 'rename-overlay', t('menu.profile.name.title')],
+      ['claim-frame-title', 'claim-overlay', t('menu.profile.account.title')],
+      ['privacy-title', 'privacy-overlay', t('privacy.title')],
+    ];
+    for (const [id, section, text] of headers) {
+      const header = el(id);
+      expect(header.textContent, `#${id}: the section header text`).toBe(text);
+      expect(header.classList.contains('mr-section-header'), `#${id}: a section header`).toBe(true);
+      expect(el(section).contains(header), `#${id}: inside its own section`).toBe(true);
+      expect(isShown(header), `#${id}: on screen`).toBe(true);
+    }
+    expect(el('profile-close-btn').textContent, 'the Close row').toBe(t('privacy.close'));
+    expect(document.getElementById('privacy-close-btn'), 'the privacy close anchor retired').toBe(
+      null,
+    );
   });
 
-  it('CTL8H-2-BOOT-TYPING-COMMIT: Name opened through the main menu (Menu, Profile, Name) shows the frame above the menu, the field has focus after the deferred focus, and a typed name commits once with Enter', async () => {
-    // WRONG IMPL KILLED: a menu leaf that opens the frame without its deferred focus (the player
-    // types into the page); an adapter that swallows the Enter that should reach the field's own
-    // commit; a commit sent twice (the adapter's A and the field's own Enter both firing); and an
-    // untrimmed name.
+  it('UIF16B.5 menu, then Profile on a FRESH session (claim phase still hidden) opens on Name: focus lands on #rename-input after the deferred focus, while the Account section already offers Sign in and Decline', async () => {
+    // Plan review B-1. WRONG IMPL KILLED: an open that steps the claim model through its painting
+    // path (`renderClaim`): a fresh session's first `claim-ui-opened` makes the phase visible, the
+    // paint reads that as the claim auto-open and opens Profile on ACCOUNT first, so focus lands on
+    // Sign in and the deferred Name anchor is skipped (focus already inside the root); and an open
+    // that never steps the model at all (the Account section shows no action rows on a fresh
+    // session: an empty section with only the privacy door).
     await bootReady();
     server();
-    openFromProfileMenu(0);
-    expect(shown('rename-overlay'), 'the Name leaf shows the frame').toBe(true);
-    expect(stackNames(), 'above the menu').toEqual(['world', 'menuView', 'renameView']);
+    expect(frameShown(), 'precondition: nothing is open').toEqual(ALL_HIDDEN);
+    openProfileFromMenu();
+    expect(stackNames()).toEqual(OVER_MENU);
+    await flush();
+    expect(document.activeElement, 'focus is on the Name field').toBe(el('rename-input'));
+    expect(focusSection(), 'in the Name section').toBe('name');
+    expect(
+      ['claim-signin-btn', 'claim-decline-btn'].map(shown),
+      'the Account section offers its prompt rows',
+    ).toEqual([true, true]);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // UIF16B.2: one column, B and Start
+  // ------------------------------------------------------------------------------------------
+
+  it('UIF16B.2 the D-pad walks ONE column in visual order (Name field, Save with a valid draft, the Account rows, the privacy door, the enabled Privacy rows, Close), clamped at Close, and back up to the field; with no account the Privacy rows are Export alone, with an Active account Delete then Export', async () => {
+    // WRONG IMPL KILLED: a walk confined to one section (Down at the last Account row stays put);
+    // a column in another order (Privacy before Account, Close first); rows that include a hidden
+    // or disabled control (the disabled Cancel or Download, the hidden decline confirm, a disabled
+    // Save); a walk that wraps at Close (repeat or fresh, the column clamps); Close missing from the
+    // column; a Save that shields the D-pad (B5: Up from Save must reach the field).
+    const fixtures: ReadonlyArray<{
+      readonly label: string;
+      readonly account: boolean;
+      readonly privacy: readonly string[];
+    }> = [
+      { label: 'no account row', account: false, privacy: ['privacy-export-btn'] },
+      {
+        label: 'an Active account',
+        account: true,
+        privacy: ['privacy-delete-btn', 'privacy-export-btn'],
+      },
+    ];
+    let driven = 0;
+    for (const fx of fixtures) {
+      await bootReady();
+      if (fx.account) H.account = accountActive();
+      server();
+      frame();
+      openProfileFromMenu();
+      await flush();
+      const field = el('rename-input') as HTMLInputElement;
+      expect(document.activeElement, `${fx.label}: precondition: the field`).toBe(field);
+      typeInto(field, 'Bob');
+      press('Escape');
+      expect(focusedId(), `${fx.label}: Escape with a draft lands on Save`).toBe('rename-submit');
+
+      const account = ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'];
+      const down = [...account, ...fx.privacy, 'profile-close-btn'];
+      expect(walk('ArrowDown', down.length + 1), `${fx.label}: Down from Save, clamped`).toEqual([
+        ...down,
+        'profile-close-btn',
+      ]);
+      const up = [...down.slice(0, -1)].reverse();
+      expect(walk('ArrowUp', up.length + 1), `${fx.label}: Up from Close`).toEqual([
+        ...up,
+        'rename-submit',
+      ]);
+      press('ArrowUp');
+      expect(document.activeElement, `${fx.label}: Up from Save: the field`).toBe(field);
+      expect(field.value, `${fx.label}: the draft survived the walk`).toBe('Bob');
+      expect(stackNames(), `${fx.label}: the walk opened and closed nothing`).toEqual(OVER_MENU);
+      expect(callsOf('setProfileName'), `${fx.label}: and sent nothing`).toEqual([]);
+      driven += 1;
+      teardownBoot();
+    }
+    expect(driven, 'ANTI-VACUITY: both fixtures were walked').toBe(2);
+  });
+
+  it('UIF16B.2 B pops the frame back to the menu with its cursor on Profile; A on Profile reopens it; Start pops the frame and the menu to the base; every section closes with the frame', async () => {
+    // Replaces CTL8H-3-BOOT-DPAD's "Backspace pops the frame" half.
+    // WRONG IMPL KILLED: a B that pops a section but leaves the frame (or the reverse); a B that
+    // pops the menu too; a return onto a stale Profile sub-list; a Start that only pops the frame;
+    // a section left on screen behind a closed frame.
+    await bootReady();
+    server();
+    openProfileFromMenu();
+    await flush();
+    press('Escape'); // stop typing: focus leaves the field for a control in the frame
+    expectSafeFocus('after stop typing');
+    expect(stackNames(), 'precondition: still open').toEqual(OVER_MENU);
+
+    press('Backspace');
+    expect(stackNames(), 'B pops the frame').toEqual(['world', 'menuView']);
+    expect(frameShown(), 'the frame and its sections are closed').toEqual(ALL_HIDDEN);
+    expect(shown('menu-overlay'), 'the menu is on screen').toBe(true);
+    expect(game().navActive, 'its cursor on Profile').toBe('profile');
+    expect(el('menu-rows').getAttribute('aria-activedescendant'), 'the root row').toBe(
+      'menu-root-profile',
+    );
+
+    pressWindow('Enter');
+    expect(stackNames(), 'A on Profile reopens it').toEqual(OVER_MENU);
+    await flush();
+    press('Escape'); // stop typing
+    const at = expectSafeFocus('stop typing again');
+    press('Escape', at); // Start, from a control in the frame
+    expect(stackNames(), 'Start pops to the base').toEqual(['world']);
+    expect(frameShown(), 'every section closed').toEqual(ALL_HIDDEN);
+    expect(shown('menu-overlay'), 'and the menu').toBe(false);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // UIF16B.3: one dialog, one trap
+  // ------------------------------------------------------------------------------------------
+
+  it('UIF16B.3 with Profile open exactly one live [role="dialog"][aria-modal="true"] exists (the frame; the menu beneath is suspended), no section carries a dialog role, and the privacy door moves focus into the Privacy section (Delete, for an Active account) and opens nothing', async () => {
+    // WRONG IMPL KILLED: a section that kept its own dialog role or aria-modal (the static
+    // `#rename-overlay` markup left as it was: two live modal roots); a menu beneath that stays a
+    // live modal; a door that hides Account or pushes a frame (the old openPrivacy verdict); a door
+    // that focuses the Privacy section's first DOM button whatever its state, or nothing.
+    await bootReady();
+    H.account = accountActive();
+    server();
+    frame();
+    pressWindow('KeyC');
+    expect(stackNames(), 'KeyC: the frame over the menu').toEqual(OVER_MENU);
+    await flush();
+    expect(liveModalDialogs(), 'one live modal root').toEqual(['profile-overlay']);
+    for (const id of ['rename-overlay', 'claim-overlay', 'privacy-overlay']) {
+      expect(el(id).getAttribute('role'), `#${id} is no dialog of its own`).not.toBe('dialog');
+      expect(el(id).getAttribute('aria-modal'), `#${id} is not modal`).toBe(null);
+    }
+
+    el('claim-privacy-btn').focus();
+    press('Enter');
+    expect(focusSection(), 'the door moved focus into Privacy').toBe('privacy');
+    expect(expectSafeFocus('the door').id, 'onto Delete').toBe('privacy-delete-btn');
+    expect(stackNames(), 'it opened nothing').toEqual(OVER_MENU);
+    expect(frameShown(), 'and hid nothing').toEqual(ALL_SHOWN);
+    expect(liveModalDialogs(), 'still one live modal root').toEqual(['profile-overlay']);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // UIF16B.4: the same commands, the same guards
+  // ------------------------------------------------------------------------------------------
+
+  it('UIF16B.4 a saved name dispatches setProfileName exactly once with the trimmed name, by Enter in the field and by A on Save, and the frame stays open', async () => {
+    // Replaces CTL8H-2-BOOT-TYPING-COMMIT's commit half.
+    // WRONG IMPL KILLED: an adapter that swallows the field's Enter; a commit sent twice (the
+    // adapter's A and the field's own Enter both firing, or Save's click and the router's A); an
+    // untrimmed name; a frame A that presses Save while focus is in the field.
+    await bootReady();
+    server();
+    openProfileFromMenu();
     await flush();
     const field = el('rename-input') as HTMLInputElement;
-    expect(document.activeElement, 'the field has focus after the deferred focus').toBe(field);
-
     typeInto(field, '  Bob ');
     press('Enter');
-    expect(callsOf('setProfileName'), 'the trimmed name, once').toEqual([
+    expect(callsOf('setProfileName'), 'Enter in the field: the trimmed name, once').toEqual([
       { name: 'setProfileName', args: { name: 'Bob' } },
     ]);
     await flush();
     expect(callsOf('setProfileName'), 'and still once').toHaveLength(1);
-    expect(shown('rename-overlay'), 'the frame stays open on success').toBe(true);
+    expect(stackNames(), 'the frame stays open').toEqual(OVER_MENU);
+
+    H.calls = [];
+    field.focus();
+    typeInto(field, ' Ann  ');
+    press('Escape');
+    expect(focusedId(), 'precondition: Save').toBe('rename-submit');
+    press('Enter');
+    expect(callsOf('setProfileName'), 'A on Save: the trimmed name, once').toEqual([
+      { name: 'setProfileName', args: { name: 'Ann' } },
+    ]);
+    await flush();
+    expect(callsOf('setProfileName'), 'and still once').toHaveLength(1);
+    expect(stackNames(), 'the frame stays open').toEqual(OVER_MENU);
   });
 
-  it('CTL8H-3-BOOT-DPAD: KeyC opens Account with focus on Sign in; ArrowDown and ArrowUp move focus between the shown buttons (clamped); Enter on Decline arms and focus lands on No; Backspace pops the frame and the decline path never ran', async () => {
-    // WRONG IMPL KILLED: a legacy adapter on the claim frame (the arrows are swallowed and focus
-    // never moves); rows that include a hidden button; a default-No that only runs on the click
-    // edge (the arm render hides the focused Decline and focus falls to the page); a Backspace
-    // that does not pop the frame, or one that also runs the decline (the claim code would be
-    // deleted by a back-out); and, as the control, a claim-code spy that is wired to nothing (the
-    // control click on Confirm must reach it).
-    // ctl-11a (named intentional changes): (1) RETIRED: the stack `['world', 'claimView']` at the
-    // open; REPLACED by `['world', 'menuView', 'claimView']`. (2) RETIRED: "Backspace pops the frame"
-    // read as the stack `['world']`; REPLACED by the stack `['world', 'menuView']` with the menu on
-    // screen: B pops ONE frame and the menu is the top frame (Start is what pops to the base). The
-    // control (KeyC from the menu reopens Account, still armed) is unchanged: an accelerator over a
-    // different open screen replaces it.
+  it('UIF16B.4 letters typed in the Name field (n, c, b, the D-pad letters and more) are typed and open nothing: unprevented, the stack, the frame and the field`s focus unchanged', async () => {
+    // WRONG IMPL KILLED: an accelerator or a D-pad letter taken from the field (the player could not
+    // type a name with n, c, w, a, s or d in it), a letter that is prevented (it never reaches the
+    // field), and N or C acting on the frame (moving focus between sections) while the field types.
     await bootReady();
     server();
-    const clearsBefore = H.claimClear.mock.calls.length;
-    press('KeyC');
-    expect(shown('claim-overlay'), 'KeyC shows Account').toBe(true);
-    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'claimView']);
+    pressWindow('KeyN');
     await flush();
-    expect(focusedId(), 'the initial focus is Sign in').toBe('claim-signin-btn');
-
-    const walked: string[] = [];
-    for (const code of ['ArrowDown', 'ArrowDown', 'ArrowDown', 'ArrowUp']) {
-      press(code);
-      walked.push(focusedId());
+    const field = el('rename-input') as HTMLInputElement;
+    expect(document.activeElement, 'precondition: the field').toBe(field);
+    for (const code of ['KeyN', 'KeyC', 'KeyB', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyM', 'KeyJ']) {
+      const down = press(code);
+      expect(down.defaultPrevented, `${code}: left to the field`).toBe(false);
+      expect(stackNames(), `${code}: the stack is unchanged`).toEqual(OVER_MENU);
+      expect(frameShown(), `${code}: the frame is unchanged`).toEqual(ALL_SHOWN);
+      expect(document.activeElement, `${code}: the field keeps focus`).toBe(field);
     }
-    expect(walked, 'down, down, clamped on the privacy door, then up').toEqual([
-      'claim-decline-btn',
-      'claim-privacy-btn',
-      'claim-privacy-btn',
-      'claim-decline-btn',
-    ]);
-    expect(el('claim-confirm').textContent ?? '', 'nothing is armed yet').toBe('');
-
-    press('Enter');
-    expect(
-      (el('claim-confirm').textContent ?? '').length,
-      'Enter on Decline arms the prompt',
-    ).toBeGreaterThan(0);
-    expect(shown('claim-confirm'), 'and shows it').toBe(true);
-    expect(focusedId(), 'focus lands on No, never Confirm').toBe('claim-decline-cancel-btn');
-    expect(H.claimClear.mock.calls.length, 'arming deletes nothing').toBe(clearsBefore);
-
-    press('Backspace');
-    expect(shown('claim-overlay'), 'B closes the Account frame').toBe(false);
-    expect(stackNames(), 'one frame was popped: the menu is the top frame').toEqual([
-      'world',
-      'menuView',
-    ]);
-    expect(shown('menu-overlay'), 'and the menu is on screen').toBe(true);
-    expect(H.claimClear.mock.calls.length, 'the decline path never ran').toBe(clearsBefore);
-
-    // Control: the spy is wired. The model is still armed (a pop is not a cancel), so reopening
-    // shows Confirm, and a click on it runs the decline and clears the stored code. The menu is the
-    // top frame here, so KeyC is an accelerator over a different screen: it replaces the menu with
-    // its own path and opens Account over a fresh menu.
-    await flush();
-    press('KeyC');
-    expect(shown('claim-overlay'), 'control: KeyC reopens Account').toBe(true);
-    expect(stackNames(), 'control: over the menu again').toEqual([
-      'world',
-      'menuView',
-      'claimView',
-    ]);
-    expect(shown('claim-decline-confirm-btn'), 'control: Confirm is shown, still armed').toBe(true);
-    (el('claim-decline-confirm-btn') as HTMLButtonElement).click();
-    expect(H.claimClear.mock.calls.length, 'control: Confirm runs the decline').toBe(
-      clearsBefore + 1,
-    );
   });
 
-  it('CTL8H-4-BOOT-TWO-STEP: Privacy opened through the main menu (Menu, Profile, Privacy): ArrowDown reaches Delete, Enter arms with focus on Keep, Enter on Keep disarms back onto Delete with no reducer call, arming again and ArrowUp to Confirm then Enter calls delete_account exactly once', async () => {
-    // WRONG IMPL KILLED: a legacy adapter on the privacy frame (the arrows are swallowed); an arm
-    // that leaves focus on the hidden Delete button or puts it on Confirm (one more Enter would
-    // delete the account); a Keep that does not disarm or that calls the reducer; a disarm that
-    // strands focus on a hidden button; rows that include the disabled Cancel or Download; a
-    // Confirm that never reaches the reducer; and a deleteAccount sent more than once.
+  it('UIF16B.4 Escape in the Name field stops typing and the frame stays open: with a valid draft focus lands on Save (draft kept); with an empty draft on a SHOWN, ENABLED control inside the frame (never the hidden or disabled Save); with the decline armed on No and with the deletion armed on Keep, never on Yes or Confirm', async () => {
+    // Replaces CTL8H-2-STOP-TYPING-IN-FRAME (named intentional change: its empty-draft arm read
+    // "focus ends on the page"; in one column there is always a control to land on, so it now
+    // lands inside the frame).
+    // WRONG IMPL KILLED: a stop-typing that lands on the next control in DOM order whatever it is (a
+    // disabled Save, a hidden decline row, an armed Yes or Confirm: one more Enter would decline the
+    // claim or delete the account); one that strands focus on the page; one that wipes the draft;
+    // the Name section's old Escape that hides the section (the frame would be left without it).
     await bootReady();
     H.account = accountActive();
     server();
-    frame(); // pumps the injected Active row into the privacy lattice: Delete becomes enabled
-    openFromProfileMenu(2);
-    expect(shown('privacy-overlay'), 'the Privacy leaf shows the frame').toBe(true);
-    expect(stackNames(), 'above the menu').toEqual(['world', 'menuView', 'privacyView']);
+    frame();
+    pressWindow('KeyN');
     await flush();
-    expect(focusedId(), 'the initial focus is Close').toBe('privacy-close-btn');
-    expect(
-      (el('privacy-delete-btn') as HTMLButtonElement).disabled,
-      'precondition: an Active account may delete',
-    ).toBe(false);
-    expect(el('privacy-confirm').textContent ?? '', 'precondition: nothing is armed').toBe('');
+    const field = el('rename-input') as HTMLInputElement;
+    const save = el('rename-submit') as HTMLButtonElement;
 
-    press('ArrowDown');
-    expect(focusedId(), 'ArrowDown from Close reaches Delete').toBe('privacy-delete-btn');
+    typeInto(field, 'Bob');
+    const typed = press('Escape');
+    expect(typed.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
+    expect(focusedId(), 'a valid draft: Save').toBe('rename-submit');
+    expectSafeFocus('a valid draft');
+    expect(field.value, 'the draft is kept').toBe('Bob');
+    expect(frameShown(), 'the frame stays open').toEqual(ALL_SHOWN);
+
+    field.focus();
+    typeInto(field, '');
+    expect(save.disabled, 'precondition: an empty draft disables Save').toBe(true);
+    press('Escape');
+    const landed = expectSafeFocus('an empty draft');
+    expect(landed, 'an empty draft: not the field').not.toBe(field);
+    expect(landed, 'and not the disabled Save').not.toBe(save);
+    expect(stackNames(), 'the frame stays open').toEqual(OVER_MENU);
+
+    // The decline armed, then back in the field with an empty draft.
+    pressWindow('Escape');
+    expect(stackNames(), 'precondition: Start closed the frame').toEqual(['world']);
+    armDecline('decline');
+    field.focus();
+    press('Escape');
+    expect(focusedId(), 'decline armed: No, never Yes').toBe('claim-decline-cancel-btn');
+    expectSafeFocus('decline armed');
+    expect(H.claimClear, 'nothing was declined').not.toHaveBeenCalled();
+    expect(stackNames(), 'the frame stays open').toEqual(OVER_MENU);
+
+    // The deletion armed (a fresh open: the close disarmed the decline).
+    pressWindow('Escape');
+    armDelete('delete');
+    field.focus();
+    press('Escape');
+    expect(focusedId(), 'delete armed: Keep, never Confirm').toBe('privacy-confirm-cancel-btn');
+    expectSafeFocus('delete armed');
+    expect(callsOf('deleteAccount'), 'nothing was deleted').toEqual([]);
+    expect(stackNames(), 'the frame stays open').toEqual(OVER_MENU);
+  });
+
+  it('UIF16B.4 the claim actions fire the same commands as before: Sign in starts one sign-in; Decline then No disarms (back on Decline) and deletes nothing; Decline then Yes runs the decline once', async () => {
+    // Replaces CTL8H-3-BOOT-DPAD (its D-pad half is UIF16B.2's walk).
+    // WRONG IMPL KILLED: a Sign in that never reaches the connection or reaches it twice; an arm
+    // that lands on Yes; a No that does not disarm or that declines; a disarm that strands focus;
+    // a Yes that never runs the decline or runs it twice; any of them sending a reducer call.
+    await bootReady();
+    server();
+    pressWindow('KeyC');
+    expect(focusedId(), 'KeyC seats Sign in').toBe('claim-signin-btn');
     press('Enter');
-    expect(
-      (el('privacy-confirm').textContent ?? '').length,
-      'Enter on Delete arms step two',
-    ).toBeGreaterThan(0);
-    expect(focusedId(), 'focus lands on Keep, never Confirm').toBe('privacy-confirm-cancel-btn');
+    expect(H.signIns, 'Sign in starts one sign-in').toBe(1);
+
+    if (!shown('profile-overlay')) pressWindow('KeyC');
+    el('claim-decline-btn').focus();
+    press('Enter');
+    expect(focusedId(), 'armed: focus on No').toBe('claim-decline-cancel-btn');
+    press('Enter');
+    expect(shown('claim-decline-cancel-btn'), 'No disarms').toBe(false);
+    expect(el('claim-confirm').textContent, 'no prompt left').toBe('');
+    expect(focusedId(), 'focus back on the armer').toBe('claim-decline-btn');
+    expect(H.claimClear, 'No declines nothing').not.toHaveBeenCalled();
+
+    press('Enter');
+    expect(focusedId(), 'armed again: No').toBe('claim-decline-cancel-btn');
+    press('ArrowUp');
+    expect(focusedId(), 'Up from No: Yes').toBe('claim-decline-confirm-btn');
+    press('Enter');
+    expect(H.claimClear, 'Yes runs the decline once').toHaveBeenCalledTimes(1);
+    expect(H.calls, 'no reducer call').toEqual([]);
+  });
+
+  it('UIF16B.4 the two-step delete: Delete arms with focus on Keep, Keep sends nothing and returns to Delete, armed again Confirm sends deleteAccount exactly once', async () => {
+    // Replaces CTL8H-4-BOOT-TWO-STEP (named intentional change: the open is KeyC then the privacy
+    // door; was the Profile sub-list's Privacy leaf, with focus on the retired Close anchor).
+    // WRONG IMPL KILLED: an arm that leaves focus on the button it armed from, or on Confirm (one
+    // more Enter would delete the account); a Keep that does not disarm or that calls a reducer; a
+    // Confirm that never reaches the reducer, or reaches it twice.
+    await bootReady();
+    H.account = accountActive();
+    server();
+    frame();
+    armDelete('delete');
     expect(callsOf('deleteAccount'), 'arming sends nothing').toEqual([]);
-
     press('Enter');
-    expect(el('privacy-confirm').textContent ?? '', 'Enter on Keep disarms').toBe('');
-    expect(focusedId(), 'focus returns to the button that armed it').toBe('privacy-delete-btn');
+    expect(el('privacy-confirm').textContent ?? '', 'Keep disarms').toBe('');
+    expect(focusedId(), 'back on Delete').toBe('privacy-delete-btn');
     expect(callsOf('deleteAccount'), 'Keep sends nothing').toEqual([]);
 
     press('Enter');
-    expect(focusedId(), 'armed again: focus on Keep').toBe('privacy-confirm-cancel-btn');
+    expect(focusedId(), 'armed again: Keep').toBe('privacy-confirm-cancel-btn');
     press('ArrowUp');
-    expect(focusedId(), 'ArrowUp from Keep reaches Confirm').toBe('privacy-confirm-btn');
-    expect(callsOf('deleteAccount'), 'moving to Confirm sends nothing').toEqual([]);
+    expect(focusedId(), 'Up from Keep: Confirm').toBe('privacy-confirm-btn');
     press('Enter');
-    expect(callsOf('deleteAccount'), 'Enter on Confirm deletes the account once').toEqual([
+    expect(callsOf('deleteAccount'), 'Confirm deletes once').toEqual([
       { name: 'deleteAccount', args: {} },
     ]);
     await flush();
     expect(callsOf('deleteAccount'), 'and only once').toHaveLength(1);
   });
 
-  it('CTL8H-5-N-OPENS-NAME-TYPING: KeyN at the world shows the Name frame on top of the stack, over the menu, the field has focus after the deferred focus, and the D-pad drives the frame (Escape then ArrowDown seats focus back in the field)', async () => {
-    // ctl-11a (named intentional change): RETIRED the stack `['world', 'renameView']`; REPLACED by
-    // `['world', 'menuView', 'renameView']` (the Name frame is the top frame, the menu beneath it).
-    // WRONG IMPL KILLED: a KeyN that no longer opens the frame; a frame opened without its
-    // deferred focus (the opening `n` would be typed, or the page keeps focus); and the legacy
-    // adapter still on the frame (the D-pad is swallowed: the last step moves nothing).
+  it('UIF16B.4 closing the frame by B, by Start, by the Close row or by a reconnect disarms an armed decline AND an armed deletion: the reopened frame shows no Yes / No and no Confirm / Keep, and nothing was declined or deleted', async () => {
+    // WRONG IMPL KILLED (plan review RT-1): a decline that stays armed behind a closed frame (one
+    // column makes its Yes reachable from the Name field: the next Enter after a Down declines the
+    // claim); a privacy disarm wired only to one close path; a close path that confirms instead of
+    // cancelling; a Close row that hides the frame without the sections' own hide.
     await bootReady();
+    H.account = accountActive();
     server();
-    expect(shown('rename-overlay'), 'precondition: the frame starts closed').toBe(false);
-    press('KeyN');
-    expect(shown('rename-overlay'), 'KeyN shows the Name frame').toBe(true);
-    expect(stackNames(), 'it is the top frame, over the menu').toEqual([
-      'world',
-      'menuView',
-      'renameView',
-    ]);
-    await flush();
-    const field = el('rename-input') as HTMLInputElement;
-    expect(document.activeElement, 'the field has focus after the deferred focus').toBe(field);
-    expect(field.value, 'the opening n was not typed').toBe('');
+    frame();
+    const closes: ReadonlyArray<readonly [string, () => void]> = [
+      ['B', () => press('Backspace')],
+      ['Start', () => press('Escape')],
+      [
+        'the Close row',
+        () => {
+          for (let i = 0; i < 12 && focusedId() !== 'profile-close-btn'; i += 1) press('ArrowDown');
+          expect(focusedId(), 'precondition: on Close').toBe('profile-close-btn');
+          press('Enter');
+        },
+      ],
+      ['a reconnect', () => opts.onReconnect(H.identity)],
+    ];
+    let driven = 0;
+    for (const [how, close] of closes) {
+      armDecline(`${how} / decline`);
+      close();
+      expect(frameShown(), `${how} / decline: the frame closed`).toEqual(ALL_HIDDEN);
+      expect(el('claim-decline-confirm-btn').style.display, `${how}: Yes painted away`).toBe(
+        'none',
+      );
+      pressWindow('KeyC');
+      expect(frameShown(), `${how}: reopened`).toEqual(ALL_SHOWN);
+      expect(
+        ['claim-decline-confirm-btn', 'claim-decline-cancel-btn'].map(shown),
+        `${how}: no Yes / No on the reopened frame`,
+      ).toEqual([false, false]);
+      expect(shown('claim-decline-btn'), `${how}: Decline is offered again`).toBe(true);
+      expect(focusedId(), `${how}: the reopen seats Sign in, not No`).toBe('claim-signin-btn');
+      pressWindow('Escape');
 
-    press('Escape');
-    expect(focusOnPage(), 'precondition: Escape left the empty field for the page').toBe(true);
-    press('ArrowDown');
-    expect(
-      document.activeElement,
-      'the Name screen takes the D-pad: focus is back in the field',
-    ).toBe(field);
+      armDelete(`${how} / delete`);
+      close();
+      expect(frameShown(), `${how} / delete: the frame closed`).toEqual(ALL_HIDDEN);
+      expect(el('privacy-confirm').textContent, `${how}: the delete prompt is cleared`).toBe('');
+      pressWindow('KeyC');
+      el('claim-privacy-btn').focus();
+      press('Enter');
+      expect(focusedId(), `${how}: the reopened door seats Delete, not Keep`).toBe(
+        'privacy-delete-btn',
+      );
+      expect(
+        ['privacy-confirm-btn', 'privacy-confirm-cancel-btn'].map(shown),
+        `${how}: no Confirm / Keep on the reopened frame`,
+      ).toEqual([false, false]);
+      pressWindow('Escape');
+      driven += 1;
+    }
+    expect(driven, 'ANTI-VACUITY: all four close paths were driven').toBe(4);
+    expect(H.claimClear, 'nothing was declined').not.toHaveBeenCalled();
+    expect(callsOf('deleteAccount'), 'nothing was deleted').toEqual([]);
   });
 
-  it('CTL8H-5-C-OPENS-ACCOUNT: KeyC at the world shows the Account frame on top of the stack, over the menu, and the D-pad reaches it: ArrowDown moves focus off Sign in onto another button of the frame', async () => {
-    // ctl-11a (named intentional change): RETIRED the stack `['world', 'claimView']`; REPLACED by
-    // `['world', 'menuView', 'claimView']` (the Account frame is the top frame, the menu beneath it).
-    // WRONG IMPL KILLED: a KeyC that no longer opens the frame; the legacy adapter still on the
-    // claim frame (the D-pad is swallowed and focus never leaves Sign in); and a cursor that moves
-    // focus out of the frame or onto a hidden button.
+  // ------------------------------------------------------------------------------------------
+  // UIF16B.5: where the frame opens
+  // ------------------------------------------------------------------------------------------
+
+  // CTL8H-5-N-OPENS-NAME-TYPING and CTL8H-5-C-OPENS-ACCOUNT are DELETED here (uif-16b, named): KeyN
+  // and KeyC open the one frame now, and main.accel.test.ts's UIF16B.5 cases pin both (N: the stack,
+  // the deferred focus on #rename-input, the `n` not typed; C: focus inside Account at once), with
+  // the D-pad half covered by the UIF16B.2 walk above.
+
+  it('UIF16B.5 a failed sign-in (onSignInFailed) opens Profile focused in the Account section; with Profile already open on Name it moves focus to Account and the frame stays', async () => {
+    // WRONG IMPL KILLED: a sign-in failure that opens the old claim frame alone, opens Profile on
+    // Name (focus left in the field, the failure unread), opens a second frame over an open one, or
+    // leaves focus in the field of an already open frame.
     await bootReady();
     server();
-    expect(shown('claim-overlay'), 'precondition: the frame starts closed').toBe(false);
-    press('KeyC');
-    expect(shown('claim-overlay'), 'KeyC shows the Account frame').toBe(true);
-    expect(stackNames(), 'it is the top frame, over the menu').toEqual([
-      'world',
-      'menuView',
-      'claimView',
-    ]);
+    const failed = opts.onSignInFailed;
+    if (failed === undefined) throw new Error('onSignInFailed was not wired by main.ts');
+    failed('sign-in-rejected' as never);
+    expect(frameShown(), 'Profile is open').toEqual(ALL_SHOWN);
+    expect(stackNames().at(-1), 'the frame is on top').toBe('profileView');
+    expect(focusSection(), 'focus in Account').toBe('account');
+    expectSafeFocus('sign-in failed');
+    expect(el('claim-title').textContent, 'the failure is shown').toBe(
+      t('claim.signInFailed.title'),
+    );
     await flush();
-    const first = document.activeElement;
-    expect(first, 'the initial focus is Sign in').toBe(el('claim-signin-btn'));
+    expect(focusSection(), 'the deferred Name anchor does not steal it').toBe('account');
+    pressWindow('Escape');
+    expect(frameShown(), 'precondition: Start closed it').toEqual(ALL_HIDDEN);
 
-    press('ArrowDown');
-    const next = document.activeElement;
-    expect(next, 'focus moved').not.toBe(first);
-    expect(next?.tagName, 'onto a button').toBe('BUTTON');
-    expect(el('claim-overlay').contains(next), 'inside the frame').toBe(true);
-    expect(isShown(next as Element), 'that is on screen').toBe(true);
+    pressWindow('KeyN');
+    await flush();
+    expect(document.activeElement, 'precondition: on the Name field').toBe(el('rename-input'));
+    failed('sign-in-expired' as never);
+    expect(stackNames(), 'the frame stays (no second one)').toEqual(OVER_MENU);
+    expect(focusSection(), 'focus moved to Account').toBe('account');
+    expectSafeFocus('sign-in failed while open');
+  });
+
+  it('UIF16B.5 a claim lifecycle paint raised before onReady (onClaimPending, or onClaimAwaitingAccount) auto-opens Profile on Account once onReady runs', async () => {
+    // WRONG IMPL KILLED: a deferred claim paint that onReady never flushes (the prompt never
+    // opens: the code stays retained behind a veto the player cannot see); an auto-open on Name;
+    // an auto-open of the old claim frame alone; an auto-open with a menu beneath (it is not a
+    // player's accelerator).
+    const raisers: ReadonlyArray<readonly [string, () => void]> = [
+      ['onClaimPending', () => opts.onClaimPending?.('claim-code')],
+      ['onClaimAwaitingAccount', () => opts.onClaimAwaitingAccount?.()],
+    ];
+    let driven = 0;
+    for (const [label, raise] of raisers) {
+      await bootConnected();
+      raise();
+      opts.onReady(H.identity);
+      server();
+      expect(frameShown(), `${label}: Profile is open`).toEqual(ALL_SHOWN);
+      expect(stackNames(), `${label}: the frame alone over the world`).toEqual([
+        'world',
+        'profileView',
+      ]);
+      expect(focusSection(), `${label}: focus in Account`).toBe('account');
+      expectSafeFocus(label);
+      driven += 1;
+      teardownBoot();
+    }
+    expect(driven, 'ANTI-VACUITY: both lifecycle events were driven').toBe(2);
+  });
+
+  it('UIF16B.5 a claim event arriving while Profile is open on Name with a typed draft paints the Account section in place: focus stays in the field and the draft is intact', async () => {
+    // WRONG IMPL KILLED: a claim render that re-runs the open (focus yanked to Account, or the
+    // section's hide clearing the draft); a render that re-shows the frame (a second frame); a
+    // render that never reaches the section (the refusal unread).
+    await bootReady();
+    server();
+    pressWindow('KeyN');
+    await flush();
+    const field = el('rename-input') as HTMLInputElement;
+    typeInto(field, 'Bob');
+    const result = opts.onClaimResult;
+    if (result === undefined) throw new Error('onClaimResult was not wired by main.ts');
+    result({ ok: false, message: 'close your other tab, then retry' } as never);
+    expect(el('claim-title').textContent, 'the Account section shows the refusal').toBe(
+      t('claim.reject.transient.title'),
+    );
+    expect(document.activeElement, 'focus stays in the field').toBe(field);
+    expect(field.value, 'the draft is intact').toBe('Bob');
+    expect(stackNames(), 'no frame surfaced').toEqual(OVER_MENU);
   });
 });

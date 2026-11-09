@@ -1375,7 +1375,10 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
       frame(settledAt + 600);
       expect(H.sends.length, `${opener.code}: nothing walks under the open screen`).toBe(sent);
 
-      fire('keydown', opener.code, settledAt + 700);
+      // uif-16b (named intentional change): N over the one Profile frame is Start only when focus
+      // is already in its Name section (else it moves focus there, UIF16B.5), so the N row closes
+      // with Start itself (Escape). Every other row still closes with its own key.
+      fire('keydown', opener.code === 'KeyN' ? 'Escape' : opener.code, settledAt + 700);
       expect(opener.shown(), `${opener.code}: precondition: the screen closed`).toBe(false);
       frame(settledAt + 800);
       frame(settledAt + 1000);
@@ -1759,7 +1762,14 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
         rootId: 'pvp-challenge-overlay',
         open: (t) => void fire('keydown', 'KeyP', t),
       },
-      { name: 'claimView', rootId: 'claim-overlay', open: () => opts.onSignInFailed?.('denied') },
+      // uif-16b (named intentional change): the failed sign-in opens the one Profile frame, whose
+      // root (`#profile-overlay`) carries the dialog ARIA its own hide() strips; the Account
+      // section has none of its own. Was: claimView, `#claim-overlay`.
+      {
+        name: 'profileView',
+        rootId: 'profile-overlay',
+        open: () => opts.onSignInFailed?.('denied'),
+      },
       { name: 'shopView', rootId: 'shop-overlay', open: (t) => openShopViaDialogue(t) },
     ];
     let t = 1200;
@@ -2076,9 +2086,13 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       readonly open: (t: number) => void;
       readonly shown: () => boolean;
     }> = [
+      // uif-16b (named intentional change): the rename and privacy rows both open the one Profile
+      // frame, so their a11y root is the frame's `#profile-overlay` (the sections carry no dialog
+      // ARIA of their own); each row's `shown` still reads its own section. Was: rootId
+      // `rename-overlay` and `privacy-overlay`.
       {
         name: 'renameView',
-        rootId: 'rename-overlay',
+        rootId: 'profile-overlay',
         open: (t) => void fire('keydown', 'KeyN', t),
         shown: () => shownById('rename-overlay'),
       },
@@ -2119,7 +2133,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       // not a frame after the loop below. Was: six overlays, evolution among them.
       {
         name: 'privacyView',
-        rootId: 'privacy-overlay',
+        rootId: 'profile-overlay',
         open: () => {
           opts.onSignInFailed?.('denied');
           rootOf('claim-privacy-btn').click();
@@ -2199,9 +2213,11 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(battleShown(), 'precondition: the Ongoing battle is still shown').toBe(true);
     frame(1210); // mirrors the callback-opened overlay onto the stack; not a batch
     // ctl-6c stamps a screen frame pushed over a battle base that was already the base with overBattle.
+    // uif-16b (named intentional change): the failed sign-in opens the one Profile frame on Account.
+    // Was: claimView.
     expect(stack(), 'precondition: it is a frame over the battle base').toEqual([
       { kind: 'battle', battleId: '101' },
-      { kind: 'screen', id: 'claimView', overBattle: '101' },
+      { kind: 'screen', id: 'profileView', overBattle: '101' },
     ]);
 
     // No frame runs between here and the assertions: the batch alone must do it.
@@ -2214,7 +2230,12 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(shownById('claim-overlay'), 'the claim overlay is closed in that same batch').toBe(
       false,
     );
-    expect(rootOf('claim-overlay').getAttribute('aria-modal'), 'through its own hide()').toBeNull();
+    // uif-16b (named intentional change): the dialog ARIA its hide() strips is the Profile frame
+    // root's (`#profile-overlay`). Was: `#claim-overlay`.
+    expect(
+      rootOf('profile-overlay').getAttribute('aria-modal'),
+      'through its own hide()',
+    ).toBeNull();
     expect(stack(), 'the world base with the outcome frame only').toEqual([
       { kind: 'world' },
       { kind: 'screen', id: 'battleView' },
