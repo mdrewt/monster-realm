@@ -465,7 +465,11 @@ const INNER_IDS: Readonly<Record<string, readonly string[]>> = {
     'tradepropose-request-currency',
     'tradepropose-submit',
   ],
-  'help-overlay': ['help-title', 'help-controls', 'help-goals'],
+  // INTENTIONAL CHANGE (uif-14, UIF14.1 / UIF14.4): `help-controls` and `help-goals` are RETIRED with
+  // the All controls and Goals tabs and replaced by the Introduction panel (`help-intro`, a div the
+  // view fills with paragraphs) and the Encyclopedia list (`help-encyclopedia`, a `ul.mr-nav-list`).
+  // Was: ['help-title', 'help-controls', 'help-goals'].
+  'help-overlay': ['help-title', 'help-intro', 'help-encyclopedia'],
   'menu-overlay': ['menu-heading', 'menu-rows', 'menu-back-hint'],
 };
 

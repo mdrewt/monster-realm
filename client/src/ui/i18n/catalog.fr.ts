@@ -354,28 +354,135 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Heading of the Journal overlay listing the player's active quests. One or two words.
   // questLogView.ts #quest-log-title (resolved in render())
   'journal.title': 'Journal',
-  // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
+  // @desc: How to Play tab with a short introduction to the game. Short (at most 14 characters).
   // ui/helpModel.ts
-  'help.tab.screen': 'Cet écran',
-  // @desc: Help tab listing every button and shortcut with its current keys. Short (at most 14 characters).
+  'help.tab.intro': 'Introduction',
+  // @desc: How to Play tab listing the game's terms and mechanics. Short (at most 14 characters).
   // ui/helpModel.ts
-  'help.tab.controls': 'Commandes',
-  // @desc: Help tab listing what to try in a first session. Short (at most 14 characters).
+  'help.tab.encyclopedia': 'Encyclopédie',
+  // @desc: First paragraph of How to Play's Introduction: a book-jacket blurb, no spoilers. Two or three sentences.
   // ui/helpModel.ts
-  'help.tab.goals': 'Objectifs',
-  // @desc: A Help goal: catch a wild monster.
+  'help.intro.p1':
+    'Au-delà des chemins du village, les hautes herbes s’animent. Des monstres sauvages parcourent le royaume, chacun sans pareil, et aucun n’appartient encore à personne. Quittez la route, affrontez-les sur le champ de bataille et gagnez les plus audacieux à votre cause.',
+  // @desc: Second paragraph of How to Play's Introduction: a book-jacket blurb, no spoilers. Two or three sentences.
   // ui/helpModel.ts
-  'help.goal.recruit': 'Recruter un monstre sauvage',
-  // @desc: A Help goal: win a battle.
+  'help.intro.p2':
+    'Faites grandir votre équipe par l’entraînement, les soins et l’essence que vous récoltez, et voyez-la prendre des formes inédites. Préparez chaque coup sur la grille tactique, puis partagez le monde avec d’autres joueurs : échangez, défiez-les et grimpez au classement. Votre royaume vous attend.',
+  // @desc: Encyclopedia entry name (party): a game term. One to three words.
   // ui/helpModel.ts
-  'help.goal.battle': 'Gagner votre premier combat',
-  // @desc: A Help goal: trade with another player.
+  'help.entry.party.term': 'Équipe',
+  // @desc: Encyclopedia definition of the party entry. One or two sentences.
   // ui/helpModel.ts
-  'help.goal.trade': 'Essayer un échange avec un autre testeur',
-  // @desc: Help note on All controls: key names (keyboard keys, as drawn in this list) are not button names (the console buttons A, B, X, Y, LB, RB, Start, Select). Keep the button names as written.
+  'help.entry.party.def':
+    'Les monstres que vous emmenez, jusqu’à six. Seuls les monstres de l’équipe peuvent combattre ou être envoyés en renfort.',
+  // @desc: Encyclopedia entry name (storage): a game term. One to three words.
   // ui/helpModel.ts
-  'help.note.keysVsButtons':
-    'Les touches sont celles du clavier ; les boutons (A, B, X, Y, LB, RB, Start, Select) sont ce qu’elles représentent. Avec les touches par défaut, la touche B ouvre le Stockage, tandis que le bouton B revient en arrière.',
+  'help.entry.storage.term': 'Stockage',
+  // @desc: Encyclopedia definition of the storage entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.storage.def':
+    'Là où attendent vos autres monstres. Les nouvelles recrues y arrivent : sélectionnez un monstre puis Déplacer pour l’amener dans une place libre de l’équipe.',
+  // @desc: Encyclopedia entry name (recruit): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.recruit.term': 'Recruter',
+  // @desc: Encyclopedia definition of the recruit entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.recruit.def':
+    'Gagner un monstre sauvage à votre cause au lieu de le vaincre : affaiblissez-le, placez-vous à côté et consacrez un tour entier à l’essai. Un échec coûte le tour.',
+  // @desc: Encyclopedia entry name (bait): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.bait.term': 'Appât',
+  // @desc: Encyclopedia definition of the bait entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.bait.def':
+    'Un objet offert lors d’une tentative de recrutement pour améliorer les chances. Il est consommé, que la tentative réussisse ou non.',
+  // @desc: Encyclopedia entry name (evolution): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.evolution.term': 'Évolution',
+  // @desc: Encyclopedia definition of the evolution entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.evolution.def':
+    'Un monstre qui remplit les conditions d’une voie devient une nouvelle espèce. Avec une seule voie ouverte, cela se fait seul ; avec plusieurs, vous choisissez dans la liste Évoluer.',
+  // @desc: Encyclopedia entry name (essence): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.essence.term': 'Essence',
+  // @desc: Encyclopedia definition of the essence entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.essence.def':
+    'Une ressource propre à chaque affinité, gagnée en remportant des combats sauvages. Les voies d’évolution en demandent certaines quantités.',
+  // @desc: Encyclopedia entry name (affinity): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.affinity.term': 'Affinité',
+  // @desc: Encyclopedia definition of the affinity entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.affinity.def':
+    'Le type élémentaire d’un monstre, comme Feu, Eau ou Plante. Les affrontements entre types décident des attaques fortes et faibles.',
+  // @desc: Encyclopedia entry name (status): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.status.term': 'Altérations d’état',
+  // @desc: Encyclopedia definition of the status entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.status.def':
+    'Des conditions sur une unité. Le poison et la brûlure la blessent à chaque fin de manche ; la paralysie peut lui faire perdre un tour ; le sommeil et le gel l’empêchent d’agir jusqu’à ce qu’ils cessent.',
+  // @desc: Encyclopedia entry name (ap): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.ap.term': 'Points d’action (PA)',
+  // @desc: Encyclopedia definition of the ap entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.ap.def':
+    'Ce qu’un monstre dépense pendant son tour en combat tactique : déplacements, techniques, objets et recrutement. Les points restants à la fin du tour sont perdus.',
+  // @desc: Encyclopedia entry name (initiative): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.initiative.term': 'Initiative',
+  // @desc: Encyclopedia definition of the initiative entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.initiative.def':
+    'À chaque manche, les unités agissent de la plus rapide à la plus lente. La barre d’ordre des tours montre qui suit ; les changements de vitesse s’appliquent dès la manche suivante.',
+  // @desc: Encyclopedia entry name (queue): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.queue.term': 'File d’actions',
+  // @desc: Encyclopedia definition of the queue entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.queue.def':
+    'Un plan de trois actions au plus pour le prochain tour d’un monstre. Quand son tour vient, le plan s’exécute ; si une étape devient impossible, il s’arrête là et les points non dépensés reviennent.',
+  // @desc: Encyclopedia entry name (idle): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.idle.term': 'Horloge d’inactivité',
+  // @desc: Encyclopedia definition of the idle entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.idle.def':
+    'Un minuteur de tour qui ne tourne que lorsque le combat vous attend. En JcJ, un tour manqué passe tout seul ; en combat sauvage, trop attendre y met fin par une fuite.',
+  // @desc: Encyclopedia entry name (stance): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.stance.term': 'Postures',
+  // @desc: Encyclopedia definition of the stance entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.stance.def':
+    'La façon dont un monstre sauvage se comporte en combat : un agressif fonce sur vous, celui qui garde son territoire le défend sans poursuivre, et un craintif garde ses distances.',
+  // @desc: Encyclopedia entry name (guard): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.guard.term': 'Garde',
+  // @desc: Encyclopedia definition of the guard entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.guard.def':
+    'Terminez un tour sans attaquer, avec des points en réserve, et votre monstre se met en garde : il subit moins de dégâts jusqu’à son prochain tour.',
+  // @desc: Encyclopedia entry name (deploy): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.deploy.term': 'Déploiement',
+  // @desc: Encyclopedia definition of the deploy entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.deploy.def':
+    'Avant un combat, choisissez quels monstres de l’équipe entrent sur le terrain et où ils se placent. Votre dernière formation est retenue.',
+  // @desc: Encyclopedia entry name (ranked): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.ranked.term': 'Classé',
+  // @desc: Encyclopedia definition of the ranked entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.ranked.def':
+    'Les combats contre d’autres joueurs qui modifient votre cote. Gagnez-les pour grimper dans le tableau Classement.',
+  // @desc: Encyclopedia detail line naming the related entries; {terms} is a comma-separated list of entry names.
+  // ui/helpModel.ts
+  'help.detail.related': (p) => `Voir aussi : ${p.terms}.`,
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (resolved in RenameView show())
   'chrome.rename.submit': 'Renommer',

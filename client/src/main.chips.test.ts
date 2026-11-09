@@ -338,7 +338,7 @@ describe('main.ts Start / Select hint-bar chips (runtime, ctl-7a)', { sequential
     expect(shown('menu-overlay'), 'anti-vacuity: Start opens the menu once hidden').toBe(true);
   });
 
-  it('CTL7A-4-SELECT-NO-IDENTITY: before the identity is known Select still opens help (like the ? hotkey) while Start does not open the menu', async () => {
+  it('CTL7A-4-SELECT-NO-IDENTITY: before the identity is known Select still opens help (like its R or / key) while Start does not open the menu', async () => {
     // WRONG IMPL KILLED: a Select branch that copies the Start identity guard (help is static
     // text, the hotkey has no such guard); a Start branch that drops the identity guard (the menu
     // reads store rows keyed by identity, which is '' before the first onReady). The post-onReady

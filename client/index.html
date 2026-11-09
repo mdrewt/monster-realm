@@ -81,8 +81,8 @@
           />
           <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button"></button>
         </div>
-        <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView. Display-only.
-             HelpView writes only `style.display`. ctl-6c: .mr-shell--top puts it above the battle
+        <!-- pt-c2b help overlay shell (How to Play) — hidden by default; managed by HelpView, which
+             fills the two panels and adds the TabBar and the detail sheet. ctl-6c: .mr-shell--top puts it above the battle
              overlay's z-index 110 (ui/battleView.ts), because the main menu opens help over a battle. -->
         <div
           id="help-overlay"
@@ -92,8 +92,8 @@
           style="display:none"
         >
           <div id="help-title" tabindex="-1"></div>
-          <ul id="help-controls" class="mr-nav-list"></ul>
-          <ul id="help-goals" class="mr-nav-list"></ul>
+          <div id="help-intro"></div>
+          <ul id="help-encyclopedia" class="mr-nav-list"></ul>
         </div>
         <!-- uxd3: main-menu overlay shell — hidden by default; managed by MenuView, which builds the
              visible ui/frame.ts `.mr-frame` INSIDE it. So this root carries .mr-shell but never

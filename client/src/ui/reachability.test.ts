@@ -34,10 +34,10 @@
  * no leaf, or whose leaf opens another frame (the stack check). The exact counts below are the
  * design table's own (party 2, storage 3, bag 3, journal 4, rename 6, Social > Challenges 7).
  *
- * Options > Report a problem (F9's twin, design §5) is NOT in the menu model yet: ctl-14 adds the
- * row (CTL14.2 "reachability.test.ts adds the row to its set"). The Options group is covered
- * generically: every leaf the search discovers, an Options leaf included, is held to the bound, so
- * the row is covered the moment the menu model grows it.
+ * Report a problem (F9's twin, design §5) is not a menu leaf: #586 D3's menu has no slot for it, so
+ * the spec re-homes it on How to Play's Introduction tab (uif-14, UIF14.3, deferred). The Options
+ * group is covered generically: every leaf the search discovers, an Options leaf included, is held
+ * to the bound.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -349,7 +349,7 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     );
     expect(
       ids.some((id) => id.startsWith('options/')),
-      'ANTI-VACUITY: the Options group has a leaf (Report a problem joins it in ctl-14)',
+      'ANTI-VACUITY: the Options group has a leaf',
     ).toBe(true);
 
     const counts: Partial<Record<MenuAccel, number>> = {};

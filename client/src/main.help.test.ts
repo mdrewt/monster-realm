@@ -1,20 +1,26 @@
 // @vitest-environment happy-dom
 /**
- * main.help.test.ts: the GENERATED Help through a booted main.ts (ctl-14, CTL14.1). Select (or
- * Options > How to play) opens Help with the tabs This screen | All controls | Goals, generated from
- * the context table (`hintBar` over the screen BENEATH Help), the live binding table and the
- * catalog; LB / RB switch the tab and Select, B and Start close it.
+ * main.help.test.ts: How to Play through a booted main.ts (uif-14, UIF14.1 / UIF14.4 / UIF14.5 /
+ * UIF14.6). Select (or Options > How to play) opens Help on Introduction with two tabs; RB shows the
+ * Encyclopedia, a D-pad list of sixteen terms; A opens an entry's detail as a modal sheet over the list,
+ * B closes the sheet back to the same entry and the next B closes Help; the tab change and the opened
+ * entry are announced through the page's live region.
  *
- * SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-console-controls.spec.md §ctl-14;
- * memory/projects/monster-realm-ctl-14-plan.md (`main.ts`: `openHelp()` = `helpView.render(
- * buildHelpViewModel(hintBar(beneath, bindings, notices, world), bindings)); helpView.show();
- * seatOpened('helpView')`, `beneath` the stack without the help frame).
+ * INTENTIONAL CHANGE (uif-14): the ctl-14 cases that read `#help-screen` (the hint-bar chips of the
+ * context beneath Help), the 24 All controls rows, the three goals and the keys-vs-buttons note are
+ * RETIRED with those tabs (Help no longer lists chips, so the battle / deploy / trade-request chip
+ * cases that only differed in that list went too). What stays: Select / Escape / the Select chip open
+ * and close it, a remap moves the key, Options > How to play, and a reopen starts over.
  *
- * DOM CONTRACT read here (see helpView.test.ts for the unit-level statement of it): the panels are
- * `#help-screen` (This screen, created at runtime), `#help-controls` (All controls) and
- * `#help-goals` (Goals), one <li> per row; the tab strip is a `role="tablist"` of `role="tab"`s whose
- * active one is `aria-selected="true"`; only the active tab's panel is visible (the others carry
- * `hidden`). A tab's name is read from the strip, never from a literal.
+ * SOURCE OF TRUTH: specs/monster-realm-v2/M-ui-foundation.spec.md §uif-14;
+ * memory/projects/monster-realm-uif-14-plan.md (`main.ts`: `openHelp()` renders
+ * `buildHelpViewModel()` with no arguments; `new HelpView({ announce: announceNow })`).
+ *
+ * DOM CONTRACT read here (see helpView.test.ts for the unit-level statement of it): the tab strip is
+ * `#help-tabs` (role=tablist) of two role=tab; the panels are `#help-intro` (two <p>) and
+ * `#help-encyclopedia` (sixteen `[data-nav-key]` rows, the cursor `.is-active`), the inactive one
+ * `hidden`; the detail is the `[data-context-sheet]` inside #help-overlay. Live-region text is read from
+ * `#a11y-live` after a frame pumps the coalescing window (ui/liveRegion.ts: trailing edge, 500 ms).
  *
  * Harness: main.hintBar.test.ts's pattern, copied (vi.resetModules + a fresh import per boot, the
  * real client/index.html shell, one controllable clock and rAF, a stubbed wasm pkg and SDK
@@ -30,15 +36,8 @@ import {
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import { DEFAULT_BINDINGS } from './input/bindings';
-import { VBUTTONS } from './input/buttons';
 import type { ConnectionOptions } from './net/connection';
-import type {
-  StoreBattle,
-  StoreBattleMonster,
-  StoreMonsterPub,
-  StoreTacticalBattle,
-  StoreTradeOffer,
-} from './net/store';
+import type { StoreBattle, StoreBattleMonster } from './net/store';
 import { t as i18nT } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -239,44 +238,6 @@ const game = (): GameHook => (window as unknown as { __game: () => GameHook })._
 const stackNames = (): string[] =>
   game().stack.map((f) => (f.kind === 'screen' || f.kind === 'prompt' ? (f.id as string) : f.kind));
 
-const NPC_ENTITY = 11n;
-/** A dialogue NPC on (3, 6) (the tile the player on (2, 6) facing East faces), which the stubbed
- *  wasm rule names as the faced candidate, in one batch. */
-function seedFacedNpc(): void {
-  opts.store.upsertNpc({
-    entityId: NPC_ENTITY,
-    npcId: 'guide',
-    zoneId: 0,
-    homeX: 3,
-    homeY: 6,
-    wanderRadius: 0,
-    dialogueTreeId: 'no-such-tree',
-    interaction: { kind: 'dialogue' },
-  });
-  opts.store.upsertCharacter(
-    {
-      entityId: NPC_ENTITY,
-      zoneId: 0,
-      tileX: 3,
-      tileY: 6,
-      facing: 'West',
-      action: 'Idle',
-      moveStartedAtMs: 0n,
-      moveQueue: [] as WasmMoveInput[],
-    },
-    clock.t,
-  );
-  H.interact = (...args: unknown[]) => {
-    const entities = args[4];
-    if (!Array.isArray(entities)) return [];
-    const at = entities.findIndex(
-      (e: { kind?: unknown; id?: unknown }) => e.kind === 'npc' && e.id === NPC_ENTITY.toString(),
-    );
-    return at === -1 ? [] : [at];
-  };
-  batch();
-}
-
 /** A stored `mr.controls` table: the defaults with `change` applied. */
 const storedTable = (
   change: (raw: { buttons: Record<string, string[]>; accels: Record<string, string[]> }) => void,
@@ -289,27 +250,24 @@ const storedTable = (
 };
 
 // --- what a player sees of Help ---------------------------------------------------------------
-const SCREEN_PANEL = '#help-screen';
-const CONTROLS_PANEL = '#help-controls';
-const GOALS_PANEL = '#help-goals';
-const PANELS = [SCREEN_PANEL, CONTROLS_PANEL, GOALS_PANEL] as const;
-
 const helpOverlay = (): HTMLElement => {
   const el = document.getElementById('help-overlay');
   if (el === null) throw new Error('index.html ships #help-overlay');
   return el;
 };
 const helpOpen = (): boolean => helpOverlay().style.display !== 'none';
-const panelEl = (selector: string): HTMLElement => {
+const part = (selector: string): HTMLElement => {
   const el = helpOverlay().querySelector<HTMLElement>(selector);
-  if (el === null) throw new Error(`Help has no ${selector} panel`);
+  if (el === null) throw new Error(`Help has no ${selector}`);
   return el;
 };
-/** The rows of a panel, as text, in order. */
-const rowTexts = (selector: string): string[] =>
-  Array.from(panelEl(selector).querySelectorAll('li')).map((li) => li.textContent ?? '');
-/** The panels a player can see: those with no hidden ancestor-or-self. */
-const shownPanels = (): string[] => PANELS.filter((s) => panelEl(s).closest('[hidden]') === null);
+/** Out of sight by `hidden` or `display:none`, on the node or any ancestor; a missing node is hidden. */
+function isHidden(start: Element | null): boolean {
+  for (let node: Element | null = start; node instanceof HTMLElement; node = node.parentElement) {
+    if (node.hidden || node.style.display === 'none') return true;
+  }
+  return !(start instanceof HTMLElement);
+}
 /** The tab strip as read: { label, selected }. */
 const tabsNow = (): Array<{ label: string; selected: boolean }> =>
   Array.from(helpOverlay().querySelectorAll('[role="tablist"] [role="tab"]')).map((el) => ({
@@ -317,149 +275,215 @@ const tabsNow = (): Array<{ label: string; selected: boolean }> =>
     selected: el.getAttribute('aria-selected') === 'true',
   }));
 const activeTab = (): string | undefined => tabsNow().find((x) => x.selected)?.label;
-/** The overlay's text with every hidden subtree skipped. */
-function visibleText(root: Element): string {
-  if (root.hasAttribute('hidden')) return '';
-  const parts: string[] = [];
-  for (const node of Array.from(root.childNodes)) {
-    if (node.nodeType === 3) parts.push(node.textContent ?? '');
-    else if (node.nodeType === 1) parts.push(visibleText(node as Element));
-  }
-  return parts.join('\n');
+/** The Encyclopedia's rows as text, in order. */
+const rowTexts = (): string[] =>
+  Array.from(part('#help-encyclopedia').querySelectorAll('[data-nav-key]')).map(
+    (r) => r.textContent ?? '',
+  );
+/** The key of the Encyclopedia row carrying the cursor. */
+const cursorKey = (): string | null =>
+  part('#help-encyclopedia').querySelector('.is-active')?.getAttribute('data-nav-key') ?? null;
+/** The detail sheet: the one [data-context-sheet] in Help (shown or not). */
+const sheet = (): HTMLElement => part('[data-context-sheet]');
+const sheetOpen = (): boolean => !isHidden(sheet());
+const sheetTitle = (): string => sheet().querySelector('.mr-sheet-title')?.textContent ?? '';
+const sheetProse = (): string => sheet().querySelector('.mr-sheet-prose')?.textContent ?? '';
+/** What the live region says now (the node is re-parented into an open overlay; found by id). */
+const liveText = (): string => document.getElementById('a11y-live')?.textContent ?? '';
+
+/** A catalog message read through the test's own resolver (default English), by literal id. */
+const say = (id: string): string => i18nT(id as never) as string;
+
+const TITLE_INTRO = 'Introduction';
+const TITLE_ENC = 'Encyclopedia';
+
+/** Boot to the bare world and open Help with Select (KeyR). */
+async function openHelp(stored?: string): Promise<void> {
+  await bootReady(stored);
+  batch();
+  frame();
+  press('KeyR');
+  frame();
+  expect(stackNames(), 'Select opened the help frame').toEqual(['world', 'helpView']);
+  expect(helpOpen(), 'and showed the overlay').toBe(true);
 }
 
-/** Walk the main menu's cursor onto `key` of the current list, with real arrow presses. */
-function menuTo(key: string): void {
-  for (let i = 0; i < 8 && game().navActive !== key; i += 1) press('ArrowDown');
-  expect(game().navActive, `precondition: the menu cursor is on ${key}`).toBe(key);
-}
-
-describe('main.ts generated Help over the real shell (runtime, ctl-14)', {
-  sequential: true,
-}, () => {
+describe('main.ts How to Play over the real shell (runtime, uif-14)', { sequential: true }, () => {
   afterEach(teardown);
 
-  it('CTL14-1-BOOT-SELECT: Select at the world opens Help on This screen listing the WORLD context`s chips (and not Help`s own Close), the tabs follow LB / RB (RB wraps from Goals, LB from This screen), All controls lists every button and shortcut with the live keys (F9 and F8 included), Goals the three catalog goals and the note shows only on All controls; Select again closes it, and a reopen starts on This screen; Escape closes it', async () => {
-    // LEGACY REPLACED (the Red): Select opened the old two-list overlay (English CONTROLS and
-    // GOALS rows, no tabs, no chips of the screen, no F8), and LB / RB scrolled the page.
-    // WRONG IMPL KILLED: Help built from the stack WITH the help frame (This screen would read
-    // OK / Back / Close / Help: the Close chip is the tell) instead of the context beneath; a
-    // This-screen tab that is a fixed list; a tab strip painted once at boot (the second open would
-    // keep the last tab); LB / RB that never reach the screen (the page keeps them); a panel that
-    // does not follow the tab; all panels shown at once; no wrap; the note on every tab or on
-    // none; a model without the shortcut rows (F9 / F8 undiscoverable) or with keys that are not
-    // the live glyphs; a Select that does not close (a second press must toggle) and an Escape that
-    // leaves Help (or the stack) behind.
-    const ESC = i18nT('key.escape');
-    const menuVerb = i18nT('chrome.chip.menu');
-    const helpVerb = i18nT('chrome.chip.help');
-    const titles = [i18nT('help.tab.screen'), i18nT('help.tab.controls'), i18nT('help.tab.goals')];
-    const note = i18nT('help.note.keysVsButtons');
+  it('UIF14.1 Select opens How to Play on Introduction with exactly two tabs, Introduction selected and its two paragraphs shown, the Encyclopedia hidden, and none of the retired panels (#help-controls, #help-goals, #help-screen, #help-note); RB shows the Encyclopedia and LB returns', async () => {
+    // WRONG IMPL KILLED: the old three-tab Help still booted (All controls kept: 110); an opening on
+    // the Encyclopedia; a tab strip painted once at boot (the second open would keep the last tab);
+    // both panels shown at once; RB / LB that never reach the screen (the page keeps them); the
+    // retired DOM nodes still in the shell.
+    expect(say('help.tab.intro'), 'fixture: the English title').toBe(TITLE_INTRO);
+    expect(say('help.tab.encyclopedia'), 'fixture: the English title').toBe(TITLE_ENC);
+    await openHelp();
 
-    await bootReady();
-    batch();
-    frame();
-    expect(helpOpen(), 'precondition: Help starts closed').toBe(false);
-    expect(stackNames(), 'precondition: the bare world').toEqual(['world']);
-
-    // --- Select opens Help over the world ----------------------------------------------------
-    press('KeyR');
-    frame();
-    expect(stackNames(), 'Select opened the help frame').toEqual(['world', 'helpView']);
-    expect(helpOpen(), 'and showed the overlay').toBe(true);
-
-    // --- This screen: the world's chips, as the hint bar showed them beneath -----------------
-    const screenRows = rowTexts(SCREEN_PANEL);
-    expect(screenRows, 'the bare world has two chips: Start and Select').toHaveLength(2);
-    expect(screenRows[0], 'row 1: Start, its live keycap and its verb').toContain(ESC);
-    expect(screenRows[0]).toContain(menuVerb);
-    expect(screenRows[1], 'row 2: Select, its live keycap and its verb').toContain('R');
-    expect(screenRows[1]).toContain(helpVerb);
-    expect(screenRows[0], 'each row carries its own verb only').not.toContain(helpVerb);
-    const screenText = screenRows.join('\n');
-    for (const own of ['chrome.chip.close', 'chrome.chip.ok', 'chrome.chip.back'] as const) {
-      expect(screenText, `Help's own chips (${own}) are not the screen's`).not.toContain(
-        i18nT(own),
-      );
-    }
-
-    // --- the strip: three tabs, This screen selected, only its panel shown -------------------
     expect(
       tabsNow().map((x) => x.label),
-      'the tab labels are the catalog titles',
-    ).toEqual(titles);
-    expect(activeTab(), 'it opens on This screen').toBe(titles[0]);
-    expect(shownPanels(), 'only This screen is shown').toEqual([SCREEN_PANEL]);
-    expect(visibleText(helpOverlay()), 'no note on This screen').not.toContain(note);
+      'exactly two tabs, the catalog titles',
+    ).toEqual([TITLE_INTRO, TITLE_ENC]);
+    expect(activeTab(), 'it opens on Introduction').toBe(TITLE_INTRO);
+    expect(
+      Array.from(part('#help-intro').querySelectorAll('p')).map((p) => p.textContent),
+      'the two catalog paragraphs',
+    ).toEqual([say('help.intro.p1'), say('help.intro.p2')]);
+    expect(isHidden(part('#help-intro')), 'Introduction is shown').toBe(false);
+    expect(isHidden(part('#help-encyclopedia')), 'the Encyclopedia is hidden').toBe(true);
+    for (const id of ['help-controls', 'help-goals', 'help-screen', 'help-note']) {
+      expect(document.getElementById(id), `#${id} is gone`).toBeNull();
+    }
 
-    // --- All controls: every row, the live keys, F9 and F8 ------------------------------------
-    const controls = rowTexts(CONTROLS_PANEL);
-    // qf-14: 11 -> 12 shortcuts with Y (Controls), so 23 -> 24 rows.
-    expect(controls, '12 buttons then 12 shortcuts').toHaveLength(24);
-    const rowFor = (label: string): string => {
-      const row = controls.find((text) => text.includes(label));
-      if (row === undefined) throw new Error(`no All controls row for ${label}`);
-      return row;
-    };
-    const selectLabel = i18nT('controls.button.select');
-    const selectRow = rowFor(selectLabel).replace(selectLabel, '');
-    expect(selectRow, 'Select: its primary key').toContain('R');
-    expect(selectRow, 'and its alt, by the catalog name').toContain(i18nT('key.slash'));
-    expect(rowFor(i18nT('controls.accel.bugReport')), 'the F9 row').toContain('F9');
-    expect(rowFor(i18nT('controls.accel.dismissError')), 'the F8 row').toContain('F8');
-
-    // --- RB walks the tabs; the panel and the note follow -------------------------------------
-    press('KeyE');
+    press('KeyE'); // RB
     expect(stackNames(), 'RB is Help`s, not the page`s: Help stays open').toEqual([
       'world',
       'helpView',
     ]);
-    expect(activeTab(), 'RB: All controls').toBe(titles[1]);
-    expect(shownPanels(), 'only All controls is shown').toEqual([CONTROLS_PANEL]);
-    expect(visibleText(helpOverlay()), 'the keys-vs-buttons note shows here').toContain(note);
+    expect(activeTab(), 'RB: the Encyclopedia').toBe(TITLE_ENC);
+    expect(isHidden(part('#help-encyclopedia')), 'its panel is shown').toBe(false);
+    expect(isHidden(part('#help-intro')), 'Introduction is hidden').toBe(true);
+    expect(rowTexts(), 'sixteen rows').toHaveLength(16);
 
-    press('KeyE');
-    expect(activeTab(), 'RB: Goals').toBe(titles[2]);
-    expect(shownPanels()).toEqual([GOALS_PANEL]);
-    expect(
-      rowTexts(GOALS_PANEL).map((text) => text.trim()),
-      'the three catalog goals, exactly',
-    ).toEqual([i18nT('help.goal.recruit'), i18nT('help.goal.battle'), i18nT('help.goal.trade')]);
-    expect(visibleText(helpOverlay()), 'no note on Goals').not.toContain(note);
-
-    press('KeyE');
-    expect(activeTab(), 'RB wraps from Goals to This screen').toBe(titles[0]);
-    expect(shownPanels()).toEqual([SCREEN_PANEL]);
-    press('KeyQ');
-    expect(activeTab(), 'LB wraps from This screen to Goals').toBe(titles[2]);
-    expect(shownPanels()).toEqual([GOALS_PANEL]);
-    press('KeyQ');
-    expect(activeTab(), 'LB: All controls').toBe(titles[1]);
+    press('KeyQ'); // LB
+    expect(activeTab(), 'LB: back to Introduction').toBe(TITLE_INTRO);
     expect(stackNames(), 'the bumpers never closed Help').toEqual(['world', 'helpView']);
+  }, 120_000);
 
-    // --- Select closes it, and a reopen starts over on This screen ---------------------------
-    press('KeyR');
+  it('UIF14.4 on the Encyclopedia ArrowDown walks the sixteen terms (the cursor row .is-active), and the cursor is remembered per tab: Down three times, LB to Introduction, RB back, still the fourth term', async () => {
+    // WRONG IMPL KILLED: a D-pad that never reaches the Help screen (the cursor never moves); a list
+    // whose rows are not the terms; a cursor reset by the tab switch (the nav kit's per-tab memory
+    // unused); a cursor that moves while Introduction is shown.
+    await openHelp();
+    press('KeyE');
+    const terms = rowTexts();
+    expect(terms, 'sixteen non-empty terms').toHaveLength(16);
+    expect(
+      terms.every((x) => x.trim() !== ''),
+      'every row reads a term',
+    ).toBe(true);
+    expect(new Set(terms).size, 'all different').toBe(16);
+    expect(cursorKey(), 'the cursor opens on the first entry').toBe('party');
+    press('ArrowDown');
+    expect(cursorKey(), 'Down: the second entry').toBe('storage');
+    press('ArrowDown');
+    press('ArrowDown');
+    expect(cursorKey(), 'Down x3: the fourth entry').toBe('bait');
+    press('KeyQ'); // LB
+    expect(activeTab()).toBe(TITLE_INTRO);
+    press('ArrowDown');
+    press('KeyE'); // RB
+    expect(activeTab()).toBe(TITLE_ENC);
+    expect(cursorKey(), 'the cursor is remembered per tab').toBe('bait');
+  }, 120_000);
+
+  it('UIF14.5 A opens the entry under the cursor as a detail sheet over the still-rendered list (heading = its term, prose holds its definition), B closes the sheet with Help still open and the same entry active, and the next B closes Help; the tabs and the D-pad are inert while the sheet is up', async () => {
+    // WRONG IMPL KILLED: an A that opens nothing, or the first entry whatever the cursor; a sheet
+    // showing another entry's text; the list hidden or emptied under the modal; a B that closes
+    // Help with the sheet (stack drops to the world); a close that resets the cursor to the first
+    // entry (feedback 114); a close that leaves the sheet shown; an RB while the detail is open that
+    // switches the tab behind the modal; a second B that does not pop.
+    await openHelp();
+    press('KeyE');
+    press('ArrowDown');
+    press('ArrowDown');
+    press('ArrowDown');
+    expect(cursorKey(), 'fixture: on the fourth entry').toBe('bait');
+    const baitTerm = say('help.entry.bait.term');
+    const baitDef = say('help.entry.bait.def');
+    expect(sheetOpen(), 'precondition: no sheet yet').toBe(false);
+
+    press('Enter'); // A
+    expect(sheetOpen(), 'A opened the detail sheet').toBe(true);
+    expect(sheet().dataset.sheetVariant, 'the detail variant').toBe('detail');
+    expect(sheetTitle(), 'heading = the entry`s term').toBe(baitTerm);
+    expect(sheetProse(), 'prose holds its definition').toContain(baitDef);
+    expect(isHidden(part('#help-encyclopedia')), 'the list stays rendered behind it').toBe(false);
+    expect(rowTexts(), 'with all sixteen rows').toHaveLength(16);
+    expect(stackNames(), 'still the help frame').toEqual(['world', 'helpView']);
+
+    press('KeyE'); // RB while the detail is up
+    press('ArrowDown');
+    expect(activeTab(), 'RB did nothing behind the modal').toBe(TITLE_ENC);
+    expect(cursorKey(), 'nor did Down').toBe('bait');
+    expect(sheetTitle(), 'and the sheet still names the same entry').toBe(baitTerm);
+
+    press('Backspace'); // B
+    expect(sheetOpen(), 'B closed the sheet').toBe(false);
+    expect(helpOpen(), 'Help is still open').toBe(true);
+    expect(stackNames(), 'the help frame is still on the stack').toEqual(['world', 'helpView']);
+    expect(cursorKey(), 'the same entry is active').toBe('bait');
+    expect(activeTab(), 'on the same tab').toBe(TITLE_ENC);
+    expect(sheet().textContent, 'nothing the sheet named stays in the document').toBe('');
+
+    press('Backspace'); // B again
     frame();
-    expect(helpOpen(), 'Select again closes Help').toBe(false);
+    expect(helpOpen(), 'the next B closes Help').toBe(false);
     expect(stackNames(), 'back to the bare world').toEqual(['world']);
+  }, 120_000);
+
+  it('UIF14.6 a tab change and an opened entry reach the live region: RB says the Encyclopedia title, A says the entry`s term, opening Help says neither', async () => {
+    // WRONG IMPL KILLED: no announce handler wired into the view (R-ctl-14-HELPA11Y stays open: the
+    // region keeps its old text); the tab announced as a key or a catalog id; the opening
+    // Introduction announced on show (the region would read the tab on every open); the term never
+    // announced; announcing only the first change. Each message is flushed through a frame past the
+    // 500 ms coalescing window (ui/liveRegion.ts), so a missing pump would also red here.
+    await openHelp();
+    frame(600);
+    expect(liveText(), 'opening Help does not announce the opening tab').not.toBe(TITLE_INTRO);
+
+    press('KeyE'); // RB
+    frame(600);
+    expect(liveText(), 'RB: the new tab`s title').toBe(TITLE_ENC);
+
+    press('ArrowDown');
+    frame(600);
+    expect(liveText(), 'a cursor move leaves the tab announcement as it was').toBe(TITLE_ENC);
+
+    press('Enter'); // A on the second entry
+    frame(600);
+    expect(liveText(), 'A: the entry`s term').toBe(say('help.entry.storage.term'));
+
+    press('Backspace'); // B closes the sheet
+    frame(600);
+    expect(liveText(), 'closing the sheet announces nothing new').toBe(
+      say('help.entry.storage.term'),
+    );
+
+    press('KeyQ'); // LB
+    frame(600);
+    expect(liveText(), 'LB: the Introduction title').toBe(TITLE_INTRO);
+  }, 120_000);
+
+  it('Select closes Help (also with a detail open), and a reopen starts over on Introduction with no sheet; Escape closes it too', async () => {
+    // WRONG IMPL KILLED: a Select that does not toggle over a detail (the sheet swallows it); a
+    // reopen that resumes the last tab or the open detail (state kept in module state); an Escape
+    // that leaves Help (or the stack) behind.
+    await openHelp();
+    press('KeyE');
+    press('Enter');
+    expect(sheetOpen(), 'precondition: a detail is open').toBe(true);
+    press('KeyR'); // Select
+    frame();
+    expect(helpOpen(), 'Select closes Help even from a detail').toBe(false);
+    expect(stackNames(), 'back to the bare world').toEqual(['world']);
+
     press('KeyR');
     frame();
     expect(helpOpen(), 'reopened').toBe(true);
-    expect(activeTab(), 'a reopen starts on This screen, not the last tab').toBe(titles[0]);
-    expect(shownPanels()).toEqual([SCREEN_PANEL]);
+    expect(activeTab(), 'a reopen starts on Introduction, not the last tab').toBe(TITLE_INTRO);
+    expect(sheetOpen(), 'with no sheet').toBe(false);
+    expect(isHidden(part('#help-intro'))).toBe(false);
 
-    // --- Escape (Start) closes it --------------------------------------------------------------
     press('Escape');
     frame();
     expect(helpOpen(), 'Escape closes Help').toBe(false);
     expect(stackNames(), 'and leaves the bare world, not the menu').toEqual(['world']);
+  }, 120_000);
 
-    // --- a saved remap: All controls and the chips show it; Select answers on the NEW key -----
-    // WRONG IMPL KILLED: All controls built from DEFAULT_BINDINGS or a hand list (the Select row
-    // would still read R and the slash key after the remap); a This-screen chip keycap from the
-    // defaults; a Select still opening on KeyR (the remap would be cosmetic); and an unbound alt
-    // slot printed as an empty or "undefined" key.
-    teardown();
+  it('a saved Select remap moves the key: the old key opens nothing, the new key opens How to Play on Introduction and closes it again', async () => {
+    // WRONG IMPL KILLED: a Select still opening on KeyR (the remap would be cosmetic); a Help that
+    // only opens through the default key.
     await bootReady(
       storedTable((raw) => {
         raw.buttons.Select = ['KeyZ'];
@@ -469,61 +493,25 @@ describe('main.ts generated Help over the real shell (runtime, ctl-14)', {
     frame();
     press('KeyR');
     frame();
-    expect(helpOpen(), 'remap: the old Select key is unbound, nothing opens').toBe(false);
+    expect(helpOpen(), 'the old Select key is unbound, nothing opens').toBe(false);
     press('KeyZ');
     frame();
-    expect(helpOpen(), 'remap: the new Select key opens Help').toBe(true);
-    expect(stackNames()).toEqual(['world', 'helpView']);
-
-    const row = rowTexts(CONTROLS_PANEL).find((text) => text.includes(selectLabel));
-    expect(row, 'remap: the Select row exists').toBeDefined();
-    const keysPart = (row ?? '').replace(selectLabel, '');
-    expect(keysPart, 'remap: All controls shows the remapped key').toContain('Z');
-    expect(keysPart, 'remap: not the old primary').not.toContain('R');
-    expect(keysPart, 'remap: not the old alt').not.toContain(i18nT('key.slash'));
-    expect(keysPart, 'remap: no placeholder for the unbound alt').not.toContain('undefined');
-
-    const helpChip = rowTexts(SCREEN_PANEL).find((text) =>
-      text.includes(i18nT('chrome.chip.help')),
-    );
-    expect(helpChip, 'remap: the world`s Select chip is listed').toBeDefined();
-    expect(helpChip, 'remap: with the remapped keycap').toContain('Z');
-    expect(helpChip, 'remap: never the old one').not.toContain('R');
-
+    expect(helpOpen(), 'the new Select key opens Help').toBe(true);
+    expect(activeTab()).toBe(TITLE_INTRO);
     press('KeyZ');
     frame();
-    expect(helpOpen(), 'remap: the new key also closes it').toBe(false);
+    expect(helpOpen(), 'the new key also closes it').toBe(false);
   }, 120_000);
 
-  it('Help names what the world faces: with an NPC in front, This screen adds the A chip with its verb ahead of Start and Select', async () => {
-    // WRONG IMPL KILLED: This screen built from the bare stack with no HintWorld (the faced target's
-    // A chip, which the hint bar shows, would be missing from the help), and a help built from a
-    // stale world read at boot.
-    await bootReady();
-    batch();
-    seedFacedNpc();
-    frame();
-    press('KeyR');
-    frame();
-    expect(stackNames()).toEqual(['world', 'helpView']);
-    const rows = rowTexts(SCREEN_PANEL);
-    expect(rows, 'A, Start, Select').toHaveLength(3);
-    expect(rows[0], 'A with its live keycap').toContain(i18nT('key.enter'));
-    expect(rows[0], 'and the faced target`s verb').toContain(i18nT('interact.verb.talk'));
-    expect(rows[1]).toContain(i18nT('chrome.chip.menu'));
-    expect(rows[2]).toContain(i18nT('chrome.chip.help'));
-  }, 120_000);
-
-  it('Options > How to play opens the same Help over the menu: This screen lists the menu`s chips, B closes only Help and the menu stays', async () => {
-    // WRONG IMPL KILLED: a menu leaf that still opens the old zero-argument help (no tabs); a Help
-    // opened from the menu that lists the WORLD's chips (it must read the context beneath, the menu
-    // screen's OK / Back / Close / Help); a B that closes the menu with it.
+  it('Options > How to play opens the same Help over the menu: two tabs on Introduction, B closes only Help and the menu stays', async () => {
+    // WRONG IMPL KILLED: a menu leaf that still opens an old Help; a B that closes the menu with it.
     await bootReady();
     batch();
     frame();
     press('Escape');
     expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
-    menuTo('options');
+    for (let i = 0; i < 8 && game().navActive !== 'options'; i += 1) press('ArrowDown');
+    expect(game().navActive, 'precondition: the menu cursor is on options').toBe('options');
     press('Enter');
     expect(game().navActive, 'precondition: the Options list opens on How to play').toBe('help');
     press('Enter');
@@ -533,44 +521,37 @@ describe('main.ts generated Help over the real shell (runtime, ctl-14)', {
       'menuView',
       'helpView',
     ]);
-    expect(helpOpen()).toBe(true);
-    expect(
-      tabsNow().map((x) => x.label),
-      'the tabbed Help',
-    ).toEqual([i18nT('help.tab.screen'), i18nT('help.tab.controls'), i18nT('help.tab.goals')]);
-    const rows = rowTexts(SCREEN_PANEL);
-    expect(rows, 'the menu screen`s four chips: OK, Back, Close, Help').toHaveLength(4);
-    for (const [i, verb] of (
-      ['chrome.chip.ok', 'chrome.chip.back', 'chrome.chip.close', 'chrome.chip.help'] as const
-    ).entries()) {
-      expect(rows[i], `row ${i}`).toContain(i18nT(verb));
-    }
+    expect(tabsNow().map((x) => x.label)).toEqual([TITLE_INTRO, TITLE_ENC]);
+    expect(activeTab()).toBe(TITLE_INTRO);
 
     press('Backspace'); // B
     frame();
     expect(helpOpen(), 'B closes Help').toBe(false);
     expect(stackNames(), 'and only Help: the menu stays').toEqual(['world', 'menuView']);
   }, 120_000);
+
+  it('clicking the Select chip opens the same two-tab Help as the key, and clicking it while Help is open closes it like Select does', async () => {
+    // WRONG IMPL KILLED: a launcher path that opens a Help with no model rendered (empty panels); a
+    // launcher that calls openHelp() unconditionally (a click on an open Help would re-render and
+    // leave it open).
+    await bootReady();
+    batch();
+    frame();
+    (document.getElementById('chip-select') as HTMLElement).click();
+    frame();
+    expect(helpOpen(), 'the click opened Help').toBe(true);
+    expect(tabsNow().map((x) => x.label)).toEqual([TITLE_INTRO, TITLE_ENC]);
+    expect(part('#help-intro').querySelectorAll('p'), 'two paragraphs rendered').toHaveLength(2);
+    expect(rowTexts(), 'the Encyclopedia is rendered too').toHaveLength(16);
+
+    (document.getElementById('chip-select') as HTMLElement).click();
+    frame();
+    expect(helpOpen(), 'the second click closed Help').toBe(false);
+    expect(stackNames(), 'back to the base').toEqual(['world']);
+  }, 120_000);
 });
 
-// --- round 2: the wrong implementations the red-team and the reviewer found ------------------------
-
-const BOB = 'bb'.repeat(32);
-const offerFrom = (from: string, tradeId: bigint, createdAtMs: bigint): StoreTradeOffer => ({
-  tradeId,
-  initiator: from,
-  counterparty: H.identity,
-  initiatorMonsterIds: [],
-  initiatorItems: [],
-  initiatorCurrency: 0n,
-  counterpartyMonsterIds: [],
-  counterpartyItems: [],
-  counterpartyCurrency: 0n,
-  initiatorCards: [],
-  counterpartyCards: [],
-  status: 'Pending',
-  createdAtMs,
-});
+// --- over a battle ---------------------------------------------------------------------------
 
 const WILD_IDENTITY = '0'.repeat(64);
 const BATTLE_MONSTER: StoreBattleMonster = {
@@ -605,98 +586,12 @@ function battleRow(battleId: bigint): StoreBattle {
   };
 }
 
-const controlsActive = (): string | null =>
-  document.querySelector('#controls-rows [aria-selected="true"]')?.getAttribute('data-nav-key') ??
-  null;
-
-/** An in-session remap through the REAL Options > Controls screen: Select's primary slot -> KeyZ,
- *  then Start pops back to the bare world. */
-function remapSelectToZ(): void {
-  press('Escape');
-  menuTo('options');
-  press('Enter');
-  for (let i = 0; i < 2 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
-  expect(game().navActive, 'precondition: the cursor is on Options > Controls').toBe('controls');
-  press('Enter');
-  expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
-    'world',
-    'menuView',
-    'controlsView',
-  ]);
-  // The Buttons grid is two columns wide: one ArrowDown per row, down to Select's Primary slot.
-  for (let i = 0; i < VBUTTONS.length + 2 && controlsActive() !== 'Select_0'; i += 1) {
-    press('ArrowDown');
-  }
-  expect(controlsActive(), 'precondition: the cursor is on the Select Primary slot').toBe(
-    'Select_0',
-  );
-  press('Enter'); // A starts the capture
-  press('KeyZ'); // the next key is bound
-  press('Escape'); // Start pops Controls and the menu
-  expect(stackNames(), 'precondition: back on the bare world').toEqual(['world']);
-}
-
-describe('main.ts Help: what a stale or short-cut implementation gets wrong (round 2, ctl-14)', {
-  sequential: true,
-}, () => {
+describe('main.ts How to Play over a battle (uif-14)', { sequential: true }, () => {
   afterEach(teardown);
 
-  it('CTL14-1-BOOT-LIVE-REMAP: a Select remap made IN-SESSION through Options > Controls shows on the next open, after Help was already opened and closed once: All controls` Select row reads Z and not R, and This screen`s Select chip reads Z', async () => {
-    // WRONG IMPL KILLED: All controls built from a binding snapshot taken at boot (the saved-table
-    // boot test above cannot see it: only a remap AFTER boot can); a Help rendered only on its
-    // first open (the first open here is the one that would freeze it); and a This-screen chip
-    // keycap read from the boot table.
-    await bootReady();
-    batch();
-    frame();
-    press('KeyR');
-    frame();
-    expect(helpOpen(), 'precondition: the first open (before the remap)').toBe(true);
-    press('KeyR');
-    frame();
-    expect(helpOpen(), 'precondition: closed again').toBe(false);
-
-    remapSelectToZ();
-    press('KeyZ');
-    frame();
-    expect(helpOpen(), 'the NEW Select key opens Help').toBe(true);
-    const selectLabel = i18nT('controls.button.select');
-    const row = rowTexts(CONTROLS_PANEL).find((text) => text.includes(selectLabel)) ?? '';
-    expect(row, 'the Select row exists').not.toBe('');
-    const keys = row.replace(selectLabel, '');
-    expect(keys, 'All controls shows the live key').toContain('Z');
-    expect(keys, 'not the boot-time primary').not.toContain('R');
-    const chip = rowTexts(SCREEN_PANEL).find((text) => text.includes(i18nT('chrome.chip.help')));
-    expect(chip, 'This screen lists the Select chip').toBeDefined();
-    expect(chip, 'with the live keycap').toContain('Z');
-    expect(chip, 'never the boot-time one').not.toContain('R');
-  }, 120_000);
-
-  it('a reopen re-reads the world: Help opened with nothing faced, closed, an NPC then in front, reopened: This screen gains the A chip', async () => {
-    // WRONG IMPL KILLED: a Help rendered once (the second open shows the first open's two chips);
-    // a This screen read from a cache of the last open instead of the world at this open.
-    await bootReady();
-    batch();
-    frame();
-    press('KeyR');
-    frame();
-    expect(rowTexts(SCREEN_PANEL), 'nothing faced: Start and Select').toHaveLength(2);
-    press('KeyR');
-    frame();
-    expect(helpOpen(), 'precondition: closed').toBe(false);
-    seedFacedNpc();
-    frame();
-    press('KeyR');
-    frame();
-    const rows = rowTexts(SCREEN_PANEL);
-    expect(rows, 'A, Start, Select on the second open').toHaveLength(3);
-    expect(rows[0], 'A with the faced target`s verb').toContain(i18nT('interact.verb.talk'));
-  }, 120_000);
-
-  it('over a bare battle, Select opens Help whose This screen is the BATTLE`s chips (OK, Menu, Help) and not the world`s; Select closes it again', async () => {
-    // WRONG IMPL KILLED: an openHelp that hard-codes the world base when it reads the context
-    // beneath (over a battle This screen would read Menu / Help only, or carry a faced target's
-    // A chip the battle does not have).
+  it('over a bare battle, Select opens the same two-tab How to Play and the Encyclopedia detail opens and closes there; Select closes it and the battle stays', async () => {
+    // WRONG IMPL KILLED: an openHelp that builds a Help from the world base only (nothing renders over
+    // a battle), or a detail sheet that cannot open when a battle is the base.
     await bootReady();
     batch();
     opts.store.upsertBattle(battleRow(101n));
@@ -707,237 +602,16 @@ describe('main.ts Help: what a stale or short-cut implementation gets wrong (rou
     press('KeyR');
     frame();
     expect(stackNames(), 'Select opened Help over the battle').toEqual(['battle', 'helpView']);
-    expect(helpOpen()).toBe(true);
-    const rows = rowTexts(SCREEN_PANEL);
-    expect(rows, 'the battle`s chips: OK, Menu, Help').toHaveLength(3);
-    expect(rows[0], 'A is OK in a battle').toContain(i18nT('chrome.chip.ok'));
-    expect(rows[1]).toContain(i18nT('chrome.chip.menu'));
-    expect(rows[2]).toContain(i18nT('chrome.chip.help'));
+    expect(tabsNow().map((x) => x.label)).toEqual([TITLE_INTRO, TITLE_ENC]);
+    press('KeyE');
+    press('Enter');
+    expect(sheetOpen(), 'a detail opens over the battle too').toBe(true);
+    expect(sheetTitle()).toBe(say('help.entry.party.term'));
+    press('Backspace');
+    expect(sheetOpen(), 'B closes the sheet').toBe(false);
+    expect(stackNames(), 'Help is still open').toEqual(['battle', 'helpView']);
     press('KeyR');
     frame();
     expect(stackNames(), 'Select closes it, the battle stays').toEqual(['battle']);
-  }, 120_000);
-
-  it('clicking the Select chip at the world opens the same Help as the key: This screen is the world`s two chips (no Close, Back or OK), All controls has 24 rows and Goals 3', async () => {
-    // WRONG IMPL KILLED: a launcher path that shows Help before reading the chips (or reads the
-    // stack WITH the help frame: Close / Back / OK); a launcher that never renders (empty panels).
-    await bootReady();
-    batch();
-    frame();
-    (document.getElementById('chip-select') as HTMLElement).click();
-    frame();
-    expect(helpOpen(), 'the click opened Help').toBe(true);
-    const rows = rowTexts(SCREEN_PANEL);
-    expect(rows, 'Start and Select').toHaveLength(2);
-    for (const own of ['chrome.chip.close', 'chrome.chip.back', 'chrome.chip.ok'] as const) {
-      expect(rows.join('|'), `Help's own chip ${own} is not on This screen`).not.toContain(
-        i18nT(own),
-      );
-    }
-    // qf-14: 23 -> 24 rows with Y (Controls).
-    expect(rowTexts(CONTROLS_PANEL), 'All controls is populated').toHaveLength(24);
-    expect(rowTexts(GOALS_PANEL), 'Goals is populated').toHaveLength(3);
-  }, 120_000);
-
-  it('clicking the Select chip while Help is open behaves like the Select key: Help closes and the stack returns to the base, and This screen is never re-rendered with Help`s own chips', async () => {
-    // WRONG IMPL KILLED (reviewer M1): a launcher that calls openHelp() unconditionally, so a click
-    // on an open Help re-renders This screen from the stack WITH the help frame (OK / Back / Close /
-    // Help) and leaves Help open. Select and the chip are the SAME control.
-    await bootReady();
-    batch();
-    frame();
-    press('KeyR');
-    frame();
-    expect(stackNames(), 'precondition: Help is open').toEqual(['world', 'helpView']);
-    const before = rowTexts(SCREEN_PANEL);
-    expect(before, 'precondition: the world`s chips').toHaveLength(2);
-
-    (document.getElementById('chip-select') as HTMLElement).click();
-    frame();
-    expect(helpOpen(), 'the click closed Help').toBe(false);
-    expect(stackNames(), 'back to the base').toEqual(['world']);
-    const after = rowTexts(SCREEN_PANEL).join('|');
-    for (const own of ['chrome.chip.close', 'chrome.chip.back', 'chrome.chip.ok'] as const) {
-      expect(after, `Help's own chip ${own} never reached This screen`).not.toContain(i18nT(own));
-    }
-    expect(rowTexts(SCREEN_PANEL), 'This screen is untouched').toEqual(before);
-  }, 120_000);
-
-  it('Select closes a Help opened over the menu (Options > How to play): only Help closes and the menu stays', async () => {
-    // WRONG IMPL KILLED: a Select that is not a toggle over a menu (it would be swallowed, or close
-    // the menu with Help, or open a second Help).
-    await bootReady();
-    batch();
-    frame();
-    press('Escape');
-    menuTo('options');
-    press('Enter');
-    press('Enter');
-    frame();
-    expect(stackNames(), 'precondition: Help over the menu').toEqual([
-      'world',
-      'menuView',
-      'helpView',
-    ]);
-    press('KeyR');
-    frame();
-    expect(helpOpen(), 'Select closed Help').toBe(false);
-    expect(stackNames(), 'and only Help').toEqual(['world', 'menuView']);
-  }, 120_000);
-
-  it('with an incoming trade request waiting and nothing faced, This screen lists the View (Y) and Dismiss (B) chips before Start and Select', async () => {
-    // WRONG IMPL KILLED: an openHelp that passes no notices or no waiting-request flag to hintBar
-    // (the Y / B chips the bar shows would be missing from the help).
-    await bootReady();
-    batch();
-    frame();
-    opts.store.upsertPlayer({
-      identity: BOB,
-      entityId: 8n,
-      name: 'Bob',
-      online: true,
-      lastInputSeq: 0n,
-    });
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
-    batch();
-    frame();
-    press('KeyR');
-    frame();
-    const rows = rowTexts(SCREEN_PANEL);
-    expect(rows, 'Y, B, Start, Select').toHaveLength(4);
-    expect(rows[0], 'Y views the request').toContain(i18nT('chrome.chip.view'));
-    expect(rows[1], 'B dismisses its banner').toContain(i18nT('chrome.chip.dismiss'));
-    expect(rows[2]).toContain(i18nT('chrome.chip.menu'));
-    expect(rows[3]).toContain(i18nT('chrome.chip.help'));
-  }, 120_000);
-});
-
-// --- bt-12 B: Help over the deploy panel (BT12.2, R-bt-12-DEPLOYHINT) ----------------------------
-
-/** An own party monster past 2^53, conscious. */
-const deployMonster = (monsterId: bigint, partySlot: number): StoreMonsterPub => ({
-  monsterId,
-  ownerIdentity: H.identity,
-  speciesId: 1,
-  nickname: `m${monsterId}`,
-  level: 5,
-  xp: 0,
-  currentHp: 20,
-  statHp: 20,
-  statAttack: 5,
-  statDefense: 5,
-  statSpeed: 5,
-  statSpAttack: 5,
-  statSpDefense: 5,
-  partySlot,
-  tier: 0,
-  essence: {} as StoreMonsterPub['essence'],
-  trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
-  qualityTimeTier: 0,
-  nutritionPct: 0,
-  lastCareAtMs: 0n,
-});
-
-describe('main.ts Help over the deploy panel (bt-12 B, BT12.2)', { sequential: true }, () => {
-  afterEach(teardown);
-
-  it('over a Deploying battle Help`s This screen lists the deploy confirm chips (A Deploy, X Edit formation, Start Menu, Select Help) and, once the editor is open, the editor chips (A Assign, B Back, LB Prev monster, RB Next monster, Start Submit, Select Help) [BT12-2-HELP-DEPLOY]', async () => {
-    // WRONG IMPL KILLED (REV B2.7): main.ts handing `hintBar` no battle hint while the deploy panel
-    // is shown (This screen would read the legacy OK / Menu / Help: X and the editor's LB / RB never
-    // discoverable — R-bt-12-DEPLOYHINT); the deploy hint passed only in one mode (REV 2 A6's
-    // "confirm passes undefined" is superseded); the panel's hint read as the tactical shell's
-    // (Danger / Prev unit / End turn chips over the deploy panel); a Help built from the stack WITH
-    // the help frame (Close / Back / OK).
-    const B = 9_007_199_254_741_101n;
-    const P1 = 9_007_199_254_741_103n;
-    const P2 = 9_007_199_254_741_105n;
-    const tactical: StoreTacticalBattle = {
-      battleId: B,
-      kind: 'Wild',
-      format: 1,
-      mapId: 13,
-      contentVersion: 1,
-      phase: 'Deploying',
-      round: 0,
-      initiative: [],
-      turnIdx: 0,
-      turnState: { kind: 'NotActive' },
-      tiePrioritySide: 'A',
-      pendingPadMs: 0,
-      attackDamageDealtA: 0,
-      attackDamageDealtB: 0,
-    };
-    await bootReady();
-    batch();
-    opts.store.upsertMonster(deployMonster(P1, 0));
-    opts.store.upsertMonster(deployMonster(P2, 1));
-    opts.store.upsertBattle({ ...battleRow(B), partyMonsterIds: [P1, P2] });
-    opts.store.reconcileTacticalBattlesFromView([tactical]);
-    batch();
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    frame();
-    const deploy = document.querySelector<HTMLElement>('#app .tactics-deploy');
-    expect(
-      deploy !== null && deploy.style.display !== 'none',
-      'precondition: the deploy panel is shown',
-    ).toBe(true);
-    expect(stackNames(), 'precondition: a bare battle base').toEqual(['battle']);
-
-    press('KeyR');
-    frame();
-    expect(stackNames(), 'Select opened Help over the Deploying battle').toEqual([
-      'battle',
-      'helpView',
-    ]);
-    const confirm = rowTexts(SCREEN_PANEL);
-    expect(confirm, 'the confirm screen`s four chips').toHaveLength(4);
-    const want = (rows: readonly string[], verbs: readonly string[], label: string): void => {
-      verbs.forEach((verb, i) => {
-        expect(rows[i], `${label}: row ${i}`).toContain(verb);
-      });
-    };
-    want(
-      confirm,
-      [
-        i18nT('chrome.chip.deploy'),
-        i18nT('chrome.chip.editFormation'),
-        i18nT('chrome.chip.menu'),
-        i18nT('chrome.chip.help'),
-      ],
-      'confirm',
-    );
-    for (const tacticalOnly of ['chrome.chip.danger', 'chrome.chip.endTurn'] as const) {
-      expect(confirm.join('|'), `no tactical-shell chip (${tacticalOnly})`).not.toContain(
-        i18nT(tacticalOnly),
-      );
-    }
-    press('KeyR');
-    frame();
-    expect(stackNames(), 'Select closed Help').toEqual(['battle']);
-
-    press('ArrowDown');
-    press('Enter');
-    frame();
-    expect(
-      deploy?.querySelector('.tactics-deploy-candidate'),
-      'precondition: Down and A on Edit formation opened the editor',
-    ).not.toBeNull();
-    press('KeyR');
-    frame();
-    expect(stackNames(), 'Select opened Help over the editor').toEqual(['battle', 'helpView']);
-    const edit = rowTexts(SCREEN_PANEL);
-    expect(edit, 'the editor`s six chips').toHaveLength(6);
-    want(
-      edit,
-      [
-        i18nT('chrome.chip.assign'),
-        i18nT('chrome.chip.back'),
-        i18nT('chrome.chip.prevMonster'),
-        i18nT('chrome.chip.nextMonster'),
-        i18nT('chrome.chip.submit'),
-        i18nT('chrome.chip.help'),
-      ],
-      'edit',
-    );
   }, 120_000);
 });

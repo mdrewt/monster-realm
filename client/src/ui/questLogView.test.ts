@@ -1311,7 +1311,7 @@ const QF4_INDEX_HTML_PATH = path.join(QF4_UI_DIR, '..', '..', 'index.html');
 const QF4_STYLES_CSS_PATH = path.join(QF4_UI_DIR, '..', 'styles.css');
 const QF4_NAV_LIST = 'mr-nav-list';
 
-/** The nine static <ul>s of client/index.html (an exact roster: the census below pins it). */
+/** The eight static <ul>s of client/index.html (an exact roster: the census below pins it). */
 const QF4_STATIC_UL_IDS: readonly string[] = [
   'quest-log-list',
   'heal-list',
@@ -1319,8 +1319,7 @@ const QF4_STATIC_UL_IDS: readonly string[] = [
   'shop-inventory',
   'pvp-player-list',
   'leaderboard-list',
-  'help-controls',
-  'help-goals',
+  'help-encyclopedia',
   'menu-rows',
 ];
 
@@ -1429,7 +1428,7 @@ describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
     sheet = null;
   });
 
-  it('QF4-3-STATIC-ULS-NO-MARKER: each of the nine static <ul>s carries mr-nav-list, has no inline style, and computes list-style none', () => {
+  it('QF4-3-STATIC-ULS-NO-MARKER: each of the eight static <ul>s carries mr-nav-list, has no inline style, and computes list-style none', () => {
     // WRONG IMPL KILLED: a sweep that misses one list (the class absent on any of the nine); the
     // marker removed by an inline style instead of the class (the inline attribute is banned, so the
     // class is what is being tested); a class on the element but no rule behind it (computes '').
@@ -1451,7 +1450,7 @@ describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
     // class; the census passing vacuously on an empty document (the count and the id roster are
     // pinned).
     const uls = [...document.querySelectorAll('ul')];
-    expect(uls, 'ANTI-VACUITY: the nine static lists are in the document').toHaveLength(9);
+    expect(uls, 'ANTI-VACUITY: the eight static lists are in the document').toHaveLength(8);
     expect(uls.map((u) => u.id).sort()).toEqual([...QF4_STATIC_UL_IDS].sort());
     const without = uls
       .filter((u) => !u.classList.contains(QF4_NAV_LIST))

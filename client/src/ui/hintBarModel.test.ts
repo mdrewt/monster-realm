@@ -500,6 +500,43 @@ describe('hintBar: the world sheet bar (uif-12, UIF12.3, R-ctl-13-SHEETCHIPS)', 
   });
 });
 
+describe('hintBar: the help frame bar (uif-14, UIF14.7)', () => {
+  it('UIF14.7 over the help frame (stack [world, screen helpView]) the generated chips are exactly A OK / B Back / Start Close / Select Help on the default keys, unbadged, in en and fr, and a world request waiting changes nothing', () => {
+    // "MUST STAY UNCHANGED" PIN: it passes before uif-14 and must still pass after. The detail sheet is
+    // a phase of the help frame (no new frame), so the bar for the frame is the ordinary screen bar.
+    // WRONG IMPL KILLED: a hint-bar edit that gives Help its own chip set (a Close verb swapped for
+    // Done, a Choose verb, the Start badge carried in while a request waits), drops the Select
+    // chip, or reorders the four chips.
+    const HELP_FRAME: Stack = [{ kind: 'world' }, { kind: 'screen', id: 'helpView' }];
+    const cap = (button: VButton): string => glyph(DEFAULT_BINDINGS.buttons[button][0] as string);
+    const expected = (a: string, b: string, start: string, select: string) => [
+      ['A', 'Enter', a, false],
+      ['B', BACKSPACE_GLYPH, b, false],
+      ['Start', 'Esc', start, false],
+      ['Select', 'R', select, false],
+    ];
+    setLocale('en');
+    expect(cap('A'), 'fixture: the default A keycap').toBe('Enter');
+    expect(rows(hintBar(HELP_FRAME, DEFAULT_BINDINGS, NO_NOTICES)), 'en help frame').toEqual(
+      expected('OK', 'Back', 'Close', 'Help'),
+    );
+    expect(
+      rows(
+        hintBar(HELP_FRAME, DEFAULT_BINDINGS, [REQUEST_NOTICE], world({ requestWaiting: true })),
+      ),
+      'a waiting request does not badge Start inside a frame',
+    ).toEqual(expected('OK', 'Back', 'Close', 'Help'));
+    setLocale('fr');
+    expect(rows(hintBar(HELP_FRAME, DEFAULT_BINDINGS, NO_NOTICES)), 'fr help frame').toEqual([
+      ['A', cap('A'), verb('chrome.chip.ok'), false],
+      ['B', cap('B'), verb('chrome.chip.back'), false],
+      ['Start', cap('Start'), 'Fermer', false],
+      ['Select', cap('Select'), 'Aide', false],
+    ]);
+    setLocale('en');
+  });
+});
+
 describe('hintBar: keycaps (ctl-13, CTL13.1)', () => {
   it('CTL13-1-MODEL-KEYCAP: each chip`s keycap is the glyph of the FIRST key bound to its button in the table it is given, a remap shows on the very next call, an unbound button reads an empty keycap, and the table is never cached', () => {
     // WRONG IMPL KILLED: keycaps hard-coded to the default keys (a remapped bar lies); the

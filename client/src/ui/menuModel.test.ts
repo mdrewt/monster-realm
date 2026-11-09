@@ -22,8 +22,8 @@
 //        reducer cases (wrap, A, B, Y, repeat clamp) in screens/mainMenuScreen.test.ts.
 //   MM-KEYGLYPH-FROM-HELP-SSOT
 //     -> none needed (milestone survivor table): leaves stop carrying key glyphs, so the
-//        invariant "every glyph is documented in helpModel" is vacuous; ctl-14's generated-help
-//        tests list the accelerators.
+//        invariant "every glyph is documented in helpModel" is vacuous; Options › Controls
+//        (controlsView.test.ts) lists the accelerators.
 import { afterEach, describe, expect, it } from 'vitest';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
