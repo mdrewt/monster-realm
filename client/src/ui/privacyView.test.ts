@@ -55,7 +55,7 @@ import {
   SERVER_ALREADY_DELETED_MESSAGE,
 } from './privacyModel';
 import { PrivacyView, type PrivacyViewHandlers } from './privacyView';
-import type { RowOp } from './screens/profileScreen';
+import type { RowOp, RowSection } from './screens/profileScreen';
 
 /** PRV1-4's distinct terminal notice — the en catalog entry, asserted to be a string (client specs
  *  are not typechecked, so a mistyped key would otherwise read `undefined`). */
@@ -1449,5 +1449,158 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     expect(focusedId(), 'the disarm does not fall back to the last row').not.toBe(EXPORT_BTN_ID);
     expect(focusedId(), 'nor to the first row').not.toBe(CLOSE_BTN_ID);
     expect(focusedId(), 'nor to the disabled Delete').not.toBe(DELETE_BTN_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-16a (UIF16A.1, UIF16A.2): the privacy view as a RowSection, walked through the interface.
+// ---------------------------------------------------------------------------
+
+describe('PrivacyView uif-16a: the shared section interface', () => {
+  const ARMED16 = 'SYNTHETIC ARE YOU SURE';
+  const move16 = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
+  const activate16 = (): RowOp => ({ kind: 'activate' });
+  const focusedId16 = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
+  const blur16 = (): void => (document.activeElement as HTMLElement | null)?.blur();
+  const ids16 = (els: readonly HTMLElement[]): string[] => els.map((e) => e.id);
+  const byId16 = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
+  const override16 = (patch: Partial<RowSection>): void => {
+    Object.assign(view as unknown as object, patch);
+  };
+
+  beforeEach(() => {
+    document.body.replaceChildren();
+    spies = freshSpies();
+    view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+    view.show();
+    view.render(vmOf());
+    blur16();
+  });
+  afterEach(() => {
+    closeOverlayA11y('privacyView', null);
+    document.body.replaceChildren();
+  });
+
+  it('UIF16A.1 sectionRoot is the identical #privacy-overlay element and the view is assignable to RowSection', () => {
+    const section: RowSection = view;
+    expect(section.sectionRoot).toBe(document.getElementById('privacy-overlay'));
+  });
+
+  it('UIF16A.1 sectionRows is the shown, enabled buttons in DOM order: idle, armed, and with a control disabled', () => {
+    expect(ids16(view.sectionRows()), 'idle').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      CANCEL_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+    view.render(vmOf({ confirmPrompt: ARMED16 }));
+    expect(
+      ids16(view.sectionRows()),
+      'armed: Confirm and Keep join, between Delete and Cancel',
+    ).toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      CONFIRM_BTN_ID,
+      CONFIRM_CANCEL_BTN_ID,
+      CANCEL_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+    view.render(vmOf({ deleteEnabled: false, downloadEnabled: true }));
+    expect(
+      ids16(view.sectionRows()),
+      'Delete disabled is excluded, Download enabled is included',
+    ).toEqual([CLOSE_BTN_ID, CANCEL_BTN_ID, EXPORT_BTN_ID, DOWNLOAD_BTN_ID]);
+  });
+
+  it('UIF16A.1 sectionRows drops an ENABLED but display:none button, and a move from its DOM neighbour skips it', () => {
+    // The real render disables every button it hides, so the display half of the filter needs a
+    // forged control: enabled, yet hidden. Idle rows are [close, delete, cancel, export].
+    const cancel = byId16(CANCEL_BTN_ID) as HTMLButtonElement;
+    cancel.style.display = 'none';
+    expect(cancel.disabled, 'precondition: the forged button is still enabled').toBe(false);
+    expect(ids16(view.sectionRows()), 'a hidden enabled button is not a row').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+    byId16(DELETE_BTN_ID).focus();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'a move from the preceding row skips the hidden one').toBe(EXPORT_BTN_ID);
+  });
+
+  it('UIF16A.1 defaultRow is Keep while the deletion confirm is armed, else the first row (the Close anchor)', () => {
+    expect(view.defaultRow(), 'idle').toBe(byId16(CLOSE_BTN_ID));
+    view.render(vmOf({ confirmPrompt: ARMED16 }));
+    expect(view.defaultRow(), 'armed').toBe(byId16(CONFIRM_CANCEL_BTN_ID));
+    view.render(vmOf());
+    expect(view.defaultRow(), 'disarmed again').toBe(byId16(CLOSE_BTN_ID));
+  });
+
+  it('UIF16A.2 applyRowOp seats defaultRow() when no row is focused: an overridden default wins', () => {
+    override16({ defaultRow: () => byId16(EXPORT_BTN_ID) });
+    blur16();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'the override, not a private Keep / first-row fallback').toBe(
+      EXPORT_BTN_ID,
+    );
+    blur16();
+    view.applyRowOp(activate16());
+    expect(focusedId16()).toBe(EXPORT_BTN_ID);
+    expect(spies.onExportRequested, 'seating presses nothing').not.toHaveBeenCalled();
+  });
+
+  it('UIF16A.2 applyRowOp walks the rows sectionRows() returns: an overridden list sets the order, the clamp and what A presses', () => {
+    // Real rows: [close, delete, cancel, export]. Override: export first, close second.
+    override16({ sectionRows: () => [byId16(EXPORT_BTN_ID), byId16(CLOSE_BTN_ID)] });
+    byId16(EXPORT_BTN_ID).focus();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'down from the first overridden row').toBe(CLOSE_BTN_ID);
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe(CLOSE_BTN_ID);
+    view.applyRowOp(move16(-1));
+    view.applyRowOp(activate16());
+    expect(
+      spies.onExportRequested,
+      'A presses the focused overridden row once',
+    ).toHaveBeenCalledTimes(1);
+
+    // A real row the interface does not list is not a row: no press.
+    clearSpies();
+    byId16(DELETE_BTN_ID).focus();
+    view.applyRowOp(activate16());
+    expect(
+      spies.onDeleteRequested,
+      'A on an unlisted control presses nothing',
+    ).not.toHaveBeenCalled();
+  });
+
+  it('UIF16A.2 through the real interface: focus on the page while armed seats Keep and presses nothing; the clamp holds at both ends', () => {
+    view.render(vmOf({ confirmPrompt: ARMED16 }));
+    blur16();
+    view.applyRowOp(activate16());
+    expect(focusedId16(), 'armed, nothing focused: A seats Keep').toBe(CONFIRM_CANCEL_BTN_ID);
+    expect(spies.onDeleteConfirmed, 'and confirms nothing').not.toHaveBeenCalled();
+    expect(spies.onConfirmCancelled, 'and does not press Keep either').not.toHaveBeenCalled();
+
+    byId16(EXPORT_BTN_ID).focus();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'no wrap past the last row').toBe(EXPORT_BTN_ID);
+    byId16(CLOSE_BTN_ID).focus();
+    view.applyRowOp(move16(-1));
+    expect(focusedId16(), 'no wrap past the first row').toBe(CLOSE_BTN_ID);
+  });
+
+  it('UIF16A.2 the render-time reseat reads sectionRows(): a focused control the interface does not list is moved to its first row on a plain re-render', () => {
+    byId16(DELETE_BTN_ID).focus();
+    view.render(vmOf());
+    expect(
+      focusedId16(),
+      'precondition: the real rows keep Delete, so a plain re-render moves nothing',
+    ).toBe(DELETE_BTN_ID);
+    override16({ sectionRows: () => [byId16(EXPORT_BTN_ID), byId16(CLOSE_BTN_ID)] });
+    view.render(vmOf());
+    expect(focusedId16(), 'the render hid nothing, but the interface does not list Delete').toBe(
+      EXPORT_BTN_ID,
+    );
   });
 });

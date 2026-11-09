@@ -1,6 +1,8 @@
 // ui/screens/profileScreen.ts — the Profile children as pure screens (design §5 row 5, CTL8H.2-4):
-// Name (the rename frame), Account (the claim frame) and Privacy & data (the privacy frame). No DOM,
-// SDK, module state or clock; the three views apply what `paint` hands them.
+// Name (the rename frame), Account (the claim frame) and Privacy & data (the privacy frame). The
+// adapters touch no DOM, SDK, module state or clock; the three views apply what `paint` hands them,
+// each walking its rows through the shared `RowSection` (uif-16a), whose `walkSection` is the one
+// place here that focuses an element it is handed.
 //
 // The rows are each view's REAL controls and the cursor IS DOM focus, so the mouse, Tab, a native
 // Enter or Space on a button and the D-pad all move and press the same thing, and no control is
@@ -21,6 +23,28 @@ export type RowOp =
 /** What the three views implement. */
 export interface RowsView {
   applyRowOp(op: RowOp): void;
+}
+
+/** One Profile section (uif-16a): its root and its rows, apart from the overlay that shows it
+ *  (a11y, show, hide). The three views are each still one overlay whose root is their section's. */
+export interface RowSection {
+  readonly sectionRoot: HTMLElement;
+  /** The rows: the shown, enabled controls, in DOM order. */
+  sectionRows(): readonly HTMLElement[];
+  /** Where a token lands with no row focused: a confirm's No while armed, else the first row. */
+  defaultRow(): HTMLElement | undefined;
+}
+
+/** One token on `section` (`rowStep` over its rows, read afresh): focuses the step's row and
+ *  returns the row it presses, which the caller clicks or not (the Name field presses nothing). */
+export function walkSection(
+  section: RowSection,
+  focused: unknown,
+  op: RowOp,
+): HTMLElement | undefined {
+  const { focus, press } = rowStep(section.sectionRows(), focused, section.defaultRow(), op);
+  focus?.focus();
+  return press;
 }
 
 export interface RowsState {

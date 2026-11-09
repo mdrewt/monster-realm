@@ -58,7 +58,13 @@
 import type { ClaimActions, ClaimViewModel } from './claimModel';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
-import { type RowOp, reseatRow, rowStep } from './screens/profileScreen';
+import {
+  type RowOp,
+  type RowSection,
+  type RowsView,
+  reseatRow,
+  walkSection,
+} from './screens/profileScreen';
 
 export interface ClaimViewHandlers {
   readonly onSignIn: () => void;
@@ -108,7 +114,7 @@ function titleBar(overlay: HTMLElement): HTMLElement {
   return title;
 }
 
-export class ClaimView {
+export class ClaimView implements RowsView, RowSection {
   readonly #overlay: HTMLElement;
   readonly #frameTitle: HTMLElement;
   readonly #title: HTMLElement;
@@ -203,11 +209,21 @@ export class ClaimView {
     return this.#actionBtns.declineCancel.style.display !== 'none';
   }
 
+  /** The section root (uif-16a): this overlay's. */
+  get sectionRoot(): HTMLElement {
+    return this.#overlay;
+  }
+
   /** The rows (CTL8H.3): the shown buttons in DOM order, the privacy door last. */
-  #rows(): HTMLButtonElement[] {
+  sectionRows(): readonly HTMLElement[] {
     return [...this.#overlay.querySelectorAll('button')].filter(
       (b) => b.style.display !== 'none' && !b.disabled,
     );
+  }
+
+  /** No while the decline is armed, else the first row. */
+  defaultRow(): HTMLElement | undefined {
+    return this.#armed ? this.#actionBtns.declineCancel : this.sectionRows()[0];
   }
 
   /** A render moved focus only on the arm and disarm edges, or off a control it hid; never focus
@@ -218,7 +234,7 @@ export class ClaimView {
     if (!onPage && !this.#overlay.contains(active)) return;
     const b = this.#actionBtns;
     const target = reseatRow(
-      this.#rows(),
+      this.sectionRows(),
       onPage ? null : active,
       { was: wasArmed, now: this.#armed },
       b.declineCancel,
@@ -233,11 +249,7 @@ export class ClaimView {
   applyRowOp(op: RowOp): void {
     if (op === this.#lastOp) return;
     this.#lastOp = op;
-    const rows = this.#rows();
-    const fallback = this.#armed ? this.#actionBtns.declineCancel : rows[0];
-    const { focus, press } = rowStep(rows, document.activeElement, fallback, op);
-    focus?.focus();
-    press?.click();
+    walkSection(this, document.activeElement, op)?.click();
   }
 
   get visible(): boolean {

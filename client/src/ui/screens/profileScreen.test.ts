@@ -15,7 +15,7 @@
  *   for the frame): an A paints `applyRowOp(activate)` once, and no later step (LB, Y, X, Left,
  *   Start, Select, a repeat A) paints it again. Up then Down paint two distinct objects.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import type { FrameId, Stack } from '../contextStack';
 import type { NavInput } from '../nav';
@@ -25,7 +25,9 @@ import {
   nameScreen,
   privacyScreen,
   type RowOp,
+  type RowSection,
   type RowsView,
+  walkSection,
 } from './profileScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
@@ -279,5 +281,127 @@ describe('qf-13 (QF13.2): the Account adapter walks the vertical axis only', () 
     ]);
     expect(seen[0], 'the very Up token object').toBe(upState.op);
     expect(seen[1], 'the very Down token object').toBe(downState.op);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-16a: walkSection, the one walk over a RowSection (UIF16A.2). Pure, node env: a row is a
+// plain object with focus/click spies, cast to HTMLElement.
+// ---------------------------------------------------------------------------
+
+interface FakeRow {
+  readonly name: string;
+  readonly focus: ReturnType<typeof vi.fn>;
+  readonly click: ReturnType<typeof vi.fn>;
+}
+const fakeRow = (name: string): FakeRow => ({ name, focus: vi.fn(), click: vi.fn() });
+const asEl = (r: FakeRow): HTMLElement => r as unknown as HTMLElement;
+const sectionOf = (rows: () => readonly FakeRow[], def: () => FakeRow | undefined): RowSection => ({
+  sectionRoot: {} as unknown as HTMLElement,
+  sectionRows: () => rows().map(asEl),
+  defaultRow: () => {
+    const d = def();
+    return d === undefined ? undefined : asEl(d);
+  },
+});
+const UIF_MOVE = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
+const UIF_ACTIVATE = (): RowOp => ({ kind: 'activate' });
+
+describe('uif-16a walkSection', () => {
+  it('UIF16A.2 with no row focused, a move or an activate focuses defaultRow() and returns undefined, clicking nothing', () => {
+    const a = fakeRow('a');
+    const b = fakeRow('b');
+    const c = fakeRow('c');
+    const section = sectionOf(
+      () => [a, b, c],
+      () => b,
+    );
+    for (const op of [UIF_MOVE(1), UIF_MOVE(-1), UIF_ACTIVATE()]) {
+      const pressed = walkSection(section, undefined, op);
+      expect(pressed, `${op.kind}: nothing is pressed`).toBeUndefined();
+    }
+    expect(b.focus, 'the default row was seated once per token').toHaveBeenCalledTimes(3);
+    expect(a.focus).not.toHaveBeenCalled();
+    expect(c.focus).not.toHaveBeenCalled();
+    for (const r of [a, b, c]) expect(r.click, `${r.name} is never clicked`).not.toHaveBeenCalled();
+  });
+
+  it('UIF16A.2 a move steps one row and clamps at both ends, never wrapping', () => {
+    const a = fakeRow('a');
+    const b = fakeRow('b');
+    const c = fakeRow('c');
+    const section = sectionOf(
+      () => [a, b, c],
+      () => a,
+    );
+    expect(walkSection(section, asEl(a), UIF_MOVE(1))).toBeUndefined();
+    expect(b.focus, 'down from a: b').toHaveBeenCalledTimes(1);
+    walkSection(section, asEl(c), UIF_MOVE(1));
+    expect(c.focus, 'down from the last row: clamped to it').toHaveBeenCalledTimes(1);
+    expect(a.focus, 'no wrap to the first row').not.toHaveBeenCalled();
+    walkSection(section, asEl(a), UIF_MOVE(-1));
+    expect(a.focus, 'up from the first row: clamped to it').toHaveBeenCalledTimes(1);
+    expect(c.focus, 'no wrap to the last row').toHaveBeenCalledTimes(1);
+    walkSection(section, asEl(b), UIF_MOVE(-1));
+    expect(a.focus, 'up from b: a').toHaveBeenCalledTimes(2);
+    for (const r of [a, b, c])
+      expect(r.click, `${r.name}: a move never clicks`).not.toHaveBeenCalled();
+  });
+
+  it('UIF16A.2 an activate on a focused row RETURNS that row, does not click it and does not move focus', () => {
+    const a = fakeRow('a');
+    const b = fakeRow('b');
+    const section = sectionOf(
+      () => [a, b],
+      () => a,
+    );
+    const pressed = walkSection(section, asEl(b), UIF_ACTIVATE());
+    expect(pressed, 'the step hands the press row back to the caller').toBe(b);
+    expect(b.click, 'the caller decides whether to click').not.toHaveBeenCalled();
+    expect(a.click).not.toHaveBeenCalled();
+    expect(a.focus, 'focus does not move').not.toHaveBeenCalled();
+    expect(b.focus, 'nor re-seat on the pressed row').not.toHaveBeenCalled();
+  });
+
+  it('UIF16A.2 a focused element that is not a row is treated as no row focused: the default is seated and nothing is pressed', () => {
+    const a = fakeRow('a');
+    const stray = fakeRow('stray');
+    const section = sectionOf(
+      () => [a],
+      () => a,
+    );
+    expect(walkSection(section, asEl(stray), UIF_ACTIVATE())).toBeUndefined();
+    expect(a.focus).toHaveBeenCalledTimes(1);
+    expect(stray.focus).not.toHaveBeenCalled();
+  });
+
+  it('UIF16A.2 sectionRows() and defaultRow() are read afresh on every call', () => {
+    const a = fakeRow('a');
+    const b = fakeRow('b');
+    const c = fakeRow('c');
+    let rows: readonly FakeRow[] = [a, b];
+    let def: FakeRow = a;
+    const section = sectionOf(
+      () => rows,
+      () => def,
+    );
+    walkSection(section, asEl(a), UIF_MOVE(1));
+    expect(b.focus, 'first call walks [a, b]').toHaveBeenCalledTimes(1);
+
+    rows = [c, a, b];
+    walkSection(section, asEl(a), UIF_MOVE(-1));
+    expect(c.focus, 'the grown row list is read on the next call').toHaveBeenCalledTimes(1);
+
+    rows = [a];
+    walkSection(section, asEl(b), UIF_MOVE(1));
+    expect(
+      b.focus,
+      'b left the rows: it is no longer a row, so the default is seated',
+    ).toHaveBeenCalledTimes(1);
+    expect(a.focus, 'the default (a) was seated').toHaveBeenCalledTimes(1);
+
+    def = c;
+    walkSection(section, undefined, UIF_MOVE(1));
+    expect(c.focus, 'a changed defaultRow() is read on the next call').toHaveBeenCalledTimes(2);
   });
 });

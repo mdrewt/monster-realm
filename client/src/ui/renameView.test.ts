@@ -98,7 +98,7 @@ import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { RenameView } from './renameView';
-import type { RowOp } from './screens/profileScreen';
+import type { RowOp, RowSection } from './screens/profileScreen';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
@@ -1607,5 +1607,164 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
       expect(titleStyle.visibility, 'the title is visible').not.toBe('hidden');
       qf13ExpectPainted(titleStyle, 'title');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// uif-16a (UIF16A.1, UIF16A.2): the rename view as a RowSection, walked through the interface.
+// ---------------------------------------------------------------------------
+
+describe('RenameView uif-16a: the shared section interface', () => {
+  const ENABLED16: RenameViewModel = {
+    displayCurrentName: 'X',
+    trimmedDraft: 'Bob',
+    canSubmit: true,
+  };
+  const EMPTY16: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: '', canSubmit: false };
+  const move16 = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
+  const activate16 = (): RowOp => ({ kind: 'activate' });
+  const focusedId16 = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
+  const blur16 = (): void => (document.activeElement as HTMLElement | null)?.blur();
+  const ids16 = (els: readonly HTMLElement[]): string[] => els.map((e) => e.id);
+  const override16 = (view: RenameView, patch: Partial<RowSection>): void => {
+    Object.assign(view as unknown as object, patch);
+  };
+
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+  afterEach(() => {
+    teardown();
+  });
+
+  it('UIF16A.1 sectionRoot is the identical #rename-overlay element and the view is assignable to RowSection', () => {
+    const view = new RenameView({ onSubmit: async () => {} });
+    const section: RowSection = view;
+    expect(section.sectionRoot).toBe(document.getElementById('rename-overlay'));
+  });
+
+  it('UIF16A.1 sectionRows is [input] for an empty draft and [input, submit] once the draft is submittable, in DOM order', () => {
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    view.render(EMPTY16);
+    expect(ids16(view.sectionRows())).toEqual(['rename-input']);
+    view.render(ENABLED16);
+    expect(ids16(view.sectionRows())).toEqual(['rename-input', 'rename-submit']);
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = '   ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(ids16(view.sectionRows()), 'typing blanks the draft: Save leaves the rows').toEqual([
+      'rename-input',
+    ]);
+  });
+
+  it('UIF16A.1 defaultRow is the field whether or not Save is a row', () => {
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    view.render(EMPTY16);
+    expect(view.defaultRow()).toBe(document.getElementById('rename-input'));
+    view.render(ENABLED16);
+    expect(view.defaultRow()).toBe(document.getElementById('rename-input'));
+  });
+
+  it('UIF16A.2 applyRowOp seats defaultRow() when no row is focused: an overridden default wins over the field', () => {
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    view.render(ENABLED16);
+    const submit = document.getElementById('rename-submit') as HTMLElement;
+    override16(view, { defaultRow: () => submit });
+    blur16();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'the override, not a private #input fallback').toBe('rename-submit');
+  });
+
+  it('UIF16A.2 applyRowOp walks the rows sectionRows() returns: an overridden list is clamped against and decides what A presses', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+    view.render(ENABLED16);
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const submit = document.getElementById('rename-submit') as HTMLElement;
+    input.value = 'Bob';
+
+    // The real rows are [input, submit]; the override is the input alone.
+    override16(view, { sectionRows: () => [input] });
+    submit.focus();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'submit is not an overridden row: the default (field) is seated').toBe(
+      'rename-input',
+    );
+    submit.focus();
+    view.applyRowOp(activate16());
+    await flushPromises();
+    expect(
+      onSubmit,
+      'A on a control the interface does not list presses nothing',
+    ).not.toHaveBeenCalled();
+
+    // A reordered override: the clamp follows the overridden order.
+    override16(view, { sectionRows: () => [submit, input] });
+    submit.focus();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'down from the first overridden row is the field').toBe('rename-input');
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe('rename-input');
+  });
+
+  it('UIF16A.2 A on the field never clicks the field: not with an empty draft, not with a submittable one', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, 'click');
+    try {
+      view.render(EMPTY16);
+      input.focus();
+      expect(focusedId16(), 'precondition: focus is on the field').toBe('rename-input');
+      view.applyRowOp(activate16());
+      expect(clickSpy, 'empty draft: the field is never clicked').not.toHaveBeenCalled();
+      expect(focusedId16(), 'empty draft: focus stays on the field').toBe('rename-input');
+      expect(onSubmit, 'empty draft: nothing submitted').not.toHaveBeenCalled();
+
+      input.value = 'Bob';
+      view.render(ENABLED16);
+      input.focus();
+      view.applyRowOp(activate16());
+      await flushPromises();
+      expect(clickSpy, 'submittable draft: the field is never clicked').not.toHaveBeenCalled();
+      expect(focusedId16(), 'submittable draft: focus stays on the field').toBe('rename-input');
+      expect(onSubmit, 'submittable draft: nothing submitted').not.toHaveBeenCalled();
+    } finally {
+      clickSpy.mockRestore();
+    }
+  });
+
+  it('UIF16A.2 through the real interface: A on the field presses nothing, A on Save submits the trimmed draft once, and a blank draft on an enabled Save submits nothing', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const submit = document.getElementById('rename-submit') as HTMLElement;
+    input.value = '  Bob  ';
+    view.render(ENABLED16);
+
+    input.focus();
+    view.applyRowOp(activate16());
+    expect(focusedId16(), 'A on the field keeps focus on it').toBe('rename-input');
+    expect(onSubmit, 'and presses nothing').not.toHaveBeenCalled();
+
+    submit.focus();
+    view.applyRowOp(activate16());
+    await flushPromises();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith('Bob');
+
+    onSubmit.mockClear();
+    input.value = '   ';
+    view.render(ENABLED16); // Save stays an enabled row, so the press reaches #submit's own gate
+    submit.focus();
+    view.applyRowOp(activate16());
+    await flushPromises();
+    expect(onSubmit, 'an empty-after-trim draft never submits').not.toHaveBeenCalled();
   });
 });
