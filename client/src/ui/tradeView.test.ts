@@ -879,7 +879,7 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
 
     // Post-restore call-through control (an existing S1 key -- the new trade.* keys do not
     // exist in the catalog until the specialist ships them).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
 
     removeOverlay(overlay);
   });

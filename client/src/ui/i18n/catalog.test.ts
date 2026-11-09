@@ -599,7 +599,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // legacy battle Flee button; the command list's Run is the only flee) = 361 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
-  'chrome.help.title': 'Controls & Goals',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.2): values only; was 'Controls & Goals'.
+  'chrome.help.title': 'How to Play',
   // NAMED INTENTIONAL CHANGE (uif-14, UIF14.1 / UIF14.4): -7 plain keys here, RETIRED with the
   // All controls / This screen / Goals tabs (`help.tab.{screen,controls,goals}`,
   // `help.goal.{recruit,battle,trade}`, `help.note.keysVsButtons`; their absence is pinned by the
@@ -818,7 +819,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.title': 'Menu',
   'menu.monsters.title': 'Monsters',
   'menu.monsters.desc': 'See your party and stored monsters.',
-  'menu.bag.title': 'Bag',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.1): values only; was 'Bag'. The key keeps its id.
+  'menu.bag.title': 'Inventory',
   'menu.bag.desc': 'Use items and care for your monsters.',
   'menu.journal.title': 'Journal',
   'menu.journal.desc': 'Review your quests and their progress.',
@@ -849,7 +851,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-6c: 2 new plain keys — the reasons a main-menu entry is disabled over a battle
   // (ui/screens/mainMenuScreen.ts), the first also the dispatch refusal line (main.ts).
   'menu.disabled.inBattle': 'Not during a battle',
-  'menu.disabled.battleBag': 'Use items from the battle Bag command',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.3): values only; was '…battle Bag command'.
+  'menu.disabled.battleBag': 'Use items from the battle Items command',
   // ctl-8a: 6 new plain keys — the Buy | Sell tab labels and the description slot's "none" mark
   // (shopView.ts), the shared Yes / No prompt options (shopView.ts, healView.ts), and the reason a
   // heal frame with no bound healer is disabled (healView.ts).
@@ -943,7 +946,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.button.start': 'Menu (Start)',
   'controls.button.select': 'Help (Select)',
   'controls.accel.storage': 'Storage',
-  'controls.accel.bag': 'Bag',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.3): values only; was 'Bag'. The key keeps its id.
+  'controls.accel.bag': 'Inventory',
   'controls.accel.party': 'Party',
   'controls.accel.journal': 'Journal',
   'controls.accel.trades': 'Trades',
@@ -2352,7 +2356,8 @@ const E_ACUTE = String.fromCharCode(0x00e9);
 // (the 1v1 outcome's continue hint); the two menu.disabled.* rows stay.
 const EXPECTED_FR_CTL6C: Record<string, string> = {
   'menu.disabled.inBattle': 'Impossible pendant un combat',
-  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Sac du combat',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.3): values only; was '…commande Sac du combat'.
+  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Objets du combat',
 };
 
 describe('ctl-6c: catalog.fr.ts, the battle keys ctl-6c changed or added', () => {

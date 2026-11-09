@@ -201,7 +201,7 @@ describe('m24s5 (ADR-0261): renameView.ts routes chrome.rename.submit through t(
     }
 
     // Post-restore call-through control (an existing S1 key).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
   });
 });
 

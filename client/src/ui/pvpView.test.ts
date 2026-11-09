@@ -791,7 +791,7 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
 
     // Post-restore call-through control (an existing S1 key — the new pvp.* keys do not
     // exist in the catalog until the specialist ships them).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
   });
 });
 

@@ -207,6 +207,6 @@ describe('m24s5 (ADR-0261): evolutionNotice.ts routes its reveal copy and OK lab
     }
 
     // Post-restore call-through control (an existing S1 key).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
   });
 });

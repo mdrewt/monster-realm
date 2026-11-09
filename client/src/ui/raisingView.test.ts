@@ -1497,7 +1497,7 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
     }
 
     // Post-restore call-through control (an existing S1 key).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
   });
 });
 
@@ -1927,7 +1927,7 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
     expect(status.hasAttribute('data-feedback')).toBe(false);
     const withStatus = (s: Ctl8fPaint['status']) => view.paint(ctl8fPaint(vm, { status: s }));
     withStatus({ kind: 'battleOnly' });
-    expect(status.textContent).toBe('Use items from the battle Bag command');
+    expect(status.textContent).toBe('Use items from the battle Items command');
     expect(status.hasAttribute('data-feedback'), 'a refusal is not "ok"').toBe(false);
     withStatus({ kind: 'noMonsters' });
     expect(status.textContent).toBe('No monsters to feed');
@@ -2100,7 +2100,7 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
     expect(step('A')).toBe('consumed');
     expect(ctl8fActive('bag-sheet')).toEqual(['use']);
     expect(step('A')).toBe('consumed');
-    expect(ctl8fPart('bag-status').textContent).toBe('Use items from the battle Bag command');
+    expect(ctl8fPart('bag-status').textContent).toBe('Use items from the battle Items command');
     expect(ctl8fShown('bag-sheet'), 'the sheet stays open').toBe(true);
     expect(parent.contains(ctl8fPart('bag-status'))).toBe(true);
     expect(step('B')).toBe('consumed');
