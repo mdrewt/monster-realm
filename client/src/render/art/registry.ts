@@ -18,11 +18,8 @@ import { MONSTERS_PACK } from './packs/monsters';
 import { TERRAIN_PACK } from './packs/terrain';
 
 export type ArtPack = 'characters' | 'monsters' | 'terrain' | 'landmarks' | 'battle' | 'grade';
-export type ArtKind = 'sprite' | 'tile' | 'normal' | 'palette' | 'lut';
 /** Image-model output (`ai-placeholder`) is deliberately absent: it never ships. */
 export type ArtProvenance = 'placeholder-procedural' | 'placeholder-licensed' | 'final';
-/** Accepted licenses only; share-alike and EULA need counsel sign-off (backlog). */
-export type ArtLicense = 'project-original' | 'CC0-1.0' | 'CC-BY-4.0' | 'CC-BY-3.0';
 /** A stable atlas key, `<pack>/<id>`; final art is a file swap behind it. */
 export type ArtKey = `${ArtPack}/${string}`;
 
@@ -44,6 +41,7 @@ interface ArtRowCore {
   readonly provenance: ArtProvenance;
 }
 
+/** Accepted licenses only; share-alike and EULA need counsel sign-off (backlog). */
 type ArtLicenseFields =
   | { readonly license: 'project-original' | 'CC0-1.0'; readonly attribution?: never }
   | { readonly license: 'CC-BY-4.0' | 'CC-BY-3.0'; readonly attribution: string };
