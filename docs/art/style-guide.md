@@ -30,9 +30,10 @@ cites them and is never parsed.
 
 ## Palette
 
-The master ramps live at the top of `client/art-src/generate_art.py` (`G`, `TG`,
-`D`, `S`, `WAT`, `WD`, `RF`, `F`, and the character ramps). That table is the
-source. `palette.png` is its swatch. Ramps run dark to light, with shadows shifted
+The master ramps live at the top of `client/art-src/generate_art.py`: grass `G`,
+tall grass `TG`, dirt and path `D`, stone `S`, water `WAT`, wood `WD`, roof and
+brick `RF`, foliage `F`, and the character ramps. That table is the source.
+`palette.png` is the swatch of the ramps listed in `PALETTE_ROWS`. Ramps run dark to light, with shadows shifted
 cool and violet and highlights shifted warm and yellow. Never darken a single
 hue. Characters contrast the terrain: the teal-and-rust hero reads on green.
 

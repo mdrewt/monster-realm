@@ -5,7 +5,8 @@
 // this module aggregates the six once. The row TYPE makes the provenance rules
 // unrepresentable where it can (no `ai-placeholder` tag, no share-alike or EULA
 // license, source/license/provenance required, a CC-BY row requires attribution);
-// `validateArtRegistry` covers what types cannot. Rules: `docs/art/style-guide.md`
+// `validateArtRegistry` covers what types cannot (duplicates, shapes, sizes,
+// blank strings, provenance-vs-license). Rules: `docs/art/style-guide.md`
 // and DECISIONS.md "Every served asset carries a provenance row; image-model
 // output never ships".
 
@@ -60,7 +61,10 @@ export type ArtRegistryReason =
   | 'frame-off-grid'
   | 'scale-not-1'
   | 'malformed-key'
-  | 'empty-attribution';
+  | 'malformed-file'
+  | 'empty-attribution'
+  | 'empty-source'
+  | 'provenance-license-mismatch';
 
 export interface ArtRegistryProblem {
   readonly key: string;
@@ -69,9 +73,18 @@ export interface ArtRegistryProblem {
 }
 
 const KEY_SHAPE = /^(characters|monsters|terrain|landmarks|battle|grade)\/[a-z][a-z0-9_]*$/;
+/** Lower-case, relative, no `.`/`..` or empty segments — so two spellings of one file cannot both pass. */
+const FILE_SHAPE = /^[a-z0-9][a-z0-9_-]*(\/[a-z0-9][a-z0-9_-]*)*\.png$/;
 const FRAME_GRID_PX = 16;
 
 const onFrameGrid = (n: number): boolean => n > 0 && n % FRAME_GRID_PX === 0;
+
+/** A procedural placeholder is this repo's own output; a licensed one is somebody else's. */
+function provenanceMatchesLicense(row: ArtRow): boolean {
+  if (row.provenance === 'placeholder-procedural') return row.license === 'project-original';
+  if (row.provenance === 'placeholder-licensed') return row.license !== 'project-original';
+  return true;
+}
 
 /**
  * Validate a registry: `[]` accepts it; otherwise one problem per violation,
@@ -86,6 +99,7 @@ export function validateArtRegistry(rows: readonly ArtRow[]): readonly ArtRegist
       problems.push({ key: row.key, file: row.file, reason });
     };
     if (!KEY_SHAPE.test(row.key)) reject('malformed-key');
+    if (!FILE_SHAPE.test(row.file)) reject('malformed-file');
     if (keys.has(row.key)) reject('duplicate-key');
     keys.add(row.key);
     if (files.has(row.file)) reject('duplicate-file');
@@ -97,12 +111,15 @@ export function validateArtRegistry(rows: readonly ArtRow[]): readonly ArtRegist
     ) {
       reject('frame-off-grid');
     }
+    if (row.source.trim() === '') reject('empty-source');
+    // `?? ''`: a row built by a cast can lack the attribution its type promises.
     if (
       (row.license === 'CC-BY-4.0' || row.license === 'CC-BY-3.0') &&
-      row.attribution.trim() === ''
+      (row.attribution ?? '').trim() === ''
     ) {
       reject('empty-attribution');
     }
+    if (!provenanceMatchesLicense(row)) reject('provenance-license-mismatch');
   }
   return problems;
 }
