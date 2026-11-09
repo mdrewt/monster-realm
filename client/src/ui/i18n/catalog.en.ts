@@ -228,9 +228,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Name of the shortcut that opens Monsters › Storage, a row of the Shortcuts tab in Options
   // › Controls. One short word. ui/controlsModel.ts
   'controls.accel.storage': 'Storage',
-  // @desc: Name of the shortcut that opens the Bag, a row of the Shortcuts tab in Options ›
+  // @desc: Name of the shortcut that opens the Inventory, a row of the Shortcuts tab in Options ›
   // Controls. One short word. ui/controlsModel.ts
-  'controls.accel.bag': 'Bag',
+  'controls.accel.bag': 'Inventory',
   // @desc: Name of the shortcut that opens Monsters › Party, a row of the Shortcuts tab in Options ›
   // Controls. One short word. ui/controlsModel.ts
   'controls.accel.party': 'Party',
@@ -340,9 +340,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback line after a text size was chosen on Controls › Display; {label} is the size.
   // One sentence. ui/controlsView.ts
   'controls.text.set': (p) => `Text size: ${p.label}.`,
-  // @desc: Heading of the help overlay listing keyboard controls and game goals.
+  // @desc: Heading of the How to Play (help) overlay.
   // index.html #help-title (literal removed from index.html; resolved in HelpView show())
-  'chrome.help.title': 'Controls & Goals',
+  'chrome.help.title': 'How to Play',
   // @desc: Heading of the Journal overlay listing the player's active quests. One or two words.
   // questLogView.ts #quest-log-title (resolved in render())
   'journal.title': 'Journal',
@@ -1274,10 +1274,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the Monsters main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.monsters.desc': 'See your party and stored monsters.',
-  // @desc: Main-menu entry opening the bag (items, feeding and care).
+  // @desc: Main-menu entry opening the Inventory (items, feeding and care).
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.bag.title': 'Bag',
-  // @desc: Feedback-line description of the Bag main-menu entry, shown on Y.
+  'menu.bag.title': 'Inventory',
+  // @desc: Feedback-line description of the Inventory main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.bag.desc': 'Use items and care for your monsters.',
   // @desc: Main-menu entry opening the quest journal.
@@ -1362,10 +1362,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // line); also the status-line and announced reason when an action is refused during a battle.
   // ui/screens/mainMenuScreen.ts (battleReason); main.ts (refusedInBattle)
   'menu.disabled.inBattle': 'Not during a battle',
-  // @desc: Feedback-line reason the Bag main-menu entry is disabled over a battle: use the
-  // battle's own Bag command.
+  // @desc: Feedback-line reason the Inventory main-menu entry is disabled over a battle: use the
+  // battle's own Items command (tactics.menu.item).
   // ui/screens/mainMenuScreen.ts (battleReason)
-  'menu.disabled.battleBag': 'Use items from the battle Bag command',
+  'menu.disabled.battleBag': 'Use items from the battle Items command',
   // @desc: Bag pocket tab: items that help recruit a wild monster. One word.
   // raisingView.ts (the Bag frame)
   'bag.pocket.bait': 'Bait',

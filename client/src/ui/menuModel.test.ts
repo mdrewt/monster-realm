@@ -114,7 +114,7 @@ describe('MENU_ENTRIES', () => {
 
     const TITLES: Readonly<Record<string, string>> = {
       monsters: 'Monsters',
-      bag: 'Bag',
+      bag: 'Inventory',
       journal: 'Journal',
       social: 'Social',
       profile: 'Profile',
@@ -157,6 +157,25 @@ describe('MENU_ENTRIES', () => {
     }
   });
 
+  it('UIF15A.1 the root entries read Monsters, Inventory, Journal, Social, Profile, Options, Close in en and Monstres, Inventaire, Journal, Social, Profil, Options, Fermer in fr, in that order, and the keys are unchanged', () => {
+    // WRONG IMPL KILLED: a root still labelled Bag / Sac; a relabel that renames the nav key
+    // (`bag` stays); a locale frozen at import; a French list that kept an English word.
+    setLocale('en');
+    expect(
+      ROOT.map((r) => r.title()),
+      'en root titles',
+    ).toEqual(['Monsters', 'Inventory', 'Journal', 'Social', 'Profile', 'Options', 'Close']);
+    setLocale('fr');
+    expect(
+      ROOT.map((r) => r.title()),
+      'fr root titles',
+    ).toEqual(['Monstres', 'Inventaire', 'Journal', 'Social', 'Profil', 'Options', 'Fermer']);
+    expect(
+      ROOT.map((r) => r.key),
+      'keys keep their ids',
+    ).toEqual(ROOT_KEYS);
+  });
+
   it('CTL5-1-CATALOG-EN-FR: every title and description resolves through the catalog id for its own row in en and in fr, at call time', () => {
     // WRONG IMPL KILLED: a table that resolves `t()` once at import (every row frozen in en, so
     // `fr` renders English, today's defect); a title thunk wired to another row's id; a row whose
@@ -184,7 +203,7 @@ describe('MENU_ENTRIES', () => {
     const frTitle = (path: string): string =>
       (rows.find((r) => r.path === path) as { row: Row }).row.title();
     expect(frTitle('monsters')).toBe('Monstres');
-    expect(frTitle('bag')).toBe('Sac');
+    expect(frTitle('bag')).toBe('Inventaire');
     expect(frTitle('close')).toBe('Fermer');
     expect(frTitle('options/controls'), 'ctl-12b: the Controls leaf in French').toBe('Commandes');
     expect(fr, 'fr differs from en').not.toEqual(en);

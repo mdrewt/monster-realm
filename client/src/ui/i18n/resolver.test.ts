@@ -90,7 +90,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'chrome.chip.prevMonster': 'Prev monster',
       'chrome.chip.nextMonster': 'Next monster',
       'chrome.badge.request': 'New',
-      'chrome.help.title': 'Controls & Goals',
+      'chrome.help.title': 'How to Play',
       'chrome.rename.submit': 'Rename',
       'chrome.tradePropose.submit': 'Offer',
       'chrome.status.exportBlocked': 'data export: download blocked by the browser',

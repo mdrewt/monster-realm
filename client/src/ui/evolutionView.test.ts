@@ -2555,7 +2555,7 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
 
     // Post-restore call-through control (an existing S1 key — the new evolution.* keys do not
     // exist in the catalog until the specialist ships them).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
   });
 });
 

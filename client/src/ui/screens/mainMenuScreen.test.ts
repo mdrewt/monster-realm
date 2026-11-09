@@ -433,7 +433,7 @@ describe('mainMenu — pick, view model and inert buttons', () => {
     expect(itemsOf(root.layout).every((i) => i.enabled)).toBe(true);
     expect(root.labels).toEqual({
       monsters: 'Monsters',
-      bag: 'Bag',
+      bag: 'Inventory',
       journal: 'Journal',
       social: 'Social',
       profile: 'Profile',
@@ -700,7 +700,7 @@ describe('mainMenu over a battle (ctl-6c)', () => {
     expect(bag.effect).toEqual(NONE);
     expect(bag.state.feedback).toEqual({
       kind: 'info',
-      text: 'Use items from the battle Bag command',
+      text: 'Use items from the battle Items command',
     });
     // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
     // battle until ctl-7a anchors their shells): A and a pick on Journal opened the quest log over
@@ -748,15 +748,15 @@ describe('mainMenu over a battle (ctl-6c)', () => {
 
     // --- locales: the reasons are resolved at press / view time -----------------------------
     expect(t('menu.disabled.inBattle'), 'the en reason').toBe('Not during a battle');
-    expect(t('menu.disabled.battleBag'), 'the en Bag reason').toBe(
-      'Use items from the battle Bag command',
+    expect(t('menu.disabled.battleBag'), 'the en Inventory reason').toBe(
+      'Use items from the battle Items command',
     );
     setLocale('fr');
     const frId = (CATALOG_FR as unknown as Record<string, string>)['menu.disabled.inBattle'];
     const frBag = (CATALOG_FR as unknown as Record<string, string>)['menu.disabled.battleBag'];
     expect(frId, 'fixture: fr has its own reason').toBeTypeOf('string');
     expect(frId).not.toBe('Not during a battle');
-    expect(frBag).not.toBe('Use items from the battle Bag command');
+    expect(frBag).not.toBe('Use items from the battle Items command');
     expect(t('menu.disabled.inBattle')).toBe(frId);
     const frRoot = itemsOf(menuViewModel(battleMenu()).layout);
     expect(frRoot.find((i) => i.key === 'monsters')?.reason, 'view model reasons are fr').toBe(
@@ -772,5 +772,30 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       kind: 'info',
       text: frBag,
     });
+  });
+
+  it('UIF15A.3 over a battle the Inventory row is disabled with a reason that points at the battle Items command, in en and fr, and names no Bag or Sac', () => {
+    // WRONG IMPL KILLED: a reason still saying "Bag command" / "Sac"; a reason that names a
+    // command the battle does not have (it must contain the resolved `tactics.menu.item`); a
+    // reason frozen in en under fr; the wrong exact wording.
+    const reasonOf = (): string => {
+      const row = itemsOf(menuViewModel(battleMenu()).layout).find((i) => i.key === 'bag');
+      expect(row?.enabled, 'the Inventory row is disabled over a battle').toBe(false);
+      return row?.reason as string;
+    };
+
+    setLocale('en');
+    const en = reasonOf();
+    expect(en).toBe('Use items from the battle Items command');
+    expect(en).toContain(t('tactics.menu.item'));
+    expect(t('tactics.menu.item')).toBe('Items');
+    expect(en).not.toMatch(/\bBag\b/);
+
+    setLocale('fr');
+    const fr = reasonOf();
+    expect(fr).toBe('Utilisez les objets avec la commande Objets du combat');
+    expect(fr).toContain(t('tactics.menu.item'));
+    expect(t('tactics.menu.item')).toBe('Objets');
+    expect(fr).not.toMatch(/\bSac\b/);
   });
 });

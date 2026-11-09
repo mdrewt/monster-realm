@@ -599,7 +599,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // legacy battle Flee button; the command list's Run is the only flee) = 361 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
-  'chrome.help.title': 'Controls & Goals',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.2): values only; was 'Controls & Goals'.
+  'chrome.help.title': 'How to Play',
   // NAMED INTENTIONAL CHANGE (uif-14, UIF14.1 / UIF14.4): -7 plain keys here, RETIRED with the
   // All controls / This screen / Goals tabs (`help.tab.{screen,controls,goals}`,
   // `help.goal.{recruit,battle,trade}`, `help.note.keysVsButtons`; their absence is pinned by the
@@ -818,7 +819,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.title': 'Menu',
   'menu.monsters.title': 'Monsters',
   'menu.monsters.desc': 'See your party and stored monsters.',
-  'menu.bag.title': 'Bag',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.1): values only; was 'Bag'. The key keeps its id.
+  'menu.bag.title': 'Inventory',
   'menu.bag.desc': 'Use items and care for your monsters.',
   'menu.journal.title': 'Journal',
   'menu.journal.desc': 'Review your quests and their progress.',
@@ -849,7 +851,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-6c: 2 new plain keys — the reasons a main-menu entry is disabled over a battle
   // (ui/screens/mainMenuScreen.ts), the first also the dispatch refusal line (main.ts).
   'menu.disabled.inBattle': 'Not during a battle',
-  'menu.disabled.battleBag': 'Use items from the battle Bag command',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.3): values only; was '…battle Bag command'.
+  'menu.disabled.battleBag': 'Use items from the battle Items command',
   // ctl-8a: 6 new plain keys — the Buy | Sell tab labels and the description slot's "none" mark
   // (shopView.ts), the shared Yes / No prompt options (shopView.ts, healView.ts), and the reason a
   // heal frame with no bound healer is disabled (healView.ts).
@@ -943,7 +946,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.button.start': 'Menu (Start)',
   'controls.button.select': 'Help (Select)',
   'controls.accel.storage': 'Storage',
-  'controls.accel.bag': 'Bag',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.3): values only; was 'Bag'. The key keeps its id.
+  'controls.accel.bag': 'Inventory',
   'controls.accel.party': 'Party',
   'controls.accel.journal': 'Journal',
   'controls.accel.trades': 'Trades',
@@ -2352,7 +2356,8 @@ const E_ACUTE = String.fromCharCode(0x00e9);
 // (the 1v1 outcome's continue hint); the two menu.disabled.* rows stay.
 const EXPECTED_FR_CTL6C: Record<string, string> = {
   'menu.disabled.inBattle': 'Impossible pendant un combat',
-  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Sac du combat',
+  // NAMED INTENTIONAL CHANGE (uif-15a, UIF15A.3): values only; was '…commande Sac du combat'.
+  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Objets du combat',
 };
 
 describe('ctl-6c: catalog.fr.ts, the battle keys ctl-6c changed or added', () => {
@@ -4358,5 +4363,61 @@ describe('uif-14: the Help ids in both catalogs', () => {
       expect(Object.hasOwn(fr, id), `fr still has ${id}`).toBe(false);
       expect(EXPECTED_KEYS.includes(id), `the roster still lists ${id}`).toBe(false);
     }
+  });
+});
+
+// =============================================================================
+// uif-15a (UIF15A.3): no player-facing "Bag" / "Sac" in the menu, the shortcuts row or party-full
+// =============================================================================
+
+describe('uif-15a: the Bag / Sac wording is gone from the menu, the shortcuts row and the party-full lines', () => {
+  it('UIF15A.3 no menu.* value, controls.accel.bag or partyFull value reads Bag (en) or Sac (fr), and the shortcut and battle-reason values are exact', () => {
+    // WRONG IMPL KILLED: a relabel that changed the root title but left the description, the
+    // shortcuts row or the party-full line saying Bag / Sac; a key renamed instead of re-valued
+    // (the ids `menu.bag.*`, `controls.accel.bag`, `menu.disabled.battleBag` stay); a sweep that
+    // matches nothing (ANTI-VACUITY below); a French value still saying Sac; a lowercase or plural
+    // spelling ("your bag", "bags", "votre sac") that a case-sensitive match would let through.
+    const enAll = CATALOG_EN as unknown as Record<string, unknown>;
+    const frAll = CATALOG_FR as unknown as Record<string, unknown>;
+    const swept = (catalog: Record<string, unknown>): string[] =>
+      Object.keys(catalog).filter(
+        (k) => k.startsWith('menu.') || k === 'controls.accel.bag' || k.includes('partyFull'),
+      );
+    const enKeys = swept(enAll);
+    const frKeys = swept(frAll);
+    expect(
+      enKeys.filter((k) => k.startsWith('menu.')).length,
+      'ANTI-VACUITY: menu.*',
+    ).toBeGreaterThan(20);
+    expect(enKeys, 'the shortcuts key stays').toContain('controls.accel.bag');
+    expect(enKeys, 'the battle reason key stays').toContain('menu.disabled.battleBag');
+    expect(enKeys, 'the nav-key title stays').toContain('menu.bag.title');
+    expect(enKeys, 'the party-full line stays').toContain('chrome.status.partyFull');
+    expect(frKeys, 'fr has the same swept keys').toEqual(enKeys);
+
+    // A closure value is called with an empty-ish probe so its text is swept too.
+    const textOf = (value: unknown): string =>
+      typeof value === 'function'
+        ? String((value as (p: Record<string, unknown>) => unknown)({ n: 1, count: 1, name: 'X' }))
+        : String(value);
+    for (const key of enKeys) {
+      expect(textOf(enAll[key]), `en ${key} must not say bag (any case)`).not.toMatch(/\bbags?\b/i);
+    }
+    for (const key of frKeys) {
+      expect(textOf(frAll[key]), `fr ${key} must not say sac (any case)`).not.toMatch(/\bsacs?\b/i);
+    }
+
+    expect(enAll['menu.bag.title']).toBe('Inventory');
+    expect(frAll['menu.bag.title']).toBe('Inventaire');
+    expect(enAll['controls.accel.bag'], 'en shortcuts row').toBe('Inventory');
+    expect(frAll['controls.accel.bag'], 'fr shortcuts row').toBe('Inventaire');
+    expect(enAll['menu.disabled.battleBag']).toBe('Use items from the battle Items command');
+    expect(frAll['menu.disabled.battleBag']).toBe(
+      'Utilisez les objets avec la commande Objets du combat',
+    );
+    expect(String(enAll['menu.disabled.battleBag'])).toContain(String(enAll['tactics.menu.item']));
+    expect(String(frAll['menu.disabled.battleBag'])).toContain(String(frAll['tactics.menu.item']));
+    expect(enAll['chrome.help.title']).toBe('How to Play');
+    expect(frAll['chrome.help.title']).toBe('Comment jouer');
   });
 });

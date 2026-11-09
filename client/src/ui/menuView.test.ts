@@ -84,7 +84,7 @@ const socialState = () => mainMenuPick(openMainMenu(EMPTY_NAV_MEMORY), 'social')
 const socialVm = (): Vm => menuViewModel(socialState());
 
 const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
-const ROOT_LABELS = ['Monsters', 'Bag', 'Journal', 'Social', 'Profile', 'Options', 'Close'];
+const ROOT_LABELS = ['Monsters', 'Inventory', 'Journal', 'Social', 'Profile', 'Options', 'Close'];
 
 /** ONE REAL macrotask boundary (the deferred focus is a real `setTimeout(0)`). */
 async function flushMacrotask(): Promise<void> {
@@ -419,6 +419,39 @@ describe('MenuView — render', () => {
     expect(rowsEl().children.length, 'the same render twice does not grow it').toBe(7);
   });
 
+  it('UIF15A.1 the root rows paint Monsters, Inventory, Journal, Social, Profile, Options, Close with the unchanged nav keys, and Inventaire / Fermer in fr', async () => {
+    // WRONG IMPL KILLED: a painted row still reading Bag / Sac; a relabel that changes the nav key
+    // or row order (the Inventory row keeps id menu-root-bag).
+    const { view } = newView();
+    view.render(rootVm());
+    expect(optionEls().map((o) => o.textContent)).toEqual([
+      'Monsters',
+      'Inventory',
+      'Journal',
+      'Social',
+      'Profile',
+      'Options',
+      'Close',
+    ]);
+    expect(optionEls().map((o) => o.dataset.navKey)).toEqual(ROOT_KEYS);
+    const { setLocale } = await import('./i18n/resolver');
+    setLocale('fr');
+    try {
+      view.render(rootVm());
+      expect(optionEls().map((o) => o.textContent)).toEqual([
+        'Monstres',
+        'Inventaire',
+        'Journal',
+        'Social',
+        'Profil',
+        'Options',
+        'Fermer',
+      ]);
+    } finally {
+      setLocale('en');
+    }
+  });
+
   it('MV-RENDER-XSS: a label or a title containing markup renders as literal text — no element is injected (ADR-0135)', () => {
     // WRONG IMPL KILLED: `innerHTML` (or any markup-parsing sink) for a label or the title; the
     // old source scan's property, as a behaviour. Catalog text is static today, but a later
@@ -499,7 +532,7 @@ describe('MenuView — render', () => {
     expect(el, 'resolves to a live element').not.toBeNull();
     expect(rowsEl().contains(el), 'inside the list').toBe(true);
     expect(el?.getAttribute('aria-selected')).toBe('true');
-    expect(el?.textContent).toBe('Bag');
+    expect(el?.textContent).toBe('Inventory');
 
     view.render(socialVm());
     const inGroup = rowsEl().getAttribute('aria-activedescendant');

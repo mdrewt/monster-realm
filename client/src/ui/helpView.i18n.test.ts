@@ -133,7 +133,7 @@ function m24s5HvWalkSubtree(root: HTMLElement): string[] {
   return texts;
 }
 
-const M24S5_HV_ROSTER = ['Controls & Goals'];
+const M24S5_HV_ROSTER = ['How to Play'];
 
 function m24s5HvAssertNoRosterWord(texts: readonly string[], label: string): void {
   const { stripped, unexpectedSpans } = m24s5HvSplitSentinels(texts.join('\n'));
@@ -160,7 +160,7 @@ describe('m24s5 (ADR-0261): helpView.ts routes chrome.help.title through t() in 
 
     view.show();
     expect(i18nT).toHaveBeenCalledWith('chrome.help.title');
-    expect(titleEl.textContent).toBe('Controls & Goals');
+    expect(titleEl.textContent).toBe('How to Play');
 
     // RT2: a repeat show() on an already-open overlay re-resolves the title.
     vi.mocked(i18nT).mockClear();
@@ -223,7 +223,28 @@ describe('m24s5 (ADR-0261): helpView.ts routes chrome.help.title through t() in 
     }
 
     // Post-restore call-through control (an existing S1 key).
-    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
+  });
+
+  it('UIF15A.2 the help frame title reads How to Play in en and Comment jouer in fr, re-resolved on a repeat show(), and the overlay accessible label reads How to Play (the a11y catalog is en-only)', () => {
+    // WRONG IMPL KILLED: a title left on "Controls & Goals" in either locale; an fr title that is the
+    // English bytes; a title frozen at the first show(); an accessible label left on the old name.
+    const overlay = mount();
+    const view = new HelpView();
+    const titleEl = overlay.querySelector('#help-title') as HTMLElement;
+
+    setLocale('en');
+    view.show();
+    expect(titleEl.textContent, 'en title').toBe('How to Play');
+    expect(overlay.getAttribute('aria-label'), 'the accessible label (en-only catalog)').toBe(
+      'How to Play',
+    );
+
+    setLocale('fr');
+    view.show();
+    expect(titleEl.textContent, 'fr title').toBe('Comment jouer');
+    expect(CATALOG_FR['chrome.help.title'], 'the fr catalog value').toBe('Comment jouer');
+    expect(CATALOG_EN['chrome.help.title'], 'the en catalog value').toBe('How to Play');
   });
 });
 
