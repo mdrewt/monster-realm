@@ -31,8 +31,8 @@ static ACTIVE_ZONE_ID: AtomicU32 = AtomicU32::new(0);
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
 
-// The compiled heal_locations registry (wap-1): `zone_map()`'s `landmarks` are
-// drawn from it, so the renderer never holds a hard-coded healer coordinate.
+// The compiled heal_locations registry: `zone_map()`'s `landmarks` are drawn
+// from it, so the renderer never holds a hard-coded healer coordinate.
 static HEAL_LOCATIONS: LazyLock<Result<Vec<game_core::HealLocationDef>, String>> =
     LazyLock::new(game_core::load_heal_locations);
 
@@ -167,7 +167,7 @@ pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, J
             *cache = Some(game_core::map_for(zone_id, maps).map_err(zone_map_err)?);
         }
         // Clone is cheap relative to RON parse: TileMap is a few hundred bools plus
-        // one terrain byte per tile (wap-1).
+        // one terrain byte per tile.
         Ok::<game_core::TileMap, JsValue>(cache.as_ref().expect("just set above").clone())
     })?;
     let next = game_core::apply_move(
@@ -463,8 +463,8 @@ pub fn evolution_eligibility(monster: JsValue, paths: JsValue) -> Result<JsValue
     Ok(report.serialize(&serializer)?)
 }
 
-/// The `zone_map()` payload (wap-1): the rule's `TileMap` re-expressed as
-/// explicit fields — never `#[serde(flatten)]`, which `serde_wasm_bindgen` would
+/// The `zone_map()` payload: the rule's `TileMap` re-expressed as explicit
+/// fields — never `#[serde(flatten)]`, which `serde_wasm_bindgen` would
 /// emit as a JS `Map` — plus the two additions the renderer reads: `terrain`
 /// (row-major `TileKind` wire names, parallel to `walkable`) and `landmarks` (one
 /// `heal` entry per compiled heal_locations row of this zone). The pre-existing

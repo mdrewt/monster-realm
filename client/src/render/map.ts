@@ -4,8 +4,8 @@
 // wasm `zone_map()` export, never a hard-coded TS grid (that would visually desync
 // from authority). `zone_map()` returns client-wasm's `ZoneMapPayload`: the Rust
 // map's fields as-is (snake_case, `walkable`/`grass` row-major `bool[]`, `warps`)
-// plus, since wap-1, `terrain` (row-major `TileKind` wire names, parallel to
-// `walkable`) and `landmarks` (content-driven markers). Parse-don't-validate: a
+// plus `terrain` (row-major `TileKind` wire names, parallel to `walkable`) and
+// `landmarks` (content-driven markers). Parse-don't-validate: a
 // ragged layer or an unknown name is rejected LOUD here, the sole constructor, so
 // every TileMap downstream holds its invariant (matches game-core's `from_rows`).
 // The client never derives terrain from `walkable`/`grass` (spec constraint 1):
@@ -67,7 +67,7 @@ export interface Landmark {
 
 /** The raw object `client-wasm.zone_map()` returns (serde field names, row-major).
  *  `grass` rides along additively (M8c): a row-major `bool[]` parallel to `walkable`.
- *  `warps` carries the warp overlay list. `terrain` and `landmarks` (wap-1) are
+ *  `warps` carries the warp overlay list. `terrain` and `landmarks` are
  *  optional on the type because older payload literals (the main-boot test
  *  fixtures) omit them; absent ⟹ no terrain / no landmarks (backward compat). */
 export interface RawTileMap {
@@ -136,7 +136,7 @@ export class TileMap {
     // Build a Set of "x,y" keys for O(1) isWarp lookup. `warps` absent ⟹ empty set
     // (backward compat: old wire format without the field is treated as no warps).
     const warpSet = new Set((raw.warps ?? []).map((w) => `${w.from.x},${w.from.y}`));
-    // The terrain layer (wap-1): absent ⟹ no terrain (the renderer's flat fallback;
+    // The terrain layer: absent ⟹ no terrain (the renderer's flat fallback;
     // never re-derived from walkable/grass). Present ⟹ the same width*height grid
     // and every name one of the ten wire names, copied so the caller's array
     // cannot change the map afterwards.
@@ -161,7 +161,7 @@ export class TileMap {
       }
       terrain = names;
     }
-    // Landmarks (wap-1): absent ⟹ none; a malformed entry, an unknown kind or an
+    // Landmarks: absent ⟹ none; a malformed entry, an unknown kind or an
     // off-grid / non-integer tile is rejected, never dropped or clamped.
     let landmarks: readonly Landmark[] = Object.freeze([]);
     if (raw.landmarks !== undefined) {

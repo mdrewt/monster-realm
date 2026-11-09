@@ -103,9 +103,9 @@ pub struct TileMap {
     /// `TallGrass` (M8). Rides the one-way `Serialize` so the TS renderer's grass
     /// overlay reads the SAME layer the rule evaluates (visual-SSOT).
     grass: Vec<bool>,
-    /// Parallel, row-major, SAME length as `walkable` — each tile's `TileKind`
-    /// (wap-1). `walkable` and `grass` are derived from the same glyph in the
-    /// same loop; the renderer draws terrain from this layer (`terrain_at`).
+    /// Parallel, row-major, SAME length as `walkable` — each tile's `TileKind`.
+    /// `walkable` and `grass` are derived from the same glyph in the same loop;
+    /// the renderer draws terrain from this layer (`terrain_at`).
     terrain: Vec<TileKind>,
     /// M11c: warp overlay list — serializes through zone_map() wasm export
     /// (intentional ABI so the TS client always sees the warps field).
