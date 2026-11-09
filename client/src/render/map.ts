@@ -44,6 +44,12 @@ function isTerrainKind(name: unknown): name is TerrainKind {
   return typeof name === 'string' && TERRAIN_SET.has(name);
 }
 
+/** Integer tile inside a width×height grid (the one bounds rule, shared by the
+ *  instance `inBounds` and the landmark check in `fromRaw`). */
+function inGrid(x: number, y: number, width: number, height: number): boolean {
+  return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < width && y < height;
+}
+
 /** A landmark in the wire shape of client-wasm's `Landmark` (`kind` is checked here). */
 export interface RawLandmark {
   readonly kind: string;
@@ -136,34 +142,58 @@ export class TileMap {
     // cannot change the map afterwards.
     let terrain: readonly TerrainKind[] | undefined;
     if (raw.terrain !== undefined) {
+      if (!Array.isArray(raw.terrain)) {
+        throw new Error('render/map: terrain must be an array of wire names');
+      }
       if (raw.terrain.length !== width * height) {
         throw new Error(
           `render/map: ragged grid — terrain.length ${raw.terrain.length} != ${width}*${height}`,
         );
       }
-      terrain = raw.terrain.map((name, i) => {
+      // An index loop, not `.map`: a sparse array's holes must fail the name check.
+      const names: TerrainKind[] = [];
+      for (let i = 0; i < raw.terrain.length; i++) {
+        const name: unknown = raw.terrain[i];
         if (!isTerrainKind(name)) {
           throw new Error(`render/map: unknown terrain ${JSON.stringify(name)} at index ${i}`);
         }
-        return name;
-      });
+        names.push(name);
+      }
+      terrain = names;
     }
-    // Landmarks (wap-1): absent ⟹ none; an unknown kind is rejected, never dropped.
-    const landmarks: readonly Landmark[] = Object.freeze(
-      (raw.landmarks ?? []).map((l, i) => {
-        if (l.kind !== 'heal') {
-          throw new Error(
-            `render/map: unknown landmark kind ${JSON.stringify(l.kind)} at index ${i}`,
-          );
-        }
-        return Object.freeze({ kind: 'heal' as const, x: l.x, y: l.y });
-      }),
-    );
+    // Landmarks (wap-1): absent ⟹ none; a malformed entry, an unknown kind or an
+    // off-grid / non-integer tile is rejected, never dropped or clamped.
+    let landmarks: readonly Landmark[] = Object.freeze([]);
+    if (raw.landmarks !== undefined) {
+      if (!Array.isArray(raw.landmarks)) {
+        throw new Error('render/map: landmarks must be an array');
+      }
+      landmarks = Object.freeze(
+        raw.landmarks.map((l: unknown, i) => {
+          if (typeof l !== 'object' || l === null) {
+            throw new Error(`render/map: invalid landmark at index ${i} — not an object`);
+          }
+          const { kind, x, y } = l as { kind?: unknown; x?: unknown; y?: unknown };
+          if (kind !== 'heal') {
+            throw new Error(
+              `render/map: unknown landmark kind ${JSON.stringify(kind)} at index ${i}`,
+            );
+          }
+          if (typeof x !== 'number' || typeof y !== 'number' || !inGrid(x, y, width, height)) {
+            throw new Error(
+              `render/map: invalid landmark at index ${i} — (${String(x)},${String(y)}) is not an integer tile inside ${width}x${height}`,
+            );
+          }
+          return Object.freeze({ kind: 'heal' as const, x, y });
+        }),
+      );
+    }
     return new TileMap(zone_id, width, height, walkable, grass, warpSet, terrain, landmarks);
   }
 
+  /** Integer tile inside the grid (a fractional coordinate is never a tile). */
   inBounds(x: number, y: number): boolean {
-    return x >= 0 && y >= 0 && x < this.width && y < this.height;
+    return inGrid(x, y, this.width, this.height);
   }
 
   /** Out-of-range is a WALL, never an exception (mirrors game-core's bounds-safe get). */

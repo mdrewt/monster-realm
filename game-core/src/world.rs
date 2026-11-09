@@ -402,7 +402,16 @@ fn check_deep_water_shore(zone_id: u32, map: &TileMap) -> Result<(), String> {
                     let q = TilePos { x: nx, y: ny };
                     match map.terrain_at(q) {
                         None | Some(TileKind::ShallowWater | TileKind::DeepWater) => {}
-                        Some(kind) => {
+                        Some(
+                            kind @ (TileKind::Floor
+                            | TileKind::Wall
+                            | TileKind::TallGrass
+                            | TileKind::Path
+                            | TileKind::Sand
+                            | TileKind::Rock
+                            | TileKind::Tree
+                            | TileKind::Bush),
+                        ) => {
                             return Err(format!(
                                 "zone_map zone_id {zone_id}: deep water at {p:?} borders non-water {kind:?} at {q:?}"
                             ));

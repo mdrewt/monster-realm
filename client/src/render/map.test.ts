@@ -428,6 +428,23 @@ describe('wap-1 TileMap.terrainAt (WAP1.5)', () => {
       expect(m.terrainAt(x, 0), `x=${x}`).toBe(name);
     });
   });
+
+  it('is undefined for a fractional coord that lands on an integer row-major index wap1_5', () => {
+    // Kills: a bounds-only guard with no integer check — on a WIDTH-2 map
+    // (0, 0.5) computes 0.5*2+0 = 1 and reads 'Wall', (1, 0.5) computes 2 and
+    // reads 'Path'. (A width-3 map hides this: 0.5*3 = 1.5 is no array index.)
+    const m = TileMap.fromRaw(terrainRaw(2, 2, { terrain: ['Floor', 'Wall', 'Path', 'Sand'] }));
+    expect(m.terrainAt(0, 0.5)).toBeUndefined();
+    expect(m.terrainAt(1, 0.5)).toBeUndefined();
+    expect(m.terrainAt(0, 1.5)).toBeUndefined();
+    // Sanity: the integer neighbours still read back (the guard is not "always undefined").
+    expect(m.terrainAt(1, 0)).toBe('Wall');
+    expect(m.terrainAt(0, 1)).toBe('Path');
+    // A width-1 map: (0.5, 0) must also be undefined.
+    const narrow = TileMap.fromRaw(terrainRaw(1, 2, { terrain: ['Floor', 'Wall'] }));
+    expect(narrow.terrainAt(0.5, 0)).toBeUndefined();
+    expect(narrow.terrainAt(0, 1)).toBe('Wall');
+  });
 });
 
 describe('wap-1 TileMap.fromRaw terrain validation (WAP1.5)', () => {
@@ -450,6 +467,37 @@ describe('wap-1 TileMap.fromRaw terrain validation (WAP1.5)', () => {
         /unknown terrain/,
       );
     }
+  });
+
+  it('rejects a non-array terrain field with a render/map error naming terrain wap1_5', () => {
+    // Kills: an `!== undefined` guard that then calls `.length`/`.map` on whatever
+    // arrived — null is a bare TypeError, and a STRING of exactly width*height chars
+    // ('Floor' on 5×1) passes the length check and dies in `.map` (a TypeError, not
+    // a render/map error). The array-like `{ length: 5 }` kills a `typeof !== 'string'`
+    // patch that still trusts `.length`.
+    for (const bad of [null, 'Floor', { length: 5 }, 5]) {
+      const extra = { terrain: bad } as unknown as Parameters<typeof terrainRaw>[2];
+      expect(() => TileMap.fromRaw(terrainRaw(5, 1, extra)), String(bad)).toThrow(
+        /^render\/map:.*terrain/,
+      );
+    }
+  });
+
+  it('rejects a sparse terrain array of the right length wap1_5', () => {
+    // Kills: an `Array.prototype.map` validation — map SKIPS holes, so a hole never
+    // reaches the name check and the map holds a silent undefined tile.
+    const allHoles: unknown[] = new Array(6);
+    expect(allHoles.length).toBe(6);
+    expect(() => TileMap.fromRaw(terrainRaw(3, 2, { terrain: allHoles }))).toThrow(
+      /^render\/map:.*unknown terrain/,
+    );
+    // One hole, at index 1, every other slot a valid name.
+    const oneHole: unknown[] = new Array(6);
+    for (const i of [0, 2, 3, 4, 5]) oneHole[i] = SIX[i];
+    expect(1 in oneHole).toBe(false);
+    expect(() => TileMap.fromRaw(terrainRaw(3, 2, { terrain: oneHole }))).toThrow(
+      /^render\/map:.*unknown terrain/,
+    );
   });
 });
 
@@ -505,5 +553,86 @@ describe('wap-1 TileMap.landmarks (WAP1.5)', () => {
     expect(m.terrainAt(0, 0)).toBe('Floor');
     expect(m.terrainAt(2, 1)).toBe('ShallowWater');
     expect(m.landmarks).toEqual([{ kind: 'heal', x: 2, y: 1 }]);
+  });
+
+  it('rejects a landmark with a non-integer coordinate, even as the second entry wap1_5', () => {
+    // Kills: copying x/y through unchecked (NaN, 1.5, the string '0', a missing
+    // coordinate all reach the renderer as a marker position), a `typeof === 'number'`
+    // check that admits NaN/1.5, a truthiness check, and validating only entry 0.
+    const bads: unknown[] = [
+      { kind: 'heal', x: Number.NaN, y: 0 },
+      { kind: 'heal', x: 1.5, y: 0 },
+      { kind: 'heal', x: '0', y: 0 },
+      { kind: 'heal', y: 0 },
+      { kind: 'heal', x: 0, y: Number.NaN },
+      { kind: 'heal', x: 0, y: 0.5 },
+      { kind: 'heal', x: 0, y: '1' },
+      { kind: 'heal', x: 0 },
+      { kind: 'heal' },
+    ];
+    for (const bad of bads) {
+      const landmarks = [{ kind: 'heal', x: 0, y: 0 }, bad];
+      expect(() => TileMap.fromRaw(terrainRaw(3, 2, { landmarks })), JSON.stringify(bad)).toThrow(
+        /^render\/map:.*invalid landmark/,
+      );
+    }
+  });
+
+  it('rejects a landmark outside the grid, including x === width and y === height wap1_5', () => {
+    // Kills: no bounds check, an off-by-one `<=` bound (x === width / y === height),
+    // a missing negative check, and an x/y-swapped bound (on 3×2, (2,1) is in-grid but
+    // (1,2) is not — a swapped check accepts (0,2) and rejects (2,0)).
+    for (const [x, y] of [
+      [99, 0],
+      [-1, 0],
+      [0, -1],
+      [3, 0],
+      [0, 2],
+      [3, 2],
+    ]) {
+      const landmarks = [
+        { kind: 'heal', x: 0, y: 0 },
+        { kind: 'heal', x, y },
+      ];
+      expect(() => TileMap.fromRaw(terrainRaw(3, 2, { landmarks })), `(${x},${y})`).toThrow(
+        /^render\/map:.*invalid landmark/,
+      );
+    }
+    // The far corners are IN the grid and must still parse.
+    const ok = TileMap.fromRaw(
+      terrainRaw(3, 2, {
+        landmarks: [
+          { kind: 'heal', x: 2, y: 0 },
+          { kind: 'heal', x: 0, y: 1 },
+          { kind: 'heal', x: 2, y: 1 },
+        ],
+      }),
+    );
+    expect(ok.landmarks.length).toBe(3);
+  });
+
+  it('rejects a null or non-object landmark entry with a render/map error wap1_5', () => {
+    // Kills: reading `l.kind` straight off the entry — null is a bare TypeError
+    // ("Cannot read properties of null"), and 5 / 'heal' read `.kind` as undefined
+    // and surface as an "unknown landmark kind" instead of an invalid entry.
+    for (const bad of [null, 5, 'heal', undefined]) {
+      for (const landmarks of [[bad], [{ kind: 'heal', x: 0, y: 0 }, bad]]) {
+        expect(
+          () => TileMap.fromRaw(terrainRaw(3, 2, { landmarks })),
+          `${String(bad)} at ${landmarks.length - 1}`,
+        ).toThrow(/^render\/map:.*invalid landmark/);
+      }
+    }
+  });
+
+  it('rejects a non-array landmarks field with a render/map error naming landmarks wap1_5', () => {
+    // Kills: `raw.landmarks ?? []`, which turns null into "no landmarks" (a silent
+    // default), and a bare `.map` call that TypeErrors on a string or object.
+    for (const bad of [null, 'heal', { length: 1 }, 5]) {
+      const extra = { landmarks: bad } as unknown as Parameters<typeof terrainRaw>[2];
+      expect(() => TileMap.fromRaw(terrainRaw(3, 2, extra)), String(bad)).toThrow(
+        /^render\/map:.*landmarks/,
+      );
+    }
   });
 });

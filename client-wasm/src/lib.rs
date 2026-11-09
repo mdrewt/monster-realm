@@ -166,7 +166,8 @@ pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, J
             let maps = cached_zone_maps().map_err(zone_map_err)?;
             *cache = Some(game_core::map_for(zone_id, maps).map_err(zone_map_err)?);
         }
-        // Clone is cheap relative to RON parse; TileMap is a few hundred bools.
+        // Clone is cheap relative to RON parse: TileMap is a few hundred bools plus
+        // one terrain byte per tile (wap-1).
         Ok::<game_core::TileMap, JsValue>(cache.as_ref().expect("just set above").clone())
     })?;
     let next = game_core::apply_move(
