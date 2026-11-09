@@ -538,8 +538,8 @@ let renameView: RenameView | undefined;
 // trade-PROPOSE overlay — the wizard Trade on a faced player opens (ctl-10b); wires
 // reducers.proposeTrade to let a human initiate a "sell my monster(s) + gold for your gold" trade.
 let tradeProposeView: TradeProposeView | undefined;
-// Help (Select): display-only, generated from the hint bar beneath it, the live bindings and the
-// catalog (ctl-14). No callbacks / reducer (zero-arg construction).
+// How to Play (Select; uif-14): display-only catalog copy. No reducer; its one handler is the
+// live-region announce.
 let helpView: HelpView | undefined;
 // The main menu (ctl-5): a nav-list screen that stays open beneath the overlay it opens.
 let menuView: MenuView | undefined;

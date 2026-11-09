@@ -297,6 +297,50 @@ test.describe
       await closeAll(page);
     });
 
+    test('UIF14.5 at the Extra large text step the detail opened on the last entry lies fully inside the visible frame', async () => {
+      // WRONG IMPL KILLED: the sheet left at the overlay's scroll origin (absolutely positioned with
+      // no account of scrollTop), so after the list scrolled to the last entry it opens above the
+      // visible frame (measured: top -166, bottom 72 at scrollTop 375).
+      try {
+        await page.evaluate(() => {
+          document.documentElement.style.setProperty('--mr-text-step', '2');
+        });
+        await openEncyclopedia(page, 'xl detail');
+        await pressButton(page, 'Up');
+        await expect
+          .poll(() => cursorKey(page), { message: 'Up wraps to the last entry' })
+          .toBe('ranked');
+        await expect
+          .poll(
+            () => page.evaluate(() => document.getElementById('help-overlay')?.scrollTop ?? 0),
+            {
+              message: 'FIXTURE: the overlay is scrolled (else this test is vacuous)',
+            },
+          )
+          .toBeGreaterThan(0);
+
+        await pressButton(page, 'A');
+        const sheet = page.locator(SHEET);
+        await expect(sheet, 'A opened the sheet').toBeVisible();
+        const s = await boxOf(page, SHEET);
+        const f = await boxOf(page, '#help-overlay');
+        const vh = await page.evaluate(() => window.innerHeight);
+        expect(s.top, 'the sheet is not above the frame').toBeGreaterThanOrEqual(f.top - 1);
+        expect(s.bottom, 'the sheet is not below the frame').toBeLessThanOrEqual(f.bottom + 1);
+        expect(s.top, 'the sheet top is on screen').toBeGreaterThanOrEqual(0);
+        expect(s.bottom, 'the sheet bottom is on screen').toBeLessThanOrEqual(vh);
+
+        await pressButton(page, 'B');
+        await expect(sheet, 'B closed the sheet').toBeHidden();
+        expect(await cursorKey(page), 'the same entry is active').toBe('ranked');
+      } finally {
+        await page.evaluate(() => {
+          document.documentElement.style.removeProperty('--mr-text-step');
+        });
+        await closeAll(page);
+      }
+    });
+
     test('UIF14.7 axe finds no WCAG 2.x A/AA violation on How to Play on Introduction, on the Encyclopedia, and with an entry detail open', async () => {
       // WRONG IMPL KILLED: a tab panel or sheet with an unnamed region / listbox, a tab with no
       // tablist, an aria-selected row outside a listbox, a modal sheet with no accessible name, or

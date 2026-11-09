@@ -457,7 +457,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Encyclopedia definition of the guard entry. One or two sentences.
   // ui/helpModel.ts
   'help.entry.guard.def':
-    'End a turn without attacking, with points left over, and your monster guards: it takes less damage until its next turn.',
+    'End a turn without attacking and with at least 2 points unspent, and your monster guards: it takes less damage until its next turn.',
   // @desc: Encyclopedia entry name (deploy): a game term. One to three words.
   // ui/helpModel.ts
   'help.entry.deploy.term': 'Deploy',

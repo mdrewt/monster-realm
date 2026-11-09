@@ -440,7 +440,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
     'À chaque manche, les unités agissent de la plus rapide à la plus lente. La barre d’ordre des tours montre qui suit ; les changements de vitesse s’appliquent dès la manche suivante.',
   // @desc: Encyclopedia entry name (queue): a game term. One to three words.
   // ui/helpModel.ts
-  'help.entry.queue.term': 'File d’actions',
+  'help.entry.queue.term': 'Plan d’action',
   // @desc: Encyclopedia definition of the queue entry. One or two sentences.
   // ui/helpModel.ts
   'help.entry.queue.def':
@@ -451,7 +451,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Encyclopedia definition of the idle entry. One or two sentences.
   // ui/helpModel.ts
   'help.entry.idle.def':
-    'Un minuteur de tour qui ne tourne que lorsque le combat vous attend. En JcJ, un tour manqué passe tout seul ; en combat sauvage, trop attendre y met fin par une fuite.',
+    'Un minuteur de tour qui ne tourne que lorsque le combat vous attend. En PvP, un tour manqué passe tout seul ; en combat sauvage, trop attendre y met fin par une fuite.',
   // @desc: Encyclopedia entry name (stance): a game term. One to three words.
   // ui/helpModel.ts
   'help.entry.stance.term': 'Postures',
@@ -465,7 +465,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Encyclopedia definition of the guard entry. One or two sentences.
   // ui/helpModel.ts
   'help.entry.guard.def':
-    'Terminez un tour sans attaquer, avec des points en réserve, et votre monstre se met en garde : il subit moins de dégâts jusqu’à son prochain tour.',
+    'Terminez un tour sans attaquer et avec au moins 2 points non dépensés, et votre monstre se met en garde : il subit moins de dégâts jusqu’à son prochain tour.',
   // @desc: Encyclopedia entry name (deploy): a game term. One to three words.
   // ui/helpModel.ts
   'help.entry.deploy.term': 'Déploiement',

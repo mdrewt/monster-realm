@@ -72,6 +72,7 @@ export class HelpView {
     this.#intro = intro;
     // A tab's panel; the Encyclopedia's is its listbox, which renderNav labels by its tab.
     intro.setAttribute('role', 'tabpanel');
+    intro.setAttribute('aria-labelledby', navTabId(FRAME, 'intro'));
     const encyclopedia = document.getElementById('help-encyclopedia');
     if (!encyclopedia) throw new Error('help-encyclopedia missing');
     this.#encyclopedia = encyclopedia;
@@ -145,7 +146,6 @@ export class HelpView {
       label: (navTab) => this.#titles.get(navTab.key) ?? '',
     });
     this.#intro.hidden = tab !== 'intro';
-    this.#intro.setAttribute('aria-labelledby', navTabId(FRAME, 'intro'));
     this.#encyclopedia.hidden = tab !== 'encyclopedia';
     // The list is the Encyclopedia's, at its remembered cursor while another tab shows.
     const listNav =
@@ -161,6 +161,8 @@ export class HelpView {
     const hadFocus = this.#sheet.root.contains(document.activeElement);
     if (entry === undefined) {
       if (!this.#sheet.root.hidden) closeContextSheet(this.#sheet);
+      this.#sheet.root.style.top = '';
+      this.#sheet.root.style.bottom = '';
       // Focus inside a sheet that closed stays in the frame, on the list it returns to.
       if (hadFocus) this.#focusPanel();
     } else {
@@ -175,6 +177,7 @@ export class HelpView {
         },
       });
       if (!hadFocus) this.#sheet.rows.focus();
+      this.#placeDetail();
     }
 
     const last = this.#painted;
@@ -193,6 +196,15 @@ export class HelpView {
     return terms === ''
       ? entry.definition
       : `${entry.definition} ${tf('help.detail.related', { terms })}`;
+  }
+
+  /** The overlay is the scroller (a long list, a large text step), and the detail is absolute in it,
+   *  so its centring box (CSS `inset: 0`) is moved onto the visible part: else it opens at the scroll
+   *  origin, off-screen. After the focus move, which may scroll. */
+  #placeDetail(): void {
+    const scrolled = this.#overlay.scrollTop;
+    this.#sheet.root.style.top = `${scrolled}px`;
+    this.#sheet.root.style.bottom = `${-scrolled}px`;
   }
 
   /** Focus the visible panel's list, else the heading anchor. */
