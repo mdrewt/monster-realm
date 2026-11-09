@@ -52,7 +52,7 @@ export interface PrivacyViewHandlers {
   /** Called from `hide()` — every close path, including the battle force-hide. */
   readonly onDismissed: () => void;
   /** A row outside this section that is always enabled (the frame's Close): where focus goes
-   *  when a render refuses the focused control (header). Absent, the section's first row. */
+   *  when a render refuses the focused control (header). Absent, focus is left where it is. */
   readonly fallbackRow?: () => HTMLElement | undefined;
 }
 
@@ -219,22 +219,22 @@ export class PrivacyView implements RowSection {
     return this.armed ? this.#confirmCancelBtn : this.sectionRows()[0];
   }
 
-  /** A render moves focus only on the arm and disarm edges (Keep, then Delete), or off a control
-   *  it hid or disabled, to the fallback row ahead of the section's own first row (header); never
-   *  focus that is outside this section (`reseatRow`). */
+  /** A render moves focus only on the arm and disarm edges (Keep, then Delete: `reseatRow`), or
+   *  off a control it hid or disabled, to the fallback row (header); never focus that is outside
+   *  this section. */
   #reseat(wasArmed: boolean): void {
     const active = document.activeElement;
     const onPage = !(active instanceof HTMLElement) || active === document.body;
     if (!onPage && !this.#overlay.contains(active)) return;
-    const fallback = this.#fallbackRow?.();
+    const focused = onPage ? null : active;
     const rows = this.sectionRows();
-    const target = reseatRow(
-      fallback === undefined ? rows : [fallback, ...rows],
-      onPage ? null : active,
-      { was: wasArmed, now: this.armed },
-      this.#confirmCancelBtn,
-      this.#deleteBtn,
-    );
+    const armed = { was: wasArmed, now: this.armed };
+    // Unarmed on both sides and the focused control is no longer a row: `reseatRow` would answer
+    // the section's first row, an action here. The fallback row instead, or nothing.
+    const refused = !armed.was && !armed.now && focused !== null && !rows.includes(focused);
+    const target = refused
+      ? this.#fallbackRow?.()
+      : reseatRow(rows, focused, armed, this.#confirmCancelBtn, this.#deleteBtn);
     target?.focus();
   }
 

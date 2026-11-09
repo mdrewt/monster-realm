@@ -956,23 +956,16 @@ function applySession(event: SessionEvent): void {
  *  no other way to show itself). With Profile open it only paints: a claim event never pulls the
  *  player out of the section they are in. */
 function renderClaim(): void {
-  // The connection raises a (re)connect's claim prompt before its ready / reconnect callback:
-  // the paint waits for that callback (see `claimPaintDeferred`).
-  if (claimPaintDeferred) return;
   const vm = buildClaimViewModel(claimModelState);
   if (vm.visible && profileView?.visible === false) showProfile('account');
   else claimView?.render(vm);
 }
 /** Set by the connection's own claim callbacks (`onClaimPending`, `onClaimAwaitingAccount`), which
- *  it calls just BEFORE `onReady` / `onReconnect`: their paint is held until that callback's tail
- *  (`flushClaimPaint`), after the reconnect's sweep has closed every frame it closes (Profile is
- *  one), so the prompt the cycle raised is the one left on screen. */
-let claimPaintDeferred = false;
-function flushClaimPaint(): void {
-  if (!claimPaintDeferred) return;
-  claimPaintDeferred = false;
-  renderClaim();
-}
+ *  it calls just BEFORE `onReady` / `onReconnect`. Their paint opens Profile on Account at once;
+ *  a reconnect's sweep then closes Profile with every other frame it closes, so `onReconnect`
+ *  shows the prompt its own cycle raised again at its tail. `onReady` sweeps nothing and only
+ *  clears the mark. */
+let claimRaised = false;
 
 function applyClaim(event: ClaimEvent): void {
   const step = claimStep(claimModelState, event);
@@ -4907,8 +4900,8 @@ async function main(): Promise<void> {
       resolveReady();
       // A successful connection clears any session terminal overlay.
       applySession({ kind: 'connected' });
-      // The claim prompt this connect raised, if any, shows now that the identity is set.
-      flushClaimPaint();
+      // The claim prompt this connect raised, if any, is up and stays: nothing swept it.
+      claimRaised = false;
     },
     // the store now holds the applied snapshot, so the reseed latch
     // may resolve on this flush. Set here, consumed by the battle emit listener.
@@ -4992,9 +4985,13 @@ async function main(): Promise<void> {
       // runs on the drop edge and the post-rebuild flush is a later microtask, so a reset here can
       // never be re-disabled by a stale render.
       evolutionNoticeBanner?.reset();
-      // The claim prompt this reconnect raised, if any: shown after the sweep above closed Profile
-      // with every other frame it closes, so the prompt is what is left on screen.
-      flushClaimPaint();
+      // The claim prompt this reconnect raised, if any: the sweep above closed Profile with every
+      // other frame it closes, so the prompt is shown again and is what is left on screen. A
+      // reconnect that raised none re-opens nothing.
+      if (claimRaised) {
+        claimRaised = false;
+        renderClaim();
+      }
     },
     // onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
@@ -5026,13 +5023,13 @@ async function main(): Promise<void> {
       if (wasOpen) profileView?.focusSection('account');
     },
     // The reconnect-triggered guest-claim lifecycle. The connection calls these two just before
-    // `onReady` / `onReconnect`, so their paint is held for that callback (`claimPaintDeferred`).
+    // `onReady` / `onReconnect` (`claimRaised`).
     onClaimPending: (code) => {
-      claimPaintDeferred = true;
+      claimRaised = true;
       applyClaim({ kind: 'claim-pending', code });
     },
     onClaimAwaitingAccount: () => {
-      claimPaintDeferred = true;
+      claimRaised = true;
       applyClaim({ kind: 'claim-awaiting-account' });
     },
     onClaimResult: (result) => {

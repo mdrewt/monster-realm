@@ -37,9 +37,6 @@ export interface ProfileSectionView extends RowSection {
 /** The sections in column order. */
 const SECTION_ORDER: readonly ProfileSection[] = ['name', 'account', 'privacy'];
 
-/** The line between two sections, from the tokens. */
-const SEPARATOR = 'var(--mr-border-thin) solid var(--mr-separator)';
-
 /** Where a constructed frame lives: the frame layer inside #game-screen, else the game screen, else
  *  <body> for a shell-less boot. */
 function frameAnchor(): HTMLElement {
@@ -62,9 +59,12 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-/** Draw the separator above `el`, with room on both sides of the line. */
+/** Draw the separator above `el` from the tokens, with room on both sides of the line. Written
+ *  as longhands: a `var()` inside the `border-top` shorthand does not survive every CSSOM. */
 function separate(el: HTMLElement): void {
-  el.style.borderTop = SEPARATOR;
+  el.style.borderTopWidth = 'var(--mr-border-thin)';
+  el.style.borderTopStyle = 'solid';
+  el.style.borderTopColor = 'var(--mr-separator)';
   el.style.marginTop = 'var(--mr-space-3)';
   el.style.paddingTop = 'var(--mr-space-3)';
 }
