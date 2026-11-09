@@ -8,8 +8,13 @@
 // their own and are shown and hidden only through this frame, so a section is never up alone.
 //
 // THE SHELL IS CONSTRUCTED (the claimView / privacyView route): the root is built here, in the
-// frame layer, and the section roots are moved into it in column order. Separators and spacing
-// between sections are inline token styles (`styles.css` holds class and `:root` rules only).
+// frame layer, as the kit's frame anatomy: the title bar, then a body that grows and scrolls
+// (`.mr-frame-body`). The section roots are moved into that body in column order, the Close row
+// last: three sections are taller than a 720-px window, so the body scrolls under the fixed title
+// and a focused row scrolls into view. The body does NOT wear the list cue `.mr-scroll`: its
+// gradients would sit behind running text, where contrast can no longer be measured. Separators
+// and spacing between sections are inline token styles (`styles.css` holds class and `:root`
+// rules only).
 //
 // FOCUS. The OPEN edge is `overlayA11y.ts`'s: its deferred anchor is the name field
 // (`OVERLAY_A11Y.profileView`), so an open on Name lands there one macrotask later and the opening
@@ -85,10 +90,12 @@ export class ProfileView implements RowsView, RowSection {
     this.#title = element('div', 'profile-title', 'mr-frame-title');
     bar.appendChild(this.#title);
     this.#root.appendChild(bar);
+    const body = element('div', 'profile-body', 'mr-frame-body');
+    this.#root.appendChild(body);
     for (const [i, key] of SECTION_ORDER.entries()) {
       const section = sections[key].sectionRoot;
       if (i > 0) separate(section);
-      this.#root.appendChild(section);
+      body.appendChild(section);
     }
     const closeRow = element('div', 'profile-close-row', 'mr-button-rows');
     separate(closeRow);
@@ -96,12 +103,15 @@ export class ProfileView implements RowsView, RowSection {
     this.#closeBtn.type = 'button';
     this.#closeBtn.addEventListener('click', () => this.hide());
     closeRow.appendChild(this.#closeBtn);
-    this.#root.appendChild(closeRow);
+    body.appendChild(closeRow);
     frameAnchor().appendChild(this.#root);
   }
 
+  /** Shown as a flex column (`.mr-frame`'s own layout, restated inline over the hidden state):
+   *  that is what gives the body the height left under the title bar, so the body scrolls and the
+   *  shell does not. */
   get visible(): boolean {
-    return this.#root.style.display === 'block';
+    return this.#root.style.display === 'flex';
   }
 
   /** Show the frame with all three sections. Only the hidden->visible edge opens the dialog and
@@ -113,7 +123,7 @@ export class ProfileView implements RowsView, RowSection {
     this.#title.textContent = t('menu.profile.title');
     this.#closeBtn.textContent = t('privacy.close');
     for (const key of SECTION_ORDER) this.#sections[key].show();
-    this.#root.style.display = 'block';
+    this.#root.style.display = 'flex';
     if (wasVisible) return;
     // LAST, after every write above, so the anchor resolves against a painted root.
     openOverlayA11y('profileView', this.#root);

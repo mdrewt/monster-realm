@@ -462,12 +462,29 @@ function measureFrameInPage(frameSelector: string): FrameMeasure {
       }
       const box = el.getBoundingClientRect();
       const slack = 0.5;
-      if (
-        box.left < rootBox.left - slack ||
-        box.top < rootBox.top - slack ||
-        box.right > rootBox.right + slack ||
-        box.bottom > rootBox.bottom + slack
-      ) {
+      type Box = { left: number; top: number; right: number; bottom: number };
+      const outside = (inner: Box, outer: Box): boolean =>
+        inner.left < outer.left - slack ||
+        inner.top < outer.top - slack ||
+        inner.right > outer.right + slack ||
+        inner.bottom > outer.bottom + slack;
+      // uif-16b (named intentional change): text the FRAME'S OWN scroller clips is not outside
+      // the frame. It counts as clipped (reachable by scrolling) only when an ancestor strictly
+      // inside `root` scrolls (`overflow-y` auto / scroll), that scroller's box lies inside the
+      // root's box, and the text box is outside the scroller's box. Text outside the root that
+      // no such scroller clips still fails. Menu, help, box and raising have no clipped text, so
+      // their results are unchanged.
+      const clippedByFrameScroller = (): boolean => {
+        if (el === root) return false;
+        for (let n = el.parentElement; n !== null && n !== root; n = n.parentElement) {
+          const oy = getComputedStyle(n).overflowY;
+          if (oy !== 'auto' && oy !== 'scroll') continue;
+          const nb = n.getBoundingClientRect();
+          if (!outside(nb, rootBox) && outside(box, nb)) return true;
+        }
+        return false;
+      };
+      if (outside(box, rootBox) && !clippedByFrameScroller()) {
         outsideRoot.push({
           text: ownText(el),
           rect: `${Math.round(box.left)},${Math.round(box.top)},${Math.round(box.right)},${Math.round(box.bottom)}`,
@@ -903,6 +920,46 @@ test.describe
 
       const m = await page.evaluate(measureFrameInPage, '#profile-overlay');
       expectFrameOk(m, 'profile shell');
+
+      // uif-16b: the frame's anatomy is a fixed title bar over a scrolling body (#profile-body),
+      // so text below the fold is clipped by the frame's own scroller (measureFrameInPage), never
+      // painted outside it. Whether the body overflows at this size is NOT pinned; what is: the
+      // title and the first section header lie inside the frame's box, and a focused row is
+      // scrolled into view inside the body.
+      const inside = (inner: string, outer: string): Promise<boolean> =>
+        page.evaluate(
+          ({ a, b }) => {
+            const ia = document.querySelector(a);
+            const ob = document.querySelector(b);
+            if (ia === null || ob === null) return false;
+            const i = ia.getBoundingClientRect();
+            const o = ob.getBoundingClientRect();
+            const s = 0.5;
+            return (
+              i.width > 0 &&
+              i.height > 0 &&
+              i.left >= o.left - s &&
+              i.top >= o.top - s &&
+              i.right <= o.right + s &&
+              i.bottom <= o.bottom + s
+            );
+          },
+          { a: inner, b: outer },
+        );
+      expect(await inside('#profile-title', '#profile-overlay'), 'the title is in the frame').toBe(
+        true,
+      );
+      expect(
+        await inside('#rename-title', '#profile-overlay'),
+        'the Name header is in the frame',
+      ).toBe(true);
+      await page.locator('#profile-close-btn').focus();
+      await expect(page.locator('#profile-close-btn')).toBeFocused();
+      await expect
+        .poll(() => inside('#profile-close-btn', '#profile-body'), {
+          message: 'a focused Close row is scrolled into view inside #profile-body',
+        })
+        .toBe(true);
 
       // Close it for the next test. uif-16b (named intentional change): an N with focus off the
       // field now MOVES the cursor to the Name section of the open Profile (it no longer acts as

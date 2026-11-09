@@ -384,11 +384,16 @@ const PRIVACY_PHASES: ReadonlyArray<readonly [string, PrivacyViewModel]> = [
 // =============================================================================================
 
 describe('ProfileView (uif-16b): one frame holding the Name, Account and Privacy sections', () => {
-  it('UIF16B.1 one #profile-overlay in #frame-layer (mr-frame mr-shell) whose children are the title bar, then the Name, Account and Privacy section roots and the close row, in that order', () => {
+  it('UIF16B.1 one #profile-overlay in #frame-layer (mr-frame mr-shell) whose children are exactly the title bar and #profile-body (mr-frame-body, not mr-scroll), the body holding the Name, Account and Privacy section roots and the close row, in that order', () => {
+    // INTENTIONAL CHANGE (uif-16b, kit frame anatomy "title bar -> body (grows, scrolls)"): a
+    // browser run measured the three sections ~170px taller than the frame at 1280x720, so the
+    // sections and the close row moved from the root into a scrolling `#profile-body`. Was: the
+    // root's children were [title bar, the three sections, the close row].
     // WRONG IMPL KILLED: three separate overlays (the sections left where they were built); a
     // frame appended to <body> instead of the frame layer; sections in another order (Privacy
     // above Account); the close row above a section; a title bar missing or after the sections;
-    // a second frame root (two `#profile-overlay`s).
+    // a second frame root (two `#profile-overlay`s); sections left directly in the root (the
+    // column overflows the frame and Close falls off screen); a body that does not scroll.
     const b = build();
     const root = b.root();
     expect(document.querySelectorAll('#profile-overlay').length, 'one frame root').toBe(1);
@@ -401,12 +406,18 @@ describe('ProfileView (uif-16b): one frame holding the Name, Account and Privacy
       children[0]?.querySelector('#profile-title'),
       'the bar holds #profile-title',
     ).not.toBeNull();
-    expect(ids(children.slice(1)), 'sections then the close row, nothing else').toEqual([
-      'rename-overlay',
-      'claim-overlay',
-      'privacy-overlay',
-      'profile-close-row',
-    ]);
+    expect(children.length, 'the root holds exactly the title bar and the body').toBe(2);
+    expect(children[1]?.id, 'the body follows the title bar').toBe('profile-body');
+    const body = byId('profile-body');
+    expect(body.classList.contains('mr-frame-body'), 'the body carries mr-frame-body').toBe(true);
+    // uif-16b (named change): NOT mr-scroll. Running text must not sit over the list cue's four
+    // background gradients (the browser contrast gate refuses to measure text over a
+    // background-image); `.mr-frame-body` alone already scrolls (overflow-y: auto).
+    expect(body.classList.contains('mr-scroll'), 'the body does not carry mr-scroll').toBe(false);
+    expect(
+      ids(Array.from(body.children) as HTMLElement[]),
+      'sections then the close row, nothing else',
+    ).toEqual(['rename-overlay', 'claim-overlay', 'privacy-overlay', 'profile-close-row']);
     expect(
       ids(Array.from(byId('profile-close-row').children) as HTMLElement[]),
       'the close row holds the one Close button',

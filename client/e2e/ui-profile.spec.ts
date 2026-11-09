@@ -200,6 +200,26 @@ async function stepFocus(p: Page, button: 'Up' | 'Down'): Promise<Focused> {
   return now;
 }
 
+/** Whether `sel`'s box (non-empty) lies inside the Profile frame's scrolling body `#profile-body`
+ *  (0.5 px slack): the row is scrolled into view, not clipped below the fold. */
+const insideBody = (p: Page, sel: string): Promise<boolean> =>
+  p.evaluate((s) => {
+    const el = document.querySelector(s);
+    const body = document.getElementById('profile-body');
+    if (el === null || body === null) return false;
+    const i = el.getBoundingClientRect();
+    const o = body.getBoundingClientRect();
+    const k = 0.5;
+    return (
+      i.width > 0 &&
+      i.height > 0 &&
+      i.left >= o.left - k &&
+      i.top >= o.top - k &&
+      i.right <= o.right + k &&
+      i.bottom <= o.bottom + k
+    );
+  }, sel);
+
 const idsWithPrefix = (p: Page, prefix: string): Promise<string[]> =>
   p.evaluate((pre) => [...document.querySelectorAll(`[id^="${pre}"]`)].map((el) => el.id), prefix);
 
@@ -356,6 +376,13 @@ test.describe
         );
       }
 
+      // The body scrolls under the fixed title: the focused Close row is scrolled into view.
+      await expect
+        .poll(() => insideBody(page, '#profile-close-btn'), {
+          message: 'Close lies inside #profile-body (scrolled into view)',
+        })
+        .toBe(true);
+
       // Close is the last row: a Down on it stays. (A fixed wait, because the proof is that
       // nothing moves; 300 ms is far past one keydown's handling.)
       await pressButton(page, 'Down');
@@ -408,6 +435,14 @@ test.describe
         down.map((f) => f.id),
         'Down and Up walk the same column',
       ).toEqual(ids.slice(from));
+
+      // Back at the top with the field focused, the body has scrolled it back into view too.
+      await expect(page.locator('#rename-input')).toBeFocused();
+      await expect
+        .poll(() => insideBody(page, '#rename-input'), {
+          message: 'the name field lies inside #profile-body (scrolled back into view)',
+        })
+        .toBe(true);
 
       // B pops the frame back to the menu with the cursor on Profile (from a button: in the field
       // Backspace is the caret's).
