@@ -346,28 +346,135 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Heading of the Journal overlay listing the player's active quests. One or two words.
   // questLogView.ts #quest-log-title (resolved in render())
   'journal.title': 'Journal',
-  // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
+  // @desc: How to Play tab with a short introduction to the game. Short (at most 14 characters).
   // ui/helpModel.ts
-  'help.tab.screen': 'This screen',
-  // @desc: Help tab listing every button and shortcut with its current keys. Short (at most 14 characters).
+  'help.tab.intro': 'Introduction',
+  // @desc: How to Play tab listing the game's terms and mechanics. Short (at most 14 characters).
   // ui/helpModel.ts
-  'help.tab.controls': 'All controls',
-  // @desc: Help tab listing what to try in a first session. Short (at most 14 characters).
+  'help.tab.encyclopedia': 'Encyclopedia',
+  // @desc: First paragraph of How to Play's Introduction: a book-jacket blurb, no spoilers. Two or three sentences.
   // ui/helpModel.ts
-  'help.tab.goals': 'Goals',
-  // @desc: A Help goal: catch a wild monster.
+  'help.intro.p1':
+    'Beyond the village paths, the tall grass is alive. Wild monsters roam the realm, each one a creature like no other, and none of them belongs to anyone yet. Step off the road, face them on the battlefield and win the bold ones over to your side.',
+  // @desc: Second paragraph of How to Play's Introduction: a book-jacket blurb, no spoilers. Two or three sentences.
   // ui/helpModel.ts
-  'help.goal.recruit': 'Recruit a wild monster',
-  // @desc: A Help goal: win a battle.
+  'help.intro.p2':
+    'Raise your team through training, care and the essence you gather, and watch them grow into forms you have never seen. Plan every move on the tactical grid, then share the world with other players: trade, challenge and climb the rankings. Your realm is waiting.',
+  // @desc: Encyclopedia entry name (party): a game term. One to three words.
   // ui/helpModel.ts
-  'help.goal.battle': 'Win your first battle',
-  // @desc: A Help goal: trade with another player.
+  'help.entry.party.term': 'Party',
+  // @desc: Encyclopedia definition of the party entry. One or two sentences.
   // ui/helpModel.ts
-  'help.goal.trade': 'Try trading with another tester',
-  // @desc: Help note on All controls: key names (keyboard keys, as drawn in this list) are not button names (the console buttons A, B, X, Y, LB, RB, Start, Select). Keep the button names as written.
+  'help.entry.party.def':
+    'The monsters you carry, up to six. Only party monsters can battle or be swapped in.',
+  // @desc: Encyclopedia entry name (storage): a game term. One to three words.
   // ui/helpModel.ts
-  'help.note.keysVsButtons':
-    'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
+  'help.entry.storage.term': 'Storage',
+  // @desc: Encyclopedia definition of the storage entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.storage.def':
+    'Where your other monsters wait. New recruits arrive here; select one and choose Move to bring it into an open party slot.',
+  // @desc: Encyclopedia entry name (recruit): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.recruit.term': 'Recruit',
+  // @desc: Encyclopedia definition of the recruit entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.recruit.def':
+    'Win a wild monster over instead of defeating it: weaken it, move next to it and spend a whole turn trying. A failed attempt costs the turn.',
+  // @desc: Encyclopedia entry name (bait): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.bait.term': 'Bait',
+  // @desc: Encyclopedia definition of the bait entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.bait.def':
+    'An item offered with a recruit attempt to improve the odds. It is used up whether or not the attempt succeeds.',
+  // @desc: Encyclopedia entry name (evolution): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.evolution.term': 'Evolution',
+  // @desc: Encyclopedia definition of the evolution entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.evolution.def':
+    'A monster that meets a path’s requirements grows into a new species. With one path open it happens on its own; with several, you choose from the Evolve list.',
+  // @desc: Encyclopedia entry name (essence): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.essence.term': 'Essence',
+  // @desc: Encyclopedia definition of the essence entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.essence.def':
+    'A resource of each affinity, earned by winning wild battles. Evolution paths ask for certain amounts of it.',
+  // @desc: Encyclopedia entry name (affinity): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.affinity.term': 'Affinity',
+  // @desc: Encyclopedia definition of the affinity entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.affinity.def':
+    'A monster’s elemental type, such as Fire, Water or Plant. Matchups decide which attacks hit hard and which hit weakly.',
+  // @desc: Encyclopedia entry name (status): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.status.term': 'Status effects',
+  // @desc: Encyclopedia definition of the status entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.status.def':
+    'Conditions on a unit. Poison and Burn hurt it at the end of each round; Paralysis can make it lose a turn; Sleep and Freeze stop it acting until they wear off.',
+  // @desc: Encyclopedia entry name (ap): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.ap.term': 'Action points (AP)',
+  // @desc: Encyclopedia definition of the ap entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.ap.def':
+    'What a monster spends on its turn in a tactical battle: moving, skills, items and recruiting. Points left at the end of the turn are lost.',
+  // @desc: Encyclopedia entry name (initiative): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.initiative.term': 'Initiative',
+  // @desc: Encyclopedia definition of the initiative entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.initiative.def':
+    'Each round, units act fastest first. The turn-order bar shows who is next; speed changes apply from the next round.',
+  // @desc: Encyclopedia entry name (queue): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.queue.term': 'Action queue',
+  // @desc: Encyclopedia definition of the queue entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.queue.def':
+    'A plan of up to three actions for a monster’s next turn. When its turn comes the plan runs; if a step can no longer happen, the plan stops there and the unspent points come back.',
+  // @desc: Encyclopedia entry name (idle): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.idle.term': 'Idle clock',
+  // @desc: Encyclopedia definition of the idle entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.idle.def':
+    'A turn timer that runs only while a battle waits on you. In PvP a missed turn passes on its own; in a wild battle, waiting too long ends it as a flee.',
+  // @desc: Encyclopedia entry name (stance): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.stance.term': 'Stances',
+  // @desc: Encyclopedia definition of the stance entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.stance.def':
+    'How a wild monster behaves in battle: an aggressive one comes at you, one that holds its turf defends its ground without chasing, and a skittish one keeps away.',
+  // @desc: Encyclopedia entry name (guard): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.guard.term': 'Guard',
+  // @desc: Encyclopedia definition of the guard entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.guard.def':
+    'End a turn without attacking and with at least 2 points unspent, and your monster guards: it takes less damage until its next turn.',
+  // @desc: Encyclopedia entry name (deploy): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.deploy.term': 'Deploy',
+  // @desc: Encyclopedia definition of the deploy entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.deploy.def':
+    'Before a battle, choose which party monsters take the field and where they stand. Your last formation is remembered.',
+  // @desc: Encyclopedia entry name (ranked): a game term. One to three words.
+  // ui/helpModel.ts
+  'help.entry.ranked.term': 'Ranked',
+  // @desc: Encyclopedia definition of the ranked entry. One or two sentences.
+  // ui/helpModel.ts
+  'help.entry.ranked.def':
+    'Battles against other players that change your rating. Win them to climb the Rankings leaderboard.',
+  // @desc: Encyclopedia detail line naming the related entries; {terms} is a comma-separated list of entry names.
+  // ui/helpModel.ts
+  'help.detail.related': (p) => `Related: ${p.terms}.`,
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (literal removed from index.html; resolved in RenameView show())
   'chrome.rename.submit': 'Rename',

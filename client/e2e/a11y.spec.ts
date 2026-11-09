@@ -96,7 +96,9 @@ const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 // ctl-14 re-measured help on its build in Chromium, twice, identical both runs: 25 passes (floor
 // 23; Help gained a tab strip of three role="tab" items and generated rows). Was 21 (floor 19).
 const PASSES_FLOOR_WORLD = 14;
-const PASSES_FLOOR_HELP = 23;
+// uif-14 re-measured help (How to Play on Introduction) on its build in Chromium, twice, identical
+// both runs: 23 passes (floor 21; the tab strip has two tabs and the Introduction is prose). Was 25.
+const PASSES_FLOOR_HELP = 21;
 const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
@@ -633,21 +635,21 @@ test.describe
       // router ignores (ctl-6b), so the `?` a US keyboard types still opens it.
       await page.keyboard.press('Shift+Slash');
       await expect(page.locator('#help-overlay')).toBeVisible();
-      // ctl-14: Help is generated. It opens on This screen (the world's hint bar: Start and Select
-      // with their keys), and RB shows All controls, which lists the F9 and F8 shortcuts.
+      // INTENTIONAL CHANGE (uif-14, UIF14.1, UIF14.7): Help is Introduction | Encyclopedia. The old
+      // `#help-screen` / `#help-controls` / F9 / F8 / `#help-note` asserts are retired with their
+      // tabs. It opens on Introduction (two paragraphs); RB shows the Encyclopedia's sixteen rows.
       const tabs = page.locator('#help-overlay [role="tab"]');
-      await expect(tabs).toHaveCount(3);
+      await expect(tabs).toHaveCount(2);
       await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
-      await expect(page.locator('#help-screen')).toBeVisible();
-      await expect(page.locator('#help-screen li')).not.toHaveCount(0);
-      await expect(page.locator('#help-controls')).toBeHidden();
+      await expect(page.locator('#help-intro')).toBeVisible();
+      await expect(page.locator('#help-intro p')).toHaveCount(2);
+      await expect(page.locator('#help-encyclopedia')).toBeHidden();
       await scanState(page, 'help overlay', PASSES_FLOOR_HELP, INCOMPLETE_CEILING_HELP);
       await page.keyboard.press('KeyE');
       await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
-      await expect(page.locator('#help-controls')).toBeVisible();
-      await expect(page.locator('#help-controls li', { hasText: 'F9' })).toHaveCount(1);
-      await expect(page.locator('#help-controls li', { hasText: 'F8' })).toHaveCount(1);
-      await expect(page.locator('#help-note')).toBeVisible();
+      await expect(page.locator('#help-encyclopedia')).toBeVisible();
+      await expect(page.locator('#help-encyclopedia [data-nav-key]')).toHaveCount(16);
+      await expect(page.locator('#help-intro')).toBeHidden();
       await page.keyboard.press('Escape');
       await expect(page.locator('#help-overlay')).toBeHidden();
     });

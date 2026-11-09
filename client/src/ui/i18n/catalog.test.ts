@@ -530,6 +530,11 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   'controls.text.row': [{ label: 'Normal' }, { label: 'Large' }],
   'controls.text.current': [{ label: 'Large' }, { label: 'Extra large' }],
   'controls.text.set': [{ label: 'Normal' }, { label: 'Extra large' }],
+  // uif-14 (named intentional change, UIF14.5): +1 parameterised key, the detail sheet's related-
+  // mechanics line. `terms` is the caller's already-joined list of related entry terms, carried
+  // verbatim; the two sets differ. (Its output is checked by the 'uif-14' describe at the end of this
+  // file: the terms appear verbatim and the sets differ; the frame text is authored with the slice.)
+  'help.detail.related': [{ terms: 'Party, Storage' }, { terms: 'Bait' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -595,15 +600,13 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
-  // ctl-14 (CTL14.1): the generated Help's tab titles, goals and note.
-  'help.tab.screen': 'This screen',
-  'help.tab.controls': 'All controls',
-  'help.tab.goals': 'Goals',
-  'help.goal.recruit': 'Recruit a wild monster',
-  'help.goal.battle': 'Win your first battle',
-  'help.goal.trade': 'Try trading with another tester',
-  'help.note.keysVsButtons':
-    'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
+  // NAMED INTENTIONAL CHANGE (uif-14, UIF14.1 / UIF14.4): -7 plain keys here, RETIRED with the
+  // All controls / This screen / Goals tabs (`help.tab.{screen,controls,goals}`,
+  // `help.goal.{recruit,battle,trade}`, `help.note.keysVsButtons`; their absence is pinned by the
+  // 'uif-14' describe at the end of this file and by helpModel.test.ts). The 36 new plain Help ids
+  // (`help.tab.{intro,encyclopedia}`, `help.intro.{p1,p2}`, `help.entry.<key>.{term,def}` x 16) are
+  // listed by id in UIF14_PLAIN_IDS below; their copy is authored with the slice, so its bytes are not
+  // pinned here (the 'uif-14' describe pins the two tab titles, non-empty-ness and en != fr).
   'chrome.rename.submit': 'Rename',
   'chrome.tradePropose.submit': 'Offer',
   'chrome.status.exportBlocked': 'data export: download blocked by the browser',
@@ -2036,7 +2039,39 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
  *  `tradePropose.feedback.sent`/`chrome.session.*` keys), sorted — `EXPECTED_PLAIN` and
  *  `SAMPLE_PARAMS` are disjoint by construction (plain vs. parameterised), so their key union is
  *  exactly the roster. */
-const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN).concat(Object.keys(SAMPLE_PARAMS)).sort();
+/** uif-14 (named intentional change, UIF14.1 / UIF14.2 / UIF14.4): the 36 plain Help ids added by the
+ *  slice — the two tab titles, the two Introduction paragraphs and the sixteen entries' term and
+ *  definition. Listed by id (the copy is authored with the slice; see the 'uif-14' describe). */
+const UIF14_ENTRY_KEYS = [
+  'party',
+  'storage',
+  'recruit',
+  'bait',
+  'evolution',
+  'essence',
+  'affinity',
+  'status',
+  'ap',
+  'initiative',
+  'queue',
+  'idle',
+  'stance',
+  'guard',
+  'deploy',
+  'ranked',
+] as const;
+const UIF14_PLAIN_IDS: readonly string[] = [
+  'help.tab.intro',
+  'help.tab.encyclopedia',
+  'help.intro.p1',
+  'help.intro.p2',
+  ...UIF14_ENTRY_KEYS.flatMap((key) => [`help.entry.${key}.term`, `help.entry.${key}.def`]),
+];
+
+const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN)
+  .concat(UIF14_PLAIN_IDS)
+  .concat(Object.keys(SAMPLE_PARAMS))
+  .sort();
 
 describe('catalog.en — the English catalog: @desc adjacency, key grammar, and shape invariants (m24-s1, ADR-0256)', () => {
   it('m24s1 SHAPE-01: every catalog.en.ts entry line has an immediately-adjacent `// @desc:` comment with >=10 non-whitespace characters', () => {
@@ -2214,7 +2249,10 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next.
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-13 roster is 506 keys').toHaveLength(506);
+    // uif-14 (named intentional change, UIF14.1 / UIF14.4 / UIF14.5): 506 -> 536, -7 retired plain
+    // `help.*` ids, +36 plain (`help.tab.{intro,encyclopedia}`, `help.intro.{p1,p2}`,
+    // `help.entry.<16 keys>.{term,def}`), +1 parameterised (`help.detail.related`).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-14 roster is 536 keys').toHaveLength(536);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3313,8 +3351,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 506 keys').toBe(506);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(506);
+    // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
   });
 });
 
@@ -3429,8 +3468,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 506 keys').toBe(506);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(506);
+    // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3552,9 +3592,12 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     const en = scan('en', CATALOG_EN as Record<string, unknown>, EN_NEEDLES);
     const fr = scan('fr', CATALOG_FR as Record<string, unknown>, FR_NEEDLES);
     expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
-    // ANTI-VACUITY: every value was read, each closure twice (the 362-key roster is pinned above).
+    // ANTI-VACUITY: every value was read, each closure twice (the full roster is pinned above).
+    // uif-14 (named intentional change, UIF14.1/UIF14.4): + the 36 plain Help ids, which are plain values not in EXPECTED_PLAIN.
     const expectedTexts =
-      Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
+      Object.keys(EXPECTED_PLAIN).length +
+      UIF14_PLAIN_IDS.length +
+      2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);
   });
@@ -3723,9 +3766,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-8 (named intentional change, UIF8.4): 496 -> 498, +bag.empty.cue, +bag.empty.next
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 506 keys').toBe(506);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(506);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(506);
+    // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(536);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4206,5 +4250,113 @@ describe('uif-13: the Controls Display tab ids in both catalogs', () => {
       new Set(SPEC.map(([key]) => (fr[key] as Fn)(probe))).size,
       'and so do the French lines',
     ).toBe(3);
+  });
+});
+
+// =============================================================================
+// uif-14 (UIF14.1, UIF14.2, UIF14.4, UIF14.5): the Help ids, in BOTH catalogs. Only the two tab
+// titles are pinned byte for byte (typed here, none read off the catalog under test); the copy of the
+// paragraphs and of the sixteen entries is authored with the slice, so those ids are pinned by
+// presence, shape and en != fr (helpModel.test.ts proves the model reads them).
+// =============================================================================
+
+/** U+00E9 (e acute), by code point, for the French "Encyclopedie". */
+const UIF14_E_ACUTE = String.fromCharCode(0x00e9);
+
+describe('uif-14: the Help ids in both catalogs', () => {
+  const en = CATALOG_EN as Record<string, unknown>;
+  const fr = CATALOG_FR as Record<string, unknown>;
+
+  it('UIF14.1 help.tab.intro and help.tab.encyclopedia read Introduction / Introduction and Encyclopedia / Encyclopedie (accented) as plain strings, in the pinned roster', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: a tab label goes
+    // blank); a decomposed or missing accent in the French title; the Encyclopedia title left as the
+    // English copy; a key missing from the roster; the retired `help.tab.screen` reused with a new text.
+    const PINNED: ReadonlyArray<readonly [string, string, string]> = [
+      ['help.tab.intro', 'Introduction', 'Introduction'],
+      ['help.tab.encyclopedia', 'Encyclopedia', `Encyclop${UIF14_E_ACUTE}die`],
+    ];
+    for (const [key, enText, frText] of PINNED) {
+      expect(typeof en[key], `en ${key} is a plain string`).toBe('string');
+      expect(typeof fr[key], `fr ${key} is a plain string`).toBe('string');
+      expect(en[key], `en ${key}`).toBe(enText);
+      expect(fr[key], `fr ${key}`).toBe(frText);
+      expect(EXPECTED_KEYS.includes(key), `${key} is in the roster`).toBe(true);
+    }
+    expect(fr['help.tab.encyclopedia'], 'the Encyclopedia title is a translation').not.toBe(
+      en['help.tab.encyclopedia'],
+    );
+  });
+
+  it('UIF14.4 the other 34 plain Help ids (two paragraphs, sixteen terms, sixteen definitions) are non-empty plain strings in both catalogs, every fr text differs from its en text, and the sixteen terms (and definitions) are distinct within a locale', () => {
+    // WRONG IMPL KILLED: an id present in en only, or empty; an fr entry copy-pasted from English (a
+    // French player reads English: UIF14.4 "in en and fr"); two entries sharing one term (the list
+    // would show two identical rows) or one definition; an id missing from the pinned roster.
+    const ids = UIF14_PLAIN_IDS.filter(
+      (id) => id !== 'help.tab.intro' && id !== 'help.tab.encyclopedia',
+    );
+    expect(ids, 'ANTI-VACUITY: 2 paragraphs + 16 terms + 16 definitions').toHaveLength(34);
+    for (const id of ids) {
+      expect(typeof en[id], `en ${id} is a plain string`).toBe('string');
+      expect(typeof fr[id], `fr ${id} is a plain string`).toBe('string');
+      expect((en[id] as string).trim().length, `en ${id} is non-empty`).toBeGreaterThan(0);
+      expect((fr[id] as string).trim().length, `fr ${id} is non-empty`).toBeGreaterThan(0);
+      // A term may legitimately be the same word in both languages (e.g. "Initiative"), so the
+      // translation pin covers the paragraphs and the definitions only.
+      if (!id.endsWith('.term')) {
+        expect(fr[id], `${id}: a translation, not the English copy`).not.toBe(en[id]);
+      }
+      expect(EXPECTED_KEYS.includes(id), `${id} is in the roster`).toBe(true);
+    }
+    for (const catalog of [en, fr]) {
+      for (const kind of ['term', 'def'] as const) {
+        const texts = UIF14_ENTRY_KEYS.map((k) => catalog[`help.entry.${k}.${kind}`]);
+        expect(new Set(texts).size, `sixteen distinct ${kind} texts`).toBe(16);
+      }
+    }
+  });
+
+  it('UIF14.5 help.detail.related is a closure carrying {terms} once and verbatim in both catalogs, the fr frame a translation, for differing term lists', () => {
+    // WRONG IMPL KILLED: a plain string where the terms must be interpolated (every detail reads the
+    // same); a closure that drops or repeats the terms; the key in en only (tf() throws in a French
+    // boot and the detail sheet loses its related line); an fr frame left as the English one.
+    expect(typeof en['help.detail.related'], 'en is a closure').toBe('function');
+    expect(typeof fr['help.detail.related'], 'fr is a closure').toBe('function');
+    type Fn = (p: { terms: string }) => string;
+    const enFn = en['help.detail.related'] as Fn;
+    const frFn = fr['help.detail.related'] as Fn;
+    for (const terms of ['Party, Storage', 'Bait']) {
+      for (const [name, fn] of [
+        ['en', enFn],
+        ['fr', frFn],
+      ] as const) {
+        const line = fn({ terms });
+        expect(line.split(terms).length - 1, `${name}: the terms appear once, verbatim`).toBe(1);
+        expect(line.trim().length, `${name}: more than the terms alone`).toBeGreaterThan(
+          terms.length,
+        );
+      }
+      expect(frFn({ terms }), 'the fr line is a translation').not.toBe(enFn({ terms }));
+    }
+    expect(enFn({ terms: 'A' }), 'the terms change the line (en)').not.toBe(enFn({ terms: 'B' }));
+    expect(frFn({ terms: 'A' }), 'the terms change the line (fr)').not.toBe(frFn({ terms: 'B' }));
+    expect(EXPECTED_KEYS.includes('help.detail.related')).toBe(true);
+  });
+
+  it('UIF14.1 the seven retired Help ids are in neither catalog nor in the pinned roster', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key (catalogParity DEAD-KEY): the
+    // old tab titles, the three goals and the keys-vs-buttons note.
+    for (const id of [
+      'help.tab.screen',
+      'help.tab.controls',
+      'help.tab.goals',
+      'help.goal.recruit',
+      'help.goal.battle',
+      'help.goal.trade',
+      'help.note.keysVsButtons',
+    ]) {
+      expect(Object.hasOwn(en, id), `en still has ${id}`).toBe(false);
+      expect(Object.hasOwn(fr, id), `fr still has ${id}`).toBe(false);
+      expect(EXPECTED_KEYS.includes(id), `the roster still lists ${id}`).toBe(false);
+    }
   });
 });

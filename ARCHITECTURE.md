@@ -443,8 +443,10 @@ truth into the stack. Each frame's screen adapter (`ui/screens/`, keyed by frame
 `dispatch` and applies stack changes through `applyStack`. `ui/overlayRegistry.ts` still decides
 which overlay may open over which (`canOpen`), its accessibility metadata (`OVERLAY_A11Y`) and
 which are visible. Frames are built from `ui/frame.ts` and `ui/navRender.ts` inside
-`#game-screen`'s frame layer. The hint bar (`ui/hintBarModel.ts`, `ui/hintBar.ts`) and Help
-(`ui/helpModel.ts`) are generated from the context table, the live bindings and the catalog. At
+`#game-screen`'s frame layer. The hint bar (`ui/hintBarModel.ts`, `ui/hintBar.ts`) is generated
+from the context table, the live bindings and the catalog. How to Play (`ui/helpModel.ts`,
+`ui/screens/helpScreen.ts`, `ui/helpView.ts`) is catalog copy: an Introduction and an Encyclopedia
+of the game's terms, whose entries open as the ContextSheet's detail variant in the same frame. At
 the world base, A acts on the target that the wasm `interact_candidates_coded` export picks (an NPC, a
 shop or a heal tile within talk range). The server re-checks the range.
 

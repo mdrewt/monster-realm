@@ -538,8 +538,8 @@ let renameView: RenameView | undefined;
 // trade-PROPOSE overlay — the wizard Trade on a faced player opens (ctl-10b); wires
 // reducers.proposeTrade to let a human initiate a "sell my monster(s) + gold for your gold" trade.
 let tradeProposeView: TradeProposeView | undefined;
-// Help (Select): display-only, generated from the hint bar beneath it, the live bindings and the
-// catalog (ctl-14). No callbacks / reducer (zero-arg construction).
+// How to Play (Select; uif-14): display-only catalog copy. No reducer; its one handler is the
+// live-region announce.
 let helpView: HelpView | undefined;
 // The main menu (ctl-5): a nav-list screen that stays open beneath the overlay it opens.
 let menuView: MenuView | undefined;
@@ -1349,23 +1349,15 @@ function openPropose(target: string): void {
   );
 }
 
-/** Help (ctl-14): This screen lists the hint bar of the context it opens over, so the chips are
- *  read before Help joins the stack; seated at the open, so its tab strip paints then. Help's
- *  push closes a world sheet, so the sheet is closed first and the bare world is what it lists. */
+/** How to Play (uif-14): catalog copy bound in the active locale at each open; seated at the open,
+ *  so its tab bar paints then. Its push closes a world sheet, so the sheet is closed first. */
 function openHelp(): void {
   screenHost.closeSheet();
-  const live = worldBaseLive();
-  const screen = hintChips(
-    contextStack,
-    facedChip(live),
-    buildNotices(noticeInput()),
-    livePending(),
-  );
   openSeated(
     'helpView',
     frameOpenOf(() => helpView),
     () => {
-      helpView?.render(buildHelpViewModel(screen, bindings));
+      helpView?.render(buildHelpViewModel());
       helpView?.show();
     },
   );
@@ -1376,8 +1368,8 @@ function facedChip(live: boolean): InteractChip | null {
   return live && !screenHost.sheetOpen ? interactChip(worldCandidates()) : null;
 }
 
-/** The hint bar's chips for `stack` with the world's live state: the frame loop paints them
- *  (ctl-13) and Help lists them (ctl-14). `chip` is what the character faces, else null. */
+/** The hint bar's chips for `stack` with the world's live state, which the frame loop paints
+ *  (ctl-13). `chip` is what the character faces, else null. */
 function hintChips(
   stack: Stack,
   chip: InteractChip | null,
@@ -4645,9 +4637,9 @@ async function main(): Promise<void> {
     // Leaderboard DOM shell. ZERO-arg construction — RL-15: the
     // leaderboard is a pure subscription view; there is no client write path to profile.
     leaderboardView = new LeaderboardViewClass();
-    // display-only help overlay — ZERO-arg construction (no callbacks,
-    // leaderboardView precedent). Opened by Select (R or Slash); `openHelp` generates its content.
-    helpView = new HelpViewClass();
+    // How to Play — display-only (no reducer callback): its one handler speaks a tab change or an
+    // opened entry through the live region. Opened by Select (R or Slash); `openHelp` binds its content.
+    helpView = new HelpViewClass({ announce: announceNow });
     // The menu view only paints and forwards clicks; keys reach the menu through the router.
     menuView = new MenuViewClass({ onInput: handleMenuPointer });
     // The guest-claim overlay. Its actions drive the pure claimModel;

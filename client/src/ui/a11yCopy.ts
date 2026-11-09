@@ -1,10 +1,10 @@
 // ui/a11yCopy.ts — the flat accessible-name copy catalog and its resolver.
 //
-// A typed SSOT `const` (the `helpModel` / `dialogueContent` / `renameModel` precedent) — NOT a
+// A typed SSOT `const` (the `dialogueContent` / `renameModel` precedent) — NOT a
 // RON data file (YAGNI: this is client chrome, not game content). Pure and total in the shape
-// that matters: no DOM, no SDK, no module state, no IO. `t()` returns a primitive, so unlike
-// `buildHelpViewModel` (ui/helpModel.ts:14) there is nothing here a caller could mutate and
-// poison for the next call — the catalog itself is never handed out.
+// that matters: no DOM, no SDK, no module state, no IO. `t()` returns a primitive, so there is
+// nothing here a caller could mutate and poison for the next call — the catalog itself is never
+// handed out.
 //
 // THE M24 SEAM. Accessible names are CATALOG KEYS from the first commit,
 // never string literals at the call site, so M24 swaps the resolver — this `t` for a real i18n
@@ -64,7 +64,7 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   'a11y.overlay.leaderboardView.title': 'Leaderboard', // ui/menuModel.ts:92
   'a11y.overlay.renameView.title': 'Rename Profile', // ui/menuModel.ts:99
   'a11y.overlay.tradeProposeView.title': 'Offer a Trade', // ui/menuModel.ts:84
-  'a11y.overlay.helpView.title': 'Controls & Goals', // index.html:86
+  'a11y.overlay.helpView.title': 'Controls & Goals', // index.html #help-overlay
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.claimView.title': 'Account & Sign-in', // ui/menuModel.ts:103
   // Reached from the Account & Sign-in overlay, so the name says what the
