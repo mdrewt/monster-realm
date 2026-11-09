@@ -2,15 +2,18 @@
 """
 generate_art.py — deterministic pixel-art generator for the Monster Realm POC.
 
-Produces two PixiJS-v8 spritesheets (PNG + JSON) plus 6x preview PNGs:
+Produces PixiJS-v8 spritesheets (PNG + JSON, each with a -normal map) plus 6x preview PNGs:
 
   ../public/assets/hero.png                 4-dir tamer, idle/walk/jump (20 frames)
   ../public/assets/hero.json
-  ../public/assets/tileset-edge-of-town.png 48 tiles: grass route <-> town
+  ../public/assets/tileset-edge-of-town.png 47 tiles: grass route <-> town
   ../public/assets/tileset-edge-of-town.json
+  ../public/assets/terrain-kit.png          50 tiles: ten terrain classes, water frames, shore band
+  ../public/assets/terrain-kit.json         (+ terrain-kit-normal.{png,json}; wap-2)
   ../public/assets/palette.png              the shared master palette swatch
   ./preview/hero@6x.png                     nearest-neighbour previews (not served)
   ./preview/tileset@6x.png
+  ./preview/terrain-kit@6x.png
 
 Art direction (locked with the user):
   - 3/4 oblique perspective, 32x32 px/tile (TILE_PX), "warm vibrant storybook" palette.
@@ -366,11 +369,11 @@ def fill_grass(im, seed=0):
         im.put(ax + 1, ay, G[1])
 
 
-def fill_tallgrass(im):
+def fill_tallgrass(im, seed=9):
     """Distinct encounter tile: deeper/bluer base + a thicket of blades w/ bright tips."""
     for y in range(TILE):
         for x in range(TILE):
-            n = noise(x, y, 9)
+            n = noise(x, y, seed)
             base = TG[2] if n > 0.6 else (TG[0] if n < 0.25 else TG[1])
             # darker toward the bottom (roots in shadow) — symmetric, not directional
             if y > 24:
@@ -378,8 +381,8 @@ def fill_tallgrass(im):
             im.put(x, y, base)
     blades = [3, 7, 10, 14, 18, 21, 25, 29]
     for bx in blades:
-        sway = int(noise(bx, 3, 9) * 3) - 1
-        top = 7 + int(noise(bx, 5, 9) * 4)
+        sway = int(noise(bx, 3, seed) * 3) - 1
+        top = 7 + int(noise(bx, 5, seed) * 4)
         for y in range(top, 29):
             t = (y - top) / float(29 - top)
             x = bx + int(round(sway * (1 - t)))
@@ -1117,6 +1120,179 @@ def build_tileset():
     return sheet, len(catalog)
 
 
+# --------------------------------------------------------------------------- #
+# Terrain kit (wap-2) — one opaque 32x32 frame family per terrain class
+# --------------------------------------------------------------------------- #
+# Classes are the TileKind wire names' frame prefixes (docs/art/style-guide.md
+# "Terrain classes"); the frame manifest the renderer reads is
+# client/src/render/art/packs/terrain.ts.  Every frame is fully opaque so one
+# frame covers one tile.  Value bands (mean relative luminance) are measured by
+# client/src/render/art/terrainKit.test.ts and recorded in the style guide.
+KIT_VARIANTS = 3
+KIT_WATER_FRAMES = 4
+
+
+def speckle(im, ramp_of, seed):
+    """Fill with a seamless 4-level speckle: ramp_of(n) picks the colour per noise value."""
+    for y in range(TILE):
+        for x in range(TILE):
+            im.put(x, y, ramp_of(noise(x, y, seed)))
+
+
+def kit_ground(im, v):
+    fill_grass(im, seed=40 + v)
+
+
+def kit_tall_grass(im, v):
+    fill_tallgrass(im, seed=9 + 10 * v)
+
+
+def kit_path(im, v):
+    speckle(im, lambda n: D[4] if n > 0.7 else D[2] if n < 0.12 else D[3], 50 + v)
+    for i in range(5 + v):  # pebbles: dark seat + lit top
+        px = int(noise(i, 1, 51 + v) * (TILE - 2))
+        py = int(noise(i, 2, 51 + v) * (TILE - 2))
+        im.put(px, py + 1, D[1])
+        im.put(px, py, D[4])
+
+
+def kit_sand(im, v):
+    speckle(im, lambda n: CREAM if n > 0.9 else D[3] if n < 0.18 else D[4], 60 + v)
+    for i in range(3):  # wind ripples
+        ry = 5 + i * 10 + int(noise(i, v, 61) * 4)
+        for x in range(TILE):
+            if noise(x, ry, 62 + v) > 0.35:
+                im.put(x, ry + (x // 9 + v) % 2, D[3])
+
+
+def _waves(im, phase, seed, base, band, crest, hi):
+    """Animated wave texture: diagonal bands drift one step per phase, crests shimmer."""
+    for y in range(TILE):
+        for x in range(TILE):
+            c = band if (x + 2 * y + 4 * phase) % 16 < 5 else base
+            if noise(x, y, seed) < 0.08:
+                c = band
+            im.put(x, y, c)
+    for ry in range(2 + phase * 2, TILE + 8, 8):
+        for x in range(TILE):
+            y = (ry + (x // 6) % 2) % TILE
+            if noise(x, ry, seed + phase) > 0.62:
+                im.put(x, y, crest)
+                if noise(x, y, seed + 7) > 0.9:
+                    im.put(x, y, hi)
+
+
+def kit_shallow(im, v=0, phase=0):
+    _waves(im, phase, 70 + v, WAT[3], WAT[2], WAT[4], CREAM)
+
+
+def kit_deep(im, v=0, phase=0):
+    _waves(im, phase, 80 + v, WAT[1], WAT[0], WAT[2], WAT[3])
+
+
+def kit_rock(im, v):
+    speckle(im, lambda n: S[4] if n > 0.45 else S[2] if n < 0.08 else S[3], 90 + v)
+    for i in range(3):  # boulders: lit crown top-left, shaded base
+        cx = 6 + i * 10 + int(noise(i, v, 91) * 4)
+        cy = 8 + int(noise(i, v, 92) * 16)
+        blob(im, cx, cy, 6, 5, S[4], S[2], CREAM, outline=False)
+    for i in range(4 + v):
+        im.put(int(noise(i, 3, 93 + v) * TILE), int(noise(i, 4, 93 + v) * TILE), S[1])
+
+
+def kit_tree(im, v):
+    speckle(im, lambda n: F[1] if n > 0.6 else F[0], 100 + v)
+    for i in range(4):  # canopy clumps under a dark leaf mass
+        cx = 4 + i * 8 + int(noise(i, v, 101) * 4)
+        cy = 6 + int(noise(i, v, 102) * 20)
+        blob(im, cx, cy, 6, 5, F[1], F[0], F[2], outline=False)
+    for i in range(10):
+        im.put(int(noise(i, 5, 103 + v) * TILE), int(noise(i, 6, 103 + v) * TILE), F[3])
+
+
+def kit_bush(im, v):
+    speckle(im, lambda n: F[4] if n > 0.55 else F[3], 110 + v)
+    for i in range(5):  # leaf clusters with a soft shaded rim
+        cx = 3 + i * 7 + int(noise(i, v, 111) * 3)
+        cy = 5 + int(noise(i, v, 112) * 22)
+        blob(im, cx, cy, 4, 3, F[4], F[3], CREAM, outline=False)
+    for i in range(2 + v):  # berries
+        bx = int(noise(i, 7, 113 + v) * 30)
+        by = int(noise(i, 8, 113 + v) * 30)
+        im.put(bx, by, RED)
+        im.put(bx + 1, by, CREAM)
+
+
+def kit_wall(im, v):
+    im.rect(0, 0, TILE, TILE, S[0])  # mortar
+    for ry, oy in enumerate(range(1, TILE, 8)):
+        off = (4 * v + (8 if ry % 2 else 0)) % 16
+        for ox in range(-16 + off, TILE, 16):
+            bx, by, bw, bh = ox + 1, oy, 14, 6
+            im.rect(bx, by, bw, bh, S[1])
+            im.hline(bx, by, bw, S[2])  # top-lit course
+            for x in range(bx, bx + bw):
+                if noise(x, by, 120 + v) > 0.85:
+                    im.put(x, by + 3, S[0])
+
+
+KIT_CLASSES = [  # (frame prefix, painter, normal-map profile)
+    ("ground", kit_ground, "terrain"),
+    ("tall_grass", kit_tall_grass, "tall"),
+    ("path", kit_path, "terrain"),
+    ("sand", kit_sand, "terrain"),
+    ("shallow_water", kit_shallow, "water"),
+    ("deep_water", kit_deep, "water"),
+    ("rock", kit_rock, "brick"),
+    ("tree", kit_tree, "tall"),
+    ("bush", kit_bush, "tall"),
+    ("wall", kit_wall, "brick"),
+]
+KIT_WATER = {"shallow_water": kit_shallow, "deep_water": kit_deep}
+KIT_SHORE = [  # (slot, make_edge sides, inner corner) — land (ground) on the named side(s)
+    ("n", "N", None), ("e", "E", None), ("s", "S", None), ("w", "W", None),
+    ("ne", "NE", None), ("nw", "NW", None), ("se", "SE", None), ("sw", "SW", None),
+    ("inner_ne", "", "NE"), ("inner_nw", "", "NW"), ("inner_se", "", "SE"), ("inner_sw", "", "SW"),
+]
+
+
+def build_terrain_kit():
+    catalog = []  # (frame key, image, normal profile)
+    for name, paint, prof in KIT_CLASSES:
+        for v in range(KIT_VARIANTS):
+            im = Img(TILE, TILE)
+            paint(im, v)
+            catalog.append((f"{name}_{v}", im, prof))
+    animations = {}
+    for name, paint in KIT_WATER.items():
+        keys = []
+        for phase in range(KIT_WATER_FRAMES):
+            im = Img(TILE, TILE)
+            paint(im, 0, phase)
+            keys.append(f"{name}_f{phase}")
+            catalog.append((keys[-1], im, "water"))
+        animations[name] = keys
+    for slot, sides, corner in KIT_SHORE:
+        catalog.append((f"shore_{slot}", make_edge(kit_shallow, sides, corner=corner, foam=True), "water"))
+
+    cols = 8
+    rows = (len(catalog) + cols - 1) // cols
+    sheet = Img(cols * TILE, rows * TILE)
+    frames, cells, prof = {}, [], {}
+    for idx, (key, im, p) in enumerate(catalog):
+        ox, oy = (idx % cols) * TILE, (idx // cols) * TILE
+        sheet.blit(im, ox, oy)
+        frames[key] = (ox, oy)
+        cells.append((key, ox, oy, im))
+        prof[key] = p
+    nsheet = build_normal_sheet(cells, prof.get)
+    for stem, img in (("terrain-kit", sheet), ("terrain-kit-normal", nsheet)):
+        write_png(os.path.join(OUT, stem + ".png"), img)
+        write_png(os.path.join(PREVIEW, stem + "@6x.png"), upscale(img, 6))
+        write_sheet_json(os.path.join(OUT, stem + ".json"), stem + ".png", img.w, img.h, frames, animations)
+    return sheet, len(catalog)
+
+
 def write_sheet_json(path, image, w, h, frames, animations):
     """PixiJS v8 spritesheet (hash) format, 2-space JSON (biome-clean)."""
     lines = ["{", '  "frames": {']
@@ -1164,8 +1340,10 @@ def main():
     hero = build_hero()
     tiles, n = build_tileset()
     mon = build_monster()
+    kit, nkit = build_terrain_kit()
     print(f"hero.png  + hero-normal.png             {hero.w}x{hero.h}  (20 frames)")
     print(f"tileset.png + tileset-...-normal.png    {tiles.w}x{tiles.h}  ({n} tiles)")
+    print(f"terrain-kit.png + terrain-kit-normal.png {kit.w}x{kit.h}  ({nkit} tiles)")
     print(f"monster-emberkit.png + -normal.png      {mon.w}x{mon.h}  (12 frames)")
     print(f"-> {OUT}")
     print(f"-> previews (albedo / normal / lit) in {PREVIEW}")
