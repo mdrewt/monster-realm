@@ -280,7 +280,7 @@ interface Stop {
   readonly rowScope: string | null;
   /** Exact title-to-bar gap in px where the shipped layout differs from "hugs the title". */
   readonly titleGap?: number;
-  readonly extra?: (p: Page, ctx: WalkCtx) => Promise<void>;
+  readonly extra?: (p: Page) => Promise<void>;
 }
 interface Screen {
   readonly key: string;
@@ -344,7 +344,7 @@ const encyclopediaKey = (p: Page): Promise<string | null> =>
 
 /** UIF.6: a disabled row stays readable (3:1 or better) yet reads below an enabled row. The Monsters
  *  sheet's Feed row is disabled for a player with no food (ui-chrome UIF1.3). */
-async function monstersDisabledRow(p: Page, _ctx: WalkCtx): Promise<void> {
+async function monstersDisabledRow(p: Page): Promise<void> {
   await pressButton(p, 'A');
   const feed = `#${navItemId('monstersSheet', null, 'feed')}`;
   await expect(p.locator(feed), 'the Monsters sheet shows its Feed row').toBeVisible();
@@ -373,7 +373,7 @@ async function monstersDisabledRow(p: Page, _ctx: WalkCtx): Promise<void> {
 }
 
 /** The Encyclopedia (16 terms) overflows: Down to the LAST term, the cursor row stays visible. */
-async function encyclopediaToLast(p: Page, _ctx: WalkCtx): Promise<void> {
+async function encyclopediaToLast(p: Page): Promise<void> {
   let key = await encyclopediaKey(p);
   for (let i = 0; i < 20 && key !== 'ranked'; i += 1) {
     await pressButton(p, 'Down');
@@ -399,7 +399,7 @@ async function leaveNameField(p: Page): Promise<void> {
 
 /** Profile overflows at 1280x720: Down walks the column to Close (the last row); every landing
  *  stays inside the scrolling body and the window. */
-async function profileToLast(p: Page, _ctx: WalkCtx): Promise<void> {
+async function profileToLast(p: Page): Promise<void> {
   await leaveNameField(p);
   let id = await activeId(p);
   const seen = [id];
@@ -978,7 +978,7 @@ async function walkScreen(p: Page, screen: Screen, ctx: WalkCtx): Promise<void> 
       ).toHaveAttribute('data-nav-tab', stop.tab as string);
     }
     await checkStop(p, screen, stop, ctx);
-    if (stop.extra !== undefined) await stop.extra(p, ctx);
+    if (stop.extra !== undefined) await stop.extra(p);
     await shot(p, stop.shot);
     ctx.visited.push(stop.id);
   }
@@ -1146,6 +1146,7 @@ async function exerciseSheet(p: Page, spec: SheetSpec): Promise<void> {
     `${label}: and the click reached its target (UIF.3)`,
   ).toHaveAttribute('aria-selected', 'true');
   expect(await frameNames(p), `${label}: the click closed only the sheet`).toEqual([...spec.stack]);
+  sheetChecks += 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1192,6 +1193,10 @@ const forcedStrip = (
     { stripSel, boxes },
   );
 
+/** Counts of assertions actually executed (UIF17.2 pins them, so a skipped step cannot pass). */
+let sheetChecks = 0;
+let noShiftChecks = 0;
+
 function expectNoShift(
   before: readonly Box[],
   after: readonly Box[],
@@ -1202,6 +1207,7 @@ function expectNoShift(
   names.forEach((n, i) => {
     expectRect(after[i] as Box, before[i] as Box, 0.5, `${label}: ${n}`);
   });
+  noShiftChecks += 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1301,10 +1307,6 @@ const SCREEN_CHIPS: Chips = [
   ['B', 'Back'],
   ['Start', 'Close'],
   ['Select', 'Help'],
-];
-const TYPING_CHIPS: Chips = [
-  ['A', 'OK'],
-  ['Start', 'Done'],
 ];
 const WORLD_TAIL: Chips = [
   ['Start', 'Menu'],
@@ -1442,23 +1444,26 @@ test.describe
     });
 
     /** Back to 1280x720@1 through the same CDP override (setViewportSize does not clear it). Never
-     *  throws: a restore failure in a `finally` must not replace the body's own error. */
-    async function restoreWindow(): Promise<void> {
-      await cdp
-        .send('Emulation.setDeviceMetricsOverride', {
+     *  swallows its own failure ONLY when the body already failed (`bodyOk` false), so the body's
+     *  error stays the reported one; after a passing body a failed restore throws. */
+    async function restoreWindow(bodyOk: boolean): Promise<void> {
+      const quiet = (): undefined => undefined;
+      const restore = async (): Promise<void> => {
+        await cdp.send('Emulation.setDeviceMetricsOverride', {
           width: BASE.w,
           height: BASE.h,
           deviceScaleFactor: BASE.dpr,
           mobile: false,
-        })
-        .catch(() => undefined);
-      await expect
-        .poll(() => page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), {
-          message: 'the window is back at 1280x720@1',
-          timeout: 10_000,
-        })
-        .toEqual([1280, 720, 1])
-        .catch(() => undefined);
+        });
+        await expect
+          .poll(() => page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), {
+            message: 'the window is back at 1280x720@1',
+            timeout: 10_000,
+          })
+          .toEqual([1280, 720, 1]);
+      };
+      if (bodyOk) await restore();
+      else await restore().catch(quiet);
     }
 
     /** Change the window and wait until the page itself reports it and the var caught up (ui-scale:
@@ -1581,7 +1586,7 @@ test.describe
       test.setTimeout(300_000);
       await ensureFood(page);
 
-      const sheetsCovered: string[] = [];
+      sheetChecks = 0;
       const specs: readonly SheetSpec[] = [
         {
           name: 'monsters',
@@ -1647,16 +1652,11 @@ test.describe
       ];
       for (const spec of specs) {
         await exerciseSheet(page, spec);
-        sheetsCovered.push(spec.name.split('-')[0] as string);
       }
-      expect(sheetsCovered, 'the sheets this walk exercised').toEqual([
-        'monsters',
-        'inventory',
-        'help',
-      ]);
+      expect(sheetChecks, 'sheets taken through every sheet assertion').toBe(3);
 
       // ---- messages: a visible, non-empty message moves no box of its frame ---------------------
-      const messagesCovered: string[] = [];
+      noShiftChecks = 0;
 
       await openMenu(page);
       const menuBoxes = ['#menu-overlay .mr-frame', '#menu-rows'] as const;
@@ -1666,7 +1666,6 @@ test.describe
       await expect(menuStrip, 'menu: Y shows the description strip').toBeVisible();
       await expect(menuStrip, 'menu: with text').toHaveText(/\S/);
       expectNoShift(menuBefore, await rectsOf(page, menuBoxes), menuBoxes, 'menu message');
-      messagesCovered.push('menu');
 
       for (const m of [
         {
@@ -1687,7 +1686,6 @@ test.describe
         expect(r.visible, `${m.name}: the strip is visible once it carries a message`).toBe(true);
         expect(r.text.length, `${m.name}: its text is not empty`).toBeGreaterThan(0);
         expectNoShift(r.before, r.after, m.boxes, `${m.name} message`);
-        messagesCovered.push(m.name);
       }
 
       // Controls: the refused-key hint on the frame's own strip (ui-feedback UIF4B.2). Nothing is
@@ -1723,7 +1721,6 @@ test.describe
       await expect(page.locator('#toast'), 'Cancel toasts controls.cancelled').toHaveText(
         'Unchanged.',
       );
-      messagesCovered.push('controls');
 
       // Profile: a valid rename's success toast (ui-feedback UIF4B.2), announced by the live region.
       await openScreen(page, 'profile');
@@ -1758,15 +1755,11 @@ test.describe
           timeout: 5_000,
         })
         .toContain(toastText);
-      messagesCovered.push('profile');
 
-      expect(messagesCovered, 'the screens whose message was measured').toEqual([
-        'menu',
-        'monsters',
-        'inventory',
-        'controls',
-        'profile',
-      ]);
+      expect(
+        noShiftChecks,
+        'messages whose frame boxes were compared (menu, 2 strips, 2 more)',
+      ).toBe(5);
       await closeAll(page);
     });
 
@@ -1778,6 +1771,7 @@ test.describe
       // step that also scales the world (stageScale moves) or does not reach the chrome.
       test.setTimeout(240_000);
       const cases = [BASE, DPR125, FULL_HD] as const;
+      let ok = false;
       try {
         await openMenu(page);
         for (const c of cases) {
@@ -1870,13 +1864,26 @@ test.describe
             timeout: 10_000,
           })
           .toBeCloseTo(16, 3);
+        ok = true;
       } finally {
-        await page.evaluate(() => {
-          window.localStorage.removeItem('mr.display');
-          document.documentElement.style.removeProperty('--mr-text-step');
-        });
-        await restoreWindow();
-        await closeAll(page);
+        // The finally may only add errors when the body passed: on the failure path every cleanup
+        // step is best-effort, so the body's own error is the one reported.
+        const cleanup = async (): Promise<void> => {
+          await page.evaluate(() => {
+            window.localStorage.removeItem('mr.display');
+            document.documentElement.style.removeProperty('--mr-text-step');
+          });
+          if (!ok) {
+            // The app's in-memory text step may still be Large: only a reload makes it fresh.
+            await page.reload();
+            await ready(page);
+          }
+        };
+        if (ok) await cleanup();
+        else await cleanup().catch(() => undefined);
+        await restoreWindow(ok);
+        if (ok) await closeAll(page);
+        else await closeAll(page).catch(() => undefined);
       }
     });
 
@@ -1895,6 +1902,7 @@ test.describe
         page.locator(`${TACTICS.shell} .tactics-board`).first(),
         'the tactical board is shown',
       ).toBeVisible();
+      let ok = false;
       try {
         for (const c of [BASE, DPR125, FULL_HD, BASE]) {
           const label = `battle ${c.w}x${c.h}@${c.dpr}`;
@@ -1931,8 +1939,9 @@ test.describe
             verb('Start'),
           );
         }
+        ok = true;
       } finally {
-        await restoreWindow();
+        await restoreWindow(ok);
       }
       await shot(page, 'tactics-board');
       const live: TacticsSnap | null = await readTactics(page);
@@ -2004,10 +2013,8 @@ test.describe
               stop.tab as string,
             );
           }
-          const stack = (await game(page)).stack;
-          const top = stack[stack.length - 1]?.kind;
-          const want = top === 'textEntry' ? TYPING_CHIPS : SCREEN_CHIPS;
-          const h = await expectHint(page, stop.id, want, stop.root);
+          // Every screen's chip set is the same literal (Profile left its name field above).
+          const h = await expectHint(page, stop.id, SCREEN_CHIPS, stop.root);
           if (screen.strip !== null) {
             expect(
               h.tabChips,
