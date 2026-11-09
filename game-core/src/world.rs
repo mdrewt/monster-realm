@@ -251,10 +251,9 @@ pub fn map_for(zone_id: u32, zone_maps: &[crate::content::ZoneMapDef]) -> Result
 ///
 /// Checks (in order):
 ///
-/// 1. All rows build valid TileMaps (well-formedness).
-/// 1b. Deep water borders only water: every in-bounds 8-neighbour of a
-///     `DeepWater` tile is `ShallowWater` or `DeepWater` (the shore band is
-///     shallow water's alone).
+/// 1. All rows build valid TileMaps (well-formedness), then (check 1b) deep water
+///    borders only water: every in-bounds 8-neighbour of a `DeepWater` tile is
+///    `ShallowWater` or `DeepWater` — the shore band is shallow water's alone.
 /// 2. zone_ids within zone_maps are unique.
 /// 3. Every zone_id in zone_maps exists in the zones registry.
 /// 4. Map dims ≤ ZoneDef bounds.
