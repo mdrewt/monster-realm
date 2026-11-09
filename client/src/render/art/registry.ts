@@ -6,7 +6,8 @@
 // unrepresentable where it can (no `ai-placeholder` tag, no share-alike or EULA
 // license, source/license/provenance required, a CC-BY row requires attribution);
 // `validateArtRegistry` covers what types cannot. Rules: `docs/art/style-guide.md`
-// and DECISIONS.md "Every served asset carries a provenance row".
+// and DECISIONS.md "Every served asset carries a provenance row; image-model
+// output never ships".
 
 import { BATTLE_PACK } from './packs/battle';
 import { CHARACTERS_PACK } from './packs/characters';

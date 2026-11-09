@@ -993,3 +993,29 @@ Profile tabs; a second always-enabled anchor inside the Privacy section (the fra
 target when a render refuses the focused control: `fallbackRow`); leaving either confirm armed behind a
 closed frame; the list scroll cue `.mr-scroll` on the body (its gradients sit behind running text, where
 contrast cannot be measured); re-adding an overlay-busy refusal for privacy.
+
+## Every served asset carries a provenance row; image-model output never ships
+
+**Decision.** Every PNG served from `client/public/assets/` has exactly one row in the art registry
+(`ART_REGISTRY` in `client/src/render/art/registry.ts`, aggregated from one pack file per asset family in
+`client/src/render/art/packs/`). A row records the stable atlas key, file, kind, sheet and frame size,
+scale, source (the generator path, or the pack's URL), license and provenance tag, and it lands in the same
+change as its file. The row type accepts only the licenses `project-original`, `CC0-1.0` and
+`CC-BY-4.0`/`CC-BY-3.0`, and a CC-BY row must carry an attribution. It accepts only the provenance tags
+`placeholder-procedural`, `placeholder-licensed` and `final`. The `ai-placeholder` tag, share-alike and
+EULA licenses cannot be written. `validateArtRegistry` rejects what the type cannot express: a duplicate
+key or file, a sprite, tile or normal frame off the 16 px grid, a scale other than 1, a malformed key and
+an empty attribution. Its colocated test runs the validator over the real rows and checks each row against
+the served directory and the PNG headers. Image-model output is for ideation only and never ships. The art
+rules live in `docs/art/style-guide.md`.
+
+**Why.** Every served asset is a placeholder until an artist is hired. Without a record of where each file
+came from, a placeholder that a license does not allow us to ship, or image-model output, could reach a
+release without anyone noticing. Keys stay stable so final art is a file swap. Before this, the repo had no
+provenance, credits or asset-license file, and one wave of monster sheets came from a generator that has
+since been deleted. Their rows cite it as `<path>@<commit>`.
+
+**Rules out.** Serving a file without a registry row; a row tagged `ai-placeholder`; share-alike or EULA
+assets until counsel signs off; renaming an atlas key to swap art; asserting a file count in place of the
+directory-against-registry check. A release gate that every row is `final` is deferred to the launch
+checklist.
