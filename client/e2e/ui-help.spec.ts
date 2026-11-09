@@ -87,6 +87,14 @@ async function openHelp(p: Page, label: string): Promise<void> {
     .poll(() => stackNames(p), { message: `${label}: Select opens the help frame` })
     .toEqual(['world', 'helpView']);
   await expect(p.locator('#help-overlay'), `${label}: Help is shown`).toBeVisible();
+  // SETTLE. The overlay moves focus to its heading one macrotask AFTER it opens (the deferred
+  // initial focus of ui/overlayA11y.ts), and that focus scrolls the heading into view. A key sent
+  // before it lands races it: the cursor moves, the frame scrolls to it, then the late focus scrolls
+  // the frame back to its top. The open is over once the heading has the focus (the pending timer
+  // is inert from then on), and it always gets it here: focus is outside the overlay at every open,
+  // because main.ts heals focus stranded in a closed overlay at the keydown. A retried predicate
+  // with the expect timeout as its bound, not a sleep.
+  await expect(p.locator('#help-title'), `${label}: the open settled on the heading`).toBeFocused();
 }
 
 /** Open Help, RB onto the Encyclopedia. */
