@@ -721,25 +721,27 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     fire('keyup', 'KeyW', 1605);
   });
 
-  it('Escape from a menu sub-list child pops straight to the world: the leaderboard over Social > Rankings closes with the menu', async () => {
+  it('Escape from a menu sub-list child pops straight to the world: the privacy screen over Profile > Privacy closes with the menu', async () => {
     // WRONG IMPL KILLED: a pop-to-base that stops at the menu's sub-list level, and one that closes
     // the child and leaves the menu painted.
-    await bootAtMenu(3);
-    expect(navActive(), 'precondition: the cursor is on Social').toBe('social');
+    // uif-15b (named intentional change, UIF15B.1): Social is a root leaf with no sub-list, so the
+    // sub-list child is Profile > Privacy. Was: Social > Rankings (the leaderboard).
+    await bootAtMenu(4);
+    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
     tap('Enter', 1500);
-    expect(navActive(), 'precondition: the sub-list starts on Trades').toBe('trades');
+    expect(navActive(), 'precondition: the sub-list starts on Name').toBe('name');
     tap('ArrowDown', 1600);
     tap('ArrowDown', 1700);
-    expect(navActive(), 'precondition: the cursor is on Rankings').toBe('rankings');
+    expect(navActive(), 'precondition: the cursor is on Privacy').toBe('privacy');
     tap('Enter', 1800);
-    expect(rankingsShown(), 'precondition: the leaderboard opened').toBe(true);
-    // ctl-8s (named intentional change, CTL8S.3): the leaderboard root is the Rankings panel of the
-    // ONE Social frame, so the frame above the menu is `social`. Was: 'leaderboardView'.
-    expect(stackNames()).toEqual(['world', 'menuView', 'social']);
+    expect(stackNames(), 'precondition: the privacy screen opened over the menu').toEqual([
+      'world',
+      'menuView',
+      'privacyView',
+    ]);
 
     tap('Escape', 1900);
-    expect(rankingsShown(), 'the leaderboard is closed').toBe(false);
-    expect(menuShown(), 'and so is the menu').toBe(false);
+    expect(menuShown(), 'the menu is closed with it').toBe(false);
     expect(stackNames()).toEqual(['world']);
   });
 

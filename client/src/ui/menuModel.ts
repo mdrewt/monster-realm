@@ -7,21 +7,20 @@
 // whichever locale is active when it is read, and catalogParity's DYNAMIC-KEY / DEAD-KEY checks see
 // each id at its call site.
 //
-// Until the ctl-8 screens land, each leaf opens a legacy overlay and the groups are one-level
-// sub-lists inside the menu frame. No leaf starts a trade or a challenge: both start face to face
-// (A on the player you face, ctl-10b); Social only answers them.
+// Each leaf opens one frame; the groups are one-level sub-lists inside the menu frame. Social is a
+// leaf (uif-15b, #586 D3): it opens the 4-tab Social frame directly, on the tab the screen picks.
+// No leaf starts a trade or a challenge: both start face to face (A on the player you face,
+// ctl-10b); Social only answers them.
+import type { FrameId } from './contextStack';
 import { t } from './i18n/resolver';
-import type { OverlayId } from './overlayRegistry';
 
-/** The legacy overlays a menu leaf opens. */
+/** The frames a menu leaf opens. */
 export type MenuTarget = Extract<
-  OverlayId,
+  FrameId,
   | 'boxView'
   | 'raisingView'
   | 'questLogView'
-  | 'tradeView'
-  | 'pvpView'
-  | 'leaderboardView'
+  | 'social'
   | 'renameView'
   | 'claimView'
   | 'privacyView'
@@ -29,7 +28,7 @@ export type MenuTarget = Extract<
   | 'controlsView'
 >;
 
-export type MenuGroupKey = 'social' | 'profile' | 'options';
+export type MenuGroupKey = 'profile' | 'options';
 
 interface MenuRowText {
   readonly key: string;
@@ -77,33 +76,11 @@ export const MENU_ENTRIES: readonly MenuEntry[] = [
     target: 'questLogView',
   },
   {
-    kind: 'group',
+    kind: 'open',
     key: 'social',
     title: () => t('menu.social.title'),
     description: () => t('menu.social.desc'),
-    children: [
-      {
-        kind: 'open',
-        key: 'trades',
-        title: () => t('menu.social.trades.title'),
-        description: () => t('menu.social.trades.desc'),
-        target: 'tradeView',
-      },
-      {
-        kind: 'open',
-        key: 'challenges',
-        title: () => t('menu.social.challenges.title'),
-        description: () => t('menu.social.challenges.desc'),
-        target: 'pvpView',
-      },
-      {
-        kind: 'open',
-        key: 'rankings',
-        title: () => t('menu.social.rankings.title'),
-        description: () => t('menu.social.rankings.desc'),
-        target: 'leaderboardView',
-      },
-    ],
+    target: 'social',
   },
   {
     kind: 'group',

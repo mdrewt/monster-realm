@@ -1651,16 +1651,20 @@ describe('InputRouter: X under a nav-capable screen (bt-12 B, BT12.2)', () => {
 type PathRow = {
   readonly menu: readonly string[];
   readonly frame: FrameId;
-  readonly tab?: 'party' | 'storage';
+  readonly tab?: 'party' | 'storage' | 'trades' | 'challenges' | 'rankings';
 };
 const EXPECTED_PATHS: Readonly<Record<MenuAccel, PathRow>> = {
   B: { menu: ['monsters'], frame: 'boxView', tab: 'storage' },
   I: { menu: ['bag'], frame: 'raisingView' },
   V: { menu: ['monsters'], frame: 'boxView', tab: 'party' },
   J: { menu: ['journal'], frame: 'questLogView' },
-  U: { menu: ['social', 'trades'], frame: 'social' },
-  P: { menu: ['social', 'challenges'], frame: 'social' },
-  L: { menu: ['social', 'rankings'], frame: 'social' },
+  // uif-15b (UIF15B.3, named intentional change): the three Social rows U, P and L. Social is a
+  // root leaf now, so each path is the one key ['social'] and the Social tab it lands on rides in
+  // `tab` (the same frame and the same tab as before). Was: U ['social','trades'], P
+  // ['social','challenges'], L ['social','rankings'], each with no tab.
+  U: { menu: ['social'], frame: 'social', tab: 'trades' },
+  P: { menu: ['social'], frame: 'social', tab: 'challenges' },
+  L: { menu: ['social'], frame: 'social', tab: 'rankings' },
   N: { menu: ['profile', 'name'], frame: 'renameView' },
   C: { menu: ['profile', 'account'], frame: 'claimView' },
   // qf-14 (named intentional change): Y opens Options > Controls directly. 9 -> 10 menu accelerators.
@@ -1744,21 +1748,49 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     expect(Object.keys(ACCEL_PATHS), 'F8 and F9 are the shell`s own').not.toContain('F8');
     expect(Object.keys(ACCEL_PATHS)).not.toContain('F9');
     for (const accel of MENU_ACCELS) {
-      expect(ACCEL_PATHS[accel].tab, `${accel}: only B and V carry a tab`).toBe(
+      expect(ACCEL_PATHS[accel].tab, `${accel}: only B, V, U, P and L carry a tab`).toBe(
         EXPECTED_PATHS[accel].tab,
       );
     }
 
-    // Each path resolves through the menu model to an `open` leaf whose frame it names.
-    const PANEL_TARGETS = ['tradeView', 'pvpView', 'leaderboardView'];
+    // Each path resolves through the menu model to an `open` leaf whose frame it names. uif-15b:
+    // the Social leaf's target IS the `social` frame, so no panel-target translation remains.
     for (const accel of MENU_ACCELS) {
       const path = ACCEL_PATHS[accel];
       const leaf = leafOf(path.menu);
       expect(leaf?.kind, `${accel}: ${path.menu.join(' > ')} ends on an open leaf`).toBe('open');
       if (leaf?.kind !== 'open') continue;
-      const frame = PANEL_TARGETS.includes(leaf.target) ? 'social' : leaf.target;
-      expect(path.frame, `${accel}: the leaf's overlay is the path's frame`).toBe(frame);
+      expect(path.frame, `${accel}: the leaf's overlay is the path's frame`).toBe(leaf.target);
     }
+  });
+
+  it('UIF15B.3 U, P and L are the one-key path [social] onto the social frame with the tab trades, challenges and rankings; every other row is unchanged and Y stays options > controls', () => {
+    // WRONG IMPL KILLED: a U/P/L row still two keys deep (the menu has no `trades` leaf any more:
+    // the walk picks nothing and the menu opens with nothing under it); a row with no tab (all
+    // three would open the Social frame on one tab); swapped tabs (P on Rankings); a tab keyed to
+    // the wrong frame (the tab rides on a Monsters row); a Y row that moved with this slice (it is
+    // deferred with Options); a B or V row that lost its Monsters tab.
+    expect(ACCEL_PATHS.U).toEqual({ menu: ['social'], frame: 'social', tab: 'trades' });
+    expect(ACCEL_PATHS.P).toEqual({ menu: ['social'], frame: 'social', tab: 'challenges' });
+    expect(ACCEL_PATHS.L).toEqual({ menu: ['social'], frame: 'social', tab: 'rankings' });
+    for (const accel of ['U', 'P', 'L'] as const) {
+      const leaf = leafOf(ACCEL_PATHS[accel].menu);
+      expect(leaf?.kind, `${accel}: the one-key path ends on an open leaf`).toBe('open');
+      expect(leaf?.kind === 'open' ? leaf.target : undefined, `${accel}: it opens social`).toBe(
+        'social',
+      );
+    }
+    expect(ACCEL_PATHS.Y).toEqual({ menu: ['options', 'controls'], frame: 'controlsView' });
+    expect(ACCEL_PATHS.B).toEqual({ menu: ['monsters'], frame: 'boxView', tab: 'storage' });
+    expect(ACCEL_PATHS.V).toEqual({ menu: ['monsters'], frame: 'boxView', tab: 'party' });
+    // The decision carries the new row verbatim.
+    expect(accelDecision('U', frozenStack(WORLD_BASE))).toEqual({
+      kind: 'open',
+      path: { menu: ['social'], frame: 'social', tab: 'trades' },
+    });
+    expect(accelDecision('L', frozenStack(WORLD_BASE, screenFrame('social')))).toEqual({
+      kind: 'start',
+    });
   });
 
   it('CTL11A-1-DECIDE: an accelerator opens its path at the world, over a battle base, over any other player screen and over the menu, and acts as Start (never a re-open) when its own screen is the top frame, including V with the Monsters frame up and P with Social up', () => {

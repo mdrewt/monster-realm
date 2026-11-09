@@ -1131,6 +1131,58 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     expect(checked, 'ANTI-VACUITY: four panel switches were checked').toBe(4);
   });
 
+  it('UIF15B.1 Start, Down three times, A on the menu`s Social row pushes exactly world, menuView, social with the Social frame on Players at fresh memory, on the remembered tab at a second open, and on a waiting request`s tab when one waits; B returns to the menu with its cursor on Social', async () => {
+    // WRONG IMPL KILLED: Social still a group (A enters a sub-list: the stack stays [world, menuView]
+    // and no Social root shows); a row that opens a legacy panel directly (a trade or pvp root with
+    // no four-tab strip); a menu open that requests a tab (it would pin Trades, so the fresh open
+    // is not Players, the remembered tab is ignored and a waiting request cannot win); a Social
+    // state that is not remembered across two opens; a waiting request that loses to the remembered
+    // tab or to Players; a B that skips the menu (the stack would be the bare world).
+    await bootReady();
+    server(1000);
+    let at = 1100;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 10;
+    };
+    const openSocialFromMenu = (): void => {
+      key('Escape');
+      expect(stackNow(), 'Start opens the menu').toEqual([WORLD_FRAME, MENU_FRAME]);
+      for (let i = 0; i < 3; i += 1) key('ArrowDown');
+      key('Enter');
+    };
+
+    // Fresh memory: Players, over the leaderboard root.
+    openSocialFromMenu();
+    expectSocialOn('menu row, fresh memory', 'players');
+    expectPlayersOnLeaderboard('menu row, fresh memory');
+
+    // Move to Challenges (RB twice: Players, Trades, Challenges), then B back to the menu.
+    key('PageDown');
+    key('PageDown');
+    expectSocialOn('RB twice from Players', 'challenges');
+    key('Backspace');
+    expect(stackNow(), 'B returns to the menu, not the world').toEqual([WORLD_FRAME, MENU_FRAME]);
+    expect(
+      (window as unknown as { __game: () => { navActive: string | null } }).__game().navActive,
+      'the menu cursor is on Social',
+    ).toBe('social');
+
+    // Second open: the remembered tab.
+    key('Enter');
+    expectSocialOn('menu row, second open', 'challenges');
+
+    // A waiting request beats the remembered tab (a fresh session, nothing remembered either).
+    teardownBoot();
+    await bootReady();
+    server(2000);
+    opts.store.upsertTradeOffer(waitingTrade(TRADE_ID));
+    server(2010);
+    at = 2100;
+    openSocialFromMenu();
+    expectSocialOn('menu row, a trade waits', 'trades');
+  });
+
   it('UIF9.5 with no frame open, an incoming trade offer and an incoming challenge each show #notice-banner naming the sender and push no frame: the stack stays the bare world, no Social root shows, nothing is sent', async () => {
     // WRONG IMPL KILLED: a request that opens the Social frame or a Social panel (a frame in the
     // stack, a root shown: the retired auto-show, or uif-9's chrome work reintroducing it); a

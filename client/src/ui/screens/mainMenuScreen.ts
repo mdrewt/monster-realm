@@ -61,7 +61,6 @@ export type MainMenuStep = ScreenStep<MainMenuState, MenuEffect>;
 /** Nav ids are `{frame}-root-{key}`, so each level gets its own frame id. */
 const FRAME_IDS: Readonly<Record<MenuLevel, string>> = {
   root: 'menu',
-  social: 'menuSocial',
   profile: 'menuProfile',
   options: 'menuOptions',
 };
@@ -82,10 +81,11 @@ const LAYOUTS = Object.fromEntries(
 /** battleSafe screens whose shells are still in the page flow, below the fold and so under the
  *  battle overlay: their entries stay disabled over a battle for as long as the shells do not
  *  paint above it. */
-const HIDDEN_UNDER_BATTLE: ReadonlySet<MenuTarget> = new Set(['questLogView', 'leaderboardView']);
+const HIDDEN_UNDER_BATTLE: ReadonlySet<MenuTarget> = new Set(['questLogView']);
 
-/** Why `row` is disabled over a battle, or undefined when it is not. Bag points at the battle's own
- *  Bag command; a group is disabled only when every entry in it is. */
+/** Why `row` is disabled over a battle, or undefined when it is not. Inventory points at the
+ *  battle's own Items command; Social (not battleSafe) reads the in-battle reason; a group is
+ *  disabled only when every entry in it is. */
 function battleReason(row: MenuEntry): string | undefined {
   switch (row.kind) {
     case 'open':

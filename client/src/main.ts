@@ -1588,10 +1588,11 @@ function openMenu(): void {
   );
 }
 
-/** Open a menu entry's overlay ABOVE the menu, through that overlay's single open path. The
- *  menu stays open beneath it, so whichever way the child closes, the menu is back with its
- *  cursor on the entry. */
-function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'): void {
+/** Open a menu entry's frame ABOVE the menu, through that frame's single open path. The menu
+ *  stays open beneath it, so whichever way the child closes, the menu is back with its cursor on
+ *  the entry. `tab` is the tab an accelerator's path names, read by the frame it belongs to:
+ *  Monsters opens on Party without one, Social on the tab its screen picks (uif-15b). */
+function openMenuTarget(target: MenuTarget, tab?: AccelPath['tab']): void {
   // A second route to store reads keyed by identity, which is '' until the first onReady.
   if (identity === '') return;
   // Exhaustive switch, no default arm: a new target compiler-flags this site.
@@ -1599,7 +1600,7 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
     case 'boxView':
       // uif-6 (UIF6.2): the tab is bound before the open and the open is seated, so the screen's
       // `init` opens on it and paints it at once: no synthesized button.
-      boundMonstersTab = monstersTab;
+      boundMonstersTab = tab === 'storage' ? 'storage' : 'party';
       openSeated(
         'boxView',
         frameOpenOf(() => boxView),
@@ -1623,14 +1624,8 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
     case 'questLogView':
       openQuestLog();
       break;
-    case 'tradeView':
-      openSocial('trades');
-      break;
-    case 'pvpView':
-      openSocial('challenges');
-      break;
-    case 'leaderboardView':
-      openSocial('rankings');
+    case 'social':
+      openSocial(tab === 'storage' || tab === 'party' ? null : (tab ?? null));
       break;
     case 'renameView':
       openRename();
@@ -1651,9 +1646,9 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
 }
 
 /** Apply one menu step: a level change resets auto-repeat, then the effect, then a repaint.
- *  `monstersTab` is the tab a Monsters open lands on: Party from the menu (design §5), and what
- *  an accelerator names. */
-function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
+ *  `tab` is the tab an accelerator's path names (none from the menu: Monsters opens on Party,
+ *  design §5, and Social on the tab its screen picks). */
+function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
   if (step.state.level !== menuState.level) inputRouter.resetRepeat();
   // The feedback line is not a live region: a Y description or a disabled entry's reason is said
   // here, once per change of the line.
@@ -1664,7 +1659,7 @@ function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
     case 'none':
       break;
     case 'open':
-      openMenuTarget(step.effect.target, monstersTab);
+      openMenuTarget(step.effect.target, tab);
       break;
     case 'close':
       menuView?.hide();

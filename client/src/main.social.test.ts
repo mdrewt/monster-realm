@@ -222,12 +222,14 @@ interface Pressed {
   readonly repeat: boolean;
 }
 
-/** Open the main menu at the world with M and pick Social › `leaf` with the real menu keys (Down
- *  and Enter), walking each level until the entry is active. Returns the clock after the last
- *  press. */
-function openSocialLeaf(leaf: 'trades' | 'challenges' | 'rankings', start: number): number {
+/** Open the main menu at the world with M and press A on its Social row with the real menu keys
+ *  (Down and Enter), walking the root until the entry is active. uif-15b (UIF15B.1, named
+ *  intentional change): Social is a root LEAF that opens the Social frame itself, so this is one A
+ *  with no sub-list walk. Was `openSocialLeaf(leaf, start)`: A on Social, then Down to the leaf, A.
+ *  Returns the clock after the last press. */
+function openSocialRow(start: number): number {
   press('KeyM', start);
-  expect(stackNow(), `${leaf}: precondition: the menu is the one frame`).toEqual([
+  expect(stackNow(), 'precondition: the menu is the one frame').toEqual([
     WORLD_FRAME,
     screenFrame('menuView'),
   ]);
@@ -236,14 +238,7 @@ function openSocialLeaf(leaf: 'trades' | 'challenges' | 'rankings', start: numbe
     press('ArrowDown', at);
     at += 10;
   }
-  expect(menuCursorNow(), `${leaf}: precondition: the menu cursor is on Social`).toBe('social');
-  press('Enter', at);
-  at += 10;
-  for (let i = 0; i < 4 && menuCursorNow() !== leaf; i += 1) {
-    press('ArrowDown', at);
-    at += 10;
-  }
-  expect(menuCursorNow(), `${leaf}: precondition: the sub-list cursor is on ${leaf}`).toBe(leaf);
+  expect(menuCursorNow(), 'precondition: the menu cursor is on Social').toBe('social');
   press('Enter', at);
   return at + 10;
 }
@@ -405,11 +400,12 @@ describe('main.ts the Social frame over the real panel views and a11y layer (ctl
     //     and before the trade panel hid: two dialogs stay displayed, the trade root suspended
     //     under the pvp one. A switch whose target became visible must still finish.
 
-    // --- (a) Social > Trades opened from the menu, then the adapter switches to Challenges -----
+    // --- (a) Social opened from the menu (uif-15b: the Social row; the stand-in's open shows the
+    // trade root, `socialPanel(null)`), then the adapter switches to Challenges ------------------
     await bootReady();
     server(1000);
     const fromMenu = lendingSocial();
-    const end = openSocialLeaf('trades', 1100);
+    const end = openSocialRow(1100);
     expect(stackNow(), 'a: precondition: Social above the menu').toEqual([
       WORLD_FRAME,
       screenFrame('menuView'),
@@ -624,9 +620,10 @@ const SO2_SOCIAL_OPENS = [
   { tag: 'TRADES-ACCEL', tab: 'trades', open: () => void press('KeyU', 1100) },
   { tag: 'CHALLENGES-ACCEL', tab: 'challenges', open: () => void press('KeyP', 1100) },
   { tag: 'RANKINGS-ACCEL', tab: 'rankings', open: () => void press('KeyL', 1100) },
-  { tag: 'TRADES-ROW', tab: 'trades', open: () => void openSocialLeaf('trades', 1100) },
-  { tag: 'CHALLENGES-ROW', tab: 'challenges', open: () => void openSocialLeaf('challenges', 1100) },
-  { tag: 'RANKINGS-ROW', tab: 'rankings', open: () => void openSocialLeaf('rankings', 1100) },
+  // uif-15b (UIF15B.1, named intentional change): the three sub-list rows are one root Social row,
+  // which opens with no requested tab: the stand-in adapter paints nothing, so the first panel is
+  // the trade root (`socialPanel(null)`). Was TRADES-ROW, CHALLENGES-ROW and RANKINGS-ROW.
+  { tag: 'ROW', tab: 'trades', open: () => void openSocialRow(1100) },
 ] as const;
 
 describe('main.ts the one Social frame is pushed first (runtime, so-2)', {

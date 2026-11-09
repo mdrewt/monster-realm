@@ -32,6 +32,7 @@ import type { Connection, ConnectionOptions } from './net/connection';
 import { t } from './ui/a11yCopy';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
 import { CATALOG_FR } from './ui/i18n/catalog.fr';
+import { MENU_ENTRIES } from './ui/menuModel';
 import { OVERLAY_A11Y } from './ui/overlayRegistry';
 
 const H = vi.hoisted(() => ({
@@ -202,7 +203,7 @@ const shownById = (id: string): boolean => {
 };
 const menuShown = (): boolean => shownById('menu-overlay');
 const journalShown = (): boolean => shownById('quest-log-list');
-const rankingsShown = (): boolean => shownById('leaderboard-title');
+const socialRootShown = (): boolean => shownById('leaderboard-overlay');
 
 const rowsEl = (): HTMLElement => document.getElementById('menu-rows') as HTMLElement;
 const cursor = (): string | null => rowsEl().getAttribute('aria-activedescendant');
@@ -455,57 +456,112 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     tap('KeyF', 1100);
     expect(feedbackText(), 'the description is French too').toBe(FR['menu.monsters.desc']);
 
-    for (let i = 0; i < 3; i += 1) tap('ArrowDown', 1200 + i * 100);
-    expect(navActive()).toBe('social');
+    // uif-15b (UIF15B.1, named intentional change): the sub-list that proves French is Profile
+    // (Social is a root leaf with no sub-list). Was: Social's Trades, Challenges, Rankings.
+    for (let i = 0; i < 4; i += 1) tap('ArrowDown', 1200 + i * 100);
+    expect(navActive()).toBe('profile');
     tap('Enter', 1600);
     expect(optionTexts(), 'the sub-list is French').toEqual([
-      FR['menu.social.trades.title'],
-      FR['menu.social.challenges.title'],
-      FR['menu.social.rankings.title'],
+      FR['menu.profile.name.title'],
+      FR['menu.profile.account.title'],
+      FR['menu.profile.privacy.title'],
     ]);
-    expect(menuTitle()).toBe(FR['menu.social.title']);
+    expect(menuTitle()).toBe(FR['menu.profile.title']);
     expect(menuCrumbs(), 'the breadcrumb is the translated Menu').toEqual([FR['menu.title']]);
     tap('KeyF', 1700);
-    expect(feedbackText()).toBe(FR['menu.social.trades.desc']);
+    expect(feedbackText()).toBe(FR['menu.profile.name.desc']);
   });
 
   it('a sub-list is a level inside the one menu frame: A enters it, A on a child opens that screen above the menu, B backs out one level at a time, and Escape closes the whole menu', async () => {
     // WRONG IMPL KILLED: a sub-list pushed as a separate frame or closed with the menu, a child
     // opened from a sub-list that closes the sub-list, a B that skips the sub-list level, a
     // sub-list cursor that is lost on return, and an Escape in a sub-list that only pops a level.
-    await bootAtMenu(3);
-    expect(navActive()).toBe('social');
+    // uif-15b (UIF15B.1, named intentional change): the sub-list is Profile (Social is a root leaf:
+    // A on it opens the Social frame, covered by the UIF15B.1 boot case in
+    // ui/screens/socialScreen.boot.test.ts). Its last child is Privacy, which opens the privacy
+    // screen. Was: Social's sub-list, ending on Rankings (the leaderboard).
+    await bootAtMenu(4);
+    expect(navActive()).toBe('profile');
     tap('Enter', 1500);
-    expect(navActive(), 'the sub-list starts on its first entry').toBe('trades');
-    expect(cursor()).toBe('menuSocial-root-trades');
-    expect(menuTitle()).toBe('Social');
+    expect(navActive(), 'the sub-list starts on its first entry').toBe('name');
+    expect(cursor()).toBe('menuProfile-root-name');
+    expect(menuTitle()).toBe('Profile');
     expect(menuCrumbs()).toEqual(['Menu']);
     expect(stackNames(), 'one menu frame').toEqual(['world', 'menuView']);
 
     tap('ArrowDown', 1600);
     tap('ArrowDown', 1700);
-    expect(navActive()).toBe('rankings');
+    expect(navActive()).toBe('privacy');
     tap('Enter', 1800);
-    expect(rankingsShown(), 'the leaderboard opened').toBe(true);
     expect(menuShown(), 'the sub-list stays open beneath it').toBe(true);
-    // ctl-8s (named intentional change, CTL8S.3): the leaderboard root is the Rankings panel of the
-    // ONE Social frame, so the frame above the menu is `social`. Was: 'leaderboardView'.
-    expect(stackNames()).toEqual(['world', 'menuView', 'social']);
+    expect(stackNames(), 'the privacy screen is a frame above the menu').toEqual([
+      'world',
+      'menuView',
+      'privacyView',
+    ]);
 
     tap('Backspace', 1900);
-    expect(rankingsShown(), 'B closes the child').toBe(false);
-    expect(navActive(), 'back on the sub-list entry').toBe('rankings');
-    expect(cursor()).toBe('menuSocial-root-rankings');
+    expect(stackNames(), 'B closes the child').toEqual(['world', 'menuView']);
+    expect(navActive(), 'back on the sub-list entry').toBe('privacy');
+    expect(cursor()).toBe('menuProfile-root-privacy');
 
     tap('Backspace', 2000);
-    expect(navActive(), 'B at a sub-list pops to the root, on the group entry').toBe('social');
+    expect(navActive(), 'B at a sub-list pops to the root, on the group entry').toBe('profile');
     expect(menuShown()).toBe(true);
-    expect(cursor()).toBe('menu-root-social');
+    expect(cursor()).toBe('menu-root-profile');
 
     tap('Enter', 2100);
-    expect(navActive(), 'the sub-list cursor was remembered').toBe('rankings');
+    expect(navActive(), 'the sub-list cursor was remembered').toBe('privacy');
     tap('Escape', 2200);
     expect(menuShown(), 'Escape closes the whole menu from a sub-list').toBe(false);
+    expect(stackNames()).toEqual(['world']);
+  });
+
+  it('UIF15B.5 every root leaf (Monsters, Inventory, Journal, Social) opens from the root and B returns to the menu root with the cursor on that same entry; a second B closes the menu', async () => {
+    // WRONG IMPL KILLED: a leaf whose B closes the whole menu (the child's pop takes the menu with
+    // it); a return that lands on the first entry or on the group-less default (the cursor is
+    // forgotten across the child); a Social leaf whose B lands in a Social sub-list (the old
+    // two-level detour: the title would read Social with a Menu crumb); a menu left covered or
+    // hidden after the return; a leaf list that is a literal here instead of the table's `open`
+    // rows (a new root leaf would escape the check: the ANTI-VACUITY count pins the roster).
+    const leaves = MENU_ENTRIES.filter((e) => e.kind === 'open').map((e) => e.key);
+    expect(leaves, 'ANTI-VACUITY: the root leaves, from the table').toEqual([
+      'monsters',
+      'bag',
+      'journal',
+      'social',
+    ]);
+    await bootAtMenu();
+    let at = 1200;
+    const step = (code: string): void => {
+      tap(code, at);
+      at += 100;
+    };
+    let checked = 0;
+    for (const key of leaves) {
+      for (let i = 0; i < 8 && navActive() !== key; i += 1) step('ArrowDown');
+      expect(navActive(), `${key}: precondition: the cursor is on it`).toBe(key);
+      step('Enter');
+      expect(stackNames().length, `${key}: A opened exactly one frame above the menu`).toBe(3);
+      expect(stackNames().slice(0, 2), `${key}: over the menu`).toEqual(['world', 'menuView']);
+      step('Backspace');
+      expect(stackNames(), `${key}: B closed only the child`).toEqual(['world', 'menuView']);
+      expect(menuShown(), `${key}: the menu shows again`).toBe(true);
+      expect(
+        (document.getElementById('menu-overlay') as HTMLElement).style.visibility,
+        `${key}: uncovered`,
+      ).not.toBe('hidden');
+      expect(navActive(), `${key}: the cursor is on the same entry`).toBe(key);
+      expect(cursor(), `${key}: the menu paints it`).toBe(`menu-root-${key}`);
+      expect(menuTitle(), `${key}: the root level, not a sub-list`).toBe('Menu');
+      expect(menuCrumbs(), `${key}: no breadcrumb`).toEqual([]);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all four leaves were driven').toBe(4);
+    expect(socialRootShown(), 'the Social root is closed after its B').toBe(false);
+
+    step('Backspace');
+    expect(menuShown(), 'B at the menu root closes it').toBe(false);
     expect(stackNames()).toEqual(['world']);
   });
 
@@ -638,25 +694,27 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     // WRONG IMPL KILLED: an applyMenuStep that does not reset the router's repeat when the menu
     // level changes (the Down still held from the root repeats into the new sub-list and walks the
     // cursor off its first entry with no new press).
-    await bootAtMenu(2);
-    expect(navActive(), 'precondition: the cursor is on Journal').toBe('journal');
+    // uif-15b: the sub-list entered is Profile (Social is a leaf now). Was: Journal, Down onto
+    // Social, Enter into its sub-list (trades, then challenges).
+    await bootAtMenu(3);
+    expect(navActive(), 'precondition: the cursor is on Social').toBe('social');
     const t0 = 2000;
     fire('keydown', 'ArrowDown', t0);
-    expect(navActive(), 'the held Down moved onto Social').toBe('social');
+    expect(navActive(), 'the held Down moved onto Profile').toBe('profile');
     fire('keydown', 'Enter', t0 + 100);
-    expect(navActive(), 'Enter (Down still held) entered the Social sub-list').toBe('trades');
-    expect(cursor()).toBe('menuSocial-root-trades');
+    expect(navActive(), 'Enter (Down still held) entered the Profile sub-list').toBe('name');
+    expect(cursor()).toBe('menuProfile-root-name');
 
     for (const dt of [349, 350, 449, 450, 550, 1000]) {
       frame(t0 + dt);
-      expect(navActive(), `${dt} ms after the Down press, with no new press`).toBe('trades');
+      expect(navActive(), `${dt} ms after the Down press, with no new press`).toBe('name');
     }
 
     // Contrast: a fresh press still moves the cursor in the new level.
     fire('keyup', 'ArrowDown', t0 + 1100);
     fire('keyup', 'Enter', t0 + 1105);
     fire('keydown', 'ArrowDown', t0 + 1200);
-    expect(navActive(), 'a new press moves').toBe('challenges');
+    expect(navActive(), 'a new press moves').toBe('account');
     fire('keyup', 'ArrowDown', t0 + 1205);
   });
 

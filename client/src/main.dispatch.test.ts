@@ -4220,24 +4220,19 @@ function outgoingChallenge(challengeId: bigint): StoreBattleChallenge {
   };
 }
 
-/** Open the main menu at the world and pick Social › `leaf` with the real menu keys (Down and
- *  Enter). The menu remembers its cursor, so each level is walked with Down until the entry is
- *  active. Returns the clock after the last press. */
-function openSocialLeaf(leaf: 'trades' | 'challenges' | 'rankings', t: number): number {
+/** Open the main menu at the world and press A on its Social row with the real menu keys (Down and
+ *  Enter). uif-15b (UIF15B.1, named intentional change): Social is a root leaf that opens the
+ *  Social frame with NO requested tab (bound tab null), so there is no sub-list walk. Was
+ *  `openSocialLeaf(leaf, t)`: A on Social, Down to the leaf, A. Returns the clock after the last
+ *  press. */
+function openSocialRow(t: number): number {
   openMenuAtWorld(t);
   let at = t + 10;
   for (let i = 0; i < 8 && menuCursorNow() !== 'social'; i += 1) {
     press('ArrowDown', at);
     at += 10;
   }
-  expect(menuCursorNow(), `${leaf}: precondition: the menu cursor is on Social`).toBe('social');
-  press('Enter', at);
-  at += 10;
-  for (let i = 0; i < 4 && menuCursorNow() !== leaf; i += 1) {
-    press('ArrowDown', at);
-    at += 10;
-  }
-  expect(menuCursorNow(), `${leaf}: precondition: the sub-list cursor is on ${leaf}`).toBe(leaf);
+  expect(menuCursorNow(), 'precondition: the menu cursor is on Social').toBe('social');
   press('Enter', at);
   return at + 10;
 }
@@ -4492,22 +4487,23 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       press(code, t);
       await expectTab(code, tab, (at) => void press(code, at));
     }
-    for (const leaf of ['trades', 'challenges', 'rankings'] as const) {
-      t = openSocialLeaf(leaf, t);
-      await expectTab(`menu Social > ${leaf}`, leaf, (at) => void press('Escape', at));
-    }
+    // uif-15b (named intentional change, UIF15B.1): the three menu leaves are one Social row, which
+    // binds NO tab (null); the frame's adapter picks its own. Was: three leaves binding trades,
+    // challenges and rankings.
+    t = openSocialRow(t);
+    await expectTab('menu Social row', null as unknown as string, (at) => void press('Escape', at));
 
     // ctl-13 (named intentional change, CTL13.2): the challenge auto-show is deleted. An incoming
     // challenge opens no frame, so it binds no tab: the tab is still the last one a path bound
-    // (rankings). Was: the auto-show opened Social on challenges and bound it.
+    // (null, from the Social row). Was: the auto-show opened Social on challenges and bound it.
     opts.store.upsertChallenge(incomingChallenge(41n));
     server(t);
     expect(stackNow(), 'no auto-show: the challenge opened nothing').toEqual([WORLD_FRAME]);
-    expect(seatReads, 'no auto-show: nothing was seated for it').toHaveLength(6);
+    expect(seatReads, 'no auto-show: nothing was seated for it').toHaveLength(4);
     opts.store.removeChallenge(41n);
     server(t + 20);
     await readAtMenu(t + 40);
-    expect(menuReads.at(-1), 'no auto-show: the challenge bound no tab').toBe('rankings');
+    expect(menuReads.at(-1), 'no auto-show: the challenge bound no tab').toBe(null);
 
     // A reconnect clears it.
     opts.onReconnect(H.identity);
@@ -4519,24 +4515,20 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       'trades',
       'challenges',
       'rankings',
-      'trades',
-      'challenges',
-      'rankings',
-      'rankings',
+      null,
+      null,
       null,
     ]);
     expect(reads, 'every read on the open Social frame, in order').toEqual([
       'trades',
       'challenges',
       'rankings',
-      'trades',
-      'challenges',
-      'rankings',
+      null,
     ]);
     expect(
       seatReads,
-      'ANTI-VACUITY: one seat per open, six opens (ctl-13: no auto-show)',
-    ).toHaveLength(6);
+      'ANTI-VACUITY: one seat per open, four opens: U, P, L and the Social row (ctl-13: no auto-show; uif-15b: was six, the three menu leaves are one row)',
+    ).toHaveLength(4);
   });
 
   it('CTL8S-3-BOOT-ONE-FRAME: U, P, L and the three menu leaves each put the ONE frame { kind: screen, id: social } on the stack (over the menu) with only that tab`s root shown; the same key closes it; a different social key while a panel shows closes it too (the Social frame is its own screen: the key acts as Start); and a battle arriving closes whichever panel shows and leaves the battle base', async () => {
@@ -4592,20 +4584,22 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     }
     expect(pairs, 'ANTI-VACUITY: six ordered pairs').toBe(6);
 
-    // The three menu leaves open the same frame, above the menu.
-    for (const [, tab] of keys) {
-      t = openSocialLeaf(tab, t);
-      expect(stackNow(), `menu Social > ${tab}: the one Social frame above the menu`).toEqual([
-        WORLD_FRAME,
-        screenFrame('menuView'),
-        screenFrame('social'),
-      ]);
-      expect(socialShown(), `menu Social > ${tab}: only the ${tab} root`).toEqual([tab]);
-      press('Escape', t);
-      expect(stackNow(), `menu Social > ${tab}: Start closed both`).toEqual([WORLD_FRAME]);
-      expect(socialShown()).toEqual([]);
-      t += 100;
-    }
+    // uif-15b (named intentional change, UIF15B.1): the three menu leaves are the one Social row,
+    // which opens the same frame above the menu with no requested tab, so the real Social adapter
+    // lands on the REMEMBERED tab: the last one opened above (L, rankings). Was: one open per leaf,
+    // each on its own root.
+    const remembered = keys[keys.length - 1][1];
+    t = openSocialRow(t);
+    expect(stackNow(), 'menu Social row: the one Social frame above the menu').toEqual([
+      WORLD_FRAME,
+      screenFrame('menuView'),
+      screenFrame('social'),
+    ]);
+    expect(socialShown(), 'menu Social row: only the remembered tab`s root').toEqual([remembered]);
+    press('Escape', t);
+    expect(stackNow(), 'menu Social row: Start closed both').toEqual([WORLD_FRAME]);
+    expect(socialShown()).toEqual([]);
+    t += 100;
 
     // A battle arriving closes whichever panel shows.
     let battleId = BATTLE_ID;
@@ -4888,7 +4882,10 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     await bootReady();
     server(1000);
     const pvp = stubView('PvpView');
-    const t = openSocialLeaf('challenges', 1100);
+    // uif-15b: the menu row binds no tab, so Challenges is opened by its accelerator P (which picks
+    // the Social row through the menu and binds the tab): the frame still sits above the menu.
+    press('KeyP', 1100);
+    const t = 1200;
     expect(pvp.visible, 'precondition: Challenges opened above the menu').toBe(true);
     const forcedBefore = pvp.forced.length;
     server(t + 100);

@@ -19,8 +19,9 @@
  * (R-ctl-8b-CTL8B.4).
  *
  * The menu's level and cursor are read off what the menu view paints: a root cursor is the id
- * `menu-root-<key>`, a Social cursor `menuSocial-root-<key>` and a Profile cursor
- * `menuProfile-root-<key>`, under the matching frame title (and the translated `Menu` crumb).
+ * `menu-root-<key>` (Social included: uif-15b made it a root leaf, so there is no Social sub-list
+ * and no `menuSocial` frame id) and a Profile cursor `menuProfile-root-<key>`, under the matching
+ * frame title (and the translated `Menu` crumb).
  *
  * Harness: main.controls.test.ts's pattern, copied (vi.resetModules + a fresh import per test,
  * recorded window / document listeners detached in afterEach, one controllable clock, a controllable
@@ -485,21 +486,19 @@ const menuFeedback = (): string =>
   byId('menu-overlay').querySelector('.mr-frame-feedback')?.textContent ?? '';
 
 // qf-14: the `options` level joins (Options > Controls is the Y accelerator's path).
-type Level = 'root' | 'social' | 'profile' | 'options';
+// uif-15b (UIF15B.1, named intentional change): no `social` level (Social is a root leaf).
+type Level = 'root' | 'profile' | 'options';
 const CURSOR_PREFIX: Readonly<Record<Level, string>> = {
   root: 'menu',
-  social: 'menuSocial',
   profile: 'menuProfile',
   options: 'menuOptions',
 };
 const levelTitle = (level: Level): string =>
   level === 'root'
     ? i18nT('menu.title')
-    : level === 'social'
-      ? i18nT('menu.social.title')
-      : level === 'profile'
-        ? i18nT('menu.profile.title')
-        : i18nT('menu.options.title');
+    : level === 'profile'
+      ? i18nT('menu.profile.title')
+      : i18nT('menu.options.title');
 
 /** One accelerator and where its canonical path lands (spelled out here, never read from the
  *  module under test). */
@@ -526,16 +525,13 @@ const ROWS: readonly Row[] = [
     key: 'journal',
     level: 'root',
   },
-  { accel: 'U', code: 'KeyU', frame: 'social', root: 'trade', key: 'trades', level: 'social' },
-  { accel: 'P', code: 'KeyP', frame: 'social', root: 'pvp', key: 'challenges', level: 'social' },
-  {
-    accel: 'L',
-    code: 'KeyL',
-    frame: 'social',
-    root: 'leaderboard',
-    key: 'rankings',
-    level: 'social',
-  },
+  // uif-15b (UIF15B.3, named intentional change): U, P and L pick the one root Social row, so the
+  // menu beneath stays on its ROOT with the cursor on `social` (the tab rides in the accelerator's
+  // path). The frame and the shown root are unchanged. Was: key trades / challenges / rankings on
+  // the `social` level.
+  { accel: 'U', code: 'KeyU', frame: 'social', root: 'trade', key: 'social', level: 'root' },
+  { accel: 'P', code: 'KeyP', frame: 'social', root: 'pvp', key: 'social', level: 'root' },
+  { accel: 'L', code: 'KeyL', frame: 'social', root: 'leaderboard', key: 'social', level: 'root' },
   { accel: 'N', code: 'KeyN', frame: 'renameView', root: 'rename', key: 'name', level: 'profile' },
   {
     accel: 'C',
@@ -690,12 +686,57 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectBareWorld('after Start');
     press('KeyM');
     expect(stackNames(), 'precondition: M opened the menu').toEqual(['world', 'menuView']);
-    for (let i = 0; i < 8 && navActive() !== 'social'; i += 1) press('ArrowDown');
-    expect(navActive(), 'precondition: the cursor is on Social').toBe('social');
+    // uif-15b: the sub-level the menu is left on is Profile (Social is a leaf now).
+    for (let i = 0; i < 8 && navActive() !== 'profile'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
     press('Enter');
-    expect(menuTitle(), 'precondition: A entered the Social sub-level').toBe(levelTitle('social'));
+    expect(menuTitle(), 'precondition: A entered the Profile sub-level').toBe(
+      levelTitle('profile'),
+    );
     press('KeyJ');
-    expectLeafOpen(ROW('J'), 'J from a menu left on the Social level');
+    expectLeafOpen(ROW('J'), 'J from a menu left on the Profile level');
+  });
+
+  it('UIF15B.3 U, P and L each push world, menuView, social and show the Social frame on the Trades, Challenges and Rankings tab respectively, with the menu cursor beneath on Social; Y still lands on the Controls frame', async () => {
+    // WRONG IMPL KILLED: an accelerator that picks the root Social row but forgets the tab (all
+    // three open on Players: the fresh-memory landing); a tab table in main.ts that swaps two of
+    // them; a menu opened with the cursor left on Monsters (the pick never moved it); a path that
+    // still walks a Social sub-list (no `trades` row: the pick is a no-op and nothing opens); a Y
+    // that moved with this slice (it is deferred with Options).
+    await bootReady();
+    server(1000);
+    const SOCIAL_TABS = ['players', 'trades', 'challenges', 'rankings'] as const;
+    const cases: ReadonlyArray<readonly [string, (typeof SOCIAL_TABS)[number]]> = [
+      ['KeyU', 'trades'],
+      ['KeyP', 'challenges'],
+      ['KeyL', 'rankings'],
+    ];
+    let checked = 0;
+    for (const [code, tab] of cases) {
+      expectBareWorld(`${code}: precondition`);
+      press(code);
+      expect(stackNames(), `${code}: the menu, then Social`).toEqual([
+        'world',
+        'menuView',
+        'social',
+      ]);
+      expect(
+        SOCIAL_TABS.filter((t) => byId(`social-tab-${t}`).getAttribute('aria-selected') === 'true'),
+        `${code}: ${tab} alone is the selected Social tab`,
+      ).toEqual([tab]);
+      expect(navActive(), `${code}: the menu cursor beneath is on Social`).toBe('social');
+      expect(menuCursor(), `${code}: and painted on the root row`).toBe('menu-root-social');
+      press('Escape');
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: three accelerators were driven').toBe(3);
+
+    press('KeyY');
+    expect(stackNames(), 'Y: the menu, then the Controls frame').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
   });
 
   it('CTL11A-1-BOOT-OWN-START: an accelerator pressed while its own screen is on top acts as Start and returns the stack to the bare world, for all ten, and for the accelerators that share a frame (B with V, U with P with L)', async () => {

@@ -1286,7 +1286,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the Journal main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.journal.desc': 'Review your quests and their progress.',
-  // @desc: Main-menu entry opening the Social sub-list (trades, challenges, rankings).
+  // @desc: Main-menu entry opening the Social frame (Players, Trades, Challenges, Rankings tabs).
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.social.title': 'Social',
   // @desc: Feedback-line description of the Social main-menu entry, shown on Y.
@@ -1310,24 +1310,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the Close main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.close.desc': 'Close the menu and return to the world.',
-  // @desc: Social sub-list entry opening the incoming-trade screen.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.trades.title': 'Trades',
-  // @desc: Feedback-line description of the Trades entry in the Social sub-list, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.trades.desc': 'See and answer the trade offered to you.',
-  // @desc: Social sub-list entry opening the battle-challenge screen.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.challenges.title': 'Challenges',
-  // @desc: Feedback-line description of the Challenges entry in the Social sub-list, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.challenges.desc': 'See and answer challenges.',
-  // @desc: Social sub-list entry opening the ranked leaderboard.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.rankings.title': 'Rankings',
-  // @desc: Feedback-line description of the Rankings entry in the Social sub-list, shown on Y.
-  // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.rankings.desc': 'See the ranked leaderboard.',
   // @desc: Profile sub-list entry opening the rename form.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.profile.name.title': 'Name',
