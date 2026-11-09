@@ -50,7 +50,7 @@ import {
   cursorFor,
   type Dir,
   moveCursor,
-  spriteSlug,
+  spriteUrl,
   type TacticalUnit,
   type Tile,
   unitAt,
@@ -236,7 +236,7 @@ interface Frame {
   readonly ghost: {
     readonly unitId: number;
     readonly tile: Cell;
-    readonly slug: string | null;
+    readonly spriteUrl: string | null;
   } | null;
   readonly info: InfoBoxesVM;
   readonly turnBar: TurnBarVM;
@@ -1352,7 +1352,7 @@ export class TacticsBattle implements BattleOpsView {
     const ghostUnit = p === null ? undefined : vm.units.find((u) => u.unitId === p.unitId);
     const ghost =
       p !== null && p.ghost !== null && ghostUnit !== undefined
-        ? { unitId: p.unitId, tile: p.ghost, slug: spriteSlug(ghostUnit.speciesName) }
+        ? { unitId: p.unitId, tile: p.ghost, spriteUrl: spriteUrl(ghostUnit.speciesName) }
         : null;
 
     // Hovered = the Active target if there is one, else the unit under the cursor.
@@ -1610,8 +1610,8 @@ export class TacticsBattle implements BattleOpsView {
     el.style.setProperty('grid-column', String(ghost.tile.x + 1));
     el.style.setProperty('grid-row', String(ghost.tile.y + 1));
     const sprite = div('tactics-sprite');
-    if (ghost.slug === null) sprite.classList.add('tactics-sprite--none');
-    else sprite.style.backgroundImage = `url("assets/monster-${ghost.slug}.png")`;
+    if (ghost.spriteUrl === null) sprite.classList.add('tactics-sprite--none');
+    else sprite.style.backgroundImage = `url("${ghost.spriteUrl}")`;
     el.appendChild(sprite);
     grid.appendChild(el);
   }

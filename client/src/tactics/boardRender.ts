@@ -1,5 +1,6 @@
 // tactics/boardRender.ts — the DOM painter for a BoardVM (BT10.1 grid / units / health bars /
-// CSS-cropped sprites / pointer; BT10.4 overlay classes and intent chips).
+// CSS-cropped sprites / pointer; BT10.4 overlay classes and intent chips; wap-3 registry-resolved
+// sprite and backdrop urls).
 //
 // Stateless: it paints a view-model into `parent` and replaces whatever a previous call painted;
 // the shell owns the cursor. createElement + textContent + setAttribute only (a species name is
@@ -40,8 +41,8 @@ function paintUnit(vm: UnitVM, onTile: (tile: Tile) => void): HTMLElement {
 
   const sprite = document.createElement('div');
   sprite.className = 'tactics-sprite';
-  if (vm.spriteSlug === null) sprite.classList.add('tactics-sprite--none');
-  else sprite.style.backgroundImage = `url("assets/monster-${vm.spriteSlug}.png")`;
+  if (vm.spriteUrl === null) sprite.classList.add('tactics-sprite--none');
+  else sprite.style.backgroundImage = `url("${vm.spriteUrl}")`;
   unit.appendChild(sprite);
 
   const hp = document.createElement('div');
@@ -82,6 +83,8 @@ export function renderBoard(parent: HTMLElement, vm: BoardVM, onTile: (tile: Til
 
   const bg = document.createElement('div');
   bg.className = 'tactics-bg';
+  // The image paints over the stylesheet's hex fallback colour (kept for a failed load).
+  if (vm.backdropUrl !== null) bg.style.backgroundImage = `url("${vm.backdropUrl}")`;
   bg.appendChild(grid);
   parent.replaceChildren(bg);
 }

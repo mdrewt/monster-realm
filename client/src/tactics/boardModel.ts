@@ -2,7 +2,9 @@
 //
 // Pure: no DOM, no clock, no resolver. It never derives a tile set (distance, reach, danger are
 // game rules owned by game-core and arrive here as an injected OverlaySets); it only layers the
-// sets onto a grid, shapes the unit view-models, and keeps the per-unit cursor memory.
+// sets onto a grid, shapes the unit view-models, and keeps the per-unit cursor memory. Art URLs
+// come from the art registry (wap-3), never from a name-derived path.
+import { ART_REGISTRY, type ArtRow } from '../render/art/registry';
 import type { CursorDir } from '../ui/battleModel';
 
 export type Side = 'A' | 'B';
@@ -75,7 +77,8 @@ export interface UnitVM {
   readonly side: Side;
   readonly mine: boolean;
   readonly speciesName: string;
-  readonly spriteSlug: string | null;
+  /** The species' registered sheet (`assets/<file>`), or null: no row, no request. */
+  readonly spriteUrl: string | null;
   readonly hpPermille: number;
   readonly hpBand: 'high' | 'mid' | 'low';
   readonly active: boolean;
@@ -86,6 +89,8 @@ export interface BoardVM {
   readonly height: number;
   readonly tiles: readonly TileVM[];
   readonly units: readonly UnitVM[];
+  /** The registered battle backdrop (`assets/<file>`), or null. */
+  readonly backdropUrl: string | null;
 }
 export interface BoardInput {
   readonly width: number;
@@ -112,9 +117,23 @@ const inBounds = (t: Tile, width: number, height: number): boolean =>
   t.x < width &&
   t.y < height;
 
-/** The sprite file slug for a species name: lower-cased `[A-Za-z]+`, anything else has no sprite. */
-export function spriteSlug(speciesName: string): string | null {
-  return /^[A-Za-z]+$/.test(speciesName) ? speciesName.toLowerCase() : null;
+const assetUrl = (row: ArtRow | undefined): string | null =>
+  row === undefined ? null : `assets/${row.file}`;
+
+/** The registered sheet of a species: the `monsters/<lower-cased name>` sprite row's file. A
+ *  name outside `[A-Za-z]+`, or one with no sprite row, has no sprite (and requests nothing). */
+export function spriteUrl(
+  speciesName: string,
+  rows: readonly ArtRow[] = ART_REGISTRY,
+): string | null {
+  if (!/^[A-Za-z]+$/.test(speciesName)) return null;
+  const key = `monsters/${speciesName.toLowerCase()}`;
+  return assetUrl(rows.find((r) => r.key === key && r.kind === 'sprite'));
+}
+
+/** The registered battle backdrop (the `battle/backdrop` row), or null. */
+export function backdropUrl(rows: readonly ArtRow[] = ART_REGISTRY): string | null {
+  return assetUrl(rows.find((r) => r.key === 'battle/backdrop'));
 }
 
 function hpPermille(curHp: number, maxHp: number): number {
@@ -186,14 +205,14 @@ export function buildBoard(input: BoardInput): BoardVM {
       side: u.side,
       mine: u.mine,
       speciesName: u.speciesName,
-      spriteSlug: spriteSlug(u.speciesName),
+      spriteUrl: spriteUrl(u.speciesName),
       hpPermille: permille,
       hpBand: hpBand(permille),
       active: input.activeUnitId === u.unitId,
       intent: intents.get(u.unitId) ?? null,
     });
   }
-  return { width, height, tiles, units };
+  return { width, height, tiles, units, backdropUrl: backdropUrl() };
 }
 
 const clamp = (n: number, hi: number): number => Math.max(0, Math.min(n, hi));

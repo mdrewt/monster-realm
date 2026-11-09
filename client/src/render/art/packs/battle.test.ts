@@ -22,16 +22,17 @@ const lum = (r: number, g: number, b: number): number =>
   0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 
 describe('WAP3.4 battle backdrop art', () => {
-  it('WAP3.4 ART_REGISTRY has exactly one battle/backdrop sprite row and the registry validates', () => {
-    // WRONG IMPL KILLED: no row (the board has no backdrop url); a row of the wrong kind or size;
-    // a duplicate key; a row that breaks provenance rules.
+  it('WAP3.4 ART_REGISTRY has exactly one frameless battle/backdrop row and the registry validates', () => {
+    // WRONG IMPL KILLED: no row (the board has no backdrop url); a framed row (sprite/tile/normal,
+    // which would demand a sibling json sheet the backdrop does not ship) or a row of the wrong
+    // size; a duplicate key; a row that breaks provenance rules.
     const rows = ART_REGISTRY.filter((r) => r.key === 'battle/backdrop');
     expect(rows).toHaveLength(1);
     const row = rows[0];
     expect(row.file).toBe('battle-backdrop.png');
-    expect(row.kind).toBe('sprite');
+    expect(['palette', 'lut']).toContain(row.kind);
+    expect('frame' in row).toBe(false);
     expect(row.sheet).toEqual({ w: 320, h: 192 });
-    expect(row.frame).toEqual({ w: 320, h: 192 });
     expect(row.scale).toBe(1);
     expect(row.source).toBe('client/art-src/generate_backdrop.py');
     expect(row.provenance).toBe('placeholder-procedural');
