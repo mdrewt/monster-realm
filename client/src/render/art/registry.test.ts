@@ -106,12 +106,12 @@ describe('WAP0.2 registry row type', () => {
       provenance: 'placeholder-licensed',
       license: 'CC-BY-4.0',
     };
+    // @ts-expect-error a palette row must not carry a frame
     const paletteWithFrame: ArtRow = {
       key: 'terrain/palette',
       file: 'palette.png',
       kind: 'palette',
       sheet: { w: 16, h: 1 },
-      // @ts-expect-error a palette row must not carry a frame
       frame: { w: 16, h: 16 },
       scale: 1,
       source: 'client/art-src/generate_art.py',
