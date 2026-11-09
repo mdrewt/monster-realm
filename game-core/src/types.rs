@@ -316,4 +316,129 @@ mod tests {
         assert_eq!(action_from_code(0), Some(ActionState::Idle));
         assert_eq!(action_from_code(2), Some(ActionState::Jumping));
     }
+
+    // --- wap-1: needs the new TileKind API (compile-red before the slice) ---
+
+    /// The terrain class table (M-world-art-pass spec, class table), HAND-TYPED:
+    /// `(glyph, Tiled GID, walkable, encounter, wire name)`. Never derived from the
+    /// implementation. An exhaustive `match` with no `_` arm, so an 11th variant
+    /// compile-fails this roster until the table here is extended too.
+    fn class_row(k: TileKind) -> (char, u32, bool, bool, &'static str) {
+        match k {
+            TileKind::Floor => ('.', 1, true, false, "Floor"),
+            TileKind::Wall => ('#', 0, false, false, "Wall"),
+            TileKind::TallGrass => ('~', 2, true, true, "TallGrass"),
+            TileKind::Path => ('=', 3, true, false, "Path"),
+            TileKind::Sand => (':', 4, true, false, "Sand"),
+            TileKind::ShallowWater => ('w', 5, false, false, "ShallowWater"),
+            TileKind::DeepWater => ('W', 6, false, false, "DeepWater"),
+            TileKind::Rock => ('^', 7, false, false, "Rock"),
+            TileKind::Tree => ('T', 8, false, false, "Tree"),
+            TileKind::Bush => ('*', 9, false, false, "Bush"),
+        }
+    }
+
+    /// The ten classes in the table's row order = the required declaration order
+    /// (serde / `SpacetimeType` positional order). Hand-typed.
+    const TABLE_ORDER: [TileKind; 10] = [
+        TileKind::Floor,
+        TileKind::Wall,
+        TileKind::TallGrass,
+        TileKind::Path,
+        TileKind::Sand,
+        TileKind::ShallowWater,
+        TileKind::DeepWater,
+        TileKind::Rock,
+        TileKind::Tree,
+        TileKind::Bush,
+    ];
+
+    /// WAP1.1: every class glyph parses to its `TileKind`, and `glyph()` is the
+    /// exact inverse.
+    /// Kills: a swapped glyph pair (`'w'`/`'W'`, `'^'`/`'*'`), a new glyph left
+    /// unmapped in `from_char` (still a load error), or a `glyph()` arm returning
+    /// another class's char.
+    #[test]
+    fn every_class_glyph_parses_to_its_tilekind_and_back_wap1_1() {
+        for k in TABLE_ORDER {
+            let (glyph, _, _, _, name) = class_row(k);
+            assert_eq!(
+                TileKind::from_char(glyph),
+                Ok(k),
+                "glyph {glyph:?} must parse to {name}"
+            );
+            assert_eq!(k.glyph(), glyph, "{name}.glyph() must be {glyph:?}");
+        }
+    }
+
+    /// WAP1.1: walkability and the encounter flag are exactly the class table's.
+    /// Kills: water/rock/tree/bush made walkable, path/sand left unwalkable, or any
+    /// class other than TallGrass flagged as an encounter tile (or TallGrass not).
+    #[test]
+    fn every_class_has_its_exact_walkable_and_encounter_flags_wap1_1() {
+        for k in TABLE_ORDER {
+            let (_, _, walkable, encounter, name) = class_row(k);
+            assert_eq!(
+                (k.is_walkable(), k.is_encounter()),
+                (walkable, encounter),
+                "{name}: (is_walkable, is_encounter)"
+            );
+        }
+    }
+
+    /// WAP1.1 / WAP1.4 wire contract: a class serializes under its bare variant
+    /// name (no serde rename) and parses back from it.
+    /// Kills: a `#[serde(rename)]` / `rename_all` on `TileKind` (the TS roster
+    /// `TERRAIN_KINDS` would no longer match the wire), or a lossy round-trip.
+    #[test]
+    fn every_class_serializes_under_its_variant_name_wap1_1() {
+        for k in TABLE_ORDER {
+            let (_, _, _, _, name) = class_row(k);
+            assert_eq!(
+                ron::to_string(&k).expect("TileKind serializes"),
+                name,
+                "{name} wire name"
+            );
+            assert_eq!(
+                ron::from_str::<TileKind>(name).expect("wire name parses back"),
+                k,
+                "{name} round-trip"
+            );
+        }
+    }
+
+    /// WAP1.1 (R1): declaration order is the table's row order (old variants keep
+    /// their positions; the seven new ones are tail-appended) and `TileKind::ALL`
+    /// lists all ten in that order.
+    /// Kills: a new variant inserted before `TallGrass` (shifts the serde /
+    /// `SpacetimeType` tags of stored values), two new variants swapped, or an
+    /// `ALL` that omits / reorders a class.
+    #[test]
+    fn all_lists_the_ten_classes_in_declaration_order_wap1_1() {
+        for (i, k) in TABLE_ORDER.iter().enumerate() {
+            assert_eq!(*k as usize, i, "{k:?} declaration position");
+        }
+        assert_eq!(TileKind::ALL.len(), 10);
+        assert_eq!(TileKind::ALL, TABLE_ORDER);
+        for (i, k) in TileKind::ALL.iter().enumerate() {
+            assert_eq!(*k as usize, i, "TileKind::ALL[{i}] = {k:?}");
+        }
+    }
+
+    /// WAP1.6: every class's Tiled GID maps to it; any other GID is `None`.
+    /// Kills: a GID off-by-one (e.g. 5 → DeepWater), a swapped pair, an open-ended
+    /// arm that accepts GID 10, or a default class for unknown GIDs.
+    #[test]
+    fn from_gid_maps_every_class_gid_and_rejects_the_rest_wap1_6() {
+        for k in TABLE_ORDER {
+            let (_, gid, _, _, name) = class_row(k);
+            assert_eq!(TileKind::from_gid(gid), Some(k), "GID {gid} is {name}");
+        }
+        assert_eq!(TileKind::from_gid(10), None, "GID 10 is not a class");
+        assert_eq!(
+            TileKind::from_gid(u32::MAX),
+            None,
+            "u32::MAX is not a class"
+        );
+    }
 }

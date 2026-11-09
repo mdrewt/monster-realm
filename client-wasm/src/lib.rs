@@ -2276,4 +2276,160 @@ mod tests {
              which would cause movement prediction to use the wrong zone's tile map"
         );
     }
+
+    // --- wap-1: needs the new TileKind API (compile-red before the slice) ---
+    //
+    // WAP1.4: the zone_map payload DTO. Expected values are hand-typed from the
+    // spec class table (Floor '.' walk · Wall '#' · TallGrass '~' walk+grass ·
+    // Path '=' walk · Sand ':' walk · ShallowWater 'w' · DeepWater 'W' · Rock '^' ·
+    // Tree 'T' · Bush '*'), never derived from the implementation.
+
+    fn heal(
+        location_id: u32,
+        zone_id: u32,
+        tile_x: i32,
+        tile_y: i32,
+    ) -> game_core::HealLocationDef {
+        game_core::HealLocationDef {
+            location_id,
+            zone_id,
+            tile_x,
+            tile_y,
+            cost_item_id: None,
+            cost_qty: 0,
+            cooldown_ms: 0,
+            cost_currency: 0,
+        }
+    }
+
+    fn heal_landmark(x: i32, y: i32) -> super::Landmark {
+        super::Landmark {
+            kind: super::LandmarkKind::Heal,
+            x,
+            y,
+        }
+    }
+
+    /// WAP1.4: on a non-square map holding all ten class glyphs, the payload's
+    /// `terrain` is each tile's class in row-major order, parallel to `walkable`
+    /// and `grass`, and every existing field keeps its value.
+    /// Kills: a column-major walk (x outer), a terrain list re-derived from
+    /// walkable/grass (cannot tell water from rock), `filter_map` dropping tiles, a
+    /// width/height swap, and an empty or defaulted `warps`/`landmarks`.
+    #[test]
+    fn build_zone_map_payload_lists_every_tile_class_row_major_wap1_4() {
+        use game_core::TileKind as K;
+        let map = game_core::TileMap::from_rows(3, &[".#~=:", "wW^T*"])
+            .expect("all ten class glyphs build a 5x2 map");
+        let p = super::build_zone_map_payload(&map, &[]).expect("payload builds");
+        assert_eq!(p.zone_id, 3);
+        assert_eq!(p.width, 5);
+        assert_eq!(p.height, 2);
+        assert_eq!(
+            p.terrain,
+            vec![
+                K::Floor,
+                K::Wall,
+                K::TallGrass,
+                K::Path,
+                K::Sand,
+                K::ShallowWater,
+                K::DeepWater,
+                K::Rock,
+                K::Tree,
+                K::Bush,
+            ]
+        );
+        assert_eq!(
+            p.walkable,
+            vec![true, false, true, true, true, false, false, false, false, false]
+        );
+        assert_eq!(
+            p.grass,
+            vec![false, false, true, false, false, false, false, false, false, false]
+        );
+        assert!(p.warps.is_empty(), "from_rows maps carry no warps");
+        assert!(p.landmarks.is_empty(), "no heal rows were given");
+    }
+
+    /// WAP1.4: `landmarks` holds one heal landmark per heal row OF THIS ZONE, in
+    /// registry order, with `x = tile_x`, `y = tile_y`.
+    /// Kills: no zone filter (zone 1/2 rows leak in), an x/y swap (every fixture
+    /// has tile_x != tile_y), sorting by coordinate (registry order is
+    /// descending), keeping only the first row, and a hard-coded zone 0.
+    #[test]
+    fn build_zone_map_payload_keeps_only_this_zones_heals_in_registry_order_wap1_4() {
+        let heals = [
+            heal(10, 0, 7, 2),
+            heal(11, 1, 1, 5),
+            heal(12, 2, 3, 4),
+            heal(13, 0, 2, 6),
+        ];
+        let zone0 = game_core::TileMap::from_rows(0, &["...."]).expect("zone-0 fixture");
+        let p0 = super::build_zone_map_payload(&zone0, &heals).expect("payload builds");
+        assert_eq!(p0.landmarks, vec![heal_landmark(7, 2), heal_landmark(2, 6)]);
+
+        let zone1 = game_core::TileMap::from_rows(1, &["...."]).expect("zone-1 fixture");
+        let p1 = super::build_zone_map_payload(&zone1, &heals).expect("payload builds");
+        assert_eq!(p1.landmarks, vec![heal_landmark(1, 5)]);
+    }
+
+    /// WAP1.4: the real `zone_map_payload(0)` keeps every existing field's value
+    /// (zone_id, width, height, warps = `map_for(0, …)`'s), carries in-bounds heal
+    /// landmarks from the compiled heal registry, and its `terrain` agrees tile by
+    /// tile with game-core's `terrain_at` (as do `walkable` / `grass`).
+    /// Kills: a payload built from a different map than the rule's, dropped warps,
+    /// a landmarks list not sourced from the heal registry, and a terrain list out
+    /// of step with the map.
+    #[test]
+    fn zone_map_payload_for_zone_0_matches_the_rules_map_wap1_4() {
+        let maps = game_core::load_zone_maps().expect("zone maps load");
+        let map = game_core::map_for(0, &maps).expect("zone 0 has a map");
+        let p = super::zone_map_payload(0).expect("zone 0 payload builds");
+        assert_eq!(p.zone_id, map.zone_id);
+        assert_eq!(p.width, map.width);
+        assert_eq!(p.height, map.height);
+        assert!(!map.warps.is_empty(), "non-vacuity: zone 0 ships warps");
+        assert_eq!(p.warps, map.warps);
+
+        let heals = game_core::load_heal_locations().expect("heal locations load");
+        let expected: Vec<super::Landmark> = heals
+            .iter()
+            .filter(|h| h.zone_id == 0)
+            .map(|h| heal_landmark(h.tile_x, h.tile_y))
+            .collect();
+        assert!(
+            !p.landmarks.is_empty(),
+            "non-vacuity: zone 0 ships a heal location"
+        );
+        assert_eq!(p.landmarks, expected);
+        for l in &p.landmarks {
+            assert_eq!(l.kind, super::LandmarkKind::Heal);
+            assert!((0..p.width).contains(&l.x), "landmark x {} in bounds", l.x);
+            assert!((0..p.height).contains(&l.y), "landmark y {} in bounds", l.y);
+        }
+
+        let tiles = (p.width * p.height) as usize;
+        assert_eq!(p.walkable.len(), tiles);
+        assert_eq!(p.grass.len(), tiles);
+        assert_eq!(p.terrain.len(), p.walkable.len());
+        for y in 0..p.height {
+            for x in 0..p.width {
+                let idx = (y * p.width + x) as usize;
+                let t = game_core::TilePos { x, y };
+                assert_eq!(
+                    p.terrain[idx],
+                    map.terrain_at(t).expect("in-bounds tile has a class"),
+                    "terrain at ({x},{y})"
+                );
+                assert_eq!(p.walkable[idx], map.is_walkable(t), "walkable at ({x},{y})");
+                assert_eq!(p.grass[idx], map.is_grass(t), "grass at ({x},{y})");
+            }
+        }
+
+        assert!(
+            super::zone_map_payload(999).is_err(),
+            "an unknown zone is an error, never a fallback map"
+        );
+    }
 }

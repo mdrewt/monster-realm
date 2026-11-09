@@ -678,13 +678,13 @@ mod tests {
         );
     }
 
-    /// Criterion: an unknown GID (not in {0, 1, 2}) must be rejected.
+    /// Criterion: an unknown GID (not a `TileKind` class GID, 0..=9) must be rejected.
     ///
     /// Kills: an impl that silently maps unknown GIDs to a default tile,
     /// which would hide content errors.
     #[test]
     fn parse_tiled_rejects_unknown_gid() {
-        let json = minimal_tiled_json(2, 1, &[1, 99]); // GID 99 is not in {0,1,2}
+        let json = minimal_tiled_json(2, 1, &[1, 99]); // GID 99 is not a class GID (0..=9)
         assert!(
             parse_tiled_json(&json, 0).is_err(),
             "unknown GID 99 must be rejected"
@@ -1124,5 +1124,47 @@ mod tests {
             "row-major indexing `row*width+col` must place distinct GIDs correctly; \
              a `*`→`/` flip collapses row 1 onto row 0's cells"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // wap-1 (WAP1.6): Tiled GIDs 0..=9 are the class table's GIDs.
+    // -----------------------------------------------------------------------
+
+    /// WAP1.6: every class GID imports as its class glyph (hand-typed row from the
+    /// spec class table: 0 '#', 1 '.', 2 '~', 3 '=', 4 ':', 5 'w', 6 'W', 7 '^',
+    /// 8 'T', 9 '*').
+    /// Kills: an importer that still knows only GIDs 0/1/2, a GID off-by-one
+    /// (shallow/deep water swapped), or a second, drifting GID table.
+    #[test]
+    fn every_class_gid_imports_as_its_glyph_wap1_6() {
+        let json = minimal_tiled_json(10, 1, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let result = parse_tiled_json(&json, 0).expect("all ten class GIDs must import");
+        assert_eq!(result.rows, vec!["#.~=:wW^T*".to_string()]);
+    }
+
+    /// WAP1.6: a GID outside the class table is rejected naming the GID and its
+    /// cell (non-square layer, bad cell at row 1 col 2, after valid new GIDs).
+    /// Kills: an open-ended arm that maps GID 10 to a class (or clamps it), an
+    /// error that swaps row/col, and an importer that still rejects GIDs 3..=9
+    /// (it would then fail on GID 3 at row 0 col 0 instead).
+    #[test]
+    fn unmapped_gid_is_rejected_naming_gid_and_cell_wap1_6() {
+        let json = minimal_tiled_json(3, 2, &[3, 4, 5, 6, 7, 10]);
+        let err = parse_tiled_json(&json, 0).expect_err("GID 10 is not a class GID");
+        for needle in ["unknown GID 10", "row=1", "col=2"] {
+            assert!(
+                err.contains(needle),
+                "error must contain {needle:?}; got {err}"
+            );
+        }
+
+        let json = minimal_tiled_json(2, 1, &[9, 99]);
+        let err = parse_tiled_json(&json, 0).expect_err("GID 99 is not a class GID");
+        for needle in ["unknown GID 99", "row=0", "col=1"] {
+            assert!(
+                err.contains(needle),
+                "error must contain {needle:?}; got {err}"
+            );
+        }
     }
 }
