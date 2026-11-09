@@ -1,6 +1,8 @@
 // ui/screens/profileScreen.ts — the Profile children as pure screens (design §5 row 5, CTL8H.2-4):
-// Name (the rename frame), Account (the claim frame) and Privacy & data (the privacy frame). No DOM,
-// SDK, module state or clock; the three views apply what `paint` hands them.
+// Name (the rename frame), Account (the claim frame) and Privacy & data (the privacy frame). The
+// adapters touch no DOM, SDK, module state or clock; the three views apply what `paint` hands them,
+// each walking its rows through the shared `RowSection` (uif-16a), whose `walkSection` is the one
+// place here that focuses an element it is handed.
 //
 // The rows are each view's REAL controls and the cursor IS DOM focus, so the mouse, Tab, a native
 // Enter or Space on a button and the D-pad all move and press the same thing, and no control is

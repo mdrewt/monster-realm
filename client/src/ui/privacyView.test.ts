@@ -1512,6 +1512,22 @@ describe('PrivacyView uif-16a: the shared section interface', () => {
     ).toEqual([CLOSE_BTN_ID, CANCEL_BTN_ID, EXPORT_BTN_ID, DOWNLOAD_BTN_ID]);
   });
 
+  it('UIF16A.1 sectionRows drops an ENABLED but display:none button, and a move from its DOM neighbour skips it', () => {
+    // The real render disables every button it hides, so the display half of the filter needs a
+    // forged control: enabled, yet hidden. Idle rows are [close, delete, cancel, export].
+    const cancel = byId16(CANCEL_BTN_ID) as HTMLButtonElement;
+    cancel.style.display = 'none';
+    expect(cancel.disabled, 'precondition: the forged button is still enabled').toBe(false);
+    expect(ids16(view.sectionRows()), 'a hidden enabled button is not a row').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+    byId16(DELETE_BTN_ID).focus();
+    view.applyRowOp(move16(1));
+    expect(focusedId16(), 'a move from the preceding row skips the hidden one').toBe(EXPORT_BTN_ID);
+  });
+
   it('UIF16A.1 defaultRow is Keep while the deletion confirm is armed, else the first row (the Close anchor)', () => {
     expect(view.defaultRow(), 'idle').toBe(byId16(CLOSE_BTN_ID));
     view.render(vmOf({ confirmPrompt: ARMED16 }));

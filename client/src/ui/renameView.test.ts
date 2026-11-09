@@ -1711,6 +1711,34 @@ describe('RenameView uif-16a: the shared section interface', () => {
     expect(focusedId16(), 'clamped at the last overridden row, no wrap').toBe('rename-input');
   });
 
+  it('UIF16A.2 A on the field never clicks the field: not with an empty draft, not with a submittable one', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, 'click');
+    try {
+      view.render(EMPTY16);
+      input.focus();
+      expect(focusedId16(), 'precondition: focus is on the field').toBe('rename-input');
+      view.applyRowOp(activate16());
+      expect(clickSpy, 'empty draft: the field is never clicked').not.toHaveBeenCalled();
+      expect(focusedId16(), 'empty draft: focus stays on the field').toBe('rename-input');
+      expect(onSubmit, 'empty draft: nothing submitted').not.toHaveBeenCalled();
+
+      input.value = 'Bob';
+      view.render(ENABLED16);
+      input.focus();
+      view.applyRowOp(activate16());
+      await flushPromises();
+      expect(clickSpy, 'submittable draft: the field is never clicked').not.toHaveBeenCalled();
+      expect(focusedId16(), 'submittable draft: focus stays on the field').toBe('rename-input');
+      expect(onSubmit, 'submittable draft: nothing submitted').not.toHaveBeenCalled();
+    } finally {
+      clickSpy.mockRestore();
+    }
+  });
+
   it('UIF16A.2 through the real interface: A on the field presses nothing, A on Save submits the trimmed draft once, and a blank draft on an enabled Save submits nothing', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const view = new RenameView({ onSubmit });

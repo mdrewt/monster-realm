@@ -1,7 +1,7 @@
 // ui/renameView.ts — thin DOM shell for the profile-rename overlay: Profile › Name (ctl-8h). Its
 // rows are [the field, Save], the cursor being DOM focus (`applyRowOp`, the Name screen's tokens,
-// walked through its `RowSection`, uif-16a);
-// it opens typing (overlayA11y focuses the field) and commits through `onSubmit`.
+// walked through its `RowSection`, uif-16a); it opens typing (overlayA11y focuses the field) and
+// commits through `onSubmit`.
 //
 // First overlay with a text <input>. Three input-hygiene mechanisms the read-only
 // overlays never needed:
