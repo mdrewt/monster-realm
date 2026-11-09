@@ -46,7 +46,7 @@ import { closeAll, pressButton, readWorld, safeTile, stepTile, walkTo } from './
 //    uif-7 (UIF7.2) named change: the sheet gained its last row, Close (one Down past Move, and
 //    the Up that wraps from Summary), so the helper below also walks Move -> Close -> Move.
 //  - NO "Menu > Bag" BREADCRUMB. The Bag paints the raising frame's own title; the menu paints a
-//    breadcrumb only inside its groups (Social, Profile, Options). The step asserts that title and
+//    breadcrumb only inside its groups (Profile, Options; uif-15b made Social a root leaf). The step asserts that title and
 //    that the menu is still open underneath instead.
 //  - THE BAG OPENS ON ITS FIRST POCKET (Bait, the lowest item id), so RB reaches Food as designed.
 //  - A SETUP WALK BEFORE THE FLOW. The final press is Up (W, North), as the criterion says. At the

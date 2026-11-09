@@ -25,14 +25,17 @@
  * path is the real `ACCEL_PATHS` through `accelDecision`. A re-ordered, grown or re-nested menu
  * therefore changes the computed counts with no edit here.
  *
- * HOW A MUTANT IS CAUGHT. Adding entries ahead of Social pushes Social > Challenges (now 8) past 7
+ * HOW A MUTANT IS CAUGHT. Adding entries ahead of Social pushes the Social tabs (P now 8) past 7
  * and reds the table's bound; so does a menu that grows a root entry (the wrap distance to Social
  * and Profile grows, which the property below feels from EVERY remembered cursor, not only the
- * fresh one); a Social group that gains two entries before Challenges; a Monsters tab strip with a
+ * fresh one); a Social tab strip that gains two tabs before Challenges (uif-15b: the Social tab
+ * presses are counted over the real Social layout from the fresh-memory landing, Players); a
+ * Monsters tab strip with a
  * third tab ahead of Storage (the RB count for B); a menu that stops wrapping (the Up route to
  * Profile and Close disappears, so Rename reads 7); and a path in `ACCEL_PATHS` whose menu keys name
  * no leaf, or whose leaf opens another frame (the stack check). The exact counts below are the
- * design table's own (party 2, storage 3, bag 3, journal 4, rename 6, Social > Challenges 7).
+ * design table's own (party 2, storage 3, bag 3, journal 4, rename 6, and, since uif-15b, the Social
+ * tabs U 6, P 7, L 6: Social is a root leaf, Start, Down x3, A, then the tab presses).
  *
  * Report a problem (F9's twin, design §5) is not a menu leaf: #586 D3's menu has no slot for it, so
  * the spec re-homes it on How to Play's Introduction tab (uif-14, UIF14.3, deferred). The Options
@@ -63,7 +66,7 @@ import { ResultsPanel } from '../tactics/results';
 import type { BagVm } from './bagModel';
 import type { MonsterCardViewModel } from './boxModel';
 import { BoxView } from './boxView';
-import { contextStep, mirrorEdges, type Stack, WORLD_STACK } from './contextStack';
+import { contextStep, mirrorEdges, type Stack, socialPanel, WORLD_STACK } from './contextStack';
 import type {
   EvolutionGateViewModel,
   EvolutionMonsterViewModel,
@@ -83,6 +86,7 @@ import {
   navStep,
   tabs as navTabs,
 } from './nav';
+import type { OverlayId } from './overlayRegistry';
 import { buildPvpChallengeViewModel, type PvpChallengeViewModel } from './pvpModel';
 import { PvpView, type PvpViewCallbacks } from './pvpView';
 import type { RaisingViewModel } from './raisingModel';
@@ -99,6 +103,7 @@ import type {
   SocialPanelId,
   SocialTab,
 } from './screens/types';
+import { buildSocialVm, socialLayout } from './socialModel';
 import { buildTradeViewModel } from './tradeModel';
 import { type TradeCallbacks, TradeView } from './tradeView';
 
@@ -188,10 +193,33 @@ const LANDING_TAB = ACCEL_PATHS.V.tab;
 const monstersLanding = (): NavState =>
   navInit(MONSTERS_SAMPLE, { tab: LANDING_TAB ?? null, item: null, perTab: {} });
 
+// uif-15b (UIF15B.4): the Social frame's tab search runs over the REAL Social layout
+// (`socialLayout`, built from the real `buildSocialVm` over an empty store) from the landing the
+// REAL `socialScreen.init` picks at fresh memory (Players, with nothing waiting and nothing
+// requested: the menu opens Social with no tab). Neither the layout nor the landing is a typed
+// constant. Counting rule unchanged: each LB / RB / D-pad press is one.
+const SOCIAL_VM = buildSocialVm(null, [], [], 'reach-me', {
+  players: [],
+  characters: [],
+  profiles: [],
+});
+const SOCIAL_LAYOUT: NavLayout = socialLayout(SOCIAL_VM);
+
+/** Where the Social frame stands when the menu has just opened it, at fresh memory. */
+const socialLanding = (): NavState => socialScreen.init(SOCIAL_VM, undefined).nav;
+
+/** The tab layout and landing the frame an accelerator's path names opens on. */
+function tabModelOf(frame: AccelPath['frame']): { layout: NavLayout; start: NavState } {
+  return frame === 'social'
+    ? { layout: SOCIAL_LAYOUT, start: socialLanding() }
+    : { layout: MONSTERS_SAMPLE, start: monstersLanding() };
+}
+
 /** Breadth-first search over the real nav model: the fewest presses from the landing tab to `goal`
- *  (none when it already is there), as the sequence itself. */
-function tabPath(goal: string): readonly TabPress[] {
-  const startState = monstersLanding();
+ *  (none when it already is there), as the sequence itself. `frame` picks the model (Monsters by
+ *  default, as before uif-15b). */
+function tabPath(goal: string, frame: AccelPath['frame'] = 'boxView'): readonly TabPress[] {
+  const { layout, start: startState } = tabModelOf(frame);
   const key = (s: NavState): string => `${s.tab}|${s.item}|${JSON.stringify(s.perTab)}`;
   const seen = new Set<string>([key(startState)]);
   let frontier: Array<{ state: NavState; path: readonly TabPress[] }> = [
@@ -203,7 +231,7 @@ function tabPath(goal: string): readonly TabPress[] {
     const next: typeof frontier = [];
     for (const { state, path } of frontier) {
       for (const button of TAB_PRESSES) {
-        const moved = navStep(MONSTERS_SAMPLE, state, press(button)).state;
+        const moved = navStep(layout, state, press(button)).state;
         if (!seen.has(key(moved))) {
           seen.add(key(moved));
           next.push({ state: moved, path: [...path, button] });
@@ -212,10 +240,11 @@ function tabPath(goal: string): readonly TabPress[] {
     }
     frontier = next;
   }
-  throw new Error(`the Monsters tab ${goal} is unreachable in the real nav model`);
+  throw new Error(`the ${frame} tab ${goal} is unreachable in the real nav model`);
 }
 
-const tabPresses = (goal: string): number => tabPath(goal).length;
+const tabPresses = (goal: string, frame: AccelPath['frame'] = 'boxView'): number =>
+  tabPath(goal, frame).length;
 
 /** An accelerator's canonical open path, from the real decision at a bare world. */
 function pathOf(accel: MenuAccel): AccelPath {
@@ -232,14 +261,17 @@ function pressesTo(accel: MenuAccel, reach: ReadonlyMap<string, Reach>): number 
   if (leaf === undefined) {
     throw new Error(`${accel}: the menu model has no leaf at ${path.menu.join(' > ')}`);
   }
-  return 1 + leaf.presses + (path.tab === undefined ? 0 : tabPresses(path.tab));
+  return 1 + leaf.presses + (path.tab === undefined ? 0 : tabPresses(path.tab, path.frame));
 }
 
 /** The stack after Start and the leaf's open, by the real stack model: the menu pushed over the
  *  world, then the leaf's frame. */
 function stackAfterLeaf(target: MenuTarget): Stack {
   let stack: Stack = WORLD_STACK;
-  for (const edge of mirrorEdges(WORLD_STACK, ['menuView', target])) {
+  // uif-15b: the `social` target is a frame id, not an overlay; the mirror sees the Social frame as
+  // the panel a plain open (no tab) shows, which `socialPanel(null)` names.
+  const overlay: OverlayId = target === 'social' ? socialPanel(null) : target;
+  for (const edge of mirrorEdges(WORLD_STACK, ['menuView', overlay])) {
     stack = contextStep(stack, edge).stack;
   }
   return stack;
@@ -329,7 +361,30 @@ describe('Party grid reachability over the real nav model (uif-6, UIF6.8)', () =
 });
 
 describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)', () => {
-  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, Social > Challenges 7), and each path lands on its accelerator`s frame', () => {
+  it('UIF15B.4 U, P and L reach the Social tabs Trades, Challenges and Rankings in 6, 7 and 6 presses, each at most 7, counted over the real mainMenuStep and the real Social tab layout from the frame`s fresh-memory landing tab (Players)', () => {
+    // WRONG IMPL KILLED: an accelerator path that still walks a Social sub-list (the leaf is not in
+    // the menu: the search throws); a Social leaf placed deeper in the root (Down x4 or more: the
+    // counts rise past 7); a Social tab count taken from a typed constant instead of the real
+    // layout (a re-ordered tab strip would not move it); a tab search that starts from Trades (the
+    // landing the open picks is Players, so P would read 6, not 7); a menu that opens Social on a
+    // requested tab (the landing tab would not be Players and the tab presses would be wrong).
+    const reach = searchMenu(openMainMenu(EMPTY_NAV_MEMORY));
+    expect(socialLanding().tab, 'the fresh-memory landing the real init picks').toBe('players');
+    expect(tabPresses('trades', 'social'), 'RB').toBe(1);
+    expect(tabPresses('challenges', 'social'), 'RB RB').toBe(2);
+    expect(tabPresses('rankings', 'social'), 'LB wraps from Players').toBe(1);
+    for (const [accel, count] of [
+      ['U', 6],
+      ['P', 7],
+      ['L', 6],
+    ] as const) {
+      const got = pressesTo(accel, reach);
+      expect(got, `${accel}: presses from the world`).toBe(count);
+      expect(got, `${accel}: within the bound`).toBeLessThanOrEqual(MAX_PRESSES);
+    }
+  });
+
+  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, Social tabs U 6, P 7, L 6), and each path lands on its accelerator`s frame', () => {
     // WRONG IMPL KILLED: a menu grown or re-ordered so a target passes 7 presses (an entry added
     // ahead of Social: Challenges reads 8), a menu that no longer wraps (the upward routes to Profile
     // and Close vanish: Rename reads 7), a Monsters entry that opens Storage first (storage reads 2,
@@ -344,8 +399,9 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 
     const reach = searchMenu(openMainMenu(EMPTY_NAV_MEMORY));
     const ids = [...reach.keys()];
+    // uif-15b (named intentional change): 10 -> 9, the three Social sub-list leaves are one root leaf.
     expect(ids.length, 'ANTI-VACUITY: the search found the menu`s leaves').toBeGreaterThanOrEqual(
-      10,
+      9,
     );
     expect(
       ids.some((id) => id.startsWith('options/')),
@@ -380,7 +436,17 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
     expect(counts.I, 'open bag: Esc, S, Enter').toBe(3);
     expect(counts.J, 'check quests: Esc, S, S, Enter').toBe(4);
     expect(counts.N, 'rename: Esc, W, W, W, Enter, Enter').toBe(6);
-    expect(counts.P, 'Social > Challenges, the worst case today').toBe(7);
+    // uif-15b (UIF15B.4, named design-table count changes): Social is a root leaf and its three
+    // accelerators ride the Social tab presses from the fresh landing (Players): Start, Down x3, A
+    // = 5, then RB (Trades) 1, RB RB (Challenges) 2, LB wrap (Rankings) 1. U 6 (new row), P 7
+    // (was Social > Challenges 7: unchanged), L 6 (new row). The Social leaf is 4 menu presses.
+    expect(counts.U, 'Social, then RB to Trades: Start, Down x3, A, RB').toBe(6);
+    expect(counts.P, 'Social, then RB RB to Challenges, the worst case').toBe(7);
+    expect(counts.L, 'Social, then LB wraps to Rankings: Start, Down x3, A, LB').toBe(6);
+    expect(reach.get('root/social')?.presses, 'the Social leaf: Down x3, A').toBe(4);
+    for (const id of ['social/trades', 'social/challenges', 'social/rankings']) {
+      expect(reach.has(id), `${id}: the Social sub-list leaf is gone`).toBe(false);
+    }
 
     // Every leaf the menu holds, not only the accelerator ones (Options included): the bound.
     for (const [id, leaf] of reach) {
@@ -442,11 +508,13 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
             path.frame,
           );
 
-          // The Monsters tab: replay the cheapest tab sequence and land on the path's tab.
+          // The frame's tab (uif-15b: Monsters' or Social's, each over its own real model):
+          // replay the cheapest tab sequence and land on the path's tab.
           if (path.tab !== undefined) {
-            let nav = monstersLanding();
-            for (const button of tabPath(path.tab)) {
-              nav = navStep(MONSTERS_SAMPLE, nav, press(button)).state;
+            const model = tabModelOf(path.frame);
+            let nav = model.start;
+            for (const button of tabPath(path.tab, path.frame)) {
+              nav = navStep(model.layout, nav, press(button)).state;
             }
             expect(nav.tab, `${accel}: the tab sequence lands on the path's tab`).toBe(path.tab);
           }

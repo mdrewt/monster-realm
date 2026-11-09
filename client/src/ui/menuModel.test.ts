@@ -43,8 +43,9 @@ const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options',
 // ctl-12b (named intentional change): Options gains its Controls leaf, SECOND, after How to play.
 // The order is load-bearing: e2e/battle-dpad.spec.ts and encounter-battle.spec.ts press A on
 // Options and expect the cursor on How to play. Was: options: ['help'].
+// uif-15b (UIF15B.1, named intentional change): Social is a root LEAF that opens the Social frame,
+// so it is no longer a group. Was: social: ['trades', 'challenges', 'rankings'].
 const GROUP_CHILD_KEYS: Readonly<Record<string, readonly string[]>> = {
-  social: ['trades', 'challenges', 'rankings'],
   profile: ['name', 'account', 'privacy'],
   options: ['help', 'controls'],
 };
@@ -80,7 +81,7 @@ afterEach(() => {
 });
 
 describe('MENU_ENTRIES', () => {
-  it('CTL5-1-ENTRIES: the root is Monsters, Bag, Journal, Social, Profile, Options, Close; Social, Profile and Options hold one sub-list level; every title and description is the English catalog text', () => {
+  it('CTL5-1-ENTRIES: the root is Monsters, Bag, Journal, Social, Profile, Options, Close; Profile and Options hold one sub-list level (Social is a leaf); every title and description is the English catalog text', () => {
     // WRONG IMPL KILLED: the old five-category tree; a root in a different order (design §5);
     // a leaf that carries children, or a third level (depth is structural: sub-lists are leaves
     // only); a group with the wrong members; a title/description swap or a row wired to another
@@ -107,7 +108,6 @@ describe('MENU_ENTRIES', () => {
       }
     }
     expect(ROOT.filter((r) => (r.children ?? []).length > 0).map((r) => r.key)).toEqual([
-      'social',
       'profile',
       'options',
     ]);
@@ -120,9 +120,6 @@ describe('MENU_ENTRIES', () => {
       profile: 'Profile',
       options: 'Options',
       close: 'Close',
-      'social/trades': 'Trades',
-      'social/challenges': 'Challenges',
-      'social/rankings': 'Rankings',
       'profile/name': 'Name',
       'profile/account': 'Account',
       'profile/privacy': 'Privacy',
@@ -137,11 +134,6 @@ describe('MENU_ENTRIES', () => {
       profile: 'Your name, account and privacy settings.',
       options: 'Help on how to play the game.',
       close: 'Close the menu and return to the world.',
-      'social/trades': 'See and answer the trade offered to you.',
-      // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): was 'Challenge a player or answer a
-      // challenge.' — no menu row starts a challenge any more; it only answers them.
-      'social/challenges': 'See and answer challenges.',
-      'social/rankings': 'See the ranked leaderboard.',
       'profile/name': 'Change the name other players see.',
       'profile/account': 'Sign in or keep this guest progress.',
       'profile/privacy': 'Export or delete your data.',
@@ -150,7 +142,9 @@ describe('MENU_ENTRIES', () => {
     };
     const rows = flatRows();
     // ctl-12b (named intentional change): + the Controls leaf. Was: 7 + 7 = 14.
-    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 8 sub-list rows').toBe(15);
+    // uif-15b (named intentional change, UIF15B.1): the Social sub-list's three rows are gone.
+    // Was: 7 + 8 = 15.
+    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 5 sub-list rows').toBe(12);
     for (const { path, row } of rows) {
       expect(row.title(), `${path} title`).toBe(TITLES[path]);
       expect(row.description(), `${path} description`).toBe(DESCRIPTIONS[path]);
@@ -234,7 +228,10 @@ describe('MENU_ENTRIES', () => {
     }
     // ctl-12b (named intentional change): + the Controls leaf, which opens controlsView. Was: 7 + 3
     // = 10 leaves over ten viewers.
-    expect(leaves.length, 'ANTI-VACUITY: 8 sub-list leaves + 3 root leaves').toBe(11);
+    // uif-15b (named intentional change, UIF15B.1): the three Social sub-list leaves (tradeView,
+    // pvpView, leaderboardView) are gone and the root Social row is a fourth root leaf opening the
+    // `social` frame. Was: 8 sub-list leaves + 3 root leaves = 11 over eleven viewers.
+    expect(leaves.length, 'ANTI-VACUITY: 5 sub-list leaves + 4 root leaves').toBe(9);
     for (const { path, target } of leaves) {
       expect(target, `${path} opens something`).toBeTypeOf('string');
       expect(target, `${path} must not open the trade wizard`).not.toBe('tradeProposeView');
@@ -248,22 +245,60 @@ describe('MENU_ENTRIES', () => {
         'claimView',
         'controlsView',
         'helpView',
-        'leaderboardView',
         'privacyView',
-        'pvpView',
         'questLogView',
         'raisingView',
         'renameView',
-        'tradeView',
+        'social',
       ].sort(),
     );
 
+    // The Social row's own description (the Challenges leaf's text retired with it, uif-15b) never
+    // advertises starting a challenge.
     setLocale('en');
-    const challenges = flatRows().find((r) => r.path === 'social/challenges');
-    expect(challenges, 'the Challenges leaf exists').toBeDefined();
-    const desc = (challenges as { row: Row }).row.description();
-    expect(desc).toBe('See and answer challenges.');
+    const social = flatRows().find((r) => r.path === 'social');
+    expect(social, 'the Social row exists').toBeDefined();
+    const desc = (social as { row: Row }).row.description();
+    expect(desc).toBe('Trades, challenges and rankings with other players.');
     expect(desc.includes('Challenge a player'), 'no longer advertises starting one').toBe(false);
+  });
+
+  it('UIF15B.1 the root Social row is an open leaf for the social frame with no children, and the three retired Social sub-list leaves are not in the table', () => {
+    // WRONG IMPL KILLED: Social still a group (A would enter a sub-list, the old two-step path); a
+    // leaf that opens a legacy overlay (tradeView) instead of the Social frame; a leaf that keeps
+    // a vestigial children array; the Trades / Challenges / Rankings rows kept somewhere in the
+    // table (a second route that the roster pin no longer carries ids for).
+    const social = MENU_ENTRIES.find((e) => e.key === 'social') as unknown as {
+      kind?: string;
+      target?: string;
+      children?: unknown;
+    };
+    expect(social, 'the Social row').toBeDefined();
+    // C26/C27 (red-team): title and description are the Social row's own catalog text, not swapped
+    // with each other or with a neighbour's, in both locales.
+    const row = MENU_ENTRIES.find((e) => e.key === 'social') as Row;
+    setLocale('en');
+    expect(row.title(), 'en title').toBe(EN['menu.social.title']);
+    expect(row.description(), 'en description').toBe(EN['menu.social.desc']);
+    expect(row.title()).not.toBe(row.description());
+    setLocale('fr');
+    expect(row.title(), 'fr title').toBe(FR['menu.social.title']);
+    expect(row.description(), 'fr description').toBe(FR['menu.social.desc']);
+    setLocale('en');
+    expect(social.kind, 'an open leaf, not a group').toBe('open');
+    expect(social.target, 'it opens the Social frame').toBe('social');
+    expect(social.children, 'a leaf has no children').toBeUndefined();
+    expect(
+      MENU_ENTRIES.filter((e) => e.kind === 'group').map((e) => e.key),
+      'only Profile and Options remain groups',
+    ).toEqual(['profile', 'options']);
+    const allKeys = MENU_ENTRIES.flatMap((e) => [
+      e.key,
+      ...((e as Row).children ?? []).map((c) => c.key),
+    ]);
+    for (const retired of ['trades', 'challenges', 'rankings']) {
+      expect(allKeys, `${retired} is not a menu row any more`).not.toContain(retired);
+    }
   });
 
   it('ctl-12b: the Options group holds How to play then Controls, and the Controls leaf opens the controlsView frame', () => {
@@ -303,7 +338,7 @@ describe('withRequestBadge (ctl-13, CTL13.2)', () => {
     // mutates the labels it was given (the menu's own table would keep the badge after the request
     // is gone); a badge painted when nothing waits; a fresh object when nothing changes (the
     // menu's re-render memo would see a change every frame); a throw when the labels have no
-    // Social entry (a sub-list level); and a locale frozen at import.
+    // Social entry (a Profile or Options sub-list level); and a locale frozen at import.
     const labels = {
       monsters: 'Monsters',
       social: 'Social',

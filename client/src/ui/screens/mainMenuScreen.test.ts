@@ -7,8 +7,8 @@
 // place, B pops a group or closes at the root, Y describes, memory recalls the last entry).
 //
 // The contract the shell relies on:
-//   levels         'root' | 'social' | 'profile' | 'options'; the root cursor is on the group's
-//                  entry after B from that group.
+//   levels         'root' | 'profile' | 'options' (uif-15b: Social is a root leaf, no level); the
+//                  root cursor is on the group's entry after B from that group.
 //   effects        none | { open, target } | close. A on a leaf leaves the STATE where it is
 //                  (the menu stays open beneath the child).
 //   memory         updated on every step, immutable (a step never mutates the map it was given).
@@ -30,8 +30,9 @@ import {
 const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
 // ctl-12b (named intentional change): Options holds How to play THEN Controls (the order two e2e
 // specs outside this slice rely on: A on Options lands on How to play). Was: options: ['help'].
+// uif-15b (UIF15B.1, named intentional change): Social is a root leaf, not a group, so the
+// 'menuSocial' sub-list level is gone. Was: social: ['trades', 'challenges', 'rankings'].
 const GROUPS: Readonly<Record<string, readonly string[]>> = {
-  social: ['trades', 'challenges', 'rankings'],
   profile: ['name', 'account', 'privacy'],
   options: ['help', 'controls'],
 };
@@ -116,9 +117,10 @@ describe('mainMenu — open and wrap', () => {
       'monsters',
     ]);
 
-    const social = intoGroup('social');
-    expect(press(social, 'Up').state.nav.item, 'a sub-list wraps upward').toBe('rankings');
-    expect(press(press(social, 'Up').state, 'Down').state.nav.item).toBe('trades');
+    // uif-15b: the sub-list that proves wrapping is Profile now (Social's three rows are gone).
+    const profile = intoGroup('profile');
+    expect(press(profile, 'Up').state.nav.item, 'a sub-list wraps upward').toBe('privacy');
+    expect(press(press(profile, 'Up').state, 'Down').state.nav.item).toBe('name');
     // ctl-12b (named intentional change): Options is a two-entry list now (How to play, Controls),
     // so it wraps like the others instead of staying put. Was: "a one-entry list stays put" (Down
     // and Up both 'help').
@@ -152,13 +154,14 @@ describe('mainMenu — open and wrap', () => {
     // A repeat in the middle still moves one entry (clamping is only at the ends).
     expect(press(atFirst, 'Down', true).state.nav.item).toBe('bag');
 
-    const social = intoGroup('social');
-    expect(press(social, 'Up', true).state.nav.item, 'repeat Up at the first child').toBe('trades');
-    const lastChild = toKey(social, 'rankings');
+    // uif-15b: Profile is the three-row sub-list (was Social: trades .. rankings).
+    const profile = intoGroup('profile');
+    expect(press(profile, 'Up', true).state.nav.item, 'repeat Up at the first child').toBe('name');
+    const lastChild = toKey(profile, 'privacy');
     expect(press(lastChild, 'Down', true).state.nav.item, 'repeat Down at the last child').toBe(
-      'rankings',
+      'privacy',
     );
-    expect(press(lastChild, 'Down', false).state.nav.item, 'contrast: fresh wraps').toBe('trades');
+    expect(press(lastChild, 'Down', false).state.nav.item, 'contrast: fresh wraps').toBe('name');
 
     const onJournal = toKey(fresh(), 'journal');
     const repeatA = press(onJournal, 'A', true);
@@ -179,6 +182,8 @@ describe('mainMenu — A, B and the sub-lists', () => {
       ['monsters', 'boxView'],
       ['bag', 'raisingView'],
       ['journal', 'questLogView'],
+      // uif-15b (UIF15B.1, named intentional change): Social is a root leaf for the Social frame.
+      ['social', 'social'],
     ];
     const targets: MenuTarget[] = [];
     for (const [key, target] of rootLeaves) {
@@ -192,9 +197,6 @@ describe('mainMenu — A, B and the sub-lists', () => {
     }
 
     const groupLeaves: ReadonlyArray<readonly [string, string, MenuTarget]> = [
-      ['social', 'trades', 'tradeView'],
-      ['social', 'challenges', 'pvpView'],
-      ['social', 'rankings', 'leaderboardView'],
       ['profile', 'name', 'renameView'],
       ['profile', 'account', 'claimView'],
       ['profile', 'privacy', 'privacyView'],
@@ -210,13 +212,15 @@ describe('mainMenu — A, B and the sub-lists', () => {
       expect(step.state.nav.item).toBe(key);
       targets.push(target);
     }
-    expect(new Set(targets).size, 'eleven distinct overlays, one per leaf').toBe(11);
+    // uif-15b: 4 root leaves + 5 sub-list leaves. Was: 3 + 8 = 11 (tradeView, pvpView and
+    // leaderboardView left; the `social` frame joined).
+    expect(new Set(targets).size, 'nine distinct targets, one per leaf').toBe(9);
 
     const close = press(toKey(fresh(), 'close'), 'A');
     expect(close.effect, 'A on Close closes the menu').toEqual(CLOSE);
   });
 
-  it('CTL5-2-GROUP-PUSH-B-RETURNS: A on Social, Profile or Options enters its sub-list on the first child with a Menu breadcrumb; B returns to the root with the cursor on that group entry and the sub-list cursor is remembered', () => {
+  it('CTL5-2-GROUP-PUSH-B-RETURNS: A on Profile or Options enters its sub-list on the first child with a Menu breadcrumb; B returns to the root with the cursor on that group entry and the sub-list cursor is remembered', () => {
     // WRONG IMPL KILLED: A on a group that emits `open` or `close`, a sub-list that starts on
     // the wrong child, a B that closes the menu from a sub-list (two presses to leave one),
     // a B that returns to the first root entry instead of the group, a sub-list cursor that is
@@ -273,12 +277,12 @@ describe('mainMenu — A, B and the sub-lists', () => {
         }
       }
     }
-    const inside = toKey(intoGroup('social'), 'challenges');
+    const inside = toKey(intoGroup('profile'), 'account');
     for (const button of ['Right', 'Left'] as const) {
       const step = press(inside, button);
       expect(step.effect).toEqual(NONE);
-      expect(step.state.level, 'a sub-list is not left by Left').toBe('social');
-      expect(step.state.nav.item).toBe('challenges');
+      expect(step.state.level, 'a sub-list is not left by Left').toBe('profile');
+      expect(step.state.nav.item).toBe('account');
     }
   });
 });
@@ -355,12 +359,13 @@ describe('mainMenu — memory and Y', () => {
     expect(cleared.state.feedback, 'a move clears the feedback').toEqual({ kind: 'none' });
 
     // Sub-list children describe themselves.
-    const rankings = press(toKey(intoGroup('social'), 'rankings'), 'Y');
-    expect(rankings.state.feedback).toEqual({
+    // uif-15b: the sub-list child that describes itself is Profile > Privacy (was Social > Rankings).
+    const privacy = press(toKey(intoGroup('profile'), 'privacy'), 'Y');
+    expect(privacy.state.feedback).toEqual({
       kind: 'info',
-      text: 'See the ranked leaderboard.',
+      text: 'Export or delete your data.',
     });
-    expect(rankings.state.level).toBe('social');
+    expect(privacy.state.level).toBe('profile');
 
     // Resolved at press time: under fr the French description appears.
     setLocale('fr');
@@ -375,6 +380,21 @@ describe('mainMenu — memory and Y', () => {
 });
 
 describe('mainMenu — pick, view model and inert buttons', () => {
+  it('UIF15B.1 A on the root Social row opens the Social frame and leaves the menu on the root with the cursor on Social; no level or frame id for a Social sub-list exists', () => {
+    // WRONG IMPL KILLED: Social still a group (A enters a 'social' level: effect none, level
+    // changes); an open effect aimed at a legacy overlay (tradeView); an A that also moves the cursor
+    // or the level (B from the Social frame would not return to the same menu); a menu whose view
+    // model ever names a 'menuSocial' frame; a root cursor memory that loses Social.
+    const on = toKey(fresh(), 'social');
+    const step = press(on, 'A');
+    expect(step.effect, 'A on Social opens the Social frame').toEqual(open('social'));
+    expect(step.state.level, 'the menu stays on the root').toBe('root');
+    expect(step.state.nav.item, 'the cursor stays on Social').toBe('social');
+    expect(step.state.feedback, 'nothing else changed').toEqual(on.feedback);
+    expect(menuViewModel(step.state).frameId, 'the root frame id, never menuSocial').toBe('menu');
+    expect(openMainMenu(step.state.memory).nav.item, 'a reopen lands on Social').toBe('social');
+  });
+
   it('a pick moves the cursor to the key and then behaves as A: a leaf opens, a group enters, Close closes', () => {
     // WRONG IMPL KILLED: a pick that opens without moving the cursor (the menu would return to
     // the wrong entry), a pick that needs the cursor to be there already, and a pick that is not
@@ -384,17 +404,20 @@ describe('mainMenu — pick, view model and inert buttons', () => {
     expect(leaf.state.nav.item, 'the cursor follows the click').toBe('journal');
     expect(leaf.state.level).toBe('root');
 
-    const group = mainMenuPick(fresh(), 'social');
+    // uif-15b: a pick of Social now opens the Social frame (was: entered the Social sub-list);
+    // Profile is the group the pick enters.
+    expect(mainMenuPick(fresh(), 'social').effect).toEqual(open('social'));
+    const group = mainMenuPick(fresh(), 'profile');
     expect(group.effect).toEqual(NONE);
-    expect(group.state.level).toBe('social');
-    expect(group.state.nav.item).toBe('trades');
+    expect(group.state.level).toBe('profile');
+    expect(group.state.nav.item).toBe('name');
 
     expect(mainMenuPick(fresh(), 'close').effect).toEqual(CLOSE);
 
-    const viaPick = mainMenuPick(group.state, 'rankings');
-    const viaKeys = press(toKey(group.state, 'rankings'), 'A');
+    const viaPick = mainMenuPick(group.state, 'privacy');
+    const viaKeys = press(toKey(group.state, 'privacy'), 'A');
     expect(viaPick.effect).toEqual(viaKeys.effect);
-    expect(viaPick.effect).toEqual(open('leaderboardView'));
+    expect(viaPick.effect).toEqual(open('privacyView'));
     expect(viaPick.state.nav).toEqual(viaKeys.state.nav);
     expect(viaPick.state.level).toBe(viaKeys.state.level);
   });
@@ -412,12 +435,12 @@ describe('mainMenu — pick, view model and inert buttons', () => {
       expect(step.state.nav.item, `pick '${key}' keeps the cursor`).toBe('journal');
     }
 
-    const inside = toKey(intoGroup('social'), 'challenges');
+    const inside = toKey(intoGroup('profile'), 'account');
     for (const key of ['journal', 'monsters', 'close', 'help']) {
       const step = mainMenuPick(inside, key);
-      expect(step.effect, `pick '${key}' inside Social`).toEqual(NONE);
-      expect(step.state.level, 'the sub-list is still showing').toBe('social');
-      expect(step.state.nav.item, 'and the cursor did not move').toBe('challenges');
+      expect(step.effect, `pick '${key}' inside Profile`).toEqual(NONE);
+      expect(step.state.level, 'the sub-list is still showing').toBe('profile');
+      expect(step.state.nav.item, 'and the cursor did not move').toBe('account');
     }
   });
 
@@ -445,10 +468,6 @@ describe('mainMenu — pick, view model and inert buttons', () => {
 
     const frames = new Set<string>([root.frameId]);
     const expected: Record<string, { title: string; labels: Record<string, string> }> = {
-      social: {
-        title: 'Social',
-        labels: { trades: 'Trades', challenges: 'Challenges', rankings: 'Rankings' },
-      },
       profile: {
         title: 'Profile',
         labels: { name: 'Name', account: 'Account', privacy: 'Privacy' },
@@ -463,7 +482,9 @@ describe('mainMenu — pick, view model and inert buttons', () => {
       expect(vm.frameId, 'a sub-list has its own frame id').not.toBe('menu');
       frames.add(vm.frameId);
     }
-    expect(frames.size, 'four distinct frame ids').toBe(4);
+    // uif-15b: root + Profile + Options. Was four (the Social sub-list's 'menuSocial' is gone).
+    expect(frames.size, 'three distinct frame ids').toBe(3);
+    expect([...frames], 'no menuSocial frame id exists').not.toContain('menuSocial');
 
     setLocale('fr');
     expect(menuViewModel(fresh()).labels.monsters, 'labels follow the locale').toBe('Monstres');
@@ -501,7 +522,9 @@ describe('mainMenu — pick, view model and inert buttons', () => {
 // The expected sets are HARD-CODED literals (the spec's table and the decision), not derived from
 // SCREEN_POLICY.
 
-type Level = 'root' | 'social' | 'profile' | 'options';
+// uif-15b: no 'social' level (the Social sub-list is gone; the root Social leaf is disabled over a
+// battle with the same in-battle reason the group showed).
+type Level = 'root' | 'profile' | 'options';
 const IN_BATTLE = 'inBattle';
 const BAG_REASON = 'battleBag';
 type ReasonKind = typeof IN_BATTLE | typeof BAG_REASON;
@@ -516,11 +539,6 @@ const DISABLED_OVER_BATTLE: Readonly<Record<Level, ReadonlyArray<readonly [strin
       ['social', IN_BATTLE],
       ['profile', IN_BATTLE],
     ],
-    social: [
-      ['trades', IN_BATTLE],
-      ['challenges', IN_BATTLE],
-      ['rankings', IN_BATTLE],
-    ],
     profile: [
       ['name', IN_BATTLE],
       ['account', IN_BATTLE],
@@ -533,7 +551,6 @@ const DISABLED_OVER_BATTLE: Readonly<Record<Level, ReadonlyArray<readonly [strin
   };
 const LEVEL_KEYS: Readonly<Record<Level, readonly string[]>> = {
   root: ROOT_KEYS,
-  social: GROUPS.social as readonly string[],
   profile: GROUPS.profile as readonly string[],
   options: GROUPS.options as readonly string[],
 };
@@ -556,7 +573,7 @@ const reasonText = (kind: ReasonKind): string =>
   kind === BAG_REASON ? t('menu.disabled.battleBag') : t('menu.disabled.inBattle');
 
 describe('mainMenu over a battle (ctl-6c)', () => {
-  it('CTL6C-3-MENU-DISABLED-OVER-BATTLE: over a battle only Options (How to play) and Close stay enabled: Monsters, Bag, Journal, the Social group (Trades, Challenges, Rankings) and the Profile group are disabled with their reasons; A or a pick on a disabled row or group does nothing, enters nothing and shows its reason; the world menu is unchanged; en and fr', () => {
+  it('CTL6C-3-MENU-DISABLED-OVER-BATTLE: over a battle only Options (How to play) and Close stay enabled: Monsters, Bag, Journal, the Social row and the Profile group are disabled with their reasons; A or a pick on a disabled row or group does nothing, enters nothing and shows its reason; the world menu is unchanged; en and fr', () => {
     // WRONG IMPL KILLED: a battle layout keyed to `!battleSafe` alone (the pre-decision rule:
     // Journal, Social and Rankings stay enabled, so the quest log and the leaderboard open over a
     // battle that paints over their in-flow shells: red at the root literal and the Social level);
@@ -577,7 +594,7 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       itemsOf(menuViewModel(s).layout).map((i) => [i.key, i.enabled] as const);
 
     // --- the layouts ------------------------------------------------------------------------
-    for (const level of ['root', 'social', 'profile', 'options'] as const) {
+    for (const level of ['root', 'profile', 'options'] as const) {
       const vm = menuViewModel(battleLevel(level));
       const items = itemsOf(vm.layout);
       expect(
@@ -640,7 +657,7 @@ describe('mainMenu over a battle (ctl-6c)', () => {
     ).toBe(true);
 
     // --- the world menu is unchanged ---------------------------------------------------------
-    for (const level of ['root', 'social', 'profile', 'options'] as const) {
+    for (const level of ['root', 'profile', 'options'] as const) {
       const world =
         level === 'root' ? fresh() : level === 'profile' ? intoGroup('profile') : intoGroup(level);
       expect(
@@ -654,15 +671,15 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       open('questLogView'),
     );
     expect(mainMenuPick(fresh(), 'journal').effect).toEqual(open('questLogView'));
-    expect(press(toKey(fresh(), 'social'), 'A').state.level, 'world: Social enters').toBe('social');
-    expect(
-      press(toKey(intoGroup('social'), 'rankings'), 'A').effect,
-      'world: Rankings opens',
-    ).toEqual(open('leaderboardView'));
-    expect(mainMenuPick(intoGroup('social'), 'rankings').effect).toEqual(open('leaderboardView'));
+    // uif-15b: Social at the world opens the Social frame (was: entered a sub-list, then Rankings
+    // opened the leaderboard).
+    expect(press(toKey(fresh(), 'social'), 'A').effect, 'world: Social opens').toEqual(
+      open('social'),
+    );
+    expect(mainMenuPick(fresh(), 'social').effect).toEqual(open('social'));
 
     // --- A and a pick on a disabled row ------------------------------------------------------
-    for (const level of ['root', 'social', 'profile', 'options'] as const) {
+    for (const level of ['root', 'profile', 'options'] as const) {
       for (const [key, kind] of DISABLED_OVER_BATTLE[level]) {
         const at = (from: MainMenuState): MainMenuState => toKey(from, key);
         const state = at(battleLevel(level));
@@ -711,12 +728,10 @@ describe('mainMenu over a battle (ctl-6c)', () => {
     expect(mainMenuPick(battleMenu(), 'journal').effect, 'nor does a pick').toEqual(NONE);
     const social = press(toKey(battleMenu(), 'social'), 'A');
     expect(social.effect).toEqual(NONE);
-    expect(social.state.level, 'the disabled Social group is not entered').toBe('root');
+    expect(social.state.level, 'the disabled Social row opens nothing').toBe('root');
     expect(social.state.nav.item).toBe('social');
     expect(social.state.feedback).toEqual({ kind: 'info', text: 'Not during a battle' });
-    expect(mainMenuPick(battleMenu(), 'social').state.level, 'nor by a pick').toBe('root');
-    expect(press(toKey(battleLevel('social'), 'rankings'), 'A').effect).toEqual(NONE);
-    expect(mainMenuPick(battleLevel('social'), 'rankings').effect).toEqual(NONE);
+    expect(mainMenuPick(battleMenu(), 'social').effect, 'nor does a pick').toEqual(NONE);
     expect(press(toKey(battleMenu(), 'profile'), 'A').state.level, 'Profile stays shut').toBe(
       'root',
     );
@@ -772,6 +787,27 @@ describe('mainMenu over a battle (ctl-6c)', () => {
       kind: 'info',
       text: frBag,
     });
+  });
+
+  it('UIF15B.1 over a battle the Social row is disabled with the in-battle reason, A and a pick open nothing and show it, in en and fr', () => {
+    // WRONG IMPL KILLED: a Social leaf that ignores the battle flag (A emits open social over a
+    // battle, the Social frame's trade/challenge answers would be reachable mid-fight); a reason
+    // other than t('menu.disabled.inBattle') (the Bag's own reason, or none); a pick that bypasses
+    // the check; a reason frozen in en under fr.
+    for (const locale of ['en', 'fr'] as const) {
+      setLocale(locale);
+      const reason = t('menu.disabled.inBattle');
+      const row = itemsOf(menuViewModel(battleMenu()).layout).find((i) => i.key === 'social');
+      expect(row?.enabled, `${locale}: Social is disabled over a battle`).toBe(false);
+      expect(row?.reason, `${locale}: the in-battle reason`).toBe(reason);
+      const a = press(toKey(battleMenu(), 'social'), 'A');
+      expect(a.effect, `${locale}: A opens nothing`).toEqual(NONE);
+      expect(a.state.feedback).toEqual({ kind: 'info', text: reason });
+      expect(a.state.level).toBe('root');
+      const picked = mainMenuPick(battleMenu(), 'social');
+      expect(picked.effect, `${locale}: a pick opens nothing`).toEqual(NONE);
+      expect(picked.state.feedback).toEqual({ kind: 'info', text: reason });
+    }
   });
 
   it('UIF15A.3 over a battle the Inventory row is disabled with a reason that points at the battle Items command, in en and fr, and names no Bag or Sac', () => {

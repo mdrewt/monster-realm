@@ -739,17 +739,21 @@ test.describe
       // first root entry (the cursor is remembered across opens within a page session).
       expect(first, 'menu opened with no active option').toBe('menu-root-monsters');
 
-      // ArrowDown x3 moves monsters -> bag -> journal -> social; A (Enter) enters the Social
-      // sub-list; B (Backspace) backs out to the root with the cursor on Social.
+      // ArrowDown x4 moves monsters -> bag -> journal -> social -> profile; A (Enter) enters the
+      // Profile sub-list; B (Backspace) backs out to the root with the cursor on Profile.
+      // uif-15b (named intentional change, UIF15B.1): Social is a root leaf that opens the Social
+      // frame, so the sub-list enter/back proof moves to Profile. Was: Social at x3.
       await page.keyboard.press('ArrowDown');
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-bag');
       await page.keyboard.press('ArrowDown');
       await page.keyboard.press('ArrowDown');
       await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
+      await page.keyboard.press('ArrowDown');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-profile');
       await page.keyboard.press('Enter');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuSocial-root-/);
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuProfile-root-/);
       await page.keyboard.press('Backspace');
-      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-profile');
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
 

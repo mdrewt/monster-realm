@@ -44,8 +44,10 @@ The default keys:
 | Start | `Escape` or `M` | Open the main menu; close everything |
 | Select | `R` or `/` | Help |
 
-Shortcut keys open a menu path directly: `B` Storage, `I` Bag, `V` Party, `J` Journal,
-`U` Trades, `P` Challenges, `L` Rankings, `N` Name, `C` Account. `F9` saves a bug
+Shortcut keys open a menu path directly: `B` Storage, `I` Inventory, `V` Party, `J` Journal,
+`U` Trades, `P` Challenges, `L` Rankings (each a tab of the Social screen), `N` Name, `C` Account.
+The main menu's Social entry opens that screen directly, on a waiting request's tab, else the tab it was left on (Players at
+first), and LB / RB switch its four tabs Players, Trades, Challenges and Rankings. `F9` saves a bug
 report and `F8` dismisses the error toast (section 5). Key names are not button names:
 the key `B` opens Storage, while the button B (`Backspace`) goes back.
 

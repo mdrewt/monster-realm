@@ -832,14 +832,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.options.desc': 'Help on how to play the game.',
   'menu.close.title': 'Close',
   'menu.close.desc': 'Close the menu and return to the world.',
-  'menu.social.trades.title': 'Trades',
-  'menu.social.trades.desc': 'See and answer the trade offered to you.',
-  'menu.social.challenges.title': 'Challenges',
-  // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): was 'Challenge a player or answer a challenge.';
-  // no menu row starts a challenge any more, so the leaf only answers them.
-  'menu.social.challenges.desc': 'See and answer challenges.',
-  'menu.social.rankings.title': 'Rankings',
-  'menu.social.rankings.desc': 'See the ranked leaderboard.',
+  // NAMED INTENTIONAL CHANGE (uif-15b, UIF15B.1): -6 plain keys here, RETIRED with the Social sub-list
+  // (`menu.social.{trades,challenges,rankings}.{title,desc}`; the root Social row opens the Social frame
+  // directly, so no menu row reads them: catalogParity DEAD-KEY otherwise) = 530 keys. Was 536. Their
+  // absence is pinned by the 'uif-15b' describe at the end of this file.
   'menu.profile.name.title': 'Name',
   'menu.profile.name.desc': 'Change the name other players see.',
   'menu.profile.account.title': 'Account',
@@ -2256,7 +2252,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // uif-14 (named intentional change, UIF14.1 / UIF14.4 / UIF14.5): 506 -> 536, -7 retired plain
     // `help.*` ids, +36 plain (`help.tab.{intro,encyclopedia}`, `help.intro.{p1,p2}`,
     // `help.entry.<16 keys>.{term,def}`), +1 parameterised (`help.detail.related`).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-14 roster is 536 keys').toHaveLength(536);
+    // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 plain
+    // `menu.social.{trades,challenges,rankings}.{title,desc}` (the Social sub-list is gone).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-15b roster is 530 keys').toHaveLength(530);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -3357,8 +3355,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 530 keys').toBe(530);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(530);
   });
 });
 
@@ -3474,8 +3473,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 530 keys').toBe(530);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(530);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3772,9 +3772,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-12 (named intentional change, UIF12.3): 498 -> 499, +interact.chip.choose.
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(536);
+    // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 530 keys').toBe(530);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(530);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(530);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4419,5 +4420,37 @@ describe('uif-15a: the Bag / Sac wording is gone from the menu, the shortcuts ro
     expect(String(frAll['menu.disabled.battleBag'])).toContain(String(frAll['tactics.menu.item']));
     expect(enAll['chrome.help.title']).toBe('How to Play');
     expect(frAll['chrome.help.title']).toBe('Comment jouer');
+  });
+});
+
+// =============================================================================
+// uif-15b (UIF15B.1): the Social sub-list's six ids are retired; the Social row's own ids stay.
+// =============================================================================
+
+describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => {
+  it('UIF15B.1 the six menu.social.{trades,challenges,rankings}.{title,desc} ids are in neither catalog nor in the pinned roster, and the Social row keeps menu.social.title and menu.social.desc', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key (catalogParity DEAD-KEY: no menu row
+    // reads it any more); an id removed from one locale only (the other keeps a dead key); the
+    // Social ROW's own two ids removed with the sub-list's (the root row would print a catalog id);
+    // a roster pin that was not lowered with the ids (530, not 536).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = ['trades', 'challenges', 'rankings'].flatMap((leaf) => [
+      `menu.social.${leaf}.title`,
+      `menu.social.${leaf}.desc`,
+    ]);
+    expect(RETIRED, 'ANTI-VACUITY: six retired ids').toHaveLength(6);
+    for (const id of RETIRED) {
+      expect(Object.hasOwn(en, id), `en still has ${id}`).toBe(false);
+      expect(Object.hasOwn(fr, id), `fr still has ${id}`).toBe(false);
+      expect(EXPECTED_KEYS.includes(id), `the roster still lists ${id}`).toBe(false);
+    }
+    for (const id of ['menu.social.title', 'menu.social.desc']) {
+      expect(typeof en[id], `en keeps ${id}`).toBe('string');
+      expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
+      expect(EXPECTED_KEYS.includes(id), `the roster keeps ${id}`).toBe(true);
+    }
+    expect(Object.keys(en), 'the English roster is 530 keys (was 536)').toHaveLength(530);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(530);
   });
 });
