@@ -914,6 +914,8 @@
   position: relative;
   z-index: 2;
   display: flex;
+  min-width: 0; /* like .tactics-unit: the unshrinkable art never grows its 1fr track */
+  min-height: 0;
   align-items: center;
   justify-content: center;
   opacity: 0.55;

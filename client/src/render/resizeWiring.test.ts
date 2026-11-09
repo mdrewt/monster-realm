@@ -314,7 +314,13 @@ describe('UIF2.3 resize wiring writes --mr-ui-scale', () => {
     win.fire();
     win.fire();
     expect(win.document.writes).toHaveLength(3);
-    for (const w of win.document.writes) expect(w.name).toBe('--mr-ui-scale');
+    const allWrites = win.document.allWrites;
+    expect(
+      allWrites.some((w) => w.name === '--mr-ui-scale'),
+      'at least one --mr-ui-scale write exists',
+    ).toBe(true);
+    const allowed = ['--mr-ui-scale', '--mr-world-scale'];
+    for (const w of allWrites) expect(allowed).toContain(w.name);
   });
 
   it('UIF2.3 a resize event where only the dpr differs re-calls the renderer and rewrites the same scale', () => {

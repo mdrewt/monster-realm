@@ -325,12 +325,23 @@ async function checkBoardArt(p: Page, backdropStatuses: readonly number[]): Prom
   ).toBe(3);
 
   await cdp.send('Emulation.clearDeviceMetricsOverride');
-  await p.waitForFunction(
-    () => document.documentElement.style.getPropertyValue('--mr-world-scale') === '2',
-    null,
-    { timeout: 10_000 },
-  );
   await cdp.detach();
+  await p.setViewportSize({ width: 1280, height: 720 });
+  await expect
+    .poll(
+      () =>
+        p.evaluate(() => ({
+          w: window.innerWidth,
+          h: window.innerHeight,
+          dpr: window.devicePixelRatio,
+          world: document.documentElement.style.getPropertyValue('--mr-world-scale'),
+        })),
+      {
+        message: 'WAP3.3 the viewport is restored to 1280x720@1 with --mr-world-scale 2',
+        timeout: 10_000,
+      },
+    )
+    .toEqual({ w: 1280, h: 720, dpr: 1, world: '2' });
 
   await expect
     .poll(() => backdropStatuses, {
