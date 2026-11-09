@@ -780,6 +780,37 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     ).toBe(true);
   });
 
+  it('UIF16B.6 a claim raised on the FIRST connect (onClaimPending, then onReady) opens Profile on Account; once the player closes it, a later reconnect that raises no claim event leaves the bare world with #profile-overlay hidden', async () => {
+    // WRONG IMPL KILLED: an onReady that does not clear the "this cycle raised a claim" mark, so
+    // every later reconnect re-pops Profile on Account uninvited (the first connect's claim stays
+    // marked forever); and a reconnect tail that re-shows Profile whenever the claim phase is merely
+    // visible rather than raised in its own cycle.
+    await boot();
+    const pending = opts.onClaimPending;
+    if (pending === undefined) throw new Error('onClaimPending was not wired by main.ts');
+    pending('CODE');
+    opts.onReady(H.identity);
+    server(1000);
+    expect(profileShown(), 'precondition: the first connect`s claim opened Profile').toEqual(
+      ALL_SHOWN,
+    );
+    expect(byId('claim-overlay').contains(document.activeElement), 'precondition: on Account').toBe(
+      true,
+    );
+
+    tap('Escape', 1100);
+    expect(stack(), 'precondition: Start closed Profile to the bare world').toEqual(WORLD_ONLY);
+    expect(profileShown(), 'precondition: every section closed').toEqual(ALL_HIDDEN);
+
+    reconnect();
+
+    expect(stack(), 'a claim-less reconnect leaves the bare world').toEqual(WORLD_ONLY);
+    expect(shownById('profile-overlay'), 'and #profile-overlay hidden').toBe(false);
+    frame(1200);
+    expect(stack(), 'a frame afterwards changes nothing').toEqual(WORLD_ONLY);
+    expect(shownById('profile-overlay')).toBe(false);
+  });
+
   it('UIF16B.6 a battle arriving with Profile open closes it: all three sections hidden, the stack back to the bare battle base, and an armed decline is disarmed by the close (its Yes and No are painted away)', async () => {
     // WRONG IMPL KILLED: a battle policy row for the merged frame that is not PLAYER_DROP (Profile
     // left over the battle, or suspended beneath it); a force-hide that hides a section but not the

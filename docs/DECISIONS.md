@@ -966,26 +966,30 @@ overlay frame").
 ## Profile is one dialog; the rename, claim and privacy views are its sections
 
 **Decision.** Profile is ONE overlay, `profileView` (`client/src/ui/profileView.ts`): it owns the frame
-root, the title, the Close row, the a11y open and close (one role, one label, one focus trap, one
-initial-focus anchor: the name field) and the one column of rows the D-pad walks. `renameView.ts`,
+root, the title, a body that scrolls under it, the Close row, the a11y open and close (one role, one
+label, one focus trap) and the one column of rows the D-pad walks. Its initial-focus anchor is the name
+field; an open on Account or Privacy seats that section's row at once instead. `renameView.ts`,
 `claimView.ts` and `privacyView.ts` keep their files, models, handlers and element ids but are sections:
 they hold no a11y of their own, are shown and hidden only through the frame, and are not `OverlayId`s
-(`OVERLAY_IDS` is 16; `OR-MANIFEST-COMPLETE` names the three files as an exclusion). The frame takes the
-strictest row of the three it replaced in every table: `SCREEN_POLICY` player / drop, and
-`RECONNECT_CLOSES` true (rename's, so a reconnect closes it and `onReconnect` shows a claim prompt its
-own cycle raised again after the sweep). N and C are two accelerators onto the one frame, the section
-carried as the path's `tab`. Every close runs each section's `hide()`, which disarms BOTH two-step
-confirms (the deletion's, and since this change the claim decline's). The `privacy-busy` message kind is
-gone: the privacy surface no longer opens over anything.
+(`OVERLAY_IDS` is 16; `OR-MANIFEST-COMPLETE` in `overlayRegistry.test.ts` names the three files as an
+exclusion). The frame takes the strictest row of the three it replaced in every table: `SCREEN_POLICY`
+player / drop, and `RECONNECT_CLOSES` true (rename's, so a reconnect closes it, and `onReconnect` shows
+a claim prompt its own cycle raised again after the sweep). N and C are two accelerators onto the one
+frame, the section carried as the path's `tab`; with Profile on top, the one whose section does not hold
+the cursor moves it there. Every close (B, Start, the Close row, a battle, a conversation, a reconnect)
+runs each section's `hide()`, which disarms BOTH two-step confirms (the deletion's, and since this
+change the claim decline's); a move that enters a section whose confirm is armed lands on its No. The
+`privacy-busy` message kind is gone: the privacy surface no longer opens over anything.
 
 **Why.** The operator's complaint was three sparse full screens behind a sub-list (playtest 3, #586 D3).
 Tabs would have kept three sparse pages. Three dialogs cannot be visible sections of one screen, because
 two open focus traps cannot coexist; the Social frame's one-panel-at-a-time trick shows one panel, not
-three. A decline has to disarm on close because one column puts an armed "Yes" directly under the name
-field of a re-opened screen, where Escape or one Down would land on it.
+three. A decline has to disarm on close, and No has to be where the cursor enters, because one column
+puts an armed "Yes" directly under the name field, where Escape or one Down would land on it.
 
 **Rules out.** Giving a section its own `openOverlayA11y`, role or frame classes; showing or hiding a
 section alone (a section's own Escape, a per-section reset in `RECONNECT_RESETS`); a Profile sub-list or
 Profile tabs; a second always-enabled anchor inside the Privacy section (the frame's Close is the reseat
 target when a render refuses the focused control: `fallbackRow`); leaving either confirm armed behind a
-closed frame; re-adding an overlay-busy refusal for privacy.
+closed frame; the list scroll cue `.mr-scroll` on the body (its gradients sit behind running text, where
+contrast cannot be measured); re-adding an overlay-busy refusal for privacy.

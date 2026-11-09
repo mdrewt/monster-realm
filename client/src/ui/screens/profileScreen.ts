@@ -27,8 +27,9 @@ export interface RowsView {
   applyRowOp(op: RowOp): void;
 }
 
-/** A column of rows: one Profile section (its root and its rows; the frame that shows it owns the
- *  a11y, uif-16a), and the frame itself, whose column is its sections' rows and then Close. */
+/** A column of rows: one Profile section (its root and its rows; the frame that shows it,
+ *  ui/profileView.ts, owns the a11y), and the frame itself, whose column is its sections' rows and
+ *  then Close. */
 export interface RowSection {
   readonly sectionRoot: HTMLElement;
   /** The rows: the shown, enabled controls, in DOM order. */

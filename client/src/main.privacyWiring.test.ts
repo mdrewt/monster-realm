@@ -803,6 +803,30 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     expectOnlyReducer('none');
   });
 
+  it('UIF16B.4 a privacy render that disables the FOCUSED control without arming (an export request now in flight) seats focus on the frame`s Close row, enabled and on screen, never the page', () => {
+    // WRONG IMPL KILLED: main.ts's `fallbackRow: () => profileView?.closeRow` handler removed (the
+    // view suites wire their own fallback, so nothing checked the shipped wiring): the reseat has
+    // no safe row and focus falls to the page; and a fallback to the section's first action
+    // (Delete), which a second Enter would press.
+    H.account = ACCOUNT_ACTIVE;
+    runFrame(0);
+    openPrivacySurface();
+    const exportBtn = byId('privacy-export-btn') as HTMLButtonElement;
+    expect(exportBtn.disabled, 'precondition: an Active account may export').toBe(false);
+    exportBtn.focus();
+    expect(document.activeElement, 'precondition: focus is on Export').toBe(exportBtn);
+
+    exportBtn.click();
+    expectOnlyReducer('export');
+    expect(exportBtn.disabled, 'precondition: the in-flight request disabled Export').toBe(true);
+    expect(byId('privacy-confirm').textContent, 'precondition: nothing is armed').toBe('');
+
+    const close = byId('profile-close-btn') as HTMLButtonElement;
+    expect(document.activeElement, 'focus moved to the frame`s Close row').toBe(close);
+    expect(close.disabled, 'Close is enabled').toBe(false);
+    expect(hiddenAncestorOf(close), 'Close is on screen').toBeNull();
+  });
+
   // ---------------------------------------------------------------------------------------
   // ADR-0231 A2-D8 — non-delivery must be observable, and must not spend anything.
   // ---------------------------------------------------------------------------------------

@@ -1575,11 +1575,6 @@ function openMenu(): void {
   );
 }
 
-/** Open a menu entry's frame ABOVE the menu, through that frame's single open path. The menu
- *  stays open beneath it, so whichever way the child closes, the menu is back with its cursor on
- *  the entry. `tab` is the tab an accelerator's path names, read by the frame it belongs to:
- *  Monsters opens on Party without one, Social on the tab its screen picks (uif-15b), Profile on
- *  Name (uif-16b). */
 /** The Profile section a path's tab names, if it names one. */
 function profileSectionOf(tab: AccelPath['tab']): ProfileSection | undefined {
   return tab === 'name' || tab === 'account' || tab === 'privacy' ? tab : undefined;
@@ -1598,6 +1593,11 @@ function socialTabOf(tab: AccelPath['tab']): SocialTab | null {
   }
 }
 
+/** Open a menu entry's frame ABOVE the menu, through that frame's single open path. The menu
+ *  stays open beneath it, so whichever way the child closes, the menu is back with its cursor on
+ *  the entry. `tab` is the tab an accelerator's path names, read by the frame it belongs to:
+ *  Monsters opens on Party without one, Social on the tab its screen picks (uif-15b), Profile on
+ *  Name (uif-16b). */
 function openMenuTarget(target: MenuTarget, tab?: AccelPath['tab']): void {
   // A second route to store reads keyed by identity, which is '' until the first onReady.
   if (identity === '') return;
@@ -2878,7 +2878,8 @@ const runAccel = (accel: MenuAccel): void => {
       break;
     case 'start': {
       // Profile's two accelerators share its frame (uif-16b): the one whose section does not hold
-      // the cursor moves there; pressed on its own section it is Start, like every other.
+      // the cursor moves it there (from the other section, the Close row or the page); pressed
+      // with the cursor already in its own section it is Start, like every other.
       const section = profileSectionOf(ACCEL_PATHS[accel].tab);
       if (section !== undefined && profileView?.sectionOf(document.activeElement) !== section) {
         profileView?.focusSection(section);
@@ -2904,7 +2905,9 @@ const openAccelPath = (path: AccelPath): void => {
   // every command is refused without a live link) and a failed first sign-in shows it before
   // join, so C alone opens it there, on Account, with no menu beneath.
   if (identity === '') {
-    if (path.frame === 'profileView' && path.tab === 'account') openProfile('account');
+    if (path.frame === 'profileView' && profileSectionOf(path.tab) === 'account') {
+      openProfile('account');
+    }
     return;
   }
   applyStack(contextStack, popToBase(contextStack));

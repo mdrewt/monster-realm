@@ -517,7 +517,10 @@ describe('ProfileView (uif-16b): one frame holding the Name, Account and Privacy
     for (const section of ['name', 'account', 'privacy'] as const) {
       b.profile.show(section);
       expect(b.profile.visible, `${section}: visible`).toBe(true);
-      expect(b.root().style.display, `${section}: the root is block`).toBe('block');
+      // uif-16b (named change): 'block' -> 'flex'. Measured in Chromium: an inline `display: block`
+      // overrides `.mr-frame`'s flex column, so #profile-body gets no bounded height and the whole
+      // shell scrolls instead of the body. An open root is inline flex (hidden: none).
+      expect(b.root().style.display, `${section}: the root is flex`).toBe('flex');
       for (const id of [
         'rename-overlay',
         'claim-overlay',
@@ -1122,5 +1125,99 @@ describe('ProfileView (uif-16b): the same commands through the same handlers', (
     byId('privacy-export-btn').focus();
     b.privacy.render(pvm({ confirmPrompt: P_ARMED, exportEnabled: false }));
     expect(focusedId(), 'armed: Keep, not Close').toBe('privacy-confirm-cancel-btn');
+  });
+});
+
+// =============================================================================================
+// uif-16b red-team round: return focus after a section open, and entering an armed section.
+// =============================================================================================
+
+describe('ProfileView (uif-16b): red-team round', () => {
+  it("UIF16B.3 show('account') / show('privacy') then hide() hands focus back to the element focused before the open", async () => {
+    // WRONG IMPL KILLED (measured: 356 tests stayed green): seating the section's row BEFORE
+    // `openOverlayA11y`, so the recorded return target is a button INSIDE the frame and the
+    // close strands focus on a hidden node instead of the pre-open element.
+    for (const section of ['account', 'privacy'] as const) {
+      await sweep();
+      const b = build();
+      paintName(b, '');
+      b.claim.render(PROMPT_VM);
+      b.privacy.render(pvm());
+      b.outside.focus();
+      expect(document.activeElement, `${section}: precondition`).toBe(b.outside);
+      b.profile.show(section);
+      expect(b.root().contains(document.activeElement), `${section}: the open seated a row`).toBe(
+        true,
+      );
+      await flush();
+      b.profile.hide();
+      expect(document.activeElement, `${section}: focus is back on the pre-open element`).toBe(
+        b.outside,
+      );
+    }
+  });
+
+  it('UIF16B.4 a move that crosses INTO a section whose confirm is armed lands on its No / Keep, never its Yes; inside the section the walk is the plain row order; unarmed, a crossing lands on the first row', async () => {
+    // WRONG IMPL KILLED: the plain column walk across an armed boundary (Down from Save lands on
+    // the armed decline's Yes, so one more A confirms a decline the player never looked at; Down
+    // from the privacy door lands on Delete's Confirm); a re-seat applied to every move (inside
+    // an armed section Up from No must reach Yes); a blanket jump on every crossing (unarmed,
+    // Down from Save must land on the first Account row).
+    const armedClaim = buildClaimViewModel(claimAfter(OPENED, { kind: 'decline-requested' }));
+    const armedPrivacy = buildPrivacyViewModel(
+      privacyAfter([{ kind: 'account-changed', countdown: ACTIVE }, { kind: 'delete-requested' }]),
+    );
+    const b = build();
+    paintName(b, 'Bob');
+    b.claim.render(armedClaim);
+    b.privacy.render(pvm());
+    b.profile.show('name');
+    await flush();
+    expect(b.claim.armed, 'ANTI-VACUITY: the decline is armed').toBe(true);
+    expect(ids(b.rename.sectionRows()), 'ANTI-VACUITY: Save is a row').toEqual([
+      'rename-input',
+      'rename-submit',
+    ]);
+
+    byId('rename-submit').focus();
+    b.profile.applyRowOp(move(1));
+    expect(focusedId(), 'Down from Save into the armed Account: No').toBe(
+      'claim-decline-cancel-btn',
+    );
+    expect(focusedId(), 'never Yes').not.toBe('claim-decline-confirm-btn');
+    b.profile.applyRowOp(move(-1));
+    expect(focusedId(), 'inside the section, Up from No reaches Yes').toBe(
+      'claim-decline-confirm-btn',
+    );
+    byId('claim-decline-cancel-btn').focus();
+    b.profile.applyRowOp(move(1));
+    expect(focusedId(), 'inside the section, Down from No reaches the privacy door').toBe(
+      'claim-privacy-btn',
+    );
+
+    // Delete armed too: Down from the door into Privacy lands on Keep.
+    b.privacy.render(armedPrivacy);
+    expect(b.privacy.armed, 'ANTI-VACUITY: delete is armed').toBe(true);
+    byId('claim-privacy-btn').focus();
+    b.profile.applyRowOp(move(1));
+    expect(focusedId(), 'Down into the armed Privacy: Keep').toBe('privacy-confirm-cancel-btn');
+    expect(focusedId(), 'never Confirm').not.toBe('privacy-confirm-btn');
+
+    // Coming UP into the armed Account from the first privacy row also lands on No.
+    const firstPrivacy = b.privacy.sectionRows()[0];
+    expect(firstPrivacy, 'ANTI-VACUITY: privacy has rows').toBeDefined();
+    firstPrivacy?.focus();
+    b.profile.applyRowOp(move(-1));
+    expect(focusedId(), 'Up into the armed Account: No').toBe('claim-decline-cancel-btn');
+
+    // Unarmed: the plain order, the crossing lands on the first Account row.
+    b.claim.render(PROMPT_VM);
+    b.privacy.render(pvm());
+    expect(b.claim.armed, 'ANTI-VACUITY: disarmed').toBe(false);
+    byId('rename-submit').focus();
+    b.profile.applyRowOp(move(1));
+    expect(focusedId(), 'unarmed: Down from Save is the first Account row').toBe(
+      'claim-signin-btn',
+    );
   });
 });

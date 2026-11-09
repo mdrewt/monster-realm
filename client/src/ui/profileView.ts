@@ -42,16 +42,6 @@ export interface ProfileSectionView extends RowSection {
 /** The sections in column order. */
 const SECTION_ORDER: readonly ProfileSection[] = ['name', 'account', 'privacy'];
 
-/** Where a constructed frame lives: the frame layer inside #game-screen, else the game screen, else
- *  <body> for a shell-less boot. */
-function frameAnchor(): HTMLElement {
-  return (
-    document.getElementById('frame-layer') ??
-    document.getElementById('game-screen') ??
-    document.body
-  );
-}
-
 /** A new element with `id` and `className`. */
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -84,6 +74,8 @@ export class ProfileView implements RowsView, RowSection {
 
   constructor(sections: Readonly<Record<ProfileSection, ProfileSectionView>>) {
     this.#sections = sections;
+    // The frame goes where its sections were built (the frame layer): read before it takes them.
+    const anchor = sections.name.sectionRoot.parentElement ?? document.body;
     this.#root = element('div', 'profile-overlay', 'mr-frame mr-shell');
     this.#root.style.display = 'none';
     const bar = element('div', 'profile-titlebar', 'mr-frame-titlebar');
@@ -104,7 +96,7 @@ export class ProfileView implements RowsView, RowSection {
     this.#closeBtn.addEventListener('click', () => this.hide());
     closeRow.appendChild(this.#closeBtn);
     body.appendChild(closeRow);
-    frameAnchor().appendChild(this.#root);
+    anchor.appendChild(this.#root);
   }
 
   /** Shown as a flex column (`.mr-frame`'s own layout, restated inline over the hidden state):
@@ -179,13 +171,20 @@ export class ProfileView implements RowsView, RowSection {
   }
 
   /** One press on the column. The cursor is DOM focus; with no row focused it only seats the
-   *  default row, so an A never confirms anything nobody chose. A on the name field presses
-   *  nothing (the field's own Enter commits); on a button it clicks, so every handler's own gate
-   *  holds. */
+   *  default row, so an A never confirms anything nobody chose. A move that ENTERS a section whose
+   *  confirm is armed lands on that confirm's No, not on the row nearest the section it left (the
+   *  confirm's Yes sits first): a confirm defaults to No however the cursor reaches it. A on the
+   *  name field presses nothing (the field's own Enter commits); on a button it clicks, so every
+   *  handler's own gate holds. */
   applyRowOp(op: RowOp): void {
     if (op === this.#lastOp) return;
     this.#lastOp = op;
+    const from = this.sectionOf(document.activeElement);
     const press = walkSection(this, document.activeElement, op);
+    const entered = this.sectionOf(document.activeElement);
+    if (entered !== undefined && entered !== from && this.#sections[entered].armed) {
+      this.#sections[entered].defaultRow()?.focus();
+    }
     if (press instanceof HTMLButtonElement) press.click();
   }
 }

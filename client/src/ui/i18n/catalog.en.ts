@@ -1141,9 +1141,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // English as claim.privacyButton today, but a different key: this is a HEADING. One short line.
   // privacyView.ts:145 (resolved in show())
   'privacy.title': 'Privacy & Account Data',
-  // @desc: Button that closes the privacy & account-data overlay; it is the first control and
-  // always enabled. Short verb, fits a very narrow button.
-  // privacyView.ts:151 (resolved in show())
+  // @desc: Button that closes the Profile screen; it is the last row and always enabled. Short
+  // verb, fits a very narrow button.
+  // ui/profileView.ts (resolved in show())
   'privacy.close': 'Close',
   // @desc: Second-step button that confirms the player's account deletion request, shown only
   // after they asked to delete. Two words, fits a narrow button.
