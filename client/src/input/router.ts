@@ -11,6 +11,7 @@ import type { WasmDirection } from '../convert/convert';
 import { acceleratorsDenied, type FrameId, type Stack } from '../ui/contextStack';
 import type { MonstersTab } from '../ui/monstersModel';
 import type { NavInput } from '../ui/nav';
+import type { ProfileSection } from '../ui/screens/profileScreen';
 import type { Command, ScreenResult, SocialTab } from '../ui/screens/types';
 import { type Accel, type ButtonEdge, dpadDir, type VButton } from './buttons';
 
@@ -116,11 +117,12 @@ export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | 'c
 export type MenuAccel = Exclude<Accel, 'F8' | 'F9'>;
 
 /** An accelerator's canonical menu path (design §3): the main-menu entry keys, root first, the
- *  frame its leaf opens, and the tab that frame opens on (a Monsters tab, or a Social one). */
+ *  frame its leaf opens, and the tab that frame opens on (a Monsters tab, a Social one, or the
+ *  section the Profile screen opens on). */
 export interface AccelPath {
   readonly menu: readonly string[];
   readonly frame: FrameId;
-  readonly tab?: MonstersTab | SocialTab;
+  readonly tab?: MonstersTab | SocialTab | ProfileSection;
 }
 
 export const ACCEL_PATHS: Readonly<Record<MenuAccel, AccelPath>> = {
@@ -131,8 +133,8 @@ export const ACCEL_PATHS: Readonly<Record<MenuAccel, AccelPath>> = {
   U: { menu: ['social'], frame: 'social', tab: 'trades' },
   P: { menu: ['social'], frame: 'social', tab: 'challenges' },
   L: { menu: ['social'], frame: 'social', tab: 'rankings' },
-  N: { menu: ['profile', 'name'], frame: 'renameView' },
-  C: { menu: ['profile', 'account'], frame: 'claimView' },
+  N: { menu: ['profile'], frame: 'profileView', tab: 'name' },
+  C: { menu: ['profile'], frame: 'profileView', tab: 'account' },
   Y: { menu: ['options', 'controls'], frame: 'controlsView' },
 };
 

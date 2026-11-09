@@ -100,12 +100,11 @@ export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   tradeView: PLAYER_DROP,
   pvpView: PLAYER_DROP,
   leaderboardView: PLAYER_DROP_SAFE,
-  renameView: PLAYER_DROP,
+  // One row for the three frames Profile replaces (uif-16b): all three were PLAYER_DROP.
+  profileView: PLAYER_DROP,
   tradeProposeView: PLAYER_DROP,
   helpView: PLAYER_DROP_SAFE,
   menuView: PLAYER_DROP_SAFE,
-  claimView: PLAYER_DROP,
-  privacyView: PLAYER_DROP,
   // Not battle-safe: the menu disables Controls over a battle, and a battle that starts closes it
   // (which also ends a capture: the view's hide path).
   controlsView: PLAYER_DROP,
@@ -278,8 +277,9 @@ export function reconcile(
 /** Whether a reconnect closes the frame (so-1): the frames whose views read store state the reset
  *  invalidated or hold a lock a dropped link never settles. Total over every frame id, so an omitted
  *  id fails client-typecheck. The three Social panels are never frames of their own; their rows
- *  agree with `social`. Help, the box, the quest log, heal, claim, privacy and controls opened at
- *  the world survive a drop, as they always have; the dialogue is the server's to end. */
+ *  agree with `social`. Help, the box, the quest log, heal and controls opened at the world survive
+ *  a drop, as they always have; Profile closes (uif-16b: its Name section holds the rename lock, so
+ *  rename's row won over claim's and privacy's); the dialogue is the server's to end. */
 export const RECONNECT_CLOSES: Readonly<Record<FrameId, boolean>> = {
   battleView: true,
   boxView: false,
@@ -292,12 +292,10 @@ export const RECONNECT_CLOSES: Readonly<Record<FrameId, boolean>> = {
   tradeView: true,
   pvpView: true,
   leaderboardView: true,
-  renameView: true,
+  profileView: true,
   tradeProposeView: true,
   helpView: false,
   menuView: true,
-  claimView: false,
-  privacyView: false,
   controlsView: false,
   social: true,
 };

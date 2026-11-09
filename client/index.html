@@ -57,8 +57,9 @@
           <div id="leaderboard-title" tabindex="-1"></div>
           <ul id="leaderboard-list" class="mr-nav-list"></ul>
         </div>
-        <!-- pt-c1b rename overlay shell — hidden by default; managed by RenameView. -->
-        <div id="rename-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
+        <!-- The Name section of the Profile screen (uif-16b): managed by RenameView, moved into the
+             Profile dialog by ProfileView. Not a dialog of its own. -->
+        <div id="rename-overlay" class="mr-button-rows" style="display:none">
           <div id="rename-current" data-testid="rename-current"></div>
           <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
           <button id="rename-submit" data-testid="rename-submit" type="button"></button>

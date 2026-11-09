@@ -45,6 +45,7 @@ import { glyph, learnKey } from './input/glyphs';
 import { isChord, KeyboardSource } from './input/keyboardSource';
 import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
+  ACCEL_PATHS,
   type AccelPath,
   accelDecision,
   InputRouter,
@@ -260,6 +261,7 @@ import {
   privacyStep,
 } from './ui/privacyModel';
 import type { PrivacyView, PrivacyViewHandlers } from './ui/privacyView';
+import type { ProfileView } from './ui/profileView';
 import { buildPvpChallengeViewModel, challengeSizes, consciousPartyIds } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -269,6 +271,7 @@ import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
 import { SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './ui/screens/index';
+import type { ProfileSection } from './ui/screens/profileScreen';
 import {
   type MainMenuStep,
   mainMenuPick,
@@ -532,8 +535,11 @@ let tradeView: TradeView | undefined;
 let pvpView: PvpView | undefined;
 // Ranked leaderboard overlay — pure subscription view (RL-15).
 let leaderboardView: LeaderboardView | undefined;
-// profile-rename overlay — the first text-input overlay; wires the
-// merged set_profile_name reducer to a KeyN rename form.
+// The Profile screen (uif-16b): ONE frame whose sections are the rename form, the guest-claim
+// prompt and the privacy surface below. It is the registered overlay (GUARD_ONLY); the three
+// section views are painted from their models here and shown only through it.
+let profileView: ProfileView | undefined;
+// The Name section: wires the set_profile_name reducer to the rename form.
 let renameView: RenameView | undefined;
 // trade-PROPOSE overlay — the wizard Trade on a faced player opens (ctl-10b); wires
 // reducers.proposeTrade to let a human initiate a "sell my monster(s) + gold for your gold" trade.
@@ -543,9 +549,9 @@ let tradeProposeView: TradeProposeView | undefined;
 let helpView: HelpView | undefined;
 // The main menu (ctl-5): a nav-list screen that stays open beneath the overlay it opens.
 let menuView: MenuView | undefined;
-// The guest-claim overlay (registry GUARD_ONLY) and the
-// session-lifecycle overlay (registry-EXTERNAL, driven by conn.sessionState()), each backed by
-// its pure model state carried at module scope.
+// The Account and Privacy sections of Profile, and the session-lifecycle overlay
+// (registry-EXTERNAL, driven by conn.sessionState()), each backed by its pure model state carried
+// at module scope.
 let claimView: ClaimView | undefined;
 let privacyView: PrivacyView | undefined;
 // Options › Controls (ctl-12b): the remapping screen. Its `capturing` is what the keydown handler
@@ -610,7 +616,7 @@ const overlayHandles: Readonly<Record<MirroredId, (() => void) | undefined>> = {
 // idempotent): the sweep owns the close, this owns the reset. The menu holds no such state. Each
 // row is the byte-identical `() => <view>?.hide()` of its view.
 const RECONNECT_RESETS: readonly (() => void)[] = [
-  () => renameView?.hide(),
+  () => profileView?.hide(),
   () => tradeProposeView?.hide(),
   () => shopView?.hide(),
   () => tradeView?.hide(),
@@ -677,9 +683,8 @@ const screenHost = new ScreenHost(
   reportPaintError,
 );
 
-// the ONE gate binder. Returns the VERDICT, not a boolean, because the
-// privacy open reads `blockedBy`; each call site spells `.kind === 'allow'`
-// itself, deliberately, so no single `!` can invert every gate at once. Reads the stack on EVERY
+// the ONE gate binder. Returns the VERDICT, not a boolean: each call site spells
+// `.kind === 'allow'` itself, deliberately, so no single `!` can invert every gate at once. Reads the stack on EVERY
 // call (`shownOverlays`), never a cache.
 //
 // The main menu stays open beneath the screen it opens (ctl-5), so it never blocks another
@@ -946,26 +951,28 @@ function applySession(event: SessionEvent): void {
   renderSession();
 }
 
+/** Paint the Account section from the claim model. A claim phase that wants the screen, with
+ *  Profile closed, is the auto-open: Profile opens on Account (the reconnect-driven claim flow has
+ *  no other way to show itself). With Profile open it only paints: a claim event never pulls the
+ *  player out of the section they are in. */
 function renderClaim(): void {
-  // ClaimPhase cannot represent "dismissed" (S4-claimView-REOPEN-AFTER-HIDE), so a later
-  // claim-lifecycle render would re-open the claim overlay ON TOP of the privacy modal, stealing
-  // its focus trap mid-confirmation. DEFERRED, not dropped: renderClaim is the only path by which
-  // the reconnect-driven claim flow pops itself up, so discarding the paint would strand a pending
-  // claim with no UI at all. The privacy overlay's dismissal flushes it.
-  if (privacyView?.visible) {
-    claimRenderPending = true;
-    return;
-  }
-  claimRenderPending = false;
+  // The connection raises a (re)connect's claim prompt before its ready / reconnect callback:
+  // the paint waits for that callback (see `claimPaintDeferred`).
+  if (claimPaintDeferred) return;
   const vm = buildClaimViewModel(claimModelState);
-  // A paint that shows the claim view is an open (so-2): its frame is pushed first.
-  if (vm.visible) openFrame('claimView', claimOpen, () => claimView?.render(vm));
+  if (vm.visible && profileView?.visible === false) showProfile('account');
   else claimView?.render(vm);
 }
-/** The claim view's open registration: its paints, the lifecycle show and its own open share it. */
-const claimOpen = frameOpenOf(() => claimView);
-/** Set when a claim paint was deferred because the privacy overlay owned the screen. */
-let claimRenderPending = false;
+/** Set by the connection's own claim callbacks (`onClaimPending`, `onClaimAwaitingAccount`), which
+ *  it calls just BEFORE `onReady` / `onReconnect`: their paint is held until that callback's tail
+ *  (`flushClaimPaint`), after the reconnect's sweep has closed every frame it closes (Profile is
+ *  one), so the prompt the cycle raised is the one left on screen. */
+let claimPaintDeferred = false;
+function flushClaimPaint(): void {
+  if (!claimPaintDeferred) return;
+  claimPaintDeferred = false;
+  renderClaim();
+}
 
 function applyClaim(event: ClaimEvent): void {
   const step = claimStep(claimModelState, event);
@@ -1018,7 +1025,7 @@ let exportAssembly: ExportAssembly | undefined;
 // SOLE owner of this part of the surface.
 //
 // A3-D10: the recompute is OUTSIDE the visibility guard. A burst arriving while the overlay is
-// closed must still be picked up — `openPrivacy()` renders from current state, so the offer is
+// closed must still be picked up — the Profile open renders from current state, so the offer is
 // there on open. Only the REPAINT is conditional.
 store.onBatchApplied(() => {
   // Both owner filters run: the store's client-side one and the assembler's own
@@ -1113,45 +1120,43 @@ function sendPrivacy(
   );
 }
 
-// A2-D5: the claim overlay is hidden FIRST. openOverlayA11y captures document.activeElement as its
-// return target and closeOverlayA11y restores it while the node is still isConnected — which a
-// display:none node is — so showing first would park focus in a hidden subtree on close and kill
-// every overlay hotkey until the player clicks the canvas.
-function openPrivacy(): void {
-  // The verdict is taken BEFORE the hide. `claimView` is never a legitimate blocker — this surface
-  // is reached FROM it — and it is safe to read that off `blockedBy` rather than re-probing,
-  // because `canOpen` reports the FIRST denier in OVERLAY_IDS order and `claimView` is
-  // second-to-last, so a `claimView` verdict means nothing else denied. Hiding first and
-  // discovering the deny afterwards would leave the player with NEITHER overlay and no message.
-  const verdict = overlayVerdict('privacyView');
-  if (verdict.kind === 'deny' && verdict.blockedBy !== 'claimView') {
-    reportError('privacy-busy', i18nT('chrome.status.privacyOverlayBusy'));
-    return;
-  }
-  // Only now, with the privacy frame pushed. A2-D5: hiding claim BEFORE show() is what keeps
-  // openOverlayA11y from capturing a soon-to-be-hidden node as its focus-return target; the claim
-  // frame goes with the closing sync.
-  openFrame(
-    'privacyView',
-    frameOpenOf(() => privacyView),
-    () => {
-      claimView?.hide();
-      renderPrivacy();
-      privacyView?.show();
-    },
-  );
+// --- the Profile screen (uif-16b) ---------------------------
+// ONE frame over the Name, Account and Privacy sections. `showProfile` is its single
+// build-and-show body; `openProfile` is the player's open (the menu leaf, N, C).
+
+/** The Profile frame's open registration. */
+const profileOpen = frameOpenOf(() => profileView);
+
+/** Show Profile on `section`, its frame pushed first (so-2). Each section is painted from its
+ *  model before the frame shows; the claim section is painted directly, never through
+ *  `renderClaim`, whose auto-open would re-enter this. On a frame already open only the claim and
+ *  privacy sections repaint: the name field keeps the draft being typed. */
+function showProfile(section: ProfileSection): void {
+  openFrame('profileView', profileOpen, () => {
+    if (profileView?.visible === false) {
+      renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
+    }
+    claimView?.render(buildClaimViewModel(claimModelState));
+    renderPrivacy();
+    profileView?.show(section);
+  });
 }
 
-// AUTH-51: "signed in" is store.ownAccount(identity) !== undefined — the row the SERVER wrote —
-// never a storage marker or the credential kind.
-function openClaim(): void {
-  applyClaim({
-    kind: 'claim-ui-opened',
-    nudgeAlreadySeen: claimCode.hasSeenFirstRunNudge(globalThis, URI, DB),
-  });
-  claimCode.markFirstRunNudgeSeen(globalThis, URI, DB);
-  openFrame('claimView', claimOpen, () => claimView?.show());
-  renderClaim();
+/** The player's open. An open on Account, or the first open of the session, puts the claim model
+ *  on its prompt (as the Account entry always did) so the section offers its actions; an open on
+ *  another section leaves a claim in progress as it is. The model is stepped WITHOUT a paint: a
+ *  paint here would auto-open on Account before the section asked for.
+ *  AUTH-51: "signed in" is store.ownAccount(identity) !== undefined — the row the SERVER wrote —
+ *  never a storage marker or the credential kind. */
+function openProfile(section: ProfileSection): void {
+  if (section === 'account' || claimModelState.phase === 'hidden') {
+    claimModelState = claimStep(claimModelState, {
+      kind: 'claim-ui-opened',
+      nudgeAlreadySeen: claimCode.hasSeenFirstRunNudge(globalThis, URI, DB),
+    }).next;
+    claimCode.markFirstRunNudgeSeen(globalThis, URI, DB);
+  }
+  showProfile(section);
 }
 // --- the main menu ------------------------------------------------
 //
@@ -1313,17 +1318,6 @@ function topSocialFrame(): UpperFrame | undefined {
 function openSocial(tab: SocialTab | null): void {
   boundSocialTab = tab;
   openSeated(SOCIAL_FRAME, socialOpen, () => showSocialPanel(socialPanel(tab)));
-}
-
-function openRename(): void {
-  openFrame(
-    'renameView',
-    frameOpenOf(() => renameView),
-    () => {
-      renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
-      renameView?.show();
-    },
-  );
 }
 
 /** Open the trade wizard for the faced player `target` (ctl-10b): the target is pre-selected and
@@ -1591,7 +1585,26 @@ function openMenu(): void {
 /** Open a menu entry's frame ABOVE the menu, through that frame's single open path. The menu
  *  stays open beneath it, so whichever way the child closes, the menu is back with its cursor on
  *  the entry. `tab` is the tab an accelerator's path names, read by the frame it belongs to:
- *  Monsters opens on Party without one, Social on the tab its screen picks (uif-15b). */
+ *  Monsters opens on Party without one, Social on the tab its screen picks (uif-15b), Profile on
+ *  Name (uif-16b). */
+/** The Profile section a path's tab names, if it names one. */
+function profileSectionOf(tab: AccelPath['tab']): ProfileSection | undefined {
+  return tab === 'name' || tab === 'account' || tab === 'privacy' ? tab : undefined;
+}
+
+/** The Social tab a path's tab names, else null (a plain open: the screen picks). */
+function socialTabOf(tab: AccelPath['tab']): SocialTab | null {
+  switch (tab) {
+    case 'trades':
+    case 'challenges':
+    case 'rankings':
+    case 'players':
+      return tab;
+    default:
+      return null;
+  }
+}
+
 function openMenuTarget(target: MenuTarget, tab?: AccelPath['tab']): void {
   // A second route to store reads keyed by identity, which is '' until the first onReady.
   if (identity === '') return;
@@ -1625,16 +1638,10 @@ function openMenuTarget(target: MenuTarget, tab?: AccelPath['tab']): void {
       openQuestLog();
       break;
     case 'social':
-      openSocial(tab === 'storage' || tab === 'party' ? null : (tab ?? null));
+      openSocial(socialTabOf(tab));
       break;
-    case 'renameView':
-      openRename();
-      break;
-    case 'claimView':
-      openClaim();
-      break;
-    case 'privacyView':
-      openPrivacy();
+    case 'profileView':
+      openProfile(profileSectionOf(tab) ?? 'name');
       break;
     case 'helpView':
       openHelp();
@@ -2201,14 +2208,25 @@ function closeFrame(frame: UpperFrame): void {
   }
 }
 
-// Where focus goes when typing stops: the first control in the field's frame that is not itself
-// a text field, so the frame's focus trap keeps it and the next Escape routes as Start.
+// Where focus goes when typing stops: the first control in the field's frame that is shown,
+// enabled and not itself a text field, so the frame's focus trap keeps it and the next Escape
+// routes as Start. In Profile with a two-step confirm armed it is that confirm's No instead: the
+// first control after the name field may be the confirm's Yes, and a confirm defaults to No.
 const STOP_TYPING_TARGETS = 'button, select, input, textarea, [tabindex]:not([tabindex="-1"])';
 function stopTyping(field: HTMLElement): void {
   const root = field.closest('[aria-modal="true"]');
-  const next = [...(root?.querySelectorAll<HTMLElement>(STOP_TYPING_TARGETS) ?? [])].find(
-    (el) => typingKey(el, { code: 'Escape' }) === undefined && !el.hasAttribute('disabled'),
-  );
+  const armedNo =
+    profileView !== undefined && root === profileView.sectionRoot && profileView.armed
+      ? profileView.defaultRow()
+      : undefined;
+  const next =
+    armedNo ??
+    [...(root?.querySelectorAll<HTMLElement>(STOP_TYPING_TARGETS) ?? [])].find(
+      (el) =>
+        typingKey(el, { code: 'Escape' }) === undefined &&
+        !el.hasAttribute('disabled') &&
+        !inHiddenSubtree(el),
+    );
   field.blur();
   next?.focus();
 }
@@ -2865,9 +2883,17 @@ const runAccel = (accel: MenuAccel): void => {
   switch (decision.kind) {
     case 'denied':
       break;
-    case 'start':
-      routeEdge({ button: 'Start', down: true });
+    case 'start': {
+      // Profile's two accelerators share its frame (uif-16b): the one whose section does not hold
+      // the cursor moves there; pressed on its own section it is Start, like every other.
+      const section = profileSectionOf(ACCEL_PATHS[accel].tab);
+      if (section !== undefined && profileView?.sectionOf(document.activeElement) !== section) {
+        profileView?.focusSection(section);
+      } else {
+        routeEdge({ button: 'Start', down: true });
+      }
       break;
+    }
     case 'open':
       openAccelPath(decision.path);
       break;
@@ -2880,16 +2906,16 @@ const runAccel = (accel: MenuAccel): void => {
 // with its cursor on it. Over a battle the menu opens read-only and a disabled entry only shows its
 // reason (CTL6C.3).
 const openAccelPath = (path: AccelPath): void => {
-  // The menu's screens read store state keyed by identity, which is '' before join. The claim
-  // view reads none (`ownAccount('')` is undefined) and a failed first sign-in shows it before
-  // join, so C alone opens it there, with no menu beneath.
+  // The menu's screens read store state keyed by identity, which is '' before join. Profile's
+  // sections read none that matters there (`ownAccount('')` and `player('')` are undefined, and
+  // every command is refused without a live link) and a failed first sign-in shows it before
+  // join, so C alone opens it there, on Account, with no menu beneath.
   if (identity === '') {
-    if (path.frame === 'claimView') openClaim();
+    if (path.frame === 'profileView' && path.tab === 'account') openProfile('account');
     return;
   }
   applyStack(contextStack, popToBase(contextStack));
-  // A close can show another frame (privacy's dismissal flushes a deferred claim paint): the menu
-  // never opens over it.
+  // A frame the pop could not take (a server-owned one) stays on top: the menu never opens over it.
   if (contextStack.length > 1) return;
   openMenu(); // pushes the menu before the leaf it opens
   for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key), path.tab);
@@ -3031,16 +3057,13 @@ let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
 // implement it, which would make the unit-tier proof vacuous. The walk cannot match the
 // always-on hint-bar chips (they and every ancestor are display-visible), so the D4
 // no-steal guarantee survives — pinned by S5T-FOCUS-NO-STEAL.
-const focusInsideHiddenSubtree = (): boolean => {
-  for (
-    let el: Element | null = document.activeElement;
-    el instanceof HTMLElement;
-    el = el.parentElement
-  ) {
+function inHiddenSubtree(start: Element | null): boolean {
+  for (let el = start; el instanceof HTMLElement; el = el.parentElement) {
     if (el.style.display === 'none') return true;
   }
   return false;
-};
+}
+const focusInsideHiddenSubtree = (): boolean => inHiddenSubtree(document.activeElement);
 /** Focus nowhere a player can use it: on <body> (or nothing), or stranded in a hidden subtree. */
 const focusAdrift = (): boolean => {
   const a = document.activeElement;
@@ -4568,6 +4591,7 @@ async function main(): Promise<void> {
     { SessionView: SessionViewClass },
     { PrivacyView: PrivacyViewClass },
     { ControlsView: ControlsViewClass, savedLine },
+    { ProfileView: ProfileViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/raisingView'),
@@ -4587,6 +4611,7 @@ async function main(): Promise<void> {
     import('./ui/sessionView'),
     import('./ui/privacyView'),
     import('./ui/controlsView'),
+    import('./ui/profileView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -4641,7 +4666,7 @@ async function main(): Promise<void> {
     helpView = new HelpViewClass({ announce: announceNow });
     // The menu view only paints and forwards clicks; keys reach the menu through the router.
     menuView = new MenuViewClass({ onInput: handleMenuPointer });
-    // The guest-claim overlay. Its actions drive the pure claimModel;
+    // The guest-claim prompt (Profile's Account section). Its actions drive the pure claimModel;
     // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
     const claimHandlers: ClaimViewHandlers = {
       onSignIn: () => void dispatch({ kind: 'claimSignIn' }),
@@ -4649,7 +4674,15 @@ async function main(): Promise<void> {
       onDeclineRequested: () => applyClaim({ kind: 'decline-requested' }),
       onDeclineConfirmed: () => void dispatch({ kind: 'claimDecline' }),
       onDeclineCancelled: () => applyClaim({ kind: 'decline-cancelled' }),
-      onPrivacy: () => openPrivacy(),
+      // The Privacy section is on the same screen: the door moves the cursor there.
+      onPrivacy: () => profileView?.focusSection('privacy'),
+      // Every close cancels an armed decline (the privacy rule). Stepped and painted directly:
+      // `applyClaim`'s paint would re-open the screen that is closing.
+      onDismissed: () => {
+        if (!claimModelState.confirmPending) return;
+        claimModelState = claimStep(claimModelState, { kind: 'decline-cancelled' }).next;
+        claimView?.render(buildClaimViewModel(claimModelState));
+      },
     };
     claimView = new ClaimViewClass(claimHandlers);
     const privacyHandlers: PrivacyViewHandlers = {
@@ -4659,11 +4692,9 @@ async function main(): Promise<void> {
       onCancelDeletion: () => void dispatch({ kind: 'cancelAccountDeletion' }),
       onExportRequested: () => void dispatch({ kind: 'requestDataExport' }),
       onExportDownload: () => downloadExportBundle(),
-      onDismissed: () => {
-        applyPrivacy({ kind: 'confirm-cancelled' });
-        // Flush a claim paint deferred while this overlay owned the screen.
-        if (claimRenderPending) renderClaim();
-      },
+      onDismissed: () => applyPrivacy({ kind: 'confirm-cancelled' }),
+      // Where focus goes when a render refuses the focused control: the frame's Close.
+      fallbackRow: () => profileView?.closeRow,
     };
     privacyView = new PrivacyViewClass(privacyHandlers);
     // The session-lifecycle overlay (registry-external). Its actions drive
@@ -4683,11 +4714,18 @@ async function main(): Promise<void> {
         }),
     };
     sessionView = new SessionViewClass(sessionHandlers);
-    // Rename and trade-PROPOSE overlays: their own Enter (and submit click) commits through
-    // `dispatch`; the view's #pending lock is reset by its own .finally().
+    // The rename form (Profile's Name section) and the trade-PROPOSE overlay: their own Enter
+    // (and submit click) commits through `dispatch`; the view's #pending lock is reset by its own
+    // .finally().
     renameView = new RenameViewClass({
       onSubmit: (name) => dispatch({ kind: 'setProfileName', name }),
       bindings: () => bindings,
+    });
+    // The Profile frame takes the three sections built above, in column order.
+    profileView = new ProfileViewClass({
+      name: renameView,
+      account: claimView,
+      privacy: privacyView,
     });
     // Options › Controls: the view reads the live table, and its requests replace it at once.
     const controlsHandlers: ControlsViewHandlers = {
@@ -4869,6 +4907,8 @@ async function main(): Promise<void> {
       resolveReady();
       // A successful connection clears any session terminal overlay.
       applySession({ kind: 'connected' });
+      // The claim prompt this connect raised, if any, shows now that the identity is set.
+      flushClaimPaint();
     },
     // the store now holds the applied snapshot, so the reseed latch
     // may resolve on this flush. Set here, consumed by the battle emit listener.
@@ -4952,6 +4992,9 @@ async function main(): Promise<void> {
       // runs on the drop edge and the post-rebuild flush is a later microtask, so a reset here can
       // never be re-disabled by a stale render.
       evolutionNoticeBanner?.reset();
+      // The claim prompt this reconnect raised, if any: shown after the sweep above closed Profile
+      // with every other frame it closes, so the prompt is what is left on screen.
+      flushClaimPaint();
     },
     // onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
@@ -4975,15 +5018,23 @@ async function main(): Promise<void> {
     // The session-lifecycle terminals drive the registry-external overlay.
     onSessionExpired: () => applySession({ kind: 'session-expired' }),
     onAuthServiceUnreachable: () => applySession({ kind: 'auth-service-unreachable' }),
-    // AUTH-48: a failed FIRST sign-in routes to the claim UI (never the session overlay).
+    // AUTH-48: a failed FIRST sign-in routes to the claim UI (never the session overlay): the
+    // paint opens Profile on Account, and a Profile already open moves its cursor there.
     onSignInFailed: (reason) => {
+      const wasOpen = profileView?.visible === true;
       applyClaim({ kind: 'sign-in-failed', reason });
-      openFrame('claimView', claimOpen, () => claimView?.show());
-      renderClaim();
+      if (wasOpen) profileView?.focusSection('account');
     },
-    // The reconnect-triggered guest-claim lifecycle.
-    onClaimPending: (code) => applyClaim({ kind: 'claim-pending', code }),
-    onClaimAwaitingAccount: () => applyClaim({ kind: 'claim-awaiting-account' }),
+    // The reconnect-triggered guest-claim lifecycle. The connection calls these two just before
+    // `onReady` / `onReconnect`, so their paint is held for that callback (`claimPaintDeferred`).
+    onClaimPending: (code) => {
+      claimPaintDeferred = true;
+      applyClaim({ kind: 'claim-pending', code });
+    },
+    onClaimAwaitingAccount: () => {
+      claimPaintDeferred = true;
+      applyClaim({ kind: 'claim-awaiting-account' });
+    },
     onClaimResult: (result) => {
       if (result.ok) {
         applyClaim({ kind: 'claim-succeeded' });

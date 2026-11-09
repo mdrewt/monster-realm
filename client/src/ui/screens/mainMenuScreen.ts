@@ -61,7 +61,6 @@ export type MainMenuStep = ScreenStep<MainMenuState, MenuEffect>;
 /** Nav ids are `{frame}-root-{key}`, so each level gets its own frame id. */
 const FRAME_IDS: Readonly<Record<MenuLevel, string>> = {
   root: 'menu',
-  profile: 'menuProfile',
   options: 'menuOptions',
 };
 

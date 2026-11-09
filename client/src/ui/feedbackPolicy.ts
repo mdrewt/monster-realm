@@ -59,7 +59,6 @@ export type MessageKind =
   | 'pvp-rejected'
   | 'link-down-send'
   | 'link-down-view'
-  | 'privacy-busy'
   | 'zone-cue'
   | 'dialogue-ended'
   | 'quest-complete'
@@ -143,7 +142,6 @@ export const FEEDBACK_POLICY = {
   'pvp-rejected': row('toast'),
   'link-down-send': acts('toast', 'the world-disconnect hint line'),
   'link-down-view': acts('toast', 'the world-disconnect hint line'),
-  'privacy-busy': acts('toast', 'the other overlay stays on screen'),
   'zone-cue': row('toast'),
   'dialogue-ended': row('toast'),
   'quest-complete': row('toast'),
