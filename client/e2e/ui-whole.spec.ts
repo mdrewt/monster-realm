@@ -1441,6 +1441,26 @@ test.describe
       }
     });
 
+    /** Back to 1280x720@1 through the same CDP override (setViewportSize does not clear it). Never
+     *  throws: a restore failure in a `finally` must not replace the body's own error. */
+    async function restoreWindow(): Promise<void> {
+      await cdp
+        .send('Emulation.setDeviceMetricsOverride', {
+          width: BASE.w,
+          height: BASE.h,
+          deviceScaleFactor: BASE.dpr,
+          mobile: false,
+        })
+        .catch(() => undefined);
+      await expect
+        .poll(() => page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), {
+          message: 'the window is back at 1280x720@1',
+          timeout: 10_000,
+        })
+        .toEqual([1280, 720, 1])
+        .catch(() => undefined);
+    }
+
     /** Change the window and wait until the page itself reports it and the var caught up (ui-scale:
      *  a dpr-only change fires no resize, and setViewportSize after an override resets dpr to 1). */
     async function setWindow(c: Case): Promise<void> {
@@ -1855,13 +1875,7 @@ test.describe
           window.localStorage.removeItem('mr.display');
           document.documentElement.style.removeProperty('--mr-text-step');
         });
-        await page.setViewportSize(VIEWPORT);
-        await expect
-          .poll(() => page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), {
-            message: 'the window is back at 1280x720@1',
-            timeout: 10_000,
-          })
-          .toEqual([1280, 720, 1]);
+        await restoreWindow();
         await closeAll(page);
       }
     });
@@ -1918,13 +1932,7 @@ test.describe
           );
         }
       } finally {
-        await page.setViewportSize(VIEWPORT);
-        await expect
-          .poll(() => page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), {
-            message: 'the window is back at 1280x720@1',
-            timeout: 10_000,
-          })
-          .toEqual([1280, 720, 1]);
+        await restoreWindow();
       }
       await shot(page, 'tactics-board');
       const live: TacticsSnap | null = await readTactics(page);
