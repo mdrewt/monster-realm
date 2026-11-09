@@ -124,6 +124,14 @@ class SpritesheetAssetProvider implements AssetProvider {
 
 ## Regenerating / extending
 
+> **Every new output gets its registry row in the same change.** A PNG written to
+> `client/public/assets/` must have exactly one row in the art registry
+> (`client/src/render/art/packs/<pack>.ts`): its stable key, file, kind, sheet and frame size,
+> scale, this generator's path as `source`, `license: 'project-original'` and
+> `provenance: 'placeholder-procedural'`. `src/render/art/registry.test.ts` fails on any served PNG
+> without a row and on any row whose PNG header disagrees with it. Image-model output never ships.
+> The rules are in [`docs/art/style-guide.md`](../../docs/art/style-guide.md).
+
 - Tune the ramps at the top of `generate_art.py` (`G`, `D`, `WAT`, `CT`, `SC`, …) — one edit
   recolours everything consistently.
 - Add a tile: write a `tile_*()` returning a 32×32 `Img`, `add("name", …)` it in `build_tileset()`
