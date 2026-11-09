@@ -83,18 +83,56 @@ pub enum MoveInput {
     Jump,
 }
 
-/// A tile's kind. Grows with its milestone; the exhaustive
-/// `match` will then compiler-flag every site (OCP-inverted).
+/// A tile's terrain class — THE class table (glyph, Tiled GID, walkability,
+/// encounter flag) that the zone-map RON rows, `tiled_import` and the style guide
+/// (`docs/art/style-guide.md`) cite; nothing else defines it. Variants are
+/// TAIL-APPENDED only: the `SpacetimeType` derive encodes them positionally (the
+/// spacetime-type-snapshot eval pins the order) and the wire name the client reads
+/// is the variant name (`serde`, no renames). Every method below is an exhaustive
+/// `match` with no wildcard on `TileKind`, so an eleventh class is a compile
+/// error at each site (OCP-inverted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum TileKind {
+    /// Ground (short grass): `.`, GID 1, walkable.
     Floor,
+    /// `#`, GID 0, blocks.
     Wall,
-    /// Walkable floor that can trigger a wild encounter when stepped onto (M8).
+    /// Walkable floor that can trigger a wild encounter when stepped onto (M8):
+    /// `~`, GID 2 — the only encounter class.
     TallGrass,
+    /// `=`, GID 3, walkable.
+    Path,
+    /// `:`, GID 4, walkable.
+    Sand,
+    /// `w`, GID 5, blocks; the shore band is drawn where it meets land.
+    ShallowWater,
+    /// `W`, GID 6, blocks; borders only water (`validate_zone_maps`).
+    DeepWater,
+    /// `^`, GID 7, blocks.
+    Rock,
+    /// `T`, GID 8, blocks.
+    Tree,
+    /// `*`, GID 9, blocks.
+    Bush,
 }
 
 impl TileKind {
+    /// Every class in declaration (= wire) order — the roster `client-wasm`'s
+    /// `terrain_kinds()` exports so the client's name list is pinned to this enum.
+    pub const ALL: [TileKind; 10] = [
+        TileKind::Floor,
+        TileKind::Wall,
+        TileKind::TallGrass,
+        TileKind::Path,
+        TileKind::Sand,
+        TileKind::ShallowWater,
+        TileKind::DeepWater,
+        TileKind::Rock,
+        TileKind::Tree,
+        TileKind::Bush,
+    ];
+
     /// Authoring char → tile kind (parse-don't-validate; unknown chars fail loud
     /// at the call site).
     ///
@@ -105,15 +143,81 @@ impl TileKind {
             '.' => Ok(TileKind::Floor),
             '#' => Ok(TileKind::Wall),
             '~' => Ok(TileKind::TallGrass),
+            '=' => Ok(TileKind::Path),
+            ':' => Ok(TileKind::Sand),
+            'w' => Ok(TileKind::ShallowWater),
+            'W' => Ok(TileKind::DeepWater),
+            '^' => Ok(TileKind::Rock),
+            'T' => Ok(TileKind::Tree),
+            '*' => Ok(TileKind::Bush),
             other => Err(format!("unknown tile char {other:?}")),
+        }
+    }
+
+    /// The authoring glyph (the inverse of `from_char`).
+    #[must_use]
+    pub fn glyph(self) -> char {
+        match self {
+            TileKind::Floor => '.',
+            TileKind::Wall => '#',
+            TileKind::TallGrass => '~',
+            TileKind::Path => '=',
+            TileKind::Sand => ':',
+            TileKind::ShallowWater => 'w',
+            TileKind::DeepWater => 'W',
+            TileKind::Rock => '^',
+            TileKind::Tree => 'T',
+            TileKind::Bush => '*',
+        }
+    }
+
+    /// Tiled GID → tile kind (`tiled_import`); `None` for a GID the table does
+    /// not own (the caller rejects it, never defaults).
+    #[must_use]
+    pub fn from_gid(gid: u32) -> Option<TileKind> {
+        match gid {
+            0 => Some(TileKind::Wall),
+            1 => Some(TileKind::Floor),
+            2 => Some(TileKind::TallGrass),
+            3 => Some(TileKind::Path),
+            4 => Some(TileKind::Sand),
+            5 => Some(TileKind::ShallowWater),
+            6 => Some(TileKind::DeepWater),
+            7 => Some(TileKind::Rock),
+            8 => Some(TileKind::Tree),
+            9 => Some(TileKind::Bush),
+            _ => None,
         }
     }
 
     #[must_use]
     pub fn is_walkable(self) -> bool {
         match self {
-            TileKind::Floor | TileKind::TallGrass => true,
-            TileKind::Wall => false,
+            TileKind::Floor | TileKind::TallGrass | TileKind::Path | TileKind::Sand => true,
+            TileKind::Wall
+            | TileKind::ShallowWater
+            | TileKind::DeepWater
+            | TileKind::Rock
+            | TileKind::Tree
+            | TileKind::Bush => false,
+        }
+    }
+
+    /// `true` for the one class that can start a wild encounter when stepped
+    /// onto (`TileMap::is_grass` reads this layer).
+    #[must_use]
+    pub fn is_encounter(self) -> bool {
+        match self {
+            TileKind::TallGrass => true,
+            TileKind::Floor
+            | TileKind::Wall
+            | TileKind::Path
+            | TileKind::Sand
+            | TileKind::ShallowWater
+            | TileKind::DeepWater
+            | TileKind::Rock
+            | TileKind::Tree
+            | TileKind::Bush => false,
         }
     }
 }

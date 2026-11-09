@@ -31,6 +31,11 @@ static ACTIVE_ZONE_ID: AtomicU32 = AtomicU32::new(0);
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
 
+// The compiled heal_locations registry (wap-1): `zone_map()`'s `landmarks` are
+// drawn from it, so the renderer never holds a hard-coded healer coordinate.
+static HEAL_LOCATIONS: LazyLock<Result<Vec<game_core::HealLocationDef>, String>> =
+    LazyLock::new(game_core::load_heal_locations);
+
 // Active-zone TileMap: cached to avoid re-running build_grid on every apply_move.
 // Invalidated (set to None) in set_active_zone so the first apply_move after a
 // zone transition rebuilds for the new zone. thread_local is idiomatic
@@ -45,6 +50,11 @@ thread_local! {
 /// subsequent calls return the cached `&'static` reference (or the cached error).
 fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, String> {
     (*ZONE_MAPS).as_ref().map_err(Clone::clone)
+}
+
+/// The cached heal-locations registry (same parse-once contract as `cached_zone_maps`).
+fn cached_heal_locations() -> Result<&'static Vec<game_core::HealLocationDef>, String> {
+    (*HEAL_LOCATIONS).as_ref().map_err(Clone::clone)
 }
 
 /// Set the active zone id for client-side movement prediction. Must be called
@@ -69,12 +79,12 @@ pub fn set_active_zone(zone_id: u32) {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-fn zone_map_ok(map: &game_core::TileMap) -> Result<JsValue, JsValue> {
-    serde_wasm_bindgen::to_value(map).map_err(|e| JsValue::from_str(&e.to_string()))
+fn zone_map_ok<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(value).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn zone_map_ok(_map: &game_core::TileMap) -> Result<JsValue, JsValue> {
+fn zone_map_ok<T: serde::Serialize>(_value: &T) -> Result<JsValue, JsValue> {
     // Native tests only check .is_ok(); no JsValue runtime call needed.
     Ok(JsValue::UNDEFINED)
 }
@@ -452,24 +462,115 @@ pub fn evolution_eligibility(monster: JsValue, paths: JsValue) -> Result<JsValue
     Ok(report.serialize(&serializer)?)
 }
 
-/// The renderer's map source: the SAME `TileMap` the rule evaluates.
-/// Dispatches on `zone_id` via the content registry (`load_zone_maps`).
-///
-/// M8c: the `TileMap`'s `grass` layer serializes automatically (additive serde
-/// field) — the TS `RawTileMap.grass` reads it for the grass overlay.
-///
-/// M11c: zone_id is now meaningful — zone 0 returns zone_0's map, zone 1 returns
-/// zone 1's map, and an unknown zone_id returns a JS Error (never silently
+/// The `zone_map()` payload (wap-1): the rule's `TileMap` re-expressed as
+/// explicit fields — never `#[serde(flatten)]`, which `serde_wasm_bindgen` would
+/// emit as a JS `Map` — plus the two additions the renderer reads: `terrain`
+/// (row-major `TileKind` wire names, parallel to `walkable`) and `landmarks` (one
+/// `heal` entry per compiled heal_locations row of this zone). The pre-existing
+/// field names and values are frozen: `client/e2e/controls.ts` and the main-boot
+/// test fixtures read them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ZoneMapPayload {
+    pub zone_id: u32,
+    pub width: i32,
+    pub height: i32,
+    pub walkable: Vec<bool>,
+    pub grass: Vec<bool>,
+    pub warps: Vec<game_core::WarpDef>,
+    pub terrain: Vec<game_core::TileKind>,
+    pub landmarks: Vec<Landmark>,
+}
+
+/// A content-driven marker the renderer draws at a tile (never a hard-coded
+/// coordinate; warp markers come from `warps`, not from here).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Landmark {
+    pub kind: LandmarkKind,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Landmark kinds on the wire; the client's `Landmark.kind` union mirrors it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum LandmarkKind {
+    #[serde(rename = "heal")]
+    Heal,
+}
+
+/// Pure core of `zone_map` (native-testable): walk the rule's map row-major
+/// through its own accessors — the SAME layers `apply_move` reads, so the client
+/// cannot hold a parallel grid — and attach this zone's heal landmarks in
+/// registry order.
+fn build_zone_map_payload(
+    map: &game_core::TileMap,
+    heals: &[game_core::HealLocationDef],
+) -> Result<ZoneMapPayload, String> {
+    let mut walkable = Vec::new();
+    let mut grass = Vec::new();
+    let mut terrain = Vec::new();
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let p = game_core::TilePos { x, y };
+            let kind = map
+                .terrain_at(p)
+                .ok_or_else(|| format!("zone_map: no terrain class at ({x},{y})"))?;
+            terrain.push(kind);
+            walkable.push(map.is_walkable(p));
+            grass.push(map.is_grass(p));
+        }
+    }
+    let landmarks = heals
+        .iter()
+        .filter(|h| h.zone_id == map.zone_id)
+        .map(|h| Landmark {
+            kind: LandmarkKind::Heal,
+            x: h.tile_x,
+            y: h.tile_y,
+        })
+        .collect();
+    Ok(ZoneMapPayload {
+        zone_id: map.zone_id,
+        width: map.width,
+        height: map.height,
+        walkable,
+        grass,
+        warps: map.warps.clone(),
+        terrain,
+        landmarks,
+    })
+}
+
+/// `zone_map` minus the JS marshaling: the cached registries → `map_for` → payload.
+fn zone_map_payload(zone_id: u32) -> Result<ZoneMapPayload, String> {
+    let maps = cached_zone_maps()?;
+    let heals = cached_heal_locations()?;
+    let map = game_core::map_for(zone_id, maps)?;
+    build_zone_map_payload(&map, heals)
+}
+
+/// The renderer's map source: the SAME `TileMap` the rule evaluates, as a
+/// `ZoneMapPayload`. Dispatches on `zone_id` via the content registry
+/// (`load_zone_maps`); an unknown zone_id returns a JS Error (never silently
 /// falls back to zone_0).
 ///
 /// # Errors
-/// Returns a JS error if `zone_id` is unknown or serialization fails.
+/// Returns a JS error if `zone_id` is unknown, a registry fails to parse, or
+/// serialization fails.
 #[wasm_bindgen]
 pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
-    // Cached zone registry: parse-once path.
-    let maps = cached_zone_maps().map_err(zone_map_err)?;
-    let tile_map = game_core::map_for(zone_id, maps).map_err(zone_map_err)?;
-    zone_map_ok(&tile_map)
+    let payload = zone_map_payload(zone_id).map_err(zone_map_err)?;
+    zone_map_ok(&payload)
+}
+
+/// The ten `TileKind` wire names in declaration order (`TileKind::ALL`) — a test
+/// hook with no production caller: `client/src/render/map.test.ts` pins the
+/// client's `TERRAIN_KINDS` roster to it so the two cannot drift.
+///
+/// # Errors
+/// Returns a JS error if serialization fails.
+#[wasm_bindgen]
+pub fn terrain_kinds() -> Result<JsValue, JsValue> {
+    zone_map_ok(&game_core::TileKind::ALL)
 }
 
 /// The tactics golden harness across the wasm boundary: runs game-core's

@@ -374,7 +374,14 @@
     "variants": [
       "Floor",
       "Wall",
-      "TallGrass"
+      "TallGrass",
+      "Path",
+      "Sand",
+      "ShallowWater",
+      "DeepWater",
+      "Rock",
+      "Tree",
+      "Bush"
     ]
   },
   "NpcInteraction": {

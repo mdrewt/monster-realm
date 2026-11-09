@@ -225,12 +225,14 @@ proptest! {
                     .terrain_at(p)
                     .expect("every in-bounds tile has a terrain class");
                 let authored = rows[y as usize].chars().nth(x as usize);
-                prop_assert_eq!(Some(kind.glyph()), authored, "class at ({x},{y})");
-                prop_assert_eq!(m.is_walkable(p), kind.is_walkable(), "walkable at ({x},{y})");
+                prop_assert_eq!(Some(kind.glyph()), authored, "class at ({},{})", x, y);
+                prop_assert_eq!(m.is_walkable(p), kind.is_walkable(), "walkable at ({},{})", x, y);
                 prop_assert_eq!(
                     m.is_grass(p),
                     m.terrain_at(p) == Some(TileKind::TallGrass),
-                    "grass at ({x},{y})"
+                    "grass at ({},{})",
+                    x,
+                    y
                 );
             }
         }

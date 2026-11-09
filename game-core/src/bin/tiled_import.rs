@@ -2,11 +2,11 @@
 //
 // Architecture: std-only recursive-descent JSON parser. No serde_json —
 // game-core Cargo.toml must not gain new deps.
-// GID convention: 0 = wall('#'), 1 = floor('.'), 2 = grass('~').
+// GID convention: game-core's TileKind class table (TileKind::from_gid -> glyph).
 // Object layer "Warps": objects with to_zone, to_x, to_y int properties.
 
 use game_core::content::{WarpDef, ZoneMapDef};
-use game_core::types::TilePos;
+use game_core::types::{TileKind, TilePos};
 
 // ===========================================================================
 // Minimal JSON value tree — covers the Tiled subset we need.
@@ -351,7 +351,7 @@ fn as_obj<'a>(v: &'a JsonValue, ctx: &str) -> Result<&'a [(String, JsonValue)], 
 /// - `json` is not valid JSON in the expected subset
 /// - There is no `tilelayer` (any name)
 /// - `data.len() != width * height`
-/// - Any GID is not in {0, 1, 2}
+/// - Any GID has no `TileKind` (the class table owns GIDs 0–9)
 /// - A "Warps" object layer has a malformed object or missing properties
 pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> {
     if json.is_empty() {
@@ -494,13 +494,11 @@ pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> 
         for col_idx in 0..width {
             let gid_val = &tile_data[row_idx * width + col_idx];
             let gid = as_u32(gid_val, &format!("data[{}]", row_idx * width + col_idx))?;
-            let ch = match gid {
-                0 => '#',
-                1 => '.',
-                2 => '~',
-                other => {
+            let ch = match TileKind::from_gid(gid) {
+                Some(kind) => kind.glyph(),
+                None => {
                     return Err(format!(
-                        "unknown GID {other} at row={row_idx} col={col_idx} (expected 0, 1, or 2)"
+                        "unknown GID {gid} at row={row_idx} col={col_idx} (not a TileKind GID)"
                     ))
                 }
             };

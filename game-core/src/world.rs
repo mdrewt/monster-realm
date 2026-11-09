@@ -87,11 +87,12 @@ const ZONE_0_ROWS: &[&str] = &[
 
 /// A zone-tagged, bounds-safe walkability grid (row-major).
 ///
-/// `Serialize` is one-way only (no `Deserialize`): the M3 `client-wasm`
-/// `zone_map()` export hands the renderer the SAME map the rule evaluates
-/// (visual-SSOT — a hard-coded TS map would visually desync). It is **not**
-/// deserialized back, so the `from_rows` parse-don't-validate constructor stays
-/// the sole way to build an invariant-holding `TileMap`.
+/// `Serialize` is one-way only (no `Deserialize`): the map is never deserialized
+/// back, so the `from_rows` parse-don't-validate constructor stays the sole way
+/// to build an invariant-holding `TileMap`. The renderer receives the SAME map
+/// the rule evaluates (visual-SSOT — a hard-coded TS map would visually desync)
+/// through `client-wasm`'s `zone_map()`, which re-expresses it field by field
+/// (plus `terrain` and `landmarks`) via the accessors below.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TileMap {
     pub zone_id: u32,
@@ -102,6 +103,10 @@ pub struct TileMap {
     /// `TallGrass` (M8). Rides the one-way `Serialize` so the TS renderer's grass
     /// overlay reads the SAME layer the rule evaluates (visual-SSOT).
     grass: Vec<bool>,
+    /// Parallel, row-major, SAME length as `walkable` — each tile's `TileKind`
+    /// (wap-1). `walkable` and `grass` are derived from the same glyph in the
+    /// same loop; the renderer draws terrain from this layer (`terrain_at`).
+    terrain: Vec<TileKind>,
     /// M11c: warp overlay list — serializes through zone_map() wasm export
     /// (intentional ABI so the TS client always sees the warps field).
     /// `from_rows` produces `warps: vec![]`; `map_for` sets them from ZoneMapDef.
@@ -109,7 +114,8 @@ pub struct TileMap {
 }
 
 impl TileMap {
-    /// Build a map from string-art rows (`'.'` floor, `'#'` wall). Fails LOUD at
+    /// Build a map from string-art rows (one `TileKind` glyph per tile, see
+    /// `TileKind::from_char`). Fails LOUD at
     /// the single offending site on ragged rows or an unknown tile char
     /// (parse-don't-validate, not a silent default).
     ///
@@ -143,6 +149,17 @@ impl TileMap {
         }
         let idx = p.y as usize * self.width as usize + p.x as usize;
         self.grass.get(idx).copied().unwrap_or(false)
+    }
+
+    /// The tile's terrain class. Out-of-range → `None`, never a panic (mirrors
+    /// `is_grass`); every in-bounds tile has a class.
+    #[must_use]
+    pub fn terrain_at(&self, p: TilePos) -> Option<TileKind> {
+        if !self.in_bounds(p) {
+            return None;
+        }
+        let idx = p.y as usize * self.width as usize + p.x as usize;
+        self.terrain.get(idx).copied()
     }
 
     /// Returns the warp whose `from` tile equals `p`, or `None`.
@@ -187,6 +204,7 @@ fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
         .map_err(|_| "map too wide".to_string())?;
     let mut walkable = Vec::with_capacity((width * height).max(0) as usize);
     let mut grass = Vec::with_capacity((width * height).max(0) as usize);
+    let mut terrain = Vec::with_capacity((width * height).max(0) as usize);
     for (y, row) in rows.iter().enumerate() {
         let row_len = i32::try_from(row.chars().count()).unwrap_or(i32::MAX);
         if row_len != width {
@@ -197,7 +215,8 @@ fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
         for (x, c) in row.chars().enumerate() {
             let kind = TileKind::from_char(c).map_err(|e| format!("{e} at ({x},{y})"))?;
             walkable.push(kind.is_walkable());
-            grass.push(matches!(kind, TileKind::TallGrass));
+            grass.push(kind.is_encounter());
+            terrain.push(kind);
         }
     }
     Ok(TileMap {
@@ -206,6 +225,7 @@ fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
         height,
         walkable,
         grass,
+        terrain,
         warps: vec![],
     })
 }
@@ -232,6 +252,9 @@ pub fn map_for(zone_id: u32, zone_maps: &[crate::content::ZoneMapDef]) -> Result
 /// Checks (in order):
 ///
 /// 1. All rows build valid TileMaps (well-formedness).
+/// 1b. Deep water borders only water: every in-bounds 8-neighbour of a
+///     `DeepWater` tile is `ShallowWater` or `DeepWater` (the shore band is
+///     shallow water's alone).
 /// 2. zone_ids within zone_maps are unique.
 /// 3. Every zone_id in zone_maps exists in the zones registry.
 /// 4. Map dims ≤ ZoneDef bounds.
@@ -259,6 +282,11 @@ pub fn validate_zone_maps(
                 .map_err(|e| format!("zone_map zone_id {}: {}", m.zone_id, e))
         })
         .collect::<Result<_, _>>()?;
+
+    // Check 1b: deep water borders only water.
+    for (m, tile_map) in zone_maps.iter().zip(built.iter()) {
+        check_deep_water_shore(m.zone_id, tile_map)?;
+    }
 
     // Check 2: unique zone_id
     {
@@ -354,6 +382,37 @@ pub fn validate_zone_maps(
         }
     }
 
+    Ok(())
+}
+
+/// Check 1b of `validate_zone_maps`: a `DeepWater` tile may border only water, so
+/// the shore band (where water meets land) is always shallow water's. Every
+/// IN-BOUNDS tile of the 3×3 window around each deep tile must be
+/// `ShallowWater` or `DeepWater`; a tile off the map is not a neighbour (a sea may
+/// run off the edge — there is no land there to meet). Names the deep tile and
+/// the first offending neighbour in row-major order.
+fn check_deep_water_shore(zone_id: u32, map: &TileMap) -> Result<(), String> {
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let p = TilePos { x, y };
+            if map.terrain_at(p) != Some(TileKind::DeepWater) {
+                continue;
+            }
+            for ny in (y - 1)..=(y + 1) {
+                for nx in (x - 1)..=(x + 1) {
+                    let q = TilePos { x: nx, y: ny };
+                    match map.terrain_at(q) {
+                        None | Some(TileKind::ShallowWater | TileKind::DeepWater) => {}
+                        Some(kind) => {
+                            return Err(format!(
+                                "zone_map zone_id {zone_id}: deep water at {p:?} borders non-water {kind:?} at {q:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
