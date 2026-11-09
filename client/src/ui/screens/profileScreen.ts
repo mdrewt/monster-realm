@@ -23,6 +23,28 @@ export interface RowsView {
   applyRowOp(op: RowOp): void;
 }
 
+/** One Profile section (uif-16a): its root and its rows, apart from the overlay that shows it
+ *  (a11y, show, hide). The three views are each still one overlay whose root is their section's. */
+export interface RowSection {
+  readonly sectionRoot: HTMLElement;
+  /** The rows: the shown, enabled controls, in DOM order. */
+  sectionRows(): readonly HTMLElement[];
+  /** Where a token lands with no row focused: a confirm's No while armed, else the first row. */
+  defaultRow(): HTMLElement | undefined;
+}
+
+/** One token on `section` (`rowStep` over its rows, read afresh): focuses the step's row and
+ *  returns the row it presses, which the caller clicks or not (the Name field presses nothing). */
+export function walkSection(
+  section: RowSection,
+  focused: unknown,
+  op: RowOp,
+): HTMLElement | undefined {
+  const { focus, press } = rowStep(section.sectionRows(), focused, section.defaultRow(), op);
+  focus?.focus();
+  return press;
+}
+
 export interface RowsState {
   readonly op: RowOp | null;
 }

@@ -1,5 +1,6 @@
 // ui/renameView.ts — thin DOM shell for the profile-rename overlay: Profile › Name (ctl-8h). Its
-// rows are [the field, Save], the cursor being DOM focus (`applyRowOp`, the Name screen's tokens);
+// rows are [the field, Save], the cursor being DOM focus (`applyRowOp`, the Name screen's tokens,
+// walked through its `RowSection`, uif-16a);
 // it opens typing (overlayA11y focuses the field) and commits through `onSubmit`.
 //
 // First overlay with a text <input>. Three input-hygiene mechanisms the read-only
@@ -33,7 +34,7 @@ import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
-import { type RowOp, rowStep } from './screens/profileScreen';
+import { type RowOp, type RowSection, type RowsView, walkSection } from './screens/profileScreen';
 
 /** The frame-chrome title bar (ui/frame.ts, CTL4.6) as `overlay`'s first child, holding the
  *  `#rename-title` it returns: index.html ships none, so it is created once and found after. */
@@ -63,7 +64,7 @@ export interface RenameCallbacks {
   readonly bindings?: () => Bindings;
 }
 
-export class RenameView {
+export class RenameView implements RowsView, RowSection {
   // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
   #lastOp: RowOp | null = null;
   readonly #overlay: HTMLElement;
@@ -181,10 +182,23 @@ export class RenameView {
   applyRowOp(op: RowOp): void {
     if (op === this.#lastOp) return;
     this.#lastOp = op;
-    const rows = this.#submitBtn.disabled ? [this.#input] : [this.#input, this.#submitBtn];
-    const { focus, press } = rowStep(rows, document.activeElement, this.#input, op);
-    focus?.focus();
+    const press = walkSection(this, document.activeElement, op);
     if (press === this.#submitBtn) press.click();
+  }
+
+  /** The section root (uif-16a): this overlay's. */
+  get sectionRoot(): HTMLElement {
+    return this.#overlay;
+  }
+
+  /** The rows [the field, Save]; a disabled Save is not a row. */
+  sectionRows(): readonly HTMLElement[] {
+    return this.#submitBtn.disabled ? [this.#input] : [this.#input, this.#submitBtn];
+  }
+
+  /** With no row focused a token seats the field. */
+  defaultRow(): HTMLElement {
+    return this.#input;
   }
 
   // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
