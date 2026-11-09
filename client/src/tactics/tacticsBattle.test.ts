@@ -2653,6 +2653,46 @@ describe('TacticsBattle: the live draft (BT11.2)', () => {
     }
   });
 
+  it('WAP3.2 the planned Move ghost paints the registered sprite url of its species (Flameling -> emberkit), and an unregistered species paints tactics-sprite--none with no background image', () => {
+    // WRONG IMPL KILLED: the ghost still rebuilding assets/monster-<slug>.png from the species
+    // name (Flameling would request monster-flameling.png, which does not exist); a ghost that
+    // ignores the registry and paints one fixed sprite; an unregistered species that still
+    // requests a file (a 404) instead of the none placeholder.
+    const asUnit1 = (speciesName: string): TacticalUnit[] =>
+      tacUnits('wild').map((u) => (u.unitId === 1 ? { ...u, speciesName } : u));
+    const ghostSprite = (speciesName: string): HTMLElement => {
+      const k = make();
+      k.shell.render(tacVm('wild', { units: asUnit1(speciesName) }));
+      draftMove(k, c(1, 1), c(2, 1), speciesName);
+      expect(ghosts(k.root), `${speciesName}: one ghost`).toHaveLength(1);
+      return q(ghosts(k.root)[0] as HTMLElement, '.tactics-sprite');
+    };
+    const probe = document.createElement('div');
+    const forms = new Set<string>();
+    for (const raw of [
+      'url("assets/monster-emberkit.png")',
+      'url(assets/monster-emberkit.png)',
+      "url('assets/monster-emberkit.png')",
+    ]) {
+      forms.add(raw);
+      probe.style.backgroundImage = raw;
+      if (probe.style.backgroundImage !== '') forms.add(probe.style.backgroundImage);
+    }
+
+    const fire = ghostSprite('Flameling');
+    expect(
+      forms.has(fire.style.backgroundImage),
+      `Flameling ghost background ${JSON.stringify(fire.style.backgroundImage)}`,
+    ).toBe(true);
+    expect(fire.classList.contains('tactics-sprite--none'), 'Flameling has a sprite').toBe(false);
+
+    const none = ghostSprite('Mossback');
+    expect(none.classList.contains('tactics-sprite--none'), 'unregistered -> none class').toBe(
+      true,
+    );
+    expect(none.style.backgroundImage, 'unregistered -> no background image').toBe('');
+  });
+
   it('BT11-2-SHELL-COMMIT: in PvE and PvP an irreversible action submits the whole draft once — a Move then skill 12 on its first legal target; Start on an empty live draft ends the turn once a new turn re-arms the unit; Recruit with its bait and Flee (PvE); the End row after a Move — and a submit that throws keeps the draft', () => {
     // WRONG IMPL KILLED: a Skill sent without the Move before it (BT11.2: "submit the draft") or
     // the Move sent alone; the wire not the binding shape; two submits for one press; the draft

@@ -23,7 +23,7 @@ interface ResizeWindow {
 }
 
 /**
- * Size the renderer and `--mr-ui-scale` to the window now, and again on every `'resize'`
+ * Size the renderer, `--mr-ui-scale` and `--mr-world-scale` to the window now, and again on every `'resize'`
  * event. All three values are read once per event, from `win` at FIRE-TIME (not capture-time),
  * so a resize after a monitor drag re-scales correctly and the world and the chrome see one set
  * of numbers. A devicePixelRatio change with no size change fires no `resize` in Chromium
@@ -40,8 +40,11 @@ export function installResizeHandler(renderer: Resizable, win: ResizeWindow): vo
     const cssH = win.innerHeight;
     const dpr = win.devicePixelRatio;
     renderer.resize(cssW, cssH, dpr);
-    const { uiScale } = viewportScale(cssW, cssH, dpr);
-    win.document.documentElement.style.setProperty('--mr-ui-scale', String(uiScale));
+    const { uiScale, stageScale } = viewportScale(cssW, cssH, dpr);
+    const style = win.document.documentElement.style;
+    style.setProperty('--mr-ui-scale', String(uiScale));
+    // CSS px per art px: the DOM battle board sizes art in whole device pixels from it.
+    style.setProperty('--mr-world-scale', String(stageScale));
   };
   syncSize(); // initial fit
   win.addEventListener('resize', syncSize);

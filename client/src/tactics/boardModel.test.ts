@@ -18,8 +18,10 @@
 // buggy implementation; correct them from the spec only.
 
 import { describe, expect, it } from 'vitest';
+import { ART_REGISTRY, type ArtRow } from '../render/art/registry';
 import {
   type BoardInput,
+  backdropUrl,
   buildBoard,
   type CursorMemory,
   cursorFor,
@@ -29,7 +31,7 @@ import {
   OVERLAY_ORDER,
   type OverlayKind,
   type OverlaySets,
-  spriteSlug,
+  spriteUrl,
   type TacticalUnit,
   type Tile,
   unitAt,
@@ -198,16 +200,82 @@ describe('boardModel: the grid and the unit view-models (BT10.1)', () => {
     ).toBe(false);
   });
 
-  it('BT10-1-BOARD-SLUG: spriteSlug lower-cases a [A-Za-z]+ species name and refuses everything else, and a unit view-model carries that slug', () => {
-    // WRONG IMPL KILLED: a slug that keeps digits, dots, slashes or spaces (a path-traversal or a
-    // broken asset name: `monster-../x.png`); a case-insensitive test of the INPUT that lets a
-    // non-ASCII letter through (the dotless i U+0131, an e acute); no lower-casing; a slug for the
-    // empty name; the slug computed once and shared by every unit.
+  it('WAP3.2 spriteUrl resolves a species through the art registry: Flameling to its emberkit sheet, every registered monster to its own file, never a -normal file', () => {
+    // WRONG IMPL KILLED: the old slug rule (monster-flameling.png, a file that does not exist);
+    // a hard-coded Flameling special case that leaves the other species on the slug rule; a
+    // lookup that returns the normal-map file; case-sensitive matching of the registry key.
+    expect(spriteUrl('Flameling'), 'Flameling').toBe('assets/monster-emberkit.png');
+    expect(spriteUrl('flameling'), 'lower-case input').toBe('assets/monster-emberkit.png');
+    expect(spriteUrl('FLAMELING'), 'upper-case input').toBe('assets/monster-emberkit.png');
+    expect(spriteUrl('Tidecrag'), 'Tidecrag').toBe('assets/monster-tidecrag.png');
+    expect(spriteUrl('Cindershade'), 'Cindershade').toBe('assets/monster-cindershade.png');
+    const sprites = ART_REGISTRY.filter(
+      (r) => r.kind === 'sprite' && r.key.startsWith('monsters/'),
+    );
+    expect(sprites.length, 'the registry has monster sprite rows').toBeGreaterThan(10);
+    for (const row of sprites) {
+      const name = row.key.slice('monsters/'.length);
+      expect(spriteUrl(name), `${name} resolves to its own file`).toBe(`assets/${row.file}`);
+      expect(spriteUrl(name)?.includes('-normal'), `${name} is not a normal map`).toBe(false);
+    }
+  });
+
+  it('WAP3.2 spriteUrl gives null for an unregistered species, a species with only a normal row, and a spoofed non-sprite row', () => {
+    // WRONG IMPL KILLED: falling back to the slug path for an unknown species (a 404 request); a
+    // lookup that ignores `kind` (a normal-only species paints its normal map; a palette row
+    // spoofing monsters/x paints a palette); the default registry used even when rows are injected.
+    const base = ART_REGISTRY.find((r) => r.key === 'monsters/tidalin');
+    expect(base, 'a real monster row to clone').toBeDefined();
+    if (base === undefined || base.kind !== 'sprite') throw new Error('fixture row missing');
+    const rowOf = (key: ArtRow['key'], file: string, kind: 'sprite' | 'normal'): ArtRow => ({
+      ...base,
+      key,
+      file,
+      kind,
+    });
+    expect(spriteUrl('Mossback'), 'Mossback has no registered sprite').toBeNull();
+    expect(spriteUrl('Sprigg'), 'Sprigg has no registered sprite').toBeNull();
+    expect(
+      spriteUrl('Zorp', [rowOf('monsters/zorp', 'monster-zorp-normal.png', 'normal')]),
+      'a normal-only species',
+    ).toBeNull();
+    expect(
+      spriteUrl('Zorp', [rowOf('monsters/other', 'monster-other.png', 'sprite')]),
+      'rows without the species',
+    ).toBeNull();
+    expect(spriteUrl('Zorp', []), 'no rows').toBeNull();
+    const palette: ArtRow = {
+      key: 'monsters/zorp',
+      file: 'monster-zorp.png',
+      kind: 'palette',
+      sheet: { w: 16, h: 16 },
+      scale: 1,
+      source: 'x.py',
+      provenance: 'placeholder-procedural',
+      license: 'project-original',
+    };
+    expect(spriteUrl('Zorp', [palette]), 'a palette row spoofing the key').toBeNull();
+    expect(
+      spriteUrl('Zorp', [rowOf('monsters/zorp', 'monster-zorp.png', 'sprite')]),
+      'an injected sprite row resolves',
+    ).toBe('assets/monster-zorp.png');
+  });
+
+  it('WAP3.2 spriteUrl refuses every name that is not [A-Za-z]+, and a unit view-model carries its own url', () => {
+    // WRONG IMPL KILLED: a lookup that keeps digits, dots, slashes or spaces (a path-traversal or
+    // a spoofed key such as `../x`); a case-insensitive test of the INPUT that lets a non-ASCII
+    // letter through (the dotless i U+0131, an e acute); a url for the empty name; the url
+    // computed once and shared by every unit.
     const E_ACUTE = String.fromCharCode(0x00e9);
     const DOTLESS_I = String.fromCharCode(0x0131);
-    expect(spriteSlug('Sprigg'), 'Sprigg').toBe('sprigg');
-    expect(spriteSlug('MossBack'), 'mixed case').toBe('mossback');
-    expect(spriteSlug('flameling'), 'already lower').toBe('flameling');
+    const spoof = ART_REGISTRY.find((r) => r.key === 'monsters/tidalin');
+    if (spoof === undefined) throw new Error('fixture row missing');
+    const spoofRows: readonly ArtRow[] = [
+      { ...spoof, key: 'monsters/a_b' } as ArtRow,
+      { ...spoof, key: 'monsters/mon2' } as ArtRow,
+    ];
+    expect(spriteUrl('A_b', spoofRows), 'underscore is not a letter').toBeNull();
+    expect(spriteUrl('Mon2', spoofRows), 'a digit is not a letter').toBeNull();
     for (const bad of [
       '../x',
       'a b',
@@ -225,21 +293,47 @@ describe('boardModel: the grid and the unit view-models (BT10.1)', () => {
       'a/b',
       'a\\b',
     ]) {
-      expect(spriteSlug(bad), `${JSON.stringify(bad)} has no sprite`).toBeNull();
+      expect(spriteUrl(bad), `${JSON.stringify(bad)} has no sprite`).toBeNull();
     }
     const vm = buildBoard(
       board({
         units: [
-          unit({ unitId: 1, x: 0, y: 0, speciesName: 'Sprigg' }),
+          unit({ unitId: 1, x: 0, y: 0, speciesName: 'Flameling' }),
           unit({ unitId: 2, x: 1, y: 0, speciesName: 'Mon2' }),
-          unit({ unitId: 3, x: 2, y: 0, speciesName: 'Cindertail' }),
+          unit({ unitId: 3, x: 2, y: 0, speciesName: 'Cindershade' }),
+          unit({ unitId: 4, x: 3, y: 0, speciesName: 'Mossback' }),
         ],
       }),
     );
     expect(
-      vm.units.map((u) => u.spriteSlug),
-      'each unit view-model carries its own slug, null when refused',
-    ).toEqual(['sprigg', null, 'cindertail']);
+      vm.units.map((u) => u.spriteUrl),
+      'each unit view-model carries its own url, null when unregistered or refused',
+    ).toEqual(['assets/monster-emberkit.png', null, 'assets/monster-cindershade.png', null]);
+  });
+
+  it('WAP3.4 backdropUrl is the battle/backdrop row file, null without that row, and the built board carries it', () => {
+    // WRONG IMPL KILLED: a hard-coded path that ignores the registry; a non-null answer for a
+    // registry without the row (a 404 request); a backdrop keyed on another battle row; a built
+    // BoardVM that omits the field (the painter never sees the url).
+    expect(backdropUrl(), 'default registry').toBe('assets/battle-backdrop.png');
+    const base = ART_REGISTRY.find((r) => r.key === 'monsters/tidalin');
+    if (base === undefined) throw new Error('fixture row missing');
+    const withKey = (key: ArtRow['key'], file: string): ArtRow => ({ ...base, key, file });
+    expect(backdropUrl([]), 'no rows').toBeNull();
+    expect(
+      backdropUrl([withKey('battle/other', 'battle-other.png')]),
+      'other battle row',
+    ).toBeNull();
+    expect(
+      backdropUrl([withKey('monsters/backdrop', 'monster-backdrop.png')]),
+      'a monster row is not the backdrop',
+    ).toBeNull();
+    expect(backdropUrl([withKey('battle/backdrop', 'battle-alt.png')]), 'injected row').toBe(
+      'assets/battle-alt.png',
+    );
+    expect(buildBoard(board()).backdropUrl, 'the built board carries the url').toBe(
+      'assets/battle-backdrop.png',
+    );
   });
 
   it('BT10-2-BOARD-UNITAT: unitAt returns the ACTIVE unit on a tile, never a Fainted or Recruited one standing there, and null on an empty tile', () => {

@@ -25,9 +25,9 @@ Species 1 (Flameling) is deliberately NOT regenerated: `monster-emberkit.*` is
 already shipped and is referenced by `demo/index.html`.
 
 The bar is DISTINCT SILHOUETTE, not just palette (H2 attachment). Seven body
-plans cover nine species; `evals/pt-d2-roster-wave-2.eval.mjs` enforces both a
-unique (plan, size, features) tuple per species AND a >=10% pairwise difference
-between the decoded, bbox-cropped alpha masks of every pair's `mon_down_idle`.
+plans cover fifteen species; `main()` refuses a plan table whose
+(plan, size, features) tuples are not unique (the pt-d2 eval that also compared
+decoded alpha masks has since been retired).
 """
 
 import os
@@ -146,13 +146,26 @@ PALETTES = {
         ramp("#b06a3a", "#e0a066", "#ffdcae"),
         ramp("#2e2410", "#5c4a22", "#967c38"),
     ),
+    # Item-evolution forms (wap-3).  Tidecrag is the Cragling line's Water fork:
+    # a cool slate-teal ramp with a pale foam underside.  Cindershade is the
+    # Shadelet line's Fire fork: a smoky violet body around an ember core, kept
+    # darker than every Fire line so value, not hue alone, separates them.
+    "tidecrag": (
+        ramp("#102a34", "#1e4a58", "#2f7584", "#5aa8b0", "#bfe6e0"),
+        ramp("#5c6a72", "#8a989e", "#d2dcdc"),
+        ramp("#0a1a20", "#102a34", "#1e4a58"),
+    ),
+    "cindershade": (
+        ramp("#1c1024", "#36203e", "#54345c", "#7e5684", "#c49ac4"),
+        ramp("#a8341a", "#e0662a", "#ffb44a"),
+        ramp("#2a0e0a", "#5e1a10", "#a8341a"),
+    ),
 }
 
 # --------------------------------------------------------------------------- #
 # The plan table.  One row per species sheet: (slug, body_plan, size, features).
-# `features` is a `|`-separated flag string.  The pt-d2 eval parses the rows
-# between the two markers below and requires every (plan, size, features) tuple
-# to be unique — two species that differ only by palette are exactly the
+# `features` is a `|`-separated flag string.  `main()` requires every
+# (plan, size, features) tuple to be unique — two species that differ only by palette are exactly the
 # palette-swap failure the distinct-silhouette bar exists to prevent.
 #
 # Species 1 (Flameling / emberkit) is absent on purpose: already shipped.
@@ -177,6 +190,10 @@ PLAN_TABLE = [
     ("voltarion", "avian", "large", "bolt|openwings"),
     ("aurelet", "orb", "small", "halo"),
     ("aurelith", "orb", "large", "halo|skirt"),
+    # Item-evolution forms (wap-3): a new (plan, size, features) tuple each — a
+    # large finned serpent and a small veiled vapour bell.
+    ("tidecrag", "serpent", "large", "fin"),
+    ("cindershade", "vapor", "small", "veil"),
 ]
 # PLAN-TABLE-END
 
@@ -522,6 +539,9 @@ def build_species_sheet(slug, plan, size, features):
 def main():
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(PREVIEW, exist_ok=True)
+    tuples = [row[1:] for row in PLAN_TABLE]
+    if len(set(tuples)) != len(tuples):
+        raise SystemExit("PLAN_TABLE: two rows share a (plan, size, features) tuple")
     for slug, plan, size, features in PLAN_TABLE:
         sheet = build_species_sheet(slug, plan, size, features)
         print(f"monster-{slug}.png + -normal.png   {sheet.w}x{sheet.h}  "

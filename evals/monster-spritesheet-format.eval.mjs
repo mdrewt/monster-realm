@@ -37,17 +37,16 @@ const SHEET_H = 128;
 
 // Roster coverage: every species in game-core/content/species must ship its
 // sheet set — monster-<slug>.{png,json} plus the monster-<slug>-normal.{png,json}
-// normal map — where <slug> is the lower-cased species name. Deviations are
-// explicit so a new species forces a reviewed decision instead of silently
+// normal map — where <slug> is the lower-cased species name. No species is
+// exempt from having a sheet (wap-3 shipped the last two); the deviations below
+// are explicit so a new species forces a reviewed decision instead of silently
 // shipping without art.
 const SLUG_OVERRIDES = { 1: 'emberkit' }; // Flameling kept the first shipped sheet name
-const NO_SHEET_YET = new Set([30, 31]); // item-evolution forms: no art authored yet
 const NO_NORMAL_MAP = new Set([7, 8, 9, 10]); // wave-1 sheets shipped without normal maps
 
 export function missingSpriteFiles(species, files) {
   const missing = [];
   for (const { id, name } of species) {
-    if (NO_SHEET_YET.has(id)) continue;
     const slug = SLUG_OVERRIDES[id] ?? name.toLowerCase();
     const want = [`monster-${slug}.png`, `monster-${slug}.json`];
     if (!NO_NORMAL_MAP.has(id))

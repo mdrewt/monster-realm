@@ -538,14 +538,20 @@
 .tactics-board {
   height: 100%;
 }
-/* The ONE shared background: every tile and unit draws over it. */
+/* The ONE shared background: every tile and unit draws over it. The registered backdrop image is
+ * set inline by boardRender (registry-resolved); the hex colour is its fallback while it loads or
+ * if it fails. */
 .tactics-bg {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
-  background: linear-gradient(#3a5a40, #2d4733);
+  background-color: #2d4733;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
 }
 .tactics-grid {
   display: grid;
@@ -625,14 +631,20 @@
   cursor: pointer;
 }
 /* A base mark under every unit that does not rely on colour: own units stand on a solid ring, the
- * others on a dashed square. */
+ * others on a dashed square.
+ *
+ * BOARD ART SCALE (wap-3): the sprite, the HP track and the base mark are sized in ART pixels
+ * times --mr-world-scale (CSS px per art px, the world's integer device scale over the dpr,
+ * published by render/resizeWiring.ts), so each art pixel covers a whole number of device pixels.
+ * border-box keeps a border inside that size. The fallback 2 is the scale at 1280x720 DPR 1. */
 .tactics-unit::before {
   content: "";
   position: absolute;
-  bottom: 14px;
+  bottom: calc(7px * var(--mr-world-scale, 2));
   z-index: -1;
-  width: 56px;
-  height: 14px;
+  box-sizing: border-box;
+  width: calc(28px * var(--mr-world-scale, 2));
+  height: calc(7px * var(--mr-world-scale, 2));
   border: 2px dashed #ddd;
 }
 .tactics-unit--mine::before {
@@ -643,9 +655,10 @@
   filter: drop-shadow(0 0 4px #fff);
 }
 .tactics-sprite {
-  width: 64px;
-  height: 64px;
-  background-size: 192px 256px;
+  flex: none; /* never squeezed by a short grid row: the art keeps its whole-pixel size */
+  width: calc(32px * var(--mr-world-scale, 2));
+  height: calc(32px * var(--mr-world-scale, 2));
+  background-size: calc(96px * var(--mr-world-scale, 2)) calc(128px * var(--mr-world-scale, 2));
   background-position: 0 0;
   background-repeat: no-repeat;
   image-rendering: pixelated;
@@ -655,9 +668,11 @@
   background-color: rgba(0, 0, 0, 0.35);
 }
 .tactics-hp {
-  width: 48px;
-  height: 6px;
-  margin-top: 2px;
+  flex: none;
+  box-sizing: border-box;
+  width: calc(24px * var(--mr-world-scale, 2));
+  height: calc(4px * var(--mr-world-scale, 2));
+  margin-top: calc(1px * var(--mr-world-scale, 2));
   background: #222;
   border: 1px solid #000;
 }
@@ -675,6 +690,7 @@
   background: var(--mr-state-error);
 }
 .tactics-unit-name {
+  flex: none; /* the art no longer shrinks to make room, so the label must not collapse instead */
   max-width: 100%;
   overflow: hidden;
   font-size: var(--mr-font-small);
@@ -898,6 +914,8 @@
   position: relative;
   z-index: 2;
   display: flex;
+  min-width: 0; /* like .tactics-unit: the unshrinkable art never grows its 1fr track */
+  min-height: 0;
   align-items: center;
   justify-content: center;
   opacity: 0.55;

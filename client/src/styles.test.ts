@@ -601,8 +601,10 @@ describe('styles.css uif-4: toast layer, overlay strip, world line layer', () =>
 // uif-11 (UIF11.1, UIF11.2, UIF11.3): the tactical screens on the kit. The sheet is parsed as text;
 // the first Chromium proof of the geometry is e2e/ui-tactics.spec.ts. BOARD ART (tile overlays, the
 // unit base mark, the sprite, the HP track, the ghost, the background, the grid and the sr-only title)
-// keeps its px: boardRender.test.ts (outside this slice's touches) pins those literals. Every other
-// rule whose selector names `tactics` is CHROME and must scale with the root rem.
+// is exempt from the rem rule here: since wap-3 the sprite, HP track and base mark sizes follow the
+// world scale (`--mr-world-scale`), and e2e/tactics-wild.spec.ts measures them in a real browser
+// (whole device px per art px) instead of any test pinning their px literals. Every other rule whose
+// selector names `tactics` is CHROME and must scale with the root rem.
 describe('styles.css uif-11: tactical chrome on the tokens, the one scale and the nav-row treatment', () => {
   const css = readFileSync(STYLES_CSS_PATH, 'utf8');
   const rules = ctl7bParseCss(ctl7bStripCssComments(css));

@@ -1,8 +1,8 @@
 // render/art/packs/monsters.ts — monster sheet rows, keyed by species name.
 //
 // The key is the lower-cased species name; the file is whatever the generator
-// wrote (Flameling's sheet ships as `monster-emberkit.png`). Tidecrag and
-// Cindershade have no sheet yet (`wap-3` adds them). Every sheet is 3×4 frames
+// wrote (Flameling's sheet ships as `monster-emberkit.png`). Every species has
+// a sheet (Tidecrag and Cindershade since `wap-3`). Every sheet is 3×4 frames
 // of 32 px; the wave-1 sheets (Cragling, Shadelet, Stoneward, Umbrafang) have no
 // normal map and came from a generator since deleted from the tree.
 import type { ArtRow } from '../registry';
@@ -53,4 +53,6 @@ export const MONSTERS_PACK: readonly ArtRow[] = [
   ...sheetRows('Voltarion', 'voltarion', ROSTER, true),
   ...sheetRows('Aurelet', 'aurelet', ROSTER, true),
   ...sheetRows('Aurelith', 'aurelith', ROSTER, true),
+  ...sheetRows('Tidecrag', 'tidecrag', ROSTER, true),
+  ...sheetRows('Cindershade', 'cindershade', ROSTER, true),
 ];

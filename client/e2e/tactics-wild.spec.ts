@@ -231,6 +231,139 @@ async function huntWild(p: Page, label: string): Promise<TacticsSnap> {
   return seen;
 }
 
+/** wap-3: one board unit's art boxes in device pixels, read in the page. */
+interface BoardArt {
+  readonly dpr: number;
+  readonly world: string;
+  readonly spriteW: number;
+  readonly spriteH: number;
+  readonly hpW: number;
+  readonly hpH: number;
+  readonly baseW: number;
+  readonly baseH: number;
+}
+
+const measureBoardArt = (p: Page): Promise<BoardArt> =>
+  p.evaluate(() => {
+    const unit = document.querySelector<HTMLElement>('.tactics-battle .tactics-unit');
+    const sprite = unit?.querySelector<HTMLElement>('.tactics-sprite');
+    const hp = unit?.querySelector<HTMLElement>('.tactics-hp');
+    if (!unit || !sprite || !hp) throw new Error('measureBoardArt: no painted board unit');
+    const sr = sprite.getBoundingClientRect();
+    const hr = hp.getBoundingClientRect();
+    const base = getComputedStyle(unit, '::before');
+    return {
+      dpr: window.devicePixelRatio,
+      world: document.documentElement.style.getPropertyValue('--mr-world-scale'),
+      spriteW: sr.width,
+      spriteH: sr.height,
+      hpW: hr.width,
+      hpH: hr.height,
+      baseW: Number.parseFloat(base.width),
+      baseH: Number.parseFloat(base.height),
+    };
+  });
+
+/** `cssLen` CSS px on a `dpr` screen covers a whole number (>= 1) of device px per `art` art px. */
+function expectWholeDevicePx(cssLen: number, dpr: number, art: number, what: string): number {
+  const per = (cssLen * dpr) / art;
+  expect(
+    Math.abs(per - Math.round(per)),
+    `${what}: ${per} device px per art px is whole`,
+  ).toBeLessThan(0.02);
+  expect(Math.round(per), `${what}: at least one device px per art px`).toBeGreaterThanOrEqual(1);
+  return Math.round(per);
+}
+
+function expectBoardArtIntegral(m: BoardArt, label: string): number {
+  const per = expectWholeDevicePx(m.spriteW, m.dpr, 32, `${label} sprite width`);
+  expect(expectWholeDevicePx(m.spriteH, m.dpr, 32, `${label} sprite height`), label).toBe(per);
+  expect(expectWholeDevicePx(m.hpW, m.dpr, 24, `${label} hp bar width`), label).toBe(per);
+  expect(expectWholeDevicePx(m.hpH, m.dpr, 4, `${label} hp bar height`), label).toBe(per);
+  expect(expectWholeDevicePx(m.baseW, m.dpr, 28, `${label} base mark width`), label).toBe(per);
+  expect(expectWholeDevicePx(m.baseH, m.dpr, 7, `${label} base mark height`), label).toBe(per);
+  return per;
+}
+
+/** WAP3.3 + WAP3.4, once the tactical shell is first open: the board art is a whole number of
+ *  device pixels per art pixel at 1280x720@1 and at 1279x720@1.25, the world scale custom property
+ *  follows the viewport, and the backdrop is served (200) and painted over a colour fallback. */
+async function checkBoardArt(p: Page, backdropStatuses: readonly number[]): Promise<void> {
+  await expect(
+    p.locator(`${TACTICS.shell} .tactics-unit`).first(),
+    'WAP3.3 the board is painted',
+  ).toBeVisible({ timeout: 20_000 });
+
+  const base = await measureBoardArt(p);
+  expect(base.dpr, 'WAP3.3 the default context is DPR 1').toBe(1);
+  expect(base.world, 'WAP3.3 --mr-world-scale at 1280x720@1').toBe('2');
+  expectBoardArtIntegral(base, 'WAP3.3 1280x720@1');
+
+  const cdp = await p.context().newCDPSession(p);
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 1279,
+    height: 720,
+    deviceScaleFactor: 1.25,
+    mobile: false,
+  });
+  await p.waitForFunction(
+    () =>
+      window.devicePixelRatio === 1.25 &&
+      document.documentElement.style.getPropertyValue('--mr-world-scale') === '2.4',
+    null,
+    { timeout: 10_000 },
+  );
+  const scaled = await measureBoardArt(p);
+  expect(scaled.world, 'WAP3.3 --mr-world-scale at 1279x720@1.25').toBe('2.4');
+  expect(
+    scaled.spriteW,
+    'WAP3.3 the sprite is not the old fixed 64 css px at a fractional dpr',
+  ).not.toBe(64);
+  expect(
+    expectBoardArtIntegral(scaled, 'WAP3.3 1279x720@1.25'),
+    'WAP3.3 three device px per art px at 1279x720@1.25',
+  ).toBe(3);
+
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await cdp.detach();
+  await p.setViewportSize({ width: 1280, height: 720 });
+  await expect
+    .poll(
+      () =>
+        p.evaluate(() => ({
+          w: window.innerWidth,
+          h: window.innerHeight,
+          dpr: window.devicePixelRatio,
+          world: document.documentElement.style.getPropertyValue('--mr-world-scale'),
+        })),
+      {
+        message: 'WAP3.3 the viewport is restored to 1280x720@1 with --mr-world-scale 2',
+        timeout: 10_000,
+      },
+    )
+    .toEqual({ w: 1280, h: 720, dpr: 1, world: '2' });
+
+  await expect
+    .poll(() => backdropStatuses, {
+      message: 'WAP3.4 assets/battle-backdrop.png is requested and served 200',
+      timeout: 10_000,
+    })
+    .toContain(200);
+  const bg = await p.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('.tactics-battle .tactics-bg');
+    if (!el) throw new Error('no .tactics-bg');
+    const cs = getComputedStyle(el);
+    return { image: cs.backgroundImage, color: cs.backgroundColor };
+  });
+  expect(bg.image, 'WAP3.4 the board background paints the backdrop').toContain(
+    'battle-backdrop.png',
+  );
+  expect(
+    ['transparent', 'rgba(0, 0, 0, 0)'].includes(bg.color),
+    `WAP3.4 the board keeps a colour fallback under the image (${bg.color})`,
+  ).toBe(false);
+}
+
 /** How many attacks were committed with the forecast up, across the whole test. */
 let forecastAttacks = 0;
 
@@ -395,6 +528,11 @@ test.describe
       // the battle starts on grass; its pack of one is asserted (one side-B unit, never a deploy panel).
       test.setTimeout(600_000);
       await closeAll(page);
+      // WAP3.4: registered BEFORE any battle starts, so the backdrop's first request is never missed.
+      const backdropStatuses: number[] = [];
+      page.on('response', (r) => {
+        if (r.url().endsWith('/assets/battle-backdrop.png')) backdropStatuses.push(r.status());
+      });
       let recruited = false;
       for (let battle = 0; battle < MAX_BATTLES && !recruited; battle += 1) {
         const start = await huntWild(page, `battle ${battle}`);
@@ -409,6 +547,7 @@ test.describe
         });
         await expect(page.locator(`${TACTICS.shell} [data-testid="battle-title"]`)).toBeVisible();
         await expect(page.locator(`${TACTICS.shell}[aria-modal="true"]`)).toHaveCount(1);
+        if (battle === 0) await checkBoardArt(page, backdropStatuses);
         recruited = await fightToRecruit(page);
         if (!recruited) {
           // Abandon a stalled battle: Flee on the next own turn, then let the results pass.
