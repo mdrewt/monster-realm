@@ -161,7 +161,73 @@ const animKeys = (): string[] =>
 const variantKeys = (): string[] => CLASSES.flatMap((c) => [...TERRAIN_KIT_CLASSES[c].variants]);
 const allKeys = (): string[] => [...variantKeys(), ...animKeys(), ...shoreKeys()];
 
+type Side = 'n' | 'e' | 's' | 'w';
+const STRIP: Record<Side, Rect> = {
+  n: { x: 0, y: 0, w: 32, h: 4 },
+  s: { x: 0, y: 28, w: 32, h: 4 },
+  w: { x: 0, y: 0, w: 4, h: 32 },
+  e: { x: 28, y: 0, w: 4, h: 32 },
+};
+const CORNER: Record<'ne' | 'nw' | 'se' | 'sw', Rect> = {
+  nw: { x: 0, y: 0, w: 4, h: 4 },
+  ne: { x: 28, y: 0, w: 4, h: 4 },
+  sw: { x: 0, y: 28, w: 4, h: 4 },
+  se: { x: 28, y: 28, w: 4, h: 4 },
+};
+const OPPOSITE: Record<Side, Side> = { n: 's', s: 'n', e: 'w', w: 'e' };
+const FLIP: Record<'ne' | 'nw' | 'se' | 'sw', 'ne' | 'nw' | 'se' | 'sw'> = {
+  ne: 'sw',
+  sw: 'ne',
+  nw: 'se',
+  se: 'nw',
+};
+
+/** 'land' when mean G > mean B, 'water' when mean B > mean G, over a frame region. */
+function region(px: Uint8Array, r: Rect): 'land' | 'water' | 'tie' {
+  let g = 0;
+  let b = 0;
+  for (let y = r.y; y < r.y + r.h; y++) {
+    for (let x = r.x; x < r.x + r.w; x++) {
+      g += px[(y * 32 + x) * 4 + 1];
+      b += px[(y * 32 + x) * 4 + 2];
+    }
+  }
+  if (g > b) return 'land';
+  return b > g ? 'water' : 'tie';
+}
+
 describe('WAP2.1 kit atlas contents', () => {
+  it('WAP2.1 every kit frame is fully opaque (alpha 255 on every pixel)', () => {
+    for (const k of allKeys()) {
+      const px = framePixels(albedo(), k);
+      for (let i = 3; i < px.length; i += 4) {
+        if (px[i] !== 255) expect(px[i], `${k} pixel ${(i - 3) / 4} alpha`).toBe(255);
+      }
+    }
+  });
+
+  it('WAP2.1 shore frames put land on the named side and water on the opposite side', () => {
+    for (const [slot, key] of Object.entries(TERRAIN_KIT_SHORE)) {
+      const px = framePixels(albedo(), key);
+      const at = (r: Rect): string => region(px, r);
+      if (slot.length === 1) {
+        const s = slot as Side;
+        expect(at(STRIP[s]), `${slot} named strip`).toBe('land');
+        expect(at(STRIP[OPPOSITE[s]]), `${slot} opposite strip`).toBe('water');
+      } else if (slot.startsWith('inner_')) {
+        const c = slot.slice(6) as keyof typeof CORNER;
+        expect(at(CORNER[c]), `${slot} notch`).toBe('land');
+        expect(at(STRIP[c[0] === 'n' ? 's' : 'n']), `${slot} opposite ns strip`).toBe('water');
+        expect(at(STRIP[c[1] === 'e' ? 'w' : 'e']), `${slot} opposite ew strip`).toBe('water');
+      } else {
+        const c = slot as keyof typeof CORNER;
+        expect(at(STRIP[c[0] as Side]), `${slot} ns strip`).toBe('land');
+        expect(at(STRIP[c[1] as Side]), `${slot} ew strip`).toBe('land');
+        expect(at(CORNER[FLIP[c]]), `${slot} opposite corner`).toBe('water');
+      }
+    }
+  });
+
   it('WAP2.1 atlas is scale 1, every frame 32x32 inside the sheet, and meta.size matches the PNG', () => {
     const { json, png } = albedo();
     expect(json.meta.scale).toBe(1);
@@ -337,6 +403,24 @@ describe('WAP2.4 normal atlas and provenance', () => {
       let blue = 0;
       for (let i = 0; i < n.length; i += 4) blue += n[i + 2];
       expect(blue / (n.length / 4), `${k} mean blue`).toBeGreaterThan(128);
+    }
+  });
+
+  it('WAP2.4 normal frames carry surface detail (R and G channels vary, not a flat map)', () => {
+    const { rgba } = normal().png;
+    for (const [name, off] of [
+      ['R', 0],
+      ['G', 1],
+    ] as const) {
+      const n = rgba.length / 4;
+      let sum = 0;
+      let sumSq = 0;
+      for (let i = off; i < rgba.length; i += 4) {
+        sum += rgba[i];
+        sumSq += rgba[i] * rgba[i];
+      }
+      const variance = sumSq / n - (sum / n) ** 2;
+      expect(variance, `${name} channel variance`).toBeGreaterThan(0);
     }
   });
 

@@ -25,7 +25,16 @@ export interface TerrainKitClassFrames {
   readonly animation?: readonly string[];
 }
 
-/** Land on the named side(s): edges, outer corners, and inner (concave) corners. */
+/**
+ * A shallow-water tile's shore frame, named for where its LAND (ground) lies:
+ * - `n`/`e`/`s`/`w`: a land band along that one edge (water on the other three);
+ * - `ne`/`nw`/`se`/`sw`: land bands along BOTH named edges — the water body's
+ *   convex corner (e.g. the NE tile of a rectangular pond is `ne`);
+ * - `inner_*`: water except a land notch in that corner — the water body's
+ *   concave corner (land diagonally touches it).
+ * Shore frames are static and their water matches the phase-0 frame
+ * (`<class>_f0`, pixel-equal to `<class>_0`), which reduced motion holds.
+ */
 export type ShoreSlot =
   | 'n'
   | 'e'
@@ -47,7 +56,7 @@ const variants = (prefix: string): readonly string[] => [0, 1, 2].map((v) => `${
 const waterFrames = (prefix: string): readonly string[] =>
   [0, 1, 2, 3].map((f) => `${prefix}_f${f}`);
 
-/** Frame keys per class, as `generate_art.py` `build_terrain_kit` writes them. */
+/** Frame keys per class, mirrored by hand from `generate_art.py` `build_terrain_kit` (the test cross-checks the json). */
 export const TERRAIN_KIT_CLASSES: Readonly<Record<TerrainKitClass, TerrainKitClassFrames>> = {
   Floor: { variants: variants('ground') },
   TallGrass: { variants: variants('tall_grass') },
