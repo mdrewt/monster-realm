@@ -2295,6 +2295,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['deployUnits', { kind: 'deployUnits', battleId: big, picks: [{ monsterId: 7n, slot: 0 }] }],
       ['forfeit', { kind: 'forfeit', battleId: big }],
       ['dismissDialogue', { kind: 'dismissDialogue' }],
+      // uif-14b (named intentional change, UIF14B.3): the How to Play Report a problem row's
+      // `reportProblem` is F9's parity, so it is battle-safe: 10 safe, 25 refused, 35 kinds (were
+      // 9 / 25 / 34).
+      ['reportProblem', { kind: 'reportProblem' }],
     ];
     const proposal = {
       targetIdentity: 'cd'.repeat(32),
@@ -2330,12 +2334,12 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
-    expect(SAFE, 'ANTI-VACUITY: nine safe kinds (bt-17: the seven 1v1 kinds gone)').toHaveLength(9);
+    expect(SAFE, 'ANTI-VACUITY: ten safe kinds (uif-14b: +reportProblem)').toHaveLength(10);
     expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      34,
+      35,
     );
     expect(
       kindsOf(SAFE),
@@ -2350,9 +2354,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'deployUnits',
       'forfeit',
       'dismissDialogue',
+      'reportProblem',
     ]);
 
-    // The table itself is total over the 34 literal kinds (bt-17: −7) and says exactly this.
+    // The table itself is total over the 35 literal kinds (bt-17: −7; uif-14b: +1) and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2517,15 +2522,32 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     // bt-17 (named intentional change, BT17.1): the seven 1v1 kinds leave the table: 9 safe, 25
     // refused, 34 kinds (were 16 / 25 / 41).
     const verdicts = Object.values(COMMAND_BATTLE_POLICY);
+    // uif-14b (named intentional change, UIF14B.3): +reportProblem (safe): 10 safe, 25 refused, 35
+    // kinds (were 9 / 25 / 34).
     expect(
       verdicts.filter((v) => v === 'safe'),
-      'nine safe kinds',
-    ).toHaveLength(9);
+      'ten safe kinds',
+    ).toHaveLength(10);
     expect(
       verdicts.filter((v) => v === 'refuse'),
       'twenty-five refused kinds',
     ).toHaveLength(25);
-    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-four kinds in all').toHaveLength(34);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-five kinds in all').toHaveLength(35);
+  });
+
+  it('UIF14B.3 reportProblem is battle-safe: no battle-base stack refuses it (bare, under a stamped Help or menu), and a world stack never does either', () => {
+    // WRONG IMPL KILLED: a 'refuse' row (Report a problem dead over a battle, where F9 works); a
+    // refusal keyed to a stack shape.
+    const cmd: ScreenCommand = { kind: 'reportProblem' };
+    expect(battleSafeCommand(cmd)).toBe(true);
+    for (const stack of [
+      stackOf(battle('7')),
+      stackOf(battle('7'), stamped('helpView', '7')),
+      stackOf(battle('7'), stamped('menuView', '7')),
+      stackOf(WORLD, screen('helpView')),
+    ]) {
+      expect(battleRefused(deepFrozen(stack), cmd)).toBe(false);
+    }
   });
 
   it('the pop a battle-frame renderer switch makes keeps the server conversation: over a battle base every player frame (menu, help, box, a prompt, a text entry) goes and only the dialogue frames stay, as the same objects in their order, while a world-based stack comes back untouched and a bare battle base alone [BT12-1-POP-KEEPS-DIALOGUE]', () => {

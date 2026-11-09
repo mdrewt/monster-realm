@@ -104,7 +104,11 @@ const SAMPLE_VM: HelpViewModel = {
     { tab: 'intro', title: 'Fixture intro' },
     { tab: 'encyclopedia', title: 'Fixture encyclopedia' },
   ],
-  intro: { paragraphs: ['Fixture paragraph one.', 'Fixture paragraph two.'] },
+  // uif-14b: `report` is the Report a problem row's label (fixture text).
+  intro: {
+    paragraphs: ['Fixture paragraph one.', 'Fixture paragraph two.'],
+    report: 'Fixture report',
+  },
   entries: ENTRY_KEYS.map((key, i) => ({
     key,
     term: term(key),
@@ -352,15 +356,77 @@ describe('HelpView: the tab bar and the two panels (uif-14, UIF14.1)', () => {
       ps.map((p) => p.textContent),
       'the two paragraphs, in order',
     ).toEqual(['Fixture paragraph one.', 'Fixture paragraph two.']);
-    expect(introEl().children.length, 'only the paragraphs').toBe(2);
+    // INTENTIONAL CHANGE (uif-14b): was `children.length === 2` ("only the paragraphs"); the Report a
+    // problem list is now the third (last) child.
+    expect(introEl().children.length, 'the paragraphs and the Report a problem list').toBe(3);
 
-    view.render({ ...SAMPLE_VM, intro: { paragraphs: ['Only one now.'] } });
+    view.render({ ...SAMPLE_VM, intro: { ...SAMPLE_VM.intro, paragraphs: ['Only one now.'] } });
     view.paint(paintOf('intro'));
     expect(
       Array.from(introEl().querySelectorAll('p')).map((p) => p.textContent),
       'the second render replaced, never appended',
     ).toEqual(['Only one now.']);
     expect(introEl().textContent, 'no stale text').not.toContain('Fixture paragraph');
+    expect(introEl().children.length, 'one paragraph and the list').toBe(2);
+  });
+
+  it('UIF14B.1 #help-intro ends with ul#help-intro-rows.mr-nav-list as its LAST child, after the paragraphs, holding one [data-nav-key="report"] row reading the vm label, .is-active on the Introduction tab; a re-render keeps it last with one row', () => {
+    // WRONG IMPL KILLED: the row placed before the paragraphs; no row; a row that is not a kit nav
+    // item (no data-nav-key: the pointer cannot seek it); no cursor mark (the D-pad's only target is
+    // invisible); a hard-coded label instead of the vm's; a re-render that appends a second list or
+    // leaves the list before a new paragraph; a plain <button> or <a> instead of a kit list.
+    const view = new HelpView();
+    view.render(SAMPLE_VM);
+    view.show();
+    view.paint(paintOf('intro'));
+    const kids = Array.from(introEl().children);
+    const last = kids[kids.length - 1] as HTMLElement;
+    expect(last.tagName).toBe('UL');
+    expect(last.id).toBe('help-intro-rows');
+    expect(last.classList.contains('mr-nav-list')).toBe(true);
+    expect(
+      kids.slice(0, -1).map((k) => k.tagName),
+      'the paragraphs come first',
+    ).toEqual(['P', 'P']);
+    const rows = Array.from(last.querySelectorAll<HTMLElement>('[data-nav-key]'));
+    expect(rows.map((r) => r.dataset.navKey)).toEqual(['report']);
+    expect(rows[0]?.textContent).toBe('Fixture report');
+    expect(rows[0]?.classList.contains('is-active'), 'the cursor is on the row').toBe(true);
+
+    view.render({ ...SAMPLE_VM, intro: { ...SAMPLE_VM.intro, report: 'Second report' } });
+    view.paint(paintOf('intro'));
+    expect(
+      document.querySelectorAll('#help-intro-rows'),
+      'one list after a re-render',
+    ).toHaveLength(1);
+    const again = Array.from(introEl().children);
+    expect((again[again.length - 1] as HTMLElement).id).toBe('help-intro-rows');
+    expect(
+      Array.from(introEl().querySelectorAll('[data-nav-key]')).map((r) => r.textContent),
+      'the label is replaced, not appended',
+    ).toEqual(['Second report']);
+  });
+
+  it('UIF14B.1 the row stays painted and active when the Encyclopedia shows (list kept), and a second HelpView over the same shell leaves exactly one #help-intro-rows', () => {
+    // WRONG IMPL KILLED: a constructor that appends a fresh list per construction (duplicate ids);
+    // a list that vanishes when the tab changes (the A target would be gone on return).
+    const view = new HelpView();
+    view.render(SAMPLE_VM);
+    view.paint(paintOf('encyclopedia'));
+    view.paint(paintOf('intro'));
+    expect(introEl().querySelectorAll('[data-nav-key="report"]')).toHaveLength(1);
+    new HelpView().render(SAMPLE_VM);
+    expect(document.querySelectorAll('#help-intro-rows')).toHaveLength(1);
+  });
+
+  it('UIF14B.1 XSS: a report label holding "<img src=x onerror=...>" reads as literal text and creates no node', () => {
+    // WRONG IMPL KILLED: an innerHTML sink on the row label.
+    const IMG = '<img src=x onerror=alert(3)>';
+    const view = new HelpView();
+    view.render({ ...SAMPLE_VM, intro: { ...SAMPLE_VM.intro, report: IMG } });
+    view.paint(paintOf('intro'));
+    expect(overlayEl().querySelector('img')).toBeNull();
+    expect(introEl().querySelector('[data-nav-key="report"]')?.textContent).toBe(IMG);
   });
 });
 
@@ -443,7 +509,7 @@ describe('HelpView: the Encyclopedia list (uif-14, UIF14.4)', () => {
         { tab: 'intro', title: IMG },
         { tab: 'encyclopedia', title: 'E' },
       ],
-      intro: { paragraphs: [SCRIPT, IMG] },
+      intro: { paragraphs: [SCRIPT, IMG], report: 'R' },
       entries: SAMPLE_VM.entries.map((e) =>
         e.key === 'party' ? { ...e, term: IMG, definition: SCRIPT } : e,
       ),

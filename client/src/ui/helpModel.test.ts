@@ -33,6 +33,8 @@ import { setLocale } from './i18n/resolver';
 
 /** U+00E9 (e acute), built by code point so the French title holds no pasted glyph. */
 const E_ACUTE = String.fromCharCode(0x00e9);
+/** U+00E8 (e grave), built by code point. */
+const E_GRAVE = String.fromCharCode(0x00e8);
 
 const EXPECTED_ENTRY_KEYS = [
   'party',
@@ -146,7 +148,11 @@ describe('buildHelpViewModel (uif-14)', () => {
       raw(CATALOG_EN, 'help.intro.p1'),
       raw(CATALOG_EN, 'help.intro.p2'),
     ]);
-    expect(Object.keys(en.intro), 'the intro is { paragraphs }').toEqual(['paragraphs']);
+    // INTENTIONAL CHANGE (uif-14b): the intro was `{ paragraphs }`; it is now `{ paragraphs, report }`.
+    expect(Object.keys(en.intro).sort(), 'the intro is { paragraphs, report }').toEqual([
+      'paragraphs',
+      'report',
+    ]);
     for (const [i, p] of en.intro.paragraphs.entries()) {
       expect(p.trim().length, `en paragraph ${i + 1} is real text`).toBeGreaterThan(0);
     }
@@ -162,6 +168,19 @@ describe('buildHelpViewModel (uif-14)', () => {
       expect(p.trim().length, `fr paragraph ${i + 1} is real text`).toBeGreaterThan(0);
       expect(p, `fr paragraph ${i + 1} is not the English copy`).not.toBe(en.intro.paragraphs[i]);
     }
+  });
+
+  it('UIF14B.1 intro.report is the Report a problem label read from help.intro.report: "Report a problem" in en and "Signaler un probleme" (with e grave) in fr (a translation), re-resolved per build', () => {
+    // WRONG IMPL KILLED: a label hard-coded in English (fr read stays English); a label resolved once
+    // at import (the locale switch); the p1/p2 id read twice; an empty label.
+    const en = buildHelpViewModel();
+    expect(en.intro.report).toBe('Report a problem');
+    expect(en.intro.report).toBe(raw(CATALOG_EN, 'help.intro.report'));
+    setLocale('fr');
+    const fr = buildHelpViewModel();
+    expect(fr.intro.report).toBe(`Signaler un probl${E_GRAVE}me`);
+    expect(fr.intro.report).toBe(raw(CATALOG_FR, 'help.intro.report'));
+    expect(fr.intro.report).not.toBe(en.intro.report);
   });
 
   it('UIF14.4 ENTRY_KEYS is the sixteen mechanics in the pinned order, and the model lists exactly those entries in that order, each one { key, term, definition, related }', () => {

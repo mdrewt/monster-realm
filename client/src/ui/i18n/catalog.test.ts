@@ -2068,8 +2068,13 @@ const UIF14_PLAIN_IDS: readonly string[] = [
   ...UIF14_ENTRY_KEYS.flatMap((key) => [`help.entry.${key}.term`, `help.entry.${key}.def`]),
 ];
 
+/** uif-14b (named intentional change, UIF14B.1): the one plain id the slice adds, the Introduction's
+ *  Report a problem row. Its en and fr bytes are pinned by the 'uif-14b' describe below. */
+const UIF14B_PLAIN_IDS: readonly string[] = ['help.intro.report'];
+
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN)
   .concat(UIF14_PLAIN_IDS)
+  .concat(UIF14B_PLAIN_IDS)
   .concat(Object.keys(SAMPLE_PARAMS))
   .sort();
 
@@ -2254,7 +2259,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // `help.entry.<16 keys>.{term,def}`), +1 parameterised (`help.detail.related`).
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 plain
     // `menu.social.{trades,challenges,rankings}.{title,desc}` (the Social sub-list is gone).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-15b roster is 530 keys').toHaveLength(530);
+    // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain `help.intro.report`.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-14b roster is 531 keys').toHaveLength(531);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2716,6 +2722,24 @@ describe('uif-8: the Bag EmptyState keys in both catalogs', () => {
         `${name}: reason, cue and next step are three different lines`,
       ).toBe(3);
     }
+  });
+});
+
+// =============================================================================
+// uif-14b (UIF14B.1): the Introduction's Report a problem row label in both catalogs.
+// =============================================================================
+
+describe('uif-14b: the Report a problem label in both catalogs', () => {
+  it('UIF14B.1 help.intro.report is "Report a problem" in en and "Signaler un probleme" (e grave, by code point) in fr, both plain strings, the fr a translation', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot and Help is blank); an
+    // fr entry left as the English copy; a decomposed e grave (e + U+0300) instead of U+00E8; a
+    // reworded label (the spec names the row).
+    const E_GRAVE_CP = String.fromCharCode(0x00e8);
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(en['help.intro.report']).toBe('Report a problem');
+    expect(fr['help.intro.report']).toBe(`Signaler un probl${E_GRAVE_CP}me`);
+    expect(fr['help.intro.report']).not.toBe(en['help.intro.report']);
   });
 });
 

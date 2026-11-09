@@ -615,3 +615,201 @@ describe('main.ts How to Play over a battle (uif-14)', { sequential: true }, () 
     expect(stackNames(), 'Select closes it, the battle stays').toEqual(['battle']);
   }, 120_000);
 });
+
+// --- uif-14b: the Report a problem row ---------------------------------------------------------
+
+/** The F9 download filename shape: `mr-bug-<sanitised sha>-<capturedAtMs>.json` (ui/bugBundle.ts). */
+const BUNDLE_FILENAME = /^mr-bug-[A-Za-z0-9_-]*-\d+\.json$/;
+
+interface DownloadWatch {
+  /** Every Blob handed to URL.createObjectURL, oldest first (one per saved bundle). */
+  readonly blobs: Blob[];
+  /** The `download` attribute of every click on an <a download>, oldest first. */
+  readonly clicks: string[];
+}
+
+/** Record bundle saves: URL.createObjectURL's Blobs and clicks on anchors carrying `download`. The
+ *  click is swallowed (no navigation). Restored by `teardown` through `restorers`. */
+function watchDownloads(): DownloadWatch {
+  const watch: { blobs: Blob[]; clicks: string[] } = { blobs: [], clicks: [] };
+  const createOwn = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+  const revokeOwn = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+  Object.defineProperty(URL, 'createObjectURL', {
+    configurable: true,
+    writable: true,
+    value: (blob: Blob): string => {
+      watch.blobs.push(blob);
+      return `blob:mr-test-${watch.blobs.length}`;
+    },
+  });
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    configurable: true,
+    writable: true,
+    value: (): void => undefined,
+  });
+  const proto = HTMLAnchorElement.prototype as unknown as Record<string, unknown>;
+  const protoDispatch = HTMLAnchorElement.prototype.dispatchEvent;
+  proto.click = function (this: HTMLAnchorElement): void {
+    if (this.hasAttribute('download')) watch.clicks.push(this.getAttribute('download') ?? '');
+  };
+  proto.dispatchEvent = function (this: HTMLAnchorElement, event: Event): boolean {
+    if (event.type === 'click' && this.hasAttribute('download')) {
+      watch.clicks.push(this.getAttribute('download') ?? '');
+      return true;
+    }
+    return protoDispatch.call(this, event);
+  };
+  restorers.push(() => {
+    if (createOwn !== undefined) Object.defineProperty(URL, 'createObjectURL', createOwn);
+    else delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+    if (revokeOwn !== undefined) Object.defineProperty(URL, 'revokeObjectURL', revokeOwn);
+    else delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+    delete proto.click;
+    delete proto.dispatchEvent;
+  });
+  return watch;
+}
+
+const reportRow = (): HTMLElement => part('#help-intro [data-nav-key="report"]');
+const bundleOf = async (blob: Blob): Promise<Record<string, unknown>> =>
+  JSON.parse(await blob.text()) as Record<string, unknown>;
+
+describe('main.ts How to Play: Report a problem (runtime, uif-14b)', { sequential: true }, () => {
+  afterEach(teardown);
+
+  it('UIF14B.1 Help opens with the Report a problem row as the last element of the Introduction, after the two paragraphs, active, with the hint bar labelling A', async () => {
+    // WRONG IMPL KILLED: no row; the row before the paragraphs; a row with no cursor (the D-pad has
+    // nothing to reach); a row that is not a kit nav item; a hint bar with no A chip beside it.
+    await openHelp();
+    const intro = part('#help-intro');
+    const last = intro.lastElementChild as HTMLElement;
+    expect(last.id).toBe('help-intro-rows');
+    expect(Array.from(intro.children).map((c) => c.tagName)).toEqual(['P', 'P', 'UL']);
+    expect(reportRow().textContent).toBe(say('help.intro.report'));
+    expect(say('help.intro.report')).toBe('Report a problem');
+    expect(reportRow().classList.contains('is-active'), 'the cursor opens on the row').toBe(true);
+    expect(isHidden(reportRow()), 'and it is shown').toBe(false);
+    const chipA = document.querySelector<HTMLElement>('#hint-bar [data-button="A"]');
+    expect(chipA, 'the hint bar labels A while Help is open').not.toBeNull();
+    expect(chipA?.textContent ?? '').toContain(say('chrome.chip.ok'));
+  }, 120_000);
+
+  it('UIF14B.2 A on the row saves exactly one bug bundle download, named like F9`s, whose body is the F9 bundle shape for this identity; Help stays a normal frame afterwards (a later B still closes it)', async () => {
+    // WRONG IMPL KILLED: A still swallowed (no download); a dispatch arm that builds its own bundle
+    // (other keys / schema / identity) or its own filename; two downloads per A; a download that
+    // never reaches an anchor (createObjectURL without a click); a Help left unclosable.
+    await openHelp();
+    const watch = watchDownloads();
+    press('Enter'); // A on the Report a problem row
+    frame();
+    frame();
+    expect(watch.blobs, 'exactly one Blob was made').toHaveLength(1);
+    expect(watch.clicks, 'exactly one anchor download').toHaveLength(1);
+    expect(watch.clicks[0]).toMatch(BUNDLE_FILENAME);
+    const bundle = await bundleOf(watch.blobs[0] as Blob);
+    expect(bundle.schema).toBe('mr-bug-bundle/1');
+    expect(bundle.identity).toBe(H.identity);
+    expect(watch.clicks[0]).toMatch(new RegExp(`-${String(bundle.capturedAtMs)}\\.json$`));
+    press('Backspace');
+    frame();
+    expect(helpOpen(), 'B still closes Help').toBe(false);
+  }, 120_000);
+
+  it('UIF14B.2 the row`s bundle is the one F9 saves: same top-level keys, same store keys, same schema, build and identity', async () => {
+    // WRONG IMPL KILLED: a second, hand-rolled bundle path (the dispatch arm is `downloadBugBundle`,
+    // the F9 function): a missing or extra key, a different store snapshot shape, a bundle without
+    // the build stamp.
+    await bootReady();
+    batch();
+    frame();
+    const watch = watchDownloads();
+    press('F9');
+    frame();
+    expect(watch.blobs, 'precondition: F9 saved one bundle').toHaveLength(1);
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'precondition: Help is open').toEqual(['world', 'helpView']);
+    press('Enter');
+    frame();
+    expect(watch.blobs, 'the row saved a second bundle').toHaveLength(2);
+    const f9 = await bundleOf(watch.blobs[0] as Blob);
+    const row = await bundleOf(watch.blobs[1] as Blob);
+    expect(Object.keys(row).sort()).toEqual(Object.keys(f9).sort());
+    expect(Object.keys(row.store as object).sort()).toEqual(Object.keys(f9.store as object).sort());
+    expect(row.schema).toBe(f9.schema);
+    expect(row.build).toEqual(f9.build);
+    expect(row.identity).toBe(f9.identity);
+    expect(watch.clicks.map((n) => BUNDLE_FILENAME.test(n))).toEqual([true, true]);
+  }, 120_000);
+
+  it('UIF14B.2 a held A saves once: key-repeat on the row adds no second download', async () => {
+    // WRONG IMPL KILLED: a screen that reports on a repeat press (a held Enter would write a file
+    // per key-repeat tick).
+    await openHelp();
+    const watch = watchDownloads();
+    clock.t = next(50);
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Enter', bubbles: true }));
+    for (let i = 0; i < 3; i += 1) {
+      clock.t = next(30);
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'Enter', repeat: true, bubbles: true }),
+      );
+    }
+    clock.t = next(5);
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Enter', bubbles: true }));
+    frame();
+    expect(watch.blobs).toHaveLength(1);
+    expect(watch.clicks).toHaveLength(1);
+  }, 120_000);
+
+  it('UIF14B.2 a pointer click on the Report a problem row saves exactly one bundle, and a second click saves a second', async () => {
+    // WRONG IMPL KILLED: a row the pointer cannot reach (no data-nav-key, or a hidden sibling list
+    // winning the tie: the click does nothing); a click that downloads twice (the seek presses A
+    // once, the row`s own listener again); a click that only moves the cursor.
+    await openHelp();
+    const watch = watchDownloads();
+    reportRow().click();
+    frame();
+    expect(watch.blobs, 'one bundle for one click').toHaveLength(1);
+    expect(watch.clicks, 'one anchor download').toHaveLength(1);
+    expect(watch.clicks[0]).toMatch(BUNDLE_FILENAME);
+    reportRow().click();
+    frame();
+    expect(watch.blobs, 'a second click, a second bundle').toHaveLength(2);
+  }, 120_000);
+
+  it('UIF14B.2 A on an Encyclopedia entry and A on its detail`s Back row save nothing', async () => {
+    // WRONG IMPL KILLED: a report bound to A on every tab or phase.
+    await openHelp();
+    const watch = watchDownloads();
+    press('KeyE'); // RB
+    press('Enter'); // opens the first entry
+    expect(sheetOpen(), 'precondition: a detail opened').toBe(true);
+    press('Enter'); // Back row
+    frame();
+    expect(sheetOpen(), 'precondition: the detail closed').toBe(false);
+    expect(watch.blobs).toHaveLength(0);
+    expect(watch.clicks).toHaveLength(0);
+  }, 120_000);
+
+  it('UIF14B.3 over a bare battle A on the row still saves one bundle (battle-safe, as F9 is)', async () => {
+    // WRONG IMPL KILLED: a 'refuse' policy row: dispatch would answer "not during a battle" and save
+    // nothing exactly where F9 works.
+    await bootReady();
+    batch();
+    opts.store.upsertBattle(battleRow(101n));
+    batch();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    frame();
+    expect(stackNames(), 'precondition: a bare battle base').toEqual(['battle']);
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'precondition: Help over the battle').toEqual(['battle', 'helpView']);
+    const watch = watchDownloads();
+    press('Enter');
+    frame();
+    expect(watch.blobs, 'one bundle over a battle').toHaveLength(1);
+    expect(watch.clicks).toHaveLength(1);
+    expect(watch.clicks[0]).toMatch(BUNDLE_FILENAME);
+  }, 120_000);
+});

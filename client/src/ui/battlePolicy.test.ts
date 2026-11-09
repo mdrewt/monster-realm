@@ -154,6 +154,8 @@ const COMMAND_KINDS = [
   'deleteAccount',
   'cancelAccountDeletion',
   'requestDataExport',
+  // INTENTIONAL CHANGE (uif-14b, UIF14B.3): the roster grows 34 -> 35 with `reportProblem`.
+  'reportProblem',
 ] as const;
 
 // Compile-level halves (RED under `just client-typecheck` today): no `Command` kind is one of the
@@ -165,7 +167,7 @@ const _total: [Exclude<Command['kind'], Listed>] extends [never] ? true : false 
 const _sound: [Exclude<Listed, Command['kind']>] extends [never] ? true : false = true;
 
 describe('battlePolicy: no 1v1 command, no 1v1 renderer (bt-17, BT17.1)', () => {
-  it('the battle policy table has no row for any of the seven 1v1 commands (attack, flee, swap, recruit, useItem, pvpAttack, pvpSwap), stays total over exactly the 34 remaining Command kinds, and keeps the four tactical actions battle-safe [BT17-1]', () => {
+  it('the battle policy table has no row for any of the seven 1v1 commands (attack, flee, swap, recruit, useItem, pvpAttack, pvpSwap), stays total over exactly the 35 Command kinds (34 at bt-17, +reportProblem at uif-14b), and keeps the four tactical actions battle-safe [BT17-1]', () => {
     // WRONG IMPL KILLED: a 1v1 row left in the table (a dead command a stray adapter could still
     // issue at a battle base); a purge that drops a live row with them (the table is no longer
     // total: a Command kind would read `undefined` and `battleSafeCommand` would refuse it); a
@@ -180,10 +182,25 @@ describe('battlePolicy: no 1v1 command, no 1v1 renderer (bt-17, BT17.1)', () => 
       Object.keys(COMMAND_BATTLE_POLICY).sort(),
       'the table is total over exactly the remaining kinds',
     ).toEqual([...COMMAND_KINDS].sort());
-    expect(COMMAND_KINDS, 'ANTI-VACUITY: the transcribed roster').toHaveLength(34);
+    expect(COMMAND_KINDS, 'ANTI-VACUITY: the transcribed roster (35 since uif-14b)').toHaveLength(
+      35,
+    );
     for (const kind of ['submitQueue', 'cancelQueue', 'deployUnits', 'forfeit'] as const) {
       expect(COMMAND_BATTLE_POLICY[kind], `${kind} stays battle-safe`).toBe('safe');
     }
+  });
+
+  it('UIF14B.3 reportProblem is classified once in COMMAND_BATTLE_POLICY as safe (F9 parity: Help opens over a battle and the report must still work there)', () => {
+    // WRONG IMPL KILLED: a missing row (the table stops being total; battleSafeCommand reads
+    // undefined); a 'refuse' row (the Report a problem row would do nothing over a battle); a
+    // 'drop' / other class; a neighbouring row (requestDataExport) flipped to make the roster pass.
+    expect('reportProblem' in COMMAND_BATTLE_POLICY).toBe(true);
+    expect(COMMAND_BATTLE_POLICY.reportProblem).toBe('safe');
+    expect(
+      Object.keys(COMMAND_BATTLE_POLICY).filter((k) => k === 'reportProblem'),
+      'one row',
+    ).toHaveLength(1);
+    expect(Object.keys(COMMAND_BATTLE_POLICY)).toHaveLength(35);
   });
 
   it('battleRenderer maps no tactical row to none, Deploying to deploy, Active to tactical and Finished to results; renderableBattle is true only when the anchor AND its tactical row are both present [BT17-1]', () => {
