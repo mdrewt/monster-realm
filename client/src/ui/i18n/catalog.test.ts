@@ -4375,7 +4375,8 @@ describe('uif-15a: the Bag / Sac wording is gone from the menu, the shortcuts ro
     // WRONG IMPL KILLED: a relabel that changed the root title but left the description, the
     // shortcuts row or the party-full line saying Bag / Sac; a key renamed instead of re-valued
     // (the ids `menu.bag.*`, `controls.accel.bag`, `menu.disabled.battleBag` stay); a sweep that
-    // matches nothing (ANTI-VACUITY below); a French value still saying Sac.
+    // matches nothing (ANTI-VACUITY below); a French value still saying Sac; a lowercase or plural
+    // spelling ("your bag", "bags", "votre sac") that a case-sensitive match would let through.
     const enAll = CATALOG_EN as unknown as Record<string, unknown>;
     const frAll = CATALOG_FR as unknown as Record<string, unknown>;
     const swept = (catalog: Record<string, unknown>): string[] =>
@@ -4400,10 +4401,10 @@ describe('uif-15a: the Bag / Sac wording is gone from the menu, the shortcuts ro
         ? String((value as (p: Record<string, unknown>) => unknown)({ n: 1, count: 1, name: 'X' }))
         : String(value);
     for (const key of enKeys) {
-      expect(textOf(enAll[key]), `en ${key} must not say Bag`).not.toMatch(/\bBag\b/);
+      expect(textOf(enAll[key]), `en ${key} must not say bag (any case)`).not.toMatch(/\bbags?\b/i);
     }
     for (const key of frKeys) {
-      expect(textOf(frAll[key]), `fr ${key} must not say Sac`).not.toMatch(/\bSac\b/);
+      expect(textOf(frAll[key]), `fr ${key} must not say sac (any case)`).not.toMatch(/\bsacs?\b/i);
     }
 
     expect(enAll['menu.bag.title']).toBe('Inventory');
