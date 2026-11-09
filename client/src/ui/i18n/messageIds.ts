@@ -140,6 +140,7 @@ export type MessageId =
   | 'help.tab.encyclopedia'
   | 'help.intro.p1'
   | 'help.intro.p2'
+  | 'help.intro.report'
   | 'help.entry.party.term'
   | 'help.entry.party.def'
   | 'help.entry.storage.term'

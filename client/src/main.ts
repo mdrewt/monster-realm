@@ -1822,6 +1822,10 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         openHelp();
       }
       return DONE;
+    case 'reportProblem':
+      // How to Play's Report a problem row (uif-14b): the same bundle F9 saves, through the same path.
+      downloadBugBundle();
+      return DONE;
     case 'care': {
       // The whole decision (frozen gate / await / exactly-one message) lives in the tested
       // performCare core. The answer goes to the line of the frame that sent it (the Monsters

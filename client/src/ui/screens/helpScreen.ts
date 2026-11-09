@@ -1,5 +1,6 @@
 // ui/screens/helpScreen.ts — How to Play as a pure screen over the nav kit (uif-14, UIF14.1,
-// UIF14.4-UIF14.5). No DOM, SDK, module state, clock or resolver. The content is `helpModel.ts`'s,
+// UIF14.4-UIF14.5; uif-14b, UIF14B.1-UIF14B.2: A on the Introduction's Report a problem row returns
+// the `reportProblem` command). No DOM, SDK, module state, clock or resolver. The content is `helpModel.ts`'s,
 // bound into `helpView.ts` when the frame opens; this screen says which tab shows, where each tab's
 // cursor is (the nav kit keeps one per tab) and which Encyclopedia entry's detail is open.
 //
@@ -36,8 +37,8 @@ export interface HelpScreenView {
 }
 
 const TAB_LAYOUTS: Readonly<Record<(typeof HELP_TABS)[number], ItemLayout>> = {
-  // The Introduction is prose: one item, nothing to move to or act on.
-  intro: list([{ key: 'rows', enabled: true }]),
+  // The Introduction is prose, then one row: Report a problem (uif-14b), so the D-pad stays on it.
+  intro: list([{ key: 'report', enabled: true }]),
   encyclopedia: list(ENTRY_KEYS.map((key) => ({ key, enabled: true }))),
 };
 
@@ -81,8 +82,10 @@ export const helpScreen: ScreenAdapter<null, HelpState, HelpScreenView> = {
         return done(btn.repeat ? 'consumed' : { kind: 'pop' });
       case 'A': {
         const item = state.nav.item;
-        if (btn.repeat || state.nav.tab !== 'encyclopedia' || !isEntry(item))
-          return done('consumed');
+        if (btn.repeat) return done('consumed');
+        // Report a problem saves the bug bundle, as F9 does (uif-14b); the frame stays as it is.
+        if (state.nav.tab === 'intro' && item === 'report') return done({ kind: 'reportProblem' });
+        if (state.nav.tab !== 'encyclopedia' || !isEntry(item)) return done('consumed');
         return done('consumed', { nav: state.nav, detail: item });
       }
       default: {

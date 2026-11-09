@@ -3380,8 +3380,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 530 keys').toBe(530);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(530);
+    // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 531 keys').toBe(531);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(531);
   });
 });
 
@@ -3498,8 +3499,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 530 keys').toBe(530);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(530);
+    // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 531 keys').toBe(531);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(531);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3623,9 +3625,12 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
     // ANTI-VACUITY: every value was read, each closure twice (the full roster is pinned above).
     // uif-14 (named intentional change, UIF14.1/UIF14.4): + the 36 plain Help ids, which are plain values not in EXPECTED_PLAIN.
+    // uif-14b (named intentional change, UIF14B.1): + the plain `help.intro.report` id (653 -> 654
+    // values read; help.intro.report is read once, a plain value not in EXPECTED_PLAIN).
     const expectedTexts =
       Object.keys(EXPECTED_PLAIN).length +
       UIF14_PLAIN_IDS.length +
+      UIF14B_PLAIN_IDS.length +
       2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);
@@ -3797,9 +3802,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-13 (named intentional change, UIF13.2): 499 -> 506, +4 plain, +3 parameterised.
     // uif-14 (named intentional change, UIF14.1/UIF14.4): 506 -> 536, -7 retired help.*, +36 plain, +1 parameterised.
     // uif-15b (named intentional change, UIF15B.1): 536 -> 530, -6 retired menu.social.* sub-list ids.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 530 keys').toBe(530);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(530);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(530);
+    // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 531 keys').toBe(531);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(531);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(531);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4456,7 +4462,7 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // WRONG IMPL KILLED: a retired id left behind as a dead key (catalogParity DEAD-KEY: no menu row
     // reads it any more); an id removed from one locale only (the other keeps a dead key); the
     // Social ROW's own two ids removed with the sub-list's (the root row would print a catalog id);
-    // a roster pin that was not lowered with the ids (530, not 536).
+    // a roster pin that was not lowered with the ids (530 then, 531 since uif-14b; not 536).
     const en = CATALOG_EN as Record<string, unknown>;
     const fr = CATALOG_FR as Record<string, unknown>;
     const RETIRED = ['trades', 'challenges', 'rankings'].flatMap((leaf) => [
@@ -4474,7 +4480,10 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
       expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
       expect(EXPECTED_KEYS.includes(id), `the roster keeps ${id}`).toBe(true);
     }
-    expect(Object.keys(en), 'the English roster is 530 keys (was 536)').toHaveLength(530);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(530);
+    // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
+    expect(Object.keys(en), 'the English roster is 531 keys (was 536; uif-14b +1)').toHaveLength(
+      531,
+    );
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(531);
   });
 });

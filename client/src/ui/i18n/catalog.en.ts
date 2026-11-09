@@ -360,6 +360,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // ui/helpModel.ts
   'help.intro.p2':
     'Raise your team through training, care and the essence you gather, and watch them grow into forms you have never seen. Plan every move on the tactical grid, then share the world with other players: trade, challenge and climb the rankings. Your realm is waiting.',
+  // @desc: How to Play's Introduction row that saves a bug report bundle (as F9 does). A short action label.
+  // ui/helpModel.ts
+  'help.intro.report': 'Report a problem',
   // @desc: Encyclopedia entry name (party): a game term. One to three words.
   // ui/helpModel.ts
   'help.entry.party.term': 'Party',
