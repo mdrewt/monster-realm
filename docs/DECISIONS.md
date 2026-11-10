@@ -802,6 +802,38 @@ visibility; a per-panel Social frame; merging the three main.ts tables into one 
 (three small total records with byte-identical thunks are the defense against copy-paste
 sibling bugs); a gate read that pushes, pops, shows or hides a frame.
 
+## The client shell is owner modules under `client/src/shell/`; `main.ts` stays the composition root
+
+**Decision.** Code leaves `client/src/main.ts` only along the map in
+`docs/refactors/client-shell.md`: layered modules under `client/src/shell/`, each owning its
+mutable state as module-level `export let` bindings. Another module reads a binding through
+its import, which is live, and changes it only by calling a function the owner exports; a
+`Set` or `Map` that several modules mutate is exported read-only with an owner function per
+mutation. `main.ts` remains the entry. Of `main.ts` and the shell modules, only `main.ts`
+registers a listener on `store`, `window` or `document`, installs the DEV hooks, writes the DOM
+at import or constructs a boot-built view; it registers the listeners in one ordered block, and
+the locale block stays in it. A shell module imports
+only the shell modules below it. The two places a lower module calls upward (the host of the
+world hint, the handlers of the three battle views) are typed ports `main.ts` installs, and a
+port called before its install throws.
+
+**Why.** Every `client/src/main.*.test.ts` suite resets the module registry and imports
+`./main`, so module-level state in a shell module resets per test and no suite changes how it
+boots. An import cannot be assigned, so the compiler holds each binding to one writing
+module, and a moved body changes only by its imports. The order of the batch listeners is
+load-bearing (`reconcileStack` first of the listeners that show or hide a view; the stack sync
+and the adapters' observe last), and Biome reorders import statements, so registration cannot
+follow module evaluation. The locale writes are the only import-time statements another
+module could observe, and in `main.ts` they run after every import.
+
+**Rules out.** Feature modules that each own a view and register their own batch listener at
+import: listener order would follow import order, and the stack and `dispatch` would import
+the features that import them. Also: one shared state object (no field has an owner, and
+every test that reads a bare identifier from the source changes); controller classes with
+injected collaborators (each extraction would move code and change its interface at once); a
+prelude module holding the locale block (it would run ahead of modules that run before it
+now); a module-scope copy of a live binding; a shell module that registers a listener.
+
 ## Interaction target: the tile in front, then your own tile
 
 **Decision.** A (and a click on the world) acts on the candidates from
