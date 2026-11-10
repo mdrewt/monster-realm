@@ -215,9 +215,9 @@ const RECENTER_STEP_TIMEOUT_MS = 8_000;
 /** SETUP ONLY. `__game().step()` bypasses `held` entirely (ADR-0158 residual 9), so it can
  *  prove NOTHING about keyboard input — it is used here purely to park the character in a
  *  known column before a keyboard-driven scenario begins. CLOSED LOOP: each step waits for the
- *  authoritative column to change before the next decision is made. A fixed sleep here read a
- *  stale column whenever the server took longer than the sleep, issued one step too many, and
- *  overshot the target ("Expected: 4, Received: 5" on a loaded CI runner). */
+ *  authoritative column to change before the next decision is made. A fixed sleep reads a stale
+ *  column whenever the server takes longer than the sleep, issues one step too many and
+ *  overshoots the target (seen as "Expected: 4, Received: 5" on a loaded CI runner). */
 async function recenter(p: Page, targetX: number): Promise<void> {
   for (let i = 0; i < 12; i += 1) {
     const t = await tile(p);
