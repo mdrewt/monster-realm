@@ -151,7 +151,11 @@ export class WorldRenderer {
     this.#app = app;
     this.#map = map;
     const [kit, hero] = await Promise.all([loadKit(), loadHero()]);
-    const releaseHero = (): void => void Assets.unload(HERO_ATLAS_URL);
+    const releaseHero = (): void => {
+      Assets.unload(HERO_ATLAS_URL).catch((err) =>
+        console.warn('render/world: hero atlas failed to unload', err),
+      );
+    };
     if (this.#app !== app) {
       // destroy() ran while the atlases loaded: the hero sheet has no owner yet.
       if (hero !== undefined) releaseHero();

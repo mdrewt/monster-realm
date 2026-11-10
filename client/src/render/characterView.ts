@@ -24,9 +24,10 @@ export const WALK_PHASES = 4;
 
 /**
  * The walk phase (an integer in [0, WALK_PHASES)) at a fractional tile position: the
- * fraction of the current step already slid, quantised. Mid-slide only the moving
- * axis is fractional (the other is a whole tile), so summing both fractions is
- * facing-agnostic — a turn mid-slide cannot desync the pose from the motion.
+ * fractional part of the position within the current step, quantised. Mid-slide only
+ * the moving axis is fractional (the other is a whole tile), so summing both fractions
+ * needs no facing. A West/North slide counts the fraction down, so it plays the cycle
+ * in reverse — the same stepA, mid, stepB, mid alternation, since the cycle is symmetric.
  */
 export function walkPhase(tileX: number, tileY: number): number {
   const slid = tileX - Math.floor(tileX) + (tileY - Math.floor(tileY));
