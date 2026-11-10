@@ -28,6 +28,11 @@ export default defineConfig({
   // (observed: 3 workers locally, 2 on 4-vCPU CI runners). Single-worker completes
   // the serialization this config always intended.
   workers: 1,
+  // `dot` on CI and `list` locally are Playwright's own defaults, spelled out only so CI
+  // can add a per-test timing file (uploaded as an artifact by the e2e job): slow specs
+  // become visible without scraping logs. The JSON holds titles, durations and error
+  // text, so an assertion message must never embed a token.
+  reporter: process.env.CI ? [['dot'], ['json', { outputFile: 'test-results/e2e.json' }]] : 'list',
   use: { baseURL: e2eBaseUrl, headless: true },
   webServer: {
     command: 'npm run dev',
