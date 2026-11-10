@@ -1543,15 +1543,11 @@ export const DPAD_BUTTON: Readonly<Record<Dir, VButton>> = {
 /** The direction facing back the way `d` came. */
 export const oppositeDir = (d: Dir): Dir => OPPOSITE[d];
 
-/** How long a press that only TURNED the character (it faced another way) may take to show
- *  before the helper presses once more. */
-const DPAD_TURN_MS = 3_000;
-
 /** Walks `dirs` with the live-bound D-pad keys, one press per step, waiting for the
  *  AUTHORITATIVE own tile to land on `stepTile(from, dir)` before the next press (the `walkPath`
  *  outcome rules: 'battle' stops the walk; a step that lands elsewhere or never lands throws,
- *  naming the step). The world must be at its base: any open frame is closed first. A press that
- *  only turned the character (its facing was not `dir`) is repeated once after `DPAD_TURN_MS`. */
+ *  naming the step; each step waits `STEP_SETTLE_MS` once and is never re-pressed). The world must
+ *  be at its base: any open frame is closed first. */
 export async function dpadWalkPath(
   page: Page,
   dirs: readonly Dir[],
@@ -1569,31 +1565,22 @@ export async function dpadWalkPath(
     const from = before.ownAuthTile;
     if (from === null) throw new Error(`${label}: no authoritative own tile before ${dir}`);
     const want = stepTile(from, dir);
-    const moved = (budgetMs: number): Promise<'battle' | 'moved' | null> =>
-      page
-        .waitForFunction(
-          (a: { fx: number; fy: number }) => {
-            const g = (window as unknown as { __game: () => GameHook }).__game();
-            if (g.ongoingBattle !== null) return 'battle';
-            const t = g.ownAuthTile;
-            return t !== null && (t.x !== a.fx || t.y !== a.fy) ? 'moved' : false;
-          },
-          { fx: from.x, fy: from.y },
-          { timeout: budgetMs },
-        )
-        .then((h) => h.jsonValue() as Promise<'battle' | 'moved'>)
-        .catch(() => null);
+    // ONE press per step: a Step always turns AND moves onto a walkable tile (FACING FACTS), so a
+    // second press on a slow server would send a second step and the walk would drift.
     await pressButton(page, DPAD_BUTTON[dir]);
-    let outcome: 'battle' | 'moved' | null;
-    if (before.ownFacing === dir) {
-      outcome = await moved(STEP_SETTLE_MS);
-    } else {
-      outcome = await moved(DPAD_TURN_MS);
-      if (outcome === null) {
-        await pressButton(page, DPAD_BUTTON[dir]);
-        outcome = await moved(STEP_SETTLE_MS - DPAD_TURN_MS);
-      }
-    }
+    const outcome = await page
+      .waitForFunction(
+        (a: { fx: number; fy: number }) => {
+          const g = (window as unknown as { __game: () => GameHook }).__game();
+          if (g.ongoingBattle !== null) return 'battle';
+          const t = g.ownAuthTile;
+          return t !== null && (t.x !== a.fx || t.y !== a.fy) ? 'moved' : false;
+        },
+        { fx: from.x, fy: from.y },
+        { timeout: STEP_SETTLE_MS },
+      )
+      .then((h) => h.jsonValue() as Promise<'battle' | 'moved'>)
+      .catch(() => null);
     if (outcome === null) {
       throw new Error(
         `${label}: D-pad ${DPAD_BUTTON[dir]} (${dir}) from ${tileName(from)} did not land within ` +

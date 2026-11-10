@@ -133,7 +133,7 @@ interface PlacedWarpMarker extends AnimatedTile {
   readonly frame: string;
 }
 
-/** A built post pass and the planned pass it was built from. */
+/** A built post pass and the id of the planned pass it was built from. */
 interface BuiltPass {
   readonly id: PostPassId;
   readonly filter: Filter;
@@ -478,8 +478,8 @@ export class WorldRenderer {
         width: map.width,
         height: map.height,
         terrain: 'fallback',
-        frames: new Array<null>(map.width * map.height).fill(null),
-        histogram: {},
+        frames: Object.freeze(new Array<null>(map.width * map.height).fill(null)),
+        histogram: Object.freeze({}),
       };
       return;
     }
@@ -499,8 +499,8 @@ export class WorldRenderer {
       width: map.width,
       height: map.height,
       terrain: 'kit',
-      frames: plan.tiles.map((tile) => tile.frame),
-      histogram,
+      frames: Object.freeze(plan.tiles.map((tile) => tile.frame)),
+      histogram: Object.freeze(histogram),
     };
     this.#clearBg();
     chunks.forEach((chunk, i) => {

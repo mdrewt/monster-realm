@@ -4067,7 +4067,7 @@ store.onBatchApplied(() => {
 const CARE_READINESS_TICK_MS = 1000;
 let lastCareTickAtMs = 0;
 
-// --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
+// --- DEV introspection hook (e2e asserts on this STATE; world-art.spec.ts adds pixels) --
 function snapshot() {
   const own = store.ownCharacter(identity);
   const pred = predictor.predicted;

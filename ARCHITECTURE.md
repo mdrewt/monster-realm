@@ -463,7 +463,8 @@ renderer's resolution, it returns the enabled passes in `POST_PASS_ORDER`
 (`postStack.ts:21`): ambient lightmap with a vignette, AdvancedBloom, Godray and a
 ColorMap LUT. `#applyPostStack` (`world.ts:353`) builds exactly those `pixi-filters`
 filters and attaches them to the world container only, so the DOM UI is never filtered.
-A pass that throws while it is built disables the whole stack with one warning. The
+An unsupported renderer, a pass that throws while it is built, or a throw from the probe
+frame drawn after the build disables the whole stack with one warning. The
 renderer starts with every pass off (`world.ts:255`), and the live game keeps it off
 (DECISIONS.md "The world post stack is `pixi-filters`…"). `setPostStack`
 (`world.ts:343`) turns passes on: the look-dev scene uses it, and the world-art e2e uses

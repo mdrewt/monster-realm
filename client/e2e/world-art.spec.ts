@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import type { ArtDescription, ScreenRect } from '../src/render/world';
 import {
   type Dir,
   DPAD_BUTTON,
@@ -43,11 +44,14 @@ import {
 // pixi-filters entry). The DEV hook `__game().setPostStack(toggles)` turns the full stack on right
 // after join; the test never sets a keyframe, so `post.keyframe === 'day'` is the live default.
 //
-// PIXEL RULE. A sampled rect must differ from a same-class ground tile by a per-channel
-// threshold in at least LAND_MIN of its pixels AND by clearly more than two same-class ground tiles
-// differ from each other (the noise floor: the vignette and godray vary brightness by screen
-// position, and the kit has three variants per class). No character may overlap either rect and
-// the topmost DOM element at the rect must be the canvas.
+// PIXEL RULE. The decor proofs run with the post stack OFF (the vignette and godray vary strongly
+// with screen position; the stack's own effect is proven in WAP10.3). A sampled rect must differ
+// from a ground tile of the SAME kit frame key by a per-channel threshold in at least its floor
+// of its pixels AND by clearly more than two such tiles differ from each other (the noise floor:
+// stack-off, that is texture noise only, measured 0.000 for same-key tiles). No character may
+// overlap either rect and the topmost DOM element at the rect must be the canvas. The terrain
+// tooth compares same-class tiles of DIFFERENT frame keys: a flat or missing terrain draws them
+// identical.
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
 const FULL_STACK = ['lightmap', 'bloom', 'godray', 'lut'] as const;
@@ -59,37 +63,20 @@ type Toggles = Record<(typeof FULL_STACK)[number], boolean>;
 const CHANNEL_THRESH = 24;
 /** The share of a sampled rect's pixels that must differ from a ground tile. */
 const LAND_MIN = 0.3;
-/** The same floor for the warp marker, a decal covering less of its tile (measured 0.293). */
+/** The warp marker's own floor: a decal covering less of its tile (measured 0.293). With a
+ *  stack-off noise of 0.000 the noise + NOISE_MARGIN rule dominates, so the EFFECTIVE floor for
+ *  the warp is 0.2; this constant only documents that the absolute floor is below the margin. */
 const WARP_MIN = 0.15;
 /** How far above the same-class ground-vs-ground noise the sampled share must sit. */
 const NOISE_MARGIN = 0.2;
-/** The share of the whole frame that must change when the stack goes off (any value above the
- *  non-vacuity floor of a few moving NPCs; lookdev's WAP9.5 measured ~0.9 for the full stack). */
+/** The share of the whole frame that must change when the stack goes off. Measured: the day
+ *  keyframe is a light warm lift, so the full stack moves 0.217 of the frame (199708 of 921600
+ *  pixels by >= 24 per channel); an unattached stack reads ~0. */
 const STACK_FRAME_MIN = 0.1;
-// Measured: the day keyframe is a light warm lift, so the full stack moves 0.217 of the frame
-// (199708 of 921600 pixels by >= 24 per channel). An unattached stack reads ~0.
-/** A tile of zone 0 and of zone 1 the flow names (Verdant Hollow, plan facts). */
+/** The heal post (8,3) and the warp source (1,5), both tiles of zone 0 (Verdant Hollow); the
+ *  warp lands in zone 1 (Tideglass Cove). */
 const HEAL: Tile = { x: 8, y: 3 };
 const WARP: Tile = { x: 1, y: 5 };
-
-interface ScreenRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-interface ArtDescription {
-  zoneId: number;
-  terrain: 'kit' | 'fallback';
-  frames: readonly (string | null)[];
-  width: number;
-  height: number;
-  landmarks: readonly { kind: 'heal'; x: number; y: number; frame: string; rect: ScreenRect }[];
-  warpMarkers: readonly { x: number; y: number; frame: string; rect: ScreenRect }[];
-  post: { passes: readonly string[]; keyframe: string };
-  histogram: Readonly<Record<string, number>>;
-}
 
 interface ArtChar {
   entityId: string;
@@ -174,12 +161,25 @@ async function installStepCounter(page: Page): Promise<void> {
           return value;
         },
       });
+    Object.defineProperty(w.__game, '__stepCounter', { value: true });
     return w.__game !== original;
   });
   expect(wrapped, 'the step/jump counter must be installed on window.__game').toBe(true);
 }
 
+/** True while `window.__game` is still the counting wrapper (a re-assignment drops the counter). */
+const stepCounterIntact = (page: Page): Promise<boolean> =>
+  page.evaluate(
+    () =>
+      (window as unknown as { __game?: { __stepCounter?: boolean } }).__game?.__stepCounter ===
+      true,
+  );
+
 const expectNoStepCalls = async (page: Page, label: string): Promise<void> => {
+  expect(
+    await stepCounterIntact(page),
+    `${label}: window.__game is no longer the step/jump counting wrapper`,
+  ).toBe(true);
   expect(
     await stepCalls(page),
     `${label}: the walk used __game().step/jump (the D-pad must be the only mover)`,
@@ -378,7 +378,7 @@ const waitPassCount = (page: Page, n: number): Promise<unknown> =>
  *  sampling makes same-key tiles near pixel-identical, so the noise floor is meaningful. The
  *  stack's own effect on the frame is proven separately in WAP10.3. The full stack is restored
  *  on every path, including a throw. */
-async function pixelProof(page: Page, c: ProofCase): Promise<ProofResult> {
+async function inStackOffWindow<T>(page: Page, body: () => Promise<T>): Promise<T> {
   await setStack(page, STACK_OFF);
   try {
     await waitPassCount(page, 0);
@@ -388,11 +388,105 @@ async function pixelProof(page: Page, c: ProofCase): Promise<ProofResult> {
           requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
         ),
     );
-    return await pixelProofStackOff(page, c);
+    return await body();
   } finally {
     await setStack(page, STACK_ON);
     await waitPassCount(page, 4).catch(() => undefined);
   }
+}
+
+const pixelProof = (page: Page, c: ProofCase): Promise<ProofResult> =>
+  inStackOffWindow(page, () => pixelProofStackOff(page, c));
+
+/** The share of different-key same-class tiles' pixels that must differ (the terrain tooth).
+ *  NOT measured before the first run (only same-key tiles, 0.000, and the stack-on variant noise,
+ *  ~0.8, are known): chosen well under the stack-on figure for the kit's textured variants and far
+ *  above the ~0 a flat or absent terrain gives. The detail message prints the measured share. */
+const VARIANT_MIN = 0.1;
+
+/** Must run inside `inStackOffWindow`. Finds two clear on-screen tiles of one class (Floor, then
+ *  Path) whose drawn frame keys DIFFER, and measures how much of them differs. Under the flat
+ *  fallback or with no terrain drawn, same-class tiles are one flat colour: the share is ~0. */
+async function variantTooth(page: Page, c: ProofCase): Promise<{ frac: number; detail: string }> {
+  let last = `${c.label}: no attempt ran`;
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    await settleCamera(page, c.label);
+    const art1 = await needArt(page, c.label);
+    const anchor = c.readSample(art1);
+    if (anchor === undefined) throw new Error(`${c.label}: the art reports no rect to anchor on`);
+    const world = await readWorld(page);
+    const terrain = world.map.terrain ?? [];
+    const decor = [
+      ...(world.map.warps ?? []).map((w) => w.from),
+      ...((world.map.landmarks ?? []) as readonly Tile[]),
+    ];
+    const { chars, own } = await readChars(page);
+    const rectOf = (t: Tile): ScreenRect => tileRectFrom(anchor, c.tile, c.pitch, t);
+    const clearOf = (r: ScreenRect, list: readonly ArtChar[]): boolean =>
+      !list.some((ch) => {
+        const m = ch.entityId === own ? 0 : c.pitch / 2;
+        const t = rectOf({ x: ch.tileX, y: ch.tileY });
+        return overlaps(
+          { x: t.x - m, y: t.y - c.pitch - m, w: c.pitch + 2 * m, h: 2 * c.pitch + 2 * m },
+          r,
+        );
+      });
+    const keyAt = (x: number, y: number): string | null => art1.frames[y * art1.width + x] ?? null;
+    let pair: [Tile, Tile] | null = null;
+    for (const kind of ['Floor', 'Path']) {
+      const pool: Tile[] = [];
+      for (let y = 0; y < world.map.height; y += 1) {
+        for (let x = 0; x < world.map.width; x += 1) {
+          if (terrain[y * world.map.width + x] !== kind || keyAt(x, y) === null) continue;
+          if (decor.some((m) => Math.abs(m.x - x) <= 1 && Math.abs(m.y - y) <= 2)) continue;
+          const r = rectOf({ x, y });
+          if (visibleShare(r) < 0.99 || !clearOf(r, chars) || !(await canvasOnTop(page, r))) {
+            continue;
+          }
+          pool.push({ x, y });
+        }
+      }
+      const first = pool[0];
+      const other =
+        first === undefined
+          ? undefined
+          : pool.find((t) => keyAt(t.x, t.y) !== keyAt(first.x, first.y));
+      if (first !== undefined && other !== undefined) {
+        pair = [first, other];
+        break;
+      }
+    }
+    if (pair === null) {
+      last = `${c.label}: no two clear same-class tiles with different frame keys on screen`;
+      await page.waitForTimeout(500);
+      continue;
+    }
+    const [a, b] = pair;
+    const png = await shot(page);
+    const art2 = await needArt(page, c.label);
+    const again = c.readSample(art2);
+    const { chars: chars2 } = await readChars(page);
+    if (
+      again === undefined ||
+      JSON.stringify(again) !== JSON.stringify(anchor) ||
+      !clearOf(rectOf(a), chars2) ||
+      !clearOf(rectOf(b), chars2)
+    ) {
+      last = `${c.label}: the scene moved while it was captured`;
+      await page.waitForTimeout(500);
+      continue;
+    }
+    const px = await diffRects(page, png, [[toPx(rectOf(a)), toPx(rectOf(b))]]);
+    const s = px.shares[0] as Share;
+    return {
+      frac: s.frac,
+      detail:
+        `${c.label}: (${a.x},${a.y}) ${keyAt(a.x, a.y)} vs (${b.x},${b.y}) ${keyAt(b.x, b.y)} ` +
+        `differ ${s.count}/${s.total} = ${s.frac.toFixed(3)}; need >= ${VARIANT_MIN} ` +
+        `(a flat or absent terrain draws same-class tiles identical)`,
+    };
+  }
+  throw new Error(`${c.label}: no clean frame for the variant tooth after 6 attempts (${last})`);
 }
 
 async function pixelProofStackOff(page: Page, c: ProofCase): Promise<ProofResult> {
@@ -557,8 +651,11 @@ function countBy(values: readonly (string | null | undefined)[]): Record<string,
   return out;
 }
 
-const nonZero = (h: Readonly<Record<string, number>>): Record<string, number> =>
-  Object.fromEntries(Object.entries(h).filter(([, n]) => n > 0));
+const nonZero = (h: Readonly<Partial<Record<string, number>>>): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const [k, n] of Object.entries(h)) if (n !== undefined && n > 0) out[k] = n;
+  return out;
+};
 
 // ---------------------------------------------------------------------------------------------
 // the flow
@@ -566,7 +663,7 @@ const nonZero = (h: Readonly<Record<string, number>>): Record<string, number> =>
 
 interface PostSample {
   label: string;
-  post: { passes: readonly string[]; keyframe: string } | null;
+  post: ArtDescription['post'] | null;
 }
 
 test.describe
@@ -575,7 +672,7 @@ test.describe
     let ctx: BrowserContext;
     let page: Page;
     const samples: PostSample[] = [];
-    let zone0Histogram: Record<string, number> | null = null;
+    let zone0Histogram: ArtDescription['histogram'] | null = null;
     let pitch = 0;
 
     const sample = async (label: string): Promise<void> => {
@@ -630,8 +727,10 @@ test.describe
       // fallback (terrain !== 'kit'); frames not one per tile, or one family only (a flat fill);
       // a heal landmark reported at the wrong tile, twice, or with a rect that is not 1x2 tiles or
       // not on screen; a landmark REPORTED but never drawn (the pixels in its rect equal bare
-      // ground: landFrac < LAND_MIN); a sprite no brighter than the vignette noise (the noise
-      // margin); a test that walked with __game().step (the step counter).
+      // ground: landFrac < LAND_MIN); a sprite no different from its texture noise (the noise
+      // margin); terrain never drawn, or drawn flat, while reported 'kit' (two same-class tiles
+      // with different frame keys read identical: the variant tooth); a test that walked with
+      // __game().step (the step counter).
       test.setTimeout(240_000);
       await setStack(page, STACK_ON);
       await waitStackOn();
@@ -695,7 +794,7 @@ test.describe
       pitch = r.w;
 
       // Only the lower, (8,3), tile: the upper half covers (8,2), tall grass.
-      const proof = await pixelProof(page, {
+      const healCase: ProofCase = {
         label: 'WAP10.1 heal landmark',
         readSample: (a) => {
           const h = a.landmarks.find((l) => l.kind === 'heal');
@@ -707,8 +806,15 @@ test.describe
         pitch,
         kinds: ['Path', 'Floor'],
         min: LAND_MIN,
+      };
+      // One stack-off window for both: the landmark proof and the terrain tooth.
+      const [proof, tooth] = await inStackOffWindow(page, async () => {
+        const p = await pixelProofStackOff(page, healCase);
+        const t = await variantTooth(page, { ...healCase, label: 'WAP10.1 terrain variants' });
+        return [p, t] as const;
       });
       expectProof(proof);
+      expect(tooth.frac, tooth.detail).toBeGreaterThanOrEqual(VARIANT_MIN);
       await expectNoStepCalls(page, 'WAP10.1 after the pixel proof');
       zone0Histogram = { ...(await needArt(page, 'WAP10.1 histogram')).histogram };
     });
@@ -916,8 +1022,9 @@ test.describe
         both.count / both.total,
         `stack-on vs stack-off frames: ${both.count} of ${both.total} pixels differ by >= ${CHANNEL_THRESH}`,
       ).toBeGreaterThanOrEqual(STACK_FRAME_MIN);
-      // Control: two stack-off frames one animation frame apart. The on/off difference above is
-      // the stack, not frame-to-frame motion, only if this reads (near) zero.
+      // Control: two stack-off screenshots apart (an animation-frame wait and a screenshot round
+      // trip between them). The on/off difference above is the stack, not frame-to-frame motion,
+      // only if this reads (near) zero.
       await page.evaluate(
         () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
       );
