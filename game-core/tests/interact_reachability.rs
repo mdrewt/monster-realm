@@ -114,7 +114,11 @@ fn wap8_2_zone_0_healer_at_8_3_keeps_its_7_3_approach() {
         .iter()
         .find(|h| h.zone_id == 0)
         .expect("zone 0 has a heal location");
-    assert_eq!((hl.tile_x, hl.tile_y), (8, 3), "zone-0 healer stays at (8,3)");
+    assert_eq!(
+        (hl.tile_x, hl.tile_y),
+        (8, 3),
+        "zone-0 healer stays at (8,3)"
+    );
     let map = map_for(0, &zone_maps).expect("zone 0 map");
     let approach = TilePos { x: 7, y: 3 };
     assert!(map.is_walkable(approach), "(7,3) must be walkable");
