@@ -1112,3 +1112,35 @@ ships. The browsers below the floor date from 2021 or earlier and are out of ven
 
 **Rules out.** Re-adding a top-level-await transform; `build.target: 'esnext'`; lowering `build.target`
 below a level with native top-level await while the wasm package is built for the `bundler` target.
+
+## The world post stack is `pixi-filters`, on the world layer only, planned from injected time
+
+**Decision.** The post stack uses four filters from `pixi-filters` (pinned exactly, `6.1.5`, imported by
+subpath: `simple-lightmap`, `advanced-bloom`, `godray`, `color-map`). `planPostStack`
+(`client/src/render/postStack.ts`) is a pure function. Its inputs are the pass toggles, an injected `nowMs`,
+the reduced-motion bit, a time-of-day keyframe, the renderer's device-pixel resolution and what the renderer
+supports. It returns the passes to run, in a fixed order, each with its filter's constructor options;
+a disabled pass is left out of the plan rather than zeroed. `WorldRenderer` builds exactly those filters and
+attaches them to one container holding the terrain, decor and actor layers, never to the stage or the DOM UI.
+Each filter runs at the renderer's resolution and the LUT samples `nearest`. The godray time is
+`godrayTime(nowMs, reduceMotion)`: the injected clock, held at 0 while reduced motion is set. No filter reads a
+wall clock or `Math.random`. Three things disable the whole stack: an unsupported renderer, a pass whose
+construction throws, and a throw from the probe frame drawn after the stack is built. In each case the plan is
+empty with one warning, and the world draws unfiltered. A driver that fails a shader without throwing is not
+detected. The renderer starts with the stack off at the `day` keyframe, and `setPostStack` turns passes on.
+
+**Why.** `pixi-filters` was the vetted USE verdict for this stack (`docs/research/pixijs-ecosystem-ui-and-assets.md`
+§0/§6 in the harness). It is MIT-licensed, has no install scripts, and its single runtime dependency is a types
+package. It ships WebGL and WebGPU programs for all four passes, which saves writing and maintaining four
+shaders. With the exact pin, an upgrade is a deliberate lockfile change, and the subpath imports name the four
+filters in use. Filtering the world container alone keeps the UI unfiltered. The world's tile
+edges stay one-pixel hard steps because every pass renders on the device-pixel grid. A filter below the
+renderer's resolution would be resampled, and the chain runs at the lowest resolution of any of its filters.
+Injected time keeps two frames with the same inputs pixel-identical, which is what the look-dev scene asserts.
+Measured on software GL at 1280×720 (`docs/art/style-guide.md`), the four passes cost 35 ms/frame against 2 ms
+unfiltered, and godray and bloom account for most of it. A canvas clear per filter pass also breaks the
+one-clear-per-frame count in `client/e2e/render-context.spec.ts`. So the live game does not turn the stack on yet.
+
+**Rules out.** Filters on `app.stage`, on a DOM layer or per sprite; a pass kept in the chain at zero strength; a
+shader, filter or animation reading a clock other than the injected `nowMs`; a filter at a resolution below the
+renderer's; a linearly sampled LUT; adding another filter package without a new entry here.
