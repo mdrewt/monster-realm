@@ -48,6 +48,10 @@ export interface AssetProvider {
   /** Release provider-owned GPU resources (#28c). Optional: a provider that
    *  owns no textures (e.g. an atlas managed elsewhere) may omit it. */
   destroy?(): void;
+  /** The WebGL context was restored: drop every texture this provider GENERATED, since
+   *  its pixels did not survive. The caller recreates its views, so the next `texture()`
+   *  call regenerates. Optional: image-backed textures re-upload on their own. */
+  contextRestored?(): void;
 }
 
 export class CharacterView {
