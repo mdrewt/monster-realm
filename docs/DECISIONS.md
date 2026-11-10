@@ -8,8 +8,8 @@ state, not a log.
 
 ## One repository, one cargo workspace
 
-**Decision.** `game-core`, `client-wasm`, `server-module` and `sim-harness` are members of one cargo
-workspace in this repository, beside the TypeScript client in `client/`. The server module and the
+**Decision.** The four product crates (`game-core`, `client-wasm`, `server-module`, `sim-harness`) are
+members of one cargo workspace in this repository, beside the TypeScript client in `client/`. The server module and the
 prediction wasm consume `game-core` by path.
 
 **Why.** The rule crate's whole value is that the client and the server compile the same code at the
@@ -33,7 +33,7 @@ re-implements all of that. Colyseus shares TypeScript, not the Rust core, and Na
 cannot share it at all. Keeping the rules in portable `game-core` bounds the lock-in: a port re-wraps
 the same core.
 
-**Rules out.** Game rules in SpacetimeDB-specific code; a second server runtime beside the module;
+**Rules out.** Game rules in SpacetimeDB-specific code; a second game-state server beside the module;
 adopting a game-server framework that cannot execute `game-core`.
 
 ## PixiJS and TypeScript render the client
@@ -43,10 +43,10 @@ authoritative and predicted state and owns none of it. `TILE_PX` (`client/src/re
 the one constant tying visual resolution to the grid; `game-core` works in integer tiles.
 
 **Why.** For a 2D pixel-art game PixiJS gives a small bundle, mature web tooling and sprite and
-tilemap performance. A Rust/bevy wasm client would remove the TypeScript boundary, but at one to two
-orders of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin
-and drift-gated. Phaser's batteries (networking, scenes, physics) duplicate what SpacetimeDB and
-`game-core` provide. A custom WebGL or WebGPU renderer is unjustified for 2D. A native or desktop
+tilemap performance. A Rust/bevy wasm client would remove the TypeScript boundary, but at roughly an
+order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin
+and drift-gated. Phaser's batteries (scenes, physics, input) duplicate what `game-core` and the
+client shell provide. A custom WebGL or WebGPU renderer is unjustified for 2D. A native or desktop
 client goal is the condition that would reopen this.
 
 **Rules out.** Game state or rules in the render layer; a 3D-environment renderer; coupling rules or
