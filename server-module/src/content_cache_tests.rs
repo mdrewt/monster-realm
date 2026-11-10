@@ -148,6 +148,26 @@ fn cached_zone_maps_is_consistent_with_map_for() {
     );
 }
 
+/// `cached_zone_tile_map(z)` is `game_core::map_for(z, cached_zone_maps())` for
+/// every shipped zone and for an absent id (same error text), and two calls
+/// hand back the SAME allocation (built once, not per call).
+#[test]
+fn cached_zone_tile_map_equals_map_for_and_is_built_once() {
+    let maps = cached_zone_maps().expect("cached_zone_maps must succeed");
+    assert!(!maps.is_empty(), "shipped content has zones");
+    let absent = maps.iter().map(|m| m.zone_id).max().unwrap_or(0) + 1;
+    for zone_id in maps.iter().map(|m| m.zone_id).chain([absent]) {
+        assert_eq!(
+            cached_zone_tile_map(zone_id).cloned(),
+            game_core::map_for(zone_id, maps),
+            "zone {zone_id}"
+        );
+    }
+    let first = cached_zone_tile_map(maps[0].zone_id).expect("first zone builds");
+    let second = cached_zone_tile_map(maps[0].zone_id).expect("first zone builds");
+    assert!(std::ptr::eq(first, second), "the map must be built once");
+}
+
 // ===========================================================================
 // ===========================================================================
 //
