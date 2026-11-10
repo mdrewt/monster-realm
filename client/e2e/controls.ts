@@ -552,9 +552,9 @@ export async function openFaceToFace(
  *  time, a visit to the pair lasts 2.3 s on average, and the wait for him from a random moment
  *  has a mean of 1.7 s, p95 7.6 s, p99 15 s, p99.9 26 s and a max of 58 s. One 20 s poll misses
  *  him 0.33% of the time (2.8% when a loaded server halves his cadence).
- *  The post this replaced, (6,3) facing South, reached him on (6,4) alone: a 4.3% corner he
- *  leaves after 1.3 s, so the same wait had a mean of 39 s, p95 124 s, p99 192 s and a max of
- *  578 s, and a press that reached the page late found him gone (the old 21 attempts covered that). */
+ *  A post that reaches him on one corner tile is far worse: (6,3) facing South reaches (6,4)
+ *  alone, a 4.3% tile he leaves after 1.3 s, so the same wait has a mean of 39 s, p95 124 s,
+ *  p99 192 s and a max of 578 s, and a press that reaches the page late finds him gone. */
 export const WANDER_NPC_WAIT_MS = 20_000;
 /** Attempts per talk to a wanderer. An attempt is spent by a poll that times out or by a press
  *  that lost the race (he stepped out of reach between the poll and the keydown). The same

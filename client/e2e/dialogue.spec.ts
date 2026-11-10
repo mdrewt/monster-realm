@@ -94,8 +94,8 @@ import {
 //     his home, and the post (4,5) itself, where he and A share a tile (characters
 //     never block each other, and with nothing on the faced tile the rule offers
 //     the own tile). He stands on one of the two 43% of the time, so a talk waits
-//     1.7 s on average (controls.ts WANDER_NPC_WAIT_MS has the measurement; the
-//     old post (6,3) facing (6,4) alone waited 39 s). A is pressed only while he
+//     1.7 s on average (controls.ts WANDER_NPC_WAIT_MS has the measurement; a
+//     post that reaches one corner tile waits 39 s). A is pressed only while he
 //     is on one of them (controls.ts interactWithNpc). Two more of his steps are
 //     needed to leave TALK_RANGE of (4,5) — only (6,4) and (7,5) are out of it —
 //     so the server's talk range re-check holds, and a conversation, once open,

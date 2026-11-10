@@ -358,7 +358,7 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
 
 /** A-press retries against the wandering elder_oak (ctl-10a: T retired). Each attempt first
  *  POLLS (bounded, no fixed sleep) until he stands on the faced tile (5,5) or on the post
- *  (4,5), then presses A once. Since qf-5 he steps about once a second, so a press can lose
+ *  (4,5), then presses A once. He steps about once a second, so a press can lose
  *  the race and attempts are bounded (controls.ts WANDER_NPC_MAX_ATTEMPTS has the
  *  arithmetic). Each talking phase runs under TALK_PHASE_TIMEOUT_MS, which covers one
  *  worst-case talk. */
