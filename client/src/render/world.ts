@@ -257,12 +257,15 @@ export class WorldRenderer {
    *  the old decor is torn down, so a bad sheet leaves no decor rather than a throw. */
   #drawDecor(map: TileMap): void {
     const sheet = this.#landmarksSheet;
+    if (sheet === undefined) {
+      this.#clearDecor();
+      return;
+    }
     const plan = layoutDecor(map);
     const keys = [...plan.landmarks.map((l) => l.frame), ...plan.warps.flatMap((w) => w.frames)];
-    const missing = keys.find((key) => sheet?.textures[key] === undefined);
-    if (sheet === undefined || missing !== undefined) {
-      if (sheet !== undefined)
-        console.warn(`render/world: landmarks atlas has no frame "${missing}"`);
+    const missing = keys.find((key) => sheet.textures[key] === undefined);
+    if (missing !== undefined) {
+      console.warn(`render/world: landmarks atlas has no frame "${missing}"`);
       this.#clearDecor();
       return;
     }
