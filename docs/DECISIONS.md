@@ -1031,15 +1031,15 @@ textures and drops the generated placeholder character textures (`AssetProvider.
 rendered texture comes back empty. `client/e2e/render-context.spec.ts` loses and restores the context in a
 real browser and compares the canvas before and after, and counts one canvas clear per animation frame.
 
-**Why.** Pixi's batch fragment shader chooses its texture with an if/else chain as long as the batch
-limit, evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser
-(SwiftShader: headless CI, and any player whose browser has no usable GPU) reports a limit of 32 and pays
-for the whole chain per pixel, so the cost grows with how much of the canvas the map covers. Measured in
-headless Chromium on 2 cores at 1280x720 (medians of 3 interleaved blocks; Pixi's own ticker and device limit of 32
-against this configuration): on a 10x7 zone, idle browser CPU is 118% against 63%; on a 28x20 zone that fills the canvas it is
-177% against 107%, the frame rate 39 against 60 fps, and the median CDP key acknowledgement 25 ms against
-4.9 ms. Pixels are identical; the larger zone takes 2 draw calls where the device limit takes 1. The cap
-covers the sprite batcher, which draws the whole kit-atlas world; the flat-terrain fallback's large
+**Why.** Pixi's batch fragment shader chooses its texture with an if/else chain as long as the batch limit,
+evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser (SwiftShader:
+headless CI, and any player whose browser has no usable GPU) reports a limit of 32 and pays for the whole
+chain per pixel, so the cost grows with how much of the canvas the map covers. Measured in headless Chromium
+on 2 cores at 1280x720 (medians of 3 interleaved blocks; Pixi's own ticker and device limit of 32 against
+this configuration): on a 10x7 zone, idle browser CPU is 118% against 63%; on a 28x20 zone that fills the
+canvas it is 177% against 107%, the frame rate 39 against 60 fps, and the median CDP key acknowledgement 25
+ms against 4.9 ms. Pixels are identical; the larger zone takes 2 draw calls where the device limit takes 1.
+The cap covers the sprite batcher, which draws the whole kit-atlas world; the flat-terrain fallback's large
 `Graphics` uses a separate Pixi shader built at the device limit before the cap can apply. With Pixi's
 ticker running beside the frame loop, Pixi draws the state the loop resolved on the PREVIOUS animation
 frame; with one owner a frame is presented in the task that resolved it. Without the re-bake, the terrain
