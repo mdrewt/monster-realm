@@ -75,14 +75,30 @@ pub fn check_party_slot(slot: u8, occupied_slots: &[u8]) -> Result<(), SlotError
 // `~` = tall grass (walkable floor that can trigger a wild encounter, M8). Grass
 // is placed only on interior `.` tiles NOT asserted plain by the world/zone_0
 // tests: avoid spawn (1,1), (2,1), (3,3), (4,3), (1,0).
+// Verdant Hollow (wap-8): 28x20, the original 10x7 block at x=0..9, y=0..6 plus the
+// grown south and east. A twin of the authored RON's zone-0 rows — the two MUST stay
+// equal (`zone_0_matches_authored_ron`, `wap8_4_*`); see the RON for the layout notes.
 const ZONE_0_ROWS: &[&str] = &[
-    "##########",
-    "#........#",
-    "#.~~....~#",
-    "#...##..~#",
-    "#..~~...~#",
-    "#......~~#",
-    "##########",
+    "##########TTTTTTTTTTTTTTTTTT",
+    "#........#TT^^TTTTT**TTTTTTT",
+    "#.~~....~#T^wwwTTTT*TTT^^TTT",
+    "#...##..=#TwwwwwTTTTTTTT^TTT",
+    "#..~~...~#TTwwwTT*TTTTTTTTTT",
+    "#......~~#TTTTTTTTT^^TTTTTTT",
+    "###=######TTTTTT**TTTTTTTTTT",
+    "T..=.*..~~~...TTT.....*..^TT",
+    "T..=...~~~~~..TT....~~~...TT",
+    "T*.=....~~~.......~~~~~~..*T",
+    "T..==========.....~~~~.....T",
+    "T.....^.....=====......^^..T",
+    "TT..wwww.........=.....TT..T",
+    "T..wwwwww..~~~...=....TTT..T",
+    "T..wwwwww.~~~~~..=*........T",
+    "T...wwww..~~~~...======....T",
+    "T*.......^..~~.....^...=...T",
+    "TT....TT.......**.....===..T",
+    "TTT...TTT..^.........^....TT",
+    "TTTTTTTTTTTTTTTTTTTTTTTTTTTT",
 ];
 
 /// A zone-tagged, bounds-safe walkability grid (row-major).

@@ -317,7 +317,7 @@ fn npc_decide_outside_radius_larger_dy_chooses_y_axis() {
 //   Independent oracle (Python model of npc_hash + the real shipped zone-0 grid):
 //   npc_hash(1, 0) % 5 == 4 (not a stay); legal set at (5,5), radius=5, is
 //   [North, East, West] (South is walled — the row directly south of home is
-//   "##########" in content/zone_maps/000-core.ron); (h >> 1) % 3 selects
+//   "###=######…" in content/zone_maps/000-core.ron, x=5 is '#'); (h >> 1) % 3 selects
 //   index 1 = East.
 // ---------------------------------------------------------------------------
 
@@ -590,7 +590,7 @@ fn npc_decide_homing_answers_every_tick_never_stalls() {
     //   toward_home: dx=5-5=0, dy=5-2=3; |dx| < |dy| -> Y-axis dominant;
     //   dy=3>0 -> South (South = increasing y in screen coords).
     //   Step target = (5,2).step(South) = (5,3). Row y=3 of the grid is
-    //   "#...##..~#" -> index 5 (0-based) is '#' -- a genuine WALL, not an
+    //   "#...##..=#…" -> index 5 (0-based) is '#' -- a genuine WALL, not an
     //   off-map coordinate.
     // The homing branch is UNCHANGED (no hash, no legality
     // filter, no stay roll), so npc_decide MUST still return Some(South)

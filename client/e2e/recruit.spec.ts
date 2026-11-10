@@ -315,12 +315,12 @@ async function waitForBattleCleared(p: Page): Promise<void> {
 //     (8,3), cost_item_id None (free), cooldown_ms 30000. heal_party is
 //     zone-scoped and REJECTED silently inside the 30 s cooldown, hence the
 //     bounded retry below.
-//   - zone_maps/000-core.ron zone 0: (8,3) is itself TALL GRASS ('~', row y=3).
+//   - zone_maps/000-core.ron zone 0: (8,3) is PATH ('=', row y=3; tall grass until wap-8).
 //     Its 4-neighbours: (7,3) floor, (8,2) grass, (8,4) grass, (9,3) wall. So
 //     the ONLY grass-free tile beside it is (7,3), and facing it means ARRIVING
 //     on (7,3) by an East step from (6,3) — a step always sets the facing
 //     (game-core world.rs apply_move), and an East step FROM (7,3) would walk
-//     onto the grass heal tile (heal tiles and characters never block).
+//     onto the heal tile itself (heal tiles and characters never block).
 //   - The walk: from the (1,2)/(2,2) shuttle north to row y=1, east to (6,1),
 //     south to (6,3), east onto (7,3) — computed by controls.ts safePath (BFS
 //     over walkable, non-grass, non-warp tiles of __game().map), so it can

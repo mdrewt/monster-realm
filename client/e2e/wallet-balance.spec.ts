@@ -95,7 +95,8 @@ import {
 //     stationary special case; NO retry loop is needed in zone 1.
 //     `interaction: Shop(1)`, tree `shopkeeper_greeting` ("Hello, customer!").
 //
-// MAP (game-core/content/zone_maps/000-core.ron) — zone 0 is the 10x7 layout; zone 1 is the
+// MAP (game-core/content/zone_maps/000-core.ron) — zone 0 is the 28x20 Verdant Hollow (wap-8), whose
+//   original 10x7 block (x=0..9, y=0..6) is shown; zone 1 is the
 //   larger Tideglass Cove (wap-7), whose column x=1 (y=1..5) and row y=1 (x=1..8) stay
 //   walkable and grass-free. In zone 0 (4,3)/(5,3) are WALLS so x=6 is the clean northward lane to the elder post, and
 //   column x=1 is clean floor for y=1..5; warp at zone 0 (1,5) <-> zone 1 (1,5) (qf-15 moved

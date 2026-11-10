@@ -59,9 +59,12 @@ pub const BUDGETS: &[Budget] = &[
         ceiling_ns: 200.0,
     },
     Budget {
-        // measured 134.5 ns mean, 2026-08-08 (conditions above); 20x = 2690.
+        // wap-8 re-set: zone 0 grew from 10x7 (measured 134.5 ns, 2026-08-08) to 28x20
+        // (8x the tiles, three per-tile layers). Re-measured 1806.4 ns mean on 2026-11-09,
+        // same bench settings and fixtures but a busier WSL2 machine than the 2026-08-08 run
+        // (apply_move 4.16 ns vs 1.87 ns that day); 20x = 36127, rounded up to 40000.
         id: "map_for",
-        ceiling_ns: 3000.0,
+        ceiling_ns: 40_000.0,
     },
 ];
 

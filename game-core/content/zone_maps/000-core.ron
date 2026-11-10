@@ -8,14 +8,34 @@
 [
     (
         zone_id: 0,
+        // Verdant Hollow (wap-8): 28x20. The original 10x7 village block (x=0..9, y=0..6) is kept
+        // tile-for-tile except two tiles: (8,3), the heal tile, is path (it was tall grass, so
+        // stepping onto the healer rolled encounters), and (3,6) opens the south wall onto a
+        // trail into the meadow, lake and copse grown south and east. (3,6) is Manhattan 3 from
+        // elder_oak's home (5,5), outside his radius-2 wander disc; the bush at (5,7) keeps the disc's
+        // only tile south of the wall out of it (npc_decide coverage test). Rows 0-6 beyond x=9 are a
+        // tree, rock and pond belt, so (9,1) and the block's east wall stay blocked.
         rows: [
-            "##########",
-            "#........#",
-            "#.~~....~#",
-            "#...##..~#",
-            "#..~~...~#",
-            "#......~~#",
-            "##########",
+            "##########TTTTTTTTTTTTTTTTTT",
+            "#........#TT^^TTTTT**TTTTTTT",
+            "#.~~....~#T^wwwTTTT*TTT^^TTT",
+            "#...##..=#TwwwwwTTTTTTTT^TTT",
+            "#..~~...~#TTwwwTT*TTTTTTTTTT",
+            "#......~~#TTTTTTTTT^^TTTTTTT",
+            "###=######TTTTTT**TTTTTTTTTT",
+            "T..=.*..~~~...TTT.....*..^TT",
+            "T..=...~~~~~..TT....~~~...TT",
+            "T*.=....~~~.......~~~~~~..*T",
+            "T..==========.....~~~~.....T",
+            "T.....^.....=====......^^..T",
+            "TT..wwww.........=.....TT..T",
+            "T..wwwwww..~~~...=....TTT..T",
+            "T..wwwwww.~~~~~..=*........T",
+            "T...wwww..~~~~...======....T",
+            "T*.......^..~~.....^...=...T",
+            "TT....TT.......**.....===..T",
+            "TTT...TTT..^.........^....TT",
+            "TTTTTTTTTTTTTTTTTTTTTTTTTTTT",
         ],
         warps: [
             // (1,5) in zone 0 is '.' (floor) — walkable warp to Tideglass Cove. Off elder_oak's
