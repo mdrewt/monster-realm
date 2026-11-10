@@ -28,6 +28,13 @@ export default defineConfig({
   // (observed: 3 workers locally, 2 on 4-vCPU CI runners). Single-worker completes
   // the serialization this config always intended.
   workers: 1,
+  // CI: terse stdout plus a machine-readable per-test timing file (uploaded as an
+  // artifact by the e2e job) so slow specs are visible without scraping logs. The
+  // JSON holds titles, durations and error text only; no env or credentials.
+  // Locally keep the readable `list` output.
+  reporter: process.env.CI
+    ? [['dot'], ['json', { outputFile: 'test-results/e2e.json' }]]
+    : 'list',
   use: { baseURL: e2eBaseUrl, headless: true },
   webServer: {
     command: 'npm run dev',
