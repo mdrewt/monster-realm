@@ -17,6 +17,12 @@
 //
 // wap-5: characters draw from the hero atlas (`atlasAssets.ts`), loaded beside the kit;
 // without it they fall back to the procedural `PlaceholderAssets`.
+//
+// wap-6: landmarks and warp markers are laid out from the map's content rows by
+// `decorLayout.ts`. Landmarks join the actors' row z-order (two tiles tall, bottom-
+// anchored, so the top half rises over the row above); warp markers are ground decals
+// under every actor, their pulse swapping texture only when its frame index changes.
+// Without the landmarks atlas no decor is drawn.
 import {
   Application,
   Assets,
@@ -30,12 +36,14 @@ import {
 import type { WasmAction, WasmDirection } from '../convert/convert';
 import { t } from '../ui/a11yCopy';
 import { HERO_SHEET_FILE } from './art/packs/characters';
+import { LANDMARKS_FILE } from './art/packs/landmarks';
 import { TERRAIN_KIT_FILE } from './art/packs/terrain';
 import { createCharacterAssets, type HeroAtlas } from './atlasAssets';
 import { FollowCamera } from './camera';
 import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
 import { TILE_PX } from './config';
+import { layoutDecor, warpFrameIndex } from './decorLayout';
 import { type RawTileMap, TileMap } from './map';
 import {
   type Chunk,
@@ -62,19 +70,39 @@ const GRASS_COLOR = 0x1f4d2b;
 const KIT_ATLAS_URL = `assets/${TERRAIN_KIT_FILE.replace(/\.png$/, '.json')}`;
 /** The hero atlas json beside its png (wap-5). */
 const HERO_ATLAS_URL = `assets/${HERO_SHEET_FILE.replace(/\.png$/, '.json')}`;
+/** The landmarks atlas json beside its png (wap-6). */
+const LANDMARKS_ATLAS_URL = `assets/${LANDMARKS_FILE.replace(/\.png$/, '.json')}`;
 
-/** An animated water tile: its sprite, its frame textures, and the frame it shows. */
-interface WaterTile {
+/** An animated tile (water, warp marker): its sprite, its frame textures, and the frame it shows. */
+interface AnimatedTile {
   readonly sprite: Sprite;
   readonly frames: readonly Texture[];
   shown: number;
 }
 
-/** A kit frame's texture; layoutTerrain has already checked every key it emits. */
-function kitTexture(kit: Spritesheet, key: string): Texture {
-  const texture = kit.textures[key];
-  if (texture === undefined) throw new Error(`render/world: terrain kit has no frame "${key}"`);
+/** An atlas frame's texture; the layout planners have already checked every key they emit. */
+function atlasTexture(sheet: Spritesheet, key: string): Texture {
+  const texture = sheet.textures[key];
+  if (texture === undefined) throw new Error(`render/world: atlas has no frame "${key}"`);
   return texture;
+}
+
+/** Constraint 7: swap a tile's texture only when its frame index changes. */
+function showFrame(tile: AnimatedTile, k: number): void {
+  const texture = tile.frames[k];
+  if (k !== tile.shown && texture !== undefined) {
+    tile.sprite.texture = texture;
+    tile.shown = k;
+  }
+}
+
+/** A decor sprite bottom-anchored on tile (x, y): a two-tile-tall frame's upper half
+ *  covers the row above, exactly where a character on that row is drawn. */
+function decorSprite(texture: Texture, x: number, y: number): Sprite {
+  const sprite = new Sprite(texture);
+  sprite.anchor.set(0, 1);
+  sprite.position.set(x * TILE_PX, (y + 1) * TILE_PX);
+  return sprite;
 }
 
 /** A draw-ready entity: a FRACTIONAL tile position already resolved by the loop. */
@@ -91,6 +119,7 @@ export class WorldRenderer {
   #map: TileMap | undefined;
   #assets: AssetProvider | undefined;
   readonly #bg = new Container();
+  readonly #decor = new Container();
   readonly #actors = new Container();
   readonly #views = new Map<bigint, CharacterView>();
   readonly #registry = new ViewRegistry();
@@ -110,7 +139,13 @@ export class WorldRenderer {
   #kit: Spritesheet | undefined;
   #chunks: ChunkCache<Texture> | undefined;
   #chunkScale = 0;
-  #water: WaterTile[] = [];
+  #water: AnimatedTile[] = [];
+  // wap-6 decor: the loaded landmarks atlas (undefined ⟹ no decor), the landmark
+  // sprites it placed in #actors (tracked explicitly: #actors also holds the
+  // character sprites), and the pulsing warp markers in #decor.
+  #landmarksSheet: Spritesheet | undefined;
+  #landmarkSprites: Sprite[] = [];
+  #warpMarkers: AnimatedTile[] = [];
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
@@ -144,21 +179,23 @@ export class WorldRenderer {
     this.#vs = viewportScale(cssW, cssH, dpr);
     app.stage.scale.set(this.#vs.stageScale);
     app.stage.addChild(this.#bg);
+    app.stage.addChild(this.#decor);
     app.stage.addChild(this.#actors);
     // e-4: Pixi sorts children by zIndex when sortableChildren is true.
     // This replaces the O(n²) setChildIndex loop with O(n log n) auto-sort.
     this.#actors.sortableChildren = true;
     this.#app = app;
     this.#map = map;
-    const [kit, hero] = await Promise.all([loadKit(), loadHero()]);
+    const [kit, hero, landmarks] = await Promise.all([loadKit(), loadHero(), loadLandmarks()]);
     const releaseHero = (): void => {
       Assets.unload(HERO_ATLAS_URL).catch((err) =>
         console.warn('render/world: hero atlas failed to unload', err),
       );
     };
     if (this.#app !== app) {
-      // destroy() ran while the atlases loaded: the hero sheet has no owner yet.
+      // destroy() ran while the atlases loaded: the hero and landmarks sheets have no owner yet.
       if (hero !== undefined) releaseHero();
+      if (landmarks !== undefined) releaseLandmarks();
       return;
     }
     this.#assets = createCharacterAssets(app.renderer, hero, releaseHero);
@@ -170,7 +207,11 @@ export class WorldRenderer {
         (chunk, options) => bakeChunk(app, kit, chunk, options),
         (texture) => texture.destroy(true),
       );
-    this.#drawMap(map);
+    this.#landmarksSheet = landmarks;
+    // A setMap() that ran while the atlases loaded already replaced #map: draw that one.
+    const current = this.#map ?? map;
+    this.#drawMap(current);
+    this.#drawDecor(current);
   }
 
   #drawMap(map: TileMap): void {
@@ -203,12 +244,54 @@ export class WorldRenderer {
       this.#bg.addChild(sprite);
     });
     for (const tile of animated) {
-      const frames = (tile.animation ?? [tile.frame]).map((key) => kitTexture(kit, key));
+      const frames = (tile.animation ?? [tile.frame]).map((key) => atlasTexture(kit, key));
       const sprite = new Sprite(frames[0]);
       sprite.position.set(tile.x * TILE_PX, tile.y * TILE_PX);
       this.#bg.addChild(sprite);
       this.#water.push({ sprite, frames, shown: 0 });
     }
+  }
+
+  /** Lay out the landmarks and warp markers from the map's content rows (decorLayout.ts).
+   *  Every frame key is checked against the atlas and the new sprites are built BEFORE
+   *  the old decor is torn down, so a bad sheet leaves no decor rather than a throw. */
+  #drawDecor(map: TileMap): void {
+    const sheet = this.#landmarksSheet;
+    const plan = layoutDecor(map);
+    const keys = [...plan.landmarks.map((l) => l.frame), ...plan.warps.flatMap((w) => w.frames)];
+    const missing = keys.find((key) => sheet?.textures[key] === undefined);
+    if (sheet === undefined || missing !== undefined) {
+      if (sheet !== undefined)
+        console.warn(`render/world: landmarks atlas has no frame "${missing}"`);
+      this.#clearDecor();
+      return;
+    }
+    const landmarkSprites = plan.landmarks.map((l) => {
+      const sprite = decorSprite(atlasTexture(sheet, l.frame), l.x, l.y);
+      sprite.zIndex = l.zIndex;
+      return sprite;
+    });
+    const warpMarkers = plan.warps.map((w): AnimatedTile => {
+      const frames = w.frames.map((key) => atlasTexture(sheet, key));
+      return { sprite: decorSprite(frames[0] as Texture, w.x, w.y), frames, shown: 0 };
+    });
+    this.#clearDecor();
+    for (const sprite of landmarkSprites) this.#actors.addChild(sprite);
+    for (const marker of warpMarkers) this.#decor.addChild(marker.sprite);
+    this.#landmarkSprites = landmarkSprites;
+    this.#warpMarkers = warpMarkers;
+  }
+
+  /** Remove and destroy exactly the decor sprites (never the character sprites that
+   *  share #actors). Their textures belong to the landmarks atlas. */
+  #clearDecor(): void {
+    for (const sprite of this.#landmarkSprites) {
+      this.#actors.removeChild(sprite);
+      sprite.destroy();
+    }
+    this.#landmarkSprites = [];
+    for (const child of this.#decor.removeChildren()) child.destroy();
+    this.#warpMarkers = [];
   }
 
   /** Destroy the background's children to release GPU memory (M12.5d-5: removeChildren
@@ -253,12 +336,17 @@ export class WorldRenderer {
     // Drop all pooled character views — they belong to the old zone.
     this.clear();
     this.#drawMap(map);
+    // Decor is placed here, after clear() and before any render() re-creates a
+    // character, so a character on a landmark's own row (an equal zIndex) is added
+    // later and draws in front of it by insertion order.
+    this.#drawDecor(map);
   }
 
   /** Render one frame: pool create/destroy (teardown on despawn — no ghost),
    *  mutate each view in place, apply a stable z-order, and scroll the
    *  follow-camera to keep the own entity centred. `frame` (wap-4) carries the
-   *  injected clock + reduced-motion bit for the water animation; omitted ⟹ water holds. */
+   *  injected clock + reduced-motion bit for the water and warp-marker animations;
+   *  omitted ⟹ both hold. */
   render(
     entities: readonly RenderEntity[],
     ownTileX = 0,
@@ -268,14 +356,12 @@ export class WorldRenderer {
     const assets = this.#assets;
     if (assets === undefined) return; // not initialised yet
     if (frame !== undefined) {
-      // Constraint 7: a texture swap only when a tile's frame index changes.
+      const { nowMs, reduceMotion } = frame;
       for (const water of this.#water) {
-        const k = waterFrameIndex(frame.nowMs, frame.reduceMotion, water.frames.length);
-        const texture = water.frames[k];
-        if (k !== water.shown && texture !== undefined) {
-          water.sprite.texture = texture;
-          water.shown = k;
-        }
+        showFrame(water, waterFrameIndex(nowMs, reduceMotion, water.frames.length));
+      }
+      for (const marker of this.#warpMarkers) {
+        showFrame(marker, warpFrameIndex(nowMs, reduceMotion, marker.frames.length));
       }
     }
     const { created, removed } = this.#registry.reconcile(entities.map((e) => e.entityId));
@@ -369,6 +455,12 @@ export class WorldRenderer {
     // The baked chunk textures are not in the atlas cache: release them explicitly.
     this.#chunks?.clear();
     this.#water = [];
+    // Decor sprites leave the stage before app.destroy(true), then the atlas is released.
+    this.#clearDecor();
+    if (this.#landmarksSheet !== undefined) {
+      this.#landmarksSheet = undefined;
+      releaseLandmarks();
+    }
     this.#app?.destroy(true);
     this.#app = undefined;
   }
@@ -396,6 +488,23 @@ async function loadHero(): Promise<HeroAtlas | undefined> {
   }
 }
 
+/** Load the landmarks atlas (wap-6), sampled `nearest` like the kit. A load failure is
+ *  not fatal: no landmarks or warp markers are drawn. */
+async function loadLandmarks(): Promise<Spritesheet | undefined> {
+  try {
+    return await Assets.load<Spritesheet>(kitAtlasAsset(LANDMARKS_ATLAS_URL));
+  } catch (err) {
+    console.warn('render/world: landmarks atlas failed to load', err);
+    return undefined;
+  }
+}
+
+function releaseLandmarks(): void {
+  Assets.unload(LANDMARKS_ATLAS_URL).catch((err) =>
+    console.warn('render/world: landmarks atlas failed to unload', err),
+  );
+}
+
 /** Bake one chunk's static tiles into a texture with the cache's options. */
 function bakeChunk(
   app: Application,
@@ -405,7 +514,7 @@ function bakeChunk(
 ): Texture {
   const scratch = new Container();
   for (const tile of chunk.tiles) {
-    const sprite = new Sprite(kitTexture(kit, tile.frame));
+    const sprite = new Sprite(atlasTexture(kit, tile.frame));
     sprite.position.set((tile.x - chunk.x) * TILE_PX, (tile.y - chunk.y) * TILE_PX);
     scratch.addChild(sprite);
   }
