@@ -208,10 +208,16 @@ async function corridorEastWest(p: Page, minX: number, maxX: number): Promise<Ti
   return t;
 }
 
+/** How long one `recenter` step may take to change the authoritative column. A step normally
+ *  lands within a tick or two (STEP_MS each); the bound only has to outlast a stalled runner. */
+const RECENTER_STEP_TIMEOUT_MS = 8_000;
+
 /** SETUP ONLY. `__game().step()` bypasses `held` entirely (ADR-0158 residual 9), so it can
  *  prove NOTHING about keyboard input — it is used here purely to park the character in a
- *  known column before a keyboard-driven scenario begins. Steps are spaced 1.5x STEP_MS so
- *  each one is fully drained before the next is issued. */
+ *  known column before a keyboard-driven scenario begins. CLOSED LOOP: each step waits for the
+ *  authoritative column to change before the next decision is made. A fixed sleep here read a
+ *  stale column whenever the server took longer than the sleep, issued one step too many, and
+ *  overshot the target ("Expected: 4, Received: 5" on a loaded CI runner). */
 async function recenter(p: Page, targetX: number): Promise<void> {
   for (let i = 0; i < 12; i += 1) {
     const t = await tile(p);
@@ -220,7 +226,12 @@ async function recenter(p: Page, targetX: number): Promise<void> {
     await p.evaluate((d: string) => {
       (window as unknown as { __game: () => { step: (x: string) => void } }).__game().step(d);
     }, dir);
-    await p.waitForTimeout(Math.round(stepMs * 1.5));
+    await expect
+      .poll(async () => (await tile(p)).x, {
+        message: `recenter: the ${dir} step from column ${t.x} must land`,
+        timeout: RECENTER_STEP_TIMEOUT_MS,
+      })
+      .not.toBe(t.x);
   }
   await converged(p);
   const t = await tile(p);
