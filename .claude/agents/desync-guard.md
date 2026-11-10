@@ -8,7 +8,7 @@ description: >-
   shared-signature changes, and verifies parity tests exist. Returns a checklist
   verdict with file:line findings. Does NOT edit code.
 tools: Read, Grep, Glob, Bash, mcp__gitmcp-wasm-bindgen__fetch_wasm_bindgen_documentation, mcp__gitmcp-wasm-bindgen__search_wasm_bindgen_documentation, mcp__gitmcp-wasm-bindgen__search_wasm_bindgen_code, mcp__codebase-memory-mcp__search_graph, mcp__codebase-memory-mcp__query_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet, mcp__codebase-memory-mcp__search_code, mcp__codegraph__codegraph_explore
-model: opus
+model: fable
 ---
 
 You guard the single most important invariant in this codebase: **the client predicts by

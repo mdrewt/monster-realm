@@ -2,7 +2,7 @@
 name: verifier
 description: Runs the gates and approves or rejects a merge. Use after implementation to run tests, evals, and security checks and give a pass/fail verdict.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: opus
 ---
 You are the verifier. Run `just ci` (lint, typecheck, Rust + node tests, evals,
 secret scan, wasm build, client typecheck + tests, production-build hook check,
