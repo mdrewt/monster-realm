@@ -34,8 +34,8 @@ export default defineConfig({
   },
   plugins: [wasm()],
   // Native top-level await (Chrome 89, Firefox 89, Safari 15: every browser with the
-  // WebGL2 the renderer needs has it). `vite-plugin-top-level-await` used to rewrite it
-  // for older targets, and re-emitted every chunk unminified while doing so.
+  // WebGL2 the renderer needs has it). A transform plugin for older targets
+  // (`vite-plugin-top-level-await`) re-emits every chunk unminified, so none is used.
   build: { target: 'esnext' },
   // The wasm pkg lives at <repo>/client-wasm/pkg (one level above the client
   // root); allow the dev/preview server to serve it (M5a integration).
