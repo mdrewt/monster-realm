@@ -1806,6 +1806,305 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // wap-8: Verdant Hollow (zone 0) grows to a larger map and its healer
+    // tile stops being tall grass. Every assertion reads the REAL shipped
+    // content through the product's loaders.
+    // -----------------------------------------------------------------------
+
+    /// Zone 0 (Verdant Hollow) built from the shipped RON.
+    fn verdant_map() -> TileMap {
+        let maps = crate::content::load_zone_maps().expect("zone maps must load");
+        map_for(0, &maps).expect("map_for(0) must succeed")
+    }
+
+    /// Tiles reachable from `spawn()` by a 4-neighbour BFS over walkable tiles.
+    fn reachable_from_spawn(map: &TileMap) -> std::collections::HashSet<TilePos> {
+        let start = spawn();
+        let mut seen = std::collections::HashSet::from([start]);
+        let mut queue = std::collections::VecDeque::from([start]);
+        while let Some(p) = queue.pop_front() {
+            for d in WAP7_DIRS {
+                let next = p.step(d);
+                if map.is_walkable(next) && seen.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Criterion WAP8.1: at least 24x16 and at most the registry bound (32x24).
+    /// Kills: a map still 10x7; overflowing the bound; a silent registry widening.
+    #[test]
+    fn wap8_1_verdant_hollow_size_is_between_24x16_and_the_registry_bound() {
+        let zones = crate::content::load_zones().expect("zones must load");
+        let zone = zones
+            .iter()
+            .find(|z| z.id == 0)
+            .expect("zone 0 must be in the zones registry");
+        assert_eq!(
+            (zone.width, zone.height),
+            (32, 24),
+            "WAP8.1: the zone-0 registry bound must stay 32x24"
+        );
+        let map = verdant_map();
+        let max_w = i32::try_from(zone.width).expect("bound fits i32");
+        let max_h = i32::try_from(zone.height).expect("bound fits i32");
+        assert!(
+            map.width >= 24 && map.height >= 16,
+            "WAP8.1: Verdant Hollow must be at least 24x16, got {}x{}",
+            map.width,
+            map.height
+        );
+        assert!(
+            map.width <= max_w && map.height <= max_h,
+            "WAP8.1: Verdant Hollow must fit the {max_w}x{max_h} bound, got {}x{}",
+            map.width,
+            map.height
+        );
+    }
+
+    /// Criterion WAP8.1: the original 10x7 block is untouched except the south
+    /// opening (3,6) and the healer tile (8,3).
+    /// Kills: redrawing the old block (moving anchors/grass); a missing opening;
+    /// a heal tile still on grass.
+    #[test]
+    fn wap8_1_original_block_is_identical_except_the_opening_and_the_heal_tile() {
+        use crate::types::TileKind;
+        let original = [
+            "##########",
+            "#........#",
+            "#.~~....~#",
+            "#...##..~#",
+            "#..~~...~#",
+            "#......~~#",
+            "##########",
+        ];
+        let map = verdant_map();
+        for (y, row) in original.iter().enumerate() {
+            for (x, c) in row.chars().enumerate() {
+                let (x, y) = (x as i32, y as i32);
+                if (x, y) == (3, 6) || (x, y) == (8, 3) {
+                    continue;
+                }
+                let want = TileKind::from_char(c).expect("original glyph is valid");
+                assert_eq!(
+                    map.terrain_at(tp(x, y)),
+                    Some(want),
+                    "WAP8.1: original-block tile ({x},{y}) must keep class of '{c}'"
+                );
+            }
+        }
+        assert!(
+            map.is_walkable(tp(3, 6)),
+            "WAP8.1: the south opening (3,6) must be walkable"
+        );
+        assert_eq!(
+            map.terrain_at(tp(8, 3)),
+            Some(TileKind::Path),
+            "WAP8.1: the heal tile (8,3) must be Path"
+        );
+    }
+
+    /// Criterion WAP8.1: the map shows path, tree, bush, rock and shallow water.
+    /// Kills: a larger map that is a flat field with no terrain variety.
+    #[test]
+    fn wap8_1_verdant_hollow_has_path_tree_bush_rock_and_shallow_water() {
+        use crate::types::TileKind;
+        let map = verdant_map();
+        for (kind, name) in [
+            (TileKind::Path, "path"),
+            (TileKind::Tree, "tree"),
+            (TileKind::Bush, "bush"),
+            (TileKind::Rock, "rock"),
+            (TileKind::ShallowWater, "shallow water"),
+        ] {
+            assert!(
+                count_terrain(&map, kind) >= 1,
+                "WAP8.1: Verdant Hollow must contain {name} ({kind:?}), found none"
+            );
+        }
+    }
+
+    /// Criterion WAP8.2: stepping East from (7,3) onto the healer (8,3) never
+    /// starts an encounter.
+    /// Kills: leaving the heal tile as tall grass.
+    #[test]
+    fn wap8_2_stepping_onto_the_zone_0_heal_tile_never_starts_an_encounter() {
+        let map = verdant_map();
+        let next = apply_move(
+            &idle_state_at(tp(7, 3)),
+            MoveInput::Step(Direction::East),
+            &map,
+            Millis(0),
+        )
+        .pos;
+        assert_eq!(next, tp(8, 3), "WAP8.2: East from (7,3) must land on (8,3)");
+        assert!(
+            !super::stepped_onto_grass(tp(7, 3), tp(8, 3), &map),
+            "WAP8.2: stepping onto the heal tile must not trigger an encounter"
+        );
+        assert!(!map.is_grass(tp(8, 3)), "WAP8.2: (8,3) must not be grass");
+    }
+
+    /// Criterion WAP8.3: every walkable zone-0 tile is reachable from spawn.
+    /// Kills: a wall/water/rock ring sealing off a pocket in the new area.
+    #[test]
+    fn wap8_3_every_walkable_zone_0_tile_is_reachable_from_spawn() {
+        let map = verdant_map();
+        assert_eq!(spawn(), tp(1, 1), "WAP8.3: spawn must stay (1,1)");
+        let reached = reachable_from_spawn(&map);
+        assert!(
+            reached.len() >= 200,
+            "WAP8.3: a large map reaches >= 200 tiles, got {}",
+            reached.len()
+        );
+        let unreachable: Vec<TilePos> = grid_tiles(&map)
+            .into_iter()
+            .filter(|p| map.is_walkable(*p) && !reached.contains(p))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "WAP8.3: {} walkable tile(s) unreachable from spawn; first few: {:?}",
+            unreachable.len(),
+            &unreachable[..unreachable.len().min(8)]
+        );
+    }
+
+    /// Criterion WAP8.3: the healer, elder home and the warp tile are reachable.
+    /// Kills: stranding the healer, the quest NPC or the way out to zone 1.
+    #[test]
+    fn wap8_3_heal_tile_elder_home_and_warp_are_reachable() {
+        let map = verdant_map();
+        let reached = reachable_from_spawn(&map);
+        let heals = crate::content::load_heal_locations().expect("heal locations must load");
+        let heal = heals
+            .iter()
+            .find(|h| h.zone_id == 0)
+            .expect("zone 0 must have a heal location");
+        let heal_tile = tp(heal.tile_x, heal.tile_y);
+        assert_eq!(heal_tile, tp(8, 3), "WAP8.3: the zone-0 healer is at (8,3)");
+        assert!(
+            reached.contains(&heal_tile),
+            "WAP8.3: the heal tile must be reachable"
+        );
+        let npcs = crate::content::load_npc_defs().expect("npc defs must load");
+        let elder = npcs
+            .iter()
+            .find(|n| n.npc_id == "elder_oak")
+            .expect("elder_oak must exist");
+        let home = tp(elder.home_x, elder.home_y);
+        assert_eq!(home, tp(5, 5), "WAP8.3: elder_oak's home is (5,5)");
+        assert!(
+            reached.contains(&home),
+            "WAP8.3: elder_oak's home must be reachable"
+        );
+        assert_eq!(map.warps.len(), 1, "WAP8.3: zone 0 has exactly one warp");
+        assert_eq!(map.warps[0].from, tp(1, 5), "WAP8.3: the warp is at (1,5)");
+        for w in &map.warps {
+            assert!(
+                reached.contains(&w.from),
+                "WAP8.3: warp tile ({},{}) must be reachable",
+                w.from.x,
+                w.from.y
+            );
+        }
+    }
+
+    /// Criterion WAP8.4: `ZONE_0_ROWS` equals the authored RON rows exactly.
+    /// Kills: the code copy and the RON drifting in any glyph (not just
+    /// walkability/grass).
+    #[test]
+    fn wap8_4_zone_0_rows_equal_the_authored_ron_rows_exactly() {
+        let maps = crate::content::load_zone_maps().expect("zone maps must load");
+        let def = maps
+            .iter()
+            .find(|m| m.zone_id == 0)
+            .expect("zone 0 must have a ZoneMapDef");
+        let code_rows: Vec<String> = ZONE_0_ROWS.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(
+            code_rows, def.rows,
+            "WAP8.4: ZONE_0_ROWS must equal the RON rows string-for-string"
+        );
+    }
+
+    /// Criterion WAP8.5: spawn, e2e route, elder posts, (2,2) grass and the healer
+    /// tile keep their walkability and grass class.
+    /// Kills: growing the map over an anchor the e2e/load-driver specs walk.
+    #[test]
+    fn wap8_5_zone_0_route_anchors_stay_walkable_and_grass_free() {
+        let map = verdant_map();
+        let mut tiles = vec![spawn(), tp(6, 2), tp(6, 3), tp(7, 3), tp(1, 2), tp(8, 3)];
+        tiles.extend((1..=8).map(|x| tp(x, 1)));
+        tiles.extend((1..=5).map(|y| tp(1, y)));
+        tiles.extend((1..=6).map(|x| tp(x, 5)));
+        for p in tiles {
+            assert!(
+                map.is_walkable(p),
+                "WAP8.5: anchor ({},{}) must be walkable",
+                p.x,
+                p.y
+            );
+            assert!(
+                !map.is_grass(p),
+                "WAP8.5: anchor ({},{}) must be grass-free",
+                p.x,
+                p.y
+            );
+        }
+        assert!(
+            map.is_grass(tp(2, 2)),
+            "WAP8.5: (2,2) must stay grass (mr_load_driver anchor)"
+        );
+        for p in [tp(6, 4), tp(5, 4)] {
+            assert!(
+                map.is_walkable(p),
+                "WAP8.5: in-front-of-elder tile ({},{}) must be walkable",
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    /// Criterion WAP8.5: blocking anchors stay blocked; elder_oak's wander disc
+    /// cannot leak through the new south opening.
+    /// Kills: opening a bump-test wall; opening (4,6)/(5,6)/(6,6) under elder; an
+    /// opening within elder's radius.
+    #[test]
+    fn wap8_5_zone_0_blocking_anchors_stay_blocked() {
+        let map = verdant_map();
+        for p in [
+            tp(0, 1),
+            tp(9, 1),
+            tp(4, 3),
+            tp(5, 3),
+            tp(8, 6),
+            tp(1, 0),
+            tp(5, 6),
+            tp(4, 6),
+            tp(6, 6),
+        ] {
+            assert!(
+                !map.is_walkable(p),
+                "WAP8.5: ({},{}) must stay non-walkable",
+                p.x,
+                p.y
+            );
+        }
+        let npcs = crate::content::load_npc_defs().expect("npc defs must load");
+        let elder = npcs
+            .iter()
+            .find(|n| n.npc_id == "elder_oak")
+            .expect("elder_oak must exist");
+        assert_eq!(elder.wander_radius, 2, "WAP8.5: elder_oak wanders radius 2");
+        let dist = (3 - elder.home_x).abs() + (6 - elder.home_y).abs();
+        assert!(
+            dist > i32::from(elder.wander_radius),
+            "WAP8.5: the opening (3,6) must lie outside elder_oak's wander disc"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // qf-15 (QF15.2): no warp endpoint may sit where an NPC lives or on the
     // heal location's tile. (5,5) was BOTH the zone-0<->zone-1 warp and
     // elder_oak's home, so chasing the quest NPC teleported the player.
