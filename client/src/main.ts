@@ -88,6 +88,7 @@ import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
 import { motionPreferenceFromWindow } from './render/motionPreference';
+import type { PostStackToggles } from './render/postStack';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
@@ -4122,6 +4123,10 @@ function snapshot() {
     })(),
     step,
     jump,
+    // wap-10: the renderer's account of what it drew (terrain, decor, post stack), and a test
+    // switch for the post stack's passes; the live game keeps every pass off (DECISIONS.md).
+    art: renderer?.describeArt() ?? null,
+    setPostStack: (toggles: PostStackToggles) => renderer?.setPostStack({ toggles }),
     // 12.5c-5 proof-of-teeth hook: forcibly set rawMap to zone_map(zoneId) WITHOUT
     // the zone-switch protocol. Used by zoneSync.spec.ts to simulate "client kept
     // zone-1 rawMap after a disconnect, but server re-spawned character at zone 0".

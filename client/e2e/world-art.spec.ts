@@ -59,11 +59,15 @@ type Toggles = Record<(typeof FULL_STACK)[number], boolean>;
 const CHANNEL_THRESH = 24;
 /** The share of a sampled rect's pixels that must differ from a ground tile. */
 const LAND_MIN = 0.3;
+/** The same floor for the warp marker, a decal covering less of its tile (measured 0.293). */
+const WARP_MIN = 0.15;
 /** How far above the same-class ground-vs-ground noise the sampled share must sit. */
 const NOISE_MARGIN = 0.2;
 /** The share of the whole frame that must change when the stack goes off (any value above the
  *  non-vacuity floor of a few moving NPCs; lookdev's WAP9.5 measured ~0.9 for the full stack). */
-const STACK_FRAME_MIN = 0.25;
+const STACK_FRAME_MIN = 0.1;
+// Measured: the day keyframe is a light warm lift, so the full stack moves 0.217 of the frame
+// (199708 of 921600 pixels by >= 24 per channel). An unattached stack reads ~0.
 /** A tile of zone 0 and of zone 1 the flow names (Verdant Hollow, plan facts). */
 const HEAL: Tile = { x: 8, y: 3 };
 const WARP: Tile = { x: 1, y: 5 };
@@ -339,9 +343,12 @@ interface ProofCase {
   pitch: number;
   /** Ground classes the references are drawn from, in preference order. */
   kinds: readonly string[];
+  /** The absolute floor on the share of sample pixels that differ from ground. */
+  min: number;
 }
 
 interface ProofResult {
+  min: number;
   landFrac: number;
   noiseFrac: number;
   detail: string;
@@ -355,7 +362,40 @@ const tileRectFrom = (sample: ScreenRect, at: Tile, pitch: number, t: Tile): Scr
   h: sample.h,
 });
 
+const waitPassCount = (page: Page, n: number): Promise<unknown> =>
+  page.waitForFunction(
+    (want: number) => {
+      const a = (window as unknown as { __game: () => ArtHook }).__game().art;
+      return a !== null && a !== undefined && a.post.passes.length === want;
+    },
+    n,
+    { timeout: 20_000 },
+  );
+
+/** The decor proofs (heal landmark, warp marker) run with the post stack OFF: the vignette and
+ *  the godray vary strongly with screen position, so with the stack on even two tiles of the SAME
+ *  kit frame differ on most pixels and a per-pixel compare means nothing. Stack off, nearest
+ *  sampling makes same-key tiles near pixel-identical, so the noise floor is meaningful. The
+ *  stack's own effect on the frame is proven separately in WAP10.3. The full stack is restored
+ *  on every path, including a throw. */
 async function pixelProof(page: Page, c: ProofCase): Promise<ProofResult> {
+  await setStack(page, STACK_OFF);
+  try {
+    await waitPassCount(page, 0);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    return await pixelProofStackOff(page, c);
+  } finally {
+    await setStack(page, STACK_ON);
+    await waitPassCount(page, 4).catch(() => undefined);
+  }
+}
+
+async function pixelProofStackOff(page: Page, c: ProofCase): Promise<ProofResult> {
   let last = `${c.label}: no attempt ran`;
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     await settleCamera(page, c.label);
@@ -379,11 +419,13 @@ async function pixelProof(page: Page, c: ProofCase): Promise<ProofResult> {
     const centreDist = (r: ScreenRect): number =>
       Math.hypot(r.x + r.w / 2 - VIEWPORT.width / 2, r.y + r.h / 2 - VIEWPORT.height / 2);
     const want = centreDist(sample);
-    const poolFor = async (kind: string): Promise<Tile[]> => {
+    const keyAt = (x: number, y: number): string | null => art1.frames[y * art1.width + x] ?? null;
+    const sampleKey = keyAt(c.tile.x, c.tile.y);
+    const poolFor = async (match: (x: number, y: number) => boolean): Promise<Tile[]> => {
       const pool: Array<{ t: Tile; d: number }> = [];
       for (let y = 0; y < world.map.height; y += 1) {
         for (let x = 0; x < world.map.width; x += 1) {
-          if (terrain[y * world.map.width + x] !== kind) continue;
+          if (!match(x, y)) continue;
           const near = [...warps.map((w) => w.from), ...lms].some(
             (m) => Math.abs(m.x - x) <= 1 && Math.abs(m.y - y) <= 2,
           );
@@ -399,10 +441,17 @@ async function pixelProof(page: Page, c: ProofCase): Promise<ProofResult> {
     };
     let refs: Tile[] = [];
     let kindUsed = '';
+    // Same texture first: a tile whose kit frame key EQUALS the sample tile's, so the only
+    // difference left is the post stack's position-dependent lighting. Then the same class with
+    // any key (the noise margin still applies).
+    if (sampleKey !== null) {
+      refs = await poolFor((x, y) => keyAt(x, y) === sampleKey);
+      kindUsed = `key ${sampleKey}`;
+    }
     for (const kind of c.kinds) {
-      refs = await poolFor(kind);
-      kindUsed = kind;
       if (refs.length >= 2) break;
+      refs = await poolFor((x, y) => terrain[y * world.map.width + x] === kind);
+      kindUsed = `class ${kind}`;
     }
     const [r1, r2] = refs;
     if (r1 === undefined || r2 === undefined) {
@@ -451,20 +500,21 @@ async function pixelProof(page: Page, c: ProofCase): Promise<ProofResult> {
     const land = px.shares[0] as Share;
     const noise = px.shares[1] as Share;
     return {
+      min: c.min,
       landFrac: land.frac,
       noiseFrac: noise.frac,
       detail:
         `${c.label}: sample ${JSON.stringify(sample)} vs ${kindUsed} (${r1.x},${r1.y}) differs ` +
         `${land.count}/${land.total} = ${land.frac.toFixed(3)}; ground (${r1.x},${r1.y}) vs ` +
         `(${r2.x},${r2.y}) noise ${noise.count}/${noise.total} = ${noise.frac.toFixed(3)}; ` +
-        `thresh ${CHANNEL_THRESH}, need >= ${LAND_MIN} and >= noise + ${NOISE_MARGIN}`,
+        `thresh ${CHANNEL_THRESH}, need >= ${c.min} and >= noise + ${NOISE_MARGIN}`,
     };
   }
   throw new Error(`${c.label}: no clean frame to sample after 6 attempts (${last})`);
 }
 
 function expectProof(p: ProofResult): void {
-  expect(p.landFrac, p.detail).toBeGreaterThanOrEqual(LAND_MIN);
+  expect(p.landFrac, p.detail).toBeGreaterThanOrEqual(p.min);
   expect(p.landFrac, p.detail).toBeGreaterThanOrEqual(p.noiseFrac + NOISE_MARGIN);
 }
 
@@ -656,6 +706,7 @@ test.describe
         tile: HEAL,
         pitch,
         kinds: ['Path', 'Floor'],
+        min: LAND_MIN,
       });
       expectProof(proof);
       await expectNoStepCalls(page, 'WAP10.1 after the pixel proof');
@@ -708,10 +759,21 @@ test.describe
       const warpKind = (w0.map.terrain ?? [])[WARP.y * w0.map.width + WARP.x] ?? 'Path';
       const proof = await pixelProof(page, {
         label: 'WAP10.2 warp marker',
-        readSample: (a) => a.warpMarkers.find((m) => m.x === WARP.x && m.y === WARP.y)?.rect,
+        // The warp frames are 2 tiles tall, bottom-anchored (like the heal): sample the lower
+        // (1,5) tile only; the upper half covers (1,4).
+        readSample: (a) => {
+          const m = a.warpMarkers.find((mk) => mk.x === WARP.x && mk.y === WARP.y);
+          return m === undefined
+            ? undefined
+            : { x: m.rect.x, y: m.rect.y + m.rect.h / 2, w: m.rect.w, h: m.rect.h / 2 };
+        },
         tile: WARP,
         pitch,
         kinds: [warpKind],
+        // The marker is a ground DECAL (a pulse ring over the tile), not a sprite: measured, its
+        // drawn footprint differs on 0.293 of the lower tile's pixels (1056/3600) against a
+        // same-key reference, with a stack-off noise floor of 0.000. An undrawn marker reads ~0.
+        min: WARP_MIN,
       });
       expectProof(proof);
 
@@ -815,39 +877,55 @@ test.describe
       });
 
       // Compare the two screenshots through the page: A = the on frame, B = the off frame.
-      const both = await page.evaluate(
-        async (a: { on: string; off: string; thresh: number }) => {
-          const read = async (b64: string): Promise<Uint8ClampedArray> => {
-            const img = new Image();
-            img.src = `data:image/png;base64,${b64}`;
-            await img.decode();
-            const c = document.createElement('canvas');
-            c.width = img.width;
-            c.height = img.height;
-            const g = c.getContext('2d', { willReadFrequently: true });
-            if (g === null) throw new Error('no 2d context');
-            g.drawImage(img, 0, 0);
-            return g.getImageData(0, 0, c.width, c.height).data;
-          };
-          const A = await read(a.on);
-          const B = await read(a.off);
-          let count = 0;
-          for (let i = 0; i < A.length; i += 4) {
-            const m = Math.max(
-              Math.abs((A[i] ?? 0) - (B[i] ?? 0)),
-              Math.abs((A[i + 1] ?? 0) - (B[i + 1] ?? 0)),
-              Math.abs((A[i + 2] ?? 0) - (B[i + 2] ?? 0)),
-            );
-            if (m >= a.thresh) count += 1;
-          }
-          return { count, total: A.length / 4 };
-        },
-        { on: onPng.toString('base64'), off: offPng.toString('base64'), thresh: CHANNEL_THRESH },
-      );
+      const frameDiff = (onShot: Buffer, offShot: Buffer) =>
+        page.evaluate(
+          async (a: { on: string; off: string; thresh: number }) => {
+            const read = async (b64: string): Promise<Uint8ClampedArray> => {
+              const img = new Image();
+              img.src = `data:image/png;base64,${b64}`;
+              await img.decode();
+              const c = document.createElement('canvas');
+              c.width = img.width;
+              c.height = img.height;
+              const g = c.getContext('2d', { willReadFrequently: true });
+              if (g === null) throw new Error('no 2d context');
+              g.drawImage(img, 0, 0);
+              return g.getImageData(0, 0, c.width, c.height).data;
+            };
+            const A = await read(a.on);
+            const B = await read(a.off);
+            let count = 0;
+            for (let i = 0; i < A.length; i += 4) {
+              const m = Math.max(
+                Math.abs((A[i] ?? 0) - (B[i] ?? 0)),
+                Math.abs((A[i + 1] ?? 0) - (B[i + 1] ?? 0)),
+                Math.abs((A[i + 2] ?? 0) - (B[i + 2] ?? 0)),
+              );
+              if (m >= a.thresh) count += 1;
+            }
+            return { count, total: A.length / 4 };
+          },
+          {
+            on: onShot.toString('base64'),
+            off: offShot.toString('base64'),
+            thresh: CHANNEL_THRESH,
+          },
+        );
+      const both = await frameDiff(onPng, offPng);
       expect(
         both.count / both.total,
         `stack-on vs stack-off frames: ${both.count} of ${both.total} pixels differ by >= ${CHANNEL_THRESH}`,
       ).toBeGreaterThanOrEqual(STACK_FRAME_MIN);
+      // Control: two stack-off frames one animation frame apart. The on/off difference above is
+      // the stack, not frame-to-frame motion, only if this reads (near) zero.
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+      );
+      const offAgain = await frameDiff(offPng, await shot(page));
+      expect(
+        offAgain.count / offAgain.total,
+        `stack-off vs stack-off control: ${offAgain.count} of ${offAgain.total} pixels differ`,
+      ).toBeLessThan(0.01);
 
       await setStack(page, STACK_ON);
       await waitStackOn();
