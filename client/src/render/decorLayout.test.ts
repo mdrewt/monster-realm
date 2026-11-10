@@ -179,6 +179,16 @@ describe('WAP6.1 landmark placement', () => {
     expect(plan.landmarks.map((p) => [p.x, p.y])).toEqual([[1, 1]]);
     expect(plan.warps.map((p) => [p.x, p.y])).toEqual([[5, 2]]);
   });
+
+  it('WAP6.1 a landmark exactly at x === width or y === height is skipped, (width-1, height-1) kept', () => {
+    const map = source(7, 4, [heal(7, 0), heal(0, 4), heal(7, 4), heal(6, 3)], []);
+    expect(layoutDecor(map).landmarks.map((p) => [p.x, p.y])).toEqual([[6, 3]]);
+  });
+
+  it('WAP6.1 fractional landmark coordinates are never placed, only integer tiles', () => {
+    const map = source(7, 4, [heal(1.5, 2), heal(1, 2.5), heal(1, 2)], []);
+    expect(layoutDecor(map).landmarks.map((p) => [p.x, p.y])).toEqual([[1, 2]]);
+  });
 });
 
 describe('WAP6.2 warp markers', () => {
@@ -300,6 +310,37 @@ describe('WAP6.2 warp markers', () => {
     expect(warpFrameIndex(Number.POSITIVE_INFINITY, false, count)).toBe(0);
     expect(warpFrameIndex(Number.NEGATIVE_INFINITY, false, count)).toBe(0);
     expect(warpFrameIndex(WARP_PULSE_MS * 3, false, 0)).toBe(0);
+  });
+
+  it('WAP6.2 reduced motion holds frame 0 at very large clocks too', () => {
+    for (const t of [1e12, 1.7e12, 2 ** 53]) {
+      expect(warpFrameIndex(t, true, 4), `t=${t}`).toBe(0);
+    }
+  });
+
+  it('WAP6.2 a non-reduced large clock still pulses', () => {
+    const t = 1.7e12;
+    expect(warpFrameIndex(t, false, 4)).not.toBe(warpFrameIndex(t + WARP_PULSE_MS, false, 4));
+  });
+
+  it('WAP6.2 the shipped pulse period is 250 ms, pinned by literal samples', () => {
+    expect(WARP_PULSE_MS).toBe(250);
+    expect(warpFrameIndex(0, false, 4)).toBe(0);
+    expect(warpFrameIndex(249, false, 4)).toBe(0);
+    expect(warpFrameIndex(250, false, 4)).toBe(1);
+    expect(warpFrameIndex(999, false, 4)).toBe(3);
+    expect(warpFrameIndex(1000, false, 4)).toBe(0);
+  });
+
+  it('WAP6.2 a warp source tile that also holds a landmark keeps both', () => {
+    const plan = layoutDecor(source(7, 4, [heal(3, 1)], [[3, 1]]));
+    expect(plan.landmarks.map((p) => [p.x, p.y])).toEqual([[3, 1]]);
+    expect(plan.warps.map((p) => [p.x, p.y])).toEqual([[3, 1]]);
+  });
+
+  it('WAP6.2 a negative clock wraps into range rather than going negative', () => {
+    expect(warpFrameIndex(-WARP_PULSE_MS, false, 4)).toBe(3);
+    expect(warpFrameIndex(-1, false, 4)).toBe(3);
   });
 });
 
