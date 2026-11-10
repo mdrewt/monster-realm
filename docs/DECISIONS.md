@@ -1020,20 +1020,20 @@ assets until counsel signs off; renaming an atlas key to swap art; asserting a f
 directory-against-registry check. A release gate that every row is `final` is deferred to the launch
 checklist.
 
-## The client builds for `esnext`; the wasm import is a native top-level await
+## The client builds for ES2022; the wasm import is a native top-level await
 
-**Decision.** `client/vite.config.ts` sets `build.target: 'esnext'` and uses no top-level-await
+**Decision.** `client/vite.config.ts` sets `build.target: 'es2022'` and uses no top-level-await
 transform. The wasm-pack `bundler` package is resolved by `vite-plugin-wasm`, and its async init is awaited
-at module top level by the browser itself. The supported floor is therefore every browser with native
-top-level await: Chrome 89, Firefox 89, Safari 15.
+at module top level by the browser itself. The supported floor is every browser with ES2022 syntax:
+Chrome 94, Firefox 93, Safari 16.4.
 
 **Why.** A transform for older targets (`vite-plugin-top-level-await`) re-emits every chunk unminified, so
 the production bundle ships with its whitespace and long names. Measured on one commit, with the transform
 against without: the entry chunk is 1,219 kB against 794 kB raw (278 kB against 237 kB gzip) and all
 JavaScript 419 kB against 358 kB gzip; over 10 cold loads of the built client, script time to first idle is
-96 ms against 70 ms and the canvas appears at 277 ms against 244 ms. The renderer needs WebGL2, which no
-browser older than that floor provides in a usable form, so the floor excludes nobody the game could run
-for.
+96 ms against 70 ms and the canvas appears at 277 ms against 244 ms. `es2022` produces the same bundle
+as `esnext` today, but `esnext` lowers nothing, so the floor would move with whatever syntax a dependency
+ships. The browsers below the floor date from 2021 or earlier and are out of vendor support.
 
-**Rules out.** Re-adding a top-level-await transform; lowering `build.target` below a level with native
-top-level await while the wasm package is built for the `bundler` target.
+**Rules out.** Re-adding a top-level-await transform; `build.target: 'esnext'`; lowering `build.target`
+below a level with native top-level await while the wasm package is built for the `bundler` target.

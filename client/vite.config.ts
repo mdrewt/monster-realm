@@ -33,10 +33,11 @@ export default defineConfig({
     __MR_BUILD_TIME__: JSON.stringify(buildTime),
   },
   plugins: [wasm()],
-  // Native top-level await (Chrome 89, Firefox 89, Safari 15: every browser with the
-  // WebGL2 the renderer needs has it). A transform plugin for older targets
-  // (`vite-plugin-top-level-await`) re-emits every chunk unminified, so none is used.
-  build: { target: 'esnext' },
+  // ES2022 keeps the wasm import's top-level await native and pins the syntax ceiling, so a
+  // dependency cannot raise the browser floor unnoticed (Chrome 94, Firefox 93, Safari 16.4).
+  // A transform plugin for older targets (`vite-plugin-top-level-await`) re-emits every chunk
+  // unminified, so none is used.
+  build: { target: 'es2022' },
   // The wasm pkg lives at <repo>/client-wasm/pkg (one level above the client
   // root); allow the dev/preview server to serve it (M5a integration).
   // e2e/dev port env-driven (default 5290) for concurrent-run isolation (MR_E2E_PORT).
