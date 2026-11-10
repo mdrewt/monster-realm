@@ -14,6 +14,9 @@
 // baked into nearest-sampled chunk textures at the device scale, animated water as
 // per-tile sprites whose texture swaps only when its frame index changes. Without
 // the kit or a terrain layer it falls back to the flat wall/grass rects.
+//
+// wap-5: characters draw from the hero atlas (`atlasAssets.ts`), loaded beside the kit;
+// without it they fall back to the procedural `PlaceholderAssets`.
 import {
   Application,
   Assets,
@@ -26,13 +29,14 @@ import {
 } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
 import { t } from '../ui/a11yCopy';
+import { HERO_SHEET_FILE } from './art/packs/characters';
 import { TERRAIN_KIT_FILE } from './art/packs/terrain';
+import { createCharacterAssets, type HeroAtlas } from './atlasAssets';
 import { FollowCamera } from './camera';
 import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
 import { TILE_PX } from './config';
 import { type RawTileMap, TileMap } from './map';
-import { PlaceholderAssets } from './placeholderAssets';
 import {
   type Chunk,
   ChunkCache,
@@ -56,6 +60,8 @@ const FLOOR_COLOR = 0x10131a;
 const GRASS_COLOR = 0x1f4d2b;
 /** The kit atlas json beside its png in `client/public/assets/` (served at `assets/`). */
 const KIT_ATLAS_URL = `assets/${TERRAIN_KIT_FILE.replace(/\.png$/, '.json')}`;
+/** The hero atlas json beside its png (wap-5). */
+const HERO_ATLAS_URL = `assets/${HERO_SHEET_FILE.replace(/\.png$/, '.json')}`;
 
 /** An animated water tile: its sprite, its frame textures, and the frame it shows. */
 interface WaterTile {
@@ -144,9 +150,14 @@ export class WorldRenderer {
     this.#actors.sortableChildren = true;
     this.#app = app;
     this.#map = map;
-    this.#assets = new PlaceholderAssets(app.renderer);
-    const kit = await loadKit();
-    if (this.#app !== app) return; // destroy() ran while the atlas loaded
+    const [kit, hero] = await Promise.all([loadKit(), loadHero()]);
+    const releaseHero = (): void => void Assets.unload(HERO_ATLAS_URL);
+    if (this.#app !== app) {
+      // destroy() ran while the atlases loaded: the hero sheet has no owner yet.
+      if (hero !== undefined) releaseHero();
+      return;
+    }
+    this.#assets = createCharacterAssets(app.renderer, hero, releaseHero);
     this.#kit = kit;
     // No kit ⟹ no chunk cache: #drawMap takes the flat fallback.
     this.#chunks =
@@ -347,8 +358,8 @@ export class WorldRenderer {
 
   destroy(): void {
     this.clear();
-    // #28c: generated placeholder textures are not in the stage tree, so
-    // app.destroy(true) alone leaks them — release them explicitly first.
+    // #28c: provider textures (generated placeholders, or the hero sheet) are not in
+    // the stage tree, so app.destroy(true) alone leaks them — release them explicitly first.
     this.#assets?.destroy?.();
     this.#assets = undefined;
     // The baked chunk textures are not in the atlas cache: release them explicitly.
@@ -366,6 +377,17 @@ async function loadKit(): Promise<Spritesheet | undefined> {
     return await Assets.load<Spritesheet>(kitAtlasAsset(KIT_ATLAS_URL));
   } catch (err) {
     console.warn('render/world: terrain kit failed to load', err);
+    return undefined;
+  }
+}
+
+/** Load the hero atlas, sampled `nearest` like the kit. A load failure is not fatal:
+ *  characters draw with the placeholder provider. */
+async function loadHero(): Promise<HeroAtlas | undefined> {
+  try {
+    return await Assets.load<Spritesheet>(kitAtlasAsset(HERO_ATLAS_URL));
+  } catch (err) {
+    console.warn('render/world: hero atlas failed to load', err);
     return undefined;
   }
 }
