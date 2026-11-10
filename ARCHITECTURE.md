@@ -414,9 +414,68 @@ stack.
   follows the player and centres maps smaller than the viewport; `viewport.ts` picks
   an integer device scale; `viewRegistry.ts` pools one sprite per entity and tears it
   down on despawn.
-- `world.ts`, `characterView.ts` and `placeholderAssets.ts` are the Pixi shell.
-  Tiles are drawn at `TILE_PX` (32). Placeholder art draws facing and action as
-  monochrome shapes, so neither depends on colour.
+- `world.ts`, `characterView.ts`, `atlasAssets.ts` and `placeholderAssets.ts` are the
+  Pixi shell. Tiles are drawn at `TILE_PX` (32). Characters draw from the hero atlas
+  (`atlasAssets.ts`), and from `placeholderAssets.ts`'s monochrome shapes when the atlas
+  fails to load; both show facing and action without depending on colour.
+
+**Terrain grammar.** Each zone-map glyph is a terrain class. The class table is
+`TileKind` (`game-core/src/types.rs:96`), and it is the one source of glyph,
+walkability and encounter flag (`TileKind::from_char`, `types.rs:141`;
+`is_walkable`, `types.rs:194`). The wasm `zone_map()` payload carries a row-major
+`terrain` layer of wire names. `map.ts` parses it against `TERRAIN_KINDS`
+(`client/src/render/map.ts:28`), whose list a test pins to the wasm export, and serves
+it through `TileMap.terrainAt` (`map.ts:214`). The client never derives terrain from
+`walkable`/`grass`. `terrainLayout.ts` turns each tile's class into one kit frame key
+(`layoutTerrain`, `client/src/render/terrainLayout.ts:186`). It picks a per-tile
+variant, uses a shore frame where shallow water meets land (`shoreMask`,
+`terrainLayout.ts:128`), and gives water its animation frames. A missing kit, missing
+terrain layer or missing frame gives the flat-rect fallback with one warning.
+
+**Art registry.** `client/src/render/art/registry.ts` holds one provenance row for every
+PNG served from `client/public/assets/` (`ART_REGISTRY`, `registry.ts:126`), aggregated
+from one pack file per asset family under `render/art/packs/`. The packs are terrain,
+characters, landmarks, monsters, battle and grade. `validateArtRegistry`
+(`registry.ts:91`) and the row types reject image-model output and unaccepted licences.
+Each row's atlas key is stable, so final art is a file swap. The packs also export what
+the renderer loads. `TERRAIN_KIT_CLASSES` (`render/art/packs/terrain.ts:60`) maps each
+class to its frame keys, and `LIVE_KEYFRAME` (`render/art/packs/grade.ts:13`) is the
+grade the game uses, `day`.
+
+**Render layers.** `WorldRenderer.init` builds one world container holding three layers in
+draw order (`client/src/render/world.ts:296-299`): terrain (`#bg`), ground decor
+(`#decor`, the warp markers) and actors (`#actors`, z-sorted by row,
+`world.ts:302`). The world container is the stage's only child; the UI is DOM, outside
+the canvas.
+- Terrain (`#drawMap`, `world.ts:461`): `planChunks` bakes static tiles into
+  nearest-sampled chunk textures at the device scale (`world.ts:490`). Animated water
+  stays as per-tile sprites whose texture changes only when the frame index changes. The
+  bake runs before the drawn terrain is torn down, so a failed bake leaves the previous
+  terrain on screen.
+- Decor (`#drawDecor`, `world.ts:523`): `layoutDecor` (`render/decorLayout.ts:56`)
+  places a landmark per heal-location row and a warp marker per warp source tile, from the
+  map's content rows. Landmarks are two tiles tall and join the actors' row z-order. Warp
+  markers are ground decals under every actor.
+
+**Post stack.** `planPostStack` (`client/src/render/postStack.ts:151`) is a pure plan.
+From the toggles, an injected `nowMs`, the reduced-motion bit, the keyframe and the
+renderer's resolution, it returns the enabled passes in `POST_PASS_ORDER`
+(`postStack.ts:21`): ambient lightmap with a vignette, AdvancedBloom, Godray and a
+ColorMap LUT. `#applyPostStack` (`world.ts:353`) builds exactly those `pixi-filters`
+filters and attaches them to the world container only, so the DOM UI is never filtered.
+An unsupported renderer, a pass that throws while it is built, or a throw from the probe
+frame drawn after the build disables the whole stack with one warning. The
+renderer starts with every pass off (`world.ts:255`), and the live game keeps it off
+(DECISIONS.md "The world post stack is `pixi-filters`…"). `setPostStack`
+(`world.ts:343`) turns passes on: the look-dev scene uses it, and the world-art e2e uses
+it through the DEV `__game().setPostStack` hook.
+
+`WorldRenderer.describeArt()` (`world.ts:724`) is a read-only account of what was last
+drawn. It reports the terrain kind (kit or fallback), the kit frame key per tile, the
+per-class tile histogram, the landmark and warp-marker sprites with their screen rects
+(via `screenFor`), and the attached passes with their keyframe. The DEV
+`window.__game().art` field reads it, and `client/e2e/world-art.spec.ts` asserts the
+whole flow through it.
 
 The frame loop in `main.ts` (`requestAnimationFrame`) drains the predictor, resolves
 positions, and draws.

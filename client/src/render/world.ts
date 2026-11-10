@@ -30,6 +30,11 @@
 // turns passes on. Its godray time is the injected clock (held under reduced motion);
 // where filters are unsupported or a pass fails to build, the world draws unfiltered.
 //
+// wap-10: `describeArt()` is a read-only account of what the world layer last drew — the
+// terrain kind and kit frame per tile, the landmark and warp-marker sprites with their
+// screen rects, the attached post passes and keyframe, and the drawn terrain's class
+// histogram. The DEV `window.__game()` snapshot reads it for the world-art e2e.
+//
 // Drawing: Pixi's own ticker is stopped (`appInitOptions`), so nothing is drawn unless
 // this class draws it — `render()` once per frame-loop frame, `resize()` because a
 // resize clears the canvas, and one probe frame whenever the post stack is rebuilt. A restored WebGL context re-applies the batch-texture cap
@@ -64,13 +69,14 @@ import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
 import { MAX_BATCH_TEXTURES, TILE_PX } from './config';
 import { layoutDecor, warpFrameIndex } from './decorLayout';
-import { type RawTileMap, TileMap } from './map';
+import { type Landmark, type RawTileMap, type TerrainKind, TileMap } from './map';
 import {
   godrayTime,
   LIGHTMAP_SIZE,
   lightmapPixels,
   NO_POST_STACK,
   type PostPass,
+  type PostPassId,
   type PostStackToggles,
   type PostSupport,
   planPostStack,
@@ -109,6 +115,66 @@ interface AnimatedTile {
   readonly sprite: Sprite;
   readonly frames: readonly Texture[];
   shown: number;
+}
+
+/** A placed decor sprite and the tile + frame key it was laid out from. */
+interface PlacedLandmark {
+  readonly sprite: Sprite;
+  readonly kind: Landmark['kind'];
+  readonly x: number;
+  readonly y: number;
+  readonly frame: string;
+}
+
+/** A warp marker: its pulse (an animated tile), its source tile and its base frame key. */
+interface PlacedWarpMarker extends AnimatedTile {
+  readonly x: number;
+  readonly y: number;
+  readonly frame: string;
+}
+
+/** A built post pass and the id of the planned pass it was built from. */
+interface BuiltPass {
+  readonly id: PostPassId;
+  readonly filter: Filter;
+}
+
+/** What the last terrain draw put on screen: the kit, or the flat-rect fallback. */
+interface DrawnTerrain {
+  readonly zoneId: number;
+  readonly width: number;
+  readonly height: number;
+  readonly terrain: 'kit' | 'fallback';
+  /** Row-major kit frame key per tile (animated water: its first frame); null under fallback. */
+  readonly frames: readonly (string | null)[];
+  /** Tiles drawn per terrain class; empty under fallback, which draws no class. */
+  readonly histogram: Readonly<Partial<Record<TerrainKind, number>>>;
+}
+
+/** A rectangle in CSS px, in viewport coordinates (`screenFor`'s space). */
+export interface ScreenRect {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+}
+
+/** `WorldRenderer.describeArt()`: what the world layer last drew. */
+export interface ArtDescription extends DrawnTerrain {
+  readonly landmarks: readonly {
+    readonly kind: Landmark['kind'];
+    readonly x: number;
+    readonly y: number;
+    readonly frame: string;
+    readonly rect: ScreenRect;
+  }[];
+  readonly warpMarkers: readonly {
+    readonly x: number;
+    readonly y: number;
+    readonly frame: string;
+    readonly rect: ScreenRect;
+  }[];
+  readonly post: { readonly passes: readonly PostPassId[]; readonly keyframe: GradeKeyframe };
 }
 
 /** An atlas frame's texture; the layout planners have already checked every key they emit. */
@@ -175,8 +241,8 @@ export class WorldRenderer {
   // sprites it placed in #actors (tracked explicitly: #actors also holds the
   // character sprites), and the pulsing warp markers in #decor.
   #landmarksSheet: Spritesheet | undefined;
-  #landmarkSprites: Sprite[] = [];
-  #warpMarkers: AnimatedTile[] = [];
+  #landmarks: PlacedLandmark[] = [];
+  #warpMarkers: PlacedWarpMarker[] = [];
   // wap-9 post stack: the world layer the filters attach to (the three layers above,
   // never the stage), the LUTs by keyframe (a missing one fails the LUT pass), the
   // lightmap texture, the live filters, the godray among them (its time advances per
@@ -184,11 +250,13 @@ export class WorldRenderer {
   readonly #world = new Container();
   #luts = new Map<GradeKeyframe, Texture>();
   #lightmap: Texture | undefined;
-  #filters: Filter[] = [];
+  #filters: BuiltPass[] = [];
   #godray: GodrayFilter | undefined;
   #postToggles: PostStackToggles = NO_POST_STACK;
   #keyframe: GradeKeyframe = LIVE_KEYFRAME;
   #postResolution = 0;
+  // The terrain the last #drawMap put on screen (describeArt reports it).
+  #drawnTerrain: DrawnTerrain | undefined;
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
@@ -301,19 +369,19 @@ export class WorldRenderer {
         ? { kind: 'supported' }
         : { kind: 'unsupported', detail: `renderer type ${app.renderer.type}` },
     );
-    const built: Filter[] = [];
+    const built: BuiltPass[] = [];
     let building: PostPass['id'] | undefined;
     try {
       for (const pass of result.passes) {
         building = pass.id;
-        built.push(this.#buildPass(pass));
+        built.push({ id: pass.id, filter: this.#buildPass(pass) });
       }
       building = undefined;
-      this.#world.filters = built.length > 0 ? built : null;
+      this.#world.filters = built.length > 0 ? built.map((b) => b.filter) : null;
       if (built.length > 0) app.render();
     } catch (err) {
       this.#world.filters = null;
-      for (const filter of built) filter.destroy();
+      for (const { filter } of built) filter.destroy();
       built.length = 0;
       // A throw from the probe frame names no single pass: blame the last one planned
       // (the probe only runs with at least one pass built, so the final default is unused).
@@ -324,7 +392,9 @@ export class WorldRenderer {
       console.warn(`render/world: post stack disabled (${warning.code}): ${warning.detail}`);
     }
     this.#filters = built;
-    this.#godray = built.find((f): f is GodrayFilter => f instanceof GodrayFilter);
+    this.#godray = built
+      .map((b) => b.filter)
+      .find((f): f is GodrayFilter => f instanceof GodrayFilter);
     this.#postResolution = app.renderer.resolution;
   }
 
@@ -362,7 +432,7 @@ export class WorldRenderer {
   /** Detach and destroy the live filters (the LUT and lightmap textures stay owned here). */
   #clearPostStack(): void {
     this.#world.filters = null;
-    for (const filter of this.#filters) filter.destroy();
+    for (const { filter } of this.#filters) filter.destroy();
     this.#filters = [];
     this.#godray = undefined;
   }
@@ -403,6 +473,14 @@ export class WorldRenderer {
         console.warn(`render/world: flat terrain fallback (${warning.code}): ${warning.detail}`);
       }
       this.#drawFlat(map);
+      this.#drawnTerrain = {
+        zoneId: map.zoneId,
+        width: map.width,
+        height: map.height,
+        terrain: 'fallback',
+        frames: Object.freeze(new Array<null>(map.width * map.height).fill(null)),
+        histogram: Object.freeze({}),
+      };
       return;
     }
     const { chunks, animated } = planChunks(map.width, map.height, plan.tiles);
@@ -411,6 +489,19 @@ export class WorldRenderer {
     // the previous terrain on screen (RT-SZ-01) instead of a blank world.
     const textures = chunkCache.build(chunks, deviceScale);
     this.#chunkScale = deviceScale;
+    const histogram: Partial<Record<TerrainKind, number>> = {};
+    for (const tile of plan.tiles) {
+      const kind = map.terrainAt(tile.x, tile.y);
+      if (kind !== undefined) histogram[kind] = (histogram[kind] ?? 0) + 1;
+    }
+    this.#drawnTerrain = {
+      zoneId: map.zoneId,
+      width: map.width,
+      height: map.height,
+      terrain: 'kit',
+      frames: Object.freeze(plan.tiles.map((tile) => tile.frame)),
+      histogram: Object.freeze(histogram),
+    };
     this.#clearBg();
     chunks.forEach((chunk, i) => {
       const sprite = new Sprite(textures[i]);
@@ -443,30 +534,34 @@ export class WorldRenderer {
       this.#clearDecor();
       return;
     }
-    const landmarkSprites = plan.landmarks.map((l) => {
+    const landmarks = plan.landmarks.map((l, i): PlacedLandmark => {
       const sprite = decorSprite(atlasTexture(sheet, l.frame), l.x, l.y);
       sprite.zIndex = l.zIndex;
-      return sprite;
+      // TileMap.fromRaw rejects an out-of-grid landmark and layoutDecor keeps input order,
+      // so placement i is the map's landmark i.
+      const { kind } = map.landmarks[i] as Landmark;
+      return { sprite, kind, x: l.x, y: l.y, frame: l.frame };
     });
-    const warpMarkers = plan.warps.map((w): AnimatedTile => {
+    const warpMarkers = plan.warps.map((w): PlacedWarpMarker => {
       const frames = w.frames.map((key) => atlasTexture(sheet, key));
-      return { sprite: decorSprite(frames[0] as Texture, w.x, w.y), frames, shown: 0 };
+      const sprite = decorSprite(frames[0] as Texture, w.x, w.y);
+      return { sprite, frames, shown: 0, x: w.x, y: w.y, frame: w.frames[0] as string };
     });
     this.#clearDecor();
-    for (const sprite of landmarkSprites) this.#actors.addChild(sprite);
+    for (const { sprite } of landmarks) this.#actors.addChild(sprite);
     for (const marker of warpMarkers) this.#decor.addChild(marker.sprite);
-    this.#landmarkSprites = landmarkSprites;
+    this.#landmarks = landmarks;
     this.#warpMarkers = warpMarkers;
   }
 
   /** Remove and destroy exactly the decor sprites (never the character sprites that
    *  share #actors). Their textures belong to the landmarks atlas. */
   #clearDecor(): void {
-    for (const sprite of this.#landmarkSprites) {
+    for (const { sprite } of this.#landmarks) {
       this.#actors.removeChild(sprite);
       sprite.destroy();
     }
-    this.#landmarkSprites = [];
+    this.#landmarks = [];
     for (const child of this.#decor.removeChildren()) child.destroy();
     this.#warpMarkers = [];
   }
@@ -621,6 +716,46 @@ export class WorldRenderer {
     return worldToScreen(world, this.#lastOffset, this.#vs.stageScale);
   }
 
+  /** What the world layer last drew: the terrain kind, kit frame per tile and class
+   *  histogram as of the last successful terrain draw, the decor sprites on the stage with
+   *  their screen rects (from each sprite's own bounds, under the transform `screenFor`
+   *  uses), and the post passes attached to the world layer. Read-only; undefined until
+   *  init() has drawn, and after destroy(). */
+  describeArt(): ArtDescription | undefined {
+    const drawn = this.#drawnTerrain;
+    if (this.#assets === undefined || drawn === undefined) return undefined;
+    return {
+      ...drawn,
+      landmarks: this.#landmarks.map(({ sprite, kind, x, y, frame }) => ({
+        kind,
+        x,
+        y,
+        frame,
+        rect: this.#spriteRect(sprite),
+      })),
+      warpMarkers: this.#warpMarkers.map(({ sprite, x, y, frame }) => ({
+        x,
+        y,
+        frame,
+        rect: this.#spriteRect(sprite),
+      })),
+      post: { passes: this.#filters.map((b) => b.id), keyframe: this.#keyframe },
+    };
+  }
+
+  /** A decor sprite's screen rect: bottom-left anchored (`decorSprite`), so its world box
+   *  runs from (x, y − height) to (x + width, y). */
+  #spriteRect(sprite: Sprite): ScreenRect {
+    const topLeft = this.screenFor({ x: sprite.x, y: sprite.y - sprite.height });
+    const bottomRight = this.screenFor({ x: sprite.x + sprite.width, y: sprite.y });
+    return {
+      x: topLeft.x,
+      y: topLeft.y,
+      w: bottomRight.x - topLeft.x,
+      h: bottomRight.y - topLeft.y,
+    };
+  }
+
   get viewCount(): number {
     return this.#views.size;
   }
@@ -641,6 +776,7 @@ export class WorldRenderer {
     // The baked chunk textures are not in the atlas cache: release them explicitly.
     this.#chunks?.clear();
     this.#water = [];
+    this.#drawnTerrain = undefined;
     // Decor sprites leave the stage before app.destroy(true), then the atlas is released.
     this.#clearDecor();
     if (this.#landmarksSheet !== undefined) {

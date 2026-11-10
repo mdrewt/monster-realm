@@ -24,16 +24,17 @@ export const TILE_PX = 32;
 
 /** Shorter-axis tile count the chosen scale AIMS for.
  *  WHAT: deviceScale ≈ round(shorterAxisDevicePx / (TARGET × TILE_PX)).
- *  WHY 11: a 10×7 shipped zone is 320×224 source px, so ~11 tiles on the
- *  shorter axis frames the whole zone with a small margin on a 16:9 desktop
- *  while still leaving a monster sprite legible on a phone. */
+ *  WHY 11: the shipped zones (Verdant Hollow 28×20, Tideglass Cove 32×20) are
+ *  larger than the viewport and the follow camera (`camera.ts`) scrolls them, so
+ *  ~11 tiles on the shorter axis frames the player's surroundings on a 16:9
+ *  desktop while still leaving a monster sprite legible on a phone. */
 export const TARGET_VISIBLE_TILES = 11;
 
 /** Best-effort FLOOR on the shorter-axis visible-tile count.
  *  WHAT: lower bound of the admissible window — the scale is not allowed to
  *  zoom in past this while a larger integer scale is still admissible.
- *  WHY 7: fewer than 7 tiles on the shorter axis hides the full height of a
- *  10×7 zone and the player loses the sense of the room. BEST-EFFORT, not
+ *  WHY 7: fewer than 7 tiles on the shorter axis shows too little around the
+ *  player to read the surroundings. BEST-EFFORT, not
  *  strict: `deviceScale >= 1` is a HARD floor (a sub-1 scale IS the blur bug
  *  this slice fixes), so below MIN × TILE_PX = 224 device px this yields. */
 export const MIN_VISIBLE_TILES = 7;

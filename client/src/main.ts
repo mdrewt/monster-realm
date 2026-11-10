@@ -88,6 +88,7 @@ import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
 import { motionPreferenceFromWindow } from './render/motionPreference';
+import type { PostStackToggles } from './render/postStack';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
@@ -4066,7 +4067,7 @@ store.onBatchApplied(() => {
 const CARE_READINESS_TICK_MS = 1000;
 let lastCareTickAtMs = 0;
 
-// --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
+// --- DEV introspection hook (e2e asserts on this STATE; world-art.spec.ts adds pixels) --
 function snapshot() {
   const own = store.ownCharacter(identity);
   const pred = predictor.predicted;
@@ -4122,6 +4123,11 @@ function snapshot() {
     })(),
     step,
     jump,
+    // The renderer's account of what it drew (terrain, decor, post stack), and a test
+    // switch for the post stack's passes; the live game keeps every pass off (DECISIONS.md).
+    // Called optionally: the main.*.test.ts shells stand a fake renderer in that lacks it.
+    art: renderer?.describeArt?.() ?? null,
+    setPostStack: (toggles: PostStackToggles) => renderer?.setPostStack({ toggles }),
     // 12.5c-5 proof-of-teeth hook: forcibly set rawMap to zone_map(zoneId) WITHOUT
     // the zone-switch protocol. Used by zoneSync.spec.ts to simulate "client kept
     // zone-1 rawMap after a disconnect, but server re-spawned character at zone 0".
