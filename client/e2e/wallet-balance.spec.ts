@@ -95,8 +95,9 @@ import {
 //     stationary special case; NO retry loop is needed in zone 1.
 //     `interaction: Shop(1)`, tree `shopkeeper_greeting` ("Hello, customer!").
 //
-// MAP (game-core/content/zone_maps/000-core.ron) — zones 0 and 1 ship the IDENTICAL 10x7
-//   layout; (4,3)/(5,3) are WALLS so x=6 is the clean northward lane to the elder post, and
+// MAP (game-core/content/zone_maps/000-core.ron) — zone 0 is the 10x7 layout; zone 1 is the
+//   larger Tideglass Cove (wap-7), whose column x=1 (y=1..5) and row y=1 (x=1..8) stay
+//   walkable and grass-free. In zone 0 (4,3)/(5,3) are WALLS so x=6 is the clean northward lane to the elder post, and
 //   column x=1 is clean floor for y=1..5; warp at zone 0 (1,5) <-> zone 1 (1,5) (qf-15 moved
 //   the pair off elder_oak's home tile (5,5)). Verified tile-by-tile, all grass-free (an
 //   encounter roll happens only on STEPPING ONTO a '~' tile, so a grass-free route cannot
@@ -121,7 +122,7 @@ import {
 //     step to from (6,4) — (5,4), (6,5) — is still within TALK_RANGE 2 of (6,3), so the
 //     server's talk / advance range re-check holds for a press made while he is in front.
 //   - tideglass_shopkeeper: pinned on (8,1); its walkable 4-neighbours are (7,1) only ((8,2)
-//     is grass, (9,1) and (8,0) walls), so the post is (7,1) facing East. One press suffices.
+//     and (9,1) rock, (8,0) wall), so the post is (7,1) facing East. One press suffices.
 //
 // CROSS-ZONE NOISE IN THE IN-FRONT POLL: `__game().characters` carries NO zoneId and the
 //   `character` subscription is globally unfiltered, so a player

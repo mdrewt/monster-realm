@@ -1,5 +1,8 @@
 // Zone map registry — DATA, not code. String-art tile rows
-// + warp list, keyed by zone_id. Tile glyphs: '.' = floor, '#' = wall, '~' = tall grass.
+// + warp list, keyed by zone_id. Tile glyphs (game-core TileKind::from_char):
+//   walkable:  '.' floor   '~' tall grass (wild encounters)   '=' path   ':' sand
+//   blocking:  '#' wall    'w' shallow water   'W' deep water   '^' rock   'T' tree   '*' bush
+// Deep water may border only water (validate_zone_maps check 1b) — the shore band is shallow's.
 // Warps are stored as an overlay list (not a tile glyph).
 // zone_id MUST exist in the zones registry (content/zones/). APPEND-ONLY ids.
 [
@@ -22,14 +25,33 @@
     ),
     (
         zone_id: 1,
+        // Tideglass Cove (wap-7): 32x20 coast — village lane and meadow in the north-west,
+        // a sand beach running south-west to north-east, and a deep bay to the south-east.
+        // Anchors kept walkable and grass-free for the e2e routes: column x=1 (y=1..5),
+        // row y=1 (x=1..8), row y=5 (x=1..6), column x=6 (y=1..5). The shopkeeper's home
+        // (8,1) is reachable only from its post (7,1): (8,0) wall, (9,1) and (8,2) rock.
+        // (0,5) stays wall (sim-harness bumps West into it from the landing).
         rows: [
-            "##########",
-            "#........#",
-            "#.~~....~#",
-            "#...##..~#",
-            "#..~~...~#",
-            "#......~~#",
-            "##########",
+            "################################",
+            "#........^~~~~~....TT..~~~~~TTT#",
+            "#.~~..=.^^~~~~~....TT..~~~~~~TT#",
+            "#...^^=.....~~.........~~~~~..T#",
+            "#..~..=..*.......=====......*.T#",
+            "#.....=.~~~......=...........TT#",
+            "#.T...=.~~~~.....=..^^......::::",
+            "#.....===========.....::::::::ww",
+            "#....TT....=....::::^^:::wwwwwww",
+            "#.~~~......=...::::wwwwwwwwwwwww",
+            "#.~~~~.....=..:::wwwwWWWWWWWWWWW",
+            "#..~~...:::=:::wwwwWWWWWWWWWWWWW",
+            "#...TT..:::=::wwwwWWWWWWWWWWWWWW",
+            "#.^....::::=:wwwwWWWWWWWWWWWWWWW",
+            "#....::::^:=:wwwwwwWWWWWWWWWWWWW",
+            "#..:::::::::wwww^wwwWWWWWWWWWWWW",
+            "#:::::^:wwwwwwwwwwwwWWWWWWWWWWWW",
+            "#::wwwwwwwwwwWWWWWWWWWWWWWWWWWWW",
+            "#wwwwwwWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "#wwwwwwWWWWWWWWWWWWWWWWWWWWWWWWW",
         ],
         warps: [
             // Return warp from Tideglass Cove back to Verdant Hollow.

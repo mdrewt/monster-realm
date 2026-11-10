@@ -54,7 +54,7 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 // ---------------------------------------------------------------------------------------
 // WORLD FACTS (derived this session from game-core/content/*, not from memory)
 // ---------------------------------------------------------------------------------------
-// zone_maps/000-core.ron — zone 0 and zone 1 ship the IDENTICAL 10x7 layout:
+// zone_maps/000-core.ron — zone 0 (Verdant Hollow) is this 10x7 layout:
 //     y=0  "##########"
 //     y=1  "#........#"      <- x=1..8 all floor
 //     y=2  "#.~~....~#"      <- grass at x=2,3,8
@@ -62,6 +62,15 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 //     y=4  "#..~~...~#"      <- grass at x=3,4,8
 //     y=5  "#......~~#"      <- grass at x=7,8
 //     y=6  "##########"
+//   zone 1 (Tideglass Cove, wap-7) is a larger 32x20 coast; its top-left corner keeps every
+//   tile this route uses walkable and grass-free ('=' path, '^' rock, '*' bush):
+//   (columns x=0..9 shown)
+//     y=0  "##########"      <- (6,0)/(8,0) walls
+//     y=1  "#........^"      <- x=1..8 floor; (9,1) rock
+//     y=2  "#.~~..=.^^"      <- grass at x=2,3; (8,2) rock
+//     y=3  "#...^^=..."      <- ROCKS at x=4,5
+//     y=4  "#..~..=..*"      <- grass at x=3
+//     y=5  "#.....=.~~"      <- x=1..7 grass-free; grass from x=8
 //   warps: zone0 (1,5) -> zone1 (1,5)   and   zone1 (1,5) -> zone0 (1,5)
 //          (qf-15 moved the pair OFF elder_oak's home tile (5,5): chasing her used to teleport
 //          the player. (1,5) is Manhattan 4 from her home — outside her radius-2 wander disc.)
@@ -91,12 +100,12 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 //     S,S,S     -> (1,2)(1,3)(1,4)             column x=1 is floor for y=1..5 [grass-free]
 //     S         -> (1,5) = THE WARP TILE       floor; warps to zone 1 (1,5)
 //   ZONE 1, from the warp landing (1,5):
-//     E,E,E,E,E -> (2,5)(3,5)(4,5)(5,5)(6,5)   row y=5 is floor for x=1..6 (grass starts at
-//                                              x=7)                            [grass-free]
+//     E,E,E,E,E -> (2,5)(3,5)(4,5)(5,5)(6,5)   row y=5 is walkable for x=1..7 (grass starts
+//                                              at x=8)                         [grass-free]
 //                                              (the first E steps OFF the return-warp tile
 //                                              immediately)
-//     N -> (6,4)  floor
-//     N -> (6,3)  floor   <- NOTE (4,3)/(5,3) are WALLS, so the way north is column x=6 (or
+//     N -> (6,4)  path
+//     N -> (6,3)  path    <- NOTE (4,3)/(5,3) are ROCKS, so the way north is column x=6 (or
 //                            x=1..3). Ending N,N,N,N up x=6 makes the checkpoint arrive FACING
 //                            NORTH, which negative 1 needs — do not "simplify" this to a
 //                            row-1 walk (N,N,N,N up x=1, then East), which arrives facing East.
@@ -113,7 +122,7 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 //                            directly BEHIND.
 //     W -> (6,1), E -> (7,1)  <- POSITIVE: the arriving East step faces (8,1) (a step always
 //                            sets the facing — world.rs apply_move). (7,1) is the shopkeeper's
-//                            only walkable 4-neighbour ((8,2) is grass, (9,1)/(8,0) walls).
+//                            only walkable 4-neighbour ((8,2)/(9,1) rock, (8,0) wall).
 
 interface Tile {
   x: number;

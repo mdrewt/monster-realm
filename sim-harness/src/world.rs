@@ -264,7 +264,7 @@ mod tests {
     // (qf-15 moved the pair off elder_oak's home tile (5,5).)
     //
     // NOTE: the warp tile sits straight below spawn (1,1): column x=1 is plain
-    // floor for y=1..5 in both zone maps (no wall, no tall grass), so the route
+    // floor for y=1..5 in both zone maps (no wall, no tall grass; wap-7 kept it so), so the route
     // to (1,5) is a straight line:
     //   South×4 → (1,2), (1,3), (1,4), (1,5).
     //   4 steps total; each step is one tick (MOVE_QUEUE_CAP = 2, paced 1/tick).
@@ -392,7 +392,7 @@ mod tests {
         );
         assert_eq!(w.pos(id), Some(game_core::TilePos { x: 1, y: 5 }));
 
-        // Now bump West into the wall at (0,5) in zone 1 (row y=5 is "#......~~#").
+        // Now bump West into the wall at (0,5) in zone 1 (zone 1 row y=5 starts "#.....=.").
         // The zone 1 return-warp at (1,5)→zone 0 must NOT fire — prev==new_pos on a
         // bump blocks the check.
         w.enqueue(id, step(Direction::West), 5).unwrap();
