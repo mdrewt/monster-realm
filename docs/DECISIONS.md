@@ -6,6 +6,52 @@ out. `ARCHITECTURE.md` describes how the pieces fit; this file records the choic
 behind them. When a decision changes, edit its entry in place — this is current
 state, not a log.
 
+## One repository, one cargo workspace
+
+**Decision.** The four product crates (`game-core`, `client-wasm`, `server-module`, `sim-harness`) are
+members of one cargo workspace in this repository, beside the TypeScript client in `client/`. The server module and the
+prediction wasm consume `game-core` by path.
+
+**Why.** The rule crate's whole value is that the client and the server compile the same code at the
+same revision. Split across repositories it becomes a versioned dependency, and a version skew between
+the two consumers is a desync. One repository also means one CI pipeline and no publish step for the
+rule core.
+
+**Rules out.** Extracting `game-core` (or an "engine") into its own repository or published crate;
+letting the client and the server pin different revisions of it.
+
+## SpacetimeDB is the server platform
+
+**Decision.** The authoritative server is a SpacetimeDB module (`server-module`): tables, reducers,
+scheduled reducers and generated TypeScript bindings. All rules stay in `game-core`; the module is a
+thin shell around it.
+
+**Why.** It is the one candidate that runs the same compiled Rust `game-core` authoritatively that the
+client predicts with, and it supplies subscriptions, persistence and schema migration that would
+otherwise be bespoke netcode. A custom Rust server (Axum/Tokio with Postgres and a sync layer)
+re-implements all of that. Colyseus shares TypeScript, not the Rust core, and Nakama's Go/Lua server
+cannot share it at all. Keeping the rules in portable `game-core` bounds the lock-in: a port re-wraps
+the same core.
+
+**Rules out.** Game rules in SpacetimeDB-specific code; a second game-state server beside the module;
+adopting a game-server framework that cannot execute `game-core`.
+
+## PixiJS and TypeScript render the client
+
+**Decision.** The client renders with PixiJS 8 in TypeScript. The renderer is a pure view of
+authoritative and predicted state and owns none of it. `TILE_PX` (`client/src/render/config.ts`) is
+the one constant tying visual resolution to the grid; `game-core` works in integer tiles.
+
+**Why.** For a 2D pixel-art game PixiJS gives a small bundle, mature web tooling and sprite and
+tilemap performance. A Rust/bevy wasm client would remove the TypeScript boundary, but at roughly an
+order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin
+and drift-gated. Phaser's batteries (scenes, physics, input) duplicate what `game-core` and the
+client shell provide. A custom WebGL or WebGPU renderer is unjustified for 2D. A native or desktop
+client goal is the condition that would reopen this.
+
+**Rules out.** Game state or rules in the render layer; a 3D-environment renderer; coupling rules or
+netcode to pixels-per-tile.
+
 ## Rules are written once, in game-core
 
 **Decision.** Every game rule lives in the `game-core` crate exactly once. The server
@@ -1019,6 +1065,35 @@ since been deleted. Their rows cite it as `<path>@<commit>`.
 assets until counsel signs off; renaming an atlas key to swap art; asserting a file count in place of the
 directory-against-registry check. A release gate that every row is `final` is deferred to the launch
 checklist.
+
+## The frame loop is the only thing that draws; the sprite batcher samples at most four textures
+
+**Decision.** Pixi's own render ticker is stopped (`autoStart: false` in `appInitOptions`).
+`WorldRenderer.render` draws once at the end of each frame-loop frame, and `WorldRenderer.resize` draws
+because a resize clears the canvas. The renderer caps `renderer.limits.maxBatchableTextures` at
+`MAX_BATCH_TEXTURES` (4) after init and again after every WebGL context restore, because Pixi re-reads the
+limit from the device on a context change. On a context restore it also re-bakes the terrain chunk
+textures and drops the generated placeholder character textures (`AssetProvider.contextRestored`), since a
+rendered texture comes back empty. `client/e2e/render-context.spec.ts` loses and restores the context in a
+real browser and compares the canvas before and after, and counts one canvas clear per animation frame.
+
+**Why.** Pixi's batch fragment shader chooses its texture with an if/else chain as long as the batch limit,
+evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser (SwiftShader:
+headless CI, and any player whose browser has no usable GPU) reports a limit of 32 and pays for the whole
+chain per pixel, so the cost grows with how much of the canvas the map covers. Measured in headless Chromium
+on 2 cores at 1280x720 (medians of 3 interleaved blocks; Pixi's own ticker and device limit of 32 against
+this configuration): on a 10x7 zone, idle browser CPU is 118% against 63%; on a 28x20 zone that fills the
+canvas it is 177% against 107%, the frame rate 39 against 60 fps, and the median CDP key acknowledgement 25
+ms against 4.9 ms. Pixels are identical; the larger zone takes 2 draw calls where the device limit takes 1.
+The cap covers the sprite batcher, which draws the whole kit-atlas world; the flat-terrain fallback's large
+`Graphics` uses a separate Pixi shader built at the device limit before the cap can apply. With Pixi's
+ticker running beside the frame loop, Pixi draws the state the loop resolved on the PREVIOUS animation
+frame; with one owner a frame is presented in the task that resolved it. Without the re-bake, the terrain
+stays blank after a context restore (30% of the canvas on the small zone, 98% on the large one).
+
+**Rules out.** Starting `app.ticker`, or adding a second `requestAnimationFrame` loop that draws; a
+canvas-clearing operation that does not draw afterwards; raising `MAX_BATCH_TEXTURES` without re-measuring
+under SwiftShader; a new `generateTexture` result that is not rebuilt on `webglcontextrestored`.
 
 ## The client builds for ES2022; the wasm import is a native top-level await
 

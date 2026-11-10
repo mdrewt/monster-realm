@@ -121,3 +121,11 @@ jobs:
           VITE_STDB_DB: monster-realm
           MR_DEV_MODULE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
         run: just e2e
+      - name: Upload e2e per-test timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-timings
+          path: client/test-results/e2e.json
+          if-no-files-found: warn
+          retention-days: 14
