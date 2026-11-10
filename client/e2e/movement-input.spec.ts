@@ -19,7 +19,7 @@ import {
 // mutants alive that no source scan and no discrete-event sim can see (a `|| true` folded
 // into a continuation guard; a second ungated emitter outside the scanned region).
 //
-// THE FOUR SCENARIOS AND WHAT EACH ONE IS FOR:
+// THE FIRST FOUR SCENARIOS AND WHAT EACH ONE IS FOR (E and F, from ctl-1, say so at each test):
 //   A  GREEN GUARD  single-code taps -> exactly 1 tile. Passes on the pre-fix tree; it is a
 //                   runtime mutant-guard for `committedActive` -> `active` reverts and
 //                   HOLD_COMMIT_MS -> 0, NOT a defect tooth. (Labelled per the
@@ -37,8 +37,9 @@ import {
 //                   send-budget observable can.
 //
 // WORLD FACTS THIS SUITE DEPENDS ON (all re-asserted at runtime by corridorEastWest, which
-// throws loudly rather than skipping): zone 0 row y=1 is "#........#" — a grass-free
-// corridor, walkable x=1..8, walls at x=0 and x=9. Spawn is (1,1) (game-core world.rs).
+// throws loudly rather than skipping): zone 0 is 28x20 and its row y=1 starts "#........#" —
+// a grass-free corridor, walkable x=1..8, walls at x=0 and x=9 (the row runs on past the
+// wall; nothing here reads it). Spawn is (1,1) (game-core world.rs).
 // STEP_MS is read from the hook, never hard-coded. The server drains one queued step per
 // movement_tick, so travel is paced at STEP_MS regardless of client send rate.
 //
@@ -80,6 +81,10 @@ interface KeyEvt {
   code: string;
   type: 'keydown' | 'keyup';
   t: number;
+  /** Animation frames the page had run when this event arrived (a self-re-arming rAF counter;
+   *  main.ts's frame body is a self-re-arming rAF callback too, so one count is one run of it).
+   *  Read only by scenario B, to prove a frame boundary fell between its two keydowns. */
+  frame: number;
 }
 
 /** ADR-0158's contract band: a press of <= 140ms is a TAP and must move exactly one tile
@@ -254,6 +259,40 @@ async function measuredPressMs(p: Page): Promise<number> {
   return ups[ups.length - 1].t - downs[0].t;
 }
 
+/** Run `fn` `ms` after this call, on the node-side clock, WITHOUT waiting for any other key
+ *  call issued meanwhile to be acknowledged. The returned promise settles with `fn`'s, so a
+ *  rejected key call rejects it (the caller awaits it inside a Promise.all). */
+function after(ms: number, fn: () => Promise<unknown>): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      Promise.resolve().then(fn).then(resolve, reject);
+    }, ms);
+  });
+}
+
+/** HARNESS VALIDITY, not a behaviour assertion (like measuredPressMs's throw): scenario B does
+ *  not await between its last three key calls, so it PROVES the overlap from the in-page key
+ *  log before a rep can be scored. THROWS on anything but exactly
+ *  `keydown c1, keydown c2, keyup c2, keyup c1` (a harness fault, never retried). Otherwise
+ *  returns whether the page ran at least one animation frame between the two keydowns —
+ *  false is a harness MISS that the caller retries, never scores. */
+async function overlapFramesApart(p: Page, c1: string, c2: string): Promise<boolean> {
+  const evts = await p.evaluate(() =>
+    (window as unknown as { __keyTimes: KeyEvt[] }).__keyTimes.slice(),
+  );
+  const want = `keydown ${c1}, keydown ${c2}, keyup ${c2}, keyup ${c1}`;
+  const got = evts.map((e) => `${e.type} ${e.code}`).join(', ');
+  if (got !== want) {
+    throw new Error(
+      'HARNESS FAULT, not a behaviour result: scenario B does not await between its last ' +
+        `three key calls, so the page must record exactly [${want}], but it recorded ` +
+        `[${got}]. The overlap under test did not happen as planned, so this rep would ` +
+        'measure nothing about EARS-1; the test stops here rather than retry or score it',
+    );
+  }
+  return evts[1].frame > evts[0].frame;
+}
+
 /** Wait for prediction to re-agree with authority, then hold still for `stabilityMs`.
  *  The waitForFunction timeout is swallowed ON PURPOSE: falling through to the explicit
  *  displacement assertion turns "moved 2 tiles" into a precise expected/received message
@@ -285,21 +324,29 @@ test.describe
       ctx = await browser.newContext();
       page = await ctx.newPage();
       // The recorder is installed BEFORE navigation so it is armed from the first frame.
-      // Capture phase, so it records regardless of what main.ts's own listener does.
+      // Capture phase, so it records regardless of what main.ts's own listener does. The
+      // frame counter is a self-re-arming rAF callback, like main.ts's frame body: each count
+      // is one animation frame the page has run, stamped onto every key event (KeyEvt.frame).
       await page.addInitScript(() => {
         const w = window as unknown as { __keyTimes: KeyEvt[] };
         w.__keyTimes = [];
+        let frame = 0;
+        const countFrame = (): void => {
+          frame += 1;
+          requestAnimationFrame(countFrame);
+        };
+        requestAnimationFrame(countFrame);
         window.addEventListener(
           'keydown',
           (e) => {
-            w.__keyTimes.push({ code: e.code, type: 'keydown', t: performance.now() });
+            w.__keyTimes.push({ code: e.code, type: 'keydown', t: performance.now(), frame });
           },
           true,
         );
         window.addEventListener(
           'keyup',
           (e) => {
-            w.__keyTimes.push({ code: e.code, type: 'keyup', t: performance.now() });
+            w.__keyTimes.push({ code: e.code, type: 'keyup', t: performance.now(), frame });
           },
           true,
         );
@@ -418,7 +465,9 @@ test.describe
       // WRONG IMPL KILLED (c): the dedup over-applied so the FIRST press stops emitting —
       //   0 tiles, and this same assertion reds from the other side.
       //
-      // Same retry rule as scenario A: retry ONLY on an over-long measured press.
+      // Scenario A's retry rule plus ONE more harness-miss cause, and nothing else: retry ONLY
+      // on an over-long measured press, or on two keydowns the page saw inside one animation
+      // frame (see the key-sequence comment below). A scored rep with a wrong count fails.
       // Same per-attempt recenter + test.slow() as scenario A, and doubly load-bearing
       // here: B has no recenter of its own, so it used to inherit scenario A's exit
       // column — East-rep retries starting at x=5 would walk to the window edge by the
@@ -431,24 +480,47 @@ test.describe
       ] as const;
       for (const rep of reps) {
         let scoredAttempt = 0;
+        let overBudget = 0;
+        let sameFrame = 0;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
           await recenter(page, 4);
           const t0 = await corridorEastWest(page, 2, 7);
           await resetKeyLog(page);
-          // 40ms gaps, not 55: the nominal press is first-down -> last-up, so two gaps put
-          // it at ~80ms — 60ms of headroom under TAP_BUDGET_MS for CI scheduling overshoot
-          // (55/55 left only 30ms; CI run 31806079496 attempt 1 overran it 3/3 times). The
-          // dedup under test is STATEFUL, not timed — both worlds emit (or not) on the
-          // keydown EVENT itself — so shrinking the gaps changes nothing about what the
-          // scenario proves, only how often a loaded runner can execute it inside the band.
+          // THE FIRST KEYDOWN IS AWAITED; THE REST RUN ON ONE NODE-SIDE TIMELINE anchored at
+          // its acknowledgement: keydown c2 at 40ms, then keyup c2 and keyup c1 at 80ms, with
+          // no await between those steps. Awaiting EVERY call puts a frame wait in series
+          // four times: CI's headless Chromium has no GPU, it dispatches a synthetic key only
+          // once the current frame's native raster ends, and wap-8's 28x20 zone 0 fills the
+          // canvas. On that map at 2 cores (CI's failure) the fully awaited sequence ran
+          // 142-164ms p50 with 20/30 to 34/40 presses over TAP_BUDGET_MS; this shape ran
+          // 100ms p50 (max 144, 1/30 over), and 84-107ms p50 across the other cells measured.
+          // c1 is awaited ON PURPOSE: its acknowledgement means the page has handled it, and
+          // 40ms of node time after that lets a frame boundary pass before c2 can arrive. Not
+          // awaiting it put both keydowns inside one frame on 15/30 presses at 1 core — and a
+          // dedup that coalesces per frame instead of per keydown would pass such a rep. This
+          // shape measured 0/30 same-frame keydowns in every cell, but that is not assumed:
+          // overlapFramesApart fails LOUD on any order other than c1 down, c2 down, c2 up,
+          // c1 up, and a same-frame pair is retried, never scored. The press is still
+          // MEASURED IN-PAGE, so a slow harness retries rather than scores.
+          // 40ms gaps, not 55: 55/55 left only 30ms of headroom (CI run 31806079496 attempt 1
+          // overran it 3/3 times, fully awaited). The dedup under test is STATEFUL, not timed —
+          // both worlds emit (or not) on the keydown EVENT itself — so the gaps change only
+          // how often a loaded runner gets a rep inside the band, not what it proves.
           await page.keyboard.down(rep.c1);
-          await page.waitForTimeout(40);
-          await page.keyboard.down(rep.c2); // the OTHER code for the SAME direction
-          await page.waitForTimeout(40);
-          await page.keyboard.up(rep.c2);
-          await page.keyboard.up(rep.c1);
+          await Promise.all([
+            after(40, () => page.keyboard.down(rep.c2)), // the OTHER code, SAME direction
+            after(80, () => Promise.all([page.keyboard.up(rep.c2), page.keyboard.up(rep.c1)])),
+          ]);
           const pressedMs = await measuredPressMs(page); // first down -> last up
-          if (pressedMs > TAP_BUDGET_MS) continue; // harness-timing miss — retry, do not score
+          const framesApart = await overlapFramesApart(page, rep.c1, rep.c2);
+          if (pressedMs > TAP_BUDGET_MS) {
+            overBudget += 1; // harness-timing miss — retry, do not score
+            continue;
+          }
+          if (!framesApart) {
+            sameFrame += 1; // both keydowns inside one frame — retry, do not score
+            continue;
+          }
           await settle(page, 600);
           const s1 = await snap(page);
           const t1 = s1.ownAuthTile;
@@ -471,9 +543,13 @@ test.describe
         }
         expect(
           scoredAttempt,
-          `every ${rep.c1}+${rep.c2} overlap tap overran ${TAP_BUDGET_MS}ms in all ` +
-            `${MAX_ATTEMPTS} attempts — the harness could not produce a tap inside the contract ` +
-            'band, so this scenario measured nothing',
+          `no ${rep.c1}+${rep.c2} overlap tap was scoreable in ${MAX_ATTEMPTS} attempts: ` +
+            `${overBudget} overran ${TAP_BUDGET_MS}ms (measured in-page) and ` +
+            `${sameFrame} had both keydowns inside one animation frame. The harness could not ` +
+            'produce a valid tap, so this scenario measured nothing. Investigate machine load ' +
+            'and frame time; do NOT widen TAP_BUDGET_MS (150+ is the declared indeterminate ' +
+            'band) and do NOT score same-frame keydowns (they cannot tell a per-keydown dedup ' +
+            'from a per-frame one)',
         ).toBeGreaterThan(0);
       }
     });
