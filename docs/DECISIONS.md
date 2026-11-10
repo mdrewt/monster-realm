@@ -1094,3 +1094,21 @@ stays blank after a context restore (30% of the canvas on the small zone, 98% on
 **Rules out.** Starting `app.ticker`, or adding a second `requestAnimationFrame` loop that draws; a
 canvas-clearing operation that does not draw afterwards; raising `MAX_BATCH_TEXTURES` without re-measuring
 under SwiftShader; a new `generateTexture` result that is not rebuilt on `webglcontextrestored`.
+
+## The client builds for ES2022; the wasm import is a native top-level await
+
+**Decision.** `client/vite.config.ts` sets `build.target: 'es2022'` and uses no top-level-await
+transform. The wasm-pack `bundler` package is resolved by `vite-plugin-wasm`, and its async init is awaited
+at module top level by the browser itself. The supported floor is every browser with ES2022 syntax:
+Chrome 94, Firefox 93, Safari 16.4.
+
+**Why.** A transform for older targets (`vite-plugin-top-level-await`) re-emits every chunk unminified, so
+the production bundle ships with its whitespace and long names. Measured on one commit, with the transform
+against without: the entry chunk is 1,219 kB against 794 kB raw (278 kB against 237 kB gzip) and all
+JavaScript 419 kB against 358 kB gzip; over 10 cold loads of the built client, script time to first idle is
+96 ms against 70 ms and the canvas appears at 277 ms against 244 ms. `es2022` produces the same bundle
+as `esnext` today, but `esnext` lowers nothing, so the floor would move with whatever syntax a dependency
+ships. The browsers below the floor date from 2021 or earlier and are out of vendor support.
+
+**Rules out.** Re-adding a top-level-await transform; `build.target: 'esnext'`; lowering `build.target`
+below a level with native top-level await while the wasm package is built for the `bundler` target.

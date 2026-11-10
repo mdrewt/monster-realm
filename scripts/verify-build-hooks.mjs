@@ -76,8 +76,8 @@ export function findDevHooks(bundleText, fingerprints) {
 //
 // A build that forgot VITE_STDB_DB bakes `db: void 0` (undefined), so no `db:"<name>"`
 // value is present → returns false. Accepts the pretty (`db: "x"`) and minified
-// (`db:"x"`) shapes — the honest build is currently pretty, but we hedge
-// like DEV_HOOK_FINGERPRINTS. String methods + literal concatenation only (NO
+// (`db:"x"`) shapes — the honest build is minified, and the pretty shape is
+// accepted too, like DEV_HOOK_FINGERPRINTS. String methods + literal concatenation only (NO
 // `new RegExp(...)` — Semgrep detect-non-literal-regexp).
 export function bundleBakesDb(bundleText, dbName) {
   return bundleText.includes(`db:"${dbName}"`) || bundleText.includes(`db: "${dbName}"`);
