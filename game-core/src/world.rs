@@ -1425,30 +1425,68 @@ mod tests {
             .count()
     }
 
-    /// The tiles a player landing on (1,5) can reach, by BFS over the REAL movement
+    /// An idle character standing on `p`.
+    fn idle_state_at(p: TilePos) -> CharacterState {
+        CharacterState {
+            pos: p,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at: Millis(0),
+        }
+    }
+
+    /// The four step directions.
+    const WAP7_DIRS: [Direction; 4] = [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ];
+
+    /// Where a player arriving in zone 1 lands, DERIVED from content: the `to_tile`
+    /// of zone 0's warp into zone 1 (asserted to be the (1,5) anchor).
+    fn tideglass_landing() -> TilePos {
+        let maps = crate::content::load_zone_maps().expect("zone maps must load");
+        let zone0 = map_for(0, &maps).expect("map_for(0) must succeed");
+        let warp = zone0
+            .warps
+            .iter()
+            .find(|w| w.to_zone == 1)
+            .expect("zone 0 must carry a warp into zone 1");
+        assert_eq!(
+            warp.to_tile,
+            tp(1, 5),
+            "WAP7.2: the zone-0 warp must land the player on the (1,5) anchor"
+        );
+        warp.to_tile
+    }
+
+    /// The zone-1 anchors and e2e route tiles: the landing/return warp (1,5), the
+    /// shopkeeper (8,1) and shop post (7,1), column x=1 (y=1..5), row y=1 (x=1..8),
+    /// row y=5 (x=1..6) and column x=6 (y=1..5).
+    fn tideglass_anchor_and_route_tiles() -> Vec<TilePos> {
+        let mut tiles = vec![tp(1, 5), tp(8, 1), tp(7, 1)];
+        tiles.extend((1..=5).map(|y| tp(1, y)));
+        tiles.extend((1..=8).map(|x| tp(x, 1)));
+        tiles.extend((1..=6).map(|x| tp(x, 5)));
+        tiles.extend((1..=5).map(|y| tp(6, y)));
+        tiles
+    }
+
+    /// The tiles a player landing in zone 1 can reach, by BFS over the REAL movement
     /// rule: the neighbour of `p` in direction `d` is
     /// `apply_move(state_at(p), Step(d)).pos`. A warp tile other than the landing is
     /// visited but NOT expanded (stepping onto it teleports the player away).
     fn reachable_from_landing(map: &TileMap) -> std::collections::HashSet<TilePos> {
-        let start = tp(1, 5);
+        let start = tideglass_landing();
         let mut seen = std::collections::HashSet::from([start]);
         let mut queue = std::collections::VecDeque::from([start]);
         while let Some(p) = queue.pop_front() {
             if p != start && map.warp_at(p).is_some() {
                 continue;
             }
-            let state = CharacterState {
-                pos: p,
-                facing: Direction::South,
-                action: ActionState::Idle,
-                move_started_at: Millis(0),
-            };
-            for d in [
-                Direction::North,
-                Direction::South,
-                Direction::East,
-                Direction::West,
-            ] {
+            let state = idle_state_at(p);
+            for d in WAP7_DIRS {
                 let next = apply_move(&state, MoveInput::Step(d), map, Millis(0)).pos;
                 if seen.insert(next) {
                     queue.push_back(next);
@@ -1579,8 +1617,12 @@ mod tests {
         );
     }
 
-    /// Criterion WAP7.2: the shop post (7,1) and the return warp are reachable.
-    /// Kills: content that strands the shopkeeper's post or the way home.
+    /// Criterion WAP7.2: the shop post (7,1) is reachable, and the player can step
+    /// OFF the landing and back ONTO the return warp (a reachable non-warp walkable
+    /// neighbour of the warp's tile has a step that lands on it).
+    /// Kills: content that strands the shopkeeper's post or the way home; a return
+    /// warp walled in so it can be left but never re-entered; a hardcoded landing
+    /// that drifts from zone 0's warp `to_tile`.
     #[test]
     fn wap7_2_shop_post_and_return_warp_are_reachable() {
         let map = tideglass_map();
@@ -1603,9 +1645,19 @@ mod tests {
             tp(1, 5),
             "WAP7.2: the return warp must sit on the landing tile"
         );
+        let can_step_back_on = [(0, -1), (0, 1), (1, 0), (-1, 0)]
+            .into_iter()
+            .map(|(dx, dy)| tp(warp.from.x + dx, warp.from.y + dy))
+            .filter(|n| reached.contains(n) && map.is_walkable(*n) && map.warp_at(*n).is_none())
+            .any(|n| {
+                WAP7_DIRS.into_iter().any(|d| {
+                    apply_move(&idle_state_at(n), MoveInput::Step(d), &map, Millis(0)).pos
+                        == warp.from
+                })
+            });
         assert!(
-            reached.contains(&warp.from),
-            "WAP7.2: the return warp tile must be reachable"
+            can_step_back_on,
+            "WAP7.2: a reachable non-warp neighbour must be able to step onto the return warp"
         );
     }
 
@@ -1631,12 +1683,7 @@ mod tests {
     #[test]
     fn wap7_3_tideglass_anchors_and_e2e_route_tiles_are_walkable_and_grass_free() {
         let map = tideglass_map();
-        let mut tiles = vec![tp(1, 5), tp(8, 1), tp(7, 1)];
-        tiles.extend((1..=5).map(|y| tp(1, y)));
-        tiles.extend((1..=8).map(|x| tp(x, 1)));
-        tiles.extend((1..=6).map(|x| tp(x, 5)));
-        tiles.extend((1..=5).map(|y| tp(6, y)));
-        for p in tiles {
+        for p in tideglass_anchor_and_route_tiles() {
             assert!(
                 map.is_walkable(p),
                 "WAP7.3: anchor/route tile ({},{}) must be walkable",
@@ -1654,12 +1701,14 @@ mod tests {
 
     /// Criterion WAP7.3: (0,5) (sim-harness bumps West from the landing) and (6,0)
     /// (the e2e negatives face it from (6,1)) stay non-walkable.
+    /// Also (8,0), (8,2), (9,1): they keep (7,1) the shopkeeper's only post.
     /// Kills: opening the west edge beside the warp or the north edge above (6,1),
-    /// which turns the bump/negative checks into real moves.
+    /// which turns the bump/negative checks into real moves; opening a neighbour of
+    /// the shopkeeper's tile, breaking the e2e "(7,1) is the only post" premise.
     #[test]
     fn wap7_3_tideglass_blocking_anchors_stay_blocked() {
         let map = tideglass_map();
-        for p in [tp(0, 5), tp(6, 0)] {
+        for p in [tp(0, 5), tp(6, 0), tp(8, 0), tp(8, 2), tp(9, 1)] {
             assert!(
                 !map.is_walkable(p),
                 "WAP7.3: ({},{}) must stay non-walkable",
@@ -1671,7 +1720,8 @@ mod tests {
 
     /// Criterion WAP7.3: the shopkeeper's home in the real NPC content is the (8,1)
     /// anchor, zone 1, radius 0 — so the anchors above cannot drift from content.
-    /// Kills: moving or letting the shopkeeper wander without updating the map.
+    /// Kills: moving or letting the shopkeeper wander without updating the map;
+    /// moving only the shopkeeper's `spawn` off (8,1) while `home` stays.
     #[test]
     fn wap7_3_shopkeeper_home_is_the_8_1_anchor() {
         let npcs = crate::content::load_npc_defs().expect("npc defs must load");
@@ -1686,9 +1736,73 @@ mod tests {
             "WAP7.3: the shopkeeper's home must be the (8,1) anchor"
         );
         assert_eq!(
+            (keeper.spawn_x, keeper.spawn_y),
+            (8, 1),
+            "WAP7.3: the shopkeeper's spawn must be the (8,1) anchor"
+        );
+        assert_eq!(
             keeper.wander_radius, 0,
             "WAP7.3: the shopkeeper must not wander"
         );
+    }
+
+    /// Criterion WAP7.3: every zone-1 warp whose `from` is an anchor/route tile is
+    /// the single return warp at (1,5); warps elsewhere on the map stay allowed.
+    /// Kills: an extra warp on a route tile (e.g. (3,1) or (11,1)) that teleports a
+    /// player walking the e2e route while the reachability BFS stays green.
+    #[test]
+    fn wap7_3_no_extra_warp_sits_on_an_anchor_or_route_tile() {
+        let map = tideglass_map();
+        let tiles = tideglass_anchor_and_route_tiles();
+        let on_route: Vec<&WarpDef> = map
+            .warps
+            .iter()
+            .filter(|w| tiles.contains(&w.from))
+            .collect();
+        assert_eq!(
+            on_route.len(),
+            1,
+            "WAP7.3: exactly one warp may sit on an anchor/route tile, found {:?}",
+            on_route.iter().map(|w| w.from).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            on_route[0].from,
+            tp(1, 5),
+            "WAP7.3: the only warp on an anchor/route tile must be the (1,5) return warp"
+        );
+        assert_eq!(
+            on_route[0].to_zone, 0,
+            "WAP7.3: the return warp targets zone 0"
+        );
+    }
+
+    /// Criterion WAP7.3: no zone-1 NPC other than `tideglass_shopkeeper` has its home
+    /// or spawn on an anchor/route tile.
+    /// Kills: a second NPC parked on the shop post (7,1) or a route tile, which
+    /// blocks or triggers on the e2e routes.
+    #[test]
+    fn wap7_3_no_other_npc_lives_on_an_anchor_or_route_tile() {
+        let npcs = crate::content::load_npc_defs().expect("npc defs must load");
+        let tiles = tideglass_anchor_and_route_tiles();
+        let zone1: Vec<&NpcDef> = npcs.iter().filter(|n| n.zone_id == 1).collect();
+        assert!(
+            zone1.iter().any(|n| n.npc_id == "tideglass_shopkeeper"),
+            "WAP7.3: the shopkeeper must be among the zone-1 NPCs examined"
+        );
+        for n in zone1.iter().filter(|n| n.npc_id != "tideglass_shopkeeper") {
+            for (what, p) in [
+                ("home", tp(n.home_x, n.home_y)),
+                ("spawn", tp(n.spawn_x, n.spawn_y)),
+            ] {
+                assert!(
+                    !tiles.contains(&p),
+                    "WAP7.3: NPC {} {what} ({},{}) sits on an anchor/route tile",
+                    n.npc_id,
+                    p.x,
+                    p.y
+                );
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
