@@ -32,9 +32,7 @@ export default defineConfig({
   // can add a per-test timing file (uploaded as an artifact by the e2e job): slow specs
   // become visible without scraping logs. The JSON holds titles, durations and error
   // text, so an assertion message must never embed a token.
-  reporter: process.env.CI
-    ? [['dot'], ['json', { outputFile: 'test-results/e2e.json' }]]
-    : 'list',
+  reporter: process.env.CI ? [['dot'], ['json', { outputFile: 'test-results/e2e.json' }]] : 'list',
   use: { baseURL: e2eBaseUrl, headless: true },
   webServer: {
     command: 'npm run dev',
