@@ -110,6 +110,9 @@ export function viewportScale(cssW: number, cssH: number, dpr: number): Viewport
  * `cssW*dpr` device pixels and writes back a `cssW`-CSS-px canvas box. Pixi's
  * defaults (`resolution: 1`, `autoDensity: false`) are the root cause, and
  * `antialias: false` keeps the integer-scaled texels crisp instead of resampled.
+ * `autoStart: false` leaves Pixi's own render ticker stopped: the frame loop is the
+ * single owner of drawing (`WorldRenderer.render` draws), so a frame is presented in
+ * the same task that resolved it instead of one animation frame later.
  * Return type is INFERRED — the name is never written anywhere.
  */
 export function appInitOptions(cssW: number, cssH: number, dpr: number, background: number) {
@@ -119,6 +122,7 @@ export function appInitOptions(cssW: number, cssH: number, dpr: number, backgrou
     background,
     antialias: false,
     autoDensity: true,
+    autoStart: false,
     resolution: norm(dpr, DPR_LO, DPR_HI, 1),
   };
 }

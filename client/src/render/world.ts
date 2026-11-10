@@ -23,6 +23,11 @@
 // anchored, so the top half rises over the row above); warp markers are ground decals
 // under every actor, their pulse swapping texture only when its frame index changes.
 // Without the landmarks atlas no decor is drawn.
+//
+// Drawing: Pixi's own ticker is stopped (`appInitOptions`), so nothing is drawn unless
+// this class draws it — `render()` once per frame-loop frame, and `resize()` because a
+// resize clears the canvas. A restored WebGL context re-applies the batch-texture cap
+// and re-bakes the chunk and placeholder textures, which Pixi cannot restore itself.
 import {
   Application,
   Assets,
@@ -42,7 +47,7 @@ import { createCharacterAssets, type HeroAtlas } from './atlasAssets';
 import { FollowCamera } from './camera';
 import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
-import { TILE_PX } from './config';
+import { MAX_BATCH_TEXTURES, TILE_PX } from './config';
 import { layoutDecor, warpFrameIndex } from './decorLayout';
 import { type RawTileMap, TileMap } from './map';
 import {
@@ -159,6 +164,10 @@ export class WorldRenderer {
     // viewport-sized canvas; camera offset via stage.position. The
     // DPR-correct backing store (resolution/autoDensity) is decided in viewport.ts.
     await app.init(appInitOptions(cssW, cssH, dpr, FLOOR_COLOR));
+    capBatchTextures(app);
+    // Pixi's own listener (registered in app.init, so it runs first) has rebuilt its GL
+    // state by the time this one runs.
+    app.canvas.addEventListener('webglcontextrestored', this.#onContextRestored);
     mount.appendChild(app.canvas);
     // The canvas IS the world region, and it is the ONLY node that may
     // carry role="application". NOT `mount` (`#app`): main.ts passes that same element as the
@@ -213,6 +222,23 @@ export class WorldRenderer {
     this.#drawMap(current);
     this.#drawDecor(current);
   }
+
+  /** A restored WebGL context comes back with Pixi's limits re-read from the device and
+   *  with every render-target texture (the baked chunks, the generated placeholders)
+   *  empty; atlas textures re-upload from their images on their own. */
+  readonly #onContextRestored = (): void => {
+    const app = this.#app;
+    if (app === undefined) return;
+    capBatchTextures(app);
+    if (this.#assets?.contextRestored !== undefined) {
+      // Views hold the dropped textures: recreate them on the next render().
+      this.clear();
+      this.#assets.contextRestored();
+    }
+    const map = this.#map;
+    if (map !== undefined && (this.#chunks?.size ?? 0) > 0) this.#drawMap(map);
+    app.render();
+  };
 
   #drawMap(map: TileMap): void {
     const kit = this.#kit;
@@ -411,6 +437,8 @@ export class WorldRenderer {
       const origin = worldToScreen({ x: 0, y: 0 }, this.#lastOffset, vs.stageScale);
       app.stage.position.set(origin.x, origin.y);
     }
+    // The one draw per frame: present the state resolved above in this same task.
+    app?.render();
   }
 
   /** Resize to CSS viewport dimensions at the live dpr, and apply the
@@ -428,6 +456,8 @@ export class WorldRenderer {
     if (map !== undefined && (this.#chunks?.size ?? 0) > 0 && vs.deviceScale !== this.#chunkScale) {
       this.#drawMap(map);
     }
+    // Resizing cleared the canvas, and the frame loop may be parked (session terminal).
+    app.render();
   }
 
   /** World (SOURCE px) → screen (CSS px) under the camera
@@ -464,9 +494,17 @@ export class WorldRenderer {
       this.#landmarksSheet = undefined;
       releaseLandmarks();
     }
+    this.#app?.canvas.removeEventListener('webglcontextrestored', this.#onContextRestored);
     this.#app?.destroy(true);
     this.#app = undefined;
   }
+}
+
+/** Hold the sprite batcher to `MAX_BATCH_TEXTURES` (config.ts). Pixi re-reads the limit
+ *  from the device on every context change, so this runs at init and after a restore. */
+function capBatchTextures(app: Application): void {
+  const { limits } = app.renderer;
+  limits.maxBatchableTextures = Math.min(limits.maxBatchableTextures, MAX_BATCH_TEXTURES);
 }
 
 /** Load the terrain kit atlas, sampled `nearest` (Constraint 7a). A load failure is

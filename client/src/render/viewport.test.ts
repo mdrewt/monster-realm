@@ -116,12 +116,15 @@ describe('A1: appInitOptions — DPR-correct backing store', () => {
     //  - width/height swapped, or the backing-store size (`cssW*dpr`) written
     //    into `width` instead of the CSS size.
     //  - `background` dropped or recolored.
+    //  - `autoStart` omitted or true — Pixi's ticker would then draw every frame a
+    //    second time, one animation frame behind the frame loop's own draw.
     expect(appInitOptions(1920, 1080, 1, 0x1e2a3f)).toEqual({
       width: 1920,
       height: 1080,
       background: 0x1e2a3f,
       antialias: false,
       autoDensity: true,
+      autoStart: false,
       resolution: 1,
     });
     expect(appInitOptions(1920, 1080, 2, 0x1e2a3f)).toEqual({
@@ -130,6 +133,7 @@ describe('A1: appInitOptions — DPR-correct backing store', () => {
       background: 0x1e2a3f,
       antialias: false,
       autoDensity: true,
+      autoStart: false,
       resolution: 2,
     });
     expect(appInitOptions(390, 844, 3, 0x000000)).toEqual({
@@ -138,6 +142,7 @@ describe('A1: appInitOptions — DPR-correct backing store', () => {
       background: 0x000000,
       antialias: false,
       autoDensity: true,
+      autoStart: false,
       resolution: 3,
     });
   });
