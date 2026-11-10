@@ -6,6 +6,52 @@ out. `ARCHITECTURE.md` describes how the pieces fit; this file records the choic
 behind them. When a decision changes, edit its entry in place — this is current
 state, not a log.
 
+## One repository, one cargo workspace
+
+**Decision.** The four product crates (`game-core`, `client-wasm`, `server-module`, `sim-harness`) are
+members of one cargo workspace in this repository, beside the TypeScript client in `client/`. The server module and the
+prediction wasm consume `game-core` by path.
+
+**Why.** The rule crate's whole value is that the client and the server compile the same code at the
+same revision. Split across repositories it becomes a versioned dependency, and a version skew between
+the two consumers is a desync. One repository also means one CI pipeline and no publish step for the
+rule core.
+
+**Rules out.** Extracting `game-core` (or an "engine") into its own repository or published crate;
+letting the client and the server pin different revisions of it.
+
+## SpacetimeDB is the server platform
+
+**Decision.** The authoritative server is a SpacetimeDB module (`server-module`): tables, reducers,
+scheduled reducers and generated TypeScript bindings. All rules stay in `game-core`; the module is a
+thin shell around it.
+
+**Why.** It is the one candidate that runs the same compiled Rust `game-core` authoritatively that the
+client predicts with, and it supplies subscriptions, persistence and schema migration that would
+otherwise be bespoke netcode. A custom Rust server (Axum/Tokio with Postgres and a sync layer)
+re-implements all of that. Colyseus shares TypeScript, not the Rust core, and Nakama's Go/Lua server
+cannot share it at all. Keeping the rules in portable `game-core` bounds the lock-in: a port re-wraps
+the same core.
+
+**Rules out.** Game rules in SpacetimeDB-specific code; a second game-state server beside the module;
+adopting a game-server framework that cannot execute `game-core`.
+
+## PixiJS and TypeScript render the client
+
+**Decision.** The client renders with PixiJS 8 in TypeScript. The renderer is a pure view of
+authoritative and predicted state and owns none of it. `TILE_PX` (`client/src/render/config.ts`) is
+the one constant tying visual resolution to the grid; `game-core` works in integer tiles.
+
+**Why.** For a 2D pixel-art game PixiJS gives a small bundle, mature web tooling and sprite and
+tilemap performance. A Rust/bevy wasm client would remove the TypeScript boundary, but at roughly an
+order of magnitude more bundle weight and with weaker web tooling, and that boundary is already thin
+and drift-gated. Phaser's batteries (scenes, physics, input) duplicate what `game-core` and the
+client shell provide. A custom WebGL or WebGPU renderer is unjustified for 2D. A native or desktop
+client goal is the condition that would reopen this.
+
+**Rules out.** Game state or rules in the render layer; a 3D-environment renderer; coupling rules or
+netcode to pixels-per-tile.
+
 ## Rules are written once, in game-core
 
 **Decision.** Every game rule lives in the `game-core` crate exactly once. The server
