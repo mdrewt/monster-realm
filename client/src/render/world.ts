@@ -25,9 +25,11 @@
 // Without the landmarks atlas no decor is drawn.
 //
 // wap-9: the post stack (`postStack.ts` plans it) filters the world layer only — one
-// container holding the terrain, decor and actors, never the stage or the DOM UI. Its
-// godray time is the injected clock (held under reduced motion); where filters are
-// unsupported or a pass fails to build, the world draws unfiltered.
+// container holding the terrain, decor and actors, never the stage or the DOM UI. It
+// starts with every pass off at the `day` keyframe; `setPostStack` turns passes on (the
+// look-dev scene does; main.ts does not call it). Its godray time is the injected clock
+// (held under reduced motion); where filters are unsupported or a pass fails to build,
+// the world draws unfiltered.
 //
 // Drawing: Pixi's own ticker is stopped (`appInitOptions`), so nothing is drawn unless
 // this class draws it — `render()` once per frame-loop frame, and `resize()` because a
@@ -67,8 +69,8 @@ import { type RawTileMap, TileMap } from './map';
 import {
   godrayTime,
   LIGHTMAP_SIZE,
-  LIVE_POST_STACK,
   lightmapPixels,
+  NO_POST_STACK,
   type PostPass,
   type PostStackToggles,
   type PostSupport,
@@ -185,7 +187,7 @@ export class WorldRenderer {
   #lightmap: Texture | undefined;
   #filters: Filter[] = [];
   #godray: GodrayFilter | undefined;
-  #postToggles: PostStackToggles = LIVE_POST_STACK;
+  #postToggles: PostStackToggles = NO_POST_STACK;
   #keyframe: GradeKeyframe = LIVE_KEYFRAME;
   #postResolution = 0;
 
@@ -269,8 +271,8 @@ export class WorldRenderer {
     this.#applyPostStack();
   }
 
-  /** Choose the post stack's passes and keyframe (the live game keeps every pass on and
-   *  `day`; the look-dev scene drives this). Rebuilds the filters; the next render() draws. */
+  /** Choose the post stack's passes and keyframe; an omitted field keeps its current
+   *  value. Rebuilds the filters; the next render() draws. */
   setPostStack(options: { toggles?: PostStackToggles; keyframe?: GradeKeyframe }): void {
     this.#postToggles = options.toggles ?? this.#postToggles;
     this.#keyframe = options.keyframe ?? this.#keyframe;

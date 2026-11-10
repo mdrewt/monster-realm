@@ -23,7 +23,15 @@ export const POST_PASS_ORDER: readonly PostPassId[] = ['lightmap', 'bloom', 'god
 /** Which passes are on. */
 export type PostStackToggles = Readonly<Record<PostPassId, boolean>>;
 
-/** The live game runs every pass. */
+/** Every pass off: the renderer's stack until `setPostStack` turns passes on. */
+export const NO_POST_STACK: PostStackToggles = {
+  lightmap: false,
+  bloom: false,
+  godray: false,
+  lut: false,
+};
+
+/** The full stack, every pass on (the look-dev scene's stack-on frame). */
 export const LIVE_POST_STACK: PostStackToggles = {
   lightmap: true,
   bloom: true,
