@@ -241,10 +241,16 @@ async function loopedNow(p: Page): Promise<number> {
 async function openLookDev(
   browser: Browser,
   dpr: number,
-): Promise<{ ctx: BrowserContext; page: Page }> {
+  abortGlob?: string,
+): Promise<{ ctx: BrowserContext; page: Page; warnings: string[] }> {
   const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: dpr });
   await ctx.route('**/src/main.ts*', (route) => route.abort());
+  if (abortGlob !== undefined) await ctx.route(abortGlob, (route) => route.abort());
   const page = await ctx.newPage();
+  const warnings: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'warning') warnings.push(msg.text());
+  });
   await page.goto('/');
   await page.waitForLoadState('load');
   expect(
@@ -257,7 +263,7 @@ async function openLookDev(
     h: 720 * dpr,
     dpr,
   });
-  return { ctx, page };
+  return { ctx, page, warnings };
 }
 
 /** The hard-step check (d) on one page: stack-off vs stack-on, day keyframe. */
@@ -421,6 +427,41 @@ test.describe
       // invisible at ratio 1, caught here.
       test.setTimeout(180_000);
       await expectHardSteps(p2, 2);
+    });
+
+    test('WAP9.4 a LUT that fails to load disables the stack with one warning and an unfiltered frame, and a working keyframe brings it back', async () => {
+      // WRONG IMPL KILLED: a failure that throws or blanks the canvas (the colour-count guard); a
+      // half-built stack left attached (the frame differs from the stack-off frame); a warning per
+      // frame or none at all (exactly one 'post stack disabled' across two renders); a fallback that
+      // never recovers (setPostStack day must filter again).
+      test.setTimeout(180_000);
+      const g = geo(1);
+      const fresh = await openLookDev(browser, 1, '**/assets/lut-night.png');
+      try {
+        const { page, warnings } = fresh;
+        // The night LUT's own load-failure line is a separate message and is not counted.
+        warnings.length = 0;
+        await shot(page, 'n-off', { toggles: OFF, keyframe: 'day', nowMs: NOW });
+        await shot(page, 'n-night', { toggles: ON, keyframe: 'night', nowMs: NOW });
+        await shot(page, 'n-night-2', { toggles: ON, keyframe: 'night', nowMs: NOW, set: false });
+        expect(
+          warnings.filter((w) => w.includes('post stack disabled')),
+          `console warnings: ${JSON.stringify(warnings)}`,
+        ).toHaveLength(1);
+        expect(await lk<unknown[], number>(page, 'colours', 'n-night')).toBeGreaterThanOrEqual(20);
+        expect(await equal(page, 'n-off', 'n-night'), 'a disabled stack draws the bare world').toBe(
+          true,
+        );
+        expect(await equal(page, 'n-off', 'n-night-2')).toBe(true);
+
+        await shot(page, 'n-day', { toggles: ON, keyframe: 'day', nowMs: NOW });
+        const back = await diff(page, 'n-off', 'n-day', g.map, 3);
+        expect(back.count / back.total, 'the day keyframe filters again').toBeGreaterThanOrEqual(
+          0.25,
+        );
+      } finally {
+        await fresh.ctx.close();
+      }
     });
 
     test('WAP9.6 per-pass frame time: none, each pass alone, all four (printed, not gated)', async () => {

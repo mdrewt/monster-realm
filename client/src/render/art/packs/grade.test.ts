@@ -117,10 +117,17 @@ describe('WAP9.3 the committed LUT pngs follow the ColorMap layout', () => {
     }
   });
 
-  it('WAP9.3 the day strip rises with red along x, with green along y and with blue across slices', () => {
-    const png = load('day');
+  it('WAP9.3 every strip is fully opaque, and rises with red along x, green along y and blue across slices', () => {
+    for (const kf of GRADE_KEYFRAMES) checkLayout(kf);
+  });
+
+  function checkLayout(kf: GradeKeyframe): void {
+    const png = load(kf);
+    for (let p = 3; p < png.rgba.length; p += 4) expect(png.rgba[p]).toBe(255);
     const last = LUT_SIZE - 1;
     const SLACK = 2;
+    // Day spans most of each channel; the darker grades must still be far from flat.
+    const range = kf === 'day' ? 150 : 40;
     for (let b = 0; b < LUT_SIZE; b++) {
       for (let g = 0; g < LUT_SIZE; g++) {
         for (let r = 1; r < LUT_SIZE; r++) {
@@ -151,14 +158,14 @@ describe('WAP9.3 the committed LUT pngs follow the ColorMap layout', () => {
     // Real range, not a flat strip: each axis spans most of the channel.
     expect(
       (texel(png, last, 0, 0)[0] as number) - (texel(png, 0, 0, 0)[0] as number),
-    ).toBeGreaterThan(150);
+    ).toBeGreaterThan(range);
     expect(
       (texel(png, 0, last, 0)[1] as number) - (texel(png, 0, 0, 0)[1] as number),
-    ).toBeGreaterThan(150);
+    ).toBeGreaterThan(range);
     expect(
       (texel(png, 0, 0, last)[2] as number) - (texel(png, 0, 0, 0)[2] as number),
-    ).toBeGreaterThan(150);
-  });
+    ).toBeGreaterThan(range);
+  }
 
   it('WAP9.3 the strips get darker from day to dusk to night', () => {
     const day = means(load('day')).luma;

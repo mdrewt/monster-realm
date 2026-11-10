@@ -13,6 +13,7 @@ import { GRADE_KEYFRAMES, type GradeKeyframe, LIVE_KEYFRAME, LUT_FILE } from './
 import {
   GODRAY_TIME_PER_MS,
   godrayTime,
+  LIGHTMAP_SIZE,
   LIVE_POST_STACK,
   lightmapPixels,
   POST_PASS_ORDER,
@@ -98,12 +99,44 @@ describe('WAP9.1 the ordered post stack', () => {
   it('WAP9.1 each of the 16 toggle subsets plans exactly the enabled ids in POST_PASS_ORDER order', () => {
     const all = subsets();
     expect(all).toHaveLength(16);
-    for (const { toggles, ids } of all) {
-      const plan = planPostStack(input({ toggles }));
-      expect(plan.passes.map((p) => p.id)).toEqual(ids);
-      expect(plan.target).toBe('world');
-      expect(plan.warnings).toEqual([]);
+    for (const keyframe of GRADE_KEYFRAMES) {
+      for (const reduceMotion of [false, true]) {
+        for (const resolution of [1, 1.5, 2]) {
+          for (const { toggles, ids } of all) {
+            const plan = planPostStack(input({ toggles, keyframe, reduceMotion, resolution }));
+            expect(plan.passes.map((p) => p.id)).toEqual(ids);
+            expect(plan.target).toBe('world');
+            expect(plan.warnings).toEqual([]);
+          }
+        }
+      }
     }
+  });
+
+  it('WAP9.1 pass magnitudes sit in their documented bounds on every keyframe', () => {
+    for (const keyframe of GRADE_KEYFRAMES) {
+      const { passes } = planPostStack(input({ keyframe }));
+      const bloom = passOf(passes, 'bloom').options;
+      expect(bloom.threshold).toBeGreaterThanOrEqual(0.5);
+      expect(bloom.threshold).toBeLessThan(1);
+      expect(passOf(passes, 'lut').options.mix).toBe(1);
+      const godrayAlpha = passOf(passes, 'godray').options.alpha as number;
+      expect(godrayAlpha).toBeGreaterThan(0);
+      expect(godrayAlpha).toBeLessThanOrEqual(0.5);
+      const vignette = passOf(passes, 'lightmap').vignette as unknown as {
+        centre: number;
+        edge: number;
+        inner: number;
+      };
+      expect(vignette.edge).toBeLessThan(vignette.centre);
+      expect(vignette.inner).toBeGreaterThan(0);
+      expect(vignette.inner).toBeLessThan(1);
+    }
+  });
+
+  it('WAP9.1 the lightmap texture size is a positive integer pair', () => {
+    expect(Number.isInteger(LIGHTMAP_SIZE.w) && LIGHTMAP_SIZE.w > 0).toBe(true);
+    expect(Number.isInteger(LIGHTMAP_SIZE.h) && LIGHTMAP_SIZE.h > 0).toBe(true);
   });
 
   it('WAP9.1 a disabled pass is omitted, never present with a zeroed strength', () => {
@@ -219,11 +252,17 @@ describe('WAP9.1 the ordered post stack', () => {
       [33, 21],
       [32, 20],
       [8, 8],
+      [LIGHTMAP_SIZE.w, LIGHTMAP_SIZE.h],
     ] as const) {
       const px = lightmapPixels(w, h, vignette);
       expect(px).toBeInstanceOf(Uint8Array);
       expect(px.length).toBe(w * h * 4);
-      for (let i = 3; i < px.length; i += 4) expect(px[i]).toBe(255);
+      for (let i = 0; i < px.length; i += 4) {
+        expect(px[i + 3]).toBe(255);
+        // The lightmap is neutral grey: it dims, it never tints.
+        expect(px[i]).toBe(px[i + 1]);
+        expect(px[i + 1]).toBe(px[i + 2]);
+      }
     }
   });
 
@@ -325,7 +364,8 @@ describe('WAP9.1 the ordered post stack', () => {
 });
 
 describe('WAP9.2 godray time is the injected clock', () => {
-  const TIMES = [0, 1, 16.7, 1000, 60_000, 123_456_789, 1e12];
+  // Ascending, negatives included: a negative clock is just nowMs * rate (and 0 under reduced motion).
+  const TIMES = [-5000, -1, 0, 1, 16.7, 1000, 60_000, 123_456_789, 1e12];
 
   it('WAP9.2 GODRAY_TIME_PER_MS is a positive finite rate', () => {
     expect(Number.isFinite(GODRAY_TIME_PER_MS)).toBe(true);
@@ -422,6 +462,7 @@ describe('WAP9.4 an unsupported filter path plans an empty stack with one warnin
       expect(plan.passes).toEqual([]);
       expect(plan.warnings).toHaveLength(1);
       expect(plan.warnings[0]?.code).toBe('filters-unsupported');
+      expect((plan.warnings[0] as { detail?: string }).detail).toContain('no filter support');
     }
   });
 
@@ -429,16 +470,14 @@ describe('WAP9.4 an unsupported filter path plans an empty stack with one warnin
     for (const pass of POST_PASS_ORDER) {
       for (const toggles of TOGGLE_SETS) {
         const plan = planPostStack(
-          input({ toggles, support: { kind: 'pass-failed', pass, detail: `${pass} blew up` } }),
+          // The support detail deliberately does NOT contain the pass id: the warning itself must name it.
+          input({ toggles, support: { kind: 'pass-failed', pass, detail: 'shader blew up' } }),
         );
         expect(plan.passes).toEqual([]);
         expect(plan.warnings).toHaveLength(1);
         const [warning] = plan.warnings;
         expect(warning?.code).toBe('pass-failed');
-        const named =
-          (warning as { pass?: string } | undefined)?.pass === pass ||
-          JSON.stringify(warning).includes(pass);
-        expect(named).toBe(true);
+        expect((warning as { detail?: string }).detail).toContain(pass);
       }
     }
   });

@@ -142,7 +142,7 @@ export function godrayTime(nowMs: number, reduceMotion: boolean): number {
 }
 
 /** The lightmap falloff; with each keyframe's ambient the centre adds up to about full light. */
-export const VIGNETTE: VignetteFalloff = { inner: 0.35, centre: 0.7, edge: 0.45 };
+const VIGNETTE: VignetteFalloff = { inner: 0.35, centre: 0.7, edge: 0.45 };
 
 /** The lightmap texture's size; it is a smooth gradient stretched over the filtered area. */
 export const LIGHTMAP_SIZE = { w: 64, h: 36 } as const;

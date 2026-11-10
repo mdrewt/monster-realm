@@ -26,14 +26,13 @@
 //
 // wap-9: the post stack (`postStack.ts` plans it) filters the world layer only — one
 // container holding the terrain, decor and actors, never the stage or the DOM UI. It
-// starts with every pass off at the `day` keyframe; `setPostStack` turns passes on (the
-// look-dev scene does; main.ts does not call it). Its godray time is the injected clock
-// (held under reduced motion); where filters are unsupported or a pass fails to build,
-// the world draws unfiltered.
+// starts with every pass off (`NO_POST_STACK`) at the `day` keyframe; `setPostStack`
+// turns passes on. Its godray time is the injected clock (held under reduced motion);
+// where filters are unsupported or a pass fails to build, the world draws unfiltered.
 //
 // Drawing: Pixi's own ticker is stopped (`appInitOptions`), so nothing is drawn unless
-// this class draws it — `render()` once per frame-loop frame, and `resize()` because a
-// resize clears the canvas. A restored WebGL context re-applies the batch-texture cap
+// this class draws it — `render()` once per frame-loop frame, `resize()` because a
+// resize clears the canvas, and one probe frame whenever the post stack is rebuilt. A restored WebGL context re-applies the batch-texture cap
 // and re-bakes the chunk and placeholder textures, which Pixi cannot restore itself.
 
 import {
@@ -272,7 +271,7 @@ export class WorldRenderer {
   }
 
   /** Choose the post stack's passes and keyframe; an omitted field keeps its current
-   *  value. Rebuilds the filters; the next render() draws. */
+   *  value. Rebuilds the filters and draws one probe frame with them. */
   setPostStack(options: { toggles?: PostStackToggles; keyframe?: GradeKeyframe }): void {
     this.#postToggles = options.toggles ?? this.#postToggles;
     this.#keyframe = options.keyframe ?? this.#keyframe;
@@ -289,6 +288,7 @@ export class WorldRenderer {
     const plan = (support: PostSupport) =>
       planPostStack({
         toggles: this.#postToggles,
+        // The godray time is set per frame by render(); the build starts it at 0.
         nowMs: 0,
         reduceMotion: false,
         keyframe: this.#keyframe,
@@ -315,7 +315,8 @@ export class WorldRenderer {
       this.#world.filters = null;
       for (const filter of built) filter.destroy();
       built.length = 0;
-      // A throw from the probe frame names no single pass: blame the last one planned.
+      // A throw from the probe frame names no single pass: blame the last one planned
+      // (the probe only runs with at least one pass built, so the final default is unused).
       const pass = building ?? result.passes[result.passes.length - 1]?.id ?? 'lut';
       result = plan({ kind: 'pass-failed', pass, detail: String(err) });
     }
