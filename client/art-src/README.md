@@ -25,6 +25,7 @@ then open <http://localhost:8080/art-src/demo/>. Details in [`demo/README.md`](.
 | `tileset-edge-of-town-normal.png` + `.json` | 256×192, 47 tiles | matching **normal map**, identical atlas layout |
 | `terrain-kit.png` + `.json` | 256×224, 50 tiles | the terrain kit (`wap-2`): ten classes × 3 variants, 4 animation frames per water class, the shallow-water shore band (albedo, every frame opaque) |
 | `terrain-kit-normal.png` + `.json` | 256×224, 50 tiles | matching **normal map**, identical atlas layout |
+| `landmarks.png` + `.json` | 160×64, 5 frames (32×64) | the heal landmark and the 4-frame warp-marker pulse (`wap-6`; albedo, no normal map) |
 | `monster-emberkit.png` + `.json` | 96×128, 12 frames | wild creature "Emberkit" — 4 facings × {idle, walk0, walk1} (albedo) |
 | `monster-emberkit-normal.png` + `.json` | 96×128, 12 frames | matching **normal map**, identical atlas layout |
 | `palette.png` | 82×210 | the shared master palette swatch (13 ramps) |
@@ -92,6 +93,23 @@ The frame manifest the renderer reads is `src/render/art/packs/terrain.ts`
 
 Each class's value band is measured by `src/render/art/terrainKit.test.ts` and recorded in
 `docs/art/style-guide.md`; recolour a painter, re-run the generator, then re-run that test.
+
+## Landmarks layout (`landmarks.json`), 5 cols
+
+The frame manifest the renderer reads is `src/render/art/packs/landmarks.ts`; the pure placement
+is `src/render/decorLayout.ts` (`layoutDecor`), driven by the map's `landmarks` and warp rows —
+never a hard-coded coordinate. Painters are `landmark_heal()` and `warp_marker()` in
+`build_landmarks()`.
+
+- **Every frame is 32×64** — one tile wide, two tall — and is bottom-anchored on its tile, so a
+  landmark's upper half rises over the row above and sorts with characters by row
+  (`render/zorder.ts`).
+- **`heal_landmark`:** a stone stele on a plinth with a heart pictogram and a glowing cap gem. The
+  pictogram is drawn into the sprite (no catalog key); the interact chip still names the healer.
+- **`warp_f{0..3}`** (json `animations.warp`): an open elliptical ground ring in the bottom 32 px,
+  transparent inside and above, so it reads by shape against every (opaque) terrain frame. The pulse
+  walks a spark round the ring and breathes a halo; hold `warp_f0` under reduced motion.
+- Both carry near-white highlight pixels — what the bloom pass (`wap-9`) acts on.
 
 ## Using it in the POC (PixiJS v8)
 
