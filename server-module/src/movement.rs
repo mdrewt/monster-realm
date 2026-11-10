@@ -25,7 +25,7 @@ use crate::tactics::start_wild_tactical;
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::npc::rules::{in_talk_range, npc_step_due};
 use game_core::{
-    apply_move, map_for, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
+    apply_move, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
     ActionState, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
@@ -301,9 +301,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     }
     let zone = sched.zone_id;
     let now = Millis(now_ms(ctx));
-    // Zone-maps cache: compile-time-embedded RON, parsed once per process.
-    let zone_maps = match crate::content_cache::cached_zone_maps() {
-        Ok(z) => z,
+    // The zone's map: built once per process from the compile-time-embedded
+    // RON, borrowed here every tick (never rebuilt per tick).
+    let map = match crate::content_cache::cached_zone_tile_map(zone) {
+        Ok(m) => m,
         Err(e) => {
             // Reason through json_escape: a RON parse error is
             // exactly the shape that carries a double quote into hand-built JSON.
@@ -311,17 +312,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
                 json_escape(&e)
             );
-            return Ok(()); // logged no-op: a content-load failure must not abort the tick
-        }
-    };
-    let map = match map_for(zone, zone_maps) {
-        Ok(m) => m,
-        Err(e) => {
-            log::error!(
-                "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
-                json_escape(&e)
-            );
-            return Ok(());
+            return Ok(()); // logged no-op: a content failure must not abort the tick
         }
     };
     // Snapshot ids BEFORE mutating (never mutate the table mid-iteration).
@@ -372,7 +363,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         }
         let input = row.move_queue.remove(0);
         let prev = char_state(&row).pos; // capture BEFORE apply_move
-        let next = apply_move(&char_state(&row), input, &map, now);
+        let next = apply_move(&char_state(&row), input, map, now);
         apply_state(&mut row, &next);
         let entity_id = row.entity_id; // capture before any move/borrow
 
@@ -419,7 +410,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // player + not-already-in-battle pass — once for the trigger roll and, on a hit,
         // twice more for the writer's seeds — so A's hit cannot shift B's roll in the
         // same tick (R-E).
-        if !stepped_onto_grass(prev, next.pos, &map) {
+        if !stepped_onto_grass(prev, next.pos, map) {
             continue;
         }
         // Player-only: an NPC character has no `player` row → no encounter.
@@ -554,11 +545,11 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             st.facing,
             entity_id,
             tick_counter,
-            &map,
+            map,
         ) else {
             continue;
         };
-        let next_state = apply_move(&st, MoveInput::Step(dir), &map, now);
+        let next_state = apply_move(&st, MoveInput::Step(dir), map, now);
         apply_state(&mut ch, &next_state);
         // NOTE (F5): apply_state writes ONLY tile_x/tile_y/facing/action/move_started_at.
         // It does NOT write zone_id. NPC zone crossings deferred to M12c.

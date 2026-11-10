@@ -25,6 +25,11 @@ use std::sync::{Arc, Mutex};
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
 
+/// Every zone's `TileMap`, built once from `ZONE_MAPS` (the movement tick used
+/// to rebuild its zone's grid from the registry on every tick).
+static ZONE_TILE_MAPS: LazyLock<Result<game_core::ZoneTileMaps, String>> =
+    LazyLock::new(|| cached_zone_maps().map(|maps| game_core::ZoneTileMaps::build(maps)));
+
 static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
     LazyLock::new(game_core::load_dialogue_trees);
 
@@ -69,6 +74,19 @@ static BATTLE_MAPS: LazyLock<Result<Vec<game_core::BattleMapEntry>, String>> =
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
 pub(crate) fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, String> {
     (*ZONE_MAPS).as_ref().map_err(Clone::clone)
+}
+
+/// One zone's `TileMap`, built once per process: `game_core::map_for(zone_id,
+/// cached_zone_maps()?)` by `&'static` reference.
+///
+/// # Errors
+/// The cached registry parse error, or `map_for`'s own error for this zone
+/// (unknown `zone_id`, malformed rows) — per zone, never for its neighbours.
+pub(crate) fn cached_zone_tile_map(zone_id: u32) -> Result<&'static game_core::TileMap, String> {
+    (*ZONE_TILE_MAPS)
+        .as_ref()
+        .map_err(Clone::clone)?
+        .get(zone_id)
 }
 
 /// Dialogue-trees registry: parsed once per process.
