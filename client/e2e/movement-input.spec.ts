@@ -208,33 +208,26 @@ async function corridorEastWest(p: Page, minX: number, maxX: number): Promise<Ti
   return t;
 }
 
-/** How long one `recenter` step may take to change the authoritative column. A step normally
- *  lands within a tick or two (STEP_MS each); the bound only has to outlast a stalled runner. */
-const RECENTER_STEP_TIMEOUT_MS = 8_000;
-
 /** SETUP ONLY. `__game().step()` bypasses `held` entirely (ADR-0158 residual 9), so it can
  *  prove NOTHING about keyboard input — it is used here purely to park the character in a
- *  known column before a keyboard-driven scenario begins. CLOSED LOOP: each step waits for the
- *  authoritative column to change before the next decision is made. A fixed sleep reads a stale
- *  column whenever the server takes longer than the sleep, issues one step too many and
- *  overshoots the target (seen as "Expected: 4, Received: 5" on a loaded CI runner). */
+ *  known column before a keyboard-driven scenario begins. CLOSED LOOP: every decision is made
+ *  from a SETTLED tile (prediction equal to authority, see `converged`), so neither a step of
+ *  its own nor a scenario's tap still in flight can be mistaken for the current column. A
+ *  fixed sleep, or a read of the authoritative tile alone, sees a stale column on a slow
+ *  runner and lands one tile off the target. */
 async function recenter(p: Page, targetX: number): Promise<void> {
-  for (let i = 0; i < 12; i += 1) {
-    const t = await tile(p);
-    if (t.x === targetX) break;
+  const settledTile = async (): Promise<Tile> => {
+    await converged(p);
+    return tile(p);
+  };
+  let t = await settledTile();
+  for (let i = 0; i < 12 && t.x !== targetX; i += 1) {
     const dir = t.x < targetX ? 'East' : 'West';
     await p.evaluate((d: string) => {
       (window as unknown as { __game: () => { step: (x: string) => void } }).__game().step(d);
     }, dir);
-    await expect
-      .poll(async () => (await tile(p)).x, {
-        message: `recenter: the ${dir} step from column ${t.x} must land`,
-        timeout: RECENTER_STEP_TIMEOUT_MS,
-      })
-      .not.toBe(t.x);
+    t = await settledTile();
   }
-  await converged(p);
-  const t = await tile(p);
   expect(t.x, `recenter(${targetX}) must actually reach column ${targetX} within 12 steps`).toBe(
     targetX,
   );
