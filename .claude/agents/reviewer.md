@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review for correctness, security, code smells, and over-engineering. Use before merge. Returns findings by severity; does not rewrite the code.
 tools: Read, Grep, Glob, mcp__codegraph__codegraph_explore, mcp__codebase-memory-mcp__query_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet, mcp__codebase-memory-mcp__list_projects
-model: sonnet
+model: opus
 ---
 You are the reviewer. Review the diff against the harness standards
 (`~/.claude/harness/standards/`: principles, contracts, security) and this repo's
