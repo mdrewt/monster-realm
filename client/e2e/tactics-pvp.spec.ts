@@ -25,6 +25,7 @@ import {
   type TacticsSnap,
   type Tile,
 } from './controls';
+import { sqlRows } from './stdb';
 
 // tactics-pvp.spec.ts — bt-15 increment A: the PvP pick, the PvP deploy panel and the secrecy of a
 // two-browser PvP battle (BT15.1, BT15.4), driven by VIRTUAL BUTTONS only.
@@ -190,20 +191,6 @@ function setNickname(monsterId: string, nickname: string, label: string): void {
   for (const table of ['monster', 'monster_pub']) {
     runSql(`UPDATE ${table} SET nickname = '${nickname}' WHERE monster_id = ${monsterId}`, label);
   }
-}
-
-function sqlRows(stdout: string, label: string): Record<string, string>[] {
-  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
-  const header = lines.shift();
-  const separator = lines.shift();
-  if (header === undefined || separator === undefined || !/^[-+]+$/.test(separator.trim())) {
-    throw new Error(`${label}: unrecognised spacetime sql table: ${stdout.slice(0, 300)}`);
-  }
-  const cols = header.split('|').map((c) => c.trim());
-  return lines.map((line) => {
-    const cells = line.split('|').map((c) => c.trim());
-    return Object.fromEntries(cols.map((c, i) => [c, cells[i] ?? '']));
-  });
 }
 
 /** The digits of an SQL cell (`123`, `(some = 123)`), or null (`(none = ())`, empty). */

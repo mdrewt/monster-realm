@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -20,6 +19,7 @@ import {
   turnKey,
   waitOwnTurnOrEnd,
 } from './controls';
+import { ownerSql } from './stdb';
 
 // participant-scoped `battle` privacy, end to end
 //
@@ -185,27 +185,6 @@ const HIT_LAND_GRACE_MS = 10_000;
 /** bt-16: A's starter seed (tactics-wild.spec.ts's precedent): a wild hit lands >= 1 HP, never a KO. */
 const SEED_HP = 300;
 const SEED_DEFENSE = 250;
-
-/** Owner SQL (literal-shaped statements only: letters, digits, spaces, `* = ( ) ,`), as the module
- *  owner (the CLI identity) — tactics-wild.spec.ts's idiom; charset-checked target. */
-function ownerSql(query: string, label: string): string {
-  const server = process.env.STDB_SERVER ?? 'local';
-  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
-  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
-    throw new Error(`${label}: STDB_SERVER/VITE_STDB_DB failed charset validation`);
-  }
-  if (!/^[A-Za-z0-9_ *=(),]+$/.test(query)) {
-    throw new Error(`${label}: refusing a non-literal-shaped sql statement: ${query}`);
-  }
-  try {
-    return execFileSync('spacetime', ['sql', '-s', server, db, query], {
-      encoding: 'utf8',
-      timeout: 15_000,
-    });
-  } catch (err) {
-    throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Grass tiles in zone 0 (recruit.spec.ts:167-175, verbatim reasoning). Spawn is

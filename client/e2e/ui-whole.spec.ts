@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -22,6 +21,7 @@ import {
   type Tile,
   throughResults,
 } from './controls';
+import { ownerSql } from './stdb';
 import { countMatching, expectNear, expectRect, measuredContrast, sampleStyle } from './uiKit';
 
 // ui-whole.spec.ts — uif-17 (M-ui-foundation): the INTEGRATED WHOLE, measured in Chromium at
@@ -995,27 +995,8 @@ async function walkScreen(p: Page, screen: Screen, ctx: WalkCtx): Promise<void> 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Owner SQL (one seed: a stack of Power Root, ui-inventory.spec.ts's statement).
+// Owner SQL seed (one stack of Power Root, so the Inventory sheet has an item).
 // ---------------------------------------------------------------------------------------------
-
-function ownerSql(query: string, label: string): string {
-  const server = process.env.STDB_SERVER ?? 'local';
-  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
-  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
-    throw new Error(`${label}: STDB_SERVER/VITE_STDB_DB failed charset validation`);
-  }
-  if (!/^[A-Za-z0-9_ *=(),]+$/.test(query)) {
-    throw new Error(`${label}: refusing a non-literal-shaped sql statement: ${query}`);
-  }
-  try {
-    return execFileSync('spacetime', ['sql', '-s', server, db, query], {
-      encoding: 'utf8',
-      timeout: 15_000,
-    });
-  } catch (err) {
-    throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
-  }
-}
 
 /** Seeds the Food stack once (the Inventory sheet needs an item), after which Feed is enabled. */
 async function ensureFood(p: Page): Promise<void> {

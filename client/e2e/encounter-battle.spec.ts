@@ -32,6 +32,7 @@ import {
   waitExecuted,
   waitOwnTurnOrEnd,
 } from './controls';
+import { sqlRows } from './stdb';
 
 // encounter-battle.spec.ts — walk into grass, meet a wild monster, fight it to a WIN (de-bloat
 // Phase 3 gameplay smoke).
@@ -180,20 +181,6 @@ function sql(query: string, label: string): string {
   } catch (err) {
     throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
   }
-}
-
-function sqlRows(stdout: string, label: string): Record<string, string>[] {
-  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
-  const header = lines.shift();
-  const separator = lines.shift();
-  if (header === undefined || separator === undefined || !/^[-+]+$/.test(separator.trim())) {
-    throw new Error(`${label}: unrecognised spacetime sql table: ${stdout.slice(0, 300)}`);
-  }
-  const cols = header.split('|').map((c) => c.trim());
-  return lines.map((line) => {
-    const cells = line.split('|').map((c) => c.trim());
-    return Object.fromEntries(cols.map((c, i) => [c, cells[i] ?? '']));
-  });
 }
 
 const normId = (id: string): string => id.toLowerCase().replace(/^0x/, '');
