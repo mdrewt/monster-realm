@@ -240,11 +240,61 @@ pub fn map_for(zone_id: u32, zone_maps: &[crate::content::ZoneMapDef]) -> Result
     let def = zone_maps
         .iter()
         .find(|m| m.zone_id == zone_id)
-        .ok_or_else(|| format!("no zone map for zone_id {zone_id}"))?;
+        .ok_or_else(|| no_zone_map(zone_id))?;
+    map_from_def(def)
+}
+
+/// The one "unknown zone" error text, shared by `map_for` and `ZoneTileMaps::get`.
+fn no_zone_map(zone_id: u32) -> String {
+    format!("no zone map for zone_id {zone_id}")
+}
+
+/// One `ZoneMapDef` → its `TileMap` (grid + warp overlay).
+fn map_from_def(def: &crate::content::ZoneMapDef) -> Result<TileMap, String> {
     let row_refs: Vec<&str> = def.rows.iter().map(String::as_str).collect();
-    let mut map = build_grid(zone_id, &row_refs)?;
+    let mut map = build_grid(def.zone_id, &row_refs)?;
     map.warps = def.warps.clone();
     Ok(map)
+}
+
+/// Every zone's `TileMap`, built ONCE from a `zone_maps` registry, so a caller
+/// that needs a map repeatedly (the server's per-zone movement tick) borrows it
+/// instead of rebuilding the grid each time. A pure value: game-core holds no
+/// cache; the owner decides how long it lives.
+///
+/// `get(z)` is `map_for(z, zone_maps)` by reference — same map, same error
+/// text, per zone: one zone's malformed rows fail only that zone's lookups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZoneTileMaps {
+    /// Registry order; `get` takes the FIRST match, like `map_for`.
+    built: Vec<(u32, Result<TileMap, String>)>,
+}
+
+impl ZoneTileMaps {
+    #[must_use]
+    pub fn build(zone_maps: &[crate::content::ZoneMapDef]) -> Self {
+        Self {
+            built: zone_maps
+                .iter()
+                .map(|def| (def.zone_id, map_from_def(def)))
+                .collect(),
+        }
+    }
+
+    /// The prebuilt map for `zone_id`.
+    ///
+    /// # Errors
+    /// Exactly `map_for`'s: `Err` naming `zone_id` if the registry has no such
+    /// zone, or that zone's build error (ragged rows / unknown glyph).
+    pub fn get(&self, zone_id: u32) -> Result<&TileMap, String> {
+        self.built
+            .iter()
+            .find(|(id, _)| *id == zone_id)
+            .ok_or_else(|| no_zone_map(zone_id))?
+            .1
+            .as_ref()
+            .map_err(Clone::clone)
+    }
 }
 
 /// Validate a `zone_maps` slice against the `zones` registry.
@@ -508,8 +558,8 @@ pub fn apply_move_coded(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_move, map_for, spawn, validate_zone_maps, zone_0, TileMap, MOVE_QUEUE_CAP, STEP_MS,
-        ZONE_0_ROWS,
+        apply_move, map_for, spawn, validate_zone_maps, zone_0, TileMap, ZoneTileMaps,
+        MOVE_QUEUE_CAP, STEP_MS, ZONE_0_ROWS,
     };
     use crate::content::{HealLocationDef, NpcDef, WarpDef, ZoneDef, ZoneMapDef};
     use crate::types::{ActionState, CharacterState, Direction, Millis, MoveInput, TilePos};
@@ -680,6 +730,51 @@ mod tests {
             err.contains("0"),
             "error must name the missing zone_id (0), got: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ZoneTileMaps — the build-once table is `map_for` by reference
+    // -----------------------------------------------------------------------
+
+    /// For every shipped zone (and one absent id) `ZoneTileMaps::get` returns
+    /// exactly what `map_for` builds fresh — grid, terrain and warps.
+    #[test]
+    fn zone_tile_maps_get_equals_map_for_on_shipped_content() {
+        let zone_maps = crate::content::load_zone_maps().expect("zone-maps content must load");
+        assert!(!zone_maps.is_empty(), "shipped content has zones");
+        let table = ZoneTileMaps::build(&zone_maps);
+        let absent = zone_maps.iter().map(|m| m.zone_id).max().unwrap_or(0) + 1;
+        for zone_id in zone_maps.iter().map(|m| m.zone_id).chain([absent]) {
+            assert_eq!(
+                table.get(zone_id).cloned(),
+                map_for(zone_id, &zone_maps),
+                "zone {zone_id}"
+            );
+        }
+    }
+
+    /// Error behaviour is per zone and identical to `map_for`: a malformed zone
+    /// fails only its own lookups, a duplicate id resolves to the FIRST def, and
+    /// an unknown id names itself.
+    #[test]
+    fn zone_tile_maps_get_matches_map_for_errors_and_first_match() {
+        let zone_maps = vec![
+            zone_map_def(0, vec!["...", "..."], vec![]),
+            zone_map_def(1, vec!["...", ".."], vec![]), // ragged
+            zone_map_def(2, vec![".?."], vec![]),       // unknown glyph
+            zone_map_def(0, vec!["#"], vec![]),         // duplicate id, shadowed
+        ];
+        let table = ZoneTileMaps::build(&zone_maps);
+        for zone_id in [0, 1, 2, 99] {
+            assert_eq!(
+                table.get(zone_id).cloned(),
+                map_for(zone_id, &zone_maps),
+                "zone {zone_id}"
+            );
+        }
+        assert_eq!(table.get(0).map(|m| m.width), Ok(3));
+        assert!(table.get(1).is_err() && table.get(2).is_err());
+        assert_eq!(table.get(99), Err("no zone map for zone_id 99".to_string()));
     }
 
     // -----------------------------------------------------------------------

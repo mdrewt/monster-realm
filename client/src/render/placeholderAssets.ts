@@ -96,6 +96,11 @@ export class PlaceholderAssets implements AssetProvider {
     destroyAllTextures(this.#cache);
   }
 
+  /** Generated textures come back empty from a context restore: drop them all. */
+  contextRestored(): void {
+    destroyAllTextures(this.#cache);
+  }
+
   texture(action: WasmAction, facing: WasmDirection): Texture {
     const key = animKey(action, facing);
     const hit = this.#cache.get(key);

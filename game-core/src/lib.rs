@@ -110,8 +110,8 @@ pub use types::{
 };
 pub use world::{
     apply_move, apply_move_coded, check_party_slot, map_for, spawn, stepped_onto_grass,
-    validate_zone_maps, zone_0, SlotError, TileMap, MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE,
-    STEP_MS,
+    validate_zone_maps, zone_0, SlotError, TileMap, ZoneTileMaps, MOVE_QUEUE_CAP, PARTY_SIZE,
+    PARTY_SLOT_NONE, STEP_MS,
 };
 
 /// a pure, deterministic state transition over an
