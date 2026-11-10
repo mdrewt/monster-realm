@@ -4123,7 +4123,7 @@ function snapshot() {
     })(),
     step,
     jump,
-    // wap-10: the renderer's account of what it drew (terrain, decor, post stack), and a test
+    // The renderer's account of what it drew (terrain, decor, post stack), and a test
     // switch for the post stack's passes; the live game keeps every pass off (DECISIONS.md).
     // Called optionally: the main.*.test.ts shells stand a fake renderer in that lacks it.
     art: renderer?.describeArt?.() ?? null,

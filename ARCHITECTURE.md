@@ -450,8 +450,8 @@ the canvas.
 - Terrain (`#drawMap`, `world.ts:461`): `planChunks` bakes static tiles into
   nearest-sampled chunk textures at the device scale (`world.ts:490`). Animated water
   stays as per-tile sprites whose texture changes only when the frame index changes. The
-  bake runs before the old terrain is torn down, so a failed bake leaves the old terrain
-  drawn.
+  bake runs before the drawn terrain is torn down, so a failed bake leaves the previous
+  terrain on screen.
 - Decor (`#drawDecor`, `world.ts:523`): `layoutDecor` (`render/decorLayout.ts:56`)
   places a landmark per heal-location row and a warp marker per warp source tile, from the
   map's content rows. Landmarks are two tiles tall and join the actors' row z-order. Warp

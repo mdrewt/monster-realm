@@ -255,7 +255,7 @@ export class WorldRenderer {
   #postToggles: PostStackToggles = NO_POST_STACK;
   #keyframe: GradeKeyframe = LIVE_KEYFRAME;
   #postResolution = 0;
-  // wap-10: the terrain the last #drawMap put on screen (describeArt reports it).
+  // The terrain the last #drawMap put on screen (describeArt reports it).
   #drawnTerrain: DrawnTerrain | undefined;
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
@@ -716,7 +716,7 @@ export class WorldRenderer {
     return worldToScreen(world, this.#lastOffset, this.#vs.stageScale);
   }
 
-  /** What the world layer last drew (wap-10): the terrain kind, kit frame per tile and class
+  /** What the world layer last drew: the terrain kind, kit frame per tile and class
    *  histogram as of the last successful terrain draw, the decor sprites on the stage with
    *  their screen rects (from each sprite's own bounds, under the transform `screenFor`
    *  uses), and the post passes attached to the world layer. Read-only; undefined until
