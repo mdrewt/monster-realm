@@ -112,3 +112,14 @@ export const WATER_FRAME_MS = 400;
  *  WHY 16: a 16-tile chunk is 512 source px, so even at device scale 4 a chunk texture is
  *  2048 px — inside every WebGL2 max-texture size — while a 40×28 zone needs only 6 chunks. */
 export const TERRAIN_CHUNK_TILES = 16;
+
+/** Most textures the sprite batcher may sample in one draw call.
+ *  WHAT: caps Pixi's `renderer.limits.maxBatchableTextures`; a batch that needs more textures
+ *  is split into another draw call.
+ *  WHY 4: Pixi's batch fragment shader picks its texture with an if/else chain as long as this
+ *  limit, evaluated for every covered pixel. A hardware GPU does not notice, but a software
+ *  rasteriser (SwiftShader: headless CI, or a player whose browser has no usable GPU) pays for
+ *  the whole chain per pixel, and reports a limit of 32. Measured on a full-canvas zone under
+ *  SwiftShader on 2 cores: limit 32 holds 30 fps, limit 4 holds 60 fps, with identical pixels.
+ *  The world draws from about seven textures, so 4 costs at most two extra draw calls. */
+export const MAX_BATCH_TEXTURES = 4;

@@ -485,3 +485,31 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
     }
   });
 });
+
+describe('contextRestored — generated textures do not survive a WebGL context restore', () => {
+  it('destroys every generated texture, and the next texture() call regenerates', () => {
+    let generated = 0;
+    const destroyed: number[] = [];
+    const renderer = {
+      generateTexture() {
+        const id = generated++;
+        return {
+          destroy() {
+            destroyed.push(id);
+          },
+        };
+      },
+    } as unknown as Renderer;
+    const assets = new PlaceholderAssets(renderer);
+    const before = assets.texture('Idle', 'South');
+    assets.texture('Walking', 'East');
+    expect(assets.texture('Idle', 'South')).toBe(before); // cached until the restore
+
+    assets.contextRestored();
+
+    expect(destroyed.sort()).toEqual([0, 1]);
+    const after = assets.texture('Idle', 'South');
+    expect(after).not.toBe(before);
+    expect(generated).toBe(3);
+  });
+});
