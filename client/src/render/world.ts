@@ -24,23 +24,37 @@
 // under every actor, their pulse swapping texture only when its frame index changes.
 // Without the landmarks atlas no decor is drawn.
 //
+// wap-9: the post stack (`postStack.ts` plans it) filters the world layer only — one
+// container holding the terrain, decor and actors, never the stage or the DOM UI. Its
+// godray time is the injected clock (held under reduced motion); where filters are
+// unsupported or a pass fails to build, the world draws unfiltered.
+//
 // Drawing: Pixi's own ticker is stopped (`appInitOptions`), so nothing is drawn unless
 // this class draws it — `render()` once per frame-loop frame, and `resize()` because a
 // resize clears the canvas. A restored WebGL context re-applies the batch-texture cap
 // and re-bakes the chunk and placeholder textures, which Pixi cannot restore itself.
+
 import {
   Application,
   Assets,
+  BufferImageSource,
   Container,
+  type Filter,
   Graphics,
   Rectangle,
+  RendererType,
   Sprite,
   type Spritesheet,
-  type Texture,
+  Texture,
 } from 'pixi.js';
+import { AdvancedBloomFilter } from 'pixi-filters/advanced-bloom';
+import { ColorMapFilter } from 'pixi-filters/color-map';
+import { GodrayFilter } from 'pixi-filters/godray';
+import { SimpleLightmapFilter } from 'pixi-filters/simple-lightmap';
 import type { WasmAction, WasmDirection } from '../convert/convert';
 import { t } from '../ui/a11yCopy';
 import { HERO_SHEET_FILE } from './art/packs/characters';
+import { GRADE_KEYFRAMES, type GradeKeyframe, LIVE_KEYFRAME, LUT_FILE } from './art/packs/grade';
 import { LANDMARKS_FILE } from './art/packs/landmarks';
 import { TERRAIN_KIT_FILE } from './art/packs/terrain';
 import { createCharacterAssets, type HeroAtlas } from './atlasAssets';
@@ -50,6 +64,17 @@ import { CharacterView } from './characterView';
 import { MAX_BATCH_TEXTURES, TILE_PX } from './config';
 import { layoutDecor, warpFrameIndex } from './decorLayout';
 import { type RawTileMap, TileMap } from './map';
+import {
+  godrayTime,
+  LIGHTMAP_SIZE,
+  LIVE_POST_STACK,
+  lightmapPixels,
+  type PostPass,
+  type PostStackToggles,
+  type PostSupport,
+  planPostStack,
+  type VignetteFalloff,
+} from './postStack';
 import {
   type Chunk,
   ChunkCache,
@@ -151,6 +176,18 @@ export class WorldRenderer {
   #landmarksSheet: Spritesheet | undefined;
   #landmarkSprites: Sprite[] = [];
   #warpMarkers: AnimatedTile[] = [];
+  // wap-9 post stack: the world layer the filters attach to (the three layers above,
+  // never the stage), the LUTs by keyframe (a missing one fails the LUT pass), the
+  // lightmap texture, the live filters, the godray among them (its time advances per
+  // frame), and the toggles + keyframe the stack is planned from.
+  readonly #world = new Container();
+  #luts = new Map<GradeKeyframe, Texture>();
+  #lightmap: Texture | undefined;
+  #filters: Filter[] = [];
+  #godray: GodrayFilter | undefined;
+  #postToggles: PostStackToggles = LIVE_POST_STACK;
+  #keyframe: GradeKeyframe = LIVE_KEYFRAME;
+  #postResolution = 0;
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
@@ -187,15 +224,21 @@ export class WorldRenderer {
     // between the two would silently draw the first frame at scale 1.
     this.#vs = viewportScale(cssW, cssH, dpr);
     app.stage.scale.set(this.#vs.stageScale);
-    app.stage.addChild(this.#bg);
-    app.stage.addChild(this.#decor);
-    app.stage.addChild(this.#actors);
+    this.#world.addChild(this.#bg);
+    this.#world.addChild(this.#decor);
+    this.#world.addChild(this.#actors);
+    app.stage.addChild(this.#world);
     // e-4: Pixi sorts children by zIndex when sortableChildren is true.
     // This replaces the O(n²) setChildIndex loop with O(n log n) auto-sort.
     this.#actors.sortableChildren = true;
     this.#app = app;
     this.#map = map;
-    const [kit, hero, landmarks] = await Promise.all([loadKit(), loadHero(), loadLandmarks()]);
+    const [kit, hero, landmarks, luts] = await Promise.all([
+      loadKit(),
+      loadHero(),
+      loadLandmarks(),
+      loadLuts(),
+    ]);
     const releaseHero = (): void => {
       Assets.unload(HERO_ATLAS_URL).catch((err) =>
         console.warn('render/world: hero atlas failed to unload', err),
@@ -205,6 +248,7 @@ export class WorldRenderer {
       // destroy() ran while the atlases loaded: the hero and landmarks sheets have no owner yet.
       if (hero !== undefined) releaseHero();
       if (landmarks !== undefined) releaseLandmarks();
+      releaseLuts(luts);
       return;
     }
     this.#assets = createCharacterAssets(app.renderer, hero, releaseHero);
@@ -217,10 +261,107 @@ export class WorldRenderer {
         (texture) => texture.destroy(true),
       );
     this.#landmarksSheet = landmarks;
+    this.#luts = luts;
     // A setMap() that ran while the atlases loaded already replaced #map: draw that one.
     const current = this.#map ?? map;
     this.#drawMap(current);
     this.#drawDecor(current);
+    this.#applyPostStack();
+  }
+
+  /** Choose the post stack's passes and keyframe (the live game keeps every pass on and
+   *  `day`; the look-dev scene drives this). Rebuilds the filters; the next render() draws. */
+  setPostStack(options: { toggles?: PostStackToggles; keyframe?: GradeKeyframe }): void {
+    this.#postToggles = options.toggles ?? this.#postToggles;
+    this.#keyframe = options.keyframe ?? this.#keyframe;
+    this.#applyPostStack();
+  }
+
+  /** Build the world layer's filters from `planPostStack`. A pass that throws while it is
+   *  built (or while the probe frame draws it) re-plans the stack as failed, so the world
+   *  draws unfiltered with one warning. A driver that fails a shader without throwing is
+   *  not detected here. */
+  #applyPostStack(): void {
+    const app = this.#app;
+    if (app === undefined || this.#assets === undefined) return;
+    const plan = (support: PostSupport) =>
+      planPostStack({
+        toggles: this.#postToggles,
+        nowMs: 0,
+        reduceMotion: false,
+        keyframe: this.#keyframe,
+        resolution: app.renderer.resolution,
+        support,
+      });
+    this.#clearPostStack();
+    let result = plan(
+      (app.renderer.type & RendererType.BOTH) !== 0
+        ? { kind: 'supported' }
+        : { kind: 'unsupported', detail: `renderer type ${app.renderer.type}` },
+    );
+    const built: Filter[] = [];
+    let building: PostPass['id'] | undefined;
+    try {
+      for (const pass of result.passes) {
+        building = pass.id;
+        built.push(this.#buildPass(pass));
+      }
+      building = undefined;
+      this.#world.filters = built.length > 0 ? built : null;
+      if (built.length > 0) app.render();
+    } catch (err) {
+      this.#world.filters = null;
+      for (const filter of built) filter.destroy();
+      built.length = 0;
+      // A throw from the probe frame names no single pass: blame the last one planned.
+      const pass = building ?? result.passes[result.passes.length - 1]?.id ?? 'lut';
+      result = plan({ kind: 'pass-failed', pass, detail: String(err) });
+    }
+    for (const warning of result.warnings) {
+      console.warn(`render/world: post stack disabled (${warning.code}): ${warning.detail}`);
+    }
+    this.#filters = built;
+    this.#godray = built.find((f): f is GodrayFilter => f instanceof GodrayFilter);
+    this.#postResolution = app.renderer.resolution;
+  }
+
+  /** One planned pass as its pixi-filters filter, at the plan's resolution. */
+  #buildPass(pass: PostPass): Filter {
+    let filter: Filter;
+    switch (pass.id) {
+      case 'lightmap':
+        this.#lightmap ??= lightmapTexture(pass.vignette);
+        filter = new SimpleLightmapFilter({ ...pass.options, lightMap: this.#lightmap });
+        break;
+      case 'bloom':
+        filter = new AdvancedBloomFilter({ ...pass.options });
+        break;
+      case 'godray':
+        filter = new GodrayFilter({ ...pass.options });
+        break;
+      case 'lut': {
+        const lut = this.#luts.get(this.#keyframe);
+        if (lut === undefined) throw new Error(`no LUT for "${this.#keyframe}"`);
+        // ColorMapFilter.destroy() destroys its colour map: hand it a wrapper, never the
+        // cached LUT texture itself.
+        filter = new ColorMapFilter({
+          ...pass.options,
+          colorMap: new Texture({ source: lut.source }),
+        });
+        break;
+      }
+    }
+    filter.resolution = pass.resolution;
+    filter.antialias = 'off';
+    return filter;
+  }
+
+  /** Detach and destroy the live filters (the LUT and lightmap textures stay owned here). */
+  #clearPostStack(): void {
+    this.#world.filters = null;
+    for (const filter of this.#filters) filter.destroy();
+    this.#filters = [];
+    this.#godray = undefined;
   }
 
   /** A restored WebGL context comes back with Pixi's limits re-read from the device and
@@ -396,6 +537,7 @@ export class WorldRenderer {
       for (const marker of this.#warpMarkers) {
         showFrame(marker, warpFrameIndex(nowMs, reduceMotion, marker.frames.length));
       }
+      if (this.#godray !== undefined) this.#godray.time = godrayTime(nowMs, reduceMotion);
     }
     const { created, removed } = this.#registry.reconcile(entities.map((e) => e.entityId));
     for (const id of created) {
@@ -460,6 +602,10 @@ export class WorldRenderer {
     if (map !== undefined && (this.#chunks?.size ?? 0) > 0 && vs.deviceScale !== this.#chunkScale) {
       this.#drawMap(map);
     }
+    // The filters render at the renderer's resolution: a dpr change rebuilds them.
+    if (this.#filters.length > 0 && app.renderer.resolution !== this.#postResolution) {
+      this.#applyPostStack();
+    }
     // Resizing cleared the canvas, and the frame loop may be parked (session terminal).
     app.render();
   }
@@ -498,6 +644,12 @@ export class WorldRenderer {
       this.#landmarksSheet = undefined;
       releaseLandmarks();
     }
+    // The filters, their lightmap and the LUTs are not in the stage tree either.
+    this.#clearPostStack();
+    this.#lightmap?.destroy(true);
+    this.#lightmap = undefined;
+    releaseLuts(this.#luts);
+    this.#luts = new Map();
     this.#app?.canvas.removeEventListener('webglcontextrestored', this.#onContextRestored);
     this.#app?.destroy(true);
     this.#app = undefined;
@@ -548,6 +700,45 @@ function releaseLandmarks(): void {
   Assets.unload(LANDMARKS_ATLAS_URL).catch((err) =>
     console.warn('render/world: landmarks atlas failed to unload', err),
   );
+}
+
+/** Load every keyframe's LUT (`nearest`, constraint 7a). A missing one is not fatal: its
+ *  absence fails the LUT pass, which plans the stack disabled. */
+async function loadLuts(): Promise<Map<GradeKeyframe, Texture>> {
+  const luts = new Map<GradeKeyframe, Texture>();
+  await Promise.all(
+    GRADE_KEYFRAMES.map(async (keyframe) => {
+      try {
+        const lut = await Assets.load<Texture>({
+          src: lutUrl(keyframe),
+          data: { scaleMode: 'nearest' },
+        });
+        luts.set(keyframe, lut);
+      } catch (err) {
+        console.warn(`render/world: ${keyframe} LUT failed to load`, err);
+      }
+    }),
+  );
+  return luts;
+}
+
+function releaseLuts(luts: ReadonlyMap<GradeKeyframe, Texture>): void {
+  for (const keyframe of luts.keys()) {
+    Assets.unload(lutUrl(keyframe)).catch((err) =>
+      console.warn(`render/world: ${keyframe} LUT failed to unload`, err),
+    );
+  }
+}
+
+const lutUrl = (keyframe: GradeKeyframe): string => `assets/${LUT_FILE[keyframe]}`;
+
+/** The ambient lightmap texture: a smooth gradient, so it samples linearly. */
+function lightmapTexture(vignette: VignetteFalloff): Texture {
+  const { w, h } = LIGHTMAP_SIZE;
+  const pixels = lightmapPixels(w, h, vignette);
+  return new Texture({
+    source: new BufferImageSource({ resource: pixels, width: w, height: h, scaleMode: 'linear' }),
+  });
 }
 
 /** Bake one chunk's static tiles into a texture with the cache's options. */
