@@ -235,9 +235,13 @@ export class WorldRenderer {
       this.clear();
       this.#assets.contextRestored();
     }
-    const map = this.#map;
-    if (map !== undefined && (this.#chunks?.size ?? 0) > 0) this.#drawMap(map);
-    app.render();
+    try {
+      const map = this.#map;
+      if (map !== undefined && (this.#chunks?.size ?? 0) > 0) this.#drawMap(map);
+    } finally {
+      // Draw even if the re-bake threw: the frame loop may be parked (session terminal).
+      app.render();
+    }
   };
 
   #drawMap(map: TileMap): void {

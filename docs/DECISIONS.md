@@ -1029,7 +1029,7 @@ because a resize clears the canvas. The renderer caps `renderer.limits.maxBatcha
 limit from the device on a context change. On a context restore it also re-bakes the terrain chunk
 textures and drops the generated placeholder character textures (`AssetProvider.contextRestored`), since a
 rendered texture comes back empty. `client/e2e/render-context.spec.ts` loses and restores the context in a
-real browser and compares the canvas before and after.
+real browser and compares the canvas before and after, and counts one canvas clear per animation frame.
 
 **Why.** Pixi's batch fragment shader chooses its texture with an if/else chain as long as the batch
 limit, evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser
@@ -1038,7 +1038,9 @@ for the whole chain per pixel, so the cost grows with how much of the canvas the
 headless Chromium on 2 cores at 1280x720 (medians of 3 interleaved blocks): on the 10x7 zone, idle browser
 CPU fell from 118% to 63%; on a 28x20 zone that fills the canvas it fell from 177% to 107%, the frame rate
 rose from 39 to 60 fps, and the median CDP key acknowledgement fell from 25 ms to 4.9 ms. Pixels are
-identical; the larger zone takes 2 draw calls instead of 1. Two tickers meant Pixi drew the state the frame
+identical; the larger zone takes 2 draw calls instead of 1. The cap covers the sprite batcher, which
+draws the whole kit-atlas world; the flat-terrain fallback's large `Graphics` uses a separate Pixi shader
+built at the device limit before the cap can apply. Two tickers meant Pixi drew the state the frame
 loop resolved on the PREVIOUS animation frame; with one owner a frame is presented in the task that
 resolved it. Before this, the terrain stayed blank after a context restore (30% of the canvas on the small
 zone, 98% on the large one).

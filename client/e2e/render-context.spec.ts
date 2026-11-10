@@ -1,28 +1,32 @@
 import { expect, type Page, test } from '@playwright/test';
 
-// render-context.spec.ts — the world survives a WebGL context loss.
+// render-context.spec.ts — who draws the world, and that it survives a WebGL context loss.
 //
-// A browser may drop a page's WebGL context at any time (GPU process restart, driver reset, a
-// backgrounded mobile tab). Pixi restores image-backed textures by itself, but a texture that was
-// RENDERED (the baked terrain chunks) comes back empty, so the renderer must re-bake on restore.
-// The same screenshots prove the frame loop is what draws: Pixi's own ticker is stopped, so a
-// frame loop that stopped drawing would leave the canvas one flat colour.
+// 1. ONE DRAW PER FRAME. Pixi's own ticker is stopped; the frame loop draws. The canvas is cleared
+//    exactly once per animation frame: zero means the frame loop stopped drawing (the world would
+//    freeze on its last resize), two means a second owner is drawing again.
+// 2. CONTEXT RESTORE. A browser may drop a page's WebGL context at any time (GPU process restart,
+//    driver reset, a backgrounded mobile tab). Pixi restores image-backed textures by itself, but a
+//    texture that was RENDERED (the baked terrain chunks) comes back empty, so the renderer must
+//    re-bake on restore.
 //
-// ORACLE. Two screenshots of the same idle scene, before the loss and after the restore, compared
-// pixel by pixel in the page. Reduced motion holds the water and warp animations on frame 0, so the
-// only legitimate differences are a wandering NPC's few tiles.
+// ORACLES. (1) counts `clear` calls on the WebGL prototypes against `requestAnimationFrame`
+// callbacks. (2) compares two screenshots of the same idle scene, before the loss and after the
+// restore, pixel by pixel in the page. Reduced motion holds the water and warp animations on frame
+// 0, so the only legitimate differences are a wandering NPC's few tiles.
 //
-// HYGIENE. One page, closed with the test; no fixed sleep decides an assertion.
+// HYGIENE. One page per test, closed with it; no fixed sleep decides an assertion.
 //
 // REDS AT MASTER: the restore assertion. The terrain stays blank after a restore there (measured:
-// 30% of the 1280x720 canvas differs on the 10x7 zone, 98% on a zone that fills the canvas).
+// 30% of the 1280x720 canvas differs on the 10x7 zone, 98% on a zone that fills the canvas). The
+// one-draw test is green at master (Pixi's ticker drew once per frame too); it pins the new owner.
 
 test.use({ viewport: { width: 1280, height: 720 }, contextOptions: { reducedMotion: 'reduce' } });
 
 /** Largest share of the canvas a wandering NPC can repaint between the two screenshots. */
 const MAX_CHANGED_FRACTION = 0.02;
-/** A drawn world shows far more colours than this; a canvas nothing drew to shows one. */
-const MIN_DRAWN_COLOURS = 8;
+/** Animation frames the one-draw-per-frame count runs over. */
+const COUNTED_FRAMES = 60;
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -42,13 +46,9 @@ async function ready(p: Page): Promise<void> {
 const canvasShot = async (p: Page): Promise<string> =>
   (await p.locator('canvas').screenshot()).toString('base64');
 
-interface Comparison {
-  readonly changedFraction: number;
-  readonly coloursInFirst: number;
-}
-
-/** Decode both PNGs in the page and compare them (no image dependency in the test runner). */
-const compare = (p: Page, first: string, second: string): Promise<Comparison> =>
+/** Decode both PNGs in the page; the share of pixels that differ (no image dependency in the
+ *  test runner). */
+const changedFraction = (p: Page, first: string, second: string): Promise<number> =>
   p.evaluate(
     async ([a, b]) => {
       const pixels = async (png: string): Promise<Uint8ClampedArray> => {
@@ -60,14 +60,12 @@ const compare = (p: Page, first: string, second: string): Promise<Comparison> =>
         return ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
       };
       const [pa, pb] = [await pixels(a), await pixels(b)];
-      if (pa.length !== pb.length) return { changedFraction: 1, coloursInFirst: 0 };
-      const colours = new Set<number>();
+      if (pa.length !== pb.length) return 1;
       let changed = 0;
       for (let i = 0; i < pa.length; i += 4) {
-        colours.add((pa[i] << 16) | (pa[i + 1] << 8) | pa[i + 2]);
         if (pa[i] !== pb[i] || pa[i + 1] !== pb[i + 1] || pa[i + 2] !== pb[i + 2]) changed++;
       }
-      return { changedFraction: changed / (pa.length / 4), coloursInFirst: colours.size };
+      return changed / (pa.length / 4);
     },
     [first, second] as const,
   );
@@ -103,7 +101,47 @@ const loseAndRestoreContext = (p: Page): Promise<{ lost: boolean; restored: bool
       }),
   );
 
+test('the frame loop draws the world exactly once per animation frame', async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __clears: number };
+    w.__clears = 0;
+    for (const proto of [WebGL2RenderingContext.prototype, WebGLRenderingContext.prototype]) {
+      const clear = proto.clear;
+      proto.clear = function (this: WebGLRenderingContext, mask: number): void {
+        w.__clears++;
+        clear.call(this, mask);
+      };
+    }
+  });
+  await page.goto('/');
+  await ready(page);
+
+  const clears = await page.evaluate(
+    (frames) =>
+      new Promise<number>((resolve) => {
+        const w = window as unknown as { __clears: number };
+        let left = frames;
+        let start = 0;
+        const tick = (): void => {
+          // Start counting from inside a frame, so both ends of the window fall on a frame edge.
+          if (left === frames) start = w.__clears;
+          if (left-- === 0) resolve(w.__clears - start);
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    COUNTED_FRAMES,
+  );
+  // One frame of slack at each end: this callback and the frame loop's are separate callbacks
+  // of the same animation frame.
+  expect(clears, 'canvas clears over the counted frames').toBeGreaterThanOrEqual(
+    COUNTED_FRAMES - 1,
+  );
+  expect(clears, 'canvas clears over the counted frames').toBeLessThanOrEqual(COUNTED_FRAMES + 1);
+});
+
 test('the world redraws its terrain after a WebGL context loss and restore', async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto('/');
   await ready(page);
 
@@ -113,15 +151,13 @@ test('the world redraws its terrain after a WebGL context loss and restore', asy
     .poll(
       async () => {
         const next = await canvasShot(page);
-        const result = await compare(page, before, next);
+        const changed = await changedFraction(page, before, next);
         before = next;
-        return result.changedFraction;
+        return changed;
       },
       { message: 'the idle scene settles', timeout: 20_000 },
     )
     .toBeLessThanOrEqual(MAX_CHANGED_FRACTION);
-  const drawn = await compare(page, before, before);
-  expect(drawn.coloursInFirst, 'the frame loop drew the world').toBeGreaterThan(MIN_DRAWN_COLOURS);
 
   expect(await loseAndRestoreContext(page), 'the context was lost, then restored').toEqual({
     lost: true,
@@ -129,7 +165,7 @@ test('the world redraws its terrain after a WebGL context loss and restore', asy
   });
 
   await expect
-    .poll(async () => (await compare(page, before, await canvasShot(page))).changedFraction, {
+    .poll(async () => changedFraction(page, before, await canvasShot(page)), {
       message: 'the restored world matches the world before the loss',
       timeout: 20_000,
     })
