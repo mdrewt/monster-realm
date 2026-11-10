@@ -90,6 +90,31 @@ pose.
 
 Every animation holds a static frame while reduced motion is set.
 
+## Post stack
+
+The world layer (terrain, decor, actors; never the DOM UI) runs four passes in
+this order: an ambient lightmap with a vignette falloff, AdvancedBloom on the
+brightest highlights, Godray, then a ColorMap LUT grade. Each pass can be turned
+off on its own, and an off pass is not run at all. Each time-of-day keyframe is a
+LUT from `client/art-src/generate_luts.py` plus an ambient light colour: `day`
+(a light warm lift on the identity), `dusk` (warm, less blue) and `night` (cool,
+dark, desaturated). The renderer starts with the stack off at `day`.
+
+**Frame-time budget per pass**, measured by the look-dev scene
+(`client/e2e/lookdev.spec.ts`, WAP9.6): mean of 20 frames, each one `render()`
+followed by a one-pixel `readPixels` sync. 1280×720 at DPR 1, headless Chromium
+with software GL (SwiftShader), on a 16-core Ryzen 9 9950X under WSL2. A hardware
+GPU is far faster. These numbers are a record, not a gate.
+
+| Stack | ms / frame |
+|---|---|
+| none | 2.0 |
+| lightmap alone | 4.0 |
+| bloom alone | 14.2 |
+| godray alone | 19.9 |
+| LUT alone | 3.9 |
+| all four | 35.1 |
+
 ## Names and atlas keys
 
 - **Registry key:** `<pack>/<id>`, where `<pack>` is one of `characters`,
