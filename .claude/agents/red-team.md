@@ -16,6 +16,9 @@ harness `code-intel` skill); union both graphs, they miss different edges.
 
 Exploratory PoCs are scratch: put them in a `mktemp -d` sandbox, never in the
 repo tree — recursive deletes inside the repo are guard-blocked by design, so
-an in-tree scratch dir costs a blocked `rm -rf` plus file-by-file cleanup; a
-tmpdir needs none. Promote a confirmed finding into a permanent gating test
-via the tester; everything else is a report, not a committed file.
+an in-tree scratch dir costs a blocked `rm -rf` plus file-by-file cleanup. A
+sandbox holding plain files needs no cleanup; one holding a git worktree does:
+`git worktree remove --force <path>` before you finish, or git keeps a stale
+record and the checkout and its build output stay on disk. Promote a confirmed
+finding into a permanent gating test via the tester; everything else is a
+report, not a committed file.
