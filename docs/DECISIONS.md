@@ -1019,3 +1019,20 @@ since been deleted. Their rows cite it as `<path>@<commit>`.
 assets until counsel signs off; renaming an atlas key to swap art; asserting a file count in place of the
 directory-against-registry check. A release gate that every row is `final` is deferred to the launch
 checklist.
+
+## The client builds for `esnext`; the wasm import is a native top-level await
+
+**Decision.** `client/vite.config.ts` sets `build.target: 'esnext'` and no longer uses
+`vite-plugin-top-level-await`. The wasm-pack `bundler` package is still resolved by `vite-plugin-wasm`, and
+its async init is awaited at module top level by the browser itself. The supported floor is therefore every
+browser with native top-level await: Chrome 89, Firefox 89, Safari 15.
+
+**Why.** The plugin rewrote top-level await for older targets and re-emitted every chunk unminified while
+doing so, so the production bundle shipped with its whitespace and long names. Measured on the same commit:
+the entry chunk fell from 1,219 kB to 794 kB raw (278 kB to 237 kB gzip) and all JavaScript from 419 kB to
+358 kB gzip; over 10 cold loads of the built client, script time to first idle fell from 96 ms to 70 ms and
+the canvas appeared at 244 ms instead of 277 ms. The renderer already needs WebGL2, which no browser older
+than that floor provides in a usable form, so the floor excludes nobody the game could run for.
+
+**Rules out.** Re-adding a top-level-await transform; lowering `build.target` below a level with native
+top-level await while the wasm package is built for the `bundler` target.

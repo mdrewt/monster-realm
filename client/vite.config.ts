@@ -1,5 +1,4 @@
 import { execSync } from 'node:child_process';
-import topLevelAwait from 'vite-plugin-top-level-await';
 import wasm from 'vite-plugin-wasm';
 import { coverageConfigDefaults, defineConfig } from 'vitest/config';
 
@@ -22,9 +21,9 @@ const buildSha = resolveBuildSha();
 const buildTime = process.env.MR_BUILD_TIME ?? new Date().toISOString();
 
 // The client-prediction wasm (built `--target bundler` from client-wasm via
-// wasm-pack) is consumed through these plugins: `vite-plugin-wasm` resolves the
-// ESM `.wasm` import and `vite-plugin-top-level-await` lets the async init run at
-// module top level. M3 wires the build/plugins + the headless prediction layer
+// wasm-pack) is consumed through `vite-plugin-wasm`, which resolves the ESM `.wasm`
+// import; its async init is a NATIVE top-level await, which is why `build.target` is
+// `esnext` below. M3 wires the build/plugins + the headless prediction layer
 // (convert + Predictor); M4/M5a binds the live module into the loop.
 export default defineConfig({
   // pt-a1: build-provenance globals, replaced at build time by Vite's
@@ -33,7 +32,11 @@ export default defineConfig({
     __MR_BUILD_SHA__: JSON.stringify(buildSha),
     __MR_BUILD_TIME__: JSON.stringify(buildTime),
   },
-  plugins: [wasm(), topLevelAwait()],
+  plugins: [wasm()],
+  // Native top-level await (Chrome 89, Firefox 89, Safari 15: every browser with the
+  // WebGL2 the renderer needs has it). `vite-plugin-top-level-await` used to rewrite it
+  // for older targets, and re-emitted every chunk unminified while doing so.
+  build: { target: 'esnext' },
   // The wasm pkg lives at <repo>/client-wasm/pkg (one level above the client
   // root); allow the dev/preview server to serve it (M5a integration).
   // e2e/dev port env-driven (default 5290) for concurrent-run isolation (MR_E2E_PORT).

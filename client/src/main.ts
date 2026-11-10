@@ -18,7 +18,7 @@ import { Identity } from 'spacetimedb';
 // refuses a pkg missing a tactics export — so the bind happens on the first deploy render only.
 import * as wasmPkg from '../../client-wasm/pkg/client_wasm.js';
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
-// vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
+// vite-plugin-wasm, awaited at module top level — see vite.config.ts / server.fs.allow).
 import {
   apply_move,
   deletion_grace_ms_default,
