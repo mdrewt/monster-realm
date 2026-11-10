@@ -17,7 +17,10 @@ extractions still to make. The decision and what it rules out are in `docs/DECIS
 2. **Shared collections follow the same rule.** A `Set` or `Map` that more than one module
    mutates is exported as `ReadonlySet` or `ReadonlyMap`, and each mutation is an owner function.
 3. **A live binding is never copied at module scope.** `const id = identity` outside a function
-   freezes the value.
+   freezes the value. Inside a function, an import does not narrow after its mount the way a
+   local `let` narrows after an assignment, so `main()` builds into a local any instance it uses
+   again in the same function (the three Profile sections the Profile frame takes, the renderer it
+   initialises) and mounts that local.
 4. **`main.ts` is the composition root.** Of `main.ts` and the shell modules, only `main.ts`
    registers a listener on `store`, `window` or `document`, installs the DEV hooks, writes the
    DOM at import or constructs a boot-built view. It registers the listeners in one ordered block
@@ -245,7 +248,7 @@ choose another name; what is fixed is the owner and what the function takes over
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `views.ts` | `mountViews` | each view assignment in `main()`, called after each construction in the same statement order |
+| `views.ts` | `mountViews` | each view assignment in `main()`, called after each construction in the same statement order; it takes the handles present in its argument |
 | `inputState.ts` | `noteNavHeld`, `releaseNavHeld` | the adds and the delete on `navHeldCodes` |
 | `feedback.ts` | `installHintHost` | the hint-host port |
 | `feedback.ts` | `mountFeedback` | the `statusEl` and `toastChrome` assignments |
