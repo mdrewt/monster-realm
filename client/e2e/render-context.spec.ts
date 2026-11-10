@@ -17,9 +17,9 @@ import { expect, type Page, test } from '@playwright/test';
 //
 // HYGIENE. One page per test, closed with it; no fixed sleep decides an assertion.
 //
-// REDS AT MASTER: the restore assertion. The terrain stays blank after a restore there (measured:
-// 30% of the 1280x720 canvas differs on the 10x7 zone, 98% on a zone that fills the canvas). The
-// one-draw test is green at master (Pixi's ticker drew once per frame too); it pins the new owner.
+// WHAT EACH TEST CATCHES. Without the re-bake the terrain stays blank after a restore: 30% of the
+// 1280x720 canvas differs on a 10x7 zone, 98% on a zone that fills the canvas. With the per-frame
+// draw removed the clear count is 0; with Pixi's ticker started as well it is 2 per frame.
 
 test.use({ viewport: { width: 1280, height: 720 }, contextOptions: { reducedMotion: 'reduce' } });
 
