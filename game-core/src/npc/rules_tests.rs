@@ -203,11 +203,11 @@ fn npc_decide_within_radius_varies_over_ticks() {
 //        causing an NPC at exactly `radius` distance to walk toward home when
 //        it should wander freely (spec says "within wander radius" is distance ≤ radius).
 //
-// `current = (5,8)` is OUTSIDE the real zone-0
-// grid's bounds (height 7, valid y is 0..6), so under the NEW legality-aware
-// wander path every step target is off-map (`is_walkable` is bounds-safe and
-// returns `false`), making the legal set L empty and the result ALWAYS `None`
-// across all 20 ticks. the assertion below (`!all_north`) is still exactly the right
+// `current = (5,8)` is on the 28x20 zone-0 grid (wap-8), but under the
+// legality-aware wander path it has no legal step: North (5,7) is a bush, and
+// South (5,9), East (6,8) and West (4,8) all lie at Manhattan 4 from home,
+// outside the radius-3 disc. So the legal set L is empty and the result is
+// ALWAYS `None` across all 20 ticks. the assertion below (`!all_north`) is still exactly the right
 // tooth: an impl that wrongly treats distance==radius as "outside" would
 // deterministically return `Some(Direction::North)` on EVERY tick (toward_home doesn't
 // consult ticks), which the assertion below still catches. All-`None` correctly passes;
@@ -225,7 +225,7 @@ fn npc_decide_at_radius_boundary_treated_as_within() {
 
     // If this were "outside" logic, every call would return Some(North).
     // If this is "inside/boundary" logic, results are governed by legality
-    // (here: always None, since (5,8) is off the real map).
+    // (here: always None, since (5,8) has no legal in-disc step on the real map).
     let results: Vec<Option<Direction>> = (0u64..20)
         .map(|tick| npc_decide(current, home, radius, Direction::South, 7, tick, &map))
         .collect();
@@ -317,7 +317,7 @@ fn npc_decide_outside_radius_larger_dy_chooses_y_axis() {
 //   Independent oracle (Python model of npc_hash + the real shipped zone-0 grid):
 //   npc_hash(1, 0) % 5 == 4 (not a stay); legal set at (5,5), radius=5, is
 //   [North, East, West] (South is walled — the row directly south of home is
-//   "##########" in content/zone_maps/000-core.ron); (h >> 1) % 3 selects
+//   "###=######…" in content/zone_maps/000-core.ron, x=5 is '#'); (h >> 1) % 3 selects
 //   index 1 = East.
 // ---------------------------------------------------------------------------
 
@@ -590,7 +590,7 @@ fn npc_decide_homing_answers_every_tick_never_stalls() {
     //   toward_home: dx=5-5=0, dy=5-2=3; |dx| < |dy| -> Y-axis dominant;
     //   dy=3>0 -> South (South = increasing y in screen coords).
     //   Step target = (5,2).step(South) = (5,3). Row y=3 of the grid is
-    //   "#...##..~#" -> index 5 (0-based) is '#' -- a genuine WALL, not an
+    //   "#...##..=#…" -> index 5 (0-based) is '#' -- a genuine WALL, not an
     //   off-map coordinate.
     // The homing branch is UNCHANGED (no hash, no legality
     // filter, no stay roll), so npc_decide MUST still return Some(South)

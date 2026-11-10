@@ -66,6 +66,65 @@ fn ctl9_4_every_npc_home_has_a_walkable_neighbour() {
     }
 }
 
+// --- wap-8: the healer must not stand on (or be approached only over) grass --
+
+/// Criterion WAP8.2: every heal tile is walkable and not tall grass, and has a
+/// walkable, grass-free 4-neighbour to approach from.
+/// Kills: a healer left on tall grass; a healer whose only approach is grass.
+#[test]
+fn wap8_2_every_heal_location_is_walkable_and_not_tall_grass() {
+    let zone_maps = load_zone_maps().expect("zone maps load");
+    let heals = load_heal_locations().expect("heal locations load");
+    assert!(!heals.is_empty(), "no heal locations loaded: vacuous check");
+    for hl in &heals {
+        let map = map_for(hl.zone_id, &zone_maps)
+            .unwrap_or_else(|e| panic!("heal location {}: {e}", hl.location_id));
+        let tile = TilePos {
+            x: hl.tile_x,
+            y: hl.tile_y,
+        };
+        assert!(
+            map.is_walkable(tile),
+            "heal location {} at {tile:?} must be walkable",
+            hl.location_id
+        );
+        assert!(
+            !map.is_grass(tile),
+            "heal location {} at {tile:?} must not be tall grass",
+            hl.location_id
+        );
+        assert!(
+            ALL_DIRECTIONS.iter().any(|&d| {
+                let n = tile.step(d);
+                map.is_walkable(n) && !map.is_grass(n)
+            }),
+            "heal location {} at {tile:?} has no walkable grass-free approach",
+            hl.location_id
+        );
+    }
+}
+
+/// Criterion WAP8.2: the zone-0 healer is at (8,3) and keeps its (7,3) approach.
+/// Kills: moving the healer without the map; grass on the (7,3) approach.
+#[test]
+fn wap8_2_zone_0_healer_at_8_3_keeps_its_7_3_approach() {
+    let zone_maps = load_zone_maps().expect("zone maps load");
+    let heals = load_heal_locations().expect("heal locations load");
+    let hl = heals
+        .iter()
+        .find(|h| h.zone_id == 0)
+        .expect("zone 0 has a heal location");
+    assert_eq!(
+        (hl.tile_x, hl.tile_y),
+        (8, 3),
+        "zone-0 healer stays at (8,3)"
+    );
+    let map = map_for(0, &zone_maps).expect("zone 0 map");
+    let approach = TilePos { x: 7, y: 3 };
+    assert!(map.is_walkable(approach), "(7,3) must be walkable");
+    assert!(!map.is_grass(approach), "(7,3) must not be grass");
+}
+
 // --- the predicate itself must be able to say "no" -------------------------
 
 #[test]

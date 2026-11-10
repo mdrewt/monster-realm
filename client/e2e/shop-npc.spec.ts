@@ -54,14 +54,15 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 // ---------------------------------------------------------------------------------------
 // WORLD FACTS (derived this session from game-core/content/*, not from memory)
 // ---------------------------------------------------------------------------------------
-// zone_maps/000-core.ron — zone 0 (Verdant Hollow) is this 10x7 layout:
+// zone_maps/000-core.ron — zone 0 (Verdant Hollow, 28x20 since wap-8) keeps this 10x7 block at
+//   its top-left (columns x=0..9 shown; (8,3) became path and (3,6) a south opening in wap-8):
 //     y=0  "##########"
 //     y=1  "#........#"      <- x=1..8 all floor
 //     y=2  "#.~~....~#"      <- grass at x=2,3,8
-//     y=3  "#...##..~#"      <- WALLS at x=4,5 ; grass at x=8
+//     y=3  "#...##..=#"      <- WALLS at x=4,5 ; (8,3) path (the heal tile)
 //     y=4  "#..~~...~#"      <- grass at x=3,4,8
 //     y=5  "#......~~#"      <- grass at x=7,8
-//     y=6  "##########"
+//     y=6  "###=######"
 //   zone 1 (Tideglass Cove, wap-7) is a larger 32x20 coast; its top-left corner keeps every
 //   tile this route uses walkable and grass-free ('=' path, '^' rock, '*' bush):
 //   (columns x=0..9 shown)

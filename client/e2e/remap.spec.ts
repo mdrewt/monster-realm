@@ -46,7 +46,7 @@ import {
 //
 // WORLD FACTS (read from game-core/content this session):
 //   heal_locations/000-core.ron: location 1, zone 0, tile (8,3).
-//   zone_maps/000-core.ron, zone 0, row y=3 "#...##..~#": (6,3) and (7,3) are floor, (8,3) is grass.
+//   zone_maps/000-core.ron, zone 0, row y=3 "#...##..=#…": (6,3) and (7,3) are floor, (8,3) is path.
 //   So the post is (7,3) FACING East onto the healer's tile (8,3); `faceTile` arrives there by an
 //   East step from (6,3) (a step sets the facing), on a grass-free, warp-free `safePath`, and never
 //   steps onto the grass. npcs/000-core.ron: elder_oak, home (5,5), wander radius 2 (Manhattan:

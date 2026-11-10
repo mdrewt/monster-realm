@@ -78,7 +78,7 @@ import {
 //     because the NPC wanders between conversations (qf-5 holds him still only
 //     while a conversation references him).
 //   - Player spawn (1,1), zone 0. Zone-0 map (content/zone_maps/000-core.ron):
-//     grass at (2,2),(3,2),(8,2),(8,3),(3,4),(4,4),(8,4),(7,5),(8,5); interior
+//     grass at (2,2),(3,2),(8,2),(3,4),(4,4),(8,4),(7,5),(8,5) ((8,3) is path since wap-8); interior
 //     walls (4,3),(5,3); WARP TILE at (5,5)→zone 1 — the walk must NEVER step on
 //     (5,5). (The live map's warp is at (1,5), not (5,5); the walk steps on
 //     neither tile.) Grass-free path (1,1)→(4,5): S,S,E,S,S,E,E —
