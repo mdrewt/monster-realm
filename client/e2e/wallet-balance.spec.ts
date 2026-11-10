@@ -16,7 +16,6 @@ import {
   WANDER_NPC_MAX_ATTEMPTS,
   WANDER_OPEN_WAIT_MS,
   WANDER_TALK_BUDGET_MS,
-  waitForNpcInFront,
 } from './controls';
 
 // owner-scoped wallet readout e2e.
@@ -97,17 +96,17 @@ import {
 //
 // MAP (game-core/content/zone_maps/000-core.ron) — zone 0 is the 10x7 layout; zone 1 is the
 //   larger Tideglass Cove (wap-7), whose column x=1 (y=1..5) and row y=1 (x=1..8) stay
-//   walkable and grass-free. In zone 0 (4,3)/(5,3) are WALLS so x=6 is the clean northward lane to the elder post, and
+//   walkable and grass-free. In zone 0 (2,3), (2,4) and row y=5 (x=1..6) are floor (A's lane to the elder post), and
 //   column x=1 is clean floor for y=1..5; warp at zone 0 (1,5) <-> zone 1 (1,5) (qf-15 moved
 //   the pair off elder_oak's home tile (5,5)). Verified tile-by-tile, all grass-free (an
 //   encounter roll happens only on STEPPING ONTO a '~' tile, so a grass-free route cannot
 //   start a battle):
-//     A: zone 0 spawn (1,1) → the elder TALK POST (6,3) = E,E,E,E,E,S,S (facing South)
-//     A: (6,3) → warp = S,S,W,W,W,W,W onto (1,5): (6,4),(6,5), then west along row y=5
-//        through (5,5),(4,5),(3,5),(2,5) to (1,5) (row y=5 is floor for x=1..6). Characters
-//        and NPCs do NOT block each other (game-core/src/world.rs is_walkable is tile-kind
-//        only), so a wandering elder_oak standing on (6,4), (6,5), (5,5), (4,5) or (3,5) —
-//        all in his disc — cannot stall these steps.
+//     A: zone 0 spawn (1,1) → the elder TALK POST (4,5) = S,S,E,S,S,E,E (facing East):
+//        (1,2),(1,3),(2,3),(2,4),(2,5),(3,5),(4,5) — beside the warp (1,5), never on it
+//     A: (4,5) → warp = W,W,W onto (1,5): west along row y=5 through (3,5),(2,5) (row y=5
+//        is floor for x=1..6). Characters and NPCs do NOT block each other
+//        (game-core/src/world.rs is_walkable is tile-kind only), so a wandering elder_oak
+//        standing on (4,5) or (3,5) — both in his disc — cannot stall these steps.
 //     B: zone 0 spawn (1,1) → warp = S,S,S,S (straight down column x=1; the final S IS the warp)
 //     both: zone 1 (1,5) → the SHOP POST (7,1) = N,N,N,N,E,E,E,E,E,E (up column x=1 to
 //        (1,1), then east along row y=1; the final E step from (6,1) leaves the character
@@ -115,22 +114,24 @@ import {
 //
 // ctl-10a: T retired — A acts on what the character FACES (the tile in front, else the own
 //   tile; game-core interact_candidates); range no longer offers a target. So:
-//   - elder_oak: A is pressed from the post (6,3) facing South, only while he stands on (6,4)
-//     (controls.ts interactWithNpc). (6,4) is in his wander disc (npc_decide: walkable AND
-//     Manhattan <= 2 of (5,5) — (5,5),(5,4),(6,4),(4,4),(4,5),(6,5),(3,5),(7,5)); the post
-//     (6,3) is Manhattan 3 from home, so he can never share the own tile. Every tile he can
-//     step to from (6,4) — (5,4), (6,5) — is still within TALK_RANGE 2 of (6,3), so the
-//     server's talk / advance range re-check holds for a press made while he is in front.
+//   - elder_oak: A is pressed from the post (4,5) facing East, only while he stands on the
+//     faced tile (5,5), his home, or on the post itself, sharing A's tile (controls.ts
+//     interactWithNpc). Both are in his wander disc (npc_decide: walkable AND Manhattan <= 2
+//     of (5,5) — (5,5),(5,4),(6,4),(4,4),(4,5),(6,5),(3,5),(7,5)) and he holds one of them
+//     43% of the time (controls.ts WANDER_NPC_WAIT_MS has the measurement). Only (6,4) and
+//     (7,5) are out of TALK_RANGE 2 of (4,5), two of his steps from either reach tile, so the
+//     server's talk range re-check holds for a press made while he is in reach; an open
+//     conversation then pins him where he is (qf-5), so the advance re-check holds too.
 //   - tideglass_shopkeeper: pinned on (8,1); its walkable 4-neighbours are (7,1) only ((8,2)
 //     and (9,1) rock, (8,0) wall), so the post is (7,1) facing East. One press suffices.
 //
 // CROSS-ZONE NOISE IN THE IN-FRONT POLL: `__game().characters` carries NO zoneId and the
 //   `character` subscription is globally unfiltered, so a player
 //   standing in zone 1 can still hold zone-0 character rows. Checked: the zone-1 faced tile
-//   (8,1) is Manhattan 7 from elder_oak's home (5,5), far outside his radius-2 disc; the
-//   zone-0 faced tile (6,4) is never the zone-1 shopkeeper's pinned (8,1). So the poll
-//   predicate cannot be fooled at either post, and the client's candidate rule re-filters
-//   by zone anyway.
+//   (8,1) and its post (7,1) are Manhattan 7 and 6 from elder_oak's home (5,5), far outside
+//   his radius-2 disc; the zone-0 reach tiles (5,5) and (4,5) are never the zone-1
+//   shopkeeper's pinned (8,1). So the poll predicate cannot be fooled at either post, and
+//   the client's candidate rule re-filters by zone anyway.
 //
 // THE RENDER PATH: client/src/ui/shopView.ts:97-100 is the SOLE writer of the balance node —
 //   `textContent = known ? vm.balance.label : ''`, `hidden = !known`,
@@ -244,7 +245,7 @@ import {
 // starvation that reddened (a); measured under far heavier CPU throttle, they starve too.
 // Expected wall clock: ~4-6 min (about 30 steps at well under 1 s each, four
 // dialogue round trips, and three `spacetime sql` invocations — a fourth only on the retry
-// escape valve). Worst case under the declared per-test timeouts (120 + 300 + 300 + 240 +
+// escape valve). Worst case under the declared per-test timeouts (120 + 304 + 304 + 240 +
 // 240 + 120 s): ~22 min.
 // `just e2e` is a merge gate for every future slice. If a bound proves tight, RAISE IT WITH
 // A WRITTEN JUSTIFICATION (the MAX_ENCOUNTERS precedent, recruit.spec.ts:97-123) — never
@@ -356,15 +357,14 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
 }
 
 /** A-press retries against the wandering elder_oak (ctl-10a: T retired). Each attempt first
- *  POLLS (bounded, no fixed sleep) until he stands on the faced tile (6,4), then presses A
- *  once. Since qf-5 he steps about once a second, so a press rarely loses the race; what
- *  bounds the wait is his walk — (6,4) is a corner he holds ~4% of the time, with visit
- *  gaps up to ~7 minutes (controls.ts WANDER_NPC_WAIT_MS has the arithmetic; the
- *  old 6 x 23 s = 138 s bound was PR #608's e2e red, twice). Each talking phase therefore
- *  runs under TALK_PHASE_TIMEOUT_MS, which covers one worst-case talk. */
+ *  POLLS (bounded, no fixed sleep) until he stands on the faced tile (5,5) or on the post
+ *  (4,5), then presses A once. Since qf-5 he steps about once a second, so a press can lose
+ *  the race and attempts are bounded (controls.ts WANDER_NPC_MAX_ATTEMPTS has the
+ *  arithmetic). Each talking phase runs under TALK_PHASE_TIMEOUT_MS, which covers one
+ *  worst-case talk. */
 const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
 
-/** ctl-10a: T retired — A, facing elder_oak from the post (6,3), until the dialogue opens
+/** ctl-10a: T retired — A, with elder_oak in reach of the post (4,5), until the dialogue opens
  *  (controls.ts interactWithNpc asserts the post and the facing before every press). */
 async function talkToElder(p: Page, playerEntityIds: readonly string[]): Promise<void> {
   await interactWithNpc(p, {
@@ -756,28 +756,23 @@ async function questLogShows(
   return held;
 }
 
-/** Grass-free, warp-free: A's zone 0 spawn (1,1) → the elder talk post (6,3).
- *  ctl-10a: T retired — the old pocket (5,4) talked by range; the post ends on a South step,
- *  which faces the elder's wander tile (6,4) (see WORLD FACTS). */
+/** Grass-free, warp-free: A's zone 0 spawn (1,1) → the elder talk post (4,5). It ends on an
+ *  East step, which faces the elder's home (5,5) (see WORLD FACTS). */
 const A_TO_ELDER: readonly string[] = [
-  'East',
-  'East',
-  'East',
-  'East',
-  'East', // (6,1)
-  'South', // (6,2)
-  'South', // (6,3) — facing South, toward (6,4); never steps on the warp
+  'South', // (1,2)
+  'South', // (1,3)
+  'East', // (2,3)
+  'South', // (2,4)
+  'South', // (2,5) — beside the warp (1,5), never on it
+  'East', // (3,5)
+  'East', // (4,5) — facing East, toward (5,5)
 ];
-const ELDER_POST: Tile = { x: 6, y: 3 };
-const ELDER_FACING: Dir = 'South';
-/** A: (6,3) → (6,4) → (6,5) → west along row y=5 to (1,5). The final West step IS the warp
- *  to zone 1 (1,5). Row y=5 is floor for x=1..6 (grass starts at x=7), so every step is
- *  grass-free; a wandering elder_oak in his disc never blocks (characters do not collide). */
+const ELDER_POST: Tile = { x: 4, y: 5 };
+const ELDER_FACING: Dir = 'East';
+/** A: (4,5) → west along row y=5 to (1,5). The final West step IS the warp to zone 1 (1,5).
+ *  Row y=5 is floor for x=1..6 (grass starts at x=7), so every step is grass-free; a
+ *  wandering elder_oak in his disc never blocks (characters do not collide). */
 const A_TO_WARP: readonly string[] = [
-  'South', // (6,4)
-  'South', // (6,5)
-  'West', // (5,5)
-  'West', // (4,5)
   'West', // (3,5)
   'West', // (2,5)
   'West', // (1,5) — WARP → zone 1 (1,5)
@@ -822,15 +817,15 @@ const EXPECTED_BALANCE_TEXT = 'Gold: 50';
  *  ADVANCE is rolled back whole, its conversation-row delete included, so the overlay stays
  *  open: that attempt spends its full 20 s hidden-wait, and the next one re-activates the
  *  still-open dialogue without a fresh talk.
- *  ARITHMETIC, stated honestly: an attempt normally costs ~10-40 s (the wait for the elder
- *  on (6,4) — his visit gaps average 28 s since qf-5 — one talk round trip, one dismiss, one
+ *  ARITHMETIC, stated honestly: an attempt normally costs a few seconds (the wait for the
+ *  elder in reach of the post — 1.7 s on average — one talk round trip, one dismiss, one
  *  quest-log read), so the expected phase sits well inside TALK_PHASE_TIMEOUT_MS. Its
- *  THEORETICAL worst case — every internal bound below running to its limit — is ~576 s for
- *  ONE attempt of phase (a) (483 s talkToElder + 10 npc-name + 20 elder-in-front + 5 dispatch
- *  + 20 hidden + 38 quest log) and ~543 s for one of phase (b) (483 + 20 hidden + 40 quest
- *  log), so a phase in which even one attempt fully degrades trips the TEST timeout rather
- *  than this loop bound. Both are red and neither can false-pass; this bound exists to give the FAST
- *  failure a named diagnosis, not to cap the phase. */
+ *  THEORETICAL worst case — every internal bound below running to its limit — is ~257 s for
+ *  ONE attempt of phase (a) (184 s talkToElder + 10 npc-name + 5 dispatch + 20 hidden + 38
+ *  quest log) and ~244 s for one of phase (b) (184 + 20 hidden + 40 quest log), so a phase
+ *  in which two attempts fully degrade trips the TEST timeout rather than this loop bound.
+ *  Both are red and neither can false-pass; this bound exists to give the FAST failure a
+ *  named diagnosis, not to cap the phase. */
 const MAX_QUEST_ATTEMPTS = 5;
 /** Per talking phase: one worst-case talk (WANDER_TALK_BUDGET_MS) plus the phase's own work. */
 const TALK_PHASE_TIMEOUT_MS = WANDER_TALK_BUDGET_MS + 120_000;
@@ -900,7 +895,7 @@ test.describe
     // -------------------------------------------------------------------------
     // Setup: A walks the grass-free path to the elder talk post (ctl-10a: T retired).
     // -------------------------------------------------------------------------
-    test('setup: A walks (1,1) → (6,3), grass-free and battle-free', async () => {
+    test('setup: A walks (1,1) → (4,5), grass-free and battle-free', async () => {
       test.setTimeout(120_000);
       const start = await snap(a);
       expect(start.ownAuthTile, 'A spawns with an authoritative tile').not.toBeNull();
@@ -983,18 +978,9 @@ test.describe
           await expect(a.locator('#dialogue-npc-name')).toHaveText('elder_oak', {
             timeout: 10_000,
           });
-          // ctl-10a: the post (6,3) has only 3 of the elder's 8 wander tiles within
-          // TALK_RANGE (the old pocket had 6), so the advance is sent while he stands on the
-          // faced tile (6,4): every tile he can reach next is within range, and the server's
-          // walked_away re-check holds. A timeout here is not a failure — the dispatch goes
-          // ahead anyway and the attempt is judged by its outcome, as before.
-          await waitForNpcInFront(a, {
-            stand: ELDER_POST,
-            facing: ELDER_FACING,
-            ignoreEntityIds: playerEntityIds,
-            worldBase: false,
-            timeoutMs: 20_000,
-          });
+          // No wait for the elder here: the talk was admitted within TALK_RANGE of him, and
+          // qf-5 pins him there for as long as the conversation is open and A stays on the
+          // post, so the server's walked_away re-check holds.
           // DISPATCHED, deliberately not a pointer click — do not "restore" one here.
           // DialogueView.render() rebuilds every choice button on each store batch, and a
           // pointer click needs one node to stay attached and stable across animation frames,

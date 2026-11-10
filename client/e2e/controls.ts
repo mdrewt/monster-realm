@@ -542,48 +542,54 @@ export async function openFaceToFace(
   }
 }
 
-/** How long a WANDERING NPC gets to reach the faced tile, per attempt (dialogue.spec and
- *  wallet-balance.spec talk to elder_oak from (6,3), facing (6,4)). qf-5 (#599) slowed
- *  wanderers to one decision a second (game-core NPC_STEP_TICKS = 5, a 1-in-5 stay), so his
- *  deterministic walk over the 8-tile disc (game_core::npc_decide; (6,4) is a corner whose only
- *  in-disc neighbours are (6,5) and (5,4)) stands him on (6,4) about 4% of the time, and the
- *  gaps between visits are heavy-tailed: replaying npc_decide for 2e6 decisions gives gaps with
- *  a mean of 28 s, p99 174 s, p99.9 271 s and a max of 430 s (sampling the live server for
- *  223 s showed a max of 80 s). A random 138 s window — wallet-balance's old 6 attempts x
- *  (20 s poll + 3 s open wait) — misses him 3.6% of the time at design cadence and 18% when a
- *  loaded CI scheduler halves it; dialogue.spec's old 120 s test timeout was tighter still.
- *  Those were PR #608's two wallet-balance e2e reds and master 57cf7b62's dialogue.spec
- *  13.5c-5 red. 21 x 20 s = 420 s of polling misses 0.001% / 0.65%. */
+/** How long a WANDERING NPC gets to walk into reach, per attempt. dialogue.spec and
+ *  wallet-balance.spec talk to elder_oak from (4,5) facing East, which reaches him on two tiles:
+ *  the faced one, (5,5) (his home), and the post itself, (4,5) (the rule's own-tile tier; an NPC
+ *  and a player may share a tile). Replaying game-core `npc_decide` + `apply_move` at the server
+ *  cadence (one decision a second, NPC_STEP_TICKS = 5, a 1-in-5 stay) for 2e7 ticks over the
+ *  zone-0 map gives his share of time per disc tile: (4,5) 22.1%, (5,5) 21.2%, (6,5) 22.2%,
+ *  (3,5) 10.1%, (7,5) 10.1%, (5,4) 5.7%, (6,4) 4.3%, (4,4) 4.3%. So he is in reach 43% of the
+ *  time, a visit to the pair lasts 2.3 s on average, and the wait for him from a random moment
+ *  has a mean of 1.7 s, p95 7.6 s, p99 15 s, p99.9 26 s and a max of 58 s. One 20 s poll misses
+ *  him 0.33% of the time (2.8% when a loaded server halves his cadence).
+ *  The post this replaced, (6,3) facing South, reached him on (6,4) alone: a 4.3% corner he
+ *  leaves after 1.3 s, so the same wait had a mean of 39 s, p95 124 s, p99 192 s and a max of
+ *  578 s, and a press that reached the page late found him gone (the old 21 attempts covered that). */
 export const WANDER_NPC_WAIT_MS = 20_000;
-/** Attempts per talk to a wanderer; each polls for WANDER_NPC_WAIT_MS (the arithmetic above). */
-export const WANDER_NPC_MAX_ATTEMPTS = 21;
+/** Attempts per talk to a wanderer. An attempt is spent by a poll that times out or by a press
+ *  that lost the race (he stepped out of reach between the poll and the keydown). The same
+ *  replay, running `interactWithNpc`'s loop over 2e6 talks: more than 3 attempts are needed in
+ *  0.003% of them when the keydown lands 0.6 s after the poll, and more than 8 in 0.002% when it
+ *  lands a full second after; at 0.2 s and 0.6 s, at full or half cadence, no talk needed more
+ *  than 8. */
+export const WANDER_NPC_MAX_ATTEMPTS = 8;
 /** After an A press, how long `opened` may take (a server round trip): the one source for the
  *  budget below, `interactWithNpc`'s default and both wanderer callers. */
 export const WANDER_OPEN_WAIT_MS = 3_000;
-/** One `interactWithNpc` call against a wanderer, bounded: attempts x (poll + open wait) = 483 s.
- *  Every caller's test timeout must cover this plus its own work. */
+/** One `interactWithNpc` call against a wanderer, bounded: attempts x (poll + open wait) =
+ *  8 x (20 s + 3 s) = 184 s. Every caller's test timeout must cover this plus its own work. */
 export const WANDER_TALK_BUDGET_MS =
   WANDER_NPC_MAX_ATTEMPTS * (WANDER_NPC_WAIT_MS + WANDER_OPEN_WAIT_MS);
 
-export interface InFrontOpts {
+interface InReachOpts {
   /** The tile the character holds. */
   readonly stand: Tile;
-  /** The way it faces; the NPC is waited for on `stepTile(stand, facing)`. */
+  /** The way it faces. */
   readonly facing: Dir;
   /** Character entity ids that are never the NPC (the players). The own id is always skipped. */
   readonly ignoreEntityIds?: readonly string[];
   /** When set, `#interact-prompt` must read exactly this in the SAME poll that sees the NPC. */
   readonly chip?: string;
-  /** Also require a bare world base (stack length 1) — true before an A press at the world. */
-  readonly worldBase: boolean;
   readonly timeoutMs: number;
 }
 
-/** Resolves true once, in ONE page-side poll, the character stands on `stand` facing `facing`
- *  and a non-player character stands on the tile in front (plus the chip / world-base checks);
- *  false on timeout. `__game().characters` carries no zone, so callers pick posts whose front
- *  tile no NPC of another zone can occupy (each spec's WORLD FACTS say why). */
-export async function waitForNpcInFront(page: Page, o: InFrontOpts): Promise<boolean> {
+/** Resolves true once, in ONE page-side poll at a bare world base, the character stands on
+ *  `stand` facing `facing` and a non-player character is in A's reach: on the faced tile
+ *  `stepTile(stand, facing)` or on `stand` itself (the two tiers of game-core
+ *  `interact_candidates`), plus the chip check; false on timeout. `__game().characters` carries
+ *  no zone, so callers pick posts whose two reach tiles no NPC of another zone can occupy (each
+ *  spec's WORLD FACTS say why). */
+async function waitForNpcInReach(page: Page, o: InReachOpts): Promise<boolean> {
   const front = stepTile(o.stand, o.facing);
   return page
     .waitForFunction(
@@ -595,22 +601,20 @@ export async function waitForNpcInFront(page: Page, o: InFrontOpts): Promise<boo
         facing: string;
         ignore: readonly string[];
         chip: string | null;
-        worldBase: boolean;
       }) => {
         const g = (window as unknown as { __game: () => GameHook }).__game();
-        if (a.worldBase && g.stack.length !== 1) return false;
+        if (g.stack.length !== 1) return false;
         const t = g.ownAuthTile;
         if (t === null || t.x !== a.sx || t.y !== a.sy) return false;
         const own = g.characters.find((c) => c.entityId === g.ownEntityId);
         if (own === undefined || own.facing !== a.facing) return false;
-        const npcInFront = g.characters.some(
+        const npcInReach = g.characters.some(
           (c) =>
             c.entityId !== g.ownEntityId &&
             !a.ignore.includes(c.entityId) &&
-            c.tileX === a.fx &&
-            c.tileY === a.fy,
+            ((c.tileX === a.fx && c.tileY === a.fy) || (c.tileX === a.sx && c.tileY === a.sy)),
         );
-        if (!npcInFront) return false;
+        if (!npcInReach) return false;
         if (a.chip === null) return true;
         const el = document.getElementById('interact-prompt');
         if (el === null || el.getClientRects().length === 0) return false;
@@ -624,7 +628,6 @@ export async function waitForNpcInFront(page: Page, o: InFrontOpts): Promise<boo
         facing: o.facing,
         ignore: o.ignoreEntityIds ?? [],
         chip: o.chip ?? null,
-        worldBase: o.worldBase,
       },
       { timeout: o.timeoutMs },
     )
@@ -638,23 +641,24 @@ export interface InteractOpts {
   /** Visible once the interaction took (e.g. `#dialogue-overlay`). */
   readonly opened: Locator;
   readonly ignoreEntityIds?: readonly string[];
-  /** The exact chip text expected while the NPC is in front (see `interactChip`). */
+  /** The exact chip text expected while the NPC is in reach (see `interactChip`). */
   readonly chip?: string;
   /** A presses before giving up. 1 for a stationary NPC (no retry needed or allowed). */
   readonly maxAttempts: number;
-  /** Per attempt: how long to wait for the NPC to stand in front. */
+  /** Per attempt: how long to wait for the NPC to be in reach. */
   readonly npcWaitMs?: number;
   /** Per attempt: how long `opened` may take after the press (a server round trip). */
   readonly openWaitMs?: number;
   readonly label: string;
 }
 
-/** Talks to an NPC the way a player does now: hold a post FACING the tile the NPC stands on (or
- *  wanders through), and press A while it is there. Each attempt re-faces first (`faceTile`, a
- *  walk only if the character was displaced), asserts the post and the facing, waits — in one
- *  page-side poll on the live `__game().characters` — for the NPC on the faced tile at a bare
- *  world base, presses A once, and waits for `opened`. A wandering NPC can step away between the
- *  poll and the keydown, so attempts are bounded by `maxAttempts`. Returns the attempts used. */
+/** Talks to an NPC the way a player does now: hold a post FACING a tile the NPC stands on (or
+ *  wanders through), and press A while it is in reach — on that faced tile or on the post
+ *  itself. Each attempt re-faces first (`faceTile`, a walk only if the character was displaced),
+ *  asserts the post and the facing, waits — in one page-side poll on the live
+ *  `__game().characters` — for the NPC in reach at a bare world base, presses A once, and waits
+ *  for `opened`. A wandering NPC can step away between the poll and the keydown, so attempts are
+ *  bounded by `maxAttempts`. Returns the attempts used. */
 export async function interactWithNpc(page: Page, o: InteractOpts): Promise<number> {
   const npcWaitMs = o.npcWaitMs ?? WANDER_NPC_WAIT_MS;
   const openWaitMs = o.openWaitMs ?? WANDER_OPEN_WAIT_MS;
@@ -668,15 +672,14 @@ export async function interactWithNpc(page: Page, o: InteractOpts): Promise<numb
       );
     }
     await expectPosted(page, o.stand, o.facing, o.label);
-    const inFront = await waitForNpcInFront(page, {
+    const inReach = await waitForNpcInReach(page, {
       stand: o.stand,
       facing: o.facing,
       ignoreEntityIds: o.ignoreEntityIds,
       chip: o.chip,
-      worldBase: true,
       timeoutMs: npcWaitMs,
     });
-    if (!inFront) continue;
+    if (!inReach) continue;
     await pressButton(page, 'A');
     const opened = await o.opened
       .waitFor({ state: 'visible', timeout: openWaitMs })
@@ -692,7 +695,7 @@ export async function interactWithNpc(page: Page, o: InteractOpts): Promise<numb
       `stack length ${w.stackLength}, chip ${JSON.stringify(chip)}` +
       (o.chip === undefined
         ? ''
-        : ` (expected ${JSON.stringify(o.chip)} while the NPC is in front)`),
+        : ` (expected ${JSON.stringify(o.chip)} while the NPC is in reach)`),
   );
 }
 
