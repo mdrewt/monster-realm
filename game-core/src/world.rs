@@ -1396,6 +1396,302 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // wap-7: Tideglass Cove (zone 1) — a coastal map, larger than Verdant Hollow.
+    //
+    // Every assertion reads the REAL shipped content (`load_zone_maps`,
+    // `load_zones`, `load_npc_defs`); reachability walks the real `apply_move`
+    // rule rather than a hand-rolled walkability flood.
+    // -----------------------------------------------------------------------
+
+    /// Zone 1 (Tideglass Cove) built from the shipped RON.
+    fn tideglass_map() -> TileMap {
+        let maps = crate::content::load_zone_maps().expect("zone maps must load");
+        map_for(1, &maps).expect("map_for(1) must succeed")
+    }
+
+    /// Every tile of the grid, row-major.
+    fn grid_tiles(map: &TileMap) -> Vec<TilePos> {
+        let width = map.width;
+        (0..map.height)
+            .flat_map(|y| (0..width).map(move |x| tp(x, y)))
+            .collect()
+    }
+
+    /// How many tiles of `map` carry the terrain class `kind`.
+    fn count_terrain(map: &TileMap, kind: crate::types::TileKind) -> usize {
+        grid_tiles(map)
+            .into_iter()
+            .filter(|p| map.terrain_at(*p) == Some(kind))
+            .count()
+    }
+
+    /// The tiles a player landing on (1,5) can reach, by BFS over the REAL movement
+    /// rule: the neighbour of `p` in direction `d` is
+    /// `apply_move(state_at(p), Step(d)).pos`. A warp tile other than the landing is
+    /// visited but NOT expanded (stepping onto it teleports the player away).
+    fn reachable_from_landing(map: &TileMap) -> std::collections::HashSet<TilePos> {
+        let start = tp(1, 5);
+        let mut seen = std::collections::HashSet::from([start]);
+        let mut queue = std::collections::VecDeque::from([start]);
+        while let Some(p) = queue.pop_front() {
+            if p != start && map.warp_at(p).is_some() {
+                continue;
+            }
+            let state = CharacterState {
+                pos: p,
+                facing: Direction::South,
+                action: ActionState::Idle,
+                move_started_at: Millis(0),
+            };
+            for d in [
+                Direction::North,
+                Direction::South,
+                Direction::East,
+                Direction::West,
+            ] {
+                let next = apply_move(&state, MoveInput::Step(d), map, Millis(0)).pos;
+                if seen.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Criterion WAP7.1: Tideglass Cove's rows differ from Verdant Hollow's.
+    /// Kills: leaving zone 1 as the pre-wap-7 copy of zone 0's 10x7 rows.
+    #[test]
+    fn wap7_1_tideglass_rows_differ_from_verdant_hollow() {
+        let maps = crate::content::load_zone_maps().expect("zone maps must load");
+        let rows_of = |id: u32| {
+            maps.iter()
+                .find(|m| m.zone_id == id)
+                .unwrap_or_else(|| panic!("zone {id} must have a ZoneMapDef"))
+                .rows
+                .clone()
+        };
+        assert_ne!(
+            rows_of(1),
+            rows_of(0),
+            "WAP7.1: Tideglass Cove (zone 1) must not reuse Verdant Hollow's (zone 0) rows"
+        );
+    }
+
+    /// Criterion WAP7.1: at least 24x16 and at most the registry bound (40x28).
+    /// Kills: a map still 10x7; a map that overflows the zone's registry bound;
+    /// a registry edit that silently widens the bound past 40x28.
+    #[test]
+    fn wap7_1_tideglass_size_is_between_24x16_and_the_registry_bound() {
+        let zones = crate::content::load_zones().expect("zones must load");
+        let zone = zones
+            .iter()
+            .find(|z| z.id == 1)
+            .expect("zone 1 must be in the zones registry");
+        assert_eq!(
+            (zone.width, zone.height),
+            (40, 28),
+            "WAP7.1: the zone-1 registry bound must stay 40x28"
+        );
+        let map = tideglass_map();
+        let max_w = i32::try_from(zone.width).expect("bound fits i32");
+        let max_h = i32::try_from(zone.height).expect("bound fits i32");
+        assert!(
+            map.width >= 24 && map.height >= 16,
+            "WAP7.1: Tideglass Cove must be at least 24x16, got {}x{}",
+            map.width,
+            map.height
+        );
+        assert!(
+            map.width <= max_w && map.height <= max_h,
+            "WAP7.1: Tideglass Cove must fit the {max_w}x{max_h} registry bound, got {}x{}",
+            map.width,
+            map.height
+        );
+    }
+
+    /// Criterion WAP7.1: the cove contains shallow water, deep water, sand and rock.
+    /// Kills: a coast missing any one of the four terrain classes (e.g. no deep
+    /// sea, or no sand shore).
+    #[test]
+    fn wap7_1_tideglass_has_shallow_water_deep_water_sand_and_rock() {
+        use crate::types::TileKind;
+        let map = tideglass_map();
+        for (kind, name) in [
+            (TileKind::ShallowWater, "shallow water"),
+            (TileKind::DeepWater, "deep water"),
+            (TileKind::Sand, "sand"),
+            (TileKind::Rock, "rock"),
+        ] {
+            assert!(
+                count_terrain(&map, kind) >= 1,
+                "WAP7.1: Tideglass Cove must contain {name} ({kind:?}), found none"
+            );
+        }
+    }
+
+    /// Criterion WAP7.1: water (shallow + deep) covers at least 10% of the tiles.
+    /// Kills: a token puddle of water on an otherwise dry map.
+    #[test]
+    fn wap7_1_tideglass_water_is_at_least_ten_percent() {
+        use crate::types::TileKind;
+        let map = tideglass_map();
+        let water =
+            count_terrain(&map, TileKind::ShallowWater) + count_terrain(&map, TileKind::DeepWater);
+        let total = usize::try_from(map.width * map.height).expect("area is non-negative");
+        assert!(total > 0, "WAP7.1: the map must have tiles");
+        assert!(
+            water * 10 >= total,
+            "WAP7.1: water must cover >= 10% of {total} tiles, got {water}"
+        );
+    }
+
+    /// Criterion WAP7.2: from the landing (1,5), EVERY walkable tile is reachable by
+    /// the real movement rule.
+    /// Kills: a lagoon or rock ring that seals off a walkable pocket; a coast that
+    /// walls the shop or grass away from the landing.
+    #[test]
+    fn wap7_2_every_walkable_tideglass_tile_is_reachable_from_the_landing() {
+        let map = tideglass_map();
+        let reached = reachable_from_landing(&map);
+        let walkable: Vec<TilePos> = grid_tiles(&map)
+            .into_iter()
+            .filter(|p| map.is_walkable(*p))
+            .collect();
+        assert!(
+            walkable.len() > 60,
+            "WAP7.2: a large cove has > 60 walkable tiles, got {} (trivially small map?)",
+            walkable.len()
+        );
+        assert!(
+            reached.contains(&tp(1, 5)),
+            "WAP7.2: the landing (1,5) must be visited"
+        );
+        let unreachable: Vec<TilePos> = walkable
+            .iter()
+            .copied()
+            .filter(|p| !reached.contains(p))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "WAP7.2: {} walkable tile(s) unreachable from (1,5); first few: {:?}",
+            unreachable.len(),
+            &unreachable[..unreachable.len().min(8)]
+        );
+    }
+
+    /// Criterion WAP7.2: the shop post (7,1) and the return warp are reachable.
+    /// Kills: content that strands the shopkeeper's post or the way home.
+    #[test]
+    fn wap7_2_shop_post_and_return_warp_are_reachable() {
+        let map = tideglass_map();
+        let reached = reachable_from_landing(&map);
+        assert!(
+            map.is_walkable(tp(7, 1)),
+            "WAP7.2: the shop post (7,1) must be walkable"
+        );
+        assert!(
+            reached.contains(&tp(7, 1)),
+            "WAP7.2: the shop post (7,1) must be reachable from the landing"
+        );
+        let warp = map
+            .warps
+            .iter()
+            .find(|w| w.to_zone == 0)
+            .expect("zone 1 must carry the return warp to zone 0");
+        assert_eq!(
+            warp.from,
+            tp(1, 5),
+            "WAP7.2: the return warp must sit on the landing tile"
+        );
+        assert!(
+            reached.contains(&warp.from),
+            "WAP7.2: the return warp tile must be reachable"
+        );
+    }
+
+    /// Criterion WAP7.2: at least eight tall-grass tiles are reachable.
+    /// Kills: a coast with no grass, or with its grass cut off behind water/rock,
+    /// so wild encounters could never trigger.
+    #[test]
+    fn wap7_2_at_least_eight_tall_grass_tiles_are_reachable() {
+        let map = tideglass_map();
+        let reached = reachable_from_landing(&map);
+        let grass = reached.iter().filter(|p| map.is_grass(**p)).count();
+        assert!(
+            grass >= 8,
+            "WAP7.2: at least 8 tall-grass tiles must be reachable, got {grass}"
+        );
+    }
+
+    /// Criterion WAP7.3: the warp, shop and e2e route tiles stay walkable and
+    /// grass-free: column x=1 (y=1..5), row y=1 (x=1..8, ending ON the shopkeeper
+    /// (8,1)), row y=5 (x=1..6), column x=6 (y=1..5), plus the shop post (7,1).
+    /// Kills: a redesign that drops a water/rock/tree/grass tile onto a route the
+    /// e2e specs walk.
+    #[test]
+    fn wap7_3_tideglass_anchors_and_e2e_route_tiles_are_walkable_and_grass_free() {
+        let map = tideglass_map();
+        let mut tiles = vec![tp(1, 5), tp(8, 1), tp(7, 1)];
+        tiles.extend((1..=5).map(|y| tp(1, y)));
+        tiles.extend((1..=8).map(|x| tp(x, 1)));
+        tiles.extend((1..=6).map(|x| tp(x, 5)));
+        tiles.extend((1..=5).map(|y| tp(6, y)));
+        for p in tiles {
+            assert!(
+                map.is_walkable(p),
+                "WAP7.3: anchor/route tile ({},{}) must be walkable",
+                p.x,
+                p.y
+            );
+            assert!(
+                !map.is_grass(p),
+                "WAP7.3: anchor/route tile ({},{}) must be grass-free",
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    /// Criterion WAP7.3: (0,5) (sim-harness bumps West from the landing) and (6,0)
+    /// (the e2e negatives face it from (6,1)) stay non-walkable.
+    /// Kills: opening the west edge beside the warp or the north edge above (6,1),
+    /// which turns the bump/negative checks into real moves.
+    #[test]
+    fn wap7_3_tideglass_blocking_anchors_stay_blocked() {
+        let map = tideglass_map();
+        for p in [tp(0, 5), tp(6, 0)] {
+            assert!(
+                !map.is_walkable(p),
+                "WAP7.3: ({},{}) must stay non-walkable",
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    /// Criterion WAP7.3: the shopkeeper's home in the real NPC content is the (8,1)
+    /// anchor, zone 1, radius 0 — so the anchors above cannot drift from content.
+    /// Kills: moving or letting the shopkeeper wander without updating the map.
+    #[test]
+    fn wap7_3_shopkeeper_home_is_the_8_1_anchor() {
+        let npcs = crate::content::load_npc_defs().expect("npc defs must load");
+        let keeper = npcs
+            .iter()
+            .find(|n| n.npc_id == "tideglass_shopkeeper")
+            .expect("tideglass_shopkeeper must exist in the NPC content");
+        assert_eq!(keeper.zone_id, 1, "WAP7.3: the shopkeeper lives in zone 1");
+        assert_eq!(
+            (keeper.home_x, keeper.home_y),
+            (8, 1),
+            "WAP7.3: the shopkeeper's home must be the (8,1) anchor"
+        );
+        assert_eq!(
+            keeper.wander_radius, 0,
+            "WAP7.3: the shopkeeper must not wander"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // qf-15 (QF15.2): no warp endpoint may sit where an NPC lives or on the
     // heal location's tile. (5,5) was BOTH the zone-0<->zone-1 warp and
     // elder_oak's home, so chasing the quest NPC teleported the player.
