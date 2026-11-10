@@ -1525,3 +1525,107 @@ export async function startPvpByButtons(
   ).toEqual([battleId, 'Active', battleId, 'Active']);
   return battleId;
 }
+
+// ---------------------------------------------------------------------------------------------
+// wap-10 (WAP10.1-WAP10.3): the D-pad walk. A player walks the world with the live-bound D-pad
+// keys, not with `__game().step` (which sends the Step intent directly and skips the input path
+// the art flow must also exercise). Nothing here calls `__game().step` or `jump`.
+// ---------------------------------------------------------------------------------------------
+
+/** The D-pad button a compass direction is pressed with (`stepTile`'s North is y - 1). */
+export const DPAD_BUTTON: Readonly<Record<Dir, VButton>> = {
+  North: 'Up',
+  South: 'Down',
+  East: 'Right',
+  West: 'Left',
+};
+
+/** The direction facing back the way `d` came. */
+export const oppositeDir = (d: Dir): Dir => OPPOSITE[d];
+
+/** How long a press that only TURNED the character (it faced another way) may take to show
+ *  before the helper presses once more. */
+const DPAD_TURN_MS = 3_000;
+
+/** Walks `dirs` with the live-bound D-pad keys, one press per step, waiting for the
+ *  AUTHORITATIVE own tile to land on `stepTile(from, dir)` before the next press (the `walkPath`
+ *  outcome rules: 'battle' stops the walk; a step that lands elsewhere or never lands throws,
+ *  naming the step). The world must be at its base: any open frame is closed first. A press that
+ *  only turned the character (its facing was not `dir`) is repeated once after `DPAD_TURN_MS`. */
+export async function dpadWalkPath(
+  page: Page,
+  dirs: readonly Dir[],
+  label: string,
+): Promise<'arrived' | 'battle'> {
+  for (const dir of dirs) {
+    if ((await readWorld(page)).stackLength > 1) await closeAll(page);
+    // No text field or button may hold the keyboard focus: the press must reach the world.
+    await page.evaluate(() => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active !== document.body) active.blur();
+    });
+    const before = await readWorld(page);
+    if (before.battle) return 'battle';
+    const from = before.ownAuthTile;
+    if (from === null) throw new Error(`${label}: no authoritative own tile before ${dir}`);
+    const want = stepTile(from, dir);
+    const moved = (budgetMs: number): Promise<'battle' | 'moved' | null> =>
+      page
+        .waitForFunction(
+          (a: { fx: number; fy: number }) => {
+            const g = (window as unknown as { __game: () => GameHook }).__game();
+            if (g.ongoingBattle !== null) return 'battle';
+            const t = g.ownAuthTile;
+            return t !== null && (t.x !== a.fx || t.y !== a.fy) ? 'moved' : false;
+          },
+          { fx: from.x, fy: from.y },
+          { timeout: budgetMs },
+        )
+        .then((h) => h.jsonValue() as Promise<'battle' | 'moved'>)
+        .catch(() => null);
+    await pressButton(page, DPAD_BUTTON[dir]);
+    let outcome: 'battle' | 'moved' | null;
+    if (before.ownFacing === dir) {
+      outcome = await moved(STEP_SETTLE_MS);
+    } else {
+      outcome = await moved(DPAD_TURN_MS);
+      if (outcome === null) {
+        await pressButton(page, DPAD_BUTTON[dir]);
+        outcome = await moved(STEP_SETTLE_MS - DPAD_TURN_MS);
+      }
+    }
+    if (outcome === null) {
+      throw new Error(
+        `${label}: D-pad ${DPAD_BUTTON[dir]} (${dir}) from ${tileName(from)} did not land within ` +
+          `${STEP_SETTLE_MS} ms`,
+      );
+    }
+    if (outcome === 'battle') return 'battle';
+    const after = await readWorld(page);
+    if (!sameTile(after.ownAuthTile, want)) {
+      throw new Error(
+        `${label}: D-pad ${dir} from ${tileName(from)} landed on ${tileName(after.ownAuthTile)}, ` +
+          `not ${tileName(want)} — re-derive the walk from the zone map`,
+      );
+    }
+  }
+  return 'arrived';
+}
+
+/** `safePath` (grass-free, warp-free) on the live zone map, then `dpadWalkPath`. */
+export async function dpadWalkTo(
+  page: Page,
+  target: Tile,
+  label: string,
+): Promise<'arrived' | 'battle'> {
+  const w = await readWorld(page);
+  if (w.ownAuthTile === null) throw new Error(`${label}: no authoritative own tile`);
+  const path = safePath(w.map, w.ownAuthTile, target);
+  if (path === null) {
+    throw new Error(
+      `${label}: no grass-free, warp-free walk from ${tileName(w.ownAuthTile)} to ${tileName(target)} ` +
+        `on zone ${w.map.zone_id}`,
+    );
+  }
+  return dpadWalkPath(page, path, label);
+}
