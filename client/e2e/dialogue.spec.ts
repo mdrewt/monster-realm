@@ -80,9 +80,8 @@ import {
 //   - Player spawn (1,1), zone 0. Zone-0 map (content/zone_maps/000-core.ron):
 //     grass at (2,2),(3,2),(8,2),(8,3),(3,4),(4,4),(8,4),(7,5),(8,5); interior
 //     walls (4,3),(5,3); WARP TILE at (5,5)→zone 1 — the walk must NEVER step on
-//     (5,5). (That sentence predates qf-15, which moved the warp to (1,5); it is
-//     left as written until wap-8, which edits the line above it, has merged. The
-//     walk steps on neither tile.) Grass-free path (1,1)→(4,5): S,S,E,S,S,E,E —
+//     (5,5). (The live map's warp is at (1,5), not (5,5); the walk steps on
+//     neither tile.) Grass-free path (1,1)→(4,5): S,S,E,S,S,E,E —
 //     every tile entered is floor, so NO encounter can start (encounters roll only
 //     on stepping onto grass) and no Escape battle-dismiss latch is needed.
 //   - ctl-10a: T retired — A talks to what the character FACES (the tile in front,
@@ -99,7 +98,7 @@ import {
 //     is on one of them (controls.ts interactWithNpc). Two more of his steps are
 //     needed to leave TALK_RANGE of (4,5) — only (6,4) and (7,5) are out of it —
 //     so the server's talk range re-check holds, and a conversation, once open,
-//     pins him in range (qf-5). The zone-1 shopkeeper (8,1) can never appear on
+//     pins him in range. The zone-1 shopkeeper (8,1) can never appear on
 //     (4,5) or (5,5), so the zone-less __game().characters cannot fool the poll.
 
 interface Tile {
@@ -165,10 +164,10 @@ const WALK_AWAY_PATH: readonly string[] = [
   'North', // (2,3)
 ];
 const AWAY_TILE: Tile = { x: 2, y: 3 };
-/** A-press retries (ctl-10a: T retired). Each attempt first POLLS (bounded, no
+/** A-press retries. Each attempt first POLLS (bounded, no
  *  fixed sleeps) until elder_oak stands on the faced tile (5,5) or on the post
  *  (4,5), then presses A once. A press can still lose the race (he steps about
- *  once a second since qf-5, between the poll and the keydown), so attempts are
+ *  once a second, between the poll and the keydown), so attempts are
  *  bounded; controls.ts WANDER_NPC_MAX_ATTEMPTS has the arithmetic. Every test
  *  that may talk runs under TALK_TEST_TIMEOUT_MS. */
 const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
@@ -221,7 +220,7 @@ async function stepOne(p: Page, dir: string, from: Tile): Promise<void> {
   }
 }
 
-/** ctl-10a: T retired — press A (controls.ts pressButton) with elder_oak in reach
+/** Press A (controls.ts pressButton) with elder_oak in reach
  *  until the dialogue overlay opens. interactWithNpc asserts the post (4,5) and the
  *  East facing before every press, and presses only while a non-player character
  *  (NPC = neither player's own entity: this suite owns the whole 2-player world
@@ -322,7 +321,7 @@ test.describe
 
     // -------------------------------------------------------------------------
     // Setup walk: deterministic grass-free path to the talk post (4,5), facing
-    // East (ctl-10a: T retired — A acts on the faced tile, see WORLD FACTS).
+    // East (A acts on the faced tile, see WORLD FACTS).
     // -------------------------------------------------------------------------
     test('setup: A walks the grass-free path (1,1)→(4,5) with no battle, facing East', async () => {
       test.setTimeout(120_000);
@@ -338,7 +337,7 @@ test.describe
       expect(done.ownAuthTile).toEqual(TALK_POST);
       // Belt: the grass-free path must not have started an encounter.
       expect(done.ongoingBattle).toBeNull();
-      // ctl-10a: the last step (East) is what aims A at (5,5).
+      // The last step (East) is what aims A at (5,5).
       const ownRow = done.characters.find((c) => c.entityId === done.ownEntityId);
       expect(ownRow?.facing, 'the arriving East step faces the talk tile (5,5)').toBe(TALK_FACING);
     });
@@ -348,7 +347,7 @@ test.describe
     // shows the entry node. Kills (post-swap): a view subscription whose inserts
     // never reach the store/overlay (client dark after the transport swap).
     // -------------------------------------------------------------------------
-    // ctl-10a: T retired — the talk is A, with the elder on the faced tile or the own tile.
+    // The talk is A, with the elder on the faced tile or the own tile.
     test('13.5c-5: A (elder_oak in reach) opens the overlay with the entry-node text; B stays dark', async () => {
       test.setTimeout(TALK_TEST_TIMEOUT_MS);
       await talkUntilOpen(a, playerEntityIds);
@@ -416,8 +415,8 @@ test.describe
           // quest_001's Talk step can only complete AFTER the quest started.
           await talkUntilOpen(a, playerEntityIds);
         }
-        // No wait for the elder here: the talk was admitted within TALK_RANGE of
-        // him, and qf-5 pins him there for as long as the conversation is open and
+        // No wait for the elder here: the talk is admitted within TALK_RANGE of
+        // him, and an open conversation pins him there for as long as it is open and
         // A stays on the post, so the server's walked_away re-check holds.
         await a
           .locator('#dialogue-choices')

@@ -121,7 +121,7 @@ import {
 //     43% of the time (controls.ts WANDER_NPC_WAIT_MS has the measurement). Only (6,4) and
 //     (7,5) are out of TALK_RANGE 2 of (4,5), two of his steps from either reach tile, so the
 //     server's talk range re-check holds for a press made while he is in reach; an open
-//     conversation then pins him where he is (qf-5), so the advance re-check holds too.
+//     conversation then pins him where he is, so the advance re-check holds too.
 //   - tideglass_shopkeeper: pinned on (8,1); its walkable 4-neighbours are (7,1) only ((8,2)
 //     and (9,1) rock, (8,0) wall), so the post is (7,1) facing East. One press suffices.
 //
@@ -364,7 +364,7 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
  *  worst-case talk. */
 const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
 
-/** ctl-10a: T retired — A, with elder_oak in reach of the post (4,5), until the dialogue opens
+/** A, with elder_oak in reach of the post (4,5), until the dialogue opens
  *  (controls.ts interactWithNpc asserts the post and the facing before every press). */
 async function talkToElder(p: Page, playerEntityIds: readonly string[]): Promise<void> {
   await interactWithNpc(p, {
@@ -978,8 +978,8 @@ test.describe
           await expect(a.locator('#dialogue-npc-name')).toHaveText('elder_oak', {
             timeout: 10_000,
           });
-          // No wait for the elder here: the talk was admitted within TALK_RANGE of him, and
-          // qf-5 pins him there for as long as the conversation is open and A stays on the
+          // No wait for the elder here: the talk is admitted within TALK_RANGE of him, and an
+          // open conversation pins him there for as long as it is open and A stays on the
           // post, so the server's walked_away re-check holds.
           // DISPATCHED, deliberately not a pointer click — do not "restore" one here.
           // DialogueView.render() rebuilds every choice button on each store batch, and a
