@@ -10,6 +10,7 @@ import {
 import { t, tf } from '../src/ui/i18n/resolver';
 import { navItemId } from '../src/ui/navRender';
 import { closeAll, pressAccel, pressButton } from './controls';
+import { sqlRows } from './stdb';
 
 // evolution.spec.ts — a real browser drives the starter through a SINGLE-PATH auto-evolution
 // (de-bloat Phase 3 gameplay smoke).
@@ -100,21 +101,6 @@ function sql(query: string, label: string): string {
   } catch (err) {
     throw new Error(`${label}: spacetime sql failed (CLI/infra): ${(err as Error).message}`);
   }
-}
-
-/** Parse the CLI's pipe table (header, -+- separator, rows); an unknown shape THROWS. */
-function sqlRows(stdout: string, label: string): Record<string, string>[] {
-  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
-  const header = lines.shift();
-  const separator = lines.shift();
-  if (header === undefined || separator === undefined || !/^[-+]+$/.test(separator.trim())) {
-    throw new Error(`${label}: unrecognised spacetime sql table: ${stdout.slice(0, 300)}`);
-  }
-  const cols = header.split('|').map((c) => c.trim());
-  return lines.map((line) => {
-    const cells = line.split('|').map((c) => c.trim());
-    return Object.fromEntries(cols.map((c, i) => [c, cells[i] ?? '']));
-  });
 }
 
 const normId = (id: string): string => id.toLowerCase().replace(/^0x/, '');
