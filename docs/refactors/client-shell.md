@@ -265,8 +265,9 @@ The three movement latches are written where the event happens and read only by 
 
 ### Owner functions the extractions add
 
-These names are proposals. None exists until its extraction lands, and that extraction may
-choose another name; what is fixed is the owner and what the function takes over.
+These names are proposals. No top-level function of these names exists until its extraction
+lands, and that extraction may choose another name; what is fixed is the owner and what the
+function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
@@ -289,7 +290,7 @@ choose another name; what is fixed is the owner and what the function takes over
 | `frames.ts` | `takeResultsAutoContinue`, `pumpCareReadiness` | the two frame-loop parts that write `autoContinuedAtMs` and `lastCareTickAtMs` |
 | `movement.ts` | `adoptRenderer`, `adoptTelemetry` | the `renderer` and `telemetry` assignments |
 | `movement.ts` | `stepWorldFrame` | the frame loop's world step |
-| `movement.ts` | `setRawMapZoneForTest` | the test-only zone setter `snapshot` exposes |
+| `movement.ts` | `setRawMapZoneForTest` | the body of the test-only zone setter of that name, which `snapshot` goes on exposing |
 | `account.ts` | `cancelArmedDecline` | the claim view's dismissed handler |
 | `account.ts` | `pumpPrivacyCountdown`, `forgetPrivacyCountdown`, `dropExportAssembly` | the frame loop's privacy step and the two resets in `onReconnect` |
 | `screens.ts` | `resetQuestAck` | the baseline reset in `onReconnect` |
@@ -355,8 +356,8 @@ is the tester's.
 | `client/src/ui/i18n/catalogParity.test.ts`: the roster of files that import the resolver, and the literal keys `main.ts` resolves | every module that resolves a catalog key | the roster gains the module; the key set splits between `main.ts` and the module, with the union unchanged |
 | `client/src/ui/i18n/catalogParity.test.ts`: `main.ts` resolves the one accessibility key `a11y.world.region`, and by importing both `t` functions proves the census tells them apart | `feedback.ts`, with the announcement edge | the key is pinned on `feedback.ts`; the two-binding proof moves to a file that still imports both |
 | `client/vite.config.ts`: `src/main.ts` is excluded from coverage by path | nothing | shell modules are measured; coverage is a report with no threshold |
-| `client/e2e/trade-full.spec.ts`, `client/e2e/pvp-full.spec.ts`: the hook shapes they re-declare | `devHooks.ts` | none while the shapes hold |
-| twelve `client/e2e` specs abort the request for `src/main.ts` to hold the shell unbooted | nothing | none: a shell module loads only through `main.ts` |
+| the `client/e2e` specs that re-declare the shape of a hook they read | `devHooks.ts` | none while the shapes hold |
+| the `client/e2e` specs that abort the request for `src/main.ts` to hold the shell unbooted | nothing | none: a shell module loads only through `main.ts` |
 
 The whole-tree scans (`client/src/ui/i18n/hardcodedStrings.test.ts`,
 `client/src/ui/i18n-no-html-sink.test.ts`, the dynamic-key scan in `catalogParity.test.ts`) walk
