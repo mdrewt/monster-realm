@@ -14,6 +14,9 @@ Produces PixiJS-v8 spritesheets (PNG + JSON, each with a -normal map) plus 6x pr
   ./preview/hero@6x.png                     nearest-neighbour previews (not served)
   ./preview/tileset@6x.png
   ./preview/terrain-kit@6x.png
+  ../public/assets/landmarks.png            32x64 frames: heal landmark + 4 warp-marker pulse frames
+  ../public/assets/landmarks.json           (no normal map; wap-6)
+  ./preview/landmarks@6x.png
 
 Art direction (locked with the user):
   - 3/4 oblique perspective, 32x32 px/tile (TILE_PX), "warm vibrant storybook" palette.
@@ -1293,17 +1296,17 @@ def build_terrain_kit():
     return sheet, len(catalog)
 
 
-def write_sheet_json(path, image, w, h, frames, animations):
-    """PixiJS v8 spritesheet (hash) format, 2-space JSON (biome-clean)."""
+def write_sheet_json(path, image, w, h, frames, animations, fw=TILE, fh=TILE):
+    """PixiJS v8 spritesheet (hash) format, 2-space JSON (biome-clean); every frame fw x fh."""
     lines = ["{", '  "frames": {']
     keys = list(frames.keys())
     for i, k in enumerate(keys):
         ox, oy = frames[k]
         comma = "," if i < len(keys) - 1 else ""
         lines.append(
-            f'    "{k}": {{ "frame": {{ "x": {ox}, "y": {oy}, "w": {TILE}, "h": {TILE} }}, '
-            f'"sourceSize": {{ "w": {TILE}, "h": {TILE} }}, '
-            f'"spriteSourceSize": {{ "x": 0, "y": 0, "w": {TILE}, "h": {TILE} }} }}{comma}'
+            f'    "{k}": {{ "frame": {{ "x": {ox}, "y": {oy}, "w": {fw}, "h": {fh} }}, '
+            f'"sourceSize": {{ "w": {fw}, "h": {fh} }}, '
+            f'"spriteSourceSize": {{ "x": 0, "y": 0, "w": {fw}, "h": {fh} }} }}{comma}'
         )
     lines.append("  },")
     lines.append('  "animations": {')
@@ -1324,6 +1327,146 @@ def write_sheet_json(path, image, w, h, frames, animations):
         f.write("\n".join(lines) + "\n")
 
 
+# --------------------------------------------------------------------------- #
+# Landmarks (wap-6) — the heal landmark and the warp-marker pulse
+# --------------------------------------------------------------------------- #
+# Every frame is 32x64: one tile wide, two tall.  The renderer bottom-anchors it on
+# its tile (client/src/render/decorLayout.ts), so the landmark's upper half rises
+# over the row above and sorts with characters by row.  Both read by SHAPE, never
+# colour alone (a stele with a heart pictogram; an open ground ring), and both
+# carry near-white highlight pixels for the bloom pass.  The frame manifest the
+# renderer reads is client/src/render/art/packs/landmarks.ts.
+LANDMARK_H = 2 * TILE
+WARP_FRAMES = 4
+GLINT = (255, 252, 236, 255)  # near-white highlight (bloom source)
+HEART = [
+    ".###.###.",
+    "#########",
+    "#########",
+    "#########",
+    ".#######.",
+    "..#####..",
+    "...###...",
+    "....#....",
+]
+
+
+def ellipse_d(x, y, cx, cy, rx, ry):
+    """Normalised elliptical distance of pixel (x, y)'s centre from (cx, cy)."""
+    return math.hypot((x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry)
+
+
+def landmark_heal():
+    """A stone stele on a plinth, a heart pictogram on its face and a glowing cap gem."""
+    im = Img(TILE, LANDMARK_H)
+    for y in range(52, 62):  # soft contact shadow under the plinth
+        for x in range(TILE):
+            if ellipse_d(x, y, 16, 57, 14, 4.5) <= 1.0:
+                im.put(x, y, SHADOW)
+    # plinth (a two-course step), outlined
+    im.rect(4, 47, 24, 11, INK)
+    im.rect(5, 48, 22, 9, S[2])
+    im.hline(5, 48, 22, S[4])
+    im.hline(5, 49, 22, S[3])
+    im.hline(5, 52, 22, S[1])
+    im.hline(5, 56, 22, S[1])
+    # stele with a rounded top, symmetric form shading (no baked directional shadow)
+    for y in range(9, 48):
+        for x in range(9, 23):
+            if y < 13 and ellipse_d(x, y, 16, 13, 7, 4.5) > 1.0:
+                continue
+            edge = x in (9, 22) or (y < 13 and ellipse_d(x, y, 16, 13, 6, 3.5) > 1.0)
+            if edge:
+                im.put(x, y, INK)
+            elif x in (10, 21):
+                im.put(x, y, S[1])
+            elif x in (11, 20):
+                im.put(x, y, S[2])
+            else:
+                im.put(x, y, S[3] if noise(x, y, 70) > 0.12 else S[2])
+    im.hline(12, 12, 8, S[4])  # lit top course
+    # heart pictogram, outlined, with a highlight
+    hx0, hy0 = 12, 21
+    for r, row in enumerate(HEART):
+        for c, ch in enumerate(row):
+            if ch == "#":
+                im.put(hx0 + c, hy0 + r, PINK if r < 4 else RED)
+    for r, row in enumerate(HEART):  # 1-px ink rim around the heart
+        for c, ch in enumerate(row):
+            if ch != "#":
+                continue
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                rr, cc = r + dy, c + dx
+                inside = 0 <= rr < len(HEART) and 0 <= cc < len(row) and HEART[rr][cc] == "#"
+                if not inside:
+                    im.put(hx0 + cc, hy0 + rr, INK)
+    im.put(hx0 + 1, hy0 + 1, CREAM)
+    im.put(hx0 + 2, hy0 + 1, GLINT)
+    # cap gem
+    for y in range(5, 11):
+        for x in range(13, 19):
+            d = ellipse_d(x, y, 16, 8, 3, 3)
+            if d <= 1.0:
+                im.put(x, y, GOLD if d > 0.5 else CREAM)
+            elif d <= 1.35:
+                im.put(x, y, INK)
+    im.put(15, 7, GLINT)
+    return im
+
+
+def warp_marker(phase):
+    """An open elliptical ground ring in the footprint (bottom 32 px): transparent
+    interior and upper half, four rune nubs, a centre diamond.  The pulse brightens
+    and widens a faint halo and walks a spark round the ring; phase 0 is the
+    brightest, fully readable frame that reduced motion holds."""
+    im = Img(TILE, LANDMARK_H)
+    cx, cy, rx, ry = 16, 48, 11.5, 8.0
+    ring = [WAT[4], WAT[3], WAT[2], WAT[3]][phase]
+    halo = (VIO[0], VIO[1], VIO[2], 120 - 25 * phase)
+    halo_out = 1.12 + 0.05 * phase
+    spark = [(0, -1), (1, 0), (0, 1), (-1, 0)][phase]
+    for y in range(TILE, LANDMARK_H):
+        for x in range(TILE):
+            d = ellipse_d(x, y, cx, cy, rx, ry)
+            if 0.72 <= d <= 1.0:
+                im.put(x, y, ring)
+            elif 1.0 < d <= 1.1 or 0.62 <= d < 0.72:
+                im.put(x, y, INK)
+            elif 1.1 < d <= halo_out:
+                im.put(x, y, halo)
+    for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):  # rune nubs on the ring
+        nx, ny = int(cx + dx * rx * 0.86), int(cy + dy * ry * 0.86)
+        im.rect(nx - 1, ny - 1, 2, 2, VIO)
+    sx, sy = int(cx + spark[0] * rx * 0.86), int(cy + spark[1] * ry * 0.86)
+    im.rect(sx - 1, sy - 1, 2, 2, GLINT)
+    for y in range(int(cy) - 3, int(cy) + 3):  # centre diamond
+        for x in range(int(cx) - 3, int(cx) + 3):
+            if abs(x + 0.5 - cx) / 3 + abs(y + 0.5 - cy) / 2.5 <= 1.0:
+                im.put(x, y, VIO if phase % 2 else WAT[4])
+    im.put(int(cx) - 1, int(cy) - 1, GLINT)
+    return im
+
+
+def build_landmarks():
+    catalog = [("heal_landmark", landmark_heal())]
+    keys = []
+    for phase in range(WARP_FRAMES):
+        keys.append(f"warp_f{phase}")
+        catalog.append((keys[-1], warp_marker(phase)))
+    sheet = Img(len(catalog) * TILE, LANDMARK_H)
+    frames = {}
+    for idx, (key, im) in enumerate(catalog):
+        sheet.blit(im, idx * TILE, 0)
+        frames[key] = (idx * TILE, 0)
+    write_png(os.path.join(OUT, "landmarks.png"), sheet)
+    write_png(os.path.join(PREVIEW, "landmarks@6x.png"), upscale(sheet, 6))
+    write_sheet_json(
+        os.path.join(OUT, "landmarks.json"), "landmarks.png", sheet.w, sheet.h,
+        frames, {"warp": keys}, fw=TILE, fh=LANDMARK_H,
+    )
+    return sheet, len(catalog)
+
+
 def build_palette():
     sw = 16
     im = Img(sw * 5 + 2, len(PALETTE_ROWS) * sw + 2)
@@ -1341,9 +1484,11 @@ def main():
     tiles, n = build_tileset()
     mon = build_monster()
     kit, nkit = build_terrain_kit()
+    marks, nmarks = build_landmarks()
     print(f"hero.png  + hero-normal.png             {hero.w}x{hero.h}  (20 frames)")
     print(f"tileset.png + tileset-...-normal.png    {tiles.w}x{tiles.h}  ({n} tiles)")
     print(f"terrain-kit.png + terrain-kit-normal.png {kit.w}x{kit.h}  ({nkit} tiles)")
+    print(f"landmarks.png                           {marks.w}x{marks.h}  ({nmarks} frames)")
     print(f"monster-emberkit.png + -normal.png      {mon.w}x{mon.h}  (12 frames)")
     print(f"-> {OUT}")
     print(f"-> previews (albedo / normal / lit) in {PREVIEW}")
