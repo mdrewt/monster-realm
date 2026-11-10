@@ -15,7 +15,6 @@ import {
   WANDER_NPC_MAX_ATTEMPTS,
   WANDER_OPEN_WAIT_MS,
   WANDER_TALK_BUDGET_MS,
-  waitForNpcInFront,
 } from './controls';
 
 // M13.5c dialogue lifecycle e2e.
@@ -81,22 +80,26 @@ import {
 //   - Player spawn (1,1), zone 0. Zone-0 map (content/zone_maps/000-core.ron):
 //     grass at (2,2),(3,2),(8,2),(8,3),(3,4),(4,4),(8,4),(7,5),(8,5); interior
 //     walls (4,3),(5,3); WARP TILE at (5,5)→zone 1 — the walk must NEVER step on
-//     (5,5). Grass-free path (1,1)→(6,3): E,E,E,E,E,S,S — every tile entered is
-//     floor, so NO encounter can start (encounters roll only on stepping onto
-//     grass) and no Escape battle-dismiss latch is needed.
+//     (5,5). (The live map's warp is at (1,5), not (5,5); the walk steps on
+//     neither tile.) Grass-free path (1,1)→(4,5): S,S,E,S,S,E,E —
+//     every tile entered is floor, so NO encounter can start (encounters roll only
+//     on stepping onto grass) and no Escape battle-dismiss latch is needed.
 //   - ctl-10a: T retired — A talks to what the character FACES (the tile in front,
-//     else the own tile; game-core interact_candidates). THE TALK POST is (6,3)
-//     FACING SOUTH, reached by the final S step from (6,2) (a step always sets the
-//     facing, game-core world.rs apply_move). The faced tile (6,4) is in
-//     elder_oak's wander disc (npc_decide: walkable AND Manhattan <= 2 of (5,5) —
-//     the disc is (5,5),(5,4),(6,4),(4,4),(4,5),(6,5),(3,5),(7,5)), while the post
-//     (6,3) itself is Manhattan 3 from home, so the elder can NEVER share the
-//     own tile and the only way A reaches him is by facing him on (6,4). A is
-//     pressed only while he is on (6,4) (controls.ts interactWithNpc); every tile
-//     he can step to from (6,4) — (5,4), (6,5) — is still within TALK_RANGE of
-//     (6,3), so the server's talk range re-check holds. The zone-1 shopkeeper
-//     (8,1) can never appear on (6,4), so the zone-less __game().characters
-//     cannot fool the poll.
+//     else the own tile; game-core interact_candidates). THE TALK POST is (4,5)
+//     FACING EAST, reached by the final E step from (3,5) (a step always sets the
+//     facing, game-core world.rs apply_move). It reaches the elder on TWO tiles of
+//     his wander disc (npc_decide: walkable AND Manhattan <= 2 of (5,5) — the disc
+//     is (5,5),(5,4),(6,4),(4,4),(4,5),(6,5),(3,5),(7,5)): the faced tile (5,5),
+//     his home, and the post (4,5) itself, where he and A share a tile (characters
+//     never block each other, and with nothing on the faced tile the rule offers
+//     the own tile). He stands on one of the two 43% of the time, so a talk waits
+//     1.7 s on average (controls.ts WANDER_NPC_WAIT_MS has the measurement; a
+//     post that reaches one corner tile waits 39 s). A is pressed only while he
+//     is on one of them (controls.ts interactWithNpc). Two more of his steps are
+//     needed to leave TALK_RANGE of (4,5) — only (6,4) and (7,5) are out of it —
+//     so the server's talk range re-check holds, and a conversation, once open,
+//     pins him in range. The zone-1 shopkeeper (8,1) can never appear on
+//     (4,5) or (5,5), so the zone-less __game().characters cannot fool the poll.
 
 interface Tile {
   x: number;
@@ -138,31 +141,38 @@ async function ready(p: Page): Promise<void> {
   );
 }
 
-/** Grass-free, warp-free path spawn (1,1) → the talk post (6,3); see WORLD FACTS.
- *  ctl-10a: T retired — the old pocket (5,4) talked by range; A needs a FACED tile,
- *  so the walk now ends with a South step, which leaves the character facing (6,4). */
+/** Grass-free, warp-free path spawn (1,1) → the talk post (4,5); see WORLD FACTS.
+ *  It ends with an East step, which leaves the character facing the elder's home (5,5). */
 const WALK_PATH: readonly string[] = [
-  'East',
-  'East',
-  'East',
-  'East',
-  'East', // (6,1)
-  'South', // (6,2)
-  'South', // (6,3) — facing South, toward (6,4); NEVER steps on the warp (5,5)
+  'South', // (1,2)
+  'South', // (1,3)
+  'East', // (2,3)
+  'South', // (2,4)
+  'South', // (2,5) — beside the warp (1,5), NEVER on it
+  'East', // (3,5)
+  'East', // (4,5) — facing East, toward (5,5)
 ];
-const TALK_POST: Tile = { x: 6, y: 3 };
-const TALK_FACING: Dir = 'South';
-/** A-press retries (ctl-10a: T retired). Each attempt first POLLS (bounded, no
- *  fixed sleeps) until elder_oak stands on the faced tile (6,4), then presses A
- *  once. A press can still lose the race (he steps about once a second since
- *  qf-5, between the poll and the keydown), so attempts are bounded. The ceiling
- *  is sized by his walk, not by the race: (6,4) is a corner of his 8 wander
- *  tiles that he holds ~4% of the time, with visit gaps up to ~7 minutes
- *  (controls.ts WANDER_NPC_WAIT_MS has the arithmetic; the old 20 s x 20
- *  inside a 120 s test timeout was the master e2e red on 57cf7b62), so every
- *  test that may talk runs under TALK_TEST_TIMEOUT_MS. */
+const TALK_POST: Tile = { x: 4, y: 5 };
+const TALK_FACING: Dir = 'East';
+/** Grass-free walk from the talk post to a tile out of TALK_RANGE of EVERY tile of the
+ *  elder's disc (the nearest, (3,5) and (4,4), are Manhattan 3 away), so wherever he
+ *  wanders once A has left, a reply sent from there is refused. */
+const WALK_AWAY_PATH: readonly string[] = [
+  'West', // (3,5)
+  'West', // (2,5)
+  'North', // (2,4)
+  'North', // (2,3)
+];
+const AWAY_TILE: Tile = { x: 2, y: 3 };
+/** A-press retries. Each attempt first POLLS (bounded, no
+ *  fixed sleeps) until elder_oak stands on the faced tile (5,5) or on the post
+ *  (4,5), then presses A once. A press can still lose the race (he steps about
+ *  once a second, between the poll and the keydown), so attempts are
+ *  bounded; controls.ts WANDER_NPC_MAX_ATTEMPTS has the arithmetic. Every test
+ *  that may talk runs under TALK_TEST_TIMEOUT_MS. */
 const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
-/** One worst-case talk (WANDER_TALK_BUDGET_MS) plus the test's own round trips and reads. */
+/** One worst-case talk (WANDER_TALK_BUDGET_MS, 184 s) plus 120 s for the test's own round
+ *  trips and reads: 304 s. */
 const TALK_TEST_TIMEOUT_MS = WANDER_TALK_BUDGET_MS + 120_000;
 /** Advance retries: a refused advance (the parties > TALK_RANGE apart between talk
  *  and click) applies no effects and keeps the row server-side; the client answers
@@ -210,12 +220,12 @@ async function stepOne(p: Page, dir: string, from: Tile): Promise<void> {
   }
 }
 
-/** ctl-10a: T retired — press A (controls.ts pressButton) FACING elder_oak until
- *  the dialogue overlay opens. interactWithNpc asserts the post (6,3) and the
- *  South facing before every press, and presses only while a non-player character
+/** Press A (controls.ts pressButton) with elder_oak in reach
+ *  until the dialogue overlay opens. interactWithNpc asserts the post (4,5) and the
+ *  East facing before every press, and presses only while a non-player character
  *  (NPC = neither player's own entity: this suite owns the whole 2-player world
- *  under workers:1) stands on the faced tile (6,4) and the chip names him. It
- *  throws after MAX_TALK_ATTEMPTS presses that opened nothing. */
+ *  under workers:1) stands on the faced tile (5,5) or on the post, and the chip
+ *  names him. It throws after MAX_TALK_ATTEMPTS attempts that opened nothing. */
 async function talkUntilOpen(p: Page, playerEntityIds: readonly string[]): Promise<void> {
   await interactWithNpc(p, {
     stand: TALK_POST,
@@ -310,10 +320,10 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // Setup walk: deterministic grass-free path to the talk post (6,3), facing
-    // South (ctl-10a: T retired — A acts on the faced tile, see WORLD FACTS).
+    // Setup walk: deterministic grass-free path to the talk post (4,5), facing
+    // East (A acts on the faced tile, see WORLD FACTS).
     // -------------------------------------------------------------------------
-    test('setup: A walks the grass-free path (1,1)→(6,3) with no battle, facing South', async () => {
+    test('setup: A walks the grass-free path (1,1)→(4,5) with no battle, facing East', async () => {
       test.setTimeout(120_000);
       const start = await snap(a);
       expect(start.ownAuthTile, 'A spawns with an authoritative tile').not.toBeNull();
@@ -327,9 +337,9 @@ test.describe
       expect(done.ownAuthTile).toEqual(TALK_POST);
       // Belt: the grass-free path must not have started an encounter.
       expect(done.ongoingBattle).toBeNull();
-      // ctl-10a: the last step (South) is what aims A at (6,4).
+      // The last step (East) is what aims A at (5,5).
       const ownRow = done.characters.find((c) => c.entityId === done.ownEntityId);
-      expect(ownRow?.facing, 'the arriving South step faces the talk tile (6,4)').toBe(TALK_FACING);
+      expect(ownRow?.facing, 'the arriving East step faces the talk tile (5,5)').toBe(TALK_FACING);
     });
 
     // -------------------------------------------------------------------------
@@ -337,8 +347,8 @@ test.describe
     // shows the entry node. Kills (post-swap): a view subscription whose inserts
     // never reach the store/overlay (client dark after the transport swap).
     // -------------------------------------------------------------------------
-    // ctl-10a: T retired — the talk is A, facing the elder.
-    test('13.5c-5: A (facing elder_oak) opens the overlay with the entry-node text; B stays dark', async () => {
+    // The talk is A, with the elder on the faced tile or the own tile.
+    test('13.5c-5: A (elder_oak in reach) opens the overlay with the entry-node text; B stays dark', async () => {
       test.setTimeout(TALK_TEST_TIMEOUT_MS);
       await talkUntilOpen(a, playerEntityIds);
 
@@ -405,18 +415,9 @@ test.describe
           // quest_001's Talk step can only complete AFTER the quest started.
           await talkUntilOpen(a, playerEntityIds);
         }
-        // ctl-10a: the talk post (6,3) reaches only 3 of the elder's 8 wander
-        // tiles within TALK_RANGE (the old pocket reached 6), so the advance is
-        // sent while he stands on the faced tile (6,4): from there every tile he
-        // can reach next is within range, and the server's walked_away re-check
-        // holds. A timeout here is not a failure — the click goes ahead anyway.
-        await waitForNpcInFront(a, {
-          stand: TALK_POST,
-          facing: TALK_FACING,
-          ignoreEntityIds: playerEntityIds,
-          worldBase: false,
-          timeoutMs: 20_000,
-        });
+        // No wait for the elder here: the talk is admitted within TALK_RANGE of
+        // him, and an open conversation pins him there for as long as it is open and
+        // A stays on the post, so the server's walked_away re-check holds.
         await a
           .locator('#dialogue-choices')
           .getByText('I seek a quest.', { exact: true })
@@ -593,10 +594,10 @@ test.describe
 
       // The elder: the one non-player character within TALK_RANGE of the post, read
       // BEFORE the walk. qf-5 holds him still while the conversation references him;
-      // he is usually on the faced tile (6,4), and a talk that landed just after he
-      // stepped to (5,4) or (6,5) leaves him there, still in range. The zone-1
-      // shopkeeper at (8,1) is Manhattan 4 from the post, so the zone-less list
-      // cannot offer him here.
+      // he is usually on the faced tile (5,5) or on the post (4,5), and a talk that
+      // landed just after he stepped off them leaves him one step away, still in
+      // range. The zone-1 shopkeeper at (8,1) is Manhattan 8 from the post, so the
+      // zone-less list cannot offer him here.
       const posted = await snap(a);
       expect(posted.ownAuthTile, 'A is on the talk post').toEqual(TALK_POST);
       const inRange = posted.characters.filter(
@@ -609,14 +610,14 @@ test.describe
       const [elder] = inRange;
       if (elder === undefined) throw new Error('unreachable: one elder was asserted above');
 
-      // Two steps North, back along the walk: (6,3) → (6,2) → (6,1).
-      for (let i = 0; i < 2; i++) {
+      // Back along the walk: (4,5) → (3,5) → (2,5) → (2,4) → (2,3).
+      for (const dir of WALK_AWAY_PATH) {
         const g = await snap(a);
         if (g.ownAuthTile === null) throw new Error('walk away: lost the own authoritative tile');
-        await stepOne(a, 'North', g.ownAuthTile);
+        await stepOne(a, dir, g.ownAuthTile);
       }
       const away = await snap(a);
-      expect(away.ownAuthTile, 'A walked back to (6,1)').toEqual({ x: 6, y: 1 });
+      expect(away.ownAuthTile, 'A walked back to (2,3)').toEqual(AWAY_TILE);
       if (away.ownAuthTile === null) throw new Error('walk away: lost the own authoritative tile');
       const elderNow = away.characters.find((c) => c.entityId === elder.entityId);
       expect(elderNow, 'the elder is still listed').toBeDefined();
