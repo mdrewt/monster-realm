@@ -120,6 +120,6 @@ export const TERRAIN_CHUNK_TILES = 16;
  *  limit, evaluated for every covered pixel. A hardware GPU does not notice, but a software
  *  rasteriser (SwiftShader: headless CI, or a player whose browser has no usable GPU) pays for
  *  the whole chain per pixel, and reports a limit of 32. Measured on a full-canvas zone under
- *  SwiftShader on 2 cores: limit 32 holds 30 fps, limit 4 holds 60 fps, with identical pixels.
+ *  SwiftShader on 2 cores: limit 32 holds 30 to 39 fps, limit 4 holds 60 fps, with identical pixels.
  *  The world draws from about seven textures, so 4 costs at most two extra draw calls. */
 export const MAX_BATCH_TEXTURES = 4;

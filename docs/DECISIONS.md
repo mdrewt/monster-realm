@@ -1035,8 +1035,8 @@ real browser and compares the canvas before and after, and counts one canvas cle
 limit, evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser
 (SwiftShader: headless CI, and any player whose browser has no usable GPU) reports a limit of 32 and pays
 for the whole chain per pixel, so the cost grows with how much of the canvas the map covers. Measured in
-headless Chromium on 2 cores at 1280x720 (medians of 3 interleaved blocks, device limit 32 against a cap
-of 4): on a 10x7 zone, idle browser CPU is 118% against 63%; on a 28x20 zone that fills the canvas it is
+headless Chromium on 2 cores at 1280x720 (medians of 3 interleaved blocks; Pixi's own ticker and device limit of 32
+against this configuration): on a 10x7 zone, idle browser CPU is 118% against 63%; on a 28x20 zone that fills the canvas it is
 177% against 107%, the frame rate 39 against 60 fps, and the median CDP key acknowledgement 25 ms against
 4.9 ms. Pixels are identical; the larger zone takes 2 draw calls where the device limit takes 1. The cap
 covers the sprite batcher, which draws the whole kit-atlas world; the flat-terrain fallback's large
