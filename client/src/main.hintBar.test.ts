@@ -432,8 +432,8 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     frame();
     expect(stackNames()).toEqual(['world']);
 
-    // The request is withdrawn: Y and the badge go.
-    opts.store.removeTradeOffer(11n);
+    // The request is withdrawn (ts-3: the session leaves the view): Y and the badge go.
+    opts.store.reconcileTradeSessionsFromView([]);
     batch();
     frame();
     expect(chipsNow(), 'nothing waits: Start and Select, no badge').toEqual([

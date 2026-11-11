@@ -427,10 +427,11 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   },
   // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView` (the wizard). The
   // session editor mounts on the SAME static shell `#tradepropose-overlay` (index.html is not
-  // edited), empties it once at construction and builds its anchor `#tradesession-rows` (a
-  // tabindex="0" listbox) there, so — like controlsView — the open needs no paint first.
+  // edited) and KEEPS its static `#tradepropose-submit` button as the always-enabled Close button,
+  // the registry anchor (ts-3.4), so the open needs no paint first. (Focus at open then moves to
+  // the `#tradesession-rows` listbox on the view's first session paint; none happens here.)
   tradeSessionView: () => {
-    const view = new TradeSessionView({ announce: noop });
+    const view = new TradeSessionView({ announce: noop, onClose: noop });
     view.show();
     return {
       root: capturedRoot('tradeSessionView'),
@@ -624,15 +625,6 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
       if (rootId === undefined || id === 'profileView' || id === 'controlsView') {
         continue;
       }
-      // ts-3 (named intentional change): the session editor's ROOT is the shipped static shell
-      // `#tradepropose-overlay` (index.html is not edited), but its anchor `#tradesession-rows` is
-      // a runtime listbox its constructor builds (the controlsView `#controls-rows` precedent), so
-      // only the shell is checkable in the shipped markup; the anchor is proved after construction
-      // by S10-WIRE-ROOT-IDENTITY / S10-WIRE-FOCUS-IDENTITY.
-      if (id === 'tradeSessionView') {
-        expect(document.getElementById(rootId), `#${rootId} ships in index.html`).not.toBeNull();
-        continue;
-      }
       const root = requireElement(rootId);
       const anchor = root.querySelector(OVERLAY_A11Y[id].initialFocusSelector);
       expect(
@@ -647,10 +639,10 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     }
     // uif-16b (named intentional change): 11 -> 10: #rename-overlay is no longer a static dialog
     // shell (it is Profile's Name section; the dialog #profile-overlay is constructed).
-    // ts-3 (named intentional change): 10 -> 9: the trade session editor's anchor is built at
-    // runtime inside the static `#tradepropose-overlay` shell (was the wizard's static
-    // `#tradepropose-target`).
-    expect(checkedAnchors, 'nine static anchors must have been checked').toBe(9);
+    // ts-3 (named intentional change): still 10: the trade session editor keeps the static
+    // `#tradepropose-overlay` shell and anchors on its static `#tradepropose-submit` Close button
+    // (was the wizard's static `#tradepropose-target`).
+    expect(checkedAnchors, 'ten static anchors must have been checked').toBe(10);
   });
 
   it('S10-WIRE-VACUITY-CONTROL BITES: the weak oracle §5.5 warns about passes on a decorative wrapper, and each of the four conjuncts that replaces it rejects it', () => {
@@ -1467,7 +1459,7 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(fill, 'the is-active fill and outline must be different colours').not.toEqual(outline);
   });
 
-  it('QF1-1-HEADING-ROSTER BITES: the live anchor classes include boxView and raisingView as headings, menuView, controlsView and tradeSessionView as nav containers and profileView`s native control — a reclassification reds', async () => {
+  it('QF1-1-HEADING-ROSTER BITES: the live anchor classes include boxView and raisingView as headings, menuView and controlsView as nav containers and profileView`s and tradeSessionView`s native controls — a reclassification reds', async () => {
     // WRONG IMPL KILLED: a retype that quietly moves an anchor out of the class its paint rule is
     // written for (e.g. a heading given a listbox role, or a native control given tabindex=-1),
     // which would leave the QF1.1 / QF1.2 teeth below iterating a list that no longer holds it.
@@ -1483,13 +1475,13 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     // is profileView's anchor now; claimView's #claim-signin-btn and privacyView's
     // #privacy-close-btn left with their overlays.
     expect(classOf('profileView')).toBe('native');
-    // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView` -> 'native'
-    // (the wizard's #tradepropose-target <select>). The session editor's anchor is the
-    // #tradesession-rows listbox, the controlsView #controls-rows precedent (plan "Frame id"), so
-    // it is a nav container. WRONG IMPL KILLED: an editor anchored on a native control or a
-    // tabindex=-1 heading (the active row would not be announced on open).
     expect(classOf('controlsView')).toBe('nav');
-    expect(classOf('tradeSessionView')).toBe('nav');
+    // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView` -> 'native'
+    // (the wizard's #tradepropose-target <select>). The session editor keeps the class under its
+    // new id: its anchor is the shell's static #tradepropose-submit Close button (plan "Frame
+    // id"). WRONG IMPL KILLED: an editor anchored on the runtime #tradesession-rows listbox (not
+    // static in index.html) or on a tabindex=-1 heading.
+    expect(classOf('tradeSessionView')).toBe('native');
   });
 
   it('QF1-1-TABINDEX-MINUS-ONE-NO-RING BITES: EVERY focused [tabindex="-1"] element that is not a listbox/grid — anchor or not — computes outline-style none', async () => {
@@ -1535,25 +1527,28 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(offenders, 'interactive-role elements at tabindex=-1').toEqual([]);
   });
 
-  it('QF1-1-SCOPE-NATIVE-ANCHORS BITES: the native-control anchors are exactly profileView`s #rename-input, and it does NOT compute outline-style none when focused', async () => {
+  it('QF1-1-SCOPE-NATIVE-ANCHORS BITES: the native-control anchors are exactly profileView`s #rename-input and tradeSessionView`s #tradepropose-submit, and neither computes outline-style none when focused', async () => {
     // WRONG IMPL KILLED: `*:focus { outline: none }`, `input:focus, select:focus, button:focus
     // { outline: none }` or `:focus-visible { outline: none }` — blanket suppression that strips
     // the browser's own ring from the controls a keyboard player actually types into.
     const s = await survey();
     // uif-16b (named intentional change): 4 -> 2 native anchors; claimView and privacyView left.
-    // ts-3 (named intentional change): 2 -> 1: tradeProposeView's #tradepropose-target left with
-    // the wizard; the session editor's anchor is a listbox (QF1-1-HEADING-ROSTER).
-    const natives: readonly OverlayId[] = ['profileView'];
-    // With one member the ring check alone would pass for an anchor that silently moved out of
-    // the native class (it would be read from the wrong roster), so the roster itself is pinned
-    // against the LIVE classification. WRONG IMPL KILLED: the session editor anchored on a native
-    // control (a stray <select>/<input> anchor would join this set), or profileView's anchor
-    // retyped away from #rename-input.
+    // ts-3 (named intentional change, the Strangler rename): tradeProposeView's slot is held by
+    // tradeSessionView, whose anchor is the static #tradepropose-submit Close button (was the
+    // wizard's #tradepropose-target). OVERLAY_IDS order: profileView precedes tradeSessionView.
+    const natives: readonly OverlayId[] = ['profileView', 'tradeSessionView'];
+    // The roster itself is pinned against the LIVE classification, so an anchor that silently
+    // moved out of the native class cannot pass by being read from the wrong roster. WRONG IMPL
+    // KILLED: the session editor anchored on its runtime rows listbox (it would leave this set),
+    // or either anchor retyped away from its static control.
     expect(
       OVERLAY_IDS.filter((id) => classifyAnchor(anchorFor(s, id).el) === 'native'),
       'the overlays whose anchor is a native control',
     ).toEqual(natives);
     expect(anchorFor(s, 'profileView').el.id, 'profileView`s native anchor').toBe('rename-input');
+    expect(anchorFor(s, 'tradeSessionView').el.id, 'tradeSessionView`s native anchor').toBe(
+      'tradepropose-submit',
+    );
     const offenders = natives
       .map((id) => ({ id, e: anchorFor(s, id) }))
       .filter(({ e }) => e.ring === null || e.ring.style === 'none')
@@ -1677,15 +1672,14 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     for (const id of OVERLAY_IDS) counts[classifyAnchor(anchorFor(s, id).el)]++;
     expect(counts.heading + counts.nav + counts.native).toBe(OVERLAY_IDS.length);
     expect(counts.heading, 'at least boxView and raisingView').toBeGreaterThanOrEqual(2);
-    // ts-3 (named intentional change): the nav floor 1 -> 3 (menuView, controlsView and the
-    // session editor's #tradesession-rows) and the native floor 2 -> 1 (the wizard's
-    // #tradepropose-target left); the exact native roster is QF1-1-SCOPE-NATIVE-ANCHORS'.
-    expect(
-      counts.nav,
-      'at least menuView, controlsView and tradeSessionView',
-    ).toBeGreaterThanOrEqual(3);
+    expect(counts.nav, 'at least menuView').toBeGreaterThanOrEqual(1);
     // uif-16b (named intentional change): 4 -> 2: the claim and privacy anchors left.
-    expect(counts.native, 'the one native control (#rename-input)').toBeGreaterThanOrEqual(1);
+    // ts-3 (named intentional change): still 2: the session editor's #tradepropose-submit Close
+    // button holds the wizard's native slot; the exact roster is QF1-1-SCOPE-NATIVE-ANCHORS'.
+    expect(
+      counts.native,
+      'the two native controls (#rename-input, #tradepropose-submit)',
+    ).toBeGreaterThanOrEqual(2);
 
     const unclassifiable = document.createElement('div');
     unclassifiable.setAttribute('tabindex', '0');
@@ -1720,10 +1714,6 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     );
     expect(containers, 'questLogView anchor (tabindex=-1 listbox) must be enumerated').toContain(
       anchorFor(s, 'questLogView'),
-    );
-    // ts-3: the session editor's runtime listbox anchor (#tradesession-rows) takes the ring too.
-    expect(containers, 'tradeSessionView anchor (#tradesession-rows) must be enumerated').toContain(
-      anchorFor(s, 'tradeSessionView'),
     );
     const failing = containers
       .map((e) => ({ label: e.label, problems: ringProblems(e.ring, probe) }))

@@ -1502,11 +1502,13 @@ describe('overlayRegistry — controlsView (ctl-12b, CTL12B.1)', () => {
 // ===========================================================================
 
 describe('overlayRegistry — tradeSessionView (ts-3)', () => {
-  it('ts-3 tradeSessionView is a GUARD_ONLY member whose a11y row is a dismissible dialog titled by its own key and focused on the #tradesession-rows listbox', async () => {
-    // WRONG IMPL KILLED: keeping the wizard's id or row (`a11y.overlay.tradeProposeView.title`, an
-    // anchor on one of the static shell's native controls the editor empties at construction, so
-    // focus would fall to <body>), a HIDE_SWITCH tier (B/I/E would force-hide an unsent draft or a
-    // confirm prompt), and a non-dismissible row (Escape could not close the editor).
+  it('ts-3 ts-3.4 tradeSessionView is a GUARD_ONLY member whose a11y row is a dismissible dialog titled by its own key and anchored on the static #tradepropose-submit Close button', async () => {
+    // WRONG IMPL KILLED: keeping the wizard's id or row (`a11y.overlay.tradeProposeView.title`, or
+    // its `#tradepropose-target` anchor, a static control the editor removes at construction, so
+    // focus would fall to <body>); the runtime `#tradesession-rows` listbox as the anchor (not a
+    // static control of index.html, the smoke test's anchor contract reds); a HIDE_SWITCH tier
+    // (B/I/E would force-hide an unsent draft or a confirm prompt), and a non-dismissible row
+    // (Escape could not close the editor).
     expect(OVERLAY_IDS, 'a manifest member').toContain('tradeSessionView');
     expect(OVERLAY_TIERS.tradeSessionView).toBe('GUARD_ONLY');
     const mod: unknown = await import('./overlayRegistry');
@@ -1514,7 +1516,7 @@ describe('overlayRegistry — tradeSessionView (ts-3)', () => {
     expect(overlayA11y?.tradeSessionView).toEqual({
       role: 'dialog',
       labelKey: 'a11y.overlay.tradeSessionView.title',
-      initialFocusSelector: '#tradesession-rows',
+      initialFocusSelector: '#tradepropose-submit',
       dismissible: true,
     });
     expect(Object.keys(overlayA11y ?? {}).includes('tradeProposeView')).toBe(false);

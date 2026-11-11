@@ -1358,6 +1358,19 @@ function openTradeEditor(sessionId: bigint): void {
   if (tradeSessionView?.visible === true) openedTradeSessions.add(sessionId);
 }
 
+/** The editor's Close button: its frame closes through the stack; the session stays open. */
+function closeTradeEditor(): void {
+  syncStack();
+  const top = contextStack[contextStack.length - 1];
+  if (top.kind === 'screen' && top.id === 'tradeSessionView') {
+    void dispatch({ kind: 'pop' });
+  } else if (tradeSessionView?.visible === true) {
+    // Under another frame: the view hides and the sync takes its frame off the stack.
+    tradeSessionView.hide();
+    syncStack();
+  }
+}
+
 /** How to Play (uif-14): catalog copy bound in the active locale at each open; seated at the open,
  *  so its tab bar paints then. Its push closes a world sheet, so the sheet is closed first. */
 function openHelp(): void {
@@ -4925,8 +4938,12 @@ async function main(): Promise<void> {
     };
     controlsSavedLine = savedLine;
     controlsView = new ControlsViewClass(controlsHandlers);
-    // The session editor issues nothing itself: its screen's commands run through `dispatch`.
-    tradeSessionView = new TradeSessionViewClass({ announce: (text) => announceNow(text) });
+    // The session editor issues nothing itself: its screen's commands run through `dispatch`, and
+    // its Close button closes the frame as B does.
+    tradeSessionView = new TradeSessionViewClass({
+      announce: (text) => announceNow(text),
+      onClose: closeTradeEditor,
+    });
   }
 
   // create the status surface BEFORE `conn = connect(...)` is

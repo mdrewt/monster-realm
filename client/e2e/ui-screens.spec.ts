@@ -67,7 +67,7 @@ const UIF10_MOUNT = `(async () => {
   const shopView = new sv.ShopView({ onBuy: noop, onSell: noop });
   const healView = new hv.HealView();
   const questView = new qv.QuestLogView();
-  const tradeView = new tsv.TradeSessionView({ announce: () => {} });
+  const tradeView = new tsv.TradeSessionView({ announce: () => {}, onClose: () => {} });
 
   function shopCtx(n) {
     const defs = new Map(), stock = [], inv = [];

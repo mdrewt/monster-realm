@@ -2519,7 +2519,7 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     ).toBe(4);
   });
 
-  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds nine safe and twenty-five refused kinds, thirty-four in all (bt-15 increment B: +forfeit; bt-17, named intentional change, BT17.1: the seven 1v1 kinds gone) [BT12-2-POLICY-DEPLOY]', () => {
+  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds ten safe and twenty-nine refused kinds, thirty-nine in all (bt-15 increment B: +forfeit; bt-17, named intentional change, BT17.1: the seven 1v1 kinds gone) [BT12-2-POLICY-DEPLOY]', () => {
     // WRONG IMPL KILLED: `deployUnits` classified `refuse` (the confirm screen's A, Start and the
     // Edit formation editor's Confirm would all die at the one place they exist: a Deploying battle
     // IS a battle base); a refusal keyed to the payload (empty picks, a bigint battle id past 2^53);
@@ -2554,15 +2554,17 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     const verdicts = Object.values(COMMAND_BATTLE_POLICY);
     // uif-14b (named intentional change, UIF14B.3): +reportProblem (safe): 10 safe, 25 refused, 35
     // kinds (were 9 / 25 / 34).
+    // ts-3 (named intentional change): -proposeTrade, +5 trade-session kinds (all refuse): 10 safe,
+    // 29 refused, 39 kinds (were 10 / 25 / 35).
     expect(
       verdicts.filter((v) => v === 'safe'),
       'ten safe kinds',
     ).toHaveLength(10);
     expect(
       verdicts.filter((v) => v === 'refuse'),
-      'twenty-five refused kinds',
-    ).toHaveLength(25);
-    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-five kinds in all').toHaveLength(35);
+      'twenty-nine refused kinds',
+    ).toHaveLength(29);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-nine kinds in all').toHaveLength(39);
   });
 
   it('UIF14B.3 reportProblem is battle-safe: no battle-base stack refuses it (bare, under a stamped Help or menu), and a world stack never does either', () => {

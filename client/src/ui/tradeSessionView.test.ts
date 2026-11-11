@@ -14,7 +14,13 @@
 // idiom), never hand-typed English.
 //
 // The shell is index.html's `#tradepropose-overlay` (the smoke test pins its five static children;
-// the view adopts the root, empties it once at construction and builds `tradesession-*` parts).
+// the view adopts the root, removes the four static wizard controls once at construction, builds
+// the `tradesession-*` parts before the kept static `#tradepropose-submit` button, which becomes
+// the always-enabled Close button and the registry's focus anchor).
+//
+// RED REASON (ts-3.4 Close-button revision): `TradeSessionViewDeps.onClose` does not exist yet
+//   (a type error on every `new TradeSessionView({ announce, onClose })`), and the view still
+//   empties the shell, so `#tradepropose-submit` is gone.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoreMonsterPub, StoreTradeSession } from '../net/store';
 import { t, tf } from './i18n/resolver';
@@ -177,23 +183,64 @@ function makeView(): {
   root: HTMLElement;
   view: TradeSessionView;
   announce: ReturnType<typeof vi.fn>;
+  onClose: ReturnType<typeof vi.fn>;
 } {
   const root = mountShell();
   const announce = vi.fn();
-  const view = new TradeSessionView({ announce });
-  return { root, view, announce };
+  const onClose = vi.fn();
+  const view = new TradeSessionView({ announce, onClose });
+  return { root, view, announce, onClose };
 }
 
+const NATIVE = 'button, input, select, textarea, a[href]';
+
+function closeButton(): HTMLButtonElement {
+  const el = byId('tradepropose-submit');
+  if (!(el instanceof HTMLButtonElement)) throw new Error('#tradepropose-submit must be a button');
+  return el;
+}
+
+const GONE_PAINT: TradeSessionPaint = {
+  vm: { kind: 'gone' },
+  rows: [],
+  draft: { monsterIds: [], items: [], currency: 0n },
+  cursor: null,
+  notice: 0,
+  prompt: null,
+};
+
 describe('TradeSessionView — the shell (ts-3.2)', () => {
-  it('ts-3.2 the constructor throws without #tradepropose-overlay, empties the static shell ONCE and builds the tradesession-* parts (each id also its data-testid); a node adopted into the root later survives every paint', () => {
+  it('ts-3.2 ts-3.4 the constructor throws without #tradepropose-overlay or its #tradepropose-submit, removes the other four static controls ONCE, keeps the button as the root`s LAST child and builds the tradesession-* parts (each id also its data-testid); a node adopted into the root later survives every paint', () => {
     // WRONG IMPL KILLED: a view that keeps the wizard's static controls (a mouse-only select and
-    // inputs inside the editor); parts without a data-testid (the e2e would not find them); a
-    // paint that empties the root again (the toast live region adopted into an open dialog root
-    // would be torn out on every batch); a silent no-op on a missing shell.
-    expect(() => new TradeSessionView({ announce: () => {} }), 'no shell').toThrow();
+    // inputs inside the editor); one that empties the whole shell (the registry's static anchor
+    // `#tradepropose-submit` is gone, the smoke test's focus contract breaks); parts appended
+    // AFTER the button; parts without a data-testid (the e2e would not find them); a paint that
+    // empties the root again (the toast live region adopted into an open dialog root would be
+    // torn out on every batch); a silent no-op on a missing shell or a missing button.
+    expect(
+      () => new TradeSessionView({ announce: () => {}, onClose: () => {} }),
+      'no shell',
+    ).toThrow();
+    mountShell().querySelector('#tradepropose-submit')?.remove();
+    expect(
+      () => new TradeSessionView({ announce: () => {}, onClose: () => {} }),
+      'a shell without its #tradepropose-submit',
+    ).toThrow();
+    document.body.innerHTML = '';
     const { root, view } = makeView();
-    expect(root.querySelector('#tradepropose-target'), 'the static shell is emptied').toBeNull();
-    expect(root.querySelector('select, input, button')).toBeNull();
+    for (const id of [
+      'tradepropose-target',
+      'tradepropose-monsters',
+      'tradepropose-offer-currency',
+      'tradepropose-request-currency',
+    ]) {
+      expect(document.getElementById(id), `#${id} is removed`).toBeNull();
+    }
+    expect(root.querySelectorAll('select, input').length, 'no wizard control left').toBe(0);
+    const button = byId('tradepropose-submit');
+    expect(root.contains(button), 'the Close button stays in the root').toBe(true);
+    expect(button.tagName).toBe('BUTTON');
+    expect(root.lastElementChild, 'the button is the root`s last element child').toBe(button);
     for (const id of [
       'tradesession-title',
       'tradesession-notice',
@@ -207,6 +254,10 @@ describe('TradeSessionView — the shell (ts-3.2)', () => {
       const el = byId(id);
       expect(root.contains(el), `#${id} is in the root`).toBe(true);
       expect(el.dataset.testid, `#${id}'s data-testid`).toBe(id);
+      expect(
+        el.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `#${id} is built before the Close button`,
+      ).not.toBe(0);
     }
     expect(byId('tradesession-title').tagName).toBe('H2');
     const adopted = document.createElement('div');
@@ -217,15 +268,132 @@ describe('TradeSessionView — the shell (ts-3.2)', () => {
     expect(adopted.parentElement, 'the adopted node survives the paints').toBe(root);
   });
 
-  it('ts-3.4 the editor holds no native control: every row is a listbox option the D-pad drives (no mouse-only element)', () => {
-    // WRONG IMPL KILLED: a button or an input per row (a pointer-only path beside the D-pad); a
-    // rows container that is not the listbox the router's focus names.
+  it('ts-3.4 the ONLY native control in the editor is the Close button: every row and every answer is a listbox option the D-pad drives (no mouse-only element)', () => {
+    // WRONG IMPL KILLED: a button or an input per row or per answer (a pointer-only path beside
+    // the D-pad); a second static control left behind; a rows container that is not the listbox
+    // the router's focus names.
     const { root, view } = makeView();
     view.show();
     view.paint(paintOf(vmOf(), { prompt: { action: 'confirm', yes: false } }));
-    expect(root.querySelectorAll('button, input, select, textarea, a[href]').length).toBe(0);
+    expect([...root.querySelectorAll(NATIVE)]).toEqual([closeButton()]);
     expect(byId('tradesession-rows').getAttribute('role')).toBe('listbox');
     expect(byId('tradesession-confirm').getAttribute('role')).toBe('listbox');
+    const options = (id: string) =>
+      [...byId(id).querySelectorAll<HTMLElement>('[data-nav-key]')].map((el) =>
+        el.getAttribute('role'),
+      );
+    expect(options('tradesession-rows').length, 'fixture: rows painted').toBeGreaterThan(0);
+    expect(new Set(options('tradesession-rows'))).toEqual(new Set(['option']));
+    expect(options('tradesession-confirm')).toEqual(['option', 'option']);
+  });
+});
+
+describe('TradeSessionView — the Close button (ts-3.4)', () => {
+  it('ts-3.4 the Close button reads kit.sheet.close after show(); a click calls onClose exactly once and nothing else', () => {
+    // WRONG IMPL KILLED: a dead button (no listener); a button that announces or double-fires
+    // onClose (a stacked listener per show()); an unlabelled or hand-typed-English button.
+    const { view, announce, onClose } = makeView();
+    view.show();
+    view.show();
+    view.paint(paintOf(vmOf()));
+    const button = closeButton();
+    expect(button.textContent).toBe(t('kit.sheet.close'));
+    expect(onClose).not.toHaveBeenCalled();
+    button.click();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(announce).not.toHaveBeenCalled();
+    view.hide();
+    view.show();
+    expect(button.textContent, 'written again at the next show()').toBe(t('kit.sheet.close'));
+    button.click();
+    expect(onClose, 'one call per click across a re-open').toHaveBeenCalledTimes(2);
+  });
+
+  it('ts-3.4 a keydown on the Close button stays its own (Enter, Space, letters, arrows never reach window) except Escape', () => {
+    // WRONG IMPL KILLED: a button whose Enter / Space also reaches the router's window keydown
+    // (one press would both close and press A on the editor); a stopPropagation that also eats
+    // Escape (the router could not close the frame from the button).
+    const { view } = makeView();
+    view.show();
+    view.paint(paintOf(vmOf()));
+    const button = closeButton();
+    const seen: string[] = [];
+    const listener = (e: KeyboardEvent) => {
+      seen.push(e.key);
+    };
+    window.addEventListener('keydown', listener);
+    try {
+      for (const [key, code] of [
+        ['Enter', 'Enter'],
+        [' ', 'Space'],
+        ['ArrowDown', 'ArrowDown'],
+        ['a', 'KeyA'],
+      ] as const) {
+        button.dispatchEvent(new KeyboardEvent('keydown', { key, code, bubbles: true }));
+      }
+      expect(seen, 'nothing but Escape reaches window').toEqual([]);
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }),
+      );
+      expect(seen, 'Escape still reaches window').toEqual(['Escape']);
+    } finally {
+      window.removeEventListener('keydown', listener);
+    }
+  });
+
+  it('ts-3.4 the Close button is live in every painted state: never disabled, never hidden, never display:none, always in the root', () => {
+    // WRONG IMPL KILLED: a Close button disabled while a prompt is open or a side is confirmed
+    // (the registry anchor would be inert, Tab escapes the trap); a button hidden on a gone
+    // paint; a paint that removes or re-parents it; a root painted display:none while shown.
+    const { root, view } = makeView();
+    view.show();
+    const button = closeButton();
+    const states: readonly [string, TradeSessionPaint][] = [
+      ['a normal session', paintOf(vmOf())],
+      ['a confirmed side', paintOf(vmOf(sess({ openerConfirmed: true })))],
+      ['a prompt open', paintOf(vmOf(), { prompt: { action: 'cancel', yes: false } })],
+      ['a raised notice', paintOf(vmOf(sess({ revision: REV + 1n })), { notice: 1 })],
+      ['a gone vm', GONE_PAINT],
+    ];
+    for (const [name, p] of states) {
+      view.paint(p);
+      expect(button.disabled, `${name}: not disabled`).toBe(false);
+      expect(button.hasAttribute('disabled'), `${name}: no disabled attribute`).toBe(false);
+      expect(button.hidden, `${name}: not hidden`).toBe(false);
+      expect(button.style.display, `${name}: the button's display`).not.toBe('none');
+      expect(root.style.display, `${name}: the root's display`).not.toBe('none');
+      expect(root.contains(button), `${name}: in the root`).toBe(true);
+      expect(byId('tradepropose-submit'), `${name}: the same node`).toBe(button);
+    }
+  });
+
+  it('ts-3.4 focus at open: the first session paint after show() focuses #tradesession-rows; later paints never move focus; a gone paint does not consume the one-shot', () => {
+    // WRONG IMPL KILLED: no focus at open (the D-pad player starts outside the list); a focus on
+    // every paint (a batch would yank focus off the Close button); a one-shot never re-armed by
+    // show(); a gone paint that spends the one-shot (the next real session paint would leave
+    // focus wherever it was).
+    const { root, view } = makeView();
+    expect(root.parentElement, 'fixture: attached').toBe(document.body);
+    view.show();
+    expect(root.style.display, 'fixture: displayed after show()').not.toBe('none');
+    const rows = byId('tradesession-rows');
+    const button = closeButton();
+    view.paint(paintOf(vmOf()));
+    expect(document.activeElement, 'the first paint focuses the rows').toBe(rows);
+
+    button.focus();
+    expect(document.activeElement, 'fixture: the button takes focus').toBe(button);
+    view.paint(paintOf(vmOf(sess({ revision: REV + 1n }))));
+    expect(document.activeElement, 'a later paint keeps focus on the button').toBe(button);
+
+    view.hide();
+    view.show();
+    button.focus();
+    expect(document.activeElement, 'fixture: the button takes focus again').toBe(button);
+    view.paint(GONE_PAINT);
+    expect(document.activeElement, 'a gone paint does not move focus').toBe(button);
+    view.paint(paintOf(vmOf()));
+    expect(document.activeElement, 'the one-shot survived the gone paint').toBe(rows);
   });
 });
 

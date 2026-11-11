@@ -3056,46 +3056,6 @@ function so2WalkMenu(path: readonly string[], t0: number): void {
   }
 }
 
-/** so-2: the player the face-to-face Trade faces. */
-const SO2_FACED_ENTITY = 99n;
-
-/** so-2: a REAL face-to-face Trade (main.controls.test.ts's `openFaceToFace`): another online player
- *  stands on the faced tile, the stubbed wasm rule names it, A opens the picker and A on its first
- *  row (Trade) opens the wizard. One batch at `t` (which also refreshes the interaction memo), then
- *  the two presses. */
-function so2OpenFacedTrade(t: number): void {
-  H.interact = (...args: unknown[]) => {
-    const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
-    const at = entities.findIndex(
-      (e) => e.kind === 'player' && e.id === SO2_FACED_ENTITY.toString(),
-    );
-    return at === -1 ? [] : [at];
-  };
-  opts.store.upsertPlayer({
-    identity: OTHER_IDENTITY,
-    entityId: SO2_FACED_ENTITY,
-    name: 'Zed',
-    online: true,
-    lastInputSeq: 0n,
-  });
-  opts.store.upsertCharacter(
-    {
-      entityId: SO2_FACED_ENTITY,
-      zoneId: 0,
-      tileX: 3,
-      tileY: 6,
-      facing: 'West',
-      action: 'Idle',
-      moveStartedAtMs: 0n,
-      moveQueue: [] as WasmMoveInput[],
-    },
-    t,
-  );
-  server(t);
-  press('Enter', t + 10);
-  press('Enter', t + 30);
-}
-
 /** A stand-in adapter that records `{ id, now }` on every observe and keeps its state unchanged
  *  (so it never paints), consumes every button but Start, and answers Start with popToBase. */
 function observingAdapter(id: string, log: Array<{ id: string; now: unknown }>): unknown {
@@ -8500,5 +8460,40 @@ describe('main.ts trade sessions through the booted shell (runtime, ts-3)', {
     opts.store.reconcileTradeSessionsFromView([]);
     server(2500);
     expect(tsClosedShows(), 'control: a session closing after the reconnect toasts once').toBe(3);
+  });
+
+  it('ts-3.4 a click on the booted editor`s #tradepropose-submit Close button closes the frame back to the bare world and calls NO reducer; a second open works again', async () => {
+    // WRONG IMPL KILLED: a dead Close button (main.ts never wires onClose: the editor stays open);
+    // a Close that cancels the session (cancelTradeSession, or any trade reducer, sent); a close
+    // that only hides the view and leaves the frame on the stack (the next input routes to an
+    // invisible editor); a close that leaves the root displayed; a close that breaks the next
+    // open (the frame cannot be pushed again).
+    await bootReady();
+    server(1000);
+    opts.store.reconcileTradeSessionsFromView([tsSession(96n, H.identity, OTHER_IDENTITY)]);
+    tsFacePartner(1100);
+    tsPressTrade(1200);
+    await flush();
+    tsExpectEditorOn(96n, 'precondition');
+    const button = document.getElementById('tradepropose-submit');
+    expect(button, 'precondition: the Close button is in the booted editor').not.toBeNull();
+    expect(tsRoot().contains(button), 'precondition: inside #tradepropose-overlay').toBe(true);
+    H.calls = [];
+
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+    frame(1300);
+    server(1350);
+    tsExpectNoEditor('the Close click closed the editor');
+    expect(
+      H.calls.filter((c) => /trade/i.test(c.name)).map((c) => c.name),
+      'no session reducer and no legacy trade reducer was called',
+    ).toEqual([]);
+    expect(tsCalls(), 'none of the watched trade reducers').toEqual([]);
+
+    tsPressTrade(1400);
+    await flush();
+    tsExpectEditorOn(96n, 'a second open works again');
+    expect(tsCalls(), 'the existing session needs no reducer to reopen').toEqual([]);
   });
 });

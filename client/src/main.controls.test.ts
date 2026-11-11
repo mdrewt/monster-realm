@@ -1278,9 +1278,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
   it('Escape on the session editor`s focused rows listbox is Start: it closes the editor directly in one press, and B on the editor closes it too', async () => {
     // INTENTIONAL CHANGE (ts-3, the Strangler): this case was "Escape on the trade-propose Offer
     // list and on a checkbox is Start ... and the pre-selected target select is disabled". The
-    // wizard, its select and its checkboxes are gone; the editor's one focus target is its rows
-    // listbox (`#tradesession-rows`, its A11Y initial focus). The checkbox and select halves are
-    // retired with the wizard.
+    // wizard, its select and its checkboxes are gone; focus at open lands in the editor's rows
+    // listbox (`#tradesession-rows`, focused by the view's first session paint; the registry
+    // anchor is the static #tradepropose-submit Close button, ts-3.4). The checkbox and select
+    // halves are retired with the wizard.
     // WRONG IMPL KILLED: a typing rule that treats the editor's listbox as a text field (Escape
     // would only "stop typing": a second press needed); an Escape hidden by an editor-owned
     // stopPropagation; an editor whose B does not pop (it would trap the player).
@@ -1292,7 +1293,7 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       'world',
       'tradeSessionView',
     ]);
-    await flush(); // the overlay's deferred initial focus
+    await flush(); // the overlay's deferred anchor focus, which must leave focus on the rows
     const rows = byId('tradesession-rows');
     expect(
       rows.contains(document.activeElement),

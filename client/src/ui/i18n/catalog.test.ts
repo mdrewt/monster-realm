@@ -3394,8 +3394,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
   });
 });
 
@@ -3516,8 +3517,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3824,9 +3826,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(536);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4506,8 +4509,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}`.
-    expect(Object.keys(en), 'the English roster is 524 keys (uif-15c -2)').toHaveLength(524);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en), 'the English roster is 536 keys (ts-3 +12)').toHaveLength(536);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(536);
   });
 });
 
@@ -4621,7 +4625,8 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
       expect(typeof en[id], `en keeps ${id}`).toBe('string');
       expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
     }
-    expect(Object.keys(en), 'the English roster is 524 keys').toHaveLength(524);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en), 'the English roster is 536 keys').toHaveLength(536);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(536);
   });
 });

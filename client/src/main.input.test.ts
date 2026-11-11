@@ -3986,7 +3986,10 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     expect(rootOf('tradepropose-overlay').getAttribute('data-session-id'), 'on that session').toBe(
       '51',
     );
-    await flush(); // the overlay's deferred initial focus runs
+    // The view's first session paint after show() focused the rows; the overlay's deferred anchor
+    // focus (the registry anchor is the #tradepropose-submit Close button, ts-3.4) runs here and,
+    // finding focus already inside the dialog, must leave it on the rows.
+    await flush();
     expect(
       rootOf('tradesession-rows').contains(document.activeElement),
       'focus is inside the editor`s rows listbox',

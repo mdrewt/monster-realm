@@ -239,9 +239,9 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
   tradeSessionView: {
     role: 'dialog',
     labelKey: 'a11y.overlay.tradeSessionView.title',
-    // The picker listbox, built by the view's constructor: its active row is what a screen reader
-    // hears at the open.
-    initialFocusSelector: '#tradesession-rows',
+    // The shell's static Close button: enabled and shown in every state. The view's first paint
+    // puts focus on the picker listbox before this deferred anchor would land.
+    initialFocusSelector: '#tradepropose-submit',
     dismissible: true,
   },
   helpView: {

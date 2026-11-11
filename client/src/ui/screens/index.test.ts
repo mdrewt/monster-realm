@@ -3120,6 +3120,8 @@ function socialHostCtx(w: SocialHostWorld): ScreenContext {
   // world: no players, no characters, no profiles).
   const store = {
     allTradeOffers: () => [],
+    // ts-3: the Social view model also reads the trade sessions (none in this world).
+    allTradeSessions: () => [],
     allChallenges: () => w.challenges.map((c) => ({ ...c })),
     allPlayers: () => [],
     characters: () => [].values(),

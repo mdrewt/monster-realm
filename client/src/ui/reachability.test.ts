@@ -1984,6 +1984,8 @@ function qf8RenderSocialSheet(): Qf8Rendered {
             tradeCursor: false,
             sheet: { actions: ['accept', 'decline'], active: 'accept' },
             confirm: null,
+            sessions: [],
+            sessionCursor: null,
           });
           pvp.paintCursor('incoming');
         },

@@ -74,7 +74,6 @@ import {
   wasmPkgStubMock,
   worldRendererMock,
 } from '../test-util/mainBootHarness';
-import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
 import type {
   StoreCharacter,

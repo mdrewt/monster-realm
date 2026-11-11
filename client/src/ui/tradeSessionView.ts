@@ -3,9 +3,15 @@
 // lock, no reducer. Every control is a nav-kit listbox row, so the D-pad and A / B drive all of it
 // and the pointer reaches the same rows through the kit.
 //
-// The dialog root is the static `#tradepropose-overlay` shell of index.html. The constructor empties
-// it ONCE and builds the editor's parts; no paint and no hide ever empties the root again, because
-// the a11y layer adopts the live region into an open dialog's root.
+// The dialog root is the static `#tradepropose-overlay` shell of index.html. ONCE, at construction,
+// the shell's other static children are removed and the editor's parts are built before its static
+// button, which stays as the Close control; nothing empties the root again, because the a11y layer
+// adopts the live region into an open dialog's root.
+//
+// The Close button is the dialog's registered focus anchor (ui/overlayRegistry.ts): a native
+// control that is enabled and shown in every state, so the focus trap always has a target. The
+// player does not start on it: the first paint after an open puts focus on the picker listbox, and
+// the a11y layer's deferred anchor focus, finding focus already inside the dialog, leaves it there.
 //
 // Player-controlled text (names, nicknames) is written with textContent only, never innerHTML. Every
 // string this view owns is resolved through the i18n resolver with a literal key.
@@ -24,6 +30,8 @@ import type {
 export interface TradeSessionViewDeps {
   /** Speak a line through the page's live region (the "offer changed" notice). */
   readonly announce: (text: string) => void;
+  /** The Close button was activated: close the editor (the session stays open). */
+  readonly onClose: () => void;
 }
 
 /** What the editor screen paints. */
@@ -96,14 +104,28 @@ export class TradeSessionView {
   readonly #prompt: HTMLElement;
   readonly #promptText: HTMLElement;
   readonly #answers: HTMLElement;
+  readonly #close: HTMLButtonElement;
   /** The notice count last announced; a paint of 0 and hide() forget it. */
   #announced = 0;
+  /** Armed by an open: the next paint of a session focuses the picker listbox, once. */
+  #focusRows = false;
 
   constructor(deps: TradeSessionViewDeps) {
     const root = document.getElementById('tradepropose-overlay');
     if (!root) throw new Error('tradepropose-overlay element not found in DOM');
+    const close = root.querySelector<HTMLButtonElement>('#tradepropose-submit');
+    if (!close) throw new Error('tradepropose-submit missing');
     this.#root = root;
     this.#deps = deps;
+    this.#close = close;
+    // The button keeps its own keys (Enter and Space are its click, never the router's A); Escape
+    // is routed in the capture phase anyway and is let through.
+    close.addEventListener('keydown', (e) => {
+      if (e.code !== 'Escape') e.stopPropagation();
+    });
+    close.addEventListener('click', () => {
+      this.#deps.onClose();
+    });
 
     this.#title = part('h2', 'tradesession-title');
     this.#notice = part('p', 'tradesession-notice');
@@ -119,6 +141,7 @@ export class TradeSessionView {
     this.#answers = part('div', 'tradesession-confirm');
     this.#answers.className = 'mr-nav-list';
     this.#prompt.append(this.#promptText, this.#answers);
+    // The shell's other static children go; the Close button stays, last.
     root.replaceChildren(
       this.#title,
       this.#notice,
@@ -126,8 +149,9 @@ export class TradeSessionView {
       this.#theirs,
       this.#rows,
       this.#prompt,
+      close,
     );
-    // The listbox is the dialog's focus anchor from the first open, before any paint.
+    // The listbox takes its role and tab stop before the first paint.
     this.#paintRows([], null, null, { monsterIds: [], items: [], currency: 0n });
   }
 
@@ -139,13 +163,19 @@ export class TradeSessionView {
     // Only the hidden->visible edge opens: a repeat would re-schedule the a11y layer's initial
     // focus and pull it back to the anchor.
     const wasVisible = this.visible;
+    // Resolved at every show, so a locale switch between opens is picked up.
+    this.#close.textContent = t('kit.sheet.close');
     this.#root.style.display = '';
-    if (!wasVisible) openOverlayA11y('tradeSessionView', this.#root);
+    if (!wasVisible) {
+      openOverlayA11y('tradeSessionView', this.#root);
+      this.#focusRows = true;
+    }
   }
 
   hide(): void {
     this.#root.style.display = 'none';
     this.#announced = 0;
+    this.#focusRows = false;
     // Unguarded on purpose: with no open record this is a no-op, and a record that ever drifted
     // from the DOM heals here instead of leaving a live focus trap.
     closeOverlayA11y('tradeSessionView', null);
@@ -173,6 +203,10 @@ export class TradeSessionView {
     this.#paintSide(this.#theirs, vm.theirs, t('tradeSession.side.theirs'));
     this.#paintRows(p.rows, p.cursor, vm, p.draft);
     this.#paintPrompt(p.prompt);
+    if (this.#focusRows) {
+      this.#focusRows = false;
+      this.#rows.focus();
+    }
   }
 
   #paintSide(el: HTMLElement, side: SessionSideVm, heading: string): void {
