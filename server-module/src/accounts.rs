@@ -503,6 +503,8 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
 /// per table. `?` on the fallible monster re-key rolls the
 /// whole claim transaction back (fail-loud on a broken dual-write invariant).
+/// Trade sessions are not re-keyed: every session naming either identity is
+/// deleted.
 ///
 /// MANIFEST CROSS-REFERENCE: the claim-flow re-key policy
 /// is one axis; the DELETION policy dimension (`deletion_policy` + `basis` +
@@ -519,6 +521,7 @@ pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> R
     crate::economy::rekey_wallet(ctx, from, to);
     crate::ranking::rekey_profile(ctx, from, to);
     crate::schema::rekey_formation(ctx, from, to);
+    crate::trading_session::delete_sessions_of(ctx, from);
     crate::trading_session::delete_sessions_of(ctx, to);
     Ok(())
 }

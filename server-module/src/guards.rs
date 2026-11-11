@@ -287,8 +287,10 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 // `sessions_of` and combine the two sources. A reducer calls a wrapper, so
 // what counts as locked is decided in this file — unless it must judge one
 // source alone or leave one trade out, in which case it reads the rows itself
-// and calls the pure predicates. An active offer is Pending OR
-// ConfirmedByCounterparty.
+// and calls the pure predicates. `trading::propose_trade` is one such reader:
+// it judges offers alone and does not see a session lock, and a session's
+// swap re-checks both sides' live rows before anything moves. An active offer
+// is Pending OR ConfirmedByCounterparty.
 //
 // SpacetimeDB reducers are single-threaded WASM: read-check-write within one
 // reducer is atomic w.r.t. all other reducers — no TOCTOU possible.

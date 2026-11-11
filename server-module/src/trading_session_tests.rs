@@ -25,7 +25,8 @@ use game_core::trading::{
 };
 use game_core::{
     build_swap_plan, make_monster_card, ActionState, Direction, ItemStack, LiveMonsterOwner,
-    MonsterCard, TradeItem, TradeStatus, MAX_ITEM_STACK, MAX_TRADE_MONSTERS_PER_SIDE, PARTY_SIZE,
+    MonsterCard, TradeError, TradeItem, TradeStatus, MAX_ITEM_STACK, MAX_TRADE_MONSTERS_PER_SIDE,
+    PARTY_SIZE,
 };
 use spacetimedb::{Identity, ScheduleAt, Timestamp};
 
@@ -1344,6 +1345,30 @@ fn ts2_open_inserts_a_blank_session_and_arms_one_reaper() {
     assert!(w.assets() == assets, "opening moves no asset");
     let wrote = s2_writes(&fx, &ASSET_TABLES);
     assert!(wrote.is_empty(), "asset tables written: {wrote:?}");
+
+    // A clock that is not a whole second: the stamp keeps its exact ms.
+    w.join(carol());
+    let odd_ms = T0 + 7;
+    let odd = Timestamp::from_micros_since_unix_epoch(odd_ms * 1000 + 500);
+    let got = fx.run_as_at(alice(), odd, |ctx| super::open_trade_session(ctx, carol()));
+    assert_eq!(got, Ok(()), "the second open");
+    let second = w.session(w.sid(alice(), carol()));
+    assert_eq!(
+        second.created_at_ms, odd_ms,
+        "created_at_ms is the call's exact ms, not a rounded second"
+    );
+    let armed: Vec<ScheduleAt> = w
+        .scheds
+        .rows()
+        .into_iter()
+        .filter(|r| r.session_id == second.session_id)
+        .map(|r| r.scheduled_at)
+        .collect();
+    assert_eq!(
+        armed,
+        vec![ScheduleAt::Time(at(odd_ms + TRADE_SESSION_TTL_MS))],
+        "one reaper row at that exact ms + TTL"
+    );
 }
 
 /// A caller with no `player` row gets "not joined" — before the deletion gate
@@ -2875,14 +2900,40 @@ fn ts2_confirm_drift_resets() {
     assert_eq!(w.monster(21).owner_identity, alice());
 }
 
-/// Drift on either side rebuilds that side's card: a rename of the other
-/// side's monster and of the caller's own monster each reset the session and
-/// put the live nickname on the card and in the snapshot row.
+/// Drift in a column the card shows rebuilds exactly that card, whoever
+/// confirms: caller ∈ {opener alice, partner bob} × drifted monster on
+/// {the caller's own side, the other side}, by a rename or a level change at
+/// either offer index. alice offers [11, 12], bob offers [21, 22]. Each confirm
+/// answers Ok, clears both flags, advances the revision, puts the live row's
+/// card at the drifted monster's index, leaves every other card (and every
+/// other offer column) as it was, and stores the masked live row as its
+/// snapshot.
 #[test]
 fn ts2_confirm_drift_refreshes_the_card_on_either_side() {
-    for (label, renamed_id, other_id) in [
-        ("the other side's monster renamed", 21, 11),
-        ("the caller's own monster renamed", 11, 21),
+    type Drift = fn(Monster) -> Monster;
+    let rename: Drift = |m| Monster {
+        nickname: "Renamed".to_string(),
+        ..m
+    };
+    let level_up: Drift = |m| Monster {
+        level: m.level + 1,
+        ..m
+    };
+    for (label, caller, drifted_id, drift) in [
+        ("opener confirms, own monster renamed", alice(), 11, rename),
+        (
+            "opener confirms, other side levelled",
+            alice(),
+            22,
+            level_up,
+        ),
+        (
+            "partner confirms, own monster levelled",
+            bob(),
+            21,
+            level_up,
+        ),
+        ("partner confirms, other side renamed", bob(), 12, rename),
     ] {
         let fx = fixture();
         let w = s2_std(&fx);
@@ -2891,17 +2942,19 @@ fn ts2_confirm_drift_refreshes_the_card_on_either_side() {
             &w,
             alice(),
             bob(),
-            &off(&[11], &[], 0),
-            &off(&[21], &[], 0),
+            &off(&[11, 12], &[], 0),
+            &off(&[21, 22], &[], 0),
         );
         let before = w.session(sid);
-        let renamed = Monster {
-            nickname: "Renamed".to_string(),
-            ..w.monster(renamed_id)
-        };
-        w.replace(&renamed);
+        let drifted = drift(w.monster(drifted_id));
+        assert_ne!(
+            card(&drifted),
+            card(&w.monster(drifted_id)),
+            "{label}: setup: the change is visible on the card"
+        );
+        w.replace(&drifted);
         assert_eq!(
-            s2_confirm(&fx, alice(), sid, before.revision),
+            s2_confirm(&fx, caller, sid, before.revision),
             Ok(()),
             "{label}"
         );
@@ -2915,16 +2968,40 @@ fn ts2_confirm_drift_refreshes_the_card_on_either_side() {
             (false, false, before.revision + 1),
             "{label}: reset, confirm not recorded"
         );
-        let cards = if renamed_id == 21 {
-            after.partner_offer.cards
-        } else {
-            after.opener_offer.cards
+        let refreshed = |offer: &TradeSessionOffer| -> TradeSessionOffer {
+            let mut want = offer.clone();
+            if let Some(at) = want.monster_ids.iter().position(|id| *id == drifted_id) {
+                want.cards[at] = card(&drifted);
+            }
+            want
         };
-        assert_eq!(cards, vec![card(&renamed)], "{label}: card rebuilt");
+        assert_eq!(
+            after.opener_offer,
+            refreshed(&before.opener_offer),
+            "{label}: alice's offer and cards"
+        );
+        assert_eq!(
+            after.partner_offer,
+            refreshed(&before.partner_offer),
+            "{label}: bob's offer and cards"
+        );
+        assert_ne!(
+            (
+                after.opener_offer.cards.clone(),
+                after.partner_offer.cards.clone()
+            ),
+            (
+                before.opener_offer.cards.clone(),
+                before.partner_offer.cards.clone()
+            ),
+            "{label}: a card changed"
+        );
+        let live = [11, 12, 21, 22].map(|id| w.monster(id));
+        let live_refs: Vec<&Monster> = live.iter().collect();
         assert_eq!(
             w.snaps(sid),
-            s2_want_snaps(sid, &[&renamed, &w.monster(other_id)]),
-            "{label}: snapshot row refreshed"
+            s2_want_snaps(sid, &live_refs),
+            "{label}: snapshot rows are the masked live rows"
         );
     }
 }
@@ -3656,10 +3733,19 @@ fn ts2_execute_bond_reset_and_arrival() {
         Ok(()),
         "alice confirms"
     );
+    fx.reset_writes();
     assert_eq!(
         s2_confirm_now(&fx, &w, bob(), sid),
         Ok(()),
         "bob's completing confirm executes"
+    );
+    assert_eq!(
+        fx.writes_to("trade_session"),
+        1,
+        "the execute writes the session table exactly once — its delete, BEFORE the apply \
+         (the apply's monster-write hook then finds no snapshot row); deleting after the \
+         apply lets the hook delete it first, and the later delete still counts as a \
+         write syscall even though it removes nothing"
     );
 
     assert!(w.session_opt(sid).is_none(), "the session row is gone");
@@ -3706,6 +3792,167 @@ fn ts2_execute_bond_reset_and_arrival() {
     );
 }
 
+/// After a swap: alice's item 5, alice's item 6, bob's item 5, bob's item 6,
+/// alice's coins, bob's coins.
+type SwapTotals = [u64; 6];
+
+/// Standard world plus `seed`; a session 700 (alice opener, bob partner, both
+/// confirmed) with one schedule row is seeded directly; each side's live facts
+/// come from `read_side`, and `execute_swap` runs DIRECTLY — no `side_check`
+/// in front of it. `Err(e)`: exactly that error, no write syscall and every
+/// session, snapshot, schedule and asset row unchanged. `Ok(totals)`: the swap
+/// lands with exactly those stacks and balances and the session is deleted.
+fn s2_swap_case(
+    label: &str,
+    seed: impl FnOnce(&S2World<'_>),
+    opener_offer: TradeSessionOffer,
+    partner_offer: TradeSessionOffer,
+    want: Result<SwapTotals, String>,
+) {
+    let fx = fixture();
+    let w = s2_std(&fx);
+    seed(&w);
+    w.seed_session(
+        700,
+        alice(),
+        bob(),
+        opener_offer,
+        partner_offer,
+        (true, true),
+    );
+    w.scheds.seed(&super::TradeSessionReaperSchedule {
+        scheduled_id: 800,
+        scheduled_at: ScheduleAt::Time(at(T0 + TRADE_SESSION_TTL_MS)),
+        session_id: 700,
+    });
+    let session = w.session(700);
+    let before = (w.session_tables(), w.assets());
+    fx.reset_writes();
+    let got = fx.run_as(carol(), |ctx| {
+        let opener_live = super::read_side(
+            ctx,
+            session.opener,
+            session.session_id,
+            &session.opener_offer,
+        );
+        let partner_live = super::read_side(
+            ctx,
+            session.partner,
+            session.session_id,
+            &session.partner_offer,
+        );
+        super::execute_swap(ctx, &session, &opener_live, &partner_live)
+    });
+    match want {
+        Err(e) => {
+            assert_eq!(got, Err(e), "{label}");
+            let mut tables = SESSION_TABLES.to_vec();
+            tables.extend(ASSET_TABLES);
+            let wrote = s2_writes(&fx, &tables);
+            assert!(wrote.is_empty(), "{label}: a refused swap wrote {wrote:?}");
+            assert!(
+                (w.session_tables(), w.assets()) == before,
+                "{label}: the headroom check runs before the delete and the apply"
+            );
+        }
+        Ok(totals) => {
+            assert_eq!(got, Ok(()), "{label}");
+            let now: SwapTotals = [
+                u64::from(w.count(alice(), 5)),
+                u64::from(w.count(alice(), 6)),
+                u64::from(w.count(bob(), 5)),
+                u64::from(w.count(bob(), 6)),
+                w.balance(alice()),
+                w.balance(bob()),
+            ];
+            assert_eq!(now, totals, "{label}: exact stacks and balances");
+            assert!(
+                w.session_opt(700).is_none() && w.scheds_of(700).is_empty(),
+                "{label}: the executed session is deleted"
+            );
+        }
+    }
+}
+
+/// The combined `check_headroom` inside `execute_swap`, reached without the
+/// `side_check` that normally shadows it. Each receiver is guarded on its own
+/// axis — an item overflow and a currency overflow on the opener's side and,
+/// mirrored, on the partner's — and each receiver's own outgoing item and coins
+/// are netted first, so a near-cap swap that fits only after netting lands
+/// exactly, on either side and on either axis. Every case uses different item
+/// ids, quantities and coin amounts per side, so feeding one side's receiving
+/// items, stacks, coins or balance into the other side's check changes an
+/// outcome.
+#[test]
+fn ts2_swap_headroom_guards_each_receiver() {
+    let stack = u64::from(MAX_ITEM_STACK);
+    let o = |items: &[TradeItem], cur: u64| s2_offer(&[], items, cur);
+
+    s2_swap_case(
+        "the opener's received stack would overflow",
+        |w| w.set_stack(alice(), 6, MAX_ITEM_STACK - 2),
+        o(&[item(5, 4)], 7),
+        o(&[item(6, 3)], 13),
+        Err(TradeError::ItemStackCapExceeded { item_id: 6 }.to_string()),
+    );
+    s2_swap_case(
+        "the partner's received stack would overflow",
+        |w| w.set_stack(bob(), 5, MAX_ITEM_STACK - 3),
+        o(&[item(5, 4)], 7),
+        o(&[item(6, 3)], 13),
+        Err(TradeError::ItemStackCapExceeded { item_id: 5 }.to_string()),
+    );
+    s2_swap_case(
+        "the opener's wallet would overflow after netting its own 7",
+        |w| w.set_wallet(alice(), MAX_BALANCE - 5),
+        o(&[item(5, 4)], 7),
+        o(&[item(6, 3)], 13),
+        Err(TradeError::CurrencyCapExceeded.to_string()),
+    );
+    s2_swap_case(
+        "the partner's wallet would overflow after netting its own 9",
+        |w| w.set_wallet(bob(), MAX_BALANCE - 4),
+        o(&[item(5, 4)], 14),
+        o(&[item(6, 3)], 9),
+        Err(TradeError::CurrencyCapExceeded.to_string()),
+    );
+
+    s2_swap_case(
+        "the opener's same-item receipt fits only after its own 6 leave",
+        |w| {
+            w.set_stack(alice(), 5, MAX_ITEM_STACK - 2);
+            w.set_stack(bob(), 5, 20);
+        },
+        o(&[item(5, 6)], 3),
+        o(&[item(5, 7)], 4),
+        Ok([stack - 1, 0, 19, 10, 501, 299]),
+    );
+    s2_swap_case(
+        "the partner's same-item receipt fits only after its own 4 leave",
+        |w| {
+            w.set_stack(alice(), 6, 30);
+            w.set_stack(bob(), 6, MAX_ITEM_STACK - 1);
+        },
+        o(&[item(6, 5)], 2),
+        o(&[item(6, 4)], 5),
+        Ok([10, 29, 0, stack, 503, 297]),
+    );
+    s2_swap_case(
+        "the opener's coin receipt fits only after its own 10 leave",
+        |w| w.set_wallet(alice(), MAX_BALANCE - 3),
+        o(&[item(5, 1)], 10),
+        o(&[item(6, 2)], 12),
+        Ok([9, 2, 1, 8, MAX_BALANCE - 1, 298]),
+    );
+    s2_swap_case(
+        "the partner's coin receipt fits only after its own 8 leave",
+        |w| w.set_wallet(bob(), MAX_BALANCE - 2),
+        o(&[item(5, 2)], 9),
+        o(&[item(6, 1)], 8),
+        Ok([8, 1, 2, 9, 499, MAX_BALANCE - 1]),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ts-2.10 (reaper half) — trade_session_reaper
 // ---------------------------------------------------------------------------
@@ -3738,12 +3985,21 @@ fn ts2_reaper_refuses_a_non_scheduler_caller() {
     }
 }
 
-/// Fired by the scheduler 1 ms before the TTL, the reaper answers Ok and
-/// deletes nothing.
+/// Fired by the scheduler 1 ms before the TTL, the reaper answers Ok, leaves
+/// the session and its snapshot rows alone, and re-arms exactly one new
+/// schedule row for that session at its own deadline (`created_at_ms` +
+/// `TRADE_SESSION_TTL_MS`): the runtime consumes the fired one-shot row, so
+/// without the re-arm a session whose reaper fired early is never reaped. The
+/// host does not delete the fired row itself, so it is still present beside
+/// the new one. Another session's rows are untouched.
 #[test]
 fn ts2_reaper_spares_a_fresh_session() {
     let fx = fixture();
     let w = s2_std(&fx);
+    w.join(carol());
+    w.join(dave());
+    w.mon(31, carol(), 0);
+    w.mon(41, dave(), 0);
     let sid = s2_session(
         &fx,
         &w,
@@ -3752,25 +4008,66 @@ fn ts2_reaper_spares_a_fresh_session() {
         &off(&[11], &[], 0),
         &off(&[21], &[], 0),
     );
+    let other = s2_session(
+        &fx,
+        &w,
+        carol(),
+        dave(),
+        &off(&[31], &[], 0),
+        &off(&[41], &[], 0),
+    );
     fx.set_database_identity(scheduler());
-    let before = (w.session_tables(), w.assets());
+    let session_before = w.session_opt(sid).map(|s| bytes(&s));
+    let snaps_before = w.raw_snaps(sid);
+    let kept = w.footprint(other);
+    let assets = w.assets();
+    let fired = w.fired(sid);
+    let (fired_id, fired_bytes) = (fired.scheduled_id, bytes(&fired));
+    let created_at_ms = w.session(sid).created_at_ms;
     fx.reset_writes();
     assert_eq!(
-        s2_reap(
-            &fx,
-            scheduler(),
-            T0 + TRADE_SESSION_TTL_MS - 1,
-            w.fired(sid)
-        ),
+        s2_reap(&fx, scheduler(), T0 + TRADE_SESSION_TTL_MS - 1, fired),
         Ok(()),
-        "a fresh session's fire is a no-op"
+        "a fresh session's fire answers Ok"
     );
-    let wrote = s2_writes(&fx, &SESSION_TABLES);
+    let wrote = s2_writes(&fx, &SESSION_TABLES[..2]);
     assert!(wrote.is_empty(), "a fresh fire wrote {wrote:?}");
-    assert!(
-        (w.session_tables(), w.assets()) == before,
-        "nothing deleted"
+    assert_eq!(
+        fx.writes_to("trade_session_reaper_schedule"),
+        1,
+        "one schedule write: the re-arm insert"
     );
+    assert_eq!(
+        w.session_opt(sid).map(|s| bytes(&s)),
+        session_before,
+        "the session survives unchanged"
+    );
+    assert!(
+        w.raw_snaps(sid) == snaps_before,
+        "its snapshot rows survive"
+    );
+
+    let rows: Vec<super::TradeSessionReaperSchedule> = w
+        .scheds
+        .rows()
+        .into_iter()
+        .filter(|r| r.session_id == sid)
+        .collect();
+    assert_eq!(rows.len(), 2, "the fired row plus exactly one new row");
+    assert!(
+        rows.iter().any(|r| bytes(r) == fired_bytes),
+        "the fired row is left for the runtime"
+    );
+    let rearmed: Vec<&super::TradeSessionReaperSchedule> =
+        rows.iter().filter(|r| r.scheduled_id != fired_id).collect();
+    assert_eq!(rearmed.len(), 1, "exactly one re-armed row");
+    assert_eq!(
+        rearmed[0].scheduled_at,
+        ScheduleAt::Time(at(created_at_ms + TRADE_SESSION_TTL_MS)),
+        "re-armed at the session's own deadline"
+    );
+    assert!(w.footprint(other) == kept, "another session is untouched");
+    assert!(w.assets() == assets, "the reaper moves no asset");
 }
 
 /// At exactly the TTL the fired session and its snapshot rows are deleted; the

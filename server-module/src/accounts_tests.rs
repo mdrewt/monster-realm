@@ -10113,13 +10113,17 @@ mod acct_nh {
     }
 
     /// ts-2.11 — the guest claim's `rekey_all` deletes every session naming
-    /// the claimer (`to`), in either role, with its snapshot and schedule
-    /// rows; a strangers' session survives byte-identical. Sessions are never
-    /// re-keyed (`NOT_REKEYED`).
+    /// the retired guest (`from`) or the claimer (`to`), in either role, with
+    /// its snapshot and schedule rows; a strangers' session survives
+    /// byte-identical. The guest's sessions list none of the guest's
+    /// monsters, so the monster re-key hook cannot be what removes them.
+    /// Sessions are never re-keyed (`NOT_REKEYED`).
     ///
-    /// Kills: no session delete in `rekey_all`; a delete over one role only;
-    /// a delete keyed on every session (the strangers' goes); a delete that
-    /// leaves the snapshot or schedule rows behind.
+    /// Kills: no session delete in `rekey_all`; a delete for only one of the
+    /// two identities (the guest's currency-only sessions would survive under
+    /// a dead identity and block that pair until the TTL); a delete over one
+    /// role only; a delete keyed on every session (the strangers' goes); a
+    /// delete that leaves the snapshot or schedule rows behind.
     #[test]
     fn ts2_deletion_claim_deletes_claimer_sessions() {
         let fx = fixture();
@@ -10130,7 +10134,19 @@ mod acct_nh {
         let claimer_opened = session_row(7401, claimer, x, T0);
         let claimer_partner = session_row(7402, y, claimer, T0 + 1);
         let strangers = session_row(7403, x, y, T0 + 2);
-        for s in [&claimer_opened, &claimer_partner, &strangers] {
+        // The guest's sessions offer currency only on the guest's side, so no
+        // monster re-key can be what removes them.
+        let mut guest_opened = session_row(7404, guest, x, T0 + 3);
+        guest_opened.opener_offer.currency = 25;
+        let mut guest_partner = session_row(7405, y, guest, T0 + 4);
+        guest_partner.partner_offer.currency = 40;
+        for s in [
+            &claimer_opened,
+            &claimer_partner,
+            &strangers,
+            &guest_opened,
+            &guest_partner,
+        ] {
             seed_session(&w, s);
         }
 
@@ -10139,6 +10155,18 @@ mod acct_nh {
                 ctx, guest, claimer
             )),
             Ok(())
+        );
+        let names_guest: Vec<u64> = w
+            .trade_session
+            .rows()
+            .iter()
+            .filter(|r| r.opener == guest || r.partner == guest)
+            .map(|r| r.session_id)
+            .collect();
+        assert!(
+            names_guest.is_empty(),
+            "[ts2/claim-deletes] the claim deletes every session naming the retired guest, \
+             including ones listing no monster; still live: {names_guest:?}"
         );
         let names_claimer: Vec<u64> = w
             .trade_session

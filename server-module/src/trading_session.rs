@@ -18,9 +18,9 @@
 
 use crate::economy::{grant_currency, spend_currency, wallet_balance};
 use crate::guards::{
-    escrowed_currency_amount, escrowed_item_qty, log_reject, offers_of, reject_if_in_battle,
-    reject_if_monster_in_trade, session_lists_monster, session_locked_currency,
-    session_locked_item_qty, sessions_of,
+    escrowed_currency_amount, escrowed_item_qty, json_escape, log_reject, offers_of,
+    reject_if_in_battle, reject_if_monster_in_trade, session_lists_monster,
+    session_locked_currency, session_locked_item_qty, sessions_of,
 };
 use crate::inventory::{consume_one, grant_item};
 use crate::marshal::{char_state, now_ms, pub_from_monster};
@@ -333,11 +333,18 @@ fn arm_session_reaper(ctx: &ReducerContext, session_id: u64, created_at_ms: i64)
 /// Delete a session's snapshot rows, then the session row. The only place a
 /// `trade_session` row is deleted.
 fn delete_session_rows(ctx: &ReducerContext, session_id: u64) {
+    delete_snapshots(ctx, session_id, |_| true);
+    ctx.db.trade_session().session_id().delete(session_id);
+}
+
+/// Delete the snapshot rows of `session_id` whose monster `which` selects.
+fn delete_snapshots(ctx: &ReducerContext, session_id: u64, which: impl Fn(u64) -> bool) {
     let snapshot_ids: Vec<u64> = ctx
         .db
         .trade_session_snapshot()
         .session_id()
         .filter(session_id)
+        .filter(|row| which(row.monster_id))
         .map(|row| row.snapshot_id)
         .collect();
     for snapshot_id in snapshot_ids {
@@ -346,7 +353,6 @@ fn delete_session_rows(ctx: &ReducerContext, session_id: u64) {
             .snapshot_id()
             .delete(snapshot_id);
     }
-    ctx.db.trade_session().session_id().delete(session_id);
 }
 
 /// End a session: disarm its TTL schedule row, then delete its snapshot rows
@@ -370,8 +376,8 @@ fn delete_session(ctx: &ReducerContext, session_id: u64) {
 }
 
 /// Delete every session `who` is in, as opener or as partner. Called when the
-/// player disconnects, when their account is erased, and for the destination
-/// identity of a guest claim.
+/// player disconnects, when their account is erased, and for both identities
+/// of a guest claim.
 pub(crate) fn delete_sessions_of(ctx: &ReducerContext, who: Identity) {
     let session_ids: Vec<u64> = sessions_of(ctx, who).map(|s| s.session_id).collect();
     for session_id in session_ids {
@@ -409,8 +415,8 @@ pub(crate) fn decline_sessions(ctx: &ReducerContext, session_ids: &[u64]) {
 /// or it fainted. The verdict is the eligibility rule's own, asked about this
 /// one monster; a write that keeps the monster offerable ends nothing.
 ///
-/// Called after every monster write that can change the owner, the party slot
-/// or the HP: `monster_mgmt::update_monster_synced` and `apply_swap`.
+/// Called after every monster write that can re-own, box or faint a monster:
+/// `monster_mgmt::update_monster_synced` and `apply_swap`.
 pub(crate) fn cancel_sessions_listing(ctx: &ReducerContext, written: &Monster) {
     let session_ids: Vec<u64> = ctx
         .db
@@ -865,24 +871,6 @@ fn snapshot_from_row(row: &TradeSessionSnapshot) -> MonsterSnapshot {
     }
 }
 
-/// Delete the snapshot rows of `session_id` for the given monsters.
-fn delete_snapshots(ctx: &ReducerContext, session_id: u64, monster_ids: &[u64]) {
-    let snapshot_ids: Vec<u64> = ctx
-        .db
-        .trade_session_snapshot()
-        .session_id()
-        .filter(session_id)
-        .filter(|row| monster_ids.contains(&row.monster_id))
-        .map(|row| row.snapshot_id)
-        .collect();
-    for snapshot_id in snapshot_ids {
-        ctx.db
-            .trade_session_snapshot()
-            .snapshot_id()
-            .delete(snapshot_id);
-    }
-}
-
 // --- Live facts ------------------------------------------------------------
 
 /// One side's live rows, read once per reducer call, in the shape the
@@ -1110,7 +1098,7 @@ pub fn set_trade_offer(
     }
     offer.cards = cards;
 
-    delete_snapshots(ctx, session_id, &previous_ids);
+    delete_snapshots(ctx, session_id, |id| previous_ids.contains(&id));
     for m in &live.owned {
         ctx.db
             .trade_session_snapshot()
@@ -1162,6 +1150,10 @@ pub fn confirm_trade_session(
     let them = party_of(&session, other);
     let own_live = read_side(ctx, me, session_id, offer_of(&session, side));
     let other_live = read_side(ctx, them, session_id, offer_of(&session, other));
+    let (opener_live, partner_live) = match side {
+        SessionSide::Opener => (&own_live, &other_live),
+        SessionSide::Partner => (&other_live, &own_live),
+    };
 
     let own_check = can_confirm(
         session.revision,
@@ -1177,7 +1169,7 @@ pub fn confirm_trade_session(
         );
     }
 
-    if refresh_drifted(ctx, &session, &own_live.owned, &other_live.owned) {
+    if refresh_drifted(ctx, &session, &opener_live.owned, &partner_live.owned) {
         log::info!(
             "{{\"evt\":\"trade_session_drift_reset\",\"session_id\":{session_id},\"by\":\"{me}\"}}"
         );
@@ -1218,12 +1210,13 @@ pub fn confirm_trade_session(
             Ok(())
         }
         ExecuteVerdict::Execute => {
-            let (opener_live, partner_live) = match side {
-                SessionSide::Opener => (&own_live, &other_live),
-                SessionSide::Partner => (&other_live, &own_live),
-            };
             if let Err(detail) = execute_swap(ctx, &session, opener_live, partner_live) {
-                log_reject("confirm_trade_session", me, &detail);
+                // The detail may describe either participant's rows, so it is
+                // logged against the session, under nobody's identity.
+                log::warn!(
+                    "{{\"evt\":\"trade_session_execute_failed\",\"session_id\":{session_id},\"reason\":\"{}\"}}",
+                    json_escape(&detail)
+                );
                 return Err(ERR_EXECUTE_FAILED.to_string());
             }
             log::info!(
@@ -1281,7 +1274,7 @@ fn refresh_drifted(
         .chain(partner_drifted.iter())
         .map(|m| m.monster_id)
         .collect();
-    delete_snapshots(ctx, session.session_id, &ids);
+    delete_snapshots(ctx, session.session_id, |id| ids.contains(&id));
     for m in opener_drifted.iter().chain(partner_drifted.iter()) {
         ctx.db
             .trade_session_snapshot()
@@ -1395,8 +1388,9 @@ pub fn cancel_trade_session(ctx: &ReducerContext, session_id: u64) -> Result<(),
 /// Scheduled reaper: delete a session that has outlived `TRADE_SESSION_TTL_MS`.
 ///
 /// SCHEDULER-ONLY. Staleness is re-checked, so an early fire or clock skew
-/// never reaps a fresh session. It does not delete its own schedule row: the
-/// runtime deletes a fired one-shot row after the reducer returns.
+/// never reaps a fresh session; a session spared that way is re-armed at its
+/// own deadline. The reaper does not delete its own schedule row: the runtime
+/// deletes a fired one-shot row after the reducer returns.
 #[spacetimedb::reducer]
 pub fn trade_session_reaper(
     ctx: &ReducerContext,
@@ -1409,6 +1403,9 @@ pub fn trade_session_reaper(
         return Ok(());
     };
     if !is_session_stale(session.created_at_ms, now_ms(ctx)) {
+        // The runtime consumes the fired row, so a session spared here needs
+        // a new one or nothing would ever reap it.
+        arm_session_reaper(ctx, session.session_id, session.created_at_ms);
         return Ok(());
     }
     delete_session_rows(ctx, session.session_id);
