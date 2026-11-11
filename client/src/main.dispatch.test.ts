@@ -8775,6 +8775,19 @@ describe('main.ts session locks and __mrTrade (runtime, ts-4)', { sequential: tr
       'exactly six own members, enumerable or not',
     ).toEqual(expected);
     expect(Object.keys(hook).sort(), 'every member is enumerable').toEqual(expected);
+    const ownKeys = Reflect.ownKeys(hook);
+    expect(
+      ownKeys.filter((key) => typeof key === 'symbol'),
+      'no symbol-keyed member is on the hook',
+    ).toEqual([]);
+    expect(
+      ownKeys.map((key) => String(key)).sort(),
+      'exactly six own keys, strings and symbols together',
+    ).toEqual(expected);
+    expect(
+      Object.getPrototypeOf(hook),
+      'the hook inherits from Object.prototype and nothing in between',
+    ).toBe(Object.prototype);
     for (const name of expected) {
       expect(typeof hook[name], `${name} is a function`).toBe('function');
     }
@@ -8867,5 +8880,114 @@ describe('main.ts session locks and __mrTrade (runtime, ts-4)', { sequential: tr
       H.calls.filter((c) => LEGACY.includes(c.name)),
       'no legacy reducer was called by any member',
     ).toEqual([]);
+  });
+
+  it.each([
+    { wiring: 'onReconnect' as const },
+    { wiring: 'onReady' as const },
+  ])('TS4-RESET-PENDING-OPEN after the identity changes through $wiring alone, a session with the partner of the previous identity`s unanswered Trade request opens no editor, and the bound session id reads null', async ({
+    wiring,
+  }) => {
+    // WRONG IMPL KILLED: `resetTradeSessionState()` without `pendingTradeOpen = null` (the previous
+    // identity's unanswered face-to-face Trade to Zed pops the editor open on the NEW identity's
+    // session with Zed, unasked); `resetTradeSessionState()` without `boundTradeSessionId = null`
+    // (the screen context keeps reading the previous identity's session id); the reset called from
+    // only one of the two identity-change callbacks (each row fires ONE of them). The control
+    // before the change proves the same arrival opens the editor while the identity holds, and
+    // that closing the editor keeps the bound id, so the null after the change is the reset's.
+    const OLD_IDENTITY = H.identity;
+    const NEW_IDENTITY = 'ee'.repeat(32);
+    try {
+      await bootReady();
+      server(1000);
+      // The main menu's stand-in issues `openTradeEditor` on LB and records the screen context it
+      // is handed: its getters read the live bound ids.
+      const issue: { command: unknown } = { command: { kind: 'openTradeEditor', sessionId: 95n } };
+      let seen: { readonly tradeSessionId: unknown } | undefined;
+      swapAdapter('menuView', {
+        ...(commandAdapter(issue) as Record<string, unknown>),
+        viewModel: (ctx: unknown) => {
+          seen = ctx as { readonly tradeSessionId: unknown };
+          return undefined;
+        },
+      });
+      const boundId = (): unknown => {
+        if (seen === undefined) throw new Error('the menu was never handed a screen context');
+        return seen.tradeSessionId;
+      };
+      const toWorld = (label: string, t: number): void => {
+        for (let i = 0; i < 4 && stackNow().length > 1; i += 1) press('Escape', t + i * 10);
+        expect(stackNow(), `${label}: back at the bare world`).toEqual([WORLD_FRAME]);
+      };
+      const ivy = tsSession(95n, TS_THIRD, H.identity);
+      opts.store.reconcileTradeSessionsFromView([ivy]);
+      tsFacePartner(1100);
+      frame(1150);
+      tsExpectNoEditor('precondition: Ivy`s incoming session opened no frame');
+
+      // Control: with the identity unchanged, the opener's row with Zed arriving after A on Trade
+      // opens the editor on it.
+      H.calls = [];
+      tsPressTrade(1200);
+      await flush();
+      expect(
+        tsCalls().map((c) => c.name),
+        'control: A on Trade sends the open',
+      ).toEqual(['openTradeSession']);
+      tsExpectNoEditor('control: nothing open before the row');
+      opts.store.reconcileTradeSessionsFromView([ivy, tsSession(96n, H.identity, OTHER_IDENTITY)]);
+      server(1300);
+      frame(1350);
+      tsExpectEditorOn(96n, 'control: the row arriving within the wait opens the editor');
+      toWorld('control', 1400);
+      opts.store.reconcileTradeSessionsFromView([ivy]);
+      server(1500);
+      frame(1550);
+      tsExpectNoEditor('precondition: the session with Zed left');
+
+      // The editor is bound to Ivy's session, then closed: the bound id stays.
+      openMenuAtWorld(1600);
+      await pageUp(1650);
+      expect(stackNow().at(-1), 'precondition: the editor is the top frame').toEqual(
+        screenFrame('tradeSessionView'),
+      );
+      expect(tsRoot().getAttribute('data-session-id'), 'precondition: on Ivy`s session').toBe('95');
+      expect(boundId(), 'control: the context reads the bound session').toBe(95n);
+      toWorld('precondition', 1700);
+      expect(boundId(), 'control: closing the editor keeps the bound session').toBe(95n);
+
+      // The previous identity asks Zed to trade; no row arrives for it.
+      server(1800);
+      H.calls = [];
+      tsPressTrade(1900);
+      await flush();
+      expect(
+        tsCalls().map((c) => c.name),
+        'precondition: the previous identity`s open was sent',
+      ).toEqual(['openTradeSession']);
+      server(2000);
+      frame(2050);
+      tsExpectNoEditor('precondition: no row, no editor');
+
+      // The identity changes through ONE callback; the new identity opened a session with Zed,
+      // arriving well within the wait of the previous identity's request.
+      H.identity = NEW_IDENTITY;
+      if (wiring === 'onReconnect') opts.onReconnect(NEW_IDENTITY);
+      opts.store.reconcileTradeSessionsFromView([tsSession(97n, NEW_IDENTITY, OTHER_IDENTITY)]);
+      if (wiring === 'onReady') opts.onReady(NEW_IDENTITY);
+      server(2100);
+      frame(2150);
+      await flush();
+      frame(2200);
+      expect(
+        opts.store.allTradeSessions().map((s) => [s.sessionId, s.opener, s.partner]),
+        'fixture: the store holds the new identity`s session with Zed',
+      ).toEqual([[97n, NEW_IDENTITY, OTHER_IDENTITY]]);
+      tsExpectNoEditor('the new identity`s session with Zed opens no editor');
+      expect(boundId(), 'the bound session id reads null after the identity change').toBeNull();
+      expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+    } finally {
+      H.identity = OLD_IDENTITY;
+    }
   });
 });

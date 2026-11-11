@@ -1216,10 +1216,11 @@ function socialPanelView(panel: SocialPanelId): TradeView | PvpView | Leaderboar
 }
 
 /** Show one Social panel alone, with the chrome in it; nothing for a panel already shown (its
- *  batch listener keeps it live). The panel is rendered and shown BEFORE the others hide, so the
- *  a11y layer closes the old one as a covered dialog and focus never bounces through the frame
- *  beneath. A render that throws before its panel shows leaves the old panel up; one that throws
- *  after (pvp shows first) still leaves that panel alone on screen. */
+ *  batch listener, or for the Trades root the Social screen's `observe`, keeps it live). The panel
+ *  is rendered and shown BEFORE the others hide, so the a11y layer closes the old one as a covered
+ *  dialog and focus never bounces through the frame beneath. A render that throws before its panel
+ *  shows leaves the old panel up; one that throws after (pvp shows first) still leaves that panel
+ *  alone on screen. */
 function showSocialPanel(panel: SocialPanelId): void {
   if (panelShown(panel)) return;
   try {

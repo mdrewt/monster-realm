@@ -869,6 +869,17 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     row?.setAttribute('tabindex', '-1');
     row?.focus();
     expect(document.activeElement, 'precondition: the session row holds the focus').toBe(row);
+    // The session list is named by the Trades tab, which is painted in the chrome.
+    expect(
+      byId('trade-sessions').getAttribute('aria-labelledby'),
+      'the session list is named by the Trades tab',
+    ).toBe('social-tab-trades');
+    const tradesTab = document.getElementById('social-tab-trades');
+    expect(
+      tradesTab !== null && chrome.contains(tradesTab),
+      'the tab naming the session list is in the chrome',
+    ).toBe(true);
+    expect(tradesTab?.textContent, 'and it is the Trades tab').toBe(SOCIAL_TAB_LABEL.trades());
     view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
     expect(document.activeElement, 'Players: the hidden list hands the focus to the anchor').toBe(
       status,

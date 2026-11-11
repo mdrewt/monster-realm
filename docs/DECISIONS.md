@@ -420,7 +420,9 @@ confirms instead of confirming; the confirm that completes the pair re-runs the 
 side check for BOTH sides on live rows before anything moves. A failure on the other
 side clears that side's confirm and tells the caller nothing more. A write that boxes,
 faints or re-owns an offered monster deletes the session. Each side names only its
-own assets: no trade reducer acts on an argument naming the other player's.
+own assets: no trade reducer acts on an argument naming the other player's. The client
+carries currency as `bigint` from the store row to the reducer argument
+(`client/src/ui/tradeSessionModel.ts`).
 
 **Why.** Reducers run serially, so check-then-write in one reducer is atomic, and
 escrow rows would just be a second source of truth. `u64` balances exceed
