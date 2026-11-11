@@ -65,7 +65,8 @@
 #
 #
 # Server-module exclusions (entries 8-17; 10 and 14 were log-line claims, refuted - log lines ARE
-# observable through a log sink, so those mutants are killed by tests and no longer excluded). The server gate is zero-tolerance, like game-core: each
+# observable through a log sink, so those mutants are killed by tests and no longer excluded; 16 is unused).
+# The server gate is zero-tolerance, like game-core: each
 # of these was first attacked with a test (an exhaustive truth table / boundary table / the full
 # suite) and survives it, because the mutated code cannot change anything observable. All are
 # keyed by file + function + operator + column, never by a bare line. Each is deleted the moment
@@ -100,11 +101,6 @@
 #     invalid the mutant becomes observable; the roster-totality logic itself is killed directly
 #     by the check_roster_is_total tests.
 #
-# 16. propose_trade (trading.rs:357:27, 374:30) `>` -> `>=` on `currency > 0`: for u64, `c >= 0`
-#     is always true, so a zero offer additionally reads the wallet and escrow (read-only) and
-#     compares `0 > balance.saturating_sub(escrowed)`, false for every u64; Result and writes are
-#     identical (the suite already exercises zero-currency proposals).
-#
 # 17. battle_with_forced_terminal (battle.rs:1628:56) `||` -> `&&`: `names_deleting` feeds only a
 #     debug_assert whose postcondition the original never violates, and the mutant can fire it
 #     only in a subset of the cases the original could, so no input changes the returned Battle or
@@ -130,7 +126,6 @@ exclude_re = [
     "playtest\\.rs:\\d+:20: replace > with >= in plan_reap",
     "playtest\\.rs:\\d+:\\d+: replace PlaytestKind::code -> u16 with 1",
     "content\\.rs:\\d+:\\d+: replace validate_enum_rosters -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
-    "trading\\.rs:\\d+:(27|30): replace > with >= in propose_trade",
     "battle\\.rs:\\d+:\\d+: replace \\|\\| with && in battle_with_forced_terminal",
     "pvp\\.rs:\\d+:\\d+: replace ranked_enforcement_active -> bool with false",
 ]

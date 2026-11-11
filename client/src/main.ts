@@ -4289,7 +4289,7 @@ function snapshot() {
   };
 }
 
-// Test hook exposing trade reducers + subscription queries for two-context e2e.
+// Test hook exposing the trade-session reducers and reads for two-context e2e.
 // Mirrors window.__game pattern. All BigInt values cross the page.evaluate boundary as
 // strings; the hook converts them back to BigInt internally (BigInt cannot pass the
 // structured-clone boundary used by Playwright evaluate).
@@ -4317,51 +4317,10 @@ const mrSessionOffer = (offer: StoreTradeSessionOffer): MrSessionOffer => ({
   currency: offer.currency.toString(),
 });
 const mrTradeHook = {
-  proposeTrade(args: {
-    counterparty: string;
-    initiatorMonsterIds: string[];
-    initiatorItems: { itemId: number; qty: number }[];
-    initiatorCurrency: string;
-    counterpartyMonsterIds: string[];
-    counterpartyItems: { itemId: number; qty: number }[];
-    counterpartyCurrency: string;
-  }): Promise<void> | undefined {
-    return conn?.live()?.reducers.proposeTrade({
-      counterparty: new Identity(args.counterparty),
-      initiatorMonsterIds: args.initiatorMonsterIds.map(BigInt),
-      initiatorItems: args.initiatorItems,
-      initiatorCurrency: BigInt(args.initiatorCurrency),
-      counterpartyMonsterIds: args.counterpartyMonsterIds.map(BigInt),
-      counterpartyItems: args.counterpartyItems,
-      counterpartyCurrency: BigInt(args.counterpartyCurrency),
-    });
-  },
-  respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined {
-    return conn?.live()?.reducers.respondTrade({ tradeId: BigInt(tradeId), accepted });
-  },
-  confirmTrade(tradeId: string): Promise<void> | undefined {
-    return conn?.live()?.reducers.confirmTrade({ tradeId: BigInt(tradeId) });
-  },
-  cancelTrade(tradeId: string): Promise<void> | undefined {
-    return conn?.live()?.reducers.cancelTrade({ tradeId: BigInt(tradeId) });
-  },
-  allTradeOffers(): Array<{
-    tradeId: string;
-    initiator: string;
-    counterparty: string;
-    status: string;
-  }> {
-    return store.allTradeOffers().map((o) => ({
-      tradeId: o.tradeId.toString(),
-      initiator: o.initiator,
-      counterparty: o.counterparty,
-      status: o.status,
-    }));
-  },
   allPlayers(): Array<{ identity: string; name: string }> {
     return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
   },
-  // Trade sessions. Ids, revisions and coin amounts cross as decimal strings.
+  // Ids, revisions and coin amounts cross as decimal strings.
   openTradeSession(partner: string): Promise<void> | undefined {
     return conn?.live()?.reducers.openTradeSession({ partner: new Identity(partner) });
   },
