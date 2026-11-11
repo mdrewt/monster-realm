@@ -240,7 +240,7 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     role: 'dialog',
     labelKey: 'a11y.overlay.tradeSessionView.title',
     // The shell's static Close button: enabled and shown in every state. The view's first paint
-    // puts focus on the picker listbox before this deferred anchor would land.
+    // puts focus on the picker listbox ahead of the deferred anchor focus.
     initialFocusSelector: '#tradepropose-submit',
     dismissible: true,
   },

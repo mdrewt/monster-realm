@@ -1,5 +1,5 @@
-// ui/screens/tradeSessionScreen.ts — the trade session editor as a pure screen (M-trade-sessions
-// ts-3). No DOM, SDK, module state or clock; `tradeSessionView.ts` paints what `paint` hands it.
+// ui/screens/tradeSessionScreen.ts — the trade session editor as a pure screen. No DOM, SDK,
+// module state or clock; `tradeSessionView.ts` paints what `paint` hands it.
 //
 // One list, driven by the D-pad and A / B: the viewer's party monsters (A toggles one into the
 // offer), their item stacks and coins (Left / Right step the amount; held, the coins step grows),
@@ -115,7 +115,7 @@ function settle(vm: TradeSessionScreenVm, state: TradeSessionScreenState): Trade
 
   let { notice, prompt, seed, draft } = state;
   // The offer on the table moved, or the other side's confirm found the viewer's side wanting
-  // and cleared its mark: what the player reviewed is no longer what a confirm would mean.
+  // and cleared its mark: a confirm would now mean something the player has not reviewed.
   if (vm.revision !== state.revision || (state.mineConfirmed && !vm.mine.confirmed)) {
     notice += 1;
     prompt = null;

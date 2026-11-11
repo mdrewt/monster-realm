@@ -1354,7 +1354,7 @@ function openTradeEditor(sessionId: bigint): void {
     frameOpenOf(() => tradeSessionView),
     () => tradeSessionView?.show(),
   );
-  // Opened: the session is no longer a waiting request on this client.
+  // Opened: on this client the session stops being a waiting request.
   if (tradeSessionView?.visible === true) openedTradeSessions.add(sessionId);
 }
 

@@ -1,4 +1,4 @@
-// ui/tradeSessionModel.ts — the trade session editor's pure view model (M-trade-sessions ts-3).
+// ui/tradeSessionModel.ts — the trade session editor's pure view model.
 // No DOM, SDK, resolver, clock or module state. Total: never throws on any input.
 //
 // A session is two sides, each edited only by its owner. The editor shows both, offers pickers over
@@ -177,7 +177,7 @@ export function lockedSessionMonsterIds(
   return locked;
 }
 
-/** The ids in `before` that `sessions` no longer holds for `identity`, ascending. */
+/** The ids in `before` that are absent from `identity`'s sessions now, ascending. */
 export function closedSessionIds(
   before: ReadonlySet<bigint>,
   sessions: readonly StoreTradeSession[],

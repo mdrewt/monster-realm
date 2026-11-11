@@ -4,7 +4,7 @@
 // The frame's rows are the blocks its legacy roots show: the one offer the trade root shows, and
 // the request and the sent challenge the pvp root shows, each picked through that root's own
 // selector, so A on a row always acts on what the player sees. Trades also lists one row per trade
-// session the viewer is in (ts-3): A on one opens its editor. Players lists the other online
+// session the viewer is in: A on one opens its editor. Players lists the other online
 // players (CTL8G.1) and Rankings the leaderboard's rows (CTL8G.2): nav rows only, never a sheet.
 import type {
   StoreBattleChallenge,

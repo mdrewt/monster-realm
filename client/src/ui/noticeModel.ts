@@ -41,7 +41,7 @@ export type Notice = RequestNotice | ErrorNotice;
 
 export interface NoticeInput {
   readonly sessions: readonly StoreTradeSession[];
-  /** The sessions this client has opened its editor on: they are no longer requests. */
+  /** The sessions this client has opened its editor on: none of them is a request. */
   readonly opened: ReadonlySet<bigint>;
   readonly challenges: readonly StoreBattleChallenge[];
   readonly players: readonly StorePlayer[];
@@ -55,7 +55,8 @@ export interface NoticeInput {
 const ERROR_NOTICE: ErrorNotice = { kind: 'error', key: 'error' };
 
 /** The requests waiting on the viewer, oldest first (a tie: the smaller key, so challenge before
- *  session). Dismissal does not hide a request here: Y still answers one the banner no longer shows. */
+ *  session). Dismissal does not hide a request here: Y still answers one the banner has stopped
+ *  showing. */
 export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
   const out: RequestNotice[] = [];
   for (const session of ownSessions(i.sessions, i.identity)) {

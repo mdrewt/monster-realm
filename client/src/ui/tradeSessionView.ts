@@ -1,4 +1,4 @@
-// ui/tradeSessionView.ts — the trade session editor's DOM shell (M-trade-sessions ts-3).
+// ui/tradeSessionView.ts — the trade session editor's DOM shell.
 // It paints what `screens/tradeSessionScreen.ts` hands it and holds nothing of its own: no draft, no
 // lock, no reducer. Every control is a nav-kit listbox row, so the D-pad and A / B drive all of it
 // and the pointer reaches the same rows through the kit.
