@@ -211,7 +211,8 @@ drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
   `trade_offer` table is drain-only: no reducer inserts a row. A row still in it keeps
   its assets guarded (they cannot be spent, sold or evolved) until `cancel_trade`, a
   disconnect, account deletion or the one-hour TTL reaper (`TRADE_OFFER_TTL_MS`)
-  deletes it.
+  deletes it. The client neither subscribes to the table nor sends `cancel_trade`: the
+  disconnect sweep and the reaper are a remaining row's way out.
 - **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row
   with a player within interact range (one per pair, at most four opened per player,
   one-hour TTL). Each side replaces only its own offer with `set_trade_offer`; every
@@ -261,7 +262,8 @@ part of the schema:
 | Class | Tables | Client read path |
 |---|---|---|
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
-| Public world state | `character`, `player`, `profile`, `trade_offer`, `battle_challenge`, `player_quest` | direct subscription |
+| Public world state | `character`, `player`, `profile`, `battle_challenge`, `player_quest` | direct subscription |
+| Public, drain-only | `trade_offer` | none in the client: no query subscribes to it and the store holds no offer state |
 | Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
@@ -357,8 +359,8 @@ with thin shells.
 
 `net/connection.ts` builds the SpacetimeDB connection (URI and database from
 `VITE_STDB_URI`/`VITE_STDB_DB`; a production build refuses the dev-default database,
-`net/connectionConfig.ts`). It subscribes to the public tables and the owner-scoped
-views in one batch; the character subscription covers all zones, and off-zone
+`net/connectionConfig.ts`). It subscribes to the public tables it renders (never the
+drain-only `trade_offer`) and the owner-scoped views in one batch; the character subscription covers all zones, and off-zone
 characters are filtered at render time. The SDK fires per-row callbacks.
 `net/batch.ts` coalesces a transaction's callbacks within one microtask so the store
 flushes once per burst, and the predictor reconciles against a consistent snapshot.

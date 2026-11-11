@@ -1798,7 +1798,7 @@ const ownPartyIds = (): bigint[] =>
 /** The own monsters a trade locks: the player's confirmed sides of trade sessions. Neither offered
  *  to a deploy nor committed to a challenge (the server refuses a locked monster at both). */
 function tradedIds(): ReadonlySet<bigint> {
-  return new Set<bigint>(lockedSessionMonsterIds(store.allTradeSessions(), identity));
+  return lockedSessionMonsterIds(store.allTradeSessions(), identity);
 }
 /** bt-15 (BT15.1): the monsters a challenge may commit — party-slotted, conscious and untraded, in
  *  slot order (`consciousPartyIds`); the pick sends the first N of them. */
