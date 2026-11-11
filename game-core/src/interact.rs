@@ -1,10 +1,13 @@
-//! World interaction target rule — which entities the interact button acts on.
+//! World interaction rules: which entities the interact button acts on
+//! ([`interact_candidates`]) and how far apart two characters may be for the
+//! server to accept an interaction between them ([`within_interact_range`]).
 //!
-//! The rule is "the tile in front, then your own tile": the first non-empty tier
-//! wins, and nothing else is a candidate (no nearest-within-range, no facing ray).
-//! The server's `TALK_RANGE` is a latency margin, not a reach, so this rule is
-//! deliberately narrower than what `talk` accepts.
+//! The target rule is "the tile in front, then your own tile": the first non-empty
+//! tier wins, and nothing else is a candidate (no nearest-within-range, no facing
+//! ray). The server's `TALK_RANGE` is a latency margin, not a reach, so the target
+//! rule is deliberately narrower than the range the server accepts.
 
+use crate::npc::rules::in_talk_range;
 use crate::types::{Direction, TilePos};
 
 /// What an interactable is. Declaration order IS the within-tile priority
@@ -58,4 +61,16 @@ fn on_tile(tile: TilePos, zone: u32, entities: &[InteractEntity]) -> Vec<usize> 
         .collect();
     hits.sort_by_key(|&i| (entities[i].kind, entities[i].id));
     hits
+}
+
+/// True when two characters are close enough for one to start an interaction
+/// with the other (open a trade, send a challenge): the same zone and within
+/// `TALK_RANGE` tiles, Manhattan, inclusive.
+///
+/// The range is the NPC talk range on purpose. It is a latency margin for the
+/// server, not a reach: the client only ever targets the tile in front or its own
+/// ([`interact_candidates`]).
+#[must_use]
+pub fn within_interact_range(zone_a: u32, pos_a: TilePos, zone_b: u32, pos_b: TilePos) -> bool {
+    zone_a == zone_b && in_talk_range(pos_a, pos_b)
 }

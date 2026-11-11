@@ -19,6 +19,12 @@ pub const MAX_ITEM_STACK: u32 = 9999;
 /// the client reads the same value through client-wasm to disable Submit.
 pub const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
 
+/// Per-side item-stack-count cap for one trade side — a DoS bound, not a game
+/// rule. Counts entries listed, not quantities. INCLUSIVE: `n <= MAX` is
+/// legal; above it the side is rejected, never truncated. Independent of
+/// `MAX_TRADE_MONSTERS_PER_SIDE`: the two are separate limits, not a shared budget.
+pub const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;
+
 /// Current item stack snapshot for one (owner, item_id) pair.
 /// Passed to `check_headroom` so it can check receiver headroom without DB access.
 #[derive(Clone, Debug, PartialEq)]
