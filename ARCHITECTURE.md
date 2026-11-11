@@ -55,7 +55,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `taming` | dev-only `grant_bait`; the tactical recruit is a `submit_queue` entry (the 1v1 `attempt_recruit` is deleted since bt-17) |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |
-| `currency`, `trading` | Balance arithmetic; trade proposal validation, headroom checks, the ordered swap plan. |
+| `currency`, `trading` | Balance arithmetic; trade proposal validation, headroom checks, the ordered swap plan; the trade-session rules (`trading::session`: eligibility, edits and confirms by revision, the per-side check, the execute verdict, snapshot drift, arrival slots). |
 | `ranking` | Elo rating update (`INITIAL_RATING` 1000). |
 | `npc`, `dialogue`, `quest` | NPC wander decisions, dialogue trees, quest triggers. |
 | `accounts` | Deletion grace (`DELETION_GRACE_MS_DEFAULT`, 7 days), export chunk size, tombstone constants. |
@@ -146,6 +146,7 @@ writes:
 | `economy` | `buy`, `sell` |
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
 | `trading` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, scheduled `trade_offer_reaper` |
+| `trading_session` | `open_trade_session`, `set_trade_offer`, `confirm_trade_session`, `cancel_trade_session`, scheduled `trade_session_reaper` |
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
@@ -176,7 +177,7 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
   other live connection, it resolves the identity's tactical battles (first — an
   Active wild battle auto-flees with its damaged HP persisted and its READY rows
   discarded, a Deploying one closes as `Fled` with nothing persisted, and the anchor
-  stays terminal so the legacy wild resolver skips it), then its trades, PvP battles,
+  stays terminal so the legacy wild resolver skips it), then its trade offers and trade sessions, PvP battles,
   legacy wild battles and challenges (`resolve_all_live_interactions`), then deletes
   the conversation, character and player rows.
 
@@ -210,6 +211,18 @@ drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
   (`TRADE_OFFER_TTL_MS`). Offered assets stay where they are, and guards stop them
   being spent, sold or evolved while the offer is open. `confirm_trade` checks
   receiver headroom and applies an ordered swap plan (debits first).
+- **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row
+  with a player within interact range (one per pair, at most four opened per player,
+  one-hour TTL). Each side replaces only its own offer with `set_trade_offer`; every
+  accepted edit advances the row's revision and clears both confirms.
+  `confirm_trade_session` names the revision it reviewed; the confirm that completes
+  the pair re-checks both sides on live rows and executes the swap in the same call
+  (monsters arrive in the receiver's lowest free party slots, then Storage). A side's
+  assets are locked only while that side is confirmed; an offered monster that is
+  boxed, faints or changes owner deletes the session at the monster write
+  (`monster_mgmt::update_monster_synced`), and so do a disconnect and a cancel. The
+  two participants read the row through `my_trade_session`; the client does not
+  subscribe to it.
 - **Raising and economy.** Care, training, essence and healing live in `raising`;
   every balance change goes through `economy::grant_currency`/`spend_currency`, and
   every inventory insert through `inventory::grant_item`, which keeps one stack per
@@ -250,8 +263,8 @@ part of the schema:
 | Public world state | `character`, `player`, `profile`, `trade_offer`, `battle_challenge`, `player_quest` | direct subscription |
 | Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
-| Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`) |
-| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `player_dialogue_state`, `heal_cooldown`, `guest_claim`, `player_session`, all schedule tables | none |
+| Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
+| Private, server only | `monster`, `encounter`, `battle_wild`, `battle_action`, `battle_secret`, `battle_wild_unit`, `battle_summary`, `trade_session_snapshot`, `player_dialogue_state`, `heal_cooldown`, `guest_claim`, `player_session`, all schedule tables | none |
 
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.
@@ -592,8 +605,8 @@ root, so opening one never closes a sibling.
   claim. An account that already played before claiming fails the claim with "already
   has game data".
 - **Deletion.** `delete_account` sets `PendingDeletion` and arms a reaper 7 days out;
-  `cancel_account_deletion` reverses it and declines trade offers made to the account
-  after it asked to be deleted. While deletion is pending, the account cannot start
+  `cancel_account_deletion` reverses it and declines trade offers made to the account,
+  and trade sessions opened with it, after it asked to be deleted. While deletion is pending, the account cannot start
   new battles, trades, challenges or other writes (`guards::require_not_deleting`),
   but commitments made before the request can still finish. The reaper resolves live
   interactions, forces ongoing battles to a terminal result, erases or anonymises

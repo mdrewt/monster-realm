@@ -196,13 +196,14 @@ private (no `public` in its `#[spacetimedb::table]`). Each owner reads their own
 through a `#[spacetimedb::view]` whose body filters on `ctx.sender()`
 (`server-module/src/schema.rs`): `my_monster_pub`, `my_inventory`, `my_wallet`,
 `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_battle` (either
-participant), `my_export_bundle` (`privacy.rs`), and the tactical set (`my_tactical_battle`,
+participant), `my_trade_session` (either participant), `my_export_bundle` (`privacy.rs`), and the tactical set (`my_tactical_battle`,
 `my_battle_units`, `my_battle_events`, `my_battle_clock` for either participant;
 `my_battle_queue`, `my_battle_deploy`, `my_formation` for the owner). Some tables have no
 client read path at all: `monster` (IVs, EVs, nature), `encounter` (spawn weights),
 `battle_wild` and `battle_wild_unit` (wild individuality seeds), `battle_secret` (the
 tactical seed), `battle_summary` (telemetry), `battle_action` (secret PvP picks),
-`heal_cooldown`, `guest_claim`, `player_session`.
+`trade_session_snapshot` (the review copy of each monster offered in a trade session,
+genes included), `heal_cooldown`, `guest_claim`, `player_session`.
 
 **Why.** Hidden stats, item stock, balances and a pending PvP pick are competitive
 information. The view body is the entire boundary, so each view takes only the
@@ -371,12 +372,14 @@ client.
 
 ## Trading resets the bond, not the monster
 
-**Decision.** `confirm_trade` (`server-module/src/trading.rs`) resets each transferred
-monster's seven Trust/Quality-Time columns — `trust_favorable_count`,
+**Decision.** Every trade swap goes through `trading_session::apply_swap`
+(`server-module/src/trading_session.rs`) — a session executed by
+`confirm_trade_session` and a legacy offer confirmed by `confirm_trade` alike — and it
+resets each transferred monster's seven Trust/Quality-Time columns — `trust_favorable_count`,
 `trust_unfavorable_count`, `trust_favorable_battle_day_epoch`,
 `quality_time_ticks_total`, `quality_time_accum_ms`, `quality_time_window_ms`,
 `quality_time_window_start_ms` — to `0` through game-core's `reset_bond_on_trade` over a
-`TrainerBond` value (`game-core/src/raising/rules.rs`); the reducer copies the columns
+`TrainerBond` value (`game-core/src/raising/rules.rs`); the shell copies the columns
 through the rule and never zeroes them itself. Level, species, nickname, IVs, EVs,
 nature, xp and the eight essence pools transfer unchanged. `monster_pub`'s derived
 `trust_tier`/`quality_time_tier` re-derive from the reset counters (Neutral / 0) while
@@ -401,8 +404,17 @@ guest-claim re-key.
 `economy::grant_currency`/`spend_currency`. Item stacks cap at `MAX_ITEM_STACK`
 (9999). `confirm_trade` checks receiver headroom first, and the swap applies debits
 before credits (`SwapPlan::ordered_steps`), so a trade either happens completely or
-not at all. Escrow is a guard, not a hold: an asset offered in an open trade cannot be
-spent, sold or evolved. A trade offer from the client can only request currency from
+not at all. Escrow is a guard, not a hold: an asset in an open trade offer cannot be
+spent, sold or evolved. A trade session (`trade_session`, `trading_session.rs`) locks
+at confirm: a side's monsters, items and currency are guarded only while that side is
+confirmed, and the `guards.rs` wrappers every other reducer calls count both sources.
+An unconfirmed side locks nothing beyond exclusivity (a monster sits in one trade at a
+time), so each confirm first compares every offered monster with its private review
+snapshot (`trade_session_snapshot`) and, on a difference, refreshes it and clears both
+confirms instead of confirming; the confirm that completes the pair re-runs the full
+side check for BOTH sides on live rows before anything moves. A failure on the other
+side clears that side's confirm and tells the caller nothing more. A write that boxes,
+faints or re-owns an offered monster deletes the session. A trade offer from the client can only request currency from
 the counterparty, because the counterparty's monsters and items are private and not
 visible to the proposer. The client parses currency input to `BigInt` digit by digit
 (`client/src/ui/tradeProposeModel.ts`).
@@ -843,12 +855,15 @@ now); a module-scope copy of a live binding; a shell module that registers a lis
 faces (`pos.step(facing)`), or, if there are none, the entities on the character's own
 tile. Same zone only; ordered NPC, then heal, then player, then by id. An entity
 within range but not in front is never a candidate, even though `talk` accepts up to
-`TALK_RANGE` (2). The UI starts trades and challenges only from a player you face. The
-server stays permissive.
+`TALK_RANGE` (2). The UI starts trades and challenges only from a player you face.
+The server is more permissive than the client: `talk` accepts `TALK_RANGE`, and
+`open_trade_session` refuses a partner outside
+`game_core::interact::within_interact_range` (same zone, Manhattan distance at most
+`TALK_RANGE`) with one message for every out-of-range case.
 
 **Why.** Interaction follows what the character faces, as in console RPGs. The
-server's range is a latency margin for an NPC that steps one tile before the reducer
-runs. It is not the player's reach.
+server's range is a latency margin for an NPC or a player that steps one tile before
+the reducer runs. It is not the player's reach.
 
 **Rules out.** A nearest-within-range target; widening the client rule to match
 `TALK_RANGE`; starting a trade or challenge remotely from a menu.
