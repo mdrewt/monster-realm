@@ -4,7 +4,9 @@
 
 use proptest::prelude::*;
 
-use crate::interact::{interact_candidates, InteractEntity, InteractKind};
+use crate::interact::{
+    interact_candidates, within_interact_range, InteractEntity, InteractKind,
+};
 use crate::types::{Direction, TilePos};
 use crate::TALK_RANGE;
 
@@ -578,5 +580,161 @@ proptest! {
         }
         expected.sort_by_key(|&i| (entities[i].kind, entities[i].id, i));
         prop_assert_eq!(interact_candidates(me, facing, zone, &entities), expected);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ts-1.6 — `within_interact_range`: same zone AND Manhattan <= TALK_RANGE
+// ---------------------------------------------------------------------------
+
+/// `ME + (dx, dy)`.
+fn offset(dx: i32, dy: i32) -> TilePos {
+    TilePos {
+        x: ME.x + dx,
+        y: ME.y + dy,
+    }
+}
+
+/// Same zone at Manhattan distance 1 and exactly 2 — on each axis, split across
+/// both axes, and with negative offsets — is in range. Kills `<=` → `<` and a
+/// Chebyshev or single-axis distance.
+#[test]
+fn same_zone_within_manhattan_two_is_in_range_ts1_6() {
+    let near = [
+        (1, 0),
+        (0, 1),
+        (-1, 0),
+        (0, -1),
+        (2, 0),
+        (0, 2),
+        (-2, 0),
+        (0, -2),
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (-1, -1),
+    ];
+    for (dx, dy) in near {
+        assert!(
+            within_interact_range(ZONE, ME, ZONE, offset(dx, dy)),
+            "offset ({dx}, {dy})"
+        );
+    }
+}
+
+/// Same zone at Manhattan distance exactly 3 — on an axis, or split 2 + 1 / 1 +
+/// 2 — and farther is out of range. Kills a range one too wide (`<= 3`), a
+/// Chebyshev distance (which puts (2, 1) at 2) and a per-axis bound.
+#[test]
+fn same_zone_at_manhattan_three_or_more_is_out_of_range_ts1_6() {
+    let far = [
+        (3, 0),
+        (0, 3),
+        (-3, 0),
+        (0, -3),
+        (2, 1),
+        (1, 2),
+        (-2, -1),
+        (-1, 2),
+        (2, -1),
+        (2, 2),
+        (10, 0),
+    ];
+    for (dx, dy) in far {
+        assert!(
+            !within_interact_range(ZONE, ME, ZONE, offset(dx, dy)),
+            "offset ({dx}, {dy})"
+        );
+    }
+    let corner = TilePos {
+        x: i32::MIN,
+        y: i32::MIN,
+    };
+    let opposite = TilePos {
+        x: i32::MAX,
+        y: i32::MAX,
+    };
+    assert!(!within_interact_range(ZONE, corner, ZONE, opposite));
+}
+
+/// The same tile in the same zone is in range, including at the coordinate
+/// extremes. Kills a strict `0 <` distance test.
+#[test]
+fn the_same_tile_in_the_same_zone_is_in_range_ts1_6() {
+    assert!(within_interact_range(ZONE, ME, ZONE, ME));
+    let edge = TilePos {
+        x: i32::MAX,
+        y: i32::MIN,
+    };
+    assert!(within_interact_range(0, edge, 0, edge));
+    assert!(within_interact_range(u32::MAX, ME, u32::MAX, ME));
+}
+
+/// Different zones are never in range, even on the same tile or at distance 1
+/// or 2. Kills a missing zone check and `&&` → `||`.
+#[test]
+fn different_zones_are_never_in_range_ts1_6() {
+    for (dx, dy) in [(0, 0), (1, 0), (2, 0), (1, 1)] {
+        assert!(
+            !within_interact_range(ZONE, ME, OTHER_ZONE, offset(dx, dy)),
+            "offset ({dx}, {dy})"
+        );
+        assert!(
+            !within_interact_range(OTHER_ZONE, offset(dx, dy), ZONE, ME),
+            "offset ({dx}, {dy}) reversed"
+        );
+    }
+    assert!(!within_interact_range(0, ME, u32::MAX, ME));
+}
+
+/// Over every offset in a 9 × 9 block and both a shared and a split zone pair,
+/// the result equals the reference and does not depend on argument order.
+/// Kills an asymmetric distance (e.g. a signed difference) and a zone test that
+/// reads one argument only.
+#[test]
+fn within_interact_range_is_symmetric_over_the_near_block_ts1_6() {
+    for (zone_a, zone_b) in [(ZONE, ZONE), (ZONE, OTHER_ZONE)] {
+        for dx in -4..=4 {
+            for dy in -4..=4 {
+                let other = offset(dx, dy);
+                let expected = zone_a == zone_b && manhattan(ME, other) <= TALK_RANGE;
+                assert_eq!(
+                    within_interact_range(zone_a, ME, zone_b, other),
+                    expected,
+                    "zones ({zone_a}, {zone_b}) offset ({dx}, {dy})"
+                );
+                assert_eq!(
+                    within_interact_range(zone_b, other, zone_a, ME),
+                    expected,
+                    "zones ({zone_b}, {zone_a}) offset ({dx}, {dy}) reversed"
+                );
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// For any two positions (near each other or anywhere, saturation extremes
+    /// included) and any zones, the result equals `zone_a == zone_b &&
+    /// |dx| + |dy| <= TALK_RANGE` computed in i64, in both argument orders.
+    #[test]
+    fn within_interact_range_matches_the_same_zone_manhattan_reference_ts1_6(
+        (ax, ay) in (coord(), coord()),
+        (dx, dy) in (-3i32..=3, -3i32..=3),
+        (fx, fy) in (coord(), coord()),
+        near in any::<bool>(),
+        (zone_a, zone_b) in (0u32..3, 0u32..3),
+    ) {
+        let a = TilePos { x: ax, y: ay };
+        let b = if near {
+            TilePos { x: ax.saturating_add(dx), y: ay.saturating_add(dy) }
+        } else {
+            TilePos { x: fx, y: fy }
+        };
+        let expected = zone_a == zone_b && manhattan(a, b) <= TALK_RANGE;
+        prop_assert_eq!(within_interact_range(zone_a, a, zone_b, b), expected);
+        prop_assert_eq!(within_interact_range(zone_b, b, zone_a, a), expected);
     }
 }

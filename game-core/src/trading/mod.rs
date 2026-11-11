@@ -8,6 +8,8 @@
 //! is the SSOT rule layer.
 
 pub mod rules;
+#[cfg(test)]
+mod session_tests;
 pub mod types;
 
 pub use rules::{
