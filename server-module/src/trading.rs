@@ -574,7 +574,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         // Currency balances are netted: each party's OWN outgoing
         // currency is subtracted from their OWN live balance, so the cap check sees the
         // post-debit effective balance (symmetric with the item netting above). Netting
-        // is cap-headroom-only: a broke sender still rejects at spend_currency in the
+        // is cap-headroom-only: a broke sender still rejects at spend_currency inside
         // apply_swap, with whole-transaction rollback.
         check_headroom(
             &offer.counterparty_items,
