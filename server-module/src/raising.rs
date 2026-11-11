@@ -15,7 +15,7 @@
 use crate::economy::{spend_currency, wallet_balance};
 use crate::evolution::check_and_evolve;
 use crate::guards::{
-    escrowed_currency_amount, escrowed_item_qty, is_in_ongoing_battle, reject_if_monster_in_trade,
+    escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, reject_if_monster_locked,
     require_owner, saturating_sub_u64,
 };
 use crate::inventory::consume_one;
@@ -23,7 +23,7 @@ use crate::marshal::{now_ms, pub_from_monster};
 use crate::monster_mgmt::update_monster_synced;
 use crate::schema::{
     character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
-    species_row, trade_offer, HealCooldown, Monster,
+    species_row, HealCooldown, Monster,
 };
 use game_core::{
     focus_train, is_cooldown_ready, Affinity, EVs, FocusTrainError, FocusTrainResult, IVs, Level,
@@ -80,14 +80,7 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         return Err("cannot care during an ongoing battle".to_string());
     }
     // Trade escrow guard.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(m.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-        monster_id,
-    )?;
+    reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
     let now = now_ms(ctx);
     evaluate_care(m.last_care_at_ms, now)?;
     m.last_care_at_ms = now;
@@ -149,25 +142,10 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
         return Err("cannot train during an ongoing battle".to_string());
     }
     // Trade escrow guards: monster and food item must be free.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(m.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-        monster_id,
-    )?;
+    reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
     // Item escrow: reject if consuming this item would breach the escrowed reserve.
     {
-        let escrowed = escrowed_item_qty(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(m.owner_identity)
-                .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-            m.owner_identity,
-            food_item_id,
-        );
+        let escrowed = escrowed_item_qty_of(ctx, m.owner_identity, food_item_id);
         let count = ctx
             .db
             .inventory()
@@ -358,14 +336,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     let defs = crate::content_cache::cached_heal_locations()
         .map_err(|e| format!("heal_party: cached_heal_locations: {e}"))?;
     if let Some(currency_cost) = evaluate_heal_currency(defs, location_id, || {
-        let escrowed = escrowed_currency_amount(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(me)
-                .chain(ctx.db.trade_offer().counterparty().filter(me)),
-            me,
-        );
+        let escrowed = escrowed_currency_of(ctx, me);
         (wallet_balance(ctx, me), escrowed)
     })? {
         spend_currency(ctx, me, currency_cost)?;
@@ -639,14 +610,7 @@ pub fn essence_train(
         return Err("cannot essence-train during an ongoing battle".to_string());
     }
     // Trade escrow guard: an escrowed monster must not be mutated.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(m.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-        monster_id,
-    )?;
+    reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
     let now = now_ms(ctx);
     // DECISION before mutation (reject-never-burns).
     evaluate_essence_train(m.last_essence_train_at_ms, now)?;
@@ -682,26 +646,11 @@ pub fn consume_crystalized_essence(
         return Err("cannot consume essence during an ongoing battle".to_string());
     }
     // Trade escrow guard: an escrowed monster must not be mutated.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(m.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-        monster_id,
-    )?;
+    reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
     // Item escrow: reject if consuming this item would breach the escrowed
     // reserve (same block as train, non-optional double-spend guard).
     {
-        let escrowed = escrowed_item_qty(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(m.owner_identity)
-                .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-            m.owner_identity,
-            item_id,
-        );
+        let escrowed = escrowed_item_qty_of(ctx, m.owner_identity, item_id);
         let count = ctx
             .db
             .inventory()

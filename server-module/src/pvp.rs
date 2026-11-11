@@ -33,13 +33,13 @@
 use crate::battle::{write_back_battle_results, write_back_party_hp};
 use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
-    reject_if_monster_in_trade,
+    reject_if_monster_locked,
 };
 use crate::marshal::now_ms;
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, battle_tactical, monster, player, trade_offer, Battle,
+    battle, battle_action, battle_challenge, battle_tactical, monster, player, Battle,
     BattleAction, BattleChallenge, ChallengeStatus,
 };
 use crate::WILD_IDENTITY;
@@ -662,15 +662,8 @@ pub fn challenge_pvp(
             log_reject("challenge_pvp", me, &e);
             return Err(e);
         }
-        reject_if_monster_in_trade(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(me)
-                .chain(ctx.db.trade_offer().counterparty().filter(me)),
-            mid,
-        )
-        .inspect_err(|e| log_reject("challenge_pvp", me, e))?;
+        reject_if_monster_locked(ctx, me, mid)
+            .inspect_err(|e| log_reject("challenge_pvp", me, e))?;
     }
 
     // Guard 8 (irreversible): insert the challenge row (`format` from the pick, BT14.1).

@@ -36,8 +36,8 @@ use crate::content_cache::{
     cached_tactics_zones,
 };
 use crate::guards::{
-    check_monster_in_party, check_party_size, escrowed_item_qty, is_in_ongoing_battle, json_escape,
-    log_reject, reject_if_monster_in_trade, require_subject_not_deleting,
+    check_monster_in_party, check_party_size, escrowed_item_qty_of, is_in_ongoing_battle,
+    json_escape, log_reject, reject_if_monster_locked, require_subject_not_deleting,
 };
 use crate::inventory::consume_one;
 use crate::marshal::now_ms;
@@ -48,9 +48,9 @@ use crate::pvp::{SideAWriteBack, PVP_FORMAT_MAX};
 use crate::schema::{
     battle, battle_clock, battle_deploy, battle_event, battle_queue, battle_secret,
     battle_tactical, battle_unit, battle_wild_unit, character, inventory, monster, player,
-    player_formation, trade_offer, Battle, BattleClock, BattleDeploy, BattleEvent, BattleQueue,
-    BattleSecret, BattleTactical, BattleUnit, BattleWildUnit, BudgetLastEntry, BudgetMoveSpend,
-    DeployPick, Monster, MoveClassRow, PlayerFormation, SideRow, StanceRow,
+    player_formation, Battle, BattleClock, BattleDeploy, BattleEvent, BattleQueue, BattleSecret,
+    BattleTactical, BattleUnit, BattleWildUnit, BudgetLastEntry, BudgetMoveSpend, DeployPick,
+    Monster, MoveClassRow, PlayerFormation, SideRow, StanceRow,
 };
 use crate::tactics_settle::{self, mark_first_recruit, Close, StepPrev};
 use crate::taming::insert_recruited;
@@ -1217,16 +1217,7 @@ impl Hooks for ShellHooks<'_> {
             .filter(|r| r.item_id == item_id)
             .map(|r| r.count)
             .fold(0u32, u32::saturating_add);
-        let escrowed = escrowed_item_qty(
-            self.ctx
-                .db
-                .trade_offer()
-                .initiator()
-                .filter(owner)
-                .chain(self.ctx.db.trade_offer().counterparty().filter(owner)),
-            owner,
-            item_id,
-        );
+        let escrowed = escrowed_item_qty_of(self.ctx, owner, item_id);
         held.saturating_sub(escrowed)
     }
 
@@ -1408,14 +1399,7 @@ fn stage_side(
         if usize::from(pick.slot) >= spawns {
             return Err(format!("slot {} out of range", pick.slot));
         }
-        reject_if_monster_in_trade(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(owner)
-                .chain(ctx.db.trade_offer().counterparty().filter(owner)),
-            pick.monster_id,
-        )?;
+        reject_if_monster_locked(ctx, owner, pick.monster_id)?;
         let kit = content.unit_kit(m.species_id, m.level, monster_stats(&m))?;
         staged.push((m, *pick, kit));
     }
@@ -1834,14 +1818,7 @@ pub(crate) fn start_wild_tactical(
         if m.owner_identity != player {
             return Err(format!("monster {mid} not owned by player"));
         }
-        reject_if_monster_in_trade(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(player)
-                .chain(ctx.db.trade_offer().counterparty().filter(player)),
-            mid,
-        )?;
+        reject_if_monster_locked(ctx, player, mid)?;
         party.push(m);
     }
     let conscious =
@@ -2094,14 +2071,7 @@ fn load_side_party(
             return Err(format!("monster {mid} not owned by caller"));
         }
         check_monster_in_party(m.party_slot).map_err(|e| format!("monster {mid} {e}"))?;
-        reject_if_monster_in_trade(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(owner)
-                .chain(ctx.db.trade_offer().counterparty().filter(owner)),
-            mid,
-        )?;
+        reject_if_monster_locked(ctx, owner, mid)?;
         party.push(m);
     }
     Ok(party)
@@ -2424,14 +2394,7 @@ pub fn deploy_units(
         if m.current_hp == 0 {
             return reject(NAME, me, format!("monster {} is fainted", pick.monster_id));
         }
-        if let Err(e) = reject_if_monster_in_trade(
-            ctx.db
-                .trade_offer()
-                .initiator()
-                .filter(me)
-                .chain(ctx.db.trade_offer().counterparty().filter(me)),
-            pick.monster_id,
-        ) {
+        if let Err(e) = reject_if_monster_locked(ctx, me, pick.monster_id) {
             return reject(NAME, me, e);
         }
     }

@@ -4,7 +4,7 @@
 //! logger, the name validator, the move authorizer, and the pure battle-input
 //! validators.
 
-use crate::schema::{battle, character, player, Battle, Character};
+use crate::schema::{battle, character, player, trade_offer, Battle, Character, TradeOffer};
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
 use spacetimedb::{Identity, ReducerContext};
 
@@ -268,13 +268,64 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 
 // --- Trade escrow guards ------------------------------------
 //
-// Three focused helpers that mirror `reject_if_in_battle`: pure predicates over
-// iterators of `TradeOffer` rows. Call sites chain initiator-filtered and
-// counterparty-filtered iterators so the guard sees ALL offers for the owner
-// regardless of role. "Active" = Pending OR ConfirmedByCounterparty.
+// Two layers. The PURE predicates (`reject_if_monster_in_trade`,
+// `escrowed_item_qty`, `escrowed_currency_amount`, `escrowed_monster_ids`)
+// mirror `reject_if_in_battle`: they judge an iterator of `TradeOffer` rows.
+// The CONTEXT WRAPPERS (`reject_if_monster_locked`, `escrowed_item_qty_of`,
+// `escrowed_currency_of`, `escrowed_monster_ids_of`) read one owner's offers
+// in BOTH roles through `offers_of` and hand them to the matching predicate.
+// A reducer calls a wrapper, so what counts as locked is decided in this
+// file — unless it must judge trade offers alone, in which case it reads the
+// table itself and calls a pure predicate. "Active" = Pending OR
+// ConfirmedByCounterparty.
 //
 // SpacetimeDB reducers are single-threaded WASM: read-check-write within one
 // reducer is atomic w.r.t. all other reducers — no TOCTOU possible.
+
+/// Every trade offer `owner` is party to: the rows of the `initiator` index,
+/// then the rows of the `counterparty` index. Both index scans open when the
+/// chain is built.
+fn offers_of(ctx: &ReducerContext, owner: Identity) -> impl Iterator<Item = TradeOffer> {
+    ctx.db
+        .trade_offer()
+        .initiator()
+        .filter(owner)
+        .chain(ctx.db.trade_offer().counterparty().filter(owner))
+}
+
+/// Reject if `monster_id` is locked by any of `owner`'s active trade offers, in
+/// either role. Does not log: a caller that logs its rejects keeps doing so.
+pub(crate) fn reject_if_monster_locked(
+    ctx: &ReducerContext,
+    owner: Identity,
+    monster_id: u64,
+) -> Result<(), String> {
+    reject_if_monster_in_trade(offers_of(ctx, owner), monster_id)
+}
+
+/// The quantity of `item_id` that `owner` has escrowed across their active
+/// trade offers, in either role.
+///
+/// Usage at call site: `available = inventory_count - escrowed_item_qty_of(ctx, owner, item_id)`.
+/// Reject if `requested_qty > available`.
+pub(crate) fn escrowed_item_qty_of(ctx: &ReducerContext, owner: Identity, item_id: u32) -> u32 {
+    escrowed_item_qty(offers_of(ctx, owner), owner, item_id)
+}
+
+/// The currency `owner` has escrowed across their active trade offers, in
+/// either role.
+///
+/// Usage at call site: `available = balance - escrowed_currency_of(ctx, owner)`.
+/// Reject if `requested_spend > available`.
+pub(crate) fn escrowed_currency_of(ctx: &ReducerContext, owner: Identity) -> u64 {
+    escrowed_currency_amount(offers_of(ctx, owner), owner)
+}
+
+/// Every monster id held by `owner`'s active trade offers, in either role and
+/// on either side of each offer.
+pub(crate) fn escrowed_monster_ids_of(ctx: &ReducerContext, owner: Identity) -> Vec<u64> {
+    escrowed_monster_ids(offers_of(ctx, owner))
+}
 
 /// Reject if the monster is in any active trade offer.
 /// Pure predicate; mirrors `reject_if_in_battle`.
@@ -298,9 +349,6 @@ pub(crate) fn reject_if_monster_in_trade(
 /// player (either as initiator or counterparty — the caller passes an already-filtered
 /// iterator covering both roles). Saturating add prevents overflow on pathological inputs
 /// (MI-2).
-///
-/// Usage at call site: `available = inventory_count - escrowed_item_qty(iter, item_id)`.
-/// Reject if `requested_qty > available`.
 pub(crate) fn escrowed_item_qty(
     trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
     owner: spacetimedb::Identity,
@@ -325,9 +373,6 @@ pub(crate) fn escrowed_item_qty(
 }
 
 /// Returns the total currency escrowed by `owner` in active trade offers.
-///
-/// Usage at call site: `available = balance - escrowed_currency_amount(iter, owner)`.
-/// Reject if `requested_spend > available`.
 pub(crate) fn escrowed_currency_amount(
     trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
     owner: spacetimedb::Identity,
@@ -343,6 +388,23 @@ pub(crate) fn escrowed_currency_amount(
             }
         })
         .fold(0u64, |acc, c| acc.saturating_add(c))
+}
+
+/// Returns every monster id in the active trade offers: for each offer in
+/// iteration order, the initiator's ids, then the counterparty's. Both sides
+/// are listed and an id present in two offers is listed twice.
+pub(crate) fn escrowed_monster_ids(
+    trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
+) -> Vec<u64> {
+    let mut ids = Vec::new();
+    for t in trades {
+        let t = t.borrow();
+        if t.status.is_active() {
+            ids.extend_from_slice(&t.initiator_monster_ids);
+            ids.extend_from_slice(&t.counterparty_monster_ids);
+        }
+    }
+    ids
 }
 
 /// Reject if the monster is in an ongoing battle (escrowed).
