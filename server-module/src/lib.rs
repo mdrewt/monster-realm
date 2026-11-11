@@ -219,8 +219,8 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Force-resolve every live interaction for `identity` — the tactical resolver
-/// (bt-8) first, then the four legacy resolver calls verbatim, in the original
-/// `on_disconnect` order.
+/// first, then trade offers, trade sessions, PvP battles, legacy wild battles
+/// and challenges.
 /// Shared by BOTH `on_disconnect` and the deletion cascade
 /// (`accounts::account_deletion_reaper`), so a resolver added to this bundle
 /// is picked up by both callers automatically. The tactical resolver runs
@@ -232,15 +232,16 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 /// list silently drops the wild-battle resolve (no reaper covers wild rows)
 /// and soft-locks the abandoned battle forever. Performs no row write itself;
 /// each callee owns its own tables' writes. Call order notes, unchanged from
-/// the original body: trades cancel before any player-row deletion so the
-/// offer lookup still resolves identity (no assets move —
+/// the original body: trade offers and trade sessions end before any
+/// player-row deletion so the lookups still resolve identity (no assets move —
 /// never physically escrowed); the PvP forfeit and the
 /// wild resolve both need identity lookups in write_back to resolve; the
-/// challenge-cancel is order-immaterial vs the other three (disjoint row
+/// challenge-cancel is order-immaterial vs the others (disjoint row
 /// classes).
 pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Identity) {
     tactics::resolve_tactical_on_disconnect(ctx, identity);
     trading::cancel_trades_on_disconnect(ctx, identity);
+    trading_session::delete_sessions_of(ctx, identity);
     pvp::forfeit_on_disconnect(ctx, identity);
     battle::resolve_wild_battle_on_disconnect(ctx, identity);
     pvp::cancel_challenges_on_disconnect(ctx, identity);

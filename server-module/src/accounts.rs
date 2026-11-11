@@ -503,6 +503,8 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
 /// per table. `?` on the fallible monster re-key rolls the
 /// whole claim transaction back (fail-loud on a broken dual-write invariant).
+/// Trade sessions are not re-keyed: every session naming either identity is
+/// deleted.
 ///
 /// MANIFEST CROSS-REFERENCE: the claim-flow re-key policy
 /// is one axis; the DELETION policy dimension (`deletion_policy` + `basis` +
@@ -519,6 +521,8 @@ pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> R
     crate::economy::rekey_wallet(ctx, from, to);
     crate::ranking::rekey_profile(ctx, from, to);
     crate::schema::rekey_formation(ctx, from, to);
+    crate::trading_session::delete_sessions_of(ctx, from);
+    crate::trading_session::delete_sessions_of(ctx, to);
     Ok(())
 }
 
@@ -914,6 +918,13 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
         ctx,
         &plan_declines_at_cancel(&account, &crate::trading::open_offers_addressed_to(ctx, me)),
     );
+    crate::trading_session::decline_sessions(
+        ctx,
+        &plan_declines_at_cancel(
+            &account,
+            &crate::trading_session::open_sessions_addressed_to(ctx, me),
+        ),
+    );
     ctx.db
         .account()
         .identity()
@@ -1040,6 +1051,7 @@ pub fn account_deletion_reaper(
     crate::economy::erase_wallet(ctx, args.account_identity);
     crate::playtest::erase_playtest_events(ctx, args.account_identity);
     crate::trading::erase_trade_offers(ctx, args.account_identity);
+    crate::trading_session::delete_sessions_of(ctx, args.account_identity);
     crate::pvp::erase_pvp_rows(ctx, args.account_identity);
     let export_chunks = crate::privacy::purge_export_bundles(ctx, args.account_identity);
     crate::erase_character_rows(ctx, args.account_identity);

@@ -1286,6 +1286,93 @@ export const TradeOfferReaperSchedule = __t.object("TradeOfferReaperSchedule", {
 });
 export type TradeOfferReaperSchedule = __Infer<typeof TradeOfferReaperSchedule>;
 
+export const TradeSession = __t.object("TradeSession", {
+  sessionId: __t.u64(),
+  opener: __t.identity(),
+  partner: __t.identity(),
+  get openerOffer() {
+    return TradeSessionOffer;
+  },
+  get partnerOffer() {
+    return TradeSessionOffer;
+  },
+  openerConfirmed: __t.bool(),
+  partnerConfirmed: __t.bool(),
+  revision: __t.u64(),
+  createdAtMs: __t.i64(),
+});
+export type TradeSession = __Infer<typeof TradeSession>;
+
+export const TradeSessionOffer = __t.object("TradeSessionOffer", {
+  monsterIds: __t.array(__t.u64()),
+  get items() {
+    return __t.array(TradeItem);
+  },
+  currency: __t.u64(),
+  get cards() {
+    return __t.array(MonsterCard);
+  },
+});
+export type TradeSessionOffer = __Infer<typeof TradeSessionOffer>;
+
+export const TradeSessionReaperSchedule = __t.object("TradeSessionReaperSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  sessionId: __t.u64(),
+});
+export type TradeSessionReaperSchedule = __Infer<typeof TradeSessionReaperSchedule>;
+
+export const TradeSessionSnapshot = __t.object("TradeSessionSnapshot", {
+  snapshotId: __t.u64(),
+  sessionId: __t.u64(),
+  monsterId: __t.u64(),
+  speciesId: __t.u32(),
+  nickname: __t.string(),
+  level: __t.u8(),
+  xp: __t.u32(),
+  ivHp: __t.u8(),
+  ivAttack: __t.u8(),
+  ivDefense: __t.u8(),
+  ivSpeed: __t.u8(),
+  ivSpAttack: __t.u8(),
+  ivSpDefense: __t.u8(),
+  get natureKind() {
+    return NatureKind;
+  },
+  evHp: __t.u16(),
+  evAttack: __t.u16(),
+  evDefense: __t.u16(),
+  evSpeed: __t.u16(),
+  evSpAttack: __t.u16(),
+  evSpDefense: __t.u16(),
+  statHp: __t.u16(),
+  statAttack: __t.u16(),
+  statDefense: __t.u16(),
+  statSpeed: __t.u16(),
+  statSpAttack: __t.u16(),
+  statSpDefense: __t.u16(),
+  currentHp: __t.u16(),
+  partySlot: __t.u8(),
+  lastCareAtMs: __t.i64(),
+  essenceFire: __t.u32(),
+  essenceWater: __t.u32(),
+  essencePlant: __t.u32(),
+  essenceElectric: __t.u32(),
+  essenceEarth: __t.u32(),
+  essenceWind: __t.u32(),
+  essenceLight: __t.u32(),
+  essenceDark: __t.u32(),
+  trustFavorableCount: __t.u32(),
+  trustUnfavorableCount: __t.u32(),
+  trustFavorableBattleDayEpoch: __t.u32(),
+  qualityTimeTicksTotal: __t.u32(),
+  qualityTimeAccumMs: __t.u32(),
+  qualityTimeWindowMs: __t.u32(),
+  qualityTimeWindowStartMs: __t.i64(),
+  lastEssenceTrainAtMs: __t.i64(),
+});
+export type TradeSessionSnapshot = __Infer<typeof TradeSessionSnapshot>;
+
 // The tagged union or sum type for the algebraic type `TradeStatus`.
 export const TradeStatus = __t.enum("TradeStatus", {
   Pending: __t.unit(),

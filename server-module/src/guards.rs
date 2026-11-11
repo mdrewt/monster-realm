@@ -4,8 +4,12 @@
 //! logger, the name validator, the move authorizer, and the pure battle-input
 //! validators.
 
-use crate::schema::{battle, character, player, trade_offer, Battle, Character, TradeOffer};
+use crate::schema::{
+    battle, character, player, trade_offer, trade_session, Battle, Character, TradeOffer,
+    TradeSession,
+};
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
+use game_core::trading::TradeSessionOffer;
 use spacetimedb::{Identity, ReducerContext};
 
 /// Escape a string for interpolation into a hand-built JSON log line.
@@ -268,24 +272,36 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 
 // --- Trade escrow guards ------------------------------------
 //
-// Two layers. The PURE predicates (`reject_if_monster_in_trade`,
-// `escrowed_item_qty`, `escrowed_currency_amount`, `escrowed_monster_ids`)
-// mirror `reject_if_in_battle`: they judge an iterator of `TradeOffer` rows.
-// The CONTEXT WRAPPERS (`reject_if_monster_locked`, `escrowed_item_qty_of`,
-// `escrowed_currency_of`, `escrowed_monster_ids_of`) read one owner's offers
-// in BOTH roles through `offers_of` and hand them to the matching predicate.
-// A reducer calls a wrapper, so what counts as locked is decided in this
-// file — unless it must judge trade offers alone, in which case it reads the
-// table itself and calls a pure predicate. "Active" = Pending OR
-// ConfirmedByCounterparty.
+// Two sources lock a player's assets: an active legacy `trade_offer` (both of
+// its sides, for as long as it exists) and a `trade_session` side its owner
+// has CONFIRMED. An unconfirmed session side locks nothing.
+//
+// Two layers. The PURE predicates judge an iterator of rows, mirroring
+// `reject_if_in_battle`: `reject_if_monster_in_trade`, `escrowed_item_qty`,
+// `escrowed_currency_amount` and `escrowed_monster_ids` over `TradeOffer`
+// rows; `session_locked_item_qty`, `session_locked_currency`,
+// `session_locked_monster_ids` and `session_lists_monster` over `TradeSession`
+// rows. The CONTEXT WRAPPERS (`reject_if_monster_locked`,
+// `escrowed_item_qty_of`, `escrowed_currency_of`, `escrowed_monster_ids_of`)
+// read one owner's offers and sessions in BOTH roles through `offers_of` and
+// `sessions_of` and combine the two sources. A reducer calls a wrapper, so
+// what counts as locked is decided in this file — unless it must judge one
+// source alone or leave one trade out, in which case it reads the rows itself
+// and calls the pure predicates. `trading::propose_trade` is one such reader:
+// it judges offers alone and does not see a session lock, and a session's
+// swap re-checks both sides' live rows before anything moves. An active offer
+// is Pending OR ConfirmedByCounterparty.
 //
 // SpacetimeDB reducers are single-threaded WASM: read-check-write within one
 // reducer is atomic w.r.t. all other reducers — no TOCTOU possible.
 
+/// The one refusal for a monster a trade holds, whichever source holds it.
+const REJECT_MONSTER_IN_TRADE: &str = "monster is in an active trade";
+
 /// Every trade offer `owner` is party to: the rows of the `initiator` index,
 /// then the rows of the `counterparty` index. Both index scans open when the
 /// chain is built.
-fn offers_of(ctx: &ReducerContext, owner: Identity) -> impl Iterator<Item = TradeOffer> {
+pub(crate) fn offers_of(ctx: &ReducerContext, owner: Identity) -> impl Iterator<Item = TradeOffer> {
     ctx.db
         .trade_offer()
         .initiator()
@@ -293,38 +309,134 @@ fn offers_of(ctx: &ReducerContext, owner: Identity) -> impl Iterator<Item = Trad
         .chain(ctx.db.trade_offer().counterparty().filter(owner))
 }
 
-/// Reject if `monster_id` is locked by any of `owner`'s active trade offers, in
-/// either role. Does not log: a caller that logs its rejects keeps doing so.
+/// Every trade session `owner` is party to, each once: the rows of the
+/// `opener` index, then the rows of the `partner` index that `owner` did not
+/// also open.
+pub(crate) fn sessions_of(
+    ctx: &ReducerContext,
+    owner: Identity,
+) -> impl Iterator<Item = TradeSession> {
+    ctx.db.trade_session().opener().filter(owner).chain(
+        ctx.db
+            .trade_session()
+            .partner()
+            .filter(owner)
+            .filter(move |s| s.opener != owner),
+    )
+}
+
+/// Reject if `monster_id` is locked by one of `owner`'s trades: an active
+/// offer in either role, or a session side `owner` has confirmed. Does not
+/// log: a caller that logs its rejects keeps doing so.
 pub(crate) fn reject_if_monster_locked(
     ctx: &ReducerContext,
     owner: Identity,
     monster_id: u64,
 ) -> Result<(), String> {
-    reject_if_monster_in_trade(offers_of(ctx, owner), monster_id)
+    reject_if_monster_in_trade(offers_of(ctx, owner), monster_id)?;
+    if session_locked_monster_ids(sessions_of(ctx, owner), owner).contains(&monster_id) {
+        return Err(REJECT_MONSTER_IN_TRADE.to_string());
+    }
+    Ok(())
 }
 
-/// The quantity of `item_id` that `owner` has escrowed across their active
-/// trade offers, in either role.
+/// The quantity of `item_id` that `owner`'s trades lock: their active offers
+/// in either role plus their confirmed session sides.
 ///
 /// Usage at call site: `available = inventory_count - escrowed_item_qty_of(ctx, owner, item_id)`.
 /// Reject if `requested_qty > available`.
 pub(crate) fn escrowed_item_qty_of(ctx: &ReducerContext, owner: Identity, item_id: u32) -> u32 {
-    escrowed_item_qty(offers_of(ctx, owner), owner, item_id)
+    escrowed_item_qty(offers_of(ctx, owner), owner, item_id).saturating_add(
+        session_locked_item_qty(sessions_of(ctx, owner), owner, item_id),
+    )
 }
 
-/// The currency `owner` has escrowed across their active trade offers, in
-/// either role.
+/// The currency `owner`'s trades lock: their active offers in either role
+/// plus their confirmed session sides.
 ///
 /// Usage at call site: `available = balance - escrowed_currency_of(ctx, owner)`.
 /// Reject if `requested_spend > available`.
 pub(crate) fn escrowed_currency_of(ctx: &ReducerContext, owner: Identity) -> u64 {
     escrowed_currency_amount(offers_of(ctx, owner), owner)
+        .saturating_add(session_locked_currency(sessions_of(ctx, owner), owner))
 }
 
-/// Every monster id held by `owner`'s active trade offers, in either role and
-/// on either side of each offer.
+/// Every monster id `owner`'s trades hold: both sides of each active offer,
+/// in either role, then the ids of `owner`'s confirmed session sides.
 pub(crate) fn escrowed_monster_ids_of(ctx: &ReducerContext, owner: Identity) -> Vec<u64> {
-    escrowed_monster_ids(offers_of(ctx, owner))
+    let mut ids = escrowed_monster_ids(offers_of(ctx, owner));
+    ids.extend(session_locked_monster_ids(sessions_of(ctx, owner), owner));
+    ids
+}
+
+/// The offer `owner` has locked in `session`: their own side, once they have
+/// confirmed it. The other participant's side is never `owner`'s lock.
+fn locked_offer(session: &TradeSession, owner: Identity) -> Option<&TradeSessionOffer> {
+    if session.opener == owner && session.opener_confirmed {
+        Some(&session.opener_offer)
+    } else if session.partner == owner && session.partner_confirmed {
+        Some(&session.partner_offer)
+    } else {
+        None
+    }
+}
+
+/// The quantity of `item_id` on `owner`'s confirmed sides of `sessions`.
+/// Saturating, like the offer predicate.
+pub(crate) fn session_locked_item_qty(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<TradeSession>>,
+    owner: Identity,
+    item_id: u32,
+) -> u32 {
+    sessions
+        .map(|s| {
+            locked_offer(s.borrow(), owner).map_or(0, |offer| {
+                offer
+                    .items
+                    .iter()
+                    .filter(|i| i.item_id == item_id)
+                    .fold(0u32, |acc, i| acc.saturating_add(i.qty))
+            })
+        })
+        .fold(0u32, |acc, q| acc.saturating_add(q))
+}
+
+/// The currency on `owner`'s confirmed sides of `sessions`. Saturating.
+pub(crate) fn session_locked_currency(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<TradeSession>>,
+    owner: Identity,
+) -> u64 {
+    sessions
+        .map(|s| locked_offer(s.borrow(), owner).map_or(0, |offer| offer.currency))
+        .fold(0u64, |acc, c| acc.saturating_add(c))
+}
+
+/// The monster ids on `owner`'s confirmed sides of `sessions`, in iteration
+/// order.
+pub(crate) fn session_locked_monster_ids(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<TradeSession>>,
+    owner: Identity,
+) -> Vec<u64> {
+    let mut ids = Vec::new();
+    for s in sessions {
+        if let Some(offer) = locked_offer(s.borrow(), owner) {
+            ids.extend_from_slice(&offer.monster_ids);
+        }
+    }
+    ids
+}
+
+/// True when either side of any of `sessions` lists `monster_id`, confirmed
+/// or not: a monster sits in at most one session at a time.
+pub(crate) fn session_lists_monster(
+    mut sessions: impl Iterator<Item = impl std::borrow::Borrow<TradeSession>>,
+    monster_id: u64,
+) -> bool {
+    sessions.any(|s| {
+        let s = s.borrow();
+        s.opener_offer.monster_ids.contains(&monster_id)
+            || s.partner_offer.monster_ids.contains(&monster_id)
+    })
 }
 
 /// Reject if the monster is in any active trade offer.
@@ -340,7 +452,7 @@ pub(crate) fn reject_if_monster_in_trade(
                 || t.counterparty_monster_ids.contains(&monster_id))
     });
     if in_trade {
-        return Err("monster is in an active trade".to_string());
+        return Err(REJECT_MONSTER_IN_TRADE.to_string());
     }
     Ok(())
 }

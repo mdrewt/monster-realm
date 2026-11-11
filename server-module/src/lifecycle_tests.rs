@@ -498,3 +498,195 @@ fn rb73_exec_on_connect_none_branch_writes_nothing() {
          proving the counts above are measured, not constant"
     );
 }
+
+// ===========================================================================
+// EXECUTED — trade sessions are cancelled with the disconnecting player.
+// ===========================================================================
+
+/// `resolve_all_live_interactions` (the bundle `on_disconnect` and the deletion cascade
+/// run) deletes every trade session the player is in — the one they opened and the one
+/// they were opened with — together with all of each session's snapshot rows and its
+/// reaper schedule row, and leaves a session between two strangers whole.
+///
+/// Opens only the three session tables (each writable on its primary key and read through
+/// every index the session code uses); the other resolvers in the bundle read tables this
+/// fixture never registers and find nothing.
+///
+/// kills: the session sweep missing from the bundle · the opener index only (session 2
+/// survives) · the partner index only (session 1 survives) · the session row deleted
+/// without its snapshot or schedule rows · a sweep keyed on anything wider than the
+/// player (session 3 deleted).
+#[test]
+fn ts2_disconnect_cancels_sessions() {
+    use crate::schema::{TradeSession, TradeSessionSnapshot};
+    use crate::trading_session::TradeSessionReaperSchedule;
+
+    let fx = crate::native_host_tests::fixture();
+    let sessions = fx
+        .table_keyed::<TradeSession, u64>("trade_session", "session_id", |r| r.session_id)
+        .writable()
+        .unique();
+    let _ = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+    let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+    let snapshots = fx
+        .table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "snapshot_id", |r| {
+            r.snapshot_id
+        })
+        .writable()
+        .unique();
+    let _ =
+        fx.table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "session_id", |r| {
+            r.session_id
+        });
+    let _ =
+        fx.table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "monster_id", |r| {
+            r.monster_id
+        });
+    let schedules = fx
+        .table_keyed::<TradeSessionReaperSchedule, u64>(
+            "trade_session_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        )
+        .writable()
+        .unique();
+    let _ = fx.table_keyed::<TradeSessionReaperSchedule, u64>(
+        "trade_session_reaper_schedule",
+        "session_id",
+        |r| r.session_id,
+    );
+
+    let player = Identity::from_byte_array([0x51; 32]);
+    let partner_of_player = Identity::from_byte_array([0x52; 32]);
+    let opener_with_player = Identity::from_byte_array([0x53; 32]);
+    let stranger_x = Identity::from_byte_array([0x54; 32]);
+    let stranger_y = Identity::from_byte_array([0x55; 32]);
+
+    let offer = |monster_ids: Vec<u64>| game_core::trading::TradeSessionOffer {
+        monster_ids,
+        items: vec![],
+        currency: 0,
+        cards: vec![],
+    };
+    let snapshot = |snapshot_id: u64, session_id: u64, monster_id: u64| TradeSessionSnapshot {
+        snapshot_id,
+        session_id,
+        monster_id,
+        species_id: 1,
+        nickname: String::new(),
+        level: 7,
+        xp: 0,
+        iv_hp: 1,
+        iv_attack: 1,
+        iv_defense: 1,
+        iv_speed: 1,
+        iv_sp_attack: 1,
+        iv_sp_defense: 1,
+        nature_kind: game_core::NatureKind::Hardy,
+        ev_hp: 0,
+        ev_attack: 0,
+        ev_defense: 0,
+        ev_speed: 0,
+        ev_sp_attack: 0,
+        ev_sp_defense: 0,
+        stat_hp: 40,
+        stat_attack: 20,
+        stat_defense: 20,
+        stat_speed: 20,
+        stat_sp_attack: 20,
+        stat_sp_defense: 20,
+        current_hp: 0,
+        party_slot: 0,
+        last_care_at_ms: 0,
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
+    };
+    // (session id, opener, opener's monsters, partner, partner's monsters)
+    type SessionSeed = (u64, Identity, Vec<u64>, Identity, Vec<u64>);
+    let rows: [SessionSeed; 3] = [
+        (1, player, vec![11, 12], partner_of_player, vec![21]),
+        (2, opener_with_player, vec![31], player, vec![13]),
+        (3, stranger_x, vec![41], stranger_y, vec![51, 52]),
+    ];
+    for (session_id, opener, opener_ids, partner, partner_ids) in rows {
+        for (n, &monster_id) in (0u64..).zip(opener_ids.iter().chain(partner_ids.iter())) {
+            snapshots.seed(&snapshot(session_id * 100 + n, session_id, monster_id));
+        }
+        sessions.seed(&TradeSession {
+            session_id,
+            opener,
+            partner,
+            opener_offer: offer(opener_ids),
+            partner_offer: offer(partner_ids),
+            opener_confirmed: session_id == 1,
+            partner_confirmed: session_id == 2,
+            revision: 1,
+            created_at_ms: 0,
+        });
+        schedules.seed(&TradeSessionReaperSchedule {
+            scheduled_id: session_id + 500,
+            scheduled_at: spacetimedb::ScheduleAt::Time(
+                spacetimedb::Timestamp::from_micros_since_unix_epoch(3_600_000_000),
+            ),
+            session_id,
+        });
+    }
+
+    let footprint = || {
+        let mut live: Vec<u64> = sessions.rows().iter().map(|s| s.session_id).collect();
+        live.sort_unstable();
+        let mut snaps: Vec<(u64, u64)> = snapshots
+            .rows()
+            .iter()
+            .map(|s| (s.session_id, s.monster_id))
+            .collect();
+        snaps.sort_unstable();
+        let mut armed: Vec<u64> = schedules.rows().iter().map(|s| s.session_id).collect();
+        armed.sort_unstable();
+        (live, snaps, armed)
+    };
+    assert_eq!(
+        footprint(),
+        (
+            vec![1, 2, 3],
+            vec![
+                (1, 11),
+                (1, 12),
+                (1, 21),
+                (2, 13),
+                (2, 31),
+                (3, 41),
+                (3, 51),
+                (3, 52)
+            ],
+            vec![1, 2, 3],
+        ),
+        "[ts2/disconnect/pre] every seeded session, snapshot and schedule row must be in the \
+         store before the bundle runs"
+    );
+
+    crate::resolve_all_live_interactions(&fx.ctx(), player);
+
+    assert_eq!(
+        footprint(),
+        (vec![3], vec![(3, 41), (3, 51), (3, 52)], vec![3]),
+        "[ts2/disconnect/post] the disconnecting player's sessions — 1 (opener) and 2 \
+         (partner) — must be gone with every snapshot row and their schedule rows, and the \
+         strangers' session 3 must be whole. Indexes the code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}

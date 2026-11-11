@@ -949,3 +949,766 @@ fn dw_sync_content_site() {
     };
     w.assert_mirrored("sync_content_inner");
 }
+
+// ===========================================================================
+// Trade sessions at the monster write seam.
+//
+// Lock-at-confirm: a monster on a CONFIRMED session side cannot be renamed; one on
+// an unconfirmed side can; `set_party_slot` never rejects because of a session.
+// Auto-cancel: a write through `update_monster_synced` that leaves an offered
+// monster boxed, at 0 HP or owned by someone other than the side that offered it
+// deletes every session listing it — the session row, ALL its snapshot rows and
+// its reaper schedule row — and nothing else. Every world below runs on
+// `dw_world` plus the three session tables; every session row is seeded with one
+// snapshot row per offered monster (both sides) and one schedule row.
+// ===========================================================================
+
+use crate::schema::{TradeSession, TradeSessionSnapshot};
+use crate::trading_session::TradeSessionReaperSchedule;
+
+const TS2_LOCKED: &str = "monster is in an active trade";
+
+fn ts2_d() -> Identity {
+    Identity::from_byte_array([0xD4; 32])
+}
+fn ts2_e() -> Identity {
+    Identity::from_byte_array([0xE5; 32])
+}
+/// The guest-claim destination identity.
+fn ts2_z() -> Identity {
+    Identity::from_byte_array([0x2F; 32])
+}
+
+/// One session side: the participant, its offered monster ids, whether it is confirmed.
+type Ts2Side = (Identity, Vec<u64>, bool);
+/// One session's footprint in the store: its row is present, the `monster_id` of each of
+/// its snapshot rows (sorted), and how many schedule rows point at it.
+type Ts2Footprint = (bool, Vec<u64>, usize);
+
+struct Ts2Sessions<'a> {
+    sessions: Handle<'a, TradeSession, u64>,
+    snapshots: Handle<'a, TradeSessionSnapshot, u64>,
+    schedules: Handle<'a, TradeSessionReaperSchedule, u64>,
+}
+
+/// Registers `trade_session` (key, opener, partner), `trade_session_snapshot` (key,
+/// session id, monster id) and `trade_session_reaper_schedule` (key, session id), each
+/// writable on its primary key.
+fn ts2_session_tables(fx: &Fixture) -> Ts2Sessions<'_> {
+    let sessions = fx
+        .table_keyed::<TradeSession, u64>("trade_session", "session_id", |r| r.session_id)
+        .writable()
+        .unique();
+    let _ = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+    let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+    let snapshots = fx
+        .table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "snapshot_id", |r| {
+            r.snapshot_id
+        })
+        .writable()
+        .unique();
+    let _ =
+        fx.table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "session_id", |r| {
+            r.session_id
+        });
+    let _ =
+        fx.table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "monster_id", |r| {
+            r.monster_id
+        });
+    let schedules = fx
+        .table_keyed::<TradeSessionReaperSchedule, u64>(
+            "trade_session_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        )
+        .writable()
+        .unique();
+    let _ = fx.table_keyed::<TradeSessionReaperSchedule, u64>(
+        "trade_session_reaper_schedule",
+        "session_id",
+        |r| r.session_id,
+    );
+    Ts2Sessions {
+        sessions,
+        snapshots,
+        schedules,
+    }
+}
+
+/// A masked review snapshot of `monster_id` for `session_id`.
+fn ts2_snapshot(snapshot_id: u64, session_id: u64, monster_id: u64) -> TradeSessionSnapshot {
+    TradeSessionSnapshot {
+        snapshot_id,
+        session_id,
+        monster_id,
+        species_id: 1,
+        nickname: format!("m{monster_id}"),
+        level: 7,
+        xp: 0,
+        iv_hp: 1,
+        iv_attack: 2,
+        iv_defense: 3,
+        iv_speed: 4,
+        iv_sp_attack: 5,
+        iv_sp_defense: 6,
+        nature_kind: game_core::NatureKind::Hardy,
+        ev_hp: 1,
+        ev_attack: 2,
+        ev_defense: 3,
+        ev_speed: 4,
+        ev_sp_attack: 5,
+        ev_sp_defense: 6,
+        stat_hp: 40,
+        stat_attack: 20,
+        stat_defense: 20,
+        stat_speed: 20,
+        stat_sp_attack: 20,
+        stat_sp_defense: 20,
+        current_hp: 0,
+        party_slot: 0,
+        last_care_at_ms: 0,
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
+    }
+}
+
+impl Ts2Sessions<'_> {
+    /// Seeds an open session (no items, no coins), one snapshot row per offered monster on
+    /// either side (snapshot id `session_id * 100 + n`) and one reaper schedule row
+    /// (scheduled id `session_id + 500`).
+    fn open(&self, session_id: u64, opener_side: Ts2Side, partner_side: Ts2Side) {
+        let (opener, opener_ids, opener_confirmed) = opener_side;
+        let (partner, partner_ids, partner_confirmed) = partner_side;
+        for (n, &monster_id) in (0u64..).zip(opener_ids.iter().chain(partner_ids.iter())) {
+            self.snapshots
+                .seed(&ts2_snapshot(session_id * 100 + n, session_id, monster_id));
+        }
+        let offer = |monster_ids: Vec<u64>| game_core::trading::TradeSessionOffer {
+            monster_ids,
+            items: vec![],
+            currency: 0,
+            cards: vec![],
+        };
+        self.sessions.seed(&TradeSession {
+            session_id,
+            opener,
+            partner,
+            opener_offer: offer(opener_ids),
+            partner_offer: offer(partner_ids),
+            opener_confirmed,
+            partner_confirmed,
+            revision: 1,
+            created_at_ms: DW_T0,
+        });
+        self.schedules.seed(&TradeSessionReaperSchedule {
+            scheduled_id: session_id + 500,
+            scheduled_at: spacetimedb::ScheduleAt::Time(dw_at(DW_T0 + 3_600_000)),
+            session_id,
+        });
+    }
+
+    /// The store footprint of `session_id`.
+    fn footprint(&self, session_id: u64) -> Ts2Footprint {
+        let present = self
+            .sessions
+            .rows()
+            .iter()
+            .any(|s| s.session_id == session_id);
+        let mut snapshot_monsters: Vec<u64> = self
+            .snapshots
+            .rows()
+            .iter()
+            .filter(|s| s.session_id == session_id)
+            .map(|s| s.monster_id)
+            .collect();
+        snapshot_monsters.sort_unstable();
+        let schedules = self
+            .schedules
+            .rows()
+            .iter()
+            .filter(|s| s.session_id == session_id)
+            .count();
+        (present, snapshot_monsters, schedules)
+    }
+
+    /// Asserts `session_id` is fully live with snapshot rows for exactly `monsters`.
+    fn assert_live(&self, session_id: u64, monsters: &[u64], label: &str) {
+        let mut want = monsters.to_vec();
+        want.sort_unstable();
+        let got = self.footprint(session_id);
+        assert_eq!(
+            got,
+            (true, want, 1),
+            "{label}: session {session_id} must survive whole — its row, one snapshot row per \
+             offered monster and its schedule row; the store holds (row present, snapshot \
+             monsters, schedule rows) = {got:?}."
+        );
+    }
+
+    /// Asserts `session_id` is gone with every snapshot row and its schedule row.
+    fn assert_gone(&self, session_id: u64, label: &str) {
+        let got = self.footprint(session_id);
+        assert_eq!(
+            got,
+            (false, Vec::new(), 0),
+            "{label}: session {session_id} must be deleted together with ALL its snapshot rows \
+             and its reaper schedule row; the store still holds (row present, snapshot monsters, \
+             schedule rows) = {got:?}."
+        );
+    }
+}
+
+/// A battle with `player` on side A and `opponent` on side B; each entry is
+/// `(monster_id, hp)` in team order.
+fn ts2_battle(
+    battle_id: u64,
+    player: Identity,
+    opponent: Identity,
+    side_a: &[(u64, u16)],
+    side_b: &[(u64, u16)],
+) -> Battle {
+    let mon = |hp: u16| game_core::BattleMonster {
+        species_id: 1,
+        affinity: game_core::Affinity::Fire,
+        level: 7,
+        current_hp: hp,
+        max_hp: 40,
+        stats: game_core::StatBlock {
+            hp: 40,
+            attack: 20,
+            defense: 20,
+            speed: 20,
+            sp_attack: 20,
+            sp_defense: 20,
+        },
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    Battle {
+        battle_id,
+        player_identity: player,
+        opponent_identity: opponent,
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 0,
+                team: side_a.iter().map(|&(_, hp)| mon(hp)).collect(),
+            },
+            side_b: game_core::BattleSide {
+                active: 0,
+                team: side_b.iter().map(|&(_, hp)| mon(hp)).collect(),
+            },
+            outcome: game_core::BattleOutcome::Ongoing,
+            turn_number: 1,
+            weather: None,
+        },
+        party_monster_ids: side_a.iter().map(|&(id, _)| id).collect(),
+        opponent_monster_ids: side_b.iter().map(|&(id, _)| id).collect(),
+        created_at_ms: DW_T0,
+    }
+}
+
+/// The world most auto-cancel tests share. A owns 11 (slot 0), 12 (slot 1) and 15
+/// (slot 2, listed by no session). Session 1: A opens with 11, B offers 21. Session 2: C
+/// opens with 31, A offers 12 as partner. Session 9: D (41) and E (51), strangers.
+/// Every side is unconfirmed.
+fn ts2_shared_world<'a>(fx: &'a Fixture) -> (DwWorld<'a>, Ts2Sessions<'a>) {
+    let w = dw_world(fx);
+    let s = ts2_session_tables(fx);
+    w.monster(11, dw_a(), 0);
+    w.monster(12, dw_a(), 1);
+    w.monster(15, dw_a(), 2);
+    w.monster(21, dw_b(), 0);
+    w.monster(31, dw_c(), 0);
+    s.open(1, (dw_a(), vec![11], false), (dw_b(), vec![21], false));
+    s.open(2, (dw_c(), vec![31], false), (dw_a(), vec![12], false));
+    s.open(9, (ts2_d(), vec![41], false), (ts2_e(), vec![51], false));
+    (w, s)
+}
+
+/// `set_nickname` refuses, with the legacy message, a monster on its owner's CONFIRMED
+/// session side (as opener and as partner) and writes nothing; it renames a monster on an
+/// UNCONFIRMED side (as opener and as partner, each beside a confirmed other side), and
+/// the rename deletes no session.
+///
+/// kills: sessions absent from the rename guard (11 or 12 renamed) · one role only · the
+/// confirmed flag ignored or read from the other side (13 or 14 refused).
+#[test]
+fn ts2_lock_at_confirm_set_nickname_refuses_a_confirmed_side_and_admits_an_unconfirmed_one() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let s = ts2_session_tables(&fx);
+    for (id, slot) in [(11u64, 0u8), (12, 1), (13, 2), (14, 3)] {
+        w.monster(id, dw_a(), slot);
+    }
+    s.open(1, (dw_a(), vec![11], true), (dw_b(), vec![21], false));
+    s.open(2, (dw_c(), vec![31], false), (dw_a(), vec![12], true));
+    s.open(3, (dw_a(), vec![13], false), (ts2_d(), vec![41], true));
+    s.open(4, (ts2_e(), vec![51], true), (dw_a(), vec![14], false));
+    let rename = |id: u64| {
+        fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_nickname(ctx, id, "Sparky".to_string())
+        })
+    };
+
+    for (id, role) in [(11u64, "opener"), (12, "partner")] {
+        let got = rename(id);
+        assert_eq!(
+            got,
+            Err(TS2_LOCKED.to_string()),
+            "monster {id} is on its owner's CONFIRMED {role} side, so a rename must be refused \
+             with exactly the legacy trade-lock message; it returned {got:?}."
+        );
+        assert_eq!(
+            w.row(id).map(|m| m.nickname),
+            Some(format!("m{id}")),
+            "a refused rename of monster {id} must leave its nickname unchanged."
+        );
+    }
+
+    for (id, role) in [(13u64, "opener"), (14, "partner")] {
+        let got = rename(id);
+        assert_eq!(
+            got,
+            Ok(()),
+            "monster {id} is on its owner's UNCONFIRMED {role} side (the other side is \
+             confirmed), which locks nothing, so the rename must succeed; it returned {got:?}."
+        );
+        assert_eq!(
+            w.row(id).map(|m| m.nickname),
+            Some("Sparky".to_string()),
+            "the admitted rename of monster {id} must land on its row."
+        );
+    }
+
+    s.assert_live(1, &[11, 21], "after the renames");
+    s.assert_live(2, &[31, 12], "after the renames");
+    s.assert_live(3, &[13, 41], "after the renames");
+    s.assert_live(4, &[51, 14], "after the renames");
+    w.assert_mirrored("set_nickname beside sessions");
+}
+
+/// `set_party_slot` never rejects because of a session: a monster on a CONFIRMED side (as
+/// opener and as partner) moves party-to-party with its session intact, and moves to
+/// Storage, which deletes its session.
+///
+/// kills: `set_party_slot` routed through the session-aware lock (both moves refused) ·
+/// the box write not reaching the auto-cancel hook (the sessions survive).
+#[test]
+fn ts2_lock_at_confirm_set_party_slot_never_rejects_for_a_session() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let s = ts2_session_tables(&fx);
+    w.monster(11, dw_a(), 0);
+    w.monster(12, dw_a(), 1);
+    s.open(1, (dw_a(), vec![11], true), (dw_b(), vec![21], true));
+    s.open(2, (dw_c(), vec![31], true), (dw_a(), vec![12], true));
+    let move_to = |id: u64, slot: u8| {
+        fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_party_slot(ctx, id, slot)
+        })
+    };
+
+    assert_eq!(
+        move_to(11, 3),
+        Ok(()),
+        "a confirmed opener-side monster must move between party slots"
+    );
+    assert_eq!(
+        move_to(12, 4),
+        Ok(()),
+        "a confirmed partner-side monster must move between party slots"
+    );
+    assert_eq!(w.row(11).map(|m| m.party_slot), Some(3));
+    assert_eq!(w.row(12).map(|m| m.party_slot), Some(4));
+    s.assert_live(1, &[11, 21], "after a party-to-party move");
+    s.assert_live(2, &[31, 12], "after a party-to-party move");
+
+    assert_eq!(
+        move_to(11, crate::PARTY_SLOT_NONE),
+        Ok(()),
+        "boxing a confirmed opener-side monster must be accepted, not rejected"
+    );
+    assert_eq!(
+        w.row(11).map(|m| m.party_slot),
+        Some(crate::PARTY_SLOT_NONE)
+    );
+    s.assert_gone(1, "after boxing the opener's offered monster");
+    s.assert_live(
+        2,
+        &[31, 12],
+        "after boxing a monster session 2 does not list",
+    );
+
+    assert_eq!(
+        move_to(12, crate::PARTY_SLOT_NONE),
+        Ok(()),
+        "boxing a confirmed partner-side monster must be accepted, not rejected"
+    );
+    s.assert_gone(2, "after boxing the partner's offered monster");
+    w.assert_mirrored("set_party_slot beside sessions");
+}
+
+/// Boxing an offered monster through `set_party_slot` deletes the session listing it —
+/// opener side, then partner side — with every snapshot row (both sides' monsters) and its
+/// schedule row; the stranger session is untouched each time.
+#[test]
+fn ts2_auto_cancel_on_box() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let s = ts2_session_tables(&fx);
+    w.monster(11, dw_a(), 0);
+    w.monster(12, dw_a(), 1);
+    w.monster(13, dw_a(), 2);
+    s.open(1, (dw_a(), vec![11, 12], false), (dw_b(), vec![21], false));
+    s.open(2, (dw_c(), vec![31], false), (dw_a(), vec![13], false));
+    s.open(9, (ts2_d(), vec![41], false), (ts2_e(), vec![51], false));
+    let to_box = |id: u64| {
+        fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_party_slot(ctx, id, crate::PARTY_SLOT_NONE)
+        })
+    };
+
+    assert_eq!(to_box(11), Ok(()), "boxing an offered monster is accepted");
+    s.assert_gone(1, "boxing 11, offered on the opener side");
+    s.assert_live(2, &[31, 13], "boxing 11, which session 2 does not list");
+    s.assert_live(9, &[41, 51], "boxing 11, a stranger session");
+
+    assert_eq!(to_box(13), Ok(()), "boxing an offered monster is accepted");
+    s.assert_gone(2, "boxing 13, offered on the partner side");
+    s.assert_live(9, &[41, 51], "boxing 13, a stranger session");
+    w.assert_mirrored("auto-cancel on box");
+}
+
+/// A battle HP write-back of 0 into an offered monster deletes the session listing it;
+/// a write-back of a positive HP in the same call keeps the session listing that one.
+#[test]
+fn ts2_auto_cancel_on_faint_writeback() {
+    let fx = fixture();
+    let (w, s) = ts2_shared_world(&fx);
+    let write_back = |battle: Battle| {
+        fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::battle::write_back_party_hp(ctx, &battle)
+        })
+    };
+
+    let got = write_back(ts2_battle(
+        800,
+        dw_a(),
+        crate::WILD_IDENTITY,
+        &[(11, 0), (12, 25)],
+        &[],
+    ));
+    assert_eq!(got, Ok(()), "the write-back runs to completion");
+    assert_eq!(
+        (
+            w.row(11).map(|m| m.current_hp),
+            w.row(12).map(|m| m.current_hp)
+        ),
+        (Some(0), Some(25)),
+        "fixture: the write-back must land 0 HP on 11 and 25 HP on 12"
+    );
+    s.assert_gone(1, "0 HP written into 11, offered on the opener side");
+    s.assert_live(
+        2,
+        &[31, 12],
+        "25 HP written into 12, offered on the partner side",
+    );
+    s.assert_live(9, &[41, 51], "a stranger session");
+
+    let got = write_back(ts2_battle(
+        801,
+        dw_a(),
+        crate::WILD_IDENTITY,
+        &[(12, 0)],
+        &[],
+    ));
+    assert_eq!(got, Ok(()), "the write-back runs to completion");
+    s.assert_gone(2, "0 HP written into 12, offered on the partner side");
+    s.assert_live(9, &[41, 51], "a stranger session");
+    w.assert_mirrored("auto-cancel on faint write-back");
+}
+
+/// The PvP side-B write-back of the player who did NOT disconnect, reached through the
+/// disconnect forfeit and the settle funnel, writes 0 HP into two of that player's offered
+/// monsters — one on an opener side, one on a partner side — and both sessions are deleted;
+/// the stranger session is untouched.
+///
+/// Opens, beyond `dw_world` and the session tables, exactly what the settle path writes:
+/// `profile` (the rating), `battle_action` (the sweep) and `pvp_deadline_schedule`.
+#[test]
+fn ts2_auto_cancel_on_pvp_settle_writeback() {
+    use crate::schema::{BattleAction, Profile};
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let s = ts2_session_tables(&fx);
+    let _ = fx
+        .table::<Profile>("profile", "identity", |r| r.identity)
+        .writable()
+        .unique();
+    let _ = fx
+        .table_keyed::<BattleAction, u64>("battle_action", "battle_id", |r| r.battle_id)
+        .writable();
+    let _ = fx
+        .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
+            "pvp_deadline_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        )
+        .writable()
+        .scannable();
+    w.monster(11, dw_a(), 0);
+    w.monster(21, dw_b(), 0);
+    w.monster(22, dw_b(), 1);
+    s.open(1, (dw_b(), vec![21], false), (dw_c(), vec![31], false));
+    s.open(2, (ts2_d(), vec![41], false), (dw_b(), vec![22], false));
+    s.open(9, (ts2_e(), vec![51], false), (ts2_z(), vec![61], false));
+    fx.table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
+        .seed(&ts2_battle(
+            900,
+            dw_a(),
+            dw_b(),
+            &[(11, 30)],
+            &[(21, 0), (22, 0)],
+        ));
+
+    let ctx = fx.ctx_at(dw_at(DW_T0));
+    crate::pvp::forfeit_on_disconnect(&ctx, dw_a());
+
+    assert_eq!(
+        (
+            w.row(21).map(|m| m.current_hp),
+            w.row(22).map(|m| m.current_hp)
+        ),
+        (Some(0), Some(0)),
+        "fixture: the side-B write-back must land 0 HP on B's monsters 21 and 22"
+    );
+    s.assert_gone(1, "0 HP written into 21, offered on B's opener side");
+    s.assert_gone(2, "0 HP written into 22, offered on B's partner side");
+    s.assert_live(9, &[51, 61], "a stranger session");
+    w.assert_mirrored("auto-cancel on PvP side-B write-back");
+}
+
+/// The guest-claim re-key moves an offered monster to a new owner, so the side that offered
+/// it is not its owner afterwards: the sessions listing A's monsters (A as opener, A as partner) are
+/// deleted and the stranger session is untouched.
+#[test]
+fn ts2_auto_cancel_on_rekey() {
+    let fx = fixture();
+    let (w, s) = ts2_shared_world(&fx);
+
+    let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::rekey_monsters(ctx, dw_a(), ts2_z())
+    });
+    assert_eq!(got, Ok(()), "the re-key runs to completion");
+    assert_eq!(
+        (
+            w.row(11).map(|m| m.owner_identity),
+            w.row(12).map(|m| m.owner_identity)
+        ),
+        (Some(ts2_z()), Some(ts2_z())),
+        "fixture: the re-key must move 11 and 12 to the claim destination"
+    );
+    s.assert_gone(
+        1,
+        "11, offered by A on the opener side, re-keyed away from A",
+    );
+    s.assert_gone(
+        2,
+        "12, offered by A on the partner side, re-keyed away from A",
+    );
+    s.assert_live(9, &[41, 51], "a stranger session");
+    w.assert_mirrored("auto-cancel on re-key");
+}
+
+/// A rename of an offered monster on an unconfirmed side (opener and partner) keeps every
+/// session; boxing one afterwards still cancels its session (the hook is live).
+#[test]
+fn ts2_auto_cancel_not_on_rename() {
+    let fx = fixture();
+    let (w, s) = ts2_shared_world(&fx);
+    for id in [11u64, 12] {
+        let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_nickname(ctx, id, "Ember".to_string())
+        });
+        assert_eq!(
+            got,
+            Ok(()),
+            "renaming unconfirmed-side monster {id} is accepted"
+        );
+    }
+    s.assert_live(
+        1,
+        &[11, 21],
+        "a rename of 11 (same owner, in party, HP above 0)",
+    );
+    s.assert_live(
+        2,
+        &[31, 12],
+        "a rename of 12 (same owner, in party, HP above 0)",
+    );
+    s.assert_live(9, &[41, 51], "a stranger session");
+
+    let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::set_party_slot(ctx, 11, crate::PARTY_SLOT_NONE)
+    });
+    assert_eq!(got, Ok(()), "positive control: boxing 11 is accepted");
+    s.assert_gone(1, "positive control: boxing 11 after the renames");
+    w.assert_mirrored("rename beside sessions");
+}
+
+/// A party-to-party slot move of an offered monster (opener and partner side) keeps every
+/// session; boxing one afterwards still cancels its session.
+#[test]
+fn ts2_auto_cancel_not_on_party_move() {
+    let fx = fixture();
+    let (w, s) = ts2_shared_world(&fx);
+    for (id, slot) in [(11u64, 3u8), (12, 4)] {
+        let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_party_slot(ctx, id, slot)
+        });
+        assert_eq!(got, Ok(()), "moving {id} to party slot {slot} is accepted");
+        assert_eq!(w.row(id).map(|m| m.party_slot), Some(slot));
+    }
+    s.assert_live(1, &[11, 21], "a party-to-party move of 11");
+    s.assert_live(2, &[31, 12], "a party-to-party move of 12");
+    s.assert_live(9, &[41, 51], "a stranger session");
+
+    let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::set_party_slot(ctx, 12, crate::PARTY_SLOT_NONE)
+    });
+    assert_eq!(got, Ok(()), "positive control: boxing 12 is accepted");
+    s.assert_gone(2, "positive control: boxing 12 after the moves");
+    s.assert_live(1, &[11, 21], "boxing 12, which session 1 does not list");
+    w.assert_mirrored("party move beside sessions");
+}
+
+/// An HP write-back of a positive value (1, the boundary, and the full 40) into offered
+/// monsters keeps every session; a later 0 HP write-back still cancels.
+#[test]
+fn ts2_auto_cancel_not_on_positive_hp_writeback() {
+    let fx = fixture();
+    let (w, s) = ts2_shared_world(&fx);
+    let write_back = |battle: Battle| {
+        fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::battle::write_back_party_hp(ctx, &battle)
+        })
+    };
+
+    let got = write_back(ts2_battle(
+        800,
+        dw_a(),
+        crate::WILD_IDENTITY,
+        &[(11, 1), (12, 40)],
+        &[],
+    ));
+    assert_eq!(got, Ok(()), "the write-back runs to completion");
+    assert_eq!(
+        (
+            w.row(11).map(|m| m.current_hp),
+            w.row(12).map(|m| m.current_hp)
+        ),
+        (Some(1), Some(40)),
+        "fixture: the write-back must land 1 HP on 11 and 40 HP on 12"
+    );
+    s.assert_live(1, &[11, 21], "1 HP written into 11");
+    s.assert_live(2, &[31, 12], "40 HP written into 12");
+
+    let got = write_back(ts2_battle(
+        801,
+        dw_a(),
+        crate::WILD_IDENTITY,
+        &[(11, 0)],
+        &[],
+    ));
+    assert_eq!(got, Ok(()), "the write-back runs to completion");
+    s.assert_gone(1, "positive control: 0 HP written into 11");
+    s.assert_live(
+        2,
+        &[31, 12],
+        "0 HP written into 11, which session 2 does not list",
+    );
+    w.assert_mirrored("positive HP beside sessions");
+}
+
+/// Boxing one monster and writing 0 HP into another, neither listed by any session, deletes
+/// nothing; boxing an offered one afterwards still cancels its session.
+#[test]
+fn ts2_auto_cancel_not_on_unlisted_monster() {
+    let fx = fixture();
+    let (w, s) = ts2_shared_world(&fx);
+    // Monster 32 belongs to C and is offered nowhere; C's offered monster is 31.
+    w.monster(32, dw_c(), 1);
+
+    let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::set_party_slot(ctx, 15, crate::PARTY_SLOT_NONE)
+    });
+    assert_eq!(got, Ok(()), "boxing unlisted monster 15 is accepted");
+    let got = fx.run_as_at(dw_c(), dw_at(DW_T0), |ctx| {
+        crate::battle::write_back_party_hp(
+            ctx,
+            &ts2_battle(800, dw_c(), crate::WILD_IDENTITY, &[(32, 0)], &[]),
+        )
+    });
+    assert_eq!(
+        got,
+        Ok(()),
+        "a 0 HP write-back into unlisted monster 32 runs"
+    );
+    s.assert_live(1, &[11, 21], "writes to unlisted monsters 15 and 32");
+    s.assert_live(2, &[31, 12], "writes to unlisted monsters 15 and 32");
+    s.assert_live(9, &[41, 51], "writes to unlisted monsters 15 and 32");
+
+    let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::set_party_slot(ctx, 11, crate::PARTY_SLOT_NONE)
+    });
+    assert_eq!(got, Ok(()), "positive control: boxing 11 is accepted");
+    s.assert_gone(1, "positive control: boxing offered monster 11");
+    s.assert_live(2, &[31, 12], "boxing 11, which session 2 does not list");
+    w.assert_mirrored("unlisted monster writes beside sessions");
+}
+
+/// Boxing a monster listed by one of A's sessions deletes that session only: A's other
+/// session in the SAME role (opener) and a session where A is partner both survive whole.
+#[test]
+fn ts2_auto_cancel_not_on_a_sibling_session() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    let s = ts2_session_tables(&fx);
+    w.monster(11, dw_a(), 0);
+    w.monster(12, dw_a(), 1);
+    w.monster(13, dw_a(), 2);
+    s.open(1, (dw_a(), vec![11], false), (dw_b(), vec![21], false));
+    s.open(3, (dw_a(), vec![12], false), (dw_c(), vec![31], true));
+    s.open(4, (ts2_d(), vec![41], true), (dw_a(), vec![13], false));
+
+    let got = fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+        crate::monster_mgmt::set_party_slot(ctx, 11, crate::PARTY_SLOT_NONE)
+    });
+    assert_eq!(got, Ok(()), "boxing 11 is accepted");
+    s.assert_gone(1, "boxing 11, listed by session 1");
+    s.assert_live(
+        3,
+        &[12, 31],
+        "boxing 11, listed by A's sibling opener session 1 only",
+    );
+    s.assert_live(
+        4,
+        &[41, 13],
+        "boxing 11, listed by A's session 1, not A's partner session",
+    );
+    w.assert_mirrored("sibling sessions");
+}

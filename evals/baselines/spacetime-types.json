@@ -927,5 +927,26 @@
         "bool"
       ]
     ]
+  },
+  "TradeSessionOffer": {
+    "kind": "struct",
+    "fields": [
+      [
+        "monster_ids",
+        "Vec<u64>"
+      ],
+      [
+        "items",
+        "Vec<TradeItem>"
+      ],
+      [
+        "currency",
+        "u64"
+      ],
+      [
+        "cards",
+        "Vec<MonsterCard>"
+      ]
+    ]
   }
 }

@@ -1131,6 +1131,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_formation, public)]` in schema.rs (bt-7).
     #[link_name = "__preinit__20_register_describer_my_formation"]
     fn register_view_my_formation();
+    /// `#[spacetimedb::view(accessor = my_trade_session, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_trade_session"]
+    fn register_view_my_trade_session();
     // Every `#[spacetimedb::table]` describer (macro `table.rs:1176`
     // `__preinit__20_register_describer_<accessor>`), registered before the views
     // so `Fixture::module_def` carries the full generated table set — the
@@ -1247,6 +1250,12 @@ unsafe extern "C" {
     fn register_table_tactical_advance_sched();
     #[link_name = "__preinit__20_register_describer_battle_gc_sched"]
     fn register_table_battle_gc_sched();
+    #[link_name = "__preinit__20_register_describer_trade_session"]
+    fn register_table_trade_session();
+    #[link_name = "__preinit__20_register_describer_trade_session_snapshot"]
+    fn register_table_trade_session_snapshot();
+    #[link_name = "__preinit__20_register_describer_trade_session_reaper_schedule"]
+    fn register_table_trade_session_reaper_schedule();
     /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1261,7 +1270,7 @@ unsafe extern "C" {
 
 /// Every table describer, in `evals/baselines/table-schemas.json` order (the
 /// order is immaterial to the module def; it is a set).
-const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 56] = [
+const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 59] = [
     register_table_guest_claim_reaper_schedule,
     register_table_movement_tick_schedule,
     register_table_mr_heartbeat_schedule,
@@ -1318,10 +1327,13 @@ const TABLE_DESCRIBERS: [unsafe extern "C" fn(); 56] = [
     register_table_tactical_deadline_sched,
     register_table_tactical_advance_sched,
     register_table_battle_gc_sched,
+    register_table_trade_session,
+    register_table_trade_session_snapshot,
+    register_table_trade_session_reaper_schedule,
 ];
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 15] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 16] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1337,6 +1349,7 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 15] = [
     register_view_my_battle_queue,
     register_view_my_battle_deploy,
     register_view_my_formation,
+    register_view_my_trade_session,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).

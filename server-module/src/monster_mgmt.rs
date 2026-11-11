@@ -23,6 +23,11 @@ use spacetimedb::{Identity, ReducerContext};
 /// owner of a projection mid-trade, or write the projection conditionally
 /// (evolution, trading, content resync, Quality-Time accrual) stay explicit.
 ///
+/// This is also the seam every write that can box a monster, faint it or
+/// re-key it goes through, so after the two writes it ends each trade session
+/// that lists the monster and cannot be honoured
+/// (`trading_session::cancel_sessions_listing`).
+///
 /// # Errors
 /// `monster_pub row missing for monster {id}` when the projection is absent.
 pub(crate) fn update_monster_synced(ctx: &ReducerContext, m: Monster) -> Result<(), String> {
@@ -31,8 +36,9 @@ pub(crate) fn update_monster_synced(ctx: &ReducerContext, m: Monster) -> Result<
         return Err(format!("monster_pub row missing for monster {id}"));
     };
     let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
+    let written = ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
+    crate::trading_session::cancel_sessions_listing(ctx, &written);
     Ok(())
 }
 
@@ -76,10 +82,11 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
-    // Trade-offer guard, read directly by design: this check judges trade
-    // offers and nothing else. Every other guarded reducer shares
-    // `guards::reject_if_monster_locked`, so a change to what that wrapper
-    // counts as locked does not reach this one.
+    // Trade-offer guard, read directly by design: this check judges legacy
+    // trade offers and nothing else. A trade session never makes this reducer
+    // reject — moving an offered monster to Storage ends the session instead
+    // (`update_monster_synced`) — so it must not share
+    // `guards::reject_if_monster_locked`, which counts confirmed session sides.
     reject_if_monster_in_trade(
         ctx.db
             .trade_offer()

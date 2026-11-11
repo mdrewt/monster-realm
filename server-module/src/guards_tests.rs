@@ -2448,3 +2448,723 @@ fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
         );
     }
 }
+
+// --- lock-at-confirm: trade sessions -----------------------------------------
+//
+// A session side locks its owner's monsters, items and currency only while THAT
+// side is confirmed. Exclusivity (`session_lists_monster`) is wider: a monster
+// listed on either side of any session, confirmed or not, is taken. The pure
+// predicates are judged over hand-built rows; the four context wrappers and
+// `sessions_of` over real `trade_session` rows seeded in both roles beside
+// legacy `trade_offer` rows. Every amount is distinct per side and per session,
+// so a dropped session, a swapped side or a read of the wrong flag lands on a
+// different number than the expected one.
+
+/// The owner under test: opener of sessions 1 (confirmed) and 2 (unconfirmed),
+/// partner of sessions 3 (confirmed) and 4 (unconfirmed), initiator of legacy offer 50.
+const TS2_OWNER: u8 = 0x3A;
+/// The context's sender: opener of confirmed session 10 with `TS2_Q1`.
+const TS2_SENDER: u8 = 0x3B;
+/// The owner's partner in sessions 1 (confirmed) and 3 (unconfirmed opener).
+const TS2_P1: u8 = 0x3C;
+/// The owner's partner in sessions 2 (confirmed) and 4 (confirmed opener).
+const TS2_P2: u8 = 0x3D;
+/// Party to both legacy offers and the unconfirmed partner of session 30.
+const TS2_P3: u8 = 0x3E;
+/// Party to the stranger session 20 and to the sender's session 10.
+const TS2_Q1: u8 = 0x3F;
+/// The other half of the stranger session 20.
+const TS2_Q2: u8 = 0x40;
+/// Party to no session and no offer.
+const TS2_IDLE: u8 = 0x41;
+/// Holds a legacy lock just under each type's maximum plus a confirmed session.
+const TS2_SAT: u8 = 0x42;
+
+/// One session side: the participant, its monster ids, its `(item_id, qty)` stacks, its
+/// currency and whether the side is confirmed.
+type Ts2Side = (spacetimedb::Identity, Vec<u64>, Vec<(u32, u32)>, u64, bool);
+
+/// A `trade_session` row built from its two sides (no cards, revision 1, stamp 0).
+fn ts2_session(
+    session_id: u64,
+    opener_side: Ts2Side,
+    partner_side: Ts2Side,
+) -> crate::schema::TradeSession {
+    let offer = |monster_ids: Vec<u64>,
+                 items: Vec<(u32, u32)>,
+                 currency: u64|
+     -> game_core::trading::TradeSessionOffer {
+        game_core::trading::TradeSessionOffer {
+            monster_ids,
+            items: items
+                .into_iter()
+                .map(|(item_id, qty)| game_core::TradeItem { item_id, qty })
+                .collect(),
+            currency,
+            cards: vec![],
+        }
+    };
+    let (opener, opener_monsters, opener_items, opener_currency, opener_confirmed) = opener_side;
+    let (partner, partner_monsters, partner_items, partner_currency, partner_confirmed) =
+        partner_side;
+    crate::schema::TradeSession {
+        session_id,
+        opener,
+        partner,
+        opener_offer: offer(opener_monsters, opener_items, opener_currency),
+        partner_offer: offer(partner_monsters, partner_items, partner_currency),
+        opener_confirmed,
+        partner_confirmed,
+        revision: 1,
+        created_at_ms: 0,
+    }
+}
+
+/// Every session of the lock-at-confirm fixture, in the store order the wrappers see.
+///
+/// The owner's OWN confirmed sides: session 1 (opener: 101 102, item 7 x3, item 9 x50,
+/// 5 coins) and session 3 (partner: 106 107, item 7 x10, item 9 x60, 20 coins). The
+/// owner's unconfirmed sides: session 2 (opener: 103, item 7 x1000, 100000 coins) and
+/// session 4 (partner: 108, item 7 x30000, 4000000 coins). The other side of session 2
+/// and of session 4 is confirmed; the other side of session 3 is not.
+fn ts2_sessions() -> Vec<crate::schema::TradeSession> {
+    let owner = ts0b_id(TS2_OWNER);
+    let sender = ts0b_id(TS2_SENDER);
+    let p1 = ts0b_id(TS2_P1);
+    let p2 = ts0b_id(TS2_P2);
+    let p3 = ts0b_id(TS2_P3);
+    let q1 = ts0b_id(TS2_Q1);
+    let q2 = ts0b_id(TS2_Q2);
+    let sat = ts0b_id(TS2_SAT);
+    vec![
+        ts2_session(
+            3,
+            (p1, vec![205], vec![(7, 80)], 800, false),
+            (owner, vec![106, 107], vec![(7, 10), (9, 60)], 20, true),
+        ),
+        ts2_session(
+            1,
+            (owner, vec![101, 102], vec![(7, 3), (9, 50)], 5, true),
+            (p1, vec![201], vec![(7, 40)], 600, true),
+        ),
+        ts2_session(
+            20,
+            (q1, vec![901], vec![(7, 5_000)], 50_000, true),
+            (q2, vec![902], vec![(7, 6_000)], 60_000, true),
+        ),
+        ts2_session(
+            4,
+            (p2, vec![206], vec![(7, 90)], 900, true),
+            (owner, vec![108], vec![(7, 30_000)], 4_000_000, false),
+        ),
+        ts2_session(
+            10,
+            (sender, vec![301], vec![(7, 700_000)], 70_000_000, true),
+            (q1, vec![302], vec![(7, 1)], 1, true),
+        ),
+        ts2_session(
+            2,
+            (owner, vec![103], vec![(7, 1_000)], 100_000, false),
+            (p2, vec![203], vec![(7, 2_000)], 200_000, true),
+        ),
+        ts2_session(
+            30,
+            (sat, vec![601], vec![(7, 5)], 5, true),
+            (p3, vec![602], vec![(7, 1)], 1, false),
+        ),
+    ]
+}
+
+/// Two confirmed sessions of the saturated owner (opener of 40, partner of 41) whose
+/// own sides sum past `u32::MAX` items and `u64::MAX` coins.
+fn ts2_saturating_sessions() -> Vec<crate::schema::TradeSession> {
+    let sat = ts0b_id(TS2_SAT);
+    let p3 = ts0b_id(TS2_P3);
+    vec![
+        ts2_session(
+            40,
+            (sat, vec![611], vec![(7, u32::MAX)], u64::MAX, true),
+            (p3, vec![612], vec![(7, 1)], 1, true),
+        ),
+        ts2_session(
+            41,
+            (p3, vec![613], vec![(7, 1)], 1, true),
+            (sat, vec![614], vec![(7, 5)], 1, true),
+        ),
+    ]
+}
+
+/// The rows with these session ids, in the order listed.
+fn ts2_pick<'a>(
+    rows: &'a [crate::schema::TradeSession],
+    session_ids: &[u64],
+) -> Vec<&'a crate::schema::TradeSession> {
+    let mut picked = Vec::new();
+    for id in session_ids {
+        let row = rows.iter().find(|r| r.session_id == *id);
+        picked.push(row.expect("ts2 fixture: every hand-listed session id is built"));
+    }
+    picked
+}
+
+fn ts2_sorted(mut ids: Vec<u64>) -> Vec<u64> {
+    ids.sort_unstable();
+    ids
+}
+
+/// `session_locked_item_qty` sums `owner`'s OWN side of each session for the asked item,
+/// and only the sides `owner` has confirmed, in either role, saturating at `u32::MAX`.
+///
+/// The owner: item 7 = 3 (session 1, opener) + 10 (session 3, partner) = 13; item 9 =
+/// 50 + 60 = 110; item 8 (listed nowhere) = 0. P1: 40 (its confirmed side of session 1;
+/// its unconfirmed 80 in session 3 is not counted). P2: 2000 + 90 = 2090.
+///
+/// kills: the confirmed flag ignored (31013 for the owner) · the OTHER side's flag read
+/// (31003) · the opener side read when the owner is the partner · the other side's items
+/// counted · one session only · the item id ignored · a wrapping or panicking add.
+#[test]
+fn ts2_lock_at_confirm_session_locked_item_qty_counts_only_the_owners_confirmed_side() {
+    let rows = ts2_sessions();
+    let owner = ts0b_id(TS2_OWNER);
+    let owners = ts2_pick(&rows, &[1, 2, 3, 4]);
+
+    for (item_id, want) in [(7u32, 13u32), (9, 110), (8, 0)] {
+        let got = session_locked_item_qty(owners.iter().copied(), owner, item_id);
+        assert_eq!(
+            got, want,
+            "the owner's session-locked quantity of item {item_id} must be {want}: the owner's \
+             own side of every session the owner has confirmed (session 1 as opener, session \
+             3 as partner) and nothing from an unconfirmed side or from the other side; it \
+             returned {got}."
+        );
+    }
+
+    for (session_id, want) in [(1u64, 3u32), (2, 0), (3, 10), (4, 0)] {
+        let one = ts2_pick(&rows, &[session_id]);
+        let got = session_locked_item_qty(one.iter().copied(), owner, 7);
+        assert_eq!(
+            got, want,
+            "session {session_id} alone must lock {want} of item 7 for the owner (1: owner \
+             opener confirmed; 2: owner opener unconfirmed, partner confirmed; 3: owner \
+             partner confirmed, opener unconfirmed; 4: owner partner unconfirmed, opener \
+             confirmed); it returned {got}."
+        );
+    }
+
+    let p1 = ts0b_id(TS2_P1);
+    let got = session_locked_item_qty(ts2_pick(&rows, &[1, 3]).into_iter(), p1, 7);
+    assert_eq!(
+        got, 40,
+        "P1 confirmed its side of session 1 (item 7 x40) and not its side of session 3 (x80), \
+         so 40 is locked for P1; it returned {got}."
+    );
+    let p2 = ts0b_id(TS2_P2);
+    let got = session_locked_item_qty(ts2_pick(&rows, &[2, 4]).into_iter(), p2, 7);
+    assert_eq!(
+        got, 2_090,
+        "P2 confirmed its partner side of session 2 (x2000) and its opener side of session 4 \
+         (x90), so 2090 is locked for P2; it returned {got}."
+    );
+
+    let saturating = ts2_saturating_sessions();
+    let sat = ts0b_id(TS2_SAT);
+    let got = session_locked_item_qty(saturating.iter(), sat, 7);
+    assert_eq!(
+        got,
+        u32::MAX,
+        "the saturated owner's confirmed sides hold u32::MAX and 5 of item 7, which must \
+         saturate to u32::MAX; it returned {got}."
+    );
+
+    let got = session_locked_item_qty(std::iter::empty::<crate::schema::TradeSession>(), owner, 7);
+    assert_eq!(got, 0, "no session locks nothing; it returned {got}.");
+}
+
+/// `session_locked_currency` sums `owner`'s OWN side's coins over the sides `owner` has
+/// confirmed, in either role, saturating at `u64::MAX`.
+///
+/// The owner: 5 (session 1) + 20 (session 3) = 25. P1: 600. P2: 200000 + 900 = 200900.
+///
+/// kills: the confirmed flag ignored (4100025) · the other side's flag read (4100005) ·
+/// the wrong side when the owner is the partner · one session only · a wrapping add.
+#[test]
+fn ts2_lock_at_confirm_session_locked_currency_counts_only_the_owners_confirmed_side() {
+    let rows = ts2_sessions();
+    let owner = ts0b_id(TS2_OWNER);
+
+    let got = session_locked_currency(ts2_pick(&rows, &[1, 2, 3, 4]).into_iter(), owner);
+    assert_eq!(
+        got, 25,
+        "the owner's session-locked currency must be 25 (5 from its confirmed opener side of \
+         session 1, 20 from its confirmed partner side of session 3); it returned {got}."
+    );
+
+    for (session_id, want) in [(1u64, 5u64), (2, 0), (3, 20), (4, 0)] {
+        let got = session_locked_currency(ts2_pick(&rows, &[session_id]).into_iter(), owner);
+        assert_eq!(
+            got, want,
+            "session {session_id} alone must lock {want} coins for the owner; it returned \
+             {got}."
+        );
+    }
+
+    let p1 = ts0b_id(TS2_P1);
+    let got = session_locked_currency(ts2_pick(&rows, &[1, 3]).into_iter(), p1);
+    assert_eq!(
+        got, 600,
+        "P1's confirmed side of session 1 holds 600 coins and its unconfirmed side of session 3 \
+         holds 800 that do not count; it returned {got}."
+    );
+    let p2 = ts0b_id(TS2_P2);
+    let got = session_locked_currency(ts2_pick(&rows, &[2, 4]).into_iter(), p2);
+    assert_eq!(
+        got, 200_900,
+        "P2's two confirmed sides hold 200000 and 900 coins; it returned {got}."
+    );
+
+    let saturating = ts2_saturating_sessions();
+    let got = session_locked_currency(saturating.iter(), ts0b_id(TS2_SAT));
+    assert_eq!(
+        got,
+        u64::MAX,
+        "the saturated owner's confirmed sides hold u64::MAX and 1 coins, which must saturate \
+         to u64::MAX; it returned {got}."
+    );
+}
+
+/// `session_locked_monster_ids` lists the monster ids of `owner`'s OWN confirmed sides, in
+/// either role, and never the other side's ids.
+///
+/// kills: unconfirmed sides listed (103, 108) · the other side listed (201, 205, 203, 206) ·
+/// one role only · one session only.
+#[test]
+fn ts2_lock_at_confirm_session_locked_monster_ids_lists_only_the_owners_confirmed_side() {
+    let rows = ts2_sessions();
+    let owner = ts0b_id(TS2_OWNER);
+
+    let got = ts2_sorted(session_locked_monster_ids(
+        ts2_pick(&rows, &[1, 2, 3, 4]).into_iter(),
+        owner,
+    ));
+    assert_eq!(
+        got,
+        vec![101, 102, 106, 107],
+        "the owner's session-locked monsters are its confirmed opener side of session 1 (101 \
+         102) and its confirmed partner side of session 3 (106 107); it returned {got:?}."
+    );
+
+    let empty: Vec<u64> = Vec::new();
+    for (session_id, want) in [
+        (1u64, vec![101u64, 102]),
+        (2, empty.clone()),
+        (3, vec![106, 107]),
+        (4, empty),
+    ] {
+        let got = ts2_sorted(session_locked_monster_ids(
+            ts2_pick(&rows, &[session_id]).into_iter(),
+            owner,
+        ));
+        assert_eq!(
+            got, want,
+            "session {session_id} alone must lock {want:?} for the owner; it returned {got:?}."
+        );
+    }
+
+    let got = ts2_sorted(session_locked_monster_ids(
+        ts2_pick(&rows, &[1, 3]).into_iter(),
+        ts0b_id(TS2_P1),
+    ));
+    assert_eq!(
+        got,
+        vec![201],
+        "P1 confirmed only its side of session 1 (201); it returned {got:?}."
+    );
+    let got = ts2_sorted(session_locked_monster_ids(
+        ts2_pick(&rows, &[2, 4]).into_iter(),
+        ts0b_id(TS2_P2),
+    ));
+    assert_eq!(
+        got,
+        vec![203, 206],
+        "P2 confirmed its partner side of session 2 (203) and its opener side of session 4 \
+         (206); it returned {got:?}."
+    );
+    let saturating = ts2_saturating_sessions();
+    let got = ts2_sorted(session_locked_monster_ids(
+        saturating.iter(),
+        ts0b_id(TS2_SAT),
+    ));
+    assert_eq!(
+        got,
+        vec![611, 614],
+        "the saturated owner's confirmed sides list 611 (opener) and 614 (partner); it \
+         returned {got:?}."
+    );
+}
+
+/// `session_lists_monster` is exclusivity: true for a monster on EITHER side of any
+/// session handed to it, confirmed or not, false for a monster no session lists.
+///
+/// kills: confirmed sides only (103, 108, 205 and the both-unconfirmed session) · one side
+/// only · the first session only · a constant.
+#[test]
+fn ts2_lock_at_confirm_session_lists_monster_counts_every_side_confirmed_or_not() {
+    let rows = ts2_sessions();
+    let owners = ts2_pick(&rows, &[1, 2, 3, 4]);
+
+    for id in [101u64, 102, 103, 106, 107, 108, 201, 203, 205, 206] {
+        assert!(
+            session_lists_monster(owners.iter().copied(), id),
+            "monster {id} is listed on one side of one of the sessions handed in, so it is \
+             in a trade session whether or not that side is confirmed; `session_lists_monster` \
+             returned false."
+        );
+    }
+    for id in [901u64, 999, 601, 501] {
+        assert!(
+            !session_lists_monster(owners.iter().copied(), id),
+            "monster {id} is on no side of the sessions handed in; `session_lists_monster` \
+             returned true."
+        );
+    }
+
+    let idle_pair = [ts2_session(
+        50,
+        (ts0b_id(TS2_P1), vec![701], vec![], 0, false),
+        (ts0b_id(TS2_P2), vec![702], vec![], 0, false),
+    )];
+    for id in [701u64, 702] {
+        assert!(
+            session_lists_monster(idle_pair.iter(), id),
+            "monster {id} is offered in a session where neither side has confirmed; \
+             exclusivity still counts it, but `session_lists_monster` returned false."
+        );
+    }
+    assert!(
+        !session_lists_monster(std::iter::empty::<crate::schema::TradeSession>(), 101),
+        "no session lists nothing."
+    );
+}
+
+/// Registers `trade_session` under its `session_id` key and BOTH role indexes (never
+/// `.scannable()`: a table-wide read aborts the test process).
+fn ts2_session_table(
+    fx: &crate::native_host_tests::Fixture,
+) -> crate::native_host_tests::Handle<'_, crate::schema::TradeSession, u64> {
+    use crate::schema::TradeSession;
+    let _ = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+    let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+    fx.table_keyed::<TradeSession, u64>("trade_session", "session_id", |r| r.session_id)
+}
+
+/// Seeds every `ts2_sessions` row plus two legacy offers: offer 50 (the owner initiator:
+/// 501, item 7 x100000, 7000000 coins; P3 counterparty: 502, item 7 x2, 3 coins) and offer
+/// 51 (P3 initiator: 503, item 7 x9, 9 coins; the saturated owner counterparty: 504, item 7
+/// x(u32::MAX - 1), u64::MAX - 1 coins).
+fn ts2_seed_wrapper_world(fx: &crate::native_host_tests::Fixture) {
+    use game_core::TradeStatus::{ConfirmedByCounterparty, Pending};
+    let sessions = ts2_session_table(fx);
+    for row in &ts2_sessions() {
+        sessions.seed(row);
+    }
+    let owner = ts0b_id(TS2_OWNER);
+    let p3 = ts0b_id(TS2_P3);
+    let sat = ts0b_id(TS2_SAT);
+    let offers = ts0b_offer_table(fx);
+    offers.seed(&ts0b_offer(
+        50,
+        (owner, vec![501], vec![(7, 100_000)], 7_000_000),
+        (p3, vec![502], vec![(7, 2)], 3),
+        Pending,
+    ));
+    offers.seed(&ts0b_offer(
+        51,
+        (p3, vec![503], vec![(7, 9)], 9),
+        (sat, vec![504], vec![(7, u32::MAX - 1)], u64::MAX - 1),
+        ConfirmedByCounterparty,
+    ));
+}
+
+/// `reject_if_monster_locked` refuses, with the legacy message, a monster on the asked
+/// owner's CONFIRMED session side in either role, admits one on the owner's unconfirmed
+/// side and one on the other participant's side, and still refuses a legacy offer's monster.
+///
+/// kills: sessions not consulted (101 admitted) · one role only (101 or 107 admitted) ·
+/// the confirmed flag ignored (103, 108 refused) · the other side's flag or ids read (201,
+/// 203, 205, 206 refused for the owner; 201 admitted for P1) · the sender's sessions read
+/// (301 refused) · a table-wide read (901, the idle owner) · the legacy arm dropped (501) ·
+/// any other error text.
+#[test]
+fn ts2_lock_at_confirm_reject_if_monster_locked_refuses_only_a_confirmed_sides_monster() {
+    let fx = crate::native_host_tests::fixture();
+    ts2_seed_wrapper_world(&fx);
+    let owner = ts0b_id(TS2_OWNER);
+    let sender = ts0b_id(TS2_SENDER);
+    let p1 = ts0b_id(TS2_P1);
+    let sat = ts0b_id(TS2_SAT);
+    let idle = ts0b_id(TS2_IDLE);
+    let locked: Result<(), String> = Err("monster is in an active trade".to_string());
+
+    let refused = [
+        (
+            owner,
+            101u64,
+            "the owner's confirmed opener side of session 1",
+        ),
+        (
+            owner,
+            102,
+            "the owner's confirmed opener side of session 1, last id",
+        ),
+        (
+            owner,
+            106,
+            "the owner's confirmed partner side of session 3",
+        ),
+        (
+            owner,
+            107,
+            "the owner's confirmed partner side of session 3, last id",
+        ),
+        (p1, 201, "P1's confirmed partner side of session 1"),
+        (
+            sat,
+            601,
+            "the saturated owner's confirmed opener side of session 30",
+        ),
+        (owner, 501, "the owner's own side of legacy offer 50"),
+        (owner, 502, "the other side of the owner's legacy offer 50"),
+    ];
+    for (who, id, place) in refused {
+        let got = fx.run_as(sender, |ctx| reject_if_monster_locked(ctx, who, id));
+        assert_eq!(
+            got, locked,
+            "monster {id} sits on {place}, so `reject_if_monster_locked` must refuse it with \
+             exactly {locked:?}; it returned {got:?}."
+        );
+    }
+
+    let admitted = [
+        (
+            owner,
+            103u64,
+            "the owner's UNCONFIRMED opener side of session 2",
+        ),
+        (
+            owner,
+            108,
+            "the owner's UNCONFIRMED partner side of session 4",
+        ),
+        (
+            owner,
+            201,
+            "P1's confirmed side of session 1, asked about the owner",
+        ),
+        (
+            owner,
+            203,
+            "P2's confirmed side of session 2, asked about the owner",
+        ),
+        (
+            owner,
+            205,
+            "P1's unconfirmed side of session 3, asked about the owner",
+        ),
+        (
+            owner,
+            206,
+            "P2's confirmed side of session 4, asked about the owner",
+        ),
+        (
+            owner,
+            301,
+            "the sender's confirmed session 10, which the owner is not in",
+        ),
+        (owner, 901, "the stranger session 20"),
+        (owner, 999, "no session and no offer"),
+        (p1, 205, "P1's own UNCONFIRMED opener side of session 3"),
+        (
+            p1,
+            106,
+            "the owner's confirmed side of session 3, asked about P1",
+        ),
+        (idle, 101, "a session the idle owner is not in"),
+    ];
+    for (who, id, place) in admitted {
+        let got = fx.run_as(sender, |ctx| reject_if_monster_locked(ctx, who, id));
+        assert_eq!(
+            got,
+            Ok(()),
+            "monster {id} sits on {place}; an unconfirmed side locks nothing and another \
+             participant's side never locks the asked owner's monster, so it must be admitted; \
+             it returned {got:?}."
+        );
+    }
+}
+
+/// `escrowed_item_qty_of` is the legacy escrow plus `owner`'s confirmed session sides.
+///
+/// The owner, item 7: 100000 (legacy offer 50) + 3 + 10 = 100013; item 9: 50 + 60 = 110;
+/// item 8: 0. P1: 40. P2: 2090. P3: 2 + 9 = 11 from the legacy offers, its unconfirmed side
+/// of session 30 adds nothing. The sender: 700000. The saturated owner: u32::MAX - 1 + 5,
+/// saturating to u32::MAX. The idle owner: 0.
+#[test]
+fn ts2_lock_at_confirm_escrowed_item_qty_of_adds_the_owners_confirmed_session_sides() {
+    let fx = crate::native_host_tests::fixture();
+    ts2_seed_wrapper_world(&fx);
+    let sender = ts0b_id(TS2_SENDER);
+    let cases = [
+        (
+            TS2_OWNER,
+            7u32,
+            100_013u32,
+            "legacy 100000 + confirmed sides 3 + 10",
+        ),
+        (TS2_OWNER, 9, 110, "confirmed sides 50 + 60, no legacy"),
+        (TS2_OWNER, 8, 0, "item 8 is listed nowhere"),
+        (TS2_P1, 7, 40, "P1's confirmed side of session 1 only"),
+        (TS2_P2, 7, 2_090, "P2's two confirmed sides"),
+        (
+            TS2_P3,
+            7,
+            11,
+            "legacy 2 + 9; the unconfirmed side of session 30 adds nothing",
+        ),
+        (
+            TS2_SENDER,
+            7,
+            700_000,
+            "the sender's confirmed side of session 10",
+        ),
+        (
+            TS2_SAT,
+            7,
+            u32::MAX,
+            "legacy u32::MAX - 1 + confirmed 5, saturating",
+        ),
+        (TS2_IDLE, 7, 0, "the idle owner is in nothing"),
+    ];
+    for (byte, item_id, want, why) in cases {
+        let who = ts0b_id(byte);
+        let got = fx.run_as(sender, |ctx| escrowed_item_qty_of(ctx, who, item_id));
+        assert_eq!(
+            got, want,
+            "`escrowed_item_qty_of` for identity byte {byte:#04x}, item {item_id} must be \
+             {want} ({why}); it returned {got}."
+        );
+    }
+}
+
+/// `escrowed_currency_of` is the legacy escrow plus `owner`'s confirmed session sides.
+///
+/// The owner: 7000000 + 5 + 20 = 7000025. P1: 600. P2: 200900. P3: 3 + 9 = 12. The
+/// saturated owner: u64::MAX - 1 + 5, saturating to u64::MAX. The idle owner: 0.
+#[test]
+fn ts2_lock_at_confirm_escrowed_currency_of_adds_the_owners_confirmed_session_sides() {
+    let fx = crate::native_host_tests::fixture();
+    ts2_seed_wrapper_world(&fx);
+    let sender = ts0b_id(TS2_SENDER);
+    let cases = [
+        (
+            TS2_OWNER,
+            7_000_025u64,
+            "legacy 7000000 + confirmed sides 5 + 20",
+        ),
+        (TS2_P1, 600, "P1's confirmed side of session 1 only"),
+        (TS2_P2, 200_900, "P2's two confirmed sides"),
+        (
+            TS2_P3,
+            12,
+            "legacy 3 + 9; the unconfirmed side of session 30 adds nothing",
+        ),
+        (
+            TS2_SAT,
+            u64::MAX,
+            "legacy u64::MAX - 1 + confirmed 5, saturating",
+        ),
+        (TS2_IDLE, 0, "the idle owner is in nothing"),
+    ];
+    for (byte, want, why) in cases {
+        let who = ts0b_id(byte);
+        let got = fx.run_as(sender, |ctx| escrowed_currency_of(ctx, who));
+        assert_eq!(
+            got, want,
+            "`escrowed_currency_of` for identity byte {byte:#04x} must be {want} ({why}); it \
+             returned {got}."
+        );
+    }
+}
+
+/// `escrowed_monster_ids_of` is the legacy ids (both sides of each active offer) plus the
+/// ids of `owner`'s confirmed session sides; an unconfirmed side contributes none.
+#[test]
+fn ts2_lock_at_confirm_escrowed_monster_ids_of_adds_the_owners_confirmed_session_sides() {
+    let fx = crate::native_host_tests::fixture();
+    ts2_seed_wrapper_world(&fx);
+    let sender = ts0b_id(TS2_SENDER);
+    let cases: [(u8, Vec<u64>, &str); 6] = [
+        (
+            TS2_OWNER,
+            vec![101, 102, 106, 107, 501, 502],
+            "legacy offer 50 (501 502) + confirmed sides of sessions 1 and 3",
+        ),
+        (TS2_P1, vec![201], "P1's confirmed side of session 1 only"),
+        (TS2_P2, vec![203, 206], "P2's two confirmed sides"),
+        (
+            TS2_P3,
+            vec![501, 502, 503, 504],
+            "both legacy offers; the unconfirmed side of session 30 adds nothing",
+        ),
+        (
+            TS2_SAT,
+            vec![503, 504, 601],
+            "legacy offer 51 + the confirmed side of session 30",
+        ),
+        (TS2_IDLE, vec![], "the idle owner is in nothing"),
+    ];
+    for (byte, want, why) in cases {
+        let who = ts0b_id(byte);
+        let got = ts2_sorted(fx.run_as(sender, |ctx| escrowed_monster_ids_of(ctx, who)));
+        assert_eq!(
+            got, want,
+            "`escrowed_monster_ids_of` for identity byte {byte:#04x} must list {want:?} once \
+             sorted ({why}); it returned {got:?}."
+        );
+    }
+}
+
+/// `sessions_of` yields every session the owner is in, as opener and as partner, and no
+/// session the owner is not in.
+///
+/// kills: the opener index only · the partner index only · rows read for `ctx.sender()` ·
+/// a table-wide read · a constant.
+#[test]
+fn ts2_lock_at_confirm_sessions_of_yields_the_owners_sessions_in_both_roles() {
+    let fx = crate::native_host_tests::fixture();
+    ts2_seed_wrapper_world(&fx);
+    let sender = ts0b_id(TS2_SENDER);
+    let cases: [(u8, Vec<u64>, &str); 5] = [
+        (
+            TS2_OWNER,
+            vec![1, 2, 3, 4],
+            "opener of 1 and 2, partner of 3 and 4",
+        ),
+        (TS2_P1, vec![1, 3], "partner of 1, opener of 3"),
+        (TS2_Q1, vec![10, 20], "opener of 20, partner of 10"),
+        (TS2_SENDER, vec![10], "opener of 10"),
+        (TS2_IDLE, vec![], "in no session"),
+    ];
+    for (byte, want, why) in cases {
+        let who = ts0b_id(byte);
+        let got = ts2_sorted(fx.run_as(sender, |ctx| {
+            sessions_of(ctx, who)
+                .map(|s| s.session_id)
+                .collect::<Vec<u64>>()
+        }));
+        assert_eq!(
+            got, want,
+            "`sessions_of` for identity byte {byte:#04x} must yield sessions {want:?} ({why}), \
+             each once; it yielded {got:?}."
+        );
+    }
+}
