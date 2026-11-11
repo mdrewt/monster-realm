@@ -46,7 +46,7 @@ export type OverlayId =
   // sessionView is DELIBERATELY NOT a member (a second EXCLUSIVE_TOP breaks decide(); D17): it is
   // driven by conn.sessionState().
   | 'profileView'
-  | 'tradeProposeView'
+  | 'tradeSessionView'
   | 'helpView'
   | 'menuView'
   // Options › Controls (ctl-12b). GUARD_ONLY: while a slot waits for a key the screen takes every
@@ -86,7 +86,7 @@ export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>> = {
   pvpView: 'GUARD_ONLY',
   leaderboardView: 'GUARD_ONLY',
   profileView: 'GUARD_ONLY',
-  tradeProposeView: 'GUARD_ONLY',
+  tradeSessionView: 'GUARD_ONLY',
   helpView: 'GUARD_ONLY',
   menuView: 'GUARD_ONLY',
   controlsView: 'GUARD_ONLY',
@@ -236,10 +236,12 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     initialFocusSelector: '#rename-input',
     dismissible: true,
   },
-  tradeProposeView: {
+  tradeSessionView: {
     role: 'dialog',
-    labelKey: 'a11y.overlay.tradeProposeView.title',
-    initialFocusSelector: '#tradepropose-target',
+    labelKey: 'a11y.overlay.tradeSessionView.title',
+    // The picker listbox, built by the view's constructor: its active row is what a screen reader
+    // hears at the open.
+    initialFocusSelector: '#tradesession-rows',
     dismissible: true,
   },
   helpView: {

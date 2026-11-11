@@ -15,9 +15,11 @@
 // UIF9.1: LB chip, the `#social-tabs` strip, RB chip; the chrome's first child, so it tops whichever
 // panel shows), the action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
 // child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
-// the Players placeholder and the trade row's cursor on `#trade-status`: kept only while this root
-// is visible, re-applied after every batch render and dropped by `hide()`. This root's own
-// children stay exactly the shell's: every new part lives in the chrome.
+// the Players placeholder, the trade row's cursor on `#trade-status` and the trade SESSION rows
+// (ts-3: one per session the viewer is in, in `#trade-sessions`): kept only while this root is
+// visible, re-applied after every batch render and dropped by `hide()`. The session list is the one
+// part this view adds to the root, created by the first paint that has a session row; a root that
+// never had one keeps exactly the shell's children.
 //
 // NO CONTROL OF ITS OWN (qf-8, QF8.1): the `#trade-actions` buttons (Accept / Reject / Confirm
 // Trade / Cancel) were a mouse-only duplicate of the Social sheet's Trades rows and are deleted,
@@ -36,11 +38,23 @@ import type { TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 /** The Yes / No question a Social action asks before it is sent. */
 export type SocialQuestion = 'declineTrade' | 'confirmTrade' | 'declineChallenge';
 
+/** One trade session row as the Trades tab paints it. */
+export interface SocialSessionRow {
+  readonly key: string;
+  readonly partnerName: string;
+  readonly mineConfirmed: boolean;
+  readonly theirsConfirmed: boolean;
+}
+
 /** What the Social screen paints. */
 export interface SocialPaint {
   readonly tab: SocialTab;
-  /** The trade row holds the cursor (the Trades tab, with a trade listed). */
+  /** The legacy trade row holds the cursor (the Trades tab, with a legacy offer listed). */
   readonly tradeCursor: boolean;
+  /** The trade session rows of the Trades tab, in order. */
+  readonly sessions: readonly SocialSessionRow[];
+  /** The session row key under the cursor, else null. */
+  readonly sessionCursor: string | null;
   /** The action sheet: the row's legal actions and the cursor. It stays painted under its prompt. */
   readonly sheet: {
     readonly actions: readonly SocialAction[];
@@ -177,6 +191,10 @@ export class TradeView {
   // text the last render wrote (the Players placeholder is written over it).
   #social: SocialPaint | null = null;
   #status = '';
+  /** Whether the last render showed no legacy offer (the status line then follows the sessions). */
+  #noOffer = true;
+  /** The session rows' listbox: created by the first paint that has a row. */
+  #sessionsEl: HTMLElement | null = null;
 
   constructor(_cbs: TradeCallbacks) {
     const el = document.getElementById('trade-overlay');
@@ -242,6 +260,7 @@ export class TradeView {
 
   /** Render or re-render the trade view from the view model. */
   render(vm: TradeScreenViewModel): void {
+    this.#noOffer = vm.kind === 'no-trade';
     if (vm.kind === 'no-trade') {
       this.#status = t('trade.status.none');
       this.#mySideEl.replaceChildren();
@@ -272,7 +291,13 @@ export class TradeView {
   #applySocial(): void {
     const p = this.#social;
     const players = p?.tab === 'players';
-    this.#statusEl.textContent = players ? t('social.players.placeholder') : this.#status;
+    const sessions = p?.tab === 'trades' ? p.sessions : [];
+    this.#statusEl.textContent = players
+      ? t('social.players.placeholder')
+      : this.#noOffer && sessions.length > 0
+        ? t('trade.status.open')
+        : this.#status;
+    this.#paintSessions(sessions, p?.sessionCursor ?? null);
     for (const el of [this.#mySideEl, this.#theirSideEl, this.#actionsEl]) {
       // A part hidden while it holds the focus would strand it on <body>.
       if (players && el.contains(document.activeElement)) this.#statusEl.focus();
@@ -283,6 +308,45 @@ export class TradeView {
     this.#statusEl.classList.toggle('is-active', cursor);
     if (cursor) this.#statusEl.setAttribute('aria-current', 'true');
     else this.#statusEl.removeAttribute('aria-current');
+  }
+
+  /** The session rows, one per session, each its partner's title over both sides' marks. With no
+   *  row the list is hidden (and never created). */
+  #paintSessions(rows: readonly SocialSessionRow[], cursor: string | null): void {
+    if (this.#sessionsEl === null) {
+      if (rows.length === 0) return;
+      this.#sessionsEl = document.createElement('div');
+      this.#sessionsEl.id = 'trade-sessions';
+      this.#sessionsEl.className = 'mr-nav-list';
+      this.#overlay.appendChild(this.#sessionsEl);
+    }
+    const el = this.#sessionsEl;
+    // A list hidden while it holds the focus would strand it on <body>.
+    if (rows.length === 0 && el.contains(document.activeElement)) this.#statusEl.focus();
+    el.hidden = rows.length === 0;
+    const mark = (confirmed: boolean): string =>
+      confirmed ? t('tradeSession.mark.confirmed') : t('tradeSession.mark.unconfirmed');
+    renderNav(
+      el,
+      list(rows.map((row) => ({ key: row.key, enabled: true }))),
+      { tab: null, item: cursor, perTab: {} },
+      {
+        frame: 'socialTrades',
+        labelledBy: navTabId(SOCIAL_FRAME_ID, 'trades'),
+        fill: (item, nav) => {
+          const row = rows.find((r) => r.key === nav.key);
+          if (row === undefined) return;
+          const title = document.createElement('div');
+          title.textContent = tf('trade.row.title', { name: row.partnerName });
+          const marks = document.createElement('div');
+          marks.textContent = tf('trade.row.marks', {
+            mine: mark(row.mineConfirmed),
+            theirs: mark(row.theirsConfirmed),
+          });
+          item.append(title, marks);
+        },
+      },
+    );
   }
 
   #renderSide(el: HTMLElement, side: TradeSideViewModel, heading: string): void {

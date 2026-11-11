@@ -102,7 +102,7 @@ export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   leaderboardView: PLAYER_DROP_SAFE,
   // One row for the three frames Profile replaces (uif-16b): all three were PLAYER_DROP.
   profileView: PLAYER_DROP,
-  tradeProposeView: PLAYER_DROP,
+  tradeSessionView: PLAYER_DROP,
   helpView: PLAYER_DROP_SAFE,
   menuView: PLAYER_DROP_SAFE,
   // Not battle-safe: the menu disables Controls over a battle, and a battle that starts closes it
@@ -293,7 +293,7 @@ export const RECONNECT_CLOSES: Readonly<Record<FrameId, boolean>> = {
   pvpView: true,
   leaderboardView: true,
   profileView: true,
-  tradeProposeView: true,
+  tradeSessionView: true,
   helpView: false,
   menuView: true,
   controlsView: false,

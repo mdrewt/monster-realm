@@ -118,6 +118,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The request banner and sheet heading for an incoming PvP challenge; {name} is the
   // challenger's display name (player text). Names no key. main.ts (#notice-banner)
   'notice.request.challenge': (p) => `${p.name} vous défie en combat`,
+  // @desc: The request banner's line when several trade requests wait; {count} is how many.
+  // Digits, one short line.
+  // main.ts
+  'notice.request.trades': (p) => `${p.count} demandes d’échange`,
   // @desc: The world interaction chip above what the character faces: {key} is the A button's
   // keycap, {verb} a resolved interact.verb.* word, {name} the npc id or the healer name. main.ts
   // (#interact-prompt)
@@ -489,10 +493,6 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (resolved in RenameView show())
   'chrome.rename.submit': 'Renommer',
-  // @desc: Submit button of the trade-proposal dialog; the player offers a trade to another
-  // player. Short verb, fits a narrow button.
-  // index.html:80 (resolved in TradeProposeView show())
-  'chrome.tradePropose.submit': 'Proposer',
   // @desc: Status-strip error shown when the browser blocked the account data-export download.
   // main.ts:582
   'chrome.status.exportBlocked': 'export des données : téléchargement bloqué par le navigateur',
@@ -805,6 +805,86 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback line in the live-trade overlay after the player cancelled the trade.
   // main.ts:2689
   'trade.feedback.cancelled': 'Échange annulé.',
+  // @desc: Status line of the Social Trades panel when the player has at least one open trade
+  // session and no legacy offer. Two words.
+  // tradeView.ts
+  'trade.status.open': 'Échanges en cours',
+  // @desc: First line of a trade-session row on the Social Trades panel; {name} is the other
+  // player's name.
+  // tradeView.ts
+  'trade.row.title': (p) => `Échange avec ${p.name}`,
+  // @desc: Second line of a trade-session row: whether each side has confirmed; {mine} and {theirs}
+  // are the resolved tradeSession.mark.* words.
+  // tradeView.ts
+  'trade.row.marks': (p) => `Vous : ${p.mine} · Eux : ${p.theirs}`,
+  // @desc: Heading of the trade session editor; {name} is the other player's name.
+  // tradeSessionView.ts
+  'tradeSession.title': (p) => `Échange avec ${p.name}`,
+  // @desc: Heading of the editor's panel listing what the player has put into the trade.
+  // tradeSessionView.ts
+  'tradeSession.side.mine': 'Votre offre',
+  // @desc: Heading of the editor's panel listing what the other player has put into the trade.
+  // tradeSessionView.ts
+  'tradeSession.side.theirs': 'Son offre',
+  // @desc: Mark on a side of a trade session whose owner has confirmed the trade. One word.
+  // tradeSessionView.ts, tradeView.ts
+  'tradeSession.mark.confirmed': 'Confirmé',
+  // @desc: Mark on a side of a trade session whose owner has not confirmed yet. Two words.
+  // tradeSessionView.ts, tradeView.ts
+  'tradeSession.mark.unconfirmed': 'Non confirmé',
+  // @desc: An editor row that cannot be used right now; {label} is the row's own text and {reason}
+  // a resolved tradeSession.reason.* phrase.
+  // tradeSessionView.ts
+  'tradeSession.row.blocked': (p) => `${p.label} — ${p.reason}`,
+  // @desc: Why a party monster cannot be offered: it has no HP left. Lower case, one word.
+  // tradeSessionView.ts
+  'tradeSession.reason.fainted': 'K.O.',
+  // @desc: Why a party monster cannot be offered: it is already offered in another trade. Lower case.
+  // tradeSessionView.ts
+  'tradeSession.reason.inAnotherTrade': 'dans un autre échange',
+  // @desc: Why a party monster cannot be offered: it is in a battle. Lower case.
+  // tradeSessionView.ts
+  'tradeSession.reason.inBattle': 'en combat',
+  // @desc: Why another monster cannot be added: the offer already holds the most a side may give.
+  // Lower case.
+  // tradeSessionView.ts
+  'tradeSession.reason.limit': 'offre complète',
+  // @desc: Why the trade cannot be confirmed yet: the player changed the offer and has not sent it.
+  // Lower case.
+  // tradeSessionView.ts
+  'tradeSession.reason.unsent': 'envoyez d’abord votre offre',
+  // @desc: Why the offer cannot be sent: it is the same as the one already on the table. Lower case.
+  // tradeSessionView.ts
+  'tradeSession.reason.nothingToSend': 'aucun changement',
+  // @desc: An item row of the editor's picker; {name} is the item, {qty} how many are offered and
+  // {held} how many the player has. Numbers are digits.
+  // tradeSessionView.ts
+  'tradeSession.row.item': (p) => `${p.name} : ${p.qty} sur ${p.held}`,
+  // @desc: The coins row of the editor's picker; {amount} is how many coins are offered and
+  // {balance} how many the player has. Numbers are digits.
+  // tradeSessionView.ts
+  'tradeSession.row.coins': (p) => `Pièces : ${p.amount} sur ${p.balance}`,
+  // @desc: Editor row that sends the player's changed offer to the other player. Two words.
+  // tradeSessionView.ts
+  'tradeSession.row.apply': 'Mettre à jour l’offre',
+  // @desc: Editor row that confirms the trade as it is shown. Two words.
+  // tradeSessionView.ts
+  'tradeSession.row.confirm': 'Valider l’échange',
+  // @desc: Editor row that cancels the whole trade for both players. Two words.
+  // tradeSessionView.ts
+  'tradeSession.row.cancel': 'Annuler l’échange',
+  // @desc: The Yes / No question before the player confirms a trade; No is the default answer.
+  // tradeSessionView.ts
+  'tradeSession.prompt.confirm': 'Confirmer cet échange ? Un échange conclu est définitif.',
+  // @desc: The Yes / No question before the player cancels a trade; No is the default answer.
+  // tradeSessionView.ts
+  'tradeSession.prompt.cancel': 'Annuler cet échange ?',
+  // @desc: Notice inside the editor after either offer changed and every confirmation was cleared.
+  // tradeSessionView.ts
+  'tradeSession.notice.changed': 'L’offre a changé. Vérifiez-la avant de confirmer.',
+  // @desc: Toast shown when a trade the player was in is over: completed, cancelled or dropped.
+  // main.ts
+  'tradeSession.notice.closed': 'Échange terminé.',
   // @desc: Fallback heading of the shop overlay when no shop is nearby (a real shop shows its
   // own name instead). One word.
   // shopView.ts:124
@@ -954,43 +1034,6 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The Yes / No question before a PvP challenge is declined; No is the default answer.
   // tradeView.ts (the Social prompt)
   'social.confirm.declineChallenge': 'Refuser ce défi ?',
-  // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
-  // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
-  // dropdown.
-  // tradeProposeView.ts:168
-  'tradePropose.target.placeholder': 'Choisir un joueur…',
-  // @desc: Feedback line in the trade-proposal dialog after the offer was sent to the other player.
-  // main.ts:2828
-  'tradePropose.feedback.sent': 'Offre envoyée !',
-  // @desc: Step names in the trade-proposal wizard's header (ctl-8e), in order: pick the player,
-  // pick your monsters, type the coins you give, type the coins you ask for, confirm. One word each.
-  // tradeProposeView.ts
-  'tradePropose.step.target': 'Joueur',
-  // @desc: Wizard step name: choose which of your monsters to offer. One word.
-  // tradeProposeView.ts
-  'tradePropose.step.offer': 'Offre',
-  // @desc: Wizard step name: type how many coins you give. One word.
-  // tradeProposeView.ts
-  'tradePropose.step.coins': 'Pièces',
-  // @desc: Wizard step name: type how many coins you ask for in return. One word.
-  // tradeProposeView.ts
-  'tradePropose.step.ask': 'Demande',
-  // @desc: Wizard step name: check the offer and send it. One word.
-  // tradeProposeView.ts
-  'tradePropose.step.review': 'Vérifier',
-  // @desc: Question on the wizard's last step, above Yes / No; Yes sends the trade offer.
-  // tradeProposeView.ts
-  'tradePropose.review.prompt': 'Envoyer cette offre ?',
-  // @desc: Shown on the wizard's last step instead of the question when no player is chosen or
-  // nothing is offered or asked for, so the offer cannot be sent yet.
-  // tradeProposeView.ts
-  'tradePropose.review.incomplete': 'Cette offre n’est pas complète.',
-  // @desc: Answer that sends the trade offer. One word.
-  // tradeProposeView.ts
-  'tradePropose.review.yes': 'Oui',
-  // @desc: Answer that does not send the trade offer and goes back a step. One word.
-  // tradeProposeView.ts
-  'tradePropose.review.no': 'Non',
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72
@@ -1153,11 +1196,6 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // across a reconnect). One short sentence.
   // healView.ts (paint, the reason)
   'heal.prompt.unavailable': 'Aucun soigneur à portée. Soin indisponible.',
-  // @desc: Summary line on the wizard's last step: the chosen player's name, how many of your
-  // monsters are ticked, the coins you give and the coins you ask for. Numbers are digits.
-  // tradeProposeView.ts
-  'tradePropose.review.summary': (p) =>
-    `Pour ${p.target} · Monstres : ${p.monsters} · Pièces : ${p.offer} · Demande : ${p.ask}`,
   // @desc: Heading of the privacy & account-data overlay (account deletion, data export). Same
   // French as claim.privacyButton today, but a different key: this is a HEADING. One short line.
   // privacyView.ts:145 (resolved in show())

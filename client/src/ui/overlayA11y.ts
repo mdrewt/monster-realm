@@ -11,8 +11,7 @@
 // (`KeyN`) is opened DURING that keydown, so focusing the input synchronously lands the `n` in the
 // field the player just
 // opened. `setTimeout(..., 0)` lets the opening key event fully complete first. This module is the
-// SOLE owner of that defer — S3 deletes the per-view copies at `ui/renameView.ts:102` and
-// `ui/tradeProposeView.ts:124` and the behaviour must be identical.
+// SOLE owner of that defer: no view keeps a copy of its own.
 //
 // The scheduler stays a REAL `setTimeout` rather than an injected one: injecting it would add a
 // parameter all seventeen S3/S4 call sites must fill, for a seam only the tests want. The defer is

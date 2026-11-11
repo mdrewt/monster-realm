@@ -8,7 +8,8 @@
 // on (the host remembers the state), else on Players; the cursor goes to the opened tab's waiting
 // request. A on a trade or challenge row opens a sheet of its legal actions, the cursor on the
 // first (Accept, for a request): Accept and Cancel send at once, Decline and a trade's final
-// Confirm ask Yes / No on No. B backs out one level and pops the frame from the list.
+// Confirm ask Yes / No on No. A on a trade SESSION row opens that session's editor at once: it has
+// no sheet. B backs out one level and pops the frame from the list.
 //
 // Players and Rankings (CTL8G.1-.2) are painted over the leaderboard root (`leaderboardView.ts`).
 // A on a player shows "Walk up to {name} and press A" (the `walkUp` phase; no remote action
@@ -17,8 +18,8 @@
 // Every step first settles the state against the rows a batch may have moved: a gone cursor is
 // re-seated, and a sheet whose row is gone or whose legal actions changed closes (it is never
 // re-pointed: the cursor must not land on an action that would now send without its prompt); a
-// walk-up whose player left closes, and a change in what the Players tab shows yields a new state
-// so the host repaints it (`people`). An A press whose phase the settle just changed only paints
+// walk-up whose player left closes, and a change in what the Players tab or the session rows show
+// yields a new state so the host repaints it (`people`, `sessions`). An A press whose phase the settle just changed only paints
 // (the shop's rule; in the shipped loop `observe` settles each batch first, so this is the belt to
 // that brace).
 //
@@ -36,6 +37,7 @@ import {
   socialLayout,
   socialPeopleKey,
   socialRows,
+  socialSessionsKey,
 } from '../socialModel';
 import type { SocialPaint, SocialQuestion } from '../tradeView';
 import type {
@@ -69,6 +71,8 @@ export interface SocialScreenState {
   /** What the Players tab showed when this state was made (`socialPeopleKey`): a batch that
    *  changes it yields a new state, so the host repaints the rows. */
   readonly people: string;
+  /** What the session rows showed when this state was made (`socialSessionsKey`), likewise. */
+  readonly sessions: string;
 }
 
 const LIST: SocialPhase = { kind: 'list' };
@@ -106,6 +110,8 @@ function commandOf(row: SocialRow, action: SocialAction): Command | null {
     if (action === 'accept') return { kind: 'acceptChallenge', challengeId: id };
     return action === 'decline' ? { kind: 'declineChallenge', challengeId: id } : null;
   }
+  // A session row offers no sheet action.
+  if (row.kind === 'session') return null;
   return action === 'cancel' ? { kind: 'cancelChallenge', challengeId: id } : null;
 }
 
@@ -132,9 +138,13 @@ function settle(vm: SocialVm, state: SocialScreenState): SocialScreenState {
     phase = LIST;
   }
   const people = socialPeopleKey(vm);
-  return nav === state.nav && phase === state.phase && people === state.people
+  const sessions = socialSessionsKey(vm);
+  return nav === state.nav &&
+    phase === state.phase &&
+    people === state.people &&
+    sessions === state.sessions
     ? state
-    : { nav, phase, people };
+    : { nav, phase, people, sessions };
 }
 
 export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFrameView> = {
@@ -152,6 +162,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
         characters: Array.from(ctx.store.characters(), (character) => character.row),
         profiles: ctx.store.allProfiles(),
       },
+      ctx.store.allTradeSessions(),
     ),
 
   /** The requested tab, else the oldest waiting request's, else the remembered one, else Players;
@@ -164,7 +175,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     if (tab !== undefined) nav = navFocus(layout, nav, { tab });
     const request = socialRows(vm, tabOf(nav)).find((row) => row.waiting);
     if (request !== undefined) nav = navFocus(layout, nav, { item: request.key });
-    return { nav, phase: LIST, people: socialPeopleKey(vm) };
+    return { nav, phase: LIST, people: socialPeopleKey(vm), sessions: socialSessionsKey(vm) };
   },
 
   onButton(vm, kept, btn): ButtonStep<SocialScreenState> {
@@ -225,6 +236,10 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
           }
           // Rankings (read-only) and an empty tab have no row to act on: rowAt finds none.
           const row = rowAt(vm, tab, state.nav.item);
+          // A session row has no sheet: A opens its editor.
+          if (!btn.repeat && row?.kind === 'session') {
+            return done({ kind: 'openTradeEditor', sessionId: row.id });
+          }
           const first = row?.actions[0];
           if (btn.repeat || row === undefined || first === undefined) return done('consumed');
           return to({
@@ -299,12 +314,16 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     view.trades?.paintSocial(view.chrome, {
       tab,
       tradeCursor: cursor?.kind === 'trade',
+      sessions: vm.trades.flatMap((row) =>
+        row.session === undefined ? [] : [{ key: row.key, ...row.session }],
+      ),
+      sessionCursor: cursor?.kind === 'session' ? cursor.key : null,
       // The sheet stays painted under its prompt.
       sheet: phase.kind === 'sheet' ? { actions: phase.actions, active: phase.action } : null,
       confirm: promptOf(vm, tab, phase),
     });
     view.challenges?.paintCursor(
-      cursor === undefined || cursor.kind === 'trade' ? null : cursor.kind,
+      cursor?.kind === 'incoming' || cursor?.kind === 'outgoing' ? cursor.kind : null,
     );
     if (tab === 'players' || tab === 'rankings') {
       view.rankings?.paintSocial({

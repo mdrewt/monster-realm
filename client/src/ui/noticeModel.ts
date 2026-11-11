@@ -1,25 +1,35 @@
 // ui/noticeModel.ts — the world's notices and the request action sheet (ctl-13, CTL13.2, CTL13.3).
 // Pure: no DOM, SDK, resolver, clock or module state. Notices are exactly two kinds: a pending
-// incoming request (a trade offered to the viewer, a challenge aimed at them) and the pending error.
-// The hint bar shows Y and B for them, Y opens a request's Accept / Decline / View sheet and B at
-// the world dismisses the top notice. Nothing here opens a frame or moves focus.
-import type { StoreBattleChallenge, StorePlayer, StoreTradeOffer } from '../net/store';
+// incoming request (a trade session opened with the viewer, a challenge aimed at them) and the
+// pending error. The hint bar shows Y and B for them, Y opens a request's Accept / Decline / View
+// sheet and B at the world dismisses the top notice. Nothing here opens a frame or moves focus.
+//
+// A trade request is an incoming session the viewer has not acted in and whose editor this client
+// has not opened. Accept opens that editor, Decline cancels the session. Several waiting trade
+// requests show as ONE banner line (`count`), which B dismisses whole (`dismissKeys`).
+import type { StoreBattleChallenge, StorePlayer, StoreTradeSession } from '../net/store';
 import { CLOSE_KEY } from './actionSheetModel';
 import { list, type NavInput, type NavLayout, type NavState, navInit, navStep } from './nav';
 import { incomingChallenge } from './pvpModel';
 import type { Command } from './screens/types';
+import { incomingUntouched, ownSessions } from './tradeSessionModel';
 
 export type RequestKind = 'trade' | 'challenge';
 
 export interface RequestNotice {
   readonly kind: 'request';
-  /** `trade-<tradeId>` or `challenge-<challengeId>`: the Social frame's row key. */
+  /** `session-<sessionId>` or `challenge-<challengeId>`: the Social frame's row key. */
   readonly key: string;
   readonly request: RequestKind;
+  /** The sessionId or the challengeId. */
   readonly id: bigint;
   /** The sender's player name, `#<hex8>` when it is empty or the player is unknown. */
   readonly fromName: string;
   readonly createdAtMs: bigint;
+  /** On the banner's notice when it stands for several waiting trade requests: how many (2 or
+   *  more), and every key it stands for. Absent for a single request. */
+  readonly count?: number;
+  readonly keys?: readonly string[];
 }
 
 export interface ErrorNotice {
@@ -30,7 +40,9 @@ export interface ErrorNotice {
 export type Notice = RequestNotice | ErrorNotice;
 
 export interface NoticeInput {
-  readonly offers: readonly StoreTradeOffer[];
+  readonly sessions: readonly StoreTradeSession[];
+  /** The sessions this client has opened its editor on: they are no longer requests. */
+  readonly opened: ReadonlySet<bigint>;
   readonly challenges: readonly StoreBattleChallenge[];
   readonly players: readonly StorePlayer[];
   readonly identity: string;
@@ -47,35 +59,19 @@ function nameOf(players: readonly StorePlayer[], identity: string): string {
   return name !== '' ? name : `#${identity.slice(0, 8)}`;
 }
 
-/** The oldest offer waiting on the viewer's answer. Not `shownTradeOffer`: its oldest-involving
- *  pick would hide an incoming offer behind the viewer's own outgoing one. */
-function waitingOffer(offers: readonly StoreTradeOffer[], identity: string) {
-  let oldest: StoreTradeOffer | undefined;
-  for (const o of offers) {
-    if (o.counterparty !== identity || o.status !== 'Pending') continue;
-    if (
-      oldest === undefined ||
-      o.createdAtMs < oldest.createdAtMs ||
-      (o.createdAtMs === oldest.createdAtMs && o.tradeId < oldest.tradeId)
-    )
-      oldest = o;
-  }
-  return oldest;
-}
-
 /** The requests waiting on the viewer, oldest first (a tie: the smaller key, so challenge before
- *  trade). Dismissal does not hide a request here: Y still answers one the banner no longer shows. */
+ *  session). Dismissal does not hide a request here: Y still answers one the banner no longer shows. */
 export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
   const out: RequestNotice[] = [];
-  const offer = waitingOffer(i.offers, i.identity);
-  if (offer !== undefined) {
+  for (const session of ownSessions(i.sessions, i.identity)) {
+    if (!incomingUntouched(session, i.identity) || i.opened.has(session.sessionId)) continue;
     out.push({
       kind: 'request',
-      key: `trade-${offer.tradeId}`,
+      key: `session-${session.sessionId}`,
       request: 'trade',
-      id: offer.tradeId,
-      fromName: nameOf(i.players, offer.initiator),
-      createdAtMs: offer.createdAtMs,
+      id: session.sessionId,
+      fromName: nameOf(i.players, session.opener),
+      createdAtMs: session.createdAtMs,
     });
   }
   const challenge = incomingChallenge(i.challenges, i.identity);
@@ -102,13 +98,25 @@ export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
   );
 }
 
-/** The notices, top first: the error when it shows, then the oldest undismissed request. */
+/** The notices, top first: the error when it shows, then the oldest undismissed request. When that
+ *  request is a trade and more undismissed trade requests wait, it stands for all of them. */
 export function buildNotices(i: NoticeInput): readonly Notice[] {
-  const request = pendingRequests(i).find((n) => !i.dismissed.has(n.key));
+  const shown = pendingRequests(i).filter((n) => !i.dismissed.has(n.key));
   const out: Notice[] = i.errorPending ? [ERROR_NOTICE] : [];
-  if (request !== undefined) out.push(request);
+  const request = shown[0];
+  if (request === undefined) return out;
+  const trades = request.request === 'trade' ? shown.filter((n) => n.request === 'trade') : [];
+  out.push(
+    trades.length >= 2
+      ? { ...request, count: trades.length, keys: trades.map((n) => n.key) }
+      : request,
+  );
   return out;
 }
+
+/** The request keys B on `notice` dismisses: every key a collapsed line stands for, else its own. */
+export const dismissKeys = (notice: Notice): readonly string[] =>
+  notice.kind === 'request' && notice.keys !== undefined ? notice.keys : [notice.key];
 
 export type RequestAction = 'accept' | 'decline' | 'view';
 
@@ -148,10 +156,15 @@ export function requestSheetStep(
   return { state: null, run: outcome.key as RequestAction };
 }
 
-/** The command that answers `n`. */
+/** The command that answers `n`. A trade session has no accept step of its own: Accept opens its
+ *  editor (where the viewer makes their offer) and Decline cancels the session. */
 export function requestCommand(n: RequestNotice, action: 'accept' | 'decline'): Command {
   const accepted = action === 'accept';
-  if (n.request === 'trade') return { kind: 'respondTrade', tradeId: n.id, accepted };
+  if (n.request === 'trade') {
+    return accepted
+      ? { kind: 'openTradeEditor', sessionId: n.id }
+      : { kind: 'cancelTradeSession', sessionId: n.id };
+  }
   return accepted
     ? { kind: 'acceptChallenge', challengeId: n.id }
     : { kind: 'declineChallenge', challengeId: n.id };
