@@ -751,6 +751,121 @@ pub struct TradeOffer {
     pub created_at_ms: i64,
 }
 
+// --- Trade sessions -------------------------------------------------
+
+/// A live trade session between two players: each side edits its own offer,
+/// each confirms the revision it reviewed, and the confirm that completes the
+/// pair executes the swap. PRIVATE (no `public`): the two participants read
+/// their own rows through the `my_trade_session` view below and nobody else
+/// reads any.
+///
+/// A live row is an open session; a cancelled, executed or expired one is
+/// DELETED, so there is no status column. `opener_offer` and `partner_offer`
+/// are a nested type whose shape is fixed once published; a later addition is
+/// a new `#[default]` column appended to this table.
+///
+/// An offer locks its owner's assets only while that side is confirmed. The
+/// cards inside an offer are display snapshots carrying no hidden genes.
+#[derive(Clone)]
+#[spacetimedb::table(accessor = trade_session)]
+pub struct TradeSession {
+    #[primary_key]
+    #[auto_inc]
+    pub session_id: u64,
+    /// The player who called `open_trade_session`.
+    #[index(btree)]
+    pub opener: Identity,
+    /// The player the session was opened with.
+    #[index(btree)]
+    pub partner: Identity,
+    pub opener_offer: game_core::trading::TradeSessionOffer,
+    pub partner_offer: game_core::trading::TradeSessionOffer,
+    pub opener_confirmed: bool,
+    pub partner_confirmed: bool,
+    /// Advances on every accepted edit and on every snapshot drift; a confirm
+    /// names the revision it reviewed.
+    pub revision: u64,
+    /// Server clock ms when the session was opened.
+    pub created_at_ms: i64,
+}
+
+/// Participant-scoped read path for `trade_session`: a client sees ONLY the
+/// rows it opened or was opened with — two point index scans, never a table
+/// scan. THIS BODY is the entire security boundary and takes the context
+/// alone (an extra parameter would be a caller-chosen-participant leak). The
+/// trailing filter is dedup by construction, the `my_battle` shape: it drops
+/// the rows the first scan already emitted.
+#[spacetimedb::view(accessor = my_trade_session, public)]
+fn my_trade_session(ctx: &spacetimedb::ViewContext) -> Vec<TradeSession> {
+    let _ = ctx;
+    Vec::new() // SKELETON
+}
+
+/// PRIVATE review snapshot of one monster offered in a trade session: every
+/// `monster` column except the owner, flat and in `MonsterSnapshot` order,
+/// stored with the columns a partner does not review blanked
+/// (`game_core::trading::MonsterSnapshot::masked`). It holds hidden genes, so
+/// it has NO view and no client read path; the server compares it with the
+/// live row before a confirm is recorded and before a swap executes.
+///
+/// One row per offered monster per session, written with each edit and
+/// deleted with its session. `monster_id` is indexed so a monster write finds
+/// the sessions listing it without knowing who owns it now. Flat columns on
+/// purpose: a column added to `monster` is one more `#[default]` column here.
+#[derive(Clone)]
+#[spacetimedb::table(accessor = trade_session_snapshot)]
+pub struct TradeSessionSnapshot {
+    #[primary_key]
+    #[auto_inc]
+    pub snapshot_id: u64,
+    #[index(btree)]
+    pub session_id: u64,
+    #[index(btree)]
+    pub monster_id: u64,
+    pub species_id: u32,
+    pub nickname: String,
+    pub level: u8,
+    pub xp: u32,
+    pub iv_hp: u8,
+    pub iv_attack: u8,
+    pub iv_defense: u8,
+    pub iv_speed: u8,
+    pub iv_sp_attack: u8,
+    pub iv_sp_defense: u8,
+    pub nature_kind: NatureKind,
+    pub ev_hp: u16,
+    pub ev_attack: u16,
+    pub ev_defense: u16,
+    pub ev_speed: u16,
+    pub ev_sp_attack: u16,
+    pub ev_sp_defense: u16,
+    pub stat_hp: u16,
+    pub stat_attack: u16,
+    pub stat_defense: u16,
+    pub stat_speed: u16,
+    pub stat_sp_attack: u16,
+    pub stat_sp_defense: u16,
+    pub current_hp: u16,
+    pub party_slot: u8,
+    pub last_care_at_ms: i64,
+    pub essence_fire: u32,
+    pub essence_water: u32,
+    pub essence_plant: u32,
+    pub essence_electric: u32,
+    pub essence_earth: u32,
+    pub essence_wind: u32,
+    pub essence_light: u32,
+    pub essence_dark: u32,
+    pub trust_favorable_count: u32,
+    pub trust_unfavorable_count: u32,
+    pub trust_favorable_battle_day_epoch: u32,
+    pub quality_time_ticks_total: u32,
+    pub quality_time_accum_ms: u32,
+    pub quality_time_window_ms: u32,
+    pub quality_time_window_start_ms: i64,
+    pub last_essence_train_at_ms: i64,
+}
+
 // --- M13a currency table ------------------------------------------
 
 /// PRIVATE per-player wallet — one row per player (PK = owner_identity).
@@ -1731,6 +1846,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         exportable: true,
     },
     DataLifecycleEntry {
+        table: "trade_session",
+        policy: DeletionPolicy::Erase,
+        basis: "only open sessions exist (a cancelled, executed or expired session is deleted), each at most an hour old and only while both participants are connected; both participant columns are swept; not exported",
+        exportable: false,
+    },
+    DataLifecycleEntry {
         table: "battle_challenge",
         policy: DeletionPolicy::Erase,
         basis: "only pending challenges exist; challenger AND target columns are swept, \
@@ -1865,6 +1986,18 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         policy: DeletionPolicy::ViaJoin("trade_offer"),
         basis: "no Identity column; per-offer TTL schedule swept via its owning trade \
                 offer row",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "trade_session_snapshot",
+        policy: DeletionPolicy::ViaJoin("trade_session"),
+        basis: "no Identity column; the review snapshot of one offered monster, hidden genes included, deleted with its owning trade session; never exported because a session holds both participants' snapshots",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "trade_session_reaper_schedule",
+        policy: DeletionPolicy::ViaJoin("trade_session"),
+        basis: "no Identity column; per-session TTL schedule swept via its owning trade session row",
         exportable: false,
     },
     DataLifecycleEntry {

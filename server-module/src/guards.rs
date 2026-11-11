@@ -285,7 +285,7 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 /// Every trade offer `owner` is party to: the rows of the `initiator` index,
 /// then the rows of the `counterparty` index. Both index scans open when the
 /// chain is built.
-fn offers_of(ctx: &ReducerContext, owner: Identity) -> impl Iterator<Item = TradeOffer> {
+pub(crate) fn offers_of(ctx: &ReducerContext, owner: Identity) -> impl Iterator<Item = TradeOffer> {
     ctx.db
         .trade_offer()
         .initiator()
@@ -406,6 +406,49 @@ pub(crate) fn escrowed_monster_ids(
     }
     ids
 }
+
+// SKELETON ---------------------------------------------------------------
+pub(crate) fn sessions_of(
+    ctx: &ReducerContext,
+    owner: Identity,
+) -> impl Iterator<Item = crate::schema::TradeSession> {
+    let _ = (ctx, owner);
+    std::iter::empty()
+}
+
+pub(crate) fn session_locked_item_qty(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeSession>>,
+    owner: Identity,
+    item_id: u32,
+) -> u32 {
+    let _ = (sessions.count(), owner, item_id);
+    0
+}
+
+pub(crate) fn session_locked_currency(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeSession>>,
+    owner: Identity,
+) -> u64 {
+    let _ = (sessions.count(), owner);
+    0
+}
+
+pub(crate) fn session_locked_monster_ids(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeSession>>,
+    owner: Identity,
+) -> Vec<u64> {
+    let _ = (sessions.count(), owner);
+    Vec::new()
+}
+
+pub(crate) fn session_lists_monster(
+    sessions: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeSession>>,
+    monster_id: u64,
+) -> bool {
+    let _ = (sessions.count(), monster_id);
+    false
+}
+// END SKELETON -----------------------------------------------------------
 
 /// Reject if the monster is in an ongoing battle (escrowed).
 /// Pure predicate: checks if any battle row has the monster_id in either party

@@ -243,6 +243,87 @@ pub(crate) fn apply_swap(
     Ok(())
 }
 
+// SKELETON ---------------------------------------------------------------
+pub(crate) const ERR_SESSION_NOT_FOUND: &str = "trade session not found";
+pub(crate) const ERR_NOT_JOINED: &str = "not joined";
+pub(crate) const ERR_PARTNER_NOT_JOINED: &str = "that player is not a joined player";
+pub(crate) const ERR_OUT_OF_RANGE: &str = "that player is not close enough to trade";
+pub(crate) const ERR_EXECUTE_FAILED: &str = "trade could not be completed";
+
+#[spacetimedb::table(accessor = trade_session_reaper_schedule, scheduled(trade_session_reaper))]
+pub struct TradeSessionReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: spacetimedb::ScheduleAt,
+    #[index(btree)]
+    pub session_id: u64,
+}
+
+#[spacetimedb::reducer]
+pub fn open_trade_session(ctx: &ReducerContext, partner: Identity) -> Result<(), String> {
+    let _ = (ctx, partner);
+    Err("unimplemented".to_string())
+}
+
+#[spacetimedb::reducer]
+pub fn set_trade_offer(
+    ctx: &ReducerContext,
+    session_id: u64,
+    monster_ids: Vec<u64>,
+    items: Vec<TradeItem>,
+    currency: u64,
+) -> Result<(), String> {
+    let _ = (ctx, session_id, monster_ids, items, currency);
+    Err("unimplemented".to_string())
+}
+
+#[spacetimedb::reducer]
+pub fn confirm_trade_session(
+    ctx: &ReducerContext,
+    session_id: u64,
+    revision: u64,
+) -> Result<(), String> {
+    let _ = (ctx, session_id, revision);
+    Err("unimplemented".to_string())
+}
+
+#[spacetimedb::reducer]
+pub fn cancel_trade_session(ctx: &ReducerContext, session_id: u64) -> Result<(), String> {
+    let _ = (ctx, session_id);
+    Err("unimplemented".to_string())
+}
+
+#[spacetimedb::reducer]
+pub fn trade_session_reaper(
+    ctx: &ReducerContext,
+    args: TradeSessionReaperSchedule,
+) -> Result<(), String> {
+    let _ = (ctx, args);
+    Err("unimplemented".to_string())
+}
+
+pub(crate) fn cancel_sessions_listing(ctx: &ReducerContext, written: &Monster) {
+    let _ = (ctx, written);
+}
+
+pub(crate) fn delete_sessions_of(ctx: &ReducerContext, who: Identity) {
+    let _ = (ctx, who);
+}
+
+pub(crate) fn open_sessions_addressed_to(
+    ctx: &ReducerContext,
+    partner: Identity,
+) -> Vec<(u64, i64)> {
+    let _ = (ctx, partner);
+    Vec::new()
+}
+
+pub(crate) fn decline_sessions(ctx: &ReducerContext, session_ids: &[u64]) {
+    let _ = (ctx, session_ids);
+}
+// END SKELETON -----------------------------------------------------------
+
 #[cfg(test)]
 #[path = "trading_session_tests.rs"]
 mod trading_session_tests;

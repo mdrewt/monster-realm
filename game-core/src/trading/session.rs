@@ -33,6 +33,7 @@ pub const TRADE_SESSION_TTL_MS: i64 = 3_600_000;
 /// `cards` are the server-built display snapshots of `monster_ids`, in the same
 /// order; no rule reads them.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct TradeSessionOffer {
     pub monster_ids: Vec<u64>,
     pub items: Vec<TradeItem>,
