@@ -969,8 +969,8 @@ export class AuthoritativeStore {
     // identity's LAST live connection ends; otherwise the snapshot
     // re-delivers it).
     this.#tradeOffers.clear();
-    // my_trade_session rows — the server deletes a disconnected player's sessions; the snapshot
-    // re-delivers whatever is still open.
+    // my_trade_session rows — cleared on disconnect. The server deletes a player's sessions when
+    // the identity's LAST live connection ends; otherwise the snapshot re-delivers them.
     this.#tradeSessions.clear();
     // battle_challenge rows — cleared on disconnect; server cancels the player's
     // outgoing pending challenges via on_disconnect (pvp.rs cancel_challenges_on_disconnect)

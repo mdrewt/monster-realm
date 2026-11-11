@@ -1414,4 +1414,69 @@ describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequent
     ).toHaveLength(1);
     expect(stackNames(), 'and opens nothing').toEqual(['world']);
   }, 60_000);
+
+  it('ts-3.5 a newly arrived request is always spoken: with an OLDER challenge holding the banner, a trade session that arrives later is announced with ITS OWN line, not the challenge`s again', async () => {
+    // RED REASON: the announcement follows the banner's head line; with the older challenge on
+    // top the new session re-announces the challenge's line (which the live region then dedupes:
+    // the new request is never spoken at all).
+    // WRONG IMPL KILLED: announcing the banner's (oldest) line whenever a new key appears; one
+    // announcement per banner text change only (the head did not change, so nothing is spoken).
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    frame();
+    opts.store.upsertChallenge(challengeFrom(BOB, 21n, 1_000n));
+    batch();
+    frame(700);
+    frame(700);
+    const live = byId('a11y-live');
+    const challengeLine = tf('notice.request.challenge', { name: 'Bob' });
+    expect(live.textContent, 'precondition: the challenge was announced').toBe(challengeLine);
+    expect(bannerText(), 'precondition: the challenge holds the banner').not.toBeNull();
+    live.textContent = '';
+
+    putSession(sessionFrom(CAROL, 11n, 2_000n));
+    batch();
+    frame(700);
+    frame(700);
+    const carolLine = tf('notice.request.trade', { name: 'Carol' });
+    expect(carolLine, 'fixture: a line of its own').not.toBe(challengeLine);
+    expect(live.textContent, 'the new session is spoken with its own line').toBe(carolLine);
+
+    live.textContent = '';
+    batch();
+    frame(700);
+    frame(700);
+    expect(live.textContent, 'and only once').toBe('');
+    expect(stackNames(), 'nothing opened').toEqual(['world']);
+    expect(H.calls, 'nothing was sent').toEqual([]);
+  }, 60_000);
+
+  it('ts-3.5 two trade sessions arriving in ONE batch with nothing older are announced once, as the collapsed line', async () => {
+    // RED REASON: a per-request announcement would speak the first session's single line (or
+    // both singles, the live region keeping the last), not the line the banner shows.
+    // WRONG IMPL KILLED: one announcement per arriving key (the second single line replacing the
+    // collapsed one); the oldest's single line announced for a collapsed banner; a re-announce on
+    // the next batch.
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    frame();
+    const live = byId('a11y-live');
+    live.textContent = '';
+    putSession(sessionFrom(BOB, 11n, 1_000n));
+    putSession(sessionFrom(CAROL, 12n, 1_100n));
+    batch();
+    frame(700);
+    frame(700);
+    expect(bannerText(), 'precondition: the banner collapses the two').toBe(TWO_TRADES);
+    expect(live.textContent, 'announced as the collapsed line').toBe(TWO_TRADES);
+    live.textContent = '';
+    batch();
+    frame(700);
+    frame(700);
+    expect(live.textContent, 'once').toBe('');
+  }, 60_000);
 });

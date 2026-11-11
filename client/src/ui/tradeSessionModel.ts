@@ -34,8 +34,9 @@ export type MonsterBlock = 'fainted' | 'inAnotherTrade' | 'inBattle';
 
 export interface PickMonsterVm {
   readonly monsterId: bigint;
-  /** The nickname, else the species name, then ` Lv.<level>`. */
+  /** The nickname, else the species name. The view adds the level in the player's language. */
   readonly label: string;
+  readonly level: number;
   readonly blocked: MonsterBlock | null;
 }
 
@@ -65,7 +66,8 @@ export interface TradeSessionVm {
   readonly offer: TradeOfferDraft;
   /** The viewer's party monsters, by slot. */
   readonly monsters: readonly PickMonsterVm[];
-  /** The viewer's item stacks that hold at least one, by itemId. */
+  /** The viewer's item stacks that hold at least one, and every item on their stored side whose
+   *  stack is gone (held 0, so the line can still be taken out), by itemId. */
   readonly items: readonly PickItemVm[];
   readonly balance: bigint;
   /** game-core's per-side monster cap. */
@@ -208,21 +210,19 @@ export function sameOffer(a: TradeOfferDraft, b: TradeOfferDraft): boolean {
   );
 }
 
-function nameOf(players: readonly StorePlayer[], identity: string): string {
+/** A player's display name: the raw name, `#<hex8>` when it is empty or the player is unknown. */
+export function playerName(players: readonly StorePlayer[], identity: string): string {
   const name = players.find((p) => p.identity === identity)?.name ?? '';
   return name !== '' ? name : `#${identity.slice(0, 8)}`;
 }
 
-function monsterLabel(
+const monsterLabel = (
   m: StoreMonsterPub,
   speciesMap: ReadonlyMap<number, { readonly name: string }>,
-): string {
-  const base =
-    m.nickname !== ''
-      ? m.nickname
-      : (speciesMap.get(m.speciesId)?.name ?? `Unknown (#${m.speciesId})`);
-  return `${base} Lv.${m.level}`;
-}
+): string =>
+  m.nickname !== ''
+    ? m.nickname
+    : (speciesMap.get(m.speciesId)?.name ?? `Unknown (#${m.speciesId})`);
 
 export function buildTradeSessionVm(i: TradeSessionInput): TradeSessionScreenVm {
   const mineIn = ownSessions(i.sessions, i.identity);
@@ -256,7 +256,7 @@ export function buildTradeSessionVm(i: TradeSessionInput): TradeSessionScreenVm 
     kind: 'session',
     sessionId: session.sessionId,
     revision: session.revision,
-    partnerName: nameOf(i.players, partnerOf(session, i.identity)),
+    partnerName: playerName(i.players, partnerOf(session, i.identity)),
     mine: side(own.offer, own.confirmed),
     theirs: side(theirOffer, theirConfirmed),
     offer: canonical(own.offer),
@@ -266,19 +266,33 @@ export function buildTradeSessionVm(i: TradeSessionInput): TradeSessionScreenVm 
       .map((m) => ({
         monsterId: m.monsterId,
         label: monsterLabel(m, i.speciesMap),
+        level: m.level,
         blocked: blockOf(m),
       })),
-    items: i.inventory
-      .filter((stack) => stack.ownerIdentity === i.identity && stack.count > 0)
-      .sort((a, b) => a.itemId - b.itemId)
-      .map((stack) => ({
-        itemId: stack.itemId,
-        name: i.itemDefs.get(stack.itemId)?.name ?? `Unknown (#${stack.itemId})`,
-        held: stack.count,
-      })),
+    items: pickItems(i, own.offer),
     balance: i.balance,
     maxMonsters: i.maxMonstersPerSide,
   };
+}
+
+/** The item rows: the viewer's stacks that hold at least one, plus every stored line whose stack
+ *  is gone (spent or sold since it was offered), which stays listed at held 0 so it can be
+ *  reduced and removed. */
+function pickItems(i: TradeSessionInput, stored: StoreTradeSessionOffer): readonly PickItemVm[] {
+  const held = new Map<number, number>();
+  for (const stack of i.inventory) {
+    if (stack.ownerIdentity === i.identity && stack.count > 0) held.set(stack.itemId, stack.count);
+  }
+  for (const line of stored.items) {
+    if (line.qty >= 1 && !held.has(line.itemId)) held.set(line.itemId, 0);
+  }
+  return [...held]
+    .sort(([a], [b]) => a - b)
+    .map(([itemId, count]) => ({
+      itemId,
+      name: i.itemDefs.get(itemId)?.name ?? `Unknown (#${itemId})`,
+      held: count,
+    }));
 }
 
 /** Everything the editor paints from `vm`, as one string: equal exactly when the paint would be
@@ -304,7 +318,7 @@ export function tradeSessionKey(vm: TradeSessionScreenVm): string {
     vm.partnerName,
     sideKey(vm.mine),
     sideKey(vm.theirs),
-    vm.monsters.map((m) => [m.monsterId.toString(), m.label, m.blocked]),
+    vm.monsters.map((m) => [m.monsterId.toString(), m.label, m.level, m.blocked]),
     vm.items.map((item) => [item.itemId, item.name, item.held]),
     vm.balance.toString(),
     vm.maxMonsters,
@@ -327,7 +341,9 @@ export function toggleMonster(
   return { ...draft, monsterIds: [...draft.monsterIds, monsterId].sort(byBigint) };
 }
 
-/** Change an item's offered quantity by `delta`, clamped to 0..held; 0 drops the line. */
+/** Change an item's offered quantity by `delta`. A step up stops at what the viewer holds and
+ *  never lowers a quantity already above it (a stack spent since it was offered); a step down
+ *  stops at 0, which drops the line. */
 export function stepItem(
   vm: TradeSessionVm,
   draft: TradeOfferDraft,
@@ -336,7 +352,8 @@ export function stepItem(
 ): TradeOfferDraft {
   const held = vm.items.find((item) => item.itemId === itemId)?.held ?? 0;
   const had = draft.items.find((line) => line.itemId === itemId)?.qty ?? 0;
-  const qty = Math.max(0, Math.min(held, had + Math.trunc(delta)));
+  const wanted = had + Math.trunc(delta);
+  const qty = wanted > had ? Math.min(Math.max(held, had), wanted) : Math.max(0, wanted);
   if (qty === had) return draft;
   const others = draft.items.filter((line) => line.itemId !== itemId);
   const items = qty === 0 ? others : [...others, { itemId, qty }];

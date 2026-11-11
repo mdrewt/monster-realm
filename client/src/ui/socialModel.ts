@@ -19,7 +19,7 @@ import { list, type NavLayout, tabs } from './nav';
 import { incomingChallenge, outgoingChallenge } from './pvpModel';
 import type { SocialTab } from './screens/types';
 import { shownTradeOffer, type TradeAction, tradeActions } from './tradeModel';
-import { incomingUntouched, ownSessions, partnerOf } from './tradeSessionModel';
+import { incomingUntouched, ownSessions, partnerOf, playerName } from './tradeSessionModel';
 
 /** The tabs in strip order. Built from a `Record`, so a new `SocialTab` fails client-typecheck
  *  here. */
@@ -119,8 +119,6 @@ function sessionRow(
   identity: string,
   players: readonly StorePlayer[],
 ): SocialRow {
-  const other = partnerOf(session, identity);
-  const name = players.find((p) => p.identity === other)?.name ?? '';
   const viewerIsOpener = session.opener === identity;
   return {
     key: `session-${session.sessionId}`,
@@ -130,7 +128,7 @@ function sessionRow(
     waiting: incomingUntouched(session, identity),
     createdAtMs: session.createdAtMs,
     session: {
-      partnerName: name !== '' ? name : `#${other.slice(0, 8)}`,
+      partnerName: playerName(players, partnerOf(session, identity)),
       mineConfirmed: viewerIsOpener ? session.openerConfirmed : session.partnerConfirmed,
       theirsConfirmed: viewerIsOpener ? session.partnerConfirmed : session.openerConfirmed,
     },

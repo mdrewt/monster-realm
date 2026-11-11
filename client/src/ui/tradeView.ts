@@ -16,7 +16,7 @@
 // panel shows), the action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
 // child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
 // the Players placeholder, the trade row's cursor on `#trade-status` and the trade SESSION rows
-// (ts-3: one per session the viewer is in, in `#trade-sessions`): kept only while this root is
+// (one per session the viewer is in, in `#trade-sessions`): kept only while this root is
 // visible, re-applied after every batch render and dropped by `hide()`. The session list is the one
 // part this view adds to the root, created by the first paint that has a session row; a root that
 // never had one keeps exactly the shell's children.
@@ -31,20 +31,15 @@ import { list, tabs } from './nav';
 import { navTabId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { SocialTab } from './screens/types';
-import { SOCIAL_TABS, type SocialAction } from './socialModel';
+import { SOCIAL_TABS, type SocialAction, type SocialSessionFacts } from './socialModel';
 import { createTabBar, renderTabBar, type TabBar } from './tabBar';
 import type { TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 /** The Yes / No question a Social action asks before it is sent. */
 export type SocialQuestion = 'declineTrade' | 'confirmTrade' | 'declineChallenge';
 
-/** One trade session row as the Trades tab paints it. */
-export interface SocialSessionRow {
-  readonly key: string;
-  readonly partnerName: string;
-  readonly mineConfirmed: boolean;
-  readonly theirsConfirmed: boolean;
-}
+/** One trade session row as the Trades tab paints it: its nav key and its painted facts. */
+export type SocialSessionRow = SocialSessionFacts & { readonly key: string };
 
 /** What the Social screen paints. */
 export interface SocialPaint {

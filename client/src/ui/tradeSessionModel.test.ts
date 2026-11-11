@@ -446,7 +446,10 @@ describe('tradeSessionModel — the editor rows (ts-3.2)', () => {
     expect(editorRows(full, full.offer).length).toBeGreaterThan(1);
 
     // Nothing to offer at all: still coins, apply, confirm, cancel.
-    const bare = sessionVm({ ownMonsters: [], inventory: [], balance: 0n });
+    // REVISED (contract C, from the spec): the stored side's item lines are picker rows even with
+    // no stack, so "nothing to offer" is session 102, whose stored side for ME holds no item line.
+    // Was: session 101 (stored items 3 and 7), which now rightly lists item-3 and item-7.
+    const bare = sessionVm({ sessionId: 102n, ownMonsters: [], inventory: [], balance: 0n });
     expect(brief(editorRows(bare, bare.offer)).map((r) => r.key)).toEqual([
       'coins',
       'apply',
@@ -581,8 +584,14 @@ describe('tradeSessionModel — gone, totality and the paint key (ts-3.2, ts-3.3
     expect(bare.partnerName, 'an unknown partner reads #hex8').toBe(`#${BOB.slice(0, 8)}`);
     expect(bare.mine.cards.every((c) => typeof c.speciesName === 'string')).toBe(true);
     expect(bare.mine.items.every((i) => typeof i.name === 'string')).toBe(true);
-    expect(bare.items.map((i) => i.itemId)).toEqual([7]);
-    expect(typeof bare.items[0]?.name).toBe('string');
+    // REVISED (contract C, from the spec): vm.items is the held stacks PLUS every stored line with
+    // no stack, so the stored item 3 (no stack here) is listed held 0 beside the held item 7.
+    // Was: [7] alone.
+    expect(bare.items.map((i) => [i.itemId, i.held])).toEqual([
+      [3, 0],
+      [7, 2],
+    ]);
+    expect(bare.items.every((i) => typeof i.name === 'string')).toBe(true);
   });
 
   it('ts-3.3 tradeSessionKey is equal for a rebuilt equal vm and differs when the revision, either mark, a card, an item, the coins, a picker block, the balance or the partner name changes; gone has its own key', () => {
@@ -629,6 +638,15 @@ describe('tradeSessionModel — gone, totality and the paint key (ts-3.2, ts-3.3
           ownMonsters: MONSTERS.map((m) => (m.monsterId === 21n ? mon(21n, 0, 'Ash', 0) : m)),
         }),
       ],
+      [
+        // ts-3 (contract A): the level left the label, so the key must carry it on its own.
+        'a picker monster levels up',
+        key({
+          ownMonsters: MONSTERS.map((m) =>
+            m.monsterId === 21n ? ({ ...m, level: 6 } as StoreMonsterPub) : m,
+          ),
+        }),
+      ],
       ['the balance', key({ balance: 499n })],
       ['a battle ends', key({ battleMonsterIds: new Set([26n, 20n]) })],
       [
@@ -639,6 +657,84 @@ describe('tradeSessionModel — gone, totality and the paint key (ts-3.2, ts-3.3
     for (const [what, k] of changes) expect(k, what).not.toBe(k0);
     expect(tradeSessionKey({ kind: 'gone' })).not.toBe(k0);
     expect(tradeSessionKey({ kind: 'gone' })).toBe(tradeSessionKey({ kind: 'gone' }));
+  });
+});
+
+describe('tradeSessionModel — the picker label through the catalog (ts-3.2, contract A)', () => {
+  it('ts-3.2 a picker monster`s label is its nickname, else its species name, with NO level suffix, and its level is exposed on its own as `level`', () => {
+    // RED REASON: today the label is `<name> Lv.<level>` (hard-coded English) and `level` does not
+    // exist on PickMonsterVm (a red-phase type error too).
+    // WRONG IMPL KILLED: the hard-coded ` Lv.` suffix kept (the view would then print the level
+    // twice, once in English); a label that drops the nickname for the species; a `level` that is a
+    // constant or another monster's (21 is level 12 here, the others 5).
+    const party = MONSTERS.map((m) =>
+      m.monsterId === 21n ? ({ ...m, nickname: '', level: 12 } as StoreMonsterPub) : m,
+    );
+    const vm = sessionVm({ ownMonsters: party });
+    const byId = new Map(vm.monsters.map((m) => [m.monsterId, m]));
+    expect(byId.get(21n)?.label, 'no nickname: the species name, bare').toBe('Sprout');
+    expect(byId.get(21n)?.level, 'its own level').toBe(12);
+    expect(byId.get(27n)?.label, 'the nickname, bare').toBe('Gus');
+    expect(byId.get(27n)?.level).toBe(5);
+    for (const m of vm.monsters) {
+      expect(m.label, `monster ${m.monsterId}: no level text in the label`).not.toMatch(/Lv|\d/);
+      expect(typeof m.level, `monster ${m.monsterId}: a number`).toBe('number');
+    }
+  });
+});
+
+describe('tradeSessionModel — an offered item line stays editable (ts-3.2, contract C)', () => {
+  /** ME's side of session 101 with `items` stored, the rest as S1. */
+  const storing = (items: readonly StoreTradeItem[]) => [
+    { ...S1, openerOffer: { ...S1.openerOffer, items } },
+    S2,
+    S3,
+  ];
+
+  it('ts-3.2 a stored line whose stack is gone (none, or count 0) is still in vm.items (held 0, its def name, once, by itemId) and in editorRows; a step up keeps the same draft, a step down goes 3, 2, 1 and then removes the line', () => {
+    // RED REASON: today vm.items holds only stacks with count > 0, so item 7 has no picker row and
+    // stepItem clamps to held 0: a step down from 3 drops the line at once.
+    // WRONG IMPL KILLED: vm.items read from the inventory alone (the offered line can never be
+    // reduced or removed: it is stuck on the table); the stored line listed twice when a count-0
+    // stack exists; a stored line of the PARTNER's side listed (Bob's item 5); a step down clamped
+    // to `held` (3 -> 0 in one press); a step up that raises past what is offered with nothing held.
+    const vm = sessionVm({
+      sessions: storing([{ itemId: 7, qty: 3 }]),
+      inventory: [inv(1n, 7, 0), inv(2n, 3, 5), inv(4n, 5, 8, BOB)],
+    });
+    expect(vm.offer.items, 'fixture: the stored line').toEqual([{ itemId: 7, qty: 3 }]);
+    expect(vm.items, 'the held stack, then the stored line with no stack').toEqual([
+      { itemId: 3, name: 'Potion', held: 5 },
+      { itemId: 7, name: 'Charm', held: 0 },
+    ]);
+    const keys = editorRows(vm, vm.offer).map((r) => r.key);
+    expect(
+      keys.filter((k) => k.startsWith('item-')),
+      'a row for the stored line',
+    ).toEqual(['item-3', 'item-7']);
+    expect(stepItem(vm, vm.offer, 7, 1), 'nothing held: a step up keeps the draft').toBe(vm.offer);
+    const two = stepItem(vm, vm.offer, 7, -1);
+    expect(two.items, 'a step down: 2').toEqual([{ itemId: 7, qty: 2 }]);
+    const one = stepItem(vm, two, 7, -1);
+    expect(one.items, 'then 1').toEqual([{ itemId: 7, qty: 1 }]);
+    const none = stepItem(vm, one, 7, -1);
+    expect(none.items, 'then the line is removed').toEqual([]);
+    expect(stepItem(vm, none, 7, -1), 'nothing left to take: the same draft').toBe(none);
+    expect(stepItem(vm, none, 7, 1), 'and nothing held to add back').toBe(none);
+  });
+
+  it('ts-3.2 holding fewer than are offered (2 held, 3 offered) a step up keeps the same draft (never lowered to 2) and a step down gives 2', () => {
+    // RED REASON: today the step clamps to 0..held, so a step UP from 3 with 2 held answers 2.
+    // WRONG IMPL KILLED: an upper bound of `held` alone (a Right press LOWERS the offer, a change
+    // the player never asked for, sent on the next Update); a step down that lands on held - 1.
+    const vm = sessionVm({
+      sessions: storing([{ itemId: 7, qty: 3 }]),
+      inventory: [inv(1n, 7, 2), inv(2n, 3, 5)],
+    });
+    expect(vm.items.find((i) => i.itemId === 7)?.held, 'fixture: 2 held').toBe(2);
+    expect(stepItem(vm, vm.offer, 7, 1), 'a step up: the same draft').toBe(vm.offer);
+    expect(stepItem(vm, vm.offer, 7, 5), 'a big step up: the same draft').toBe(vm.offer);
+    expect(stepItem(vm, vm.offer, 7, -1).items).toEqual([{ itemId: 7, qty: 2 }]);
   });
 });
 

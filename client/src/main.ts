@@ -1481,6 +1481,11 @@ function runInteract(action: InteractAction): void {
 const tradeOpenExpired = (pending: { readonly atMs: number }): boolean =>
   performance.now() - pending.atMs > TRADE_OPEN_WAIT_MS;
 
+/** Nothing is over the world: no frame and no world sheet. The editor of a face-to-face open the
+ *  player is waiting on opens only then, so it never covers what they opened meanwhile. */
+const worldIsBare = (): boolean =>
+  contextStack[contextStack.length - 1].kind === 'world' && !screenHost.sheetOpen;
+
 /** The request keys the player dismissed with B (ctl-13), and those already announced. A new
  *  session forgets both: a request still waiting after a reconnect shows and is announced again. */
 const dismissedRequests = new Set<string>();
@@ -2030,6 +2035,10 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         },
         () => {
           if (pendingTradeOpen?.partner === partner) pendingTradeOpen = null;
+          // The two players pressed Trade at once and the other's session won: that is the trade
+          // this player asked for, so its editor opens.
+          const theirs = sessionWith(store.allTradeSessions(), identity, partner);
+          if (theirs !== undefined && worldIsBare()) openTradeEditor(theirs.sessionId);
         },
       );
     }
@@ -4034,10 +4043,7 @@ store.onBatchApplied(() => {
       const opened = openedSessionWith(sessions, identity, pendingTradeOpen.partner);
       if (opened !== undefined || tradeOpenExpired(pendingTradeOpen)) {
         pendingTradeOpen = null;
-        // Only over the bare world: a frame the player opened meanwhile is never covered.
-        if (opened !== undefined && contextStack[contextStack.length - 1].kind === 'world') {
-          openTradeEditor(opened.sessionId);
-        }
+        if (opened !== undefined && worldIsBare()) openTradeEditor(opened.sessionId);
       }
     }
     const closed =
@@ -4089,17 +4095,20 @@ store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const pending = pendingRequests(noticeInput());
-    let arrived = false;
-    for (const n of pending) {
-      if (announcedRequests.has(n.key)) continue;
-      announcedRequests.add(n.key);
-      arrived = true;
+    const arrived = pending.filter((n) => !announcedRequests.has(n.key));
+    for (const n of arrived) announcedRequests.add(n.key);
+    // One line for the batch. The banner's own when it stands for a request that just arrived
+    // (several new trade requests read as their count); else the first new request's line, so an
+    // older request holding the banner never hides a new one from the screen reader.
+    const first = arrived[0];
+    if (first !== undefined) {
+      const banner = buildNotices(noticeInput()).find(
+        (n): n is RequestNotice => n.kind === 'request',
+      );
+      const covers =
+        banner !== undefined && arrived.some((n) => dismissKeys(banner).includes(n.key));
+      announceNow(requestLine(covers && banner !== undefined ? banner : first));
     }
-    // One line for the batch, the banner's own: several new trade requests read as their count.
-    const banner = arrived
-      ? buildNotices(noticeInput()).find((n): n is RequestNotice => n.kind === 'request')
-      : undefined;
-    if (banner !== undefined) announceNow(requestLine(banner));
     const badged = pending.some((n) => !answeredRequests.has(n.key));
     if (badged !== menuBadged) {
       menuBadged = badged;

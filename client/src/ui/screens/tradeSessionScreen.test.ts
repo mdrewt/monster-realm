@@ -646,6 +646,42 @@ describe('tradeSessionScreen — gone and a state per session (ts-3.6)', () => {
     expect(elsewhere.draft.monsterIds, 'another session: a fresh draft').toEqual([]);
   });
 
+  it('ts-3.2 (contract C) a DRAFT-only item line whose stack vanishes is dropped on observe (a new state), while a STORED line whose stack vanishes stays at the draft`s quantity with its row', () => {
+    // RED REASON: today settle keeps the draft as it was, so the unsent line for an item the viewer
+    // no longer holds (and never stored) stays in the draft: Update offer would send a line the
+    // server refuses, and with no row left the player cannot remove it.
+    // WRONG IMPL KILLED: no drop at all; a drop of EVERY line with no stack (the stored item 4,
+    // still on the table, would vanish from the draft: an Update would silently withdraw it); a
+    // drop that also resets the dirty quantity of a kept line (3 back to the stored 2).
+    const stored = sess({ openerOffer: mySide([], [{ itemId: 4, qty: 2 }]) });
+    const held = [
+      { invId: 1n, ownerIdentity: ME, itemId: 4, count: 3 },
+      { invId: 2n, ownerIdentity: ME, itemId: 6, count: 2 },
+    ];
+    const vm0 = vmOf(stored, { inventory: held });
+    let s = open(vm0);
+    expect(s.draft.items, 'fixture: the stored line').toEqual([{ itemId: 4, qty: 2 }]);
+    s = walk(vm0, cursorTo(vm0, s, 'item-4'), ['Right']); // 4: 2 -> 3, unsent
+    s = walk(vm0, cursorTo(vm0, s, 'item-6'), ['Right']); // 6: a new draft-only line
+    expect(s.draft.items, 'fixture: the dirty draft').toEqual([
+      { itemId: 4, qty: 3 },
+      { itemId: 6, qty: 1 },
+    ]);
+
+    const vm1 = vmOf(stored, { inventory: [] }); // both stacks are gone
+    const after = observe(vm1, s);
+    expect(after, 'a new state').not.toBe(s);
+    expect(
+      after.draft.items,
+      'the draft-only line is dropped, the stored one stays as edited',
+    ).toEqual([{ itemId: 4, qty: 3 }]);
+    expect(after.seed.items, 'the seed is the stored side').toEqual([{ itemId: 4, qty: 2 }]);
+    const keys = paintOf(vm1, after).rows.map((r) => r.key);
+    expect(keys, 'the stored line keeps its row').toContain('item-4');
+    expect(keys, 'the vanished item has none').not.toContain('item-6');
+    expect(observe(vm1, after), 'then stable').toBe(after);
+  });
+
   it('ts-3.2 paint hands the view the vm, the model`s rows for the DRAFT, the draft, the cursor key, the notice and the prompt', () => {
     // WRONG IMPL KILLED: rows built from the stored side (an edit would not show until the server
     // echoed it); a cursor index instead of a key; the prompt or the notice dropped.

@@ -8496,4 +8496,152 @@ describe('main.ts trade sessions through the booted shell (runtime, ts-3)', {
     tsExpectEditorOn(96n, 'a second open works again');
     expect(tsCalls(), 'the existing session needs no reducer to reopen').toEqual([]);
   });
+
+  it('ts-3.6 the editor stays on ITS session: another session the viewer is in leaving (in a batch) keeps the editor open on its own session with exactly one "Trade closed." toast; its own session leaving then closes it', async () => {
+    // RED REASON: the editor is closed whenever ANY of the viewer's sessions closes.
+    // WRONG IMPL KILLED: closing the editor on any closed id (Ivy's 98 leaving tears down the
+    // editor on Zed's 97); no toast for a session that is not the open one; a toast per frame.
+    TS3.toastShows.length = 0;
+    await bootReady();
+    server(1000);
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(98n, TS_THIRD, H.identity),
+      tsSession(97n, H.identity, OTHER_IDENTITY),
+    ]);
+    tsFacePartner(1100);
+    frame(1150);
+    tsExpectNoEditor('precondition: no session opened a frame on its own');
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    tsExpectEditorOn(97n, 'precondition: the editor on Zed`s session');
+    expect(tsCalls(), 'precondition: the existing session needs no reducer').toEqual([]);
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(97n, H.identity, OTHER_IDENTITY)]);
+    server(1300);
+    frame(1350);
+    tsExpectEditorOn(97n, 'another session left: the editor stays on its own');
+    expect(tsClosedShows(), 'exactly one close toast for the session that left').toBe(1);
+    server(1400);
+    frame(1450);
+    tsExpectEditorOn(97n, 'and on the next batch');
+    expect(tsClosedShows(), 'and no more toasts').toBe(1);
+
+    opts.store.reconcileTradeSessionsFromView([]);
+    server(1500);
+    frame(1550);
+    tsExpectNoEditor('its own session left: the editor closed');
+    expect(tsClosedShows(), 'its own close toasts once').toBe(2);
+  });
+
+  it('ts-3.1 a pending face-to-face open to Zed plus an INCOMING session Zed opened, arriving while it is pending, opens no frame', async () => {
+    // RED REASON: the pending open is matched against a session with Zed in either orientation.
+    // WRONG IMPL KILLED: `sessionWith` where `openedSessionWith` is needed for the pending open (Zed's
+    // own request pops the editor open over the world, unasked, as if it answered the viewer's
+    // open).
+    await bootReady();
+    server(1000);
+    tsFacePartner(1100);
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'precondition: the open was sent',
+    ).toEqual(['openTradeSession']);
+    tsExpectNoEditor('precondition: nothing open yet');
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(99n, OTHER_IDENTITY, H.identity)]);
+    server(1300);
+    frame(1350);
+    expect(
+      opts.store.allTradeSessions().map((s) => s.sessionId),
+      'precondition: Zed`s session is in the store',
+    ).toEqual([99n]);
+    tsExpectNoEditor('the incoming session opened no frame');
+    server(1400);
+    frame(1450);
+    tsExpectNoEditor('nor on a later batch');
+    expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+  });
+
+  it('ts-3.1 the opener`s row arriving while a WORLD SHEET is open (the faced player`s picker) opens no frame over it and leaves the sheet as it was', async () => {
+    // RED REASON: the pending open's row opens the editor whenever the STACK is the bare world, and
+    // a world sheet is not a frame: the editor pops up over (and under the focus of) the sheet.
+    // WRONG IMPL KILLED: an auto-open gated on the stack alone (the sheet is ignored); an auto-open
+    // that closes the sheet first; a sheet whose cursor is reset by the batch.
+    await bootReady();
+    server(1000);
+    tsFacePartner(1100);
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    expect(tsCalls(), 'precondition: the open was sent').toHaveLength(1);
+    const sheetRows = (): number =>
+      document.querySelectorAll('#interact-prompt [role="option"]').length;
+    const sheetCursor = (): string | null =>
+      document
+        .querySelector('#interact-prompt [role="option"][aria-selected="true"]')
+        ?.getAttribute('data-nav-key') ?? null;
+    press('Enter', 1300); // A on the faced player again: the picker
+    frame(1310);
+    expect(sheetRows(), 'precondition: the picker is up').toBeGreaterThan(0);
+    expect(tsShown(document.getElementById('interact-prompt')), 'precondition: shown').toBe(true);
+    const cursorBefore = sheetCursor();
+    expect(cursorBefore, 'precondition: the picker has a cursor').not.toBeNull();
+    tsExpectNoEditor('precondition: no editor');
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(83n, H.identity, OTHER_IDENTITY)]);
+    server(1400);
+    frame(1450);
+    tsExpectNoEditor('the row opened no frame over the sheet');
+    expect(tsShown(document.getElementById('interact-prompt')), 'the sheet is still up').toBe(true);
+    expect(sheetRows(), 'with its rows').toBeGreaterThan(0);
+    expect(sheetCursor(), 'and its cursor where it was').toBe(cursorBefore);
+    expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+  });
+
+  it('ts-3.1 a crossed open: openTradeSession REJECTS while a session Zed opened is already in the store, and the editor opens on that session over the bare world', async () => {
+    // RED REASON: a rejected open only toasts and clears the pending state, so the player who asked
+    // to trade with Zed is left at the world with Zed's request waiting.
+    // WRONG IMPL KILLED: a rejection that ignores the store (no editor: the crossed case is lost);
+    // an editor opened on the wrong session (Ivy's 76 is listed first); a reducer sent to recover
+    // (a second openTradeSession, or a cancel); the editor opened before the rejection (case above).
+    await bootReady();
+    server(1000);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    tsFacePartner(1100);
+    H.calls = [];
+    let rejectOpen: (e: Error) => void = () => undefined;
+    const pending = new Promise<void>((_resolve, reject) => {
+      rejectOpen = reject;
+    });
+    pending.catch(() => undefined);
+    H.gate = pending;
+    tsPressTrade(1200);
+    await flush();
+    H.gate = null;
+    expect(
+      tsCalls().map((c) => c.name),
+      'precondition: the open was sent',
+    ).toEqual(['openTradeSession']);
+
+    // Zed opened his own session first: it lands while the viewer's open is still in flight.
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(76n, TS_THIRD, H.identity),
+      tsSession(77n, OTHER_IDENTITY, H.identity),
+    ]);
+    server(1300);
+    frame(1350);
+    tsExpectNoEditor('precondition: the crossed row alone opens nothing while the open is pending');
+
+    rejectOpen(new Error('zz-already-in-a-session'));
+    await flush();
+    await flush();
+    frame(1400);
+    server(1450);
+    frame(1500);
+    tsExpectEditorOn(77n, 'the rejected open lands on the existing session with Zed');
+    expect(tsCalls(), 'no recovery reducer was sent').toHaveLength(1);
+  });
 });

@@ -12,6 +12,9 @@
 // control that is enabled and shown in every state, so the focus trap always has a target. The
 // player does not start on it: the first paint after an open puts focus on the picker listbox, and
 // the a11y layer's deferred anchor focus, finding focus already inside the dialog, leaves it there.
+// Nor does focus rest on it by accident: once a session is painted, a focus the player did not ask
+// for (no Tab, no pointer press) is handed on to the listbox, so Enter stays the list's A. The
+// button keeps only its own keys (Enter, Space); the D-pad, B and Start reach the router from it.
 //
 // Player-controlled text (names, nicknames) is written with textContent only, never innerHTML. Every
 // string this view owns is resolved through the i18n resolver with a literal key.
@@ -109,6 +112,12 @@ export class TradeSessionView {
   #announced = 0;
   /** Armed by an open: the next paint of a session focuses the picker listbox, once. */
   #focusRows = false;
+  /** A session has been painted since the last open. */
+  #painted = false;
+  /** The player is moving focus themselves (a Tab in the dialog, a pointer press on Close). */
+  #byPlayer = false;
+  /** The prompt action last painted: a different one is announced and takes the focus. */
+  #promptAction: TradeSessionPrompt['action'] | null = null;
 
   constructor(deps: TradeSessionViewDeps) {
     const root = document.getElementById('tradepropose-overlay');
@@ -121,13 +130,32 @@ export class TradeSessionView {
     // A 24px target at the default root size (WCAG 2.2 target-size), no wider than its label.
     close.style.minHeight = '1.5rem';
     close.style.alignSelf = 'flex-start';
-    // The button keeps its own keys (Enter and Space are its click, never the router's A); Escape
-    // is routed in the capture phase anyway and is let through.
+    // Enter and Space are the button's own click, never the router's A. Every other key (the
+    // D-pad, B, Start) still reaches the router while it has focus.
     close.addEventListener('keydown', (e) => {
-      if (e.code !== 'Escape') e.stopPropagation();
+      if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') e.stopPropagation();
     });
     close.addEventListener('click', () => {
       this.#deps.onClose();
+    });
+    // Focus the player did not move here goes on to the listbox (see the header).
+    root.addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key === 'Tab') this.#byPlayer = true;
+      },
+      true,
+    );
+    root.addEventListener('focusin', (e) => {
+      if (e.target !== close) this.#byPlayer = false;
+    });
+    close.addEventListener('pointerdown', () => {
+      this.#byPlayer = true;
+    });
+    close.addEventListener('focus', () => {
+      const asked = this.#byPlayer;
+      this.#byPlayer = false;
+      if (!asked && this.#painted) this.#rows.focus();
     });
 
     this.#title = part('h2', 'tradesession-title');
@@ -172,6 +200,7 @@ export class TradeSessionView {
     if (!wasVisible) {
       openOverlayA11y('tradeSessionView', this.#root);
       this.#focusRows = true;
+      this.#painted = false;
     }
   }
 
@@ -179,6 +208,8 @@ export class TradeSessionView {
     this.#root.style.display = 'none';
     this.#announced = 0;
     this.#focusRows = false;
+    this.#painted = false;
+    this.#promptAction = null;
     // Unguarded on purpose: with no open record this is a no-op, and a record that ever drifted
     // from the DOM heals here instead of leaving a live focus trap.
     closeOverlayA11y('tradeSessionView', null);
@@ -206,6 +237,7 @@ export class TradeSessionView {
     this.#paintSide(this.#theirs, vm.theirs, t('tradeSession.side.theirs'));
     this.#paintRows(p.rows, p.cursor, vm, p.draft);
     this.#paintPrompt(p.prompt);
+    this.#painted = true;
     if (this.#focusRows) {
       this.#focusRows = false;
       this.#rows.focus();
@@ -304,7 +336,8 @@ export class TradeSessionView {
   #rowLabel(key: string, vm: TradeSessionVm, draft: TradeOfferDraft): string {
     if (key.startsWith(MONSTER)) {
       const id = key.slice(MONSTER.length);
-      return vm.monsters.find((m) => m.monsterId.toString() === id)?.label ?? '';
+      const m = vm.monsters.find((pick) => pick.monsterId.toString() === id);
+      return m === undefined ? '' : `${m.label} ${tf('tactics.hud.level', { level: m.level })}`;
     }
     if (key.startsWith(ITEM)) {
       const id = key.slice(ITEM.length);
@@ -344,5 +377,13 @@ export class TradeSessionView {
         },
       },
     );
+    // A question that just appeared is spoken, and takes the focus when the player is in the
+    // dialog: its answers are a listbox of their own. A flip of the answer is neither.
+    const action = prompt?.action ?? null;
+    if (action !== null && action !== this.#promptAction) {
+      this.#deps.announce(promptQuestion(prompt));
+      if (this.#root.contains(document.activeElement)) this.#answers.focus();
+    }
+    this.#promptAction = action;
   }
 }

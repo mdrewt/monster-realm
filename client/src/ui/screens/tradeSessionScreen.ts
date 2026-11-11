@@ -125,6 +125,14 @@ function settle(vm: TradeSessionScreenVm, state: TradeSessionScreenState): Trade
     if (sameOffer(draft, seed)) draft = vm.offer;
     seed = vm.offer;
   }
+  // A drafted line whose item is neither held nor stored any more has no row and could never be
+  // sent: it goes.
+  if (draft.items.some((line) => !vm.items.some((item) => item.itemId === line.itemId))) {
+    draft = {
+      ...draft,
+      items: draft.items.filter((line) => vm.items.some((item) => item.itemId === line.itemId)),
+    };
+  }
   const rows = editorRows(vm, draft);
   const nav = navReconcile(list(rowsOf(state.rows)), list(rows), state.nav);
   const shown = tradeSessionKey(vm);

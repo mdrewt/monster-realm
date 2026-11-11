@@ -23,7 +23,7 @@
 //   empties the shell, so `#tradepropose-submit` is gone.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoreMonsterPub, StoreTradeSession } from '../net/store';
-import { t, tf } from './i18n/resolver';
+import { setLocale, t, tf } from './i18n/resolver';
 import { navItemId } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
@@ -309,33 +309,43 @@ describe('TradeSessionView — the Close button (ts-3.4)', () => {
     expect(onClose, 'one call per click across a re-open').toHaveBeenCalledTimes(2);
   });
 
-  it('ts-3.4 a keydown on the Close button stays its own (Enter, Space, letters, arrows never reach window) except Escape', () => {
-    // WRONG IMPL KILLED: a button whose Enter / Space also reaches the router's window keydown
-    // (one press would both close and press A on the editor); a stopPropagation that also eats
-    // Escape (the router could not close the frame from the button).
+  it('ts-3.4 a keydown on the Close button keeps only ITS keys (Enter, NumpadEnter, Space never reach window); arrows, letters and Escape DO reach window', () => {
+    // REVISED (contract D, from the spec): the button owns only its activation keys; the D-pad, B
+    // and Start must keep working while it has focus. Was: arrows and letters were asserted
+    // swallowed too, which is the defect (a player Tabbed onto Close had no D-pad, no B).
+    // RED REASON: today every key but Escape is stopped at the button.
+    // WRONG IMPL KILLED: a button whose Enter / NumpadEnter / Space also reaches the router's
+    // window keydown (one press would both close and press A on the editor); a stopPropagation
+    // that eats every other key (arrows, B, Start dead on the button); one that eats Escape.
     const { view } = makeView();
     view.show();
     view.paint(paintOf(vmOf()));
     const button = closeButton();
     const seen: string[] = [];
     const listener = (e: KeyboardEvent) => {
-      seen.push(e.key);
+      seen.push(e.code);
     };
     window.addEventListener('keydown', listener);
+    const down = (key: string, code: string) => {
+      button.dispatchEvent(new KeyboardEvent('keydown', { key, code, bubbles: true }));
+    };
     try {
-      for (const [key, code] of [
-        ['Enter', 'Enter'],
-        [' ', 'Space'],
+      down('Enter', 'Enter');
+      down('Enter', 'NumpadEnter');
+      down(' ', 'Space');
+      expect(seen, 'the button`s own keys stay on the button').toEqual([]);
+      const through: ReadonlyArray<readonly [string, string]> = [
         ['ArrowDown', 'ArrowDown'],
+        ['ArrowUp', 'ArrowUp'],
+        ['ArrowLeft', 'ArrowLeft'],
+        ['ArrowRight', 'ArrowRight'],
         ['a', 'KeyA'],
-      ] as const) {
-        button.dispatchEvent(new KeyboardEvent('keydown', { key, code, bubbles: true }));
-      }
-      expect(seen, 'nothing but Escape reaches window').toEqual([]);
-      button.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }),
-      );
-      expect(seen, 'Escape still reaches window').toEqual(['Escape']);
+        ['b', 'KeyB'],
+        ['Backspace', 'Backspace'],
+        ['Escape', 'Escape'],
+      ];
+      for (const [key, code] of through) down(key, code);
+      expect(seen, 'every other key reaches window').toEqual(through.map(([, code]) => code));
     } finally {
       window.removeEventListener('keydown', listener);
     }
@@ -381,8 +391,11 @@ describe('TradeSessionView — the Close button (ts-3.4)', () => {
     view.paint(paintOf(vmOf()));
     expect(document.activeElement, 'the first paint focuses the rows').toBe(rows);
 
+    // REVISED (contract D, from the spec): after a paint a programmatic focus of the button is
+    // handed on to the rows; the player reaches it by Tab. Was: a bare `button.focus()`.
+    rows.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
     button.focus();
-    expect(document.activeElement, 'fixture: the button takes focus').toBe(button);
+    expect(document.activeElement, 'fixture: the button takes focus after a Tab').toBe(button);
     view.paint(paintOf(vmOf(sess({ revision: REV + 1n }))));
     expect(document.activeElement, 'a later paint keeps focus on the button').toBe(button);
 
@@ -394,6 +407,76 @@ describe('TradeSessionView — the Close button (ts-3.4)', () => {
     expect(document.activeElement, 'a gone paint does not move focus').toBe(button);
     view.paint(paintOf(vmOf()));
     expect(document.activeElement, 'the one-shot survived the gone paint').toBe(rows);
+  });
+
+  it('ts-3.4 (contract D) once a session is painted, a PROGRAMMATIC focus of the Close button (no Tab, no pointerdown before it) is handed on to #tradesession-rows, from the rows and from outside the dialog', () => {
+    // RED REASON: today nothing watches the button's focus: a stray focus() (a frame beneath
+    // resuming, the a11y layer's anchor) strands the player on Close, where A closes the editor.
+    // WRONG IMPL KILLED: no hand-on; a hand-on to <body> or to the prompt instead of the rows; a
+    // hand-on only when focus came from inside the dialog.
+    const { root, view } = makeView();
+    expect(root.parentElement, 'fixture: attached').toBe(document.body);
+    view.show();
+    view.paint(paintOf(vmOf()));
+    const rows = byId('tradesession-rows');
+    const button = closeButton();
+    expect(document.activeElement, 'fixture: the rows have focus').toBe(rows);
+    button.focus();
+    expect(document.activeElement, 'a programmatic focus is handed on to the rows').toBe(rows);
+
+    const outside = document.createElement('button');
+    outside.id = 'outside-control';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'fixture: focus left the dialog').toBe(outside);
+    button.focus();
+    expect(document.activeElement, 'from outside too: handed on to the rows').toBe(rows);
+    view.paint(paintOf(vmOf(sess({ revision: REV + 1n }))));
+    button.focus();
+    expect(document.activeElement, 'and after a later paint').toBe(rows);
+  });
+
+  it.each([
+    ['a Tab keydown on the rows (inside the dialog root)', 'tab'],
+    ['a pointerdown on the button', 'pointer'],
+  ] as const)('ts-3.4 (contract D) after %s, the next focus of the Close button stays on it', (_label, how) => {
+    // RED REASON: none today (the button keeps any focus); paired with the hand-on case above, it
+    // kills a hand-on that also fires for the player's own Tab or click.
+    // WRONG IMPL KILLED: a hand-on that ignores how focus arrived (the player could never Tab or
+    // click onto Close); a Tab honoured only when dispatched on the button itself.
+    const { view } = makeView();
+    view.show();
+    view.paint(paintOf(vmOf()));
+    const rows = byId('tradesession-rows');
+    const button = closeButton();
+    expect(document.activeElement, 'fixture: the rows have focus').toBe(rows);
+    if (how === 'tab') {
+      rows.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
+    } else {
+      button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    }
+    button.focus();
+    expect(document.activeElement, 'the player`s own move: on the button').toBe(button);
+  });
+
+  it('ts-3.4 (contract D) before any session paint, a programmatic focus of the Close button stays on it, and the a11y layer`s deferred anchor focus lands on it', async () => {
+    // RED REASON: guards the hand-on above against over-reach (green today; red for an impl that
+    // hands on before the editor has anything painted).
+    // WRONG IMPL KILLED: a hand-on armed by show() instead of by a paint (the registry's anchor
+    // focus would be pushed onto an empty listbox, and the focus trap's one target lost); a gone
+    // paint counted as a session paint.
+    const { view } = makeView();
+    view.show();
+    const button = closeButton();
+    await flushMacrotask();
+    expect(document.activeElement, 'the deferred anchor focus lands on the button').toBe(button);
+    byId('tradesession-rows').focus();
+    button.focus();
+    expect(document.activeElement, 'shown, never painted: the focus stays').toBe(button);
+    view.paint(GONE_PAINT);
+    byId('tradesession-rows').focus();
+    button.focus();
+    expect(document.activeElement, 'a gone paint is not a session paint').toBe(button);
   });
 });
 
@@ -463,19 +546,27 @@ describe('TradeSessionView — both sides and the marks (ts-3.2)', () => {
     expect(keys).toEqual(editorRows(vm, vm.offer).map((r) => r.key));
     expect(rowEl('monster-21').getAttribute('aria-checked'), 'offered').toBe('true');
     expect(rowEl('monster-23').hasAttribute('aria-checked'), 'not offered').toBe(false);
-    expect(rowEl('monster-21').textContent).toContain('Ash');
+    // REVISED (contract A, from the spec): a monster row's own words are the model's bare label and
+    // the catalog's level text (`tactics.hud.level`), and a disabled row wraps THAT composed text.
+    // Was: the model's label alone, which carried a hard-coded English ` Lv.<n>`.
+    const words = (id: bigint): string => {
+      const m = vm.monsters.find((x) => x.monsterId === id);
+      if (m === undefined) throw new Error(`fixture: monster ${id} is in the picker`);
+      return `${m.label} ${tf('tactics.hud.level', { level: m.level })}`;
+    };
+    expect(rowEl('monster-21').textContent, 'an offered row: its composed words').toBe(words(21n));
+    expect(words(21n), 'fixture: the composed words name the monster').toContain('Ash');
     const bry = vm.monsters.find((m) => m.monsterId === 22n);
     expect(bry?.blocked, 'fixture: 22 fainted').toBe('fainted');
     expect(rowEl('monster-22').textContent).toBe(
       tf('tradeSession.row.blocked', {
-        label: bry?.label ?? '',
+        label: words(22n),
         reason: t('tradeSession.reason.fainted'),
       }),
     );
-    const cyd = vm.monsters.find((m) => m.monsterId === 23n);
     expect(rowEl('monster-23').textContent, 'at the cap of 1').toBe(
       tf('tradeSession.row.blocked', {
-        label: cyd?.label ?? '',
+        label: words(23n),
         reason: t('tradeSession.reason.limit'),
       }),
     );
@@ -508,6 +599,35 @@ describe('TradeSessionView — both sides and the marks (ts-3.2)', () => {
     );
     expect(rowEl('apply').textContent).toBe(t('tradeSession.row.apply'));
     expect(rowEl('confirm').textContent).toContain(t('tradeSession.reason.unsent'));
+  });
+
+  it('ts-3.2 (contract A) in another locale a monster row`s level reads the catalog`s words (fr), never the English "Lv.", in an offered and in a blocked row', () => {
+    // RED REASON: today the level is the model's hard-coded English ` Lv.<n>` inside the label.
+    // WRONG IMPL KILLED: a view that composes `${label} Lv.${level}` itself (it passes in en and
+    // ships English to every other locale); a blocked row that wraps the bare label (no level).
+    const vm = vmOf();
+    setLocale('fr');
+    try {
+      const { view } = makeView();
+      view.paint(paintOf(vm));
+      const ash = vm.monsters.find((m) => m.monsterId === 21n);
+      const bry = vm.monsters.find((m) => m.monsterId === 22n);
+      if (ash === undefined || bry === undefined) throw new Error('fixture: 21 and 22');
+      const frLevel = tf('tactics.hud.level', { level: ash.level });
+      expect(frLevel, 'fixture: fr has its own level words').not.toContain('Lv.');
+      expect(rowEl('monster-21').textContent).toBe(`${ash.label} ${frLevel}`);
+      expect(rowEl('monster-22').textContent).toBe(
+        tf('tradeSession.row.blocked', {
+          label: `${bry.label} ${tf('tactics.hud.level', { level: bry.level })}`,
+          reason: t('tradeSession.reason.fainted'),
+        }),
+      );
+      expect(byId('tradesession-rows').textContent, 'no English level anywhere').not.toContain(
+        'Lv.',
+      );
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('ts-3.2 a confirmed side paints Cancel as the only row; a gone paint leaves the last session shown', () => {
@@ -593,6 +713,91 @@ describe('TradeSessionView — the notice and the prompt (ts-3.3, ts-3.4)', () =
     view.paint(paintOf(vm));
     expect(byId('tradesession-prompt').hidden).toBe(true);
     expect(byId('tradesession-confirm').querySelectorAll('[data-nav-key]').length).toBe(0);
+  });
+
+  it('ts-3.4 (contract B) a prompt that OPENS or changes action announces its question exactly once and moves focus from inside the dialog to #tradesession-confirm; a repaint of the same prompt (the Yes / No flip) does neither', () => {
+    // RED REASON: today the prompt is painted silently and focus stays on the rows, so a screen
+    // reader user never hears the irreversible question and the answers are not focused.
+    // WRONG IMPL KILLED: no announce; an announce on every paint of an open prompt (the question
+    // repeated on each Yes / No flip and each batch); an announce of the other action's question;
+    // no focus move; a focus move on every repaint (focus yanked back each flip); a change of
+    // action (confirm -> cancel) treated as the same prompt.
+    const { root, view, announce } = makeView();
+    expect(root.parentElement, 'fixture: attached').toBe(document.body);
+    view.show();
+    const vm = vmOf();
+    view.paint(paintOf(vm));
+    const rows = byId('tradesession-rows');
+    const confirm = byId('tradesession-confirm');
+    expect(document.activeElement, 'fixture: the rows have focus').toBe(rows);
+    expect(announce, 'fixture: nothing announced yet').not.toHaveBeenCalled();
+
+    view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: false } }));
+    expect(announce.mock.calls, 'the question, once').toEqual([[t('tradeSession.prompt.confirm')]]);
+    expect(document.activeElement, 'focus moves to the answers').toBe(confirm);
+
+    rows.focus();
+    expect(document.activeElement, 'fixture: focus moved back by hand').toBe(rows);
+    view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: true } }));
+    view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: true } }));
+    expect(announce, 'the flip and a repaint: silent').toHaveBeenCalledTimes(1);
+    expect(document.activeElement, 'the flip and a repaint: focus stays').toBe(rows);
+
+    view.paint(paintOf(vm, { prompt: { action: 'cancel', yes: false } }));
+    expect(announce.mock.calls, 'a new action: its own question, once').toEqual([
+      [t('tradeSession.prompt.confirm')],
+      [t('tradeSession.prompt.cancel')],
+    ]);
+    expect(document.activeElement, 'a new action: focus to the answers').toBe(confirm);
+
+    view.paint(paintOf(vm));
+    view.paint(paintOf(vm, { prompt: { action: 'cancel', yes: false } }));
+    expect(announce, 'closed then opened again: announced again').toHaveBeenCalledTimes(3);
+    expect(announce).toHaveBeenLastCalledWith(t('tradeSession.prompt.cancel'));
+  });
+
+  it('ts-3.4 (contract B) a prompt opening while focus is OUTSIDE the dialog root is announced but takes no focus', () => {
+    // RED REASON: no announce today.
+    // WRONG IMPL KILLED: a focus move that pulls focus into the dialog from outside it (from a
+    // frame stacked above, or the page); an announce tied to the focus move.
+    const { view, announce } = makeView();
+    view.show();
+    const vm = vmOf();
+    view.paint(paintOf(vm));
+    const outside = document.createElement('button');
+    outside.id = 'outside-control';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'fixture: focus is outside the dialog').toBe(outside);
+    view.paint(paintOf(vm, { prompt: { action: 'confirm', yes: false } }));
+    expect(announce.mock.calls).toEqual([[t('tradeSession.prompt.confirm')]]);
+    expect(document.activeElement, 'focus stays where it was').toBe(outside);
+  });
+
+  it('ts-3.4 (contract B) when the prompt closes with focus inside #tradesession-prompt, focus returns to #tradesession-rows; with focus elsewhere in the dialog it is not moved', () => {
+    // RED REASON: none today (the rescue exists); no test pinned it and a mutant deleting it
+    // survived the suite.
+    // WRONG IMPL KILLED: the rescue deleted (focus is stranded on a hidden node, i.e. <body>,
+    // outside the focus trap); a rescue that moves focus on every close wherever it was.
+    const { view } = makeView();
+    view.show();
+    const vm = vmOf();
+    view.paint(paintOf(vm, { prompt: { action: 'cancel', yes: false } }));
+    const rows = byId('tradesession-rows');
+    const confirm = byId('tradesession-confirm');
+    confirm.focus();
+    expect(document.activeElement, 'fixture: focus is on the answers').toBe(confirm);
+    view.paint(paintOf(vm));
+    expect(byId('tradesession-prompt').hidden, 'fixture: the prompt closed').toBe(true);
+    expect(document.activeElement, 'focus returns to the rows').toBe(rows);
+
+    view.paint(paintOf(vm, { prompt: { action: 'cancel', yes: false } }));
+    const button = closeButton();
+    rows.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
+    button.focus();
+    expect(document.activeElement, 'fixture: focus on the Close button').toBe(button);
+    view.paint(paintOf(vm));
+    expect(document.activeElement, 'not inside the prompt: not moved').toBe(button);
   });
 
   it('ts-3.4 show() opens the dialog on the hidden-to-visible edge only and hide() closes it unguarded', () => {

@@ -12,7 +12,7 @@ import { CLOSE_KEY } from './actionSheetModel';
 import { list, type NavInput, type NavLayout, type NavState, navInit, navStep } from './nav';
 import { incomingChallenge } from './pvpModel';
 import type { Command } from './screens/types';
-import { incomingUntouched, ownSessions } from './tradeSessionModel';
+import { incomingUntouched, ownSessions, playerName } from './tradeSessionModel';
 
 export type RequestKind = 'trade' | 'challenge';
 
@@ -54,11 +54,6 @@ export interface NoticeInput {
 
 const ERROR_NOTICE: ErrorNotice = { kind: 'error', key: 'error' };
 
-function nameOf(players: readonly StorePlayer[], identity: string): string {
-  const name = players.find((p) => p.identity === identity)?.name ?? '';
-  return name !== '' ? name : `#${identity.slice(0, 8)}`;
-}
-
 /** The requests waiting on the viewer, oldest first (a tie: the smaller key, so challenge before
  *  session). Dismissal does not hide a request here: Y still answers one the banner no longer shows. */
 export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
@@ -70,7 +65,7 @@ export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
       key: `session-${session.sessionId}`,
       request: 'trade',
       id: session.sessionId,
-      fromName: nameOf(i.players, session.opener),
+      fromName: playerName(i.players, session.opener),
       createdAtMs: session.createdAtMs,
     });
   }
@@ -81,7 +76,7 @@ export function pendingRequests(i: NoticeInput): readonly RequestNotice[] {
       key: `challenge-${challenge.challengeId}`,
       request: 'challenge',
       id: challenge.challengeId,
-      fromName: nameOf(i.players, challenge.challenger),
+      fromName: playerName(i.players, challenge.challenger),
       createdAtMs: challenge.createdAtMs,
     });
   }

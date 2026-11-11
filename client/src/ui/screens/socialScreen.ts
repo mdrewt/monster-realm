@@ -110,9 +110,10 @@ function commandOf(row: SocialRow, action: SocialAction): Command | null {
     if (action === 'accept') return { kind: 'acceptChallenge', challengeId: id };
     return action === 'decline' ? { kind: 'declineChallenge', challengeId: id } : null;
   }
-  // A session row offers no sheet action.
-  if (row.kind === 'session') return null;
-  return action === 'cancel' ? { kind: 'cancelChallenge', challengeId: id } : null;
+  // An outgoing challenge; a session row has no sheet, so no action ever reaches here for one.
+  return action === 'cancel' && row.kind === 'outgoing'
+    ? { kind: 'cancelChallenge', challengeId: id }
+    : null;
 }
 
 /** The prompt `phase` paints: its question and the Yes / No cursor. */
