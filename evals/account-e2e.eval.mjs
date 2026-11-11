@@ -120,30 +120,35 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 56-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 59-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED — an entry beyond the cap
-// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). bt-16
-// (BT16.3, R-bt-8-E2EVACUITY): the live encounter path and the challenge accept
-// now open TACTICAL battles, so the tactical tables are written ORGANICALLY by
-// the S9 scenario and left this list: A's one-monster party meets a pack of one
-// on the grass (Active with auto-deploy, its unit waiting under the 300 s PvE
-// window: `battle_tactical`, `battle_unit`, `battle_clock`,
-// `tactical_deadline_sched` stand at the snapshot), and battle1 — deployed by
-// both sides to Active, then FORFEITED by D's disconnect (settle_pvp_battle:
-// rating, profile rows) — finishes, arming its 24 h `battle_gc_sched` row. The
-// rows below stay with their honest reasons: three tables no live path writes
-// any more (retired in place by the cutover; bt-17 retires them), and three whose
-// rows are swept or consumed before the snapshot. Measured on the first green run:
-// `battle_event` (battle1's BattleEnd at the forfeit settle) and `player_formation`
-// (A's deploy_units upsert in battle1) carry rows and are NOT allowlisted.
+// is a seeding regression, not an allowlist edit (red-team MEDIUM-8).
+// The list holds nine tables: five that no live path writes (`battle_action`,
+// `pvp_deadline_schedule` and `battle_wild`, retired in place by the tactical
+// cutover; `trade_offer` and `trade_offer_reaper_schedule`, whose only writer is
+// the retired legacy offer reducer), one that SQL DML cannot seed
+// (`player_dialogue_state`), and three whose rows are swept or consumed before
+// the snapshot (`battle_queue`, `battle_deploy`, `tactical_advance_sched`).
+// Every other owned table is written ORGANICALLY by the S9 scenario and must
+// carry rows: A's one-monster party meets a pack of one on the grass (Active
+// with auto-deploy, its unit waiting under the 300 s PvE window:
+// `battle_tactical`, `battle_unit`, `battle_clock`, `tactical_deadline_sched`
+// stand at the snapshot); battle1 — deployed by both sides to Active, then
+// FORFEITED by D's disconnect (settle_pvp_battle: rating, profile rows) —
+// finishes, arming its 24 h `battle_gc_sched` row and writing `battle_event`
+// (its BattleEnd) and `player_formation` (A's deploy_units upsert); and A's
+// face-to-face trade session with D (S9-trade-open: open_trade_session +
+// set_trade_offer) stands as one `trade_session` row, one
+// `trade_session_snapshot` row (the offered monster) and one
+// `trade_session_reaper_schedule` row.
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
@@ -173,8 +178,16 @@ export const S9_VACUITY_ALLOWLIST = [
     'battle_wild',
     'retired in place by the bt-16 cutover: no live path writes it (the grass trigger opens a tactical battle); bt-17 retires the table',
   ],
+  [
+    'trade_offer',
+    'no live writer: propose_trade, respond_trade and confirm_trade are retired (each refuses and writes nothing), and the row cannot be seeded because its offer and card columns are Vecs, which 2.8.1 SQL DML cannot express; trade erasure is proven on the trade_session row instead',
+  ],
+  [
+    'trade_offer_reaper_schedule',
+    'drain-only: armed only by the retired propose_trade, and ScheduleAt is not DML-expressible, so no row exists to sweep; schedule erasure is proven on trade_session_reaper_schedule instead',
+  ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 7;
+export const S9_VACUITY_ALLOWLIST_CAP = 9;
 // Erase-policy identity columns that are `Option<Identity>` (a sum type): the
 // snapshot counts them by battle reachability, never by an identity WHERE.
 export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
@@ -1126,9 +1139,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 56) {
+  if (!Array.isArray(entries) || entries.length !== 59) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 56',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 59',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1358,7 +1371,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 56 classified entries',
+    reason: 'cascade truth held over 59 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -1381,7 +1394,7 @@ export function checkCascadeTruth(input) {
  * REAL `pending_evolution_notice` row before the cascade. A `Vec<struct>`
  * column is not DML-insertable, so this organic write is the only way that
  * table can carry a pre-cascade row at all (the vacuity allowlist is
- * hard-capped at 3 and full).
+ * hard-capped and full).
  */
 export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId, battle1Id) {
   if (typeof aHex !== 'string' || !/^0x[0-9a-f]{64}$/.test(aHex)) {
@@ -1851,7 +1864,7 @@ const DRIVER_SRC = [
   '  await applied(d.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM battle_challenge"]);',
   '  const dJoin = await tryReducer(d.conn.reducers.joinGame({ name: "dave s9" }));',
   '  emit("S9-D-join", dJoin.ok, dJoin);',
-  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM trade_offer", "SELECT * FROM player", "SELECT * FROM my_pending_evolution_notices", "SELECT * FROM my_tactical_battle"]);',
+  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM my_trade_session", "SELECT * FROM player", "SELECT * FROM my_pending_evolution_notices", "SELECT * FROM my_tactical_battle"]);',
   '  const aJoin = await tryReducer(a.conn.reducers.joinGame({ name: "alice s9" }));',
   '  emit("S9-A-join", aJoin.ok, aJoin);',
   '  const aMon = iterRows(a.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(a.identity); });',
@@ -1916,8 +1929,45 @@ const DRIVER_SRC = [
   '    return rows.length > 0 && rows[0].entries.length >= 1 ? rows[0] : null;',
   '  });',
   '  emit("S9-evolve-notice", true, { entries: notice.entries.length });',
-  '  const tr = await tryReducer(a.conn.reducers.proposeTrade({ counterparty: d2.idObj, initiatorMonsterIds: [], initiatorItems: [], initiatorCurrency: 5n, counterpartyMonsterIds: [], counterpartyItems: [], counterpartyCurrency: 0n }));',
-  '  emit("S9-trade-open", tr.ok, tr);',
+  '  // The trade leg is a face-to-face SESSION: A opens one with d2, then sets a',
+  '  // non-empty own side (the one party monster + 5 coins of the go-1 wallet).',
+  '  // It is NEVER confirmed: an unconfirmed side locks nothing, so challenge2 and',
+  '  // the wild battle below still take the same monster.',
+  '  // RANGE: open_trade_session needs both characters in one zone within',
+  '  // Manhattan 2. join_game puts every new character on the zone-0 spawn tile;',
+  '  // the D disconnect above deleted the old D character, so the d2 rejoin spawned',
+  '  // a fresh one there; A joined at S9-A-join and has queued no move yet (the',
+  '  // first enqueueMove is after challenge2). So A and d2 share the spawn tile.',
+  '  // A refusal (out of range, wrong zone and a missing character are one error',
+  '  // string) is emitted ok:false WITH its text and the flow goes on, so the',
+  '  // strict milestone verdict reports that text instead of a later stall.',
+  '  const trOpen = await tryReducer(a.conn.reducers.openTradeSession({ partner: d2.idObj }));',
+  '  const isOurSession = function (r) { return stripHexS9(r.opener.toHexString()) === stripHexS9(a.identity) && stripHexS9(r.partner.toHexString()) === stripHexS9(d2.identity); };',
+  '  let trSession = null;',
+  '  let trLanded = null;',
+  '  let trErr = trOpen.ok ? null : "open_trade_session refused: " + trOpen.err;',
+  '  if (trOpen.ok) {',
+  '    const t0s = Date.now();',
+  '    while (trSession === null && Date.now() - t0s < 20000) {',
+  '      const rows = iterRows(a.conn, "my_trade_session").filter(isOurSession);',
+  '      if (rows.length > 0) trSession = rows[0]; else await sleep(600);',
+  '    }',
+  '    if (trSession === null) trErr = "open_trade_session returned Ok but no my_trade_session row A->d2 appeared within 20000ms";',
+  '  }',
+  '  if (trSession !== null) {',
+  '    const trSet = await tryReducer(a.conn.reducers.setTradeOffer({ sessionId: trSession.sessionId, monsterIds: [aMonId], items: [], currency: 5n }));',
+  '    if (!trSet.ok) trErr = "set_trade_offer refused: " + trSet.err;',
+  '    else {',
+  '      const t0o = Date.now();',
+  '      while (trLanded === null && Date.now() - t0o < 20000) {',
+  '        const rows = iterRows(a.conn, "my_trade_session").filter(function (r) { return String(r.sessionId) === String(trSession.sessionId) && isOurSession(r); });',
+  '        const o = rows.length > 0 ? rows[0].openerOffer : null;',
+  '        if (o !== null && o.monsterIds.length === 1 && String(o.monsterIds[0]) === String(aMonId) && String(o.currency) === "5" && rows[0].openerConfirmed === false && rows[0].partnerConfirmed === false) trLanded = rows[0]; else await sleep(600);',
+  '      }',
+  '      if (trLanded === null) trErr = "set_trade_offer returned Ok but the offer (monster " + String(aMonId) + " + 5 coins, unconfirmed) never showed on my_trade_session within 20000ms";',
+  '    }',
+  '  }',
+  '  emit("S9-trade-open", trLanded !== null, { err: trErr, sessionId: trSession === null ? null : String(trSession.sessionId), revision: trLanded === null ? null : String(trLanded.revision) });',
   '  const ch2 = await tryReducer(a.conn.reducers.challengePvp({ target: d2.idObj, partyIds: [aMonId] }));',
   '  emit("S9-challenge2-pending", ch2.ok, ch2);',
   '  let seq = 1;',
@@ -2373,6 +2423,16 @@ async function runLivePhase() {
         refs.tradeIds = (
           await sqlJsonRows('SELECT trade_id FROM trade_offer WHERE initiator = ' + refs.aHex)
         ).map((r) => String(r.trade_id));
+        // A's sessions in either role (S9-trade-open opens exactly one, as
+        // opener): their child rows are counted by these pinned ids both passes.
+        const sessionIds = new Set();
+        for (const col of ['opener', 'partner']) {
+          const rows = await sqlJsonRows(
+            'SELECT session_id FROM trade_session WHERE ' + col + ' = ' + refs.aHex,
+          );
+          for (const r of rows) sessionIds.add(String(r.session_id));
+        }
+        refs.sessionIds = [...sessionIds];
         refs.challengeIds = (
           await sqlJsonRows(
             'SELECT challenge_id FROM battle_challenge WHERE challenger = ' + refs.aHex,
@@ -2431,6 +2491,13 @@ async function runLivePhase() {
         );
       }
       viaJoin.trade_offer_reaper_schedule = tradeSched;
+      for (const t of ['trade_session_snapshot', 'trade_session_reaper_schedule']) {
+        let n = 0;
+        for (const id of refs.sessionIds) {
+          n += await cnt('SELECT COUNT(*) AS n FROM ' + t + ' WHERE session_id = ' + id);
+        }
+        viaJoin[t] = n;
+      }
       const dCounts = {
         monster: await cnt('SELECT COUNT(*) AS n FROM monster WHERE owner_identity = ' + refs.dHex),
         monster_pub: await cnt(
@@ -2564,6 +2631,7 @@ async function runLivePhase() {
           aMonsterId: String(evPresence.data.monsterId),
           wildId: null,
           tradeIds: [],
+          sessionIds: [],
           challengeIds: [],
           entityId: null,
           b1Sides: null,
