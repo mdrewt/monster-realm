@@ -3,9 +3,10 @@
 //! receiver-attributed headroom and snapshot drift (ts-1.4), arrival slots (ts-1.5),
 //! and the session-open predicates and constants (ts-1.6).
 //!
-//! Every failing case is derived from ONE valid two-seat trade (`baseline`) by
-//! changing exactly one fact, so a case can only fail for its named reason. The
-//! session API is reached through the `crate::trading` re-exports.
+//! Most cases start from ONE valid two-seat trade (`baseline`). Each case of the
+//! eligibility table changes exactly one fact of it, so it can only fail for its
+//! named reason; the ordering tests stack several defects on purpose. The session
+//! API is reached through the `crate::trading` re-exports.
 
 use proptest::prelude::*;
 
@@ -660,8 +661,10 @@ fn first_offending_item_in_offer_order_is_reported_ts1_1() {
 }
 
 /// Duplicates are checked before per-row facts (monsters before items), and the
-/// repeated id is the one reported. Kills a duplicate check moved after the
-/// per-row loop, item duplicates checked first, and a report of the wrong id.
+/// id reported is that of the first entry, in offer order, that repeats an
+/// earlier entry. Kills a duplicate check moved after the per-row loop, item
+/// duplicates checked first, a report of the first id that has a LATER copy, and
+/// a report of the last repeat found.
 #[test]
 fn duplicate_ids_are_reported_before_per_row_defects_ts1_1() {
     let mut s = seat_a();
@@ -674,6 +677,32 @@ fn duplicate_ids_are_reported_before_per_row_defects_ts1_1() {
     assert_eq!(
         s.eligibility(),
         Err(TradeSessionError::DuplicateMonster { monster_id: 102 })
+    );
+    s.monster_ids = vec![101, 102, 102, 101];
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::DuplicateMonster { monster_id: 102 }),
+        "entry 2 is the first to repeat an earlier id"
+    );
+    s.monster_ids = vec![101, 101, 102, 102];
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::DuplicateMonster { monster_id: 101 }),
+        "entry 1 repeats before entry 3 does"
+    );
+
+    let mut s = seat_a();
+    s.items = vec![item(11, 1), item(12, 1), item(12, 1), item(11, 1)];
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::DuplicateItem { item_id: 12 }),
+        "entry 2 is the first to repeat an earlier id"
+    );
+    s.items = vec![item(11, 1), item(11, 1), item(12, 1), item(12, 1)];
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::DuplicateItem { item_id: 11 }),
+        "entry 1 repeats before entry 3 does"
     );
 
     let mut s = seat_a();
@@ -879,11 +908,50 @@ fn variant_index(e: &TradeSessionError) -> usize {
     }
 }
 
+/// Every id-bearing variant, built from an id (monster ids widened to `u64`).
+fn id_bearing_errors() -> [fn(u32) -> TradeSessionError; 11] {
+    [
+        |id| TradeSessionError::MonsterNotOwned {
+            monster_id: u64::from(id),
+        },
+        |id| TradeSessionError::MonsterNotInParty {
+            monster_id: u64::from(id),
+        },
+        |id| TradeSessionError::MonsterFainted {
+            monster_id: u64::from(id),
+        },
+        |id| TradeSessionError::MonsterInAnotherTrade {
+            monster_id: u64::from(id),
+        },
+        |id| TradeSessionError::MonsterInBattle {
+            monster_id: u64::from(id),
+        },
+        |id| TradeSessionError::DuplicateMonster {
+            monster_id: u64::from(id),
+        },
+        |id| TradeSessionError::DuplicateItem { item_id: id },
+        |id| TradeSessionError::ZeroItemQuantity { item_id: id },
+        |id| TradeSessionError::UnknownItem { item_id: id },
+        |id| TradeSessionError::InsufficientItems { item_id: id },
+        |id| TradeSessionError::ItemStackCapExceeded { item_id: id },
+    ]
+}
+
 /// Every variant's `Display` wire string is non-empty and differs from every
-/// other variant's (same id in each payload, so the wording itself differs).
-/// Kills an empty `Display`, a shared string, and two variants rendered alike.
+/// other variant's (same id in each payload, so the wording itself differs), and
+/// every id-bearing variant's string carries its own id. Kills an empty
+/// `Display`, a shared string, two variants rendered alike, and a string that
+/// drops (or hard-codes) the offending id.
 #[test]
 fn every_error_variant_displays_a_distinct_non_empty_string_ts1_1() {
+    for build in id_bearing_errors() {
+        let (low, high) = (build(12345), build(67890));
+        let (low_s, high_s) = (low.to_string(), high.to_string());
+        assert!(low_s.contains("12345"), "{low:?} renders {low_s:?}");
+        assert!(high_s.contains("67890"), "{high:?} renders {high_s:?}");
+        assert_ne!(low_s, high_s, "{low:?} and {high:?} render alike");
+    }
+
     let all = all_session_errors();
     for (i, e) in all.iter().enumerate() {
         assert_eq!(variant_index(e), i, "{e:?} listed once, in order");
@@ -903,12 +971,26 @@ fn every_error_variant_displays_a_distinct_non_empty_string_ts1_1() {
 // ts-1.2 — edits, confirms, revisions
 // ---------------------------------------------------------------------------
 
+/// A display card for `monster_id`; every field differs between the cards of
+/// `offer_x`, `offer_y` and `offer_z`, so a lost, stripped or stale card list
+/// changes the state.
+fn card(monster_id: u64, species_id: u32, nickname: &str, level: u8) -> MonsterCard {
+    MonsterCard {
+        monster_id,
+        species_id,
+        nickname: String::from(nickname),
+        level,
+        current_hp: u16::from(level) * 3,
+        stat_hp: u16::from(level) * 4,
+    }
+}
+
 fn offer_x() -> TradeSessionOffer {
     TradeSessionOffer {
         monster_ids: vec![101],
         items: vec![item(11, 2)],
         currency: 5,
-        cards: Vec::new(),
+        cards: vec![card(101, 7, "Ember", 4)],
     }
 }
 
@@ -917,7 +999,7 @@ fn offer_y() -> TradeSessionOffer {
         monster_ids: vec![201, 202],
         items: Vec::new(),
         currency: 0,
-        cards: Vec::new(),
+        cards: vec![card(201, 8, "Ripple", 6), card(202, 9, "Gust", 8)],
     }
 }
 
@@ -926,7 +1008,7 @@ fn offer_z() -> TradeSessionOffer {
         monster_ids: vec![102],
         items: vec![item(12, 1)],
         currency: 9,
-        cards: Vec::new(),
+        cards: vec![card(102, 10, "Moss", 10)],
     }
 }
 
@@ -943,7 +1025,8 @@ fn session(opener_confirmed: bool, partner_confirmed: bool, revision: u64) -> Tr
 /// An unconfirmed opener's edit replaces ONLY the opener's offer, advances the
 /// revision by exactly one and clears both flags, whatever the partner's flag.
 /// Kills editing the wrong side, a revision `+ 0` / `+ 2` / constant, a flag left
-/// set, and an edit that also rewrites the other offer.
+/// set, an edit that also rewrites the other offer, and an edit that strips the
+/// new offer's cards or keeps the old ones.
 #[test]
 fn opener_edit_replaces_only_the_opener_offer_and_resets_ts1_2() {
     for partner_confirmed in [false, true] {
@@ -1047,7 +1130,7 @@ fn confirmed_partner_cannot_edit_ts1_2() {
 
 /// `reset_confirms` clears both flags, advances the revision by exactly one and
 /// leaves both offers untouched, from every flag combination. Kills a flag left
-/// set, a revision unchanged or `+ 2`, and an offer cleared.
+/// set, a revision unchanged or `+ 2`, and an offer (or its cards) cleared.
 #[test]
 fn reset_confirms_clears_both_flags_and_advances_the_revision_ts1_2() {
     for opener_confirmed in [false, true] {
