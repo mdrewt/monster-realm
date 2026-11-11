@@ -1,9 +1,11 @@
-//! World interaction target rule — which entities the interact button acts on.
+//! World interaction rules: which entities the interact button acts on
+//! ([`interact_candidates`]) and how far apart two characters may be for the
+//! server to accept an interaction between them ([`within_interact_range`]).
 //!
-//! The rule is "the tile in front, then your own tile": the first non-empty tier
-//! wins, and nothing else is a candidate (no nearest-within-range, no facing ray).
-//! The server's `TALK_RANGE` is a latency margin, not a reach, so this rule is
-//! deliberately narrower than what `talk` accepts.
+//! The target rule is "the tile in front, then your own tile": the first non-empty
+//! tier wins, and nothing else is a candidate (no nearest-within-range, no facing
+//! ray). The server's `TALK_RANGE` is a latency margin, not a reach, so the target
+//! rule is deliberately narrower than the range the server accepts.
 
 use crate::npc::rules::in_talk_range;
 use crate::types::{Direction, TilePos};
