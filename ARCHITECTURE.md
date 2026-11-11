@@ -55,7 +55,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `taming` | dev-only `grant_bait`; the tactical recruit is a `submit_queue` entry (the 1v1 `attempt_recruit` is deleted since bt-17) |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |
-| `currency`, `trading` | Balance arithmetic; trade proposal validation, headroom checks, the ordered swap plan; the trade-session rules (`trading::session`: eligibility, edits and confirms by revision, the per-side check, the execute verdict, snapshot drift, arrival slots). |
+| `currency`, `trading` | Balance arithmetic; headroom checks, the ordered swap plan; the offer proposal and role rules, which no reducer calls; the trade-session rules (`trading::session`: eligibility, edits and confirms by revision, the per-side check, the execute verdict, snapshot drift, arrival slots). |
 | `ranking` | Elo rating update (`INITIAL_RATING` 1000). |
 | `npc`, `dialogue`, `quest` | NPC wander decisions, dialogue trees, quest triggers. |
 | `accounts` | Deletion grace (`DELETION_GRACE_MS_DEFAULT`, 7 days), export chunk size, tombstone constants. |

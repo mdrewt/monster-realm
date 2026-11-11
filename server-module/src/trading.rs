@@ -82,8 +82,8 @@ pub(crate) fn open_offers_addressed_to(
 /// from `accounts::cancel_account_deletion` with the ids
 /// `accounts::plan_declines_at_cancel` selected; the policy lives there, this
 /// is the write half kept inside the module that owns `trade_offer` (D0). No
-/// assets move: escrow is guard-in-place, so a delete here is the
-/// same effect as the counterparty declining. EA-REAPER-02 site 5.
+/// assets move: escrow is guard-in-place, so a delete here has the
+/// same effect as `cancel_trade`. EA-REAPER-02 site 5.
 pub(crate) fn decline_offers(ctx: &ReducerContext, trade_ids: &[u64]) {
     for &trade_id in trade_ids {
         disarm_trade_reaper(ctx, trade_id);
