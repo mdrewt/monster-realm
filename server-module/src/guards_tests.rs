@@ -2025,10 +2025,22 @@ fn ts0b_wrapper_reject_if_monster_locked_refuses_a_monster_offered_in_either_rol
     let locked: Result<(), String> = Err("monster is in an active trade".to_string());
 
     let targets = [
-        (105, "initiator role, second offer, the owner's own side, last id"),
-        (204, "initiator role, second offer, the partner's side, last id"),
-        (107, "counterparty role, second offer, the owner's own side, last id"),
-        (207, "counterparty role, second offer, the partner's side, last id"),
+        (
+            105,
+            "initiator role, second offer, the owner's own side, last id",
+        ),
+        (
+            204,
+            "initiator role, second offer, the partner's side, last id",
+        ),
+        (
+            107,
+            "counterparty role, second offer, the owner's own side, last id",
+        ),
+        (
+            207,
+            "counterparty role, second offer, the partner's side, last id",
+        ),
     ];
     for (id, place) in targets {
         let got = fx.run_as(sender, |ctx| reject_if_monster_locked(ctx, owner, id));
@@ -2140,7 +2152,8 @@ fn ts0b_wrapper_escrowed_item_qty_of_sums_the_owners_side_across_both_roles() {
 
     let got = fx.run_as(sender, |ctx| escrowed_item_qty_of(ctx, saturated, 7));
     assert_eq!(
-        got, u32::MAX,
+        got,
+        u32::MAX,
         "ts-0b.2 FAIL: the saturated owner's two offers hold u32::MAX and 5 of item 7, which \
          must saturate to u32::MAX; it returned {got}."
     );
@@ -2206,7 +2219,8 @@ fn ts0b_wrapper_escrowed_currency_of_sums_the_owners_side_across_both_roles() {
 
     let got = fx.run_as(sender, |ctx| escrowed_currency_of(ctx, saturated));
     assert_eq!(
-        got, u64::MAX,
+        got,
+        u64::MAX,
         "ts-0b.2 FAIL: the saturated owner's two offers hold u64::MAX and 1 of currency, which \
          must saturate to u64::MAX; it returned {got}."
     );
