@@ -1832,7 +1832,8 @@ fn rb128_dismiss_dialogue_refuses_only_a_deletion_gated_caller_and_keeps_its_row
 // `counterparty` index, and hands that sequence to its pure predicate. The tests
 // below run the shipped wrappers over real rows and compare them with literal
 // values AND with the pure predicate over a hand-listed sequence of the owner's
-// offers. The owner under test is never the context's sender.
+// offers. In the four `ts0b_wrapper_*` tests the owner under test is never the
+// context's sender; the `enqueue_move` test runs the reducer as its own caller.
 
 /// The owner under test.
 const TS0B_OWNER: u8 = 0x0A;
