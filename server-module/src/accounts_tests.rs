@@ -8599,12 +8599,12 @@ mod acct_nh {
         }
     }
 
-    /// BT7.1 — the GENERATED view roster is exactly the fifteen views (the
-    /// eight pre-bt-7 plus the seven tactical ones), each at the position its
-    /// `VIEW_MY_*` id names, every one public, caller-scoped (not anonymous)
-    /// and parameterless; no view is named for a secret table; and each new
-    /// view serves exactly its own table's row (its generated return type
-    /// resolved through the typespace).
+    /// BT7.1 — the GENERATED view roster is exactly the sixteen views (the
+    /// eight pre-bt-7, the seven tactical ones and `my_trade_session`), each at
+    /// the position its id names, every one public, caller-scoped (not
+    /// anonymous) and parameterless; no view is named for a secret table; and
+    /// each tactical view and `my_trade_session` serves exactly its own
+    /// table's row (its generated return type resolved through the typespace).
     ///
     /// Kills: a view for `battle_secret`, `battle_wild_unit` or
     ///        `battle_summary` (BT7.2: none, ever); a view taking an argument
@@ -8616,7 +8616,7 @@ mod acct_nh {
     ///        wrong view (every `call_view` test below would then read a
     ///        different boundary than it names).
     #[test]
-    fn generated_view_roster_is_exactly_fifteen_caller_scoped_views_bt7_1() {
+    fn generated_view_roster_is_exactly_sixteen_caller_scoped_views_bt7_1() {
         use crate::native_host_tests::{
             VIEW_MY_BATTLE, VIEW_MY_BATTLE_CLOCK, VIEW_MY_BATTLE_DEPLOY, VIEW_MY_BATTLE_EVENTS,
             VIEW_MY_BATTLE_QUEUE, VIEW_MY_BATTLE_UNITS, VIEW_MY_CONVERSATION,
@@ -8648,9 +8648,10 @@ mod acct_nh {
                 "my_monster_pub",
                 "my_pending_evolution_notices",
                 "my_tactical_battle",
+                "my_trade_session",
                 "my_wallet",
             ],
-            "[bt7/view-roster] the generated view set"
+            "[bt7/view-roster] the generated view set (sixteen views)"
         );
 
         for (id, name) in [
@@ -8672,6 +8673,8 @@ mod acct_nh {
             (VIEW_MY_BATTLE_QUEUE, "my_battle_queue"),
             (VIEW_MY_BATTLE_DEPLOY, "my_battle_deploy"),
             (VIEW_MY_FORMATION, "my_formation"),
+            // `my_trade_session` is registered last, after `my_formation`.
+            (VIEW_MY_FORMATION + 1, "my_trade_session"),
         ] {
             let v = &views[id];
             assert_eq!(
@@ -8712,6 +8715,18 @@ mod acct_nh {
         let ts = def.typespace().unwrap_or_else(|| {
             panic!("[bt7/describe-typespace] the generated module def carries no typespace")
         });
+        // The `trade_session` row, in declaration order.
+        const TRADE_SESSION_COLUMNS: &[&str] = &[
+            "session_id",
+            "opener",
+            "partner",
+            "opener_offer",
+            "partner_offer",
+            "opener_confirmed",
+            "partner_confirmed",
+            "revision",
+            "created_at_ms",
+        ];
         for (view, columns) in [
             ("my_tactical_battle", super::BT7_COLUMNS_BATTLE_TACTICAL),
             ("my_battle_units", super::BT7_COLUMNS_BATTLE_UNIT),
@@ -8720,6 +8735,7 @@ mod acct_nh {
             ("my_battle_queue", super::BT7_COLUMNS_BATTLE_QUEUE),
             ("my_battle_deploy", super::BT7_COLUMNS_BATTLE_DEPLOY),
             ("my_formation", super::BT7_COLUMNS_PLAYER_FORMATION),
+            ("my_trade_session", TRADE_SESSION_COLUMNS),
         ] {
             let Some(v) = views.iter().find(|v| &*v.source_name == view) else {
                 panic!("[bt7/view-missing] `{view}`")

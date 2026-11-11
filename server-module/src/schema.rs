@@ -797,8 +797,18 @@ pub struct TradeSession {
 /// the rows the first scan already emitted.
 #[spacetimedb::view(accessor = my_trade_session, public)]
 fn my_trade_session(ctx: &spacetimedb::ViewContext) -> Vec<TradeSession> {
-    let _ = ctx;
-    Vec::new() // SKELETON
+    ctx.db
+        .trade_session()
+        .opener()
+        .filter(ctx.sender())
+        .chain(
+            ctx.db
+                .trade_session()
+                .partner()
+                .filter(ctx.sender())
+                .filter(|s| s.opener != ctx.sender()),
+        )
+        .collect()
 }
 
 /// PRIVATE review snapshot of one monster offered in a trade session: every

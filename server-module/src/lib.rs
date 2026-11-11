@@ -241,6 +241,7 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Identity) {
     tactics::resolve_tactical_on_disconnect(ctx, identity);
     trading::cancel_trades_on_disconnect(ctx, identity);
+    trading_session::delete_sessions_of(ctx, identity);
     pvp::forfeit_on_disconnect(ctx, identity);
     battle::resolve_wild_battle_on_disconnect(ctx, identity);
     pvp::cancel_challenges_on_disconnect(ctx, identity);
