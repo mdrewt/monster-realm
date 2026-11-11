@@ -10,19 +10,15 @@
 //! Liveness: a scheduled TTL reaper deletes offers older than `TRADE_OFFER_TTL_MS`;
 //! every offer-deletion path disarms its schedule row.
 
-use crate::economy::{grant_currency, spend_currency, wallet_balance};
+use crate::economy::wallet_balance;
 use crate::guards::{escrowed_currency_amount, escrowed_item_qty, log_reject, reject_if_in_battle};
-use crate::inventory::{consume_one, grant_item};
-use crate::marshal::{now_ms, pub_from_monster};
-use crate::schema::{
-    battle, inventory, monster, monster_pub, player, trade_offer, Monster, TradeOffer,
-};
-use game_core::raising::rules::{reset_bond_on_trade, TrainerBond};
+use crate::marshal::now_ms;
+use crate::schema::{battle, inventory, monster, player, trade_offer, TradeOffer};
+use crate::trading_session::{apply_swap, netted_receiver_stacks, snapshot_cards};
 use game_core::{
     authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
-    make_monster_card, validate_proposal, ApplyStep, ItemStack, LiveMonsterOwner, MonsterCard,
-    ProposalSide, TradeItem, TradeSide, TradeStatus, MAX_TRADE_MONSTERS_PER_SIDE,
-    TRADE_OFFER_TTL_MS,
+    validate_proposal, LiveMonsterOwner, ProposalSide, TradeItem, TradeStatus,
+    MAX_TRADE_MONSTERS_PER_SIDE, TRADE_OFFER_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
@@ -52,45 +48,6 @@ fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String
     Ok(())
 }
 
-/// Trade-time bond reset — the imperative half of game-core's
-/// `reset_bond_on_trade` (decision "Trading resets the bond, not the monster"):
-/// copy the seven Trust / Quality-Time columns into a `TrainerBond`, run the
-/// rule, copy them back. The struct literal and the destructure both name every
-/// field (no `..`), so a bond field added in game-core is a compile error here
-/// until the row copies it; no other column of `m` is named, so this cannot
-/// touch level, genes, xp or essence. Called from `confirm_trade`'s transfer
-/// loop only — never from the guest-claim re-key
-/// (`monster_mgmt::rekey_monsters`), which is the SAME trainer under a new
-/// identity.
-fn reset_trainer_bond(m: &mut Monster) {
-    let mut bond = TrainerBond {
-        trust_favorable_count: m.trust_favorable_count,
-        trust_unfavorable_count: m.trust_unfavorable_count,
-        trust_favorable_battle_day_epoch: m.trust_favorable_battle_day_epoch,
-        quality_time_ticks_total: m.quality_time_ticks_total,
-        quality_time_accum_ms: m.quality_time_accum_ms,
-        quality_time_window_ms: m.quality_time_window_ms,
-        quality_time_window_start_ms: m.quality_time_window_start_ms,
-    };
-    reset_bond_on_trade(&mut bond);
-    let TrainerBond {
-        trust_favorable_count,
-        trust_unfavorable_count,
-        trust_favorable_battle_day_epoch,
-        quality_time_ticks_total,
-        quality_time_accum_ms,
-        quality_time_window_ms,
-        quality_time_window_start_ms,
-    } = bond;
-    m.trust_favorable_count = trust_favorable_count;
-    m.trust_unfavorable_count = trust_unfavorable_count;
-    m.trust_favorable_battle_day_epoch = trust_favorable_battle_day_epoch;
-    m.quality_time_ticks_total = quality_time_ticks_total;
-    m.quality_time_accum_ms = quality_time_accum_ms;
-    m.quality_time_window_ms = quality_time_window_ms;
-    m.quality_time_window_start_ms = quality_time_window_start_ms;
-}
-
 /// Returns true if `owner` has any active (Pending or ConfirmedByCounterparty)
 /// trade offer, as either initiator or counterparty.
 /// Uses the two btree indexes — O(active_offers_for_owner), not O(total).
@@ -106,39 +63,6 @@ fn has_active_trade(ctx: &ReducerContext, owner: Identity) -> bool {
             .counterparty()
             .filter(owner)
             .any(|t| t.status.is_active())
-}
-
-/// Build display-only `MonsterCard` snapshots from the given monster IDs.
-/// Rejects if any ID is not found or not owned by `expected_owner`.
-fn build_cards(
-    ctx: &ReducerContext,
-    monster_ids: &[u64],
-    expected_owner: Identity,
-    reducer: &str,
-) -> Result<Vec<MonsterCard>, String> {
-    let me = ctx.sender();
-    let mut cards = Vec::with_capacity(monster_ids.len());
-    for &mid in monster_ids {
-        let Some(m) = ctx.db.monster().monster_id().find(mid) else {
-            let e = format!("monster {mid} not found");
-            log_reject(reducer, me, &e);
-            return Err(e);
-        };
-        if m.owner_identity != expected_owner {
-            let e = format!("monster {mid} not owned by caller");
-            log_reject(reducer, me, &e);
-            return Err(e);
-        }
-        cards.push(make_monster_card(
-            m.monster_id,
-            m.species_id,
-            m.nickname.clone(),
-            m.level,
-            m.current_hp,
-            m.stat_hp,
-        ));
-    }
-    Ok(cards)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,8 +391,8 @@ pub fn propose_trade(
     }
 
     // Build display snapshots (also validates ownership).
-    let initiator_cards = build_cards(ctx, &initiator_monster_ids, me, "propose_trade")?;
-    let counterparty_cards = build_cards(
+    let initiator_cards = snapshot_cards(ctx, &initiator_monster_ids, me, "propose_trade")?;
+    let counterparty_cards = snapshot_cards(
         ctx,
         &counterparty_monster_ids,
         counterparty,
@@ -633,66 +557,25 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
     // crediting items/currency to the receiver would exceed MAX_ITEM_STACK or MAX_BALANCE.
     // Prevents silent value destruction via grant_item/grant_currency clamping.
     {
-        // Initiator RECEIVES counterparty_items + counterparty_currency.
-        // Subtract any qty the initiator is simultaneously SENDING of the same item_id so
-        // the headroom check uses the post-debit effective count, not the pre-debit raw count.
-        // Without this, a symmetric same-item swap (give 15 of X, receive 20 of X while
-        // holding 9990) falsely rejects: 9990+20>9999 but net 9990-15+20=9995 is fine.
-        let i_stacks: Vec<ItemStack> = offer
-            .counterparty_items
-            .iter()
-            .map(|ti| {
-                let raw_count = ctx
-                    .db
-                    .inventory()
-                    .owner_identity()
-                    .filter(offer.initiator)
-                    .find(|r| r.item_id == ti.item_id)
-                    .map(|r| r.count)
-                    .unwrap_or(0);
-                let sending_qty = offer
-                    .initiator_items
-                    .iter()
-                    .find(|si| si.item_id == ti.item_id)
-                    .map(|si| si.qty)
-                    .unwrap_or(0);
-                ItemStack {
-                    item_id: ti.item_id,
-                    current_count: raw_count.saturating_sub(sending_qty),
-                }
-            })
-            .collect();
-        // Counterparty RECEIVES initiator_items + initiator_currency.
-        // Same net-quantity correction applied symmetrically.
-        let c_stacks: Vec<ItemStack> = offer
-            .initiator_items
-            .iter()
-            .map(|ti| {
-                let raw_count = ctx
-                    .db
-                    .inventory()
-                    .owner_identity()
-                    .filter(offer.counterparty)
-                    .find(|r| r.item_id == ti.item_id)
-                    .map(|r| r.count)
-                    .unwrap_or(0);
-                let sending_qty = offer
-                    .counterparty_items
-                    .iter()
-                    .find(|si| si.item_id == ti.item_id)
-                    .map(|si| si.qty)
-                    .unwrap_or(0);
-                ItemStack {
-                    item_id: ti.item_id,
-                    current_count: raw_count.saturating_sub(sending_qty),
-                }
-            })
-            .collect();
+        // Each receiver's stacks are netted against what it simultaneously sends,
+        // so the check sees the post-debit effective count.
+        let i_stacks = netted_receiver_stacks(
+            ctx,
+            offer.initiator,
+            &offer.counterparty_items,
+            &offer.initiator_items,
+        );
+        let c_stacks = netted_receiver_stacks(
+            ctx,
+            offer.counterparty,
+            &offer.initiator_items,
+            &offer.counterparty_items,
+        );
         // Currency balances are netted: each party's OWN outgoing
         // currency is subtracted from their OWN live balance, so the cap check sees the
         // post-debit effective balance (symmetric with the item netting above). Netting
         // is cap-headroom-only: a broke sender still rejects at spend_currency in the
-        // apply loop, with whole-transaction rollback.
+        // apply_swap, with whole-transaction rollback.
         check_headroom(
             &offer.counterparty_items,
             &i_stacks,
@@ -725,104 +608,10 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         msg
     })?;
 
-    // Apply monster transfers (dual-write monster + monster_pub, clear party_slot,
-    // reset the trainer bond).
-    for xfer in &plan.monster_transfers {
-        let new_owner = if xfer.new_owner_idx == TradeSide::Counterparty {
-            offer.counterparty
-        } else {
-            offer.initiator
-        };
-
-        let mut m = ctx
-            .db
-            .monster()
-            .monster_id()
-            .find(xfer.monster_id)
-            .ok_or_else(|| format!("monster {} gone during apply", xfer.monster_id))?;
-        m.owner_identity = new_owner;
-        m.party_slot = crate::PARTY_SLOT_NONE;
-        // The monster changes trainer: its Trust / Quality-Time bond returns to the
-        // fresh-monster baseline BEFORE the projection below, so `monster_pub`'s
-        // derived tiers re-derive from the reset counters.
-        reset_trainer_bond(&mut m);
-        // Copy-forward tier: read the existing monster_pub row;
-        // a missing row fails loud (same convention as the monster read above).
-        let existing_pub = ctx
-            .db
-            .monster_pub()
-            .monster_id()
-            .find(xfer.monster_id)
-            .ok_or_else(|| format!("monster_pub {} gone during apply", xfer.monster_id))?;
-        let mut mp = pub_from_monster(&m, existing_pub.tier);
-        mp.owner_identity = new_owner;
-        mp.party_slot = crate::PARTY_SLOT_NONE;
-        ctx.db.monster().monster_id().update(m);
-        ctx.db.monster_pub().monster_id().update(mp);
-    }
-
-    // Apply item + currency transfers in the debits-before-credits order published
-    // by game-core: ALL debits land before ANY credit, so a
-    // same-item bilateral swap near a cap credits into an already-debited stack —
-    // the netted headroom check above is exact and no clamping grant ever engages
-    // (reject-not-clamp). Debit arms read from_initiator (sender); credit
-    // arms read to_initiator (receiver) — game-core inverted at emission, so there
-    // is NO inversion here.
-    for step in plan.ordered_steps() {
-        match step {
-            ApplyStep::ItemDebit {
-                from_initiator,
-                item_id,
-                qty,
-            } => {
-                let from = if from_initiator {
-                    offer.initiator
-                } else {
-                    offer.counterparty
-                };
-                // consume_one returns Err if insufficient — the whole transaction rolls back.
-                for _ in 0..qty {
-                    consume_one(ctx, from, item_id)?;
-                }
-            }
-            ApplyStep::CurrencyDebit {
-                from_initiator,
-                amount,
-            } => {
-                let from = if from_initiator {
-                    offer.initiator
-                } else {
-                    offer.counterparty
-                };
-                // spend_currency returns Err if insufficient (broke-sender rejection
-                // site) — the whole transaction rolls back.
-                spend_currency(ctx, from, amount)?;
-            }
-            ApplyStep::ItemCredit {
-                to_initiator,
-                item_id,
-                qty,
-            } => {
-                let to = if to_initiator {
-                    offer.initiator
-                } else {
-                    offer.counterparty
-                };
-                grant_item(ctx, to, item_id, qty);
-            }
-            ApplyStep::CurrencyCredit {
-                to_initiator,
-                amount,
-            } => {
-                let to = if to_initiator {
-                    offer.initiator
-                } else {
-                    offer.counterparty
-                };
-                grant_currency(ctx, to, amount);
-            }
-        }
-    }
+    // Every transferred monster arrives in Storage.
+    apply_swap(ctx, &plan, offer.initiator, offer.counterparty, |_| {
+        crate::PARTY_SLOT_NONE
+    })?;
 
     // Delete the offer row — releases the escrow guard.
     ctx.db.trade_offer().trade_id().delete(trade_id);

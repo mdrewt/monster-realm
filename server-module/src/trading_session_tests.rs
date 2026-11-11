@@ -291,7 +291,12 @@ fn ts0a_apply_swap_with_none_dest_slot_unslots_both_rows() {
 #[test]
 fn ts0a_apply_swap_missing_monster_or_projection_row_is_err() {
     for (label, seed_private, seed_pub, want) in [
-        ("no private row", false, false, "monster 11 gone during apply"),
+        (
+            "no private row",
+            false,
+            false,
+            "monster 11 gone during apply",
+        ),
         (
             "no projection row",
             true,
@@ -336,7 +341,11 @@ fn ts0a_apply_swap_item_debits_land_before_credits() {
         super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
     });
     assert_eq!(got, Ok(()));
-    assert_eq!(w.count(alice(), 5), cap - 9 - 15 + 20, "exact netted credit");
+    assert_eq!(
+        w.count(alice(), 5),
+        cap - 9 - 15 + 20,
+        "exact netted credit"
+    );
     assert_eq!(w.count(alice(), 9), 0, "fully given stack is gone");
     assert_eq!(w.count(bob(), 5), 15, "bob nets 20 - 20 + 15");
     assert_eq!(w.count(bob(), 9), 1, "bob receives the item he lacked");
