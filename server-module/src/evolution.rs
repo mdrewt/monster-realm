@@ -14,13 +14,13 @@
 //! `game_core::eligible_evolution_paths` and the requirement NAMING is
 //! `game_core::unmet_requirement`; nothing in this file reads a gate field.
 
-use crate::guards::{reject_if_in_battle, reject_if_monster_in_trade, require_owner};
+use crate::guards::{reject_if_in_battle, reject_if_monster_locked, require_owner};
 use crate::marshal::{
     evolution_path_from_row, monster_to_instance, now_ms, pub_from_monster, species_from_row,
 };
 use crate::schema::{
     battle, evolution_path, monster, monster_pub, pending_evolution_notice, species_row,
-    trade_offer, EvolutionPathRow, EvolutionRevealRow, PendingEvolutionNotice,
+    EvolutionPathRow, EvolutionRevealRow, PendingEvolutionNotice,
 };
 use game_core::Affinity;
 use spacetimedb::{Identity, ReducerContext, Table};
@@ -64,14 +64,7 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<
         monster_id,
     )?;
     // Trade escrow guard: monster in an active offer cannot be evolved.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(m.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-        monster_id,
-    )?;
+    reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
 
     // The ONE targeted row, keyed on BOTH endpoints. R1 guarantees at
     // most one (from, to) edge; an empty table or a foreign

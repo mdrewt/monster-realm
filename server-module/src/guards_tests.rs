@@ -1825,3 +1825,626 @@ fn rb128_dismiss_dialogue_refuses_only_a_deletion_gated_caller_and_keeps_its_row
     let call = || crate::npc::dismiss_dialogue(&ctx);
     rb128_assert_refused_only_while_gated(name.as_str(), &fx, &acct, me, &call, Ok(()), &oracle);
 }
+
+// --- ctx-bound trade escrow wrappers ------------------------------------------
+//
+// Each wrapper reads the owner's offers through the `initiator` index, then the
+// `counterparty` index, and hands that sequence to its pure predicate. The tests
+// below run the shipped wrappers over real rows and compare them with literal
+// values AND with the pure predicate over a hand-listed sequence of the owner's
+// offers. In the four `ts0b_wrapper_*` tests the owner under test is never the
+// context's sender; the `enqueue_move` test runs the reducer as its own caller.
+
+/// The owner under test.
+const TS0B_OWNER: u8 = 0x0A;
+/// The context's sender: party to offers of its own, with different contents.
+const TS0B_SENDER: u8 = 0x5E;
+/// An owner who is party to no offer at all.
+const TS0B_IDLE: u8 = 0x1D;
+/// An owner whose two offers sum past `u32::MAX` items and `u64::MAX` currency.
+const TS0B_SATURATED: u8 = 0x2A;
+/// The owner's first trading partner.
+const TS0B_PARTNER_1: u8 = 0xC1;
+/// The owner's second trading partner.
+const TS0B_PARTNER_2: u8 = 0xC2;
+/// One half of a stranger pair: the owner is party to neither side of their offer.
+const TS0B_STRANGER_P: u8 = 0x71;
+/// The other half of the stranger pair.
+const TS0B_STRANGER_Q: u8 = 0x72;
+
+fn ts0b_id(byte: u8) -> spacetimedb::Identity {
+    spacetimedb::Identity::from_byte_array([byte; 32])
+}
+
+/// One side of an offer: the party, its monster ids, its `(item_id, qty)` stacks and its
+/// currency.
+type Ts0bSide = (spacetimedb::Identity, Vec<u64>, Vec<(u32, u32)>, u64);
+
+/// A `trade_offer` row built from its two sides (no cards, a fixed creation stamp).
+fn ts0b_offer(
+    trade_id: u64,
+    initiator_side: Ts0bSide,
+    counterparty_side: Ts0bSide,
+    status: game_core::TradeStatus,
+) -> crate::schema::TradeOffer {
+    let stacks = |pairs: Vec<(u32, u32)>| -> Vec<game_core::TradeItem> {
+        pairs
+            .into_iter()
+            .map(|(item_id, qty)| game_core::TradeItem { item_id, qty })
+            .collect()
+    };
+    let (initiator, initiator_monster_ids, initiator_items, initiator_currency) = initiator_side;
+    let (counterparty, counterparty_monster_ids, counterparty_items, counterparty_currency) =
+        counterparty_side;
+    crate::schema::TradeOffer {
+        trade_id,
+        initiator,
+        counterparty,
+        initiator_monster_ids,
+        initiator_items: stacks(initiator_items),
+        initiator_currency,
+        counterparty_monster_ids,
+        counterparty_items: stacks(counterparty_items),
+        counterparty_currency,
+        initiator_cards: vec![],
+        counterparty_cards: vec![],
+        status,
+        created_at_ms: 0,
+    }
+}
+
+/// Registers `trade_offer` under its `trade_id` key and BOTH role indexes. It is never
+/// made `.scannable()`, so a wrapper that reaches for a table-wide scan aborts the test
+/// process instead of passing.
+fn ts0b_offer_table(
+    fx: &crate::native_host_tests::Fixture,
+) -> crate::native_host_tests::Handle<'_, crate::schema::TradeOffer, u64> {
+    use crate::schema::TradeOffer;
+    let _ = fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator);
+    let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+    fx.table_keyed::<TradeOffer, u64>("trade_offer", "trade_id", |r| r.trade_id)
+}
+
+/// Seeds every escrow-wrapper row, in this store order (the order an index point scan
+/// yields), and returns them.
+///
+/// The owner is the initiator of offers 1 and 2 and the counterparty of offers 3 and 4,
+/// interleaved with the sender's offers (10 as initiator, 11 as counterparty), the stranger
+/// pair's offer 20 and the saturated owner's offers (30 as initiator, 31 as counterparty).
+/// Every offer carries nonzero, per-side-distinct items and currency, and item 7 on both
+/// sides; item 9 is a decoy on the owner's side of offers 1 and 3. Monster 102 is in two
+/// of the owner's offers. Monster 999 is in the sender's and the stranger pair's offers
+/// only, and the stranger pair also carries 105 and 107.
+fn ts0b_seed_offers(fx: &crate::native_host_tests::Fixture) -> Vec<crate::schema::TradeOffer> {
+    use game_core::TradeStatus::{ConfirmedByCounterparty, Pending};
+    let owner = ts0b_id(TS0B_OWNER);
+    let sender = ts0b_id(TS0B_SENDER);
+    let saturated = ts0b_id(TS0B_SATURATED);
+    let p1 = ts0b_id(TS0B_PARTNER_1);
+    let p2 = ts0b_id(TS0B_PARTNER_2);
+    let sp = ts0b_id(TS0B_STRANGER_P);
+    let sq = ts0b_id(TS0B_STRANGER_Q);
+    let rows = vec![
+        ts0b_offer(
+            10,
+            (sender, vec![301, 999], vec![(7, 1000)], 10_000),
+            (p1, vec![302], vec![(7, 2000)], 20_000),
+            Pending,
+        ),
+        ts0b_offer(
+            1,
+            (owner, vec![101, 102], vec![(7, 3), (9, 50)], 5),
+            (p1, vec![201], vec![(7, 40)], 600),
+            Pending,
+        ),
+        ts0b_offer(
+            20,
+            (sp, vec![999, 105, 107], vec![(7, 5000)], 50_000),
+            (sq, vec![402], vec![(7, 6000)], 60_000),
+            Pending,
+        ),
+        ts0b_offer(
+            3,
+            (p1, vec![205], vec![(7, 80)], 800),
+            (owner, vec![106], vec![(7, 10), (9, 60)], 20),
+            Pending,
+        ),
+        ts0b_offer(
+            11,
+            (p2, vec![303], vec![(7, 3000)], 30_000),
+            (sender, vec![304], vec![(7, 4000)], 40_000),
+            ConfirmedByCounterparty,
+        ),
+        ts0b_offer(
+            2,
+            (owner, vec![103, 105], vec![(7, 4)], 6),
+            (p2, vec![203, 204], vec![(7, 70), (9, 2)], 700),
+            ConfirmedByCounterparty,
+        ),
+        ts0b_offer(
+            30,
+            (saturated, vec![501], vec![(7, u32::MAX)], u64::MAX),
+            (p1, vec![502], vec![(7, 9)], 7),
+            Pending,
+        ),
+        ts0b_offer(
+            4,
+            (p2, vec![206, 207], vec![(7, 90), (9, 1)], 900),
+            (owner, vec![102, 107], vec![(7, 30)], 40),
+            ConfirmedByCounterparty,
+        ),
+        ts0b_offer(
+            31,
+            (p2, vec![503], vec![(7, 11)], 13),
+            (saturated, vec![504], vec![(7, 5)], 1),
+            ConfirmedByCounterparty,
+        ),
+    ];
+    let table = ts0b_offer_table(fx);
+    for row in &rows {
+        table.seed(row);
+    }
+    rows
+}
+
+/// The seeded rows with these trade ids, in the order listed: the hand-written sequence a
+/// wrapper's pure predicate must see.
+fn ts0b_pick<'a>(
+    rows: &'a [crate::schema::TradeOffer],
+    trade_ids: &[u64],
+) -> Vec<&'a crate::schema::TradeOffer> {
+    let mut picked = Vec::new();
+    for id in trade_ids {
+        let row = rows.iter().find(|r| r.trade_id == *id);
+        picked.push(row.expect("ts0b fixture: every hand-listed trade id is seeded"));
+    }
+    picked
+}
+
+/// `reject_if_monster_locked` refuses a monster in any of the owner's active offers, in
+/// either role and on either side, answers exactly what `reject_if_monster_in_trade`
+/// answers over the owner's offers (initiator role, then counterparty role), and reads
+/// the offers of the owner it is handed, never the context's sender.
+///
+/// Every refused target sits in the SECOND offer of its role and LAST in its id list:
+/// 105 and 107 on the owner's own side, 204 and 207 on the partner's side. Monster 999
+/// is only in the sender's and the stranger pair's offers. The idle owner is party to no
+/// offer while the table holds offers carrying the ids asked about.
+///
+/// kills: initiator index only (107 and 207 admitted) · counterparty index only (105 and
+/// 204 admitted) · first offer of a role only (every target admitted) · rows read for
+/// `ctx.sender()` (105 admitted, 999 refused) · a stranger's or table-wide read
+/// (999 and the idle owner refused) · a constant answer · any other error text.
+#[test]
+fn ts0b_wrapper_reject_if_monster_locked_refuses_a_monster_offered_in_either_role() {
+    let fx = crate::native_host_tests::fixture();
+    let rows = ts0b_seed_offers(&fx);
+    let owner = ts0b_id(TS0B_OWNER);
+    let sender = ts0b_id(TS0B_SENDER);
+    let idle = ts0b_id(TS0B_IDLE);
+    let owners_offers = ts0b_pick(&rows, &[1, 2, 3, 4]);
+    let locked: Result<(), String> = Err("monster is in an active trade".to_string());
+
+    let targets = [
+        (
+            105,
+            "initiator role, second offer, the owner's own side, last id",
+        ),
+        (
+            204,
+            "initiator role, second offer, the partner's side, last id",
+        ),
+        (
+            107,
+            "counterparty role, second offer, the owner's own side, last id",
+        ),
+        (
+            207,
+            "counterparty role, second offer, the partner's side, last id",
+        ),
+    ];
+    for (id, place) in targets {
+        let got = fx.run_as(sender, |ctx| reject_if_monster_locked(ctx, owner, id));
+        assert_eq!(
+            got, locked,
+            "ts-0b.2 FAIL: monster {id} is in one of the owner's active offers ({place}), so \
+             `reject_if_monster_locked` must refuse it with exactly {locked:?}; it returned \
+             {got:?}. An `Ok` means the wrapper skipped that role's index, stopped at the first \
+             offer of the role, or read the offers of `ctx.sender()` instead of the owner it \
+             was handed."
+        );
+        let pure = reject_if_monster_in_trade(owners_offers.iter().copied(), id);
+        assert_eq!(
+            got, pure,
+            "ts-0b.2 FAIL: for monster {id} the wrapper returned {got:?} while the pure \
+             predicate over the owner's offers (initiator role, then counterparty role) \
+             returns {pure:?}; the wrapper must hand its predicate exactly those rows."
+        );
+    }
+
+    let got = fx.run_as(sender, |ctx| reject_if_monster_locked(ctx, owner, 999));
+    assert_eq!(
+        got,
+        Ok(()),
+        "ts-0b.2 FAIL: monster 999 is in none of the owner's offers (only in the sender's and \
+         the stranger pair's), so it must be admitted; it returned {got:?}. A refusal means \
+         the wrapper read the sender's offers or rows the owner is not party to."
+    );
+    let pure = reject_if_monster_in_trade(owners_offers.iter().copied(), 999);
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: for monster 999 the wrapper returned {got:?} while the pure predicate \
+         over the owner's offers returns {pure:?}."
+    );
+
+    let none = ts0b_pick(&rows, &[]);
+    for id in [105, 999] {
+        let got = fx.run_as(sender, |ctx| reject_if_monster_locked(ctx, idle, id));
+        assert_eq!(
+            got,
+            Ok(()),
+            "ts-0b.2 FAIL: the idle owner is party to no offer, so monster {id} must be admitted \
+             for them; it returned {got:?}. A refusal means the wrapper read offers the owner \
+             is not party to (the table, the sender's or the stranger pair's)."
+        );
+        let pure = reject_if_monster_in_trade(none.iter().copied(), id);
+        assert_eq!(
+            got, pure,
+            "ts-0b.2 FAIL: for the idle owner and monster {id} the wrapper returned {got:?} \
+             while the pure predicate over no offers returns {pure:?}."
+        );
+    }
+}
+
+/// `escrowed_item_qty_of` sums the owner's OWN side of every offer in both roles for the
+/// asked item, exactly as `escrowed_item_qty` does over the owner's offers with the same
+/// owner, and saturates at `u32::MAX`.
+///
+/// Item 7 for the owner: 3 + 4 (initiator side of offers 1 and 2) + 10 + 30 (counterparty
+/// side of offers 3 and 4) = 47. Decoy item 9: 50 + 60 = 110. The idle owner: 0. The
+/// saturated owner: `u32::MAX` + 5, saturating to `u32::MAX`.
+///
+/// kills: initiator index only (7) · counterparty index only (40) · the initiator side
+/// read when the owner is the counterparty (177) · the predicate handed `ctx.sender()` as
+/// its owner (150) · rows keyed on `ctx.sender()` · the item id ignored (157 for both) ·
+/// a stranger's or table-wide read (the idle owner) · a constant · a wrapping or
+/// panicking add (the saturated owner).
+#[test]
+fn ts0b_wrapper_escrowed_item_qty_of_sums_the_owners_side_across_both_roles() {
+    let fx = crate::native_host_tests::fixture();
+    let rows = ts0b_seed_offers(&fx);
+    let owner = ts0b_id(TS0B_OWNER);
+    let sender = ts0b_id(TS0B_SENDER);
+    let idle = ts0b_id(TS0B_IDLE);
+    let saturated = ts0b_id(TS0B_SATURATED);
+    let owners_offers = ts0b_pick(&rows, &[1, 2, 3, 4]);
+
+    for (item_id, want) in [(7, 47), (9, 110)] {
+        let got = fx.run_as(sender, |ctx| escrowed_item_qty_of(ctx, owner, item_id));
+        assert_eq!(
+            got, want,
+            "ts-0b.2 FAIL: the owner's escrowed quantity of item {item_id} must be {want} (the \
+             owner's own side of offers 1 and 2 as initiator plus 3 and 4 as counterparty); it \
+             returned {got}. 7 / 40 is one role's index only, 177 the wrong side when the \
+             owner is the counterparty, 150 the predicate keyed on the sender, 157 the item id \
+             ignored."
+        );
+        let pure = escrowed_item_qty(owners_offers.iter().copied(), owner, item_id);
+        assert_eq!(
+            got, pure,
+            "ts-0b.2 FAIL: for item {item_id} the wrapper returned {got} while the pure \
+             predicate over the owner's offers, with the same owner, returns {pure}."
+        );
+    }
+
+    let got = fx.run_as(sender, |ctx| escrowed_item_qty_of(ctx, idle, 7));
+    assert_eq!(
+        got, 0,
+        "ts-0b.2 FAIL: the idle owner is party to no offer, so nothing of item 7 is escrowed \
+         for them; it returned {got}, which is a read of offers the owner is not party to."
+    );
+    let none = ts0b_pick(&rows, &[]);
+    let pure = escrowed_item_qty(none.iter().copied(), idle, 7);
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: for the idle owner the wrapper returned {got} while the pure predicate \
+         over no offers returns {pure}."
+    );
+
+    let got = fx.run_as(sender, |ctx| escrowed_item_qty_of(ctx, saturated, 7));
+    assert_eq!(
+        got,
+        u32::MAX,
+        "ts-0b.2 FAIL: the saturated owner's two offers hold u32::MAX and 5 of item 7, which \
+         must saturate to u32::MAX; it returned {got}."
+    );
+    let saturated_offers = ts0b_pick(&rows, &[30, 31]);
+    let pure = escrowed_item_qty(saturated_offers.iter().copied(), saturated, 7);
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: for the saturated owner the wrapper returned {got} while the pure \
+         predicate over that owner's offers returns {pure}."
+    );
+}
+
+/// `escrowed_currency_of` sums the owner's OWN side of every offer in both roles, exactly as
+/// `escrowed_currency_amount` does over the owner's offers with the same owner, and
+/// saturates at `u64::MAX`.
+///
+/// The owner: 5 + 6 (initiator side of offers 1 and 2) + 20 + 40 (counterparty side of
+/// offers 3 and 4) = 71. The idle owner: 0. The saturated owner: `u64::MAX` + 1,
+/// saturating to `u64::MAX`.
+///
+/// kills: initiator index only (11) · counterparty index only (60) · the initiator side
+/// read when the owner is the counterparty (1711) · the predicate handed `ctx.sender()`
+/// as its owner (1360) · rows keyed on `ctx.sender()` · a stranger's or table-wide read
+/// (the idle owner) · a constant · a wrapping or panicking add (the saturated owner).
+#[test]
+fn ts0b_wrapper_escrowed_currency_of_sums_the_owners_side_across_both_roles() {
+    let fx = crate::native_host_tests::fixture();
+    let rows = ts0b_seed_offers(&fx);
+    let owner = ts0b_id(TS0B_OWNER);
+    let sender = ts0b_id(TS0B_SENDER);
+    let idle = ts0b_id(TS0B_IDLE);
+    let saturated = ts0b_id(TS0B_SATURATED);
+
+    let got = fx.run_as(sender, |ctx| escrowed_currency_of(ctx, owner));
+    assert_eq!(
+        got, 71,
+        "ts-0b.2 FAIL: the owner's escrowed currency must be 71 (the owner's own side of \
+         offers 1 and 2 as initiator plus 3 and 4 as counterparty); it returned {got}. 11 / \
+         60 is one role's index only, 1711 the wrong side when the owner is the counterparty, \
+         1360 the predicate keyed on the sender."
+    );
+    let owners_offers = ts0b_pick(&rows, &[1, 2, 3, 4]);
+    let pure = escrowed_currency_amount(owners_offers.iter().copied(), owner);
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: the wrapper returned {got} while the pure predicate over the owner's \
+         offers, with the same owner, returns {pure}."
+    );
+
+    let got = fx.run_as(sender, |ctx| escrowed_currency_of(ctx, idle));
+    assert_eq!(
+        got, 0,
+        "ts-0b.2 FAIL: the idle owner is party to no offer, so no currency is escrowed for \
+         them; it returned {got}, which is a read of offers the owner is not party to."
+    );
+    let none = ts0b_pick(&rows, &[]);
+    let pure = escrowed_currency_amount(none.iter().copied(), idle);
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: for the idle owner the wrapper returned {got} while the pure predicate \
+         over no offers returns {pure}."
+    );
+
+    let got = fx.run_as(sender, |ctx| escrowed_currency_of(ctx, saturated));
+    assert_eq!(
+        got,
+        u64::MAX,
+        "ts-0b.2 FAIL: the saturated owner's two offers hold u64::MAX and 1 of currency, which \
+         must saturate to u64::MAX; it returned {got}."
+    );
+    let saturated_offers = ts0b_pick(&rows, &[30, 31]);
+    let pure = escrowed_currency_amount(saturated_offers.iter().copied(), saturated);
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: for the saturated owner the wrapper returned {got} while the pure \
+         predicate over that owner's offers returns {pure}."
+    );
+}
+
+/// `escrowed_monster_ids_of` lists, for every offer of the owner (initiator role first,
+/// then counterparty role, each in store order), the initiator's monster ids then the
+/// counterparty's, duplicates kept and nothing sorted, exactly as `escrowed_monster_ids`
+/// does over the owner's offers.
+///
+/// kills: one side's ids only · one role's index only · counterparty role read first ·
+/// de-duplication (102 is in offers 1 and 4) · sorting · rows keyed on `ctx.sender()` ·
+/// a stranger's or table-wide read (the idle owner) · a constant.
+#[test]
+fn ts0b_wrapper_escrowed_monster_ids_of_lists_every_monster_in_the_owners_offers() {
+    let fx = crate::native_host_tests::fixture();
+    let rows = ts0b_seed_offers(&fx);
+    let owner = ts0b_id(TS0B_OWNER);
+    let sender = ts0b_id(TS0B_SENDER);
+    let idle = ts0b_id(TS0B_IDLE);
+
+    let got = fx.run_as(sender, |ctx| escrowed_monster_ids_of(ctx, owner));
+    // Offer 1 (101 102 | 201), offer 2 (103 105 | 203 204), offer 3 (205 | 106), offer 4
+    // (206 207 | 102 107): initiator's ids, then counterparty's.
+    let want: Vec<u64> = vec![
+        101, 102, 201, 103, 105, 203, 204, 205, 106, 206, 207, 102, 107,
+    ];
+    assert_eq!(
+        got, want,
+        "ts-0b.2 FAIL: the owner's escrowed monster ids must be both sides of offers 1 and 2 \
+         (owner initiator) then of offers 3 and 4 (owner counterparty), in that order, with \
+         102 listed twice; it returned {got:?}. A shorter list is one side or one role only; \
+         a reordered one is the roles read the other way round or a sort; a missing second \
+         102 is de-duplication."
+    );
+    let owners_offers = ts0b_pick(&rows, &[1, 2, 3, 4]);
+    let pure = escrowed_monster_ids(owners_offers.iter().copied());
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: the wrapper returned {got:?} while the pure predicate over the owner's \
+         offers returns {pure:?}."
+    );
+
+    let got = fx.run_as(sender, |ctx| escrowed_monster_ids_of(ctx, idle));
+    assert_eq!(
+        got,
+        Vec::<u64>::new(),
+        "ts-0b.2 FAIL: the idle owner is party to no offer, so no monster is escrowed for \
+         them; it returned {got:?}, which is a read of offers the owner is not party to."
+    );
+    let none = ts0b_pick(&rows, &[]);
+    let pure = escrowed_monster_ids(none.iter().copied());
+    assert_eq!(
+        got, pure,
+        "ts-0b.2 FAIL: for the idle owner the wrapper returned {got:?} while the pure \
+         predicate over no offers returns {pure:?}."
+    );
+}
+
+/// A boxed (not party-slotted) monster owned by `owner`.
+fn ts0b_boxed_monster(monster_id: u64, owner: spacetimedb::Identity) -> crate::schema::Monster {
+    crate::schema::Monster {
+        monster_id,
+        owner_identity: owner,
+        species_id: 1,
+        nickname: format!("m{monster_id}"),
+        level: 7,
+        xp: 0,
+        iv_hp: 10,
+        iv_attack: 11,
+        iv_defense: 12,
+        iv_speed: 13,
+        iv_sp_attack: 14,
+        iv_sp_defense: 15,
+        nature_kind: game_core::NatureKind::Hardy,
+        ev_hp: 4,
+        ev_attack: 5,
+        ev_defense: 6,
+        ev_speed: 7,
+        ev_sp_attack: 8,
+        ev_sp_defense: 9,
+        stat_hp: 40,
+        stat_attack: 20,
+        stat_defense: 20,
+        stat_speed: 20,
+        stat_sp_attack: 20,
+        stat_sp_defense: 20,
+        current_hp: 40,
+        party_slot: crate::PARTY_SLOT_NONE,
+        last_care_at_ms: 0,
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
+    }
+}
+
+/// `enqueue_move` for a joined caller with NO party monster queues the move and asks the
+/// host for no `trade_offer` index at all: the escrow read happens only inside its
+/// has-a-party arm. The caller owns a boxed monster that sits in an active offer of its
+/// own, so the escrow read, were it hoisted, would have rows to find.
+///
+/// Positive control, in the SAME test and AFTER the move (the generated code memoises an
+/// index id per process, so a name is asked for only the first time): a direct
+/// `escrowed_monster_ids_of` call then returns the offer's ids and makes both role-index
+/// names appear in the recorder. That proves the recorder and the name spelling, so the
+/// negative half is not vacuous.
+///
+/// Under plain `cargo test` (one shared process) an earlier test may already have asked
+/// for those indexes: the negative half can then pass vacuously and the positive control
+/// can fail. `just test` runs nextest, one process per test, where both halves hold.
+///
+/// kills: the escrow read hoisted out of the has-a-party arm, anywhere in the reducer.
+#[test]
+fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
+    use crate::movement::enqueue_move;
+    use game_core::MoveInput;
+
+    let fx = crate::native_host_tests::fixture();
+    let me = ts0b_id(TS0B_OWNER);
+    let players = fx
+        .table::<crate::schema::Player>("player", "identity", |r| r.identity)
+        .writable()
+        .unique();
+    let characters = fx
+        .table_keyed::<crate::schema::Character, u64>("character", "entity_id", |r| r.entity_id)
+        .writable()
+        .unique();
+    let monsters =
+        fx.table::<crate::schema::Monster>("monster", "owner_identity", |r| r.owner_identity);
+    players.seed(&crate::schema::Player {
+        identity: me,
+        entity_id: 7,
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+    });
+    characters.seed(&crate::schema::Character {
+        entity_id: 7,
+        zone_id: 0,
+        tile_x: 1,
+        tile_y: 1,
+        facing: game_core::Direction::South,
+        action: game_core::ActionState::Idle,
+        move_started_at_ms: 0,
+        sprite_id: 0,
+        move_queue: vec![],
+    });
+    monsters.seed(&ts0b_boxed_monster(61, me));
+    ts0b_offer_table(&fx).seed(&ts0b_offer(
+        1,
+        (me, vec![61], vec![(7, 1)], 1),
+        (ts0b_id(TS0B_PARTNER_1), vec![62], vec![(7, 2)], 2),
+        game_core::TradeStatus::Pending,
+    ));
+
+    let moved = fx.run_as(me, |ctx| enqueue_move(ctx, MoveInput::Jump, 1));
+    assert_eq!(
+        moved,
+        Ok(()),
+        "fixture: a joined caller with a fresh seq and an empty queue must have its move \
+         accepted; it returned {moved:?}, so the test never reached the party check."
+    );
+    let queues: Vec<_> = characters
+        .rows()
+        .into_iter()
+        .map(|c| c.move_queue)
+        .collect();
+    assert_eq!(
+        queues,
+        vec![vec![MoveInput::Jump]],
+        "fixture: the accepted move must be queued on the caller's one character row."
+    );
+
+    let after_move = fx.requested_indexes();
+    let trade_reads: Vec<&String> = after_move
+        .iter()
+        .filter(|name| name.starts_with("trade_offer_"))
+        .collect();
+    assert!(
+        trade_reads.is_empty(),
+        "hot path FAIL: `enqueue_move` for a caller with no party monster asked the host for \
+         {trade_reads:?}. The escrow read must stay inside the has-a-party arm, so a caller \
+         with no party pays zero trade-offer index reads on the hottest reducer. Every index \
+         asked for: {after_move:?}"
+    );
+
+    let escrowed = escrowed_monster_ids_of(&fx.ctx(), me);
+    assert_eq!(
+        escrowed,
+        vec![61, 62],
+        "positive control: the caller's one active offer escrows monsters 61 and 62; the \
+         direct wrapper call returned {escrowed:?}."
+    );
+    let after_read = fx.requested_indexes();
+    for name in [
+        "trade_offer_initiator_idx_btree",
+        "trade_offer_counterparty_idx_btree",
+    ] {
+        assert!(
+            after_read.iter().any(|n| n.as_str() == name),
+            "positive control FAIL: a direct `escrowed_monster_ids_of` call must ask the host \
+             for `{name}`, but the recorder holds {after_read:?}. Without this the negative \
+             half above proves nothing (a mis-spelled name or a dead recorder passes it)."
+        );
+    }
+}
