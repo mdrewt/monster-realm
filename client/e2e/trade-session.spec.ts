@@ -580,11 +580,16 @@ test.describe
         );
 
         // --- A confirms; B sees A's mark ---------------------------------------------------
-        await expect(pageA.locator(NOTICE), 'A: no notice before any partner edit').toBeHidden();
+        await expect(
+          pageA.locator(NOTICE),
+          'A: B`s offer moved the revision: the notice shows',
+        ).toBeVisible();
+        await expect(pageA.locator(NOTICE)).toHaveText(NOTICE_CHANGED);
         await answerPrompt(pageA, 'confirm', 'A confirms');
         await expect(pageA.locator(MINE_MARK)).toHaveAttribute('data-confirmed', 'true', {
           timeout: 15_000,
         });
+        await expect(pageA.locator(NOTICE), 'A: the sent confirm cleared the notice').toBeHidden();
         await expect(pageB.locator(THEIRS_MARK), 'B sees A`s mark').toHaveAttribute(
           'data-confirmed',
           'true',

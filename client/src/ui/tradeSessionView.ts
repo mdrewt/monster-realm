@@ -118,6 +118,9 @@ export class TradeSessionView {
     this.#root = root;
     this.#deps = deps;
     this.#close = close;
+    // A 24px target at the default root size (WCAG 2.2 target-size), no wider than its label.
+    close.style.minHeight = '1.5rem';
+    close.style.alignSelf = 'flex-start';
     // The button keeps its own keys (Enter and Space are its click, never the router's A); Escape
     // is routed in the capture phase anyway and is let through.
     close.addEventListener('keydown', (e) => {
