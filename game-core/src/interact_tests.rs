@@ -4,9 +4,7 @@
 
 use proptest::prelude::*;
 
-use crate::interact::{
-    interact_candidates, within_interact_range, InteractEntity, InteractKind,
-};
+use crate::interact::{interact_candidates, within_interact_range, InteractEntity, InteractKind};
 use crate::types::{Direction, TilePos};
 use crate::TALK_RANGE;
 

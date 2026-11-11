@@ -13,10 +13,10 @@ use crate::currency::MAX_BALANCE;
 use crate::monster::types::NatureKind;
 use crate::trading::{
     apply_edit, arrival_slots, can_confirm, check_offer_eligibility, check_offer_size,
-    check_session_open, is_session_stale, judge_execute, open_session_count,
-    pair_has_open_session, reset_confirms, side_check, snapshot_drifted, ExecuteVerdict,
-    ItemStack, MonsterCard, MonsterSnapshot, OwnedMonster, ReceiptFacts, SessionSide, SideFacts,
-    TradeItem, TradeSessionError, TradeSessionOffer, TradeSessionState, MAX_ITEM_STACK,
+    check_session_open, is_session_stale, judge_execute, open_session_count, pair_has_open_session,
+    reset_confirms, side_check, snapshot_drifted, ExecuteVerdict, ItemStack, MonsterCard,
+    MonsterSnapshot, OwnedMonster, ReceiptFacts, SessionSide, SideFacts, TradeItem,
+    TradeSessionError, TradeSessionOffer, TradeSessionState, MAX_ITEM_STACK,
     MAX_OPEN_TRADE_SESSIONS, MAX_TRADE_ITEMS_PER_SIDE, MAX_TRADE_MONSTERS_PER_SIDE,
     TRADE_SESSION_TTL_MS,
 };
@@ -377,7 +377,10 @@ fn each_eligibility_failure_returns_its_own_exact_error_ts1_1() {
     }
     for (i, (name_i, _, err_i)) in cases.iter().enumerate() {
         for (name_j, _, err_j) in &cases[i + 1..] {
-            assert_ne!(err_i, err_j, "{name_i} and {name_j} must be distinct reasons");
+            assert_ne!(
+                err_i, err_j,
+                "{name_i} and {name_j} must be distinct reasons"
+            );
         }
     }
 }
@@ -406,8 +409,14 @@ fn offer_size_accepts_64_monsters_and_rejects_65_ts1_1() {
 fn offer_size_accepts_64_items_and_rejects_65_ts1_1() {
     assert_eq!(check_offer_size(0, 64), Ok(()));
     assert_eq!(check_offer_size(64, 64), Ok(()));
-    assert_eq!(check_offer_size(0, 65), Err(TradeSessionError::TooManyItems));
-    assert_eq!(check_offer_size(64, 65), Err(TradeSessionError::TooManyItems));
+    assert_eq!(
+        check_offer_size(0, 65),
+        Err(TradeSessionError::TooManyItems)
+    );
+    assert_eq!(
+        check_offer_size(64, 65),
+        Err(TradeSessionError::TooManyItems)
+    );
     assert_eq!(
         check_offer_size(0, usize::MAX),
         Err(TradeSessionError::TooManyItems)
@@ -588,19 +597,28 @@ fn currency_up_to_balance_minus_locked_is_accepted_and_one_more_is_not_ts1_1() {
     s.currency = 600;
     assert_eq!(s.eligibility(), Ok(()));
     s.currency = 601;
-    assert_eq!(s.eligibility(), Err(TradeSessionError::InsufficientCurrency));
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::InsufficientCurrency)
+    );
 
     let mut s = seat_a();
     s.locked_currency = 0;
     s.currency = 1000;
     assert_eq!(s.eligibility(), Ok(()));
     s.currency = 1001;
-    assert_eq!(s.eligibility(), Err(TradeSessionError::InsufficientCurrency));
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::InsufficientCurrency)
+    );
 
     let mut s = seat_a();
     s.locked_currency = 2000;
     s.currency = 1;
-    assert_eq!(s.eligibility(), Err(TradeSessionError::InsufficientCurrency));
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::InsufficientCurrency)
+    );
 }
 
 /// With two defective monsters the FIRST in offer order is reported, and
@@ -697,7 +715,10 @@ fn monster_then_item_then_currency_checks_run_in_order_ts1_1() {
         Err(TradeSessionError::ZeroItemQuantity { item_id: 12 })
     );
     s.items[1].qty = 3;
-    assert_eq!(s.eligibility(), Err(TradeSessionError::InsufficientCurrency));
+    assert_eq!(
+        s.eligibility(),
+        Err(TradeSessionError::InsufficientCurrency)
+    );
     s.currency = 600;
     assert_eq!(s.eligibility(), Ok(()));
 }
@@ -1076,7 +1097,10 @@ fn stale_revision_is_reported_before_the_side_check_ts1_2() {
 
     let mut fainted = baseline();
     fainted.a.row_mut(102).current_hp = 0;
-    assert_eq!(fainted.confirm_a(5, 6), Err(TradeSessionError::StaleRevision));
+    assert_eq!(
+        fainted.confirm_a(5, 6),
+        Err(TradeSessionError::StaleRevision)
+    );
 }
 
 /// At the current revision `can_confirm` returns exactly what `side_check`
@@ -1432,7 +1456,11 @@ fn item_receipt_overflow_is_reported_by_the_receiver_not_the_giver_ts1_4() {
         t.check_b(),
         Err(TradeSessionError::ItemStackCapExceeded { item_id: 11 })
     );
-    assert_eq!(t.check_a(), Ok(()), "the giver never reports the receiver's cap");
+    assert_eq!(
+        t.check_a(),
+        Ok(()),
+        "the giver never reports the receiver's cap"
+    );
 }
 
 /// An exact fill to `MAX_ITEM_STACK` is accepted and one more is rejected, for
@@ -1479,7 +1507,10 @@ fn same_item_netting_counts_the_receivers_own_outgoing_qty_ts1_4() {
     t.b.items = vec![item(11, 15)];
     t.b.known_item_ids = vec![11, 13];
     t.b.stacks = vec![stack(11, 9990), stack(13, 15)];
-    assert_eq!(MAX_ITEM_STACK, 9999, "fixture arithmetic assumes the 9999 cap");
+    assert_eq!(
+        MAX_ITEM_STACK, 9999,
+        "fixture arithmetic assumes the 9999 cap"
+    );
     assert_eq!(t.check_b(), Ok(()), "9990 − 15 + 20 = 9995");
     assert_eq!(t.check_a(), Ok(()));
 
@@ -1510,11 +1541,17 @@ fn currency_receipt_overflow_is_reported_by_the_receiver_not_the_giver_ts1_4() {
     assert_eq!(over.check_b(), Err(TradeSessionError::CurrencyCapExceeded));
     assert_eq!(over.check_a(), Ok(()));
 
-    assert_eq!(b_receiving_currency_holding(MAX_BALANCE - 600).check_b(), Ok(()));
+    assert_eq!(
+        b_receiving_currency_holding(MAX_BALANCE - 600).check_b(),
+        Ok(())
+    );
 
     let mut locked = b_receiving_currency_holding(MAX_BALANCE - 599);
     locked.b.locked_currency = 1000;
-    assert_eq!(locked.check_b(), Err(TradeSessionError::CurrencyCapExceeded));
+    assert_eq!(
+        locked.check_b(),
+        Err(TradeSessionError::CurrencyCapExceeded)
+    );
 }
 
 /// Bilateral currency netting: at `MAX_BALANCE`, giving 600 and receiving 600
@@ -1545,8 +1582,14 @@ fn bilateral_currency_netting_counts_the_receivers_own_outgoing_coins_ts1_4() {
 #[test]
 fn headroom_failure_rejects_the_receiver_and_resets_from_the_givers_seat_ts1_4() {
     let ok = baseline();
-    assert_eq!(judge_execute(ok.check_a(), ok.check_b()), ExecuteVerdict::Execute);
-    assert_eq!(judge_execute(ok.check_b(), ok.check_a()), ExecuteVerdict::Execute);
+    assert_eq!(
+        judge_execute(ok.check_a(), ok.check_b()),
+        ExecuteVerdict::Execute
+    );
+    assert_eq!(
+        judge_execute(ok.check_b(), ok.check_a()),
+        ExecuteVerdict::Execute
+    );
 
     let items = b_receiving_items_holding(MAX_ITEM_STACK - 4, 0);
     assert_eq!(
@@ -1677,11 +1720,15 @@ fn masked_mutations() -> [SnapshotMutation; 9] {
         ("current_hp", |s| s.current_hp += 1),
         ("party_slot", |s| s.party_slot += 1),
         ("trust_favorable_count", |s| s.trust_favorable_count += 1),
-        ("trust_unfavorable_count", |s| s.trust_unfavorable_count += 1),
+        ("trust_unfavorable_count", |s| {
+            s.trust_unfavorable_count += 1
+        }),
         ("trust_favorable_battle_day_epoch", |s| {
             s.trust_favorable_battle_day_epoch += 1;
         }),
-        ("quality_time_ticks_total", |s| s.quality_time_ticks_total += 1),
+        ("quality_time_ticks_total", |s| {
+            s.quality_time_ticks_total += 1
+        }),
         ("quality_time_accum_ms", |s| s.quality_time_accum_ms += 1),
         ("quality_time_window_ms", |s| s.quality_time_window_ms += 1),
         ("quality_time_window_start_ms", |s| {
@@ -1726,7 +1773,9 @@ fn reviewed_mutations() -> [SnapshotMutation; 34] {
         ("essence_wind", |s| s.essence_wind += 1),
         ("essence_light", |s| s.essence_light += 1),
         ("essence_dark", |s| s.essence_dark += 1),
-        ("last_essence_train_at_ms", |s| s.last_essence_train_at_ms += 1),
+        ("last_essence_train_at_ms", |s| {
+            s.last_essence_train_at_ms += 1
+        }),
     ]
 }
 
@@ -1778,7 +1827,10 @@ fn a_change_in_a_masked_column_is_not_drift_ts1_4() {
         mutate(&mut live);
         assert_ne!(live, base, "fixture: {name} actually changes");
         assert!(!snapshot_drifted(&base, &live), "{name} is masked");
-        assert!(!snapshot_drifted(&live, &base), "{name} is masked (reversed)");
+        assert!(
+            !snapshot_drifted(&live, &base),
+            "{name} is masked (reversed)"
+        );
         mutate(&mut all_masked_changed);
     }
     assert!(!snapshot_drifted(&base, &all_masked_changed));
@@ -1795,7 +1847,10 @@ fn a_change_in_any_reviewed_column_is_drift_ts1_4() {
         mutate(&mut live);
         assert_ne!(live, base, "fixture: {name} actually changes");
         assert!(snapshot_drifted(&base, &live), "{name} is reviewed");
-        assert!(snapshot_drifted(&live, &base), "{name} is reviewed (reversed)");
+        assert!(
+            snapshot_drifted(&live, &base),
+            "{name} is reviewed (reversed)"
+        );
     }
 }
 
@@ -1823,10 +1878,7 @@ fn a_reviewed_change_is_drift_even_alongside_masked_changes_ts1_4() {
 /// assignment, an occupied slot reused, and Storage before a free slot.
 #[test]
 fn arrivals_fill_the_lowest_free_slots_then_storage_ts1_5() {
-    assert_eq!(
-        arrival_slots(&[0, 2, 5], 4),
-        vec![1, 3, 4, PARTY_SLOT_NONE]
-    );
+    assert_eq!(arrival_slots(&[0, 2, 5], 4), vec![1, 3, 4, PARTY_SLOT_NONE]);
     assert_eq!(arrival_slots(&[5, 0, 2], 2), vec![1, 3]);
     assert_eq!(arrival_slots(&[1, 2, 3, 4, 5], 2), vec![0, PARTY_SLOT_NONE]);
     assert_eq!(arrival_slots(&[0, 1, 2, 3, 4], 1), vec![5]);
@@ -2058,10 +2110,19 @@ fn opening_is_refused_at_the_opener_session_limit_only_ts1_6() {
 fn a_session_is_stale_from_exactly_the_ttl_ts1_6() {
     let created = 1_000;
     assert!(!is_session_stale(created, created));
-    assert!(!is_session_stale(created, created + TRADE_SESSION_TTL_MS - 1));
+    assert!(!is_session_stale(
+        created,
+        created + TRADE_SESSION_TTL_MS - 1
+    ));
     assert!(is_session_stale(created, created + TRADE_SESSION_TTL_MS));
-    assert!(is_session_stale(created, created + TRADE_SESSION_TTL_MS + 1));
-    assert!(!is_session_stale(created, created - 500), "clock skew is fresh");
+    assert!(is_session_stale(
+        created,
+        created + TRADE_SESSION_TTL_MS + 1
+    ));
+    assert!(
+        !is_session_stale(created, created - 500),
+        "clock skew is fresh"
+    );
     assert!(!is_session_stale(0, TRADE_SESSION_TTL_MS - 1));
     assert!(is_session_stale(0, TRADE_SESSION_TTL_MS));
     assert!(!is_session_stale(i64::MAX, i64::MIN));
