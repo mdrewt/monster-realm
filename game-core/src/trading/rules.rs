@@ -20,7 +20,7 @@ pub const MAX_ITEM_STACK: u32 = 9999;
 pub const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
 
 /// Per-side item-stack-count cap for one trade side — a DoS bound, not a game
-/// rule. Counts distinct stacks listed, not quantities. INCLUSIVE: `n <= MAX` is
+/// rule. Counts entries listed, not quantities. INCLUSIVE: `n <= MAX` is
 /// legal; above it the side is rejected, never truncated. Independent of
 /// `MAX_TRADE_MONSTERS_PER_SIDE`: the two are separate limits, not a shared budget.
 pub const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;

@@ -6,7 +6,7 @@
 //! staleness rule (`is_offer_stale`), and the pure `build_swap_plan` that the server
 //! applies atomically. `session` holds the trade-session rules: offer eligibility,
 //! edits and confirms by revision, the per-side check, the execute verdict,
-//! snapshot drift and arrival slots. The server module is the thin imperative
+//! snapshot drift, arrival slots, and the session-open limits and TTL. The server module is the thin imperative
 //! shell; this module is the SSOT rule layer.
 
 pub mod rules;

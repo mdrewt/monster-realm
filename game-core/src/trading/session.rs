@@ -3,12 +3,14 @@
 //!
 //! Pure and integer-only. The server reads live rows into the fact types here
 //! ([`SideFacts`], [`ReceiptFacts`], [`MonsterSnapshot`]), calls a rule and writes
-//! the result; every comparison — size caps, eligibility, holdings, the
-//! last-monster count, receipt headroom, revisions, the drift mask, arrival slots,
-//! the per-pair and per-opener limits — is made here and nowhere else.
+//! the result. The session's comparisons — size caps, eligibility, holdings, the
+//! last-monster count, revisions, the drift mask, arrival slots, the per-pair and
+//! per-opener limits — are made here; the receipt caps are the single-receiver
+//! headroom checks of `rules`.
 //!
-//! No rule reads the other player's private state: a side is judged on its own
-//! facts plus the other side's offer, which both participants can see.
+//! A side is judged on its own facts plus the other side's offer, which both
+//! participants can see. [`judge_execute`] takes the other side's result and
+//! discards its reason.
 
 use super::rules::{
     check_currency_headroom, check_item_headroom, ItemStack, MAX_TRADE_ITEMS_PER_SIDE,
@@ -93,8 +95,10 @@ pub struct SideFacts<'a> {
     /// The offered item ids that exist in the item registry.
     pub known_item_ids: &'a [u32],
     /// The side's RAW live inventory for every item it offers or is about to
-    /// receive; an absent id counts 0. Never a post-debit count: the receipt
-    /// rule subtracts the side's own outgoing quantity itself.
+    /// receive; an absent id counts 0, so the caller must supply the row of
+    /// every incoming item the side already holds or its receipt cap is not
+    /// checked. Never a post-debit count: the receipt rule subtracts the side's
+    /// own outgoing quantity itself.
     pub stacks: &'a [ItemStack],
     /// Item quantities the side's OTHER confirmed sessions and active legacy
     /// offers lock; an absent id counts 0. The session being checked never counts.
@@ -111,8 +115,9 @@ pub struct SideFacts<'a> {
 pub struct ReceiptFacts<'a> {
     /// Every monster the side owns right now, party and storage alike.
     pub owned_monster_count: usize,
-    /// The OTHER side's stored offer. A stored offer passed
-    /// [`check_offer_eligibility`] when it was set, so it names no id twice.
+    /// The OTHER side's stored offer. The caller must only ever store an offer
+    /// that passed [`check_offer_eligibility`], so that it names no id twice:
+    /// the receipt rule checks each incoming entry on its own.
     pub incoming: &'a TradeSessionOffer,
 }
 
@@ -563,8 +568,8 @@ pub fn snapshot_drifted(stored: &MonsterSnapshot, live: &MonsterSnapshot) -> boo
 /// `occupied_after_outgoing` holds the slots of the receiver's monsters that
 /// STAY; the monsters it gives away have vacated theirs. Entries that are not a
 /// party slot (a boxed monster's `PARTY_SLOT_NONE`) and repeated entries are
-/// ignored. `incoming` is an offer's monster count, so it is bounded by
-/// [`MAX_TRADE_MONSTERS_PER_SIDE`].
+/// ignored. The caller passes an offer's monster count as `incoming`, at most
+/// [`MAX_TRADE_MONSTERS_PER_SIDE`]; the result has exactly that many entries.
 #[must_use]
 pub fn arrival_slots(occupied_after_outgoing: &[u8], incoming: usize) -> Vec<u8> {
     (0..PARTY_SIZE)
