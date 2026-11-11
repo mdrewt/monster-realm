@@ -458,8 +458,8 @@ fn ts4_apply_swap_deletes_a_drained_stack_row_and_leaves_a_bystander_untouched()
         );
     }
 
-    let plan = build_swap_plan(&[], &[], &[item(5, 4)], &[item(6, 3)], 30, 20)
-        .expect("plan builds");
+    let plan =
+        build_swap_plan(&[], &[], &[item(5, 4)], &[item(6, 3)], 30, 20).expect("plan builds");
     let got = fx.run_as(carol(), |ctx| {
         super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
     });

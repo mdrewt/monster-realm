@@ -2745,8 +2745,13 @@ enum Ts4Call {
         give: Ts4Side,
         take: Ts4Side,
     },
-    Respond { trade_id: u64, accept: bool },
-    Confirm { trade_id: u64 },
+    Respond {
+        trade_id: u64,
+        accept: bool,
+    },
+    Confirm {
+        trade_id: u64,
+    },
 }
 
 /// One row of the ts-4.1 matrix.
