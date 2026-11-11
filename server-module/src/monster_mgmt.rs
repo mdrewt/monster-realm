@@ -76,9 +76,10 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
-    // Trade-offer guard, read directly by design: this refusal is scoped to
-    // active trade OFFERS, so it calls the pure predicate rather than
-    // `reject_if_monster_locked`, whose scope is every lock on a monster.
+    // Trade-offer guard, read directly by design: this check judges trade
+    // offers and nothing else. Every other guarded reducer shares
+    // `guards::reject_if_monster_locked`, so a change to what that wrapper
+    // counts as locked does not reach this one.
     reject_if_monster_in_trade(
         ctx.db
             .trade_offer()

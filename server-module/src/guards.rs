@@ -274,9 +274,10 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 // The CONTEXT WRAPPERS (`reject_if_monster_locked`, `escrowed_item_qty_of`,
 // `escrowed_currency_of`, `escrowed_monster_ids_of`) read one owner's offers
 // in BOTH roles through `offers_of` and hand them to the matching predicate.
-// Reducers call the wrappers, so what counts as locked is decided in this
-// file; a caller that must judge trade offers alone reads the table itself
-// and calls a pure predicate. "Active" = Pending OR ConfirmedByCounterparty.
+// A reducer calls a wrapper, so what counts as locked is decided in this
+// file — unless it must judge trade offers alone, in which case it reads the
+// table itself and calls a pure predicate. "Active" = Pending OR
+// ConfirmedByCounterparty.
 //
 // SpacetimeDB reducers are single-threaded WASM: read-check-write within one
 // reducer is atomic w.r.t. all other reducers — no TOCTOU possible.
