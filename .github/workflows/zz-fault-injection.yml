@@ -1,0 +1,164 @@
+name: zz-fault-injection
+on:
+  push: { branches: ['scratch/ci-fix-20261111T1648-**'] }
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+jobs:
+  # Two-window Playwright e2e against a real, version-pinned SpacetimeDB.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-e2e }
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with: { version: 'v0.15.0' }
+      - uses: actions/setup-node@v7 # v7
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
+      - name: Install SpacetimeDB CLI
+        run: |
+          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
+          sh /tmp/spacetime-install.sh --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin spacetime 2.11.0
+        run: |
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
+          spacetime --version
+      # The e2e suite needs the dev_reducers build; `publish` has no feature passthrough, so
+      # global-setup publishes this prebuilt artifact via --bin-path. The committed
+      # bindings are NOT regenerated from it.
+      - name: Build dev_reducers module wasm
+        run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
+      - name: Start SpacetimeDB
+        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb.log 2>&1 &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "spacetime did not become ready on :3000" >&2; cat /tmp/stdb.log >&2 || true; exit 1
+      - name: Install client deps
+        run: cd client && npm ci
+      # Browser binaries only, no `--with-deps`, so this job needs no Ubuntu apt mirror. The
+      # runner image supplies every shared library chromium loads and the fonts every glyph
+      # the client renders resolves to (DejaVu, Liberation, Noto Color Emoji). The fallback
+      # fonts `--with-deps` would fetch through apt (CJK, Thai, FreeFont, Unifont, X11) are
+      # unused; a spec that needs one bundles it as a web font instead of adding an apt step.
+      # >>> ci-fix-20261111T1648 injected
+      - name: 'FAULT: Ubuntu apt mirrors unreachable'
+        run: |
+          set -euo pipefail
+          MIRRORS="azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com"
+          LOG=/tmp/apt-get-invocations.log
+          WRAPPER=/usr/local/sbin/apt-get
+          addrs_of() { getent ahosts "$1" | awk '{print $1}' | sort -u; }
+
+          # 1. Blackhole exactly the three Ubuntu mirror hosts, IPv4 and IPv6.
+          printf '0.0.0.0 %s\n:: %s\n' "$MIRRORS" "$MIRRORS" | sudo tee -a /etc/hosts >/dev/null
+          for h in $MIRRORS; do
+            getent hosts "$h"
+            if ! a=$(addrs_of "$h") || [ -z "$a" ]; then echo "FAULT: $h does not resolve at all" >&2; exit 1; fi
+            for x in $a; do
+              case "$x" in 0.0.0.0|::) ;; *) echo "FAULT: $h still resolves to $x" >&2; exit 1 ;; esac
+            done
+          done
+
+          # 2. Non-vacuity: a control download of a package the image lacks must fail on fetch.
+          ctl=$(mktemp -d)
+          out=$(mktemp)
+          if (cd "$ctl" && /usr/bin/apt-get download fonts-unifont) >"$out" 2>&1; then
+            cat "$out"
+            echo "FAULT does not bite: apt-get download fonts-unifont succeeded with mirrors blackholed" >&2
+            exit 1
+          fi
+          cat "$out"
+          if ! grep -q 'Failed to fetch' "$out"; then
+            echo "FAULT: control download failed, but not with a fetch failure" >&2
+            exit 1
+          fi
+
+          # 3. Specificity: the hosts the fixed install and the job need still resolve normally.
+          for h in cdn.playwright.dev registry.npmjs.org packages.microsoft.com; do
+            if ! a=$(addrs_of "$h") || [ -z "$a" ]; then echo "FAULT: $h does not resolve" >&2; exit 1; fi
+            echo "$h ->" $a
+            for x in $a; do
+              case "$x" in 0.0.0.0|::) echo "FAULT: $h is blackholed ($x)" >&2; exit 1 ;; esac
+            done
+          done
+
+          # 4. Arm the apt-get audit wrapper (ahead of /usr/bin on PATH and sudo secure_path).
+          # Root-owned 0666: /tmp is sticky, so fs.protected_regular lets root and runner append.
+          sudo install -m 0666 /dev/null "$LOG"
+          sudo tee "$WRAPPER" >/dev/null <<'EOF'
+          #!/bin/sh
+          set -eu
+          printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> /tmp/apt-get-invocations.log
+          exec /usr/bin/apt-get "$@"
+          EOF
+          sudo chmod 0755 "$WRAPPER"
+          hash -r
+          u=$(command -v apt-get)
+          r=$(sudo sh -c 'command -v apt-get')
+          echo "apt-get resolves to: runner=$u root=$r"
+          if [ "$u" != "$WRAPPER" ] || [ "$r" != "$WRAPPER" ]; then echo "FAULT: audit wrapper not first on PATH" >&2; exit 1; fi
+          sudo apt-get --version >/dev/null
+          if [ "$(wc -l < "$LOG")" -ne 1 ]; then cat "$LOG"; echo "FAULT: wrapper did not log the sudo self-test" >&2; exit 1; fi
+          apt-get --version >/dev/null
+          if [ "$(wc -l < "$LOG")" -ne 2 ]; then cat "$LOG"; echo "FAULT: wrapper did not log the runner self-test" >&2; exit 1; fi
+          cat "$LOG"
+          sudo truncate -s 0 "$LOG"
+          if [ -s "$LOG" ]; then echo "FAULT: audit log not empty after truncate" >&2; exit 1; fi
+
+          # 5. Summary.
+          echo "FAULT-BITES mirrors-blackholed=azure.archive.ubuntu.com,archive.ubuntu.com,security.ubuntu.com control-download=failed wrapper=$WRAPPER armed=yes log=empty"
+      # <<< ci-fix-20261111T1648 injected
+      - name: Install Playwright chromium
+        run: cd client && npx playwright install chromium
+      - name: Two-window e2e (golden flows vs real spacetime)
+        env:
+          STDB_SERVER: http://127.0.0.1:3000
+          VITE_STDB_URI: ws://127.0.0.1:3000
+          VITE_STDB_DB: monster-realm
+          MR_DEV_MODULE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
+        run: just e2e
+      - name: Upload e2e per-test timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-timings
+          path: client/test-results/e2e.json
+          if-no-files-found: warn
+          retention-days: 14
+      # >>> ci-fix-20261111T1648 injected
+      - name: 'ORACLE: apt-get was never invoked'
+        run: |
+          set -euo pipefail
+          LOG=/tmp/apt-get-invocations.log
+          if [ ! -f "$LOG" ]; then echo "ORACLE: $LOG missing; the fault step never armed the audit" >&2; exit 1; fi
+          u=$(command -v apt-get)
+          r=$(sudo sh -c 'command -v apt-get')
+          if [ "$u" != /usr/local/sbin/apt-get ] || [ "$r" != /usr/local/sbin/apt-get ]; then
+            echo "ORACLE: audit wrapper no longer first on PATH (runner=$u root=$r)" >&2
+            exit 1
+          fi
+          if [ -s "$LOG" ]; then
+            echo "ORACLE: apt-get WAS invoked:" >&2
+            cat "$LOG" >&2
+            exit 1
+          fi
+          echo "APT-INVOCATIONS=0"
+      # <<< ci-fix-20261111T1648 injected
