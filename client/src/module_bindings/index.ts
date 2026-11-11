@@ -42,11 +42,13 @@ import CancelAccountDeletionReducer from "./cancel_account_deletion_reducer";
 import CancelChallengeReducer from "./cancel_challenge_reducer";
 import CancelQueueReducer from "./cancel_queue_reducer";
 import CancelTradeReducer from "./cancel_trade_reducer";
+import CancelTradeSessionReducer from "./cancel_trade_session_reducer";
 import CareReducer from "./care_reducer";
 import ChallengePvpReducer from "./challenge_pvp_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import CompleteGuestClaimReducer from "./complete_guest_claim_reducer";
 import ConfirmTradeReducer from "./confirm_trade_reducer";
+import ConfirmTradeSessionReducer from "./confirm_trade_session_reducer";
 import ConsumeCrystalizedEssenceReducer from "./consume_crystalized_essence_reducer";
 import DeclineChallengeReducer from "./decline_challenge_reducer";
 import DeleteAccountReducer from "./delete_account_reducer";
@@ -58,6 +60,7 @@ import EvolveReducer from "./evolve_reducer";
 import ForfeitReducer from "./forfeit_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
+import OpenTradeSessionReducer from "./open_trade_session_reducer";
 import ProposeTradeReducer from "./propose_trade_reducer";
 import RequestDataExportReducer from "./request_data_export_reducer";
 import RespondTradeReducer from "./respond_trade_reducer";
@@ -66,6 +69,7 @@ import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
 import SetProfileNameReducer from "./set_profile_name_reducer";
+import SetTradeOfferReducer from "./set_trade_offer_reducer";
 import StartGuestClaimReducer from "./start_guest_claim_reducer";
 import SubmitQueueReducer from "./submit_queue_reducer";
 import SyncContentReducer from "./sync_content_reducer";
@@ -95,6 +99,7 @@ import MyInventoryRow from "./my_inventory_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
 import MyPendingEvolutionNoticesRow from "./my_pending_evolution_notices_table";
 import MyTacticalBattleRow from "./my_tactical_battle_table";
+import MyTradeSessionRow from "./my_trade_session_table";
 import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
@@ -434,6 +439,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyTacticalBattleRow),
+  myTradeSession: __table({
+    name: 'my_trade_session',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyTradeSessionRow),
   myWallet: __table({
     name: 'my_wallet',
     indexes: [
@@ -453,11 +465,13 @@ const reducersSchema = __reducers(
   __reducerSchema("cancel_challenge", CancelChallengeReducer),
   __reducerSchema("cancel_queue", CancelQueueReducer),
   __reducerSchema("cancel_trade", CancelTradeReducer),
+  __reducerSchema("cancel_trade_session", CancelTradeSessionReducer),
   __reducerSchema("care", CareReducer),
   __reducerSchema("challenge_pvp", ChallengePvpReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("complete_guest_claim", CompleteGuestClaimReducer),
   __reducerSchema("confirm_trade", ConfirmTradeReducer),
+  __reducerSchema("confirm_trade_session", ConfirmTradeSessionReducer),
   __reducerSchema("consume_crystalized_essence", ConsumeCrystalizedEssenceReducer),
   __reducerSchema("decline_challenge", DeclineChallengeReducer),
   __reducerSchema("delete_account", DeleteAccountReducer),
@@ -469,6 +483,7 @@ const reducersSchema = __reducers(
   __reducerSchema("forfeit", ForfeitReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
+  __reducerSchema("open_trade_session", OpenTradeSessionReducer),
   __reducerSchema("propose_trade", ProposeTradeReducer),
   __reducerSchema("request_data_export", RequestDataExportReducer),
   __reducerSchema("respond_trade", RespondTradeReducer),
@@ -477,6 +492,7 @@ const reducersSchema = __reducers(
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),
   __reducerSchema("set_profile_name", SetProfileNameReducer),
+  __reducerSchema("set_trade_offer", SetTradeOfferReducer),
   __reducerSchema("start_guest_claim", StartGuestClaimReducer),
   __reducerSchema("submit_queue", SubmitQueueReducer),
   __reducerSchema("sync_content", SyncContentReducer),
@@ -542,6 +558,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_pending_evolution_notices": Omit<typeof tablesSchema.schemaType.tables["myPendingEvolutionNotices"], "accessorName"> & { readonly accessorName: "my_pending_evolution_notices" };
     /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
     readonly "my_tactical_battle": Omit<typeof tablesSchema.schemaType.tables["myTacticalBattle"], "accessorName"> & { readonly accessorName: "my_tactical_battle" };
+    /** @deprecated Use `myTradeSession` instead. This alias will be removed in the next major version. */
+    readonly "my_trade_session": Omit<typeof tablesSchema.schemaType.tables["myTradeSession"], "accessorName"> & { readonly accessorName: "my_trade_session" };
     /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
     readonly "my_wallet": Omit<typeof tablesSchema.schemaType.tables["myWallet"], "accessorName"> & { readonly accessorName: "my_wallet" };
   };
@@ -588,6 +606,7 @@ const tableAccessorAliases = {
   "my_monster_pub": "myMonsterPub",
   "my_pending_evolution_notices": "myPendingEvolutionNotices",
   "my_tactical_battle": "myTacticalBattle",
+  "my_trade_session": "myTradeSession",
   "my_wallet": "myWallet",
 } as const;
 
@@ -661,6 +680,8 @@ export type DbView = __DbViewBase & {
   readonly "my_pending_evolution_notices": __DbViewBase["myPendingEvolutionNotices"];
   /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
   readonly "my_tactical_battle": __DbViewBase["myTacticalBattle"];
+  /** @deprecated Use `myTradeSession` instead. This alias will be removed in the next major version. */
+  readonly "my_trade_session": __DbViewBase["myTradeSession"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __DbViewBase["myWallet"];
 };
@@ -719,6 +740,8 @@ export type Tables = __TablesBase & {
   readonly "my_pending_evolution_notices": __TablesBase["myPendingEvolutionNotices"];
   /** @deprecated Use `myTacticalBattle` instead. This alias will be removed in the next major version. */
   readonly "my_tactical_battle": __TablesBase["myTacticalBattle"];
+  /** @deprecated Use `myTradeSession` instead. This alias will be removed in the next major version. */
+  readonly "my_trade_session": __TablesBase["myTradeSession"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __TablesBase["myWallet"];
 };

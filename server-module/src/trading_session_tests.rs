@@ -1950,9 +1950,9 @@ fn ts2_non_participant_same_as_missing() {
 /// An accepted edit replaces only the caller's side: monster ids, items and
 /// currency as sent, cards rebuilt from the live rows in OFFER order, the
 /// caller's snapshot rows replaced by one masked row per offered monster, the
-/// other side's offer and snapshot row untouched (same stored bytes), revision
-/// + 1 per accepted edit — an identical resubmission included — and an empty
-/// edit legal. No asset row changes.
+/// other side's offer and snapshot row untouched (same stored bytes); the
+/// revision advances by one per accepted edit — an identical resubmission
+/// included — and an empty edit is legal. No asset row changes.
 #[test]
 fn ts2_edit_replaces_only_the_callers_side_with_cards_and_masked_snapshots() {
     let fx = fixture();

@@ -27,6 +27,9 @@
     "cancel_trade": [
       "trade_id: u64()"
     ],
+    "cancel_trade_session": [
+      "session_id: u64()"
+    ],
     "care": [
       "monster_id: u64()"
     ],
@@ -42,6 +45,10 @@
     ],
     "confirm_trade": [
       "trade_id: u64()"
+    ],
+    "confirm_trade_session": [
+      "session_id: u64()",
+      "revision: u64()"
     ],
     "consume_crystalized_essence": [
       "monster_id: u64()",
@@ -77,6 +84,9 @@
     "join_game": [
       "name: string()"
     ],
+    "open_trade_session": [
+      "partner: identity()"
+    ],
     "propose_trade": [
       "counterparty: identity()",
       "initiator_monster_ids: array(u64())",
@@ -109,6 +119,12 @@
     ],
     "set_profile_name": [
       "name: string()"
+    ],
+    "set_trade_offer": [
+      "session_id: u64()",
+      "monster_ids: array(u64())",
+      "items: array(TradeItem)",
+      "currency: u64()"
     ],
     "start_guest_claim": [
       "code: string()"

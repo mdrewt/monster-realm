@@ -2203,7 +2203,7 @@ fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
             partner,
             opener_offer,
             partner_offer,
-            opener_confirmed: session_id % 2 == 0,
+            opener_confirmed: session_id.is_multiple_of(2),
             partner_confirmed: false,
             revision: session_id - 8000,
             created_at_ms: 1_700_000_000_000 + session_id as i64,
