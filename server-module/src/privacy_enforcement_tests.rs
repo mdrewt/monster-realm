@@ -1258,7 +1258,8 @@ mod census {
 
 const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // (i) acts on an already-open commitment, which PRV1-10 and ADR-0227 D5 keep
-    // completable while a deletion is pending. Every one of these reaches two
+    // completable while a deletion is pending. Every one of these except
+    // cancel_trade_session (which only deletes) reaches two
     // INSERT-IF-ABSENT helpers on the way out -- economy::grant_currency
     // (player_wallet) and evolution::check_and_evolve (pending_evolution_notice).
     // That is accepted under PRV1-10: during the grace window nothing has been
@@ -1283,6 +1284,12 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "closes an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
          reaches the insert-if-absent helpers economy::grant_currency and \
          evolution::check_and_evolve, whose minted rows the cascade sweeps",
+    ),
+    (
+        "cancel_trade_session",
+        "unwinds an already-open trade session (PRV1-10, ADR-0227 D5) by deleting the session \
+         row, its snapshot rows and its reaper schedule row; it inserts and updates nothing, \
+         so it mints no row a deleting account could keep",
     ),
     (
         "cancel_challenge",
@@ -1371,6 +1378,7 @@ const EXPECTED_SCHEDULED: &[&str] = &[
     "tactical_advance",
     "tactical_deadline_fire",
     "trade_offer_reaper",
+    "trade_session_reaper",
 ];
 
 /// Every reducer that carries a depth-0 gate before its first write today. Pinned
@@ -1388,6 +1396,7 @@ const EXPECTED_GATED: &[&str] = &[
     "challenge_pvp",
     "clear_queue",
     "complete_guest_claim",
+    "confirm_trade_session",
     "consume_crystalized_essence",
     "deploy_units",
     "dismiss_dialogue",
@@ -1398,6 +1407,7 @@ const EXPECTED_GATED: &[&str] = &[
     "grant_bait",
     "heal_party",
     "join_game",
+    "open_trade_session",
     "propose_trade",
     "request_data_export",
     "sell",
@@ -1405,6 +1415,7 @@ const EXPECTED_GATED: &[&str] = &[
     "set_nickname",
     "set_party_slot",
     "set_profile_name",
+    "set_trade_offer",
     "submit_queue",
     "talk",
     "train",
@@ -1418,10 +1429,10 @@ const EXPECTED_NO_WRITES: &[&str] = &["start_guest_claim"];
 /// only refuses a manifest that shrank to nothing.
 const CLASSIFIED_TABLE_FLOOR: usize = 24;
 
-/// Reducer floor for the real corpus (53), so the per-reducer verdict
-/// pin cannot be satisfied by an engine that finds almost none of them.
-/// bt-17 (BT17.1): 54 → 53, the 1v1 reducer attributes measured gone; never lowered again.
-const REDUCER_FLOOR: usize = 53;
+/// Reducer floor for the real corpus: the 58 reducer attributes it carries
+/// (the five trade-session reducers included), so the per-reducer verdict pin
+/// cannot be satisfied by an engine that finds almost none of them.
+const REDUCER_FLOOR: usize = 58;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -1957,5 +1968,288 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
                  reducer (BT17.1)"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ts-2.12 — trade-session privacy, read from the GENERATED module definition
+// (the artifact the host consumes) and through the shipped view entry point.
+// ---------------------------------------------------------------------------
+
+/// The trade-session tables and their one read path.
+const TS2_SESSION_TABLES: [&str; 3] = [
+    "trade_session",
+    "trade_session_snapshot",
+    "trade_session_reaper_schedule",
+];
+const TS2_SESSION_VIEW: &str = "my_trade_session";
+
+/// The row a view serves, from its generated return type (`Vec<T>` or the
+/// `some` arm of an `Option<T>`): the typespace ref of `T` when it is one, and
+/// `T`'s column names in order.
+fn ts2_view_row(
+    ts: &spacetimedb::sats::Typespace,
+    ret: &spacetimedb::sats::AlgebraicType,
+    view: &str,
+) -> (Option<spacetimedb::sats::AlgebraicTypeRef>, Vec<String>) {
+    use spacetimedb::sats::AlgebraicType;
+    let resolve = |ty: &AlgebraicType| -> AlgebraicType {
+        match ty {
+            AlgebraicType::Ref(r) => ts[*r].clone(),
+            other => other.clone(),
+        }
+    };
+    let elem: AlgebraicType = match resolve(ret) {
+        AlgebraicType::Array(a) => {
+            let e: &AlgebraicType = &a.elem_ty;
+            e.clone()
+        }
+        AlgebraicType::Sum(s) => {
+            let Some(some) = s
+                .variants
+                .iter()
+                .find(|v| v.name.as_deref() == Some("some"))
+            else {
+                panic!("[ts2/view-return-shape] `{view}` returns a sum with no `some` arm")
+            };
+            some.algebraic_type.clone()
+        }
+        other => panic!(
+            "[ts2/view-return-shape] `{view}` returns {other:?}: neither Vec<T> nor Option<T>"
+        ),
+    };
+    let row_ref = match &elem {
+        AlgebraicType::Ref(r) => Some(*r),
+        _ => None,
+    };
+    let AlgebraicType::Product(p) = resolve(&elem) else {
+        panic!("[ts2/view-return-shape] `{view}`'s row type is not a product")
+    };
+    let columns = p
+        .elements
+        .iter()
+        .map(|e| e.name.as_deref().unwrap_or("").to_string())
+        .collect();
+    (row_ref, columns)
+}
+
+/// ts-2.12 — in the generated module definition the three trade-session
+/// tables are PRIVATE, and the only view over session data is
+/// `my_trade_session`: public, caller-scoped, parameterless, serving exactly
+/// the `trade_session` row. No view is named for, or serves the row of, the
+/// snapshot table or the schedule table — whether by the table's own row type
+/// or by a look-alike row carrying its key columns.
+///
+/// Kills: `public` on `trade_session` (every client would receive every
+/// session) or on `trade_session_snapshot` (every offered monster's hidden
+/// genes); a view over the snapshot or schedule table; a second view over
+/// session rows; `my_trade_session` taking a parameter (a caller-chosen
+/// participant is a leak) or anonymous (it cannot know its caller); the view
+/// re-typed to serve another row.
+#[test]
+fn ts2_privacy_session_tables_are_private() {
+    use spacetimedb::spacetimedb_lib::db::raw_def::v9::TableAccess;
+    let fx = crate::native_host_tests::fixture();
+    let def = fx.module_def();
+    let tables = def.tables().unwrap_or_else(|| {
+        panic!("[ts2/describe-tables] the generated module def carries no Tables section")
+    });
+    let ts = def.typespace().unwrap_or_else(|| {
+        panic!("[ts2/describe-typespace] the generated module def carries no typespace")
+    });
+    let mut row_refs = Vec::new();
+    for name in TS2_SESSION_TABLES {
+        let Some(t) = tables.iter().find(|t| &*t.source_name == name) else {
+            panic!("[ts2/table-missing] `{name}` is not a table of the generated module def")
+        };
+        assert_eq!(
+            t.table_access,
+            TableAccess::Private,
+            "[ts2/table-private] `{name}` must be PRIVATE: sessions are read only through \
+             `{TS2_SESSION_VIEW}` by their two participants, and snapshots and schedules by no \
+             client at all"
+        );
+        row_refs.push((name, t.product_type_ref));
+    }
+    let session_ref = row_refs[0].1;
+
+    let views = def.views().unwrap_or_else(|| {
+        panic!("[ts2/describe-views] the generated module def carries no Views section")
+    });
+    let mut over_sessions: Vec<String> = Vec::new();
+    for v in views {
+        let name = v.source_name.to_string();
+        for banned in ["snapshot", "schedule"] {
+            assert!(
+                !name.contains(banned),
+                "[ts2/no-child-view] `{name}` names `{banned}`: the session snapshot and \
+                 schedule tables have no view"
+            );
+        }
+        let (row_ref, columns) = ts2_view_row(ts, &v.return_type, &name);
+        for (table, table_ref) in &row_refs[1..] {
+            assert_ne!(
+                row_ref,
+                Some(*table_ref),
+                "[ts2/no-child-view] `{name}` serves `{table}` rows"
+            );
+        }
+        let has = |col: &str| columns.iter().any(|c| c == col);
+        assert!(
+            !has("snapshot_id"),
+            "[ts2/no-child-view] `{name}` serves a snapshot-shaped row: {columns:?}"
+        );
+        assert!(
+            !(has("scheduled_at") && has("session_id")),
+            "[ts2/no-child-view] `{name}` serves a session-schedule-shaped row: {columns:?}"
+        );
+        if row_ref == Some(session_ref) || has("session_id") {
+            over_sessions.push(name);
+        }
+    }
+    assert_eq!(
+        over_sessions,
+        [TS2_SESSION_VIEW],
+        "[ts2/one-session-view] the only view over trade-session data"
+    );
+
+    let Some(v) = views.iter().find(|v| &*v.source_name == TS2_SESSION_VIEW) else {
+        panic!("[ts2/view-missing] `{TS2_SESSION_VIEW}`")
+    };
+    assert!(
+        v.is_public,
+        "[ts2/view-public] `{TS2_SESSION_VIEW}` is public"
+    );
+    assert!(
+        !v.is_anonymous,
+        "[ts2/view-caller-scoped] `{TS2_SESSION_VIEW}` must know its caller (ViewContext)"
+    );
+    assert!(
+        v.params.elements.is_empty(),
+        "[ts2/view-no-params] `{TS2_SESSION_VIEW}` takes parameters — a caller-chosen \
+         participant is a leak"
+    );
+    let (row_ref, columns) = ts2_view_row(ts, &v.return_type, TS2_SESSION_VIEW);
+    assert_eq!(
+        row_ref,
+        Some(session_ref),
+        "[ts2/view-row] `{TS2_SESSION_VIEW}` serves exactly the `trade_session` row"
+    );
+    assert_eq!(
+        columns,
+        [
+            "session_id",
+            "opener",
+            "partner",
+            "opener_offer",
+            "partner_offer",
+            "opener_confirmed",
+            "partner_confirmed",
+            "revision",
+            "created_at_ms",
+        ],
+        "[ts2/view-row] `{TS2_SESSION_VIEW}`'s row columns, in order"
+    );
+}
+
+/// ts-2.12 — through the SHIPPED view entry point, `my_trade_session` returns
+/// to each caller exactly the sessions it opened or was opened with, each
+/// once, full row values, and nothing to a stranger. Sessions: 8001 A→B,
+/// 8002 C→A, 8003 C→D (each row's offers, revision and stamp differ).
+///
+/// Kills: the red-phase empty body; one arm only (the opener arm drops 8002
+/// for A and every session for B and D; the partner arm drops 8001 for A and
+/// every session for C); an arm keyed on the wrong column; a view serving
+/// every session (a full-table scan of a private table — the host refuses
+/// it, and a stranger would see all three); the two arms chained with a
+/// filter that drops a caller's own rows.
+#[test]
+fn ts2_privacy_my_trade_session_shows_only_the_two_participants() {
+    use crate::schema::TradeSession;
+    use spacetimedb::sats::bsatn;
+    use spacetimedb::Identity;
+
+    let fx = crate::native_host_tests::fixture();
+    let view_id = {
+        let def = fx.module_def();
+        let views = def.views().unwrap_or_else(|| {
+            panic!("[ts2/describe-views] the generated module def carries no Views section")
+        });
+        let Some(v) = views.iter().find(|v| &*v.source_name == TS2_SESSION_VIEW) else {
+            panic!(
+                "[ts2/view-missing] `{TS2_SESSION_VIEW}` is not a view of the generated module \
+                 def, so the runtime cannot serve it"
+            )
+        };
+        usize::try_from(v.index).expect("a view index fits a usize")
+    };
+
+    let sessions = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+    let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+    let id = |b: u8| Identity::from_byte_array([b; 32]);
+    let (a, b, c, d, e) = (id(0xE1), id(0xE2), id(0xE3), id(0xE4), id(0xE5));
+    let row = |session_id: u64, opener: Identity, partner: Identity| {
+        let opener_offer = game_core::trading::TradeSessionOffer {
+            currency: session_id,
+            ..Default::default()
+        };
+        let partner_offer = game_core::trading::TradeSessionOffer {
+            monster_ids: vec![session_id * 10],
+            ..Default::default()
+        };
+        TradeSession {
+            session_id,
+            opener,
+            partner,
+            opener_offer,
+            partner_offer,
+            opener_confirmed: session_id % 2 == 0,
+            partner_confirmed: false,
+            revision: session_id - 8000,
+            created_at_ms: 1_700_000_000_000 + session_id as i64,
+        }
+    };
+    let s1 = row(8001, a, b);
+    let s2 = row(8002, c, a);
+    let s3 = row(8003, c, d);
+    for s in [&s1, &s2, &s3] {
+        sessions.seed(s);
+    }
+
+    let encs = |rows: &[TradeSession]| -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = rows
+            .iter()
+            .map(|r| bsatn::to_vec(r).expect("a row always BSATN-encodes"))
+            .collect();
+        out.sort();
+        out
+    };
+    let cases: [(&str, Identity, Vec<TradeSession>); 5] = [
+        (
+            "A (opener of 8001, partner of 8002)",
+            a,
+            vec![s1.clone(), s2.clone()],
+        ),
+        ("B (partner of 8001)", b, vec![s1.clone()]),
+        (
+            "C (opener of 8002 and 8003)",
+            c,
+            vec![s2.clone(), s3.clone()],
+        ),
+        ("D (partner of 8003)", d, vec![s3.clone()]),
+        ("E (a stranger)", e, vec![]),
+    ];
+    for (label, who, want) in cases {
+        let got: Vec<TradeSession> = fx.call_view::<TradeSession>(view_id, who);
+        assert_eq!(
+            got.len(),
+            want.len(),
+            "[ts2/view-participants] {label}: each of its sessions exactly once, nobody else's"
+        );
+        assert_eq!(
+            encs(&got),
+            encs(&want),
+            "[ts2/view-participants] {label}: exactly its own sessions, full row values"
+        );
     }
 }

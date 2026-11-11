@@ -852,7 +852,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
     // Spec §3 ERASE (12) + this slice's own `export_bundle`
     // + rb-73's `player_session`
     // + 20r-d's `pending_evolution_notice`
-    // + bt-7's five identity-bearing tactical tables.
+    // + bt-7's five identity-bearing tactical tables
+    // + `trade_session` (an open session names both participants).
     let expected_erase = [
         "battle_action",
         "battle_challenge",
@@ -874,6 +875,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "player_wallet",
         "playtest_event",
         "trade_offer",
+        "trade_session",
     ];
     assert_eq!(
         erase, expected_erase,
@@ -884,7 +886,8 @@ fn data_lifecycle_partition_matches_spec_section3() {
          personal data is itself personal data — rb-73 adds `player_session` (ADR-0245 \
          D1), 20r-d adds `pending_evolution_notice` (ADR-0254 D2) and bt-7 adds the five \
          tactical tables that carry the identity themselves (battle_unit, battle_queue, \
-         battle_deploy, battle_clock, player_formation): twenty in all. A table moved OUT of \
+         battle_deploy, battle_clock, player_formation) and `trade_session` names both \
+         participants of an open trade session: twenty-one in all. A table moved OUT of \
          this set survives the cascade; a table moved IN is deleted when the spec says it \
          must survive."
     );
@@ -914,10 +917,12 @@ fn data_lifecycle_partition_matches_spec_section3() {
         ("tactical_advance_sched", "battle"),
         ("tactical_deadline_sched", "battle"),
         ("trade_offer_reaper_schedule", "trade_offer"),
+        ("trade_session_reaper_schedule", "trade_session"),
+        ("trade_session_snapshot", "trade_session"),
     ];
     assert_eq!(
         join_only, expected_join_only,
-        "T2 / spec §3 JOIN-ONLY: the nine structurally-invisible tables and their OWNING \
+        "T2 / spec §3 JOIN-ONLY: the fourteen structurally-invisible tables and their OWNING \
          PARENTS are pinned by value. These tables carry no Identity column, so \
          findIdentityColumns cannot see them and nothing else in the repo can re-derive the \
          parent. Each parent here was checked against the real join column: \
@@ -926,7 +931,10 @@ fn data_lifecycle_partition_matches_spec_section3() {
          battle_challenge_reaper_schedule.challenge_id -> battle_challenge, \
          trade_offer_reaper_schedule.trade_id -> trade_offer, and bt-7's four tactical \
          join tables (battle_tactical, battle_secret, battle_wild_unit, battle_event), each \
-         keyed by battle_id -> battle."
+         keyed by battle_id -> battle, bt-8's three tactical schedule tables, keyed by \
+         battle_id -> battle, and the two trade-session children, \
+         trade_session_snapshot.session_id -> trade_session and \
+         trade_session_reaper_schedule.session_id -> trade_session."
     );
 
     let expected_not_owned = [
@@ -990,11 +998,12 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
     }
     assert_eq!(
         pairs.len(),
-        12,
+        14,
         "T3 non-vacuity: spec §3 names five JOIN-ONLY tables, bt-7 adds four (the tactical \
          join tables) and bt-8 three (the tactical schedule tables), all swept via `battle`, \
-         so this scan must have twelve parents to check. Zero ViaJoin entries would make \
-         every clause below vacuously true."
+         and the two trade-session children (snapshot and reaper schedule) are swept via \
+         `trade_session`, so this scan must have fourteen parents to check. Zero ViaJoin \
+         entries would make every clause below vacuously true."
     );
 
     for (table, parent) in &pairs {
@@ -3065,6 +3074,20 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::trading::TradeOfferReaperSchedule as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "trade_session",
+            <crate::schema::TradeSession as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "trade_session_reaper_schedule",
+            <crate::trading_session::TradeSessionReaperSchedule as SpacetimeType>::make_type(
+                &mut ts,
+            ),
+        ),
+        (
+            "trade_session_snapshot",
+            <crate::schema::TradeSessionSnapshot as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "type_relation_row",
             <crate::schema::TypeRelationRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3168,12 +3191,14 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 56,
+        registry_len, 59,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 56 (20 ERASE + 5 ANONYMIZE + 12 JOIN-ONLY + 19 NOT-OWNED) — \
+         manifest carries exactly 59 (21 ERASE + 5 ANONYMIZE + 14 JOIN-ONLY + 19 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
-         bt-7's ten tactical tables, plus bt-8's three tactical schedule tables. \
+         bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
+         trade-session tables (`trade_session`, `trade_session_snapshot`, \
+         `trade_session_reaper_schedule`). \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -3185,11 +3210,12 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 29,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 53 registered row types \
-         carry an Identity column at some depth; exactly 29 is the live count (the 25 \
+        identity_bearing, 30,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 59 registered row types \
+         carry an Identity column at some depth; exactly 30 is the live count (the 26 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). bt-7 adds six — battle_unit (its `Option<Identity>` \
+         exceptions R3 below names). `trade_session` adds one (its `opener` and `partner` \
+         columns), while its snapshot and schedule tables, both ViaJoin, add none. bt-7 adds six — battle_unit (its `Option<Identity>` \
          owner, visible only to this deep walk), battle_queue and battle_deploy (`owner`), \
          battle_clock (`player`), battle_summary (both sides) and player_formation (its key) — \
          and its four ViaJoin tables add none. rb-73's `player_session` (ADR-0245) adds one: its \
@@ -3273,11 +3299,11 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 25,
+        population, 26,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 25 (20 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
-         20r-d's `pending_evolution_notice` and bt-7's five Erase tactical tables plus its \
-         Anonymize `battle_summary` included). A floor would let this population grow \
+         the live partition is exactly 26 (21 ERASE + 5 ANONYMIZE — rb-73's `player_session`, \
+         20r-d's `pending_evolution_notice`, bt-7's five Erase tactical tables plus its \
+         Anonymize `battle_summary`, and the Erase `trade_session` included). A floor would let this population grow \
          silently; an exact count forces a conscious edit to this test alongside any \
          reclassification."
     );
@@ -3349,12 +3375,13 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
         );
     }
     assert_eq!(
-        population, 12,
+        population, 14,
         "[m22s6/x2-population] {population} manifest entries are classified ViaJoin; the live \
-         set is exactly 12 (character, battle_wild, pvp_deadline_schedule, \
+         set is exactly 14 (character, battle_wild, pvp_deadline_schedule, \
          battle_challenge_reaper_schedule, trade_offer_reaper_schedule, bt-7's \
-         battle_tactical, battle_secret, battle_wild_unit, battle_event, and bt-8's \
-         tactical_deadline_sched, tactical_advance_sched, battle_gc_sched)."
+         battle_tactical, battle_secret, battle_wild_unit, battle_event, bt-8's \
+         tactical_deadline_sched, tactical_advance_sched, battle_gc_sched, and the two \
+         trade-session children trade_session_snapshot and trade_session_reaper_schedule)."
     );
 }
 
@@ -4956,9 +4983,9 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        56,
+        59,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
-         schedule tables"
+         schedule tables plus the three trade-session tables"
     );
 }
 
@@ -4997,9 +5024,10 @@ mod acct_nh {
         GuestClaim, HealCooldown, Inventory, Monster, MonsterPub, MoveClassRow,
         PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow,
         PlayerFormation, PlayerQuestRow, PlayerSession, PlayerWallet, Profile, SideRow, StanceRow,
-        TradeOffer, DATA_LIFECYCLE_MANIFEST,
+        TradeOffer, TradeSession, TradeSessionSnapshot, DATA_LIFECYCLE_MANIFEST,
     };
     use crate::trading::TradeOfferReaperSchedule;
+    use crate::trading_session::TradeSessionReaperSchedule;
     use game_core::tactics::tuning::BattleKind;
     use game_core::tactics::types::{MoveAction, QueuedAction};
     use spacetimedb::sats::bsatn;
@@ -5125,6 +5153,11 @@ mod acct_nh {
         event: Handle<'a, BattleEvent, u64>,
         summary: Handle<'a, BattleSummary, u64>,
         formation: Handle<'a, PlayerFormation>,
+        // Trade sessions: the session row on its primary key, its snapshot and
+        // reaper-schedule children on their `session_id` btree.
+        trade_session: Handle<'a, TradeSession, u64>,
+        trade_snapshot: Handle<'a, TradeSessionSnapshot, u64>,
+        trade_session_reaper: Handle<'a, TradeSessionReaperSchedule, u64>,
     }
 
     /// Registers every index the shipped accounts / claim / cascade / export
@@ -5245,6 +5278,25 @@ mod acct_nh {
         let _ = fx.table::<BattleSummary>("battle_summary", "opponent_identity", |r| {
             r.opponent_identity
         });
+        // Trade sessions: both participant indexes (the deletion, claim and view
+        // paths read through them) and every key a session delete reaches.
+        let _ = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+        let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+        let _ = fx.table_keyed::<TradeSessionSnapshot, u64>(
+            "trade_session_snapshot",
+            "snapshot_id",
+            |r| r.snapshot_id,
+        );
+        let _ = fx.table_keyed::<TradeSessionSnapshot, u64>(
+            "trade_session_snapshot",
+            "monster_id",
+            |r| r.monster_id,
+        );
+        let _ = fx.table_keyed::<TradeSessionReaperSchedule, u64>(
+            "trade_session_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
         W {
             account: fx
                 .table::<Account>("account", "identity", |r| r.identity)
@@ -5400,6 +5452,27 @@ mod acct_nh {
                 })
                 .unique()
                 .writable(),
+            trade_session: fx
+                .table_keyed::<TradeSession, u64>("trade_session", "session_id", |r| r.session_id)
+                .unique()
+                .writable()
+                .auto_inc(|r| r.session_id, |r, v| r.session_id = v),
+            trade_snapshot: fx
+                .table_keyed::<TradeSessionSnapshot, u64>(
+                    "trade_session_snapshot",
+                    "session_id",
+                    |r| r.session_id,
+                )
+                .writable()
+                .auto_inc(|r| r.snapshot_id, |r, v| r.snapshot_id = v),
+            trade_session_reaper: fx
+                .table_keyed::<TradeSessionReaperSchedule, u64>(
+                    "trade_session_reaper_schedule",
+                    "session_id",
+                    |r| r.session_id,
+                )
+                .writable()
+                .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
         }
     }
 
@@ -6914,8 +6987,10 @@ mod acct_nh {
         // telemetry and the export store are not game data, and the account is
         // the claimer's own. bt-7: a live tactical battle's anchor row blocks
         // the claim (guard 10), a finished battle's per-battle rows belong to
-        // that battle (GC-bound), and `battle_summary` is telemetry.
-        const NOT_REKEYED: [&str; 15] = [
+        // that battle (GC-bound), and `battle_summary` is telemetry. A trade
+        // session is a live interaction like a trade offer: the claim deletes the
+        // claimer's sessions instead of moving any onto it.
+        const NOT_REKEYED: [&str; 16] = [
             "player",
             "player_conversation",
             "player_session",
@@ -6931,6 +7006,7 @@ mod acct_nh {
             "battle_deploy",
             "battle_clock",
             "battle_summary",
+            "trade_session",
         ];
         let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
             .iter()
@@ -8261,9 +8337,9 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            56,
+            59,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
-             bt-8's three schedule tables"
+             bt-8's three schedule tables plus the three trade-session tables"
         );
         for table in [
             "battle_tactical",
@@ -9507,5 +9583,559 @@ mod acct_nh {
             1,
             "a refused claim does not spend the code"
         );
+    }
+
+    // =======================================================================
+    // ts-2.11 — TRADE SESSIONS UNDER ACCOUNT DELETION AND THE GUEST CLAIM:
+    // the cancel declines post-request incoming sessions, the deletion reaper
+    // erases sessions in both roles, the confirm stamp gate, and the claim
+    // deletes the claimer's sessions. Every session delete takes the
+    // session's snapshot rows and reaper-schedule row with it.
+    // =======================================================================
+
+    /// An open session `session_id` from `opener` to `partner`, stamped
+    /// `created_at_ms`, both offers blank and neither side confirmed.
+    fn session_row(
+        session_id: u64,
+        opener: Identity,
+        partner: Identity,
+        created_at_ms: i64,
+    ) -> TradeSession {
+        TradeSession {
+            session_id,
+            opener,
+            partner,
+            opener_offer: game_core::trading::TradeSessionOffer::default(),
+            partner_offer: game_core::trading::TradeSessionOffer::default(),
+            opener_confirmed: false,
+            partner_confirmed: false,
+            revision: 3,
+            created_at_ms,
+        }
+    }
+
+    /// The snapshot row `snapshot_id` of `m` in session `session_id`, every
+    /// column copied from the live row. The drift rule compares the MASKED
+    /// forms of both sides, so this row matches its live monster exactly as a
+    /// stored masked snapshot does.
+    fn snapshot_row(snapshot_id: u64, session_id: u64, m: &Monster) -> TradeSessionSnapshot {
+        TradeSessionSnapshot {
+            snapshot_id,
+            session_id,
+            monster_id: m.monster_id,
+            species_id: m.species_id,
+            nickname: m.nickname.clone(),
+            level: m.level,
+            xp: m.xp,
+            iv_hp: m.iv_hp,
+            iv_attack: m.iv_attack,
+            iv_defense: m.iv_defense,
+            iv_speed: m.iv_speed,
+            iv_sp_attack: m.iv_sp_attack,
+            iv_sp_defense: m.iv_sp_defense,
+            nature_kind: m.nature_kind,
+            ev_hp: m.ev_hp,
+            ev_attack: m.ev_attack,
+            ev_defense: m.ev_defense,
+            ev_speed: m.ev_speed,
+            ev_sp_attack: m.ev_sp_attack,
+            ev_sp_defense: m.ev_sp_defense,
+            stat_hp: m.stat_hp,
+            stat_attack: m.stat_attack,
+            stat_defense: m.stat_defense,
+            stat_speed: m.stat_speed,
+            stat_sp_attack: m.stat_sp_attack,
+            stat_sp_defense: m.stat_sp_defense,
+            current_hp: m.current_hp,
+            party_slot: m.party_slot,
+            last_care_at_ms: m.last_care_at_ms,
+            essence_fire: m.essence_fire,
+            essence_water: m.essence_water,
+            essence_plant: m.essence_plant,
+            essence_electric: m.essence_electric,
+            essence_earth: m.essence_earth,
+            essence_wind: m.essence_wind,
+            essence_light: m.essence_light,
+            essence_dark: m.essence_dark,
+            trust_favorable_count: m.trust_favorable_count,
+            trust_unfavorable_count: m.trust_unfavorable_count,
+            trust_favorable_battle_day_epoch: m.trust_favorable_battle_day_epoch,
+            quality_time_ticks_total: m.quality_time_ticks_total,
+            quality_time_accum_ms: m.quality_time_accum_ms,
+            quality_time_window_ms: m.quality_time_window_ms,
+            quality_time_window_start_ms: m.quality_time_window_start_ms,
+            last_essence_train_at_ms: m.last_essence_train_at_ms,
+        }
+    }
+
+    /// The standard snapshot child of a fixture session: one row for a
+    /// monster of the opener's, keyed off the session id.
+    fn session_snapshot(s: &TradeSession) -> TradeSessionSnapshot {
+        let m = monster_row(s.session_id * 10 + 1, s.opener);
+        snapshot_row(s.session_id * 10 + 1, s.session_id, &m)
+    }
+
+    /// The reaper-schedule child of a fixture session, armed at its TTL.
+    fn session_schedule(s: &TradeSession) -> TradeSessionReaperSchedule {
+        TradeSessionReaperSchedule {
+            scheduled_id: s.session_id * 10 + 2,
+            scheduled_at: ScheduleAt::Time(at(
+                s.created_at_ms + game_core::trading::TRADE_SESSION_TTL_MS
+            )),
+            session_id: s.session_id,
+        }
+    }
+
+    /// Seed a session together with its snapshot row and its schedule row.
+    fn seed_session(w: &W<'_>, s: &TradeSession) {
+        w.trade_session.seed(s);
+        w.trade_snapshot.seed(&session_snapshot(s));
+        w.trade_session_reaper.seed(&session_schedule(s));
+    }
+
+    fn sorted_ids(mut ids: Vec<u64>) -> Vec<u64> {
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The three session tables hold EXACTLY `want` (fixture sessions seeded
+    /// with `seed_session`) and their children, byte-identical: a session not
+    /// in `want` is gone together with its snapshot and schedule rows, and
+    /// every session in `want` is untouched.
+    fn assert_sessions_exactly(w: &W<'_>, want: &[&TradeSession], label: &str) {
+        let want_ids = sorted_ids(want.iter().map(|s| s.session_id).collect());
+        assert_eq!(
+            sorted_ids(
+                w.trade_session
+                    .rows()
+                    .iter()
+                    .map(|r| r.session_id)
+                    .collect()
+            ),
+            want_ids,
+            "[{label}] the live trade sessions"
+        );
+        assert_eq!(
+            sorted_ids(
+                w.trade_snapshot
+                    .rows()
+                    .iter()
+                    .map(|r| r.session_id)
+                    .collect()
+            ),
+            want_ids,
+            "[{label}] snapshot rows: a deleted session's snapshot goes with it and a surviving \
+             session keeps its own"
+        );
+        assert_eq!(
+            sorted_ids(
+                w.trade_session_reaper
+                    .rows()
+                    .iter()
+                    .map(|r| r.session_id)
+                    .collect()
+            ),
+            want_ids,
+            "[{label}] reaper-schedule rows: a deleted session is disarmed and a surviving \
+             session stays armed"
+        );
+        let sessions: Vec<TradeSession> = want.iter().copied().cloned().collect();
+        assert_eq!(
+            encs(&w.trade_session.rows()),
+            encs(&sessions),
+            "[{label}] every surviving session row is byte-identical"
+        );
+        let snapshots: Vec<TradeSessionSnapshot> =
+            want.iter().copied().map(session_snapshot).collect();
+        assert_eq!(
+            encs(&w.trade_snapshot.rows()),
+            encs(&snapshots),
+            "[{label}] every surviving snapshot row is byte-identical"
+        );
+        let schedules: Vec<TradeSessionReaperSchedule> =
+            want.iter().copied().map(session_schedule).collect();
+        assert_eq!(
+            encs(&w.trade_session_reaper.rows()),
+            encs(&schedules),
+            "[{label}] every surviving schedule row is byte-identical"
+        );
+    }
+
+    /// ts-2.11 — `cancel_account_deletion` declines exactly the canceller's
+    /// incoming sessions that the deletion stamp gate refuses: sessions where
+    /// the canceller is the PARTNER and that were created at or after the
+    /// deletion request (the boundary is inclusive — a session stamped in the
+    /// request millisecond does not predate it). Each declined session goes
+    /// with its snapshot and schedule rows. A pre-request incoming session, a
+    /// session the canceller opened and two strangers' session survive
+    /// byte-identical, and the account ends `Active`. The read half composes
+    /// with the policy: `open_sessions_addressed_to` returns exactly the
+    /// `(session_id, created_at_ms)` pairs of the sessions addressed to the
+    /// canceller, and `plan_declines_at_cancel` over them names the two
+    /// post-request ones.
+    ///
+    /// Kills: the decline call missing from the cancel (every session
+    /// survives); a decline made after the status write (an `Active` row
+    /// refuses nothing); an exclusive boundary (the request-millisecond
+    /// session survives); declining every incoming session regardless of
+    /// stamp (the pre-request one goes); declining by the opener column too or
+    /// by both roles (the canceller's own session goes); a decline that skips
+    /// the snapshot or schedule rows; a reader that also returns the sessions
+    /// the canceller opened or strangers' sessions.
+    #[test]
+    fn ts2_deletion_cancel_declines_post_request_incoming_sessions() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xA1);
+        let (b, c, d, e) = (id(0xA2), id(0xA3), id(0xA4), id(0xA5));
+        let requested = T0;
+        let active = crate::accounts::new_account_row(a, "i".to_string(), 1);
+        let pending = crate::accounts::requested_deletion(active.clone(), requested);
+        w.account.seed(&pending);
+
+        let post_incoming = session_row(7101, b, a, requested + 1);
+        let at_request = session_row(7102, c, a, requested);
+        let pre_incoming = session_row(7103, d, a, requested - 1);
+        let opened_by_a = session_row(7104, a, e, requested - 1);
+        let strangers = session_row(7105, d, e, requested + 5);
+        for s in [
+            &post_incoming,
+            &at_request,
+            &pre_incoming,
+            &opened_by_a,
+            &strangers,
+        ] {
+            seed_session(&w, s);
+        }
+
+        let addressed = fx.run_as(a, |ctx| {
+            crate::trading_session::open_sessions_addressed_to(ctx, a)
+        });
+        let mut addressed_sorted = addressed.clone();
+        addressed_sorted.sort_unstable();
+        assert_eq!(
+            addressed_sorted,
+            vec![
+                (7101, requested + 1),
+                (7102, requested),
+                (7103, requested - 1)
+            ],
+            "[ts2/addressed-to] exactly the sessions where the canceller is the partner, as \
+             (session_id, created_at_ms) — never one it opened, never a stranger's"
+        );
+        let mut planned = crate::accounts::plan_declines_at_cancel(&pending, &addressed);
+        planned.sort_unstable();
+        assert_eq!(
+            planned,
+            vec![7101, 7102],
+            "[ts2/plan-declines] the stamp policy refuses the post-request and the \
+             request-millisecond sessions, and keeps the pre-request one"
+        );
+
+        assert_eq!(
+            signed_in(
+                &fx,
+                a,
+                requested + 100,
+                crate::accounts::cancel_account_deletion
+            ),
+            Ok(())
+        );
+        let live: Vec<u64> = w
+            .trade_session
+            .rows()
+            .iter()
+            .map(|r| r.session_id)
+            .collect();
+        assert!(
+            !live.contains(&7101) && !live.contains(&7102),
+            "[ts2/cancel-declines] the post-request incoming sessions are declined; live: {live:?}"
+        );
+        assert_sessions_exactly(
+            &w,
+            &[&pre_incoming, &opened_by_a, &strangers],
+            "ts2/cancel-declines",
+        );
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == a)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[active]),
+            "the cancel restores Active"
+        );
+    }
+
+    /// ts-2.11 — the deletion reaper's cascade erases every session naming the
+    /// subject, as opener and as partner, each with its snapshot and schedule
+    /// rows; a strangers' session and the subject's peer's session with a
+    /// third player survive byte-identical, and the account ends terminal.
+    /// Driven through the shipped `account_deletion_reaper` at the grace end.
+    ///
+    /// Kills: no session sweep in the cascade (both of the subject's
+    /// sessions survive); a sweep over one role only (the other survives); a
+    /// sweep keyed on the peer or deleting every session (the survivors go); a
+    /// sweep that leaves the snapshot or schedule rows behind.
+    #[test]
+    fn ts2_deletion_reaper_erases_sessions_in_both_roles() {
+        let fx = fixture();
+        let w = world(&fx);
+        let v = id(0xB1);
+        let (peer, x, y) = (id(0xB2), id(0xB3), id(0xB4));
+        let requested = T0;
+        let pending = crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(v, "iss".to_string(), 1),
+            requested,
+        );
+        w.account.seed(&pending);
+        let as_opener = session_row(7201, v, peer, requested - 50);
+        let as_partner = session_row(7202, peer, v, requested + 50);
+        let strangers = session_row(7203, x, y, requested);
+        let peer_elsewhere = session_row(7204, peer, x, requested + 60);
+        for s in [&as_opener, &as_partner, &strangers, &peer_elsewhere] {
+            seed_session(&w, s);
+        }
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+
+        let got = fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(
+                ctx,
+                AccountDeletionReaperSchedule {
+                    scheduled_id: 1,
+                    scheduled_at: ScheduleAt::Time(at(grace_end)),
+                    account_identity: v,
+                },
+            )
+        });
+        assert_eq!(got, Ok(()));
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == v)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[crate::accounts::terminal_account(
+                crate::accounts::anonymized_account(pending),
+                grace_end
+            )]),
+            "the due tick ran the cascade"
+        );
+        let names_v: Vec<u64> = w
+            .trade_session
+            .rows()
+            .iter()
+            .filter(|r| r.opener == v || r.partner == v)
+            .map(|r| r.session_id)
+            .collect();
+        assert!(
+            names_v.is_empty(),
+            "[ts2/reaper-erases] no session may name the erased identity in either role; \
+             still live: {names_v:?}"
+        );
+        assert_sessions_exactly(&w, &[&strangers, &peer_elsewhere], "ts2/reaper-erases");
+    }
+
+    /// ts-2.11 — the confirm stamp gate and the other session reducers for a
+    /// deletion-gated caller (request stamp T). `confirm_trade_session` on a
+    /// session created after T is refused with the deletion-gate reason and
+    /// writes nothing; `set_trade_offer` and `open_trade_session` are refused
+    /// with the same reason and write nothing. On a session created before T
+    /// the gate does not fire: the fixture makes that confirm otherwise valid
+    /// (the caller offers a party monster at full HP with a matching snapshot
+    /// row and keeps a second monster; the partner offers currency backed by
+    /// a wallet), so it is RECORDED — the caller's flag is set, the revision
+    /// and every other column unchanged. `cancel_trade_session` is not gated:
+    /// the gated caller cancels the post-request session, which goes with its
+    /// snapshot and schedule rows. No partner account is seeded: no reducer
+    /// may read the partner's deletion state.
+    ///
+    /// Kills: the stamp gate missing from the confirm (the post-request
+    /// confirm is recorded); a blanket `require_not_deleting` on the confirm
+    /// (the pre-request confirm is refused); the gate on set or open missing;
+    /// a gate on cancel (the gated caller cannot leave the session); a cancel
+    /// that leaves the snapshot or schedule row behind.
+    #[test]
+    fn ts2_deletion_gated_caller_cannot_confirm_post_request_session() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xC1);
+        let (b, c, d) = (id(0xC2), id(0xC3), id(0xC4));
+        let requested = T0;
+        w.account.seed(&crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(a, "i".to_string(), 1),
+            requested,
+        ));
+        w.player.seed(&player_row(a, 901, "A"));
+        let offered = monster_row(7311, a);
+        let mut kept = monster_row(7312, a);
+        kept.party_slot = 1;
+        w.monster.seed(&offered);
+        w.monster.seed(&kept);
+        w.wallet.seed(&PlayerWallet {
+            owner_identity: a,
+            balance: 10,
+        });
+        w.wallet.seed(&PlayerWallet {
+            owner_identity: b,
+            balance: 500,
+        });
+
+        let mut pre = session_row(7301, a, b, requested - 1);
+        pre.opener_offer.monster_ids = vec![7311];
+        pre.partner_offer.currency = 100;
+        pre.revision = 4;
+        let pre_snapshot = snapshot_row(73_011, 7301, &offered);
+        let pre_schedule = session_schedule(&pre);
+        w.trade_session.seed(&pre);
+        w.trade_snapshot.seed(&pre_snapshot);
+        w.trade_session_reaper.seed(&pre_schedule);
+
+        let mut post = session_row(7302, a, c, requested + 1);
+        post.partner_offer.currency = 50;
+        seed_session(&w, &post);
+
+        let gated = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+        let session_tables = [
+            "trade_session",
+            "trade_session_snapshot",
+            "trade_session_reaper_schedule",
+        ];
+        let rows_now = |w: &W<'_>| {
+            (
+                encs(&w.trade_session.rows()),
+                encs(&w.trade_snapshot.rows()),
+                encs(&w.trade_session_reaper.rows()),
+            )
+        };
+        let before = rows_now(&w);
+        fx.reset_writes();
+
+        assert_eq!(
+            fx.run_as_at(a, at(requested + 10), |ctx| {
+                crate::trading_session::confirm_trade_session(ctx, 7302, post.revision)
+            }),
+            gated,
+            "[ts2/confirm-gated] a deletion-gated caller may not confirm a session created \
+             after their request"
+        );
+        assert_eq!(
+            fx.run_as_at(a, at(requested + 10), |ctx| {
+                crate::trading_session::set_trade_offer(ctx, 7301, vec![7312], vec![], 0)
+            }),
+            gated,
+            "[ts2/edit-gated] an edit is a new commitment"
+        );
+        assert_eq!(
+            fx.run_as_at(a, at(requested + 10), |ctx| {
+                crate::trading_session::open_trade_session(ctx, d)
+            }),
+            gated,
+            "[ts2/open-gated] opening is a new commitment"
+        );
+        for table in session_tables {
+            assert_eq!(
+                fx.writes_to(table),
+                0,
+                "[ts2/gated-writes-nothing] a refused call writes no `{table}` row"
+            );
+        }
+        assert_eq!(
+            rows_now(&w),
+            before,
+            "[ts2/gated-writes-nothing] the session tables are unchanged"
+        );
+
+        assert_eq!(
+            fx.run_as_at(a, at(requested + 10), |ctx| {
+                crate::trading_session::confirm_trade_session(ctx, 7301, 4)
+            }),
+            Ok(()),
+            "[ts2/confirm-pre-request] a session that predates the request stays completable"
+        );
+        let mut recorded = pre.clone();
+        recorded.opener_confirmed = true;
+        let live_pre: Vec<TradeSession> = w
+            .trade_session
+            .rows()
+            .into_iter()
+            .filter(|r| r.session_id == 7301)
+            .collect();
+        assert_eq!(
+            encs(&live_pre),
+            encs(std::slice::from_ref(&recorded)),
+            "[ts2/confirm-pre-request] the caller's confirm is recorded: its flag set, the \
+             partner's flag, the revision and both offers unchanged"
+        );
+
+        assert_eq!(
+            fx.run_as_at(a, at(requested + 20), |ctx| {
+                crate::trading_session::cancel_trade_session(ctx, 7302)
+            }),
+            Ok(()),
+            "[ts2/cancel-ungated] a deletion-gated participant can always cancel"
+        );
+        assert_eq!(
+            encs(&w.trade_session.rows()),
+            encs(&[recorded]),
+            "[ts2/cancel-ungated] the cancelled session is gone; the other one is untouched"
+        );
+        assert_eq!(
+            encs(&w.trade_snapshot.rows()),
+            encs(&[pre_snapshot]),
+            "[ts2/cancel-ungated] the cancelled session's snapshot row goes with it"
+        );
+        assert_eq!(
+            encs(&w.trade_session_reaper.rows()),
+            encs(&[pre_schedule]),
+            "[ts2/cancel-ungated] the cancelled session's schedule row goes with it"
+        );
+    }
+
+    /// ts-2.11 — the guest claim's `rekey_all` deletes every session naming
+    /// the claimer (`to`), in either role, with its snapshot and schedule
+    /// rows; a strangers' session survives byte-identical. Sessions are never
+    /// re-keyed (`NOT_REKEYED`).
+    ///
+    /// Kills: no session delete in `rekey_all`; a delete over one role only;
+    /// a delete keyed on every session (the strangers' goes); a delete that
+    /// leaves the snapshot or schedule rows behind.
+    #[test]
+    fn ts2_deletion_claim_deletes_claimer_sessions() {
+        let fx = fixture();
+        let w = world(&fx);
+        let guest = id(0xD1);
+        let claimer = id(0xD2);
+        let (x, y) = (id(0xD3), id(0xD4));
+        let claimer_opened = session_row(7401, claimer, x, T0);
+        let claimer_partner = session_row(7402, y, claimer, T0 + 1);
+        let strangers = session_row(7403, x, y, T0 + 2);
+        for s in [&claimer_opened, &claimer_partner, &strangers] {
+            seed_session(&w, s);
+        }
+
+        assert_eq!(
+            fx.run_as(claimer, |ctx| crate::accounts::rekey_all(
+                ctx, guest, claimer
+            )),
+            Ok(())
+        );
+        let names_claimer: Vec<u64> = w
+            .trade_session
+            .rows()
+            .iter()
+            .filter(|r| r.opener == claimer || r.partner == claimer)
+            .map(|r| r.session_id)
+            .collect();
+        assert!(
+            names_claimer.is_empty(),
+            "[ts2/claim-deletes] the claim deletes every session naming the claimer; still \
+             live: {names_claimer:?}"
+        );
+        assert_sessions_exactly(&w, &[&strangers], "ts2/claim-deletes");
     }
 }
