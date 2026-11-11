@@ -112,8 +112,13 @@ jobs:
           echo "spacetime did not become ready on :3000" >&2; cat /tmp/stdb.log >&2 || true; exit 1
       - name: Install client deps
         run: cd client && npm ci
+      # Browser binaries only, no `--with-deps`, so this job needs no Ubuntu apt mirror. The
+      # runner image supplies every shared library chromium loads and the fonts every glyph
+      # the client renders resolves to (DejaVu, Liberation, Noto Color Emoji). The fallback
+      # fonts `--with-deps` would fetch through apt (CJK, Thai, FreeFont, Unifont, X11) are
+      # unused; a spec that needs one bundles it as a web font instead of adding an apt step.
       - name: Install Playwright chromium
-        run: cd client && npx playwright install --with-deps chromium
+        run: cd client && npx playwright install chromium
       - name: Two-window e2e (golden flows vs real spacetime)
         env:
           STDB_SERVER: http://127.0.0.1:3000
