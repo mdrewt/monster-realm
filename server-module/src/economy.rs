@@ -9,13 +9,11 @@
 //! spend/consume call.
 
 use crate::guards::{
-    escrowed_currency_amount, escrowed_item_qty, is_in_ongoing_battle, require_owner,
+    escrowed_currency_of, escrowed_item_qty_of, is_in_ongoing_battle, require_owner,
     saturating_sub_u32, saturating_sub_u64,
 };
 use crate::inventory::{consume_one, grant_item};
-use crate::schema::{
-    inventory, item_row, player, player_wallet, shop_item_row, trade_offer, PlayerWallet,
-};
+use crate::schema::{inventory, item_row, player, player_wallet, shop_item_row, PlayerWallet};
 use game_core::currency::{apply_grant, apply_spend};
 use game_core::{check_currency_headroom, check_item_headroom};
 use spacetimedb::{Identity, ReducerContext, Table};
@@ -139,14 +137,7 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
         .ok_or_else(|| "total overflow".to_string())?;
 
     // Trade escrow guard: reject if currency is locked in an active offer.
-    let escrowed = escrowed_currency_amount(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(me)
-            .chain(ctx.db.trade_offer().counterparty().filter(me)),
-        me,
-    );
+    let escrowed = escrowed_currency_of(ctx, me);
     let balance = wallet_balance(ctx, me);
     let available = saturating_sub_u64(balance, escrowed);
     if total > available {
@@ -242,15 +233,7 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
         .ok_or_else(|| "total overflow".to_string())?;
 
     // Trade escrow guard: reject if the item is locked in an active offer.
-    let escrowed = escrowed_item_qty(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(me)
-            .chain(ctx.db.trade_offer().counterparty().filter(me)),
-        me,
-        item_id,
-    );
+    let escrowed = escrowed_item_qty_of(ctx, me, item_id);
     let current_count = ctx
         .db
         .inventory()

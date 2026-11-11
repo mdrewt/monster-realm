@@ -5,7 +5,9 @@
 //! `monster_pub` projection through [`update_monster_synced`], the shared
 //! copy-forward dual-write every plain monster update in the crate uses.
 
-use crate::guards::{log_reject, reject_if_monster_in_trade, require_owner, validate_name};
+use crate::guards::{
+    log_reject, reject_if_monster_in_trade, reject_if_monster_locked, require_owner, validate_name,
+};
 use crate::marshal::pub_from_monster;
 use crate::schema::{monster, monster_pub, trade_offer, Monster};
 use crate::PARTY_SLOT_NONE;
@@ -50,14 +52,7 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
     };
     require_owner(ctx, "set_nickname", m.owner_identity)?;
     // Trade escrow guard.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(m.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
-        monster_id,
-    )?;
+    reject_if_monster_locked(ctx, m.owner_identity, monster_id)?;
     let validated = if nickname.trim().is_empty() {
         String::new() // clear nickname
     } else {
@@ -81,7 +76,9 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
-    // Trade escrow guard.
+    // Trade-offer guard, read directly by design: this refusal is scoped to
+    // active trade OFFERS, so it calls the pure predicate rather than
+    // `reject_if_monster_locked`, whose scope is every lock on a monster.
     reject_if_monster_in_trade(
         ctx.db
             .trade_offer()
