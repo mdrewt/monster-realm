@@ -280,9 +280,10 @@ export class TradeView {
 
   /** Write the status line and apply the kept Social paint to this root. On the Players tab the
    *  status reads the placeholder and the sides and actions are hidden; the status stays shown
-   *  (it is the dialog's focus anchor). The trade row's cursor is marked on the status by class AND aria-current, never
-   *  colour alone. The Trades tab keeps this shape in uif-9: its row cards come with M-trade-sessions
-   *  `ts-3`, which rebuilds the tab (UIF9.4). With no paint the root is exactly the legacy trade overlay. */
+   *  (it is the dialog's focus anchor). The legacy trade row's cursor is marked on the status by
+   *  class AND aria-current, never colour alone. On the Trades tab the session rows follow, and with
+   *  no legacy offer the status names them. With no paint the root is exactly the legacy trade
+   *  overlay. */
   #applySocial(): void {
     const p = this.#social;
     const players = p?.tab === 'players';
