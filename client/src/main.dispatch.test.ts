@@ -8645,3 +8645,127 @@ describe('main.ts trade sessions through the booted shell (runtime, ts-3)', {
     expect(tsCalls(), 'no recovery reducer was sent').toHaveLength(1);
   });
 });
+
+// ==========================================================================================
+// ts-4: a confirmed session side locks its monsters out of a challenge; the `__mrTrade` DEV hook
+// ==========================================================================================
+//
+// Same harness. The challenge is the real `challenge` Command, issued by a stand-in main-menu
+// adapter on LB (the world action sheet's Yes issues the same Command), and read at the stubbed
+// `challengePvp` reducer: the ids main.ts commits are `eligibleChallengeIds()`, which reads
+// `tradedIds()`.
+
+describe('main.ts session locks and __mrTrade (runtime, ts-4)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('ts-4.7 a monster on the player`s CONFIRMED session side is never committed to a challenge while the other party monster is; the same side unconfirmed (the partner confirmed) commits both', async () => {
+    // WRONG IMPL KILLED: `tradedIds()` without the `lockedSessionMonsterIds(...)` spread (the
+    // confirmed-locked monster is committed to `challengePvp`, which the server refuses: the
+    // player can never challenge while a confirmed trade waits); a lock read off EITHER side's
+    // mark (the partner's confirm would lock the player's monster in the control); a lock that
+    // ignores the confirm (an unconfirmed offer would already withhold it: lock-at-confirm).
+    await bootReady();
+    server(1000);
+    const LOCKED = 201n;
+    const FREE = 202n;
+    // Slot order puts the locked monster FIRST, so a size-1 pick shows which one was dropped.
+    opts.store.upsertMonster(monster(LOCKED, 0));
+    opts.store.upsertMonster(monster(FREE, 1));
+    const mySide: StoreTradeSession['openerOffer'] = {
+      monsterIds: [LOCKED],
+      items: [],
+      currency: 0n,
+      cards: [],
+    };
+    const withMySide = (confirmed: boolean): StoreTradeSession =>
+      tsSession(301n, H.identity, OTHER_IDENTITY, {
+        openerOffer: mySide,
+        openerConfirmed: confirmed,
+        partnerConfirmed: true,
+      });
+    const issue: { command: unknown } = { command: undefined };
+    swapAdapter('menuView', commandAdapter(issue));
+    /** The `partyIds` of every `challengePvp` one challenge of `partySize` sent. */
+    const committed = async (partySize: number, t: number): Promise<unknown[]> => {
+      H.calls = [];
+      issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize };
+      await pageUp(t);
+      return H.calls
+        .filter((c) => c.name === 'challengePvp')
+        .map((c) => (c.args as { partyIds?: unknown }).partyIds);
+    };
+
+    // Control: my side holds LOCKED but is NOT confirmed (only the partner's is): both are offered.
+    opts.store.reconcileTradeSessionsFromView([withMySide(false)]);
+    server(1100);
+    openMenuAtWorld(1200);
+    expect(await committed(2, 1300), 'unconfirmed: a size-2 challenge commits both').toEqual([
+      [LOCKED, FREE],
+    ]);
+    expect(await committed(1, 1400), 'unconfirmed: a size-1 challenge commits LOCKED').toEqual([
+      [LOCKED],
+    ]);
+    press('Escape', 1500);
+    expect(stackNow(), 'precondition: Start closed the menu').toEqual([{ kind: 'world' }]);
+
+    // My side confirmed: LOCKED is locked, FREE is still offered.
+    opts.store.reconcileTradeSessionsFromView([withMySide(true)]);
+    server(1600);
+    openMenuAtWorld(1700);
+    expect(await committed(1, 1800), 'confirmed: a size-1 challenge commits FREE only').toEqual([
+      [FREE],
+    ]);
+    expect(
+      await committed(2, 1900),
+      'confirmed: one eligible monster, so a size-2 challenge sends nothing',
+    ).toEqual([]);
+  });
+
+  it('ts-4.4 window.__mrTrade exposes exactly the four session reducers, mySessions and allPlayers, each a function that reads or sends for this boot', async () => {
+    // WRONG IMPL KILLED: the legacy `proposeTrade`, `respondTrade`, `confirmTrade`, `cancelTrade`
+    // or `allTradeOffers` left on the hook (a DEV hook that still drives the retired legacy
+    // reducers); a session member dropped or renamed; a member that is not a function. The hook is
+    // deleted before the import, so what is read is THIS boot's assignment (the DEV gate is on in
+    // this harness: `stackNow` reads the `__game` hook assigned beside it).
+    type Hook = Record<string, unknown>;
+    await bootReady(() => {
+      delete (window as unknown as { __mrTrade?: Hook }).__mrTrade;
+    });
+    server(1000);
+    const hook = (window as unknown as { __mrTrade?: Hook }).__mrTrade;
+    expect(hook, 'the DEV hook is assigned by this boot').toBeDefined();
+    if (hook === undefined) return;
+    const expected = [
+      'allPlayers',
+      'cancelTradeSession',
+      'confirmTradeSession',
+      'mySessions',
+      'openTradeSession',
+      'setTradeOffer',
+    ];
+    expect(Object.keys(hook).sort(), 'exactly the session members and allPlayers').toEqual(
+      expected,
+    );
+    for (const name of expected) {
+      expect(typeof hook[name], `${name} is a function`).toBe('function');
+    }
+
+    // Anti-vacuity: the members are this boot's, wired to its store and its connection.
+    opts.store.reconcileTradeSessionsFromView([tsSession(55n, H.identity, OTHER_IDENTITY)]);
+    server(1100);
+    const call = (name: string, ...args: unknown[]): unknown =>
+      (hook[name] as (...a: unknown[]) => unknown)(...args);
+    expect(call('allPlayers'), 'allPlayers reads this boot`s store').toEqual([
+      { identity: H.identity, name: 'P' },
+    ]);
+    expect(
+      (call('mySessions') as Array<{ sessionId: string }>).map((s) => s.sessionId),
+      'mySessions reads this boot`s sessions',
+    ).toEqual(['55']);
+    H.calls = [];
+    await call('cancelTradeSession', '55');
+    expect(H.calls, 'cancelTradeSession sends its reducer').toEqual([
+      { name: 'cancelTradeSession', args: { sessionId: 55n } },
+    ]);
+  });
+});

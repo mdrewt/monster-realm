@@ -3220,18 +3220,80 @@ fn scheduled_reducers_refuse_every_sender_but_the_module_and_write_nothing_bt8_3
 // BT8.4 — a Deploying battle already holds the interlock; its expiry releases it
 // ===========================================================================
 
+/// A's party monster 11 is held by a Deploying tactical battle; A and B share a
+/// trade session (seeded directly: the trade-session tables are registered on top
+/// of the tactics world, every index `set_trade_offer` reads). A's
+/// `set_trade_offer` listing 11 is refused with the session rule's ongoing-battle
+/// reason, and nothing is written: no row of the tactics world or of the session
+/// tables changes and no session table sees a write syscall.
+///
+/// kills: a session eligibility read that misses the tactical battle's anchor row
+/// (the edit is accepted and the session row is rewritten); a refusal for another
+/// reason (the exact string differs).
 #[test]
-fn propose_trade_refuses_a_party_monster_of_a_deploying_tactical_battle_bt8_4() {
+fn set_trade_offer_refuses_a_party_monster_of_a_deploying_tactical_battle_bt8_4() {
+    use crate::schema::{TradeSession, TradeSessionSnapshot};
     let fx = fixture();
     let w = world(&fx);
     deploying_pair(&fx, &w);
     w.join(b(), 2);
-    let before = w.snapshot();
-    let got = fx.run_as_at(a(), at(T0 + 1_000), |ctx| {
-        crate::trading::propose_trade(ctx, b(), vec![11], Vec::new(), 0, Vec::new(), Vec::new(), 0)
+    let sessions = fx
+        .table_keyed::<TradeSession, u64>("trade_session", "session_id", |r| r.session_id)
+        .writable()
+        .unique();
+    let _ = fx.table::<TradeSession>("trade_session", "opener", |r| r.opener);
+    let _ = fx.table::<TradeSession>("trade_session", "partner", |r| r.partner);
+    let snapshots = fx
+        .table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "snapshot_id", |r| {
+            r.snapshot_id
+        })
+        .writable()
+        .unique()
+        .auto_inc(|r| r.snapshot_id, |r, id| r.snapshot_id = id);
+    let _ =
+        fx.table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "session_id", |r| {
+            r.session_id
+        });
+    let _ =
+        fx.table_keyed::<TradeSessionSnapshot, u64>("trade_session_snapshot", "monster_id", |r| {
+            r.monster_id
+        });
+    sessions.seed(&TradeSession {
+        session_id: 700,
+        opener: a(),
+        partner: b(),
+        opener_offer: game_core::trading::TradeSessionOffer::default(),
+        partner_offer: game_core::trading::TradeSessionOffer::default(),
+        opener_confirmed: false,
+        partner_confirmed: false,
+        revision: 0,
+        created_at_ms: T0,
     });
-    assert_eq!(got, Err("monster is in an ongoing battle".to_string()));
-    assert_eq!(changed(&before, &w.snapshot()), none());
+    let session_rows = || (row_set(&sessions.rows()), row_set(&snapshots.rows()));
+    let before = (w.snapshot(), session_rows());
+    fx.reset_writes();
+    let got = fx.run_as_at(a(), at(T0 + 1_000), |ctx| {
+        crate::trading_session::set_trade_offer(ctx, 700, vec![11], Vec::new(), 0)
+    });
+    assert_eq!(
+        got,
+        Err("monster 11 is in an ongoing battle".to_string()),
+        "indexes asked: {:?}",
+        fx.requested_indexes()
+    );
+    assert_eq!(changed(&before.0, &w.snapshot()), none());
+    assert!(
+        session_rows() == before.1,
+        "the refused edit changed a session or snapshot row"
+    );
+    assert_eq!(
+        (
+            fx.writes_to("trade_session"),
+            fx.writes_to("trade_session_snapshot")
+        ),
+        (0, 0),
+        "the refused edit made a session write syscall"
+    );
 }
 
 #[test]

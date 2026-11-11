@@ -1480,3 +1480,78 @@ describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequent
     expect(live.textContent, 'once').toBe('');
   }, 60_000);
 });
+
+// ==========================================================================================
+// ts-4: an identity change forgets the sessions the previous identity opened (ts-4.7)
+// ==========================================================================================
+//
+// Same harness. The identity changes the way a rebuilt connection mints a new one: `onReconnect`
+// then `onReady`, both carrying the NEW identity (the stubbed connection answers it too). Session
+// ids are per-database, so the new identity can be the partner of a session with the same id as
+// one the old identity opened its editor on.
+
+const NEW_IDENTITY = 'ee'.repeat(32);
+
+describe('main.ts an identity change and opened sessions (runtime, ts-4)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  it('ts-4.7 after the identity changes, an incoming untouched session with the SAME id as one the previous identity opened its editor on raises the request banner and opens no frame', async () => {
+    // WRONG IMPL KILLED: `resetTradeSessionState()` without `openedTradeSessions.clear()` (the old
+    // identity's opened id 41 suppresses the new identity's request 41: the request never shows,
+    // and the player is never told a trade waits). The control before the change proves the
+    // opened set is what silenced S, so the banner after it is the clear, not some other reset.
+    const OLD_IDENTITY = H.identity;
+    const S = 41n;
+    try {
+      await bootReady();
+      seedPlayer(BOB, 'Bob', 8n);
+      batch();
+      frame();
+      putSession(sessionFrom(BOB, S, 1_000n));
+      batch();
+      frame();
+      const bobLine = tf('notice.request.trade', { name: 'Bob' });
+      expect(bannerText(), 'precondition: the old identity`s request is announced').toBe(bobLine);
+      press(Y);
+      frame();
+      expect(sheetCursor(), 'precondition: the sheet is on Accept').toBe('accept');
+      press(A);
+      await flush();
+      frame();
+      expect(stackNames(), 'precondition: Accept opened the editor').toEqual([
+        'world',
+        'tradeSessionView',
+      ]);
+      const boundTo = byId('tradepropose-overlay').getAttribute('data-session-id');
+      expect(boundTo, 'precondition: the editor is on S').toBe(S.toString());
+      press('Escape');
+      frame();
+      batch();
+      frame();
+      expect(stackNames(), 'precondition: Start closed the editor').toEqual(['world']);
+      expect(bannerText(), 'control: the opened session raises nothing').toBeNull();
+
+      // The identity changes; the new identity is the partner of a session with the same id.
+      H.identity = NEW_IDENTITY;
+      opts.onReconnect(NEW_IDENTITY);
+      sessions.clear();
+      putSession(sessionFrom(BOB, S, 2_000n));
+      opts.onReady(NEW_IDENTITY);
+      batch();
+      frame();
+      await flush();
+      frame();
+      expect(
+        opts.store.allTradeSessions().map((s) => [s.sessionId, s.partner]),
+        'fixture: the store holds S with the NEW identity as its partner',
+      ).toEqual([[S, NEW_IDENTITY]]);
+      expect(bannerText(), 'the new identity`s request on S raises the banner').toBe(bobLine);
+      expect(stackNames(), 'and opens no frame').toEqual(['world']);
+      expect(H.calls, 'and nothing was sent').toEqual([]);
+    } finally {
+      H.identity = OLD_IDENTITY;
+    }
+  }, 60_000);
+});

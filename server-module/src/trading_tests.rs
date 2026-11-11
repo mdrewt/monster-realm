@@ -1,8 +1,11 @@
 // Trading spine tests.
 //
 // Two layers: the pure game-core rules and guard functions (validate_proposal,
-// build_swap_plan, the escrow guards), and — at the end of the file — the
-// native-host suite that executes the shipped trading reducers against real rows.
+// build_swap_plan, the escrow guards, the deletion-gate predicates), and — at the
+// end of the file — the native-host suite that executes against real rows the
+// drain path that empties `trade_offer`, the escrow guards inside their reducers,
+// the three retired legacy offer reducers, and the trade-time bond reset of the
+// shared swap.
 
 #[cfg(test)]
 use game_core::{
@@ -431,114 +434,6 @@ fn escrowed_item_qty_uses_counterparty_items_when_owner_is_counterparty() {
     );
 }
 
-/// the pure trade-side size predicate, by value.
-///
-/// File-local, pure, and `ReducerContext`-free so it can be tested exactly like this.
-///
-/// The boundary pairs `(64, 0) Ok` / `(65, 0) Err` and `(0, 64) Ok` /
-/// `(0, 65) Err` pin the cap VALUES (an off-by-one in either direction fails).
-/// They do **not**, on their own, pin that the two limits are checked
-/// INDEPENDENTLY:
-/// a single `n_monsters + n_items > 64` sum check passes all four,
-/// then rejects a perfectly legal `(64, 64)` trade. `(64, 64) Ok` is the
-/// assertion that actually kills it, and it is why that case is here.
-///
-/// The three saturation cases (`usize::MAX`, `65_536`) exist because
-/// boundary-only pairs cannot see a TRUNCATING comparison: `if n_monsters as u8 >
-/// MAX_TRADE_MONSTERS_PER_SIDE as u8` passes every small-value assertion while
-/// `n = 256` (and `65_536`, and `usize::MAX`) wrap to values that compare as
-/// under the cap and return `Ok` — leaving the DoS surface wide open at exactly
-/// the magnitudes it was added to bound.
-///
-/// **`(0, 0)` must be `Ok`, and that case is the load-bearing one.** The nearest
-/// in-repo template is `guards::check_party_size`, which
-/// rejects `n == 0` — copy-pasting it here would reject EVERY legal one-sided
-/// trade (offer monsters, ask currency), i.e. break a shipped feature while
-/// "adding a security guard". Emptiness is not this function's concern: it is
-/// `validate_proposal`'s CROSS-SIDE `EmptyOffer` rule
-/// and must not be restated here.
-/// Why 64 and not `MAX_PARTY_SIZE`: `propose_trade` never checks `party_slot`,
-/// and `client/src/ui/tradeProposeModel.ts` offers ALL owned monsters, so
-/// boxed monsters are tradeable today — a cap of 6 would reject legitimate
-/// existing UI flows. These are DoS bounds, not game rules.
-///
-/// Kills: no cap at all (compile error → E0425); a `check_party_size` copy-paste
-/// (`(0,0)` returns Err); an off-by-one on either cap (`(64,·)` or `(·,64)`
-/// rejected, or `(65,·)`/`(·,65)` admitted); a monsters-only cap that leaves the
-/// item vector unbounded (`(0,65)` returns Ok).
-#[test]
-fn e4_trade_side_size_caps_reject_oversized_and_admit_empty() {
-    assert!(
-        super::check_trade_side_size(64, 0).is_ok(),
-        "TEETH (E4-A/D3): check_trade_side_size(64, 0) must be Ok — 64 is \
-         MAX_TRADE_MONSTERS_PER_SIDE and the cap is inclusive. A cap of 6 \
-         (== PARTY_SIZE) was considered and REJECTED: propose_trade never checks \
-         party_slot and the client offers all owned monsters, so boxed monsters are \
-         tradeable today and a 6 cap would reject legitimate existing UI flows with \
-         an opaque server error (ADR-0166 D3)."
-    );
-    assert!(
-        super::check_trade_side_size(65, 0).is_err(),
-        "TEETH (E4-A/D3): check_trade_side_size(65, 0) must be Err — one over \
-         MAX_TRADE_MONSTERS_PER_SIDE. Reject, never truncate: silently clamping a \
-         trade list changes what the player agreed to."
-    );
-    assert!(
-        super::check_trade_side_size(0, 64).is_ok(),
-        "TEETH (E4-A/D3): check_trade_side_size(0, 64) must be Ok — 64 is \
-         MAX_TRADE_ITEMS_PER_SIDE and the cap is inclusive."
-    );
-    assert!(
-        super::check_trade_side_size(0, 65).is_err(),
-        "TEETH (E4-A/D3): check_trade_side_size(0, 65) must be Err. This is the \
-         assertion that kills a monsters-only cap: the per-item inventory scan at \
-         trading.rs:278-329 is O(items x inventory rows), so the ITEM vector is the \
-         more expensive one to leave unbounded."
-    );
-    assert!(
-        super::check_trade_side_size(0, 0).is_ok(),
-        "TEETH (E4-A/D3): check_trade_side_size(0, 0) must be Ok. This is the \
-         load-bearing case. The nearest in-repo template, guards::check_party_size \
-         (guards.rs:105-108), REJECTS n == 0 — copy-pasting it here would break EVERY \
-         legal one-sided trade (offer monsters, ask currency). Emptiness is NOT this \
-         function's concern: it is validate_proposal's cross-side EmptyOffer rule \
-         (game-core/src/trading/rules.rs:53-61) and must not be restated (ADR-0166 D3)."
-    );
-    // H1: the two caps must be INDEPENDENT, not a sum.
-    assert!(
-        super::check_trade_side_size(64, 64).is_ok(),
-        "TEETH (E4-A/D3): check_trade_side_size(64, 64) must be Ok — the monster cap \
-         and the item cap are INDEPENDENT limits, not a shared budget. A single \
-         `n_monsters + n_items > 64` check passes all four boundary pairs above and \
-         is caught only here; it would reject a completely legal trade of 64 \
-         monsters plus 64 items with an opaque server error."
-    );
-    // EV-7: boundary-only pairs cannot see a truncating comparison.
-    assert!(
-        super::check_trade_side_size(65_536, 0).is_err(),
-        "TEETH (E4-A/D3, EV-7): check_trade_side_size(65_536, 0) must be Err. \
-         Boundary pairs alone do not pin the comparison's WIDTH: \
-         `if n_monsters as u8 > MAX_TRADE_MONSTERS_PER_SIDE as u8` passes (64,0) and \
-         (65,0) while 256, 65_536 and usize::MAX all wrap to values that compare as \
-         under the cap — the caps become inert at exactly the magnitudes they exist \
-         to bound. A `u16` cast fails on this value specifically."
-    );
-    assert!(
-        super::check_trade_side_size(usize::MAX, 0).is_err(),
-        "TEETH (E4-A/D3, EV-7): check_trade_side_size(usize::MAX, 0) must be Err. \
-         Any narrowing cast, wrapping arithmetic, or `n % something` comparison in \
-         the monster check dies here. Note this value is not reachable through a \
-         real BSATN payload — it is a pure-function probe of the comparison itself."
-    );
-    assert!(
-        super::check_trade_side_size(0, usize::MAX).is_err(),
-        "TEETH (E4-A/D3, EV-7): check_trade_side_size(0, usize::MAX) must be Err — \
-         the same width probe for the ITEM check, which is the more expensive vector \
-         to leave unbounded (trading.rs:278-329 scans the whole inventory once per \
-         listed item)."
-    );
-}
-
 /// A deliberately NON-ZERO request stamp for every rb-47 fixture.
 ///
 /// At a request stamp of zero the `unwrap_or(0)` mis-spelling of the
@@ -572,15 +467,6 @@ fn rb47_seed_deleting_stranger(
         requested_at_ms,
     ));
     stranger
-}
-
-/// Register the `u64`-keyed offer table for one fixture (rb-47 widened the host
-/// with `table_keyed` precisely so a reducer whose first statement is a point
-/// read on an auto-inc primary key can be executed at all).
-fn rb47_offer_table(
-    fx: &crate::native_host_tests::Fixture,
-) -> crate::native_host_tests::Handle<'_, crate::schema::TradeOffer, u64> {
-    fx.table_keyed("trade_offer", "trade_id", |r| r.trade_id)
 }
 
 /// One `trade_offer` row whose initiator is a third party. The struct literal is
@@ -1026,132 +912,6 @@ fn rb47_guards_wrapper_refuses_only_offers_created_after_the_request() {
     }
 }
 
-/// the shipped `respond_trade` refuses an accepting response to an offer created
-/// at or after the caller's deletion request.
-///
-/// The shipped reducer is EXECUTED over a `u64`-keyed `trade_offer` table.
-///
-/// ONE-SIDED BY CONSTRUCTION, and this is the honest limit: every write syscall
-/// ABORTS the process uncatchably, so the ADMITTED direction — the predating
-/// offer that must stay completable — cannot be asserted here at all. It reaches
-/// the status update and takes the process down. That half of the criterion is
-/// owned by `rb47_guards_wrapper_refuses_only_offers_created_after_the_request`
-/// (which executes the same verdict one call below the reducer).
-/// For the same reason there is no declining case here: a decline deletes a row.
-///
-/// THE THREE CONTROLS ARE NOT DECORATION. The caller is mid-grace in every one
-/// of them, so each proves the gate did NOT run: an ordinary status error, an
-/// ordinary role error and an ordinary not-found error would all be replaced by
-/// the deletion reject if the gate were hoisted above the authorization. They
-/// also prove the `u64`-keyed fixture actually resolves rows, without which the
-/// tooth below would pass vacuously on a not-found error.
-///
-/// RED AT HEAD BY PROCESS ABORT: with no gate, case (d) advances the offer and
-/// the unmodelled update syscall aborts (nextest reports a signal, not a failed
-/// assertion, and a should-panic attribute cannot catch it). Case (d) is
-/// therefore LAST — every control has already reported by then.
-#[test]
-fn rb47_respond_trade_refuses_a_post_request_accept() {
-    let fx = crate::native_host_tests::fixture();
-    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
-    let offers = rb47_offer_table(&fx);
-    let ctx = fx.ctx();
-    let me = ctx.sender();
-    let req = RB47_REQUESTED_AT_MS;
-    let stranger = rb47_seed_deleting_stranger(&acct, req + 7_000);
-
-    // The caller is mid-grace for the WHOLE test: the controls below are what
-    // prove the gate does not fire before the authorization it must follow. The
-    // issuer and creation stamp are non-default and differ from the stranger's,
-    // so a decision keyed on either column is observable here.
-    acct.seed(&crate::accounts::requested_deletion(
-        crate::accounts::new_account_row(me, "rb47-caller".to_string(), 42_000),
-        req,
-    ));
-
-    offers.seed(&rb47_offer(
-        1,
-        me,
-        TradeStatus::ConfirmedByCounterparty,
-        req,
-    ));
-    offers.seed(&rb47_offer(2, stranger, TradeStatus::Pending, req));
-    offers.seed(&rb47_offer(3, me, TradeStatus::Pending, req));
-    offers.seed(&rb47_offer(4, me, TradeStatus::Pending, req + 1));
-
-    // --- Control (a): the row is found, but its status is not Pending -------
-    let want: Result<(), String> = Err("trade offer is not in Pending state".to_string());
-    let got = crate::trading::respond_trade(&ctx, 1, true);
-    assert_eq!(
-        got,
-        want,
-        "rb-47 E1 FAIL (control, wrong status): the reducer returned {got:?} for a mid-grace \
-         caller responding to an offer that is no longer Pending; the pure authorization owns \
-         that answer, and the offer-age gate must run BELOW it (ADR-0117, role and status \
-         first). The deletion reject here means the gate was hoisted above the authorization, \
-         which leaks account-lifecycle state into a message that should be about the offer. \
-         This case also proves the u64-keyed fixture RESOLVES rows — without that, the tooth \
-         below would pass on a not-found error and prove nothing. Indexes the generated code \
-         asked this host about: {:?}",
-        fx.requested_indexes()
-    );
-
-    // --- Control (b): the caller is not this offer's counterparty -----------
-    let want: Result<(), String> =
-        Err("only the trade counterparty can perform this action".to_string());
-    let got = crate::trading::respond_trade(&ctx, 2, true);
-    assert_eq!(
-        got, want,
-        "rb-47 E1 FAIL (control, wrong role): the reducer returned {got:?} for a mid-grace \
-         caller responding to somebody else's offer. Role is checked FIRST and no status or \
-         lifecycle state may leak to a non-party (ADR-0117). The deletion reject here means \
-         the gate runs above the role check — and it would then tell any caller, about any \
-         offer, that THEY are mid-grace before establishing they are a party at all."
-    );
-
-    // --- Control (c): no such offer -----------------------------------------
-    let want: Result<(), String> = Err("trade offer not found".to_string());
-    let got = crate::trading::respond_trade(&ctx, 99, true);
-    assert_eq!(
-        got, want,
-        "rb-47 E1 FAIL (control, unknown offer): the reducer returned {got:?} for an offer id \
-         that was never seeded. The lookup owns this answer; the gate needs an OFFER's \
-         creation stamp and therefore cannot run before the offer is in hand. A deletion \
-         reject here means the gate was hoisted to the top of the reducer, where it has no \
-         stamp to judge and must be reading something else."
-    );
-
-    // --- (d) THE TOOTH: a Pending offer created AT or AFTER the request -----
-    // Runs LAST: at HEAD these two calls reach the status write and the native
-    // host aborts the process on the unmodelled write syscall. That abort IS the
-    // red state for this test.
-    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
-    let got = crate::trading::respond_trade(&ctx, 3, true);
-    assert_eq!(
-        got, gated,
-        "rb-47 E1 FAIL (the criterion, equal stamp): the reducer returned {got:?} for a \
-         mid-grace caller ACCEPTING an offer stamped in the very millisecond of their own \
-         deletion request. ADR-0237 D1's boundary is inclusive: an offer created in that \
-         millisecond does not PREDATE the request, and the attack this closes is `request \
-         deletion, then have a confederate propose immediately`. The expected reason is \
-         compared against the CONSTANT, never a re-typed literal, so a reworded reason cannot \
-         drift into text no client ever receives. \
-         RED AT HEAD BY ABORT, not by assertion: with no gate this call reaches the status \
-         write and the native host takes the process down on the unmodelled write syscall."
-    );
-    let got = crate::trading::respond_trade(&ctx, 4, true);
-    assert_eq!(
-        got, gated,
-        "rb-47 E1 FAIL (the criterion, later stamp): the reducer returned {got:?} for a \
-         mid-grace caller accepting an offer created one millisecond AFTER their deletion \
-         request. This is the literal EARS shape — an offer created AFTER the request — and \
-         an implementation that reds only the equal-stamp case above while passing this one \
-         is not reachable without inverting the comparison, which the pure truth table also \
-         owns. Admitting it lets a deleting account escrow a counterparty into a swap the \
-         cascade is about to unwind."
-    );
-}
-
 /// `open_offers_addressed_to` reads the COUNTERPARTY column of `trade_offer` and
 /// nothing else, and projects exactly `(trade_id, created_at_ms)`.
 ///
@@ -1161,8 +921,8 @@ fn rb47_respond_trade_refuses_a_post_request_accept() {
 ///     row-keyed rather than table-keyed: a helper that returns every active
 ///     offer in the table (or that filters on the wrong value) returns it too.
 ///   * id 5 names the CALLER as INITIATOR and the stranger as counterparty. This
-///     is the whole of ADR-0252 D4 executed: `propose_trade` is blanket-gated for
-///     a deletion-gated caller, so every initiator-side offer of theirs PREDATES
+///     is the whole of ADR-0252 D4 executed: no reducer opens an offer for a
+///     deletion-gated caller, so every initiator-side offer of theirs PREDATES
 ///     the request and is exactly the in-flight commitment PRV1-10 protects.
 ///     Sweeping that column would be a real spec break, and a
 ///     `.initiator()`-keyed or both-column helper (M7) returns this row.
@@ -1288,8 +1048,7 @@ fn rb83_open_offers_addressed_to_reads_only_the_counterparty_column() {
 // Every reducer here runs through `Fixture::run_as(_at)` with a real sender,
 // against the tables it reads through their real indexes. HOST LIMIT: there is
 // no transaction rollback, so every rejection is asserted as refusal BEFORE any
-// write (the whole store byte-identical); a mid-apply failure (a broke sender at
-// `spend_currency`) relies on rollback and stays with the two-identity trade e2e.
+// write (the whole store byte-identical).
 // ===========================================================================
 
 use crate::native_host_tests::{fixture, Fixture, Handle};
@@ -1297,7 +1056,6 @@ use crate::schema::{
     Account, Battle, Inventory, ItemRow, Monster, MonsterPub, Player, PlayerWallet, TradeOffer,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Timestamp};
-use std::collections::BTreeMap;
 
 const NH_T0: i64 = 1_750_000_000_000;
 const NH_ESCROW_MONSTER: &str = "monster is in an active trade";
@@ -1583,67 +1341,9 @@ impl NhWorld<'_> {
             .map(|r| r.balance)
             .sum()
     }
-    fn owner_of(&self, monster_id: u64) -> (Identity, Identity) {
-        let m = self
-            .monsters
-            .rows()
-            .into_iter()
-            .find(|m| m.monster_id == monster_id);
-        let p = self
-            .pubs
-            .rows()
-            .into_iter()
-            .find(|m| m.monster_id == monster_id);
-        (
-            m.expect("monster row").owner_identity,
-            p.expect("monster_pub row").owner_identity,
-        )
-    }
-    /// (per-item totals, currency total, monster ids) summed over `parties`.
-    fn totals(&self, parties: &[Identity]) -> (BTreeMap<u32, u64>, u64, Vec<u64>) {
-        let mut items = BTreeMap::new();
-        for s in self.stacks.rows() {
-            if parties.contains(&s.owner_identity) {
-                *items.entry(s.item_id).or_insert(0) += u64::from(s.count);
-            }
-        }
-        let currency = parties.iter().map(|p| self.balance(*p)).sum();
-        let mut mons: Vec<u64> = self
-            .monsters
-            .rows()
-            .iter()
-            .filter(|m| parties.contains(&m.owner_identity))
-            .map(|m| m.monster_id)
-            .collect();
-        mons.sort_unstable();
-        (items, currency, mons)
-    }
 }
 
 const TRADE_OFFER_TTL: i64 = game_core::TRADE_OFFER_TTL_MS;
-
-#[allow(clippy::too_many_arguments)]
-fn nh_propose(
-    ctx: &ReducerContext,
-    to: Identity,
-    my_mons: Vec<u64>,
-    my_items: Vec<TradeItem>,
-    my_cur: u64,
-    their_mons: Vec<u64>,
-    their_items: Vec<TradeItem>,
-    their_cur: u64,
-) -> Result<(), String> {
-    super::propose_trade(
-        ctx,
-        to,
-        my_mons,
-        my_items,
-        my_cur,
-        their_mons,
-        their_items,
-        their_cur,
-    )
-}
 
 /// Opens every table a guarded reducer WRITES (or scans) just past its escrow guard, so a
 /// control call (asset not escrowed) can run to completion instead of hitting the
@@ -1696,839 +1396,6 @@ fn nh_past_guard(label: &str, refusal: &str, got: Result<(), String>) -> Result<
          not keyed on the escrowed asset"
     );
     got
-}
-
-/// a valid proposal inserts exactly one Pending offer stamped with the transaction clock,
-/// carrying display cards built from the LIVE rows (no genes — `MonsterCard` has no such
-/// fields), arms exactly one reaper at created + TTL, and moves no asset (escrow is
-/// guard-in-place).
-/// kills: propose_trade -> Ok(()), schedule_trade_reaper -> (), build_cards -> Ok(vec![]).
-#[test]
-fn nh_trade_propose_inserts_offer_with_live_cards_and_arms_reaper() {
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.join(nh_a(), true);
-    w.join(nh_b(), true);
-    w.monster(11, nh_a(), 0);
-    w.monster(21, nh_b(), 1);
-    w.stack(nh_a(), 5, 10);
-    w.stack(nh_b(), 6, 4);
-    w.wallet(nh_a(), 500);
-    w.wallet(nh_b(), 300);
-    let assets_before = w.snapshot()[2..].to_vec();
-
-    let got = fx.run_as_at(nh_a(), nh_at(NH_T0), |ctx| {
-        nh_propose(
-            ctx,
-            nh_b(),
-            vec![11],
-            vec![nh_item(5, 3)],
-            100,
-            vec![21],
-            vec![nh_item(6, 2)],
-            50,
-        )
-    });
-    assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
-
-    let offers = w.offers.rows();
-    assert_eq!(offers.len(), 1, "exactly one offer row");
-    let o = &offers[0];
-    let card = |id: u64| make_monster_card(id, 1, format!("m{id}"), 7, 33, 40);
-    assert_eq!(
-        (
-            o.initiator,
-            o.counterparty,
-            o.status.clone(),
-            o.created_at_ms
-        ),
-        (nh_a(), nh_b(), TradeStatus::Pending, NH_T0)
-    );
-    assert_eq!(
-        (
-            o.initiator_monster_ids.clone(),
-            o.counterparty_monster_ids.clone()
-        ),
-        (vec![11], vec![21])
-    );
-    assert_eq!(
-        (o.initiator_items.clone(), o.counterparty_items.clone()),
-        (vec![nh_item(5, 3)], vec![nh_item(6, 2)])
-    );
-    assert_eq!((o.initiator_currency, o.counterparty_currency), (100, 50));
-    assert_eq!(
-        (o.initiator_cards.clone(), o.counterparty_cards.clone()),
-        (vec![card(11)], vec![card(21)]),
-        "cards are built from each side's live monster rows"
-    );
-    let reapers = w.reapers.rows();
-    assert_eq!(reapers.len(), 1, "exactly one reaper row armed");
-    assert_eq!(reapers[0].trade_id, o.trade_id);
-    assert_eq!(
-        reapers[0].scheduled_at,
-        ScheduleAt::Time(nh_at(NH_T0 + TRADE_OFFER_TTL)),
-        "the reaper fires at created_at + TTL"
-    );
-    assert_eq!(
-        w.snapshot()[2..].to_vec(),
-        assets_before,
-        "proposing moves no asset"
-    );
-}
-
-/// Counterparty validation + self-trade + foreign monsters: each refused with no row.
-/// kills: == -> != on the self-trade flag (with the success test above), build_cards != -> ==.
-#[test]
-fn nh_trade_propose_refuses_unjoined_phantom_self_and_foreign_monsters() {
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.join(nh_a(), true);
-    w.join(nh_b(), true);
-    w.monster(11, nh_a(), 0);
-    w.monster(21, nh_b(), 0);
-    let before = w.snapshot();
-    type Case = (
-        &'static str,
-        Identity,
-        Identity,
-        Vec<u64>,
-        Vec<u64>,
-        &'static str,
-    );
-    let cases: Vec<Case> = vec![
-        (
-            "unjoined caller",
-            nh_c(),
-            nh_a(),
-            vec![],
-            vec![11],
-            "not joined",
-        ),
-        (
-            "phantom counterparty",
-            nh_a(),
-            nh_c(),
-            vec![11],
-            vec![],
-            "counterparty is not a joined player",
-        ),
-        (
-            "self trade",
-            nh_a(),
-            nh_a(),
-            vec![11],
-            vec![],
-            "cannot trade with yourself",
-        ),
-        (
-            "offers counterparty's monster",
-            nh_a(),
-            nh_b(),
-            vec![21],
-            vec![],
-            "monster 21 not owned by caller",
-        ),
-        (
-            "asks for its own monster",
-            nh_a(),
-            nh_b(),
-            vec![],
-            vec![11],
-            "monster 11 not owned by caller",
-        ),
-        (
-            "missing monster",
-            nh_a(),
-            nh_b(),
-            vec![77],
-            vec![],
-            "monster 77 not found",
-        ),
-    ];
-    for (label, caller, to, mine, theirs, want) in cases {
-        let got = fx.run_as(caller, |ctx| {
-            nh_propose(ctx, to, mine, vec![], 0, theirs, vec![], 0)
-        });
-        assert_eq!(got, Err(want.to_string()), "{label}");
-        assert_eq!(
-            w.snapshot(),
-            before,
-            "{label}: a refused proposal writes nothing"
-        );
-    }
-}
-
-/// Escrow headroom at propose: listed currency/items are bounded by holdings on BOTH
-/// sides — one over refuses, exactly-at succeeds; an item the party does not hold at
-/// all refuses even when it holds a different stack.
-/// kills: every > -> ==/</>= at the four balance/inventory comparisons, the > 0 -> ==/<
-/// currency pre-checks, and == -> != in both inventory lookups.
-#[test]
-fn nh_trade_propose_bounds_listed_assets_by_holdings() {
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.join(nh_a(), true);
-    w.join(nh_b(), true);
-    w.wallet(nh_a(), 100);
-    w.wallet(nh_b(), 60);
-    w.stack(nh_a(), 5, 10);
-    w.stack(nh_b(), 6, 4);
-    let before = w.snapshot();
-    type Case = (
-        &'static str,
-        Vec<TradeItem>,
-        u64,
-        Vec<TradeItem>,
-        u64,
-        String,
-    );
-    let cases: Vec<Case> = vec![
-        (
-            "initiator currency +1",
-            vec![],
-            101,
-            vec![],
-            0,
-            "insufficient currency for trade offer".into(),
-        ),
-        (
-            "counterparty currency +1",
-            vec![],
-            0,
-            vec![],
-            61,
-            "counterparty has insufficient currency for this trade".into(),
-        ),
-        (
-            "initiator item +1",
-            vec![nh_item(5, 11)],
-            0,
-            vec![],
-            0,
-            "insufficient inventory for item 5".into(),
-        ),
-        (
-            "counterparty item +1",
-            vec![],
-            0,
-            vec![nh_item(6, 5)],
-            0,
-            "counterparty has insufficient inventory for item 6".into(),
-        ),
-        (
-            "initiator item never held",
-            vec![nh_item(7, 1)],
-            0,
-            vec![],
-            0,
-            "insufficient inventory for item 7".into(),
-        ),
-        (
-            "counterparty item never held",
-            vec![],
-            0,
-            vec![nh_item(8, 1)],
-            0,
-            "counterparty has insufficient inventory for item 8".into(),
-        ),
-    ];
-    for (label, mine, my_cur, theirs, their_cur, want) in cases {
-        let got = fx.run_as(nh_a(), |ctx| {
-            nh_propose(ctx, nh_b(), vec![], mine, my_cur, vec![], theirs, their_cur)
-        });
-        assert_eq!(got, Err(want), "{label}");
-        assert_eq!(w.snapshot(), before, "{label}: nothing written");
-    }
-    let got = fx.run_as(nh_a(), |ctx| {
-        nh_propose(
-            ctx,
-            nh_b(),
-            vec![],
-            vec![nh_item(5, 10)],
-            100,
-            vec![],
-            vec![nh_item(6, 4)],
-            60,
-        )
-    });
-    assert_eq!(
-        got,
-        Ok(()),
-        "listing exactly everything both sides hold is legal"
-    );
-    assert_eq!(w.offer_ids().len(), 1);
-}
-
-/// ST-trading_tests#conservation: a monster in an ONGOING battle cannot be offered,
-/// found through either battle index (PvE/PvP side A as player, PvP side B as
-/// opponent) and on either side of the trade; a FINISHED battle does not block.
-#[test]
-fn nh_trade_propose_refuses_monsters_in_an_ongoing_battle() {
-    use game_core::BattleOutcome::{Ongoing, SideAWins};
-    let cases: Vec<(&str, Battle)> = vec![
-        (
-            "initiator as player",
-            Battle {
-                party_monster_ids: vec![11],
-                ..nh_battle(nh_a(), crate::WILD_IDENTITY, Ongoing)
-            },
-        ),
-        (
-            "initiator as PvP side B",
-            Battle {
-                opponent_monster_ids: vec![11],
-                ..nh_battle(nh_c(), nh_a(), Ongoing)
-            },
-        ),
-        (
-            "counterparty as player",
-            Battle {
-                party_monster_ids: vec![21],
-                ..nh_battle(nh_b(), crate::WILD_IDENTITY, Ongoing)
-            },
-        ),
-        (
-            "counterparty as PvP side B",
-            Battle {
-                opponent_monster_ids: vec![21],
-                ..nh_battle(nh_c(), nh_b(), Ongoing)
-            },
-        ),
-    ];
-    for (label, battle) in cases {
-        let fx = fixture();
-        let w = nh_world(&fx, true);
-        w.join(nh_a(), true);
-        w.join(nh_b(), true);
-        w.monster(11, nh_a(), 0);
-        w.monster(21, nh_b(), 0);
-        w.battles.seed(&battle);
-        let before = w.snapshot();
-        let got = fx.run_as(nh_a(), |ctx| {
-            nh_propose(ctx, nh_b(), vec![11], vec![], 0, vec![21], vec![], 0)
-        });
-        assert_eq!(
-            got,
-            Err("monster is in an ongoing battle".to_string()),
-            "{label}"
-        );
-        assert_eq!(w.snapshot(), before, "{label}: nothing written");
-    }
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.join(nh_a(), true);
-    w.join(nh_b(), true);
-    w.monster(11, nh_a(), 0);
-    w.monster(21, nh_b(), 0);
-    w.battles.seed(&Battle {
-        party_monster_ids: vec![11],
-        ..nh_battle(nh_a(), crate::WILD_IDENTITY, SideAWins)
-    });
-    let got = fx.run_as(nh_a(), |ctx| {
-        nh_propose(ctx, nh_b(), vec![11], vec![], 0, vec![21], vec![], 0)
-    });
-    assert_eq!(got, Ok(()), "a finished battle does not block the trade");
-}
-
-/// TR-20 one-active-offer rule (an active offer in EITHER column blocks EITHER party)
-/// and the ADR-0227 deletion gate on OPENING a trade, keyed on the caller only.
-/// kills: has_active_trade -> false, || -> && in has_active_trade.
-#[test]
-fn nh_trade_propose_refuses_busy_parties_and_a_deletion_gated_caller() {
-    let busy: Vec<(&str, TradeOffer)> = vec![
-        (
-            "caller already initiates",
-            nh_offer(100, nh_a(), nh_c(), TradeStatus::Pending),
-        ),
-        (
-            "caller already addressed",
-            nh_offer(100, nh_c(), nh_a(), TradeStatus::ConfirmedByCounterparty),
-        ),
-        (
-            "counterparty already initiates",
-            nh_offer(100, nh_b(), nh_c(), TradeStatus::Pending),
-        ),
-        (
-            "counterparty already addressed",
-            nh_offer(100, nh_c(), nh_b(), TradeStatus::Pending),
-        ),
-    ];
-    for (label, offer) in busy {
-        let fx = fixture();
-        let w = nh_world(&fx, true);
-        w.join(nh_a(), true);
-        w.join(nh_b(), true);
-        w.wallet(nh_a(), 10);
-        w.offers.seed(&offer);
-        let before = w.snapshot();
-        let got = fx.run_as(nh_a(), |ctx| {
-            nh_propose(ctx, nh_b(), vec![], vec![], 5, vec![], vec![], 0)
-        });
-        assert_eq!(got, Err(TradeError::AlreadyInTrade.to_string()), "{label}");
-        assert_eq!(w.snapshot(), before, "{label}: nothing written");
-    }
-
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.join(nh_a(), true);
-    w.join(nh_b(), true);
-    w.wallet(nh_a(), 10);
-    // A deleting STRANGER must not gate the caller (caller-keyed, not table-keyed).
-    rb47_seed_deleting_stranger(&w.accounts, RB47_REQUESTED_AT_MS);
-    w.accounts.seed(&crate::accounts::requested_deletion(
-        crate::accounts::new_account_row(nh_a(), "nh-issuer".to_string(), 1),
-        NH_T0 - 1,
-    ));
-    let before = w.snapshot();
-    let got = fx.run_as_at(nh_a(), nh_at(NH_T0), |ctx| {
-        nh_propose(ctx, nh_b(), vec![], vec![], 5, vec![], vec![], 0)
-    });
-    assert_eq!(got, Err(crate::guards::REJECT_DELETION_GATED.to_string()));
-    assert_eq!(
-        w.snapshot(),
-        before,
-        "a deletion-gated caller opens nothing"
-    );
-    assert_eq!(w.accounts.remove(nh_a()), 1);
-    let got = fx.run_as_at(nh_a(), nh_at(NH_T0), |ctx| {
-        nh_propose(ctx, nh_b(), vec![], vec![], 5, vec![], vec![], 0)
-    });
-    assert_eq!(got, Ok(()), "only the stranger is deleting now");
-}
-
-/// respond_trade: only the counterparty may answer, only a Pending offer; a decline
-/// deletes THAT offer and disarms THAT reaper; an accept advances the status in place.
-/// kills: respond_trade -> Ok(()), == -> != on the role check, delete ! on `accepted`.
-#[test]
-fn nh_trade_respond_is_counterparty_only_decline_deletes_accept_advances() {
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.offers
-        .seed(&nh_offer(100, nh_a(), nh_b(), TradeStatus::Pending));
-    w.offers
-        .seed(&nh_offer(101, nh_a(), nh_b(), TradeStatus::Pending));
-    w.reaper(500, 100);
-    w.reaper(501, 101);
-    let before = w.snapshot();
-    for (label, who) in [("stranger", nh_c()), ("initiator", nh_a())] {
-        for accepted in [true, false] {
-            let got = fx.run_as(who, |ctx| super::respond_trade(ctx, 100, accepted));
-            assert!(
-                got.is_err(),
-                "{label} (accepted={accepted}) must be refused"
-            );
-            assert_eq!(w.snapshot(), before, "{label}: nothing written");
-        }
-    }
-    assert_eq!(
-        fx.run_as(nh_b(), |ctx| super::respond_trade(ctx, 999, true)),
-        Err("trade offer not found".to_string())
-    );
-
-    assert_eq!(
-        fx.run_as(nh_b(), |ctx| super::respond_trade(ctx, 100, true)),
-        Ok(())
-    );
-    let status_of = |id: u64| {
-        w.offers
-            .rows()
-            .into_iter()
-            .find(|o| o.trade_id == id)
-            .map(|o| o.status)
-    };
-    assert_eq!(status_of(100), Some(TradeStatus::ConfirmedByCounterparty));
-    assert_eq!(
-        w.reaper_trade_ids(),
-        vec![100, 101],
-        "an accept keeps the reaper armed"
-    );
-    let again = fx.run_as(nh_b(), |ctx| super::respond_trade(ctx, 100, true));
-    assert!(
-        again.is_err(),
-        "a non-Pending offer cannot be answered again"
-    );
-
-    assert_eq!(
-        fx.run_as(nh_b(), |ctx| super::respond_trade(ctx, 101, false)),
-        Ok(())
-    );
-    assert_eq!(
-        w.offer_ids(),
-        vec![100],
-        "the decline deletes exactly offer 101"
-    );
-    assert_eq!(
-        w.reaper_trade_ids(),
-        vec![100],
-        "and disarms exactly its reaper"
-    );
-}
-
-/// confirm_trade authorization: only the initiator, only after the counterparty
-/// accepted. kills: == -> != on the initiator role check.
-#[test]
-fn nh_trade_confirm_is_initiator_only_after_acceptance() {
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.monster(11, nh_a(), 0);
-    w.offers.seed(&TradeOffer {
-        initiator_monster_ids: vec![11],
-        ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
-    });
-    w.offers.seed(&TradeOffer {
-        initiator_monster_ids: vec![11],
-        ..nh_offer(101, nh_a(), nh_c(), TradeStatus::Pending)
-    });
-    let before = w.snapshot();
-    for (label, who, id) in [
-        ("stranger", nh_c(), 100),
-        ("counterparty", nh_b(), 100),
-        ("initiator on Pending", nh_a(), 101),
-    ] {
-        let got = fx.run_as(who, |ctx| super::confirm_trade(ctx, id));
-        assert!(got.is_err(), "{label} must be refused");
-        assert_eq!(w.snapshot(), before, "{label}: nothing written");
-    }
-    assert_eq!(
-        fx.run_as(nh_a(), |ctx| super::confirm_trade(ctx, 100)),
-        Ok(())
-    );
-    assert_eq!(w.owner_of(11), (nh_b(), nh_b()));
-}
-
-/// EV-trade-conservation: the SUCCESS path is a conserving swap. Across both parties
-/// the multiset of monsters, the per-item totals and the currency total are identical
-/// before and after; each asset lands on the other side; monster and monster_pub agree
-/// on the new owner and are unslotted; genes and tier are untouched; a fully-traded
-/// stack disappears; the offer and ONLY its reaper row are gone; a bystander is untouched.
-/// kills: confirm_trade -> Ok(()), == -> != on either live-owner check or on the
-/// transfer direction, disarm_trade_reaper -> ().
-#[test]
-fn nh_trade_confirm_swaps_every_asset_and_conserves_every_total() {
-    let fx = fixture();
-    let w = nh_world(&fx, true);
-    w.monster(11, nh_a(), 0);
-    w.monster(12, nh_a(), 2);
-    w.monster(21, nh_b(), 1);
-    w.monster(31, nh_c(), 0);
-    w.stack(nh_a(), 5, 10);
-    w.stack(nh_a(), 6, 3);
-    w.stack(nh_b(), 5, 7);
-    w.stack(nh_b(), 8, 2);
-    w.stack(nh_c(), 5, 1);
-    w.wallet(nh_a(), 500);
-    w.wallet(nh_b(), 300);
-    w.wallet(nh_c(), 1000);
-    w.offers.seed(&TradeOffer {
-        initiator_monster_ids: vec![11, 12],
-        initiator_items: vec![nh_item(5, 4), nh_item(6, 3)],
-        initiator_currency: 120,
-        counterparty_monster_ids: vec![21],
-        counterparty_items: vec![nh_item(5, 2), nh_item(8, 2)],
-        counterparty_currency: 45,
-        ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
-    });
-    w.offers
-        .seed(&nh_offer(101, nh_c(), nh_c(), TradeStatus::Pending));
-    w.reaper(500, 100);
-    w.reaper(501, 101);
-    let totals_before = w.totals(&[nh_a(), nh_b()]);
-    let genes_before: Vec<Monster> = w.monsters.rows();
-    let tiers_before: Vec<(u64, u8)> = w
-        .pubs
-        .rows()
-        .iter()
-        .map(|p| (p.monster_id, p.tier))
-        .collect();
-
-    let got = fx.run_as(nh_a(), |ctx| super::confirm_trade(ctx, 100));
-    assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
-
-    assert_eq!(
-        w.totals(&[nh_a(), nh_b()]),
-        totals_before,
-        "nothing created or destroyed"
-    );
-    for (id, owner) in [(11, nh_b()), (12, nh_b()), (21, nh_a()), (31, nh_c())] {
-        assert_eq!(
-            w.owner_of(id),
-            (owner, owner),
-            "monster {id}: private row and projection agree"
-        );
-    }
-    for m in w.monsters.rows() {
-        let old = genes_before
-            .iter()
-            .find(|o| o.monster_id == m.monster_id)
-            .unwrap();
-        let moved = m.monster_id != 31;
-        let expect = Monster {
-            owner_identity: m.owner_identity,
-            party_slot: if moved {
-                crate::PARTY_SLOT_NONE
-            } else {
-                old.party_slot
-            },
-            ..nh_monster(m.monster_id, old.owner_identity, old.party_slot)
-        };
-        assert_eq!(
-            spacetimedb::sats::bsatn::to_vec(&m).unwrap(),
-            spacetimedb::sats::bsatn::to_vec(&expect).unwrap(),
-            "monster {}: only owner + slot may change",
-            m.monster_id
-        );
-    }
-    for p in w.pubs.rows() {
-        let moved = p.monster_id != 31;
-        if moved {
-            assert_eq!(
-                p.party_slot,
-                crate::PARTY_SLOT_NONE,
-                "pub {} unslotted",
-                p.monster_id
-            );
-        }
-        assert!(
-            tiers_before.contains(&(p.monster_id, p.tier)),
-            "pub {} keeps its tier",
-            p.monster_id
-        );
-    }
-    assert_eq!(
-        [
-            (5, w.count(nh_a(), 5)),
-            (6, w.count(nh_a(), 6)),
-            (8, w.count(nh_a(), 8))
-        ],
-        [(5, 8), (6, 0), (8, 2)],
-        "initiator: 10-4+2 of item 5, all of 6 given, 2 of 8 received"
-    );
-    assert_eq!(
-        [
-            (5, w.count(nh_b(), 5)),
-            (6, w.count(nh_b(), 6)),
-            (8, w.count(nh_b(), 8))
-        ],
-        [(5, 9), (6, 3), (8, 0)]
-    );
-    assert!(
-        !w.stacks.rows().iter().any(|s| s.count == 0),
-        "a fully traded stack is deleted, not left at zero"
-    );
-    // EV-inventory-single-stack: B's received item 5 merges into B's existing stack
-    // and A's received item 8 opens one — never a second row for the same pair.
-    let mut pairs: Vec<_> = w
-        .stacks
-        .rows()
-        .iter()
-        .map(|s| (s.owner_identity, s.item_id))
-        .collect();
-    let total = pairs.len();
-    pairs.sort_unstable();
-    pairs.dedup();
-    assert_eq!(
-        pairs.len(),
-        total,
-        "one inventory row per (owner, item) after the swap"
-    );
-    assert_eq!((w.balance(nh_a()), w.balance(nh_b())), (425, 375));
-    assert_eq!(
-        (w.count(nh_c(), 5), w.balance(nh_c())),
-        (1, 1000),
-        "bystander untouched"
-    );
-    assert_eq!(w.offer_ids(), vec![101], "the confirmed offer is deleted");
-    assert_eq!(
-        w.reaper_trade_ids(),
-        vec![101],
-        "and exactly its reaper is disarmed"
-    );
-}
-
-/// TR-15 live re-read: confirm refuses, before any write, when an offered monster
-/// changed hands or vanished after acceptance, or entered an ongoing battle (either
-/// index). kills: == -> != on either live-owner check (as the refusal half).
-#[test]
-fn nh_trade_confirm_refuses_stale_ownership_and_battles_before_writing() {
-    use game_core::BattleOutcome::Ongoing;
-    type Tweak = fn(&NhWorld<'_>);
-    let cases: Vec<(&str, Tweak, &str)> = vec![
-        (
-            "initiator's monster moved",
-            |w| {
-                w.monsters.remove(11);
-                w.monsters.seed(&nh_monster(11, nh_c(), 0));
-            },
-            "ownership",
-        ),
-        (
-            "counterparty's monster moved",
-            |w| {
-                w.monsters.remove(21);
-                w.monsters.seed(&nh_monster(21, nh_c(), 0));
-            },
-            "ownership",
-        ),
-        (
-            "initiator's monster gone",
-            |w| {
-                w.monsters.remove(11);
-            },
-            "monster 11 not found during swap",
-        ),
-        (
-            "counterparty's monster in battle as side B",
-            |w| {
-                w.battles.seed(&Battle {
-                    opponent_monster_ids: vec![21],
-                    ..nh_battle(nh_c(), nh_b(), Ongoing)
-                })
-            },
-            "monster is in an ongoing battle",
-        ),
-        (
-            "initiator's monster in battle",
-            |w| {
-                w.battles.seed(&Battle {
-                    party_monster_ids: vec![11],
-                    ..nh_battle(nh_a(), crate::WILD_IDENTITY, Ongoing)
-                })
-            },
-            "monster is in an ongoing battle",
-        ),
-    ];
-    for (label, tweak, want) in cases {
-        let fx = fixture();
-        let w = nh_world(&fx, true);
-        w.monster(11, nh_a(), 0);
-        w.monster(21, nh_b(), 0);
-        w.offers.seed(&TradeOffer {
-            initiator_monster_ids: vec![11],
-            counterparty_monster_ids: vec![21],
-            ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
-        });
-        tweak(&w);
-        let before = w.snapshot();
-        let got = fx.run_as(nh_a(), |ctx| super::confirm_trade(ctx, 100));
-        let err = got.expect_err(label);
-        if want == "ownership" {
-            assert_eq!(err, TradeError::OwnershipChanged.to_string(), "{label}");
-        } else {
-            assert_eq!(err, want, "{label}");
-        }
-        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
-    }
-}
-
-/// ADR-0113 reject-not-clamp headroom, netted per ADR-0123: a credit that would push a
-/// receiver's stack past MAX_ITEM_STACK (or balance past MAX_BALANCE) refuses with the
-/// store untouched, on BOTH sides; a same-item swap whose NET lands under the cap
-/// succeeds exactly. The decoy stack of item 9 is what makes a wrong-row lookup visible.
-/// kills: == -> != in all four headroom lookups (raw count + sending qty, both sides).
-#[test]
-fn nh_trade_confirm_headroom_rejects_overflow_and_admits_a_netted_swap() {
-    use game_core::currency::MAX_BALANCE;
-    use game_core::MAX_ITEM_STACK;
-    struct Case {
-        label: &'static str,
-        a: Vec<(u32, u32)>,
-        b: Vec<(u32, u32)>,
-        wallets: (u64, u64),
-        a_gives: (Vec<TradeItem>, u64),
-        b_gives: (Vec<TradeItem>, u64),
-        want: Result<(), String>,
-    }
-    let cap = MAX_ITEM_STACK;
-    let cases = vec![
-        Case {
-            label: "initiator receives past the cap",
-            a: vec![(5, cap - 4), (9, 1)],
-            b: vec![(5, 5)],
-            wallets: (0, 0),
-            a_gives: (vec![], 0),
-            b_gives: (vec![nh_item(5, 5)], 0),
-            want: Err(TradeError::ItemStackCapExceeded { item_id: 5 }.to_string()),
-        },
-        Case {
-            label: "counterparty receives past the cap",
-            a: vec![(5, 5)],
-            b: vec![(5, cap - 4), (9, 1)],
-            wallets: (0, 0),
-            a_gives: (vec![nh_item(5, 5)], 0),
-            b_gives: (vec![], 0),
-            want: Err(TradeError::ItemStackCapExceeded { item_id: 5 }.to_string()),
-        },
-        Case {
-            label: "counterparty balance past MAX_BALANCE",
-            a: vec![],
-            b: vec![],
-            wallets: (11, MAX_BALANCE - 10),
-            a_gives: (vec![], 11),
-            b_gives: (vec![], 0),
-            want: Err(TradeError::CurrencyCapExceeded.to_string()),
-        },
-        Case {
-            label: "initiator netted swap",
-            a: vec![(5, cap - 9), (9, 1)],
-            b: vec![(5, 20)],
-            wallets: (0, 0),
-            a_gives: (vec![nh_item(5, 15), nh_item(9, 1)], 0),
-            b_gives: (vec![nh_item(5, 20)], 0),
-            want: Ok(()),
-        },
-        Case {
-            label: "counterparty netted swap",
-            a: vec![(5, 20)],
-            b: vec![(5, cap - 9), (9, 1)],
-            wallets: (0, 0),
-            a_gives: (vec![nh_item(5, 20)], 0),
-            b_gives: (vec![nh_item(5, 15), nh_item(9, 1)], 0),
-            want: Ok(()),
-        },
-    ];
-    for c in cases {
-        let fx = fixture();
-        let w = nh_world(&fx, true);
-        for (item, n) in &c.a {
-            w.stack(nh_a(), *item, *n);
-        }
-        for (item, n) in &c.b {
-            w.stack(nh_b(), *item, *n);
-        }
-        w.wallet(nh_a(), c.wallets.0);
-        w.wallet(nh_b(), c.wallets.1);
-        w.offers.seed(&TradeOffer {
-            initiator_items: c.a_gives.0.clone(),
-            initiator_currency: c.a_gives.1,
-            counterparty_items: c.b_gives.0.clone(),
-            counterparty_currency: c.b_gives.1,
-            ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
-        });
-        let before = w.snapshot();
-        let got = fx.run_as(nh_a(), |ctx| super::confirm_trade(ctx, 100));
-        assert_eq!(got, c.want, "{}", c.label);
-        if got.is_err() {
-            assert_eq!(
-                w.snapshot(),
-                before,
-                "{}: refused before any write",
-                c.label
-            );
-        } else {
-            let (near_cap, other) = if c.label.starts_with("initiator") {
-                (nh_a(), nh_b())
-            } else {
-                (nh_b(), nh_a())
-            };
-            assert_eq!(
-                w.count(near_cap, 5),
-                cap - 9 - 15 + 20,
-                "{}: exact netted credit",
-                c.label
-            );
-            assert_eq!(w.count(other, 5), 15, "{}", c.label);
-        }
-    }
 }
 
 /// cancel_trade: either party may cancel an active offer (deleting it and disarming
@@ -2983,13 +1850,14 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
 // the seven Trust / Quality-Time columns — returns to the fresh-monster baseline 0
 // on EACH transferred monster when (and only when) the trade EXECUTES; every other
 // column transfers unchanged and `monster_pub`'s derived tiers follow. The rule is
-// game-core's `reset_bond_on_trade`; these tests prove `confirm_trade` consumes it.
-// The EXAMPLE test seeds every row with all seven bond columns nonzero and distinct
-// across rows (within a row too, except monster 13's deliberate fav == unfav); the
-// conservation test above seeds all-zero bonds, so it cannot see a reset. The
-// PROPERTY test draws ZERO-BIASED bonds, so some of its rows start at the baseline.
-// Every reducer runs at a NONZERO clock, so an anchor stamped with `now` is never
-// mistaken for 0.
+// game-core's `reset_bond_on_trade`; these tests prove the shared swap
+// (`trading_session::apply_swap`, driven with `PARTY_SLOT_NONE` as every
+// destination) consumes it. The EXAMPLE test seeds every row with all seven bond
+// columns nonzero and distinct across rows (within a row too, except monster 13's
+// deliberate fav == unfav). The PROPERTY test draws ZERO-BIASED bonds, so some of
+// its rows start at the baseline. Every swap runs at a NONZERO clock, so an anchor
+// stamped with `now` is never mistaken for 0, and as a BYSTANDER (`nh_c()`), so a
+// swap keyed on the sender instead of its two named parties is visible.
 // ===========================================================================
 
 /// BSATN bytes of a row (or of a table's rows): `Monster` / `MonsterPub` derive no
@@ -3055,11 +1923,14 @@ fn nh_21re_pub(w: &NhWorld<'_>, id: u64) -> MonsterPub {
         .unwrap_or_else(|| panic!("monster {id}: no monster_pub row"))
 }
 
-/// The one live offer's id (the one the last `propose_trade` inserted).
-fn nh_21re_only_offer(w: &NhWorld<'_>) -> u64 {
-    let ids = w.offer_ids();
-    assert_eq!(ids.len(), 1, "exactly one live offer, got {ids:?}");
-    ids[0]
+/// Every id in `ids` as a live owner that still matches its side.
+fn nh_21re_live(ids: &[u64]) -> Vec<LiveMonsterOwner> {
+    ids.iter()
+        .map(|&monster_id| LiveMonsterOwner {
+            monster_id,
+            owner_matches_expected: true,
+        })
+        .collect()
 }
 
 /// What a traded row must be: the seeded row re-keyed to `new_owner` and unslotted,
@@ -3127,40 +1998,33 @@ fn nh_21re_as(
     fx.run_as_at(who, nh_at(NH_T0), call)
 }
 
-/// A proposes to B at `NH_T0`: monsters only, no items or currency.
-fn nh_21re_propose(fx: &Fixture, mine: Vec<u64>, theirs: Vec<u64>) -> Result<(), String> {
-    nh_21re_as(fx, nh_a(), |ctx| {
-        nh_propose(ctx, nh_b(), mine, vec![], 0, theirs, vec![], 0)
-    })
-}
-
-/// E1 + E2 end to end through the shipped reducers: A offers 11 + 13 for B's 21, and
-/// the offer is proposed, accepted and confirmed at the NONZERO clock `NH_T0`. Until
-/// execution no row moves. On execution EACH of the three transferred monsters has
-/// all seven bond columns at 0 (asserted by name) while every other column carries
-/// over byte-for-byte, and its `monster_pub` reads Neutral trust / Quality-Time tier
-/// 0 with the evolution tier copied forward. Every monster that did not change hands
-/// — A's slotted 12 and boxed 14, B's slotted 22 and boxed 23, bystander C's 31 —
-/// keeps its whole row, and so does 12 after one offer of it is DECLINED and another
-/// is CANCELLED after acceptance, and so does B's 22 after A's REQUEST for it (the
-/// counterparty side) is DECLINED. Monster 13 already reads the baseline TIERS
-/// (Neutral 4/4, 5 ticks) but carries nonzero bookkeeping, and is A's SECOND monster.
+/// E1 + E2 through the shared swap: A gives 11 + 13 for B's 21, applied by the
+/// bystander C at the NONZERO clock `NH_T0` with every destination
+/// `PARTY_SLOT_NONE`. EACH of the three transferred monsters has all seven bond
+/// columns at 0 (asserted by name) while every other column carries over
+/// byte-for-byte, and its `monster_pub` reads Neutral trust / Quality-Time tier 0
+/// with the evolution tier copied forward. Every monster that did not change hands —
+/// A's slotted 12 and boxed 14, B's slotted 22 and boxed 23, bystander C's 31 —
+/// keeps its whole row. Monster 13 already reads the baseline TIERS (Neutral 4/4, 5
+/// ticks) but carries nonzero bookkeeping, and is A's SECOND monster. That a session
+/// edit, a first confirm and a cancel reset no bond on either side is owned by
+/// `trading_session_tests` (`ts2_edit_replaces_only_the_callers_side_with_cards_and_masked_snapshots`,
+/// `ts2_confirm_first_confirm_sets_only_the_callers_flag`,
+/// `ts2_cancel_by_either_participant_deletes_row_snapshots_and_schedule`: each holds
+/// every bonded monster row byte-identical).
 /// kills: a no-op reset; a reset that misses any one of the seven columns; an
 /// anchor or day epoch stamped with `now` instead of 0; a reset that skips a monster
 /// whose tiers are already baseline (13); a reset of only the first monster per side
 /// (13); a reset that skips a base-form, evolution-tier-0 monster (21, whose pub is
-/// seeded at tier 0); a reset at propose / respond / cancel time or on a declined offer, on
-/// either the initiator's or the counterparty's side (12, 22); a sweep
-/// over the owner's whole party, collection or box (12, 14, 22, 23) or a bystander
-/// (31); a reset that rebuilds or drifts any non-bond column (the whole-row byte
-/// oracle); a `monster_pub` re-projected from the PRE-reset row (stale trust or
-/// Quality-Time tier) or carrying a fabricated evolution tier.
+/// seeded at tier 0); a sweep over the owner's whole party, collection or box (12,
+/// 14, 22, 23) or over the sender's monsters (31, C is the caller); a reset that
+/// rebuilds or drifts any non-bond column (the whole-row byte oracle); a
+/// `monster_pub` re-projected from the PRE-reset row (stale trust or Quality-Time
+/// tier) or carrying a fabricated evolution tier.
 #[test]
-fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
+fn nh_21re_apply_swap_resets_bond_and_preserves_everything_else() {
     let fx = fixture();
     let w = nh_world(&fx, true);
-    w.join(nh_a(), true);
-    w.join(nh_b(), true);
     let boxed = crate::PARTY_SLOT_NONE;
     // (row, evolution tier): the tier is distinct per pub, so a fabricated or
     // swapped tier is visible; traded 21 is a BASE form (tier 0), so a reset that
@@ -3214,76 +2078,20 @@ fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
         "precondition: monster 13 already reads the baseline tiers (its bookkeeping is dirty)"
     );
 
-    let rows_before = nh_21re_bytes(&w.monsters.rows());
-    let pubs_before = nh_21re_bytes(&w.pubs.rows());
-    let untouched = |stage: &str| {
-        assert_eq!(
-            nh_21re_bytes(&w.monsters.rows()),
-            rows_before,
-            "{stage}: no monster row may change (bond included) before a trade executes"
-        );
-        assert_eq!(
-            nh_21re_bytes(&w.pubs.rows()),
-            pubs_before,
-            "{stage}: no monster_pub row may change before a trade executes"
-        );
-    };
-
-    // (iv) The NON-execution paths first, one at a time (TR-20: one active offer per
-    // player): an offer of 12 that B declines; a REQUEST for B's 22 (the counterparty
-    // side) that B declines; then an offer of 12 that B accepts and A cancels.
-    assert_eq!(
-        nh_21re_propose(&fx, vec![12], vec![]),
-        Ok(()),
-        "A offers 12 (to be declined)"
-    );
-    let tid = nh_21re_only_offer(&w);
-    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, false));
-    assert_eq!(got, Ok(()), "B declines the offer of 12");
-    untouched("after a DECLINED offer of 12");
-    assert_eq!(
-        nh_21re_propose(&fx, vec![], vec![22]),
-        Ok(()),
-        "A requests B's 22, offering nothing (to be declined)"
-    );
-    let tid = nh_21re_only_offer(&w);
-    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, false));
-    assert_eq!(got, Ok(()), "B declines the request for 22");
-    untouched("after a DECLINED request for B's 22");
-    assert_eq!(
-        nh_21re_propose(&fx, vec![12], vec![]),
-        Ok(()),
-        "A offers 12 (to be cancelled)"
-    );
-    let tid = nh_21re_only_offer(&w);
-    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, true));
-    assert_eq!(got, Ok(()), "B accepts the offer of 12");
-    let got = nh_21re_as(&fx, nh_a(), |ctx| super::cancel_trade(ctx, tid));
-    assert_eq!(got, Ok(()), "A cancels the accepted offer");
-    assert_eq!(w.offer_ids(), Vec::<u64>::new(), "no offer is live");
-    untouched("after an accepted-then-CANCELLED offer of 12");
-
-    // (i) propose and (ii) accept: still nothing may move.
-    assert_eq!(
-        nh_21re_propose(&fx, vec![11, 13], vec![21]),
-        Ok(()),
-        "A offers 11 + 13 for B's 21; indexes asked: {:?}",
-        fx.requested_indexes()
-    );
-    let tid = nh_21re_only_offer(&w);
-    untouched("after propose_trade");
-    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, true));
-    assert_eq!(got, Ok(()), "B accepts the offer of 11 + 13");
-    untouched("after respond_trade(accept)");
-
-    // (iii) confirm: the trade EXECUTES.
-    let got = nh_21re_as(&fx, nh_a(), |ctx| super::confirm_trade(ctx, tid));
+    // The trade EXECUTES: A gives 11 + 13, B gives 21, nothing else.
+    let plan = build_swap_plan(
+        &nh_21re_live(&[11, 13]),
+        &nh_21re_live(&[21]),
+        &[],
+        &[],
+        0,
+        0,
+    )
+    .expect("a monsters-only plan with live owners builds");
+    let got = nh_21re_as(&fx, nh_c(), |ctx| {
+        crate::trading_session::apply_swap(ctx, &plan, nh_a(), nh_b(), |_| crate::PARTY_SLOT_NONE)
+    });
     assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
-    assert_eq!(
-        w.offer_ids(),
-        Vec::<u64>::new(),
-        "the confirmed offer executed and was deleted"
-    );
 
     for (id, new_owner) in [(11, nh_b()), (13, nh_b()), (21, nh_a())] {
         let (seed, tier) = seed_of(id);
@@ -3522,15 +2330,16 @@ fn nh_21re_row_from_draw(monster_id: u64, owner: Identity, d: &Nh21reDraw) -> Mo
     }
 }
 
-/// E2's property half, driving the shipped `confirm_trade` once per case. Each case
-/// draws a trade SHAPE — 0..=2 arbitrary monsters per side, at least one in total,
-/// so one-sided sales and gifts in either direction are drawn as often as swaps —
-/// plus a currency leg on each side (0..=200 against 1_000-balance wallets) and an
-/// initiator item leg (0..=3 of item 5, omitted at 0). Every monster column is drawn
-/// (the bond zero-biased) with a base-form-biased evolution tier on its pub (tier 0
-/// on ~40% of monsters, 1..=3 often, any u8 rarely); the offer is
-/// already ConfirmedByCounterparty with its reaper, and the initiator confirms at an
-/// arbitrary NONZERO clock. For EVERY transferred monster the row is exactly the
+/// E2's property half, driving the shared `trading_session::apply_swap` once per
+/// case. Each case draws a trade SHAPE — 0..=2 arbitrary monsters per side, at least
+/// one in total, so one-sided sales and gifts in either direction are drawn as often
+/// as swaps — plus a currency leg on each side (0..=200 against 1_000-balance
+/// wallets) and an initiator item leg (0..=3 of item 5, omitted at 0). Every monster
+/// column is drawn (the bond zero-biased) with a base-form-biased evolution tier on
+/// its pub (tier 0 on ~40% of monsters, 1..=3 often, any u8 rarely); the plan is
+/// `build_swap_plan` of that shape, and the bystander C applies it with
+/// `PARTY_SLOT_NONE` as every destination at an arbitrary NONZERO clock. For EVERY
+/// transferred monster the row is exactly the
 /// seeded row re-keyed, unslotted and with the seven bond columns at 0, and the pub
 /// reads Neutral / Quality-Time 0 and is otherwise exactly
 /// `pub_from_monster(expected row, tier)`; each side ends up holding exactly the
@@ -3553,7 +2362,7 @@ fn nh_21re_row_from_draw(monster_id: u64, owner: Identity, d: &Nh21reDraw) -> Mo
 /// the drawn clock; a pub whose tiers are stale or whose other columns disagree with
 /// `pub_from_monster` of the expected row.
 #[test]
-fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
+fn nh_21re_apply_swap_property_only_owner_slot_and_bond_change() {
     use proptest::prelude::*;
     let config = ProptestConfig {
         cases: 48,
@@ -3598,18 +2407,27 @@ fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
                 .map(|(m, _, _)| m.monster_id)
                 .collect()
         };
-        w.offers.seed(&TradeOffer {
-            initiator_monster_ids: ids_of(nh_a()),
-            initiator_items: if item_qty == 0 { vec![] } else { vec![nh_item(5, item_qty)] },
+        let initiator_items = if item_qty == 0 { vec![] } else { vec![nh_item(5, item_qty)] };
+        let plan = build_swap_plan(
+            &nh_21re_live(&ids_of(nh_a())),
+            &nh_21re_live(&ids_of(nh_b())),
+            &initiator_items,
+            &[],
             initiator_currency,
-            counterparty_monster_ids: ids_of(nh_b()),
             counterparty_currency,
-            ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
-        });
-        w.reaper(500, 100);
+        )
+        .map_err(|e| {
+            proptest::test_runner::TestCaseError::fail(format!(
+                "the drawn shape {shape} must plan: {e}"
+            ))
+        })?;
 
-        let got = fx.run_as_at(nh_a(), nh_at(now), |ctx| super::confirm_trade(ctx, 100));
-        prop_assert_eq!(got, Ok(()), "confirm_trade must execute the drawn trade at {}", now);
+        let got = fx.run_as_at(nh_c(), nh_at(now), |ctx| {
+            crate::trading_session::apply_swap(ctx, &plan, nh_a(), nh_b(), |_| {
+                crate::PARTY_SLOT_NONE
+            })
+        });
+        prop_assert_eq!(got, Ok(()), "apply_swap must execute the drawn trade at {}", now);
         let rows = w.monsters.rows();
         let pubs = w.pubs.rows();
         prop_assert_eq!(rows.len(), traded.len(), "no monster row created or destroyed");
@@ -3688,4 +2506,484 @@ fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
             );
         }
     });
+}
+
+// ===========================================================================
+// ts-4 — the retired legacy offer reducers (ts-4.1).
+//
+// `propose_trade`, `respond_trade` and `confirm_trade` keep their signatures and
+// answer every call with one fixed error before reading or writing anything: no
+// offer naming another player's assets can be created, and no caller learns
+// anything about another player's wallet, inventory or monsters from the answer.
+// ===========================================================================
+
+/// The one answer of every retired legacy offer reducer.
+const TS4_RETIRED: &str = "this trade flow is retired; trade face to face instead";
+
+/// Every table a trade reducer reads or writes, by accessor name. A same-row
+/// `update` reaches subscribers but leaves the bytes identical, so each table's
+/// write-syscall counter must stay at zero as well as its rows.
+const TS4_TABLES: [&str; 13] = [
+    "account",
+    "battle",
+    "inventory",
+    "monster",
+    "monster_pub",
+    "player",
+    "player_wallet",
+    "playtest_event",
+    "trade_offer",
+    "trade_offer_reaper_schedule",
+    "trade_session",
+    "trade_session_snapshot",
+    "trade_session_reaper_schedule",
+];
+
+/// An identity with no `player` row.
+fn ts4_unjoined() -> Identity {
+    Identity::from_byte_array([0xE4; 32])
+}
+
+/// A joined player whose account is mid-grace (deletion requested).
+fn ts4_gated() -> Identity {
+    Identity::from_byte_array([0xD5; 32])
+}
+
+/// One side of a `propose_trade` call: (monster ids, items, currency).
+type Ts4Side = (Vec<u64>, Vec<TradeItem>, u64);
+
+/// No monsters, no items, no currency.
+fn ts4_nothing() -> Ts4Side {
+    (Vec::new(), Vec::new(), 0)
+}
+
+/// One `propose_trade` argument shape: `to` maps the caller to the counterparty
+/// argument (so "oneself" is a shape), `give` and `take` are the initiator's and
+/// the counterparty's side.
+struct Ts4Propose {
+    label: &'static str,
+    to: fn(Identity) -> Identity,
+    give: Ts4Side,
+    take: Ts4Side,
+}
+
+/// The argument shapes, against the world of
+/// `ts4_legacy_reducers_reject_before_any_read`: B (the usual counterparty)
+/// holds 300 coins and 4 of item 6, so the F1 shapes straddle B's real holdings
+/// and the F5 shapes name B's assets that B never offered.
+fn ts4_propose_shapes() -> Vec<Ts4Propose> {
+    fn shape(
+        label: &'static str,
+        to: fn(Identity) -> Identity,
+        give: Ts4Side,
+        take: Ts4Side,
+    ) -> Ts4Propose {
+        Ts4Propose {
+            label,
+            to,
+            give,
+            take,
+        }
+    }
+    let to_b: fn(Identity) -> Identity = |_| nh_b();
+    let items = |first: u32, n: u32| -> Vec<TradeItem> {
+        (first..first + n).map(|id| nh_item(id, 1)).collect()
+    };
+    let mons = |first: u64, n: u64| -> Vec<u64> { (first..first + n).collect() };
+    vec![
+        shape("empty", to_b, ts4_nothing(), ts4_nothing()),
+        shape(
+            "the caller's own assets",
+            to_b,
+            (vec![11, 12], vec![nh_item(5, 3)], 100),
+            ts4_nothing(),
+        ),
+        shape(
+            "F5: the counterparty's monsters and items, never offered by it",
+            to_b,
+            ts4_nothing(),
+            (vec![21, 22], vec![nh_item(6, 2)], 0),
+        ),
+        shape(
+            "F1: counterparty currency one below its balance",
+            to_b,
+            ts4_nothing(),
+            (vec![], vec![], 299),
+        ),
+        shape(
+            "F1: counterparty currency exactly its balance",
+            to_b,
+            ts4_nothing(),
+            (vec![], vec![], 300),
+        ),
+        shape(
+            "F1: counterparty currency one above its balance",
+            to_b,
+            ts4_nothing(),
+            (vec![], vec![], 301),
+        ),
+        shape(
+            "F1: counterparty item one below its stack",
+            to_b,
+            ts4_nothing(),
+            (vec![], vec![nh_item(6, 3)], 0),
+        ),
+        shape(
+            "F1: counterparty item one above its stack",
+            to_b,
+            ts4_nothing(),
+            (vec![], vec![nh_item(6, 5)], 0),
+        ),
+        shape(
+            "F1: an item the counterparty never held",
+            to_b,
+            ts4_nothing(),
+            (vec![], vec![nh_item(8, 1)], 0),
+        ),
+        shape(
+            "a two-sided swap of real holdings",
+            to_b,
+            (vec![11], vec![nh_item(5, 3)], 100),
+            (vec![21], vec![nh_item(6, 2)], 50),
+        ),
+        shape(
+            "a stranger's monster",
+            to_b,
+            ts4_nothing(),
+            (vec![31], vec![], 0),
+        ),
+        shape(
+            "a monster in an ongoing battle",
+            to_b,
+            (vec![13], vec![], 0),
+            ts4_nothing(),
+        ),
+        shape(
+            "a missing monster",
+            to_b,
+            (vec![77], vec![], 0),
+            ts4_nothing(),
+        ),
+        shape(
+            "65 items on the giving side",
+            to_b,
+            (vec![], items(100, 65), 0),
+            ts4_nothing(),
+        ),
+        shape(
+            "65 items on the asking side",
+            to_b,
+            ts4_nothing(),
+            (vec![], items(100, 65), 0),
+        ),
+        shape(
+            "9 monsters on the giving side",
+            to_b,
+            (mons(1000, 9), vec![], 0),
+            ts4_nothing(),
+        ),
+        shape(
+            "9 monsters on the asking side",
+            to_b,
+            ts4_nothing(),
+            (mons(2000, 9), vec![], 0),
+        ),
+        shape(
+            "65 monsters, 65 items and u64::MAX currency on both sides",
+            to_b,
+            (mons(1000, 65), items(100, 65), u64::MAX),
+            (mons(2000, 65), items(300, 65), u64::MAX),
+        ),
+        shape("oneself", |me| me, (vec![11], vec![], 0), ts4_nothing()),
+        shape(
+            "an unjoined identity",
+            |_| ts4_unjoined(),
+            (vec![11], vec![], 0),
+            ts4_nothing(),
+        ),
+        shape(
+            "the deletion-gated player",
+            |_| ts4_gated(),
+            ts4_nothing(),
+            (vec![41], vec![nh_item(6, 2)], 50),
+        ),
+        shape(
+            "the initiator, asking for its assets",
+            |_| nh_a(),
+            ts4_nothing(),
+            (vec![11], vec![nh_item(5, 3)], 100),
+        ),
+    ]
+}
+
+/// ts-4.1 on a populated, WRITABLE store: whatever offers, wallets, stacks,
+/// monsters, battles and account states exist, every call of the three legacy
+/// reducers — by the initiator and the counterparty of live offers (Pending and
+/// ConfirmedByCounterparty, in both roles), a stranger, an unjoined identity and
+/// a deletion-gated player; with every `propose_trade` shape of
+/// [`ts4_propose_shapes`]; with live, missing and extreme trade ids, accepting
+/// and declining — returns EXACTLY the retired-path error, leaves every row of
+/// every trade table byte-identical, and makes no write syscall on any of them.
+/// Every outcome is the same string, so no answer varies with the counterparty's
+/// holdings (F1) and no offer naming the counterparty's assets exists (F5).
+///
+/// The store is writable on purpose: a reducer that still inserts, updates or
+/// deletes an offer, reaper, monster, stack or wallet row does so and is caught
+/// by the row and counter oracles, instead of aborting the process.
+///
+/// kills: any surviving legacy body or a branch of one (a validation, an
+/// authorization, a balance or stack check that answers differently: the exact
+/// string differs); a stub that still writes (an insert, a status update, a
+/// same-row update, a delete or a reaper arm: the counters or the rows move); a
+/// stub whose answer depends on the caller, the counterparty or the arguments
+/// (one outcome across 5 callers x every shape).
+#[test]
+fn ts4_legacy_reducers_reject_before_any_read() {
+    use game_core::BattleOutcome::Ongoing;
+    let fx = fixture();
+    let w = nh_world(&fx, true);
+    for who in [nh_a(), nh_b(), nh_c(), ts4_gated()] {
+        w.join(who, true);
+    }
+    for who in [nh_a(), nh_b(), nh_c()] {
+        w.accounts.seed(&crate::accounts::new_account_row(
+            who,
+            "ts4-issuer".to_string(),
+            1,
+        ));
+    }
+    w.accounts.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(ts4_gated(), "ts4-issuer".to_string(), 1),
+        NH_T0 - 1,
+    ));
+    for (id, owner, slot) in [
+        (11, nh_a(), 0),
+        (12, nh_a(), 1),
+        (13, nh_a(), 2),
+        (21, nh_b(), 0),
+        (22, nh_b(), 1),
+        (31, nh_c(), 0),
+        (41, ts4_gated(), 0),
+    ] {
+        w.monster(id, owner, slot);
+    }
+    w.stack(nh_a(), 5, 10);
+    w.stack(nh_b(), 6, 4);
+    w.stack(nh_c(), 5, 1);
+    w.stack(ts4_gated(), 6, 2);
+    w.wallet(nh_a(), 500);
+    w.wallet(nh_b(), 300);
+    w.wallet(nh_c(), 1_000);
+    w.wallet(ts4_gated(), 50);
+    w.battles.seed(&Battle {
+        party_monster_ids: vec![13],
+        ..nh_battle(nh_a(), crate::WILD_IDENTITY, Ongoing)
+    });
+    w.offers.seed(&TradeOffer {
+        initiator_monster_ids: vec![11],
+        initiator_items: vec![nh_item(5, 3)],
+        initiator_currency: 100,
+        counterparty_monster_ids: vec![21],
+        counterparty_items: vec![nh_item(6, 2)],
+        counterparty_currency: 50,
+        ..nh_offer(100, nh_a(), nh_b(), TradeStatus::Pending)
+    });
+    w.offers.seed(&TradeOffer {
+        initiator_monster_ids: vec![22],
+        counterparty_monster_ids: vec![12],
+        ..nh_offer(101, nh_b(), nh_a(), TradeStatus::ConfirmedByCounterparty)
+    });
+    w.offers.seed(&TradeOffer {
+        initiator_monster_ids: vec![31],
+        ..nh_offer(102, nh_c(), ts4_gated(), TradeStatus::Pending)
+    });
+    w.offers.seed(&TradeOffer {
+        initiator_monster_ids: vec![41],
+        ..nh_offer(
+            103,
+            ts4_gated(),
+            nh_c(),
+            TradeStatus::ConfirmedByCounterparty,
+        )
+    });
+    for (scheduled_id, trade_id) in [(500, 100), (501, 101), (502, 102), (503, 103)] {
+        w.reaper(scheduled_id, trade_id);
+    }
+    assert_eq!(
+        (w.balance(nh_b()), w.count(nh_b(), 6)),
+        (300, 4),
+        "precondition: the F1 shapes straddle exactly these holdings of B"
+    );
+
+    let store = || {
+        let mut rows = w.snapshot();
+        rows.push(nh_21re_bytes(&w.players.rows()));
+        rows.push(nh_21re_bytes(&w.accounts.rows()));
+        rows.push(nh_21re_bytes(&w.battles.rows()));
+        rows
+    };
+    let before = store();
+    let want: Result<(), String> = Err(TS4_RETIRED.to_string());
+    let mut outcomes: Vec<String> = Vec::new();
+    let mut check = |label: String, got: Result<(), String>| {
+        assert_eq!(
+            got,
+            want,
+            "{label}: a retired legacy reducer must answer exactly the retired-path error; \
+             indexes asked: {:?}",
+            fx.requested_indexes()
+        );
+        assert!(store() == before, "{label}: the call changed a row");
+        let wrote: Vec<(&str, u32)> = TS4_TABLES
+            .iter()
+            .map(|t| (*t, fx.writes_to(t)))
+            .filter(|(_, n)| *n > 0)
+            .collect();
+        assert!(
+            wrote.is_empty(),
+            "{label}: the call made write syscalls {wrote:?} (a same-row update is a write a \
+             subscriber is told about, even though the bytes do not change)"
+        );
+        outcomes.push(format!("{got:?}"));
+    };
+
+    let callers: [(&str, Identity); 5] = [
+        ("initiator", nh_a()),
+        ("counterparty", nh_b()),
+        ("stranger", nh_c()),
+        ("unjoined identity", ts4_unjoined()),
+        ("deletion-gated player", ts4_gated()),
+    ];
+    let ids: [u64; 7] = [100, 101, 102, 103, 999, 0, u64::MAX];
+    let at = nh_at(NH_T0 + 5);
+    for &(who_label, who) in &callers {
+        for Ts4Propose {
+            label,
+            to,
+            give,
+            take,
+        } in ts4_propose_shapes()
+        {
+            let got = fx.run_as_at(who, at, |ctx| {
+                super::propose_trade(ctx, to(who), give.0, give.1, give.2, take.0, take.1, take.2)
+            });
+            check(format!("propose_trade by the {who_label}: {label}"), got);
+        }
+        for id in ids {
+            for accepted in [true, false] {
+                let got = fx.run_as_at(who, at, |ctx| super::respond_trade(ctx, id, accepted));
+                check(
+                    format!("respond_trade({id}, accepted = {accepted}) by the {who_label}"),
+                    got,
+                );
+            }
+            let got = fx.run_as_at(who, at, |ctx| super::confirm_trade(ctx, id));
+            check(format!("confirm_trade({id}) by the {who_label}"), got);
+        }
+    }
+
+    let calls = callers.len() * (ts4_propose_shapes().len() + ids.len() * 3);
+    assert_eq!(
+        outcomes.len(),
+        calls,
+        "every caller made every call (the loops ran)"
+    );
+    let distinct: std::collections::BTreeSet<&String> = outcomes.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "one outcome for every caller and argument shape: {distinct:?}"
+    );
+}
+
+/// ts-4.1's "before any read", on a BARE host with no table registered.
+///
+/// On this host an index read of an unregistered table yields NO rows rather
+/// than aborting, so a stub that reads first and then errors would pass every
+/// row oracle. What does see the read is the index-request log: the generated
+/// accessor asks the host for an index id by name (`index_id_from_name`) the
+/// first time it touches an index in the process, and the host records every
+/// such name. Each `#[test]` runs in its own nextest process, so the log starts
+/// empty and every index the stub touches lands in it. A table scan aborts the
+/// process (unmodelled), which fails the test as loudly.
+///
+/// The calls run on the dummy context first (no runtime entry point at all, so
+/// the log must stay EMPTY), then as two real senders through `run_as_at`
+/// (warmed up once, so the log must not GROW past what the entry point itself
+/// asks for).
+///
+/// kills: a stub that looks up the caller's `player` row
+/// (`player_identity_idx_btree`), reads a wallet (`player_wallet_owner_identity_idx_btree`)
+/// or a stack (`inventory_owner_identity_idx_btree`), calls
+/// `guards::require_not_deleting` (`account_identity_idx_btree`), or finds the
+/// offer (`trade_offer_trade_id_idx_btree`) before returning the error.
+#[test]
+fn ts4_legacy_reducers_request_no_index_on_a_bare_host() {
+    let fx = fixture();
+    let want: Result<(), String> = Err(TS4_RETIRED.to_string());
+    let ctx = fx.ctx();
+    let got = [
+        super::propose_trade(
+            &ctx,
+            nh_b(),
+            vec![11],
+            vec![nh_item(5, 3)],
+            100,
+            vec![21],
+            vec![nh_item(6, 2)],
+            50,
+        ),
+        super::propose_trade(
+            &ctx,
+            nh_b(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            Vec::new(),
+            Vec::new(),
+            0,
+        ),
+        super::respond_trade(&ctx, 100, true),
+        super::respond_trade(&ctx, 100, false),
+        super::confirm_trade(&ctx, 100),
+    ];
+    let asked = fx.requested_indexes();
+    assert!(
+        asked.is_empty(),
+        "the retired reducers asked this host for the indexes {asked:?} (results {got:?}): \
+         a retired reducer returns its error before ANY read"
+    );
+    for (call, got) in got.iter().enumerate() {
+        assert_eq!(*got, want, "dummy-context call {call}");
+    }
+
+    let warm_up: Result<(), String> = fx.run_as(nh_c(), |_| Ok(()));
+    assert_eq!(warm_up, Ok(()), "the run_as entry point runs");
+    let baseline = fx.requested_indexes();
+    for who in [nh_a(), ts4_gated()] {
+        let got = fx.run_as_at(who, nh_at(NH_T0), |ctx| {
+            [
+                super::propose_trade(
+                    ctx,
+                    nh_b(),
+                    vec![11],
+                    vec![],
+                    0,
+                    vec![21],
+                    vec![nh_item(6, 9)],
+                    301,
+                ),
+                super::respond_trade(ctx, 101, true),
+                super::confirm_trade(ctx, 101),
+            ]
+        });
+        for (call, got) in got.iter().enumerate() {
+            assert_eq!(*got, want, "call {call} as {who}");
+        }
+        assert_eq!(
+            fx.requested_indexes(),
+            baseline,
+            "the retired reducers called as {who} asked this host for an index"
+        );
+    }
 }
