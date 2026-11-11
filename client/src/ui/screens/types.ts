@@ -47,9 +47,6 @@ export type Command =
     }
   | { readonly kind: 'sell'; readonly itemId: number; readonly qty: number }
   // Trades and challenges.
-  | { readonly kind: 'respondTrade'; readonly tradeId: bigint; readonly accepted: boolean }
-  | { readonly kind: 'confirmTrade'; readonly tradeId: bigint }
-  | { readonly kind: 'cancelTrade'; readonly tradeId: bigint }
   // Trade sessions. `openTradeSession` is sent only by the face-to-face Trade verb; `openTradeEditor`
   // calls no reducer: it opens the editor frame on a session the player is already in.
   | { readonly kind: 'openTradeSession'; readonly partnerIdentity: string }

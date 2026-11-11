@@ -620,9 +620,17 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       createdAtMs: 0n,
     });
     server(1010);
-    // The incoming challenge may auto-show Social on its tab; P opens it there otherwise.
-    if (stackNames().length === 1) tap('KeyP', 1020);
-    expect(stackNames().length, 'precondition: the Social frame is open over the world').toBe(2);
+    // The incoming challenge does not auto-show Social: the world stays alone, and P opens the
+    // Social frame through the menu.
+    expect(stackNames(), 'precondition: the incoming challenge leaves the world alone').toEqual([
+      'world',
+    ]);
+    tap('KeyP', 1020);
+    expect(stackNames(), 'precondition: the Social frame is open over the menu').toEqual([
+      'world',
+      'menuView',
+      'social',
+    ]);
     const sheetSelected = (): string | null =>
       document
         .querySelector('#social-sheet [aria-selected="true"]')
@@ -656,8 +664,15 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       { name: 'declineChallenge', args: { challengeId: 5n } },
     ]);
     await flush();
+    expect(stackNames(), 'precondition: the Social frame is still open').toEqual([
+      'world',
+      'menuView',
+      'social',
+    ]);
     tap('Backspace', 1100); // B at the list pops the Social frame
-    expect(stackNames(), 'precondition: the Social frame closed').toEqual(['world']);
+    expect(stackNames(), 'precondition: the Social frame closed').toEqual(['world', 'menuView']);
+    tap('Backspace', 1110); // B pops the menu
+    expect(stackNames(), 'precondition: the menu closed').toEqual(['world']);
 
     // --- rename submit: set_profile_name with the trimmed draft ------------------------------
     tap('KeyN', 1200);

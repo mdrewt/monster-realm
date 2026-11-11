@@ -365,23 +365,6 @@ export type StoreBattleChallenge = {
   readonly createdAtMs: bigint;
 };
 
-/** A trade offer row, normalized (identities as hex strings). */
-export type StoreTradeOffer = {
-  readonly tradeId: bigint;
-  readonly initiator: string;
-  readonly counterparty: string;
-  readonly initiatorMonsterIds: readonly bigint[];
-  readonly initiatorItems: readonly StoreTradeItem[];
-  readonly initiatorCurrency: bigint;
-  readonly counterpartyMonsterIds: readonly bigint[];
-  readonly counterpartyItems: readonly StoreTradeItem[];
-  readonly counterpartyCurrency: bigint;
-  readonly initiatorCards: readonly StoreMonsterCard[];
-  readonly counterpartyCards: readonly StoreMonsterCard[];
-  readonly status: 'Pending' | 'ConfirmedByCounterparty';
-  readonly createdAtMs: bigint;
-};
-
 /** One side of a trade session: what its owner put in, and the server's cards of the monsters. */
 export type StoreTradeSessionOffer = {
   readonly monsterIds: readonly bigint[];
@@ -558,8 +541,6 @@ export class AuthoritativeStore {
   readonly #shopItems = new Map<bigint, StoreShopItemRow>();
   // battle_challenge rows (public table — challenger + target subscribe)
   readonly #challenges = new Map<bigint, StoreBattleChallenge>();
-  // trade_offer rows (public table — both parties subscribe)
-  readonly #tradeOffers = new Map<bigint, StoreTradeOffer>();
   // my_trade_session rows (the sessions this identity is in), by sessionId
   readonly #tradeSessions = new Map<bigint, StoreTradeSession>();
   // Profile rows keyed by identity hex (public table — world-readable
@@ -964,11 +945,6 @@ export class AuthoritativeStore {
     // initial onInsert burst when the subscription re-applies on reconnect.
     this.#shops.clear();
     this.#shopItems.clear();
-    // trade_offer rows — cleared on disconnect; no escrow survives a drop
-    // (on_disconnect cancels the player's active offer server-side per TR-18 when the
-    // identity's LAST live connection ends; otherwise the snapshot
-    // re-delivers it).
-    this.#tradeOffers.clear();
     // my_trade_session rows — cleared on disconnect. The server deletes a player's sessions when
     // the identity's LAST live connection ends; otherwise the snapshot re-delivers them.
     this.#tradeSessions.clear();
@@ -1291,37 +1267,6 @@ export class AuthoritativeStore {
   /** All online players (for PvP challenge target selection). */
   allPlayers(): StorePlayer[] {
     return [...this.#players.values()];
-  }
-
-  // --- trade_offer ingest (adapter-only) ---------------------------------
-
-  upsertTradeOffer(row: StoreTradeOffer): void {
-    this.#tradeOffers.set(row.tradeId, row);
-    this.#dirty = true;
-  }
-
-  removeTradeOffer(tradeId: bigint): void {
-    if (this.#tradeOffers.delete(tradeId)) this.#dirty = true;
-  }
-
-  // --- trade_offer read --------------------------------------------------
-
-  /**
-   * The active trade offer where `identity` is initiator OR counterparty, or undefined.
-   * Returns the first match in Map insertion order — not lowest-tradeId. The server
-   * guarantees at most one active offer per player, so tiebreak never matters in practice.
-   * For tiebreak-deterministic selection use buildTradeViewModel (passes allTradeOffers()).
-   */
-  ownTradeOffer(identity: string): StoreTradeOffer | undefined {
-    for (const offer of this.#tradeOffers.values()) {
-      if (offer.initiator === identity || offer.counterparty === identity) return offer;
-    }
-    return undefined;
-  }
-
-  /** All trade offers (for future browse / multi-offer UIs). */
-  allTradeOffers(): StoreTradeOffer[] {
-    return [...this.#tradeOffers.values()];
   }
 
   // --- my_trade_session ingest/read ------------------------------------------

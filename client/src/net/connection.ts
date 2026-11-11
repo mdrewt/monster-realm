@@ -77,7 +77,6 @@ import {
   type SdkSkillRowRow,
   type SdkSpeciesRowRow,
   type SdkTacticalBattleRow,
-  type SdkTradeOfferRow,
   type SdkTradeSessionRow,
   shopItemRowToStore,
   shopRowToStore,
@@ -85,7 +84,6 @@ import {
   skillRowToStore,
   speciesRowToStore,
   tacticalBattleRowToStore,
-  tradeOfferRowToStore,
   tradeSessionRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
@@ -718,24 +716,6 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
-    // trade_offer (public runtime table — both parties subscribe).
-    // Completed/cancelled offers are deleted server-side (D5: terminal row GC);
-    // no onUpdate expected, but handle it defensively to stay fresh.
-    const ingestTradeOffer = (row: SdkTradeOfferRow): void => {
-      store.upsertTradeOffer(tradeOfferRowToStore(row));
-      batcher.schedule();
-    };
-    conn.db.trade_offer.onInsert((_ctx, row) =>
-      ingestTradeOffer(row as unknown as SdkTradeOfferRow),
-    );
-    conn.db.trade_offer.onUpdate((_ctx, _old, row) =>
-      ingestTradeOffer(row as unknown as SdkTradeOfferRow),
-    );
-    conn.db.trade_offer.onDelete((_ctx, row) => {
-      store.removeTradeOffer((row as unknown as SdkTradeOfferRow).tradeId);
-      batcher.schedule();
-    });
-
     // battle_challenge (public table — challenger + target subscribe).
     // Challenges are deleted server-side when Accepted/Declined/Cancelled
     // (pvp.rs — the delete fires onDelete here, removing the stale row).
@@ -990,10 +970,6 @@ export function connect(opts: ConnectionOptions): Connection {
             // Subscribing the private table would error the whole batch and onApplied
             // would never fire.
             'SELECT * FROM my_wallet',
-            // trade_offer is a PUBLIC runtime table; both parties
-            // subscribe. Per-row RLS is future work; until then the
-            // client sees all offers and filters by own identity in ownTradeOffer().
-            'SELECT * FROM trade_offer',
             // battle_challenge is a PUBLIC runtime table; challenger
             // and target subscribe. battle_action is PRIVATE (must-never-leak)
             // and MUST NEVER be subscribed here.

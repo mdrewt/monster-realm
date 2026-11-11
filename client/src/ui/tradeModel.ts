@@ -1,19 +1,16 @@
-// ui/tradeModel.ts — pure view model for the trade overlay.
+// ui/tradeModel.ts — the view models of one side of a trade: its monster cards, item lines and
+// coins. The session editor (ui/tradeSessionModel.ts) builds both sides through `buildSideViewModel`.
 //
 // No DOM, no SDK, no side-effects. Never throws on any input — a throw
 // here would starve sibling store batch-listeners (store.ts one-way flow).
-//
-// The trade_offer table is PUBLIC (both parties subscribe).
-// The model filters by own identity rather than trusting the store pre-filter:
-// this is defense-in-depth against a future per-row RLS gap.
 // MonsterCard snapshots contain NO genes.
-import type { StoreItemRow, StoreMonsterCard, StoreTradeItem, StoreTradeOffer } from '../net/store';
+import type { StoreItemRow, StoreMonsterCard, StoreTradeItem } from '../net/store';
 
 // ---------------------------------------------------------------------------
 // View model types
 // ---------------------------------------------------------------------------
 
-/** One monster card rendered in a trade offer (no genes). */
+/** One monster card of a trade side (no genes). */
 export interface TradeCardViewModel {
   readonly monsterId: bigint;
   readonly speciesName: string;
@@ -23,89 +20,18 @@ export interface TradeCardViewModel {
   readonly statHp: number;
 }
 
-/** One item stack in a trade offer. */
+/** One item line of a trade side. */
 export interface TradeItemViewModel {
   readonly itemId: number;
   readonly name: string;
   readonly qty: number;
 }
 
-/** One side of the trade (own or other party). */
+/** One side of a trade (the viewer's or the partner's). */
 export interface TradeSideViewModel {
   readonly cards: readonly TradeCardViewModel[];
   readonly items: readonly TradeItemViewModel[];
   readonly currency: bigint;
-}
-
-/**
- * The two server-side TradeStatus variants.
- * Typed as a literal union so deriveActionsAndLabel can switch exhaustively —
- * adding a third server variant is a TypeScript compile error at the switch site.
- */
-export type TradeStatus = 'Pending' | 'ConfirmedByCounterparty';
-
-/**
- * The reducer action the viewer may take.
- * - 'accept'  → respondTrade(tradeId, accepted:true)
- * - 'reject'  → respondTrade(tradeId, accepted:false)
- * - 'confirm' → confirmTrade(tradeId)
- * - 'cancel'  → cancelTrade(tradeId)
- * accept/reject are the SAME reducer (respond_trade) with different accepted arg.
- */
-export type TradeAction = 'accept' | 'reject' | 'confirm' | 'cancel';
-
-export interface TradeOfferViewModel {
-  readonly kind: 'trade';
-  readonly tradeId: bigint;
-  /** What the viewer gives up. */
-  readonly mySide: TradeSideViewModel;
-  /** What the viewer receives. */
-  readonly theirSide: TradeSideViewModel;
-  /** True when the viewer is the initiator of this offer. */
-  readonly viewerIsInitiator: boolean;
-  /** Human-readable status label. */
-  readonly statusLabel: string;
-  /** Ordered list of buttons to render. Empty = viewer can only wait. */
-  readonly actions: readonly TradeAction[];
-}
-
-export interface NoTradeViewModel {
-  readonly kind: 'no-trade';
-}
-
-export type TradeScreenViewModel = TradeOfferViewModel | NoTradeViewModel;
-
-// ---------------------------------------------------------------------------
-// Action-derivation table (spec §5 — encode exactly, no deviation)
-//
-// | Viewer role  | status                  | actions            | statusLabel                        |
-// |--------------|-------------------------|--------------------|------------------------------------|
-// | initiator    | Pending                 | ['cancel']         | "Waiting for response"             |
-// | counterparty | Pending                 | ['accept','reject']| "Offer received"                   |
-// | initiator    | ConfirmedByCounterparty | ['confirm','cancel']| "Accepted — confirm to finalize"  |
-// | counterparty | ConfirmedByCounterparty | ['cancel']         | "Accepted — awaiting confirmation" |
-// ---------------------------------------------------------------------------
-
-function deriveActionsAndLabel(
-  isInitiator: boolean,
-  status: TradeStatus,
-): { actions: readonly TradeAction[]; statusLabel: string } {
-  switch (status) {
-    case 'Pending':
-      return isInitiator
-        ? { actions: ['cancel'], statusLabel: 'Waiting for response' }
-        : { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
-    case 'ConfirmedByCounterparty':
-      return isInitiator
-        ? { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' }
-        : { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
-    default:
-      // A status this client does not know (version skew: the row converter passes an unknown
-      // variant through raw). No action is offered and the raw status is shown; a throw here would
-      // reach the Social frame's button path, which nothing catches.
-      status satisfies never;
-      return { actions: [], statusLabel: String(status) };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,8 +63,8 @@ function buildItemViewModel(
   };
 }
 
-/** One side's cards, item lines and coins as view models. Shared with the session editor
- *  (ui/tradeSessionModel.ts). Missing species / item defs read "Unknown (#N)". */
+/** One side's cards, item lines and coins as view models. Missing species / item defs read
+ *  "Unknown (#N)". */
 export function buildSideViewModel(
   cards: readonly StoreMonsterCard[],
   items: readonly StoreTradeItem[],
@@ -150,77 +76,5 @@ export function buildSideViewModel(
     cards: cards.map((c) => buildCardViewModel(c, speciesMap)),
     items: items.map((i) => buildItemViewModel(i, itemDefs)),
     currency,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * The offer the trade panel shows: the one `identity` is a party to (the table is PUBLIC, so the
- * filter is defense-in-depth), and of several (impossible per TR-20 / D4 one-active-per-player)
- * the lowest tradeId, for determinism. The Social frame's Trades row selects through it too.
- */
-export function shownTradeOffer(
-  offers: readonly StoreTradeOffer[],
-  identity: string,
-): StoreTradeOffer | undefined {
-  let shown: StoreTradeOffer | undefined;
-  for (const offer of offers) {
-    if (offer.initiator !== identity && offer.counterparty !== identity) continue;
-    if (shown === undefined || offer.tradeId < shown.tradeId) shown = offer;
-  }
-  return shown;
-}
-
-/** The actions `identity` may take on `offer` (the action-derivation table above); none for a
- *  status this client does not know. */
-export function tradeActions(offer: StoreTradeOffer, identity: string): readonly TradeAction[] {
-  return deriveActionsAndLabel(offer.initiator === identity, offer.status).actions;
-}
-
-/**
- * Build the trade overlay view model from pure subscription data.
- *
- * Shows `shownTradeOffer(offers, identity)`; returns NoTradeViewModel when no offer involves the
- * viewer.
- * TOTAL: never throws. Missing species/item defs → "Unknown (#N)".
- */
-export function buildTradeViewModel(
-  offers: readonly StoreTradeOffer[],
-  identity: string,
-  speciesMap: ReadonlyMap<number, { readonly name: string }>,
-  itemDefs: ReadonlyMap<number, StoreItemRow>,
-): TradeScreenViewModel {
-  const offer = shownTradeOffer(offers, identity);
-  if (offer === undefined) return { kind: 'no-trade' };
-
-  const isInitiator = offer.initiator === identity;
-  const { actions, statusLabel } = deriveActionsAndLabel(isInitiator, offer.status);
-
-  const initiatorSide = buildSideViewModel(
-    offer.initiatorCards,
-    offer.initiatorItems,
-    offer.initiatorCurrency,
-    speciesMap,
-    itemDefs,
-  );
-  const counterpartySide = buildSideViewModel(
-    offer.counterpartyCards,
-    offer.counterpartyItems,
-    offer.counterpartyCurrency,
-    speciesMap,
-    itemDefs,
-  );
-
-  return {
-    kind: 'trade',
-    tradeId: offer.tradeId,
-    mySide: isInitiator ? initiatorSide : counterpartySide,
-    theirSide: isInitiator ? counterpartySide : initiatorSide,
-    viewerIsInitiator: isInitiator,
-    statusLabel,
-    actions,
   };
 }

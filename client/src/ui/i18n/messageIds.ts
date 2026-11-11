@@ -247,17 +247,12 @@ export type MessageId =
   | 'box.feedback.fed'
   // qf-3: the disabled Care row's remaining-cooldown hint.
   | 'box.sheet.careCooldown'
-  // Trade.* : the Social Trades panel (tradeView.ts); `tradeSession.*` is the session editor.
+  // Trade.* : the Social Trades panel (tradeView.ts) and the side rows of the session editor
+  // (tradeSessionView.ts); `tradeSession.*` is the session editor.
   | 'trade.status.none'
-  | 'trade.side.offer'
-  | 'trade.side.receive'
   | 'trade.side.card'
   | 'trade.side.currency'
   | 'trade.side.nothing'
-  | 'trade.feedback.accepted'
-  | 'trade.feedback.rejected'
-  | 'trade.feedback.completed'
-  | 'trade.feedback.cancelled'
   | 'trade.status.open'
   | 'trade.row.title'
   | 'trade.row.marks'
@@ -321,10 +316,7 @@ export type MessageId =
   | 'social.players.walkUp'
   | 'social.action.accept'
   | 'social.action.decline'
-  | 'social.action.confirm'
   | 'social.action.cancel'
-  | 'social.confirm.declineTrade'
-  | 'social.confirm.confirmTrade'
   | 'social.confirm.declineChallenge'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'

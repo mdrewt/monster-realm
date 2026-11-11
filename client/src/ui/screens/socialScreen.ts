@@ -6,10 +6,10 @@
 // The frame opens on the tab its open path asked for (`ctx.socialTab`: U, P, L, the menu leaves,
 // the challenge auto-show), else on the oldest waiting request's tab, else on the tab it was left
 // on (the host remembers the state), else on Players; the cursor goes to the opened tab's waiting
-// request. A on a trade or challenge row opens a sheet of its legal actions, the cursor on the
-// first (Accept, for a request): Accept and Cancel send at once, Decline and a trade's final
-// Confirm ask Yes / No on No. A on a trade SESSION row opens that session's editor at once: it has
-// no sheet. B backs out one level and pops the frame from the list.
+// request. A on a challenge row opens a sheet of its legal actions, the cursor on the first
+// (Accept, for a request): Accept and Cancel send at once, Decline asks Yes / No on No. A on a
+// trade session row opens that session's editor at once: it has no sheet. B backs out one level
+// and pops the frame from the list.
 //
 // Players and Rankings (CTL8G.1-.2) are painted over the leaderboard root (`leaderboardView.ts`).
 // A on a player shows "Walk up to {name} and press A" (the `walkUp` phase; no remote action
@@ -86,26 +86,13 @@ const sameActions = (a: readonly SocialAction[], b: readonly SocialAction[]): bo
   a.length === b.length && a.every((action, i) => action === b[i]);
 
 /** The question `action` asks before it is sent, else null (it sends at once). */
-function questionOf(row: SocialRow, action: SocialAction): SocialQuestion | null {
-  if (action === 'decline') return row.kind === 'trade' ? 'declineTrade' : 'declineChallenge';
-  return action === 'confirm' && row.kind === 'trade' ? 'confirmTrade' : null;
+function questionOf(action: SocialAction): SocialQuestion | null {
+  return action === 'decline' ? 'declineChallenge' : null;
 }
 
 /** The command `action` sends for `row`; null for an action that kind of row never offers. */
 function commandOf(row: SocialRow, action: SocialAction): Command | null {
   const { id } = row;
-  if (row.kind === 'trade') {
-    switch (action) {
-      case 'accept':
-        return { kind: 'respondTrade', tradeId: id, accepted: true };
-      case 'decline':
-        return { kind: 'respondTrade', tradeId: id, accepted: false };
-      case 'confirm':
-        return { kind: 'confirmTrade', tradeId: id };
-      case 'cancel':
-        return { kind: 'cancelTrade', tradeId: id };
-    }
-  }
   if (row.kind === 'incoming') {
     if (action === 'accept') return { kind: 'acceptChallenge', challengeId: id };
     return action === 'decline' ? { kind: 'declineChallenge', challengeId: id } : null;
@@ -120,7 +107,7 @@ function commandOf(row: SocialRow, action: SocialAction): Command | null {
 function promptOf(vm: SocialVm, tab: SocialTab, phase: SocialPhase): SocialPaint['confirm'] {
   if (phase.kind !== 'sheet' || phase.confirm === null) return null;
   const row = rowAt(vm, tab, phase.row);
-  const question = row === undefined ? null : questionOf(row, phase.action);
+  const question = row === undefined ? null : questionOf(phase.action);
   return question === null ? null : { question, yes: phase.confirm.yes };
 }
 
@@ -155,7 +142,6 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
   viewModel: (ctx) =>
     buildSocialVm(
       ctx.socialTab,
-      ctx.store.allTradeOffers(),
       ctx.store.allChallenges(),
       ctx.identity,
       {
@@ -293,7 +279,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
       }
       case 'A':
         if (btn.repeat) return done('consumed');
-        return questionOf(row, phase.action) === null
+        return questionOf(phase.action) === null
           ? send()
           : to({ ...phase, confirm: { yes: false } });
       case 'B':
@@ -314,7 +300,6 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     const { phase } = state;
     view.trades?.paintSocial(view.chrome, {
       tab,
-      tradeCursor: cursor?.kind === 'trade',
       sessions: vm.trades.flatMap((row) =>
         row.session === undefined ? [] : [{ key: row.key, ...row.session }],
       ),

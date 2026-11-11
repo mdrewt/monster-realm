@@ -330,7 +330,6 @@ import {
   type ToastState,
   toastStep,
 } from './ui/toast';
-import { buildTradeViewModel } from './ui/tradeModel';
 import {
   closedSessionIds,
   lockedSessionMonsterIds,
@@ -1226,14 +1225,6 @@ function showSocialPanel(panel: SocialPanelId): void {
   try {
     switch (panel) {
       case 'tradeView':
-        tradeView?.render(
-          buildTradeViewModel(
-            store.allTradeOffers(),
-            identity,
-            store.speciesMap(),
-            store.itemDefs(),
-          ),
-        );
         tradeView?.show();
         break;
       case 'pvpView':
@@ -1797,9 +1788,6 @@ const actionFeedback =
   };
 const SHOP_BUY = actionFeedback({ ok: 'shop-buy-ok', rejected: 'shop-rejected' });
 const SHOP_SELL = actionFeedback({ ok: 'shop-sell-ok', rejected: 'shop-rejected' });
-const TRADE_ANSWER = actionFeedback({ ok: 'trade-answered', rejected: 'trade-rejected' });
-const TRADE_SETTLE = actionFeedback({ ok: 'trade-settled', rejected: 'trade-rejected' });
-const TRADE_CANCEL = actionFeedback({ ok: 'trade-cancelled', rejected: 'trade-rejected' });
 const RENAME = actionFeedback({ ok: 'rename-saved', rejected: 'rename-rejected' });
 const ownPartyIds = (): bigint[] =>
   store
@@ -1807,16 +1795,10 @@ const ownPartyIds = (): bigint[] =>
     .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
     .map((m) => m.monsterId);
 
-/** The own monsters a trade locks: either side of the player's legacy offer, and their confirmed
- *  sides of trade sessions. Neither offered to a deploy nor committed to a challenge (the server
- *  refuses a locked monster at both). */
+/** The own monsters a trade locks: the player's confirmed sides of trade sessions. Neither offered
+ *  to a deploy nor committed to a challenge (the server refuses a locked monster at both). */
 function tradedIds(): ReadonlySet<bigint> {
-  const offer = store.ownTradeOffer(identity);
-  return new Set<bigint>([
-    ...(offer?.initiatorMonsterIds ?? []),
-    ...(offer?.counterpartyMonsterIds ?? []),
-    ...lockedSessionMonsterIds(store.allTradeSessions(), identity),
-  ]);
+  return new Set<bigint>(lockedSessionMonsterIds(store.allTradeSessions(), identity));
 }
 /** bt-15 (BT15.1): the monsters a challenge may commit — party-slotted, conscious and untraded, in
  *  slot order (`consciousPartyIds`); the pick sends the first N of them. */
@@ -1831,8 +1813,8 @@ function ownDeployLocked(battleId: bigint): boolean {
 
 /** C5: a REJECTED answer changed no server row — the request is still Pending, so the optimistic
  *  `answeredRequests` key is released and the banner, badges and Y answer it again. Handed to the
- *  answer arms' helpers (`performCare`'s `onRejected`, `sendGuarded`'s third argument), which is
- *  the only place the rejection is observable: both report it and resolve. */
+ *  answer arms' helper (`sendGuarded`'s third argument), which is the only place the rejection is
+ *  observable: it reports it and resolves. */
 const releaseAnswered = (key: string) => (): void => {
   answeredRequests.delete(key);
 };
@@ -1846,7 +1828,6 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
   // An answer leaves the request out of the world's notices until the server row changes (ctl-13).
   // The add stays optimistic — on answer, not settle, so the banner never flashes while the answer
   // is in flight; the arm's reject path releases it again (`releaseAnswered`, C5).
-  if (command.kind === 'respondTrade') answeredRequests.add(`trade-${command.tradeId}`);
   if (command.kind === 'cancelTradeSession') answeredRequests.add(`session-${command.sessionId}`);
   if (command.kind === 'acceptChallenge' || command.kind === 'declineChallenge')
     answeredRequests.add(`challenge-${command.challengeId}`);
@@ -1988,36 +1969,6 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
             : tf('shop.feedback.sell.count', { qty }),
         where: 'sell',
         showFeedback: SHOP_SELL,
-      });
-    }
-    case 'respondTrade': {
-      const { tradeId, accepted } = command;
-      return performCare({
-        call: () => liveReducers()?.respondTrade({ tradeId, accepted }),
-        successMessage: accepted
-          ? i18nT('trade.feedback.accepted')
-          : i18nT('trade.feedback.rejected'),
-        where: 'respond-trade',
-        showFeedback: TRADE_ANSWER,
-        onRejected: releaseAnswered(`trade-${tradeId}`),
-      });
-    }
-    case 'confirmTrade': {
-      const { tradeId } = command;
-      return performCare({
-        call: () => liveReducers()?.confirmTrade({ tradeId }),
-        successMessage: i18nT('trade.feedback.completed'),
-        where: 'confirm-trade',
-        showFeedback: TRADE_SETTLE,
-      });
-    }
-    case 'cancelTrade': {
-      const { tradeId } = command;
-      return performCare({
-        call: () => liveReducers()?.cancelTrade({ tradeId }),
-        successMessage: i18nT('trade.feedback.cancelled'),
-        where: 'cancel-trade',
-        showFeedback: TRADE_CANCEL,
       });
     }
     // Trade sessions. No success line: the editor shows the outcome, and a confirm that resolves
@@ -2527,8 +2478,8 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * the rejection route: reduceErrorMessage passes SenderError reasons through and
  * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
  * (movement — silent prediction repair in sendIntent, M2 §3), the join (conn.join() — its
- * failures surface from connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell, the
- * legacy trade answers, rename — routed through performCare in main(), A6).
+ * failures surface from connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell,
+ * rename — routed through performCare in main(), A6).
  * ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
  * in-flight lock `return` it so the lock lives exactly until the call settles.
  * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
@@ -4010,21 +3961,6 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- trade view batch listener ----------------------------------
-// Re-renders when visible so the overlay stays live as the offer status changes
-// (e.g. Pending → ConfirmedByCounterparty when counterparty calls respond_trade).
-// MUST be total (never throw): defense-in-depth (store.flushBatch has per-listener try/catch).
-store.onBatchApplied(() => {
-  if (!tradeView?.visible || identity === '') return;
-  try {
-    tradeView.render(
-      buildTradeViewModel(store.allTradeOffers(), identity, store.speciesMap(), store.itemDefs()),
-    );
-  } catch (err) {
-    console.error('[trade] batch listener error', err);
-  }
-});
-
 // --- trade sessions ---------------------------------------------
 // A face-to-face Trade's editor opens when its row arrives; a session that left `my_trade_session`
 // (executed, cancelled by either side, auto-cancelled, reaped) closes its editor and is announced
@@ -4800,19 +4736,14 @@ async function main(): Promise<void> {
     dialogueView = new DialogueViewClass();
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
-    // shop and trade DOM shells: buy/sell, the legacy trade responses and rename all run
+    // shop and trade DOM shells: buy/sell and rename run
     // through the performCare core (frozen gate, await of the SDK promise, exactly one feedback
     // line) inside `dispatch`.
     shopView = new ShopViewClass({
       onBuy: (shopId, itemId) => dispatch({ kind: 'buy', shopId, itemId, qty: 1 }),
       onSell: (itemId) => dispatch({ kind: 'sell', itemId, qty: 1 }),
     });
-    tradeView = new TradeViewClass({
-      onAccept: (tradeId) => dispatch({ kind: 'respondTrade', tradeId, accepted: true }),
-      onReject: (tradeId) => dispatch({ kind: 'respondTrade', tradeId, accepted: false }),
-      onConfirm: (tradeId) => dispatch({ kind: 'confirmTrade', tradeId }),
-      onCancel: (tradeId) => dispatch({ kind: 'cancelTrade', tradeId }),
-    });
+    tradeView = new TradeViewClass();
     // PvP challenge overlay: the lifecycle callbacks RETURN the promise.
     pvpView = new PvpViewClass({
       onAccept: (challengeId) => dispatch({ kind: 'acceptChallenge', challengeId }),
