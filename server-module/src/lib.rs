@@ -219,8 +219,8 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Force-resolve every live interaction for `identity` — the tactical resolver
-/// (bt-8) first, then trade offers, trade sessions, PvP battles, legacy wild
-/// battles and challenges.
+/// first, then trade offers, trade sessions, PvP battles, legacy wild battles
+/// and challenges.
 /// Shared by BOTH `on_disconnect` and the deletion cascade
 /// (`accounts::account_deletion_reaper`), so a resolver added to this bundle
 /// is picked up by both callers automatically. The tactical resolver runs

@@ -852,7 +852,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
     // Spec §3 ERASE (12) + this slice's own `export_bundle`
     // + rb-73's `player_session`
     // + 20r-d's `pending_evolution_notice`
-    // + bt-7's five identity-bearing tactical tables
+    // + the five identity-bearing tactical tables
     // + `trade_session` (an open session names both participants).
     let expected_erase = [
         "battle_action",
@@ -9602,7 +9602,7 @@ mod acct_nh {
     }
 
     // =======================================================================
-    // ts-2.11 — TRADE SESSIONS UNDER ACCOUNT DELETION AND THE GUEST CLAIM:
+    // TRADE SESSIONS UNDER ACCOUNT DELETION AND THE GUEST CLAIM:
     // the cancel declines post-request incoming sessions, the deletion reaper
     // erases sessions in both roles, the confirm stamp gate, and the claim
     // deletes the claimer's sessions. Every session delete takes the
@@ -9777,7 +9777,7 @@ mod acct_nh {
         );
     }
 
-    /// ts-2.11 — `cancel_account_deletion` declines exactly the canceller's
+    /// `cancel_account_deletion` declines exactly the canceller's
     /// incoming sessions that the deletion stamp gate refuses: sessions where
     /// the canceller is the PARTNER and that were created at or after the
     /// deletion request (the boundary is inclusive — a session stamped in the
@@ -9885,7 +9885,7 @@ mod acct_nh {
         );
     }
 
-    /// ts-2.11 — the deletion reaper's cascade erases every session naming the
+    /// The deletion reaper's cascade erases every session naming the
     /// subject, as opener and as partner, each with its snapshot and schedule
     /// rows; a strangers' session and the subject's peer's session with a
     /// third player survive byte-identical, and the account ends terminal.
@@ -9956,7 +9956,7 @@ mod acct_nh {
         assert_sessions_exactly(&w, &[&strangers, &peer_elsewhere], "ts2/reaper-erases");
     }
 
-    /// ts-2.11 — the confirm stamp gate and the other session reducers for a
+    /// The confirm stamp gate and the other session reducers for a
     /// deletion-gated caller (request stamp T). `confirm_trade_session` on a
     /// session created after T is refused with the deletion-gate reason and
     /// writes nothing; `set_trade_offer` and `open_trade_session` are refused
@@ -10112,8 +10112,8 @@ mod acct_nh {
         );
     }
 
-    /// ts-2.11 — the guest claim's `rekey_all` deletes every session naming
-    /// the retired guest (`from`) or the claimer (`to`), in either role, with
+    /// The guest claim's `rekey_all` deletes every session naming
+    /// the guest (`from`) or the claimer (`to`), in either role, with
     /// its snapshot and schedule rows; a strangers' session survives
     /// byte-identical. The guest's sessions list none of the guest's
     /// monsters, so the monster re-key hook cannot be what removes them.

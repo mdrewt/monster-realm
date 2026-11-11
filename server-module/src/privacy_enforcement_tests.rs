@@ -1972,7 +1972,7 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.12 — trade-session privacy, read from the GENERATED module definition
+// Trade-session privacy, read from the GENERATED module definition
 // (the artifact the host consumes) and through the shipped view entry point.
 // ---------------------------------------------------------------------------
 
@@ -2033,7 +2033,7 @@ fn ts2_view_row(
     (row_ref, columns)
 }
 
-/// ts-2.12 — in the generated module definition the three trade-session
+/// In the generated module definition the three trade-session
 /// tables are PRIVATE, and the only view over session data is
 /// `my_trade_session`: public, caller-scoped, parameterless, serving exactly
 /// the `trade_session` row. No view is named for, or serves the row of, the
@@ -2152,12 +2152,12 @@ fn ts2_privacy_session_tables_are_private() {
     );
 }
 
-/// ts-2.12 — through the SHIPPED view entry point, `my_trade_session` returns
+/// Through the SHIPPED view entry point, `my_trade_session` returns
 /// to each caller exactly the sessions it opened or was opened with, each
 /// once, full row values, and nothing to a stranger. Sessions: 8001 A→B,
 /// 8002 C→A, 8003 C→D (each row's offers, revision and stamp differ).
 ///
-/// Kills: the red-phase empty body; one arm only (the opener arm drops 8002
+/// Kills: an empty body; one arm only (the opener arm drops 8002
 /// for A and every session for B and D; the partner arm drops 8001 for A and
 /// every session for C); an arm keyed on the wrong column; a view serving
 /// every session (a full-table scan of a private table — the host refuses

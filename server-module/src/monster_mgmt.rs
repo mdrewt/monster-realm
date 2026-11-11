@@ -25,7 +25,7 @@ use spacetimedb::{Identity, ReducerContext};
 ///
 /// This is also the seam every write that can box a monster, faint it or
 /// re-key it goes through, so after the two writes it ends each trade session
-/// that lists the monster and can no longer be honoured
+/// that lists the monster and cannot be honoured
 /// (`trading_session::cancel_sessions_listing`).
 ///
 /// # Errors

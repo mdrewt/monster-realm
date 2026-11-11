@@ -411,8 +411,8 @@ pub(crate) fn decline_sessions(ctx: &ReducerContext, session_ids: &[u64]) {
 // --- Auto-cancel at the monster write seam -----------------------------------
 
 /// End every session that lists `written` when the row, as just written, is
-/// no longer its offerer's to give: it has another owner, it left the party,
-/// or it fainted. The verdict is the eligibility rule's own, asked about this
+/// not its offerer's to give: it has another owner, it left the party, or it
+/// fainted. The verdict is the eligibility rule's own, asked about this
 /// one monster; a write that keeps the monster offerable ends nothing.
 ///
 /// Called after every monster write that can re-own, box or faint a monster:

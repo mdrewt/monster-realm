@@ -1503,7 +1503,7 @@ fn ts2_auto_cancel_on_pvp_settle_writeback() {
 }
 
 /// The guest-claim re-key moves an offered monster to a new owner, so the side that offered
-/// it no longer owns it: the sessions listing A's monsters (A as opener, A as partner) are
+/// it is not its owner afterwards: the sessions listing A's monsters (A as opener, A as partner) are
 /// deleted and the stranger session is untouched.
 #[test]
 fn ts2_auto_cancel_on_rekey() {

@@ -1297,7 +1297,7 @@ fn s2_assert_reset_other(
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.1 — open_trade_session
+// open_trade_session
 // ---------------------------------------------------------------------------
 
 /// An accepted open inserts exactly one blank row — both offers empty, both
@@ -1626,7 +1626,7 @@ fn ts2_open_range_is_checked_before_the_pair_and_limit_rules() {
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.2 — no oracle on the partner's private state
+// No oracle on the partner's private state
 // ---------------------------------------------------------------------------
 
 /// One value of bob's private state. Every variant keeps bob's offered side
@@ -1969,7 +1969,7 @@ fn ts2_non_participant_same_as_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.3 — set_trade_offer
+// set_trade_offer
 // ---------------------------------------------------------------------------
 
 /// An accepted edit replaces only the caller's side: monster ids, items and
@@ -2631,7 +2631,7 @@ fn ts2_edit_holdings_net_only_other_confirmed_commitments() {
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.4 — confirm_trade_session (a confirm that does not complete the set)
+// confirm_trade_session (a confirm that does not complete the set)
 // ---------------------------------------------------------------------------
 
 /// The first confirm, from either seat, sets only the caller's flag; offers,
@@ -2812,7 +2812,7 @@ fn ts2_confirm_refuses_the_callers_own_side_reasons() {
     );
 }
 
-/// E3, driven by an EV-only change: alice has confirmed; bob's offered monster
+/// Snapshot drift, driven by an EV-only change: alice has confirmed; bob's offered monster
 /// gains one attack EV in its live row; bob's confirm — which would complete
 /// the set — returns `Ok(())` WITHOUT recording a confirm or moving anything:
 /// both flags false, revision + 1, that monster's snapshot row now the masked
@@ -3220,7 +3220,7 @@ fn ts2_confirm_deletion_gate_keys_on_the_session_stamp() {
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.7 / ts-2.8 / ts-2.9 — the confirm that completes the set (execute)
+// The confirm that completes the set (execute)
 // ---------------------------------------------------------------------------
 
 /// The execute re-runs `reject_if_in_battle` for BOTH sides over the player and
@@ -3349,7 +3349,7 @@ fn s2_other_side_fails(label: &str, break_it: impl FnOnce(&S2World<'_>)) -> Vec<
     bytes(&w.rows_of(bob()))
 }
 
-/// E4: whichever way the other participant's confirmed side (alice) has become
+/// Whichever way the other participant's confirmed side (alice) has become
 /// invalid — stack drained, coins spent, monster re-owned, in battle, fainted,
 /// boxed, a receipt that would overflow her own stack, holdings locked by
 /// another confirmed session or by a legacy offer — the caller's (bob's)
@@ -3954,7 +3954,7 @@ fn ts2_swap_headroom_guards_each_receiver() {
 }
 
 // ---------------------------------------------------------------------------
-// ts-2.10 (reaper half) — trade_session_reaper
+// trade_session_reaper
 // ---------------------------------------------------------------------------
 
 /// A caller other than the module identity is refused with the scheduler-only
@@ -4122,7 +4122,7 @@ fn ts2_reaper_deletes_a_stale_session_and_its_snapshots_but_not_the_fired_row() 
     assert!(w.assets() == assets, "the reaper moves no asset");
 }
 
-/// A fire whose session no longer exists answers Ok and writes nothing.
+/// A fire for a session that does not exist answers Ok and writes nothing.
 #[test]
 fn ts2_reaper_missing_session_is_ok() {
     let fx = fixture();
