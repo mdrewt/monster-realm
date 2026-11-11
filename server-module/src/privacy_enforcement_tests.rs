@@ -1354,6 +1354,7 @@ const EXPECTED_MODULES: &[&str] = &[
     "tactics_settle",
     "taming",
     "trading",
+    "trading_session",
 ];
 
 const EXPECTED_LIFECYCLE: &[&str] = &["init", "on_connect", "on_disconnect"];
