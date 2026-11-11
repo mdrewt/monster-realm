@@ -717,13 +717,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.sheet.feed': `Feed${ELLIPSIS}`, // boxView.ts
   'box.sheet.evolve': `Evolve${ELLIPSIS}`, // boxView.ts
   'box.sheet.feedNone': 'No food', // boxView.ts
-  // Trade.* (4 plain). qf-8 (named intentional change): `trade.action.{accept,reject,confirm,
-  // cancel}` ('Accept', 'Reject', 'Confirm Trade', 'Cancel') are RETIRED with the trade row's
-  // buttons; the Social sheet's `social.action.*` rows answer a trade.
+  // Trade.* (2 plain). ts-4.6: no offer-side heading (`trade.side.{offer,receive}`) is a catalog id;
+  // the trade root lists session rows only.
   'trade.status.none': 'No active trade', // tradeView.ts
-  'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
-  'trade.side.receive': 'You receive', // tradeView.ts (hoisted, #renderSide heading arg)
-  'trade.side.nothing': '(nothing)', // tradeView.ts
+  'trade.side.nothing': '(nothing)',
   // Shop.* (6 plain)
   'shop.title': 'Shop', // shopView.ts
   'shop.noShop': 'No shop available.', // shopView.ts
@@ -757,10 +754,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // 'shop.feedback.sold' are DELETED; the four parameterised `shop.feedback.{buy,sell}.{item,count}`
   // lines (SAMPLE_PARAMS / EXPECTED_PARAM_OUTPUTS) replace them, so 13 of these 15 remain.
   'chrome.feedback.disconnected': 'disconnected — try again', // careAction.ts:72 (performCare) / sessionModel.ts
-  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2668
-  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2675
-  'trade.feedback.completed': 'Trade complete!', // main.ts:2682
-  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2689
+  // ts-4.6: no `trade.feedback.*` line is a catalog id (no offer-based trade command settles).
   'chrome.rename.updated': 'Name updated!', // main.ts:2801
   // ts-3 (named intentional change, the Strangler): 'tradePropose.feedback.sent' ('Offer sent!')
   // is DELETED with the wizard (no success toast: the editor is the feedback); 12 of the 15 remain.
@@ -892,12 +886,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'social.tab.challenges': 'Challenges',
   'social.tab.rankings': 'Rankings',
   'social.players.placeholder': 'The player list is not available yet.',
+  // ts-4.6: the sheet's three rows and its one question (no offer-based trade row is listed).
   'social.action.accept': 'Accept',
   'social.action.decline': 'Decline',
-  'social.action.confirm': 'Confirm',
   'social.action.cancel': 'Cancel',
-  'social.confirm.declineTrade': 'Decline this trade?',
-  'social.confirm.confirmTrade': 'Complete this trade? It cannot be undone.',
   'social.confirm.declineChallenge': 'Decline this challenge?',
   // ts-3 (named intentional change, the Strangler): ctl-8e's 9 plain wizard keys
   // (`tradePropose.step.{target,offer,coins,ask,review}`, `tradePropose.review.{prompt,incomplete,
@@ -2560,10 +2552,11 @@ describe('ctl-8a: catalog.fr.ts, the keys ctl-8a adds', () => {
 });
 
 // =============================================================================
-// ctl-8d: the French values of the 12 keys ctl-8d adds (the Social tabs, the Players placeholder,
-// the action sheet's rows and its three Yes / No questions), pinned exactly as the English ones are
-// in EXPECTED_PLAIN above. Before each `?` stands a U+00A0 NO-BREAK SPACE: the French typography
-// convention catalog.fr.ts documents in its header and follows in `box.evolve.confirm`.
+// ctl-8d: the French values of the Social frame's 9 plain keys (the Social tabs, the Players
+// placeholder, the action sheet's three rows and its one Yes / No question; ts-4.6: no offer-based
+// trade row or question), pinned exactly as the English ones are in EXPECTED_PLAIN above. Before the
+// `?` stands a U+00A0 NO-BREAK SPACE: the French typography convention catalog.fr.ts documents in
+// its header and follows in `box.evolve.confirm`.
 // =============================================================================
 
 /** U+00C9 (capital E acute) and U+00A0 (no-break space), built by code point so the expected
@@ -2579,21 +2572,17 @@ const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
   'social.players.placeholder': `La liste des joueurs n${RIGHT_QUOTE}est pas encore disponible.`,
   'social.action.accept': 'Accepter',
   'social.action.decline': 'Refuser',
-  'social.action.confirm': 'Confirmer',
   'social.action.cancel': 'Annuler',
-  'social.confirm.declineTrade': `Refuser cet ${E_ACUTE}change${NO_BREAK_SPACE}?`,
-  'social.confirm.confirmTrade': `Conclure cet ${E_ACUTE}change${NO_BREAK_SPACE}? Cette action est irr${E_ACUTE}versible.`,
   'social.confirm.declineChallenge': `Refuser ce d${E_ACUTE}fi${NO_BREAK_SPACE}?`,
 };
 
-describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
-  it('ctl-8d FR-PINS: the 12 new plain keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
+describe('ctl-8d: catalog.fr.ts, the Social frame`s keys', () => {
+  it('ctl-8d FR-PINS: the 9 plain Social keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
     // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot); a French entry left
-    // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser, the two
-    // trade questions); a confirm question that drops the irreversibility; a straight apostrophe
-    // (not U+2019) in the placeholder; a decomposed or missing accent; and a question mark glued
-    // to its word or set off by a plain breaking space instead of the catalog's U+00A0 (a browser
-    // could wrap the `?` onto a line of its own).
+    // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser); a straight
+    // apostrophe (not U+2019) in the placeholder; a decomposed or missing accent; and a question
+    // mark glued to its word or set off by a plain breaking space instead of the catalog's U+00A0
+    // (a browser could wrap the `?` onto a line of its own).
     for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8D_PLAIN)) {
       const en = EXPECTED_PLAIN[key];
       expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
@@ -2604,8 +2593,62 @@ describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
     }
     expect(
       Object.keys(EXPECTED_FR_CTL8D_PLAIN).length,
-      'ANTI-VACUITY: all 12 ctl-8d keys are pinned in French',
-    ).toBe(12);
+      'ANTI-VACUITY: all 9 Social keys are pinned in French',
+    ).toBe(9);
+  });
+});
+
+// =============================================================================
+// ts-4 (ts-4.6): no catalog carries an id of the offer-based trade surface; the ids the session
+// rows, the session editor and the challenge sheet read stay in both.
+// =============================================================================
+
+/** The nine ids of the offer-based trade surface (the ts-4 plan "Resume 2"). HARD-CODED. */
+const TS46_RETIRED_IDS = [
+  'trade.side.offer',
+  'trade.side.receive',
+  'trade.feedback.accepted',
+  'trade.feedback.rejected',
+  'trade.feedback.completed',
+  'trade.feedback.cancelled',
+  'social.action.confirm',
+  'social.confirm.declineTrade',
+  'social.confirm.confirmTrade',
+] as const;
+
+/** Their neighbours that stay (other readers). HARD-CODED. */
+const TS46_KEPT_IDS = [
+  'trade.status.none',
+  'trade.status.open',
+  'trade.side.card',
+  'trade.side.currency',
+  'trade.side.nothing',
+  'trade.row.title',
+  'trade.row.marks',
+  'social.action.accept',
+  'social.action.decline',
+  'social.action.cancel',
+  'social.confirm.declineChallenge',
+] as const;
+
+describe('ts-4.6: the offer-based trade ids are in no catalog', () => {
+  it('ts-4.6 CATALOG-RETIRED: the nine offer-based trade ids are own keys of neither catalog.en nor catalog.fr nor the pinned roster, while their eleven neighbours stay in both', () => {
+    // WRONG IMPL KILLED: a retired id left in one catalog (a dead key catalogParity would also
+    // flag, or an en-only deletion that leaves fr carrying a stray); a deletion that takes a
+    // neighbour with it (the status line, the session row title and marks, the session editor's
+    // side lines or the challenge sheet would read a missing id).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    for (const id of TS46_RETIRED_IDS) {
+      expect(Object.hasOwn(en, id), `en ${id} is gone`).toBe(false);
+      expect(Object.hasOwn(fr, id), `fr ${id} is gone`).toBe(false);
+      expect(EXPECTED_KEYS.includes(id), `the pinned roster does not list ${id}`).toBe(false);
+    }
+    for (const id of TS46_KEPT_IDS) {
+      expect(Object.hasOwn(en, id), `en ${id} stays`).toBe(true);
+      expect(Object.hasOwn(fr, id), `fr ${id} stays`).toBe(true);
+      expect(EXPECTED_KEYS.includes(id), `the pinned roster lists ${id}`).toBe(true);
+    }
   });
 });
 

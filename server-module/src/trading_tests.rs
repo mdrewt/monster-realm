@@ -2716,16 +2716,118 @@ fn ts4_propose_shapes() -> Vec<Ts4Propose> {
     ]
 }
 
+/// The callers of the ts-4.1 matrix, against the world of
+/// `ts4_legacy_reducers_reject_before_any_read`: the initiator and the
+/// counterparty of live offers, a stranger, an identity with no `player` row and
+/// a deletion-gated player.
+fn ts4_callers() -> [(&'static str, Identity); 5] {
+    [
+        ("initiator", nh_a()),
+        ("counterparty", nh_b()),
+        ("stranger", nh_c()),
+        ("unjoined identity", ts4_unjoined()),
+        ("deletion-gated player", ts4_gated()),
+    ]
+}
+
+/// The trade ids of the ts-4.1 matrix: the four live offers of the populated
+/// world, a missing id and both extremes.
+const TS4_TRADE_IDS: [u64; 7] = [100, 101, 102, 103, 999, 0, u64::MAX];
+
+/// The size of the ts-4.1 matrix: 5 callers x (22 `propose_trade` shapes + 7
+/// trade ids x (accept, decline, confirm)).
+const TS4_MATRIX_CALLS: usize = 215;
+
+/// One call of a retired legacy reducer, with its arguments.
+enum Ts4Call {
+    Propose {
+        to: Identity,
+        give: Ts4Side,
+        take: Ts4Side,
+    },
+    Respond { trade_id: u64, accept: bool },
+    Confirm { trade_id: u64 },
+}
+
+/// One row of the ts-4.1 matrix.
+struct Ts4Case {
+    label: String,
+    caller: Identity,
+    call: Ts4Call,
+}
+
+/// The ts-4.1 matrix both ts-4.1 tests run: for every caller of
+/// [`ts4_callers`], every `propose_trade` shape of [`ts4_propose_shapes`], then
+/// for every id of [`TS4_TRADE_IDS`] `respond_trade` accepting, `respond_trade`
+/// declining and `confirm_trade`. Its length is pinned to [`TS4_MATRIX_CALLS`],
+/// so a matrix that lost a caller, a shape or an id fails both tests.
+fn ts4_matrix() -> Vec<Ts4Case> {
+    let mut cases = Vec::new();
+    for (who_label, who) in ts4_callers() {
+        for Ts4Propose {
+            label,
+            to,
+            give,
+            take,
+        } in ts4_propose_shapes()
+        {
+            cases.push(Ts4Case {
+                label: format!("propose_trade by the {who_label}: {label}"),
+                caller: who,
+                call: Ts4Call::Propose {
+                    to: to(who),
+                    give,
+                    take,
+                },
+            });
+        }
+        for trade_id in TS4_TRADE_IDS {
+            for accept in [true, false] {
+                cases.push(Ts4Case {
+                    label: format!(
+                        "respond_trade({trade_id}, accepted = {accept}) by the {who_label}"
+                    ),
+                    caller: who,
+                    call: Ts4Call::Respond { trade_id, accept },
+                });
+            }
+            cases.push(Ts4Case {
+                label: format!("confirm_trade({trade_id}) by the {who_label}"),
+                caller: who,
+                call: Ts4Call::Confirm { trade_id },
+            });
+        }
+    }
+    assert_eq!(
+        cases.len(),
+        TS4_MATRIX_CALLS,
+        "the ts-4.1 matrix is every caller x every shape and every trade id"
+    );
+    cases
+}
+
+/// Make `call` on `ctx` and return the reducer's answer.
+fn ts4_call(ctx: &spacetimedb::ReducerContext, call: Ts4Call) -> Result<(), String> {
+    match call {
+        Ts4Call::Propose { to, give, take } => {
+            super::propose_trade(ctx, to, give.0, give.1, give.2, take.0, take.1, take.2)
+        }
+        Ts4Call::Respond { trade_id, accept } => super::respond_trade(ctx, trade_id, accept),
+        Ts4Call::Confirm { trade_id } => super::confirm_trade(ctx, trade_id),
+    }
+}
+
 /// ts-4.1 on a populated, WRITABLE store: whatever offers, wallets, stacks,
 /// monsters, battles and account states exist, every call of the three legacy
 /// reducers — by the initiator and the counterparty of live offers (Pending and
 /// ConfirmedByCounterparty, in both roles), a stranger, an unjoined identity and
 /// a deletion-gated player; with every `propose_trade` shape of
 /// [`ts4_propose_shapes`]; with live, missing and extreme trade ids, accepting
-/// and declining — returns EXACTLY the retired-path error, leaves every row of
-/// every trade table byte-identical, and makes no write syscall on any of them.
-/// Every outcome is the same string, so no answer varies with the counterparty's
-/// holdings (F1) and no offer naming the counterparty's assets exists (F5).
+/// and declining (the [`ts4_matrix`]) — returns EXACTLY the retired-path error,
+/// leaves every row of every trade table byte-identical, and makes no write
+/// syscall on any of them. Every answer is that one string, so no answer varies
+/// with the counterparty's holdings (F1) and no offer naming the counterparty's
+/// assets exists (F5).
 ///
 /// The store is writable on purpose: a reducer that still inserts, updates or
 /// deletes an offer, reaper, monster, stack or wallet row does so and is caught
@@ -2824,8 +2926,7 @@ fn ts4_legacy_reducers_reject_before_any_read() {
     };
     let before = store();
     let want: Result<(), String> = Err(TS4_RETIRED.to_string());
-    let mut outcomes: Vec<String> = Vec::new();
-    let mut check = |label: String, got: Result<(), String>| {
+    let check = |label: String, got: Result<(), String>| {
         assert_eq!(
             got,
             want,
@@ -2844,56 +2945,18 @@ fn ts4_legacy_reducers_reject_before_any_read() {
             "{label}: the call made write syscalls {wrote:?} (a same-row update is a write a \
              subscriber is told about, even though the bytes do not change)"
         );
-        outcomes.push(format!("{got:?}"));
     };
 
-    let callers: [(&str, Identity); 5] = [
-        ("initiator", nh_a()),
-        ("counterparty", nh_b()),
-        ("stranger", nh_c()),
-        ("unjoined identity", ts4_unjoined()),
-        ("deletion-gated player", ts4_gated()),
-    ];
-    let ids: [u64; 7] = [100, 101, 102, 103, 999, 0, u64::MAX];
     let at = nh_at(NH_T0 + 5);
-    for &(who_label, who) in &callers {
-        for Ts4Propose {
-            label,
-            to,
-            give,
-            take,
-        } in ts4_propose_shapes()
-        {
-            let got = fx.run_as_at(who, at, |ctx| {
-                super::propose_trade(ctx, to(who), give.0, give.1, give.2, take.0, take.1, take.2)
-            });
-            check(format!("propose_trade by the {who_label}: {label}"), got);
-        }
-        for id in ids {
-            for accepted in [true, false] {
-                let got = fx.run_as_at(who, at, |ctx| super::respond_trade(ctx, id, accepted));
-                check(
-                    format!("respond_trade({id}, accepted = {accepted}) by the {who_label}"),
-                    got,
-                );
-            }
-            let got = fx.run_as_at(who, at, |ctx| super::confirm_trade(ctx, id));
-            check(format!("confirm_trade({id}) by the {who_label}"), got);
-        }
+    for Ts4Case {
+        label,
+        caller,
+        call,
+    } in ts4_matrix()
+    {
+        let got = fx.run_as_at(caller, at, move |ctx| ts4_call(ctx, call));
+        check(label, got);
     }
-
-    let calls = callers.len() * (ts4_propose_shapes().len() + ids.len() * 3);
-    assert_eq!(
-        outcomes.len(),
-        calls,
-        "every caller made every call (the loops ran)"
-    );
-    let distinct: std::collections::BTreeSet<&String> = outcomes.iter().collect();
-    assert_eq!(
-        distinct.len(),
-        1,
-        "one outcome for every caller and argument shape: {distinct:?}"
-    );
 }
 
 /// ts-4.1's "before any read", on a BARE host with no table registered.
@@ -2907,83 +2970,53 @@ fn ts4_legacy_reducers_reject_before_any_read() {
 /// empty and every index the stub touches lands in it. A table scan aborts the
 /// process (unmodelled), which fails the test as loudly.
 ///
-/// The calls run on the dummy context first (no runtime entry point at all, so
-/// the log must stay EMPTY), then as two real senders through `run_as_at`
-/// (warmed up once, so the log must not GROW past what the entry point itself
-/// asks for).
+/// The whole [`ts4_matrix`] runs twice: on the dummy context first (no runtime
+/// entry point at all, so the log must stay EMPTY after every call), then with
+/// each case's own caller as the sender through `run_as_at` (warmed up once at
+/// the same clock, so after every call the log must equal what the entry point
+/// itself asks for). The log is checked after EACH call, so a read that only
+/// one caller, one argument shape, one trade id or one of accept / decline
+/// triggers fails at that call.
 ///
 /// kills: a stub that looks up the caller's `player` row
 /// (`player_identity_idx_btree`), reads a wallet (`player_wallet_owner_identity_idx_btree`)
 /// or a stack (`inventory_owner_identity_idx_btree`), calls
 /// `guards::require_not_deleting` (`account_identity_idx_btree`), or finds the
-/// offer (`trade_offer_trade_id_idx_btree`) before returning the error.
+/// offer (`trade_offer_trade_id_idx_btree`) before returning the error — for
+/// every call, or only for the stranger caller, only for an over-cap vector,
+/// only for trade id 102, or only for a decline of id 999.
 #[test]
 fn ts4_legacy_reducers_request_no_index_on_a_bare_host() {
     let fx = fixture();
     let want: Result<(), String> = Err(TS4_RETIRED.to_string());
     let ctx = fx.ctx();
-    let got = [
-        super::propose_trade(
-            &ctx,
-            nh_b(),
-            vec![11],
-            vec![nh_item(5, 3)],
-            100,
-            vec![21],
-            vec![nh_item(6, 2)],
-            50,
-        ),
-        super::propose_trade(
-            &ctx,
-            nh_b(),
-            Vec::new(),
-            Vec::new(),
-            0,
-            Vec::new(),
-            Vec::new(),
-            0,
-        ),
-        super::respond_trade(&ctx, 100, true),
-        super::respond_trade(&ctx, 100, false),
-        super::confirm_trade(&ctx, 100),
-    ];
-    let asked = fx.requested_indexes();
-    assert!(
-        asked.is_empty(),
-        "the retired reducers asked this host for the indexes {asked:?} (results {got:?}): \
-         a retired reducer returns its error before ANY read"
-    );
-    for (call, got) in got.iter().enumerate() {
-        assert_eq!(*got, want, "dummy-context call {call}");
+    for Ts4Case { label, call, .. } in ts4_matrix() {
+        let got = ts4_call(&ctx, call);
+        let asked = fx.requested_indexes();
+        assert!(
+            asked.is_empty(),
+            "dummy context, {label}: the call asked this host for the indexes {asked:?} \
+             (result {got:?}); a retired reducer returns its error before ANY read"
+        );
+        assert_eq!(got, want, "dummy context, {label}");
     }
 
-    let warm_up: Result<(), String> = fx.run_as(nh_c(), |_| Ok(()));
-    assert_eq!(warm_up, Ok(()), "the run_as entry point runs");
+    let at = nh_at(NH_T0 + 5);
+    let warm_up: Result<(), String> = fx.run_as_at(nh_c(), at, |_| Ok(()));
+    assert_eq!(warm_up, Ok(()), "the run_as_at entry point runs");
     let baseline = fx.requested_indexes();
-    for who in [nh_a(), ts4_gated()] {
-        let got = fx.run_as_at(who, nh_at(NH_T0), |ctx| {
-            [
-                super::propose_trade(
-                    ctx,
-                    nh_b(),
-                    vec![11],
-                    vec![],
-                    0,
-                    vec![21],
-                    vec![nh_item(6, 9)],
-                    301,
-                ),
-                super::respond_trade(ctx, 101, true),
-                super::confirm_trade(ctx, 101),
-            ]
-        });
-        for (call, got) in got.iter().enumerate() {
-            assert_eq!(*got, want, "call {call} as {who}");
-        }
+    for Ts4Case {
+        label,
+        caller,
+        call,
+    } in ts4_matrix()
+    {
+        let got = fx.run_as_at(caller, at, move |ctx| ts4_call(ctx, call));
         assert_eq!(
             fx.requested_indexes(),
             baseline,
-            "the retired reducers called as {who} asked this host for an index"
+            "{label}: the call asked this host for an index (result {got:?})"
         );
+        assert_eq!(got, want, "{label}");
     }
 }

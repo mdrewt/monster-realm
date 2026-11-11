@@ -24,8 +24,8 @@ import {
 // challenge sheet's rows exactly, outside this slice).
 //
 // EVIDENCE LABEL: real modules + real CSS + a FAKE store. A real server cannot hand one player two
-// other online players, one incoming and one outgoing challenge, a pending trade and thirty ranked
-// profiles cheaply, and the geometry claims below need all four panels populated at once. The page
+// other online players, one incoming and one outgoing challenge, two trade sessions and thirty
+// ranked profiles cheaply, and the geometry claims below need all four panels populated at once. The page
 // is the real index.html and the real stylesheet served by the Vite dev server (main.ts is
 // route-aborted, so it never connects: the uif-8 UIF8.1 fixture-page precedent in ui-inventory.spec
 // .ts). The page-side code imports the real TradeView, PvpView, LeaderboardView, socialModel and
@@ -45,18 +45,20 @@ import {
 const VIEWPORT = { width: 1280, height: 720 } as const;
 
 // THE FIXTURE WORLD (a fake store): the viewer `Me`, two other online players (Alice, Bob), one
-// incoming challenge (from Alice) and one outgoing challenge (to Bob), one pending trade offered by
-// Alice, and thirty ranked profiles. The screen opens on Challenges (the cursor on the incoming
-// request); `__uif9.press('RB')` walks Rankings, Players, Trades, Challenges.
+// incoming challenge (from Alice) and one outgoing challenge (to Bob), two trade sessions (Alice
+// opened session 5 with the viewer, untouched: a waiting request; the viewer opened session 6 with
+// Bob), and thirty ranked profiles. The screen opens on Challenges (the incoming request is the
+// oldest waiting one; the cursor on it); `__uif9.press('RB')` walks Rankings, Players, Trades,
+// Challenges. On Trades the cursor row is session 5's row of `#trade-sessions`.
 const UIF9_MOUNT = `(async () => {
-  const [tv, pv, lv, sm, ss, tm, pm, lm] = await Promise.all([
+  const [tv, pv, lv, sm, ss, pm, lm] = await Promise.all([
     import('/src/ui/tradeView.ts'), import('/src/ui/pvpView.ts'), import('/src/ui/leaderboardView.ts'),
     import('/src/ui/socialModel.ts'), import('/src/ui/screens/socialScreen.ts'),
-    import('/src/ui/tradeModel.ts'), import('/src/ui/pvpModel.ts'), import('/src/ui/leaderboardModel.ts'),
+    import('/src/ui/pvpModel.ts'), import('/src/ui/leaderboardModel.ts'),
   ]);
   const me = 'aa'.repeat(16), p1 = 'bb'.repeat(16), p2 = 'cc'.repeat(16);
   const noop = async () => {};
-  const trade = new tv.TradeView({ onAccept: noop, onReject: noop, onConfirm: noop, onCancel: noop });
+  const trade = new tv.TradeView();
   const pvp = new pv.PvpView({ onAccept: noop, onDecline: noop, onCancel: noop });
   const board = new lv.LeaderboardView();
   const players = [
@@ -68,9 +70,11 @@ const UIF9_MOUNT = `(async () => {
     { challengeId: 1n, challenger: p1, target: me, challengerPartyIds: [], status: 'Pending', createdAtMs: 1n },
     { challengeId: 2n, challenger: me, target: p2, challengerPartyIds: [], status: 'Pending', createdAtMs: 2n },
   ];
-  const offers = [{ tradeId: 5n, initiator: p1, counterparty: me, initiatorMonsterIds: [], initiatorItems: [],
-    initiatorCurrency: 0n, counterpartyMonsterIds: [], counterpartyItems: [], counterpartyCurrency: 0n,
-    initiatorCards: [], counterpartyCards: [], status: 'Pending', createdAtMs: 3n }];
+  const side = () => ({ monsterIds: [], items: [], currency: 0n, cards: [] });
+  const session = (sessionId, opener, partner, createdAtMs) => ({ sessionId, opener, partner,
+    openerOffer: side(), partnerOffer: side(), openerConfirmed: false, partnerConfirmed: false,
+    revision: 1n, createdAtMs });
+  const sessions = [session(6n, me, p2, 4n), session(5n, p1, me, 3n)];
   const profiles = [];
   for (let i = 0; i < 30; i += 1) profiles.push({ identity: (i < 10 ? '0' : '') + i + 'd'.repeat(30), name: 'Ranked ' + i, rating: 1000 + i, wins: i, losses: 1 });
   const chrome = document.createElement('div');
@@ -79,14 +83,14 @@ const UIF9_MOUNT = `(async () => {
     trades: trade, challenges: pvp, rankings: board, chrome,
     show(panel) {
       if (views[panel].visible) return;
-      if (panel === 'tradeView') { trade.render(tm.buildTradeViewModel(offers, me, new Map(), new Map())); trade.show(); }
+      if (panel === 'tradeView') trade.show();
       if (panel === 'pvpView') pvp.refresh(pm.buildPvpChallengeViewModel(challenges, me, players), true);
       if (panel === 'leaderboardView') { board.render(lm.buildLeaderboardViewModel(profiles, me)); board.show(); }
       views[panel].hostChrome(chrome);
       for (const k of Object.keys(views)) if (k !== panel && views[k].visible) views[k].hide();
     },
   };
-  const vm = sm.buildSocialVm(null, offers, challenges, me, { players, characters: [], profiles });
+  const vm = sm.buildSocialVm(null, challenges, me, { players, characters: [], profiles }, sessions);
   let state = ss.socialScreen.init(vm, undefined);
   const paint = () => ss.socialScreen.paint(view, vm, state);
   paint();
@@ -231,12 +235,13 @@ interface PanelSnap {
   readonly container: { readonly margin: string; readonly padding: string } | null;
 }
 
-/** The row elements of each panel (a Challenges row is its container; Trades has the one row). */
+/** The row elements of each panel (a Challenges row is its container; Trades lists its session
+ *  rows in `#trade-sessions`, never `#trade-status`). */
 const ROW_SELECTORS: Readonly<Record<Tab, { rows: string; container: string | null }>> = {
   players: { rows: '#leaderboard-players > [data-nav-key]', container: '#leaderboard-players' },
   rankings: { rows: '#leaderboard-list > li', container: '#leaderboard-list' },
   challenges: { rows: '#pvp-challenge-incoming, #pvp-challenge-outgoing', container: null },
-  trades: { rows: '#trade-status', container: null },
+  trades: { rows: '#trade-sessions > [data-nav-key]', container: '#trade-sessions' },
 };
 
 const panelSnap = (p: Page, tab: Tab): Promise<PanelSnap> =>
@@ -414,7 +419,7 @@ test.describe
       }
 
       // Non-vacuity: rows exist on every panel, a cursor row on every panel, a non-cursor row on
-      // the three panels that have more than the one row.
+      // every panel (Trades lists its two session rows).
       for (const tab of TABS) {
         expect(snaps[tab].rows.length, `${tab}: rows are listed`).toBeGreaterThan(0);
         expect(
@@ -422,7 +427,8 @@ test.describe
           `${tab}: exactly one cursor row`,
         ).toBe(1);
       }
-      for (const tab of ['players', 'rankings', 'challenges'] as const) {
+      expect(snaps.trades.rows.length, 'Trades lists the two session rows').toBe(2);
+      for (const tab of TABS) {
         expect(
           snaps[tab].rows.filter((r) => !r.active).length,
           `${tab}: has a non-cursor row`,
@@ -460,11 +466,11 @@ test.describe
         }
       }
 
-      // Non-cursor rows: the same computed padding on Players, Rankings and Challenges.
+      // Non-cursor rows: the same computed padding on every panel.
       const nonCursor = (tab: Tab): string[] =>
         snaps[tab].rows.filter((r) => !r.active).map((r) => r.padding);
       const wantNonCursor = nonCursor('players')[0] as string;
-      for (const tab of ['players', 'rankings', 'challenges'] as const) {
+      for (const tab of TABS) {
         expect(
           [...new Set(nonCursor(tab))],
           `${tab}: every non-cursor row has Players' non-cursor padding`,
@@ -510,14 +516,14 @@ test.describe
       }
     });
 
-    test('UIF9.4 the Challenges tab lists each challenge as a RowCard with a visible border, the two cards do not overlap, the cursor card is treated differently from the other, the cursor row is one line of card tall; and the Trades panel holds no RowCard (its migration is M-trade-sessions ts-3)', async () => {
+    test('UIF9.4 the Challenges tab lists each challenge as a RowCard with a visible border, the two cards do not overlap, the cursor card is treated differently from the other, the cursor row is one line of card tall; and the Trades panel lists its session rows in #trade-sessions, the cursor on one of them and never on #trade-status, with no RowCard', async () => {
       // WRONG IMPL KILLED: today's bare label divs (no `.mr-card`: the locators match nothing); a
       // card with no border or one drawn in the panel's own colour (no visible separation); two
       // cards that touch or overlap; a cursor card styled exactly like the other (the kit's
       // `.mr-nav-item.is-active > .mr-card` rule is not reached); a ▶ that pushes the card onto a
-      // second line (the cursor row is taller than the other); a Trades tab migrated early (a card
-      // in the trade root: that tab is rebuilt by M-trade-sessions ts-3, feedback 086, so a card
-      // here would be thrown away).
+      // second line (the cursor row is taller than the other); a card wrapped around a session row
+      // or the status line; a cursor painted on `#trade-status` (the offer-based trade row's mark)
+      // beside or instead of the session row's.
       await goTo(page, 'challenges');
       const incoming = '#pvp-challenge-incoming > .mr-card';
       const outgoing = '#pvp-challenge-outgoing > .mr-card';
@@ -620,15 +626,34 @@ test.describe
         'the cursor row is one line of card tall (the ▶ does not wrap the card)',
       );
 
-      // Trades: no RowCard (deferred to M-trade-sessions ts-3).
+      // Trades: the two session rows, the cursor on the waiting one, the status line unmarked, and
+      // no RowCard.
       await goTo(page, 'trades');
       await expect(
-        page.locator('#trade-status'),
-        'precondition: the Trades panel shows',
+        page.locator('#trade-sessions'),
+        'precondition: the Trades panel shows its session rows',
       ).toBeVisible();
       await expect(
+        page.locator('#trade-sessions > [data-nav-key]'),
+        'one row per session the viewer is in',
+      ).toHaveCount(2);
+      await expect(
+        page.locator('#trade-sessions > .is-active'),
+        'the cursor is on one session row',
+      ).toHaveCount(1);
+      await expect(
+        page.locator('#trade-sessions > .is-active'),
+        'the waiting session (5) holds the cursor',
+      ).toHaveAttribute('data-nav-key', 'session-5');
+      await expect(
+        page.locator(
+          '#trade-status.mr-nav-item, #trade-status.is-active, #trade-status[aria-current]',
+        ),
+        'the status line carries no cursor mark',
+      ).toHaveCount(0);
+      await expect(
         page.locator('#trade-overlay .mr-card'),
-        'the Trades panel holds no RowCard (ts-3 rebuilds that tab)',
+        'the Trades panel holds no RowCard',
       ).toHaveCount(0);
     });
 

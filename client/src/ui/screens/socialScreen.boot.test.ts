@@ -11,10 +11,10 @@
  *   opens it on Challenges with the cursor on the request.
  * - CTL8D-2-BOOT-RESPOND: A on the incoming challenge opens a sheet Accept / Decline on Accept;
  *   Decline asks Yes / No on No and sends nothing until Yes; A on Yes sends one declineChallenge;
- *   A, A on the request then accepts it with the party ids (qf-8: the challenge panel's legacy
- *   Accept button is deleted, the sheet is its only Accept); then U, A, A accepts a waiting trade.
- * - CTL8D-3-BOOT-HOTKEYS: with a waiting trade in the store (the waiting-request rule's pick), U,
- *   P and L still open Social on Trades, Challenges and Rankings, each over its own root.
+ *   A, A on the request then accepts it with the party ids (the sheet is the challenge's only
+ *   Accept); then U, A on a waiting trade session opens its editor and sends nothing.
+ * - CTL8D-3-BOOT-HOTKEYS: with a waiting trade session in the store (the waiting-request rule's
+ *   pick), U, P and L still open Social on Trades, Challenges and Rankings, each over its own root.
  * - CTL8G-1-BOOT-PLAYERS, on Players the leaderboard root lists the other online players (the
  *   catalogued empty line while nobody is), a batch adding, re-sorting and removing players
  *   repaints the list while it shows (the Nearby badge by distance), A on a row shows the
@@ -49,7 +49,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mountIndexHtmlShell } from '../../../test-util/mainBootHarness';
 import type { WasmMoveInput } from '../../convert/convert';
 import type { Connection, ConnectionOptions } from '../../net/connection';
-import type { StoreBattleChallenge, StoreMonsterPub, StoreTradeOffer } from '../../net/store';
+import type { StoreBattleChallenge, StoreMonsterPub } from '../../net/store';
 import type { SocialTab } from './types';
 
 const H = vi.hoisted(() => ({
@@ -247,10 +247,10 @@ function teardownBoot(): void {
 const flush = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const EID = 7n;
-/** Another player: the challenger of every incoming challenge, the initiator of every trade. */
+/** Another player: the challenger of every incoming challenge, the opener of every session. */
 const OTHER = 'cd'.repeat(32);
 /** Distinct ids per row kind, so a command naming the wrong row shows. */
-const TRADE_ID = 11n;
+const SESSION_ID = 11n;
 const CHALLENGE_ID = 21n;
 const AUTO_SHOW_CHALLENGE_ID = 31n;
 const PARTY_MONSTER_ID = 51n;
@@ -322,23 +322,22 @@ function incomingChallenge(challengeId: bigint): StoreBattleChallenge {
   };
 }
 
-/** A Pending trade OTHER offered the booted player (the counterparty: a waiting request). */
-function waitingTrade(tradeId: bigint): StoreTradeOffer {
-  return {
-    tradeId,
-    initiator: OTHER,
-    counterparty: H.identity,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: 'Pending',
-    createdAtMs: 0n,
-  };
+/** Put an untouched trade session OTHER opened with the booted player (the partner: a waiting
+ *  request) in the store: the batch that delivers it is the caller's `server(at)`. */
+function waitingSession(sessionId: bigint): void {
+  opts.store.reconcileTradeSessionsFromView([
+    {
+      sessionId,
+      opener: OTHER,
+      partner: H.identity,
+      openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+      partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+      openerConfirmed: false,
+      partnerConfirmed: false,
+      revision: 1n,
+      createdAtMs: 0n,
+    },
+  ]);
 }
 
 /** The booted player's one party monster (slot 0), so a challenge Accept has a party to send. */
@@ -547,8 +546,7 @@ function navRows(container: HTMLElement): NavRows {
   };
 }
 
-/** The sheet of an incoming request (a challenge, or a trade offered to the player): Accept then
- *  Decline, the cursor on `active`. */
+/** The sheet of an incoming challenge: Accept then Decline, the cursor on `active`. */
 function expectAnswerSheet(label: string, active: 'accept' | 'decline'): void {
   expect(sheetShown(), `${label}: the sheet shows`).toBe(true);
   expect(navRows(el('social-sheet')), `${label}: Accept, Decline, the cursor on ${active}`).toEqual(
@@ -654,21 +652,16 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     );
   });
 
-  it('CTL8D-2-BOOT-RESPOND: with an incoming challenge, P then A opens a sheet Accept, Decline on Accept; Down, A on Decline asks the catalogued question with No selected and sends nothing; A on No closes the prompt and still sends nothing; A on Decline again, Up to Yes, A sends exactly one declineChallenge for that challenge; A, A on the request then sends one acceptChallenge with the party ids; and with a trade offered to the player U, A, A sends exactly one respondTrade accepting it', async () => {
+  it('CTL8D-2-BOOT-RESPOND: with an incoming challenge, P then A opens a sheet Accept, Decline on Accept; Down, A on Decline asks the catalogued question with No selected and sends nothing; A on No closes the prompt and still sends nothing; A on Decline again, Up to Yes, A sends exactly one declineChallenge for that challenge; A, A on the request then sends one acceptChallenge with the party ids; and with a trade session waiting for the player U lands on its row in #trade-sessions and A opens its editor over Social with no sheet and nothing sent', async () => {
     // WRONG IMPL KILLED: the legacy adapter (A does nothing on the Social frame); a sheet that
     // opens on Decline, or with a single action; a Decline that sends at once (skips the prompt)
     // or whose prompt defaults to Yes; a No that declines anyway; an Up that does not reach Yes;
     // a decline sent twice, as acceptChallenge or cancelChallenge, or for another id; an Accept on
     // the sheet sent without the player's party ids (the reducer would start a battle with no
-    // team); and a trade answer sent as accepted:false, as confirmTrade, for the wrong id, or only
-    // after a prompt.
-    // qf-8 (named intentional change, QF8.1): the step "the legacy Accept button in the pvp root
-    // stays directly clickable" clicked `[data-testid="pvp-accept-btn"]`; that button is deleted,
-    // so the acceptance (and its partyIds tooth) is the Social sheet's: A on the request, A on
-    // Accept.
-    // ctl-11a (named intentional change): RETIRED the stack `[world, social]` after P and after U
-    // (`expectSocialOn` reads it); REPLACED by `[world, menuView, social]`. The incoming challenge's
-    // auto-show (retired by ctl-13: the incoming challenge opens nothing).
+    // team); a session row that opens a sheet, sends a reducer call or marks the cursor on
+    // `#trade-status`; and an A on it that leaves the stack as it was (the editor unreachable).
+    // Social opened by U or P sits over the menu (`[world, menuView, social]`, `expectSocialOn`);
+    // an incoming challenge opens nothing by itself.
     await bootReady();
     server(1000);
     opts.store.upsertMonster(partyMonster(PARTY_MONSTER_ID));
@@ -741,27 +734,34 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     press('Escape', 1310);
     expect(stackNow(), 'precondition: Start closed Social').toEqual([WORLD_FRAME]);
 
-    // --- a trade offered to the player: U, A, A accepts it -------------------------------------
-    opts.store.upsertTradeOffer(waitingTrade(TRADE_ID));
+    // --- a trade session waiting for the player: U, A opens its editor -------------------------
+    waitingSession(SESSION_ID);
     server(1400);
-    expect(stackNow(), 'precondition: a trade opens nothing by itself').toEqual([WORLD_FRAME]);
+    expect(stackNow(), 'precondition: a session opens nothing by itself').toEqual([WORLD_FRAME]);
     H.calls = [];
     press('KeyU', 1500);
     expectSocialOn('U', 'trades');
-    expect(cursorMark(el('trade-status')), 'U: the cursor is on the offered trade').toEqual(MARKED);
+    expect(
+      navRows(el('trade-sessions')).activeByAria,
+      'U: the cursor is on the waiting session row',
+    ).toEqual([`session-${SESSION_ID}`]);
+    expect(cursorMark(el('trade-status')), 'U: the status line carries no cursor').toEqual(
+      UNMARKED,
+    );
     press('Enter', 1510);
-    expectAnswerSheet('A on the trade', 'accept');
-    expect(promptShown(), 'A on the trade: no prompt').toBe(false);
+    expect(sheetShown(), 'A on the session: no sheet').toBe(false);
+    expect(promptShown(), 'A on the session: no prompt').toBe(false);
+    const stack = stackNow();
+    expect(stack.length, 'A on the session pushes one frame over Social').toBe(
+      SOCIAL_STACK.length + 1,
+    );
+    expect(stack.slice(0, SOCIAL_STACK.length), 'Social stays beneath it').toEqual(SOCIAL_STACK);
+    expect(stack.at(-1), 'the new frame is not Social').not.toEqual(SOCIAL_ENTRY);
     await flush();
-    expect(H.calls, 'A on the trade only opens the sheet').toEqual([]);
-    press('Enter', 1520);
-    await flush();
-    expect(H.calls, 'U, A, A accepts that trade, once').toEqual([
-      { name: 'respondTrade', args: { tradeId: TRADE_ID, accepted: true } },
-    ]);
+    expect(H.calls, 'opening the editor sends nothing').toEqual([]);
   });
 
-  it('CTL8D-3-BOOT-HOTKEYS: with a trade offered to the player waiting in the store, U opens Social on Trades over the trade root, P on Challenges over the pvp root and L on Rankings over the leaderboard root, each with the four-tab strip in the shown root`s chrome and exactly its own tab selected', async () => {
+  it('CTL8D-3-BOOT-HOTKEYS: with a trade session waiting for the player in the store, U opens Social on Trades over the trade root, P on Challenges over the pvp root and L on Rankings over the leaderboard root, each with the four-tab strip in the shown root`s chrome and exactly its own tab selected', async () => {
     // WRONG IMPL KILLED: the legacy adapter (no strip is painted); an adapter that ignores the
     // requested tab and opens on the oldest waiting request's (P and L would open on Trades over
     // the trade root) or on the remembered tab (P would reopen on Trades, L on Challenges); and a
@@ -771,9 +771,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // bare world.
     await bootReady();
     server(1000);
-    opts.store.upsertTradeOffer(waitingTrade(TRADE_ID));
+    waitingSession(SESSION_ID);
     server(1010);
-    expect(stackNow(), 'precondition: a waiting trade opens nothing by itself').toEqual([
+    expect(stackNow(), 'precondition: a waiting trade session opens nothing by itself').toEqual([
       WORLD_FRAME,
     ]);
 
@@ -1193,11 +1193,11 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     teardownBoot();
     await bootReady();
     server(2000);
-    opts.store.upsertTradeOffer(waitingTrade(TRADE_ID));
+    waitingSession(SESSION_ID);
     server(2010);
     at = 2100;
     openSocialFromMenu();
-    expectSocialOn('menu row, a trade waits', 'trades');
+    expectSocialOn('menu row, a trade session waits', 'trades');
   });
 
   it('UIF9.5 with no frame open, an incoming trade session and an incoming challenge each show #notice-banner naming the sender and push no frame: the stack stays the bare world, no Social root shows, nothing is sent', async () => {
@@ -1226,25 +1226,10 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
         label: 'an incoming challenge',
         seed: () => opts.store.upsertChallenge(incomingChallenge(CHALLENGE_ID)),
       },
-      // ts-3 (named intentional change, C): a legacy trade_offer raises no notice any more; the
-      // incoming trade request is an untouched SESSION Zed opened with the player. Was:
-      // upsertTradeOffer(waitingTrade(TRADE_ID)).
+      // The incoming trade request is an untouched session Zed opened with the player.
       {
         label: 'an incoming trade session',
-        seed: () =>
-          opts.store.reconcileTradeSessionsFromView([
-            {
-              sessionId: TRADE_ID,
-              opener: OTHER,
-              partner: H.identity,
-              openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
-              partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
-              openerConfirmed: false,
-              partnerConfirmed: false,
-              revision: 1n,
-              createdAtMs: 0n,
-            },
-          ]),
+        seed: () => waitingSession(SESSION_ID),
       },
     ];
     let checked = 0;

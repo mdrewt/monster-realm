@@ -902,10 +902,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'shop.feedback.buy.item', // ctl-7d: a buy, naming the quantity, the item and the gold
       'shop.feedback.sell.count', // ctl-7d: a sell whose item definition is not loaded
       'shop.feedback.sell.item', // ctl-7d: a sell, naming the quantity, the item and the gold
-      'trade.feedback.accepted',
-      'trade.feedback.cancelled',
-      'trade.feedback.completed',
-      'trade.feedback.rejected',
+      // ts-4.6: no `trade.feedback.*` line (no offer-based trade command settles in main.ts).
       'tradeSession.notice.closed', // ts-3: a session left my_trade_session (once per batch)
     ]);
     const a11yLiteralKeys = new Set(
@@ -1310,15 +1307,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
     });
 
-    it('21r-b FR-04: every one of the 12 surviving 21r-b keys has a CATALOG_FR value strictly different from CATALOG_EN, and the retired tradePropose.feedback.sent is in neither catalog (kills an untranslated copy-through, red-team S3)', () => {
+    it('21r-b FR-04: every one of the 8 surviving 21r-b keys has a CATALOG_FR value strictly different from CATALOG_EN, and the retired tradePropose.feedback.sent and the four trade.feedback.* lines are in neither catalog (kills an untranslated copy-through, red-team S3)', () => {
       // The aggregate FR-01 tally (>=100/133 differ) can pass even while ONE specific key was
       // copy-pasted from en into fr — this test names each of the 21r-b keys individually so a
-      // single untranslated copy-through (e.g. 'trade.feedback.completed': 'Trade complete!'
-      // left unchanged in catalog.fr.ts) fails BY NAME, not just a lowered aggregate count.
-      // ctl-7d (forced by the id deletion): 'shop.feedback.purchased' and 'shop.feedback.sold' are
-      // deleted from both catalogs, so they leave this list (15 -> 13). Their per-key protection
-      // moves to CTL7D-4-CATALOG-BYTES below, which pins the exact en and fr bytes of the four
-      // `shop.feedback.{buy,sell}.{item,count}` lines that replace them.
+      // single untranslated copy-through (e.g. 'chrome.rename.updated': 'Name updated!' left
+      // unchanged in catalog.fr.ts) fails BY NAME, not just a lowered aggregate count.
+      // `shop.feedback.{purchased,sold}` are not catalog ids: CTL7D-4-CATALOG-BYTES below pins the
+      // exact en and fr bytes of the four `shop.feedback.{buy,sell}.{item,count}` lines instead.
       const NEW_KEYS_21R_B: readonly string[] = [
         'chrome.feedback.disconnected',
         'chrome.rename.updated',
@@ -1328,26 +1323,30 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         'chrome.session.unreachable.body',
         'chrome.session.continue',
         'chrome.session.confirmPrompt',
+      ];
+      expect(NEW_KEYS_21R_B.length, 'ANTI-VACUITY: the 21r-b keys that are still catalog ids').toBe(
+        8,
+      );
+      /** The 21r-b keys no catalog carries: the wizard's "sent" line (ts-3) and the four
+       *  offer-based trade outcome lines (ts-4.6). */
+      const RETIRED_21R_B: readonly string[] = [
+        'tradePropose.feedback.sent',
         'trade.feedback.accepted',
         'trade.feedback.rejected',
         'trade.feedback.completed',
         'trade.feedback.cancelled',
-        // ts-3 (named intentional change, the Strangler): 'tradePropose.feedback.sent' is deleted
-        // with the wizard (13 -> 12); its absence from both catalogs is asserted below.
       ];
-      expect(
-        NEW_KEYS_21R_B.length,
-        'ANTI-VACUITY: the 21r-b plan named 15 new keys; ctl-7d deleted 2 of them, ts-3 one more',
-      ).toBe(12);
 
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
       expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
       const safeFr = fr as Record<string, unknown>;
-      // WRONG IMPL KILLED: the wizard's "sent" line left behind in either catalog (a dead key the
-      // removed wizard no longer requests).
-      expect('tradePropose.feedback.sent' in en, 'retired from en').toBe(false);
-      expect('tradePropose.feedback.sent' in safeFr, 'retired from fr').toBe(false);
+      // WRONG IMPL KILLED: a retired line left behind in either catalog (a dead key nothing
+      // requests).
+      for (const retired of RETIRED_21R_B) {
+        expect(retired in en, `${retired} retired from en`).toBe(false);
+        expect(retired in safeFr, `${retired} retired from fr`).toBe(false);
+      }
 
       let checked = 0;
       for (const key of NEW_KEYS_21R_B) {
@@ -1360,7 +1359,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         ).not.toBe(en[key]);
         checked += 1;
       }
-      expect(checked, 'ANTI-VACUITY: all 12 keys must have been checked').toBe(12);
+      expect(checked, 'ANTI-VACUITY: all 8 keys must have been checked').toBe(8);
     });
 
     // -------------------------------------------------------------------------------------------

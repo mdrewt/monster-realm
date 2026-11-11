@@ -502,8 +502,8 @@ pub mod resolver_attacks {
     //   1. Player A starts a battle. party_monster_ids = [monster_42].
     //      monster_42.owner_identity = A.
     //   2. During the battle, monster_42 is traded/transferred to Player B.
-    //      monster_42.owner_identity = B. (No trading reducer exists yet, but
-    //      this gap becomes critical the moment it does.)
+    //      monster_42.owner_identity = B. (A trade session's swap re-owns
+    //      monsters, so this path is reachable.)
     //   3. Player A wins the battle. The HP write-back reducer does:
     //        let m = ctx.db.monster().find(party_monster_ids[0]);
     //        if m.owner_identity != ctx.sender { return Err } -- CORRECT CHECK
@@ -513,8 +513,7 @@ pub mod resolver_attacks {
     //        re-verifying, they write reduced HP onto B's monster.
     //
     // Impact:
-    // SILENT HP LOSS for the winner when any monster changes hands during battle
-    // (even if that path doesn't exist yet).
+    // SILENT HP LOSS for the winner when any monster changes hands during battle.
     // The spec MUST define what happens: abort with an error, or write-back only
     // monsters that still belong to the caller.
     //
@@ -522,13 +521,18 @@ pub mod resolver_attacks {
 
     #[test]
     fn m7b_2_owner_change_mid_battle_spec_gap() {
-        // Spec gap CLOSED + battle↔trade interlock.
+        // Spec gap CLOSED: write_back_party_hp aborts on an owner change.
         //
         // write_back_party_hp cannot be called from game-core (server-module depends on
         // game-core, not vice-versa). Source-scan asserts the abort-on-owner-change
-        // contract in write_back_party_hp and the two-direction interlock in trading.rs.
+        // contract in write_back_party_hp. The trade side of the interlock (a monster
+        // in an ongoing battle cannot be offered, and both sides are re-checked when a
+        // trade executes) is executed against real rows in
+        // server-module/src/trading_session_tests.rs:
+        // ts2_edit_refuses_each_ineligible_offer and
+        // ts2_execute_rechecks_battle_both_sides.
 
-        // --- Criterion 1: write_back_party_hp aborts on owner mismatch ---
+        // --- write_back_party_hp aborts on owner mismatch ---
         let battle_src = include_str!("../../../server-module/src/battle.rs");
         // Strip line-comment lines so commented-out code cannot satisfy assertions.
         let stripped_battle: String = battle_src
@@ -567,38 +571,6 @@ pub mod resolver_attacks {
             abort_pos < first_update_pos,
             "write_back_party_hp must abort BEFORE any `ctx.db.monster().monster_id().update(` \
          so the other player's monster row is untouched on owner mismatch (ADR-0106 M15a)."
-        );
-
-        // --- Criterion 2: both-direction battle↔trade interlock ---
-        let trading_src = include_str!("../../../server-module/src/trading.rs");
-        let stripped_trading: String = trading_src
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // propose_trade and confirm_trade must each call reject_if_in_battle (>= 2 sites).
-        let count = stripped_trading.matches("reject_if_in_battle").count();
-        assert!(
-            count >= 2,
-            "trading.rs must call reject_if_in_battle in both propose_trade and confirm_trade \
-         (m16.5a, ADR-0112). Found {count} occurrence(s); need >= 2."
-        );
-
-        // propose_trade must chain opponent_identity to catch PvP side-B participants.
-        let propose_start = stripped_trading
-            .find("fn propose_trade")
-            .expect("propose_trade must exist");
-        let respond_start = stripped_trading[propose_start..]
-            .find("fn respond_trade")
-            .map(|p| propose_start + p)
-            .unwrap_or(stripped_trading.len());
-        let propose_body = &stripped_trading[propose_start..respond_start];
-        assert!(
-            propose_body.contains("opponent_identity()"),
-            "propose_trade must chain `opponent_identity().filter(` to catch PvP side-B \
-         participants (ADR-0109/ADR-0112). Without this, a battling side-B monster can \
-         be freely traded out, creating a zombie battle."
         );
     }
 

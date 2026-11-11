@@ -62,10 +62,9 @@ import type {
   EssenceByAffinity,
   StoreBattleChallenge,
   StoreEvolutionPath,
-  StoreMonsterCard,
   StoreMonsterPub,
   StoreSpeciesRow,
-  StoreTradeOffer,
+  StoreTradeSession,
 } from '../net/store';
 // bt-12 (BT12.6): the deploy and results panels join the reachability sweep.
 import { type DeployMonster, DeployPanel, type DeployVM } from '../tactics/deployPanel';
@@ -112,8 +111,7 @@ import type {
   SocialTab,
 } from './screens/types';
 import { buildSocialVm, socialLayout } from './socialModel';
-import { buildTradeViewModel } from './tradeModel';
-import { type TradeCallbacks, TradeView } from './tradeView';
+import { type SocialSessionRow, TradeView } from './tradeView';
 
 /** The bound the criterion sets: D-pad / A presses (Start and tab switches included, as design
  *  §5 counts them) from the world to any accelerator target. */
@@ -207,7 +205,7 @@ const monstersLanding = (): NavState =>
 // REAL `socialScreen.init` picks at fresh memory (Players, with nothing waiting and nothing
 // requested: the menu opens Social with no tab). Neither the layout nor the landing is a typed
 // constant. Counting rule unchanged: each LB / RB / D-pad press is one.
-const SOCIAL_VM = buildSocialVm(null, [], [], 'reach-me', {
+const SOCIAL_VM = buildSocialVm(null, [], 'reach-me', {
   players: [],
   characters: [],
   profiles: [],
@@ -687,9 +685,9 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 //    Flee (deleted by qf-7c: the command list's Run is the only flee), plus one INTEGRATED
 //    row: the Social sheet now owns the words Accept / Decline / Cancel / Confirm, so an element
 //    carrying one of them anywhere else in the document is a duplicate. Each row renders its view
-//    through EVERY state it lists, in sequence on one view (the states a store batch can bring: the
-//    trade panel's and the battle's are built by the REAL trade and battle models over store-shaped
-//    rows, so no proof rests on a state the model never yields), and after each one asserts:
+//    through EVERY state it lists, in sequence on one view (the states a store batch or a screen
+//    paint can bring: the trade panel's are the Social screen's paints of its session rows), and
+//    after each one asserts:
 //    (a) no retired selector, label or text anywhere under `document.documentElement` (a control
 //        appended beside `body` counts; closed shadow roots are walked through happy-dom's own
 //        slot), all text read as a player reads it (`qf8Normalise`: NFKC, zero-width characters
@@ -715,11 +713,12 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 //  - QF8.1, the pointer route to every deleted action, through the real adapter, the real view and
 //    the real PointerSource (each click is the D-pad presses the pointer source plans), every view
 //    built with RECORDING callbacks that are asserted never called (the nav path's command is the
-//    only send): Evolve (QF8-1-EVOLVE-POINTER), Move (QF8-1-MOVE-POINTER), the Social sheet's trade
-//    answers (QF8-1-SOCIAL-TRADE-POINTER) and its challenge answers (QF8-1-SOCIAL-CHALLENGE-POINTER).
-//    A trade or challenge ROW is not a `[data-nav-key]` row (it carries the cursor by class: a
-//    pre-existing limit, CTL15.2 unchanged), so a pointer player opens the Social sheet with the
-//    hint bar's A chip (pointerSource.ts presses the chip's button) and then clicks the sheet rows.
+//    only send): Evolve (QF8-1-EVOLVE-POINTER), Move (QF8-1-MOVE-POINTER), Social › Trades' session
+//    rows (QF8-1-SOCIAL-TRADE-POINTER: `[data-nav-key]` rows, a click opens that session's editor)
+//    and the Social sheet's challenge answers (QF8-1-SOCIAL-CHALLENGE-POINTER). A challenge ROW is
+//    not a `[data-nav-key]` row (it carries the cursor by class: a pre-existing limit, CTL15.2
+//    unchanged), so a pointer player opens the Social sheet with the hint bar's A chip
+//    (pointerSource.ts presses the chip's button) and then clicks the sheet rows.
 //  - QF8.3: no e2e file still names a retired raising id or a DOM hook of a deleted button.
 //
 // NOT COVERED: no QF8.2 row any more. The battle row is covered now (qf-7c, QF7B.3: qf-7c deleted
@@ -733,7 +732,7 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 // D-PAD ROUTES (already pinned, nothing added here): Evolve, monstersScreen.test.ts
 // CTL8C-1-EVOLVE-COMMAND (with CTL8C-1-EVOLVE-LIST, CTL8C-1-EVOLVE-CONFIRM-NO; e2e/evolution.spec.ts V1
 // reaches the list by D-pad); Move, monstersScreen.test.ts CTL8B-2-MOVE-COMMAND; the Social sheet,
-// socialScreen.test.ts CTL8D-2-SHEET-TRADE / CTL8D-2-SHEET-CHALLENGE / CTL8D-2-COMMANDS and
+// socialScreen.test.ts CTL8D-2-SHEET-CHALLENGE / CTL8D-2-COMMANDS / ts-3.4 (the session rows) and
 // socialScreen.boot.test.ts CTL8D-2-BOOT-RESPOND, e2e/pvp.spec.ts ctl-8d.
 // =============================================================================
 
@@ -892,15 +891,6 @@ function qf8Recorder(): {
         calls.push(`${name}(${args.map(String).join(', ')})`);
         return Promise.resolve();
       },
-  };
-}
-
-function qf8TradeCallbacks(rec: ReturnType<typeof qf8Recorder>): TradeCallbacks {
-  return {
-    onAccept: rec.record('onAccept'),
-    onReject: rec.record('onReject'),
-    onConfirm: rec.record('onConfirm'),
-    onCancel: rec.record('onCancel'),
   };
 }
 
@@ -1660,98 +1650,58 @@ function qf8RenderBox(): Qf8Rendered {
   };
 }
 
-// ---- the trade panel: EVERY offer the trade model can show the player, built by the REAL
-// `buildTradeViewModel` over store-shaped offers (its action table: Accept / Reject, Cancel,
-// Confirm / Cancel, Cancel, none), and no offer at all ----
+// ---- the trade panel: the session rows the Social frame paints on the Trades tab (two rows, the
+// cursor on one; no row), and the Players tab's placeholder ----
 
-/** U+00D7 MULTIPLICATION SIGN, the item row's quantity mark, by code point. */
-const QF8_TIMES = String.fromCodePoint(0x00d7);
-/** The species names the trade model resolves the offered card through. */
-const QF8_TRADE_SPECIES: ReadonlyMap<number, { readonly name: string }> = new Map([
-  [1, { name: 'Sproutle' }],
-]);
-/** A card Bob offers (no genes: a trade card snapshot). */
-const QF8_TRADE_CARD: StoreMonsterCard = {
-  monsterId: 41n,
-  speciesId: 1,
-  nickname: 'Bix',
-  level: 4,
-  currentHp: 12,
-  statHp: 15,
-};
-
-/** Each state's offers (store-shaped, `qf8Offer`'s cells) and the lines it alone shows. */
-function qf8TradeOffers(): ReadonlyArray<
-  readonly [name: string, offers: readonly StoreTradeOffer[], shows: readonly string[]]
-> {
-  return [
-    [
-      'an offer to the player: a card, an item and gold',
-      [
-        {
-          ...qf8Offer('waiting', 7n),
-          initiatorCards: [QF8_TRADE_CARD],
-          initiatorItems: [{ itemId: 3, qty: 2 }],
-          counterpartyCurrency: 50n,
-        },
-      ],
-      [
-        i18nTf('trade.side.card', {
-          nickname: 'Bix',
-          species: 'Sproutle',
-          level: 4,
-          current: 12,
-          max: 15,
-        }),
-        `Unknown (#3) ${QF8_TIMES}2`,
-        i18nTf('trade.side.currency', { amount: 50n }),
-      ],
-    ],
-    ['an offer the player sent', [qf8Offer('sent', 8n)], []],
-    ['an offer Bob accepted, awaiting the player`s Confirm', [qf8Offer('toConfirm', 9n)], []],
-    ['an offer the player accepted, awaiting Bob`s Confirm', [qf8Offer('accepted', 10n)], []],
-    [
-      'an offer in a status this client does not know',
-      [
-        {
-          ...qf8Offer('waiting', 11n),
-          status: 'Disputed' as unknown as StoreTradeOffer['status'],
-        },
-      ],
-      [],
-    ],
-    ['no offer', [], []],
-  ];
-}
+/** Two session rows as the Social screen paints them: Bob opened one with the player (both
+ *  unconfirmed), the player opened one with Carol and confirmed its side. */
+const QF8_SESSION_ROWS: readonly SocialSessionRow[] = [
+  { key: 'session-101', partnerName: 'Bob', mineConfirmed: false, theirsConfirmed: false },
+  { key: 'session-102', partnerName: 'Carol', mineConfirmed: true, theirsConfirmed: false },
+];
 
 function qf8RenderTrade(): Qf8Rendered {
   const parent = document.createElement('div');
   document.body.appendChild(parent);
   const overlay = qf8MountTradeShell(parent);
-  const rec = qf8Recorder();
   const baseline = qf8NativeControls();
-  const view = new TradeView(qf8TradeCallbacks(rec));
+  const view = new TradeView();
   view.show();
-  const built = qf8TradeOffers().map(
-    ([name, offers, shows]) =>
-      [name, buildTradeViewModel(offers, QF8_ME, QF8_TRADE_SPECIES, new Map()), shows] as const,
-  );
-  expect(
-    built.map(([, vm]) => (vm.kind === 'trade' ? vm.actions : vm.kind)),
-    'fixture: the states span every action set tradeModel.ts yields (and its no-trade shape)',
-  ).toEqual([['accept', 'reject'], ['cancel'], ['confirm', 'cancel'], ['cancel'], [], 'no-trade']);
+  // The Social chrome is painted off-document here: this row judges the trade root (the sheet and
+  // the strip are the socialSheet row's).
+  const chrome = document.createElement('div');
+  const paint = (tab: SocialTab, sessions: readonly SocialSessionRow[]) => (): void =>
+    view.paintSocial(chrome, {
+      tab,
+      sessions,
+      sessionCursor: sessions[0]?.key ?? null,
+      sheet: null,
+      confirm: null,
+    });
   return {
     root: overlay,
     baseline,
-    calls: rec.calls,
-    states: built.map(([name, vm, shows]) => ({
-      name,
-      apply: () => view.render(vm),
-      anchors: () =>
-        vm.kind === 'trade'
-          ? [vm.statusLabel, i18nT('trade.side.offer'), i18nT('trade.side.receive'), ...shows]
-          : [i18nT('trade.status.none')],
-    })),
+    states: [
+      {
+        name: 'the Trades tab with two session rows, the cursor on the first',
+        apply: paint('trades', QF8_SESSION_ROWS),
+        anchors: () => [
+          i18nT('trade.status.open'),
+          i18nTf('trade.row.title', { name: 'Bob' }),
+          i18nTf('trade.row.title', { name: 'Carol' }),
+        ],
+      },
+      {
+        name: 'the Trades tab with no session row',
+        apply: paint('trades', []),
+        anchors: () => [i18nT('trade.status.none')],
+      },
+      {
+        name: 'the Players tab',
+        apply: paint('players', QF8_SESSION_ROWS),
+        anchors: () => [i18nT('social.players.placeholder')],
+      },
+    ],
     dispose: () => {
       view.hide();
       parent.remove();
@@ -1951,7 +1901,7 @@ function qf8RenderEvolution(): Qf8Rendered {
 }
 
 // ---- INTEGRATED: the Social frame's chrome hosted in the challenge panel, its sheet open on the
-// incoming challenge, the trade panel holding an offer to answer (the trade model's). The words
+// incoming challenge, the trade panel built beside it with session rows in the paint. The words
 // Accept / Decline / Cancel / Confirm are LIVE here (the sheet's rows, e2e/pvp.spec.ts ctl-8d reads
 // them), so the row pins WHERE they may live, not that they are gone ----
 
@@ -1962,7 +1912,7 @@ function qf8RenderSocialSheet(): Qf8Rendered {
   qf8MountPvpShell(parent);
   const rec = qf8Recorder();
   const baseline = qf8NativeControls();
-  const trade = new TradeView(qf8TradeCallbacks(rec));
+  const trade = new TradeView();
   const pvp = new PvpView(qf8PvpCallbacks(rec));
   const chrome = document.createElement('div');
   return {
@@ -1973,19 +1923,15 @@ function qf8RenderSocialSheet(): Qf8Rendered {
       {
         name: 'the Challenges panel with the sheet open on the incoming challenge',
         apply: () => {
-          // The batch renders both roots; the Social frame shows the Challenges panel alone.
-          trade.render(
-            buildTradeViewModel([qf8Offer('waiting', 7n)], QF8_ME, new Map(), new Map()),
-          );
+          // The Social frame shows the Challenges panel alone; the trade root stays hidden.
           pvp.refresh(QF8_PVP_VM, true);
           pvp.hostChrome(chrome);
           trade.paintSocial(chrome, {
             tab: 'challenges',
-            tradeCursor: false,
+            sessions: QF8_SESSION_ROWS,
+            sessionCursor: null,
             sheet: { actions: ['accept', 'decline'], active: 'accept' },
             confirm: null,
-            sessions: [],
-            sessionCursor: null,
           });
           pvp.paintCursor('incoming');
         },
@@ -2065,15 +2011,24 @@ const QF8_RETIRED: readonly Qf8Row[] = [
   {
     view: 'tradeView',
     retiredTitle:
-      'the trade panel, rendered from the real trade model over every offer it can show (one to answer, one sent, one awaiting the player`s Confirm, one the player accepted, one in an unknown status, none), renders no #trade-actions button, no data-action element and no element labelled Accept, Reject, Confirm Trade or Cancel (however its spaces are spelled), registers no listener, on* handler or shadow root beyond its focus trap, and no pointer, mouse, touch, focus or key event on any element, the document or the window reaches a TradeCallbacks member [QF8-2-TRADE-RETIRED]',
+      'the trade panel, painted by the Social frame with two session rows (the cursor on one), with none, and on the Players tab, renders no #trade-actions button, no data-action element, no You offer / You receive side and no element labelled Accept, Reject, Confirm Trade or Cancel (however its spaces are spelled), registers no listener, on* handler or shadow root beyond its focus trap, and no pointer, mouse, touch, focus or key event on any element, the document or the window sends anything [QF8-2-TRADE-RETIRED]',
     nativeTitle:
-      'with the trade panel shown over each offer the trade model can show, the document gains no native control or tab stop [QF8-2-TRADE-NATIVE]',
-    retiredSelectors: ['#trade-actions button', '[data-action]'],
+      'with the trade panel shown in each of those states, the document gains no native control or tab stop beyond the one nav container of the session rows [QF8-2-TRADE-NATIVE]',
+    retiredSelectors: [
+      '#trade-actions button',
+      '[data-action]',
+      '#trade-my-side *',
+      '#trade-their-side *',
+    ],
     retiredLabels: [/^accept$/i, /^reject$/i, /^confirm trade$/i, /^cancel$/i],
-    retiredText: [],
+    // The headings only the offer's two sides rendered (their catalog ids are gone, so the former
+    // English is spelled here).
+    retiredText: ['You offer', 'You receive'],
     // The dialog's focus trap on the shell (show() -> overlayA11y.ts's installTrap).
     ownRegistrations: ['root keydown capture'],
-    allowedDelta: {},
+    // `renderNav` makes the session rows' container the root's one tab stop (ui/navRender.ts); the
+    // rows themselves are `div`s with a role.
+    allowedDelta: { 'div#trade-sessions[role="listbox"][tabindex="0"]': 1 },
     render: qf8RenderTrade,
   },
   {
@@ -2112,7 +2067,7 @@ const QF8_RETIRED: readonly Qf8Row[] = [
   {
     view: 'socialSheet',
     retiredTitle:
-      'with the Social chrome hosted in the challenge panel and its sheet open on the incoming challenge (the trade panel holding an offer to answer, built by the trade model), every element labelled Accept, Decline, Cancel or Confirm (however its spaces are spelled) is a row of #social-sheet, the document gains no native control or tab stop beyond the sheet and Yes / No nav containers, nothing registers a listener, on* handler or shadow root beyond the challenge panel`s focus trap, and no pointer, mouse, touch, focus or key event on any element, the document or the window reaches a trade or challenge view callback [QF8-2-SOCIAL-SHEET-LABELS]',
+      'with the Social chrome hosted in the challenge panel and its sheet open on the incoming challenge (the trade panel built beside it, session rows in the paint), every element labelled Accept, Decline, Cancel or Confirm (however its spaces are spelled) is a row of #social-sheet, the document gains no native control or tab stop beyond the sheet and Yes / No nav containers, nothing registers a listener, on* handler or shadow root beyond the challenge panel`s focus trap, and no pointer, mouse, touch, focus or key event on any element, the document or the window reaches a trade or challenge view callback [QF8-2-SOCIAL-SHEET-LABELS]',
     retiredSelectors: [
       '#trade-actions button',
       '[data-action]',
@@ -2997,28 +2952,18 @@ describe('an outside click closes the Monsters sheet and lands on its target (ui
 const QF8_BOB = 'cd'.repeat(32);
 const QF8_CAROL = 'ef'.repeat(32);
 
-/** Trade `tradeId` between Bob and the player: an offer TO the player (Accept / Decline), one the
- *  player sent (Cancel), one Bob accepted that awaits the player's final Confirm (Confirm /
- *  Cancel), or one the player accepted that awaits Bob's Confirm (Cancel) — tradeModel.ts's action
- *  table, all four cells. */
-function qf8Offer(
-  cell: 'waiting' | 'sent' | 'toConfirm' | 'accepted',
-  tradeId: bigint,
-): StoreTradeOffer {
-  const playerStarted = cell === 'sent' || cell === 'toConfirm';
+/** Trade session `sessionId` between `opener` and `partner`, both sides empty and unconfirmed. */
+function qf8Session(sessionId: bigint, opener: string, partner: string): StoreTradeSession {
+  const side = { monsterIds: [], items: [], currency: 0n, cards: [] };
   return {
-    tradeId,
-    initiator: playerStarted ? QF8_ME : QF8_BOB,
-    counterparty: playerStarted ? QF8_BOB : QF8_ME,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: cell === 'toConfirm' || cell === 'accepted' ? 'ConfirmedByCounterparty' : 'Pending',
+    sessionId,
+    opener,
+    partner,
+    openerOffer: side,
+    partnerOffer: side,
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
     createdAtMs: 1_000n,
   };
 }
@@ -3056,14 +3001,12 @@ interface Qf8SocialHarness {
  *  on a game screen holding the hint bar's A chip. Every press is painted as the shell paints it. */
 function qf8SocialHarness(
   tab: SocialTab,
-  offers: readonly StoreTradeOffer[],
+  sessions: readonly StoreTradeSession[],
   challenges: readonly StoreBattleChallenge[],
 ): Qf8SocialHarness {
   const ctx = {
     store: {
-      allTradeOffers: () => offers.map((offer) => ({ ...offer })),
-      // ts-3: the Social frame also reads the viewer's trade sessions (none in these cases).
-      allTradeSessions: () => [],
+      allTradeSessions: () => sessions.map((session) => ({ ...session })),
       allChallenges: () => challenges.map((challenge) => ({ ...challenge })),
       allPlayers: () => [],
       characters: () => [].values(),
@@ -3089,9 +3032,8 @@ function qf8SocialHarness(
   gameScreen.appendChild(hintBar);
 
   const rec = qf8Recorder();
-  const trade = new TradeView(qf8TradeCallbacks(rec));
+  const trade = new TradeView();
   const pvp = new PvpView(qf8PvpCallbacks(rec));
-  trade.render(buildTradeViewModel(offers, QF8_ME, new Map(), new Map()));
   const pvpVm = buildPvpChallengeViewModel(challenges, QF8_ME, []);
   const chrome = document.createElement('div');
   const frame: SocialFrameView = {
@@ -3159,95 +3101,43 @@ function qf8NavRows(listSelector: string): string[] {
 }
 
 describe('the Social sheet answers trades and challenges by pointer (qf-8, QF8.1)', () => {
-  it('a pointer player answers trades from the Social sheet: a click on the hint bar A chip opens the sheet on Accept, a click on Accept sends respondTrade accepted:true once, a click on Decline opens the Yes / No prompt on No and sends nothing and a click on Yes then sends respondTrade accepted:false; on a trade awaiting the player`s Confirm a click on Confirm asks first and Yes sends confirmTrade, a click on Cancel sends cancelTrade; on a trade the player sent the one-row sheet`s Cancel sends cancelTrade; no trade view callback is ever called [QF8-1-SOCIAL-TRADE-POINTER]', () => {
-    // WRONG IMPL KILLED: once the trade row's buttons are deleted, the Social sheet is a pointer
-    // player's only way to answer a trade: sheet rows that are not `[data-nav-key]` rows; a sheet
-    // the seek cannot prove driven (the one-row Cancel sheet needs the aria-modal root); an Accept
-    // that sends accepted:false, a Decline or a Confirm that sends without its prompt or whose
-    // prompt defaults to Yes, a Cancel sent as a respond; a second send per click; and a view
-    // handler left on the trade root (a view-side send beside the sheet's command).
-    const offered = qf8SocialHarness('trades', [qf8Offer('waiting', 11n)], []);
+  it('a pointer player reaches Social › Trades: the session rows are #trade-sessions nav rows, the cursor on the waiting one; a click on the hint bar A chip opens THAT session`s editor, a click on the other session`s row opens ITS editor, each once and with no sheet; #trade-status carries no cursor; no view callback is ever called [QF8-1-SOCIAL-TRADE-POINTER]', () => {
+    // WRONG IMPL KILLED: a session row that is not a `[data-nav-key]` row (a pointer player could
+    // not open a trade); a session row that opens a sheet instead of the editor; the editor opened
+    // on the cursor's session whatever row was clicked, or on the first session; a second send per
+    // click; the cursor painted on `#trade-status` (a second cursor beside the row's); and a view
+    // handler left on the trade root (a view-side send beside the screen's command).
+    const trades = qf8SocialHarness(
+      'trades',
+      [qf8Session(102n, QF8_ME, QF8_CAROL), qf8Session(101n, QF8_BOB, QF8_ME)],
+      [],
+    );
     try {
       expect(
-        document.getElementById('trade-status')?.getAttribute('aria-current'),
-        'precondition: the Social cursor is on the offered trade',
-      ).toBe('true');
+        qf8NavRows('#trade-sessions'),
+        'precondition: two session rows, the cursor on Bob`s waiting one',
+      ).toEqual(['session-101:true', 'session-102:false']);
+      expect(
+        document.getElementById('trade-status')?.getAttribute('aria-current') ?? null,
+        'the status line carries no cursor',
+      ).toBeNull();
+      trades.clickChip();
+      expect(trades.fired, 'the chip opens the editor of the session under the cursor').toEqual([
+        { kind: 'openTradeEditor', sessionId: 101n },
+      ]);
       expect(
         (document.getElementById('social-sheet') as HTMLElement).hidden,
-        'precondition: no sheet yet',
+        'no sheet opens on a session row',
       ).toBe(true);
-      offered.clickChip();
-      expect(qf8NavRows('#social-sheet'), 'the chip opened the sheet, Accept selected').toEqual([
-        'accept:true',
-        'decline:false',
+      trades.click('#trade-sessions [data-nav-key="session-102"]');
+      expect(trades.fired, 'a click on the other row opens ITS editor, once').toEqual([
+        { kind: 'openTradeEditor', sessionId: 101n },
+        { kind: 'openTradeEditor', sessionId: 102n },
       ]);
-      expect(offered.fired, 'opening the sheet sends nothing').toEqual([]);
-      offered.click('#social-sheet [data-nav-key="accept"]');
-      expect(offered.fired, 'a click on Accept accepts, once').toEqual([
-        { kind: 'respondTrade', tradeId: 11n, accepted: true },
-      ]);
-      expect(offered.phase(), 'and the sheet closes').toEqual({ kind: 'list' });
-
-      offered.clickChip();
-      offered.click('#social-sheet [data-nav-key="decline"]');
-      expect(
-        document.getElementById('social-prompt-text')?.textContent,
-        'a click on Decline asks the catalogued question',
-      ).toBe(i18nT('social.confirm.declineTrade'));
-      expect(qf8NavRows('#social-confirm'), 'No selected').toEqual(['yes:false', 'no:true']);
-      expect(offered.fired, 'the question sends nothing').toHaveLength(1);
-      offered.click('#social-confirm [data-nav-key="yes"]');
-      expect(offered.fired, 'a click on Yes declines, once').toEqual([
-        { kind: 'respondTrade', tradeId: 11n, accepted: true },
-        { kind: 'respondTrade', tradeId: 11n, accepted: false },
-      ]);
-      expect(offered.viewCalls(), 'no trade view callback: the command is the only send').toEqual(
-        [],
-      );
+      expect(trades.phase(), 'the frame stays in its list').toEqual({ kind: 'list' });
+      expect(trades.viewCalls(), 'no view callback: the command is the only send').toEqual([]);
     } finally {
-      offered.dispose();
-    }
-
-    const toConfirm = qf8SocialHarness('trades', [qf8Offer('toConfirm', 12n)], []);
-    try {
-      toConfirm.clickChip();
-      expect(qf8NavRows('#social-sheet'), 'Confirm, then Cancel, Confirm selected').toEqual([
-        'confirm:true',
-        'cancel:false',
-      ]);
-      toConfirm.click('#social-sheet [data-nav-key="confirm"]');
-      expect(
-        document.getElementById('social-prompt-text')?.textContent,
-        'a click on Confirm asks first',
-      ).toBe(i18nT('social.confirm.confirmTrade'));
-      expect(qf8NavRows('#social-confirm'), 'No selected').toEqual(['yes:false', 'no:true']);
-      expect(toConfirm.fired, 'the question sends nothing').toEqual([]);
-      toConfirm.click('#social-confirm [data-nav-key="yes"]');
-      expect(toConfirm.fired, 'a click on Yes confirms, once').toEqual([
-        { kind: 'confirmTrade', tradeId: 12n },
-      ]);
-      toConfirm.clickChip();
-      toConfirm.click('#social-sheet [data-nav-key="cancel"]');
-      expect(toConfirm.fired, 'a click on Cancel cancels at once').toEqual([
-        { kind: 'confirmTrade', tradeId: 12n },
-        { kind: 'cancelTrade', tradeId: 12n },
-      ]);
-      expect(toConfirm.viewCalls(), 'no trade view callback').toEqual([]);
-    } finally {
-      toConfirm.dispose();
-    }
-
-    const sent = qf8SocialHarness('trades', [qf8Offer('sent', 13n)], []);
-    try {
-      sent.clickChip();
-      expect(qf8NavRows('#social-sheet'), 'a one-row sheet: Cancel').toEqual(['cancel:true']);
-      sent.click('#social-sheet [data-nav-key="cancel"]');
-      expect(sent.fired, 'the one-row Cancel is proven driven and cancels, once').toEqual([
-        { kind: 'cancelTrade', tradeId: 13n },
-      ]);
-      expect(sent.viewCalls(), 'no trade view callback').toEqual([]);
-    } finally {
-      sent.dispose();
+      trades.dispose();
     }
   });
 

@@ -34,19 +34,35 @@ import { ownerSql, sqlRows } from './stdb';
 //     writes one trade_session_snapshot row per offered monster;
 //   - the confirm that completes the pair executes the swap and deletes the session, its snapshot
 //     rows and its schedule row; each received monster lands in the receiver's lowest free party
-//     slot once its own outgoing monster has left (slot 0 for a one-monster party).
+//     slot once its own outgoing monster has left (game-core trading/session.rs `arrival_slots`);
+//     item and coin legs debit the giver and credit the receiver by exactly the offered amount.
 //   - a fresh identity has exactly one starter monster, no items and no wallet row.
+//
+// SEEDED STATE (owner SQL, ./stdb.ts `ownerSql`). A fresh identity holds no item and no coin, so
+// without seeding the conservation checks below could not fail for items or coins. Before the
+// open the swap test seeds: A a stack of ITEM_X and a wallet, B a stack of ITEM_X and a wallet,
+// and gives B a second monster that STAYS in party slot 0 (a third identity C's starter, moved to
+// B by owner SQL on `monster` and `monster_pub`), with B's own starter moved to party slot 2. So
+// B's lowest free slot after its outgoing monster leaves is 1: a received monster parked in a
+// constant slot 0, in the sender's old slot, in the receiver's vacated slot or in Storage lands
+// elsewhere. A keeps a one-monster party, so its arrival slot is 0 only when the vacated slot
+// counts as free.
 //
 // EARS CRITERIA COVERED
 // =====================
-//   m16.5d-1  window.__mrTrade exposes exactly the six session functions
+//   m16.5d-1  window.__mrTrade exposes exactly allPlayers and the five session functions
+//             (openTradeSession, setTradeOffer, confirmTradeSession, cancelTradeSession,
+//             mySessions)
 //   m16.5d-2  openTradeSession creates one session row, revision 0, seen by both players, with its
 //             reaper schedule row
-//   m16.5d-3  both setTradeOffer calls land (revision 2, one snapshot row per offered monster) and
-//             the opener's confirm is recorded and seen by the partner
-//   m16.5d-4  the partner's confirm executes: the two monsters swap owners (server truth), nothing
-//             is duplicated or lost, items and wallets are unchanged, and the session, snapshot
-//             and schedule rows are gone from the server and from both clients' mySessions()
+//   m16.5d-3  both setTradeOffer calls land (revision 2, each side's monster, item and coin legs,
+//             one snapshot row per offered monster) and the opener's confirm is recorded and seen
+//             by the partner
+//   m16.5d-4  the partner's confirm executes: the two offered monsters swap owners into the
+//             receivers' lowest free party slots (server truth), nothing is duplicated or lost,
+//             each side's item count and coin balance moves by exactly the traded amount with
+//             both totals conserved, and the session, snapshot and schedule rows are gone from
+//             the server and from both clients' mySessions()
 
 interface GameSnap {
   identity: string;
@@ -102,6 +118,27 @@ const HOOK_MEMBERS = [
 
 const PARTY_SIZE = 6;
 
+/** A KNOWN item id (`item_row` holds it; the swap test re-proves that): an unknown id is refused
+ *  by set_trade_offer before the stack rule. Item 1 is the bait recruit.spec.ts seeds. */
+const ITEM_X = 1;
+/** A's seeded stack of ITEM_X and how many of it A gives: a partial stack, so A keeps a row. */
+const A_STACK = 5;
+const A_ITEM_LEG = 2;
+/** B's seeded stack of ITEM_X: non-zero, so a receiver credit that overwrites instead of adding
+ *  shows. */
+const B_STACK = 3;
+/** The seeded balances and the coins B gives A. A's balance is non-zero for the same reason. */
+const A_WALLET = 300;
+const B_WALLET = 200;
+const B_COIN_LEG = 50;
+/** Where B's own starter (the monster B gives) is moved before the open, and where the monster
+ *  B keeps sits: B's lowest free slot once its outgoing monster leaves is then 1. */
+const B_OUTGOING_SLOT = 2;
+const B_KEPT_SLOT = 0;
+const B_ARRIVAL_SLOT = '1';
+/** A gives its only monster, so its vacated slot 0 is its lowest free slot. */
+const A_ARRIVAL_SLOT = '0';
+
 async function gameReady(p: Page): Promise<void> {
   await p.waitForFunction(
     () => {
@@ -129,7 +166,7 @@ const snapOf = (p: Page): Promise<GameSnap> =>
 /** A reducer call through the hook, made in the page. */
 type HookCall =
   | { kind: 'open'; partner: string }
-  | { kind: 'offer'; sessionId: string; monsterIds: string[] }
+  | { kind: 'offer'; sessionId: string; offer: HookOffer }
   | { kind: 'confirm'; sessionId: string; revision: string }
   | { kind: 'cancel'; sessionId: string };
 
@@ -144,11 +181,7 @@ const send = (p: Page, call: HookCall): Promise<{ name: string; message: string 
         sent = w.__mrTrade.openTradeSession(c.partner);
         break;
       case 'offer':
-        sent = w.__mrTrade.setTradeOffer(c.sessionId, {
-          monsterIds: c.monsterIds,
-          items: [],
-          currency: '0',
-        });
+        sent = w.__mrTrade.setTradeOffer(c.sessionId, c.offer);
         break;
       case 'confirm':
         sent = w.__mrTrade.confirmTradeSession(c.sessionId, c.revision);
@@ -276,14 +309,77 @@ function serverMonsters(owners: string[]): Map<string, { owner: string; partySlo
   return out;
 }
 
-/** Every row of `table` with a cell naming one of `owners`, each as its sorted cell list. Used for
- *  tables whose only job here is "unchanged" (inventory, player_wallet). */
-function serverRowsOf(table: 'inventory' | 'player_wallet', owners: string[]): string[] {
-  const rows = sqlRows(ownerSql(`SELECT * FROM ${table}`, table), table);
-  return rows
-    .filter((r) => Object.values(r).some((cell) => owners.includes(norm(cell))))
-    .map((r) => JSON.stringify(Object.entries(r).sort(([x], [y]) => x.localeCompare(y))))
-    .sort();
+/** Every item `owners` hold, as `"<owner>:<item_id>" -> summed count`: one key per held
+ *  (owner, item) pair, so an item the trade must not touch, or a second stack row, shows too. */
+function serverItemTotals(owners: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of sqlRows(ownerSql('SELECT * FROM inventory', 'inventory'), 'inventory')) {
+    const owner = norm(r.owner_identity ?? '');
+    if (!owners.includes(owner)) continue;
+    const key = `${owner}:${(r.item_id ?? '').trim()}`;
+    out[key] = (out[key] ?? 0) + Number((r.count ?? '').trim());
+  }
+  return out;
+}
+
+/** Every wallet row of `owners`, as `owner -> balance`. An owner with no row has no key. */
+function serverBalances(owners: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of sqlRows(ownerSql('SELECT * FROM player_wallet', 'player_wallet'), 'wallet')) {
+    const owner = norm(r.owner_identity ?? '');
+    if (!owners.includes(owner)) continue;
+    if (owner in out) throw new Error(`wallet: two player_wallet rows for ${owner}`);
+    out[owner] = Number((r.balance ?? '').trim());
+  }
+  return out;
+}
+
+const sum = (m: Record<string, number>): number => Object.values(m).reduce((a, b) => a + b, 0);
+
+/** Owner SQL: one stack of `itemId` for `ownerHex` (inv_id 0 asks auto_inc for a fresh id). */
+function seedStack(ownerHex: string, itemId: number, count: number, label: string): void {
+  ownerSql(
+    `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${ownerHex}, ${itemId}, ${count})`,
+    label,
+  );
+}
+
+/** Owner SQL: a wallet row for `ownerHex`, which must have none yet. */
+function seedWallet(ownerHex: string, balance: number, label: string): void {
+  ownerSql(
+    `INSERT INTO player_wallet (owner_identity, balance) VALUES (0x${ownerHex}, ${balance})`,
+    label,
+  );
+}
+
+/** Owner SQL: one column of one monster, on the private row AND its `monster_pub` projection (the
+ *  server writes both together; apply_swap reads both). */
+function setMonsterColumn(
+  monsterId: string,
+  column: 'owner_identity' | 'party_slot',
+  value: string,
+  label: string,
+): void {
+  const mid = decimal(monsterId, label);
+  if (!/^(0x[0-9a-f]{64}|[0-9]+)$/.test(value)) throw new Error(`${label}: bad value ${value}`);
+  for (const table of ['monster', 'monster_pub'] as const) {
+    ownerSql(`UPDATE ${table} SET ${column} = ${value} WHERE monster_id = ${mid}`, label);
+  }
+}
+
+/** `monster_pub`'s owner and slot for `monsterId` (the projection the owner's client reads). */
+function serverMonsterPub(monsterId: string): { owner: string; partySlot: string } | null {
+  const mid = decimal(monsterId, 'monster_pub');
+  const row = sqlRows(
+    ownerSql(
+      `SELECT monster_id, owner_identity, party_slot FROM monster_pub WHERE monster_id = ${mid}`,
+      'monster_pub',
+    ),
+    'monster_pub',
+  )[0];
+  return row === undefined
+    ? null
+    : { owner: norm(row.owner_identity ?? ''), partySlot: row.party_slot ?? '' };
 }
 
 /** The server's session rows between the two identities (either orientation). */
@@ -340,8 +436,13 @@ test.describe
     let ctxB: BrowserContext;
     let pageB: Page;
 
+    // C never trades: its starter is the monster B keeps in party slot 0 (see SEEDED STATE).
+    let browserC: Browser;
+    let ctxC: BrowserContext;
+    let pageC: Page;
+
     test.beforeAll(async () => {
-      // Two separate browser instances — each gets a distinct SpacetimeDB identity.
+      // Three separate browser instances — each gets a distinct SpacetimeDB identity.
       browserA = await chromium.launch();
       ctxA = await browserA.newContext();
       pageA = await ctxA.newPage();
@@ -350,21 +451,28 @@ test.describe
       ctxB = await browserB.newContext();
       pageB = await ctxB.newPage();
 
+      browserC = await chromium.launch();
+      ctxC = await browserC.newContext();
+      pageC = await ctxC.newPage();
+
       await pageA.goto('/');
       await pageB.goto('/');
-      await Promise.all([gameReady(pageA), gameReady(pageB)]);
+      await pageC.goto('/');
+      await Promise.all([gameReady(pageA), gameReady(pageB), gameReady(pageC)]);
     });
 
     test.afterAll(async () => {
       await browserA?.close().catch(() => undefined);
       await browserB?.close().catch(() => undefined);
+      await browserC?.close().catch(() => undefined);
     });
 
     // -------------------------------------------------------------------------
-    // WHAT THIS KILLS: a main.ts that drops or renames a session function, or that keeps (or
-    // re-adds) any other member — a retired trade call on the hook fails the exact key list.
+    // WHAT THIS KILLS: a main.ts that drops or renames allPlayers or a session function, or that
+    // exposes any other member — a proposeTrade / respondTrade / confirmTrade / cancelTrade call
+    // on the hook fails the exact key list.
     // -------------------------------------------------------------------------
-    test('m16.5d-1: window.__mrTrade exposes exactly the six trade session functions', async () => {
+    test('m16.5d-1: window.__mrTrade exposes exactly allPlayers and the five trade session functions', async () => {
       const shape = await pageA.evaluate(() => {
         const hook = (window as unknown as { __mrTrade?: Record<string, unknown> }).__mrTrade;
         if (hook === undefined) return null;
@@ -375,7 +483,7 @@ test.describe
       expect(shape, 'window.__mrTrade is installed').not.toBeNull();
       expect(
         (shape ?? []).map((m) => m.key),
-        'window.__mrTrade has exactly the session functions',
+        'window.__mrTrade has exactly allPlayers and the session functions',
       ).toEqual(HOOK_MEMBERS);
       expect(
         (shape ?? []).map((m) => m.type),
@@ -384,49 +492,116 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // Scenario: A walks onto B's tile, opens a session, each offers its starter, A confirms, B
-    // confirms last and the swap executes.
+    // Scenario: B is given a kept monster in slot 0 and its starter moves to slot 2; A and B are
+    // seeded a stack of ITEM_X and a wallet. A walks onto B's tile and opens a session; A offers
+    // its starter plus A_ITEM_LEG of ITEM_X, B offers its starter plus B_COIN_LEG coins; A
+    // confirms, B confirms last and the swap executes.
     //
     // WHAT THIS KILLS:
     //   m16.5d-2  an open that writes no row, the wrong opener/partner, a non-zero first
     //             revision, or no reaper schedule row;
-    //   m16.5d-3  an offer that does not land (revision, offers, snapshot rows), or a confirm that
-    //             is not recorded;
+    //   m16.5d-3  an offer that does not land (revision, monster / item / coin legs, snapshot
+    //             rows), or a confirm that is not recorded;
     //   m16.5d-4  an execute that leaves the session, a snapshot or the schedule row behind; that
-    //             moves the wrong monster, destroys or mints one (the owned-id union changes), parks
-    //             a received monster outside the first free party slot, or touches items/wallets;
-    //             a client that keeps a deleted session in mySessions().
+    //             moves the wrong monster, destroys or mints one (the owned-id union changes), or
+    //             moves the kept one; that parks a received monster in a constant slot 0, in the
+    //             sender's old slot, in the receiver's vacated slot, past a vacated slot or in
+    //             Storage; that moves monsters only (no item or coin leg lands); that debits
+    //             without crediting or credits without debiting (a total changes); that
+    //             overwrites the receiver's stack or balance with the traded amount instead of
+    //             adding it; that moves a whole stack or a whole wallet; a client that keeps a
+    //             deleted session in mySessions().
     // -------------------------------------------------------------------------
     test('m16.5d-2 m16.5d-3 m16.5d-4: open face to face, both offer, both confirm at the current revision; the swap conserves every asset by server truth and the session, its snapshots and its reaper schedule are gone', async () => {
-      test.setTimeout(120_000);
+      test.setTimeout(150_000);
       await closeAll(pageA);
       await closeAll(pageB);
 
       const aBefore = await snapOf(pageA);
       const bBefore = await snapOf(pageB);
+      const cBefore = await snapOf(pageC);
       const idA = aBefore.identity;
       const idB = bBefore.identity;
       expect(idA, 'two players, two identities').not.toBe(idB);
       const hA = hexOf(idA, 'A');
       const hB = hexOf(idB, 'B');
+      const hC = hexOf(cBefore.identity, 'C');
+      expect([hC === hA, hC === hB], 'C is a third identity').toEqual([false, false]);
 
-      // Each fresh identity holds exactly its one starter, in the party.
+      // Each fresh identity holds exactly its one starter, in the party, and no item or coin.
       expect(aBefore.ownMonsters.length, 'A holds exactly its starter').toBe(1);
       expect(bBefore.ownMonsters.length, 'B holds exactly its starter').toBe(1);
-      const monA = aBefore.ownMonsters[0]?.monsterId ?? '';
-      const monB = bBefore.ownMonsters[0]?.monsterId ?? '';
+      expect(cBefore.ownMonsters.length, 'C holds exactly its starter').toBe(1);
+      const monA = decimal(aBefore.ownMonsters[0]?.monsterId ?? '', 'A starter');
+      const monB = decimal(bBefore.ownMonsters[0]?.monsterId ?? '', 'B starter');
+      const monC = decimal(cBefore.ownMonsters[0]?.monsterId ?? '', 'C starter');
       expect(aBefore.ownMonsters[0]?.partySlot ?? PARTY_SIZE).toBeLessThan(PARTY_SIZE);
       expect(bBefore.ownMonsters[0]?.partySlot ?? PARTY_SIZE).toBeLessThan(PARTY_SIZE);
+      expect(serverItemTotals([hA, hB]), 'precondition: A and B hold no item').toEqual({});
+      expect(serverBalances([hA, hB]), 'precondition: A and B have no wallet row').toEqual({});
+      const known = sqlRows(ownerSql('SELECT id FROM item_row', 'item_row'), 'item_row').map((r) =>
+        (r.id ?? '').trim(),
+      );
+      expect(known, `item ${ITEM_X} exists in item_row`).toContain(`${ITEM_X}`);
 
       expect(await sessionBetween(pageA, idA, idB), 'precondition: no session yet').toBeNull();
       expect(serverSessions(hA, hB), 'precondition: no session row on the server').toEqual([]);
 
-      // Server truth before the trade.
+      // --- Seed: B keeps C's starter in slot 0 and gives its own from slot 2; stacks; wallets.
+      setMonsterColumn(monB, 'party_slot', `${B_OUTGOING_SLOT}`, 'B starter to its slot');
+      setMonsterColumn(monC, 'owner_identity', `0x${hB}`, 'C starter to B');
+      setMonsterColumn(monC, 'party_slot', `${B_KEPT_SLOT}`, 'C starter to B slot');
+      seedStack(hA, ITEM_X, A_STACK, 'seed A stack');
+      seedStack(hB, ITEM_X, B_STACK, 'seed B stack');
+      seedWallet(hA, A_WALLET, 'seed A wallet');
+      seedWallet(hB, B_WALLET, 'seed B wallet');
+
+      // Server truth before the trade, seeded state included.
       const monstersBefore = serverMonsters([hA, hB]);
-      expect(monstersBefore.get(monA)?.owner, 'server: A owns its starter').toBe(hA);
-      expect(monstersBefore.get(monB)?.owner, 'server: B owns its starter').toBe(hB);
-      const inventoryBefore = serverRowsOf('inventory', [hA, hB]);
-      const walletsBefore = serverRowsOf('player_wallet', [hA, hB]);
+      expect(monstersBefore.get(monA), 'server: A owns its starter').toEqual({
+        owner: hA,
+        partySlot: aBefore.ownMonsters[0]?.partySlot.toString() ?? '',
+      });
+      expect(monstersBefore.get(monB), 'server: B`s starter sits in its seeded slot').toEqual({
+        owner: hB,
+        partySlot: `${B_OUTGOING_SLOT}`,
+      });
+      expect(monstersBefore.get(monC), 'server: B keeps a monster in slot 0').toEqual({
+        owner: hB,
+        partySlot: `${B_KEPT_SLOT}`,
+      });
+      expect(serverMonsterPub(monC), 'server: the kept monster`s projection matches').toEqual({
+        owner: hB,
+        partySlot: `${B_KEPT_SLOT}`,
+      });
+      expect(serverMonsterPub(monB)?.partySlot, 'server: B`s starter projection slot').toBe(
+        `${B_OUTGOING_SLOT}`,
+      );
+      const itemsBefore = serverItemTotals([hA, hB]);
+      const balancesBefore = serverBalances([hA, hB]);
+      expect(itemsBefore, 'server: the seeded stacks').toEqual({
+        [`${hA}:${ITEM_X}`]: A_STACK,
+        [`${hB}:${ITEM_X}`]: B_STACK,
+      });
+      expect(balancesBefore, 'server: the seeded wallets').toEqual({
+        [hA]: A_WALLET,
+        [hB]: B_WALLET,
+      });
+      // B's client holds both monsters before the trade (the projection reaches the owner).
+      await expect
+        .poll(
+          async () =>
+            (await snapOf(pageB)).ownMonsters.map((m) => `${m.monsterId}@${m.partySlot}`).sort(),
+          { message: 'B`s client holds its starter and the kept monster', timeout: 20_000 },
+        )
+        .toEqual([`${monB}@${B_OUTGOING_SLOT}`, `${monC}@${B_KEPT_SLOT}`].sort());
+
+      const offerA: HookOffer = {
+        monsterIds: [monA],
+        items: [{ itemId: ITEM_X, qty: A_ITEM_LEG }],
+        currency: '0',
+      };
+      const offerB: HookOffer = { monsterIds: [monB], items: [], currency: `${B_COIN_LEG}` };
 
       try {
         // --- m16.5d-2: A walks onto B's tile and opens the session ------------------------
@@ -453,13 +628,13 @@ test.describe
         ]);
         expect(serverReaperRows(sid), 'server: the open armed one reaper schedule row').toBe(1);
 
-        // --- m16.5d-3: both offer their starter; A confirms ----------------------------------
+        // --- m16.5d-3: A offers its starter and items, B its starter and coins; A confirms ----
         expectAccepted(
-          await send(pageA, { kind: 'offer', sessionId: sid, monsterIds: [monA] }),
+          await send(pageA, { kind: 'offer', sessionId: sid, offer: offerA }),
           'A offers',
         );
         expectAccepted(
-          await send(pageB, { kind: 'offer', sessionId: sid, monsterIds: [monB] }),
+          await send(pageB, { kind: 'offer', sessionId: sid, offer: offerB }),
           'B offers',
         );
         const offered = await waitSession(
@@ -467,11 +642,12 @@ test.describe
           idA,
           idB,
           'both offers land',
-          (s) =>
-            s.revision === '2' &&
-            s.openerOffer.monsterIds.join() === monA &&
-            s.partnerOffer.monsterIds.join() === monB,
+          (s) => s.revision === '2' && s.partnerOffer.monsterIds.join() === monB,
         );
+        expect(
+          { opener: offered.openerOffer, partner: offered.partnerOffer },
+          'each side holds exactly its monster, item and coin legs',
+        ).toEqual({ opener: offerA, partner: offerB });
         expect(serverSnapshotMonsters(sid), 'server: one snapshot row per offered monster').toEqual(
           [monA, monB].sort(),
         );
@@ -509,14 +685,25 @@ test.describe
         expect(serverReaperRows(sid), 'server: its reaper schedule row is deleted').toBe(0);
 
         const monstersAfter = serverMonsters([hA, hB]);
-        expect(monstersAfter.get(monA), 'server: A`s starter now belongs to B, in slot 0').toEqual({
+        expect(
+          monstersAfter.get(monA),
+          'server: A`s starter now belongs to B, in B`s lowest free slot (slot 0 is kept, slot 2 vacated)',
+        ).toEqual({ owner: hB, partySlot: B_ARRIVAL_SLOT });
+        expect(
+          monstersAfter.get(monB),
+          'server: B`s starter now belongs to A, in A`s vacated slot 0',
+        ).toEqual({ owner: hA, partySlot: A_ARRIVAL_SLOT });
+        expect(monstersAfter.get(monC), 'server: the monster B keeps did not move').toEqual({
           owner: hB,
-          partySlot: '0',
+          partySlot: `${B_KEPT_SLOT}`,
         });
-        expect(monstersAfter.get(monB), 'server: B`s starter now belongs to A, in slot 0').toEqual({
-          owner: hA,
-          partySlot: '0',
-        });
+        expect(
+          [serverMonsterPub(monA), serverMonsterPub(monB)],
+          'server: each traded monster`s projection follows it',
+        ).toEqual([
+          { owner: hB, partySlot: B_ARRIVAL_SLOT },
+          { owner: hA, partySlot: A_ARRIVAL_SLOT },
+        ]);
         expect(
           [...monstersAfter.keys()].sort(),
           'server: the pair owns exactly the same monster ids (none minted, none destroyed)',
@@ -527,12 +714,30 @@ test.describe
           [ownedBy(monstersAfter, hA), ownedBy(monstersAfter, hB)],
           'server: a one-for-one swap leaves each owner`s count unchanged',
         ).toEqual([ownedBy(monstersBefore, hA), ownedBy(monstersBefore, hB)]);
-        expect(serverRowsOf('inventory', [hA, hB]), 'server: no item row changed').toEqual(
-          inventoryBefore,
-        );
-        expect(serverRowsOf('player_wallet', [hA, hB]), 'server: no wallet row changed').toEqual(
-          walletsBefore,
-        );
+        const itemsAfter = serverItemTotals([hA, hB]);
+        const balancesAfter = serverBalances([hA, hB]);
+        expect(
+          itemsAfter,
+          'server: A`s stack fell and B`s rose by exactly the item leg, nothing else held',
+        ).toEqual({
+          [`${hA}:${ITEM_X}`]: A_STACK - A_ITEM_LEG,
+          [`${hB}:${ITEM_X}`]: B_STACK + A_ITEM_LEG,
+        });
+        expect(
+          balancesAfter,
+          'server: B`s balance fell and A`s rose by exactly the coin leg',
+        ).toEqual({
+          [hA]: A_WALLET + B_COIN_LEG,
+          [hB]: B_WALLET - B_COIN_LEG,
+        });
+        expect(
+          [sum(itemsAfter), sum(balancesAfter)],
+          'server: the item and coin totals are conserved',
+        ).toEqual([sum(itemsBefore), sum(balancesBefore)]);
+        expect([sum(itemsBefore), sum(balancesBefore)], 'the seeded totals').toEqual([
+          A_STACK + B_STACK,
+          A_WALLET + B_WALLET,
+        ]);
 
         // Both clients converge: the session leaves mySessions(), the monsters swap.
         await waitNoSession(pageA, idA, idB, 'A after the execute');
@@ -551,20 +756,26 @@ test.describe
             async () => {
               const a = await snapOf(pageA);
               const b = await snapOf(pageB);
+              const held = (s: GameSnap): number =>
+                s.ownInventory.filter((i) => i.itemId === ITEM_X).reduce((n, i) => n + i.count, 0);
               return {
-                a: a.ownMonsters.map((m) => m.monsterId).sort(),
-                b: b.ownMonsters.map((m) => m.monsterId).sort(),
+                a: a.ownMonsters.map((m) => `${m.monsterId}@${m.partySlot}`).sort(),
+                b: b.ownMonsters.map((m) => `${m.monsterId}@${m.partySlot}`).sort(),
+                aItems: held(a),
+                bItems: held(b),
               };
             },
-            { message: 'both clients hold the swapped monsters', timeout: 20_000 },
+            {
+              message: 'both clients hold the swapped monsters and the moved items',
+              timeout: 20_000,
+            },
           )
-          .toEqual({ a: [monB], b: [monA] });
-        expect((await snapOf(pageA)).ownInventory, 'A: the client inventory is unchanged').toEqual(
-          aBefore.ownInventory,
-        );
-        expect((await snapOf(pageB)).ownInventory, 'B: the client inventory is unchanged').toEqual(
-          bBefore.ownInventory,
-        );
+          .toEqual({
+            a: [`${monB}@${A_ARRIVAL_SLOT}`],
+            b: [`${monA}@${B_ARRIVAL_SLOT}`, `${monC}@${B_KEPT_SLOT}`].sort(),
+            aItems: A_STACK - A_ITEM_LEG,
+            bItems: B_STACK + A_ITEM_LEG,
+          });
       } finally {
         await cancelLeftover(pageA, pageB, idA, idB);
       }

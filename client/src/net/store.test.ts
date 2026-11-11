@@ -50,7 +50,6 @@ import {
   type StoreSkillRow,
   type StoreSpeciesRow,
   type StoreTacticalBattle,
-  type StoreTradeOffer,
   // ux2: owner-scoped wallet slot — see the ux2 block at the end of this file.
   type StoreWallet,
 } from './store';
@@ -6272,5 +6271,46 @@ describe('AuthoritativeStore ts-3: the trade session map (my_trade_session)', ()
 
     s.reset();
     expect(s.allTradeSessions(), 'reset clears the sessions').toEqual([]);
+  });
+});
+
+describe('AuthoritativeStore ts-4.4: no trade-offer state', () => {
+  it('ts-4.4 the store has no trade-offer member (own or prototype) while the trade-session members still work', () => {
+    // WRONG IMPL KILLED: any of upsertTradeOffer / removeTradeOffer / ownTradeOffer /
+    // allTradeOffers kept (a trade_offer row could still land in the store and surface in a
+    // screen); an offer map kept as an own field under another name (the name census); the
+    // session members deleted along with them (the session leg).
+    const s = new AuthoritativeStore();
+    const names = new Set<string>(Object.getOwnPropertyNames(s));
+    for (
+      let proto: object | null = Object.getPrototypeOf(s);
+      proto !== null && proto !== Object.prototype;
+      proto = Object.getPrototypeOf(proto)
+    ) {
+      for (const name of Object.getOwnPropertyNames(proto)) names.add(name);
+    }
+    expect(names.has('allTradeSessions'), 'precondition: the census reads the prototype').toBe(
+      true,
+    );
+    expect([...names].filter((name) => /tradeoffer/i.test(name))).toEqual([]);
+    for (const member of [
+      'upsertTradeOffer',
+      'removeTradeOffer',
+      'ownTradeOffer',
+      'allTradeOffers',
+    ]) {
+      expect(Reflect.has(s, member), `${member} is absent`).toBe(false);
+    }
+
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.reconcileTradeSessionsFromView([tsRow(TS_BIG + 1n), tsRow(3n)]);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(s.allTradeSessions().map((r) => r.sessionId)).toEqual([3n, TS_BIG + 1n]);
+    s.reconcileTradeSessionsFromView([tsRow(3n)]);
+    expect(s.allTradeSessions().map((r) => r.sessionId)).toEqual([3n]);
+    s.reset();
+    expect(s.allTradeSessions()).toEqual([]);
   });
 });

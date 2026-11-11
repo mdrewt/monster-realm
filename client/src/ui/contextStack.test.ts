@@ -2272,7 +2272,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // stack[0] (a menu above the battle, a suspended dialogue or a stack-only battle base must still
     // refuse); one that refuses at a world base or over an outcome frame (the world would lose
     // care, shop, trade and challenge); a table with a stray or missing kind (a new Command arm
-    // must classify itself: here the literal 39 kinds are the whole table); a single row moved
+    // must classify itself: here the literal 36 kinds are the whole table); a single row moved
     // from refuse to safe (each of the named rows below is its own sample); and a battleSafeCommand
     // that disagrees with the table or with battleRefused (two readers of one policy drifting
     // apart: the shell's early return and the stack rule would then refuse different commands).
@@ -2318,10 +2318,9 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       // 9 / 25 / 34).
       ['reportProblem', { kind: 'reportProblem' }],
     ];
-    // ts-3 (named intentional change, plan "Commands"): `proposeTrade` leaves with the wizard and
-    // the five trade-session kinds join the refused list: 10 safe, 29 refused, 39 kinds (were
-    // 10 / 25 / 35). An editor opened, an offer sent or a trade confirmed from a battle base is
-    // refused like the legacy trade rows.
+    // The five trade-session kinds are refused (ts-3): an editor opened, an offer sent or a trade
+    // confirmed from a battle base. No offer-based trade kind exists (ts-4.6): 10 safe, 26 refused,
+    // 36 kinds.
     const REFUSE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['Care: care', { kind: 'care', monsterId: big }],
       ['Feed: train', { kind: 'train', monsterId: big, foodItemId: 2 }],
@@ -2331,9 +2330,6 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['healParty', { kind: 'healParty' }],
       ['buy', { kind: 'buy', shopId: 1, itemId: 2, qty: 3 }],
       ['sell', { kind: 'sell', itemId: 2, qty: 3 }],
-      ['respondTrade', { kind: 'respondTrade', tradeId: big, accepted: true }],
-      ['confirmTrade', { kind: 'confirmTrade', tradeId: big }],
-      ['cancelTrade', { kind: 'cancelTrade', tradeId: big }],
       ['openTradeSession', { kind: 'openTradeSession', partnerIdentity: 'cd'.repeat(32) }],
       ['openTradeEditor', { kind: 'openTradeEditor', sessionId: big }],
       [
@@ -2364,11 +2360,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
     expect(SAFE, 'ANTI-VACUITY: ten safe kinds (uif-14b: +reportProblem)').toHaveLength(10);
-    expect(REFUSE, 'ANTI-VACUITY: twenty-nine refused kinds (ts-3: -1 +5)').toHaveLength(29);
+    expect(REFUSE, 'ANTI-VACUITY: twenty-six refused kinds').toHaveLength(26);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      39,
+      36,
     );
     expect(
       kindsOf(SAFE),
@@ -2386,8 +2382,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'reportProblem',
     ]);
 
-    // The table itself is total over the 39 literal kinds (bt-17: −7; uif-14b: +1; ts-3: −1 +5) and
-    // says exactly this.
+    // The table itself is total over the 36 literal kinds and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );

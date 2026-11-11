@@ -129,14 +129,17 @@ export const M22S9_MANIFEST_TRANSCRIPTION =
   'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
-// snapshot, each with its measured reason. HARD-CAPPED — an entry beyond the cap
-// is a seeding regression, not an allowlist edit (red-team MEDIUM-8).
+// snapshot, each with its measured reason. HARD-CAPPED (red-team MEDIUM-8): the
+// cap moves only for a table no reducer writes (a drained table, which no
+// scenario can give a row); any other owned table that newly reads zero rows is
+// a seeding regression, fixed in the scenario and never by an allowlist entry.
 // The list holds nine tables: five that no live path writes (`battle_action`,
 // `pvp_deadline_schedule` and `battle_wild`, retired in place by the tactical
-// cutover; `trade_offer` and `trade_offer_reaper_schedule`, whose only writer is
-// the retired legacy offer reducer), one that SQL DML cannot seed
-// (`player_dialogue_state`), and three whose rows are swept or consumed before
-// the snapshot (`battle_queue`, `battle_deploy`, `tactical_advance_sched`).
+// cutover; `trade_offer` and `trade_offer_reaper_schedule`, drained tables: the
+// three offer reducers refuse every call and write nothing), one that SQL DML
+// cannot seed (`player_dialogue_state`), and three whose rows are swept or
+// consumed before the snapshot (`battle_queue`, `battle_deploy`,
+// `tactical_advance_sched`).
 // Every other owned table is written ORGANICALLY by the S9 scenario and must
 // carry rows: A's one-monster party meets a pack of one on the grass (Active
 // with auto-deploy, its unit waiting under the 300 s PvE window:
@@ -180,11 +183,11 @@ export const S9_VACUITY_ALLOWLIST = [
   ],
   [
     'trade_offer',
-    'no live writer: propose_trade, respond_trade and confirm_trade are retired (each refuses and writes nothing), and the row cannot be seeded because its offer and card columns are Vecs, which 2.8.1 SQL DML cannot express; trade erasure is proven on the trade_session row instead',
+    'no reducer writes it: propose_trade, respond_trade and confirm_trade refuse every call and write nothing, and the row cannot be seeded because its offer and card columns are Vecs, which 2.8.1 SQL DML cannot express; the deletion sweep of offers naming the account in either column is proven natively by nh_trade_every_offer_deletion_site_disarms_its_reaper (server-module/src/trading_tests.rs), and this eval proves session erasure on a real host (trade_session)',
   ],
   [
     'trade_offer_reaper_schedule',
-    'drain-only: armed only by the retired propose_trade, and ScheduleAt is not DML-expressible, so no row exists to sweep; schedule erasure is proven on trade_session_reaper_schedule instead',
+    'drain-only: no reducer arms a row (propose_trade refuses every call), and ScheduleAt is not DML-expressible, so no row exists to sweep; the disarm on deletion is proven natively by nh_trade_every_offer_deletion_site_disarms_its_reaper, and this eval proves schedule erasure on a real host on trade_session_reaper_schedule',
   ],
 ];
 export const S9_VACUITY_ALLOWLIST_CAP = 9;
@@ -2420,9 +2423,20 @@ async function runLivePhase() {
           (r) => identityCellHex(r.identity) === normHex(refs.aHex),
         );
         refs.entityId = players.length > 0 ? String(players[0].entity_id) : null;
-        refs.tradeIds = (
-          await sqlJsonRows('SELECT trade_id FROM trade_offer WHERE initiator = ' + refs.aHex)
-        ).map((r) => String(r.trade_id));
+        // The ids of every trade_offer row naming A in either column: the
+        // parent keys of the transcription's
+        // `trade_offer_reaper_schedule:ViaJoin(trade_offer)` entry, whose
+        // reachability count checkCascadeTruth requires (a missing count is
+        // [s9/unattempted]). No reducer writes trade_offer, so this reads no id
+        // and that count reads 0 on both passes (the entry is allowlisted).
+        const tradeIds = new Set();
+        for (const col of ['initiator', 'counterparty']) {
+          const rows = await sqlJsonRows(
+            'SELECT trade_id FROM trade_offer WHERE ' + col + ' = ' + refs.aHex,
+          );
+          for (const r of rows) tradeIds.add(String(r.trade_id));
+        }
+        refs.tradeIds = [...tradeIds];
         // A's sessions in either role (S9-trade-open opens exactly one, as
         // opener): their child rows are counted by these pinned ids both passes.
         const sessionIds = new Set();
@@ -2484,6 +2498,7 @@ async function runLivePhase() {
         );
       }
       viaJoin.battle_challenge_reaper_schedule = chalSched;
+      // Reaper rows reachable from A's pinned trade_offer ids (see refs.tradeIds).
       let tradeSched = 0;
       for (const id of refs.tradeIds) {
         tradeSched += await cnt(

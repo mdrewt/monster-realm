@@ -9,7 +9,9 @@ import {
 import { readWorld, walkTo } from './controls';
 import { ownerSql } from './stdb';
 
-// Trade SESSION reducer NEGATIVE-PATH suite (ts-4).
+// Trade SESSION reducer NEGATIVE-PATH suite: the caller's own-side refusals, the no-oracle cases
+// (ts-4.2: no outcome depends on the partner's holdings), cancel roles, non-participant lookups
+// and the stale-revision rule.
 //
 // No assertion in this file may ever be relaxed to match a buggy implementation. A wrong
 // assertion is re-derived FROM the reducer source (server-module/src/trading_session.rs,
@@ -96,9 +98,10 @@ import { ownerSql } from './stdb';
 
 // ---------------------------------------------------------------------------
 // Shapes crossing the page.evaluate boundary. Re-declared locally on purpose: page.evaluate
-// crosses a structured-clone boundary the type system cannot check. Verified against the
-// `mrTradeHook` object in client/src/main.ts (≈ 4319) this session: EXACTLY allPlayers,
-// openTradeSession, setTradeOffer, confirmTradeSession, cancelTradeSession, mySessions.
+// crosses a structured-clone boundary the type system cannot check. They mirror the
+// `mrTradeHook` object in client/src/main.ts, whose members are exactly allPlayers,
+// openTradeSession, setTradeOffer, confirmTradeSession, cancelTradeSession and mySessions
+// (trade-full.spec.ts m16.5d-1 pins that key set).
 // ---------------------------------------------------------------------------
 interface GameSnap {
   identity: string;
@@ -150,7 +153,7 @@ type TradeAction =
   | { kind: 'cancel'; sessionId: string };
 
 // ---------------------------------------------------------------------------
-// EXPECTED SERVER MESSAGES — each pinned from source with its line, read this session.
+// EXPECTED SERVER MESSAGES — each pinned from source, with the line it sits on.
 // A change to any of them is a deliberate API change made HERE, never by loosening an assertion.
 // ---------------------------------------------------------------------------
 /** server-module/src/trading_session.rs:282 `ERR_SESSION_NOT_FOUND`, returned by
@@ -177,12 +180,12 @@ const ITEM_X = 1;
 /** The item quantity A offers in 1a/1b. > 0: qty 0 is ZeroItemQuantity (session.rs:353-355). */
 const ITEM_X_QTY = 1;
 /** What 1b seeds into B's stack of ITEM_X — strictly more than ITEM_X_QTY, so a reducer that
- *  read the PARTNER's stack instead of the caller's would find enough and accept. */
+ *  reads the PARTNER's stack instead of the caller's finds enough and accepts. */
 const PARTNER_ITEM_X_SEED = 5;
 /** The coins A offers in 3a/3b against a provably empty own wallet. */
 const OVERDRAWN_CURRENCY = '1';
 /** What 3b seeds as B's balance — strictly more than OVERDRAWN_CURRENCY, so a reducer that read
- *  the PARTNER's wallet instead of the caller's would find enough and accept. */
+ *  the PARTNER's wallet instead of the caller's finds enough and accepts. */
 const PARTNER_WALLET_SEED = 100;
 /** game-core `PARTY_SIZE` (game-core/src/world.rs): slots 0..6 are the party. */
 const PARTY_SIZE = 6;
@@ -929,7 +932,7 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   });
 
   // -------------------------------------------------------------------------
-  // 1b — ts-4.2, the PARTNER's INVENTORY (the security case this slice exists for).
+  // 1b — ts-4.2, the PARTNER's INVENTORY (the no-oracle security case).
   //
   // The same caller script runs twice against B: run 1 with B holding NO stack of ITEM_X,
   // run 2 with B holding PARTNER_ITEM_X_SEED of it (owner SQL), the difference proven by a
@@ -937,11 +940,12 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   // plus server truth and A's own view after each step — must be deep-equal, and equal to the
   // pinned expectation.
   //
-  // NOT RED BEFORE THE IMPLEMENTATION, BY DESIGN: a correct session reducer never reads the
-  // partner. WHAT THIS KILLS is a session reducer whose result or error text depends on the
-  // partner's stack — the retired propose_trade answered "counterparty has insufficient
-  // inventory for item N" — and the wrong-party operand: an eligibility check that reads
-  // `stacks` of the partner instead of the caller accepts A's one-unit item leg in run 2 only.
+  // A reducer that never reads the partner passes this by construction, so its bite is a wrong
+  // reducer, not a red first run. WHAT THIS KILLS: a session reducer whose result or error text
+  // depends on the partner's stack (one that answers "counterparty has insufficient inventory
+  // for item N" when the partner lacks the item fails here), and the wrong-party operand: an
+  // eligibility check that reads `stacks` of the partner instead of the caller accepts A's
+  // one-unit item leg in run 2 only.
   // -------------------------------------------------------------------------
   test('1b: every caller-visible trade session outcome is identical whether or not the partner holds the item', async () => {
     test.setTimeout(180_000);
@@ -1063,11 +1067,11 @@ test.describe('ts-4 — trade session negative paths, three identities, server t
   // or a zero balance), run 2 with B's balance seeded to PARTNER_WALLET_SEED by owner SQL; the
   // difference proven by a server-truth SELECT before run 2; the two outcome lists deep-equal.
   //
-  // NOT RED BEFORE THE IMPLEMENTATION, BY DESIGN. WHAT THIS KILLS is a session reducer whose
-  // result or error text depends on the partner's wallet — the retired propose_trade answered
-  // "counterparty has insufficient currency for this trade" — and the wrong-party operand: a
-  // currency rule that reads the partner's balance instead of the caller's accepts A's one-coin
-  // leg in run 2 only.
+  // As in 1b, a reducer that never reads the partner passes by construction. WHAT THIS KILLS: a
+  // session reducer whose result or error text depends on the partner's wallet (one that
+  // answers "counterparty has insufficient currency for this trade" when the partner is broke
+  // fails here), and the wrong-party operand: a currency rule that reads the partner's balance
+  // instead of the caller's accepts A's one-coin leg in run 2 only.
   // -------------------------------------------------------------------------
   test('3b: every caller-visible trade session outcome is identical whether or not the partner has coins', async () => {
     test.setTimeout(180_000);

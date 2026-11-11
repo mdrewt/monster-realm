@@ -1259,7 +1259,7 @@ mod census {
 const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // (i) acts on an already-open commitment, which PRV1-10 and ADR-0227 D5 keep
     // completable while a deletion is pending. Every one of these except
-    // cancel_trade_session (which only deletes) reaches two
+    // cancel_trade and cancel_trade_session (which only delete) reaches two
     // INSERT-IF-ABSENT helpers on the way out -- economy::grant_currency
     // (player_wallet) and evolution::check_and_evolve (pending_evolution_notice).
     // That is accepted under PRV1-10: during the grace window nothing has been
@@ -1275,9 +1275,9 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // a fn that does not exist has no verdict, so its row would be stale.
     (
         "cancel_trade",
-        "unwinds an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
+        "unwinds an already-open trade offer (PRV1-10, ADR-0227 D5) by deleting the offer row \
+         and its reaper schedule row; it inserts and updates nothing, so it mints no row a \
+         deleting account could keep",
     ),
     (
         "cancel_trade_session",
@@ -1298,9 +1298,11 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
          evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     // (ii) a decline arm that unwinds a commitment BEFORE a stamp-aware accept gate
-    // (ADR-0237). The class is EMPTY: the retired legacy `respond_trade` reads and
-    // writes nothing, and `confirm_trade_session` gates before every write. A
-    // reducer of this shape needs a row here with its basis.
+    // (ADR-0237). No reducer has this shape, so the class is EMPTY:
+    // `respond_trade`'s only statement returns the retired-path error (it reads
+    // and writes nothing), and `confirm_trade_session` has no decline arm and runs
+    // its stamp-aware deletion gate before any write. A reducer of this shape
+    // needs a row here with its basis.
     //
     // (iii) operator-only surface, unreachable by a player caller.
     (
