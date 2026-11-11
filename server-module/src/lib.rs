@@ -44,6 +44,7 @@ mod tactics;
 mod tactics_settle;
 mod taming;
 mod trading;
+mod trading_session;
 
 #[cfg(test)]
 #[path = "native_host_tests.rs"]
