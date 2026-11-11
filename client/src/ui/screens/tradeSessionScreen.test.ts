@@ -10,9 +10,9 @@
 // Node env, no DOM. The adapter is driven through `init(vm, remembered)`, `onButton(vm, state,
 // btn)`, `observe(vm, state, now)` and `paint(view, vm, state)` into a recording fake view. Every
 // view model is built by the REAL `buildTradeSessionVm` over a fixture input, so the adapter is
-// proved against the model it ships with. `viewModel(ctx)` is NOT driven here: its store and wasm
-// reads (party size, the cap, the battle and legacy-offer sets) are wiring, proved by the boot
-// suites (main.*.test.ts, batch T2).
+// proved against the model it ships with. `viewModel(ctx)`'s wiring (party size, the cap, the
+// battle set) is proved by the boot suites (main.*.test.ts, batch T2); the last describe here
+// drives it once over a store double to prove it reads no legacy trade offer (ts-4.4).
 //
 // Fixture: ME opened session 7 with Bob at revision 2^53 + 1; ME's side starts EMPTY, Bob's holds
 // monster 91. ME's party (PARTY_SIZE 3, by slot): 11 free, 12 fainted, 13 free; inventory item 4
@@ -32,7 +32,7 @@ import {
 } from '../tradeSessionModel';
 import type { TradeSessionPaint, TradeSessionView } from '../tradeSessionView';
 import { coinStep, type TradeSessionScreenState, tradeSessionScreen } from './tradeSessionScreen';
-import type { ButtonStep } from './types';
+import type { ButtonStep, ScreenContext } from './types';
 
 const ME = 'aa'.repeat(32);
 const BOB = 'bb'.repeat(32);
@@ -695,5 +695,62 @@ describe('tradeSessionScreen — gone and a state per session (ts-3.6)', () => {
     expect(p.cursor).toBe('cancel');
     expect(p.notice).toBe(0);
     expect(p.prompt).toEqual({ action: 'cancel', yes: false });
+  });
+});
+
+describe('tradeSessionScreen — viewModel(ctx) over the store (ts-4.4)', () => {
+  it('ts-4.4 the session editor`s view model reads no legacy offer: it builds over a store that throws on ownTradeOffer / allTradeOffers, and a free party monster in no session and no battle is not blocked as inAnotherTrade', () => {
+    // WRONG IMPL KILLED: a viewModel that still reads a legacy offer from the store (the Proxy
+    // throws on either name, so the build itself fails); one that still marks a monster
+    // `inAnotherTrade` from a legacy offer source (monster 11 is in no session and no battle, so
+    // any block on it is fabricated). The fainted and in-battle controls keep the case
+    // non-vacuous: the store reads that remain (the roster, the ongoing battle) still mark.
+    const LEGACY = new Set(['ownTradeOffer', 'allTradeOffers']);
+    const read: string[] = [];
+    const base: Record<string, unknown> = {
+      allTradeSessions: () => [sess()],
+      ongoingBattle: () => ({ partyMonsterIds: [13n], opponentMonsterIds: [] }),
+      allPlayers: () => [
+        { identity: BOB, entityId: 2n, name: 'Bob', online: true, lastInputSeq: 0n },
+      ],
+      ownMonsters: () => [mon(13n, 2, 'Cyd'), mon(11n, 0, 'Ash'), mon(12n, 1, 'Bry', 0)],
+      speciesMap: () => new Map([[1, { name: 'Sprout' }]]),
+      itemDefs: () => new Map(),
+      ownInventory: () => [],
+      ownWallet: () => ({ ownerIdentity: ME, balance: BALANCE }),
+    };
+    const store = new Proxy(base, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string') {
+          read.push(prop);
+          if (LEGACY.has(prop)) throw new Error(`the editor read the legacy offer: ${prop}`);
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const ctx = { store, identity: ME, tradeSessionId: SID } as unknown as ScreenContext;
+
+    const vm = tradeSessionScreen.viewModel(ctx);
+    expect(
+      read.filter((name) => LEGACY.has(name)),
+      'no legacy-offer read',
+    ).toEqual([]);
+    expect(read, 'ANTI-VACUITY: the build read the session rows').toContain('allTradeSessions');
+    if (vm.kind !== 'session') throw new Error(`a session vm, got ${vm.kind}`);
+    expect(vm.sessionId).toBe(SID);
+    expect(vm.partnerName).toBe('Bob');
+    expect(vm.balance).toBe(BALANCE);
+    expect(
+      vm.monsters.map((m) => [m.monsterId, m.blocked]),
+      'by slot: 11 free, 12 fainted, 13 in the ongoing battle',
+    ).toEqual([
+      [11n, null],
+      [12n, 'fainted'],
+      [13n, 'inBattle'],
+    ]);
+    expect(
+      vm.monsters.some((m) => m.blocked === 'inAnotherTrade'),
+      'no monster is in another trade',
+    ).toBe(false);
   });
 });

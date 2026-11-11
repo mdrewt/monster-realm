@@ -31,7 +31,7 @@ import {
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreBattleChallenge, StoreTradeOffer, StoreTradeSession } from './net/store';
+import type { StoreBattleChallenge, StoreTradeSession } from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import { t as i18nT, tf } from './ui/i18n/resolver';
 
@@ -186,10 +186,8 @@ function seedPlayer(identity: string, name: string, entityId: bigint): void {
   opts.store.upsertPlayer({ identity, entityId, name, online: true, lastInputSeq: 0n });
 }
 
-/** ts-3 (named intentional change, C): a legacy `trade_offer` raises no notice any more, so every
- *  incoming trade request in this file is a SESSION (`my_trade_session`) `from` opened with the
- *  booted player, untouched on the booted player's side. Was: `offerFrom` (a Pending trade_offer),
- *  kept below only for the "a legacy offer raises nothing" control. */
+/** An incoming trade request: a SESSION (`my_trade_session`) `from` opened with the booted player,
+ *  untouched on the booted player's side. */
 const sessionFrom = (
   from: string,
   sessionId: bigint,
@@ -219,23 +217,6 @@ function dropSession(sessionId: bigint): void {
   sessions.delete(sessionId);
   opts.store.reconcileTradeSessionsFromView([...sessions.values()]);
 }
-
-/** A Pending offer from `from` to the booted player. */
-const offerFrom = (from: string, tradeId: bigint, createdAtMs: bigint): StoreTradeOffer => ({
-  tradeId,
-  initiator: from,
-  counterparty: H.identity,
-  initiatorMonsterIds: [],
-  initiatorItems: [],
-  initiatorCurrency: 0n,
-  counterpartyMonsterIds: [],
-  counterpartyItems: [],
-  counterpartyCurrency: 0n,
-  initiatorCards: [],
-  counterpartyCards: [],
-  status: 'Pending',
-  createdAtMs,
-});
 
 /** A Pending challenge from `from` to the booted player. */
 const challengeFrom = (
@@ -574,8 +555,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     expect(H.sends, 'no movement while the request sheet is open').toEqual([]);
     expect(sheetCursor(), 'Left and Right leave the cursor on Accept').toBe('accept');
     expect(H.calls, 'and nothing was sent yet').toEqual([]);
-    // ts-3 (named intentional change, C): a trade's Accept is `openTradeEditor` — no reducer; the
-    // editor opens on that session. Was: respondTrade accepted:true for a legacy offer.
+    // A trade's Accept is `openTradeEditor` — no reducer; the editor opens on that session.
     press(A);
     await flush();
     expect(H.calls, 'Enter on Accept: no reducer for a trade session').toEqual([]);
@@ -587,7 +567,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     );
     press('Escape');
     frame();
-    expect(stackNames(), 'precondition: Start closed the editor').toEqual(['world']);
+    expect(stackNames(), 'precondition: Escape closed the editor').toEqual(['world']);
     press(A);
     await flush();
     expect(H.calls, 'a second Enter at the world sends nothing').toEqual([]);
@@ -600,8 +580,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       readonly downs: number;
       readonly calls: Array<{ name: string; args: unknown }>;
     }> = [
-      // ts-3 (named intentional change, C): a trade's Decline cancels the session. Was: respondTrade
-      // accepted:false.
+      // A trade's Decline cancels the session.
       {
         kind: 'trade',
         downs: 1,
@@ -873,7 +852,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
       readonly kind: 'trade' | 'challenge';
       readonly call: { name: string; args: unknown };
     }> = [
-      // ts-3 (named intentional change, C): was respondTrade accepted:false for a legacy offer.
+      // A trade's Decline cancels the session.
       { kind: 'trade', call: { name: 'cancelTradeSession', args: { sessionId: 11n } } },
       { kind: 'challenge', call: { name: 'declineChallenge', args: { challengeId: 21n } } },
     ];
@@ -929,7 +908,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
     // WRONG IMPL KILLED: no Close row painted; a Close row painted with the raw key or another
     // label; a Close row that is not last (Up from Accept would not reach it, Down x3 would land
     // elsewhere); an Enter on Close that answers the request (the row before it, View, opens
-    // Social; or the default, Accept, sends respondTrade); an Enter on Close that DISMISSES the
+    // Social; or the default, Accept, opens the session editor); an Enter on Close that DISMISSES the
     // request (banner gone: B at an open sheet only closes it); an Enter that leaves the sheet up.
     const line = tf('notice.request.trade', { name: 'Bob' });
     await openRequestSheet('trade');
@@ -974,8 +953,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
     ).toEqual(afterClose);
 
     // ANTI-VACUITY: the sheet was live all along — Y then Enter on Accept answers the request.
-    // ts-3 (named intentional change, C): a trade's Accept opens the session editor (no reducer).
-    // Was: Accept sent respondTrade accepted:true.
+    // A trade's Accept opens the session editor (no reducer).
     press(Y);
     frame();
     press(A);
@@ -1302,10 +1280,10 @@ describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequent
     );
   }, 60_000);
 
-  it('ts-3.5 nothing is raised for a session whose editor this client opened, for the opener`s own session, for a session the viewer already acted in, nor for a legacy trade_offer', async () => {
+  it('ts-3.5 nothing is raised for a session whose editor this client opened, for the opener`s own session, nor for a session the viewer already acted in', async () => {
     // WRONG IMPL KILLED: `opened` never consulted (the request returns once the editor closes); a
     // banner for the viewer's OWN session (opener and partner swapped in the filter); a session the
-    // viewer already offered into still treated as a fresh request; the legacy offer path left in.
+    // viewer already offered into still treated as a fresh request.
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     seedPlayer(CAROL, 'Carol', 9n);
@@ -1328,12 +1306,6 @@ describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequent
     frame();
     expect(bannerText(), 'a session the viewer already acted in raises nothing').toBeNull();
 
-    // A legacy trade_offer.
-    opts.store.upsertTradeOffer(offerFrom(CAROL, 23n, 1_200n));
-    batch();
-    frame();
-    expect(bannerText(), 'a legacy trade_offer raises no notice').toBeNull();
-
     // Opened through the client: the request leaves the banner for good.
     putSession(sessionFrom(BOB, 24n, 1_300n));
     batch();
@@ -1352,7 +1324,7 @@ describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequent
     ]);
     press('Escape');
     frame();
-    expect(stackNames(), 'precondition: Start closed the editor').toEqual(['world']);
+    expect(stackNames(), 'precondition: Escape closed the editor').toEqual(['world']);
     batch();
     frame();
     expect(bannerText(), 'a session this client opened raises nothing').toBeNull();
@@ -1360,9 +1332,9 @@ describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequent
   }, 60_000);
 
   it('ts-3.5 Y then Accept opens the editor on THAT session and calls no reducer; Y then Decline calls cancelTradeSession once with that id, and a second Y then Decline before the row leaves sends nothing more', async () => {
-    // WRONG IMPL KILLED: an Accept that sends a reducer (the legacy respondTrade, or a premature
-    // confirm) or opens the editor on another session (the older one is listed first); a Decline
-    // that sends respondTrade or the wrong id; no optimistic answered key (the request comes back
+    // WRONG IMPL KILLED: an Accept that sends a reducer (respondTrade, or a premature confirm) or
+    // opens the editor on another session (the older one is listed first); a Decline that sends
+    // respondTrade or the wrong id; no optimistic answered key (the request comes back
     // at once and a second Decline sends a duplicate cancel).
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
@@ -1497,11 +1469,18 @@ describe('main.ts an identity change and opened sessions (runtime, ts-4)', {
 }, () => {
   afterEach(teardown);
 
-  it('ts-4.7 after the identity changes, an incoming untouched session with the SAME id as one the previous identity opened its editor on raises the request banner and opens no frame', async () => {
+  it.each([
+    { wiring: 'onReconnect' as const },
+    { wiring: 'onReady' as const },
+  ])('ts-4.7 after the identity changes through $wiring alone, an incoming untouched session with the SAME id as one the previous identity opened its editor on raises the request banner and opens no frame', async ({
+    wiring,
+  }) => {
     // WRONG IMPL KILLED: `resetTradeSessionState()` without `openedTradeSessions.clear()` (the old
     // identity's opened id 41 suppresses the new identity's request 41: the request never shows,
-    // and the player is never told a trade waits). The control before the change proves the
-    // opened set is what silenced S, so the banner after it is the clear, not some other reset.
+    // and the player is never told a trade waits); the reset called from only one of the two
+    // identity-change callbacks (each row fires ONE of them, so the row of the callback that lacks
+    // the reset stays silenced). The control before the change proves the opened set is what
+    // silenced S, so the banner after it is the clear, not some other reset.
     const OLD_IDENTITY = H.identity;
     const S = 41n;
     try {
@@ -1530,15 +1509,16 @@ describe('main.ts an identity change and opened sessions (runtime, ts-4)', {
       frame();
       batch();
       frame();
-      expect(stackNames(), 'precondition: Start closed the editor').toEqual(['world']);
+      expect(stackNames(), 'precondition: Escape closed the editor').toEqual(['world']);
       expect(bannerText(), 'control: the opened session raises nothing').toBeNull();
 
-      // The identity changes; the new identity is the partner of a session with the same id.
+      // The identity changes through ONE callback; the new identity is the partner of a session
+      // with the same id.
       H.identity = NEW_IDENTITY;
-      opts.onReconnect(NEW_IDENTITY);
+      if (wiring === 'onReconnect') opts.onReconnect(NEW_IDENTITY);
       sessions.clear();
       putSession(sessionFrom(BOB, S, 2_000n));
-      opts.onReady(NEW_IDENTITY);
+      if (wiring === 'onReady') opts.onReady(NEW_IDENTITY);
       batch();
       frame();
       await flush();

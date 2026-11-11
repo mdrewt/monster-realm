@@ -2112,10 +2112,10 @@ describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04
 // =============================================================================
 // narrowTag + HANDLED_ENUM_VARIANTS (EARS 17.5f-3, T4)
 //
-// SCOPE: narrowTag is applied at ONE site only — rowConvert.ts:525 (the
-//   `as 'Pending' | 'ConfirmedByCounterparty'` cast on row.status.tag).
-//   Other .tag reads feed bare-string store fields where narrowing is a type
-//   no-op.
+// SCOPE: narrowTag is the generic fail-soft narrower for a boundary enum tag: a known
+//   tag comes back typed, an unknown one comes back raw with one console.warn. These
+//   tests drive it with registry entries (HANDLED_ENUM_VARIANTS.Phase) and inline
+//   variant lists; .tag reads that feed bare-string store fields need no narrowing.
 //
 // PvpAction is EXCLUDED from the registry because rowConvert never READS it
 //   (PvpAction is a write-direction enum: the client writes it in submitPvpAction
@@ -2140,31 +2140,23 @@ import { HANDLED_ENUM_VARIANTS, narrowTag } from './rowConvert';
 // T4-1: narrowTag returns typed value for a known tag (identity for known input)
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: narrowTag — known tag passes through typed (T4-1)', () => {
-  it('BITES: narrowTag("Pending", [...], "TradeStatus") returns "Pending" typed', () => {
+  it('BITES: narrowTag("Deploying", HANDLED_ENUM_VARIANTS.Phase, "Phase") returns "Deploying" typed', () => {
     // Kills: an impl that returns undefined or throws for a known tag.
     // A SetMove replayed as a raw append would land on wrong tile — this assertion
     // catches a narrowTag that coerces known tags to something else.
-    const result = narrowTag(
-      'Pending',
-      ['Pending', 'ConfirmedByCounterparty'] as const,
-      'TradeStatus',
-    );
-    expect(result).toBe('Pending');
+    const result = narrowTag('Deploying', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
+    expect(result).toBe('Deploying');
     expect(typeof result).toBe('string');
   });
 
-  it('BITES: narrowTag("ConfirmedByCounterparty", [...], "TradeStatus") returns the same string', () => {
+  it('BITES: narrowTag("Finished", HANDLED_ENUM_VARIANTS.Phase, "Phase") returns the same string', () => {
     // Kills: an impl that only handles the first element of the known array.
-    const result = narrowTag(
-      'ConfirmedByCounterparty',
-      ['Pending', 'ConfirmedByCounterparty'] as const,
-      'TradeStatus',
-    );
-    expect(result).toBe('ConfirmedByCounterparty');
+    const result = narrowTag('Finished', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
+    expect(result).toBe('Finished');
   });
 
-  it('BITES: narrowTag works for each Affinity variant (not just TradeStatus)', () => {
-    // Kills: an impl hard-coded only for TradeStatus.
+  it('BITES: narrowTag works for each Affinity variant (not just Phase)', () => {
+    // Kills: an impl hard-coded only for Phase.
     const affinities = [
       'Fire',
       'Water',
@@ -2189,13 +2181,14 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
   it('BITES: unknown tag returns the raw string (fail-soft — no throw)', () => {
     // Kills: an impl that returns undefined, null, or the first known variant
     // when encountering an unknown tag (future server addition).
-    const result = narrowTag(
-      'FutureVariant',
-      ['Pending', 'ConfirmedByCounterparty'] as const,
-      'TradeStatus',
-    );
-    // The raw string must be returned — fail-soft passthrough.
-    expect(result).toBe('FutureVariant');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = narrowTag('FutureVariant', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
+      // The raw string must be returned — fail-soft passthrough.
+      expect(result).toBe('FutureVariant');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('BITES: unknown tag logs via console.warn exactly once, message contains enum name and tag', () => {
@@ -2204,11 +2197,11 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
     // The message must contain both the enum name and the unknown tag so log grep works.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      narrowTag('NewServerVariant', ['Pending', 'ConfirmedByCounterparty'] as const, 'TradeStatus');
+      narrowTag('NewServerVariant', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const message = String(warnSpy.mock.calls[0]?.[0] ?? '');
       // The log must contain the enum name so operators know WHICH enum has a new variant.
-      expect(message).toContain('TradeStatus');
+      expect(message).toContain('Phase');
       // The log must contain the raw tag so operators know WHICH variant is unhandled.
       expect(message).toContain('NewServerVariant');
     } finally {
@@ -2220,7 +2213,7 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
     // Kills: an impl that logs for every call regardless of whether the tag is known.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      narrowTag('Pending', ['Pending', 'ConfirmedByCounterparty'] as const, 'TradeStatus');
+      narrowTag('Active', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
       expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
@@ -2260,7 +2253,7 @@ describe('rowConvert m17.5f: narrowTag — never throws for any input (T4-3)', (
 });
 
 // ---------------------------------------------------------------------------
-// T4-5: HANDLED_ENUM_VARIANTS.TradeStatus deep-equals the current generated variants
+// T4-5: no trade_offer converter is exported and HANDLED_ENUM_VARIANTS has no TradeStatus key
 // ---------------------------------------------------------------------------
 describe('rowConvert ts-4.4: no trade_offer converter and no TradeStatus boundary read (T4-5)', () => {
   it('ts-4.4 rowConvert exports no tradeOfferRowToStore, HANDLED_ENUM_VARIANTS has no TradeStatus key, and the session converter is exported', () => {
@@ -3806,8 +3799,8 @@ describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () 
     //   `store.ownEvolutionNotices(identity)` compares with `===` against a hex
     //   STRING, so the filter never matches and the banner never appears — while
     //   the row sits happily in the store and every other gate stays green. This
-    //   is the same defect class that already bit playerRowToStore and
-    //   tradeOfferRowToStore in this file.
+    //   is the same defect class playerRowToStore and tradeSessionRowToStore are
+    //   pinned against in this file.
     // WRONG IMPL KILLED (b): passing `row.entries` THROUGH by reference without
     //   mapping. It looks identical today, and it silently re-exports whatever
     //   extra SDK-only keys the binding happens to carry into the store — the
@@ -3952,11 +3945,20 @@ describe('rowConvert: HANDLED_ENUM_VARIANTS mirrors the generated binding enums'
   }
 
   it('the comparison bites: a stale extra variant or a missing one is unequal', () => {
-    const generated = generatedVariants('TradeStatus');
-    expect(generated).toEqual(['Pending', 'ConfirmedByCounterparty']);
-    expect([...HANDLED_ENUM_VARIANTS.TradeStatus, 'Stale']).not.toEqual(generated);
-    expect(HANDLED_ENUM_VARIANTS.TradeStatus.slice(1)).not.toEqual(generated);
+    const generated = generatedVariants('Phase');
+    expect(generated).toEqual(['Deploying', 'Active', 'Finished']);
+    expect([...HANDLED_ENUM_VARIANTS.Phase, 'Stale']).not.toEqual(generated);
+    expect(HANDLED_ENUM_VARIANTS.Phase.slice(1)).not.toEqual(generated);
     expect(generatedVariants('NoSuchEnum')).toBeUndefined();
+  });
+
+  it('ts-4.4 TradeStatus is a generated binding enum with no registry entry: no row converter reads a trade_offer row', () => {
+    // WRONG IMPL KILLED: a TradeStatus registry entry kept in step with the binding (the
+    // per-key mirror above would pass it, so only this leg catches it). The generated-side
+    // leg keeps the case non-vacuous: the enum is still declared in module_bindings/types.ts.
+    expect(generatedVariants('TradeStatus')).toEqual(['Pending', 'ConfirmedByCounterparty']);
+    expect(Object.hasOwn(HANDLED_ENUM_VARIANTS, 'TradeStatus')).toBe(false);
+    expect(Object.keys(HANDLED_ENUM_VARIANTS)).not.toContain('TradeStatus');
   });
 });
 
@@ -4687,14 +4689,14 @@ describe('rowConvert bt-12: the seven tactical views (BT12.1)', () => {
     ).toEqual([]);
   });
 
-  it('the boundary registry lists the 21 enums the converters read, the eleven tactical ones appended in declaration order with exactly their generated variants [BT12-1-REGISTRY]', () => {
+  it('the boundary registry lists the 20 enums the converters read, the eleven tactical ones appended in declaration order with exactly their generated variants [BT12-1-REGISTRY]', () => {
     // WRONG IMPL KILLED: a tactical enum left unregistered (a server-added variant would cross the
     // boundary unnoticed: the per-key mirror below only checks what is registered); MoveClassRow
     // registered (movement is not stored: YAGNI); an entry with a variant missing, extra or out
-    // of order (TurnState, UnitState and the 17 EventPayload kinds included); and the old ten
-    // reordered or dropped on the way.
-    expect(Object.keys(HANDLED_ENUM_VARIANTS), 'the 21 keys, in order').toEqual([
-      'TradeStatus',
+    // of order (TurnState, UnitState and the 17 EventPayload kinds included); the nine
+    // non-tactical ones reordered or dropped; TradeStatus listed (no converter reads a
+    // trade_offer row, so it is not a row-read boundary enum).
+    expect(Object.keys(HANDLED_ENUM_VARIANTS), 'the 20 keys, in order').toEqual([
       'ChallengeStatus',
       'BattleOutcome',
       'Affinity',

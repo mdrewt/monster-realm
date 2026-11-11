@@ -20,17 +20,15 @@
 //   requestCommand(n, 'accept' | 'decline') -> the exact screen Command.
 //
 // ---------------------------------------------------------------------------------------------
-// ts-3 NAMED INTENTIONAL CHANGE (M-trade-sessions ts-3.4, ts-3.5; plan §Notices):
-//   `NoticeInput.offers` is replaced by `sessions` + `opened`: a trade request is an incoming,
+// TRADE REQUESTS (M-trade-sessions ts-3.4, ts-3.5; plan §Notices):
+//   The trade rows a NoticeInput carries are `sessions` + `opened`: a trade request is an incoming,
 //   untouched trade SESSION this client has not opened its editor on (key `session-<id>`, from the
-//   opener), and legacy `trade_offer` rows raise nothing. The trade halves of CTL13-2-NOTICES and
-//   CTL13-3-SHEET are re-expressed over sessions with the SAME assertions (oldest first, the tie
-//   rule, names, dismissals, the error first, permutation-determinism); only the row source and the
-//   `trade-` → `session-` key prefix change. `requestCommand` for a trade now answers
-//   `openTradeEditor` (accept) / `cancelTradeSession` (decline) — was `respondTrade`. Challenge
-//   cases are unchanged. One deliberate difference: pendingRequests now lists EVERY waiting trade
-//   request (the collapse to one banner line is buildNotices' job), so the permutation reference
-//   holds both incoming sessions where it held the one oldest offer.
+//   opener). The trade halves of CTL13-2-NOTICES and CTL13-3-SHEET run over sessions (oldest first,
+//   the tie rule, names, dismissals, the error first, permutation-determinism). `requestCommand`
+//   for a trade answers `openTradeEditor` (accept) / `cancelTradeSession` (decline); challenge
+//   cases answer the challenge commands. pendingRequests lists EVERY waiting trade request (the
+//   collapse to one banner line is buildNotices' job), so the permutation reference holds both
+//   incoming sessions.
 // ---------------------------------------------------------------------------------------------
 
 import { describe, expect, it } from 'vitest';
@@ -38,7 +36,6 @@ import type { VButton } from '../input/buttons';
 import type {
   StoreBattleChallenge,
   StorePlayer,
-  StoreTradeOffer,
   StoreTradeSession,
   StoreTradeSessionOffer,
 } from '../net/store';
@@ -83,24 +80,6 @@ function tradeSession(
     revision: 1n,
     createdAtMs,
     ...over,
-  };
-}
-
-function offer(tradeId: bigint, initiator: string, counterparty: string): StoreTradeOffer {
-  return {
-    tradeId,
-    initiator,
-    counterparty,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: 'Pending',
-    createdAtMs: 1n,
   };
 }
 
@@ -523,16 +502,16 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
 //   client has not opened SHALL raise the non-modal banner (several collapsing into one line) and
 //   never a frame") and memory/projects/monster-realm-ts-3-plan.md §Notices.
 //
-// RED REASON: NoticeInput has no `sessions` / `opened`, no session raises a request, buildNotices
-//   never collapses, `dismissKeys` does not exist and requestCommand answers `respondTrade`.
+// WHAT IS PINNED: NoticeInput carries `sessions` / `opened`, an incoming untouched session raises a
+//   request, buildNotices collapses several into one notice, `dismissKeys` answers the keys B
+//   dismisses, and requestCommand answers a trade request with the session commands.
 // ==========================================================================================
 
 describe('noticeModel: incoming trade sessions (ts-3)', () => {
-  it('ts-3.5 an incoming untouched session NOT in `opened` is a pending request from its opener; once this client opened its editor it is not; the opener never gets one; legacy offers raise nothing', () => {
+  it('ts-3.5 an incoming untouched session NOT in `opened` is a pending request from its opener; once this client opened its editor it is not; the opener never gets one', () => {
     // WRONG IMPL KILLED: the banner raised again for a session the player already opened (the
     // editor IS the answer: the banner would nag over it); the opener's own session raising a
-    // request; a request named from the partner; the legacy `trade_offer` path still feeding the
-    // banner (an implementation that keeps reading `offers`).
+    // request; a request named from the partner.
     const s = tradeSession(31n, BOB, ME, 1_000n);
     expect(pendingRequests(input({ sessions: [s] }))).toEqual([tradeNotice(31n, 'Bob', 1_000n)]);
     expect(
@@ -544,9 +523,6 @@ describe('noticeModel: incoming trade sessions (ts-3)', () => {
       'another id opened: still a request',
     ).toHaveLength(1);
     expect(pendingRequests(input({ sessions: [s], identity: BOB })), 'the opener').toEqual([]);
-    const legacy = Object.assign(input(), { offers: [offer(11n, BOB, ME)] });
-    expect(pendingRequests(legacy), 'a legacy offer raises nothing').toEqual([]);
-    expect(buildNotices(legacy)).toEqual([]);
   });
 
   it('ts-3.5 two or more undismissed trade requests collapse into ONE notice carrying count and keys; one alone carries neither; a dismissed one is not counted; an older challenge comes first uncounted; dismissKeys answers the keys or the notice`s own key', () => {
@@ -597,8 +573,9 @@ describe('noticeModel: incoming trade sessions (ts-3)', () => {
   });
 
   it('ts-3.4 requestCommand answers a trade request with openTradeEditor (accept) and cancelTradeSession (decline) for THAT session, and challenges as before', () => {
-    // WRONG IMPL KILLED: the legacy respondTrade still sent (no such trade row exists: the server
-    // would refuse it); the accept and decline swapped; the id of another session.
+    // WRONG IMPL KILLED: any answer other than the session commands (a trade request is a session
+    // and only the session reducers act on it); the accept and decline swapped; the id of another
+    // session.
     const n = tradeNotice(9_007_199_254_740_993n, 'Bob', 1n);
     expect(requestCommand(n, 'accept')).toEqual({
       kind: 'openTradeEditor',

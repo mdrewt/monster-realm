@@ -49,15 +49,12 @@
  *               trailing/leading character, a wrong key) — this pins byte-identity post-fix.
  *
  * RED-TEAM ROUND (post-implementation, gated set 67/67 green): the §5.3 census/parity gate
- * proves a key is REQUESTED somewhere in main.ts, never WHICH call site claims it — a
- * accepted<->rejected or completed<->cancelled key swap across the four trade actions, or a
- * single non-shop site (trade frozen-link, rename success, trade-propose success) reverted to
- * its raw English literal, both survived mutation with every gated test green. The trade/rename/
- * trade-propose suites below open each overlay through its REAL input path (KeyU, KeyN, and for
- * trade-propose A then A on Trade facing another player, ctl-10b retired KeyO — no NPC/dialogue
- * needed, unlike shop) and drive its REAL submit path, asserting each action's
- * feedback against its OWN catalog key (never just "some key differs from en") plus the right
- * reducer spy + args.
+ * proves a key is REQUESTED somewhere in main.ts, never WHICH call site claims it — a single
+ * non-shop site (a frozen-link line, the rename success) reverted to its raw English literal
+ * survived mutation with every gated test green. The rename suite below opens its overlay through
+ * its REAL input path (KeyN — no NPC/dialogue needed, unlike shop) and drives its REAL submit
+ * path, asserting each line against its OWN catalog key (never just "some key differs from en")
+ * plus the right reducer spy.
  *
  * ctl-7d (CTL7D.4, a named intentional change): the plain shop success ids
  * `shop.feedback.purchased` / `shop.feedback.sold` are deleted. A successful Buy or Sell now shows
@@ -82,7 +79,6 @@ import type {
   StorePlayer,
   StoreShopItemRow,
   StoreShopRow,
-  StoreTradeOffer,
   StoreTradeSession,
   StoreWallet,
 } from './net/store';
@@ -98,17 +94,12 @@ const CHECK = String.fromCharCode(0x2713);
 const MINUS = String.fromCharCode(0x2212);
 const E_ACUTE = String.fromCharCode(0xe9);
 
-/** A second identity (64 hex chars, `Identity`-constructible) for the trade/trade-propose
- *  counterparty. */
+/** A second identity (64 hex chars, `Identity`-constructible) for the trade session partner. */
 const OTHER = 'cd'.repeat(32);
-const TRADE_ID = 10n;
 
 const H = vi.hoisted(() => {
   const buy = vi.fn(() => Promise.resolve());
   const sell = vi.fn(() => Promise.resolve());
-  const respondTrade = vi.fn(() => Promise.resolve());
-  const confirmTrade = vi.fn(() => Promise.resolve());
-  const cancelTrade = vi.fn(() => Promise.resolve());
   const setProfileName = vi.fn(() => Promise.resolve());
   const proposeTrade = vi.fn(() => Promise.resolve());
   return {
@@ -120,9 +111,6 @@ const H = vi.hoisted(() => {
     interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
     buy,
     sell,
-    respondTrade,
-    confirmTrade,
-    cancelTrade,
     setProfileName,
     proposeTrade,
     /** `conn.live()`'s return — the census roster can't tell which reducer a call site
@@ -131,9 +119,6 @@ const H = vi.hoisted(() => {
       reducers: {
         buy,
         sell,
-        respondTrade,
-        confirmTrade,
-        cancelTrade,
         setProfileName,
         proposeTrade,
       },
@@ -210,7 +195,6 @@ interface StoreHandle {
   upsertShopItem(row: StoreShopItemRow): void;
   upsertItemDef(row: StoreItemRow): void;
   upsertWallet(row: StoreWallet): void;
-  upsertTradeOffer(row: StoreTradeOffer): void;
   /** ts-3: the PK-less `my_trade_session` view, reconciled as a whole set. */
   reconcileTradeSessionsFromView(rows: readonly StoreTradeSession[]): void;
   upsertPlayer(row: StorePlayer): void;
@@ -282,11 +266,8 @@ function findSellButton(): HTMLButtonElement {
   return btn as HTMLButtonElement;
 }
 
-// INTENTIONAL CHANGE (uif-4b, UIF4B.1): every message of the shop, trade, rename and trade-propose
-// sites goes through the one seam, so it is read off `#toast` (visible text, '' while hidden). The
-// four reader names below are kept so each case's body still reads as before. Was:
-// `#shop-feedback`, `#trade-feedback`, `#rename-feedback` and `#tradepropose-feedback` (retired from
-// index.html, or no longer written).
+// Every message of the shop, rename and trade-session sites goes through the one seam, so it is
+// read off `#toast` (visible text, '' while hidden); the per-site reader names below all read it.
 function toastText(): string {
   const el = document.getElementById('toast');
   expect(el, '#toast must exist in the real index.html shell').not.toBeNull();
@@ -319,7 +300,7 @@ async function freshShopFeedback(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-/** Generic sibling of `waitForFeedback` for the trade/rename/trade-propose overlays below —
+/** Generic sibling of `waitForFeedback` for the rename and trade-session lines below —
  *  same "await a reducer promise" reason, parameterised over which feedback node to poll. */
 async function waitForNonEmpty(getText: () => string): Promise<void> {
   await vi.waitFor(
@@ -333,69 +314,6 @@ async function waitForNonEmpty(getText: () => string): Promise<void> {
 function focusCanvasAndPressKey(code: string): void {
   document.querySelector('canvas')?.focus();
   window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
-}
-
-/** ctl-10b: a keydown and its keyup at the world (the canvas focused), as a player's tap. */
-function tapWorldKey(code: string): void {
-  document.querySelector('canvas')?.focus();
-  window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
-  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
-}
-
-/** Seeds ONE trade offer involving `H.identity` (initiator or counterparty per `opts`), then
- *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openSocial('trades')`,
- *  which shows the trade panel of the Social frame, gated by
- *  `overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()`), the same "real input,
- *  no NPC/dialogue" path main.partyFull.test.ts uses for the Monsters frame (KeyB). */
-function openTradeWithOffer(opts: {
-  readonly viewerIsInitiator: boolean;
-  readonly status: 'Pending' | 'ConfirmedByCounterparty';
-}): void {
-  const store = storeHandle();
-  const offer: StoreTradeOffer = {
-    tradeId: TRADE_ID,
-    initiator: opts.viewerIsInitiator ? H.identity : OTHER,
-    counterparty: opts.viewerIsInitiator ? OTHER : H.identity,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: opts.status,
-    createdAtMs: 0n,
-  };
-  store.upsertTradeOffer(offer);
-  store.flushBatch();
-  focusCanvasAndPressKey('KeyU');
-}
-
-/** qf-8 (named intentional change, QF8.1): the trade panel's action buttons are deleted; each trade
- *  action is the player's key sequence over the Social sheet that U opened on the trade row
- *  (tradeModel.ts's action table; the trade `reject` is the sheet's Decline, and Decline and
- *  Confirm ask Yes / No on No first). */
-const TRADE_SHEET_KEYS: Readonly<
-  Record<'accept' | 'reject' | 'confirm' | 'cancel', readonly string[]>
-> = {
-  accept: ['Enter', 'Enter'], // the sheet (on Accept), A on Accept
-  reject: ['Enter', 'ArrowDown', 'Enter', 'ArrowUp', 'Enter'], // Decline, its prompt, Yes
-  confirm: ['Enter', 'Enter', 'ArrowUp', 'Enter'], // the sheet (on Confirm), its prompt, Yes
-  cancel: ['Enter', 'Enter'], // the one-row sheet (on Cancel), A on Cancel
-};
-
-/** Answer the seeded offer with `action` on the Social sheet. */
-function answerTradeOnSheet(action: 'accept' | 'reject' | 'confirm' | 'cancel'): void {
-  expect(
-    document.getElementById('trade-status')?.getAttribute('aria-current'),
-    `trade ${action}: the Social cursor must be on the seeded offer`,
-  ).toBe('true');
-  for (const code of TRADE_SHEET_KEYS[action]) tapWorldKey(code);
-}
-
-function tradeFeedbackText(): string {
-  return toastText();
 }
 
 function renameFeedbackText(): string {
@@ -430,9 +348,6 @@ beforeEach(() => {
   H.interact = () => [];
   H.buy.mockClear();
   H.sell.mockClear();
-  H.respondTrade.mockClear();
-  H.confirmTrade.mockClear();
-  H.cancelTrade.mockClear();
   H.setProfileName.mockClear();
   H.proposeTrade.mockClear();
   buildAppShellFromRealIndexHtml();
@@ -539,126 +454,34 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
 });
 
 // ---------------------------------------------------------------------------
-// TRADE — table-driven over the four actions (red-team S1: accepted<->rejected and
-// completed<->cancelled key swaps survived with every gated test green). Each row opens the
-// REAL trade overlay via the REAL KeyU shortcut (openTradeWithOffer — no NPC/dialogue needed,
-// unlike shop) with a seeded offer shaped so exactly the action under test is available, answers
-// it on the REAL Social sheet with the REAL keys (qf-8: the trade panel's buttons are deleted;
-// `answerTradeOnSheet`), and asserts the feedback against its OWN fr key — and explicitly against
-// every SIBLING trade key, so a swap cannot pass by accident — plus the right reducer spy+args.
-// ---------------------------------------------------------------------------
-
-interface TradeCase {
-  readonly action: 'accept' | 'reject' | 'confirm' | 'cancel';
-  readonly viewerIsInitiator: boolean;
-  readonly status: 'Pending' | 'ConfirmedByCounterparty';
-  readonly frKey: string;
-  readonly enLiteral: string;
-}
-
-const TRADE_CASES: readonly TradeCase[] = [
-  {
-    action: 'accept',
-    viewerIsInitiator: false,
-    status: 'Pending',
-    frKey: 'trade.feedback.accepted',
-    enLiteral: 'Trade accepted!',
-  },
-  {
-    action: 'reject',
-    viewerIsInitiator: false,
-    status: 'Pending',
-    frKey: 'trade.feedback.rejected',
-    enLiteral: 'Trade rejected.',
-  },
-  {
-    action: 'confirm',
-    viewerIsInitiator: true,
-    status: 'ConfirmedByCounterparty',
-    frKey: 'trade.feedback.completed',
-    enLiteral: 'Trade complete!',
-  },
-  {
-    action: 'cancel',
-    viewerIsInitiator: true,
-    status: 'Pending',
-    frKey: 'trade.feedback.cancelled',
-    enLiteral: 'Trade cancelled.',
-  },
-];
-const TRADE_FR_KEYS = TRADE_CASES.map((c) => c.frKey);
-
-describe('main.ts trade feedback routes through the i18n catalog, per-action (slice 21r-b red-team S1)', () => {
-  it.each(
-    TRADE_CASES,
-  )('UIF4B.1 ★★ BITES: under fr, trade $action toasts CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args', async ({
-    action,
-    viewerIsInitiator,
-    status,
-    frKey,
-    enLiteral,
-  }) => {
-    await bootMain('/?locale=fr');
-    openTradeWithOffer({ viewerIsInitiator, status });
-    H.linkFrozen = false;
-
-    answerTradeOnSheet(action);
-    await waitForNonEmpty(tradeFeedbackText);
-
-    expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
-    expect(tradeFeedbackText()).not.toBe(enLiteral);
-    for (const otherKey of TRADE_FR_KEYS) {
-      if (otherKey === frKey) continue;
-      expect(
-        tradeFeedbackText(),
-        `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
-          'accepted<->rejected / completed<->cancelled key swap',
-      ).not.toBe(FR[otherKey]);
-    }
-
-    switch (action) {
-      case 'accept':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
-        break;
-      case 'reject':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
-        break;
-      case 'confirm':
-        expect(H.confirmTrade).toHaveBeenCalledOnce();
-        expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-      case 'cancel':
-        expect(H.cancelTrade).toHaveBeenCalledOnce();
-        expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-    }
-  });
-
-  it('UIF4B.1 ★ BITES: under fr, a frozen link on trade Accept toasts CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
-    await bootMain('/?locale=fr');
-    openTradeWithOffer({ viewerIsInitiator: false, status: 'Pending' });
-    H.linkFrozen = true;
-
-    answerTradeOnSheet('accept');
-    await waitForNonEmpty(tradeFeedbackText);
-
-    expect(tradeFeedbackText()).toBe(FR['chrome.feedback.disconnected']);
-    expect(tradeFeedbackText()).not.toBe('disconnected — try again');
-    expect(tradeFeedbackText()).not.toBe(EN['chrome.feedback.disconnected']);
-    expect(H.respondTrade, 'a frozen link must never reach the reducer').not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// RENAME + TRADE-PROPOSE — both reachable at modest cost: rename via its real KeyN shortcut,
-// trade-propose face to face (A on another online player, then A on Trade; no NPC/dialogue, same
-// as trade). Red-team S2: a single non-shop success-line site reverted
-// to its raw English literal survived with every gated test green.
+// RENAME + TRADE SESSION — rename via its real KeyN shortcut, the session-closed notice by a
+// session row leaving the store. Red-team S2: a single non-shop success-line site reverted to its
+// raw English literal survived with every gated test green; the rename frozen-link row pins the
+// non-shop frozen line under fr.
 // ---------------------------------------------------------------------------
 
 describe('main.ts rename + trade-propose feedback routes through the i18n catalog (slice 21r-b red-team S2)', () => {
+  it('UIF4B.1 ★ BITES: under fr, a frozen link on rename submit toasts CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
+    // WRONG IMPL KILLED: the rename adapter's frozen-link arm left on the bare English literal (or
+    // the en catalog's text) under fr; a frozen rename that reaches the reducer.
+    await bootMain('/?locale=fr');
+    focusCanvasAndPressKey('KeyN');
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = 'NewName';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const submit = document.getElementById('rename-submit') as HTMLButtonElement;
+    expect(submit.disabled, 'the submit button must be enabled for a non-empty draft').toBe(false);
+    H.linkFrozen = true;
+
+    submit.click();
+    await waitForNonEmpty(renameFeedbackText);
+
+    expect(renameFeedbackText()).toBe(FR['chrome.feedback.disconnected']);
+    expect(renameFeedbackText()).not.toBe('disconnected — try again');
+    expect(renameFeedbackText()).not.toBe(EN['chrome.feedback.disconnected']);
+    expect(H.setProfileName, 'a frozen link must never reach the reducer').not.toHaveBeenCalled();
+  });
+
   it('UIF4B.1 ★★ BITES: under fr, a successful rename toasts CATALOG_FR["chrome.rename.updated"], not the hardcoded "Name updated!"', async () => {
     await bootMain('/?locale=fr');
     focusCanvasAndPressKey('KeyN');
