@@ -211,8 +211,10 @@ context: an extra "owner" parameter would let a caller choose whose rows to read
 
 **Rules out.** Marking a per-player table `public`; a view that takes an identity
 argument. Tables that are public on purpose: content, `character`, `player`,
-`profile` (the leaderboard), `trade_offer` and `battle_challenge` (both parties need
-them), and `player_quest`.
+`profile` (the leaderboard), `battle_challenge` (both parties need it),
+`player_quest`, and `trade_offer`, which is drain-only: no reducer inserts a row, and
+a row still in it leaves by `cancel_trade`, a disconnect, account deletion or its TTL
+reaper.
 
 ## Tactical battle privacy is structural, and tactical rows are not exportable
 
@@ -373,8 +375,8 @@ client.
 ## Trading resets the bond, not the monster
 
 **Decision.** Every trade swap goes through `trading_session::apply_swap`
-(`server-module/src/trading_session.rs`) — a session executed by
-`confirm_trade_session` and a legacy offer confirmed by `confirm_trade` alike — and it
+(`server-module/src/trading_session.rs`), which `confirm_trade_session` calls when the
+last confirm lands, and it
 resets each transferred monster's seven Trust/Quality-Time columns — `trust_favorable_count`,
 `trust_unfavorable_count`, `trust_favorable_battle_day_epoch`,
 `quality_time_ticks_total`, `quality_time_accum_ms`, `quality_time_window_ms`,
@@ -402,22 +404,23 @@ guest-claim re-key.
 **Decision.** Currency is a private `player_wallet` (`u64` balance, `MAX_BALANCE`
 999 999 999 in `game-core/src/currency.rs`); every balance change goes through
 `economy::grant_currency`/`spend_currency`. Item stacks cap at `MAX_ITEM_STACK`
-(9999). `confirm_trade` checks receiver headroom first, and the swap applies debits
-before credits (`SwapPlan::ordered_steps`), so a trade either happens completely or
-not at all. Escrow is a guard, not a hold: an asset in an open trade offer cannot be
-spent, sold or evolved. A trade session (`trade_session`, `trading_session.rs`) locks
+(9999). The confirm that executes a trade session checks receiver headroom first, and
+the swap applies debits before credits (`SwapPlan::ordered_steps`), so a trade either
+happens completely or not at all. Escrow is a guard, not a hold: a guarded asset cannot
+be spent, sold or evolved. A trade session (`trade_session`, `trading_session.rs`) locks
 at confirm: a side's monsters, items and currency are guarded only while that side is
-confirmed, and the `guards.rs` wrappers every other reducer calls count both sources.
+confirmed. The `guards.rs` wrappers every other reducer calls count a confirmed session
+side and any `trade_offer` row still in its table; that table is drain-only
+(`propose_trade`, `respond_trade` and `confirm_trade` return one fixed error and read
+nothing, so no reducer names another player's assets).
 An unconfirmed side locks nothing beyond exclusivity (a monster sits in one trade at a
 time), so each confirm first compares every offered monster with its private review
 snapshot (`trade_session_snapshot`) and, on a difference, refreshes it and clears both
 confirms instead of confirming; the confirm that completes the pair re-runs the full
 side check for BOTH sides on live rows before anything moves. A failure on the other
 side clears that side's confirm and tells the caller nothing more. A write that boxes,
-faints or re-owns an offered monster deletes the session. A trade offer from the client can only request currency from
-the counterparty, because the counterparty's monsters and items are private and not
-visible to the proposer. The client parses currency input to `BigInt` digit by digit
-(`client/src/ui/tradeProposeModel.ts`).
+faints or re-owns an offered monster deletes the session. Each side names only its
+own assets: no trade reducer takes an argument naming the other player's.
 
 **Why.** Reducers run serially, so check-then-write in one reducer is atomic, and
 escrow rows would just be a second source of truth. The currency-only counterparty is

@@ -6,36 +6,47 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll, readWorld, walkTo } from './controls';
+import { ownerSql, sqlRows } from './stdb';
 
-// Trade full flow e2e (EARS criteria: m16.5d-1 through m16.5d-4)
+// Trade full flow e2e on trade SESSIONS (EARS m16.5d-1 through m16.5d-4).
 //
 // TWO-CONTEXT DESIGN
 // ==================
-// The propose→respond→confirm flow requires two distinct SpacetimeDB identities.
-// Each browser instance generates its own ephemeral identity (no .withToken in
-// the DbConnection — the SDK issues a fresh identity per new browser session).
-// We cannot share a single browser or BrowserContext because the SDK caches its
-// connection+identity inside the page's JS module scope; opening two tabs in one
-// context would yield the same identity and the propose_trade guard would reject
-// (cannot trade with yourself).
+// A session needs two distinct SpacetimeDB identities. Each browser instance generates its own
+// ephemeral identity (no .withToken in the DbConnection). Two tabs in one context would share the
+// SDK's module-scoped connection, hence one identity, and open_trade_session refuses a session
+// with oneself.
 //
-// WHY __mrTrade INSTEAD OF KeyU
-// ==============================
-// The trade overlay (KeyU) lets a human inspect the UI, but offers no programmatic
-// API to call propose_trade/respond_trade/confirm_trade from the test.  The
-// SpacetimeDB DbConnection instance is scoped to the page's module — its
-// reducers object is not accessible from page.evaluate() in a type-safe way
-// without a deliberate test hook.  window.__mrTrade exposes exactly the four
-// reducer calls needed to drive the flow, plus allTradeOffers() and allPlayers()
-// for polling.
+// WHY __mrTrade INSTEAD OF THE EDITOR
+// ===================================
+// The editor's buttons are proved by trade-session.spec.ts. This file drives the reducers through
+// the DEV `window.__mrTrade` hook and judges the result from SERVER TRUTH (owner SQL through the
+// `spacetime` CLI, ./stdb.ts), so a client that renders the right thing over a wrong server state
+// cannot pass. main.ts points at the `MrTrade` interface below as the hook-shape mirror.
+//
+// SERVER FACTS the flow relies on (server-module/src/trading_session.rs, game-core/src/trading/
+// session.rs):
+//   - open_trade_session needs both characters in one zone within interact range (Manhattan 2), so
+//     A walks onto B's tile first; a fresh session has revision 0 and arms one
+//     trade_session_reaper_schedule row;
+//   - every accepted set_trade_offer advances the revision by one and clears both confirms, and
+//     writes one trade_session_snapshot row per offered monster;
+//   - the confirm that completes the pair executes the swap and deletes the session, its snapshot
+//     rows and its schedule row; each received monster lands in the receiver's lowest free party
+//     slot once its own outgoing monster has left (slot 0 for a one-monster party).
+//   - a fresh identity has exactly one starter monster, no items and no wallet row.
 //
 // EARS CRITERIA COVERED
 // =====================
-//   m16.5d-1  __mrTrade hook is wired in main.ts with all 4 reducer methods
-//   m16.5d-2  proposeTrade creates a Pending trade_offer row visible to both players
-//   m16.5d-3  respondTrade(tradeId, true) transitions status to ConfirmedByCounterparty
-//   m16.5d-4  confirmTrade deletes the offer row and transfers ownership; monster
-//             conservation holds (totalMonstersBefore === totalMonstersAfter)
+//   m16.5d-1  window.__mrTrade exposes exactly the six session functions
+//   m16.5d-2  openTradeSession creates one session row, revision 0, seen by both players, with its
+//             reaper schedule row
+//   m16.5d-3  both setTradeOffer calls land (revision 2, one snapshot row per offered monster) and
+//             the opener's confirm is recorded and seen by the partner
+//   m16.5d-4  the partner's confirm executes: the two monsters swap owners (server truth), nothing
+//             is duplicated or lost, items and wallets are unchanged, and the session, snapshot
+//             and schedule rows are gone from the server and from both clients' mySessions()
 
 interface GameSnap {
   identity: string;
@@ -50,35 +61,47 @@ interface GameSnap {
   ownInventory: Array<{ invId: string; itemId: number; count: number }>;
 }
 
-interface MrTrade {
-  proposeTrade(args: {
-    counterparty: string;
-    initiatorMonsterIds: string[];
-    initiatorItems: { itemId: number; qty: number }[];
-    initiatorCurrency: string;
-    counterpartyMonsterIds: string[];
-    counterpartyItems: { itemId: number; qty: number }[];
-    counterpartyCurrency: string;
-  }): Promise<void> | undefined;
-  respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined;
-  confirmTrade(tradeId: string): Promise<void> | undefined;
-  cancelTrade(tradeId: string): Promise<void> | undefined;
-  allTradeOffers(): Array<{
-    tradeId: string;
-    initiator: string;
-    counterparty: string;
-    status: string;
-  }>;
-  allPlayers(): Array<{ identity: string; name: string }>;
+/** One side of a session, as the hook hands it across the evaluate boundary. */
+interface HookOffer {
+  monsterIds: string[];
+  items: { itemId: number; qty: number }[];
+  currency: string;
 }
 
-// ---------------------------------------------------------------------------
-// gameReady: wait until __game() is present, identity is set, and the player
-// has been placed on the map (ownAuthTile non-null). join_game fires on
-// connect (connection.ts); the starter Flameling is granted synchronously
-// by the server during join_game, so ownAuthTile non-null implies the grant
-// has been processed.
-// ---------------------------------------------------------------------------
+/** A session row as `mySessions()` returns it (bigints as decimal strings). */
+interface HookSession {
+  sessionId: string;
+  opener: string;
+  partner: string;
+  revision: string;
+  openerConfirmed: boolean;
+  partnerConfirmed: boolean;
+  openerOffer: HookOffer;
+  partnerOffer: HookOffer;
+}
+
+/** The `window.__mrTrade` hook (client/src/main.ts `mrTradeHook`). Keep in sync with it. */
+interface MrTrade {
+  allPlayers(): Array<{ identity: string; name: string }>;
+  openTradeSession(partnerHex: string): Promise<void> | undefined;
+  setTradeOffer(sessionId: string, offer: HookOffer): Promise<void> | undefined;
+  confirmTradeSession(sessionId: string, revision: string): Promise<void> | undefined;
+  cancelTradeSession(sessionId: string): Promise<void> | undefined;
+  mySessions(): HookSession[];
+}
+
+/** The hook's members, sorted: the whole contract and nothing else. */
+const HOOK_MEMBERS = [
+  'allPlayers',
+  'cancelTradeSession',
+  'confirmTradeSession',
+  'mySessions',
+  'openTradeSession',
+  'setTradeOffer',
+];
+
+const PARTY_SIZE = 6;
+
 async function gameReady(p: Page): Promise<void> {
   await p.waitForFunction(
     () => {
@@ -92,22 +115,216 @@ async function gameReady(p: Page): Promise<void> {
   );
 }
 
-// ---------------------------------------------------------------------------
-// getSnap: pull the subset of GameSnap needed for trade assertions.
-// ---------------------------------------------------------------------------
-async function getSnap(p: Page): Promise<{
-  identity: string;
-  ownMonsters: GameSnap['ownMonsters'];
-  ownInventory: GameSnap['ownInventory'];
-}> {
-  return p.evaluate(() => {
+const snapOf = (p: Page): Promise<GameSnap> =>
+  p.evaluate(() => {
     const g = (window as unknown as { __game: () => GameSnap }).__game();
     return {
       identity: g.identity,
+      ownAuthTile: g.ownAuthTile,
       ownMonsters: g.ownMonsters,
       ownInventory: g.ownInventory,
     };
   });
+
+/** A reducer call through the hook, made in the page. */
+type HookCall =
+  | { kind: 'open'; partner: string }
+  | { kind: 'offer'; sessionId: string; monsterIds: string[] }
+  | { kind: 'confirm'; sessionId: string; revision: string }
+  | { kind: 'cancel'; sessionId: string };
+
+/** Sends `call` from `p` and awaits the reducer: null when it succeeded, else the rejection's name
+ *  and message as the page saw them. */
+const send = (p: Page, call: HookCall): Promise<{ name: string; message: string } | null> =>
+  p.evaluate(async (c: HookCall) => {
+    const w = window as unknown as { __mrTrade: MrTrade };
+    let sent: Promise<void> | undefined;
+    switch (c.kind) {
+      case 'open':
+        sent = w.__mrTrade.openTradeSession(c.partner);
+        break;
+      case 'offer':
+        sent = w.__mrTrade.setTradeOffer(c.sessionId, {
+          monsterIds: c.monsterIds,
+          items: [],
+          currency: '0',
+        });
+        break;
+      case 'confirm':
+        sent = w.__mrTrade.confirmTradeSession(c.sessionId, c.revision);
+        break;
+      case 'cancel':
+        sent = w.__mrTrade.cancelTradeSession(c.sessionId);
+        break;
+    }
+    if (sent === undefined) return { name: 'NotSent', message: `${c.kind}: no live connection` };
+    try {
+      await sent;
+      return null;
+    } catch (e) {
+      const err = e as { name?: unknown; message?: unknown } | null;
+      return { name: String(err?.name ?? typeof e), message: String(err?.message ?? e) };
+    }
+  }, call);
+
+/** Asserts that a hook call succeeded, naming the rejection when it did not. */
+function expectAccepted(r: { name: string; message: string } | null, label: string): void {
+  expect(r, `${label}: the reducer accepted the call (got ${JSON.stringify(r)})`).toBeNull();
+}
+
+/** The session between `me` and `other` (either orientation) as `p`'s hook reads it, else null. */
+const sessionBetween = (p: Page, me: string, other: string): Promise<HookSession | null> =>
+  p.evaluate(
+    ({ me: a, other: b }) => {
+      const w = window as unknown as { __mrTrade: MrTrade };
+      return (
+        w.__mrTrade
+          .mySessions()
+          .find(
+            (s) => (s.opener === a && s.partner === b) || (s.opener === b && s.partner === a),
+          ) ?? null
+      );
+    },
+    { me, other },
+  );
+
+/** Polls until `p` holds a session between the two that satisfies `ok`; returns it. */
+async function waitSession(
+  p: Page,
+  me: string,
+  other: string,
+  label: string,
+  ok: (s: HookSession) => boolean = () => true,
+): Promise<HookSession> {
+  let found: HookSession | null = null;
+  await expect
+    .poll(
+      async () => {
+        found = await sessionBetween(p, me, other);
+        return found !== null && ok(found);
+      },
+      { message: `${label}: the session reaches this page in the expected state`, timeout: 20_000 },
+    )
+    .toBe(true);
+  const s = found as HookSession | null;
+  if (s === null) throw new Error(`${label}: no session`);
+  return s;
+}
+
+/** Polls until `p` holds NO session between the two. */
+async function waitNoSession(p: Page, me: string, other: string, label: string): Promise<void> {
+  await expect
+    .poll(async () => (await sessionBetween(p, me, other)) === null, {
+      message: `${label}: the session row leaves this page`,
+      timeout: 20_000,
+    })
+    .toBe(true);
+}
+
+/** Cleanup only (a `finally`): cancels any session the two still share and waits for it to leave
+ *  both pages. Never the flow under test; never throws. */
+async function cancelLeftover(pa: Page, pb: Page, a: string, b: string): Promise<void> {
+  try {
+    const left = await sessionBetween(pa, a, b);
+    if (left !== null) {
+      await send(pa, { kind: 'cancel', sessionId: left.sessionId });
+      await waitNoSession(pa, a, b, 'cleanup');
+      await waitNoSession(pb, b, a, 'cleanup');
+    }
+  } catch (err) {
+    console.error('[trade-full cleanup]', err);
+  }
+  await closeAll(pa).catch(() => undefined);
+  await closeAll(pb).catch(() => undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Server truth (owner SQL). Identities compare lowercased, without `0x`.
+// ---------------------------------------------------------------------------
+
+const norm = (id: string): string => {
+  const s = id.trim().toLowerCase();
+  return s.startsWith('0x') ? s.slice(2) : s;
+};
+
+/** `id` as checked 64-char lowercase hex. */
+function hexOf(id: string, label: string): string {
+  const h = norm(id);
+  if (!/^[0-9a-f]{64}$/.test(h)) throw new Error(`${label}: not a hex identity: ${id}`);
+  return h;
+}
+
+/** A decimal id, checked, so it can sit in an owner-SQL literal. */
+function decimal(id: string, label: string): string {
+  if (!/^[0-9]+$/.test(id)) throw new Error(`${label}: not a decimal id: ${id}`);
+  return id;
+}
+
+/** Every monster row owned by one of `owners`, as `monsterId -> { owner, partySlot }`. */
+function serverMonsters(owners: string[]): Map<string, { owner: string; partySlot: string }> {
+  const rows = sqlRows(
+    ownerSql('SELECT monster_id, owner_identity, party_slot FROM monster', 'monster'),
+    'monster',
+  );
+  const out = new Map<string, { owner: string; partySlot: string }>();
+  for (const r of rows) {
+    const owner = norm(r.owner_identity ?? '');
+    if (owners.includes(owner)) {
+      out.set(r.monster_id ?? '', { owner, partySlot: r.party_slot ?? '' });
+    }
+  }
+  return out;
+}
+
+/** Every row of `table` with a cell naming one of `owners`, each as its sorted cell list. Used for
+ *  tables whose only job here is "unchanged" (inventory, player_wallet). */
+function serverRowsOf(table: 'inventory' | 'player_wallet', owners: string[]): string[] {
+  const rows = sqlRows(ownerSql(`SELECT * FROM ${table}`, table), table);
+  return rows
+    .filter((r) => Object.values(r).some((cell) => owners.includes(norm(cell))))
+    .map((r) => JSON.stringify(Object.entries(r).sort(([x], [y]) => x.localeCompare(y))))
+    .sort();
+}
+
+/** The server's session rows between the two identities (either orientation). */
+function serverSessions(a: string, b: string): Array<{ sessionId: string; revision: string }> {
+  const rows = sqlRows(
+    ownerSql('SELECT session_id, opener, partner, revision FROM trade_session', 'trade_session'),
+    'trade_session',
+  );
+  return rows
+    .filter((r) => {
+      const o = norm(r.opener ?? '');
+      const p = norm(r.partner ?? '');
+      return (o === a && p === b) || (o === b && p === a);
+    })
+    .map((r) => ({ sessionId: r.session_id ?? '', revision: r.revision ?? '' }));
+}
+
+/** The monster ids of `sessionId`'s snapshot rows, sorted. */
+function serverSnapshotMonsters(sessionId: string): string[] {
+  const sid = decimal(sessionId, 'snapshot');
+  return sqlRows(
+    ownerSql(
+      `SELECT snapshot_id, session_id, monster_id FROM trade_session_snapshot WHERE session_id = ${sid}`,
+      'trade_session_snapshot',
+    ),
+    'trade_session_snapshot',
+  )
+    .map((r) => r.monster_id ?? '')
+    .sort();
+}
+
+/** How many reaper schedule rows guard `sessionId`. */
+function serverReaperRows(sessionId: string): number {
+  const sid = decimal(sessionId, 'reaper');
+  return sqlRows(
+    ownerSql(
+      `SELECT scheduled_id, session_id FROM trade_session_reaper_schedule WHERE session_id = ${sid}`,
+      'trade_session_reaper_schedule',
+    ),
+    'trade_session_reaper_schedule',
+  ).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,265 +356,217 @@ test.describe
     });
 
     test.afterAll(async () => {
-      await browserA.close();
-      await browserB.close();
+      await browserA?.close().catch(() => undefined);
+      await browserB?.close().catch(() => undefined);
     });
 
     // -------------------------------------------------------------------------
-    // __mrTrade hook is wired in main.ts
+    // WHAT THIS KILLS: a main.ts that drops or renames a session function, or that keeps (or
+    // re-adds) any other member — a retired trade call on the hook fails the exact key list.
+    // -------------------------------------------------------------------------
+    test('m16.5d-1: window.__mrTrade exposes exactly the six trade session functions', async () => {
+      const shape = await pageA.evaluate(() => {
+        const hook = (window as unknown as { __mrTrade?: Record<string, unknown> }).__mrTrade;
+        if (hook === undefined) return null;
+        return Object.keys(hook)
+          .sort()
+          .map((k) => ({ key: k, type: typeof hook[k] }));
+      });
+      expect(shape, 'window.__mrTrade is installed').not.toBeNull();
+      expect(
+        (shape ?? []).map((m) => m.key),
+        'window.__mrTrade has exactly the session functions',
+      ).toEqual(HOOK_MEMBERS);
+      expect(
+        (shape ?? []).map((m) => m.type),
+        'every member of window.__mrTrade is a function',
+      ).toEqual(HOOK_MEMBERS.map(() => 'function'));
+    });
+
+    // -------------------------------------------------------------------------
+    // Scenario: A walks onto B's tile, opens a session, each offers its starter, A confirms, B
+    // confirms last and the swap executes.
     //
     // WHAT THIS KILLS:
-    //   A refactor of main.ts that removes or renames window.__mrTrade, or omits
-    //   any of the four reducer methods.  The test fails with hasHook=false the
-    //   moment the hook is absent, surfacing the regression immediately without
-    //   waiting for the full-flow test to time out on an undefined call.
-    //
+    //   m16.5d-2  an open that writes no row, the wrong opener/partner, a non-zero first
+    //             revision, or no reaper schedule row;
+    //   m16.5d-3  an offer that does not land (revision, offers, snapshot rows), or a confirm that
+    //             is not recorded;
+    //   m16.5d-4  an execute that leaves the session, a snapshot or the schedule row behind; that
+    //             moves the wrong monster, destroys or mints one (the owned-id union changes), parks
+    //             a received monster outside the first free party slot, or touches items/wallets;
+    //             a client that keeps a deleted session in mySessions().
     // -------------------------------------------------------------------------
-    test('__mrTrade hook is available on window (m16.5d-1)', async () => {
-      const hasHook = await pageA.evaluate(() => {
-        const w = window as unknown as { __mrTrade?: MrTrade };
-        return (
-          typeof w.__mrTrade?.proposeTrade === 'function' &&
-          typeof w.__mrTrade?.respondTrade === 'function' &&
-          typeof w.__mrTrade?.confirmTrade === 'function' &&
-          typeof w.__mrTrade?.cancelTrade === 'function'
+    test('m16.5d-2 m16.5d-3 m16.5d-4: open face to face, both offer, both confirm at the current revision; the swap conserves every asset by server truth and the session, its snapshots and its reaper schedule are gone', async () => {
+      test.setTimeout(120_000);
+      await closeAll(pageA);
+      await closeAll(pageB);
+
+      const aBefore = await snapOf(pageA);
+      const bBefore = await snapOf(pageB);
+      const idA = aBefore.identity;
+      const idB = bBefore.identity;
+      expect(idA, 'two players, two identities').not.toBe(idB);
+      const hA = hexOf(idA, 'A');
+      const hB = hexOf(idB, 'B');
+
+      // Each fresh identity holds exactly its one starter, in the party.
+      expect(aBefore.ownMonsters.length, 'A holds exactly its starter').toBe(1);
+      expect(bBefore.ownMonsters.length, 'B holds exactly its starter').toBe(1);
+      const monA = aBefore.ownMonsters[0]?.monsterId ?? '';
+      const monB = bBefore.ownMonsters[0]?.monsterId ?? '';
+      expect(aBefore.ownMonsters[0]?.partySlot ?? PARTY_SIZE).toBeLessThan(PARTY_SIZE);
+      expect(bBefore.ownMonsters[0]?.partySlot ?? PARTY_SIZE).toBeLessThan(PARTY_SIZE);
+
+      expect(await sessionBetween(pageA, idA, idB), 'precondition: no session yet').toBeNull();
+      expect(serverSessions(hA, hB), 'precondition: no session row on the server').toEqual([]);
+
+      // Server truth before the trade.
+      const monstersBefore = serverMonsters([hA, hB]);
+      expect(monstersBefore.get(monA)?.owner, 'server: A owns its starter').toBe(hA);
+      expect(monstersBefore.get(monB)?.owner, 'server: B owns its starter').toBe(hB);
+      const inventoryBefore = serverRowsOf('inventory', [hA, hB]);
+      const walletsBefore = serverRowsOf('player_wallet', [hA, hB]);
+
+      try {
+        // --- m16.5d-2: A walks onto B's tile and opens the session ------------------------
+        const there = (await readWorld(pageB)).ownAuthTile;
+        if (there === null) throw new Error('B has no authoritative tile');
+        expect(await walkTo(pageA, there, 'A walks to B'), 'A reaches B by a grass-free walk').toBe(
+          'arrived',
         );
-      });
-      expect(
-        hasHook,
-        'window.__mrTrade must expose proposeTrade/respondTrade/confirmTrade/cancelTrade',
-      ).toBe(true);
-    });
+        expectAccepted(await send(pageA, { kind: 'open', partner: idB }), 'A opens');
 
-    // -------------------------------------------------------------------------
-    // m16.5d-2 through m16.5d-4: full propose → respond → confirm flow.
-    //
-    // Scenario: Player A (initiator) offers their starter Flameling to Player B.
-    // B side offers nothing.  Both are freshly spawned: exactly 1 monster each
-    // (granted by join_game), no items, no currency in the trade.
-    //
-    // After confirm:
-    //   - trade_offer row must be deleted (allTradeOffers().length === 0)
-    //   - monster conservation: totalBefore === totalAfter (2 → 2)
-    //   - item conservation: both sides still have 0 items in the traded slots
-    //
-    // WHAT THE FULL FLOW TEST KILLS:
-    //   m16.5d-2: proposeTrade reducer not wired → offer row never appears
-    //   m16.5d-3: respondTrade reducer not wired → status never reaches ConfirmedByCounterparty
-    //   m16.5d-4: confirmTrade reducer not wired → offer row not deleted; OR
-    //             monster ownership not transferred → conservation holds but A still
-    //             has their monster and B never gains it (both length=1, but the
-    //             monster is in the wrong player's roster)
-    //
-    // -------------------------------------------------------------------------
-    test('full trade flow: propose → respond → confirm; conservation + offer row deleted (m16.5d-2/3/4)', async () => {
-      test.setTimeout(60_000);
+        const opened = await waitSession(pageA, idA, idB, 'A after the open');
+        expect(opened.opener, 'A opened it').toBe(idA);
+        expect(opened.partner, 'with B').toBe(idB);
+        expect(opened.revision, 'a fresh session has revision 0').toBe('0');
+        expect([opened.openerConfirmed, opened.partnerConfirmed], 'nothing confirmed').toEqual([
+          false,
+          false,
+        ]);
+        const sid = opened.sessionId;
+        const seenByB = await waitSession(pageB, idB, idA, 'B after the open');
+        expect(seenByB.sessionId, 'B sees the SAME session').toBe(sid);
+        expect(serverSessions(hA, hB), 'server: one session row, revision 0').toEqual([
+          { sessionId: sid, revision: '0' },
+        ]);
+        expect(serverReaperRows(sid), 'server: the open armed one reaper schedule row').toBe(1);
 
-      // Snapshot before trade.
-      const snapABefore = await getSnap(pageA);
-      const snapBBefore = await getSnap(pageB);
+        // --- m16.5d-3: both offer their starter; A confirms ----------------------------------
+        expectAccepted(
+          await send(pageA, { kind: 'offer', sessionId: sid, monsterIds: [monA] }),
+          'A offers',
+        );
+        expectAccepted(
+          await send(pageB, { kind: 'offer', sessionId: sid, monsterIds: [monB] }),
+          'B offers',
+        );
+        const offered = await waitSession(
+          pageA,
+          idA,
+          idB,
+          'both offers land',
+          (s) =>
+            s.revision === '2' &&
+            s.openerOffer.monsterIds.join() === monA &&
+            s.partnerOffer.monsterIds.join() === monB,
+        );
+        expect(serverSnapshotMonsters(sid), 'server: one snapshot row per offered monster').toEqual(
+          [monA, monB].sort(),
+        );
 
-      const identityA = snapABefore.identity;
-      const identityB = snapBBefore.identity;
+        expectAccepted(
+          await send(pageA, { kind: 'confirm', sessionId: sid, revision: offered.revision }),
+          'A confirms at the current revision',
+        );
+        const confirmedA = await waitSession(
+          pageB,
+          idB,
+          idA,
+          'B sees A`s confirm',
+          (s) => s.openerConfirmed,
+        );
+        expect(confirmedA.partnerConfirmed, 'B has not confirmed yet').toBe(false);
+        expect(confirmedA.revision, 'a confirm does not advance the revision').toBe('2');
+        expect(serverSessions(hA, hB), 'server: the half-confirmed session still exists').toEqual([
+          { sessionId: sid, revision: '2' },
+        ]);
 
-      // Each player gets exactly 1 starter Flameling from join_game.
-      expect(snapABefore.ownMonsters.length, 'Player A must have exactly 1 starter monster').toBe(
-        1,
-      );
-      expect(snapBBefore.ownMonsters.length, 'Player B must have exactly 1 starter monster').toBe(
-        1,
-      );
+        // --- m16.5d-4: B confirms last; the swap executes ------------------------------------
+        expectAccepted(
+          await send(pageB, { kind: 'confirm', sessionId: sid, revision: confirmedA.revision }),
+          'B confirms last',
+        );
 
-      const totalMonstersBefore = snapABefore.ownMonsters.length + snapBBefore.ownMonsters.length;
-      const totalItemsBefore = snapABefore.ownInventory.length + snapBBefore.ownInventory.length;
+        await expect
+          .poll(() => serverSessions(hA, hB).length, {
+            message: 'server: the executed session row is deleted',
+            timeout: 20_000,
+          })
+          .toBe(0);
+        expect(serverSnapshotMonsters(sid), 'server: its snapshot rows are deleted').toEqual([]);
+        expect(serverReaperRows(sid), 'server: its reaper schedule row is deleted').toBe(0);
 
-      // Player A waits until Player B appears in allPlayers() (public subscription).
-      // allPlayers() returns all entries from the player table; both identities are
-      // present once both pages have completed join_game.
-      await pageA.waitForFunction(
-        (myIdentity: string) => {
-          const w = window as unknown as { __mrTrade?: MrTrade };
-          if (!w.__mrTrade) return false;
-          return w.__mrTrade.allPlayers().some((pl) => pl.identity !== myIdentity);
-        },
-        identityA,
-        { timeout: 15_000 },
-      );
+        const monstersAfter = serverMonsters([hA, hB]);
+        expect(monstersAfter.get(monA), 'server: A`s starter now belongs to B, in slot 0').toEqual({
+          owner: hB,
+          partySlot: '0',
+        });
+        expect(monstersAfter.get(monB), 'server: B`s starter now belongs to A, in slot 0').toEqual({
+          owner: hA,
+          partySlot: '0',
+        });
+        expect(
+          [...monstersAfter.keys()].sort(),
+          'server: the pair owns exactly the same monster ids (none minted, none destroyed)',
+        ).toEqual([...monstersBefore.keys()].sort());
+        const ownedBy = (m: Map<string, { owner: string }>, who: string): number =>
+          [...m.values()].filter((v) => v.owner === who).length;
+        expect(
+          [ownedBy(monstersAfter, hA), ownedBy(monstersAfter, hB)],
+          'server: a one-for-one swap leaves each owner`s count unchanged',
+        ).toEqual([ownedBy(monstersBefore, hA), ownedBy(monstersBefore, hB)]);
+        expect(serverRowsOf('inventory', [hA, hB]), 'server: no item row changed').toEqual(
+          inventoryBefore,
+        );
+        expect(serverRowsOf('player_wallet', [hA, hB]), 'server: no wallet row changed').toEqual(
+          walletsBefore,
+        );
 
-      // Resolve Player B's identity as seen from Player A's allPlayers().
-      const counterpartyId = await pageA.evaluate((myIdentity: string) => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        const others = w.__mrTrade.allPlayers().filter((pl) => pl.identity !== myIdentity);
-        if (others.length !== 1) throw new Error(`Expected 1 other player, found ${others.length}`);
-        return others[0]?.identity;
-      }, identityA);
-
-      expect(counterpartyId, 'counterpartyId must resolve to a non-empty hex identity').not.toBe(
-        '',
-      );
-      expect(counterpartyId).toBe(identityB);
-
-      // Player A proposes: offer their first monster, nothing from B's side.
-      // initiatorMonsterIds: the monsterId of A's starter (bigint-as-string).
-      const initiatorMonsterId = snapABefore.ownMonsters[0]!.monsterId;
-      await pageA.evaluate(
-        (args: { counterparty: string; monsterId: string }) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const p = w.__mrTrade.proposeTrade({
-            counterparty: args.counterparty,
-            initiatorMonsterIds: [args.monsterId],
-            initiatorItems: [],
-            initiatorCurrency: '0',
-            counterpartyMonsterIds: [],
-            counterpartyItems: [],
-            counterpartyCurrency: '0',
-          });
-          if (!p) throw new Error('proposeTrade: conn not ready or __mrTrade hook missing');
-          return p;
-        },
-        { counterparty: counterpartyId, monsterId: initiatorMonsterId },
-      );
-
-      // Both players wait for the offer row to appear (public subscription; both
-      // sides see trade_offer rows once the server inserts the row).
-      await Promise.all([
-        pageA.waitForFunction(
-          () => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length > 0;
-          },
-          null,
-          { timeout: 15_000 },
-        ),
-        pageB.waitForFunction(
-          () => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length > 0;
-          },
-          null,
-          { timeout: 15_000 },
-        ),
-      ]);
-
-      // Offer must be Pending after propose.
-      // WHAT THIS KILLS: a propose_trade impl that inserts with a non-Pending
-      // status (e.g. auto-confirms, or writes a garbage status string).
-      const offerStatusAfterPropose = await pageA.evaluate(() => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        return w.__mrTrade.allTradeOffers()[0]?.status ?? '';
-      });
-      expect(offerStatusAfterPropose, 'offer must be Pending immediately after propose').toBe(
-        'Pending',
-      );
-
-      // Player B reads the tradeId and responds (accept = true).
-      const tradeId = await pageB.evaluate(() => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        return w.__mrTrade.allTradeOffers()[0]?.tradeId ?? '';
-      });
-      expect(tradeId, 'tradeId must be a non-empty string').not.toBe('');
-
-      await pageB.evaluate((tid: string) => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        const p = w.__mrTrade.respondTrade(tid, true);
-        if (!p) throw new Error('respondTrade: conn not ready or __mrTrade hook missing');
-        return p;
-      }, tradeId);
-
-      // Player A waits for status to become ConfirmedByCounterparty.
-      // WHAT THIS KILLS: a respond_trade impl that does not update the status
-      // field (or updates it to a different variant name).
-      await pageA.waitForFunction(
-        (tid: string) => {
-          const w = window as unknown as { __mrTrade?: MrTrade };
-          if (!w.__mrTrade) return false;
-          const offer = w.__mrTrade.allTradeOffers().find((o) => o.tradeId === tid);
-          return offer?.status === 'ConfirmedByCounterparty';
-        },
-        tradeId,
-        { timeout: 15_000 },
-      );
-
-      // Player A confirms (initiator confirms after counterparty has responded).
-      await pageA.evaluate((tid: string) => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        const p = w.__mrTrade.confirmTrade(tid);
-        if (!p) throw new Error('confirmTrade: conn not ready or __mrTrade hook missing');
-        return p;
-      }, tradeId);
-
-      // Both players wait for the offer row to disappear.
-      // WHAT THIS KILLS: a confirm_trade impl that fails to delete the trade_offer
-      // row on completion (offer would remain indefinitely, both .length stay > 0).
-      await Promise.all([
-        pageA.waitForFunction(
-          () => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length === 0;
-          },
-          null,
-          { timeout: 20_000 },
-        ),
-        pageB.waitForFunction(
-          () => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length === 0;
-          },
-          null,
-          { timeout: 20_000 },
-        ),
-      ]);
-
-      // Monster conservation.
-      // After the transfer, A lost 1 monster and B gained 1 monster — the total
-      // across both players must equal what it was before (2 → 2).
-      // We poll both snapshots together so we do not read A's count before B's
-      // subscription has caught up with the ownership transfer.
-      //
-      // WHAT THIS KILLS: a confirm_trade impl that destroys rather than transfers
-      // the monster (total drops to 1), or that grants B a NEW monster in addition
-      // to the transfer (total rises to 3).
-      await Promise.all([
-        pageA.waitForFunction(
-          (args: { totalBefore: number }) => {
-            const g = (window as unknown as { __game: () => GameSnap }).__game();
-            // A offered their monster → A should end with 0 monsters.
-            return g.ownMonsters.length === args.totalBefore - 1;
-          },
-          { totalBefore: snapABefore.ownMonsters.length },
-          { timeout: 20_000 },
-        ),
-        pageB.waitForFunction(
-          (args: { totalBefore: number }) => {
-            const g = (window as unknown as { __game: () => GameSnap }).__game();
-            // B received A's monster → B should end with 2 monsters.
-            return g.ownMonsters.length === args.totalBefore + 1;
-          },
-          { totalBefore: snapBBefore.ownMonsters.length },
-          { timeout: 20_000 },
-        ),
-      ]);
-
-      const snapAAfter = await getSnap(pageA);
-      const snapBAfter = await getSnap(pageB);
-
-      const totalMonstersAfter = snapAAfter.ownMonsters.length + snapBAfter.ownMonsters.length;
-      expect(
-        totalMonstersAfter,
-        `Monster conservation violated: before=${totalMonstersBefore} after=${totalMonstersAfter}`,
-      ).toBe(totalMonstersBefore);
-
-      // Item conservation (neither side offered items).
-      // WHAT THIS KILLS: an impl that accidentally creates phantom item rows
-      // for the "no items offered" side during confirm_trade.
-      const totalItemsAfter = snapAAfter.ownInventory.length + snapBAfter.ownInventory.length;
-      expect(
-        totalItemsAfter,
-        `Item conservation violated: before=${totalItemsBefore} after=${totalItemsAfter}`,
-      ).toBe(totalItemsBefore);
+        // Both clients converge: the session leaves mySessions(), the monsters swap.
+        await waitNoSession(pageA, idA, idB, 'A after the execute');
+        await waitNoSession(pageB, idB, idA, 'B after the execute');
+        for (const [p, who] of [
+          [pageA, 'A'],
+          [pageB, 'B'],
+        ] as const) {
+          const left = await p.evaluate(() =>
+            (window as unknown as { __mrTrade: MrTrade }).__mrTrade.mySessions(),
+          );
+          expect(left, `${who}: mySessions() is empty`).toEqual([]);
+        }
+        await expect
+          .poll(
+            async () => {
+              const a = await snapOf(pageA);
+              const b = await snapOf(pageB);
+              return {
+                a: a.ownMonsters.map((m) => m.monsterId).sort(),
+                b: b.ownMonsters.map((m) => m.monsterId).sort(),
+              };
+            },
+            { message: 'both clients hold the swapped monsters', timeout: 20_000 },
+          )
+          .toEqual({ a: [monB], b: [monA] });
+        expect((await snapOf(pageA)).ownInventory, 'A: the client inventory is unchanged').toEqual(
+          aBefore.ownInventory,
+        );
+        expect((await snapOf(pageB)).ownInventory, 'B: the client inventory is unchanged').toEqual(
+          bBefore.ownInventory,
+        );
+      } finally {
+        await cancelLeftover(pageA, pageB, idA, idB);
+      }
     });
   });

@@ -145,7 +145,7 @@ writes:
 | `monster_mgmt` | `set_nickname`, `set_party_slot` |
 | `economy` | `buy`, `sell` |
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
-| `trading` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, scheduled `trade_offer_reaper` |
+| `trading` | `cancel_trade`, scheduled `trade_offer_reaper`; `propose_trade`, `respond_trade` and `confirm_trade` are retired and return one fixed error |
 | `trading_session` | `open_trade_session`, `set_trade_offer`, `confirm_trade_session`, `cancel_trade_session`, scheduled `trade_session_reaper` |
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
@@ -207,10 +207,11 @@ drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
   battle (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the
   tactical clocks and auto-pass rules end a stalled battle. Ranked results update the
   public `profile` table.
-- **Trading.** Offers are public `trade_offer` rows with a one-hour TTL
-  (`TRADE_OFFER_TTL_MS`). Offered assets stay where they are, and guards stop them
-  being spent, sold or evolved while the offer is open. `confirm_trade` checks
-  receiver headroom and applies an ordered swap plan (debits first).
+- **Trading.** Trades run through trade sessions (next item). The public
+  `trade_offer` table is drain-only: no reducer inserts a row. A row still in it keeps
+  its assets guarded (they cannot be spent, sold or evolved) until `cancel_trade`, a
+  disconnect, account deletion or the one-hour TTL reaper (`TRADE_OFFER_TTL_MS`)
+  deletes it.
 - **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row
   with a player within interact range (one per pair, at most four opened per player,
   one-hour TTL). Each side replaces only its own offer with `set_trade_offer`; every
@@ -285,9 +286,9 @@ body is the whole security boundary.
   and `battle_unit` carries no queue or ready field (`docs/DECISIONS.md`, "Tactical
   battle privacy is structural"). `battle_secret`, `battle_wild_unit` and
   `battle_summary` have no client read path.
-- **Accepted exposures.** `trade_offer` is public so both parties can see it, so the
-  amounts offered reveal a lower bound on the offering player's balance. The display
-  cards in an offer carry public-projection fields only.
+- **Accepted exposures.** `trade_offer` is public, so the amounts in a row still
+  draining from it reveal a lower bound on the offering player's balance; no reducer
+  adds rows. The display cards in an offer carry public-projection fields only.
 - **Data lifecycle.** `schema::DATA_LIFECYCLE_MANIFEST` gives every table a deletion
   policy (Erase, Anonymize, ViaJoin, NotOwned), a written basis, and an `exportable`
   flag. A test in `accounts_tests.rs` compares it with the generated module
