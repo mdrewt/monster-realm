@@ -1,10 +1,13 @@
-//! ts-0a seam tests: the four helpers that moved out of `trading.rs` into
-//! `trading_session.rs`, reached THROUGH the destination module (`super::`).
+//! Seam tests for the trade-session helpers in `trading_session.rs`
+//! (`snapshot_cards`, `reset_trainer_bond`, `netted_receiver_stacks`,
+//! `apply_swap`), reached through `super::`.
 //!
-//! Behaviour-preserving move: each test pins an outcome on real rows (native
-//! host) or on a pure oracle (`game_core`'s `reset_bond_on_trade`), never the
-//! existence of a symbol. The native host models no transaction rollback, so
-//! an `Err` case asserts only what the helper returned.
+//! Each test pins an outcome on real rows (native host) or on a pure oracle
+//! (`game_core`'s `reset_bond_on_trade`). Every helper call runs as `carol()`,
+//! a party that is never the receiver, expected owner, initiator or
+//! counterparty passed in, so a helper that read `ctx.sender()` instead of its
+//! argument reads the wrong rows. The native host models no transaction
+//! rollback, so an `Err` case asserts only what the helper returned.
 
 use crate::native_host_tests::{fixture, Fixture, Handle};
 use crate::schema::{Inventory, Monster, MonsterPub, PlayerWallet};
@@ -17,6 +20,9 @@ fn alice() -> Identity {
 }
 fn bob() -> Identity {
     Identity::from_byte_array([0xB2; 32])
+}
+fn carol() -> Identity {
+    Identity::from_byte_array([0xC3; 32])
 }
 fn item(item_id: u32, qty: u32) -> TradeItem {
     TradeItem { item_id, qty }
@@ -203,17 +209,17 @@ impl World<'_> {
     }
 }
 
-/// One monster per side (11 alice's, 21 bob's), seeded with distinct bonds,
-/// tiers and slots; swap them under `dest_slot` and read the rows back.
 type Swapped = (Result<(), String>, Monster, Monster, MonsterPub, MonsterPub);
 
+/// One monster per side (11 alice's, 21 bob's), seeded with distinct bonds,
+/// tiers and slots; swap them under `dest_slot` and read the rows back.
 fn swap_one_each(dest_slot: impl Fn(u64) -> u8) -> Swapped {
     let fx = fixture();
     let w = world(&fx);
     w.monster(&bonded(11, alice(), 0, 1), 2);
     w.monster(&bonded(21, bob(), 2, 2), 1);
     let plan = build_swap_plan(&[live(11)], &[live(21)], &[], &[], 0, 0).expect("plan builds");
-    let got = fx.run_as(alice(), |ctx| {
+    let got = fx.run_as(carol(), |ctx| {
         super::apply_swap(ctx, &plan, alice(), bob(), dest_slot)
     });
     (
@@ -286,35 +292,25 @@ fn ts0a_apply_swap_with_none_dest_slot_unslots_both_rows() {
 }
 
 /// A plan naming a monster with no private row, or with no projection row, is an
-/// `Err` (fail loud, never skip). Today's messages are pinned.
+/// `Err` (fail loud, never skip) carrying the exact message.
 /// kills: `if let Some` skip-on-missing, `unwrap_or` of a default projection.
 #[test]
 fn ts0a_apply_swap_missing_monster_or_projection_row_is_err() {
-    for (label, seed_private, seed_pub, want) in [
-        (
-            "no private row",
-            false,
-            false,
-            "monster 11 gone during apply",
-        ),
+    for (label, seed_private, want) in [
+        ("no private row", false, "monster 11 gone during apply"),
         (
             "no projection row",
             true,
-            false,
             "monster_pub 11 gone during apply",
         ),
     ] {
         let fx = fixture();
         let w = world(&fx);
-        let m = bonded(11, alice(), 0, 1);
         if seed_private {
-            w.monsters.seed(&m);
-        }
-        if seed_pub {
-            w.pubs.seed(&crate::marshal::pub_from_monster(&m, 0));
+            w.monsters.seed(&bonded(11, alice(), 0, 1));
         }
         let plan = build_swap_plan(&[live(11)], &[], &[], &[], 0, 0).expect("plan builds");
-        let got = fx.run_as(alice(), |ctx| {
+        let got = fx.run_as(carol(), |ctx| {
             super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
         });
         assert_eq!(got, Err(want.to_string()), "{label}");
@@ -323,10 +319,11 @@ fn ts0a_apply_swap_missing_monster_or_projection_row_is_err() {
 
 /// Debits land before credits: a same-item bilateral swap where alice sits 9 under
 /// the stack cap, gives 15 and receives 20 only comes out exact (cap - 4) because
-/// her debit precedes her credit; credit-first would clamp at the cap and lose 5.
-/// Bob's side nets to 15; both stacks come out single-row.
-/// kills: credits-before-debits, per-transfer interleaving, swapped initiator /
-/// counterparty on the item legs.
+/// her debit precedes her credit; credit-first would clamp cap - 9 + 20 to the cap
+/// and then end at cap - 15, losing 11. Bob's side nets to 15; both stacks come
+/// out single-row.
+/// kills: credits-before-debits, swapped initiator / counterparty on the item
+/// legs, `initiator` replaced by `ctx.sender()`.
 #[test]
 fn ts0a_apply_swap_item_debits_land_before_credits() {
     let cap = game_core::MAX_ITEM_STACK;
@@ -337,7 +334,7 @@ fn ts0a_apply_swap_item_debits_land_before_credits() {
     w.stack(bob(), 5, 20);
     let plan = build_swap_plan(&[], &[], &[item(5, 15), item(9, 1)], &[item(5, 20)], 0, 0)
         .expect("plan builds");
-    let got = fx.run_as(alice(), |ctx| {
+    let got = fx.run_as(carol(), |ctx| {
         super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
     });
     assert_eq!(got, Ok(()));
@@ -369,7 +366,7 @@ fn ts0a_apply_swap_currency_moves_both_ways_and_broke_sender_is_err() {
         w.wallet(alice(), 100);
         w.wallet(bob(), 10);
         let plan = build_swap_plan(&[], &[], &[], &[], 40, 5).expect("plan builds");
-        let got = fx.run_as(alice(), |ctx| {
+        let got = fx.run_as(carol(), |ctx| {
             super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
         });
         assert_eq!(got, Ok(()));
@@ -383,7 +380,7 @@ fn ts0a_apply_swap_currency_moves_both_ways_and_broke_sender_is_err() {
     w.wallet(alice(), 30);
     w.wallet(bob(), 10);
     let plan = build_swap_plan(&[], &[], &[], &[], 40, 0).expect("plan builds");
-    let got = fx.run_as(alice(), |ctx| {
+    let got = fx.run_as(carol(), |ctx| {
         super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
     });
     assert!(got.is_err(), "a broke sender must be refused, got {got:?}");
@@ -392,7 +389,7 @@ fn ts0a_apply_swap_currency_moves_both_ways_and_broke_sender_is_err() {
 /// The receiver's post-debit effective stacks, one per RECEIVING item in
 /// `receiving` order: held count (0 with no row, only the RECEIVER's rows) minus
 /// the same item's quantity in `sending`, saturating at 0.
-/// kills: wrong owner lookup, no netting, plain `-` instead of saturating, output
+/// kills: wrong owner lookup (including `ctx.sender()` for `receiver`), no netting, plain `-` instead of saturating, output
 /// reordered, iterating `sending` instead of `receiving`.
 #[test]
 fn ts0a_netted_receiver_stacks_nets_saturates_and_follows_receiving_order() {
@@ -401,7 +398,7 @@ fn ts0a_netted_receiver_stacks_nets_saturates_and_follows_receiving_order() {
     w.stack(alice(), 5, 10);
     w.stack(alice(), 6, 3);
     w.stack(bob(), 8, 77); // decoy: alice has no item 8
-    let got = fx.run_as(alice(), |ctx| {
+    let got = fx.run_as(carol(), |ctx| {
         super::netted_receiver_stacks(
             ctx,
             alice(),
@@ -430,9 +427,9 @@ fn ts0a_netted_receiver_stacks_nets_saturates_and_follows_receiving_order() {
 
 /// `snapshot_cards` returns one card per id in the CALLER-GIVEN order with the
 /// live level / hp / nickname; an unknown id and a foreign-owned id each refuse
-/// with today's messages.
+/// with `monster {id} not found` / `monster {id} not owned by caller`.
 /// kills: sorting the ids, stale or default card fields, dropping the owner check,
-/// changed error text.
+/// `expected_owner` replaced by `ctx.sender()`, changed error text.
 #[test]
 fn ts0a_snapshot_cards_returns_live_cards_and_refuses_missing_or_foreign() {
     let fx = fixture();
@@ -447,7 +444,7 @@ fn ts0a_snapshot_cards_returns_live_cards_and_refuses_missing_or_foreign() {
     });
     w.monsters.seed(&bonded(11, alice(), 1, 2));
     w.monsters.seed(&bonded(31, bob(), 0, 3));
-    let (ok, missing, foreign) = fx.run_as(alice(), |ctx| {
+    let (ok, missing, foreign) = fx.run_as(carol(), |ctx| {
         (
             super::snapshot_cards(ctx, &[21, 11], alice(), "propose_trade"),
             super::snapshot_cards(ctx, &[11, 99], alice(), "propose_trade"),
@@ -482,8 +479,10 @@ fn ts0a_snapshot_cards_returns_live_cards_and_refuses_missing_or_foreign() {
 
 /// All seven bond columns return to the game-core baseline (the oracle is the
 /// rule itself, applied to a `TrainerBond`); every other column is byte-identical.
-/// kills: a column left out of the copy-in or copy-back, a column swapped with a
-/// neighbour, a reset that also touches level / xp / genes / essence.
+/// kills: a dropped copy-back line (a bond column left at its seeded value), a
+/// reset that also touches level / xp / genes / essence. The rule zeroes every
+/// column, so copy-in omissions and same-type copy-back swaps are equivalent
+/// mutants this test cannot see.
 #[test]
 fn ts0a_reset_trainer_bond_resets_exactly_the_seven_bond_columns() {
     let mut m = bonded(11, alice(), 3, 5);
