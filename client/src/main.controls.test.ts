@@ -49,6 +49,7 @@ import type {
   StoreMonsterPub,
   StoreTacticalBattle,
   StoreTradeOffer,
+  StoreTradeSession,
 } from './net/store';
 // The test's own resolver instance (main.ts gets a fresh one per boot): both default to English, so
 // `i18nT(id)` here is the text the shell paints for that id.
@@ -524,8 +525,24 @@ const FACED_ENTITY = 99n;
  * names that player; A opens the picker (Trade, Challenge); A on the first row (Trade) opens the
  * wizard on Offer with that player pre-selected. Delivers one batch at `t` (the player and the
  * own character), then the two presses at `t + 10` and `t + 30` (each with its keyup 5 ms later).
+ * ts-3 (named intentional change, the Strangler): the wizard is gone. The batch also carries a
+ * `my_trade_session` row the booted player opened with Zed (session 5), so A on Trade opens the
+ * session editor on it at once (no open_trade_session is waited on).
  */
 function openFaceToFace(t: number): void {
+  opts.store.reconcileTradeSessionsFromView([
+    {
+      sessionId: 5n,
+      opener: H.identity,
+      partner: OTHER_IDENTITY,
+      openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+      partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+      openerConfirmed: false,
+      partnerConfirmed: false,
+      revision: 1n,
+      createdAtMs: 900n,
+    } satisfies StoreTradeSession,
+  ]);
   H.interact = (...args: unknown[]) => {
     const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
     const at = entities.findIndex((e) => e.kind === 'player' && e.id === FACED_ENTITY.toString());
@@ -1253,75 +1270,44 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(renameShown(), 'the overlay stays open on a commit').toBe(true);
   });
 
-  it('Escape in a trade-propose currency input stops typing: the value is kept, focus moves inside the overlay, and the next Escape closes it', async () => {
-    // WRONG IMPL KILLED: a typing rule that only knows the rename text box (the currency inputs are
-    // type=number), an Escape that is hidden by the currency input's own stopPropagation, one that
-    // closes the overlay and wipes the draft, and one that leaves focus in the field.
-    // ctl-10b (named intentional change): the overlay is opened face to face (O is retired). The
-    // faced player is pre-selected and the select disabled, so with a typed offer the first enabled
-    // control stop-typing lands on is the (enabled, complete-draft) submit button: still inside the
-    // overlay, which is all this case asserts.
+  // ts-3 (named intentional change, the Strangler): 'Escape in a trade-propose currency input stops
+  // typing: the value is kept, focus moves inside the overlay, and the next Escape closes it' is
+  // DELETED → survivor: the #rename-input stop-typing case above, in this describe (retired: wizard
+  // deleted by spec §ts-3 Strangler; the session editor has no text field, so no typing mode).
+
+  it('Escape on the session editor`s focused rows listbox is Start: it closes the editor directly in one press, and B on the editor closes it too', async () => {
+    // INTENTIONAL CHANGE (ts-3, the Strangler): this case was "Escape on the trade-propose Offer
+    // list and on a checkbox is Start ... and the pre-selected target select is disabled". The
+    // wizard, its select and its checkboxes are gone; the editor's one focus target is its rows
+    // listbox (`#tradesession-rows`, its A11Y initial focus). The checkbox and select halves are
+    // retired with the wizard.
+    // WRONG IMPL KILLED: a typing rule that treats the editor's listbox as a text field (Escape
+    // would only "stop typing": a second press needed); an Escape hidden by an editor-owned
+    // stopPropagation; an editor whose B does not pop (it would trap the player).
     await bootReady();
     server(1000);
     openFaceToFace(1010);
-    expect(proposeShown(), 'precondition: the face-to-face open showed the overlay').toBe(true);
-    const overlay = byId('tradepropose-overlay');
-    const offer = byId('tradepropose-offer-currency') as HTMLInputElement;
-    offer.focus();
-    expect(document.activeElement, 'precondition: the currency input has focus').toBe(offer);
-    typeInto(offer, '25');
-    expect(offer.value, 'precondition: the draft is in the field').toBe('25');
-
-    const esc1 = fire('keydown', 'Escape', 1100, { target: offer });
-    fire('keyup', 'Escape', 1105, { target: offer });
-    expect(esc1.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
-    expect(proposeShown(), 'the overlay stays').toBe(true);
-    expect(offer.value, 'the value is kept').toBe('25');
-    expect(document.activeElement, 'focus left the field').not.toBe(offer);
-    expect(overlay.contains(document.activeElement), 'and is inside the overlay').toBe(true);
-    expect(stackNames()).toEqual(['world', 'tradeProposeView']);
-
-    const active = document.activeElement as HTMLElement;
-    fire('keydown', 'Escape', 1200, { target: active });
-    fire('keyup', 'Escape', 1205, { target: active });
-    expect(proposeShown(), 'the second Escape closes the overlay').toBe(false);
-    expect(stackNames()).toEqual(['world']);
-  });
-
-  it('Escape on the trade-propose Offer list and on a checkbox is Start: it closes the overlay directly, and the pre-selected target select is disabled', async () => {
-    // INTENTIONAL CHANGE (ctl-10b): this case was "Escape on the trade-propose select". The
-    // face-to-face open pre-selects the faced player and DISABLES the select (no retarget), so the
-    // select can no longer hold focus; the case is retargeted to the Offer list the wizard now opens
-    // on (the checkbox half is unchanged).
-    // WRONG IMPL KILLED: a typing rule that treats every INPUT or SELECT as a text field (Escape on
-    // a checkbox would only "stop typing" and the overlay would need a second press, or none), an
-    // Escape hidden by a draft control's own stopPropagation, an Escape swallowed on the Offer
-    // list, and a face-to-face open that leaves the select enabled (mouse or Tab could retarget).
-    await bootReady();
-    server(1000);
-    openFaceToFace(1010);
-    expect(proposeShown(), 'precondition: the overlay opened').toBe(true);
-    const select = byId('tradepropose-target') as HTMLSelectElement;
-    expect(select.value, 'the faced player is pre-selected').toBe(OTHER_IDENTITY);
-    expect(select.disabled, 'and the select is locked').toBe(true);
-    const list = byId('tradepropose-monsters');
-    list.focus();
-    expect(document.activeElement, 'precondition: the Offer list has focus').toBe(list);
-    fire('keydown', 'Escape', 1100, { target: list });
-    fire('keyup', 'Escape', 1105, { target: list });
-    expect(proposeShown(), 'Escape on the Offer list closes the overlay').toBe(false);
+    expect(proposeShown(), 'precondition: the editor opened').toBe(true);
+    expect(stackNames(), 'precondition: as the session editor frame').toEqual([
+      'world',
+      'tradeSessionView',
+    ]);
+    await flush(); // the overlay's deferred initial focus
+    const rows = byId('tradesession-rows');
+    expect(
+      rows.contains(document.activeElement),
+      'precondition: focus is inside the rows listbox',
+    ).toBe(true);
+    const focused = document.activeElement as HTMLElement;
+    fire('keydown', 'Escape', 1100, { target: focused });
+    fire('keyup', 'Escape', 1105, { target: focused });
+    expect(proposeShown(), 'one Escape closes the editor').toBe(false);
     expect(stackNames()).toEqual(['world']);
 
     openFaceToFace(1200);
     expect(proposeShown(), 'precondition: reopened').toBe(true);
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    byId('tradepropose-monsters').appendChild(checkbox);
-    checkbox.focus();
-    expect(document.activeElement, 'precondition: the checkbox has focus').toBe(checkbox);
-    fire('keydown', 'Escape', 1300, { target: checkbox });
-    fire('keyup', 'Escape', 1305, { target: checkbox });
-    expect(proposeShown(), 'Escape on a checkbox closes the overlay').toBe(false);
+    tap('Backspace', 1300);
+    expect(proposeShown(), 'B closes the editor').toBe(false);
     expect(stackNames()).toEqual(['world']);
   });
 
@@ -1452,7 +1438,7 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
   const focusOnPage = (): boolean =>
     document.activeElement === document.body || document.activeElement === null;
 
-  it('a composing Escape (isComposing, keyCode 229, or both) in #rename-input and in a trade-propose currency input is the IME`s: overlay, draft and focus survive, nothing is prevented, and a plain Escape in the same field then stops typing', async () => {
+  it('a composing Escape (isComposing, keyCode 229, or both) in #rename-input is the IME`s: overlay, draft and focus survive, nothing is prevented, and a plain Escape in the same field then stops typing', async () => {
     // ctl-11a: the Name screen (opened by N) now sits over the main menu, so "still the one frame"
     // and "no menu" are read per case (`stack`, `menu`): the menu beneath it must neither close nor
     // re-open; the wizard still has none.
@@ -1482,16 +1468,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
         stack: ['world', 'menuView', 'profileView'],
         menu: true,
       },
-      {
-        name: 'trade-propose',
-        // ctl-10b (named intentional change): face to face, O is retired.
-        open: (at: number): void => openFaceToFace(at),
-        field: 'tradepropose-offer-currency',
-        draft: '25',
-        shown: proposeShown,
-        stack: ['world', 'tradeProposeView'],
-        menu: false,
-      },
+      // ts-3 (named intentional change, the Strangler): the 'trade-propose' currency-input row is
+      // removed with the wizard (retired: wizard deleted by spec §ts-3 Strangler; the session editor
+      // has no text field). Survivor: the #rename-input row above, in this same case.
     ] as const;
     let t = 1010;
     for (const c of cases) {
@@ -1666,91 +1645,11 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(helpShown(), 'Slash opens help with focus on the canvas').toBe(true);
   });
 
-  it('stop typing moves focus to the first enabled control that is not a text field: with the face-to-face wizard`s target select disabled that is the first monster checkbox, from either typing field', async () => {
-    // INTENTIONAL CHANGE (ctl-10b): this case first expected the target select (opened by O), then
-    // disabled the select by hand and expected the first checkbox. The face-to-face open now locks
-    // the select itself (pre-selected, disabled), so the select is never the stop-typing target and
-    // the first checkbox is the answer from the start; the hand-disabling step is retired.
-    // WRONG IMPL KILLED: a stop-typing that blurs only (the frame's trap would have nothing to
-    // keep), one that picks the LAST control (the submit button or the last checkbox), one that picks
-    // the first control without skipping a disabled one (focus() on the locked select is a no-op, so
-    // focus would end on the page), one that depends on which text field held focus, a face-to-face
-    // open that leaves the select enabled (it would take the focus), and one that closes the overlay
-    // or wipes a draft.
-    await bootReady();
-    const ownMonster = (id: bigint) =>
-      ({
-        monsterId: id,
-        ownerIdentity: H.identity,
-        speciesId: 1,
-        nickname: `Mon${id}`,
-        level: 5,
-        xp: 0,
-        currentHp: 20,
-        statHp: 20,
-        statAttack: 5,
-        statDefense: 5,
-        statSpeed: 5,
-        statSpAttack: 5,
-        statSpDefense: 5,
-        partySlot: 255,
-        tier: 0,
-        essence: {},
-        trustTier: 'Unknown',
-        qualityTimeTier: 0,
-        nutritionPct: 0,
-        lastCareAtMs: 0n,
-      }) as never;
-    opts.store.upsertMonster(ownMonster(31n));
-    opts.store.upsertMonster(ownMonster(32n));
-    opts.store.upsertPlayer({
-      identity: OTHER_IDENTITY,
-      entityId: 99n,
-      name: 'Zed',
-      online: true,
-      lastInputSeq: 0n,
-    });
-    server(1000);
-    openFaceToFace(1010);
-    expect(proposeShown(), 'precondition: the face-to-face open showed the overlay').toBe(true);
-    const select = byId('tradepropose-target') as HTMLSelectElement;
-    expect(select.disabled, 'precondition: the face-to-face open locked the select').toBe(true);
-    const offer = byId('tradepropose-offer-currency') as HTMLInputElement;
-    const request = byId('tradepropose-request-currency') as HTMLInputElement;
-    const submit = byId('tradepropose-submit') as HTMLButtonElement;
-    const firstBox = document.querySelector(
-      '#tradepropose-monsters input[data-monster-id="31"]',
-    ) as HTMLInputElement | null;
-    const secondBox = document.querySelector(
-      '#tradepropose-monsters input[data-monster-id="32"]',
-    ) as HTMLInputElement | null;
-    expect(firstBox, 'precondition: the first own monster is offerable').not.toBeNull();
-    expect(secondBox, 'precondition: the second own monster is offerable').not.toBeNull();
-
-    // From the offer field: the locked select is skipped; the first checkbox, not the last control.
-    offer.focus();
-    typeInto(offer, '25');
-    const esc1 = fire('keydown', 'Escape', 1100, { target: offer });
-    fire('keyup', 'Escape', 1105, { target: offer });
-    expect(esc1.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
-    expect(document.activeElement, 'focus lands on the first enabled control').toBe(firstBox);
-    expect(document.activeElement, 'not the locked select').not.toBe(select);
-    expect(offer.value, 'the draft is kept').toBe('25');
-
-    // From the request field: the same target.
-    request.focus();
-    typeInto(request, '7');
-    fire('keydown', 'Escape', 1200, { target: request });
-    fire('keyup', 'Escape', 1205, { target: request });
-    expect(document.activeElement, 'from the other text field the target is the same').toBe(
-      firstBox,
-    );
-    expect(request.value, 'the draft is kept').toBe('7');
-    expect(document.activeElement, 'not the later checkbox').not.toBe(secondBox);
-    expect(document.activeElement, 'and not the submit button').not.toBe(submit);
-    expect(proposeShown(), 'the overlay stays open throughout').toBe(true);
-    expect(stackNames()).toEqual(['world', 'tradeProposeView']);
-  });
+  // ts-3 (named intentional change, the Strangler): 'stop typing moves focus to the first enabled
+  // control that is not a text field: with the face-to-face wizard`s target select disabled that is
+  // the first monster checkbox, from either typing field' is DELETED → survivor: UIF16B.4 below (the
+  // rename field's stop-typing target, this describe) | retired: wizard deleted by spec §ts-3
+  // Strangler (no typing field, select or checkbox in the session editor).
 
   it('UIF16B.4 stop typing in the rename field lands on the enabled submit button when there is a draft, and with an empty draft (submit disabled) on a SHOWN, ENABLED control inside the Profile frame, with the frame open both times', async () => {
     // uif-16b (named intentional change): the empty-draft arm read "no enabled control: focus ends
@@ -3233,7 +3132,9 @@ const SO2_SHOWN: ReadonlyArray<readonly [string, () => boolean]> = [
   ['menuView', menuShown],
   ['helpView', helpShown],
   ['profileView', so2ProfileShown],
-  ['tradeProposeView', proposeShown],
+  // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`; the editor keeps
+  // the wizard's shell root, so `proposeShown` still reads it.
+  ['tradeSessionView', proposeShown],
   ['shopView', () => shownById('shop-overlay')],
   ['healView', () => shownById('heal-overlay')],
   ['questLogView', questLogShown],
@@ -3293,8 +3194,10 @@ const so2Controls = (): Promise<So2ViewClass> =>
   import('./ui/controlsView').then((m) => m.ControlsView);
 const so2Shop = (): Promise<So2ViewClass> => import('./ui/shopView').then((m) => m.ShopView);
 const so2Heal = (): Promise<So2ViewClass> => import('./ui/healView').then((m) => m.HealView);
+// ts-3 (named intentional change, the Strangler rename): the wizard's view class becomes the session
+// editor's (`ui/tradeSessionView.ts`, TradeSessionView), same roster slot.
 const so2Propose = (): Promise<So2ViewClass> =>
-  import('./ui/tradeProposeView').then((m) => m.TradeProposeView);
+  import('./ui/tradeSessionView').then((m) => m.TradeSessionView as unknown as So2ViewClass);
 
 const SO2_OPENS: readonly So2Open[] = [
   {
@@ -3450,8 +3353,11 @@ const SO2_OPENS: readonly So2Open[] = [
   },
   {
     // The face-to-face Trade: A at a faced player, A on the first row.
-    tag: 'TRADE-WIZARD',
-    id: 'tradeProposeView',
+    // ts-3 (named intentional change): the wizard row becomes the session editor's (openFaceToFace
+    // seeds a session with Zed, so A on Trade opens it at once). Was: TRADE-WIZARD /
+    // tradeProposeView.
+    tag: 'TRADE-SESSION',
+    id: 'tradeSessionView',
     views: [{ load: so2Propose, method: 'show' }],
     shown: proposeShown,
     drive: () => openFaceToFace(1010),
@@ -3563,7 +3469,8 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
   const FORCED = [
     { tag: 'HELP', root: 'help-overlay' },
     { tag: 'PROFILE', root: 'profile-overlay' },
-    { tag: 'TRADE-PROPOSE', root: 'tradepropose-overlay' },
+    // ts-3: the session editor's root (the wizard's static shell, adopted). Was TRADE-PROPOSE.
+    { tag: 'TRADE-SESSION', root: 'tradepropose-overlay' },
     { tag: 'SHOP', root: 'shop-overlay' },
     { tag: 'HEAL', root: 'heal-overlay' },
     { tag: 'JOURNAL', root: 'quest-log-overlay' },

@@ -6165,3 +6165,112 @@ describe('AuthoritativeStore bt-15: the deploy rows getter (BT15.1)', () => {
     expect(s.battleDeploys(BT12S_B2)).toEqual([]);
   });
 });
+
+// =============================================================================
+// ts-3 (M-trade-sessions): the `my_trade_session` view's store map. A PK-less Vec view, so the map
+// is rebuilt from the post-burst SDK cache by `reconcileTradeSessionsFromView` (the tactical-view
+// shape): AUTHORITATIVE (an absent sessionId is deleted), `#dirty` only on a real `deepRowEq` change
+// (every row nests fresh offer / card arrays per conversion), cleared by `reset()`;
+// `allTradeSessions()` answers ascending sessionId. RED REASON: neither method exists on
+// AuthoritativeStore (TypeError: not a function) and `StoreTradeSession` is not exported.
+// =============================================================================
+
+import type { StoreTradeSession } from './store';
+
+const TS_ME = 'aa'.repeat(32);
+const TS_BOB = 'bb'.repeat(32);
+/** Two session ids no Number tells apart. */
+const TS_BIG = 2n ** 53n;
+
+/** A FRESH row each call (nested arrays included), as `tradeSessionRowToStore` emits one. */
+function tsRow(sessionId: bigint, over: Partial<StoreTradeSession> = {}): StoreTradeSession {
+  return {
+    sessionId,
+    opener: TS_ME,
+    partner: TS_BOB,
+    openerOffer: {
+      monsterIds: [5n],
+      items: [{ itemId: 3, qty: 2 }],
+      currency: 10n,
+      cards: [{ monsterId: 5n, speciesId: 1, nickname: 'Ash', level: 4, currentHp: 9, statHp: 9 }],
+    },
+    partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs: 1_000n,
+    ...over,
+  };
+}
+
+describe('AuthoritativeStore ts-3: the trade session map (my_trade_session)', () => {
+  it('reconcileTradeSessionsFromView inserts, replaces a changed row, deletes an absent id, and allTradeSessions answers ascending sessionId (exact past 2^53) as a fresh array', () => {
+    // WRONG IMPL KILLED: an upsert-only reconcile (a cancelled or executed session stays listed:
+    // the editor never closes and "Trade closed." never shows); insertion order (the input is
+    // 2^53 + 1, 7, 2^53); a Number() compare (the two big ids tie); a row mutated in place or not
+    // replaced on a nested change (a confirm mark or an item qty would stay stale); the internal
+    // array handed out (a caller's sort would corrupt the store).
+    const s = new AuthoritativeStore();
+    expect(s.allTradeSessions(), 'nothing before the first delivery').toEqual([]);
+    s.reconcileTradeSessionsFromView([tsRow(TS_BIG + 1n), tsRow(7n), tsRow(TS_BIG)]);
+    expect(s.allTradeSessions().map((r) => r.sessionId)).toEqual([7n, TS_BIG, TS_BIG + 1n]);
+    expect(s.allTradeSessions()[0]).toEqual(tsRow(7n));
+
+    const changed = tsRow(7n, {
+      partnerConfirmed: true,
+      openerOffer: { ...tsRow(7n).openerOffer, items: [{ itemId: 3, qty: 1 }] },
+    });
+    s.reconcileTradeSessionsFromView([changed, tsRow(TS_BIG)]);
+    expect(
+      s.allTradeSessions().map((r) => r.sessionId),
+      'the absent id is deleted',
+    ).toEqual([7n, TS_BIG]);
+    expect(s.allTradeSessions()[0]?.partnerConfirmed).toBe(true);
+    expect(s.allTradeSessions()[0]?.openerOffer.items).toEqual([{ itemId: 3, qty: 1 }]);
+
+    const copy = s.allTradeSessions();
+    copy.reverse();
+    copy.pop();
+    expect(
+      s.allTradeSessions().map((r) => r.sessionId),
+      'a fresh array',
+    ).toEqual([7n, TS_BIG]);
+
+    s.reconcileTradeSessionsFromView([]);
+    expect(s.allTradeSessions(), 'an emptied view').toEqual([]);
+  });
+
+  it('an identical rebuild (fresh, structurally equal rows with nested arrays) marks nothing dirty and wakes no listener; an insert, a nested change and a delete each wake one; reset() clears the map', () => {
+    // WRONG IMPL KILLED: no change detection or a shallow one (the reconcile runs on EVERY flush:
+    // fresh nested offer arrays would wake every listener per movement tick, a render storm); a
+    // comparator tightened until nothing is ever dirty (a partner's confirm would never repaint); a
+    // delete that does not mark dirty; a reset() that forgets the map (a previous identity's
+    // sessions would surface to the next one).
+    const s = new AuthoritativeStore();
+    s.reconcileTradeSessionsFromView([tsRow(1n), tsRow(2n)]);
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.flushBatch();
+    expect(cb, 'the first population is a change').toHaveBeenCalledTimes(1);
+
+    cb.mockClear();
+    s.reconcileTradeSessionsFromView([tsRow(2n), tsRow(1n)]);
+    s.flushBatch();
+    expect(cb, 'an identical rebuild wakes nobody').toHaveBeenCalledTimes(0);
+
+    s.reconcileTradeSessionsFromView([
+      tsRow(1n, { openerOffer: { ...tsRow(1n).openerOffer, cards: [] } }),
+      tsRow(2n),
+    ]);
+    s.flushBatch();
+    expect(cb, 'a nested change wakes once').toHaveBeenCalledTimes(1);
+
+    cb.mockClear();
+    s.reconcileTradeSessionsFromView([tsRow(2n)]);
+    s.flushBatch();
+    expect(cb, 'a delete wakes once').toHaveBeenCalledTimes(1);
+
+    s.reset();
+    expect(s.allTradeSessions(), 'reset clears the sessions').toEqual([]);
+  });
+});

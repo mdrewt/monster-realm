@@ -97,6 +97,8 @@ const H = vi.hoisted(() => {
   const cancelTrade = spy();
   const setProfileName = spy();
   const proposeTrade = spy();
+  // ts-3: the face-to-face Trade's reducer (the no-success-line case below).
+  const openTradeSession = spy();
   const care = spy();
   return {
     identity: 'ab'.repeat(32),
@@ -113,6 +115,7 @@ const H = vi.hoisted(() => {
     cancelTrade,
     setProfileName,
     proposeTrade,
+    openTradeSession,
     care,
     live: {
       reducers: {
@@ -123,6 +126,7 @@ const H = vi.hoisted(() => {
         cancelTrade,
         setProfileName,
         proposeTrade,
+        openTradeSession,
         care,
       },
     } as unknown,
@@ -138,6 +142,7 @@ const ALL_SPIES: readonly ReducerSpy[] = [
   H.cancelTrade,
   H.setProfileName,
   H.proposeTrade,
+  H.openTradeSession,
   H.care,
 ];
 
@@ -486,11 +491,11 @@ function placeCharacter(entityId: bigint, tileX: number, tileY: number): StoreCh
   };
 }
 
-function openPropose(): Activate {
-  // ctl-10b (named intentional change): O is retired. The wizard opens face to face: the own player
-  // at (1, 1) facing East, Bob online on the faced tile (2, 1), the stubbed wasm rule naming him; A
-  // opens the picker (Trade, Challenge) and A on Trade opens the wizard on Offer with Bob
-  // pre-selected (the select is locked), so the old `target.value = OTHER` + change step is gone.
+// ts-3 (named intentional change, the Strangler): `openPropose` (the wizard opened face to face,
+// a monster ticked and both currency fields typed, then its submit) is removed with the wizard's
+// 'propose' site. The face-to-face setup below is kept as `openFaceToFaceTrade` (A, A on Trade),
+// unused by the sites: the session arms have no success line to pin here.
+function openFaceToFaceTrade(): void {
   const store = storeHandle();
   H.interact = (...args: unknown[]) => {
     const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
@@ -517,21 +522,6 @@ function openPropose(): Activate {
   store.flushBatch();
   tapWorldKey('Enter');
   tapWorldKey('Enter');
-  const target = document.getElementById('tradepropose-target') as HTMLSelectElement;
-  expect(target.value, 'the faced player is pre-selected').toBe(OTHER);
-  const monsterBox = document.querySelector('#tradepropose-monsters input[type="checkbox"]');
-  expect(monsterBox, 'the seeded monster must render as an offerable checkbox').not.toBeNull();
-  (monsterBox as HTMLInputElement).checked = true;
-  monsterBox?.dispatchEvent(new Event('change', { bubbles: true }));
-  const offer = document.getElementById('tradepropose-offer-currency') as HTMLInputElement;
-  offer.value = '10';
-  offer.dispatchEvent(new Event('input', { bubbles: true }));
-  const request = document.getElementById('tradepropose-request-currency') as HTMLInputElement;
-  request.value = '3';
-  request.dispatchEvent(new Event('input', { bubbles: true }));
-  const submit = document.getElementById('tradepropose-submit') as HTMLButtonElement;
-  expect(submit.disabled, 'submit must be enabled once a target + assets are set').toBe(false);
-  return () => clickFirst('#tradepropose-submit', 'trade-propose submit');
 }
 
 interface Site {
@@ -575,7 +565,6 @@ const SUCCESS_TEXT: Readonly<Record<string, string>> = {
   confirm: 'Trade complete!',
   cancel: 'Trade cancelled.',
   rename: 'Name updated!',
-  propose: 'Offer sent!',
 };
 
 const SITES: readonly Site[] = [
@@ -651,23 +640,12 @@ const SITES: readonly Site[] = [
     args: { name: 'NewName' },
     open: openRename,
   },
-  {
-    name: 'propose',
-    tag: 'propose-trade',
-    feedback: onToast(),
-    overlayId: 'tradepropose-overlay',
-    reducer: H.proposeTrade,
-    // Every field but `counterparty` (an SDK Identity, checked by its hex in the HIDDEN test).
-    args: expect.objectContaining({
-      initiatorMonsterIds: [5n],
-      initiatorItems: [],
-      initiatorCurrency: 10n,
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
-      counterpartyCurrency: 3n,
-    }),
-    open: openPropose,
-  },
+  // ts-3 (named intentional change, the Strangler): the 'propose' site (the wizard's submit,
+  // proposeTrade, tag propose-trade, the "Offer sent!" success line) is removed with the wizard
+  // (retired: wizard deleted by spec §ts-3 Strangler). The session arms have NO success line (the
+  // editor is the feedback); their rejection toast with the server's reason is
+  // main.dispatch.test.ts UIF4.5's openTradeSession / setTradeOffer / confirmTradeSession /
+  // cancelTradeSession rows and ts-3.1 (d). Nine sites -> eight.
 ];
 
 function siteNamed(name: string): Site {
@@ -739,25 +717,32 @@ describe('main.ts a message that fires after its overlay closed paints nothing s
     await expectOutcomeOnToastNotInOverlay('rename');
   });
 
-  it('UIF4B.3 PGCCA-A4-HIDDEN-PROPOSE: a trade proposal that settles after #tradepropose-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast, with every argument field intact', async () => {
-    // WRONG IMPL KILLED: the trade-propose sink painting into the hidden overlay or dropping the
-    // message; or an args thunk that drops a field (monster ids, either currency, the counterparty).
-    const [args] = (await expectOutcomeOnToastNotInOverlay('propose')) as [Record<string, unknown>];
-    const { counterparty, ...rest } = args;
-    expect(rest).toEqual({
-      initiatorMonsterIds: [5n],
-      initiatorItems: [],
-      initiatorCurrency: 10n,
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
-      counterpartyCurrency: 3n,
-    });
-    expect((counterparty as { toHexString(): string }).toHexString()).toBe(OTHER);
+  // ts-3 (named intentional change, the Strangler): 'UIF4B.3 PGCCA-A4-HIDDEN-PROPOSE' is DELETED →
+  // survivor: PGCCA-A4-HIDDEN-RENAME / -SHOP / -TRADE above (the same late-settle rule) | retired:
+  // wizard deleted by spec §ts-3 Strangler (the session arms paint no success line at all).
+
+  it('ts-3.1 E: A on Trade face to face sends openTradeSession once for Bob (never proposeTrade), and its Ok paints NO success line: no toast, nothing on #status, no copy in #tradepropose-overlay', async () => {
+    // WRONG IMPL KILLED: the wizard's "Offer sent!" kept as the session open's success line (an Ok
+    // only means the row will come: the editor is the feedback); the retired proposeTrade arm still
+    // reachable from Trade.
+    await bootMain('/');
+    openFaceToFaceTrade();
+    await settle();
+    expect(H.openTradeSession, 'the open is sent once').toHaveBeenCalledOnce();
+    const [args] = H.openTradeSession.mock.calls[0] as [{ partner: { toHexString(): string } }];
+    expect(args.partner.toHexString(), 'for the faced player').toBe(OTHER);
+    expect(H.proposeTrade, 'never the retired proposal').not.toHaveBeenCalled();
+    expect(toastText(), 'no success toast').toBe('');
+    expect(textOf('status'), 'no success line on #status').not.toContain('Offer sent!');
+    expect(
+      document.getElementById('tradepropose-overlay')?.textContent ?? '',
+      'no "Offer sent!" anywhere in the editor root',
+    ).not.toContain('Offer sent!');
   });
 });
 
 describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1/A4)', () => {
-  it('UIF4B.1 PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 9 sites, on the TOAST at the eight overlay sites (never in their overlay) and care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
+  it('UIF4B.1 PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 8 sites, on the TOAST at the seven overlay sites (never in their overlay) and care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
     // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the eight non-care sites read `#toast`, and their overlay
     // subtree must hold no copy of the line. Was: each read its own overlay's feedback node.
     // WRONG IMPL KILLED: a site passing the wrong `where` (a copy-pasted care/buy tag), or reverted
@@ -765,7 +750,8 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     // overlay holds a copy) or on #status. qf-9: the care site is the Monsters sheet, its line the
     // Monsters frame's own `.mr-frame-feedback` (a care rejection painted on the status line or
     // nowhere reads '' there).
-    expect(SITES.length, 'ANTI-VACUITY: all nine sites').toBe(9);
+    // ts-3 (named intentional change): nine -> eight sites (the wizard's 'propose' left).
+    expect(SITES.length, 'ANTI-VACUITY: all eight sites').toBe(8);
     for (const [i, site] of SITES.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
@@ -810,7 +796,6 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
       'confirm',
       'cancel',
       'rename',
-      'propose',
     ]);
     for (const [i, site] of sites.entries()) {
       if (i > 0) resetApp();
@@ -838,15 +823,15 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     }
   }, 60_000);
 
-  it('UIF4B.1 PGCCA-A1-SUCCESS-PER-SITE: a settled success puts the exact success line on the toast (visible), with no copy in the overlay, at all 8 overlay sites', async () => {
+  it('UIF4B.1 PGCCA-A1-SUCCESS-PER-SITE: a settled success puts the exact success line on the toast (visible), with no copy in the overlay, at all 7 overlay sites', async () => {
     // WRONG IMPL KILLED: a success still painted on a view-owned line (an overlay copy), on #status,
     // or not shown at all; a swapped trade line (accepted <-> rejected, completed <-> cancelled); a
     // success tagged with a rejection kind (the line would still show but on the wrong channel).
     const sites = SITES.filter((s) => s.overlayId !== undefined);
     expect(
       sites.map((s) => s.name),
-      'ANTI-VACUITY: the eight overlay sites',
-    ).toEqual(['buy', 'sell', 'accept', 'reject', 'confirm', 'cancel', 'rename', 'propose']);
+      'ANTI-VACUITY: the seven overlay sites (ts-3: the wizard`s propose left)',
+    ).toEqual(['buy', 'sell', 'accept', 'reject', 'confirm', 'cancel', 'rename']);
     for (const [i, site] of sites.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
@@ -892,7 +877,7 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     expect(
       lockSites.map((s) => s.name),
       'the sites whose view (or main.ts) keeps an in-flight lock',
-    ).toEqual(['care', 'buy', 'sell', 'rename', 'propose']);
+    ).toEqual(['care', 'buy', 'sell', 'rename']);
     for (const [i, site] of lockSites.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');

@@ -466,21 +466,21 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
         online: true,
         lastInputSeq: 0n,
       });
-      s.upsertTradeOffer({
-        tradeId: 41n,
-        initiator: OTHER,
-        counterparty: H.identity,
-        initiatorMonsterIds: [],
-        initiatorItems: [],
-        initiatorCurrency: 0n,
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: 0n,
-        initiatorCards: [],
-        counterpartyCards: [],
-        status: 'Pending',
-        createdAtMs: 0n,
-      });
+      // ts-3 (named intentional change, C): the request is an incoming SESSION Dana opened (a
+      // legacy trade_offer raises no notice any more). Was: s.upsertTradeOffer({ tradeId: 41n, … }).
+      s.reconcileTradeSessionsFromView([
+        {
+          sessionId: 41n,
+          opener: OTHER,
+          partner: H.identity,
+          openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+          partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+          openerConfirmed: false,
+          partnerConfirmed: false,
+          revision: 1n,
+          createdAtMs: 0n,
+        },
+      ]);
     });
     frames(2800, 4500);
     expect(liveWrites, 'the request line was said').toContain('Dana wants to trade');

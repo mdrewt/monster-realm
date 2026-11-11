@@ -33,9 +33,12 @@ const CTX = {
 
 const nav = (button: VButton, repeat = false): NavInput => ({ button, repeat });
 
+// ts-3 (named intentional change, C): a trade request is an incoming SESSION now: its key is
+// `session-<sessionId>`, its Accept opens the editor (`openTradeEditor`) and its Decline cancels the
+// session (`cancelTradeSession`). Was: `trade-<tradeId>` and respondTrade accepted true / false.
 const REQ: RequestNotice = {
   kind: 'request',
-  key: 'trade-11',
+  key: 'session-11',
   request: 'trade',
   id: 11n,
   fromName: 'Bob',
@@ -43,7 +46,7 @@ const REQ: RequestNotice = {
 };
 const OTHER: RequestNotice = {
   kind: 'request',
-  key: 'trade-12',
+  key: 'session-12',
   request: 'trade',
   id: 12n,
   fromName: 'Dan',
@@ -109,14 +112,13 @@ describe('ScreenHost: the request sheet (ctl-13, CTL13.3)', () => {
     // Accept.
     const accept = host.button(WORLD_STACK, nav('A'), CTX, port);
     expect(accept, 'A on Accept returns the exact command').toEqual({
-      kind: 'respondTrade',
-      tradeId: 11n,
-      accepted: true,
+      kind: 'openTradeEditor',
+      sessionId: 11n,
     });
     expect(host.request, 'the sheet closed').toBeNull();
     expect(host.sheetOpen).toBe(false);
     expect(host.takesNav(WORLD_STACK), 'and the D-pad is the world`s again').toBe(false);
-    expect(spy.dismissed, 'the answered request`s banner is dismissed').toEqual(['trade-11']);
+    expect(spy.dismissed, 'the answered request`s banner is dismissed').toEqual(['session-11']);
 
     // Decline.
     spy.dismissed.length = 0;
@@ -125,8 +127,8 @@ describe('ScreenHost: the request sheet (ctl-13, CTL13.3)', () => {
     expect(down, 'a D-pad press moves the cursor and is consumed').toBe('consumed');
     expect(host.request?.nav.item).toBe('decline');
     const decline = host.button(WORLD_STACK, nav('A'), CTX, port);
-    expect(decline).toEqual({ kind: 'respondTrade', tradeId: 11n, accepted: false });
-    expect(spy.dismissed).toEqual(['trade-11']);
+    expect(decline).toEqual({ kind: 'cancelTradeSession', sessionId: 11n });
+    expect(spy.dismissed).toEqual(['session-11']);
 
     // View: the port is asked, nothing is returned to dispatch.
     spy.dismissed.length = 0;

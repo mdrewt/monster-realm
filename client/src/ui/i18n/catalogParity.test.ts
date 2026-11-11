@@ -801,7 +801,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/screens/mainMenuScreen.ts',
       'ui/sessionModel.ts',
       'ui/shopView.ts',
-      'ui/tradeProposeView.ts',
+      // ts-3 (named intentional change, the Strangler rename): 'ui/tradeProposeView.ts' left with
+      // the wizard; the session editor's view resolves its own rows, marks and prompts.
+      'ui/tradeSessionView.ts',
       'ui/tradeView.ts',
     ]);
 
@@ -854,6 +856,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // uif-12 (named intentional change, UIF12.2): main.ts gains 1 literal key, `kit.sheet.close` —
     // the Close row every world picker / action sheet / request sheet now ends with, painted
     // through `closeRowLabel()` (the kit's existing word; no new catalog key).
+    // ts-3 (named intentional change, plan "main.ts"): `tradePropose.feedback.sent` leaves with the
+    // wizard (no success toast: the editor is the feedback); main.ts gains `notice.request.trades`
+    // (the banner line when several trade requests collapse into one) and
+    // `tradeSession.notice.closed` (the one "Trade closed." toast per batch).
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -884,6 +890,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
       'notice.request.challenge', // ctl-13: the banner / sheet heading for a challenge
       'notice.request.trade', // ctl-13: the banner / sheet heading for a trade
+      'notice.request.trades', // ts-3: n >= 2 trade requests collapsed into one banner line
       'notice.sheet.accept', // ctl-13: the request sheet's rows
       'notice.sheet.decline',
       'notice.sheet.view',
@@ -899,7 +906,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'trade.feedback.cancelled',
       'trade.feedback.completed',
       'trade.feedback.rejected',
-      'tradePropose.feedback.sent',
+      'tradeSession.notice.closed', // ts-3: a session left my_trade_session (once per batch)
     ]);
     const a11yLiteralKeys = new Set(
       main.calls
@@ -1303,7 +1310,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
     });
 
-    it('21r-b FR-04: every one of the 13 surviving 21r-b keys has a CATALOG_FR value strictly different from CATALOG_EN (kills an untranslated copy-through, red-team S3)', () => {
+    it('21r-b FR-04: every one of the 12 surviving 21r-b keys has a CATALOG_FR value strictly different from CATALOG_EN, and the retired tradePropose.feedback.sent is in neither catalog (kills an untranslated copy-through, red-team S3)', () => {
       // The aggregate FR-01 tally (>=100/133 differ) can pass even while ONE specific key was
       // copy-pasted from en into fr — this test names each of the 21r-b keys individually so a
       // single untranslated copy-through (e.g. 'trade.feedback.completed': 'Trade complete!'
@@ -1325,17 +1332,22 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         'trade.feedback.rejected',
         'trade.feedback.completed',
         'trade.feedback.cancelled',
-        'tradePropose.feedback.sent',
+        // ts-3 (named intentional change, the Strangler): 'tradePropose.feedback.sent' is deleted
+        // with the wizard (13 -> 12); its absence from both catalogs is asserted below.
       ];
       expect(
         NEW_KEYS_21R_B.length,
-        'ANTI-VACUITY: the 21r-b plan named 15 new keys; ctl-7d deleted 2 of them',
-      ).toBe(13);
+        'ANTI-VACUITY: the 21r-b plan named 15 new keys; ctl-7d deleted 2 of them, ts-3 one more',
+      ).toBe(12);
 
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
       expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
       const safeFr = fr as Record<string, unknown>;
+      // WRONG IMPL KILLED: the wizard's "sent" line left behind in either catalog (a dead key the
+      // removed wizard no longer requests).
+      expect('tradePropose.feedback.sent' in en, 'retired from en').toBe(false);
+      expect('tradePropose.feedback.sent' in safeFr, 'retired from fr').toBe(false);
 
       let checked = 0;
       for (const key of NEW_KEYS_21R_B) {
@@ -1348,7 +1360,123 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         ).not.toBe(en[key]);
         checked += 1;
       }
-      expect(checked, 'ANTI-VACUITY: all 13 keys must have been checked').toBe(13);
+      expect(checked, 'ANTI-VACUITY: all 12 keys must have been checked').toBe(12);
+    });
+
+    // -------------------------------------------------------------------------------------------
+    // ts-3 — the trade session keys. Key list and en bytes hand-transcribed from
+    // memory/projects/monster-realm-ts-3-plan.md "i18n" ADDED table (spec §ts-3, ts-3.7).
+    // -------------------------------------------------------------------------------------------
+
+    /** U+00B7 MIDDLE DOT, the separator in `trade.row.marks`, built from its code point. */
+    const MIDDOT = String.fromCharCode(0x00b7);
+
+    /** The 18 plain keys ts-3 adds, with their exact en text. */
+    const TS3_PLAIN: ReadonlyArray<readonly [string, string]> = [
+      ['trade.status.open', 'Open trades'],
+      ['tradeSession.side.mine', 'Your offer'],
+      ['tradeSession.side.theirs', 'Their offer'],
+      ['tradeSession.mark.confirmed', 'Confirmed'],
+      ['tradeSession.mark.unconfirmed', 'Not confirmed'],
+      ['tradeSession.reason.fainted', 'fainted'],
+      ['tradeSession.reason.inAnotherTrade', 'in another trade'],
+      ['tradeSession.reason.inBattle', 'in battle'],
+      ['tradeSession.reason.limit', 'offer is full'],
+      ['tradeSession.reason.unsent', 'update your offer first'],
+      ['tradeSession.reason.nothingToSend', 'no changes'],
+      ['tradeSession.row.apply', 'Update offer'],
+      ['tradeSession.row.confirm', 'Confirm trade'],
+      ['tradeSession.row.cancel', 'Cancel trade'],
+      ['tradeSession.prompt.confirm', 'Confirm this trade? A completed trade cannot be undone.'],
+      ['tradeSession.prompt.cancel', 'Cancel this trade?'],
+      ['tradeSession.notice.changed', 'The offer changed. Review it before you confirm.'],
+      ['tradeSession.notice.closed', 'Trade closed.'],
+    ];
+
+    /** The 7 parameterised keys ts-3 adds: [key, one concrete sample, the exact en output]. The
+     *  sample values are distinct tokens so a fr closure that drops or swaps a field is visible. */
+    const TS3_PARAM: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>, string]> = [
+      ['trade.row.title', { name: 'Ann' }, 'Trade with Ann'],
+      [
+        'trade.row.marks',
+        { mine: 'MINEMARK', theirs: 'THEIRMARK' },
+        `You: MINEMARK ${MIDDOT} Them: THEIRMARK`,
+      ],
+      ['tradeSession.title', { name: 'Ann' }, 'Trade with Ann'],
+      ['tradeSession.row.blocked', { label: 'Pip Lv.5', reason: 'REASON' }, 'Pip Lv.5 (REASON)'],
+      ['tradeSession.row.item', { name: 'Potion', qty: 2, held: 7 }, 'Potion: 2 of 7'],
+      ['tradeSession.row.coins', { amount: 40n, balance: 900n }, 'Coins: 40 of 900'],
+      ['notice.request.trades', { count: 3 }, '3 trade requests'],
+    ];
+
+    it('ts-3.7 TS3-I18N: no tradePropose.* / chrome.tradePropose.* id survives in messageIds or either catalog, and every key of the ts-3 ADDED table is a MessageId resolving in en (exact bytes) and fr (distinct from en, every param interpolated)', () => {
+      // WRONG IMPL KILLED: (1) a wizard key left behind (`tradePropose.step.review`,
+      // `chrome.tradePropose.submit`, ...) in messageIds.ts or in one catalog; (2) a new key added
+      // to en only (fr missing it, or the union missing it); (3) fr copied from en (an untranslated
+      // line); (4) a fr closure that hard-codes or drops a param (`Échanger avec ?` ignoring
+      // {name}); (5) en text that drifts from the plan's table.
+      const messageIds = parseMessageIdUnion(readFileSync(MESSAGE_IDS_PATH, 'utf8'));
+      const en = CATALOG_EN as Record<string, unknown>;
+      const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+      expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+      const safeFr = fr as Record<string, unknown>;
+
+      const isWizardKey = (k: string): boolean =>
+        startsWith(k, 'tradePropose.') || startsWith(k, 'chrome.tradePropose.');
+      expect(messageIds.filter(isWizardKey), 'wizard ids left in messageIds.ts').toEqual([]);
+      expect(Object.keys(en).filter(isWizardKey), 'wizard keys left in catalog.en.ts').toEqual([]);
+      expect(Object.keys(safeFr).filter(isWizardKey), 'wizard keys left in catalog.fr.ts').toEqual(
+        [],
+      );
+      // ANTI-VACUITY: the predicate sees a real wizard id (a predicate that never matches would
+      // pass the three empties above for nothing), and the union really parsed.
+      expect(isWizardKey('tradePropose.review.summary')).toBe(true);
+      expect(isWizardKey('chrome.tradePropose.submit')).toBe(true);
+      expect(isWizardKey('trade.status.open'), 'a ts-3 key is not a wizard key').toBe(false);
+      expect(messageIds.length, 'the MessageId union parsed').toBeGreaterThan(100);
+
+      const ids = new Set(messageIds);
+      let checked = 0;
+      for (const [key, enText] of TS3_PLAIN) {
+        expect(ids.has(key), `${key} is a MessageId`).toBe(true);
+        expect(en[key], `${key}: the plan's en text`).toBe(enText);
+        expect(typeof safeFr[key], `${key} must be a plain string in fr`).toBe('string');
+        expect(safeFr[key], `${key}: fr must differ from en (untranslated copy-through)`).not.toBe(
+          enText,
+        );
+        expect((safeFr[key] as string).length, `${key}: fr is not empty`).toBeGreaterThan(0);
+        checked += 1;
+      }
+      for (const [key, sample, enText] of TS3_PARAM) {
+        expect(ids.has(key), `${key} is a MessageId`).toBe(true);
+        expect(typeof en[key], `${key} must be a closure in en`).toBe('function');
+        expect(typeof safeFr[key], `${key} must be a closure in fr`).toBe('function');
+        const enOut = (en[key] as (p: Readonly<Record<string, unknown>>) => string)(sample);
+        const frOut = (safeFr[key] as (p: Readonly<Record<string, unknown>>) => string)(sample);
+        expect(enOut, `${key}: the plan's en text`).toBe(enText);
+        expect(frOut, `${key}: fr must differ from en`).not.toBe(enOut);
+        for (const value of Object.values(sample)) {
+          expect(frOut.includes(String(value)), `${key}: fr interpolates ${String(value)}`).toBe(
+            true,
+          );
+        }
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 25 ADDED keys were checked').toBe(25);
+      expect(
+        new Set([...TS3_PLAIN.map(([k]) => k), ...TS3_PARAM.map(([k]) => k)]).size,
+        'ANTI-VACUITY: no key listed twice',
+      ).toBe(25);
+
+      // Through the resolver itself, both locales: a plain key resolves to its catalog value.
+      try {
+        setLocale('fr');
+        expect(t('tradeSession.notice.closed' as never)).toBe(safeFr['tradeSession.notice.closed']);
+        setLocale('en');
+        expect(t('tradeSession.notice.closed' as never)).toBe('Trade closed.');
+      } finally {
+        setLocale('en');
+      }
     });
 
     // -------------------------------------------------------------------------------------------

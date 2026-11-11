@@ -4910,3 +4910,106 @@ describe('rowConvert bt-12: the seven tactical views (BT12.1)', () => {
     );
   });
 });
+
+// =============================================================================================
+// ts-3 (M-trade-sessions): the `my_trade_session` view row -> `StoreTradeSession`.
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-ts-3-plan.md §Contracts › Store; the generated row
+//   `module_bindings/my_trade_session_table.ts` (sessionId u64, opener / partner Identity, two
+//   `TradeSessionOffer`s { monsterIds u64[], items TradeItem[], currency u64, cards MonsterCard[] },
+//   two bools, revision u64, createdAtMs i64).
+// RED REASON: `tradeSessionRowToStore` is not exported by rowConvert.ts.
+// =============================================================================================
+
+import { type SdkTradeSessionRow, tradeSessionRowToStore } from './rowConvert';
+
+describe('rowConvert ts-3: tradeSessionRowToStore', () => {
+  it('maps a my_trade_session row field by field: identities to hex, every u64 / i64 kept as the SAME bigint (past 2^53), both nested offers with their monster ids, items and cards, and nothing the SDK row carries beyond the contract`s keys', () => {
+    // WRONG IMPL KILLED: an identity left as the SDK object (`===` against the identity hex would
+    // never match: the viewer would be in no session); Number() on the session id, the revision,
+    // a monster id or the coins (2^53 + 1 collapses: the confirm would carry the wrong revision);
+    // the offers swapped; cards or items dropped; a spread of the SDK row (an SDK-only field leaks
+    // into the store and into the reconcile's deep compare); the SDK's arrays shared by reference
+    // (a later SDK cache mutation would rewrite the stored row in place).
+    const BIG = 9_007_199_254_740_993n;
+    const sdk = {
+      sessionId: BIG,
+      opener: { toHexString: () => 'aa'.repeat(32) },
+      partner: { toHexString: () => 'bb'.repeat(32) },
+      openerOffer: {
+        monsterIds: [BIG + 2n, 5n],
+        items: [{ itemId: 3, qty: 2 }],
+        currency: BIG + 4n,
+        cards: [
+          {
+            monsterId: BIG + 2n,
+            speciesId: 1,
+            nickname: 'Ash',
+            level: 4,
+            currentHp: 9,
+            statHp: 12,
+          },
+          { monsterId: 5n, speciesId: 2, nickname: '', level: 1, currentHp: 0, statHp: 7 },
+        ],
+      },
+      partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+      openerConfirmed: false,
+      partnerConfirmed: true,
+      revision: BIG + 6n,
+      createdAtMs: BIG + 8n,
+      sdkOnly: 'must not leak',
+    };
+    const row = tradeSessionRowToStore(sdk as unknown as SdkTradeSessionRow);
+    expect(row).toEqual({
+      sessionId: BIG,
+      opener: 'aa'.repeat(32),
+      partner: 'bb'.repeat(32),
+      openerOffer: {
+        monsterIds: [BIG + 2n, 5n],
+        items: [{ itemId: 3, qty: 2 }],
+        currency: BIG + 4n,
+        cards: [
+          {
+            monsterId: BIG + 2n,
+            speciesId: 1,
+            nickname: 'Ash',
+            level: 4,
+            currentHp: 9,
+            statHp: 12,
+          },
+          { monsterId: 5n, speciesId: 2, nickname: '', level: 1, currentHp: 0, statHp: 7 },
+        ],
+      },
+      partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+      openerConfirmed: false,
+      partnerConfirmed: true,
+      revision: BIG + 6n,
+      createdAtMs: BIG + 8n,
+    });
+    expect(typeof row.sessionId).toBe('bigint');
+    expect(typeof row.revision).toBe('bigint');
+    expect(typeof row.openerOffer.monsterIds[0]).toBe('bigint');
+    expect(Object.keys(row).sort(), 'exactly the contract`s keys').toEqual(
+      [
+        'createdAtMs',
+        'opener',
+        'openerConfirmed',
+        'openerOffer',
+        'partner',
+        'partnerConfirmed',
+        'partnerOffer',
+        'revision',
+        'sessionId',
+      ].sort(),
+    );
+    expect(Object.keys(row.openerOffer).sort()).toEqual(
+      ['cards', 'currency', 'items', 'monsterIds'].sort(),
+    );
+
+    // The stored row owns its arrays: an SDK-side mutation after the conversion changes nothing.
+    sdk.openerOffer.monsterIds.push(99n);
+    sdk.openerOffer.items.push({ itemId: 4, qty: 1 });
+    expect(row.openerOffer.monsterIds).toEqual([BIG + 2n, 5n]);
+    expect(row.openerOffer.items).toEqual([{ itemId: 3, qty: 2 }]);
+  });
+});

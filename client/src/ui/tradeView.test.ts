@@ -1038,8 +1038,18 @@ const PLAYERS_HIDDEN = ['trade-my-side', 'trade-their-side', 'trade-actions'];
 const MARKED = [true, true, 'true'] as const;
 const UNMARKED = [false, false, null] as const;
 
+/** ts-3 (named intentional change): `SocialPaint` gains `sessions` and `sessionCursor`; every
+ *  earlier case paints none (`[]`, null), so what it pins is unchanged. */
 function socialPaint(overrides: Partial<SocialPaint> = {}): SocialPaint {
-  return { tab: 'trades', tradeCursor: false, sheet: null, confirm: null, ...overrides };
+  return {
+    tab: 'trades',
+    tradeCursor: false,
+    sheet: null,
+    confirm: null,
+    sessions: [],
+    sessionCursor: null,
+    ...overrides,
+  };
 }
 
 function byId(id: string): HTMLElement {
@@ -1740,6 +1750,120 @@ describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
     view.render(makeNoTradeVM());
     expect(overlay.querySelectorAll('.mr-card').length, 'no trade: no card').toBe(0);
     expect(overlay.querySelectorAll('.mr-card-title').length, 'and no card title').toBe(0);
+
+    removeOverlay(overlay);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ts-3 (ts-3.5): the session rows on the Trades panel.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 (ts-3.5) and
+//   memory/projects/monster-realm-ts-3-plan.md §Social › Trades: the rows are painted into a runtime
+//   `ul#trade-sessions` (renderNav, frame `socialTrades`) appended to the root, `hidden` while there
+//   are none or the tab is not Trades; each row reads `trade.row.title` and `trade.row.marks`; with no
+//   legacy offer and at least one session the status line reads `trade.status.open`. Constructor,
+//   `render(vm)` and every static child are unchanged.
+//
+// RED REASON: paintSocial paints no session row and never reads `trade.status.open`.
+//
+// The list is created at RUNTIME (never by the constructor: CTL8S-3-HOST-CHROME-TRADE and
+// CTL8D-1-VIEW-TABS pin the shell's children with no session painted), so before the first session
+// it may be absent or hidden; once painted it is a child of the root.
+// ---------------------------------------------------------------------------
+
+const BOB_ROW = {
+  key: 'session-101',
+  partnerName: 'Bob',
+  mineConfirmed: false,
+  theirsConfirmed: true,
+};
+const CAROL_ROW = {
+  key: 'session-102',
+  partnerName: 'Carol',
+  mineConfirmed: true,
+  theirsConfirmed: false,
+};
+
+/** No session list shows: absent, or hidden with no row. */
+function expectNoSessionRows(label: string): void {
+  const ul = document.getElementById('trade-sessions');
+  if (ul === null) return;
+  expect(ul.hidden, `${label}: #trade-sessions is hidden`).toBe(true);
+}
+
+describe('TradeView.paintSocial — the session rows (ts-3, ts-3.5)', () => {
+  it('ts-3.5 on the Trades tab paintSocial paints one #trade-sessions row per session in order, each reading its partner`s title and its marks, the cursor on sessionCursor alone; the list is a child of the root and hidden off the Trades tab and with no session', () => {
+    // WRONG IMPL KILLED: one row for all sessions (or only the first); rows out of order; a row
+    // without the partner's name or with both marks read the same; no cursor or the cursor on the
+    // legacy status line too; a list painted over the Challenges panel or left showing after the
+    // last session closed; a list created by the constructor (the static shell pins).
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    view.show();
+    view.render(makeNoTradeVM());
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    expectNoSessionRows('before any session');
+
+    view.paintSocial(
+      chrome,
+      socialPaint({ sessions: [BOB_ROW, CAROL_ROW], sessionCursor: 'session-102' }),
+    );
+    const ul = byId('trade-sessions');
+    expect(ul.parentElement, 'a child of the trade root').toBe(overlay);
+    expect(ul.hidden).toBe(false);
+    const rows = navRows(ul);
+    expect(rows.keys).toEqual(['session-101', 'session-102']);
+    expect(rows.activeByAria, 'the cursor on session 102 alone').toEqual(['session-102']);
+    expect(rows.activeByClass).toEqual(['session-102']);
+    expect(rows.texts[0]).toContain(i18nTf('trade.row.title', { name: 'Bob' }));
+    expect(rows.texts[1]).toContain(i18nTf('trade.row.title', { name: 'Carol' }));
+    expect(rows.texts[0], 'the marks differ, so the row texts differ past the name').not.toBe(
+      rows.texts[1]?.replace('Carol', 'Bob'),
+    );
+    expect(statusMark(), 'the legacy status carries no cursor').toEqual(UNMARKED);
+
+    // No cursor on a session: no row selected.
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW, CAROL_ROW], sessionCursor: null }));
+    expect(navRows(ul).activeByAria).toEqual([]);
+
+    // Off the Trades tab: hidden. Back, then the last session closes: hidden again.
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges', sessions: [BOB_ROW, CAROL_ROW] }));
+    expect(ul.hidden, 'Challenges: hidden').toBe(true);
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
+    expect(ul.hidden).toBe(false);
+    expect(navRows(ul).keys).toEqual(['session-101']);
+    view.paintSocial(chrome, socialPaint({ sessions: [] }));
+    expect(ul.hidden, 'no session: hidden').toBe(true);
+    expect(byId('trade-sessions'), 'one list, reused').toBe(ul);
+    expect(document.querySelectorAll('#trade-sessions').length).toBe(1);
+
+    removeOverlay(overlay);
+  });
+
+  it('ts-3.5 the status line reads trade.status.open with no legacy offer and at least one session, trade.status.none with neither, and a legacy offer keeps its own status label', () => {
+    // WRONG IMPL KILLED: "No active trade" shown over a list of open trades; "Open trades" kept
+    // after the last session closed; the legacy offer's label overwritten by the session count.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    view.show();
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    const status = byId('trade-status');
+
+    view.render(makeNoTradeVM());
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
+    expect(status.textContent).toBe(i18nT('trade.status.open'));
+    view.render(makeNoTradeVM());
+    expect(status.textContent, 'a batch render keeps it').toBe(i18nT('trade.status.open'));
+    view.paintSocial(chrome, socialPaint({ sessions: [] }));
+    expect(status.textContent).toBe(i18nT('trade.status.none'));
+
+    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW], tradeCursor: true }));
+    expect(status.textContent, 'the legacy offer`s own label').toBe('Offer received');
+    expect(statusMark(), 'and its own cursor').toEqual(MARKED);
 
     removeOverlay(overlay);
   });

@@ -7,13 +7,10 @@
 //
 // CONTRACT:
 //   pendingRequests(input) -> readonly RequestNotice[]
-//     the incoming requests waiting on the viewer: the OLDEST trade offer with
-//     `counterparty === identity && status === 'Pending'` (never `shownTradeOffer`, whose
-//     oldest-involving pick can hide an incoming offer behind an outgoing one) and the
-//     `incomingChallenge`. Oldest first by createdAtMs, a tie goes to the smaller key string
-//     ('challenge-...' < 'trade-...'), so the order is deterministic under input permutation.
-//     NOT filtered by `dismissed`. `fromName` = the proposer's / challenger's player name,
-//     `#<hex8>` when the name is empty or the player unknown.
+//     the incoming requests waiting on the viewer and the `incomingChallenge`. Oldest first by
+//     createdAtMs, a tie goes to the smaller key string ('challenge-...' < 'session-...'), so the
+//     order is deterministic under input permutation. NOT filtered by `dismissed`. `fromName` = the
+//     opener's / challenger's player name, `#<hex8>` when the name is empty or the player unknown.
 //   buildNotices(input) -> readonly Notice[]
 //     TOP FIRST: `{ kind: 'error', key: 'error' }` when `errorPending`, then the oldest pending
 //     request whose key is not in `dismissed`. At most one of each.
@@ -21,14 +18,35 @@
 //   openRequestSheet(n) -> { notice: n, nav } with the cursor on 'accept'.
 //   requestSheetStep(sheet, btn, live) -> { state: RequestSheet | null, run?: 'accept'|'decline'|'view' }
 //   requestCommand(n, 'accept' | 'decline') -> the exact screen Command.
+//
+// ---------------------------------------------------------------------------------------------
+// ts-3 NAMED INTENTIONAL CHANGE (M-trade-sessions ts-3.4, ts-3.5; plan §Notices):
+//   `NoticeInput.offers` is replaced by `sessions` + `opened`: a trade request is an incoming,
+//   untouched trade SESSION this client has not opened its editor on (key `session-<id>`, from the
+//   opener), and legacy `trade_offer` rows raise nothing. The trade halves of CTL13-2-NOTICES and
+//   CTL13-3-SHEET are re-expressed over sessions with the SAME assertions (oldest first, the tie
+//   rule, names, dismissals, the error first, permutation-determinism); only the row source and the
+//   `trade-` → `session-` key prefix change. `requestCommand` for a trade now answers
+//   `openTradeEditor` (accept) / `cancelTradeSession` (decline) — was `respondTrade`. Challenge
+//   cases are unchanged. One deliberate difference: pendingRequests now lists EVERY waiting trade
+//   request (the collapse to one banner line is buildNotices' job), so the permutation reference
+//   holds both incoming sessions where it held the one oldest offer.
+// ---------------------------------------------------------------------------------------------
 
 import { describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
-import type { StoreBattleChallenge, StorePlayer, StoreTradeOffer } from '../net/store';
+import type {
+  StoreBattleChallenge,
+  StorePlayer,
+  StoreTradeOffer,
+  StoreTradeSession,
+  StoreTradeSessionOffer,
+} from '../net/store';
 import { CLOSE_KEY } from './actionSheetModel';
 import type { NavInput } from './nav';
 import {
   buildNotices,
+  dismissKeys,
   type Notice,
   type NoticeInput,
   openRequestSheet,
@@ -45,13 +63,30 @@ const CAROL = 'cc'.repeat(32);
 const DAN = 'dd'.repeat(32);
 const STRANGER = 'ee'.repeat(32);
 
-function offer(
-  tradeId: bigint,
-  initiator: string,
-  counterparty: string,
-  status: StoreTradeOffer['status'] = 'Pending',
+const NO_SIDE: StoreTradeSessionOffer = { monsterIds: [], items: [], currency: 0n, cards: [] };
+
+function tradeSession(
+  sessionId: bigint,
+  opener: string,
+  partner: string,
   createdAtMs = 1_000n,
-): StoreTradeOffer {
+  over: Partial<StoreTradeSession> = {},
+): StoreTradeSession {
+  return {
+    sessionId,
+    opener,
+    partner,
+    openerOffer: NO_SIDE,
+    partnerOffer: NO_SIDE,
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs,
+    ...over,
+  };
+}
+
+function offer(tradeId: bigint, initiator: string, counterparty: string): StoreTradeOffer {
   return {
     tradeId,
     initiator,
@@ -64,8 +99,8 @@ function offer(
     counterpartyCurrency: 0n,
     initiatorCards: [],
     counterpartyCards: [],
-    status,
-    createdAtMs,
+    status: 'Pending',
+    createdAtMs: 1n,
   };
 }
 
@@ -92,7 +127,8 @@ const PLAYERS: readonly StorePlayer[] = [
 
 function input(over: Partial<NoticeInput> = {}): NoticeInput {
   return {
-    offers: [],
+    sessions: [],
+    opened: new Set<bigint>(),
     challenges: [],
     players: PLAYERS,
     identity: ME,
@@ -102,10 +138,10 @@ function input(over: Partial<NoticeInput> = {}): NoticeInput {
   };
 }
 
-/** The request a Pending offer from `from` to the viewer makes. */
+/** The request an untouched incoming session from `from` makes. */
 const tradeNotice = (id: bigint, fromName: string, createdAtMs: bigint): RequestNotice => ({
   kind: 'request',
-  key: `trade-${id}`,
+  key: `session-${id}`,
   request: 'trade',
   id,
   fromName,
@@ -132,24 +168,25 @@ function permutations<T>(items: readonly T[]): T[][] {
 const nav = (button: VButton, repeat = false): NavInput => ({ button, repeat });
 
 describe('noticeModel: pendingRequests and buildNotices (ctl-13, CTL13.2)', () => {
-  it('CTL13-2-NOTICES: only an incoming Pending trade and an incoming Pending challenge are requests; they list oldest first (a tie: challenge before trade), carry the sender`s name or `#<hex8>`, are NOT filtered by dismissals, and buildNotices puts the error first then the oldest undismissed request, identically under every input permutation', () => {
-    // WRONG IMPL KILLED: a request list that counts an outgoing offer or challenge, an offer that
-    // awaits the viewer's own final Confirm (ConfirmedByCounterparty), a non-Pending challenge or
-    // an offer between two others; an incoming trade hidden behind an OLDER outgoing one (the
-    // shownTradeOffer pick); newest-first or id-ordered notices; a tie broken by input order; a
-    // name read from the wrong side (the viewer's own) or a blank name shown; a `dismissed` filter
-    // inside pendingRequests (the Y sheet would stop reaching a dismissed banner's request); a
-    // buildNotices with the error last, more than one request, or a dismissed request still on
-    // top; and an order that changes when the input arrays are permuted.
+  it('CTL13-2-NOTICES: only an incoming untouched trade session and an incoming Pending challenge are requests; they list oldest first (a tie: challenge before trade), carry the sender`s name or `#<hex8>`, are NOT filtered by dismissals, and buildNotices puts the error first then the oldest undismissed request, identically under every input permutation', () => {
+    // WRONG IMPL KILLED: a request list that counts an outgoing session or challenge, a session the
+    // viewer already answered (edited or confirmed), a non-Pending challenge or a session between
+    // two others; an incoming session hidden behind an OLDER outgoing one; newest-first or
+    // id-ordered notices; a tie broken by input order; a name read from the wrong side (the
+    // viewer's own) or a blank name shown; a `dismissed` filter inside pendingRequests (the Y sheet
+    // would stop reaching a dismissed banner's request); a buildNotices with the error last, more
+    // than one request, or a dismissed request still on top; and an order that changes when the
+    // input arrays are permuted.
 
     // --- nothing waiting -------------------------------------------------------------------
     expect(pendingRequests(input()), 'no rows: no request').toEqual([]);
     expect(buildNotices(input()), 'no rows, no error: no notice').toEqual([]);
     const NOT_REQUESTS = input({
-      offers: [
-        offer(1n, ME, BOB), // outgoing
-        offer(2n, BOB, ME, 'ConfirmedByCounterparty'), // the viewer already answered it
-        offer(3n, BOB, CAROL), // between two others
+      sessions: [
+        tradeSession(1n, ME, BOB), // outgoing
+        tradeSession(2n, BOB, ME, 1_000n, { partnerConfirmed: true }), // the viewer answered it
+        tradeSession(8n, BOB, ME, 1_000n, { partnerOffer: { ...NO_SIDE, currency: 1n } }), // edited
+        tradeSession(3n, BOB, CAROL), // between two others
       ],
       challenges: [
         challenge(4n, ME, BOB), // outgoing
@@ -162,9 +199,9 @@ describe('noticeModel: pendingRequests and buildNotices (ctl-13, CTL13.2)', () =
     expect(buildNotices(NOT_REQUESTS)).toEqual([]);
 
     // --- one of each -----------------------------------------------------------------------
-    const tradeRow = offer(11n, BOB, ME, 'Pending', 1_000n);
+    const tradeRow = tradeSession(11n, BOB, ME, 1_000n);
     const challengeRow = challenge(21n, CAROL, ME, 'Pending', 2_000n);
-    const both = input({ offers: [tradeRow], challenges: [challengeRow] });
+    const both = input({ sessions: [tradeRow], challenges: [challengeRow] });
     expect(pendingRequests(both), 'oldest first; names from the sender`s player row').toEqual([
       tradeNotice(11n, 'Bob', 1_000n),
       challengeNotice(21n, `#${CAROL.slice(0, 8)}`, 2_000n),
@@ -179,41 +216,46 @@ describe('noticeModel: pendingRequests and buildNotices (ctl-13, CTL13.2)', () =
 
     // The challenge older than the trade comes first.
     const challengeFirst = input({
-      offers: [offer(11n, BOB, ME, 'Pending', 3_000n)],
+      sessions: [tradeSession(11n, BOB, ME, 3_000n)],
       challenges: [challenge(21n, BOB, ME, 'Pending', 2_000n)],
     });
-    expect(pendingRequests(challengeFirst).map((n) => n.key)).toEqual(['challenge-21', 'trade-11']);
+    expect(pendingRequests(challengeFirst).map((n) => n.key)).toEqual([
+      'challenge-21',
+      'session-11',
+    ]);
     expect(buildNotices(challengeFirst).map((n) => n.key)).toEqual(['challenge-21']);
 
     // A unknown sender (no player row) reads `#<hex8>` too.
     const unknown = input({ challenges: [challenge(22n, STRANGER, ME)] });
     expect(pendingRequests(unknown)[0]?.fromName).toBe(`#${STRANGER.slice(0, 8)}`);
+    const unknownOpener = input({ sessions: [tradeSession(13n, STRANGER, ME)] });
+    expect(pendingRequests(unknownOpener)[0]?.fromName).toBe(`#${STRANGER.slice(0, 8)}`);
 
-    // --- a tie goes to the smaller key string ('challenge-...' < 'trade-...') ---------------
+    // --- a tie goes to the smaller key string ('challenge-...' < 'session-...') -------------
     const tie = input({
-      offers: [offer(11n, BOB, ME, 'Pending', 5_000n)],
+      sessions: [tradeSession(11n, BOB, ME, 5_000n)],
       challenges: [challenge(21n, BOB, ME, 'Pending', 5_000n)],
     });
     expect(
       pendingRequests(tie).map((n) => n.key),
       'a createdAtMs tie',
-    ).toEqual(['challenge-21', 'trade-11']);
+    ).toEqual(['challenge-21', 'session-11']);
     expect(buildNotices(tie).map((n) => n.key)).toEqual(['challenge-21']);
 
-    // --- an incoming offer behind an OLDER outgoing one is still a request ------------------
+    // --- an incoming session behind an OLDER outgoing one is still a request ----------------
     const hidden = input({
-      offers: [offer(5n, ME, CAROL, 'Pending', 500n), offer(11n, BOB, ME, 'Pending', 1_000n)],
+      sessions: [tradeSession(5n, ME, CAROL, 500n), tradeSession(11n, BOB, ME, 1_000n)],
     });
     expect(
       pendingRequests(hidden).map((n) => n.key),
-      'the outgoing offer (lower id, older) does not hide the incoming one',
-    ).toEqual(['trade-11']);
+      'the outgoing session (lower id, older) does not hide the incoming one',
+    ).toEqual(['session-11']);
 
     // --- dismissals: buildNotices skips them, pendingRequests does not ----------------------
     const dismissedTrade = input({
-      offers: [tradeRow],
+      sessions: [tradeRow],
       challenges: [challengeRow],
-      dismissed: new Set(['trade-11']),
+      dismissed: new Set(['session-11']),
     });
     expect(
       buildNotices(dismissedTrade).map((n) => n.key),
@@ -222,20 +264,20 @@ describe('noticeModel: pendingRequests and buildNotices (ctl-13, CTL13.2)', () =
     expect(
       pendingRequests(dismissedTrade).map((n) => n.key),
       'pendingRequests is NOT dismiss-filtered (Y still reaches the dismissed one)',
-    ).toEqual(['trade-11', 'challenge-21']);
+    ).toEqual(['session-11', 'challenge-21']);
     const allDismissed = input({
-      offers: [tradeRow],
+      sessions: [tradeRow],
       challenges: [challengeRow],
-      dismissed: new Set(['trade-11', 'challenge-21']),
+      dismissed: new Set(['session-11', 'challenge-21']),
     });
     expect(buildNotices(allDismissed), 'everything dismissed: no banner').toEqual([]);
     expect(pendingRequests(allDismissed)).toHaveLength(2);
     // A dismissed key that no longer exists dismisses nothing else.
     expect(
-      buildNotices(input({ offers: [tradeRow], dismissed: new Set(['trade-99']) })).map(
+      buildNotices(input({ sessions: [tradeRow], dismissed: new Set(['session-99']) })).map(
         (n) => n.key,
       ),
-    ).toEqual(['trade-11']);
+    ).toEqual(['session-11']);
 
     // --- the error is first, then at most one request --------------------------------------
     const withError: Notice[] = [...buildNotices(input({ ...both, errorPending: true }))];
@@ -253,10 +295,10 @@ describe('noticeModel: pendingRequests and buildNotices (ctl-13, CTL13.2)', () =
 
     // --- deterministic under permutation of every input array -------------------------------
     const crowd = {
-      offers: [
-        offer(5n, ME, CAROL, 'Pending', 500n),
-        offer(11n, BOB, ME, 'Pending', 3_000n),
-        offer(12n, DAN, ME, 'Pending', 3_500n),
+      sessions: [
+        tradeSession(5n, ME, CAROL, 500n),
+        tradeSession(11n, BOB, ME, 3_000n),
+        tradeSession(12n, DAN, ME, 3_500n),
       ],
       challenges: [
         challenge(21n, BOB, ME, 'Pending', 3_000n),
@@ -268,13 +310,13 @@ describe('noticeModel: pendingRequests and buildNotices (ctl-13, CTL13.2)', () =
     const reference = pendingRequests(input({ ...crowd }));
     expect(
       reference.map((n) => n.key),
-      'ANTI-VACUITY: the crowd yields one trade and one challenge, oldest first, tie to challenge',
-    ).toEqual(['challenge-21', 'trade-11']);
+      'ANTI-VACUITY: both incoming sessions and the one challenge, oldest first, tie to challenge',
+    ).toEqual(['challenge-21', 'session-11', 'session-12']);
     let permuted = 0;
-    for (const offers of permutations(crowd.offers)) {
+    for (const sessions of permutations(crowd.sessions)) {
       for (const challenges of permutations(crowd.challenges)) {
         for (const players of permutations(crowd.players)) {
-          const i = input({ offers, challenges, players, errorPending: true });
+          const i = input({ sessions, challenges, players, errorPending: true });
           expect(pendingRequests(i), 'pendingRequests, permuted').toEqual(reference);
           expect(
             buildNotices(i).map((n) => n.key),
@@ -300,7 +342,7 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
     // with another id (a stale id sent: the spec's "never act on a stale request"); a sheet that
     // closes on a repeat B / Start or runs on a held A; a D-pad that does not move or does not
     // clamp on a held edge; any other button that moves or closes it; and a command with the
-    // wrong reducer, the wrong id or the opposite `accepted`.
+    // wrong reducer, the wrong id or the opposite answer.
     // NAMED INTENTIONAL CHANGE — uif-12 (UIF12.2): the sheet ends with a Close row, so the last
     // row (the wrap target of Up from Accept, the clamp of a held Down) is `close`, not `view`.
     expect(requestSheetLayout.kind).toBe('list');
@@ -404,23 +446,20 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
       expect(r.run, `${button} runs nothing`).toBeUndefined();
     }
 
-    // --- requestCommand: the exact Commands -------------------------------------------------
-    expect(requestCommand(REQ, 'accept')).toEqual({
-      kind: 'respondTrade',
-      tradeId: 11n,
-      accepted: true,
+    // --- requestCommand: the exact Commands (ts-3: a trade request is a session) -------------
+    expect(requestCommand(REQ, 'accept'), 'ts-3: accept opens the editor').toEqual({
+      kind: 'openTradeEditor',
+      sessionId: 11n,
     });
-    expect(requestCommand(REQ, 'decline')).toEqual({
-      kind: 'respondTrade',
-      tradeId: 11n,
-      accepted: false,
+    expect(requestCommand(REQ, 'decline'), 'ts-3: decline cancels the session').toEqual({
+      kind: 'cancelTradeSession',
+      sessionId: 11n,
     });
     expect(requestCommand(CHAL, 'accept')).toEqual({ kind: 'acceptChallenge', challengeId: 21n });
     expect(requestCommand(CHAL, 'decline')).toEqual({ kind: 'declineChallenge', challengeId: 21n });
     expect(requestCommand(OTHER, 'accept'), 'the id is the request`s own').toEqual({
-      kind: 'respondTrade',
-      tradeId: 12n,
-      accepted: true,
+      kind: 'openTradeEditor',
+      sessionId: 12n,
     });
   });
 
@@ -474,5 +513,103 @@ describe('noticeModel: the request action sheet (ctl-13, CTL13.3)', () => {
       requestSheetStep(up.state as NonNullable<typeof up.state>, nav('A'), [REQ]),
       'A on Close reached by Up',
     ).toStrictEqual({ state: null });
+  });
+});
+
+// ==========================================================================================
+// ts-3 (ts-3.4, ts-3.5): incoming trade sessions on the banner.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 ("an incoming session this
+//   client has not opened SHALL raise the non-modal banner (several collapsing into one line) and
+//   never a frame") and memory/projects/monster-realm-ts-3-plan.md §Notices.
+//
+// RED REASON: NoticeInput has no `sessions` / `opened`, no session raises a request, buildNotices
+//   never collapses, `dismissKeys` does not exist and requestCommand answers `respondTrade`.
+// ==========================================================================================
+
+describe('noticeModel: incoming trade sessions (ts-3)', () => {
+  it('ts-3.5 an incoming untouched session NOT in `opened` is a pending request from its opener; once this client opened its editor it is not; the opener never gets one; legacy offers raise nothing', () => {
+    // WRONG IMPL KILLED: the banner raised again for a session the player already opened (the
+    // editor IS the answer: the banner would nag over it); the opener's own session raising a
+    // request; a request named from the partner; the legacy `trade_offer` path still feeding the
+    // banner (an implementation that keeps reading `offers`).
+    const s = tradeSession(31n, BOB, ME, 1_000n);
+    expect(pendingRequests(input({ sessions: [s] }))).toEqual([tradeNotice(31n, 'Bob', 1_000n)]);
+    expect(
+      pendingRequests(input({ sessions: [s], opened: new Set([31n]) })),
+      'opened on this client: no request',
+    ).toEqual([]);
+    expect(
+      pendingRequests(input({ sessions: [s], opened: new Set([32n]) })),
+      'another id opened: still a request',
+    ).toHaveLength(1);
+    expect(pendingRequests(input({ sessions: [s], identity: BOB })), 'the opener').toEqual([]);
+    const legacy = Object.assign(input(), { offers: [offer(11n, BOB, ME)] });
+    expect(pendingRequests(legacy), 'a legacy offer raises nothing').toEqual([]);
+    expect(buildNotices(legacy)).toEqual([]);
+  });
+
+  it('ts-3.5 two or more undismissed trade requests collapse into ONE notice carrying count and keys; one alone carries neither; a dismissed one is not counted; an older challenge comes first uncounted; dismissKeys answers the keys or the notice`s own key', () => {
+    // WRONG IMPL KILLED: one banner per session (several notices stacked: the spec's collapse);
+    // a count that includes dismissed sessions, or the challenge; keys missing (B would dismiss
+    // only the top session and the banner would come straight back for the next); count set on a
+    // single request (the line would read "1 trade requests"); a collapse that outranks an older
+    // challenge; dismissKeys ignoring the collapsed keys.
+    const a = tradeSession(41n, BOB, ME, 1_000n);
+    const b = tradeSession(42n, CAROL, ME, 3_000n);
+    const c = tradeSession(43n, DAN, ME, 4_000n);
+    const one = buildNotices(input({ sessions: [a] }));
+    expect(one).toEqual([tradeNotice(41n, 'Bob', 1_000n)]);
+    expect('count' in (one[0] as Notice), 'one alone: no count').toBe(false);
+    expect('keys' in (one[0] as Notice), 'one alone: no keys').toBe(false);
+    expect(dismissKeys(one[0] as Notice)).toEqual(['session-41']);
+
+    const many = buildNotices(
+      input({ sessions: [c, a, b], challenges: [challenge(21n, BOB, ME, 'Pending', 2_000n)] }),
+    );
+    expect(many, 'one notice').toHaveLength(1);
+    const top = many[0] as RequestNotice;
+    expect(top).toMatchObject({ kind: 'request', key: 'session-41', request: 'trade', id: 41n });
+    expect(top.count, 'all three undismissed trade requests').toBe(3);
+    expect([...(top.keys ?? [])].sort()).toEqual(['session-41', 'session-42', 'session-43']);
+    expect([...dismissKeys(top)].sort()).toEqual(['session-41', 'session-42', 'session-43']);
+
+    const minusOne = buildNotices(
+      input({ sessions: [c, a, b], dismissed: new Set(['session-41']) }),
+    )[0] as RequestNotice;
+    expect(minusOne.key, 'the oldest undismissed').toBe('session-42');
+    expect(minusOne.count).toBe(2);
+    expect([...(minusOne.keys ?? [])].sort()).toEqual(['session-42', 'session-43']);
+
+    const chalFirst = buildNotices(
+      input({ sessions: [a, b], challenges: [challenge(21n, BOB, ME, 'Pending', 500n)] }),
+    );
+    expect(
+      chalFirst.map((n) => n.key),
+      'the older challenge is the banner',
+    ).toEqual(['challenge-21']);
+    expect('count' in (chalFirst[0] as Notice)).toBe(false);
+    expect(dismissKeys(chalFirst[0] as Notice)).toEqual(['challenge-21']);
+
+    const withError = buildNotices(input({ sessions: [a, b], errorPending: true }));
+    expect(withError.map((n) => n.key)).toEqual(['error', 'session-41']);
+    expect(dismissKeys(withError[0] as Notice)).toEqual(['error']);
+  });
+
+  it('ts-3.4 requestCommand answers a trade request with openTradeEditor (accept) and cancelTradeSession (decline) for THAT session, and challenges as before', () => {
+    // WRONG IMPL KILLED: the legacy respondTrade still sent (no such trade row exists: the server
+    // would refuse it); the accept and decline swapped; the id of another session.
+    const n = tradeNotice(9_007_199_254_740_993n, 'Bob', 1n);
+    expect(requestCommand(n, 'accept')).toEqual({
+      kind: 'openTradeEditor',
+      sessionId: 9_007_199_254_740_993n,
+    });
+    expect(requestCommand(n, 'decline')).toEqual({
+      kind: 'cancelTradeSession',
+      sessionId: 9_007_199_254_740_993n,
+    });
+    const chal = challengeNotice(21n, 'Bob', 1n);
+    expect(requestCommand(chal, 'accept')).toEqual({ kind: 'acceptChallenge', challengeId: 21n });
+    expect(requestCommand(chal, 'decline')).toEqual({ kind: 'declineChallenge', challengeId: 21n });
   });
 });

@@ -18,7 +18,7 @@
 //   - preventDefault-everything trap                       -> A11Y-7-NON-TAB-NOT-PREVENTED
 //   - stopPropagation-everything trap                       -> A11Y-7-NON-TAB-REACHES-APP
 //   - preventDefault-only, no focus move (root.contains bug avoided by IDENTITY assertions)
-//   - bubble-phase trap (dead in renameView/tradeProposeView) -> S1-TRAP-CAPTURE
+//   - bubble-phase trap (dead in renameView)                -> S1-TRAP-CAPTURE
 //   - cached focusable list (dead every battleView server tick) -> S1-TRAP-LIVE-QUERY
 //   - no hidden-ancestor filter                             -> S1-TRAP-HIDDEN-FILTER
 //   - no-op uninstall handle                                -> S1-TRAP-UNINSTALL
@@ -204,8 +204,8 @@ describe('installTrap — Tab-only handling, non-Tab keys pass through untouched
 
 describe('installTrap — capture-phase registration, live re-query, hidden filtering, real uninstall (S1-TRAP)', () => {
   it('S1-TRAP-CAPTURE BITES: focus still moves even when the event TARGET stopPropagation()s its own bubble-phase keydown — a bubble-phase root trap is dead here', () => {
-    // WRONG IMPL KILLED (F1, LOAD-BEARING): renameView.ts:61,80 and tradeProposeView.ts call
-    // e.stopPropagation() on their own focusables' keydown. A trap registered on `root` with
+    // WRONG IMPL KILLED (F1, LOAD-BEARING): renameView.ts:61,80 calls (and the trade-propose
+    // wizard, deleted at ts-3, called) e.stopPropagation() on its own focusables' keydown. A trap registered on `root` with
     // capture:false (bubble phase) never sees a Tab pressed on such a child, because the
     // child's own bubble listener stops propagation before it reaches an ancestor bubble
     // listener. A CAPTURE-phase listener on `root`, by contrast, runs during the capturing
@@ -332,10 +332,11 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
 // Every fixture above uses ONLY <button> elements. A red-team pass measured that narrowing
 // FOCUSABLE_SELECTOR to the single clause 'button:not([disabled])' keeps every test in this
 // file (and all 42 tests across the m23-s1 suite) green — a severe production regression,
-// because ui/renameView.ts:45's #rename-input and ui/tradeProposeView.ts:67,71,176's currency
-// <input>s and per-monster checkboxes are real focusables inside exactly the two overlays the
-// module header calls the highest-risk case for this trap. The tests below build a ring with
-// every element kind FOCUSABLE_SELECTOR's real clauses admit, plus the ones its OTHER real
+// because ui/renameView.ts:45's #rename-input (and, until ts-3 deleted it, the trade-propose
+// wizard's currency <input>s and per-monster checkboxes) are real focusables inside the overlays
+// the module header calls the highest-risk case for this trap; ts-3's trade session editor
+// focuses a tabindex="0" listbox (#tradesession-rows), the div[tabindex=0] kind below. The tests
+// below build a ring with every element kind FOCUSABLE_SELECTOR's real clauses admit, plus the ones its OTHER real
 // clauses ('[type="hidden"]' exclusion, ':not([disabled])') and the tabindex="-1" carve-out
 // must skip.
 // ---------------------------------------------------------------------------

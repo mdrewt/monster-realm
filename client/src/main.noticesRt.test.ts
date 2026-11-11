@@ -37,7 +37,7 @@ import {
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreBattleChallenge, StoreTradeOffer } from './net/store';
+import type { StoreBattleChallenge, StoreTradeSession } from './net/store';
 import { tf } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -190,20 +190,17 @@ function seedPlayer(identity: string, name: string, entityId: bigint): void {
   opts.store.upsertPlayer({ identity, entityId, name, online: true, lastInputSeq: 0n });
 }
 
-/** A Pending offer from `from` to the booted player. */
-const offerFrom = (from: string, tradeId: bigint, createdAtMs: bigint): StoreTradeOffer => ({
-  tradeId,
-  initiator: from,
-  counterparty: H.identity,
-  initiatorMonsterIds: [],
-  initiatorItems: [],
-  initiatorCurrency: 0n,
-  counterpartyMonsterIds: [],
-  counterpartyItems: [],
-  counterpartyCurrency: 0n,
-  initiatorCards: [],
-  counterpartyCards: [],
-  status: 'Pending',
+/** ts-3 (named intentional change, C): an incoming, untouched SESSION `from` opened with the booted
+ *  player (a legacy trade_offer raises no notice any more). Was: `offerFrom`, a Pending offer. */
+const sessionFrom = (from: string, sessionId: bigint, createdAtMs: bigint): StoreTradeSession => ({
+  sessionId,
+  opener: from,
+  partner: H.identity,
+  openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+  partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+  openerConfirmed: false,
+  partnerConfirmed: false,
+  revision: 1n,
   createdAtMs,
 });
 
@@ -287,7 +284,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     seedPlayer(CAROL, 'Carol', 9n);
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    opts.store.reconcileTradeSessionsFromView([sessionFrom(BOB, 11n, 1_000n)]);
     opts.store.upsertChallenge(challengeFrom(CAROL, 21n, 2_000n));
     batch();
     frame();
@@ -298,9 +295,16 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     press(Y);
     frame();
     expect(sheetShown(), 'Y (chip still shown) opens the oldest dismissed request').toBe(true);
+    // ts-3 (named intentional change, C): Accept on a session opens its editor and sends nothing.
+    // Was: respondTrade accepted:true.
     press(A);
     await flush();
-    expect(H.calls).toEqual([{ name: 'respondTrade', args: { tradeId: 11n, accepted: true } }]);
+    frame();
+    expect(H.calls, 'Accept sends no reducer').toEqual([]);
+    expect(
+      byId('tradepropose-overlay').getAttribute('data-session-id'),
+      'Accept answered the dismissed request: its editor is open',
+    ).toBe('11');
   }, 60_000);
 
   it('RT-M05: a second request arriving does not re-announce the first', async () => {
@@ -308,7 +312,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     seedPlayer(BOB, 'Bob', 8n);
     seedPlayer(CAROL, 'Carol', 9n);
     batch();
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    opts.store.reconcileTradeSessionsFromView([sessionFrom(BOB, 11n, 1_000n)]);
     batch();
     frame(700);
     frame(700);
@@ -344,7 +348,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     batch();
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    opts.store.reconcileTradeSessionsFromView([sessionFrom(BOB, 11n, 1_000n)]);
     batch();
     frame();
     const pump = (): void => {
@@ -375,7 +379,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     batch();
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    opts.store.reconcileTradeSessionsFromView([sessionFrom(BOB, 11n, 1_000n)]);
     batch();
     frame();
     press(Y);
@@ -390,18 +394,24 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     batch();
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    opts.store.reconcileTradeSessionsFromView([sessionFrom(BOB, 11n, 1_000n)]);
     batch();
     frame();
+    // ts-3 (named intentional change, C): a trade Accept sends no reducer now, so the double answer
+    // is the Decline (cancelTradeSession). Was: Y Enter twice, one respondTrade.
     press(Y);
+    press('ArrowDown');
     press(A);
     await flush();
     frame();
     press(Y);
     frame();
+    press('ArrowDown');
     press(A);
     await flush();
-    expect(H.calls, 'one accept only').toHaveLength(1);
+    expect(H.calls, 'one decline only').toEqual([
+      { name: 'cancelTradeSession', args: { sessionId: 11n } },
+    ]);
   }, 60_000);
 
   it('RT-DOUBLE-CH: same for a challenge decline then accept', async () => {

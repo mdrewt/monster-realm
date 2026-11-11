@@ -135,7 +135,14 @@ const COMMAND_KINDS = [
   'respondTrade',
   'confirmTrade',
   'cancelTrade',
-  'proposeTrade',
+  // INTENTIONAL CHANGE (ts-3, plan "Commands"): `proposeTrade` leaves with the wizard and the five
+  // session kinds join (35 -> 39). The legacy `respondTrade` / `confirmTrade` / `cancelTrade` stay
+  // with the legacy Trades block until ts-4.
+  'openTradeSession',
+  'openTradeEditor',
+  'setTradeOffer',
+  'confirmTradeSession',
+  'cancelTradeSession',
   'challenge',
   'acceptChallenge',
   'declineChallenge',
@@ -167,7 +174,7 @@ const _total: [Exclude<Command['kind'], Listed>] extends [never] ? true : false 
 const _sound: [Exclude<Listed, Command['kind']>] extends [never] ? true : false = true;
 
 describe('battlePolicy: no 1v1 command, no 1v1 renderer (bt-17, BT17.1)', () => {
-  it('the battle policy table has no row for any of the seven 1v1 commands (attack, flee, swap, recruit, useItem, pvpAttack, pvpSwap), stays total over exactly the 35 Command kinds (34 at bt-17, +reportProblem at uif-14b), and keeps the four tactical actions battle-safe [BT17-1]', () => {
+  it('the battle policy table has no row for any of the seven 1v1 commands (attack, flee, swap, recruit, useItem, pvpAttack, pvpSwap), stays total over exactly the 39 Command kinds (34 at bt-17, +reportProblem at uif-14b, -proposeTrade +5 session kinds at ts-3), and keeps the four tactical actions battle-safe [BT17-1]', () => {
     // WRONG IMPL KILLED: a 1v1 row left in the table (a dead command a stray adapter could still
     // issue at a battle base); a purge that drops a live row with them (the table is no longer
     // total: a Command kind would read `undefined` and `battleSafeCommand` would refuse it); a
@@ -182,9 +189,7 @@ describe('battlePolicy: no 1v1 command, no 1v1 renderer (bt-17, BT17.1)', () => 
       Object.keys(COMMAND_BATTLE_POLICY).sort(),
       'the table is total over exactly the remaining kinds',
     ).toEqual([...COMMAND_KINDS].sort());
-    expect(COMMAND_KINDS, 'ANTI-VACUITY: the transcribed roster (35 since uif-14b)').toHaveLength(
-      35,
-    );
+    expect(COMMAND_KINDS, 'ANTI-VACUITY: the transcribed roster (39 since ts-3)').toHaveLength(39);
     for (const kind of ['submitQueue', 'cancelQueue', 'deployUnits', 'forfeit'] as const) {
       expect(COMMAND_BATTLE_POLICY[kind], `${kind} stays battle-safe`).toBe('safe');
     }
@@ -200,7 +205,32 @@ describe('battlePolicy: no 1v1 command, no 1v1 renderer (bt-17, BT17.1)', () => 
       Object.keys(COMMAND_BATTLE_POLICY).filter((k) => k === 'reportProblem'),
       'one row',
     ).toHaveLength(1);
-    expect(Object.keys(COMMAND_BATTLE_POLICY)).toHaveLength(35);
+    // ts-3: 35 - proposeTrade + the five session kinds.
+    expect(Object.keys(COMMAND_BATTLE_POLICY)).toHaveLength(39);
+  });
+
+  it('ts-3 the trade-session commands: proposeTrade has no row and no Command kind, and openTradeSession, openTradeEditor, setTradeOffer, confirmTradeSession and cancelTradeSession are each refused over a battle, while the legacy respondTrade / confirmTrade / cancelTrade rows stay', () => {
+    // WRONG IMPL KILLED: the wizard's `proposeTrade` row (or Command arm) left behind; a session
+    // kind missing from the table (battleSafeCommand reads undefined); a session kind classified
+    // 'safe' (an editor opened, an offer sent or a trade confirmed from a battle base) or 'drop'; a
+    // purge that also took a legacy trade row the Trades block still issues until ts-4.
+    type Proposed = Extract<Command['kind'], 'proposeTrade'>;
+    const noProposeKind: [Proposed] extends [never] ? true : false = true;
+    expect(noProposeKind, 'type level: proposeTrade is not a Command kind').toBe(true);
+    expect('proposeTrade' in COMMAND_BATTLE_POLICY, 'no proposeTrade row').toBe(false);
+    const sessionKinds = [
+      'openTradeSession',
+      'openTradeEditor',
+      'setTradeOffer',
+      'confirmTradeSession',
+      'cancelTradeSession',
+    ] as const;
+    for (const kind of sessionKinds) {
+      expect(COMMAND_BATTLE_POLICY[kind], `${kind} is refused over a battle`).toBe('refuse');
+    }
+    for (const kind of ['respondTrade', 'confirmTrade', 'cancelTrade'] as const) {
+      expect(kind in COMMAND_BATTLE_POLICY, `${kind} stays`).toBe(true);
+    }
   });
 
   it('battleRenderer maps no tactical row to none, Deploying to deploy, Active to tactical and Finished to results; renderableBattle is true only when the anchor AND its tactical row are both present [BT17-1]', () => {

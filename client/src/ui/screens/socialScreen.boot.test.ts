@@ -1200,7 +1200,7 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     expectSocialOn('menu row, a trade waits', 'trades');
   });
 
-  it('UIF9.5 with no frame open, an incoming trade offer and an incoming challenge each show #notice-banner naming the sender and push no frame: the stack stays the bare world, no Social root shows, nothing is sent', async () => {
+  it('UIF9.5 with no frame open, an incoming trade session and an incoming challenge each show #notice-banner naming the sender and push no frame: the stack stays the bare world, no Social root shows, nothing is sent', async () => {
     // WRONG IMPL KILLED: a request that opens the Social frame or a Social panel (a frame in the
     // stack, a root shown: the retired auto-show, or uif-9's chrome work reintroducing it); a
     // request with no banner (invisible); a request answered by itself (a reducer call).
@@ -1226,9 +1226,25 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
         label: 'an incoming challenge',
         seed: () => opts.store.upsertChallenge(incomingChallenge(CHALLENGE_ID)),
       },
+      // ts-3 (named intentional change, C): a legacy trade_offer raises no notice any more; the
+      // incoming trade request is an untouched SESSION Zed opened with the player. Was:
+      // upsertTradeOffer(waitingTrade(TRADE_ID)).
       {
-        label: 'an incoming trade offer',
-        seed: () => opts.store.upsertTradeOffer(waitingTrade(TRADE_ID)),
+        label: 'an incoming trade session',
+        seed: () =>
+          opts.store.reconcileTradeSessionsFromView([
+            {
+              sessionId: TRADE_ID,
+              opener: OTHER,
+              partner: H.identity,
+              openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+              partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+              openerConfirmed: false,
+              partnerConfirmed: false,
+              revision: 1n,
+              createdAtMs: 0n,
+            },
+          ]),
       },
     ];
     let checked = 0;

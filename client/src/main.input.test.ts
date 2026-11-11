@@ -43,9 +43,25 @@ import type {
   StoreMonsterPub,
   StoreNpcRow,
   StoreTacticalBattle,
+  StoreTradeSession,
 } from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import type { NavInput } from './ui/nav';
+
+/** ts-3: one `my_trade_session` row, both sides empty and unconfirmed (revision 1). */
+function inputSession(sessionId: bigint, opener: string, partner: string): StoreTradeSession {
+  return {
+    sessionId,
+    opener,
+    partner,
+    openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs: 900n,
+  };
+}
 
 interface Sent {
   readonly input: { readonly tag: string; readonly value?: { readonly tag: string } };
@@ -1724,10 +1740,10 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
     // of two hidden overlays whose hide() still resets them: the Name field and the trade wizard's
     // offer-coins field. Was: `textContent = 'sentinel'` on the three feedback nodes. The numeric
     // field takes a digit string (a number input drops a non-numeric value).
-    const sentinels: ReadonlyArray<readonly [string, string]> = [
-      ['rename-input', 'sentinel'],
-      ['tradepropose-offer-currency', '123'],
-    ];
+    // ts-3 (named intentional change): the `tradepropose-offer-currency` sentinel row is removed
+    // with the wizard (retired: wizard deleted by spec §ts-3 Strangler; the session editor has no
+    // text field to hold a draft). Its survivor is the `rename-input` row, in this same case.
+    const sentinels: ReadonlyArray<readonly [string, string]> = [['rename-input', 'sentinel']];
     for (const [id, draft] of sentinels) {
       expect(shownById(id), `precondition: the overlay holding #${id} is hidden`).toBe(false);
       (rootOf(id) as HTMLInputElement).value = draft;
@@ -2033,7 +2049,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(checked, 'ANTI-VACUITY: both overlays were driven').toBe(2);
   });
 
-  it('CTL3-3-BOOT-HIDE-ALL: rename, tradePropose, heal, raising and privacy each close through their own hide() when a battle arrives (evolution has no open path: it is never a frame)', async () => {
+  it('CTL3-3-BOOT-HIDE-ALL: rename, tradeSession, heal, raising and privacy each close through their own hide() when a battle arrives (evolution has no open path: it is never a frame)', async () => {
     // WRONG IMPL KILLED: a close command that skips some overlays (the six here were measured
     // as skipped by a mutant while every other boot case stayed green: the overlay is left
     // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
@@ -2100,9 +2116,15 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
         // ctl-10b (named intentional change): O is retired; the wizard opens face to face. The rule is
         // switched to the rival (a new batch invalidates the memoised candidates), A opens the
         // picker and A on its first row (Trade) opens the wizard.
-        name: 'tradeProposeView',
+        // ts-3 (named intentional change, the Strangler rename): the row is the session editor's
+        // (`tradeSessionView`, same root `#tradepropose-overlay`). A session with the rival is in
+        // the store first, so A on Trade opens the editor at once (no open is waited on).
+        name: 'tradeSessionView',
         rootId: 'tradepropose-overlay',
         open: (t) => {
+          opts.store.reconcileTradeSessionsFromView([
+            inputSession(41n, H.identity, RIVAL_IDENTITY),
+          ]);
           useRule(pick(['player', '20']));
           settle(t);
           tapKey('Enter', t + 10);
@@ -3908,7 +3930,7 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     document.body.replaceChildren();
   });
 
-  it('CTL10B-1-BOOT-TRADE: with two other online players and the SECOND one faced, A opens the picker (Trade, Challenge for that player), A on Trade opens the trade wizard on Offer with the faced player (not the first) pre-selected and the select disabled, focus inside the Offer list, and nothing is sent', async () => {
+  it('CTL10B-1-BOOT-TRADE: with two other online players and the SECOND one faced, A opens the picker (Trade, Challenge for that player), A on Trade sends open_trade_session for the faced player (not the first) and opens nothing until the opener`s row arrives, then the session editor opens over the world with focus inside its rows', async () => {
     // WRONG IMPL KILLED: openPropose(first other player) (the pre-selected target and the wizard's
     // counterparty would be the first rival, not the faced one), a Trade row that opens the wizard
     // with no target (the select is the placeholder, a Target step), a pre-selected but ENABLED
@@ -3936,37 +3958,40 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     expect(H.calls, 'opening the picker sends nothing').toEqual([]);
     expect(shownById('tradepropose-overlay'), 'and opens no wizard yet').toBe(false);
 
+    // ts-3 (named intentional change, the Strangler): A on Trade no longer opens a wizard with the
+    // faced player pre-selected. It sends open_trade_session for the FACED player and opens nothing;
+    // the session editor opens on the opener's own row once it arrives, focus inside its rows
+    // listbox. Was: the wizard on Offer, its target select locked on the faced player, focus in the
+    // Offer list. WRONG IMPL KILLED (added): the wizard still opening; the open sent for the first
+    // rival; the editor opened before the row exists; focus left on the world.
     tapKey('Enter', 1030); // A on Trade
-    expect(shownById('tradepropose-overlay'), 'A on Trade opens the wizard').toBe(true);
-    expect(stack(), 'as one frame over the world').toEqual([
-      { kind: 'world' },
-      { kind: 'screen', id: 'tradeProposeView' },
-    ]);
-    const select = rootOf('tradepropose-target') as HTMLSelectElement;
-    expect(select.value, 'the FACED player is pre-selected, not the first rival').toBe(
+    await flush();
+    expect(H.calls, 'A on Trade sends exactly one open').toEqual(['openTradeSession']);
+    const open = H.callArgs.find((c) => c.name === 'openTradeSession')?.args as
+      | { partner: unknown }
+      | undefined;
+    expect(identityHex(open?.partner), 'for the FACED player, not the first rival').toBe(
       FACED_IDENTITY,
     );
-    expect(select.value, 'precondition: and that is not the first rival').not.toBe(RIVAL_IDENTITY);
-    expect(select.disabled, 'the select is locked: no retarget').toBe(true);
-    const steps = [
-      ...rootOf('tradepropose-overlay').querySelectorAll<HTMLElement>(
-        '[data-testid="tradepropose-steps"] li',
-      ),
-    ];
-    expect(
-      steps.map((li) => li.getAttribute('data-step')),
-      'no Target step',
-    ).toEqual(['offer', 'coins', 'ask', 'review']);
-    expect(
-      steps.filter((li) => li.getAttribute('aria-current') === 'step').map((li) => li.dataset.step),
-      'the wizard is on Offer',
-    ).toEqual(['offer']);
+    expect(shownById('tradepropose-overlay'), 'nothing opens before the row exists').toBe(false);
+    expect(stack(), 'the bare world').toEqual(WORLD_ONLY);
 
+    opts.store.reconcileTradeSessionsFromView([inputSession(51n, H.identity, FACED_IDENTITY)]);
+    settle(1040);
+    expect(shownById('tradepropose-overlay'), 'the opener`s row opens the editor').toBe(true);
+    expect(stack(), 'as one frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'tradeSessionView' },
+    ]);
+    expect(rootOf('tradepropose-overlay').getAttribute('data-session-id'), 'on that session').toBe(
+      '51',
+    );
     await flush(); // the overlay's deferred initial focus runs
-    const list = rootOf('tradepropose-monsters');
-    expect(list.contains(document.activeElement), 'focus is inside the Offer list').toBe(true);
-    expect(document.activeElement, 'and not on the select').not.toBe(select);
-    expect(H.calls, 'nothing was sent').toEqual([]);
+    expect(
+      rootOf('tradesession-rows').contains(document.activeElement),
+      'focus is inside the editor`s rows listbox',
+    ).toBe(true);
+    expect(H.calls, 'nothing more was sent').toEqual(['openTradeSession']);
   });
 
   // NAMED INTENTIONAL CHANGE (bt-15, BT15.1 / BT15.5): the Challenge confirm is the party-size
@@ -4220,14 +4245,16 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     expect(faceAndRead(P3), 'the target of a Pending challenge offers only Trade').toBe(
       tradeOnly(P3),
     );
+    // ts-3 (named intentional change): the lone Trade row runs at once, and Trade now sends
+    // open_trade_session (no session with P3 exists) instead of opening the wizard. Was: the wizard
+    // shown, nothing sent, then Start closed it.
     tapKey('Enter', t);
     t += 20;
-    expect(shownById('tradepropose-overlay'), 'A runs the lone Trade row at once').toBe(true);
+    expect(H.calls, 'A runs the lone Trade row at once: the open is sent').toEqual([
+      'openTradeSession',
+    ]);
     expect(chipOptions(), 'no picker, so no Challenge row').toEqual([]);
-    expect(H.calls, 'nothing was sent').toEqual([]);
-    tapKey('Escape', t); // Start closes the wizard
-    t += 20;
-    expect(stack(), 'precondition: the wizard closed').toEqual(WORLD_ONLY);
+    expect(stack(), 'and nothing opens before a session row exists').toEqual(WORLD_ONLY);
 
     // P2 is the CHALLENGER of that challenge: only Trade.
     expect(faceAndRead(P2), 'the challenger of a Pending challenge offers only Trade').toBe(

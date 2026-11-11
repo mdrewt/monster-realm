@@ -95,7 +95,9 @@ vi.mock('./ui/renameView', () => ({ RenameView: H.makeStub() }));
 // over these stand-in sections the real frame would read members they do not have, so it is a
 // stand-in too.
 vi.mock('./ui/profileView', () => ({ ProfileView: H.makeStub() }));
-vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub() }));
+// ts-3 (named intentional change, the Strangler rename): the wizard module is deleted; its stand-in
+// becomes the session editor's (the shell's `#tradepropose-overlay` root is not this suite's).
+vi.mock('./ui/tradeSessionView', () => ({ TradeSessionView: H.makeStub() }));
 
 vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
   wasmPkgIdentityMoveMock({ interact: () => [] }),

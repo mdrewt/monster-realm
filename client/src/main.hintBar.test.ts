@@ -26,8 +26,24 @@ import type { WasmMoveInput } from './convert/convert';
 import { DEFAULT_BINDINGS } from './input/bindings';
 import { VBUTTONS } from './input/buttons';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreMonsterPub, StoreTradeOffer } from './net/store';
+import type { StoreMonsterPub, StoreTradeSession } from './net/store';
 import { t as i18nT } from './ui/i18n/resolver';
+
+/** ts-3: an incoming, untouched `my_trade_session` row `from` opened with the booted player (the
+ *  identity is the hoisted one, `'ab'.repeat(32)`). */
+function incomingSession(from: string, sessionId: bigint, createdAtMs: bigint): StoreTradeSession {
+  return {
+    sessionId,
+    opener: from,
+    partner: 'ab'.repeat(32),
+    openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs,
+  };
+}
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -216,21 +232,8 @@ const game = (): GameHook => (window as unknown as { __game: () => GameHook })._
 const stackNames = (): string[] =>
   game().stack.map((f) => (f.kind === 'screen' || f.kind === 'prompt' ? (f.id as string) : f.kind));
 
-const offerFrom = (from: string, tradeId: bigint, createdAtMs: bigint): StoreTradeOffer => ({
-  tradeId,
-  initiator: from,
-  counterparty: H.identity,
-  initiatorMonsterIds: [],
-  initiatorItems: [],
-  initiatorCurrency: 0n,
-  counterpartyMonsterIds: [],
-  counterpartyItems: [],
-  counterpartyCurrency: 0n,
-  initiatorCards: [],
-  counterpartyCards: [],
-  status: 'Pending',
-  createdAtMs,
-});
+// ts-3 (named intentional change, C): `offerFrom` (a Pending legacy trade_offer) is replaced by
+// `incomingSession` above: a legacy offer raises no notice any more.
 
 const NPC_ENTITY = 11n;
 /** A dialogue NPC on (3, 6) (the tile the player on (2, 6) facing East faces), which the stubbed
@@ -359,7 +362,9 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       online: true,
       lastInputSeq: 0n,
     });
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    // ts-3 (named intentional change, C): the waiting request is an incoming SESSION (a legacy
+    // trade_offer raises no notice any more). Was: upsertTradeOffer(offerFrom(BOB, 11n, 1_000n)).
+    opts.store.reconcileTradeSessionsFromView([incomingSession(BOB, 11n, 1_000n)]);
     batch();
     frame();
     expect(chipsNow(), 'Y (view), B (dismiss), Start badged, Select').toEqual([
@@ -559,7 +564,8 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       online: true,
       lastInputSeq: 0n,
     });
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    // ts-3 (named intentional change, C): an incoming session, not a legacy trade_offer.
+    opts.store.reconcileTradeSessionsFromView([incomingSession(BOB, 11n, 1_000n)]);
     batch();
     frame();
     expect(chipOf('Start').badge, 'precondition: a request waits (Start is badged)').toBe(
