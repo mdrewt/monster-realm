@@ -1,0 +1,74 @@
+# Scratch probe for ci-fix-20261111T1648 (never merged; lives only on a scratch/ branch).
+name: zz-probe
+on:
+  push: { branches: ['scratch/ci-fix-20261111T1648-**'] }
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with: { node-version: '24.22.0' }
+      - name: Install client deps
+        run: cd client && npm ci
+      - name: 'FACTS: image, apt config, DNS'
+        run: |
+          echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"; lsb_release -ds
+          echo "--- /etc/apt/apt-mirrors.txt"; cat /etc/apt/apt-mirrors.txt || true
+          echo "--- sources"; ls -la /etc/apt/sources.list.d/ /etc/apt/sources.list 2>&1 || true
+          for f in /etc/apt/sources.list.d/*; do echo "## $f"; cat "$f"; done
+          echo "--- apt.conf.d"; ls /etc/apt/apt.conf.d/
+          echo "--- apt-config (acquire)"; apt-config dump | grep -i -E "acquire|retries|timeout" || true
+          echo "--- resolv"; cat /etc/resolv.conf; resolvectl status 2>&1 | head -30 || true
+          for h in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com packages.microsoft.com mirrors.edge.kernel.org mirrors.kernel.org cdn.playwright.dev; do
+            s=$(date +%s.%N); r=$(timeout 30 getent ahosts "$h" | head -1 || true); e=$(date +%s.%N)
+            printf 'DNS %s -> %s (%.2fs)\n' "$h" "${r:-FAILED}" "$(echo "$e - $s" | bc)"
+          done
+          echo "--- lists age"; ls -la --time-style=long-iso /var/lib/apt/lists | head -20
+      - name: 'FACTS: fonts before'
+        run: |
+          dpkg -l | grep -E "^ii\s+(fonts-|xfonts-|xvfb|fontconfig)" | awk '{print $2, $3}'
+          echo "--- families"; fc-list : family | sort -u
+          for f in monospace sans-serif serif system-ui Arial ui-monospace; do echo "fc-match $f -> $(fc-match "$f")"; done
+          echo "--- fc-match -s monospace"; fc-match -s monospace | head -8
+      - name: Install chromium WITHOUT deps
+        run: cd client && time npx playwright install chromium
+      - name: 'FACTS: chromium shared libs'
+        run: |
+          ls ~/.cache/ms-playwright/
+          for b in ~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome ~/.cache/ms-playwright/chromium_headless_shell-*/chrome-*/chrome-headless-shell ~/.cache/ms-playwright/chromium_headless_shell-*/chrome-*/headless_shell; do
+            [ -e "$b" ] || continue
+            echo "## $b"; n=$(ldd "$b" | grep -c "not found" || true); echo "LDD-NOT-FOUND=$n"; ldd "$b" | grep "not found" || true
+          done
+          cd client && npx playwright install-deps --dry-run chromium 2>&1 | tail -25 || true
+      - name: 'PROBE: before (twice, determinism control)'
+        run: |
+          cd client
+          node zz-probe.mjs /tmp/before1.json
+          node zz-probe.mjs /tmp/before2.json
+          node zz-probe-diff.mjs /tmp/before1.json /tmp/before2.json
+      - name: Install Playwright system deps (apt; may fail during a mirror outage)
+        id: deps
+        continue-on-error: true
+        run: cd client && time timeout 900 npx playwright install-deps chromium
+      - name: 'FACTS: fonts after'
+        run: |
+          echo "deps outcome: ${{ steps.deps.outcome }}"
+          dpkg -l | grep -E "^ii\s+(fonts-|xfonts-|xvfb|fontconfig)" | awk '{print $2, $3}'
+          echo "--- families"; fc-list : family | sort -u
+          for f in monospace sans-serif serif system-ui Arial ui-monospace; do echo "fc-match $f -> $(fc-match "$f")"; done
+          echo "--- fc-match -s monospace"; fc-match -s monospace | head -8
+      - name: 'PROBE: after'
+        run: |
+          cd client
+          node zz-probe.mjs /tmp/after.json
+          node zz-probe-diff.mjs /tmp/before1.json /tmp/after.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: probe-json
+          path: /tmp/*.json
+          retention-days: 3
