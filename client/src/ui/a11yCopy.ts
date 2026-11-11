@@ -63,7 +63,7 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   'a11y.overlay.pvpView.title': 'PvP Challenge', // ui/pvpView.ts:103
   'a11y.overlay.leaderboardView.title': 'Leaderboard', // ui/menuModel.ts:92
   'a11y.overlay.profileView.title': 'Profile', // ui/menuModel.ts: the Profile leaf
-  'a11y.overlay.tradeProposeView.title': 'Offer a Trade', // ui/menuModel.ts:84
+  'a11y.overlay.tradeSessionView.title': 'Trade', // ui/tradeSessionView.ts
   'a11y.overlay.helpView.title': 'How to Play', // index.html #help-overlay
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.controlsView.title': 'Controls', // ui/menuModel.ts: the Options › Controls leaf

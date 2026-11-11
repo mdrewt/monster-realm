@@ -137,7 +137,9 @@ function buildItemViewModel(
   };
 }
 
-function buildSideViewModel(
+/** One side's cards, item lines and coins as view models. Shared with the session editor
+ *  (ui/tradeSessionModel.ts). Missing species / item defs read "Unknown (#N)". */
+export function buildSideViewModel(
   cards: readonly StoreMonsterCard[],
   items: readonly StoreTradeItem[],
   currency: bigint,

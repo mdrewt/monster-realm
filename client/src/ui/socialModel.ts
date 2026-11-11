@@ -3,7 +3,8 @@
 //
 // The frame's rows are the blocks its legacy roots show: the one offer the trade root shows, and
 // the request and the sent challenge the pvp root shows, each picked through that root's own
-// selector, so A on a row always acts on what the player sees. Players lists the other online
+// selector, so A on a row always acts on what the player sees. Trades also lists one row per trade
+// session the viewer is in: A on one opens its editor. Players lists the other online
 // players (CTL8G.1) and Rankings the leaderboard's rows (CTL8G.2): nav rows only, never a sheet.
 import type {
   StoreBattleChallenge,
@@ -11,12 +12,14 @@ import type {
   StorePlayer,
   StoreProfile,
   StoreTradeOffer,
+  StoreTradeSession,
 } from '../net/store';
 import { buildLeaderboardViewModel, type LeaderboardRowViewModel } from './leaderboardModel';
 import { list, type NavLayout, tabs } from './nav';
 import { incomingChallenge, outgoingChallenge } from './pvpModel';
 import type { SocialTab } from './screens/types';
 import { shownTradeOffer, type TradeAction, tradeActions } from './tradeModel';
+import { incomingUntouched, ownSessions, partnerOf, playerName } from './tradeSessionModel';
 
 /** The tabs in strip order. Built from a `Record`, so a new `SocialTab` fails client-typecheck
  *  here. */
@@ -30,19 +33,30 @@ export const SOCIAL_TABS = Object.keys({
 /** What a row's sheet can offer. */
 export type SocialAction = 'accept' | 'decline' | 'confirm' | 'cancel';
 
-export type SocialRowKind = 'trade' | 'incoming' | 'outgoing';
+export type SocialRowKind = 'trade' | 'session' | 'incoming' | 'outgoing';
+
+/** What a session row paints beside its key. */
+export interface SocialSessionFacts {
+  /** The other player's name, `#<hex8>` when it is empty or the player is unknown. */
+  readonly partnerName: string;
+  readonly mineConfirmed: boolean;
+  readonly theirsConfirmed: boolean;
+}
 
 export interface SocialRow {
-  /** The nav key: `trade-<tradeId>` or `challenge-<challengeId>`. */
+  /** The nav key: `trade-<tradeId>`, `session-<sessionId>` or `challenge-<challengeId>`. */
   readonly key: string;
   readonly kind: SocialRowKind;
-  /** The tradeId or the challengeId. */
+  /** The tradeId, the sessionId or the challengeId. */
   readonly id: bigint;
-  /** The actions legal now, in sheet order; never empty. */
+  /** The actions legal now, in sheet order. Empty exactly for a session row, which has no sheet:
+   *  A on it opens its editor. */
   readonly actions: readonly SocialAction[];
   /** An incoming request the viewer has not answered. */
   readonly waiting: boolean;
   readonly createdAtMs: bigint;
+  /** A session row's painted facts; absent on every other kind. */
+  readonly session?: SocialSessionFacts;
 }
 
 /** The Manhattan distance, in tiles, within which a player in the viewer's zone reads "Nearby".
@@ -68,7 +82,7 @@ interface SocialPeople {
 export interface SocialVm {
   /** The tab the open path asked for (`ScreenContext.socialTab`), else null. */
   readonly requested: SocialTab | null;
-  /** The offer the trade root shows, if any. */
+  /** The offer the trade root shows, if any, then one row per trade session the viewer is in. */
   readonly trades: readonly SocialRow[];
   /** The request the pvp root shows, then the viewer's own sent challenge. */
   readonly challenges: readonly SocialRow[];
@@ -97,6 +111,27 @@ function tradeRow(offer: StoreTradeOffer, identity: string): SocialRow {
     // An offer awaiting the viewer's own final Confirm is not a request (design §4).
     waiting: offer.counterparty === identity && offer.status === 'Pending',
     createdAtMs: offer.createdAtMs,
+  };
+}
+
+function sessionRow(
+  session: StoreTradeSession,
+  identity: string,
+  players: readonly StorePlayer[],
+): SocialRow {
+  const viewerIsOpener = session.opener === identity;
+  return {
+    key: `session-${session.sessionId}`,
+    kind: 'session',
+    id: session.sessionId,
+    actions: [],
+    waiting: incomingUntouched(session, identity),
+    createdAtMs: session.createdAtMs,
+    session: {
+      partnerName: playerName(players, partnerOf(session, identity)),
+      mineConfirmed: viewerIsOpener ? session.openerConfirmed : session.partnerConfirmed,
+      theirsConfirmed: viewerIsOpener ? session.partnerConfirmed : session.openerConfirmed,
+    },
   };
 }
 
@@ -150,12 +185,31 @@ export function socialPlayers(
 export const socialPeopleKey = (vm: SocialVm): string =>
   JSON.stringify(vm.players.map((row) => [row.key, row.name, row.nearby]));
 
+/** What the session rows paint, as one string: equal exactly when their keys, names and marks are
+ *  equal in order. */
+export const socialSessionsKey = (vm: SocialVm): string =>
+  JSON.stringify(
+    vm.trades.flatMap((row) =>
+      row.session === undefined
+        ? []
+        : [
+            [
+              row.key,
+              row.session.partnerName,
+              row.session.mineConfirmed,
+              row.session.theirsConfirmed,
+            ],
+          ],
+    ),
+  );
+
 export function buildSocialVm(
   requested: SocialTab | null,
   offers: readonly StoreTradeOffer[],
   challenges: readonly StoreBattleChallenge[],
   identity: string,
   people: SocialPeople,
+  sessions: readonly StoreTradeSession[] = [],
 ): SocialVm {
   const offer = shownTradeOffer(offers, identity);
   const incoming = incomingChallenge(challenges, identity);
@@ -170,7 +224,12 @@ export function buildSocialVm(
   return {
     requested,
     // An offer in a status this client does not know offers no action: it is not a row.
-    trades: trade === undefined || trade.actions.length === 0 ? [] : [trade],
+    trades: [
+      ...(trade === undefined || trade.actions.length === 0 ? [] : [trade]),
+      ...ownSessions(sessions, identity).map((session) =>
+        sessionRow(session, identity, people.players),
+      ),
+    ],
     challenges: rows,
     players: socialPlayers(people.players, people.characters, identity),
     rankings: buildLeaderboardViewModel(people.profiles, identity).rows,
@@ -213,11 +272,15 @@ export function socialLayout(vm: SocialVm): NavLayout {
   );
 }
 
-/** The oldest waiting request: its tab and row key, else null. A tie goes to the trade. */
+/** The oldest waiting request: its tab and row key, else null. A tie goes to the trade, and among
+ *  trade rows to the first listed. */
 export function oldestWaiting(
   vm: SocialVm,
 ): { readonly tab: 'trades' | 'challenges'; readonly key: string } | null {
-  const trade = vm.trades.find((row) => row.waiting);
+  let trade: SocialRow | undefined;
+  for (const row of vm.trades) {
+    if (row.waiting && (trade === undefined || row.createdAtMs < trade.createdAtMs)) trade = row;
+  }
   const challenge = vm.challenges.find((row) => row.waiting);
   if (
     challenge !== undefined &&

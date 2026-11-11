@@ -36,6 +36,7 @@ import { CATALOG_FR } from './i18n/catalog.fr';
 import { setLocale, t } from './i18n/resolver';
 import * as menuModel from './menuModel';
 import { MENU_ENTRIES, withRequestBadge } from './menuModel';
+import { OVERLAY_IDS } from './overlayRegistry';
 
 interface Row {
   readonly key: string;
@@ -223,12 +224,16 @@ describe('MENU_ENTRIES', () => {
     expect(read(), 'back to en: nothing was memoized in fr').toEqual(en);
   });
 
-  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade wizard, every leaf opens exactly one of the seven viewers, and the Social row describes answering only (it no longer says "Challenge a player")', () => {
+  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade session editor (tradeSessionView, a real frame id), every leaf opens exactly one of the seven viewers, and the Social row describes answering only (it no longer says "Challenge a player")', () => {
     // WRONG IMPL KILLED: a menu leaf (Social, Trades, Challenges or any other) whose target is
-    // tradeProposeView (a menu way to start a trade, r2-025); a leaf that opens some other
-    // initiating surface (the target set is closed, so a new one reds); a Social description
-    // that still advertises starting a challenge; and a walk that misses the help / controls
-    // leaves (ANTI-VACUITY below counts them).
+    // tradeSessionView (a menu way to start a trade, r2-025; ts-3.1: a session is opened face to
+    // face only); a leaf that opens some other initiating surface (the target set is closed, so a
+    // new one reds); a Social description that still advertises starting a challenge; and a walk
+    // that misses the help / controls leaves (ANTI-VACUITY below counts them).
+    // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`, the wizard.
+    // ANTI-VACUITY: the id the leaves are compared against is a real frame id (a stale id could
+    // never be a leaf target, so the negative below would pass for nothing).
+    expect((OVERLAY_IDS as readonly string[]).includes('tradeSessionView')).toBe(true);
     const leaves: Array<{ readonly path: string; readonly target: unknown }> = [];
     for (const root of ROOT) {
       if ((root as unknown as { kind?: string }).kind === 'open') {
@@ -241,7 +246,7 @@ describe('MENU_ENTRIES', () => {
     expect(leaves.length, 'ANTI-VACUITY: 7 root leaves').toBe(7);
     for (const { path: p, target } of leaves) {
       expect(target, `${p} opens something`).toBeTypeOf('string');
-      expect(target, `${p} must not open the trade wizard`).not.toBe('tradeProposeView');
+      expect(target, `${p} must not open the trade session editor`).not.toBe('tradeSessionView');
     }
     expect(
       leaves.map((l) => l.target).sort(),

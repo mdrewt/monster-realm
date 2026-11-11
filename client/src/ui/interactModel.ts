@@ -9,9 +9,9 @@ import { TILE_PX } from '../render/config';
 import { pickerEntries } from './actionSheetModel';
 
 /** What A or a sheet row does. A shopkeeper's `shop` is sent as the talk reducer (greet-then-shop);
- *  `heal` opens the heal frame bound to that location, it never transacts. `trade` opens the trade
- *  wizard with that player as the target; `challenge` sends a challenge after a Yes-default confirm
- *  (ctl-10b). A player's identity is the store's hex key. */
+ *  `heal` opens the heal frame bound to that location, it never transacts. `trade` opens a trade
+ *  session with that player (or the editor on the one they already share); `challenge` sends a
+ *  challenge after a Yes-default confirm. A player's identity is the store's hex key. */
 export type InteractAction =
   | { readonly kind: 'talk'; readonly npcEntityId: bigint }
   | { readonly kind: 'shop'; readonly npcEntityId: bigint }

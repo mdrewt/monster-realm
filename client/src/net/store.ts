@@ -382,6 +382,28 @@ export type StoreTradeOffer = {
   readonly createdAtMs: bigint;
 };
 
+/** One side of a trade session: what its owner put in, and the server's cards of the monsters. */
+export type StoreTradeSessionOffer = {
+  readonly monsterIds: readonly bigint[];
+  readonly items: readonly StoreTradeItem[];
+  readonly currency: bigint;
+  readonly cards: readonly StoreMonsterCard[];
+};
+
+/** A trade session row from the participant-scoped `my_trade_session` view, normalized
+ *  (identities as hex strings). A live row is an open session; a closed one is deleted. */
+export type StoreTradeSession = {
+  readonly sessionId: bigint;
+  readonly opener: string;
+  readonly partner: string;
+  readonly openerOffer: StoreTradeSessionOffer;
+  readonly partnerOffer: StoreTradeSessionOffer;
+  readonly openerConfirmed: boolean;
+  readonly partnerConfirmed: boolean;
+  readonly revision: bigint;
+  readonly createdAtMs: bigint;
+};
+
 // NOTE: StoreProfile is a `type` alias (not `interface`) — the tests probe
 // fields via `as Record<string, unknown>`, which TS only permits for object-literal
 // types (same pattern as StoreMonsterPub/StoreInventory above).
@@ -538,6 +560,8 @@ export class AuthoritativeStore {
   readonly #challenges = new Map<bigint, StoreBattleChallenge>();
   // trade_offer rows (public table — both parties subscribe)
   readonly #tradeOffers = new Map<bigint, StoreTradeOffer>();
+  // my_trade_session rows (the sessions this identity is in), by sessionId
+  readonly #tradeSessions = new Map<bigint, StoreTradeSession>();
   // Profile rows keyed by identity hex (public table — world-readable
   // leaderboard). Deliberately NO removeProfile: profile rows are never deleted
   // server-side (RL-2), so a remove path would be unreachable dead code.
@@ -945,6 +969,9 @@ export class AuthoritativeStore {
     // identity's LAST live connection ends; otherwise the snapshot
     // re-delivers it).
     this.#tradeOffers.clear();
+    // my_trade_session rows — cleared on disconnect. The server deletes a player's sessions when
+    // the identity's LAST live connection ends; otherwise the snapshot re-delivers them.
+    this.#tradeSessions.clear();
     // battle_challenge rows — cleared on disconnect; server cancels the player's
     // outgoing pending challenges via on_disconnect (pvp.rs cancel_challenges_on_disconnect)
     // when the identity's LAST live connection ends.
@@ -1295,6 +1322,37 @@ export class AuthoritativeStore {
   /** All trade offers (for future browse / multi-offer UIs). */
   allTradeOffers(): StoreTradeOffer[] {
     return [...this.#tradeOffers.values()];
+  }
+
+  // --- my_trade_session ingest/read ------------------------------------------
+
+  /** Rebuild the session map from the `my_trade_session` view's post-burst cache (a PK-less Vec
+   *  view: the `reconcileBattlesFromView` shape). AUTHORITATIVE: a `sessionId` absent from `rows`
+   *  is deleted, which is how an executed, cancelled or auto-cancelled session leaves the client.
+   *  `#dirty` is set only on a real change, so an unchanged burst wakes no listener. */
+  reconcileTradeSessionsFromView(rows: readonly StoreTradeSession[]): void {
+    const keep = new Set<bigint>();
+    for (const row of rows) {
+      keep.add(row.sessionId);
+      const prev = this.#tradeSessions.get(row.sessionId);
+      if (prev === undefined || !deepRowEq(prev, row)) {
+        this.#tradeSessions.set(row.sessionId, row);
+        this.#dirty = true;
+      }
+    }
+    for (const id of [...this.#tradeSessions.keys()]) {
+      if (!keep.has(id)) {
+        this.#tradeSessions.delete(id);
+        this.#dirty = true;
+      }
+    }
+  }
+
+  /** Every trade session held, ascending by sessionId. */
+  allTradeSessions(): StoreTradeSession[] {
+    return [...this.#tradeSessions.values()].sort((a, b) =>
+      a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0,
+    );
   }
 
   // --- profile ingest/read (RL-13 leaderboard; adapter writes, view reads) --

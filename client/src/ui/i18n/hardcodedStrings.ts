@@ -87,7 +87,7 @@ export const SCAN_TARGETS: readonly string[] = [
   'ui/renameView.ts',
   'ui/sessionView.ts',
   'ui/shopView.ts',
-  'ui/tradeProposeView.ts',
+  'ui/tradeSessionView.ts',
   'ui/tradeView.ts',
 ];
 

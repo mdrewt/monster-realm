@@ -23,7 +23,6 @@ import {
   apply_move,
   deletion_grace_ms_default,
   interact_candidates_coded,
-  max_trade_monsters_per_side,
   move_queue_cap,
   party_size,
   party_slot_none,
@@ -73,6 +72,7 @@ import {
   ownPerspective,
   type StoreMonsterPub,
   type StoreTacticalBattle,
+  type StoreTradeSessionOffer,
 } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
@@ -241,6 +241,7 @@ import type { MonstersTab } from './ui/monstersModel';
 import { EMPTY_NAV_MEMORY } from './ui/nav';
 import {
   buildNotices,
+  dismissKeys,
   type Notice,
   type NoticeInput,
   pendingRequests,
@@ -330,8 +331,14 @@ import {
   toastStep,
 } from './ui/toast';
 import { buildTradeViewModel } from './ui/tradeModel';
-import { buildProposeLists, type TradeProposeArgs } from './ui/tradeProposeModel';
-import type { TradeProposeView } from './ui/tradeProposeView';
+import {
+  closedSessionIds,
+  lockedSessionMonsterIds,
+  openedSessionWith,
+  ownSessions,
+  sessionWith,
+} from './ui/tradeSessionModel';
+import type { TradeSessionView } from './ui/tradeSessionView';
 import type { TradeView } from './ui/tradeView';
 
 // resolve the SpacetimeDB target at MODULE scope (eager, like the old
@@ -380,7 +387,6 @@ const STEP_MS = step_ms();
 const QUEUE_CAP = move_queue_cap();
 const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
-const MAX_TRADE_MONSTERS_PER_SIDE = max_trade_monsters_per_side();
 // The deletion grace window, read ONCE per session — it is a build constant, and
 // re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
 const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
@@ -542,9 +548,10 @@ let leaderboardView: LeaderboardView | undefined;
 let profileView: ProfileView | undefined;
 // The Name section: wires the set_profile_name reducer to the rename form.
 let renameView: RenameView | undefined;
-// trade-PROPOSE overlay — the wizard Trade on a faced player opens (ctl-10b); wires
-// reducers.proposeTrade to let a human initiate a "sell my monster(s) + gold for your gold" trade.
-let tradeProposeView: TradeProposeView | undefined;
+// The trade session editor: opened by Trade on a faced player, a Social › Trades row and the
+// request sheet's Accept. It paints what its screen hands it; the screen's commands reach the
+// session reducers through `dispatch`.
+let tradeSessionView: TradeSessionView | undefined;
 // How to Play (Select; uif-14): catalog copy. No reducer; its one handler is the live-region
 // announce. Its Report a problem row reaches `dispatch` as the `reportProblem` command (uif-14b).
 let helpView: HelpView | undefined;
@@ -582,9 +589,25 @@ let boundSocialTab: SocialTab | null = null;
 // The Monsters tab the last Monsters open bound (uif-6): Party from the menu and V, Storage from B.
 // Read by the screen's `init` at the seated open; clears on reconnect (null opens Storage).
 let boundMonstersTab: MonstersTab | null = null;
-// The player the trade wizard was last opened for (the face-to-face Trade, ctl-10b). Every open
-// rebinds it, and the face-to-face Trade is the wizard's only open path.
-let boundProposeTarget: string | null = null;
+// The trade session the editor was last opened on. Every open rebinds it; it clears on reconnect.
+let boundTradeSessionId: bigint | null = null;
+/** The sessions this client has opened its editor on: an incoming one stops being a request. */
+const openedTradeSessions = new Set<bigint>();
+/** A face-to-face Trade whose `open_trade_session` was sent and whose row has not arrived yet: the
+ *  editor opens when it does. Dropped on a rejection, on a reconnect and after `TRADE_OPEN_WAIT_MS`. */
+let pendingTradeOpen: { readonly partner: string; readonly atMs: number } | null = null;
+const TRADE_OPEN_WAIT_MS = 10_000;
+/** The player's session ids at the last batch of a live link, the baseline a closed session is
+ *  found against; null until this connection's first batch. */
+let knownSessionIds: ReadonlySet<bigint> | null = null;
+
+/** Forget every trade-session fact of the previous connection or identity. */
+function resetTradeSessionState(): void {
+  boundTradeSessionId = null;
+  openedTradeSessions.clear();
+  pendingTradeOpen = null;
+  knownSessionIds = null;
+}
 
 // The three tables of the overlays the visibility mirror still sees (so-2): the server-owned
 // battle and dialogue (`MIRRORED_IDS`), which show themselves on server edges. A player frame's
@@ -618,7 +641,7 @@ const overlayHandles: Readonly<Record<MirroredId, (() => void) | undefined>> = {
 // row is the byte-identical `() => <view>?.hide()` of its view.
 const RECONNECT_RESETS: readonly (() => void)[] = [
   () => profileView?.hide(),
-  () => tradeProposeView?.hide(),
+  () => tradeSessionView?.hide(),
   () => shopView?.hide(),
   () => tradeView?.hide(),
   () => pvpView?.hide(),
@@ -1314,27 +1337,38 @@ function openSocial(tab: SocialTab | null): void {
   openSeated(SOCIAL_FRAME, socialOpen, () => showSocialPanel(socialPanel(tab)));
 }
 
-/** Open the trade wizard for the faced player `target` (ctl-10b): the target is pre-selected and
- *  locked, so it opens on Offer. A target that is not a listed trade partner opens nothing. The
- *  frame is seated at the open, so its first paint puts focus on the Offer list before the
- *  overlay's deferred initial focus would land on the (locked) target select. */
-function openPropose(target: string): void {
-  const lists = buildProposeLists(
-    store.allPlayers(),
-    store.ownMonsters(identity),
-    store.speciesMap(),
-    identity,
-  );
-  if (!lists.targets.some((t) => t.identity === target)) return;
-  boundProposeTarget = target;
+/** Open the trade session editor on `sessionId`: bind the session, push the frame and seat its
+ *  adapter, so the editor paints at the open. Nothing opens for a session the player is not in.
+ *  The editor opens above the main menu and above the Social frame (a Trades row opens it; B goes
+ *  back to the row), so neither blocks it; every other overlay does. */
+function openTradeEditor(sessionId: bigint): void {
+  const sessions = ownSessions(store.allTradeSessions(), identity);
+  if (!sessions.some((session) => session.sessionId === sessionId)) return;
+  const beneath: readonly OverlayId[] = ['menuView', ...SOCIAL_PANELS];
+  const blocking = shownOverlays().filter((id) => !beneath.includes(id));
+  if (canOpen('tradeSessionView', blocking).kind !== 'allow') return;
+  held.clear(); // the opening keypress must not leave a held movement key latched
+  boundTradeSessionId = sessionId;
   openSeated(
-    'tradeProposeView',
-    frameOpenOf(() => tradeProposeView),
-    () => {
-      tradeProposeView?.render(lists, target);
-      tradeProposeView?.show();
-    },
+    'tradeSessionView',
+    frameOpenOf(() => tradeSessionView),
+    () => tradeSessionView?.show(),
   );
+  // Opened: on this client the session stops being a waiting request.
+  if (tradeSessionView?.visible === true) openedTradeSessions.add(sessionId);
+}
+
+/** The editor's Close button: its frame closes through the stack; the session stays open. */
+function closeTradeEditor(): void {
+  syncStack();
+  const top = contextStack[contextStack.length - 1];
+  if (top.kind === 'screen' && top.id === 'tradeSessionView') {
+    void dispatch({ kind: 'pop' });
+  } else if (tradeSessionView?.visible === true) {
+    // Under another frame: the view hides and the sync takes its frame off the stack.
+    tradeSessionView.hide();
+    syncStack();
+  }
 }
 
 /** How to Play (uif-14): catalog copy bound in the active locale at each open; seated at the open,
@@ -1400,7 +1434,8 @@ function openControls(): void {
 /** Run what A or a sheet row chose at the world (ctl-10a). Exhaustive, no default arm. Only the
  *  world base asks (`ScreenHost.button`), which keeps it out of a battle and from under a frame
  *  (CTL6C.3). Talk and shop share the talk reducer (greet-then-shop); heal binds the heal frame to
- *  that location and transacts nothing. Trade opens the wizard for the faced player; a challenge
+ *  that location and transacts nothing. Trade opens the editor on the session the two players
+ *  already share, else asks the server for one (the editor opens when its row arrives); a challenge
  *  arrives here only after its Yes-default confirm (ctl-10b). The server re-validates on every send. */
 function runInteract(action: InteractAction): void {
   switch (action.kind) {
@@ -1423,18 +1458,33 @@ function runInteract(action: InteractAction): void {
           ),
       );
       break;
-    case 'trade':
-      if (overlayVerdict('tradeProposeView').kind === 'allow') {
-        held.clear(); // the opening keypress must not leave a held movement key latched
-        openPropose(action.playerIdentity);
+    case 'trade': {
+      const partner = action.playerIdentity;
+      const existing = sessionWith(store.allTradeSessions(), identity, partner);
+      if (existing !== undefined) {
+        openTradeEditor(existing.sessionId);
+        break;
       }
+      // One open per partner at a time: a second press while the first is in flight sends nothing.
+      if (pendingTradeOpen?.partner === partner && !tradeOpenExpired(pendingTradeOpen)) break;
+      held.clear();
+      void dispatch({ kind: 'openTradeSession', partnerIdentity: partner });
       break;
+    }
     case 'challenge':
       // bt-15 (BT15.1): a challenge reaches `dispatch` only as a SIZED Command from the confirm's
       // size row (worldScreen.ts); the bare action runs nothing, so no path sends an unsized one.
       break;
   }
 }
+
+const tradeOpenExpired = (pending: { readonly atMs: number }): boolean =>
+  performance.now() - pending.atMs > TRADE_OPEN_WAIT_MS;
+
+/** Nothing is over the world: no frame and no world sheet. The editor of a face-to-face open the
+ *  player is waiting on opens only then, so it never covers what they opened meanwhile. */
+const worldIsBare = (): boolean =>
+  contextStack[contextStack.length - 1].kind === 'world' && !screenHost.sheetOpen;
 
 /** The request keys the player dismissed with B (ctl-13), and those already announced. A new
  *  session forgets both: a request still waiting after a reconnect shows and is announced again. */
@@ -1446,7 +1496,8 @@ const answeredRequests = new Set<string>();
 
 function noticeInput(): NoticeInput {
   return {
-    offers: store.allTradeOffers(),
+    sessions: store.allTradeSessions(),
+    opened: openedTradeSessions,
     challenges: store.allChallenges(),
     players: store.allPlayers(),
     identity,
@@ -1463,11 +1514,14 @@ function livePending(): readonly RequestNotice[] {
   return pendingRequests(noticeInput()).filter((n) => !answeredRequests.has(n.key));
 }
 
-/** The banner's and the announcement's line for a request; it names no key (a remap keeps it true). */
+/** The banner's and the announcement's line for a request; it names no key (a remap keeps it true).
+ *  A notice standing for several trade requests reads their count. */
 const requestLine = (n: RequestNotice): string =>
-  n.request === 'trade'
-    ? tf('notice.request.trade', { name: n.fromName })
-    : tf('notice.request.challenge', { name: n.fromName });
+  n.request !== 'trade'
+    ? tf('notice.request.challenge', { name: n.fromName })
+    : n.count !== undefined
+      ? tf('notice.request.trades', { count: n.count })
+      : tf('notice.request.trade', { name: n.fromName });
 
 const worldPort: WorldPort = {
   candidates: worldCandidates,
@@ -1479,8 +1533,13 @@ const worldPort: WorldPort = {
     notices: () => buildNotices(noticeInput()),
     pending: livePending,
     dismiss: (key) => {
-      if (key === 'error') dismissErrorToast();
-      else dismissedRequests.add(key);
+      if (key === 'error') {
+        dismissErrorToast();
+        return;
+      }
+      // B on a line standing for several trade requests dismisses all of them.
+      const notice = buildNotices(noticeInput()).find((n) => n.key === key);
+      for (const k of notice === undefined ? [key] : dismissKeys(notice)) dismissedRequests.add(k);
     },
     // View opens Social on the request's tab, through the same verdict as its own hotkey.
     view: (n) => {
@@ -1704,8 +1763,8 @@ const screenCtx: ScreenContext = {
   get socialTab() {
     return boundSocialTab;
   },
-  get proposeTarget() {
-    return boundProposeTarget;
+  get tradeSessionId() {
+    return boundTradeSessionId;
   },
   get monstersTab() {
     return boundMonstersTab;
@@ -1741,10 +1800,6 @@ const SHOP_SELL = actionFeedback({ ok: 'shop-sell-ok', rejected: 'shop-rejected'
 const TRADE_ANSWER = actionFeedback({ ok: 'trade-answered', rejected: 'trade-rejected' });
 const TRADE_SETTLE = actionFeedback({ ok: 'trade-settled', rejected: 'trade-rejected' });
 const TRADE_CANCEL = actionFeedback({ ok: 'trade-cancelled', rejected: 'trade-rejected' });
-const TRADE_PROPOSE = actionFeedback({
-  ok: 'trade-offer-sent',
-  rejected: 'trade-propose-rejected',
-});
 const RENAME = actionFeedback({ ok: 'rename-saved', rejected: 'rename-rejected' });
 const ownPartyIds = (): bigint[] =>
   store
@@ -1752,13 +1807,15 @@ const ownPartyIds = (): bigint[] =>
     .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
     .map((m) => m.monsterId);
 
-/** The own monsters in the player's open trade, either side of it: neither offered to a deploy nor
- *  committed to a challenge (the server refuses a traded monster at both). */
+/** The own monsters a trade locks: either side of the player's legacy offer, and their confirmed
+ *  sides of trade sessions. Neither offered to a deploy nor committed to a challenge (the server
+ *  refuses a locked monster at both). */
 function tradedIds(): ReadonlySet<bigint> {
   const offer = store.ownTradeOffer(identity);
   return new Set<bigint>([
     ...(offer?.initiatorMonsterIds ?? []),
     ...(offer?.counterpartyMonsterIds ?? []),
+    ...lockedSessionMonsterIds(store.allTradeSessions(), identity),
   ]);
 }
 /** bt-15 (BT15.1): the monsters a challenge may commit — party-slotted, conscious and untraded, in
@@ -1790,6 +1847,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
   // The add stays optimistic — on answer, not settle, so the banner never flashes while the answer
   // is in flight; the arm's reject path releases it again (`releaseAnswered`, C5).
   if (command.kind === 'respondTrade') answeredRequests.add(`trade-${command.tradeId}`);
+  if (command.kind === 'cancelTradeSession') answeredRequests.add(`session-${command.sessionId}`);
   if (command.kind === 'acceptChallenge' || command.kind === 'declineChallenge')
     answeredRequests.add(`challenge-${command.challengeId}`);
   switch (command.kind) {
@@ -1962,27 +2020,55 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         showFeedback: TRADE_CANCEL,
       });
     }
-    case 'proposeTrade': {
-      // The model's typed args (no DOM re-derive). The targetIdentity string is wrapped in
-      // `new Identity(...)` (the SDK boundary) INSIDE the call thunk, so a throw while building
-      // the args lands in the core's error arm; the counterparty side is currency-only (RLS —
-      // D2), so its monster/item request fields are always empty.
-      const { args } = command;
-      return performCare({
-        call: () =>
-          liveReducers()?.proposeTrade({
-            counterparty: new Identity(args.targetIdentity),
-            initiatorMonsterIds: [...args.initiatorMonsterIds],
-            initiatorItems: [],
-            initiatorCurrency: args.initiatorCurrency,
-            counterpartyMonsterIds: [],
-            counterpartyItems: [],
-            counterpartyCurrency: args.counterpartyCurrency,
-          }),
-        successMessage: i18nT('tradePropose.feedback.sent'),
-        where: 'propose-trade',
-        showFeedback: TRADE_PROPOSE,
-      });
+    // Trade sessions. No success line: the editor shows the outcome, and a confirm that resolves
+    // has not necessarily confirmed (the server may have reset the marks instead). A rejection is
+    // the server's own reason.
+    case 'openTradeSession': {
+      const partner = command.partnerIdentity;
+      return sendGuarded(
+        'trade-open',
+        () => {
+          const sent = conn?.live()?.reducers.openTradeSession({ partner: new Identity(partner) });
+          // Only a call that was really made waits for a row.
+          if (sent !== undefined) pendingTradeOpen = { partner, atMs: performance.now() };
+          return sent;
+        },
+        () => {
+          if (pendingTradeOpen?.partner === partner) pendingTradeOpen = null;
+          // The two players pressed Trade at once and the other's session won: that is the trade
+          // this player asked for, so its editor opens.
+          const theirs = sessionWith(store.allTradeSessions(), identity, partner);
+          if (theirs !== undefined && worldIsBare()) openTradeEditor(theirs.sessionId);
+        },
+      );
+    }
+    case 'openTradeEditor':
+      openTradeEditor(command.sessionId);
+      return DONE;
+    case 'setTradeOffer': {
+      const { sessionId, monsterIds, items, currency } = command;
+      return sendGuarded('trade-offer', () =>
+        conn?.live()?.reducers.setTradeOffer({
+          sessionId,
+          monsterIds: [...monsterIds],
+          items: items.map((line) => ({ itemId: line.itemId, qty: line.qty })),
+          currency,
+        }),
+      );
+    }
+    case 'confirmTradeSession': {
+      const { sessionId, revision } = command;
+      return sendGuarded('trade-confirm', () =>
+        conn?.live()?.reducers.confirmTradeSession({ sessionId, revision }),
+      );
+    }
+    case 'cancelTradeSession': {
+      const { sessionId } = command;
+      return sendGuarded(
+        'trade-cancel',
+        () => conn?.live()?.reducers.cancelTradeSession({ sessionId }),
+        releaseAnswered(`session-${sessionId}`),
+      );
     }
     case 'challenge': {
       // bt-15 (BT15.1): the committed list is the first `partySize` ELIGIBLE monsters (party-slotted,
@@ -2441,8 +2527,8 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * the rejection route: reduceErrorMessage passes SenderError reasons through and
  * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
  * (movement — silent prediction repair in sendIntent, M2 §3), the join (conn.join() — its
- * failures surface from connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell, trade,
- * rename, trade-propose — routed through performCare in main(), A6).
+ * failures surface from connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell, the
+ * legacy trade answers, rename — routed through performCare in main(), A6).
  * ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
  * in-flight lock `return` it so the lock lives exactly until the call settles.
  * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
@@ -2487,6 +2573,10 @@ const SEND_REJECT_KIND = {
   'cancel-queue': 'battle-command-rejected',
   forfeit: 'battle-command-rejected',
   'deploy-units': 'battle-command-rejected',
+  'trade-open': 'trade-rejected',
+  'trade-offer': 'trade-rejected',
+  'trade-confirm': 'trade-rejected',
+  'trade-cancel': 'trade-rejected',
 } as const satisfies Record<string, SinkKind>;
 type SendWhere = keyof typeof SEND_REJECT_KIND;
 
@@ -3217,7 +3307,7 @@ const handleKeyDown = (e: KeyboardEvent): void => {
   }
 };
 // Escape is routed in the CAPTURE phase, so a view's own stopPropagation can no longer trap it
-// (B5: Escape was dead inside rename and trade-propose). Every other key keeps the bubble phase,
+// (B5: Escape was dead inside a view that shields its fields). Every other key keeps the bubble phase,
 // where those views' stopPropagation still shields their fields from the accelerator keys.
 window.addEventListener(
   'keydown',
@@ -3935,6 +4025,52 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- trade sessions ---------------------------------------------
+// A face-to-face Trade's editor opens when its row arrives; a session that left `my_trade_session`
+// (executed, cancelled by either side, auto-cancelled, reaped) closes its editor and is announced
+// once. Nothing here opens a frame for an INCOMING session. MUST be total (never throw).
+store.onBatchApplied(() => {
+  if (identity === '') return;
+  try {
+    // A dropped link empties the store before the reconnect resets this state: nothing is read as
+    // closed across it, and the next baseline is the first batch of the new connection.
+    if (conn === undefined || conn.linkFrozen()) {
+      knownSessionIds = null;
+      return;
+    }
+    const sessions = ownSessions(store.allTradeSessions(), identity);
+    if (pendingTradeOpen !== null) {
+      const opened = openedSessionWith(sessions, identity, pendingTradeOpen.partner);
+      if (opened !== undefined || tradeOpenExpired(pendingTradeOpen)) {
+        pendingTradeOpen = null;
+        if (opened !== undefined && worldIsBare()) openTradeEditor(opened.sessionId);
+      }
+    }
+    const closed =
+      knownSessionIds === null ? [] : closedSessionIds(knownSessionIds, sessions, identity);
+    knownSessionIds = new Set(sessions.map((session) => session.sessionId));
+    if (closed.length === 0) return;
+    for (const id of closed) {
+      const key = `session-${id}`;
+      openedTradeSessions.delete(id);
+      dismissedRequests.delete(key);
+      announcedRequests.delete(key);
+      answeredRequests.delete(key);
+    }
+    if (boundTradeSessionId !== null && closed.includes(boundTradeSessionId)) {
+      boundTradeSessionId = null;
+      // The frame goes through the stack: the view hides and the sync pops it.
+      if (tradeSessionView?.visible === true) {
+        tradeSessionView.hide();
+        syncStack();
+      }
+    }
+    route('trade-cancelled', i18nT('tradeSession.notice.closed'));
+  } catch (err) {
+    console.error('[trade-session] batch listener error', err);
+  }
+});
+
 // --- PvP challenge panel batch listener -----------------------
 // Refreshes the Challenges panel while it shows (status/list changes). An incoming challenge opens
 // nothing (ctl-13): it is a notice — the banner, the badges and Y. MUST be total (never throw).
@@ -3959,10 +4095,19 @@ store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const pending = pendingRequests(noticeInput());
-    for (const n of pending) {
-      if (announcedRequests.has(n.key)) continue;
-      announcedRequests.add(n.key);
-      announceNow(requestLine(n));
+    const arrived = pending.filter((n) => !announcedRequests.has(n.key));
+    for (const n of arrived) announcedRequests.add(n.key);
+    // One line for the batch. The banner's own when it stands for a request that just arrived
+    // (several new trade requests read as their count); else the first new request's line, so an
+    // older request holding the banner never hides a new one from the screen reader.
+    const first = arrived[0];
+    if (first !== undefined) {
+      const banner = buildNotices(noticeInput()).find(
+        (n): n is RequestNotice => n.kind === 'request',
+      );
+      const covers =
+        banner !== undefined && arrived.some((n) => dismissKeys(banner).includes(n.key));
+      announceNow(requestLine(covers && banner !== undefined ? banner : first));
     }
     const badged = pending.some((n) => !answeredRequests.has(n.key));
     if (badged !== menuBadged) {
@@ -4160,6 +4305,17 @@ function snapshot() {
 // after Vite's define-replacement of import.meta.env.DEV (NOT Rollup tree-shaking): a
 // `vite build --minify false` bundle would retain the dead branch. Server-side identity
 // authz still prevents privilege escalation (callers can only act as themselves).
+/** One side of a session as the hook hands it across the evaluate boundary. */
+interface MrSessionOffer {
+  monsterIds: string[];
+  items: { itemId: number; qty: number }[];
+  currency: string;
+}
+const mrSessionOffer = (offer: StoreTradeSessionOffer): MrSessionOffer => ({
+  monsterIds: offer.monsterIds.map((id) => id.toString()),
+  items: offer.items.map((line) => ({ itemId: line.itemId, qty: line.qty })),
+  currency: offer.currency.toString(),
+});
 const mrTradeHook = {
   proposeTrade(args: {
     counterparty: string;
@@ -4204,6 +4360,51 @@ const mrTradeHook = {
   },
   allPlayers(): Array<{ identity: string; name: string }> {
     return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
+  },
+  // Trade sessions. Ids, revisions and coin amounts cross as decimal strings.
+  openTradeSession(partner: string): Promise<void> | undefined {
+    return conn?.live()?.reducers.openTradeSession({ partner: new Identity(partner) });
+  },
+  setTradeOffer(
+    sessionId: string,
+    offer: { monsterIds: string[]; items: { itemId: number; qty: number }[]; currency: string },
+  ): Promise<void> | undefined {
+    return conn?.live()?.reducers.setTradeOffer({
+      sessionId: BigInt(sessionId),
+      monsterIds: offer.monsterIds.map(BigInt),
+      items: offer.items,
+      currency: BigInt(offer.currency),
+    });
+  },
+  confirmTradeSession(sessionId: string, revision: string): Promise<void> | undefined {
+    return conn?.live()?.reducers.confirmTradeSession({
+      sessionId: BigInt(sessionId),
+      revision: BigInt(revision),
+    });
+  },
+  cancelTradeSession(sessionId: string): Promise<void> | undefined {
+    return conn?.live()?.reducers.cancelTradeSession({ sessionId: BigInt(sessionId) });
+  },
+  mySessions(): Array<{
+    sessionId: string;
+    opener: string;
+    partner: string;
+    revision: string;
+    openerConfirmed: boolean;
+    partnerConfirmed: boolean;
+    openerOffer: MrSessionOffer;
+    partnerOffer: MrSessionOffer;
+  }> {
+    return ownSessions(store.allTradeSessions(), identity).map((session) => ({
+      sessionId: session.sessionId.toString(),
+      opener: session.opener,
+      partner: session.partner,
+      revision: session.revision.toString(),
+      openerConfirmed: session.openerConfirmed,
+      partnerConfirmed: session.partnerConfirmed,
+      openerOffer: mrSessionOffer(session.openerOffer),
+      partnerOffer: mrSessionOffer(session.partnerOffer),
+    }));
   },
 };
 
@@ -4585,7 +4786,7 @@ async function main(): Promise<void> {
     { PvpView: PvpViewClass },
     { LeaderboardView: LeaderboardViewClass },
     { RenameView: RenameViewClass },
-    { TradeProposeView: TradeProposeViewClass },
+    { TradeSessionView: TradeSessionViewClass },
     { HelpView: HelpViewClass },
     { MenuView: MenuViewClass },
     { ClaimView: ClaimViewClass },
@@ -4605,7 +4806,7 @@ async function main(): Promise<void> {
     import('./ui/pvpView'),
     import('./ui/leaderboardView'),
     import('./ui/renameView'),
-    import('./ui/tradeProposeView'),
+    import('./ui/tradeSessionView'),
     import('./ui/helpView'),
     import('./ui/menuView'),
     import('./ui/claimView'),
@@ -4640,7 +4841,7 @@ async function main(): Promise<void> {
     dialogueView = new DialogueViewClass();
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
-    // shop and trade DOM shells: buy/sell, the trade responses, rename and trade-propose all run
+    // shop and trade DOM shells: buy/sell, the legacy trade responses and rename all run
     // through the performCare core (frozen gate, await of the SDK promise, exactly one feedback
     // line) inside `dispatch`.
     shopView = new ShopViewClass({
@@ -4715,9 +4916,8 @@ async function main(): Promise<void> {
         }),
     };
     sessionView = new SessionViewClass(sessionHandlers);
-    // The rename form (Profile's Name section) and the trade-PROPOSE overlay: their own Enter
-    // (and submit click) commits through `dispatch`; the view's #pending lock is reset by its own
-    // .finally().
+    // The rename form (Profile's Name section): its own Enter (and submit click) commits through
+    // `dispatch`; the view's #pending lock is reset by its own .finally().
     renameView = new RenameViewClass({
       onSubmit: (name) => dispatch({ kind: 'setProfileName', name }),
       bindings: () => bindings,
@@ -4747,9 +4947,11 @@ async function main(): Promise<void> {
     };
     controlsSavedLine = savedLine;
     controlsView = new ControlsViewClass(controlsHandlers);
-    tradeProposeView = new TradeProposeViewClass({
-      maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,
-      onSubmit: (args: TradeProposeArgs) => dispatch({ kind: 'proposeTrade', args }),
+    // The session editor issues nothing itself: its screen's commands run through `dispatch`, and
+    // its Close button closes the frame as B does.
+    tradeSessionView = new TradeSessionViewClass({
+      announce: (text) => announceNow(text),
+      onClose: closeTradeEditor,
     });
   }
 
@@ -4900,6 +5102,7 @@ async function main(): Promise<void> {
       identity = id;
       // A screen opened before the join must not be remembered into this identity's session.
       screenHost.forget();
+      resetTradeSessionState();
       dismissedRequests.clear();
       announcedRequests.clear();
       answeredRequests.clear();
@@ -4975,7 +5178,7 @@ async function main(): Promise<void> {
       // The requested Social tab and what the screens remember go with the session too.
       boundSocialTab = null;
       boundMonstersTab = null;
-      boundProposeTarget = null;
+      resetTradeSessionState();
       screenHost.forget();
       dismissedRequests.clear();
       announcedRequests.clear();

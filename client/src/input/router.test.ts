@@ -1718,7 +1718,8 @@ const PLAYER_FRAMES: readonly FrameId[] = [
   'pvpView',
   'leaderboardView',
   'profileView',
-  'tradeProposeView',
+  // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`, same slot.
+  'tradeSessionView',
   'helpView',
   'menuView',
   'controlsView',

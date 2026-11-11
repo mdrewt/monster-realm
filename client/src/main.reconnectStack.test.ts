@@ -918,10 +918,13 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
   // message is a toast), so their `stale` entries are gone: there is no view line for hide() to clear.
   // The reset itself (the `hide()` call-count delta) is still pinned for all of them. Was: each of the
   // five carried a `stale` id that was dirtied before the reconnect and read back '' after it.
+  // ts-3 (named intentional change, the Strangler rename): the wizard's row becomes the session
+  // editor's in the same slot (`tradeProposeView` -> `tradeSessionView`, ui/tradeSessionView.ts):
+  // the editor is reset on every reconnect as the wizard was. Was: TradeProposeView.
   const PROTECTED_VIEWS: readonly ProtectedView[] = [
     {
-      id: 'tradeProposeView',
-      load: async () => (await import('./ui/tradeProposeView')).TradeProposeView,
+      id: 'tradeSessionView',
+      load: async () => (await import('./ui/tradeSessionView')).TradeSessionView,
     },
     {
       id: 'renameView',

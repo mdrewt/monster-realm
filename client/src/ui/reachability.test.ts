@@ -1984,6 +1984,8 @@ function qf8RenderSocialSheet(): Qf8Rendered {
             tradeCursor: false,
             sheet: { actions: ['accept', 'decline'], active: 'accept' },
             confirm: null,
+            sessions: [],
+            sessionCursor: null,
           });
           pvp.paintCursor('incoming');
         },
@@ -3060,6 +3062,8 @@ function qf8SocialHarness(
   const ctx = {
     store: {
       allTradeOffers: () => offers.map((offer) => ({ ...offer })),
+      // ts-3: the Social frame also reads the viewer's trade sessions (none in these cases).
+      allTradeSessions: () => [],
       allChallenges: () => challenges.map((challenge) => ({ ...challenge })),
       allPlayers: () => [],
       characters: () => [].values(),

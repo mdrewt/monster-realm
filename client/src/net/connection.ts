@@ -78,6 +78,7 @@ import {
   type SdkSpeciesRowRow,
   type SdkTacticalBattleRow,
   type SdkTradeOfferRow,
+  type SdkTradeSessionRow,
   shopItemRowToStore,
   shopRowToStore,
   shouldRemoveOnViewDelete,
@@ -85,6 +86,7 @@ import {
   speciesRowToStore,
   tacticalBattleRowToStore,
   tradeOfferRowToStore,
+  tradeSessionRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
 import { isOwnZoneChange } from './warpDetect';
@@ -317,6 +319,16 @@ export function connect(opts: ConnectionOptions): Connection {
         store.reconcileFormationFromView(
           [...live.db.myFormation.iter()].map((row) =>
             formationRowToStore(row as unknown as SdkFormationRow),
+          ),
+        ),
+      );
+      // `my_trade_session` — the participant-scoped Vec view over the private trade_session table.
+      // PK-less, so every change is an unordered insert+delete pair: rebuild from the cache
+      // (AUTHORITATIVE — a session absent from it has closed).
+      guarded(() =>
+        store.reconcileTradeSessionsFromView(
+          [...live.db.myTradeSession.iter()].map((row) =>
+            tradeSessionRowToStore(row as unknown as SdkTradeSessionRow),
           ),
         ),
       );
@@ -828,6 +840,9 @@ export function connect(opts: ConnectionOptions): Connection {
     conn.db.myBattleEvents.onDelete(() => batcher.schedule());
     conn.db.myFormation.onInsert(() => batcher.schedule());
     conn.db.myFormation.onDelete(() => batcher.schedule());
+    // `my_trade_session`: the same PK-less shape — no onUpdate, no per-row store write.
+    conn.db.myTradeSession.onInsert(() => batcher.schedule());
+    conn.db.myTradeSession.onDelete(() => batcher.schedule());
   }
 
   /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
@@ -1010,6 +1025,10 @@ export function connect(opts: ConnectionOptions): Connection {
             'SELECT * FROM my_battle_clock',
             'SELECT * FROM my_battle_events',
             'SELECT * FROM my_formation',
+            // my_trade_session is the participant-scoped VIEW over the PRIVATE trade_session
+            // table: each client receives only the sessions it is in. Subscribing `trade_session`
+            // itself would error the whole batch.
+            'SELECT * FROM my_trade_session',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

@@ -15,7 +15,7 @@
  *  added `battle.*` and `pvp.*` as it migrated the 1v1 battle view and pvpView.ts (bt-17 kept only the
  *  four `battle.*` keys the tactical frame reads: `battle.title`, `battle.outcome.*`); S4 added
  *  `evolution.*`, `raising.*`, `box.*`, `trade.*` and `shop.*` for the five mid-density views;
- *  S5 added the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
+ *  S5 added the tail — `dialogue.*`, `claim.*`, `leaderboard.*`,
  *  `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — and gave three
  *  `chrome.*` keys their first call sites; S6 wires boot; 21r-b2 grew `claim.*` and `privacy.*`
  *  with the claim overlay's and the privacy surface's own copy (claimModel.ts, privacyBanner.ts).
@@ -52,6 +52,7 @@ export type MessageId =
   | 'notice.sheet.view'
   | 'notice.request.trade'
   | 'notice.request.challenge'
+  | 'notice.request.trades'
   // interact.* / key.* : the world interaction chip and picker (main.ts, ctl-10a).
   | 'interact.chip'
   | 'interact.choose'
@@ -175,7 +176,6 @@ export type MessageId =
   | 'help.entry.ranked.def'
   | 'help.detail.related'
   | 'chrome.rename.submit'
-  | 'chrome.tradePropose.submit'
   | 'chrome.status.exportBlocked'
   | 'chrome.status.disconnected'
   | 'chrome.status.contentStale'
@@ -247,7 +247,7 @@ export type MessageId =
   | 'box.feedback.fed'
   // qf-3: the disabled Care row's remaining-cooldown hint.
   | 'box.sheet.careCooldown'
-  // Trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
+  // Trade.* : the Social Trades panel (tradeView.ts); `tradeSession.*` is the session editor.
   | 'trade.status.none'
   | 'trade.side.offer'
   | 'trade.side.receive'
@@ -258,6 +258,31 @@ export type MessageId =
   | 'trade.feedback.rejected'
   | 'trade.feedback.completed'
   | 'trade.feedback.cancelled'
+  | 'trade.status.open'
+  | 'trade.row.title'
+  | 'trade.row.marks'
+  // tradeSession.* : the trade session editor (tradeSessionView.ts); the closed notice is main.ts's.
+  | 'tradeSession.title'
+  | 'tradeSession.side.mine'
+  | 'tradeSession.side.theirs'
+  | 'tradeSession.mark.confirmed'
+  | 'tradeSession.mark.unconfirmed'
+  | 'tradeSession.row.blocked'
+  | 'tradeSession.reason.fainted'
+  | 'tradeSession.reason.inAnotherTrade'
+  | 'tradeSession.reason.inBattle'
+  | 'tradeSession.reason.limit'
+  | 'tradeSession.reason.unsent'
+  | 'tradeSession.reason.nothingToSend'
+  | 'tradeSession.row.item'
+  | 'tradeSession.row.coins'
+  | 'tradeSession.row.apply'
+  | 'tradeSession.row.confirm'
+  | 'tradeSession.row.cancel'
+  | 'tradeSession.prompt.confirm'
+  | 'tradeSession.prompt.cancel'
+  | 'tradeSession.notice.changed'
+  | 'tradeSession.notice.closed'
   // Shop.* : the shop overlay (shopView.ts).
   | 'shop.title'
   | 'shop.noShop'
@@ -301,19 +326,6 @@ export type MessageId =
   | 'social.confirm.declineTrade'
   | 'social.confirm.confirmTrade'
   | 'social.confirm.declineChallenge'
-  // tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
-  // submit label is the S1-seeded `chrome.tradePropose.submit`.
-  | 'tradePropose.target.placeholder'
-  | 'tradePropose.feedback.sent'
-  | 'tradePropose.step.target'
-  | 'tradePropose.step.offer'
-  | 'tradePropose.step.coins'
-  | 'tradePropose.step.ask'
-  | 'tradePropose.step.review'
-  | 'tradePropose.review.prompt'
-  | 'tradePropose.review.incomplete'
-  | 'tradePropose.review.yes'
-  | 'tradePropose.review.no'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay — its buttons (claimView.ts) and, since 21r-b2, its
@@ -360,8 +372,6 @@ export type MessageId =
   // ctl-8a: the heal frame's question and the reason it is disabled with no bound healer.
   | 'heal.prompt.question'
   | 'heal.prompt.unavailable'
-  // ctl-8e: the trade-propose wizard's Review summary (tradeProposeView.ts).
-  | 'tradePropose.review.summary'
   // Privacy.* : the privacy surface — its heading and buttons (privacyView.ts) and, since
   // 21r-b2, its copy layer (privacyBanner.ts): the HUD countdown, status/notice lines, export
   // status lines and control labels.
@@ -608,6 +618,7 @@ export interface MessageParams {
   readonly 'interact.chip': { readonly key: string; readonly verb: string; readonly name: string };
   readonly 'notice.request.trade': { readonly name: string };
   readonly 'notice.request.challenge': { readonly name: string };
+  readonly 'notice.request.trades': { readonly count: number };
   readonly 'interact.choose': { readonly key: string };
   readonly 'interact.entry': { readonly verb: string; readonly name: string };
   readonly 'interact.confirm.challenge': { readonly name: string };
@@ -696,6 +707,16 @@ export interface MessageParams {
     readonly max: number;
   };
   readonly 'trade.side.currency': { readonly amount: bigint };
+  readonly 'trade.row.title': { readonly name: string };
+  readonly 'trade.row.marks': { readonly mine: string; readonly theirs: string };
+  readonly 'tradeSession.title': { readonly name: string };
+  readonly 'tradeSession.row.blocked': { readonly label: string; readonly reason: string };
+  readonly 'tradeSession.row.item': {
+    readonly name: string;
+    readonly qty: number;
+    readonly held: number;
+  };
+  readonly 'tradeSession.row.coins': { readonly amount: bigint; readonly balance: bigint };
   readonly 'shop.buy.row': { readonly name: string; readonly price: bigint };
   readonly 'shop.sell.row': {
     readonly name: string;
@@ -740,12 +761,6 @@ export interface MessageParams {
   readonly 'questLog.entry': { readonly name: string; readonly step: number };
   readonly 'heal.location': { readonly cost: string };
   readonly 'heal.prompt.question': { readonly cost: string };
-  readonly 'tradePropose.review.summary': {
-    readonly target: string;
-    readonly monsters: number;
-    readonly offer: string;
-    readonly ask: string;
-  };
   readonly 'evolutionNotice.species.fallback': { readonly id: number };
   readonly 'evolutionNotice.reveal.nicknamed': {
     readonly nickname: string;

@@ -81,6 +81,7 @@ import type {
   StoreSpeciesRow,
   StoreTacticalBattle,
   StoreTradeOffer,
+  StoreTradeSession,
 } from './net/store';
 // bt-12: the results cap the auto-advance waits for (the presentation constitution's, never a
 // literal 3000 here either).
@@ -224,9 +225,25 @@ vi.mock('./ui/privacyView', () => ({ PrivacyView: H.makeStub('PrivacyView') }));
 vi.mock('./ui/renameView', () => ({
   RenameView: H.withoutShowFeedback(H.makeStub('RenameView')),
 }));
-vi.mock('./ui/tradeProposeView', () => ({
-  TradeProposeView: H.withoutShowFeedback(H.makeStub('TradeProposeView')),
-}));
+// ts-3 (named intentional change, the Strangler): the `./ui/tradeProposeView` stand-in is removed
+// with the wizard module. The session editor (`ui/tradeSessionView.ts`) is NOT replaced: the ts-3
+// cases below read what it paints into the shell's `#tradepropose-overlay` root.
+
+// ts-3: every toast `show` main.ts steps, by text (a pass-through spy over the real pure step), so a
+// case can count how many toasts a batch raised: the live region dedupes a repeated text and the
+// toast root is one node, so neither can tell one show from two.
+const TS3 = vi.hoisted(() => ({ toastShows: [] as string[] }));
+vi.mock('./ui/toast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/toast')>();
+  return {
+    ...actual,
+    toastStep: (...a: Parameters<typeof actual.toastStep>) => {
+      const e = a[1];
+      if (e.kind === 'show') TS3.toastShows.push(e.text);
+      return actual.toastStep(...a);
+    },
+  };
+});
 // uif-16b (named intentional change): main.ts builds ONE ProfileView over the three section views
 // (rename, claim, privacy). Over their stand-ins the real frame would read members they lack, so
 // it is a recording stand-in too: its constructor's argument is the sections record.
@@ -611,7 +628,6 @@ function seedDispatchFixture(): void {
  *  battle case, so both drive the same callbacks with the same arguments. */
 function dispatchRows(): readonly Row[] {
   const party = [51n, 50n];
-  const other = new Identity(OTHER_IDENTITY);
   return [
     {
       label: 'box setNickname',
@@ -762,35 +778,10 @@ function dispatchRows(): readonly Row[] {
       kind: 'setProfileName',
       atBattle: 'refuse',
     },
-    {
-      label: 'trade-propose submit',
-      view: 'TradeProposeView',
-      handler: 'onSubmit',
-      args: [
-        {
-          targetIdentity: OTHER_IDENTITY,
-          initiatorMonsterIds: [51n, 52n],
-          initiatorCurrency: 300n,
-          counterpartyCurrency: 700n,
-        },
-      ],
-      expected: [
-        {
-          name: 'proposeTrade',
-          args: {
-            counterparty: other,
-            initiatorMonsterIds: [51n, 52n],
-            initiatorItems: [],
-            initiatorCurrency: 300n,
-            counterpartyMonsterIds: [],
-            counterpartyItems: [],
-            counterpartyCurrency: 700n,
-          },
-        },
-      ],
-      kind: 'proposeTrade',
-      atBattle: 'refuse',
-    },
+    // ts-3 (named intentional change, the Strangler): the 'trade-propose submit' row is removed
+    // with the wizard and its `proposeTrade` Command (retired: wizard deleted by spec §ts-3
+    // Strangler). The session arms have no view constructor callback: the battle case below names
+    // them in `noViewCallback`, and the ts-3.1 / ts-3.3 cases at the end of this file drive them.
   ];
 }
 
@@ -924,10 +915,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       H.handlers.BoxView?.partySlotNone,
       'the box sentinel is the party_slot_none export',
     ).toBe(255);
-    expect(
-      H.handlers.TradeProposeView?.maxMonstersPerSide,
-      'the per-side cap is the max_trade_monsters_per_side export',
-    ).toBe(37);
+    // ts-3 (named intentional change): the TradeProposeView `maxMonstersPerSide` handler pin is
+    // removed with the wizard (retired: wizard deleted by spec §ts-3 Strangler). The per-side cap
+    // reaches the session editor as `TradeSessionInput.maxMonstersPerSide`
+    // (ui/tradeSessionModel.test.ts owns it).
   });
 
   it('CTL10B-2-BOOT-PVP-NO-CALLBACK: the PvpView constructor is handed no onChallenge callback (a challenge starts only face to face), while its respond callbacks (Accept, Decline, Cancel) are all still wired', async () => {
@@ -1047,13 +1038,18 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     }
   });
 
-  it('C5: an answer the server REJECTS releases its optimistic answeredRequests key, so the still-pending request banner returns — the performCare path (trade reject) and the sendGuarded path (challenge decline)', async () => {
+  it('C5: an answer the server REJECTS releases its optimistic answeredRequests key, so the still-pending request banner returns — the session cancel (cancelTradeSession, ts-3) and the challenge decline, both through sendGuarded', async () => {
     // WRONG IMPL KILLED: a rejection swallowed inside performCare's feedback arm or sendGuarded's
     // catch (the key stays latched although the server row is unchanged and still Pending, so the
     // banner never returns and the request can never be answered again); a release fired on the
     // SEND instead of the settle (the banner would flash back while the answer is in flight); and
     // a "fix" that drops the optimistic add (the banner would stay up until the settle on every
     // answer, rejected or not).
+    // ts-3 (named intentional change, C): a legacy `trade_offer` raises no notice any more, so the
+    // trade half answers an incoming SESSION: its decline is `cancelTradeSession`, issued by a
+    // stand-in menu adapter on LB (the world sheet's Decline issues the same Command; the
+    // notices suite drives that surface), and its key `session-11` is the optimistic one. Was: a
+    // legacy offer answered by TradeView.onReject (respondTrade, the performCare path).
     await bootReady();
     opts.store.upsertPlayer({
       identity: OTHER_IDENTITY,
@@ -1062,55 +1058,48 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       online: true,
       lastInputSeq: 0n,
     });
-    opts.store.upsertTradeOffer({
-      tradeId: 11n,
-      initiator: OTHER_IDENTITY,
-      counterparty: H.identity,
-      initiatorMonsterIds: [],
-      initiatorItems: [],
-      initiatorCurrency: 0n,
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
-      counterpartyCurrency: 0n,
-      initiatorCards: [],
-      counterpartyCards: [],
-      status: 'Pending',
-      createdAtMs: 1_000n,
-    });
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(11n, OTHER_IDENTITY, H.identity, { createdAtMs: 1_000n }),
+    ]);
     server(1000);
     frame(1100);
     const banner = document.getElementById('notice-banner');
     if (banner === null) throw new Error('#notice-banner is not in the document');
-    expect(banner.hidden, 'precondition: the incoming trade is announced by the banner').toBe(
+    expect(banner.hidden, 'precondition: the incoming session is announced by the banner').toBe(
       false,
     );
 
-    // --- the performCare path: the trade reject settles REJECTED ------------------------------
+    // --- the sendGuarded path: the session cancel settles REJECTED ----------------------------
+    const issue: { command: unknown } = { command: { kind: 'cancelTradeSession', sessionId: 11n } };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1110);
     H.calls = [];
     let rejectTrade: (err: unknown) => void = () => {};
     H.gate = new Promise<void>((_resolve, reject) => {
       rejectTrade = reject;
     });
-    const tradeAnswer = handlerOf('TradeView', 'onReject')(11n) as Promise<void>;
+    await pageUp(1150);
+    press('Escape', 1160);
+    expect(stackNow(), 'precondition: Start closed the menu').toEqual([{ kind: 'world' }]);
     frame(1200);
     expect(
       banner.hidden,
-      'while the answer is in flight the banner stays away (the optimistic add)',
+      'while the cancel is in flight the banner stays away (the optimistic add)',
     ).toBe(true);
-    rejectTrade(new Error('trade answer rejected by the server'));
-    await tradeAnswer; // dispatch's promise resolves once the rejection is reported
+    rejectTrade(uif4SenderError('session cancel rejected by the server'));
+    await flush();
     H.gate = null;
-    expect(H.calls, 'control: the reject really was sent').toEqual([
-      { name: 'respondTrade', args: { tradeId: 11n, accepted: false } },
+    expect(H.calls, 'control: the cancel really was sent').toEqual([
+      { name: 'cancelTradeSession', args: { sessionId: 11n } },
     ]);
     frame(1300);
     expect(
       banner.hidden,
-      'a rejected trade answer releases the key: the still-pending request shows again',
+      'a rejected cancel releases the key: the still-waiting request shows again',
     ).toBe(false);
 
     // --- the sendGuarded path: the challenge decline settles REJECTED -------------------------
-    opts.store.removeTradeOffer(11n);
+    opts.store.reconcileTradeSessionsFromView([]);
     opts.store.upsertChallenge({
       challengeId: 21n,
       challenger: OTHER_IDENTITY,
@@ -1163,6 +1152,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     server(1000);
     const line = (key: string): string => i18n.t(key as never);
     // bt-17: 'BattleView' leaves this list with the 1v1 view (main.ts builds no such view).
+    // ts-3 (named intentional change): 'TradeProposeView' leaves this list and its 'onSubmit' row
+    // leaves `cases` with the wizard (retired: wizard deleted by spec §ts-3 Strangler; the session
+    // arms have NO success line — the editor is the feedback — and their rejection toast is the
+    // UIF4.5 site rows' openTradeSession / setTradeOffer / confirmTradeSession / cancelTradeSession).
     const all = [
       'BoxView',
       'RaisingView',
@@ -1171,7 +1164,6 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       'TradeView',
       'PvpView',
       'RenameView',
-      'TradeProposeView',
     ];
     // The fourth field is the exact line the action must paint.
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[], string]> = [
@@ -1182,19 +1174,6 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       ['ShopView', 'onBuy', [11, 22], enBoughtCount(1)],
       ['ShopView', 'onSell', [23], enSoldCount(1)],
       ['RenameView', 'onSubmit', ['Zed'], line('chrome.rename.updated')],
-      [
-        'TradeProposeView',
-        'onSubmit',
-        [
-          {
-            targetIdentity: OTHER_IDENTITY,
-            initiatorMonsterIds: [51n],
-            initiatorCurrency: 3n,
-            counterpartyCurrency: 4n,
-          },
-        ],
-        line('tradePropose.feedback.sent'),
-      ],
       // qf-9 (named intentional change): the ['RaisingView', 'onCare', [72n], 'Cared!'] row is
       // removed with the callback. RaisingView stays in `all` below as a control: no action may
       // paint on it.
@@ -1593,6 +1572,22 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
         'no view constructor callback: a dialogue screen adapter and the document-level ' +
         '[data-shop-id] click delegation dispatch it, and CTL7D-5-BOOT-BATTLE-REFUSED in this ' +
         'file refuses both at a battle base',
+      // ts-3 (named intentional change): `proposeTrade` leaves the policy with the wizard; the five
+      // session kinds join it, all 'refuse', none with a view constructor callback.
+      openTradeSession:
+        'no view constructor callback since ts-3: runInteract`s face-to-face Trade dispatches it ' +
+        '(ts-3.1 in this file), and ui/battlePolicy.test.ts pins its refusal',
+      openTradeEditor:
+        'no view constructor callback and no reducer: the world sheet`s Accept and a Social ' +
+        'session row dispatch it (main.notices.test.ts ts-3.5)',
+      setTradeOffer:
+        'no view constructor callback: the session editor`s screen adapter dispatches it',
+      confirmTradeSession:
+        'no view constructor callback: the session editor`s prompt Yes dispatches it (ts-3.3 in ' +
+        'this file)',
+      cancelTradeSession:
+        'no view constructor callback: the editor`s Cancel and the world sheet`s Decline dispatch ' +
+        'it (main.notices.test.ts ts-3.5)',
     };
     const policyRefused = Object.entries(COMMAND_BATTLE_POLICY)
       .filter(([, verdict]) => verdict === 'refuse')
@@ -1907,6 +1902,47 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
         await pageUp(1100);
       },
     },
+    // ts-3 (E): the four session sends go through sendGuarded; a rejection is a `trade-rejected`
+    // toast carrying the server's reason (SEND_REJECT_KIND trade-open / trade-offer /
+    // trade-confirm / trade-cancel).
+    {
+      label: 'openTradeSession',
+      reducer: 'openTradeSession',
+      run: async () => {
+        menuIssuing({ kind: 'openTradeSession', partnerIdentity: OTHER_IDENTITY });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'setTradeOffer',
+      reducer: 'setTradeOffer',
+      run: async () => {
+        menuIssuing({
+          kind: 'setTradeOffer',
+          sessionId: 41n,
+          monsterIds: [51n],
+          items: [],
+          currency: 5n,
+        });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'confirmTradeSession',
+      reducer: 'confirmTradeSession',
+      run: async () => {
+        menuIssuing({ kind: 'confirmTradeSession', sessionId: 41n, revision: 2n });
+        await pageUp(1100);
+      },
+    },
+    {
+      label: 'cancelTradeSession',
+      reducer: 'cancelTradeSession',
+      run: async () => {
+        menuIssuing({ kind: 'cancelTradeSession', sessionId: 41n });
+        await pageUp(1100);
+      },
+    },
     // ackEvolutionNotices is UNREACHABLE here, named and not skipped silently: its only caller is
     // the evolution-notice banner's acknowledge control, which needs a pending_evolution_notice row
     // and the banner's own click path, neither of which this harness's stand-in views expose.
@@ -1988,7 +2024,9 @@ describe('main.ts per-view settles are announced through the live region once (r
 }, () => {
   afterEach(teardownBoot);
 
-  it('UIF4B.4 each of the eight shop, trade, rename and trade-propose settles reaches #a11y-live exactly once, with its own text', async () => {
+  it('UIF4B.4 each of the seven shop, trade and rename settles reaches #a11y-live exactly once, with its own text', async () => {
+    // ts-3 (named intentional change): the trade-propose row leaves with the wizard (retired: wizard
+    // deleted by spec §ts-3 Strangler; the session arms raise no success toast). Eight -> seven.
     // WRONG IMPL KILLED: a toast painted but never queued for the live region (a screen-reader user
     // hears nothing), a settle announced twice (the toast AND a view line, or a repeated queue), a
     // settle announced as a different text than the one shown, and one that paints the live node
@@ -1997,12 +2035,6 @@ describe('main.ts per-view settles are announced through the live region once (r
     server(1000);
     const live = uif4WatchLive();
     const line = (key: string): string => i18n.t(key as never);
-    const proposeArgs = {
-      targetIdentity: OTHER_IDENTITY,
-      initiatorMonsterIds: [51n],
-      initiatorCurrency: 3n,
-      counterpartyCurrency: 4n,
-    };
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[], string]> = [
       ['TradeView', 'onAccept', [81n], line('trade.feedback.accepted')],
       ['TradeView', 'onReject', [82n], line('trade.feedback.rejected')],
@@ -2011,9 +2043,8 @@ describe('main.ts per-view settles are announced through the live region once (r
       ['ShopView', 'onBuy', [11, 22], enBoughtCount(1)],
       ['ShopView', 'onSell', [23], enSoldCount(1)],
       ['RenameView', 'onSubmit', ['Zed'], line('chrome.rename.updated')],
-      ['TradeProposeView', 'onSubmit', [proposeArgs], line('tradePropose.feedback.sent')],
     ];
-    expect(new Set(cases.map((c) => c[3])).size, 'ANTI-VACUITY: eight distinct texts').toBe(8);
+    expect(new Set(cases.map((c) => c[3])).size, 'ANTI-VACUITY: seven distinct texts').toBe(7);
     let base = 1100;
     for (const [view, name, args, text] of cases) {
       await handlerOf(view, name)(...args);
@@ -2140,7 +2171,8 @@ const STAND_IN_CLASS: Readonly<Record<string, string>> = {
   // uif-16b (named intentional change): 10 -> 8 rows: claimView, privacyView and renameView left
   // (they are sections of the one Profile frame, no frame ids of their own), profileView joined.
   profileView: 'ProfileView',
-  tradeProposeView: 'TradeProposeView',
+  // ts-3 (named intentional change): the `tradeProposeView: 'TradeProposeView'` row leaves with the
+  // wizard's stand-in; `tradeSessionView` is a REAL view here (CTL7C-2's real openers).
 };
 
 /** A stand-in adapter for `id` that records the view each paint is lent, consumes every button
@@ -2439,6 +2471,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       helpView: (await import('./ui/helpView')).HelpView,
       menuView: (await import('./ui/menuView')).MenuView,
       controlsView: (await import('./ui/controlsView')).ControlsView,
+      tradeSessionView: (await import('./ui/tradeSessionView')).TradeSessionView,
     };
     const paints: Array<{ id: string; view: unknown }> = [];
     /** The Social frame's three panels (ctl-8s): never frames of their own. HARD-CODED. */
@@ -2488,7 +2521,8 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       // menu, and its adapter is lent the ProfileView main.ts built (the three sections are inside
       // it, never lent on their own).
       { id: 'profileView', beneath: ['menuView'], open: (at) => so2WalkMenu(['profile'], at) },
-      { id: 'tradeProposeView', open: (at) => so2OpenFacedTrade(at) },
+      // ts-3 (named intentional change): the `tradeProposeView` stand-in row moves to the REAL
+      // openers below as `tradeSessionView` (the editor is not replaced in this file).
     ];
     const evolution = stubView('EvolutionView');
     evolution.visible = true;
@@ -2592,6 +2626,18 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
             press('ArrowDown', at + i);
           }
           press('Enter', at + 9);
+        },
+        close: (at) => void press('Escape', at),
+      },
+      // ts-3 (named intentional change, the Strangler rename): the session editor, opened by its
+      // one real path — A on the faced player, A on Trade — over an existing session with that
+      // player (so no reducer is waited on). LAST: it installs its own interaction rule.
+      {
+        id: 'tradeSessionView',
+        open: (at) => {
+          opts.store.reconcileTradeSessionsFromView([tsSession(77n, H.identity, OTHER_IDENTITY)]);
+          tsFacePartner(at);
+          tsPressTrade(at);
         },
         close: (at) => void press('Escape', at),
       },
@@ -3008,46 +3054,6 @@ function so2WalkMenu(path: readonly string[], t0: number): void {
     press('Enter', at);
     at += 10;
   }
-}
-
-/** so-2: the player the face-to-face Trade faces. */
-const SO2_FACED_ENTITY = 99n;
-
-/** so-2: a REAL face-to-face Trade (main.controls.test.ts's `openFaceToFace`): another online player
- *  stands on the faced tile, the stubbed wasm rule names it, A opens the picker and A on its first
- *  row (Trade) opens the wizard. One batch at `t` (which also refreshes the interaction memo), then
- *  the two presses. */
-function so2OpenFacedTrade(t: number): void {
-  H.interact = (...args: unknown[]) => {
-    const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
-    const at = entities.findIndex(
-      (e) => e.kind === 'player' && e.id === SO2_FACED_ENTITY.toString(),
-    );
-    return at === -1 ? [] : [at];
-  };
-  opts.store.upsertPlayer({
-    identity: OTHER_IDENTITY,
-    entityId: SO2_FACED_ENTITY,
-    name: 'Zed',
-    online: true,
-    lastInputSeq: 0n,
-  });
-  opts.store.upsertCharacter(
-    {
-      entityId: SO2_FACED_ENTITY,
-      zoneId: 0,
-      tileX: 3,
-      tileY: 6,
-      facing: 'West',
-      action: 'Idle',
-      moveStartedAtMs: 0n,
-      moveQueue: [] as WasmMoveInput[],
-    },
-    t,
-  );
-  server(t);
-  press('Enter', t + 10);
-  press('Enter', t + 30);
 }
 
 /** A stand-in adapter that records `{ id, now }` on every observe and keeps its state unchanged
@@ -7926,5 +7932,716 @@ describe('bt-17: no 1v1 renderer — a row-less anchor shows nothing (BT17.1, BT
     expect(text.includes('Cinder') || text.includes('Dusk'), 'none of the challenger`s').toBe(
       false,
     );
+  });
+});
+
+// ==========================================================================================
+// ts-3: the session editor through the booted main.ts (ts-3.1, ts-3.3, ts-3.6)
+// ==========================================================================================
+//
+// Same harness. The session editor is the REAL `TradeSessionView` mounted on the shell's
+// `#tradepropose-overlay` root (nothing replaces it here), driven through the real router, stack,
+// screen adapter and dispatch. Session rows are injected the way the connection's flush does:
+// `reconcileTradeSessionsFromView(rows)` then a batch. The faced player is OTHER_IDENTITY (`Zed`,
+// entity 31) on the faced tile (3, 6); the stubbed wasm rule names only him. A third player
+// (`Ivy`) holds an unrelated session in the cases that must not open the wrong one.
+
+const TS_FACED_ENTITY = 31n;
+const TS_THIRD = 'ef'.repeat(32);
+/** `tradeSession.notice.closed` and `tradeSession.notice.changed`, en, as the plan transcribes
+ *  them (literal bytes: never read off the catalog under test). */
+const TS_CLOSED = 'Trade closed.';
+const TS_CHANGED = 'The offer changed. Review it before you confirm.';
+/** Every trade reducer a ts-3 case watches (the retired proposeTrade included: it must never run). */
+const TS_REDUCERS: readonly string[] = [
+  'openTradeSession',
+  'setTradeOffer',
+  'confirmTradeSession',
+  'cancelTradeSession',
+  'proposeTrade',
+];
+
+/** One `my_trade_session` row, both sides empty and unconfirmed at revision 1 unless overridden. */
+function tsSession(
+  sessionId: bigint,
+  opener: string,
+  partner: string,
+  over: Partial<StoreTradeSession> = {},
+): StoreTradeSession {
+  return {
+    sessionId,
+    opener,
+    partner,
+    openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs: 900n,
+    ...over,
+  };
+}
+
+/** The other two players' rows (online, so each could be a "first other player"). */
+function tsSeedPlayers(): void {
+  opts.store.upsertPlayer({
+    identity: OTHER_IDENTITY,
+    entityId: TS_FACED_ENTITY,
+    name: 'Zed',
+    online: true,
+    lastInputSeq: 0n,
+  });
+  opts.store.upsertPlayer({
+    identity: TS_THIRD,
+    entityId: 32n,
+    name: 'Ivy',
+    online: true,
+    lastInputSeq: 0n,
+  });
+}
+
+/** Zed's character on the faced tile and the wasm rule naming him, in one batch at `t`. */
+function tsFacePartner(t: number): void {
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4];
+    if (!Array.isArray(entities)) return [];
+    const at = entities.findIndex(
+      (e: { kind?: unknown; id?: unknown }) =>
+        e.kind === 'player' && e.id === TS_FACED_ENTITY.toString(),
+    );
+    return at === -1 ? [] : [at];
+  };
+  tsSeedPlayers();
+  opts.store.upsertCharacter(
+    {
+      entityId: TS_FACED_ENTITY,
+      zoneId: 0,
+      tileX: 3,
+      tileY: 6,
+      facing: 'West',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+  server(t);
+}
+
+/** A on the faced player (the picker, its cursor on Trade), then A on Trade. */
+function tsPressTrade(t: number): void {
+  press('Enter', t + 1);
+  press('Enter', t + 2);
+}
+
+const tsRoot = (): HTMLElement => {
+  const el = document.getElementById('tradepropose-overlay');
+  if (el === null) throw new Error('the shell must ship #tradepropose-overlay');
+  return el;
+};
+/** Shown unless the element or an ancestor is `hidden` or has an inline `display: none`. */
+const tsShown = (el: Element | null): boolean => {
+  if (el === null) return false;
+  for (let n: Element | null = el; n instanceof HTMLElement; n = n.parentElement) {
+    if (n.hidden || n.style.display === 'none') return false;
+  }
+  return true;
+};
+const tsCalls = (): Array<{ name: string; args: unknown }> =>
+  H.calls.filter((c) => TS_REDUCERS.includes(c.name));
+/** The key of the selected row in the listbox `#<id>` (its `data-nav-key`, else the id suffix after
+ *  `-root-`: `navItemId(frame, null, key)`), or null when nothing is selected. */
+const tsSelected = (id: string): string | null => {
+  const el = document.querySelector(`#${id} [aria-selected="true"]`);
+  if (el === null) return null;
+  const key = el.getAttribute('data-nav-key');
+  if (key !== null) return key;
+  const at = el.id.indexOf('-root-');
+  return at === -1 ? el.id : el.id.slice(at + '-root-'.length);
+};
+const tsClosedShows = (): number => TS3.toastShows.filter((s) => s === TS_CLOSED).length;
+
+function tsExpectEditorOn(sessionId: bigint, label: string): void {
+  expect(stackNow(), `${label}: the editor is the one frame over the world`).toEqual([
+    WORLD_FRAME,
+    screenFrame('tradeSessionView'),
+  ]);
+  expect(tsShown(tsRoot()), `${label}: #tradepropose-overlay is displayed`).toBe(true);
+  expect(tsRoot().getAttribute('data-session-id'), `${label}: bound to that session`).toBe(
+    sessionId.toString(),
+  );
+}
+
+function tsExpectNoEditor(label: string): void {
+  expect(stackNow(), `${label}: the bare world`).toEqual([WORLD_FRAME]);
+  expect(tsShown(tsRoot()), `${label}: #tradepropose-overlay is not displayed`).toBe(false);
+}
+
+describe('main.ts trade sessions through the booted shell (runtime, ts-3)', {
+  sequential: true,
+}, () => {
+  afterEach(teardownBoot);
+
+  it('ts-3.1 (a) A on the faced player then A on Trade sends openTradeSession exactly once with THAT player`s Identity and opens nothing; when the opener`s own row arrives the editor opens on exactly that session', async () => {
+    // WRONG IMPL KILLED: the wizard (or any frame) still opening on Trade; the reducer sent with
+    // the viewer's own identity, the first other player's (Ivy is listed before nothing faced her)
+    // or a hex string instead of an SDK Identity; an editor opened before the row exists; an editor
+    // opened on the wrong session (Ivy's incoming session 90 is in the same batch, listed first);
+    // an incoming session auto-opening a frame (90 arrives before any press).
+    await bootReady();
+    server(1000);
+    opts.store.reconcileTradeSessionsFromView([tsSession(90n, TS_THIRD, H.identity)]);
+    tsFacePartner(1100);
+    frame(1150);
+    tsExpectNoEditor('precondition: an incoming session opened no frame');
+    H.calls = [];
+
+    tsPressTrade(1200);
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'A on Trade sends exactly one openTradeSession',
+    ).toEqual(['openTradeSession']);
+    expect(tsCalls()[0]?.args, 'for the FACED player, as an SDK Identity').toEqual({
+      partner: new Identity(OTHER_IDENTITY),
+    });
+    tsExpectNoEditor('nothing opens before the session row exists');
+    frame(1300);
+    server(1350);
+    tsExpectNoEditor('nor on a later frame or batch without the row');
+
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(90n, TS_THIRD, H.identity),
+      tsSession(91n, H.identity, OTHER_IDENTITY),
+    ]);
+    server(1400);
+    frame(1450);
+    tsExpectEditorOn(91n, 'the opener`s row arrived');
+    expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+  });
+
+  it.each([
+    ['the viewer opened it', true],
+    ['the faced player opened it', false],
+  ] as const)('ts-3.1 (b) with a session with the faced player already present (%s), A on Trade calls NO reducer and opens the editor on that session', async (_label, viewerOpened) => {
+    // WRONG IMPL KILLED: a Trade that always sends openTradeSession (a duplicate open the server
+    // refuses); an existing-session lookup that checks one orientation only (`openedSessionWith`
+    // where `sessionWith` is needed: the incoming orientation would send); the editor opened on
+    // the first listed session (Ivy's 60) instead of the one with the faced player.
+    await bootReady();
+    server(1000);
+    const withZed = viewerOpened
+      ? tsSession(61n, H.identity, OTHER_IDENTITY)
+      : tsSession(61n, OTHER_IDENTITY, H.identity);
+    opts.store.reconcileTradeSessionsFromView([tsSession(60n, TS_THIRD, H.identity), withZed]);
+    tsFacePartner(1100);
+    frame(1150);
+    tsExpectNoEditor('precondition: no session opened a frame on its own');
+    H.calls = [];
+
+    tsPressTrade(1200);
+    await flush();
+    expect(tsCalls(), 'no trade reducer is called').toEqual([]);
+    tsExpectEditorOn(61n, 'A on Trade');
+  });
+
+  it('ts-3.1 (c) a second A on Trade while the first open is pending sends nothing more and opens nothing', async () => {
+    // WRONG IMPL KILLED: no pending guard (two open_trade_session calls, the second refused by the
+    // server with a toast); a pending state cleared by the call's Ok (the Ok only means the row
+    // will come: the guard must hold until the row arrives or the call is rejected).
+    await bootReady();
+    server(1000);
+    tsFacePartner(1100);
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'precondition: the first open was sent',
+    ).toEqual(['openTradeSession']);
+    frame(1250);
+    tsPressTrade(1300);
+    await flush();
+    frame(1350);
+    expect(tsCalls(), 'the second press sends nothing more').toHaveLength(1);
+    tsExpectNoEditor('and opens nothing');
+  });
+
+  it('ts-3.1 (d) a rejected open toasts the server`s reason and clears the pending state: the next Trade sends again, and a later row the viewer opened with that player opens NO frame', async () => {
+    // WRONG IMPL KILLED: a rejection that leaves the pending state set (the next Trade would send
+    // nothing, and the next session row with Zed would pop the editor open long after the player
+    // gave up); a rejection swallowed without the server's reason on the toast.
+    await bootReady();
+    server(1000);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    tsFacePartner(1100);
+    H.calls = [];
+    H.gate = uif4Rejected('zz-open-refused');
+    tsPressTrade(1200);
+    await flush();
+    H.gate = null;
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'precondition: the open was sent',
+    ).toEqual(['openTradeSession']);
+    expect(toastText(), 'the rejection toasts the server`s reason').toContain('zz-open-refused');
+
+    H.gate = uif4Rejected('zz-open-refused-again');
+    tsPressTrade(1300);
+    await flush();
+    H.gate = null;
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'the pending state was cleared: the next Trade sends again',
+    ).toEqual(['openTradeSession', 'openTradeSession']);
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(71n, H.identity, OTHER_IDENTITY)]);
+    server(1400);
+    frame(1450);
+    tsExpectNoEditor('a row arriving after the rejections opens no frame');
+  });
+
+  it('ts-3.1 (e) the opener`s row arriving while another frame is on top opens nothing over it, and nothing later; A on Trade then opens the editor on it with no reducer', async () => {
+    // WRONG IMPL KILLED: an auto-open over another frame (the editor stacked on the menu); a
+    // pending state kept after its row arrived (the editor popping up on some later batch once the
+    // menu closes).
+    await bootReady();
+    server(1000);
+    tsFacePartner(1100);
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    expect(tsCalls(), 'precondition: the open was sent').toHaveLength(1);
+    press('KeyM', 1300);
+    expect(stackNow(), 'precondition: the menu is open').toEqual([
+      WORLD_FRAME,
+      screenFrame('menuView'),
+    ]);
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(81n, H.identity, OTHER_IDENTITY)]);
+    server(1400);
+    frame(1450);
+    expect(stackNow(), 'the row opened nothing over the menu').toEqual([
+      WORLD_FRAME,
+      screenFrame('menuView'),
+    ]);
+    expect(tsShown(tsRoot()), 'the editor is not displayed').toBe(false);
+
+    press('Escape', 1500);
+    server(1600);
+    frame(1650);
+    tsExpectNoEditor('closing the menu opens nothing later');
+
+    tsPressTrade(1700);
+    await flush();
+    expect(tsCalls(), 'control: the existing session needs no reducer').toHaveLength(1);
+    tsExpectEditorOn(81n, 'control: A on Trade');
+  });
+
+  it('ts-3.1 (f) no accelerator and no menu row the suite can enumerate ever calls openTradeSession, with two other online players about; A on Trade facing one does', async () => {
+    // WRONG IMPL KILLED: a menu leaf or an accelerator (the retired O, a Social row) that starts a
+    // session, typically with "the first other player" as partner (both players are online with a
+    // character, so a target is always available to such a path).
+    await bootReady();
+    server(1000);
+    tsSeedPlayers();
+    opts.store.upsertCharacter(
+      {
+        entityId: TS_FACED_ENTITY,
+        zoneId: 0,
+        tileX: 3,
+        tileY: 6,
+        facing: 'West',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      1050,
+    );
+    server(1050); // no interaction rule yet: A at the world does nothing here
+    H.calls = [];
+    let t = 1100;
+    const toWorld = (label: string): void => {
+      for (let i = 0; i < 4 && stackNow().length > 1; i += 1) {
+        press('Escape', t);
+        t += 10;
+      }
+      expect(stackNow(), `${label}: back at the bare world`).toEqual([WORLD_FRAME]);
+    };
+    for (const code of ['KeyU', 'KeyP', 'KeyL', 'KeyB', 'KeyI', 'KeyJ', 'KeyR', 'KeyN', 'KeyC']) {
+      press(code, t);
+      t += 10;
+      await flush();
+      if (stackNow().length > 1) {
+        press('Enter', t); // A on whatever that key opened
+        t += 10;
+        await flush();
+      }
+      toWorld(code);
+    }
+    const rows = new Set<string>();
+    for (let i = 0; i < 12; i += 1) {
+      press('KeyM', t);
+      t += 10;
+      for (let d = 0; d < i; d += 1) {
+        press('ArrowDown', t);
+        t += 10;
+      }
+      const row = menuCursorNow();
+      if (row !== null) rows.add(row);
+      press('Enter', t);
+      t += 10;
+      await flush();
+      if (stackNow().length > 1) {
+        press('Enter', t); // one level deeper: A on the first row of what the leaf opened
+        t += 10;
+        await flush();
+      }
+      toWorld(`menu row ${row ?? i}`);
+    }
+    expect(rows.size, 'ANTI-VACUITY: the walk reached several menu rows').toBeGreaterThanOrEqual(5);
+    expect(tsCalls(), 'no menu or accelerator path sent a trade reducer').toEqual([]);
+
+    tsFacePartner(t);
+    tsPressTrade(t + 10);
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'control: face to face, A on Trade sends it',
+    ).toEqual(['openTradeSession']);
+  });
+
+  it('ts-3.3 from the booted editor, Confirm (row, prompt, Yes) sends confirmTradeSession with the session id and the revision data-revision shows AFTER a partner edit moved it, and the "offer changed" notice is on screen after that edit', async () => {
+    // WRONG IMPL KILLED: the revision cached when the editor opened (3) sent after the partner's
+    // edit moved it to 4 (the server refuses a stale confirm: the player can never confirm); a
+    // `data-revision` that never repaints; no "offer changed" notice after the edit; a row A that
+    // sends at once (no prompt); a prompt Yes wired to cancelTradeSession.
+    await bootReady();
+    server(1000);
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(95n, H.identity, OTHER_IDENTITY, { revision: 3n }),
+    ]);
+    tsFacePartner(1100);
+    tsPressTrade(1200);
+    await flush();
+    tsExpectEditorOn(95n, 'precondition');
+    expect(tsRoot().getAttribute('data-revision'), 'precondition: revision 3 shown').toBe('3');
+    const notice = (): HTMLElement | null => document.getElementById('tradesession-notice');
+    expect(
+      tsShown(notice()) && (notice()?.textContent ?? '') !== '',
+      'precondition: no notice at open',
+    ).toBe(false);
+
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(95n, H.identity, OTHER_IDENTITY, {
+        revision: 4n,
+        partnerOffer: { monsterIds: [], items: [], currency: 25n, cards: [] },
+      }),
+    ]);
+    server(1300);
+    frame(1350);
+    expect(tsRoot().getAttribute('data-revision'), 'the editor shows the new revision').toBe('4');
+    expect(tsShown(notice()), 'the notice is on screen').toBe(true);
+    expect(notice()?.textContent, 'with the "offer changed" text').toBe(TS_CHANGED);
+
+    H.calls = [];
+    let t = 1400;
+    for (let i = 0; i < 8 && tsSelected('tradesession-rows') !== 'confirm'; i += 1) {
+      press('ArrowDown', t);
+      t += 20;
+    }
+    expect(tsSelected('tradesession-rows'), 'precondition: the cursor reached Confirm').toBe(
+      'confirm',
+    );
+    press('Enter', t);
+    t += 20;
+    await flush();
+    expect(tsCalls(), 'A on the row only asks').toEqual([]);
+    expect(tsShown(document.getElementById('tradesession-prompt')), 'the prompt is shown').toBe(
+      true,
+    );
+    expect(tsSelected('tradesession-confirm'), 'on No').toBe('no');
+    press('ArrowUp', t);
+    t += 20;
+    expect(tsSelected('tradesession-confirm'), 'the flip lands on Yes').toBe('yes');
+    press('Enter', t);
+    await flush();
+    expect(tsCalls(), 'Yes sends the confirm with the DISPLAYED revision').toEqual([
+      { name: 'confirmTradeSession', args: { sessionId: 95n, revision: 4n } },
+    ]);
+  });
+
+  it('ts-3.6 the open editor`s session leaving my_trade_session closes the frame back to the world, drops its Social › Trades row and toasts "Trade closed." exactly once; two sessions leaving in one batch toast once; the first hydrated batch and a reconnect toast nothing', async () => {
+    // WRONG IMPL KILLED: an editor left open on a vanished session (or closed by hiding the view
+    // behind the stack's back: the stack keeps the frame); Social › Trades still listing the row; a
+    // toast per closed session (two in one batch); a toast on every batch after the close; a toast
+    // on the first hydrated batch or after a reconnect (a "known" set not reset by onReconnect
+    // treats the wiped store as every session closing); a close listener that stops running after a
+    // reconnect (the control at the end).
+    TS3.toastShows.length = 0;
+    await bootReady();
+    server(1000);
+    frame(1050);
+    expect(tsClosedShows(), 'the first hydrated batch with no sessions toasts nothing').toBe(0);
+
+    const socialVms: unknown[] = [];
+    const realSocial = H.adapters.social as { viewModel: (ctx: unknown) => unknown };
+    swapAdapter('social', {
+      ...realSocial,
+      viewModel: (ctx: unknown) => {
+        const vm = realSocial.viewModel(ctx);
+        socialVms.push(vm);
+        return vm;
+      },
+    });
+    const sessionRowKeys = (): string[] =>
+      (
+        (socialVms.at(-1) as { trades?: ReadonlyArray<{ key?: unknown }> } | undefined)?.trades ??
+        []
+      )
+        .map((r) => String(r.key))
+        .filter((k) => k.startsWith('session-'));
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(85n, H.identity, OTHER_IDENTITY)]);
+    tsFacePartner(1100);
+    press('KeyU', 1200);
+    expect(stackNow(), 'precondition: U opened Social').toEqual(SOCIAL_OVER_MENU);
+    expect(sessionRowKeys(), 'precondition: Social › Trades lists the session').toEqual([
+      'session-85',
+    ]);
+    press('Escape', 1300);
+    expect(stackNow(), 'precondition: Start closed Social').toEqual([WORLD_FRAME]);
+    tsPressTrade(1400);
+    await flush();
+    tsExpectEditorOn(85n, 'precondition');
+    expect(tsClosedShows(), 'precondition: no close toast yet').toBe(0);
+
+    opts.store.reconcileTradeSessionsFromView([]);
+    server(1500);
+    frame(1550);
+    tsExpectNoEditor('the session left: the editor closed through the stack');
+    expect(toastText(), 'the toast reads the closed notice').toBe(TS_CLOSED);
+    expect(tsClosedShows(), 'exactly one close toast').toBe(1);
+    server(1600);
+    frame(1650);
+    expect(tsClosedShows(), 'a later batch toasts no more').toBe(1);
+    press('KeyU', 1700);
+    expect(stackNow(), 'precondition: U opened Social again').toEqual(SOCIAL_OVER_MENU);
+    expect(sessionRowKeys(), 'Social › Trades lists no row for it').toEqual([]);
+    press('Escape', 1800);
+
+    // Two sessions leave in one batch: one toast.
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(86n, H.identity, OTHER_IDENTITY),
+      tsSession(87n, TS_THIRD, H.identity),
+    ]);
+    server(1900);
+    expect(tsClosedShows(), 'precondition: arriving toasts nothing').toBe(1);
+    opts.store.reconcileTradeSessionsFromView([]);
+    server(2000);
+    expect(tsClosedShows(), 'two sessions leaving in one batch toast once').toBe(2);
+
+    // A reconnect wipes the store: nothing is toasted for the sessions it lost.
+    opts.store.reconcileTradeSessionsFromView([tsSession(88n, H.identity, OTHER_IDENTITY)]);
+    server(2100);
+    opts.onReconnect(H.identity);
+    opts.store.reconcileTradeSessionsFromView([]);
+    opts.onReady(H.identity);
+    server(2200);
+    server(2300);
+    frame(2350);
+    expect(tsClosedShows(), 'no toast after a reconnect wiped the store').toBe(2);
+
+    // Control: the close listener still runs after the reconnect.
+    opts.store.reconcileTradeSessionsFromView([tsSession(89n, H.identity, OTHER_IDENTITY)]);
+    server(2400);
+    opts.store.reconcileTradeSessionsFromView([]);
+    server(2500);
+    expect(tsClosedShows(), 'control: a session closing after the reconnect toasts once').toBe(3);
+  });
+
+  it('ts-3.4 a click on the booted editor`s #tradepropose-submit Close button closes the frame back to the bare world and calls NO reducer; a second open works again', async () => {
+    // WRONG IMPL KILLED: a dead Close button (main.ts never wires onClose: the editor stays open);
+    // a Close that cancels the session (cancelTradeSession, or any trade reducer, sent); a close
+    // that only hides the view and leaves the frame on the stack (the next input routes to an
+    // invisible editor); a close that leaves the root displayed; a close that breaks the next
+    // open (the frame cannot be pushed again).
+    await bootReady();
+    server(1000);
+    opts.store.reconcileTradeSessionsFromView([tsSession(96n, H.identity, OTHER_IDENTITY)]);
+    tsFacePartner(1100);
+    tsPressTrade(1200);
+    await flush();
+    tsExpectEditorOn(96n, 'precondition');
+    const button = document.getElementById('tradepropose-submit');
+    expect(button, 'precondition: the Close button is in the booted editor').not.toBeNull();
+    expect(tsRoot().contains(button), 'precondition: inside #tradepropose-overlay').toBe(true);
+    H.calls = [];
+
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+    frame(1300);
+    server(1350);
+    tsExpectNoEditor('the Close click closed the editor');
+    expect(
+      H.calls.filter((c) => /trade/i.test(c.name)).map((c) => c.name),
+      'no session reducer and no legacy trade reducer was called',
+    ).toEqual([]);
+    expect(tsCalls(), 'none of the watched trade reducers').toEqual([]);
+
+    tsPressTrade(1400);
+    await flush();
+    tsExpectEditorOn(96n, 'a second open works again');
+    expect(tsCalls(), 'the existing session needs no reducer to reopen').toEqual([]);
+  });
+
+  it('ts-3.6 the editor stays on ITS session: another session the viewer is in leaving (in a batch) keeps the editor open on its own session with exactly one "Trade closed." toast; its own session leaving then closes it', async () => {
+    // RED REASON: the editor is closed whenever ANY of the viewer's sessions closes.
+    // WRONG IMPL KILLED: closing the editor on any closed id (Ivy's 98 leaving tears down the
+    // editor on Zed's 97); no toast for a session that is not the open one; a toast per frame.
+    TS3.toastShows.length = 0;
+    await bootReady();
+    server(1000);
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(98n, TS_THIRD, H.identity),
+      tsSession(97n, H.identity, OTHER_IDENTITY),
+    ]);
+    tsFacePartner(1100);
+    frame(1150);
+    tsExpectNoEditor('precondition: no session opened a frame on its own');
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    tsExpectEditorOn(97n, 'precondition: the editor on Zed`s session');
+    expect(tsCalls(), 'precondition: the existing session needs no reducer').toEqual([]);
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(97n, H.identity, OTHER_IDENTITY)]);
+    server(1300);
+    frame(1350);
+    tsExpectEditorOn(97n, 'another session left: the editor stays on its own');
+    expect(tsClosedShows(), 'exactly one close toast for the session that left').toBe(1);
+    server(1400);
+    frame(1450);
+    tsExpectEditorOn(97n, 'and on the next batch');
+    expect(tsClosedShows(), 'and no more toasts').toBe(1);
+
+    opts.store.reconcileTradeSessionsFromView([]);
+    server(1500);
+    frame(1550);
+    tsExpectNoEditor('its own session left: the editor closed');
+    expect(tsClosedShows(), 'its own close toasts once').toBe(2);
+  });
+
+  it('ts-3.1 a pending face-to-face open to Zed plus an INCOMING session Zed opened, arriving while it is pending, opens no frame', async () => {
+    // RED REASON: the pending open is matched against a session with Zed in either orientation.
+    // WRONG IMPL KILLED: `sessionWith` where `openedSessionWith` is needed for the pending open (Zed's
+    // own request pops the editor open over the world, unasked, as if it answered the viewer's
+    // open).
+    await bootReady();
+    server(1000);
+    tsFacePartner(1100);
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    expect(
+      tsCalls().map((c) => c.name),
+      'precondition: the open was sent',
+    ).toEqual(['openTradeSession']);
+    tsExpectNoEditor('precondition: nothing open yet');
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(99n, OTHER_IDENTITY, H.identity)]);
+    server(1300);
+    frame(1350);
+    expect(
+      opts.store.allTradeSessions().map((s) => s.sessionId),
+      'precondition: Zed`s session is in the store',
+    ).toEqual([99n]);
+    tsExpectNoEditor('the incoming session opened no frame');
+    server(1400);
+    frame(1450);
+    tsExpectNoEditor('nor on a later batch');
+    expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+  });
+
+  it('ts-3.1 the opener`s row arriving while a WORLD SHEET is open (the faced player`s picker) opens no frame over it and leaves the sheet as it was', async () => {
+    // RED REASON: the pending open's row opens the editor whenever the STACK is the bare world, and
+    // a world sheet is not a frame: the editor pops up over (and under the focus of) the sheet.
+    // WRONG IMPL KILLED: an auto-open gated on the stack alone (the sheet is ignored); an auto-open
+    // that closes the sheet first; a sheet whose cursor is reset by the batch.
+    await bootReady();
+    server(1000);
+    tsFacePartner(1100);
+    H.calls = [];
+    tsPressTrade(1200);
+    await flush();
+    expect(tsCalls(), 'precondition: the open was sent').toHaveLength(1);
+    const sheetRows = (): number =>
+      document.querySelectorAll('#interact-prompt [role="option"]').length;
+    const sheetCursor = (): string | null =>
+      document
+        .querySelector('#interact-prompt [role="option"][aria-selected="true"]')
+        ?.getAttribute('data-nav-key') ?? null;
+    press('Enter', 1300); // A on the faced player again: the picker
+    frame(1310);
+    expect(sheetRows(), 'precondition: the picker is up').toBeGreaterThan(0);
+    expect(tsShown(document.getElementById('interact-prompt')), 'precondition: shown').toBe(true);
+    const cursorBefore = sheetCursor();
+    expect(cursorBefore, 'precondition: the picker has a cursor').not.toBeNull();
+    tsExpectNoEditor('precondition: no editor');
+
+    opts.store.reconcileTradeSessionsFromView([tsSession(83n, H.identity, OTHER_IDENTITY)]);
+    server(1400);
+    frame(1450);
+    tsExpectNoEditor('the row opened no frame over the sheet');
+    expect(tsShown(document.getElementById('interact-prompt')), 'the sheet is still up').toBe(true);
+    expect(sheetRows(), 'with its rows').toBeGreaterThan(0);
+    expect(sheetCursor(), 'and its cursor where it was').toBe(cursorBefore);
+    expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+  });
+
+  it('ts-3.1 a crossed open: openTradeSession REJECTS while a session Zed opened is already in the store, and the editor opens on that session over the bare world', async () => {
+    // RED REASON: a rejected open only toasts and clears the pending state, so the player who asked
+    // to trade with Zed is left at the world with Zed's request waiting.
+    // WRONG IMPL KILLED: a rejection that ignores the store (no editor: the crossed case is lost);
+    // an editor opened on the wrong session (Ivy's 76 is listed first); a reducer sent to recover
+    // (a second openTradeSession, or a cancel); the editor opened before the rejection (case above).
+    await bootReady();
+    server(1000);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    tsFacePartner(1100);
+    H.calls = [];
+    let rejectOpen: (e: Error) => void = () => undefined;
+    const pending = new Promise<void>((_resolve, reject) => {
+      rejectOpen = reject;
+    });
+    pending.catch(() => undefined);
+    H.gate = pending;
+    tsPressTrade(1200);
+    await flush();
+    H.gate = null;
+    expect(
+      tsCalls().map((c) => c.name),
+      'precondition: the open was sent',
+    ).toEqual(['openTradeSession']);
+
+    // Zed opened his own session first: it lands while the viewer's open is still in flight.
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(76n, TS_THIRD, H.identity),
+      tsSession(77n, OTHER_IDENTITY, H.identity),
+    ]);
+    server(1300);
+    frame(1350);
+    tsExpectNoEditor('precondition: the crossed row alone opens nothing while the open is pending');
+
+    rejectOpen(new Error('zz-already-in-a-session'));
+    await flush();
+    await flush();
+    frame(1400);
+    server(1450);
+    frame(1500);
+    tsExpectEditorOn(77n, 'the rejected open lands on the existing session with Zed');
+    expect(tsCalls(), 'no recovery reducer was sent').toHaveLength(1);
   });
 });

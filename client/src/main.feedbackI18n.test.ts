@@ -74,7 +74,6 @@ import {
   wasmPkgStubMock,
   worldRendererMock,
 } from '../test-util/mainBootHarness';
-import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
 import type {
   StoreCharacter,
@@ -84,6 +83,7 @@ import type {
   StoreShopItemRow,
   StoreShopRow,
   StoreTradeOffer,
+  StoreTradeSession,
   StoreWallet,
 } from './net/store';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
@@ -211,6 +211,8 @@ interface StoreHandle {
   upsertItemDef(row: StoreItemRow): void;
   upsertWallet(row: StoreWallet): void;
   upsertTradeOffer(row: StoreTradeOffer): void;
+  /** ts-3: the PK-less `my_trade_session` view, reconciled as a whole set. */
+  reconcileTradeSessionsFromView(rows: readonly StoreTradeSession[]): void;
   upsertPlayer(row: StorePlayer): void;
   upsertCharacter(row: StoreCharacter, nowMs: number): void;
   reconcileInventoryFromView(rows: readonly StoreInventory[]): void;
@@ -678,71 +680,38 @@ describe('main.ts rename + trade-propose feedback routes through the i18n catalo
     expect(renameFeedbackText()).not.toBe(EN['chrome.rename.updated']);
   });
 
-  it('UIF4B.1 ★★ BITES: under fr, a successful trade-propose submit toasts CATALOG_FR["tradePropose.feedback.sent"], not the hardcoded "Offer sent!"', async () => {
+  // ts-3 (named intentional change, the Strangler): 'UIF4B.1 ★★ BITES: under fr, a successful
+  // trade-propose submit toasts CATALOG_FR["tradePropose.feedback.sent"]' is replaced: the wizard,
+  // its submit and its `tradePropose.*` keys are deleted (spec §ts-3 Strangler) and the session arms
+  // have no success line. The trade site this suite now pins under fr is the session-closed notice.
+  it('UIF4B.1 ts-3.6 ★★ BITES: under fr, a trade session leaving my_trade_session toasts CATALOG_FR["tradeSession.notice.closed"], not the hardcoded "Trade closed."', async () => {
+    // WRONG IMPL KILLED: the closed notice toasted as an English literal (or the en catalog's text)
+    // under fr; no closed notice at all.
     await bootMain('/?locale=fr');
     const store = storeHandle();
-    // ctl-10b (named intentional change): O is retired. The wizard opens face to face: the own
-    // player at (1, 1) facing East, Bob online on the faced tile (2, 1), the stubbed wasm rule
-    // naming him; A opens the picker (Trade, Challenge), A on Trade opens the wizard on Offer with
-    // Bob pre-selected (the select is locked), so the old `target.value = OTHER` step is gone.
-    H.interact = (...args: unknown[]) => {
-      const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
-      const at = entities.findIndex((e) => e.kind === 'player' && e.id === '1');
-      return at === -1 ? [] : [at];
-    };
-    const place = (entityId: bigint, tileX: number, tileY: number): StoreCharacter => ({
-      entityId,
-      zoneId: 0,
-      tileX,
-      tileY,
-      facing: 'East',
-      action: 'Idle',
-      moveStartedAtMs: 0n,
-      moveQueue: [] as WasmMoveInput[],
-    });
-    store.upsertPlayer({
-      identity: H.identity,
-      entityId: 7n,
-      name: 'P',
-      online: true,
-      lastInputSeq: 0n,
-    });
-    store.upsertCharacter(place(7n, 1, 1), 1000);
-    store.upsertPlayer({
-      identity: OTHER,
-      entityId: 1n,
-      name: 'Bob',
-      online: true,
-      lastInputSeq: 0n,
-    });
-    store.upsertCharacter(place(1n, 2, 1), 1000);
+    const empty = { monsterIds: [], items: [], currency: 0n, cards: [] };
+    store.reconcileTradeSessionsFromView([
+      {
+        sessionId: 61n,
+        opener: H.identity,
+        partner: OTHER,
+        openerOffer: empty,
+        partnerOffer: empty,
+        openerConfirmed: false,
+        partnerConfirmed: false,
+        revision: 1n,
+        createdAtMs: 900n,
+      },
+    ]);
     store.flushBatch();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(proposeFeedbackText(), 'precondition: the session arriving toasts nothing').toBe('');
 
-    tapWorldKey('Enter');
-    tapWorldKey('Enter');
-
-    const target = document.getElementById('tradepropose-target') as HTMLSelectElement;
-    expect(target.value, 'the faced player is pre-selected').toBe(OTHER);
-    const offerCurrency = document.getElementById(
-      'tradepropose-offer-currency',
-    ) as HTMLInputElement;
-    offerCurrency.value = '10';
-    offerCurrency.dispatchEvent(new Event('input', { bubbles: true }));
-
-    const submit = document.getElementById('tradepropose-submit') as HTMLButtonElement;
-    expect(
-      submit.disabled,
-      'the submit button must be enabled once a target + an asset are set',
-    ).toBe(false);
-    submit.click();
+    store.reconcileTradeSessionsFromView([]);
+    store.flushBatch();
     await waitForNonEmpty(proposeFeedbackText);
-
-    expect(
-      H.proposeTrade,
-      'the real reducer must have been called exactly once',
-    ).toHaveBeenCalledOnce();
-    expect(proposeFeedbackText()).toBe(FR['tradePropose.feedback.sent']);
-    expect(proposeFeedbackText()).not.toBe('Offer sent!');
-    expect(proposeFeedbackText()).not.toBe(EN['tradePropose.feedback.sent']);
+    expect(proposeFeedbackText()).toBe(FR['tradeSession.notice.closed']);
+    expect(proposeFeedbackText()).not.toBe('Trade closed.');
+    expect(proposeFeedbackText()).not.toBe(EN['tradeSession.notice.closed']);
   });
 });

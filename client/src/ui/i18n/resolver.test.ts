@@ -92,7 +92,8 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'chrome.badge.request': 'New',
       'chrome.help.title': 'How to Play',
       'chrome.rename.submit': 'Rename',
-      'chrome.tradePropose.submit': 'Offer',
+      // ts-3 (named intentional change, the Strangler): 'chrome.tradePropose.submit' ('Offer')
+      // retired with the trade-propose wizard.
       'chrome.status.exportBlocked': 'data export: download blocked by the browser',
       // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' retired
       // with the `privacy-busy` kind (Profile is one dialog).

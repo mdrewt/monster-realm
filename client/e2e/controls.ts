@@ -437,8 +437,8 @@ const sizeRowText = (n: number): string => `${n} vs ${n}`;
  * Starts a trade or a challenge the way a player does now (CTL10B.1): closes every open frame,
  * stands on the other player's tile (walking there only when `otherPage` is given and the two
  * stand apart), waits for the chip to read `[Enter] Choose…`, presses A, moves the picker cursor
- * to the row `<verb> — <name>` and presses A. A Trade opens the trade wizard on Offer with the
- * player pre-selected. A Challenge shows the party-size pick (bt-15, named intentional change: was
+ * to the row `<verb> — <name>` and presses A. A Trade opens a trade session with that player and its
+ * editor (ts-3: or the editor on the session the two already share). A Challenge shows the party-size pick (bt-15, named intentional change: was
  * Yes / No): the rows are `N vs N`, …, `1 vs 1`, then `No`, the largest size selected; the helper
  * Downs to the `size vs size` row (default: the first, the largest) and presses A, which sends it.
  * `targetName` defaults to the one other player's name. The three pre-bt-15 callers pass no `size`

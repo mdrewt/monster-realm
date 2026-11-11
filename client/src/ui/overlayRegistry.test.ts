@@ -114,7 +114,9 @@ const EXPECTED_GUARD_ONLY = [
   // harder than the claim code's — a two-step confirmation for an IRREVERSIBLE action, so a stray
   // keypress that force-hid it would strand the arming or invite a re-click on a dismissed surface.
   'profileView',
-  'tradeProposeView',
+  // ts-3 (named intentional change, the Strangler rename): tradeProposeView -> tradeSessionView in
+  // the same slot. The session editor holds an unsent draft and a confirm prompt: never force-hidden.
+  'tradeSessionView',
   'helpView',
   'menuView',
   // ctl-12b: Options › Controls. GUARD_ONLY because it can hold a key capture in progress: a
@@ -1496,6 +1498,40 @@ describe('overlayRegistry — controlsView (ctl-12b, CTL12B.1)', () => {
 });
 
 // ===========================================================================
+// ts-3: the trade session editor's own registry rows (the Strangler rename of tradeProposeView).
+// ===========================================================================
+
+describe('overlayRegistry — tradeSessionView (ts-3)', () => {
+  it('ts-3 ts-3.4 tradeSessionView is a GUARD_ONLY member whose a11y row is a dismissible dialog titled by its own key and anchored on the static #tradepropose-submit Close button', async () => {
+    // WRONG IMPL KILLED: keeping the wizard's id or row (`a11y.overlay.tradeProposeView.title`, or
+    // its `#tradepropose-target` anchor, a static control the editor removes at construction, so
+    // focus would fall to <body>); the runtime `#tradesession-rows` listbox as the anchor (not a
+    // static control of index.html, the smoke test's anchor contract reds); a HIDE_SWITCH tier
+    // (B/I/E would force-hide an unsent draft or a confirm prompt), and a non-dismissible row
+    // (Escape could not close the editor).
+    expect(OVERLAY_IDS, 'a manifest member').toContain('tradeSessionView');
+    expect(OVERLAY_TIERS.tradeSessionView).toBe('GUARD_ONLY');
+    const mod: unknown = await import('./overlayRegistry');
+    const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, unknown> }).OVERLAY_A11Y;
+    expect(overlayA11y?.tradeSessionView).toEqual({
+      role: 'dialog',
+      labelKey: 'a11y.overlay.tradeSessionView.title',
+      initialFocusSelector: '#tradepropose-submit',
+      dismissible: true,
+    });
+    expect(Object.keys(overlayA11y ?? {}).includes('tradeProposeView')).toBe(false);
+    expect(canOpen('tradeSessionView', ['battleView'])).toEqual({
+      kind: 'deny',
+      blockedBy: 'battleView',
+    });
+    expect(canOpen('boxView', ['tradeSessionView'])).toEqual({
+      kind: 'deny',
+      blockedBy: 'tradeSessionView',
+    });
+  });
+});
+
+// ===========================================================================
 // uif-16b: Profile is ONE overlay (named intentional change, UIF16B.3 / UIF16B.7).
 // ===========================================================================
 
@@ -1518,11 +1554,13 @@ describe('overlayRegistry — profileView (uif-16b)', () => {
       'pvpView',
       'leaderboardView',
       'profileView',
-      'tradeProposeView',
+      // ts-3 (named intentional change): the wizard's slot now holds the session editor.
+      'tradeSessionView',
       'helpView',
       'menuView',
       'controlsView',
     ]);
+    expect((OVERLAY_IDS as readonly string[]).includes('tradeProposeView')).toBe(false);
     for (const section of ['renameView', 'claimView', 'privacyView']) {
       expect(
         Object.keys(OVERLAY_TIERS).includes(section),

@@ -42,6 +42,7 @@ import type {
   StorePlayer,
   StoreProfile,
   StoreTradeOffer,
+  StoreTradeSession,
 } from '../../net/store';
 import type { SocialRankingsPaint } from '../leaderboardView';
 import type { NavInput } from '../nav';
@@ -135,6 +136,9 @@ interface World {
   players: readonly StorePlayer[];
   characters: readonly StoreCharacter[];
   profiles: readonly StoreProfile[];
+  /** ts-3 (named intentional change): the trade sessions `allTradeSessions()` answers; every
+   *  earlier world leaves it empty, so what those cases pin is unchanged. */
+  sessions: readonly StoreTradeSession[];
 }
 
 const world = (over: Partial<World> = {}): World => ({
@@ -144,6 +148,7 @@ const world = (over: Partial<World> = {}): World => ({
   players: [],
   characters: [],
   profiles: [],
+  sessions: [],
   ...over,
 });
 
@@ -157,6 +162,8 @@ function ctxOf(w: World): ScreenContext {
     allPlayers: () => w.players.map((p) => ({ ...p })),
     characters: () => w.characters.map((c) => ({ row: { ...c } })).values(),
     allProfiles: () => w.profiles.map((p) => ({ ...p })),
+    // ts-3 (named intentional change): the read the session rows make.
+    allTradeSessions: () => w.sessions.map((s) => ({ ...s })),
   };
   return {
     store,
@@ -315,12 +322,16 @@ function paintOf(w: World, state: SocialScreenState): Painted {
   return { panel: shown.panel, paint: social.paint, cursor: cursor.row };
 }
 
-/** The paint of the list phase on `tab`. */
+/** The paint of the list phase on `tab`. ts-3 (named intentional change): `SocialPaint` gains the
+ *  session rows and their cursor; with no session in the world they are `[]` and null, so every
+ *  equality below still pins exactly what it pinned. */
 const listPaint = (tab: SocialTab, tradeCursor = false): SocialPaint => ({
   tab,
   tradeCursor,
   sheet: null,
   confirm: null,
+  sessions: [],
+  sessionCursor: null,
 });
 
 describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
@@ -1911,5 +1922,145 @@ describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
       'a challenge prompt: no Rankings call',
     ).toEqual([]);
     expect(checked, 'ANTI-VACUITY: four tabs').toBe(4);
+  });
+});
+
+// ==========================================================================================
+// ts-3 (ts-3.4, ts-3.5): the session rows on the Trades tab.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 and
+//   memory/projects/monster-realm-ts-3-plan.md §Social › Trades: A (fresh) on a `session` row answers
+//   `{ kind: 'openTradeEditor', sessionId }` at once (no sheet, no prompt); `SocialScreenState.sessions`
+//   is `socialSessionsKey(vm)`, settled like `people`; paint passes `sessions` (the rows' paint data)
+//   and `sessionCursor` (the session row key under the cursor, else null); `tradeCursor` stays the
+//   legacy row's.
+//
+// RED REASON: the adapter reads no `allTradeSessions()`, lists no session row and paints neither
+//   `sessions` nor `sessionCursor`.
+//
+// Fixture: Bob opened session 101 with the viewer (untouched: a waiting request, created 500);
+//   the viewer opened 102 with Carol and confirmed it (created 4_000); a legacy offer the viewer
+//   sent (trade 11) sits above them.
+// ==========================================================================================
+
+const NO_SIDE = { monsterIds: [], items: [], currency: 0n, cards: [] } as const;
+
+function tradeSession(
+  sessionId: bigint,
+  opener: string,
+  partner: string,
+  over: Partial<StoreTradeSession> = {},
+): StoreTradeSession {
+  return {
+    sessionId,
+    opener,
+    partner,
+    openerOffer: NO_SIDE,
+    partnerOffer: NO_SIDE,
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs: 1_000n,
+    ...over,
+  };
+}
+
+const S101 = tradeSession(101n, BOB, ME, { createdAtMs: 500n });
+const S102 = tradeSession(102n, ME, CAROL, { openerConfirmed: true, createdAtMs: 4_000n });
+const sessionWorld = (over: Partial<World> = {}): World =>
+  world({
+    tab: 'trades',
+    offers: [trade('sent', 9_000n)],
+    sessions: [S102, S101],
+    players: [ME_P, BOB_P, CAROL_P],
+    ...over,
+  });
+
+describe('socialScreen — the session rows (ts-3)', () => {
+  it('ts-3.4 the Trades tab walks the legacy row then the session rows with Up / Down; a fresh A on a session row answers openTradeEditor for THAT session at once, with no sheet and no prompt; a held A does nothing; B still pops', () => {
+    // WRONG IMPL KILLED: a session row that opens an action sheet (actions are empty: the sheet
+    // would be empty or the A swallowed, and the editor unreachable from Social); the editor
+    // opened on the first session whatever the cursor (a key/id mix-up); a held A that opens it
+    // (a held Enter would reopen it at repeat rate); a sheet left open after the command.
+    const w = sessionWorld();
+    const opened = open(w);
+    expect(cursorOf(opened), 'fixture: the requested Trades, on the waiting session').toEqual({
+      tab: 'trades',
+      item: 'session-101',
+    });
+    const top = swallowed(w, opened, ['Up']);
+    expect(top.nav.item, 'the legacy row is first').toBe(TRADE);
+    expect(swallowed(w, top, ['Down', 'Down']).nav.item).toBe('session-102');
+    expect(swallowed(w, top, ['Down', 'Down', 'Down']).nav.item, 'a fresh Down wraps').toBe(TRADE);
+
+    for (const [reach, id] of [
+      [[], 101n],
+      [['Down'], 102n],
+    ] as const) {
+      const on = swallowed(w, opened, reach);
+      const a = press(w, on, 'A');
+      expect(a.result, `A on session ${id}`).toEqual({ kind: 'openTradeEditor', sessionId: id });
+      expect(a.state.phase, `A on session ${id}: no sheet`).toMatchObject(LIST);
+      const held = press(w, on, rep('A'));
+      expect(held.result, `a held A on session ${id}`).toBe('consumed');
+      expect(held.state.phase).toMatchObject(LIST);
+    }
+    // The legacy row keeps its sheet.
+    expect(press(w, top, 'A').state.phase).toMatchObject(sheet(TRADE, ['cancel'], 'cancel'));
+    expect(press(w, opened, 'B').result).toEqual(POP);
+  });
+
+  it('ts-3.5 a plain open lands on the oldest waiting session`s row; observe answers the SAME state when no painted session fact changed and a NEW one (state.sessions = the new key) when a session arrives, leaves or a mark flips', () => {
+    // WRONG IMPL KILLED: an init that ignores waiting sessions (the banner's "View" would open
+    // Social elsewhere); a state with no `sessions` signature (a partner's confirm never repaints
+    // the row: nothing would change the state); an observe that answers a new object per batch.
+    const w = sessionWorld({ tab: null });
+    const s = open(w);
+    expect(cursorOf(s)).toEqual({ tab: 'trades', item: 'session-101' });
+    expect(typeof s.sessions).toBe('string');
+    expect(observe(w, s), 'nothing changed').toBe(s);
+    expect(
+      observe(sessionWorld({ tab: null, sessions: [{ ...S102, revision: 7n }, S101] }), s),
+      'a revision bump paints nothing new',
+    ).toBe(s);
+    for (const [what, after] of [
+      [
+        'a session arrives',
+        sessionWorld({ tab: null, sessions: [S102, S101, tradeSession(103n, CAROL, ME)] }),
+      ],
+      ['a session leaves', sessionWorld({ tab: null, sessions: [S101] })],
+      [
+        'a mark flips',
+        sessionWorld({ tab: null, sessions: [{ ...S102, partnerConfirmed: true }, S101] }),
+      ],
+    ] as const) {
+      const next = observe(after, s);
+      expect(next, `${what}: a new state`).not.toBe(s);
+      expect(next.sessions, `${what}: the new signature`).not.toBe(s.sessions);
+      expect(observe(after, next), `${what}: then stable`).toBe(next);
+    }
+  });
+
+  it('ts-3.5 paint passes the session rows` paint data and the session cursor; on a session row tradeCursor is false and the challenge cursor null; off the Trades tab the cursor is null', () => {
+    // WRONG IMPL KILLED: the session rows never painted; the marks from the wrong seat; the cursor
+    // painted as the legacy row (tradeCursor true on a session row: two cursors); a session row
+    // handed to the challenge root as its cursor kind; a session cursor kept on another tab.
+    const w = sessionWorld();
+    const s = open(w);
+    const p = paintOf(w, s);
+    expect(p.panel).toBe('tradeView');
+    expect(p.paint.sessions).toEqual([
+      { key: 'session-101', partnerName: 'Bob', mineConfirmed: false, theirsConfirmed: false },
+      { key: 'session-102', partnerName: 'Carol', mineConfirmed: true, theirsConfirmed: false },
+    ]);
+    expect(p.paint.sessionCursor).toBe('session-101');
+    expect(p.paint.tradeCursor, 'not the legacy row').toBe(false);
+    expect(p.cursor, 'no challenge cursor on a session row').toBeNull();
+    const onLegacy = paintOf(w, swallowed(w, s, ['Up']));
+    expect(onLegacy.paint.tradeCursor).toBe(true);
+    expect(onLegacy.paint.sessionCursor).toBeNull();
+    const elsewhere = paintOf(w, swallowed(w, s, ['RB']));
+    expect(elsewhere.paint.tab).toBe('challenges');
+    expect(elsewhere.paint.sessionCursor).toBeNull();
   });
 });

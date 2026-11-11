@@ -7,10 +7,9 @@
 //
 // WHY THE CAPTURE PHASE, AND IT IS LOAD-BEARING, NOT STYLE. `ui/renameView.ts:62` and
 // `ui/renameView.ts:81` call `e.stopPropagation()` on the keydown of `#rename-input` and
-// `#rename-submit` (the D3 input-hygiene contract), and `ui/tradeProposeView.ts` does the same for
-// every one of its focusables. A listener registered on `root` with `capture:false` runs in the
-// BUBBLE phase, i.e. strictly after the target's own listeners — so in exactly the two overlays
-// that own real text input, a bubble-phase trap is 100% dead. A capture-phase listener runs during
+// `#rename-submit` (the D3 input-hygiene contract). A listener registered on `root` with
+// `capture:false` runs in the BUBBLE phase, i.e. strictly after the target's own listeners — so in
+// exactly the overlay that owns real text input, a bubble-phase trap is 100% dead. A capture-phase listener runs during
 // the capturing walk DOWN to the target, before the target's own handler exists as far as the event
 // is concerned, so nothing the target later does to the event can shadow it.
 //

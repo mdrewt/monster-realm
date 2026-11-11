@@ -68,7 +68,12 @@ import { DEFAULT_BINDINGS } from '../../input/bindings';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import { KeyboardSource } from '../../input/keyboardSource';
 import { InputRouter, type RouteContext } from '../../input/router';
-import type { StoreBattleChallenge, StoreItemRow } from '../../net/store';
+import {
+  AuthoritativeStore,
+  type StoreBattleChallenge,
+  type StoreItemRow,
+  type StoreTradeSession,
+} from '../../net/store';
 import {
   type BaseFrame,
   type FrameId,
@@ -93,7 +98,7 @@ import { controlsScreen } from './optionsScreen';
 import { profileScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
-import { tradeProposeScreen } from './tradeProposeScreen';
+import { tradeSessionScreen } from './tradeSessionScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult, SocialTab } from './types';
 
 const CTX = {
@@ -220,7 +225,9 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   // ctl-8d (named intentional change): the Social frame holds its own screen.
   ['social', socialScreen],
   // ctl-8e (named intentional change): the trade-propose frame holds the wizard.
-  ['tradeProposeView', tradeProposeScreen],
+  // ts-3 (named intentional change, the Strangler rename): the wizard is deleted; its slot is the
+  // trade session editor's frame, which holds `tradeSessionScreen`.
+  ['tradeSessionView', tradeSessionScreen],
   // ctl-8f (named intentional change): the raising frame holds the Bag, the quest log frame the
   // Journal. Both read the store, so a storeless shipped pass no longer reaches them (see
   // CTL7D-6-OBSERVE-SKIPS) and neither can serve as "a legacy frame" any more.
@@ -261,9 +268,15 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     );
     expect(controlsScreen.nav, 'and it is nav-capable').toBe(true);
     expect(SCREEN_ADAPTERS.social, 'the Social frame is its ctl-8d screen').toBe(socialScreen);
-    expect(SCREEN_ADAPTERS.tradeProposeView, 'the trade-propose frame is its ctl-8e wizard').toBe(
-      tradeProposeScreen,
+    // ts-3 (named intentional change): was `tradeProposeView` holding the ctl-8e wizard.
+    expect(SCREEN_ADAPTERS.tradeSessionView, 'the trade session frame is its ts-3 editor').toBe(
+      tradeSessionScreen,
     );
+    expect(tradeSessionScreen.nav, 'and it is nav-capable').toBe(true);
+    expect(
+      Object.keys(SCREEN_ADAPTERS).includes('tradeProposeView'),
+      'the wizard frame is gone',
+    ).toBe(false);
     expect(SCREEN_ADAPTERS.raisingView, 'the raising frame is the ctl-8f Bag').toBe(bagScreen);
     expect(SCREEN_ADAPTERS.questLogView, 'the quest log frame is the ctl-8f Journal').toBe(
       journalScreen,
@@ -283,10 +296,9 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(LEGACY_IDS.includes('questLogView'), 'questLogView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('social'), 'the Social frame is no longer legacy').toBe(false);
-    expect(
-      LEGACY_IDS.includes('tradeProposeView'),
-      'the trade-propose frame is no longer legacy',
-    ).toBe(false);
+    expect(LEGACY_IDS.includes('tradeSessionView'), 'the trade session frame is not legacy').toBe(
+      false,
+    );
     expect(LEGACY_IDS.length + CONVERTED.size, 'ANTI-VACUITY: every id is one or the other').toBe(
       FRAME_IDS.length,
     );
@@ -468,9 +480,11 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
 
 describe('typing mode (ctl-6b, CTL6B.5)', () => {
   // uif-16b: the name field's owner is Profile (renameView is a section of it now).
+  // ts-3 (named intentional change): the `tradeProposeView` / `proposeTrade` owner row is RETIRED
+  // with the wizard (spec §ts-3 Strangler): the session editor owns no text field. Survivor: the
+  // profileView row below, the remaining typing surface.
   const OWNER_COMMANDS: Record<string, ScreenResult> = {
     profileView: { kind: 'setProfileName', name: 'Zed' },
-    tradeProposeView: { kind: 'proposeTrade', args: { marker: 'offer' } as never },
   };
 
   it('CTL6B-5-TEXTENTRY-ESCAPE-STOPS: over a text-entry frame Start stops typing by popping that frame only, and every other button belongs to the field', () => {
@@ -2942,7 +2956,8 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
       boxView: { view: 'box' },
       questLogView: { view: 'quest' },
       helpView: { view: 'help' },
-      tradeProposeView: { view: 'propose' },
+      // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`.
+      tradeSessionView: { view: 'session' },
     };
     const host = new ScreenHost(
       tableWith({
@@ -2951,7 +2966,7 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
         questLogView: remembering('questLogView', log, { paint: true }),
         helpView: remembering('helpView', log),
         pvpView: remembering('pvpView', log, { paint: true }),
-        tradeProposeView: remembering('tradeProposeView', log, { paint: true, fault }),
+        tradeSessionView: remembering('tradeSessionView', log, { paint: true, fault }),
       }),
       (id) => VIEWS[id],
       (err) => {
@@ -3044,15 +3059,15 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
     expect(errors, 'nothing was reported so far').toEqual([]);
 
     // (h) A throw from viewModel, init or paint: reported once with the very value, never thrown.
-    const propose = stackOf(WORLD, screen('tradeProposeView'));
+    const session = stackOf(WORLD, screen('tradeSessionView'));
     let faults = 0;
     for (const at of ['viewModel', 'init', 'paint'] as const) {
-      host.opened(screen('tradeProposeView'));
-      const initsBefore = memInitsOf(log, 'tradeProposeView').length;
+      host.opened(screen('tradeSessionView'));
+      const initsBefore = memInitsOf(log, 'tradeSessionView').length;
       errors.length = 0;
       fault.at = at;
       expect(
-        () => host.seat(screen('tradeProposeView'), CTX),
+        () => host.seat(screen('tradeSessionView'), CTX),
         `${at}: seat does not throw`,
       ).not.toThrow();
       fault.at = undefined;
@@ -3060,11 +3075,11 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
       expect(errors[0], `${at}: the very value thrown`).toBe(SEAT_THROWN[at]);
       // Only the paint came after init: only then is there a state, and it is kept.
       expect(
-        memInitsOf(log, 'tradeProposeView').length,
+        memInitsOf(log, 'tradeSessionView').length,
         `${at}: init completed during the seat only when the paint was the fault`,
       ).toBe(initsBefore + (at === 'paint' ? 1 : 0));
-      host.button(propose, nav('A'), CTX);
-      const own = memInitsOf(log, 'tradeProposeView');
+      host.button(session, nav('A'), CTX);
+      const own = memInitsOf(log, 'tradeSessionView');
       expect(
         own.length,
         at === 'paint'
@@ -3105,6 +3120,8 @@ function socialHostCtx(w: SocialHostWorld): ScreenContext {
   // world: no players, no characters, no profiles).
   const store = {
     allTradeOffers: () => [],
+    // ts-3: the Social view model also reads the trade sessions (none in this world).
+    allTradeSessions: () => [],
     allChallenges: () => w.challenges.map((c) => ({ ...c })),
     allPlayers: () => [],
     characters: () => [].values(),
@@ -3237,155 +3254,147 @@ describe('the Social frame over the shipped table (ctl-8d, CTL8D.1)', () => {
 });
 
 // ==========================================================================================
-// ctl-8e: the trade-propose wizard over the SHIPPED table (CTL8E.2)
+// ts-3: the trade session editor over the SHIPPED table (spec §ts-3, ts-3.4)
 // ==========================================================================================
 //
-// The legacy O opens the overlay through `openPropose()`; swapping its `SCREEN_ADAPTERS` entry gives
-// the open overlay the D-pad, A, B, LB / RB (PageUp / PageDown) and Start / Select. A ScreenHost
-// over the shipped table, a fake store holding another player and two own monsters, and a
-// recording view: the keys reach `tradeProposeScreen`, every step paints the lent view once.
+// ts-3 (named intentional change, the Strangler rename): this section was "ctl-8e: the
+// trade-propose wizard over the SHIPPED table (CTL8E.2)". The wizard is deleted; the frame id
+// `tradeSessionView` takes its slot and holds `tradeSessionScreen` (plan "`ui/screens/
+// tradeSessionScreen.ts`": `nav: true`, `remember: true`, it settles on `observe`). main.ts's
+// `openTradeEditor` binds `ctx.tradeSessionId`, pushes the frame and seats it (`host.seat`).
+// A ScreenHost over the shipped table, the REAL AuthoritativeStore holding one session (so the
+// adapter's `viewModel(ctx)` reads whatever store methods it reads, never a guessed fake), and a
+// recording view: the keys reach `tradeSessionScreen` and the steps paint the lent view.
+//
+// Adjudication of the retired cases:
+//   CTL8E-2-ADAPTER (the wizard's table entry, no memory, no observe) → TS3-ADAPTER below
+//     (re-pointed; the "no memory" / "no observe" halves invert by the plan)
+//   CTL8E-2-ADAPTER (Target → Offer → Coins → Ask → Review commit-token host flow) → TS3-HOST-FLOW
+//     below + ui/screens/tradeSessionScreen.test.ts | retired: wizard deleted by spec §ts-3
+//     Strangler
+//   the "a text entry over it takes the D-pad back" clause → CTL7C-1-NAV-CAPABLE (this file) |
+//     retired: the editor has no text entry (its coins are a D-pad stepper)
 
-const PROPOSE_ME = 'ef'.repeat(32);
-const PROPOSE_OTHER = 'cd'.repeat(32);
+const SESSION_ME = 'ef'.repeat(32);
+const SESSION_PARTNER = 'cd'.repeat(32);
+/** A session id past 2^53, so a Number round trip in the adapter or the host shows. */
+const SESSION_ID = 9_007_199_254_740_993n;
 
-function proposeFlowCtx(): ScreenContext {
-  const mon = (monsterId: bigint) => ({
-    monsterId,
-    ownerIdentity: PROPOSE_ME,
-    speciesId: 1,
-    nickname: `m${monsterId}`,
-    level: 5,
-    partySlot: 255,
-  });
-  const store = {
-    allPlayers: () => [
-      { identity: PROPOSE_ME, name: 'Me', entityId: 1n, online: true, lastInputSeq: 0n },
-      { identity: PROPOSE_OTHER, name: 'Zed', entityId: 2n, online: true, lastInputSeq: 0n },
-    ],
-    ownMonsters: (identity: string) => (identity === PROPOSE_ME ? [mon(22n), mon(11n)] : []),
-    speciesMap: () => new Map(),
+function sessionFlowCtx(): ScreenContext {
+  const store = new AuthoritativeStore();
+  const empty = { monsterIds: [], items: [], currency: 0n, cards: [] };
+  const row: StoreTradeSession = {
+    sessionId: SESSION_ID,
+    opener: SESSION_ME,
+    partner: SESSION_PARTNER,
+    openerOffer: empty,
+    partnerOffer: empty,
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 3n,
+    createdAtMs: 1_000n,
   };
+  store.reconcileTradeSessionsFromView([row]);
   return {
     store,
-    identity: PROPOSE_ME,
+    identity: SESSION_ME,
     bindings: DEFAULT_BINDINGS,
     now: () => 0,
     shopId: null,
     healLocationId: null,
     socialTab: null,
+    tradeSessionId: SESSION_ID,
     reduceMotion: false,
   } as unknown as ScreenContext;
 }
 
-describe('the trade-propose wizard over the shipped table (ctl-8e, CTL8E.2)', () => {
-  it('CTL8E-2-ADAPTER: the shipped table holds tradeProposeScreen for the trade-propose frame, nav-capable with no memory and no observe, so the frame takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above it, or a text entry over it, takes the D-pad back', () => {
-    // WRONG IMPL KILLED: a screen written but never wired into SCREEN_ADAPTERS (the legacy O would
-    // still open an overlay whose keys do nothing: B5's red); a swap into the wrong slot (the
-    // wizard on the rename or trade frame); an adapter without its nav mark (the router would
-    // keep the D-pad for walking under the open overlay); one that opts in to memory (a reopened
-    // wizard would resume a half-built offer the DOM has already cleared); one with an observe (a
-    // store batch would repaint the wizard and could re-send a spent token); and a frame that
-    // keeps the D-pad under a legacy child or while its typing row owns the keys.
-    expect(SCREEN_ADAPTERS.tradeProposeView, 'the trade-propose frame').toBe(tradeProposeScreen);
-    expect(tradeProposeScreen.nav, 'nav-capable').toBe(true);
-    expect(tradeProposeScreen.remember, 'every open starts over').toBeUndefined();
-    expect(tradeProposeScreen.observe, 'nothing repaints on a batch').toBeUndefined();
+describe('the trade session editor over the shipped table (ts-3, ts-3.4)', () => {
+  it('TS3-ADAPTER: the shipped table holds tradeSessionScreen for the trade session frame (and no other frame does), nav-capable, opted in to memory and observing batches, so the frame takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above it takes the D-pad back', () => {
+    // WRONG IMPL KILLED: a screen written but never wired into SCREEN_ADAPTERS (the editor would
+    // open with keys that do nothing); a swap into the wrong slot (the editor on the trade or
+    // Social frame); an adapter without its nav mark (the router would keep the D-pad for walking
+    // under the open editor); one that does not opt in to memory (an unsent draft is lost on a
+    // close, plan "init"); one with no observe (a partner's edit or confirm would not repaint the
+    // open editor, ts-3.3); and a frame that keeps the D-pad under a legacy child.
+    expect(SCREEN_ADAPTERS.tradeSessionView, 'the trade session frame').toBe(tradeSessionScreen);
+    expect(tradeSessionScreen.nav, 'nav-capable').toBe(true);
+    expect(tradeSessionScreen.remember, 'an unsent draft survives a close').toBe(true);
+    expect(typeof tradeSessionScreen.observe, 'a store batch settles the editor').toBe('function');
     for (const id of FRAME_IDS) {
-      if (id === 'tradeProposeView') continue;
-      expect(SCREEN_ADAPTERS[id], `${id} is not the wizard`).not.toBe(tradeProposeScreen);
+      if (id === 'tradeSessionView') continue;
+      expect(SCREEN_ADAPTERS[id], `${id} is not the editor`).not.toBe(tradeSessionScreen);
     }
     const host = hostOf(SCREEN_ADAPTERS);
-    expect(host.takesNav(stackOf(WORLD, screen('tradeProposeView'))), 'over the world').toBe(true);
-    expect(host.takesNav(stackOf(battle('7'), screen('tradeProposeView'))), 'over a battle').toBe(
+    expect(host.takesNav(stackOf(WORLD, screen('tradeSessionView'))), 'over the world').toBe(true);
+    expect(host.takesNav(stackOf(battle('7'), screen('tradeSessionView'))), 'over a battle').toBe(
       true,
     );
-    expect(host.takesNav(stackOf(WORLD, prompt('tradeProposeView'))), 'as a prompt').toBe(true);
-    // INTENTIONAL CHANGE (ctl-8f): the covering legacy frame is evolutionView; questLogView holds
-    // the nav-capable Journal now. Was: questLogView.
+    expect(host.takesNav(stackOf(WORLD, prompt('tradeSessionView'))), 'as a prompt').toBe(true);
     expect(
-      host.takesNav(stackOf(WORLD, screen('tradeProposeView'), screen('evolutionView'))),
+      host.takesNav(stackOf(WORLD, screen('tradeSessionView'), screen('evolutionView'))),
       'under a legacy frame',
-    ).toBe(false);
-    expect(
-      host.takesNav(stackOf(WORLD, screen('tradeProposeView'), textEntry('tradeProposeView'))),
-      'a text entry over it',
     ).toBe(false);
   });
 
-  it('CTL8E-2-ADAPTER: over the shipped table A on Target opens Offer, Down and A toggle the second monster by id, RB / A walk Coins and Ask to Review on Yes, and A there confirms with a commit token and the cursor on No; every step paints the lent view once, Start pops to the base, and a reopened frame starts over on Target', () => {
-    // WRONG IMPL KILLED: a host still answering the frame through the legacy adapter (A would be
-    // `unhandled`, nothing would paint and the step header would never move); an adapter that
-    // cannot build its view model from the real ScreenContext (identity, the three store reads);
-    // a toggle for the store-order monster instead of the cursor's; a Review that opens on No or
-    // confirms with a second A; a paint missed, doubled, or sent to another frame's view; and a
-    // reopen that resumes the last visit's step.
-    const ctx = proposeFlowCtx();
-    const painted: TradeProposePaintLike[] = [];
+  it('TS3-HOST-FLOW: over the shipped table and the real store, seat paints the bound session into the lent view (rows coins / apply / confirm / cancel, cursor on the first row, no prompt), Up wraps to Cancel, a reopen remembers the cursor, A on Cancel opens the prompt on No, Up flips it to Yes, A answers cancelTradeSession for the bound session id, and B pops', () => {
+    // WRONG IMPL KILLED: a host still answering the frame through the legacy adapter (nothing
+    // would paint, A would be `unhandled`); an adapter whose viewModel ignores
+    // `ctx.tradeSessionId` or cannot build from the real store (the seat would paint `gone`); a
+    // paint sent to another frame's view; an adapter that does not remember (the reopened cursor
+    // would be back on the first row); a Cancel that sends at once with no prompt, or a prompt
+    // that opens on Yes (one stray A would end the trade); a cancel for a Number-rounded or other
+    // session id; and a B that does not close the editor.
+    const ctx = sessionFlowCtx();
+    const painted: TradeSessionPaintLike[] = [];
     const view = {
-      paint(p: TradeProposePaintLike) {
+      paint(p: TradeSessionPaintLike) {
         painted.push(p);
       },
     };
-    const lent = (id: FrameId): unknown => (id === 'tradeProposeView' ? view : undefined);
+    const lent = (id: FrameId): unknown => (id === 'tradeSessionView' ? view : undefined);
     const host = new ScreenHost(SCREEN_ADAPTERS, lent, unexpectedPaintError);
-    const stack = stackOf(WORLD, screen('tradeProposeView'));
-    const last = (): TradeProposePaintLike => painted[painted.length - 1] as TradeProposePaintLike;
+    const stack = stackOf(WORLD, screen('tradeSessionView'));
+    const last = (): TradeSessionPaintLike => painted[painted.length - 1] as TradeSessionPaintLike;
 
-    host.opened(screen('tradeProposeView'));
-    expect(painted, 'the open paints nothing: the view draws its own opening').toEqual([]);
+    host.opened(screen('tradeSessionView'));
+    host.seat(screen('tradeSessionView'), ctx);
+    expect(painted.length, 'the seat paints once').toBe(1);
+    expect(last().vm.kind, 'the bound session, not gone').toBe('session');
+    expect(last().vm.sessionId, 'the session ctx.tradeSessionId names').toBe(SESSION_ID);
+    // An empty own side, no party monster and no item stack in the store: the four fixed rows.
+    expect(last().rows.map((r) => r.key)).toEqual(['coins', 'apply', 'confirm', 'cancel']);
+    expect(last().cursor, 'the cursor starts on the first row').toBe('coins');
+    expect(last().prompt).toBeNull();
+    expect(last().notice).toBe(0);
 
-    expect(host.button(stack, nav('A'), ctx), 'A on Target is swallowed').toBe('consumed');
-    expect(last().step, 'Offer').toBe('offer');
-    expect(last().steps, 'all five steps').toEqual(['target', 'offer', 'coins', 'ask', 'review']);
-    expect(last().offerCursor, 'the first monster by id, not the store order').toBe('11');
-    expect(last().lists.targets.map((t) => t.label)).toEqual(['Zed']);
+    expect(host.button(stack, nav('Up'), ctx), 'Up is swallowed').toBe('consumed');
+    expect(last().cursor, 'a fresh Up wraps to the last row').toBe('cancel');
 
-    expect(host.button(stack, nav('Down'), ctx)).toBe('consumed');
-    expect(last().offerCursor).toBe('22');
-    expect(host.button(stack, nav('A'), ctx), 'A toggles in place').toBe('consumed');
-    expect(last().step).toBe('offer');
-    expect(last().toggle, 'a token for monster 22').toEqual({ monsterId: 22n });
+    // remember: true. A close and a reopen on the SAME session keep the cursor (plan "init").
+    host.opened(screen('tradeSessionView'));
+    host.seat(screen('tradeSessionView'), ctx);
+    expect(last().cursor, 'the reopened editor resumes on Cancel').toBe('cancel');
 
-    expect(host.button(stack, nav('RB'), ctx)).toBe('consumed');
-    expect(last().step).toBe('coins');
-    expect(host.button(stack, nav('A'), ctx)).toBe('consumed');
-    expect(last().step).toBe('ask');
-    expect(host.button(stack, nav('A'), ctx)).toBe('consumed');
-    expect(last().step).toBe('review');
-    expect(last().yes, 'Review opens on Yes').toBe(true);
-    expect(last().commit).toBeNull();
-
-    expect(host.button(stack, nav('A'), ctx), 'the adapter answers no command').toBe('consumed');
-    expect(last().commit, 'A on Yes: a commit token').toEqual({ kind: 'commit' });
-    expect(last().yes, 'and the cursor on No').toBe(false);
-    expect(painted.length, 'seven steps, seven paints').toBe(7);
-
-    expect(host.button(stack, nav('Start'), ctx), 'Start abandons the draft').toEqual({
-      kind: 'popToBase',
+    expect(host.button(stack, nav('A'), ctx), 'A on Cancel asks first').toBe('consumed');
+    expect(last().prompt, 'the cancel prompt, on No').toEqual({ action: 'cancel', yes: false });
+    expect(host.button(stack, nav('Up'), ctx)).toBe('consumed');
+    expect(last().prompt, 'Up flips to Yes').toEqual({ action: 'cancel', yes: true });
+    expect(host.button(stack, nav('A'), ctx), 'A on Yes cancels THIS session').toEqual({
+      kind: 'cancelTradeSession',
+      sessionId: SESSION_ID,
     });
-
-    host.opened(screen('tradeProposeView'));
-    expect(host.button(stack, nav('A'), ctx), 'the reopened frame').toBe('consumed');
-    expect(last().step, 'starts over: A on Target, not Review').toBe('offer');
-    expect(last().commit, 'with no token left over').toBeNull();
-    expect(last().toggle).toBeNull();
-    expect(host.button(stackOf(WORLD, screen('tradeProposeView')), nav('B'), ctx)).toBe('consumed');
-    expect(last().step, 'B steps back to Target').toBe('target');
-    expect(host.button(stack, nav('B'), ctx), 'B at Target closes the wizard').toEqual({
-      kind: 'pop',
-    });
+    expect(host.button(stack, nav('B'), ctx), 'B closes the editor').toEqual({ kind: 'pop' });
   });
 });
 
-/** The slice of a trade-propose paint the host-flow case reads (the view's own type is DOM-bound). */
-interface TradeProposePaintLike {
-  readonly steps: readonly string[];
-  readonly step: string;
-  readonly lists: { readonly targets: readonly { readonly label: string }[] };
-  readonly offerCursor: string | null;
-  readonly yes: boolean;
-  readonly toggle: { readonly monsterId: bigint } | null;
-  readonly commit: { readonly kind: 'commit' } | null;
+/** The slice of a trade session paint the host-flow case reads (plan `TradeSessionPaint`; the
+ *  view's own type is DOM-bound). */
+interface TradeSessionPaintLike {
+  readonly vm: { readonly kind: string; readonly sessionId?: bigint };
+  readonly rows: readonly { readonly key: string }[];
+  readonly cursor: string | null;
+  readonly notice: number;
+  readonly prompt: { readonly action: 'confirm' | 'cancel'; readonly yes: boolean } | null;
 }
 
 // ==========================================================================================

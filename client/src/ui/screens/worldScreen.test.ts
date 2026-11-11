@@ -368,9 +368,12 @@ describe('worldButton: everything else (ctl-10a, CTL10A.3)', () => {
 // `WorldNotices = { notices, pending, request }`. Without it every case above is as it was.
 // ==========================================================================================
 
+// ts-3 (named intentional change, C): a trade request is an incoming SESSION: key
+// `session-<sessionId>`; Accept is `openTradeEditor`, Decline `cancelTradeSession`. Was:
+// `trade-<tradeId>` answered with respondTrade accepted true / false.
 const TRADE_REQ: RequestNotice = {
   kind: 'request',
-  key: 'trade-11',
+  key: 'session-11',
   request: 'trade',
   id: 11n,
   fromName: 'Bob',
@@ -505,14 +508,13 @@ describe('worldButton: Y with a request waiting (ctl-13, CTL13.3)', () => {
     expect(accept.command, 'Accept: the exact command').toEqual(
       requestCommand(TRADE_REQ, 'accept'),
     );
-    expect(accept.command).toEqual({ kind: 'respondTrade', tradeId: 11n, accepted: true });
+    expect(accept.command).toEqual({ kind: 'openTradeEditor', sessionId: 11n });
     expect(accept.view).toBeUndefined();
     const onDecline = down.request as NonNullable<typeof down.request>;
     const decline = worldButton(null, [], nav('A'), worldNotices({ request: onDecline }));
-    expect(decline.command, 'Decline: the opposite answer').toEqual({
-      kind: 'respondTrade',
-      tradeId: 11n,
-      accepted: false,
+    expect(decline.command, 'Decline: the session is cancelled').toEqual({
+      kind: 'cancelTradeSession',
+      sessionId: 11n,
     });
     expect(decline.request).toBeNull();
     const onView = worldButton(null, [], nav('Down'), worldNotices({ request: onDecline }))
@@ -636,7 +638,7 @@ describe('worldButton: B with a notice showing (ctl-13, CTL13.3)', () => {
 
     const banner = worldButton(null, [], nav('B'), worldNotices());
     expect(banner.result).toBe('consumed');
-    expect(banner.dismiss, 'the request banner').toBe('trade-11');
+    expect(banner.dismiss, 'the request banner').toBe('session-11');
 
     const challenge = worldButton(
       null,
@@ -658,7 +660,7 @@ describe('worldButton: B with a notice showing (ctl-13, CTL13.3)', () => {
     // Regardless of what is faced.
     const faced = worldButton(null, [npc, healTile(3)], nav('B'), worldNotices());
     expect(faced.result, 'a target does not stop B dismissing').toBe('consumed');
-    expect(faced.dismiss).toBe('trade-11');
+    expect(faced.dismiss).toBe('session-11');
 
     // Nothing to dismiss: the page's.
     for (const n of [

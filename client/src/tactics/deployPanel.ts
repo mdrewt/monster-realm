@@ -256,7 +256,7 @@ export class DeployPanel implements BattleOpsView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
-    // Release the in-flight lock (the tradeProposeView hide()-time precedent): a dropped link's
+    // Release the in-flight lock at hide() time: a dropped link's
     // promise may never settle; a late settle compares its token and touches nothing.
     this.#lock = null;
     this.#mode = 'confirm';

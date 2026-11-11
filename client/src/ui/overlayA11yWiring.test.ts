@@ -27,8 +27,9 @@
 //     the table the assertion reads. A view whose `show()` calls nothing passes both.
 //     `helpView.test.ts:56` and `dialogueView.test.ts:23` already record this in-source.
 //   * The `{BUTTON, INPUT, SELECT, A, TEXTAREA}` tag allow-list is UNSATISFIABLE: exactly FOUR of
-//     seventeen anchors qualify (`#rename-input`, `#tradepropose-target`, `#claim-signin-btn` and,
-//     since rb-52, `#privacy-close-btn`). The other thirteen are `<div>`/`<ul>`/`<h2>` carrying `tabindex="-1"` — the ARIA APG dialog
+//     seventeen anchors qualified (`#rename-input`, the trade-propose wizard's
+//     `#tradepropose-target`, `#claim-signin-btn` and, since rb-52, `#privacy-close-btn`; since
+//     ts-3 only `#rename-input` is left). The other thirteen are `<div>`/`<ul>`/`<h2>` carrying `tabindex="-1"` — the ARIA APG dialog
 //     fallback the milestone DELIBERATELY ships. `docs/adr/0205:31,:50-58` amends the wording to
 //     "focusable — natively, or via `tabindex`" and `:284-287` instructs this slice by name to use
 //     "the identity assertion as the anti-vacuity device, not a native-tag allow-list".
@@ -98,7 +99,7 @@ import { QuestLogView } from './questLogView';
 import { RaisingView } from './raisingView';
 import { RenameView } from './renameView';
 import { ShopView } from './shopView';
-import { TradeProposeView } from './tradeProposeView';
+import { TradeSessionView } from './tradeSessionView';
 import { TradeView } from './tradeView';
 
 // The MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
@@ -424,11 +425,16 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       reopen: () => view.show('name'),
     };
   },
-  tradeProposeView: () => {
-    const view = new TradeProposeView({ onSubmit: noop, maxMonstersPerSide: 64 });
+  // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView` (the wizard). The
+  // session editor mounts on the SAME static shell `#tradepropose-overlay` (index.html is not
+  // edited) and KEEPS its static `#tradepropose-submit` button as the always-enabled Close button,
+  // the registry anchor (ts-3.4), so the open needs no paint first. (Focus at open then moves to
+  // the `#tradesession-rows` listbox on the view's first session paint; none happens here.)
+  tradeSessionView: () => {
+    const view = new TradeSessionView({ announce: noop, onClose: noop });
     view.show();
     return {
-      root: capturedRoot('tradeProposeView'),
+      root: capturedRoot('tradeSessionView'),
       close: () => view.hide(),
       reopen: () => view.show(),
     };
@@ -496,7 +502,8 @@ const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   pvpView: 'pvp-challenge-overlay',
   leaderboardView: 'leaderboard-overlay',
   profileView: 'profile-overlay',
-  tradeProposeView: 'tradepropose-overlay',
+  // ts-3: the session editor's root is the wizard's static shell, id unchanged.
+  tradeSessionView: 'tradepropose-overlay',
   helpView: 'help-overlay',
   menuView: 'menu-overlay',
   controlsView: 'controls-overlay',
@@ -614,7 +621,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     for (const id of OVERLAY_IDS) {
       const rootId = ROOT_IDS[id];
       // profile's (uif-16b) and controls' (ctl-12b) shells are JS-created, so their roots cannot
-      // resolve in the shipped markup — the ten STATIC shells are what this clause is about.
+      // resolve in the shipped markup — the STATIC shells are what this clause is about.
       if (rootId === undefined || id === 'profileView' || id === 'controlsView') {
         continue;
       }
@@ -632,7 +639,10 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     }
     // uif-16b (named intentional change): 11 -> 10: #rename-overlay is no longer a static dialog
     // shell (it is Profile's Name section; the dialog #profile-overlay is constructed).
-    expect(checkedAnchors, 'ten static shells must have been checked').toBe(10);
+    // ts-3 (named intentional change): still 10: the trade session editor keeps the static
+    // `#tradepropose-overlay` shell and anchors on its static `#tradepropose-submit` Close button
+    // (was the wizard's static `#tradepropose-target`).
+    expect(checkedAnchors, 'ten static anchors must have been checked').toBe(10);
   });
 
   it('S10-WIRE-VACUITY-CONTROL BITES: the weak oracle §5.5 warns about passes on a decorative wrapper, and each of the four conjuncts that replaces it rejects it', () => {
@@ -1017,7 +1027,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
 //
 // THE ENUMERATION IS THE DOCUMENT, NOT THE ANCHOR LIST. A tooth that only looked at the eighteen
 // `initialFocusSelector` anchors would pass a stylesheet that mis-paints a non-anchor node
-// (`#heal-options`, a tradePropose wizard pane). `survey()` opens every overlay through the
+// (`#heal-options`, the trade session editor's answer listbox `#tradesession-confirm`). `survey()` opens every overlay through the
 // existing `OPENERS`, one at a time (the totality tooth's own open/close cycle — one document, one
 // `#app` mount), collects every `[tabindex="-1"]`, `[role="listbox"]` and `[role="grid"]` it can
 // see after each open, de-duplicates by element identity, and reads each element's ring once at
@@ -1449,7 +1459,7 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(fill, 'the is-active fill and outline must be different colours').not.toEqual(outline);
   });
 
-  it('QF1-1-HEADING-ROSTER BITES: the live anchor classes include boxView and raisingView as headings, menuView as a nav container and the two native controls — a reclassification reds', async () => {
+  it('QF1-1-HEADING-ROSTER BITES: the live anchor classes include boxView and raisingView as headings, menuView and controlsView as nav containers and profileView`s and tradeSessionView`s native controls — a reclassification reds', async () => {
     // WRONG IMPL KILLED: a retype that quietly moves an anchor out of the class its paint rule is
     // written for (e.g. a heading given a listbox role, or a native control given tabindex=-1),
     // which would leave the QF1.1 / QF1.2 teeth below iterating a list that no longer holds it.
@@ -1465,14 +1475,20 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     // is profileView's anchor now; claimView's #claim-signin-btn and privacyView's
     // #privacy-close-btn left with their overlays.
     expect(classOf('profileView')).toBe('native');
-    expect(classOf('tradeProposeView')).toBe('native');
+    expect(classOf('controlsView')).toBe('nav');
+    // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView` -> 'native'
+    // (the wizard's #tradepropose-target <select>). The session editor keeps the class under its
+    // new id: its anchor is the shell's static #tradepropose-submit Close button (plan "Frame
+    // id"). WRONG IMPL KILLED: an editor anchored on the runtime #tradesession-rows listbox (not
+    // static in index.html) or on a tabindex=-1 heading.
+    expect(classOf('tradeSessionView')).toBe('native');
   });
 
   it('QF1-1-TABINDEX-MINUS-ONE-NO-RING BITES: EVERY focused [tabindex="-1"] element that is not a listbox/grid — anchor or not — computes outline-style none', async () => {
     // WRONG IMPL KILLED: (1) no suppression rule at all (the shipped state: every heading anchor
     // computes ''), (2) a suppression keyed to the anchors only — `[data-testid$="-title"]`,
-    // `.mr-frame-title`, an id list — which leaves the non-anchor tabindex=-1 panes
-    // (tradePropose's wizard panes) ringed, (3) a rule covering only the static index.html
+    // `.mr-frame-title`, an id list — which leaves any non-anchor tabindex=-1 node ringed (the
+    // retired trade-propose wizard's panes were the measured case), (3) a rule covering only the static index.html
     // shells and not the TS-constructed headings (boxView / raisingView / battleView /
     // evolutionView titles).
     const s = await survey();
@@ -1511,14 +1527,28 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(offenders, 'interactive-role elements at tabindex=-1').toEqual([]);
   });
 
-  it('QF1-1-SCOPE-NATIVE-ANCHORS BITES: the native-control anchors (#rename-input, now profileView`s, and #tradepropose-target) do NOT compute outline-style none when focused', async () => {
+  it('QF1-1-SCOPE-NATIVE-ANCHORS BITES: the native-control anchors are exactly profileView`s #rename-input and tradeSessionView`s #tradepropose-submit, and neither computes outline-style none when focused', async () => {
     // WRONG IMPL KILLED: `*:focus { outline: none }`, `input:focus, select:focus, button:focus
     // { outline: none }` or `:focus-visible { outline: none }` — blanket suppression that strips
     // the browser's own ring from the controls a keyboard player actually types into.
     const s = await survey();
-    // uif-16b (named intentional change): 4 -> 2 native anchors (profileView's #rename-input,
-    // tradeProposeView's #tradepropose-target); claimView and privacyView left.
-    const natives: readonly OverlayId[] = ['profileView', 'tradeProposeView'];
+    // uif-16b (named intentional change): 4 -> 2 native anchors; claimView and privacyView left.
+    // ts-3 (named intentional change, the Strangler rename): tradeProposeView's slot is held by
+    // tradeSessionView, whose anchor is the static #tradepropose-submit Close button (was the
+    // wizard's #tradepropose-target). OVERLAY_IDS order: profileView precedes tradeSessionView.
+    const natives: readonly OverlayId[] = ['profileView', 'tradeSessionView'];
+    // The roster itself is pinned against the LIVE classification, so an anchor that silently
+    // moved out of the native class cannot pass by being read from the wrong roster. WRONG IMPL
+    // KILLED: the session editor anchored on its runtime rows listbox (it would leave this set),
+    // or either anchor retyped away from its static control.
+    expect(
+      OVERLAY_IDS.filter((id) => classifyAnchor(anchorFor(s, id).el) === 'native'),
+      'the overlays whose anchor is a native control',
+    ).toEqual(natives);
+    expect(anchorFor(s, 'profileView').el.id, 'profileView`s native anchor').toBe('rename-input');
+    expect(anchorFor(s, 'tradeSessionView').el.id, 'tradeSessionView`s native anchor').toBe(
+      'tradepropose-submit',
+    );
     const offenders = natives
       .map((id) => ({ id, e: anchorFor(s, id) }))
       .filter(({ e }) => e.ring === null || e.ring.style === 'none')
@@ -1644,7 +1674,12 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(counts.heading, 'at least boxView and raisingView').toBeGreaterThanOrEqual(2);
     expect(counts.nav, 'at least menuView').toBeGreaterThanOrEqual(1);
     // uif-16b (named intentional change): 4 -> 2: the claim and privacy anchors left.
-    expect(counts.native, 'the two native controls').toBeGreaterThanOrEqual(2);
+    // ts-3 (named intentional change): still 2: the session editor's #tradepropose-submit Close
+    // button holds the wizard's native slot; the exact roster is QF1-1-SCOPE-NATIVE-ANCHORS'.
+    expect(
+      counts.native,
+      'the two native controls (#rename-input, #tradepropose-submit)',
+    ).toBeGreaterThanOrEqual(2);
 
     const unclassifiable = document.createElement('div');
     unclassifiable.setAttribute('tabindex', '0');

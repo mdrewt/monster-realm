@@ -698,7 +698,8 @@ const PLAYER_IDS: ReadonlyArray<Exclude<OverlayId, 'battleView' | 'dialogueView'
   'pvpView',
   'leaderboardView',
   'profileView',
-  'tradeProposeView',
+  // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`, same slot.
+  'tradeSessionView',
   'helpView',
   'menuView',
   'controlsView',
@@ -717,7 +718,7 @@ const PLAYER_FRAMES: readonly UpperFrame[] = [
   prompt('pvpView'),
   screen('leaderboardView'),
   textEntry('profileView'),
-  screen('tradeProposeView'),
+  screen('tradeSessionView'),
   screen('helpView'),
   screen('menuView'),
   screen('controlsView'),
@@ -871,7 +872,8 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       ['pvpView', 'player', 'drop'],
       ['leaderboardView', 'player', 'drop'],
       ['profileView', 'player', 'drop'],
-      ['tradeProposeView', 'player', 'drop'],
+      // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`.
+      ['tradeSessionView', 'player', 'drop'],
       ['helpView', 'player', 'drop'],
       ['menuView', 'player', 'drop'],
       ['controlsView', 'player', 'drop'],
@@ -1683,7 +1685,8 @@ const UNSAFE_OVER_BATTLE: readonly FrameId[] = [
   'tradeView',
   'pvpView',
   'profileView',
-  'tradeProposeView',
+  // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`.
+  'tradeSessionView',
   'controlsView',
 ];
 
@@ -2033,7 +2036,8 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       pvpView: false,
       leaderboardView: true,
       profileView: false,
-      tradeProposeView: false,
+      // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`.
+      tradeSessionView: false,
       helpView: true,
       menuView: true,
       controlsView: false,
@@ -2314,12 +2318,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       // 9 / 25 / 34).
       ['reportProblem', { kind: 'reportProblem' }],
     ];
-    const proposal = {
-      targetIdentity: 'cd'.repeat(32),
-      initiatorMonsterIds: [1n],
-      initiatorCurrency: 0n,
-      counterpartyCurrency: 0n,
-    } as unknown as Extract<ScreenCommand, { kind: 'proposeTrade' }>['args'];
+    // ts-3 (named intentional change, plan "Commands"): `proposeTrade` leaves with the wizard and
+    // the five trade-session kinds join the refused list: 10 safe, 29 refused, 39 kinds (were
+    // 10 / 25 / 35). An editor opened, an offer sent or a trade confirmed from a battle base is
+    // refused like the legacy trade rows.
     const REFUSE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['Care: care', { kind: 'care', monsterId: big }],
       ['Feed: train', { kind: 'train', monsterId: big, foodItemId: 2 }],
@@ -2332,7 +2334,20 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['respondTrade', { kind: 'respondTrade', tradeId: big, accepted: true }],
       ['confirmTrade', { kind: 'confirmTrade', tradeId: big }],
       ['cancelTrade', { kind: 'cancelTrade', tradeId: big }],
-      ['proposeTrade', { kind: 'proposeTrade', args: proposal }],
+      ['openTradeSession', { kind: 'openTradeSession', partnerIdentity: 'cd'.repeat(32) }],
+      ['openTradeEditor', { kind: 'openTradeEditor', sessionId: big }],
+      [
+        'setTradeOffer',
+        {
+          kind: 'setTradeOffer',
+          sessionId: big,
+          monsterIds: [1n],
+          items: [{ itemId: 2, qty: 1 }],
+          currency: 3n,
+        },
+      ],
+      ['confirmTradeSession', { kind: 'confirmTradeSession', sessionId: big, revision: 4n }],
+      ['cancelTradeSession', { kind: 'cancelTradeSession', sessionId: big }],
       // bt-15 (named intentional change, BT15.1): the challenge Command carries the picked party size.
       ['challenge', { kind: 'challenge', targetIdentity: 'cd'.repeat(32), partySize: 2 }],
       ['challenge Accept: acceptChallenge', { kind: 'acceptChallenge', challengeId: big }],
@@ -2349,11 +2364,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
     expect(SAFE, 'ANTI-VACUITY: ten safe kinds (uif-14b: +reportProblem)').toHaveLength(10);
-    expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
+    expect(REFUSE, 'ANTI-VACUITY: twenty-nine refused kinds (ts-3: -1 +5)').toHaveLength(29);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      35,
+      39,
     );
     expect(
       kindsOf(SAFE),
@@ -2371,7 +2386,8 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'reportProblem',
     ]);
 
-    // The table itself is total over the 35 literal kinds (bt-17: −7; uif-14b: +1) and says exactly this.
+    // The table itself is total over the 39 literal kinds (bt-17: −7; uif-14b: +1; ts-3: −1 +5) and
+    // says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2503,7 +2519,7 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     ).toBe(4);
   });
 
-  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds nine safe and twenty-five refused kinds, thirty-four in all (bt-15 increment B: +forfeit; bt-17, named intentional change, BT17.1: the seven 1v1 kinds gone) [BT12-2-POLICY-DEPLOY]', () => {
+  it('deployUnits is battle-safe: no battle-base stack refuses the deploy panel`s send, bare or under a frame, and the policy table holds ten safe and twenty-nine refused kinds, thirty-nine in all (bt-15 increment B: +forfeit; bt-17, named intentional change, BT17.1: the seven 1v1 kinds gone) [BT12-2-POLICY-DEPLOY]', () => {
     // WRONG IMPL KILLED: `deployUnits` classified `refuse` (the confirm screen's A, Start and the
     // Edit formation editor's Confirm would all die at the one place they exist: a Deploying battle
     // IS a battle base); a refusal keyed to the payload (empty picks, a bigint battle id past 2^53);
@@ -2538,15 +2554,17 @@ describe('bt-12: the battle frame owner by phase and the deploy policy (BT12.1, 
     const verdicts = Object.values(COMMAND_BATTLE_POLICY);
     // uif-14b (named intentional change, UIF14B.3): +reportProblem (safe): 10 safe, 25 refused, 35
     // kinds (were 9 / 25 / 34).
+    // ts-3 (named intentional change): -proposeTrade, +5 trade-session kinds (all refuse): 10 safe,
+    // 29 refused, 39 kinds (were 10 / 25 / 35).
     expect(
       verdicts.filter((v) => v === 'safe'),
       'ten safe kinds',
     ).toHaveLength(10);
     expect(
       verdicts.filter((v) => v === 'refuse'),
-      'twenty-five refused kinds',
-    ).toHaveLength(25);
-    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-five kinds in all').toHaveLength(35);
+      'twenty-nine refused kinds',
+    ).toHaveLength(29);
+    expect(Object.keys(COMMAND_BATTLE_POLICY), 'thirty-nine kinds in all').toHaveLength(39);
   });
 
   it('UIF14B.3 reportProblem is battle-safe: no battle-base stack refuses it (bare, under a stamped Help or menu), and a world stack never does either', () => {
@@ -3172,7 +3190,9 @@ describe('context stack: the accelerator denial (ctl-11a, CTL11A.2)', () => {
 const SO1_ROSTER: Readonly<Record<FrameId, boolean>> = {
   menuView: true,
   profileView: true,
-  tradeProposeView: true,
+  // ts-3 (named intentional change, the Strangler rename): was `tradeProposeView`, still true (the
+  // editor's bound session id is null after a reconnect, plan "Commands").
+  tradeSessionView: true,
   shopView: true,
   social: true,
   tradeView: true,
@@ -3220,7 +3240,7 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
         from: stackOf(
           WORLD,
           screen('profileView'),
-          prompt('tradeProposeView'),
+          prompt('tradeSessionView'),
           screen('evolutionView'),
           screen('raisingView'),
         ),
@@ -3228,7 +3248,7 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
         commands: [
           so1Close('raisingView'),
           so1Close('evolutionView'),
-          so1Close('tradeProposeView'),
+          so1Close('tradeSessionView'),
           so1Close('profileView'),
         ],
       },
@@ -3476,10 +3496,13 @@ describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
         commands: [so1Close('profileView')],
       },
       {
-        name: 'a text entry owned by the trade wizard, over the menu',
-        from: stackOf(WORLD, screen('menuView'), textEntry('tradeProposeView')),
+        // ts-3 (named intentional change, the Strangler rename): was the trade wizard's id. The
+        // session editor types nothing (its coins are a D-pad stepper), so this row is the sweep's
+        // owner rule over a second closing owner id, not a shape main.ts builds.
+        name: 'a text entry under the trade session editor`s closing id, over the menu',
+        from: stackOf(WORLD, screen('menuView'), textEntry('tradeSessionView')),
         to: stackOf(WORLD),
-        commands: [so1Close('tradeProposeView'), so1Close('menuView')],
+        commands: [so1Close('tradeSessionView'), so1Close('menuView')],
       },
       {
         name: 'a text entry owned by help stays',

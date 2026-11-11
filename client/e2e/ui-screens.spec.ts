@@ -17,16 +17,26 @@ import {
   sampleStyle,
 } from './uiKit';
 
-// ui-screens.spec.ts — uif-10 (M-ui-foundation): Shop, Heal, Journal and Trade propose on the UI kit,
-// measured in Chromium (UIF10.1 - UIF10.4).
+// ui-screens.spec.ts — uif-10 (M-ui-foundation): Shop, Heal, Journal and the trade session editor on
+// the UI kit, measured in Chromium (UIF10.1 - UIF10.4).
 //
 // EVIDENCE LABEL: real modules + real CSS + FAKE data. The page is the real index.html and the real
 // stylesheet served by the Vite dev server (main.ts is route-aborted, so it never connects: the uif-8
 // and uif-9 fixture-page precedent in ui-inventory.spec.ts and ui-social.spec.ts). The page-side code
-// imports the real ShopView, HealView, QuestLogView and TradeProposeView, and drives Shop and the
-// Journal through the real shopScreen and journalScreen adapters with a fake store, exactly as
-// main.ts does, so what is measured is what the shipped modules and the shipped CSS compute. The
+// imports the real ShopView, HealView, QuestLogView and TradeSessionView, and drives Shop, the
+// Journal and the trade editor through the real shopScreen, journalScreen and tradeSessionScreen
+// adapters (the editor's view model built by the real `buildTradeSessionVm` over fake rows), exactly
+// as main.ts does, so what is measured is what the shipped modules and the shipped CSS compute. The
 // page-side code is a STRING (a function containing `import()` is rewritten by Playwright).
+//
+// ts-3 (named intentional change): the propose wizard is deleted, so its fixture is re-pointed onto
+// the session editor, which mounts on the same `#tradepropose-overlay` shell. Kept where the subject
+// still exists: the root's start padding and the first body line at the content-left (UIF10.3, the
+// first line is now the editor's title), many rows kept inside the root with the cursor row in view
+// (UIF10.3, was the monsters list keeping submit inside the root: the editor has no submit, its last
+// row is Cancel trade), and the axe scan (UIF10.4, now on the list and on the confirm prompt).
+// DROPPED with their subject: "the step header is 2rem tall" and "the step header is above the
+// target select" (the editor has no step header and no target select).
 //
 // ORACLE RULE (uiKit.ts doctrine). Geometry is compared with what Chromium computes for the same page
 // (a root's content-left against a row's left edge, a list's rect against its root's content box);
@@ -40,21 +50,24 @@ const VIEWPORT = { width: 1280, height: 720 } as const;
 
 // THE FIXTURE WORLD. `show(screen, n)` hides the other three roots, then shows one screen: Shop with
 // n items to buy and n stacks to sell, the Journal with n quests, Heal with its one bound location,
-// Trade propose with two targets and n offerable monsters. Shop and the Journal are driven by their
-// real adapters (`press`); the fake store carries only what the adapters read.
+// the trade editor on one session with a full party of six and n item stacks to offer (each one an
+// editor row). Shop, the Journal and the trade editor are driven by their real adapters (`press`);
+// the fake store and the fake session rows carry only what the adapters and the model read.
 const UIF10_MOUNT = `(async () => {
-  const [sv, ss, hv, qv, js, tv, tm] = await Promise.all([
+  const [sv, ss, hv, qv, js, tsv, tsm, tss] = await Promise.all([
     import('/src/ui/shopView.ts'), import('/src/ui/screens/shopScreen.ts'),
     import('/src/ui/healView.ts'), import('/src/ui/questLogView.ts'),
     import('/src/ui/screens/journalScreen.ts'),
-    import('/src/ui/tradeProposeView.ts'), import('/src/ui/tradeProposeModel.ts'),
+    import('/src/ui/tradeSessionView.ts'), import('/src/ui/tradeSessionModel.ts'),
+    import('/src/ui/screens/tradeSessionScreen.ts'),
   ]);
   const me = 'ab'.repeat(32);
+  const them = 'cd'.repeat(32);
   const noop = async () => {};
   const shopView = new sv.ShopView({ onBuy: noop, onSell: noop });
   const healView = new hv.HealView();
   const questView = new qv.QuestLogView();
-  const tradeView = new tv.TradeProposeView({ onSubmit: noop, maxMonstersPerSide: 6 });
+  const tradeView = new tsv.TradeSessionView({ announce: () => {}, onClose: () => {} });
 
   function shopCtx(n) {
     const defs = new Map(), stock = [], inv = [];
@@ -75,10 +88,39 @@ const UIF10_MOUNT = `(async () => {
     for (let i = 0; i < n; i += 1) quests.push({ pqId: BigInt(i + 1), ownerIdentity: me, questId: 'quest_' + i, stepIndex: 0 });
     return { identity: me, now: () => 0, store: { ownQuests: () => quests } };
   }
-  function tradeLists(n) {
-    const offerableMonsters = [];
-    for (let i = 0; i < n; i += 1) offerableMonsters.push({ monsterId: BigInt(i + 1), label: 'Monster ' + i + ' Lv.3' });
-    return { targets: [{ identity: '0xaaa1', label: 'Alice' }, { identity: '0xbbb2', label: 'Bob' }], offerableMonsters };
+  // One session (id 7, revision 3) the viewer opened with Bob: the viewer offers its first monster,
+  // Bob offers one monster, one item and 10 coins and has confirmed. The viewer holds a full party
+  // of six, n item stacks and 250 coins, so the editor lists 6 monster rows, n item rows, then
+  // Coins, Update offer, Confirm trade and Cancel trade.
+  function tradeVm(n) {
+    const card = (id, name) => ({ monsterId: id, speciesId: 1, nickname: name, level: 3, currentHp: 20, statHp: 20 });
+    const ownMonsters = [], itemDefs = new Map(), inventory = [];
+    for (let i = 0; i < 6; i += 1) {
+      ownMonsters.push({ monsterId: BigInt(i + 1), ownerIdentity: me, speciesId: 1, nickname: 'Monster ' + i,
+        level: 3, xp: 0, currentHp: 20, statHp: 20, statAttack: 5, statDefense: 5, statSpeed: 5,
+        statSpAttack: 5, statSpDefense: 5, partySlot: i, tier: 0, qualityTimeTier: 0, nutritionPct: 0,
+        lastCareAtMs: 0n });
+    }
+    for (let i = 0; i < n; i += 1) {
+      const id = 100 + i;
+      itemDefs.set(id, { id, name: 'Item ' + i, description: 'Description ' + i, recruitBonus: 0,
+        trainStat: null, trainAmount: 0, sellPrice: 5n, cureStatus: null });
+      inventory.push({ invId: BigInt(i + 1), ownerIdentity: me, itemId: id, count: 5 });
+    }
+    if (!itemDefs.has(100)) itemDefs.set(100, { id: 100, name: 'Item 0', description: '', recruitBonus: 0,
+      trainStat: null, trainAmount: 0, sellPrice: 5n, cureStatus: null });
+    const session = { sessionId: 7n, opener: me, partner: them,
+      openerOffer: { monsterIds: [1n], items: [], currency: 0n, cards: [card(1n, 'Monster 0')] },
+      partnerOffer: { monsterIds: [50n], items: [{ itemId: 100, qty: 1 }], currency: 10n,
+        cards: [card(50n, 'Visitor')] },
+      openerConfirmed: false, partnerConfirmed: true, revision: 3n, createdAtMs: 0n };
+    return tsm.buildTradeSessionVm({
+      sessions: [session], identity: me, sessionId: 7n,
+      players: [{ identity: me, entityId: 1n, name: 'Me', online: true, lastInputSeq: 0n },
+        { identity: them, entityId: 2n, name: 'Bob', online: true, lastInputSeq: 0n }],
+      ownMonsters, speciesMap: new Map([[1, { name: 'Flameling' }]]), itemDefs, inventory,
+      balance: 250n, legacyOfferMonsterIds: new Set(), battleMonsterIds: new Set(),
+      partySize: 6, maxMonstersPerSide: 6 });
   }
 
   let adapter = null, view = null, vm = null, state = null;
@@ -98,10 +140,10 @@ const UIF10_MOUNT = `(async () => {
         healView.render({ locations: [{ locationId: 1, zoneId: 0, tileX: 4, tileY: 9, costItemName: null,
           costQty: 0, costCurrency: 0n, cooldownMs: 0, isFree: true }] });
       } else if (screen === 'trade') {
-        const lists = tradeLists(n);
-        tradeView.render(lists); tradeView.show();
-        tradeView.paint({ steps: tm.proposeSteps(false), step: 'target', lists,
-          offerCursor: n > 0 ? '1' : null, yes: true, toggle: null, commit: null });
+        vm = tradeVm(n);
+        if (vm.kind !== 'session') throw new Error('the fixture session built no editor view model');
+        adapter = tss.tradeSessionScreen; view = tradeView; state = adapter.init(vm, undefined);
+        adapter.paint(view, vm, state); tradeView.show(); adapter.paint(view, vm, state);
       } else throw new Error('unknown screen ' + screen);
     },
     press(button, times) {
@@ -139,13 +181,13 @@ const ROOT: Readonly<Record<Screen, string>> = {
   trade: '#tradepropose-overlay',
 };
 
-/** The first body row (or, for Trade propose, the step header) whose left edge starts the root's
+/** The first body row (or, for the trade editor, its title) whose left edge starts the root's
  *  content box. */
 const FIRST_LINE: Readonly<Record<Screen, string>> = {
   shop: '#shop-for-sale li',
   heal: '#heal-list li',
   journal: '#quest-log-list li',
-  trade: '[data-testid="tradepropose-steps"]',
+  trade: '#tradesession-title',
 };
 
 const rectOf = (p: Page, selector: string): Promise<Rect> => sampleRect(p, selector);
@@ -229,7 +271,7 @@ async function expectAxeClean(page: Page, label: string, root: string): Promise<
 // ---------------------------------------------------------------------------------------------
 
 test.describe
-  .serial('UIF10 — Shop, Heal, Journal and Trade propose on the UI kit (fixture page: real modules, real CSS, fake data)', () => {
+  .serial('UIF10 — Shop, Heal, Journal and the trade session editor on the UI kit (fixture page: real modules, real CSS, fake data)', () => {
     let browser: Browser;
     let ctx: BrowserContext;
     let page: Page;
@@ -350,16 +392,15 @@ test.describe
       ).toBeGreaterThanOrEqual(title.y + title.height - 0.5);
     });
 
-    test('UIF10.3 on all four roots the first body row starts at the root content-left (no UA list indent), Shop and the Journal scroll many rows with the D-pad cursor kept in view, and Trade propose gets a 2rem step header above the select and a scrolling monsters list that keeps submit inside the root', async () => {
+    test('UIF10.3 on all four roots the first body row starts at the root content-left (no UA list indent), Shop and the Journal scroll many rows with the D-pad cursor kept in view, and the trade editor keeps 40 rows inside the root with its last row (Cancel trade) in view under the cursor', async () => {
       // WRONG IMPL KILLED: a bare `ul` / `ol` indent (Heal's header measured at x 66 against the
       // root's content edge at x 26: the row starts 40px right of the frame); a list that grows
       // past the root instead of scrolling inside it; a D-pad cursor that walks out of the list's
-      // rect (scrolled under the clip); a step header at its text height instead of the TabBar's
-      // 2rem, or below the select; a monsters list that pushes the submit button out of the root.
+      // rect (scrolled under the clip); a trade editor whose rows push the root past the screen or
+      // leave the cursor's last row (Cancel trade) clipped out of the root.
+      // ts-3 (named intentional change): the step-header checks (2rem tall, above the target
+      // select) are dropped with the wizard; see the header.
       const token = await resolveLength(page, '--mr-space-4');
-      const rootFontPx = await page.evaluate(() =>
-        Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-      );
 
       const bigN: Readonly<Record<Screen, number>> = { shop: 40, heal: 1, journal: 40, trade: 30 };
       for (const screen of ['shop', 'heal', 'journal', 'trade'] as const) {
@@ -431,29 +472,50 @@ test.describe
         )
         .toBe(true);
 
-      // Trade propose: 30 monsters scroll above the fields; the step header is 2rem and above the select.
+      // The trade editor: 6 monster rows + 30 item rows + Coins, Update offer, Confirm trade and
+      // Cancel trade. The rows alone are taller than the root (so the case is not vacuous), the
+      // root stays on screen, and a fresh Up from the first row (a wrap) puts the cursor on Cancel
+      // trade, which must then lie inside the root.
       await show(page, 'trade', 30);
-      const steps = '[data-testid="tradepropose-steps"]';
-      const header = await rectOf(page, steps);
-      expectNear(header.height, 2 * rootFontPx, 1, 'trade: the step header is 2rem tall');
-      const select = await rectOf(page, '#tradepropose-target');
-      expect(header.y + header.height, 'trade: the header is above the select').toBeLessThanOrEqual(
-        select.y + 0.5,
-      );
-      const monsters = await scrollBox(page, '#tradepropose-monsters');
-      expect(monsters.scrollHeight, 'trade: 30 monsters overflow their list').toBeGreaterThan(
-        monsters.clientHeight,
-      );
+      const rows = '#tradesession-rows [data-nav-key]';
+      await expect(page.locator(rows), 'trade: the editor lists 40 rows').toHaveCount(40);
+      await expect(page.locator('#tradesession-rows [data-nav-key="item-129"]')).toHaveCount(1);
       const root = await rectOf(page, ROOT.trade);
-      const submit = await rectOf(page, '#tradepropose-submit');
-      expect(submit.height, 'trade: the submit button is laid out').toBeGreaterThan(0);
+      const rowsHeight = await page.evaluate(
+        (sel) =>
+          [...document.querySelectorAll(sel)].reduce(
+            (sum, el) => sum + el.getBoundingClientRect().height,
+            0,
+          ),
+        rows,
+      );
       expect(
-        insideV(submit, root),
-        `trade: the submit button (${submit.y}..${submit.y + submit.height}) is inside the root (${root.y}..${root.y + root.height})`,
-      ).toBe(true);
+        rowsHeight,
+        `trade: the 40 rows (${rowsHeight}px) are taller than the root (${root.height}px)`,
+      ).toBeGreaterThan(root.height);
+      expect(root.height, 'trade: the root is laid out').toBeGreaterThan(0);
+      expect(
+        root.y + root.height,
+        `trade: the root (${root.y}..${root.y + root.height}) stays inside the viewport`,
+      ).toBeLessThanOrEqual(VIEWPORT.height + 0.5);
+      await expect(page.locator('#tradesession-rows [aria-selected="true"]')).toHaveAttribute(
+        'data-nav-key',
+        'monster-1',
+      );
+      await press(page, 'Up');
+      const last = '#tradesession-rows [data-nav-key="cancel"]';
+      await expect(page.locator(last), 'trade: Up wraps to Cancel trade').toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      await expect
+        .poll(async () => insideV(await rectOf(page, last), await rectOf(page, ROOT.trade)), {
+          message: 'trade: the cursor row Cancel trade lies inside the root',
+        })
+        .toBe(true);
     });
 
-    test('UIF10.4 axe is clean on Shop (confirm phase), Heal, an empty Journal and Trade propose (first step), and the Shop quantity row keeps its Left/Right clamping in Chromium', async () => {
+    test('UIF10.4 axe is clean on Shop (confirm phase), Heal, an empty Journal and the trade editor (its list and its confirm prompt), and the Shop quantity row keeps its Left/Right clamping in Chromium', async () => {
       // WRONG IMPL KILLED: a kit adoption that adds an a11y violation on any of the four screens
       // (a chip announced as text, a tablist with a non-tab child, a sheet with no accessible
       // name, an unlabelled live region, a contrast loss); a vacuous scan (the passes floor); a
@@ -471,9 +533,21 @@ test.describe
       await expect(page.locator('#quest-log-overlay')).toBeVisible();
       await expectAxeClean(page, 'journal (empty)', ROOT.journal);
 
+      // ts-3 (named intentional change): was the propose wizard's first step. The editor's list,
+      // then its confirm prompt (Up twice from the first row wraps to Cancel trade, then Confirm
+      // trade; A opens the prompt).
       await show(page, 'trade', 3);
       await expect(page.locator('#tradepropose-overlay')).toBeVisible();
-      await expectAxeClean(page, 'trade propose (first step)', ROOT.trade);
+      await expect(page.locator('#tradesession-rows [data-nav-key]')).toHaveCount(13);
+      await expectAxeClean(page, 'trade editor (list)', ROOT.trade);
+      await press(page, 'Up', 2);
+      await expect(page.locator('#tradesession-rows [data-nav-key="confirm"]')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      await press(page, 'A');
+      await expect(page.locator('#tradesession-prompt'), 'trade: the confirm prompt').toBeVisible();
+      await expectAxeClean(page, 'trade editor (confirm prompt)', ROOT.trade);
 
       // The quantity row (a non-regression guard: the clamp is the adapter's and does not change).
       await show(page, 'shop', 3);

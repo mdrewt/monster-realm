@@ -9,7 +9,6 @@ import type { LeaderboardView } from '../leaderboardView';
 import type { MonstersTab } from '../monstersModel';
 import type { NavInput } from '../nav';
 import type { PvpView } from '../pvpView';
-import type { TradeProposeArgs } from '../tradeProposeModel';
 import type { TradeView } from '../tradeView';
 
 /** The result of one screen step: the next state and the effect the shell applies. */
@@ -51,7 +50,21 @@ export type Command =
   | { readonly kind: 'respondTrade'; readonly tradeId: bigint; readonly accepted: boolean }
   | { readonly kind: 'confirmTrade'; readonly tradeId: bigint }
   | { readonly kind: 'cancelTrade'; readonly tradeId: bigint }
-  | { readonly kind: 'proposeTrade'; readonly args: TradeProposeArgs }
+  // Trade sessions. `openTradeSession` is sent only by the face-to-face Trade verb; `openTradeEditor`
+  // calls no reducer: it opens the editor frame on a session the player is already in.
+  | { readonly kind: 'openTradeSession'; readonly partnerIdentity: string }
+  | { readonly kind: 'openTradeEditor'; readonly sessionId: bigint }
+  // The player's whole side, replacing what the session holds for them.
+  | {
+      readonly kind: 'setTradeOffer';
+      readonly sessionId: bigint;
+      readonly monsterIds: readonly bigint[];
+      readonly items: readonly { readonly itemId: number; readonly qty: number }[];
+      readonly currency: bigint;
+    }
+  // `revision`: the one the editor shows; the server refuses a confirm of any other.
+  | { readonly kind: 'confirmTradeSession'; readonly sessionId: bigint; readonly revision: bigint }
+  | { readonly kind: 'cancelTradeSession'; readonly sessionId: bigint }
   // bt-15 (BT15.1): `partySize` is the party-size pick (1..3) — the challenge commits the first
   // `partySize` eligible party monsters; the server derives `format` from that list's length.
   | { readonly kind: 'challenge'; readonly targetIdentity: string; readonly partySize: number }
@@ -139,12 +152,13 @@ export interface ScreenContext {
   /** The Social tab the last open path asked for, else null (a plain open). It is bound before
    *  the frame shows, keeps its value after the frame closes and reads null after a reconnect. */
   readonly socialTab: SocialTab | null;
-  /** The player the trade wizard was opened for (the face-to-face Trade, ctl-10b), as a hex
-   *  identity; absent or null when no target was supplied. Bound before the wizard shows. */
-  readonly proposeTarget?: string | null;
+  /** The trade session the editor was last opened on; absent or null when none was bound. Bound
+   *  before the editor shows; it keeps its value after the frame closes and reads null after a
+   *  reconnect. */
+  readonly tradeSessionId?: bigint | null;
   /** The Monsters tab the last open path bound (uif-6: Party from the menu and V, Storage from B),
    *  else null or absent, which open Storage. Bound before the frame is seated; optional like
-   *  `proposeTarget`, so a fixture need not build it. */
+   *  `tradeSessionId`, so a fixture need not build it. */
   readonly monstersTab?: MonstersTab | null;
   /** The OS reduced-motion preference. */
   readonly reduceMotion: boolean;

@@ -290,13 +290,32 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
   ],
   'heal.prompt.question': [{ cost: '25 gold' }, { cost: '2x Herb + 40 gold' }],
-  // ctl-8e: the Review summary of the PARSED on-screen draft (1 ★). `offer` and `ask` are the
-  // parsed coin amounts as decimal strings, `monsters` the checked count; every field differs
-  // between the two sets, numbers included.
-  'tradePropose.review.summary': [
-    { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
-    { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
+  // ts-3 (named intentional change, the Strangler): ctl-8e's `tradePropose.review.summary` is
+  // DELETED with the trade-propose wizard. ts-3 adds 7 ★ keys (plan "i18n" ADDED table): the
+  // Social › Trades session row's title and marks, the editor's title, a blocked picker row, an
+  // item row, the coins row and the collapsed banner line. Names / labels / reasons / marks are
+  // caller data carried verbatim; `qty` / `held` / `count` are numbers, `amount` / `balance`
+  // bigints (past 2^53 in set B, so a Number round trip or a grouping formatter shows); every field
+  // differs between the two sets.
+  'trade.row.title': [{ name: 'Bob' }, { name: 'Dana' }],
+  'trade.row.marks': [
+    { mine: 'Confirmed', theirs: 'Not confirmed' },
+    { mine: 'Not confirmed', theirs: 'Confirmed' },
   ],
+  'tradeSession.title': [{ name: 'Zed' }, { name: 'Amy' }],
+  'tradeSession.row.blocked': [
+    { label: 'Kip Lv.7', reason: 'fainted' },
+    { label: 'Sproutle Lv.12', reason: 'in battle' },
+  ],
+  'tradeSession.row.item': [
+    { name: 'Herb', qty: 2, held: 5 },
+    { name: 'Tonic', qty: 0, held: 9 },
+  ],
+  'tradeSession.row.coins': [
+    { amount: 40n, balance: 900n },
+    { amount: 9_007_199_254_740_993n, balance: 27_021_597_764_222_979n },
+  ],
+  'notice.request.trades': [{ count: 2 }, { count: 5 }],
   // ctl-8f: the Journal detail's step line (questLogView.ts).
   'journal.detail.step': [{ step: 0 }, { step: 4 }],
   // ctl-8g: the Players tab's walk-up line (leaderboardView.ts). `name` is a player-chosen display
@@ -609,7 +628,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // listed by id in UIF14_PLAIN_IDS below; their copy is authored with the slice, so its bytes are not
   // pinned here (the 'uif-14' describe pins the two tab titles, non-empty-ness and en != fr).
   'chrome.rename.submit': 'Rename',
-  'chrome.tradePropose.submit': 'Offer',
+  // ts-3 (named intentional change, the Strangler): 'chrome.tradePropose.submit' ('Offer') is
+  // DELETED with the trade-propose wizard.
   'chrome.status.exportBlocked': 'data export: download blocked by the browser',
   // uif-16b (named intentional change, WF1-A10): 'chrome.status.privacyOverlayBusy' is RETIRED
   // with the `privacy-busy` kind (catalogParity DEAD-KEY otherwise).
@@ -711,8 +731,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'shop.inventory.empty': 'No items to sell.', // shopView.ts
   'shop.buy.submit': 'Buy', // shopView.ts
   'shop.sell.submit': 'Sell', // shopView.ts
-  // The tail batch's 10 plain keys.
-  'tradePropose.target.placeholder': 'Select a player…', // tradeProposeView.ts:168
+  // The tail batch's 10 plain keys. ts-3 (named intentional change, the Strangler):
+  // 'tradePropose.target.placeholder' ('Select a player…') is DELETED with the wizard; 9 remain.
   'dialogue.action.shop': 'Shop', // dialogueView.ts:72
   'claim.privacyButton': 'Privacy & Account Data', // claimView.ts (resolved in render()/show())
   'claim.signInButton': 'Sign in', // claimView.ts (resolved in render()/show())
@@ -742,7 +762,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'trade.feedback.completed': 'Trade complete!', // main.ts:2682
   'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2689
   'chrome.rename.updated': 'Name updated!', // main.ts:2801
-  'tradePropose.feedback.sent': 'Offer sent!', // main.ts:2828
+  // ts-3 (named intentional change, the Strangler): 'tradePropose.feedback.sent' ('Offer sent!')
+  // is DELETED with the wizard (no success toast: the editor is the feedback); 12 of the 15 remain.
   'chrome.session.expired.title': 'Session expired', // sessionModel.ts:124
   'chrome.session.expired.body':
     'Your sign-in has expired. Sign in again to keep saving progress across your devices, or ' +
@@ -878,18 +899,30 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'social.confirm.declineTrade': 'Decline this trade?',
   'social.confirm.confirmTrade': 'Complete this trade? It cannot be undone.',
   'social.confirm.declineChallenge': 'Decline this challenge?',
-  // ctl-8e: 9 new plain keys — the trade-propose wizard's step header (five steps), the Review
-  // question, the line shown when the on-screen draft cannot be sent, and the Yes / No answers
-  // (all painted by tradeProposeView.ts).
-  'tradePropose.step.target': 'Target',
-  'tradePropose.step.offer': 'Offer',
-  'tradePropose.step.coins': 'Coins',
-  'tradePropose.step.ask': 'Ask',
-  'tradePropose.step.review': 'Review',
-  'tradePropose.review.prompt': 'Send this offer?',
-  'tradePropose.review.incomplete': 'This offer is not complete.',
-  'tradePropose.review.yes': 'Yes',
-  'tradePropose.review.no': 'No',
+  // ts-3 (named intentional change, the Strangler): ctl-8e's 9 plain wizard keys
+  // (`tradePropose.step.{target,offer,coins,ask,review}`, `tradePropose.review.{prompt,incomplete,
+  // yes,no}`) are DELETED with the trade-propose wizard. ts-3 adds 18 plain keys, byte-transcribed
+  // from memory/projects/monster-realm-ts-3-plan.md's "i18n" ADDED table: the Trades status line
+  // with sessions and no legacy offer (tradeView.ts), and the session editor's side headings, mark
+  // words, unavailable reasons, action rows, prompts and notices (tradeSessionView.ts / main.ts).
+  'trade.status.open': 'Open trades',
+  'tradeSession.side.mine': 'Your offer',
+  'tradeSession.side.theirs': 'Their offer',
+  'tradeSession.mark.confirmed': 'Confirmed',
+  'tradeSession.mark.unconfirmed': 'Not confirmed',
+  'tradeSession.reason.fainted': 'fainted',
+  'tradeSession.reason.inAnotherTrade': 'in another trade',
+  'tradeSession.reason.inBattle': 'in battle',
+  'tradeSession.reason.limit': 'offer is full',
+  'tradeSession.reason.unsent': 'update your offer first',
+  'tradeSession.reason.nothingToSend': 'no changes',
+  'tradeSession.row.apply': 'Update offer',
+  'tradeSession.row.confirm': 'Confirm trade',
+  'tradeSession.row.cancel': 'Cancel trade',
+  'tradeSession.prompt.confirm': 'Confirm this trade? A completed trade cannot be undone.',
+  'tradeSession.prompt.cancel': 'Cancel this trade?',
+  'tradeSession.notice.changed': 'The offer changed. Review it before you confirm.',
+  'tradeSession.notice.closed': 'Trade closed.',
   // ctl-8f (named intentional change): 9 new plain keys — the Bag frame's pocket tabs, item
   // actions, picker title and the no-monster reason (raisingView.ts).
   'bag.pocket.bait': 'Bait',
@@ -1474,15 +1507,51 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { cost: '2x Herb + 40 gold' },
     outputB: 'Heal party for 2x Herb + 40 gold?',
   },
-  // ctl-8e: the trade-propose Review summary (CTL8E.1).
-  'tradePropose.review.summary': {
-    inputA: { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
-    // INTENTIONAL CHANGE (ctl-8e round 2): was "To {target}: {n} monsters and {offer} coins,
-    // asking {ask} coins" ("1 monsters" for a single one); now a labelled list that reads right for
-    // any count.
-    outputA: `To Zed ${MIDDLE_DOT} Monsters: 2 ${MIDDLE_DOT} Coins: 25 ${MIDDLE_DOT} Asking: 7`,
-    inputB: { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
-    outputB: `To Amy ${MIDDLE_DOT} Monsters: 3 ${MIDDLE_DOT} Coins: 1000 ${MIDDLE_DOT} Asking: 4`,
+  // ts-3 (named intentional change, the Strangler): ctl-8e's `tradePropose.review.summary` output
+  // pins are DELETED with the key. ts-3's 7 parameterised keys, en bytes from the plan's "i18n"
+  // ADDED table; the marks separator is U+00B7 (MIDDLE_DOT), the digits are the value's own (no
+  // grouping, no Number round trip).
+  'trade.row.title': {
+    inputA: { name: 'Bob' },
+    outputA: 'Trade with Bob',
+    inputB: { name: 'Dana' },
+    outputB: 'Trade with Dana',
+  },
+  'trade.row.marks': {
+    inputA: { mine: 'Confirmed', theirs: 'Not confirmed' },
+    outputA: `You: Confirmed ${MIDDLE_DOT} Them: Not confirmed`,
+    inputB: { mine: 'Not confirmed', theirs: 'Confirmed' },
+    outputB: `You: Not confirmed ${MIDDLE_DOT} Them: Confirmed`,
+  },
+  'tradeSession.title': {
+    inputA: { name: 'Zed' },
+    outputA: 'Trade with Zed',
+    inputB: { name: 'Amy' },
+    outputB: 'Trade with Amy',
+  },
+  'tradeSession.row.blocked': {
+    inputA: { label: 'Kip Lv.7', reason: 'fainted' },
+    outputA: 'Kip Lv.7 (fainted)',
+    inputB: { label: 'Sproutle Lv.12', reason: 'in battle' },
+    outputB: 'Sproutle Lv.12 (in battle)',
+  },
+  'tradeSession.row.item': {
+    inputA: { name: 'Herb', qty: 2, held: 5 },
+    outputA: 'Herb: 2 of 5',
+    inputB: { name: 'Tonic', qty: 0, held: 9 },
+    outputB: 'Tonic: 0 of 9',
+  },
+  'tradeSession.row.coins': {
+    inputA: { amount: 40n, balance: 900n },
+    outputA: 'Coins: 40 of 900',
+    inputB: { amount: 9_007_199_254_740_993n, balance: 27_021_597_764_222_979n },
+    outputB: 'Coins: 9007199254740993 of 27021597764222979',
+  },
+  'notice.request.trades': {
+    inputA: { count: 2 },
+    outputA: '2 trade requests',
+    inputB: { count: 5 },
+    outputB: '5 trade requests',
   },
   // ctl-8f: the Journal detail's step line (CTL8F.3).
   'journal.detail.step': {
@@ -2272,7 +2341,12 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524: -2 plain `menu.options.{title,desc}`
     // (the Options group is gone); the `menu.options.{help,controls}.*` pairs are re-homed as
     // `menu.{help,controls}.*` (a net zero).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the uif-15c roster is 524 keys').toHaveLength(524);
+    // ts-3 (named intentional change, the Strangler, spec §ts-3 / ts-3.7): 524 -> 536: -13 wizard
+    // keys (`chrome.tradePropose.submit`, `tradePropose.target.placeholder`,
+    // `tradePropose.feedback.sent`, the 9 ctl-8e plain `tradePropose.{step,review}.*` keys and
+    // `tradePropose.review.summary`), +25 (18 plain, 7 parameterised: `trade.status.open`,
+    // `trade.row.{title,marks}`, `tradeSession.*`, `notice.request.trades`).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-3 roster is 536 keys').toHaveLength(536);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2536,93 +2610,15 @@ describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
 });
 
 // =============================================================================
-// ctl-8e: the French side of the 10 keys ctl-8e adds (the wizard's step header, the Review
-// question, the incomplete line, Yes / No and the summary). The exact French wording is the
-// translator's; what is pinned is that every key EXISTS in catalog.fr.ts with the right shape (a
-// missing key makes t() throw in a French boot, the whole wizard blank), that the three sentences
-// are translations rather than the English copy, and that the summary closure carries every param
-// through.
+// ts-3 (named intentional change, the Strangler): the ctl-8e describe "catalog.fr.ts, the keys
+// ctl-8e adds" is DELETED with the trade-propose wizard and its keys. Adjudication:
+//   CTL8E-1-VIEW-PAINT (the 9 plain keys + summary in fr) → ts-3.7 TS3-I18N
+//     (ui/i18n/catalogParity.test.ts) | retired: wizard deleted by spec §ts-3 Strangler
+//   CTL8E-1-VIEW-PAINT (the single-monster summary and its exact French) → ts-3.7 TS3-I18N
+//     (ui/i18n/catalogParity.test.ts) | retired: wizard deleted by spec §ts-3 Strangler
+// The ts-3 keys' French side (present in fr, distinct from en, every param interpolated) is
+// pinned by TS3-I18N; their en bytes by CAT-01 above (EXPECTED_PLAIN / EXPECTED_PARAM_OUTPUTS).
 // =============================================================================
-
-describe('ctl-8e: catalog.fr.ts, the keys ctl-8e adds', () => {
-  it('CTL8E-1-VIEW-PAINT: the 9 new plain keys are non-empty strings and the summary a closure in catalog.fr.ts; the prompt, the incomplete line and the summary are not the English copy; and the summary closure echoes every param, both sample sets, with two different outputs', () => {
-    // WRONG IMPL KILLED: a key added to en only (the French wizard header and Review would throw);
-    // a French sentence left as the English copy; a summary closure that drops or swaps a param
-    // (the target, the count or a coin amount); and a closure that ignores the numeric params
-    // (both sample sets would print the same line).
-    const fr = CATALOG_FR as Record<string, unknown>;
-    const plainKeys = Object.keys(EXPECTED_PLAIN).filter((k) => k.startsWith('tradePropose.'));
-    const wizardPlain = plainKeys.filter(
-      (k) => k !== 'tradePropose.target.placeholder' && k !== 'tradePropose.feedback.sent',
-    );
-    expect(wizardPlain.slice().sort(), 'fixture: the 9 ctl-8e plain keys').toEqual([
-      'tradePropose.review.incomplete',
-      'tradePropose.review.no',
-      'tradePropose.review.prompt',
-      'tradePropose.review.yes',
-      'tradePropose.step.ask',
-      'tradePropose.step.coins',
-      'tradePropose.step.offer',
-      'tradePropose.step.review',
-      'tradePropose.step.target',
-    ]);
-    for (const key of wizardPlain) {
-      expect(typeof fr[key], `${key} must be a plain string in the fr catalog`).toBe('string');
-      expect((fr[key] as string).length > 0, `${key} must be non-empty`).toBe(true);
-    }
-    for (const key of ['tradePropose.review.prompt', 'tradePropose.review.incomplete']) {
-      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(EXPECTED_PLAIN[key]);
-    }
-
-    const key = 'tradePropose.review.summary';
-    const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
-    expect(spec, 'fixture: the English output pins exist').toBeDefined();
-    expect(typeof fr[key], `${key} must be a closure in the fr catalog`).toBe('function');
-    const fn = fr[key] as (p: Record<string, unknown>) => string;
-    const outA = fn(spec.inputA);
-    const outB = fn(spec.inputB);
-    expect(outA, 'a translation, not the English line').not.toBe(spec.outputA);
-    expect(outA, 'the two sample sets print different lines').not.toBe(outB);
-    for (const [out, input] of [
-      [outA, spec.inputA],
-      [outB, spec.inputB],
-    ] as const) {
-      for (const [field, value] of Object.entries(input)) {
-        expect(out.includes(String(value)), `${field}=${String(value)} appears in ${out}`).toBe(
-          true,
-        );
-      }
-    }
-  });
-
-  it('CTL8E-1-VIEW-PAINT: the summary reads right for a single monster (no "1 monsters") and its French is the exact labelled list, every space before a colon a U+00A0 NO-BREAK SPACE, for both sample sets', () => {
-    // WRONG IMPL KILLED: the plural sentence "{n} monsters and ..." (a single ticked monster reads
-    // "1 monsters"); a French colon set off by a plain breaking space (a browser may wrap the colon
-    // onto a line of its own); a French line with an ASCII e grave stand-in, or the English words
-    // left in; and a closure that reorders or drops a field.
-    const en = (CATALOG_EN as Record<string, unknown>)['tradePropose.review.summary'] as (
-      p: Record<string, unknown>,
-    ) => string;
-    expect(en({ target: 'Zed', monsters: 1, offer: '0', ask: '0' })).toBe(
-      `To Zed ${MIDDLE_DOT} Monsters: 1 ${MIDDLE_DOT} Coins: 0 ${MIDDLE_DOT} Asking: 0`,
-    );
-    expect(
-      en({ target: 'Zed', monsters: 1, offer: '0', ask: '0' }).includes(' monsters'),
-      'no plural noun after a count',
-    ).toBe(false);
-
-    const E_GRAVE = String.fromCharCode(0x00e8);
-    const fr = (CATALOG_FR as Record<string, unknown>)['tradePropose.review.summary'] as (
-      p: Record<string, unknown>,
-    ) => string;
-    const spec = EXPECTED_PARAM_OUTPUTS['tradePropose.review.summary'] as ParamOutputSpec;
-    const frame = (p: { target: string; monsters: number; offer: string; ask: string }): string =>
-      `Pour ${p.target} ${MIDDLE_DOT} Monstres${NO_BREAK_SPACE}: ${p.monsters} ${MIDDLE_DOT} ` +
-      `Pi${E_GRAVE}ces${NO_BREAK_SPACE}: ${p.offer} ${MIDDLE_DOT} Demande${NO_BREAK_SPACE}: ${p.ask}`;
-    expect(fr(spec.inputA)).toBe(frame({ target: 'Zed', monsters: 2, offer: '25', ask: '7' }));
-    expect(fr(spec.inputB)).toBe(frame({ target: 'Amy', monsters: 3, offer: '1000', ask: '4' }));
-  });
-});
 
 // =============================================================================
 // ctl-8g: the French side of the 3 keys ctl-8g adds (the Players tab's Nearby badge, its empty
@@ -3398,8 +3394,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
   });
 });
 
@@ -3520,8 +3517,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3828,9 +3826,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 524 keys').toBe(524);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(524);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(536);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4510,8 +4509,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // uif-14b (named intentional change, UIF14B.1): 530 -> 531, +1 plain help.intro.report.
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}`.
-    expect(Object.keys(en), 'the English roster is 524 keys (uif-15c -2)').toHaveLength(524);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en), 'the English roster is 536 keys (ts-3 +12)').toHaveLength(536);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(536);
   });
 });
 
@@ -4625,7 +4625,8 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
       expect(typeof en[id], `en keeps ${id}`).toBe('string');
       expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
     }
-    expect(Object.keys(en), 'the English roster is 524 keys').toHaveLength(524);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(524);
+    // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
+    expect(Object.keys(en), 'the English roster is 536 keys').toHaveLength(536);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(536);
   });
 });

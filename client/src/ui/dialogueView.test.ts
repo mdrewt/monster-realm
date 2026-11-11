@@ -195,8 +195,9 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
     );
 
     // The defer must come from the S1 helper, not from a view-local setTimeout. This
-    // clause is what makes the test RED for renameView/tradeProposeView-shaped impls that already
-    // defer their own focus; it is the reason a passing positive polarity is not enough.
+    // clause is what makes the test RED for impls that already defer their own focus (the shape
+    // renameView and the retired trade-propose wizard, deleted at ts-3, had); it is the reason a
+    // passing positive polarity is not enough.
     expect(
       vi.mocked(openOverlayA11y),
       'the deferred focus must be scheduled by openOverlayA11y, not by the view',

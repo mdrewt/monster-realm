@@ -31,7 +31,7 @@ import {
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreBattleChallenge, StoreTradeOffer } from './net/store';
+import type { StoreBattleChallenge, StoreTradeOffer, StoreTradeSession } from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import { t as i18nT, tf } from './ui/i18n/resolver';
 
@@ -112,6 +112,7 @@ async function boot(): Promise<void> {
   H.sends = [];
   H.calls = [];
   H.interact = () => [];
+  sessions.clear();
   T = 1000;
   clock.t = T;
   localStorage.clear();
@@ -183,6 +184,40 @@ function batch(): void {
 
 function seedPlayer(identity: string, name: string, entityId: bigint): void {
   opts.store.upsertPlayer({ identity, entityId, name, online: true, lastInputSeq: 0n });
+}
+
+/** ts-3 (named intentional change, C): a legacy `trade_offer` raises no notice any more, so every
+ *  incoming trade request in this file is a SESSION (`my_trade_session`) `from` opened with the
+ *  booted player, untouched on the booted player's side. Was: `offerFrom` (a Pending trade_offer),
+ *  kept below only for the "a legacy offer raises nothing" control. */
+const sessionFrom = (
+  from: string,
+  sessionId: bigint,
+  createdAtMs: bigint,
+  over: Partial<StoreTradeSession> = {},
+): StoreTradeSession => ({
+  sessionId,
+  opener: from,
+  partner: H.identity,
+  openerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+  partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+  openerConfirmed: false,
+  partnerConfirmed: false,
+  revision: 1n,
+  createdAtMs,
+  ...over,
+});
+
+/** The session rows this boot's store holds: the view is PK-less, so every change reconciles the
+ *  whole set (as the connection's flush does). Applied on the next `batch()`. */
+const sessions = new Map<bigint, StoreTradeSession>();
+function putSession(row: StoreTradeSession): void {
+  sessions.set(row.sessionId, row);
+  opts.store.reconcileTradeSessionsFromView([...sessions.values()]);
+}
+function dropSession(sessionId: bigint): void {
+  sessions.delete(sessionId);
+  opts.store.reconcileTradeSessionsFromView([...sessions.values()]);
 }
 
 /** A Pending offer from `from` to the booted player. */
@@ -327,11 +362,11 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
         bannerName: 'Bob',
       },
       {
-        label: 'a trade in a later batch',
+        label: 'a trade session in a later batch',
         initial: false,
         seed: () => {
           seedPlayer(CAROL, 'Carol', 9n);
-          opts.store.upsertTradeOffer(offerFrom(CAROL, 11n, 1_000n));
+          putSession(sessionFrom(CAROL, 11n, 1_000n));
         },
         bannerName: 'Carol',
       },
@@ -359,13 +394,14 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       expect(openDialogs(), `${s.label}: no dialog is on screen`).toEqual([]);
       expect(shownById('pvp-challenge-overlay'), `${s.label}: not the Challenges root`).toBe(false);
       expect(shownById('trade-overlay'), `${s.label}: not the Trades root`).toBe(false);
+      expect(shownById('tradepropose-overlay'), `${s.label}: not the session editor`).toBe(false);
       expect(shownById('menu-overlay'), `${s.label}: not the menu`).toBe(false);
       expect(document.activeElement, `${s.label}: focus did not move`).toBe(focusBefore);
       expect(H.calls, `${s.label}: nothing was sent`).toEqual([]);
 
       // ANTI-VACUITY: the request really is in the store and really is announced.
       expect(
-        opts.store.allChallenges().length + opts.store.allTradeOffers().length,
+        opts.store.allChallenges().length + opts.store.allTradeSessions().length,
         `${s.label}: precondition: the request is in the store`,
       ).toBe(1);
       expect(bannerText(), `${s.label}: precondition: it is announced by the banner`).toContain(
@@ -405,7 +441,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
 
     // --- a trade arrives ------------------------------------------------------------------
     const focusBefore = document.activeElement;
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    putSession(sessionFrom(BOB, 11n, 1_000n));
     batch();
     frame();
     const tradeLine = tf('notice.request.trade', { name: 'Bob' });
@@ -454,11 +490,11 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       i18nT('menu.close.title'),
     ]);
     // The request is withdrawn while the menu is open: the row follows the BATCH (no frame).
-    opts.store.removeTradeOffer(11n);
+    dropSession(11n);
     batch();
     expect(menuRows()[3], 'the Social row lost its badge on the batch').toBe(social);
     // And a request that arrives while it is open badges it again.
-    opts.store.upsertTradeOffer(offerFrom(BOB, 12n, 3_000n));
+    putSession(sessionFrom(BOB, 12n, 3_000n));
     batch();
     expect(menuRows()[3], 'a new request badges the open menu').toBe(`${social} (${badge})`);
 
@@ -468,7 +504,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     expect(bannerText(), 'the banner is back at the bare world').toBe(tradeLine);
 
     // --- a challenge reads its own line -------------------------------------------------------
-    opts.store.removeTradeOffer(12n);
+    dropSession(12n);
     opts.store.upsertChallenge(challengeFrom(BOB, 21n, 4_000n));
     batch();
     frame();
@@ -486,7 +522,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     expect(H.calls, 'nothing was ever sent').toEqual([]);
   }, 60_000);
 
-  it('CTL13-3-BOOT-Y-ENTER: Y with a request pending and no target opens its sheet (Accept / Decline / View, on Accept) over the bare world with no focus move; while it is open a movement key sends no move; Enter sends exactly the Accept reducer for that request (respondTrade accepted:true, acceptChallenge), Down then Enter the Decline one, and View opens Social on the request`s tab sending nothing; a request withdrawn or replaced under the open sheet sends nothing', async () => {
+  it('CTL13-3-BOOT-Y-ENTER: Y with a request pending and no target opens its sheet (Accept / Decline / View, on Accept) over the bare world with no focus move; while it is open a movement key sends no move; Enter answers Accept for that request (a trade session opens its editor with no reducer, ts-3; acceptChallenge), Down then Enter sends the Decline reducer (cancelTradeSession, declineChallenge), and View opens Social on the request`s tab sending nothing; a request withdrawn or replaced under the open sheet sends nothing', async () => {
     // WRONG IMPL KILLED: a Y that does nothing without a target (the criterion); a sheet whose
     // cursor starts on Decline or View (Y then Enter would not accept); a sheet that opens a
     // frame, takes focus or lets the character walk on a D-pad press; an Enter that sends the
@@ -509,7 +545,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       await bootReady();
       seedPlayer(BOB, 'Bob', 8n);
       batch();
-      if (kind === 'trade') opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+      if (kind === 'trade') putSession(sessionFrom(BOB, 11n, 1_000n));
       else opts.store.upsertChallenge(challengeFrom(BOB, 21n, 2_000n));
       batch();
       frame();
@@ -538,16 +574,23 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     expect(H.sends, 'no movement while the request sheet is open').toEqual([]);
     expect(sheetCursor(), 'Left and Right leave the cursor on Accept').toBe('accept');
     expect(H.calls, 'and nothing was sent yet').toEqual([]);
+    // ts-3 (named intentional change, C): a trade's Accept is `openTradeEditor` — no reducer; the
+    // editor opens on that session. Was: respondTrade accepted:true for a legacy offer.
     press(A);
     await flush();
-    expect(H.calls, 'Enter on Accept: exactly the accept reducer for that offer').toEqual([
-      { name: 'respondTrade', args: { tradeId: 11n, accepted: true } },
-    ]);
+    expect(H.calls, 'Enter on Accept: no reducer for a trade session').toEqual([]);
     frame();
     expect(sheetShown(), 'the sheet closed').toBe(false);
+    expect(stackNames(), 'Accept opened the session editor').toEqual(['world', 'tradeSessionView']);
+    expect(byId('tradepropose-overlay').getAttribute('data-session-id'), 'on that session').toBe(
+      '11',
+    );
+    press('Escape');
+    frame();
+    expect(stackNames(), 'precondition: Start closed the editor').toEqual(['world']);
     press(A);
     await flush();
-    expect(H.calls, 'a second Enter at the world sends nothing more').toHaveLength(1);
+    expect(H.calls, 'a second Enter at the world sends nothing').toEqual([]);
     press('KeyD');
     expect(H.sends, 'control: with the sheet closed the same key walks').toHaveLength(1);
 
@@ -557,10 +600,12 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
       readonly downs: number;
       readonly calls: Array<{ name: string; args: unknown }>;
     }> = [
+      // ts-3 (named intentional change, C): a trade's Decline cancels the session. Was: respondTrade
+      // accepted:false.
       {
         kind: 'trade',
         downs: 1,
-        calls: [{ name: 'respondTrade', args: { tradeId: 11n, accepted: false } }],
+        calls: [{ name: 'cancelTradeSession', args: { sessionId: 11n } }],
       },
       {
         kind: 'challenge',
@@ -615,37 +660,45 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     }
 
     // --- stale: withdrawn or replaced under the open sheet ---------------------------------
+    // ts-3 (named intentional change, C): Accept sends no reducer now, so "sends nothing" alone is
+    // vacuous; each stale step also pins that NO editor opened (neither on the stale id nor
+    // re-pointed onto the replacement), and the last step reads the editor's session id.
     await openSheet('trade');
     seedPlayer(CAROL, 'Carol', 9n);
-    opts.store.removeTradeOffer(11n);
-    opts.store.upsertTradeOffer(offerFrom(CAROL, 12n, 1_500n));
+    dropSession(11n);
+    putSession(sessionFrom(CAROL, 12n, 1_500n));
     batch();
     press(A); // no frame in between: the press itself must refuse a stale id
     await flush();
-    expect(H.calls, 'replaced by another offer: Enter sends nothing (no stale id)').toEqual([]);
+    expect(H.calls, 'replaced by another session: Enter sends nothing (no stale id)').toEqual([]);
     frame();
     expect(sheetShown(), 'and the sheet is closed').toBe(false);
+    expect(stackNames(), 'and no editor opened, on either session').toEqual(['world']);
 
     press(Y);
     frame();
     expect(sheetShown(), 'Y opens the sheet of the live request').toBe(true);
-    opts.store.removeTradeOffer(12n);
+    dropSession(12n);
     batch();
     frame();
     expect(sheetShown(), 'the withdrawn request closes its sheet on the next frame').toBe(false);
     press(A);
     await flush();
     expect(H.calls, 'withdrawn: Enter sends nothing').toEqual([]);
+    expect(stackNames(), 'withdrawn: and opens nothing').toEqual(['world']);
 
-    opts.store.upsertTradeOffer(offerFrom(CAROL, 13n, 5_000n));
+    putSession(sessionFrom(CAROL, 13n, 5_000n));
     batch();
     frame();
     press(Y);
     press(A);
     await flush();
-    expect(H.calls, 'a request that arrives afterwards is answered with ITS id').toEqual([
-      { name: 'respondTrade', args: { tradeId: 13n, accepted: true } },
-    ]);
+    frame();
+    expect(H.calls, 'a request that arrives afterwards: Accept sends no reducer').toEqual([]);
+    expect(stackNames(), 'it opens the editor').toEqual(['world', 'tradeSessionView']);
+    expect(byId('tradepropose-overlay').getAttribute('data-session-id'), 'on ITS session id').toBe(
+      '13',
+    );
   }, 120_000);
 
   it('CTL13-3-BOOT-B: B at the world hides the error toast first, then dismisses the request banner (the next request takes its place, a new request id is not dismissed), sends nothing, and leaves the Start badge and Y while the request still waits; a later distinct error shows the toast again; a reconnect forgets the dismissals', async () => {
@@ -658,7 +711,7 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     seedPlayer(CAROL, 'Carol', 9n);
-    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    putSession(sessionFrom(BOB, 11n, 1_000n));
     opts.store.upsertChallenge(challengeFrom(CAROL, 21n, 2_000n));
     batch();
     frame();
@@ -712,11 +765,11 @@ describe('main.ts incoming requests as notices (runtime, ctl-13)', { sequential:
     expect(isShown(toast()), 'B hides it again').toBe(false);
 
     // --- a dismissal is per request: a new request id shows -----------------------------------
-    opts.store.removeTradeOffer(11n);
-    opts.store.upsertTradeOffer(offerFrom(BOB, 12n, 3_000n));
+    dropSession(11n);
+    putSession(sessionFrom(BOB, 12n, 3_000n));
     batch();
     frame();
-    expect(bannerText(), 'a new offer (another id) is not dismissed').toBe(tradeLine);
+    expect(bannerText(), 'a new session (another id) is not dismissed').toBe(tradeLine);
 
     // --- a reconnect forgets the dismissals --------------------------------------------------
     press(B);
@@ -766,7 +819,7 @@ async function openRequestSheet(kind: 'trade' | 'challenge'): Promise<void> {
   await bootReady();
   seedPlayer(BOB, 'Bob', 8n);
   batch();
-  if (kind === 'trade') opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+  if (kind === 'trade') putSession(sessionFrom(BOB, 11n, 1_000n));
   else opts.store.upsertChallenge(challengeFrom(BOB, 21n, 2_000n));
   batch();
   frame();
@@ -820,7 +873,8 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
       readonly kind: 'trade' | 'challenge';
       readonly call: { name: string; args: unknown };
     }> = [
-      { kind: 'trade', call: { name: 'respondTrade', args: { tradeId: 11n, accepted: false } } },
+      // ts-3 (named intentional change, C): was respondTrade accepted:false for a legacy offer.
+      { kind: 'trade', call: { name: 'cancelTradeSession', args: { sessionId: 11n } } },
       { kind: 'challenge', call: { name: 'declineChallenge', args: { challengeId: 21n } } },
     ];
     for (const a of answers) {
@@ -920,12 +974,17 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
     ).toEqual(afterClose);
 
     // ANTI-VACUITY: the sheet was live all along — Y then Enter on Accept answers the request.
+    // ts-3 (named intentional change, C): a trade's Accept opens the session editor (no reducer).
+    // Was: Accept sent respondTrade accepted:true.
     press(Y);
     frame();
     press(A);
     await flush();
-    expect(H.calls, 'control: Accept still sends the accept reducer').toEqual([
-      { name: 'respondTrade', args: { tradeId: 11n, accepted: true } },
+    frame();
+    expect(H.calls, 'control: Accept sends no reducer for a session').toEqual([]);
+    expect(stackNames(), 'control: Accept still answers: the editor opened').toEqual([
+      'world',
+      'tradeSessionView',
     ]);
   }, 60_000);
 
@@ -1032,7 +1091,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
         await bootReady();
         seedPlayer(BOB, 'Bob', 8n);
         batch();
-        opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+        putSession(sessionFrom(BOB, 11n, 1_000n));
         batch();
         frame();
         let base = 0;
@@ -1174,5 +1233,250 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
     frame();
     expect(sheetRows(), 'precondition: B closed the action sheet').toEqual([]);
     expect(cls(), 'absent once the action sheet closes').toBe(false);
+  }, 60_000);
+});
+
+// ==========================================================================================
+// ts-3: incoming SESSIONS as the non-modal banner (ts-3.5)
+// ==========================================================================================
+//
+// Same harness and real views. An incoming session (the booted player is its `partner`, their side
+// empty and unconfirmed) that this client has not opened its editor on waits as a request: one
+// banner line; two or more collapse into ONE line with the count; B dismisses the whole line; Y
+// opens the sheet whose Accept opens the editor (no reducer) and whose Decline cancels the session.
+
+const DAN = 'dd'.repeat(32);
+/** `notice.request.trades` with count 2, en, as the plan transcribes it (literal bytes). */
+const TWO_TRADES = '2 trade requests';
+
+describe('main.ts incoming trade sessions as notices (runtime, ts-3)', { sequential: true }, () => {
+  afterEach(teardown);
+
+  it('ts-3.5 an incoming untouched session raises the banner with the single-trade line and opens no frame and moves no focus; two raise ONE line with count 2; B on that line dismisses it entirely; a new session after it shows again', async () => {
+    // WRONG IMPL KILLED: an incoming session that opens the editor or Social (a frame) or takes
+    // focus; no banner for a session (still reading legacy offers); one banner line per session or
+    // the oldest's single line with no count; a B that dismisses only the oldest key (the next
+    // session's single line would take its place); a dismissal that swallows later sessions.
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    seedPlayer(DAN, 'Dan', 10n);
+    batch();
+    frame();
+    expect(bannerText(), 'control: nothing waits').toBeNull();
+    const focusBefore = document.activeElement;
+
+    putSession(sessionFrom(BOB, 11n, 1_000n));
+    batch();
+    frame();
+    await flush();
+    frame();
+    expect(bannerText(), 'one incoming session: the single-trade line').toBe(
+      tf('notice.request.trade', { name: 'Bob' }),
+    );
+    expect(stackNames(), 'no frame opened').toEqual(['world']);
+    expect(openDialogs(), 'no dialog is on screen').toEqual([]);
+    expect(shownById('tradepropose-overlay'), 'not the session editor').toBe(false);
+    expect(document.activeElement, 'focus did not move').toBe(focusBefore);
+    expect(H.calls, 'nothing was sent').toEqual([]);
+
+    putSession(sessionFrom(CAROL, 12n, 2_000n));
+    batch();
+    frame();
+    expect(bannerText(), 'two incoming sessions: ONE line with the count').toBe(TWO_TRADES);
+    expect(stackNames(), 'still no frame').toEqual(['world']);
+
+    press(B);
+    frame();
+    expect(bannerText(), 'B dismisses the whole collapsed line').toBeNull();
+    batch();
+    frame();
+    expect(bannerText(), 'and it stays dismissed on the next batch').toBeNull();
+    expect(H.calls, 'B never answers a request').toEqual([]);
+
+    putSession(sessionFrom(DAN, 13n, 3_000n));
+    batch();
+    frame();
+    expect(bannerText(), 'control: a new session after the dismissal shows').toBe(
+      tf('notice.request.trade', { name: 'Dan' }),
+    );
+  }, 60_000);
+
+  it('ts-3.5 nothing is raised for a session whose editor this client opened, for the opener`s own session, for a session the viewer already acted in, nor for a legacy trade_offer', async () => {
+    // WRONG IMPL KILLED: `opened` never consulted (the request returns once the editor closes); a
+    // banner for the viewer's OWN session (opener and partner swapped in the filter); a session the
+    // viewer already offered into still treated as a fresh request; the legacy offer path left in.
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    frame();
+
+    // The opener's side: the booted player opened it.
+    putSession(sessionFrom(H.identity, 21n, 1_000n, { partner: BOB }));
+    batch();
+    frame();
+    expect(bannerText(), 'the opener sees no banner for its own session').toBeNull();
+
+    // Touched: the viewer's (partner) side already holds coins.
+    putSession(
+      sessionFrom(CAROL, 22n, 1_100n, {
+        partnerOffer: { monsterIds: [], items: [], currency: 5n, cards: [] },
+      }),
+    );
+    batch();
+    frame();
+    expect(bannerText(), 'a session the viewer already acted in raises nothing').toBeNull();
+
+    // A legacy trade_offer.
+    opts.store.upsertTradeOffer(offerFrom(CAROL, 23n, 1_200n));
+    batch();
+    frame();
+    expect(bannerText(), 'a legacy trade_offer raises no notice').toBeNull();
+
+    // Opened through the client: the request leaves the banner for good.
+    putSession(sessionFrom(BOB, 24n, 1_300n));
+    batch();
+    frame();
+    const bobLine = tf('notice.request.trade', { name: 'Bob' });
+    expect(bannerText(), 'precondition: the incoming session is announced').toBe(bobLine);
+    press(Y);
+    frame();
+    expect(sheetCursor(), 'precondition: the sheet is on Accept').toBe('accept');
+    press(A);
+    await flush();
+    frame();
+    expect(stackNames(), 'precondition: Accept opened the editor').toEqual([
+      'world',
+      'tradeSessionView',
+    ]);
+    press('Escape');
+    frame();
+    expect(stackNames(), 'precondition: Start closed the editor').toEqual(['world']);
+    batch();
+    frame();
+    expect(bannerText(), 'a session this client opened raises nothing').toBeNull();
+    expect(H.calls, 'nothing was ever sent').toEqual([]);
+  }, 60_000);
+
+  it('ts-3.5 Y then Accept opens the editor on THAT session and calls no reducer; Y then Decline calls cancelTradeSession once with that id, and a second Y then Decline before the row leaves sends nothing more', async () => {
+    // WRONG IMPL KILLED: an Accept that sends a reducer (the legacy respondTrade, or a premature
+    // confirm) or opens the editor on another session (the older one is listed first); a Decline
+    // that sends respondTrade or the wrong id; no optimistic answered key (the request comes back
+    // at once and a second Decline sends a duplicate cancel).
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    putSession(sessionFrom(CAROL, 30n, 900n, { partner: DAN })); // not the viewer's: never shown
+    putSession(sessionFrom(BOB, 31n, 1_000n));
+    batch();
+    frame();
+    press(Y);
+    frame();
+    expect(sheetCursor(), 'precondition: the sheet is on Accept').toBe('accept');
+    press(A);
+    await flush();
+    frame();
+    expect(H.calls, 'Accept calls no reducer').toEqual([]);
+    expect(stackNames(), 'Accept opens the editor').toEqual(['world', 'tradeSessionView']);
+    expect(byId('tradepropose-overlay').getAttribute('data-session-id'), 'on THAT session').toBe(
+      '31',
+    );
+    press('Escape');
+    frame();
+
+    // Decline, on a second incoming session.
+    putSession(sessionFrom(CAROL, 32n, 2_000n));
+    batch();
+    frame();
+    expect(bannerText(), 'precondition: Carol`s session waits').toBe(
+      tf('notice.request.trade', { name: 'Carol' }),
+    );
+    press(Y);
+    press('ArrowDown');
+    frame();
+    expect(sheetCursor(), 'precondition: the cursor is on Decline').toBe('decline');
+    press(A);
+    await flush();
+    expect(H.calls, 'Decline cancels that session once').toEqual([
+      { name: 'cancelTradeSession', args: { sessionId: 32n } },
+    ]);
+    frame();
+    press(Y);
+    press('ArrowDown');
+    press(A);
+    await flush();
+    frame();
+    expect(
+      H.calls,
+      'a second Y then Decline before the row leaves sends nothing more',
+    ).toHaveLength(1);
+    expect(stackNames(), 'and opens nothing').toEqual(['world']);
+  }, 60_000);
+
+  it('ts-3.5 a newly arrived request is always spoken: with an OLDER challenge holding the banner, a trade session that arrives later is announced with ITS OWN line, not the challenge`s again', async () => {
+    // RED REASON: the announcement follows the banner's head line; with the older challenge on
+    // top the new session re-announces the challenge's line (which the live region then dedupes:
+    // the new request is never spoken at all).
+    // WRONG IMPL KILLED: announcing the banner's (oldest) line whenever a new key appears; one
+    // announcement per banner text change only (the head did not change, so nothing is spoken).
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    frame();
+    opts.store.upsertChallenge(challengeFrom(BOB, 21n, 1_000n));
+    batch();
+    frame(700);
+    frame(700);
+    const live = byId('a11y-live');
+    const challengeLine = tf('notice.request.challenge', { name: 'Bob' });
+    expect(live.textContent, 'precondition: the challenge was announced').toBe(challengeLine);
+    expect(bannerText(), 'precondition: the challenge holds the banner').not.toBeNull();
+    live.textContent = '';
+
+    putSession(sessionFrom(CAROL, 11n, 2_000n));
+    batch();
+    frame(700);
+    frame(700);
+    const carolLine = tf('notice.request.trade', { name: 'Carol' });
+    expect(carolLine, 'fixture: a line of its own').not.toBe(challengeLine);
+    expect(live.textContent, 'the new session is spoken with its own line').toBe(carolLine);
+
+    live.textContent = '';
+    batch();
+    frame(700);
+    frame(700);
+    expect(live.textContent, 'and only once').toBe('');
+    expect(stackNames(), 'nothing opened').toEqual(['world']);
+    expect(H.calls, 'nothing was sent').toEqual([]);
+  }, 60_000);
+
+  it('ts-3.5 two trade sessions arriving in ONE batch with nothing older are announced once, as the collapsed line', async () => {
+    // RED REASON: a per-request announcement would speak the first session's single line (or
+    // both singles, the live region keeping the last), not the line the banner shows.
+    // WRONG IMPL KILLED: one announcement per arriving key (the second single line replacing the
+    // collapsed one); the oldest's single line announced for a collapsed banner; a re-announce on
+    // the next batch.
+    await bootReady();
+    seedPlayer(BOB, 'Bob', 8n);
+    seedPlayer(CAROL, 'Carol', 9n);
+    batch();
+    frame();
+    const live = byId('a11y-live');
+    live.textContent = '';
+    putSession(sessionFrom(BOB, 11n, 1_000n));
+    putSession(sessionFrom(CAROL, 12n, 1_100n));
+    batch();
+    frame(700);
+    frame(700);
+    expect(bannerText(), 'precondition: the banner collapses the two').toBe(TWO_TRADES);
+    expect(live.textContent, 'announced as the collapsed line').toBe(TWO_TRADES);
+    live.textContent = '';
+    batch();
+    frame(700);
+    frame(700);
+    expect(live.textContent, 'once').toBe('');
   }, 60_000);
 });

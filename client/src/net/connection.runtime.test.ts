@@ -439,13 +439,15 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
   // qf-15 (QF15.1): the zone cue names the destination zone from the `zone_def` content table. It
   // is a REGULAR public table with a primary key (`zone_id`), so unlike the PK-less views above it
   // is fed row by row (heal_location_row's idiom) and onUpdate DOES fire.
-  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 30 in all since bt-12 [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
+  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 31 in all since ts-3 [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
     // WRONG IMPL KILLED: no subscription (the client never receives a zone name and the cue stays
     // silent forever); a second subscription call or a duplicate entry (the length pin); a query
     // for a table nobody named riding along (the length pin: 22 queries before qf-15, plus this
     // one); the table spelled differently (`zoneDef`, `zone_defs`).
     // bt-12 (named intentional change, BT12.1): 23 → 30, the seven tactical views
     // (BT12-1-SUBSCRIBE-SEVEN pins which seven).
+    // ts-3 (named intentional change, M-trade-sessions): 30 → 31, the `my_trade_session` view
+    // (TS3-SUBSCRIBE-SESSION-VIEW pins which one).
     const opts = makeOpts();
     connect(opts);
     await settle();
@@ -458,8 +460,8 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     ).toHaveLength(1);
     expect(
       queries,
-      'the 22 queries that were there, plus zone_def, plus (bt-12) the seven tactical views',
-    ).toHaveLength(30);
+      'the 22 queries that were there, plus zone_def, plus (bt-12) the seven tactical views, plus (ts-3) my_trade_session',
+    ).toHaveLength(31);
   });
 
   it('an inserted zone_def row stores its name by zone id, an update replaces it, a delete removes it, and each change flushes one batch [QF15-1-WIRE-ZONE-DEF]', async () => {
@@ -748,7 +750,7 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
     vi.useRealTimers();
   });
 
-  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 30 queries in all [BT12-1-SUBSCRIBE-SEVEN]', async () => {
+  it('the one subscription batch names each of the seven owner-scoped tactical views exactly once and no private battle table, 31 queries in all since ts-3 [BT12-1-SUBSCRIBE-SEVEN]', async () => {
     // WRONG IMPL KILLED: a view left out (its rows never reach the client: the deploy panel or the
     // results never show); a view subscribed twice (the length pin); the PRIVATE table subscribed
     // instead of its view (`battle_unit`, `player_formation`: a private table errors the WHOLE
@@ -766,7 +768,8 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
       queries.filter((q) => BT12_PRIVATE_TABLES.some((table) => q.endsWith(` ${table}`))),
       'no private battle table is subscribed',
     ).toEqual([]);
-    expect(queries, 'the 23 that were there, plus the seven').toHaveLength(30);
+    // ts-3 (named intentional change, M-trade-sessions): 30 → 31, the `my_trade_session` view.
+    expect(queries, 'the 23 that were there, plus the seven, plus (ts-3) one').toHaveLength(31);
   });
 
   it('each tactical view registers an insert and a delete handler and never an update handler; a handler writes nothing to the store itself, and one insert or one delete is exactly one flushed batch that reconciles the view from the SDK cache [BT12-1-VIEW-HANDLERS]', async () => {
@@ -981,6 +984,139 @@ describe('connect(): the tactical views (bt-12, BT12.1)', { sequential: true }, 
         errors.mock.calls.some((call) => call[0] === '[net] view reconcile threw; flushing anyway'),
         'the contained throw is logged',
       ).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+// =============================================================================================
+// ts-3 (M-trade-sessions): the `my_trade_session` view — subscribed (never the private
+// `trade_session`), wired to the batcher with onInsert / onDelete and NO onUpdate (a PK-less Vec
+// view), reconciled from the SDK cache (`conn.db.myTradeSession.iter()`) in its OWN guarded block
+// before the flush, so a converter throw starves no other reconcile.
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-ts-3-plan.md §Contracts › Store (`connection.ts`).
+// RED REASON: connection.ts subscribes no session view, registers no handler on it and reconciles
+// nothing into `store.allTradeSessions()` (which does not exist yet).
+// =============================================================================================
+
+/** A `my_trade_session` row as the bindings deliver it (identities as SDK objects). */
+const ts3Row = (sessionId: bigint, revision = 1n) => ({
+  sessionId,
+  opener: ID,
+  partner: { toHexString: () => 'bb'.repeat(32) },
+  openerOffer: { monsterIds: [5n], items: [{ itemId: 3, qty: 1 }], currency: 2n, cards: [] },
+  partnerOffer: { monsterIds: [], items: [], currency: 0n, cards: [] },
+  openerConfirmed: false,
+  partnerConfirmed: false,
+  revision,
+  createdAtMs: 1n,
+});
+
+describe('connect(): the trade session view (ts-3)', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('the one subscription batch names my_trade_session exactly once and never the private trade_session, 31 queries in all [TS3-SUBSCRIBE-SESSION-VIEW]', async () => {
+    // WRONG IMPL KILLED: the view left out (the editor and the Trades rows never see a session);
+    // the PRIVATE table subscribed (it errors the whole batch: onApplied never fires and every
+    // session hangs); the view subscribed twice; the legacy `trade_offer` query dropped (the
+    // count would stay 30 with the new one in).
+    await bt12Connect();
+    const queries = H.builds[0].queries ?? [];
+    expect(queries.filter((q) => q === 'SELECT * FROM my_trade_session')).toHaveLength(1);
+    expect(queries, 'never the private table').not.toContain('SELECT * FROM trade_session');
+    expect(queries.filter((q) => q.endsWith(' trade_session'))).toEqual([]);
+    expect(queries).toHaveLength(31);
+  });
+
+  it('myTradeSession registers onInsert and onDelete and no onUpdate; a burst of callbacks is ONE flushed batch, and the store is rebuilt from the view cache inside it (a row leaving the cache leaves the store)', async () => {
+    // WRONG IMPL KILLED: no handler on `conn.db.myTradeSession` (nothing is ever reconciled); an
+    // onUpdate (a PK-less view never fires one); a per-row store write (an unordered insert+delete
+    // pair would wipe the row the insert half wrote); a flush per callback; the reconcile placed
+    // after flushBatch (a listener would read the pre-burst sessions: the editor one batch late);
+    // an upsert-only reconcile (a cancelled session never leaves).
+    const opts = await bt12Connect();
+    const events = H.rowEvents.myTradeSession;
+    expect(events, 'handlers on conn.db.myTradeSession').toBeDefined();
+    if (events === undefined) return;
+    expect(events.insert.length).toBeGreaterThan(0);
+    expect(events.delete.length).toBeGreaterThan(0);
+    expect(events.update.length, 'no onUpdate on a view').toBe(0);
+
+    const seen: bigint[][] = [];
+    opts.store.onBatchApplied(() => {
+      seen.push(opts.store.allTradeSessions().map((s) => s.sessionId));
+    });
+    H.viewRows.myTradeSession = [ts3Row(9n), ts3Row(4n)];
+    for (const cb of events.insert) cb({}, ts3Row(9n));
+    for (const cb of events.insert) cb({}, ts3Row(4n));
+    await settle();
+    expect(seen, 'one burst, one batch, the cache already reconciled').toEqual([[4n, 9n]]);
+    expect(opts.store.allTradeSessions()[0]?.opener, 'converted: the identity hex').toBe(
+      ID.toHexString(),
+    );
+
+    H.viewRows.myTradeSession = [ts3Row(9n, 2n)];
+    for (const cb of events.delete) cb({}, ts3Row(4n));
+    for (const cb of events.insert) cb({}, ts3Row(9n, 2n));
+    await settle();
+    expect(seen, 'the second burst is the second batch').toEqual([[4n, 9n], [9n]]);
+    expect(opts.store.allTradeSessions()[0]?.revision).toBe(2n);
+
+    H.viewRows.myTradeSession = [];
+    for (const cb of events.delete) cb({}, ts3Row(9n, 2n));
+    await settle();
+    expect(opts.store.allTradeSessions(), 'the emptied cache empties the store').toEqual([]);
+  });
+
+  it('a malformed my_trade_session row that makes the converter throw is contained: the inventory, battle and tactical views still land, the batch still flushes once and the throw is logged', async () => {
+    // WRONG IMPL KILLED: the session reconcile inside another view's try (its throw would starve
+    // that view's siblings); no guard at all (the throw escapes the batcher and no batch is ever
+    // delivered); a silent swallow (no log line).
+    const opts = await bt12Connect();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const flushed = vi.fn();
+      opts.store.onBatchApplied(flushed);
+      const malformed = new Proxy(
+        {},
+        {
+          get: () => {
+            throw new Error('malformed my_trade_session row');
+          },
+        },
+      );
+      H.viewRows.myTradeSession = [malformed];
+      H.viewRows.my_inventory = [{ invId: 43n, ownerIdentity: ID, itemId: 5, count: 3 }];
+      H.viewRows.myBattle = [bt12SdkBattle(47n)];
+      H.viewRows.myFormation = [bt12Formation([37n])];
+      for (const cb of H.rowEvents.myTradeSession?.insert ?? []) cb({}, {});
+      bt12Fire('insert', ['my_inventory', 'myFormation']);
+      await settle();
+      expect(flushed, 'the batch is still delivered, once').toHaveBeenCalledTimes(1);
+      expect(opts.store.ownInventory(BT12_ME)).toEqual([
+        { invId: 43n, ownerIdentity: BT12_ME, itemId: 5, count: 3 },
+      ]);
+      expect(opts.store.ongoingBattle(BT12_ME)?.battleId).toBe(47n);
+      expect(opts.store.ownFormation(BT12_ME)?.monsterIds).toEqual([37n]);
+      expect(errors.mock.calls.length, 'the contained throw is logged').toBeGreaterThan(0);
     } finally {
       errors.mockRestore();
     }

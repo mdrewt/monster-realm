@@ -55,6 +55,8 @@ import type {
   StoreTacticalBattle,
   StoreTradeItem,
   StoreTradeOffer,
+  StoreTradeSession,
+  StoreTradeSessionOffer,
   StoreTurnState,
   StoreWallet,
   StoreWeather,
@@ -945,6 +947,50 @@ export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
     // SDK boundary (supersedes the old trust-cast): an unknown
     // TradeStatus variant is logged and passed through raw via narrowTag (fail-soft).
     status: narrowTag(row.status.tag, HANDLED_ENUM_VARIANTS.TradeStatus, 'TradeStatus'),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+// --- my_trade_session converter ------------------------------------------
+
+interface SdkTradeSessionOffer {
+  readonly monsterIds: readonly bigint[];
+  readonly items: readonly SdkTradeItem[];
+  readonly currency: bigint;
+  readonly cards: readonly SdkMonsterCard[];
+}
+
+export interface SdkTradeSessionRow {
+  readonly sessionId: bigint;
+  readonly opener: { toHexString(): string };
+  readonly partner: { toHexString(): string };
+  readonly openerOffer: SdkTradeSessionOffer;
+  readonly partnerOffer: SdkTradeSessionOffer;
+  readonly openerConfirmed: boolean;
+  readonly partnerConfirmed: boolean;
+  readonly revision: bigint;
+  readonly createdAtMs: bigint;
+}
+
+function sdkSessionOfferToStore(offer: SdkTradeSessionOffer): StoreTradeSessionOffer {
+  return {
+    monsterIds: [...offer.monsterIds],
+    items: offer.items.map(sdkTradeItemToStore),
+    currency: offer.currency,
+    cards: offer.cards.map(sdkCardToStore),
+  };
+}
+
+export function tradeSessionRowToStore(row: SdkTradeSessionRow): StoreTradeSession {
+  return {
+    sessionId: row.sessionId,
+    opener: row.opener.toHexString(),
+    partner: row.partner.toHexString(),
+    openerOffer: sdkSessionOfferToStore(row.openerOffer),
+    partnerOffer: sdkSessionOfferToStore(row.partnerOffer),
+    openerConfirmed: row.openerConfirmed,
+    partnerConfirmed: row.partnerConfirmed,
+    revision: row.revision,
     createdAtMs: row.createdAtMs,
   };
 }
