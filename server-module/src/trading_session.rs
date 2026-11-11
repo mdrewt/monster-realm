@@ -129,8 +129,10 @@ pub(crate) fn netted_receiver_stacks(
 /// Apply a `SwapPlan` between `initiator` and `counterparty`: every monster
 /// transfer first (new owner, `dest_slot(monster_id)` as its party slot, bond
 /// reset), then the item and currency steps in the debits-before-credits order
-/// of `SwapPlan::ordered_steps()`. Any `Err` aborts the caller's transaction,
-/// so a partial apply never commits.
+/// of `SwapPlan::ordered_steps()`. Writes land as they go, so the caller must
+/// return any `Err` out of its reducer — that aborts the transaction and no
+/// partial apply commits. `dest_slot` is written unchecked: the caller passes a
+/// slot it has already validated for the new owner's party.
 pub(crate) fn apply_swap(
     ctx: &ReducerContext,
     plan: &SwapPlan,
@@ -178,7 +180,7 @@ pub(crate) fn apply_swap(
     // Apply item + currency transfers in the debits-before-credits order published
     // by game-core: ALL debits land before ANY credit, so a
     // same-item bilateral swap near a cap credits into an already-debited stack —
-    // the netted headroom check above is exact and no clamping grant ever engages
+    // the caller's netted headroom check is exact and no clamping grant ever engages
     // (reject-not-clamp). Debit arms read from_initiator (sender); credit
     // arms read to_initiator (receiver) — game-core inverted at emission, so there
     // is NO inversion here.
