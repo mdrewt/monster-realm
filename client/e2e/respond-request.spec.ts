@@ -36,7 +36,13 @@ import {
 // player is a TARGET, and Y at the world opens that player's action sheet, not the request's (the
 // request sheet opens on Y only with no target). A therefore walks a few tiles away along a
 // grass-free, warp-free path, and the helper below waits for the world chip to clear (nothing
-// faced). The challenge test below relies on A having stood apart here, as it did before.
+// faced).
+//
+// THE CHALLENGE TEST. The server checks interact range when a challenge is SENT, so A first walks
+// back onto B's tile (the walk must arrive), and only then does B challenge A through
+// `__mrPvp.challengePvp`. With the banner up, A stands apart (the chip clears) and answers with Y
+// then Enter from there. A accepting from apart, and the battle starting for both, is what shows
+// the server does not check range when a challenge is answered.
 //
 // WHAT THIS KILLS: a request that opens a frame or moves A's focus on arrival (the retired
 // auto-show); no banner; a Y that opens nothing (or the wrong sheet) with a request pending; a
@@ -304,18 +310,23 @@ test.describe
       }
     });
 
-    test('ctl-13: B challenges A; A sees the banner with nothing opened, presses Y then Enter, and a battle starts for both', async () => {
+    test('ctl-13: B challenges A in range; A sees the banner with nothing opened, stands apart, presses Y then Enter, and a battle starts for both', async () => {
       test.setTimeout(120_000);
       const snapA = await snapOf(pageA);
       const snapB = await snapOf(pageB);
       await closeAll(pageA);
       await closeAll(pageB);
       await expect(pageA.locator('#notice-banner'), 'precondition: no request yet').toBeHidden();
-      await expect
-        .poll(() => readChip(pageA), { message: 'precondition: A faces nothing', timeout: 5_000 })
-        .toBeNull();
+
+      // A walks back onto B's tile: the server refuses a challenge sent out of interact range.
+      const there = (await readWorld(pageB)).ownAuthTile;
+      if (there === null) throw new Error('ctl-13 challenge: B has no authoritative tile');
+      expect(await walkTo(pageA, there, 'A walks to B'), 'A reaches B by a grass-free walk').toBe(
+        'arrived',
+      );
       const focusBefore = await focusOf(pageA);
 
+      // B challenges A in range. A rejection (out of range, a missing hook) fails the evaluate.
       await pageB.evaluate(
         async (args: { target: string; party: string[] }) => {
           const w = window as unknown as { __mrPvp: MrPvp };
@@ -333,6 +344,14 @@ test.describe
       await expect.poll(() => stackNames(pageA), 'no frame opened').toEqual(['world']);
       await expect(pageA.locator('#pvp-challenge-overlay')).toBeHidden();
       expect(await focusOf(pageA), 'A`s focus did not move').toBe(focusBefore);
+
+      // A stands apart before answering, so Y has no target and opens the request's sheet; the
+      // answer below is sent from out of range.
+      await standApart(pageA);
+      await expect(pageA.locator('#notice-banner'), 'the challenge still waits').toBeVisible();
+      await expect
+        .poll(() => readChip(pageA), { message: 'A faces nothing', timeout: 5_000 })
+        .toBeNull();
 
       await pressButton(pageA, 'Y');
       // uif-12 (UIF12.2, named intentional change): + the trailing Close row.

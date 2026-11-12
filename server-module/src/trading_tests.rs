@@ -1617,6 +1617,34 @@ fn nh_escrow_seed(fx: &Fixture, w: &NhWorld<'_>) {
     }
 }
 
+/// A's and B's characters on one shared tile, each under the `entity_id` its `player` row names
+/// (`challenge_pvp` refuses a target outside interact range). Seeding needs no writable table,
+/// so a write-walled store stays write-walled.
+fn nh_colocate(fx: &Fixture, w: &NhWorld<'_>) {
+    use crate::schema::Character;
+    let chars = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
+    for who in [nh_a(), nh_b()] {
+        let entity_id = w
+            .players
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| p.entity_id)
+            .expect("nh_colocate: a joined player");
+        chars.seed(&Character {
+            entity_id,
+            zone_id: crate::ZONE_0,
+            tile_x: 1,
+            tile_y: 1,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: Vec::new(),
+        });
+    }
+}
+
 /// hand-enumerated: the call sites of `reject_if_monster_in_trade` outside the tactical
 /// shell — 8 functions, 8 sites (the 1v1 `start_battle` x2, `start_pvp_battle` and
 /// `begin_encounter` rows left with their bodies in bt-17). The tactical sites are driven in
@@ -1679,6 +1707,9 @@ fn nh_escrowed_monster_is_refused_by_every_guarded_reducer() {
             let fx = fixture();
             let w = nh_world(&fx, control);
             nh_escrow_seed(&fx, &w);
+            if *label == "challenge_pvp" {
+                nh_colocate(&fx, &w);
+            }
             if control {
                 nh_open_writes(&fx);
             }
