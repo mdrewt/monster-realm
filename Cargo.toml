@@ -76,3 +76,11 @@ overflow-checks = true
 
 [profile.bench]
 overflow-checks = true
+
+# cargo-mutants builds with this profile (`profile` in .cargo/mutants.toml). It is the test profile
+# minus debuginfo, which nothing in a mutation verdict reads and which costs ~1 s of every
+# per-mutant rebuild. opt-level, debug-assertions and overflow-checks are inherited from `test`
+# unchanged, so every mutant behaves exactly as it does under `cargo test`.
+[profile.mutants]
+inherits = "test"
+debug = "none"

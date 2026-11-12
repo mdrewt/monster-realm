@@ -109,7 +109,10 @@
 #     predicate has its full matrix (ea_ra_06b) and the `-> true` mutant is caught by canary
 #     ea_ra_06a. EXPIRY: when ALLOWED_ISSUERS gains a real issuer the canary fires - remove this
 #     entry in that same change.
-#
+
+# Build profile: `test` without debuginfo (root Cargo.toml, [profile.mutants]).
+profile = "mutants"
+
 exclude_re = [
     "tiled_import\\.rs:\\d+:30: replace \\+= with -= in Parser<'a>::parse_array",
     "tiled_import\\.rs:(66:22|190:22|196:26|206:26): replace \\+= with \\*= in Parser<'a>::(skip_whitespace|parse_number)",
