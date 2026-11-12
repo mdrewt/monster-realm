@@ -428,6 +428,67 @@ describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN afte
   });
 });
 
+describe('interpolateHistory: a remote walker written once per step renders one tile per step, no snap', () => {
+  it('BITES: across a four-position ring at STEP_MS cadence every 16 ms frame advances by one frame of travel', () => {
+    // The ring a walking remote leaves when its row is written once per step: four real
+    // positions one STEP_MS apart. Rendered at now − adaptive delay with a calm jitter
+    // estimate, the sprite must move at one tile per step with no hold and no jump.
+    const stepMs = 200;
+    const frameMs = 16;
+    const ring = [4, 5, 6, 7].map((tileX, i) => ({
+      tileX,
+      tileY: 0,
+      receivedAt: 1000 + i * stepMs,
+    }));
+    const delay = adaptiveInterpDelayMs(5, stepMs);
+    expect(delay, 'a calm link adds almost nothing to the one-step base').toBeLessThan(
+      1.1 * stepMs,
+    );
+
+    // Frames while the whole ring brackets the render clock.
+    const first = ring[0]!.receivedAt + delay;
+    const last = ring[3]!.receivedAt + delay;
+    const xs: number[] = [];
+    for (let now = first; now <= last; now += frameMs) {
+      xs.push(interpolateHistory(ring, now - delay, stepMs).x);
+    }
+    expect(xs.length).toBeGreaterThan(30);
+    expect(xs[0]).toBeCloseTo(4, 5);
+    expect(xs[xs.length - 1]!).toBeGreaterThan(6.9);
+    const perFrame = frameMs / stepMs; // tiles
+    for (let i = 1; i < xs.length; i++) {
+      const dx = xs[i]! - xs[i - 1]!;
+      expect(dx, `frame ${i}: no hold, no jump`).toBeCloseTo(perFrame, 6);
+    }
+  });
+
+  it('CONTRAST: the same walk with a same-tile sample between steps holds, then moves faster than a step', () => {
+    // A ring whose brackets alternate "no movement" (60 ms) and "one tile" (140 ms): the
+    // sprite stands still and then covers the tile in less than a step.
+    const stepMs = 200;
+    const frameMs = 16;
+    const ring = [
+      { tileX: 6, tileY: 0, receivedAt: 1000 },
+      { tileX: 6, tileY: 0, receivedAt: 1060 },
+      { tileX: 7, tileY: 0, receivedAt: 1200 },
+      { tileX: 7, tileY: 0, receivedAt: 1260 },
+    ];
+    const deltas: number[] = [];
+    let prev = interpolateHistory(ring, 1000, stepMs).x;
+    for (let t = 1000 + frameMs; t <= 1260; t += frameMs) {
+      const x = interpolateHistory(ring, t, stepMs).x;
+      deltas.push(x - prev);
+      prev = x;
+    }
+    expect(deltas.filter((d) => d === 0).length, 'frames with no movement').toBeGreaterThanOrEqual(
+      3,
+    );
+    expect(Math.max(...deltas), 'and frames faster than one tile per step').toBeGreaterThan(
+      frameMs / stepMs + 0.01,
+    );
+  });
+});
+
 // =============================================================================
 // resume-from-idle re-anchored interpolation bracket
 //
