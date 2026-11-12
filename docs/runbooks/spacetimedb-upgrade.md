@@ -9,8 +9,7 @@ versions move in lockstep").
 | Pin | Where |
 |---|---|
 | Rust `spacetimedb` crate | root `Cargo.toml` (`[workspace.dependencies]`) |
-| CLI/host used by CI | `.github/workflows/ci.yml`, two `Pin spacetime <ver>` steps (`spacetime version install <ver>` + `spacetime version use <ver>`) |
-| CLI/host used nightly | `.github/workflows/nightly.yml`, one `Pin spacetime <ver>` step |
+| CLI/host used by CI and nightly | `scripts/ci-tools.sh`: `SPACETIME_VERSION` and `SPACETIME_SHA256` (the sha256 of that release's `spacetime-x86_64-unknown-linux-gnu.tar.gz`); both workflows install from it through `.github/actions/tools` |
 | Local CLI | `spacetime version install <ver>` then `spacetime version use <ver>`; check with `spacetime --version` |
 | Generated TypeScript bindings | `client/src/module_bindings/` (regenerated, never hand-edited) |
 
@@ -36,7 +35,8 @@ lockstep hop until the SDK ages.
    `bindings-drift` eval compares the committed bindings with a fresh
    `spacetime generate` from the CLI on PATH, so the CLI, CI pins and bindings must
    agree.
-4. **Move the CI pins** in both workflows to the same version, in the same commit.
+4. **Move the CI pin** (`SPACETIME_VERSION` and `SPACETIME_SHA256` in
+   `scripts/ci-tools.sh`) to the same version, in the same commit.
 5. **Run `just ci`.** The schema and type snapshot evals
    (`battle-schema-snapshot`, `spacetime-type-snapshot`) compare Rust source, not the
    encoded schema, so they will not see encoding changes; step 6 covers that.

@@ -29,8 +29,7 @@ jobs:
         with: { prefix-key: v1-nightly }
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with: { tool: cargo-mutants@27.1.0 }
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
+      - uses: ./.github/actions/tools
       - run: just mutate-core ${{ matrix.shard }}
       # always(): the survivor list matters most on the nights the gate fails.
       - name: Upload mutants.out
@@ -61,8 +60,7 @@ jobs:
         with: { tool: cargo-mutants@27.1.0 }
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with: { tool: cargo-nextest@0.9.148 }
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
+      - uses: ./.github/actions/tools
       - run: just mutate-server ${{ matrix.shard }}
       - name: Upload mutants.out
         if: always()
@@ -82,15 +80,13 @@ jobs:
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-coverage }
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-        with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
           node-version: '24.22.0'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
+      - uses: ./.github/actions/tools
+        with: { wasm: true }
       - run: just coverage
       - name: Upload coverage summary
         if: always()
@@ -109,8 +105,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable # stable
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-perf }
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
+      - uses: ./.github/actions/tools
       - run: just perf-budget
 
   # The whole e2e suite in ONE Playwright process on ONE database. CI runs it as shards with a
@@ -125,25 +120,13 @@ jobs:
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-e2e }
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-        with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
           node-version: '24.22.0'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
-      - name: Install SpacetimeDB CLI
-        run: |
-          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
-          sh /tmp/spacetime-install.sh --yes
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.11.0
-        run: |
-          spacetime version install 2.11.0
-          spacetime version use 2.11.0
-          spacetime --version
+      - uses: ./.github/actions/tools
+        with: { wasm: true }
       - name: Build dev_reducers module wasm
         run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
       - name: Start SpacetimeDB
@@ -157,6 +140,12 @@ jobs:
           echo "spacetime did not become ready on :3000" >&2; cat /tmp/stdb-e2e.log >&2 || true; exit 1
       - name: Install client deps
         run: cd client && npm ci
+      # Keyed on the lock file, which fixes the Playwright version and so the chromium build:
+      # on a hit the install step below finds the browser present and downloads nothing.
+      - uses: actions/cache@v6 # v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('client/package-lock.json') }}
       - name: Install Playwright chromium
         run: cd client && npx playwright install chromium
       - name: Whole e2e suite, one process
@@ -177,18 +166,7 @@ jobs:
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-smoke }
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-        with: { just-version: '1.58.0' }
-      - name: Install SpacetimeDB CLI
-        run: |
-          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
-          sh /tmp/spacetime-install.sh --yes
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.11.0
-        run: |
-          spacetime version install 2.11.0
-          spacetime version use 2.11.0
-          spacetime --version
+      - uses: ./.github/actions/tools
       - name: Start SpacetimeDB
         run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-smoke.log 2>&1 &
       - name: Wait for SpacetimeDB

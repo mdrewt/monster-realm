@@ -735,7 +735,7 @@ what was published.
 ## SpacetimeDB versions move in lockstep
 
 **Decision.** The spacetime CLI/host and the Rust `spacetimedb` crate are pinned to
-the same version (2.11.0: root `Cargo.toml`, both workflows' `Pin spacetime` steps).
+the same version (2.11.0: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
 AMENDED 2026-10-15 (deps-s3): the npm `spacetimedb` SDK now joins the lockstep
 (`^2.11.0`, locked in `client/package-lock.json`). It was previously held separate
 (at 2.6.0) because newer SDKs change reconnect behaviour; since 2.7.0 the vendor

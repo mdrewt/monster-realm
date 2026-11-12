@@ -52,10 +52,10 @@ are implemented but inactive until an identity provider is deployed (see
 | Tool | Version | Where it is pinned |
 |---|---|---|
 | Rust | 1.99.0, with `wasm32-unknown-unknown`, clippy and rustfmt | `rust-toolchain.toml` (rustup installs it automatically) |
-| SpacetimeDB CLI | 2.11.0 | root `Cargo.toml` (`spacetimedb = "2.11.0"`), the npm SDK (`^2.11.0`, lockstep) and both workflows. Install the CLI the way CI does (`curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com && sh /tmp/spacetime-install.sh --yes`), then `spacetime version install 2.11.0` and `spacetime version use 2.11.0` |
+| SpacetimeDB CLI | 2.11.0 | root `Cargo.toml` (`spacetimedb = "2.11.0"`), the npm SDK (`^2.11.0`, lockstep) and `scripts/ci-tools.sh` (CI). Install the CLI with the vendor installer (`curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com && sh /tmp/spacetime-install.sh --yes`), then `spacetime version install 2.11.0` and `spacetime version use 2.11.0` |
 | Node.js | 24.22.0 (`engines` allows `>=24.13.1 <25`) | `client/package.json` `engines`; both workflows use 24.22.0 |
-| wasm-pack | 0.15.0 | CI (`.github/workflows/ci.yml`, `jetli/wasm-pack-action` with `version: 'v0.15.0'`); locally, for example `cargo install wasm-pack --version 0.15.0` |
-| just | any recent | runs every recipe in `justfile` |
+| wasm-pack | 0.15.0 | `scripts/ci-tools.sh` (CI); locally, for example `cargo install wasm-pack --version 0.15.0` |
+| just | any recent (CI: 1.58.0) | `scripts/ci-tools.sh` (CI); runs every recipe in `justfile` |
 | cargo-nextest | any recent | `just test` uses it |
 | Docker | any recent | `just observability-validate`, which `just ci` runs (a missing Docker fails it), and the monitoring stack |
 | GNU `timeout` | coreutils | `just playtest-preflight` (every `playtest-*` recipe that publishes); macOS: `brew install coreutils` |

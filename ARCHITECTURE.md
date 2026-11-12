@@ -688,4 +688,7 @@ root, so opening one never closes a sibling.
 client-typecheck, client-test, client-verify-build, and observability-validate.
 `.github/workflows/ci.yml` runs the same recipes as parallel jobs grouped by
 toolchain (`rust`, `eval`, `client`, `observability`), plus dependency review,
-`cargo audit` and the sharded e2e jobs.
+`cargo audit` and the sharded e2e jobs. Every job takes just, wasm-pack and the SpacetimeDB
+CLI from `.github/actions/tools`: `scripts/ci-tools.sh` pins each version and archive
+checksum, and the Actions cache serves the installed tools, wasm-pack's own downloads
+and the Playwright browser, so a release-host outage does not fail a job.

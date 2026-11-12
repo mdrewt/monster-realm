@@ -131,8 +131,13 @@ const MAX_ENCOUNTERS = 10;
 const MAX_OWN_TURNS = 16;
 /** R1: own turns spent closing in until the wild is adjacent on a fresh turn. */
 const MAX_APPROACH_TURNS = 12;
-/** R1: battles to try for an adjacent own turn (a wild that kites or flees is re-hunted). */
-const MAX_R1_BATTLES = 3;
+/** R1: battles to try for an adjacent own turn. A kiting (Skittish) wild holds its distance for the
+ *  whole MAX_APPROACH_TURNS bound, so its battle is fled and the grass re-hunted. Zone 0's FROZEN
+ *  encounter weights 10/7/5 put its one Skittish entry (species 3, Sproutlet) at ≤ 5/22 ≈ 23 % of
+ *  draws (measured: 4 of 32 first battles ran the bound, every other wild stood adjacent by own
+ *  turn 2), so 8 kiters in a row is ≈ 7e-6 per run — battle-dpad's MAX_ADJACENT_HUNTS for the same
+ *  draw. */
+const MAX_R1_BATTLES = 8;
 /** R3: hunts to try for a WIN — a battle that ends otherwise (an auto-fleeing wild, a round cap) or
  *  that a kiting wild drags past MAX_OWN_TURNS (fled) is re-hunted. */
 const MAX_WIN_HUNTS = 3;
@@ -605,7 +610,9 @@ test.describe
     //   row for a fresh inventory — exactly one `bait:` row, the no-bait choice. Then Flee.
     // -------------------------------------------------------------------------
     test('R1: the Recruit row is greyed when not adjacent and live when adjacent, and its bait list offers no bait row in a fresh inventory (bt-16: was recruit-action + an empty bait-selector)', async () => {
-      test.setTimeout(300_000);
+      // A battle that runs the whole approach bound takes up to ≈ 37 s on a CI runner (battle-dpad's
+      // measurement), so MAX_R1_BATTLES of them fit with room for the hunts between.
+      test.setTimeout(600_000);
       expect(
         (await snap(page)).ownInventory.filter((s) => s.itemId === BAIT_ITEM_ID).length,
         'fixture: a fresh inventory holds no bait',
@@ -613,17 +620,25 @@ test.describe
 
       let sawGreyed = false;
       let checked = false;
+      // One line per battle (how it ended and the distance at each own turn) for the final throw.
+      const battles: string[] = [];
       // Both halves are required: a wild already adjacent on the first own turn gives the live
       // half only, so the battle is fled and the grass re-hunted until the greyed half is seen too.
       for (let battle = 0; battle < MAX_R1_BATTLES && !(checked && sawGreyed); battle += 1) {
         await huntEncounter(page, `R1 battle ${battle}`);
         let last: string | null = null;
         let doneHere = false;
+        let outcome = `bound@${MAX_APPROACH_TURNS}`;
+        const distances: number[] = [];
         for (let turn = 0; turn < MAX_APPROACH_TURNS && !doneHere; turn += 1) {
           const tt = await waitOwnTurnOrEnd(page, last, TURN_WAIT_MS);
-          if (tt.phase !== 'Active') break;
+          if (tt.phase !== 'Active') {
+            outcome = `ended:${tt.phase}@${turn}`;
+            break;
+          }
           last = turnKey(tt);
           const { me, enemy } = sides(tt);
+          distances.push(tileDistance(me, enemy));
           await openMenu(page, me);
           const recruitRow = page.locator(TACTICS.menuRow('recruit'));
           await expect(recruitRow, 'R1: a wild battle`s menu offers the Recruit row').toHaveCount(
@@ -661,6 +676,7 @@ test.describe
           await expect(page.locator(TACTICS.menuRow('flee'))).toHaveCount(1, { timeout: 5_000 });
           checked = true;
           doneHere = true;
+          outcome = `adjacent@${turn + 1}`;
           // Flee from the open root menu (Flee needs the whole budget: nothing was spent).
           await fleeByButtons(page);
         }
@@ -674,13 +690,16 @@ test.describe
         }
         await waitForBattleCleared(page);
         await throughResults(page, `R1 battle ${battle}`);
+        battles.push(`battle ${battle}: ${outcome} d[${distances.join(',')}]`);
       }
-      expect(checked, `R1: an own turn adjacent to the wild within ${MAX_R1_BATTLES} battles`).toBe(
-        true,
-      );
-      expect(sawGreyed, 'R1: the greyed Recruit row was seen on a non-adjacent own turn').toBe(
-        true,
-      );
+      expect(
+        checked,
+        `R1: an own turn adjacent to the wild within ${MAX_R1_BATTLES} battles — ${battles.join(' || ')}`,
+      ).toBe(true);
+      expect(
+        sawGreyed,
+        `R1: the greyed Recruit row was seen on a non-adjacent own turn — ${battles.join(' || ')}`,
+      ).toBe(true);
     });
 
     // -------------------------------------------------------------------------

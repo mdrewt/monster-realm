@@ -46,3 +46,81 @@ test('a recipe that is absent, commented out, or only a prefix of a step is repo
   assert.deepEqual(missing(justfile, `${workflow}\n      - run: just test-all`), ['test']);
   assert.deepEqual(missing(justfile, `${workflow}\n      - run: just test`), []);
 });
+
+// A job that fetches a tool release itself fails whenever the release host does. Every job gets
+// its tools from .github/actions/tools, which serves them from cache.
+const jobs = (workflow) =>
+  workflow
+    .slice(workflow.indexOf('\njobs:\n'))
+    .split(/\n(?=  [\w-]+:\n)/)
+    .slice(1)
+    .map((body) => ({ name: body.slice(2, body.indexOf(':')), body }));
+
+const TOOL = /\b(just|wasm-pack|spacetime)\s/;
+const usesTool = (body) => body.split('\n').some((l) => !l.trim().startsWith('#') && TOOL.test(l));
+const jobsWithoutTools = (workflow) =>
+  jobs(workflow)
+    .filter(
+      ({ body }) => usesTool(body) && !/^\s+- uses: \.\/\.github\/actions\/tools$/m.test(body),
+    )
+    .map(({ name }) => name);
+
+for (const file of ['ci.yml', 'nightly.yml']) {
+  test(`every ${file} job that runs just, wasm-pack or spacetime takes them from the tools action`, () => {
+    const workflow = read(`.github/workflows/${file}`);
+    assert.ok(
+      jobs(workflow).some(({ body }) => usesTool(body)),
+      'no job runs a tool',
+    );
+    assert.deepEqual(jobsWithoutTools(workflow), []);
+  });
+}
+
+test('a job that runs a tool without the tools action is reported', () => {
+  const workflow = [
+    'jobs:',
+    '  good:',
+    '    steps:',
+    '      - uses: ./.github/actions/tools',
+    '      - run: just lint',
+    '  commented:',
+    '    steps:',
+    '      # - uses: ./.github/actions/tools',
+    '      - run: spacetime start',
+    '  no-tool:',
+    '    steps:',
+    '      # just a comment',
+    '      - run: node scripts/e2e-shard-union.mjs e2e-shards',
+  ].join('\n');
+  assert.deepEqual(jobsWithoutTools(`name: x\n${workflow}`), ['commented']);
+});
+
+// Jobs that share a wasm-pack download cache key overwrite nothing: the first to finish writes it
+// and the rest restore it. A `--dev` build (`just eval`) downloads no binaryen, so a key shared
+// with a release build (`just wasm`) can hold a directory the release build still has to fill
+// from the network on every run. Each job therefore keys the directory by its own job id.
+const sharedCacheKeys = (action) =>
+  action
+    .split('\n')
+    .filter((l) => /^\s+(key|restore-keys):\s+wasm-pack-downloads-/.test(l))
+    .filter((l) => !/-\$\{\{ github\.job \}\}-/.test(l))
+    .map((l) => l.trim().split(':')[0]);
+
+test('the wasm-pack download cache is keyed by job, on both key and restore-keys', () => {
+  const action = read('.github/actions/tools/action.yml');
+  const keyed = action.split('\n').filter((l) => l.includes(': wasm-pack-downloads-'));
+  assert.equal(keyed.length, 2, 'expected one key and one restore-keys line');
+  assert.deepEqual(sharedCacheKeys(action), []);
+});
+
+test('a wasm-pack download cache key without the job id is reported', () => {
+  const expr = (e) => ['$', `{{ ${e} }}`].join('');
+  const prefix = `wasm-pack-downloads-${expr('runner.os')}-${expr('runner.arch')}-`;
+  const action = [
+    `        key: ${prefix}${expr("hashFiles('Cargo.lock')")}`,
+    `        restore-keys: ${prefix}${expr('github.job')}-`,
+  ].join('\n');
+  assert.deepEqual(sharedCacheKeys(action), ['key']);
+  assert.deepEqual(sharedCacheKeys(action.replace('restore-keys', 'key')), ['key']);
+  assert.deepEqual(sharedCacheKeys(action.replace(prefix, `${prefix}${expr('github.job')}-`)), []);
+});
