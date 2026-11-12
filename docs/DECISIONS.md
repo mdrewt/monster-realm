@@ -20,6 +20,30 @@ rule core.
 **Rules out.** Extracting `game-core` (or an "engine") into its own repository or published crate;
 letting the client and the server pin different revisions of it.
 
+## One game, three ways to play: no code may assume we run the server
+
+**Decision.** The same server module, rules crate and client are played three ways: a single-player
+world on a server the game starts on the player's machine, a private server a player hosts for
+friends, and the one official server. A way to play is a deployment — where the server runs and who
+may connect — never a build of the rules. A character belongs to one world; nothing moves between
+worlds. Private worlds run the official rules until modding ships after early access, and the code is
+written so that modding can be added: content stays data behind one loader per registry, rules never
+name a specific content id, and each kind of extension has one seam.
+
+**Why.** Most players are expected to play alone or with a few friends, and early access is that
+build; the official server follows. Three rule sets or three clients would triple every change and let
+the ways to play drift apart. Isolation between worlds is what keeps the official server's economy and
+ladder meaningful when anyone can run their own world. The design intent is `game-design.md` §14 in
+the harness's spec corpus.
+
+**Rules out.** A server address, database name or operator-run service assumed in shared client or
+module code (the connection target is configuration); an upgrade or migration step a person runs by
+hand; telemetry that leaves a player's machine without their consent; client game code that exists
+only in one shell (browser, desktop); a feature that cannot work with one player and nobody else
+online; progress or collection content that requires another player (group content such as raids
+stays attemptable alone); importing a character, monster, item or rating into the official server;
+a rule or view that branches on a content id.
+
 ## SpacetimeDB is the server platform
 
 **Decision.** The authoritative server is a SpacetimeDB module (`server-module`): tables, reducers,
