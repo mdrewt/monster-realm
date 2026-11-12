@@ -18,14 +18,20 @@
 //       step(dir);                          // immediate first step — UNGATED
 //       held.press(dir, performance.now()); // the press carries its own timestamp
 //   keyup: held.release(dir);
-//   sendIntent — conn always live here, no overlays;
+//   sendIntent — conn always live here, no overlays; every issued seq enters `owed`;
 //   reconcile batch listener + divergence re-issue, whose emitter is
-//       if (diverged && predictor.outstandingSteps === 0 && !(…overlays…)) {
+//       if (diverged && predictor.outstandingSteps === 0 && owed.count === 0 && !(…overlays…)) {
 //         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
 //   rAF frame body: drain FIRST (nh2 R1), then the SAME emitter
-//       if (predictor.outstandingSteps === 0 && !(…overlays…)) { … committedActive(now) … }
-// Server reducers: guards.rs authorize_move (:66-96), movement.rs enqueue_move (:120-130) and
-// the movement_tick drain arm (:184-237).
+//       if (predictor.outstandingSteps === 0 && owed.count === 0 && !(…overlays…)) { … }
+// Server reducers: guards.rs authorize_move, movement.rs enqueue_move and the movement_tick
+// drain arm.
+//
+// ACK DELIVERY: the server publishes the queue and the ack on the character row. WHEN an
+// accepted input reaches that row is a property of the server's storage, so the model takes
+// it as a parameter (`AckDelivery`): 'accept' writes the row in the reducer call, 'tick'
+// writes it with the next movement_tick. Every S0-S12 scenario runs under BOTH with the same
+// thresholds — the feel must not depend on which one the server does.
 //
 // WHY a model and not the real thing: main.ts is not importable under vitest (module-scope
 // DOM/PIXI/wasm side effects) and the server is Rust. The SOURCE-LEVEL proof that main.ts
@@ -38,6 +44,7 @@ import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
 import { characterToPredictedBaseline, type SdkCharacterFields } from '../convert/convert';
 import { HeldDirections, HOLD_COMMIT_MS, reissueDir } from './heldKeys';
+import { OwedInputs } from './owedInputs';
 import { type ApplyMove, Predictor, type PredictorEpoch } from './predictor';
 
 const STEP_MS = 200; // game-core world.rs:13
@@ -122,6 +129,13 @@ class EventQueue {
 }
 
 // --- server model (guards.rs + movement.rs) --------------------------------------
+/** When an accepted input reaches the published row: with the reducer call, or with the next
+ *  movement_tick's write. */
+type AckDelivery = 'accept' | 'tick';
+/** The delivery mode `runSim` / `runWarpSim` give a server whose config names none. */
+let defaultAckDelivery: AckDelivery = 'accept';
+
+/** The PUBLISHED character row: position, plus the queue and the ack as last written. */
 interface ServerRow {
   x: number;
   y: number;
@@ -129,16 +143,26 @@ interface ServerRow {
   action: 'Idle' | 'Walking' | 'Jumping';
   moveStartedAt: number;
   moveQueue: WasmMoveInput[];
-  lastInputSeq: number;
+  ackedSeq: number;
 }
 class ServerModel {
   row: ServerRow;
+  readonly ackDelivery: AckDelivery;
+  /** The authority for the undrained queue and the seq guard. The row carries a copy,
+   *  refreshed by `#publishIntent`. */
+  #queue: WasmMoveInput[] = [];
+  #seq = 0;
   readonly acceptedDrains: { dir: string; atMs: number; moved: boolean }[] = [];
   /** Every intent the server ACCEPTED, stamped with its SERVER-ARRIVAL time. The step-2
    *  cadence slack metric (S4/S5) is measured against this: it is the moment the second
    *  move became eligible for the next movement_tick. */
   readonly acceptedEnqueues: { seq: number; atMs: number }[] = [];
-  constructor(x: number, y: number) {
+  /** S13 anti-vacuity control only: an accepted call writes the QUEUE to the row and leaves
+   *  the ack for the tick — the torn pair one row write per change makes unrepresentable. */
+  readonly #tornPublish: boolean;
+  constructor(x: number, y: number, ackDelivery: AckDelivery, tornPublish = false) {
+    this.ackDelivery = ackDelivery;
+    this.#tornPublish = tornPublish;
     this.row = {
       x,
       y,
@@ -146,28 +170,52 @@ class ServerModel {
       action: 'Idle',
       moveStartedAt: 0,
       moveQueue: [],
-      lastInputSeq: 0,
+      ackedSeq: 0,
     };
   }
-  /** guards.rs authorize_move (:77-81, :93) + movement.rs enqueue_move (:120-130). */
+  /** Copy the queue and the seq onto the row. Returns true iff the row changed. */
+  #publishIntent(): boolean {
+    const same =
+      this.row.ackedSeq === this.#seq &&
+      this.row.moveQueue.length === this.#queue.length &&
+      this.row.moveQueue.every((m, i) => m === this.#queue[i]);
+    if (same) return false;
+    this.row.moveQueue = [...this.#queue];
+    this.row.ackedSeq = this.#seq;
+    return true;
+  }
+  /** True when an accepted call changes the row, so the client receives a snapshot of it. */
+  get writesRowOnAccept(): boolean {
+    return this.ackDelivery === 'accept' || this.#tornPublish;
+  }
+  /** How many accepted steps the server has not drained yet. */
+  get owedSteps(): number {
+    return this.#queue.length;
+  }
+  /** guards.rs authorize_move + movement.rs enqueue_move. Under 'accept' an accepted call
+   *  writes the row; under 'tick' it changes nothing a client can see. */
   enqueueMove(input: WasmMoveInput, seq: number, atMs: number): 'ok' | 'stale seq' | 'queue full' {
-    if (seq <= this.row.lastInputSeq) return 'stale seq';
-    if (this.row.moveQueue.length >= QUEUE_CAP) return 'queue full'; // txn rollback: no ack
-    this.row.lastInputSeq = seq;
-    this.row.moveQueue.push(input);
+    if (seq <= this.#seq) return 'stale seq';
+    if (this.#queue.length >= QUEUE_CAP) return 'queue full'; // txn rollback: no ack
+    this.#seq = seq;
+    this.#queue.push(input);
     this.acceptedEnqueues.push({ seq, atMs });
+    if (this.ackDelivery === 'accept') this.#publishIntent();
+    else if (this.#tornPublish) this.row.moveQueue = [...this.#queue];
     return 'ok';
   }
-  /** movement.rs movement_tick drain arm (:184-237). Returns true iff the row changed. */
+  /** movement.rs movement_tick for this character. Every arm publishes the queue and the
+   *  ack. Returns true iff the row changed. */
   tick(now: number): boolean {
-    if (this.row.moveQueue.length === 0) {
+    if (this.#queue.length === 0) {
+      let changed = this.#publishIntent();
       if (this.row.action !== 'Idle') {
         this.row.action = 'Idle';
-        return true;
+        changed = true;
       }
-      return false;
+      return changed;
     }
-    const input = this.row.moveQueue.shift() as WasmMoveInput;
+    const input = this.#queue.shift() as WasmMoveInput;
     const before: WasmCharacterState = {
       pos: { x: this.row.x, y: this.row.y },
       facing: this.row.facing,
@@ -186,6 +234,7 @@ class ServerModel {
     this.row.facing = next.facing;
     this.row.action = next.action;
     this.row.moveStartedAt = next.move_started_at;
+    this.#publishIntent();
     return true;
   }
   snapshot(): ServerRow {
@@ -199,6 +248,8 @@ interface Emission {
   dir: string;
   atMs: number;
   source: 'keydown' | 'frame' | 'divergence';
+  /** OBSERVATION ONLY: `owed.count` at the moment this intent was issued, before it was added. */
+  owedBefore: number;
 }
 type Send = (input: WasmMoveInput, seq: number, epoch: PredictorEpoch, at: number) => void;
 
@@ -213,29 +264,55 @@ class ClientModel {
   /** OBSERVATION ONLY (no behaviour): every reconcile's (diverged, outstandingSteps) pair, so
    *  the S9 divergence teeth can prove their PRECONDITION was actually reached instead of
    *  passing because the divergence site is simply unreachable. */
-  readonly reconciles: { atMs: number; diverged: boolean; outstanding: number }[] = [];
+  readonly reconciles: {
+    atMs: number;
+    diverged: boolean;
+    outstanding: number;
+    predictedX: number | undefined;
+  }[] = [];
+  /** main.ts `owed`: sent inputs neither rejected nor acked on the row. NOT reset by a
+   *  prediction rebuild. */
+  readonly owed = new OwedInputs();
+  /** main.ts `lastSentSeq`: the seq floor a rebuilt predictor starts from. */
+  #lastSentSeq = 0;
+  /** DEFAULTS TRUE — the model tracks main.ts. `false` is the S14 anti-vacuity control only:
+   *  the emitters gated on `outstandingSteps` alone. */
+  readonly #owedGate: boolean;
   #send: Send;
   #source: Emission['source'] = 'keydown';
   /** Mirrors the shipped keydown `if (!held.isHeld(dir)) step(dir);`.
    *  DEFAULTS TRUE — the model tracks main.ts, and the flag exists ONLY so S10-twin can
    *  run the dedup off and prove the S10 scenario is capable of seeing the double-move. */
   readonly #dedupFirstStep: boolean;
-  constructor(holdCommitMs: number | undefined, send: Send, dedupFirstStep = true) {
+  constructor(
+    holdCommitMs: number | undefined,
+    send: Send,
+    dedupFirstStep = true,
+    owedGate = true,
+  ) {
     this.predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
     this.held = new HeldDirections(holdCommitMs);
     this.#send = send;
     this.#dedupFirstStep = dedupFirstStep;
+    this.#owedGate = owedGate;
   }
-  /** main.ts sendIntent (:470-505), conn always live, no overlays. */
+  /** The continuation gate both emitters share. */
+  #nothingOwed(): boolean {
+    return this.predictor.outstandingSteps === 0 && (!this.#owedGate || this.owed.count === 0);
+  }
+  /** main.ts sendIntent, conn always live, no overlays. */
   sendIntent(input: WasmMoveInput, at: number): void {
     const intent = this.predictor.enqueue(input);
     if (intent === undefined) return; // declined: predict & send nothing
+    this.#lastSentSeq = intent.seq;
     this.emissions.push({
       seq: intent.seq,
       dir: input === 'Jump' ? 'Jump' : input.Step,
       atMs: at,
       source: this.#source,
+      owedBefore: this.owed.count,
     });
+    this.owed.sent(intent.seq);
     this.#send(input, intent.seq, intent.epoch, at);
   }
   /** main.ts keydown movement branch (:1093-1099) — POST-FIX: the first step is UNGATED by
@@ -273,12 +350,18 @@ class ClientModel {
       moveStartedAtMs: BigInt(Math.floor(this.lastRow.moveStartedAt)),
     };
     const baseline = characterToPredictedBaseline(sdkFields, at, STEP_MS);
-    const ackedSeq = this.lastRow.lastInputSeq;
-    this.predictor.seedSeq(ackedSeq); // main.ts:418
+    const ackedSeq = this.lastRow.ackedSeq;
+    this.owed.acked(ackedSeq);
+    this.predictor.seedSeq(ackedSeq);
     const diverged = this.predictor.reconcile(baseline, this.lastRow.moveQueue, ackedSeq, at);
-    this.reconciles.push({ atMs: at, diverged, outstanding: this.predictor.outstandingSteps });
-    // main.ts:429-451 divergence re-issue — nh2 gate + the mvi hold-commit gate.
-    if (diverged && this.predictor.outstandingSteps === 0) {
+    this.reconciles.push({
+      atMs: at,
+      diverged,
+      outstanding: this.predictor.outstandingSteps,
+      predictedX: this.predictor.predicted?.pos.x,
+    });
+    // main.ts divergence re-issue — nh2 gate + the owed gate + the mvi hold-commit gate.
+    if (diverged && this.#nothingOwed()) {
       const heldDir = reissueDir(this.held.committedActive(at), this.predictor.lastQueuedDir);
       if (heldDir !== undefined) {
         this.#source = 'divergence';
@@ -286,10 +369,16 @@ class ClientModel {
       }
     }
   }
+  /** The reducer call for `seq` rejected (main.ts sendIntent `.catch`). */
+  onRejected(seq: number, epoch: PredictorEpoch, reason: string, at: number): void {
+    this.rejections.push({ seq, reason, atMs: at });
+    this.owed.rejected(seq);
+    if (this.predictor.dropRejected(seq, epoch)) this.reconcileFromStore(at);
+  }
   /** rAF frame body: drain FIRST (nh2 R1), then the gated re-issue. */
   frame(at: number): void {
     this.predictor.drain(at);
-    if (this.predictor.outstandingSteps === 0) {
+    if (this.#nothingOwed()) {
       const heldDir = reissueDir(this.held.committedActive(at), this.predictor.lastQueuedDir);
       if (heldDir !== undefined) {
         this.#source = 'frame';
@@ -313,7 +402,7 @@ class ClientModel {
   rebuildPrediction(mode: 'clear' | 'preserve', atMs: number): void {
     const heldSnapshot = mode === 'preserve' ? this.held.snapshot() : undefined;
     this.predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
-    this.predictor.seedSeq(this.lastRow?.lastInputSeq ?? 0); // nh3 Case M2 send-seq floor
+    this.predictor.seedSeq(this.#lastSentSeq); // nh3 Case M2 send-seq floor
     this.held.clear();
     if (heldSnapshot !== undefined) this.held.restore(heldSnapshot);
     this.reconcileFromStore(atMs);
@@ -321,11 +410,13 @@ class ClientModel {
 
   /** The RECONNECT shape (ADR-0152 per-path invariant): the same rebuild with NO
    *  reconcile — the server's `on_disconnect` deleted the rows, so `reconcileFromStore`
-   *  early-returns until `joinGame` round-trips. 'clear' is the shipped body; 'leak' is the
+   *  early-returns until `joinGame` round-trips. The owed set is cleared with the socket.
+   *  'clear' is the shipped body; 'leak' is the
    *  anti-vacuity control that models `held.clear()` being removed from the shared body. */
   rebuildPredictionDeferredReconcile(mode: 'clear' | 'leak'): void {
     this.predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
-    this.predictor.seedSeq(this.lastRow?.lastInputSeq ?? 0);
+    this.predictor.seedSeq(this.#lastSentSeq);
+    this.owed.clear(); // main.ts onReconnect: nothing sent on the dropped socket is answered
     if (mode === 'clear') this.held.clear();
   }
 }
@@ -343,6 +434,10 @@ interface SimConfig {
   /** undefined ⇒ the SHIPPED deduped keydown. `false` is the S10-twin
    *  anti-vacuity control only (the pre-fix "every keydown emits" wiring). */
   dedupFirstStep?: boolean;
+  /** undefined ⇒ `defaultAckDelivery`. */
+  ackDelivery?: AckDelivery;
+  /** undefined ⇒ one coherent row write. `true` is the S13 anti-vacuity control only. */
+  tornPublish?: boolean;
 }
 
 /** Scripted stimuli. `serverNudge` models an AUTHORITATIVE REPOSITION (a server-side write the
@@ -370,7 +465,12 @@ interface SimResult {
 
 function runSim(cfg: SimConfig, script: readonly ScriptEvent[], untilMs: number): SimResult {
   const q = new EventQueue();
-  const server = new ServerModel(cfg.startX, cfg.startY);
+  const server = new ServerModel(
+    cfg.startX,
+    cfg.startY,
+    cfg.ackDelivery ?? defaultAckDelivery,
+    cfg.tornPublish,
+  );
   const probes: { atMs: number; x: number }[] = [];
   const latency = cfg.latencyMs;
   const client = new ClientModel(
@@ -380,16 +480,15 @@ function runSim(cfg: SimConfig, script: readonly ScriptEvent[], untilMs: number)
       q.push(sentAt + latency, (at) => {
         const res = server.enqueueMove(input, seq, at);
         if (res === 'ok') {
-          // enqueue txn writes character+player in one batch
-          // → one client reconcile on arrival.
-          const snap = server.snapshot();
-          q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
+          // 'accept': the enqueue txn writes the character row → one client reconcile on
+          // arrival. 'tick': the call resolves and no row changes.
+          if (server.writesRowOnAccept) {
+            const snap = server.snapshot();
+            q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
+          }
         } else {
-          // Err rolls the txn back; the promise rejects → main.ts:481-504 .catch.
-          q.push(at + latency, (a2) => {
-            client.rejections.push({ seq, reason: res, atMs: a2 });
-            if (client.predictor.dropRejected(seq, epoch)) client.reconcileFromStore(a2);
-          });
+          // Err rolls the txn back; the promise rejects → main.ts sendIntent .catch.
+          q.push(at + latency, (a2) => client.onRejected(seq, epoch, res, a2));
         }
       });
     },
@@ -1345,6 +1444,10 @@ interface WarpSimConfig {
   rebuildAtMs: number;
   rebuildMode: WarpMode;
   untilMs: number;
+  /** undefined ⇒ `defaultAckDelivery`. */
+  ackDelivery?: AckDelivery;
+  /** undefined ⇒ the SHIPPED owed gate. `false` is the S14 anti-vacuity control only. */
+  owedGate?: boolean;
 }
 
 /** State captured AT the rebuild instant — the preconditions every S12 tooth asserts before
@@ -1354,6 +1457,7 @@ interface WarpProbe {
   xAtRebuild: number;
   emissionsBefore: number;
   pendingAtRebuild: number;
+  serverOwedAtRebuild: number;
   outstandingAtRebuild: number;
   reconcilesBefore: number;
   reconcilesAfter: number;
@@ -1370,22 +1474,26 @@ interface WarpSimResult extends SimResult {
  *  scheduled rebuild event that records the pipeline state around itself. */
 function runWarpSim(cfg: WarpSimConfig, script: readonly ScriptEvent[]): WarpSimResult {
   const q = new EventQueue();
-  const server = new ServerModel(cfg.startX, cfg.startY);
+  const server = new ServerModel(cfg.startX, cfg.startY, cfg.ackDelivery ?? defaultAckDelivery);
   const latency = cfg.latencyMs;
-  const client = new ClientModel(cfg.holdCommitMs, (input, seq, epoch, sentAt) => {
-    q.push(sentAt + latency, (at) => {
-      const res = server.enqueueMove(input, seq, at);
-      if (res === 'ok') {
-        const snap = server.snapshot();
-        q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
-      } else {
-        q.push(at + latency, (a2) => {
-          client.rejections.push({ seq, reason: res, atMs: a2 });
-          if (client.predictor.dropRejected(seq, epoch)) client.reconcileFromStore(a2);
-        });
-      }
-    });
-  });
+  const client = new ClientModel(
+    cfg.holdCommitMs,
+    (input, seq, epoch, sentAt) => {
+      q.push(sentAt + latency, (at) => {
+        const res = server.enqueueMove(input, seq, at);
+        if (res === 'ok') {
+          if (server.writesRowOnAccept) {
+            const snap = server.snapshot();
+            q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
+          }
+        } else {
+          q.push(at + latency, (a2) => client.onRejected(seq, epoch, res, a2));
+        }
+      });
+    },
+    true,
+    cfg.owedGate,
+  );
   const initialSnap = server.snapshot();
   q.push(0, (at) => client.onRowUpdate(initialSnap, at));
   const framePeriod = 1000 / cfg.fps;
@@ -1417,6 +1525,7 @@ function runWarpSim(cfg: WarpSimConfig, script: readonly ScriptEvent[]): WarpSim
     xAtRebuild: Number.NaN,
     emissionsBefore: -1,
     pendingAtRebuild: -1,
+    serverOwedAtRebuild: -1,
     outstandingAtRebuild: -1,
     reconcilesBefore: -1,
     reconcilesAfter: -1,
@@ -1427,6 +1536,7 @@ function runWarpSim(cfg: WarpSimConfig, script: readonly ScriptEvent[]): WarpSim
     probe.xAtRebuild = server.row.x;
     probe.emissionsBefore = client.emissions.length;
     probe.pendingAtRebuild = client.predictor.pendingCount;
+    probe.serverOwedAtRebuild = server.owedSteps;
     probe.outstandingAtRebuild = client.predictor.outstandingSteps;
     probe.reconcilesBefore = client.reconciles.length;
     if (cfg.rebuildMode === 'deferred-clear') client.rebuildPredictionDeferredReconcile('clear');
@@ -1514,10 +1624,10 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
     // WRONG IMPL KILLED (2): `restore` that drops entries / restores an empty capture.
     // WRONG IMPL KILLED (3), NARROWLY: a rebuild that floors the fresh predictor's seq at
     //   NOTHING — every continuation would carry an already-acked seq, the server would reject
-    //   it as stale and no tile would move. The floor's FIDELITY is NOT claimed here: this sim
-    //   floors from the server ack (`lastRow.lastInputSeq`), which coincides with production's
-    //   `lastSentSeq` only under the AM8 all-acked precondition asserted above. The ack-vs-sent
-    //   distinction (nh3 Case M2) is owned by predictor.test.ts's nh3-2 block.
+    //   it as stale and no tile would move. The floor's FIDELITY is NOT claimed here: under the
+    //   AM8 all-acked precondition asserted above, production's `lastSentSeq` floor equals the
+    //   server ack, so this tooth cannot tell them apart. The ack-vs-sent distinction (nh3
+    //   Case M2) is owned by predictor.test.ts's nh3-2 block and by S14 below.
     // WRONG IMPL KILLED (4): a preserved hold that DOUBLE-advances (a merge that leaves two
     //   entries, or an emitter that fires twice per slot) — the cadence assertion below pins
     //   one tile per 200ms movement_tick slot across the whole run (R3).
@@ -1672,5 +1782,294 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
       'CONTROL: a rebuild that does NOT clear the held stack emits into the deferred gap — if ' +
         'it does not, S12e proves nothing about held.clear() being load-bearing',
     ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ================================================================================
+// S13-S15 — the ack rides the character row
+//
+// These three name the delivery mode they run under instead of inheriting it: each is about
+// what the client sees between a reducer call being accepted and the row that acks it.
+// ================================================================================
+
+const ACK_DELIVERIES: readonly AckDelivery[] = ['accept', 'tick'];
+
+describe('[ack-row] S13 an accepted input is replayed once, never twice, across a tick boundary', () => {
+  const START_X = 5;
+  const tapCell = (cfg: Partial<SimConfig>): SimResult =>
+    runSim(
+      { fps: 60, tickPhaseMs: 0, latencyMs: 1, startX: START_X, startY: 5, ...cfg },
+      hold('East', 500, 580),
+      2000,
+    );
+  const maxPredictedX = (r: SimResult): number =>
+    Math.max(...r.client.reconciles.map((c) => c.predictedX ?? Number.NEGATIVE_INFINITY));
+
+  it(
+    'S13 BITES: in every (delivery × tickPhase × latency) cell no reconcile ever predicts the tap two tiles out',
+    () => {
+      // The hazard: a reconcile that sees the input in the row's queue while the same row's
+      // ack does not cover it replays it on top of itself — the predicted tile jumps two out
+      // and is pulled back one on the next row. One row write per change rules the pair out.
+      for (const ackDelivery of ACK_DELIVERIES) {
+        for (const latencyMs of [1, 25, 60, 90]) {
+          for (let tickPhaseMs = 0; tickPhaseMs < STEP_MS; tickPhaseMs += 25) {
+            const r = tapCell({ ackDelivery, latencyMs, tickPhaseMs });
+            const cell = `delivery=${ackDelivery} L=${latencyMs} phase=${tickPhaseMs}`;
+            expect(r.server.row.x, `${cell}: the tap moves one tile`).toBe(START_X + 1);
+            expect(maxPredictedX(r), `${cell}: no reconcile over-predicts`).toBe(START_X + 1);
+            expect(
+              r.client.reconciles.filter((c) => c.diverged).length,
+              `${cell}: no reconcile is a correction`,
+            ).toBe(0);
+            expect(
+              r.client.predictor.predicted?.pos.x,
+              `${cell}: client rests on the server tile`,
+            ).toBe(r.server.row.x);
+            expect(r.client.owed.count, `${cell}: nothing left owed`).toBe(0);
+          }
+        }
+      }
+    },
+    GRID_TIMEOUT_MS,
+  );
+
+  it('S13-twin ANTI-VACUITY: a server that writes the queue before the ack DOES double-replay', () => {
+    const r = tapCell({ ackDelivery: 'tick', tornPublish: true, latencyMs: 25, tickPhaseMs: 0 });
+    expect(
+      maxPredictedX(r),
+      'CONTROL: with the queue visible and the ack not yet covering it, the reconcile replays ' +
+        'the input twice — if it does not, S13 cannot see the defect it names',
+    ).toBe(START_X + 2);
+    expect(r.server.row.x, 'CONTROL: the server still moved one tile').toBe(START_X + 1);
+  });
+});
+
+describe('[ack-row] S14 an input in flight across a warp rebuild stays owed', () => {
+  // 60fps / tickPhase 0 / L=40. The held walk emits a continuation on the t=2050 frame; it
+  // reaches the server at t=2090. The rebuild at t=2060 therefore replaces the predictor
+  // while that input is on the wire — sent, not accepted, not acked.
+  const CELL = {
+    fps: 60,
+    tickPhaseMs: 0,
+    latencyMs: 40,
+    startX: 5,
+    startY: 5,
+    rebuildAtMs: 2060,
+    rebuildMode: 'preserve',
+  } as const;
+  const RELEASE_AT = 2075;
+
+  function expectInFlightAtRebuild(r: WarpSimResult, label: string): void {
+    expect(r.probe.ran, `${label} PRECONDITION: the rebuild ran`).toBe(true);
+    expect(
+      r.probe.pendingAtRebuild,
+      `${label} PRECONDITION: exactly one input is unacked at the rebuild`,
+    ).toBe(1);
+    expect(
+      r.probe.serverOwedAtRebuild,
+      `${label} PRECONDITION: the server has not accepted it yet — it is on the wire`,
+    ).toBe(0);
+    expect(
+      r.probe.reconcilesAfter - r.probe.reconcilesBefore,
+      `${label} PRECONDITION: the rebuild reconciles from the last row in the same call stack`,
+    ).toBe(1);
+    expect(
+      r.client.reconciles[r.probe.reconcilesAfter - 1]?.outstanding,
+      `${label} PRECONDITION: the fresh predictor reads outstandingSteps 0`,
+    ).toBe(0);
+  }
+
+  it.each(
+    ACK_DELIVERIES,
+  )('S14a BITES (%s): a key released just after the warp travels exactly one more tile', (ackDelivery) => {
+    const script: ScriptEvent[] = [
+      { kind: 'keydown', atMs: 500, dir: 'East' },
+      { kind: 'keyup', atMs: RELEASE_AT, dir: 'East' },
+    ];
+    const r = runWarpSim({ ...CELL, ackDelivery, untilMs: 3000 }, script);
+    expectInFlightAtRebuild(r, ackDelivery);
+    expect(
+      afterRebuild(r).length,
+      'no continuation may be emitted between the rebuild and the release: the in-flight ' +
+        'input is still owed',
+    ).toBe(0);
+    expect(
+      r.server.row.x - r.probe.xAtRebuild,
+      'the in-flight step lands, and nothing else does',
+    ).toBe(1);
+    expect(r.client.rejections.length, 'nothing was rejected').toBe(0);
+    expect(r.client.owed.count, 'the owed set settles once the row acks the input').toBe(0);
+    expect(r.client.predictor.predicted?.pos.x, 'client rests on the server tile').toBe(
+      r.server.row.x,
+    );
+
+    // CONTROL: the emitters gated on outstandingSteps alone let one more step out in the
+    // frame after the rebuild, and the released key travels two tiles.
+    const control = runWarpSim({ ...CELL, ackDelivery, owedGate: false, untilMs: 3000 }, script);
+    expectInFlightAtRebuild(control, `${ackDelivery} control`);
+    expect(
+      afterRebuild(control).length,
+      'CONTROL: without the owed gate a continuation slips out before the release',
+    ).toBe(1);
+    expect(
+      control.server.row.x - control.probe.xAtRebuild,
+      'CONTROL: and the release travels two tiles — if it does not, S14a proves nothing',
+    ).toBe(2);
+  });
+
+  it.each(
+    ACK_DELIVERIES,
+  )('S14b BITES (%s): a key still held emits no continuation while the input is owed, and keeps cadence', (ackDelivery) => {
+    const script: ScriptEvent[] = [{ kind: 'keydown', atMs: 500, dir: 'East' }];
+    const r = runWarpSim({ ...CELL, ackDelivery, untilMs: 4000 }, script);
+    expectInFlightAtRebuild(r, ackDelivery);
+    const post = afterRebuild(r);
+    expect(post.length, 'the held walk does continue after the warp').toBeGreaterThanOrEqual(5);
+    expect(
+      post.filter((e) => e.owedBefore > 0).length,
+      'every post-warp continuation is emitted with nothing owed',
+    ).toBe(0);
+    expect(
+      cadenceOf(r).missedSlots,
+      'one tile per movement_tick slot across the warp: no skipped slot, no double step',
+    ).toBe(0);
+    expect(r.client.rejections.length, 'nothing was rejected').toBe(0);
+
+    const control = runWarpSim({ ...CELL, ackDelivery, owedGate: false, untilMs: 4000 }, script);
+    expect(
+      afterRebuild(control).filter((e) => e.owedBefore > 0).length,
+      'CONTROL: without the gate a continuation is emitted on top of the owed input',
+    ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('[ack-row] S15 reload with surviving rows: the published ack can be one tick behind', () => {
+  // The page reloads while the rows survive (another connection of the identity is live).
+  // Before the reload the old page sent seq 1 and the server accepted it; the tick that will
+  // drain it has not run. Under 'tick' the row the fresh page seeds from still says
+  // ackedSeq 0, so its first send re-uses seq 1 and is rejected "stale seq".
+  const FRAME_MS = 1000 / 60;
+  const RELOAD_AT = 110;
+  const KEYDOWN_AT = 120;
+  const KEYUP_AT = 600;
+  const UNTIL = 1500;
+
+  interface FrameSample {
+    atMs: number;
+    predictedX: number | undefined;
+    serverX: number;
+    pending: number;
+  }
+  interface ReloadResult {
+    server: ServerModel;
+    fresh: ClientModel;
+    frames: FrameSample[];
+  }
+
+  function runReload(ackDelivery: AckDelivery): ReloadResult {
+    const q = new EventQueue();
+    const server = new ServerModel(5, 5, ackDelivery);
+    const latency = 1;
+    let active: ClientModel | undefined;
+    const page = (): ClientModel => {
+      const client: ClientModel = new ClientModel(undefined, (input, seq, epoch, sentAt) => {
+        q.push(sentAt + latency, (at) => {
+          const res = server.enqueueMove(input, seq, at);
+          // A reply addressed to a page that has been replaced reaches nobody.
+          if (res === 'ok') {
+            if (server.writesRowOnAccept) {
+              const snap = server.snapshot();
+              q.push(at + latency, (a2) => active?.onRowUpdate(snap, a2));
+            }
+          } else {
+            q.push(at + latency, (a2) => {
+              if (active === client) client.onRejected(seq, epoch, res, a2);
+            });
+          }
+        });
+      });
+      return client;
+    };
+    const old = page();
+    const fresh = page();
+    const frames: FrameSample[] = [];
+    active = old;
+    const login = server.snapshot();
+    q.push(0, (at) => old.onRowUpdate(login, at));
+    q.push(100, (at) => old.keydown('East', at));
+    q.push(RELOAD_AT, (at) => {
+      active = fresh;
+      fresh.onRowUpdate(server.snapshot(), at); // the fresh page's initial subscription rows
+    });
+    q.push(KEYDOWN_AT, (at) => fresh.keydown('East', at));
+    q.push(KEYUP_AT, () => fresh.keyup('East'));
+    for (let n = 0; n * FRAME_MS <= UNTIL; n++) {
+      q.push(n * FRAME_MS, (at) => {
+        active?.frame(at);
+        if (active === fresh) {
+          frames.push({
+            atMs: at,
+            predictedX: fresh.predictor.predicted?.pos.x,
+            serverX: server.row.x,
+            pending: fresh.predictor.pendingCount,
+          });
+        }
+      });
+    }
+    for (let t = 150; t <= UNTIL; t += STEP_MS) {
+      q.push(t, (at) => {
+        if (server.tick(at)) {
+          const snap = server.snapshot();
+          q.push(at + latency, (a2) => active?.onRowUpdate(snap, a2));
+        }
+      });
+    }
+    q.run(UNTIL);
+    return { server, fresh, frames };
+  }
+
+  it("S15 BITES: under 'tick' the first send is rejected once, and the client converges within two frames", () => {
+    const r = runReload('tick');
+    expect(
+      r.fresh.rejections.map((x) => [x.seq, x.reason]),
+      'exactly one rejection: the re-used seq',
+    ).toEqual([[1, 'stale seq']]);
+    const rejectedAt = (r.fresh.rejections[0] as { atMs: number }).atMs;
+    const settled = r.frames.filter(
+      (f) => f.atMs >= rejectedAt && f.atMs <= rejectedAt + 2 * FRAME_MS + EPS,
+    );
+    expect(
+      settled.length,
+      'PRECONDITION: frames ran inside the two-frame window',
+    ).toBeGreaterThanOrEqual(1);
+    for (const f of settled) {
+      expect(f.pending, `t=${f.atMs}: the rejected op is gone from pending`).toBe(0);
+      expect(f.predictedX, `t=${f.atMs}: predicted is back on the server tile`).toBe(f.serverX);
+    }
+    // The held key recovers on its own: once the tick has published ack 1 the continuation
+    // is issued above it and accepted.
+    const later = r.fresh.emissions.filter((e) => e.atMs > rejectedAt);
+    expect(later.length, 'the hold continues after the rejection').toBeGreaterThanOrEqual(2);
+    expect(
+      later.every((e) => e.seq > 1),
+      'no later send re-uses a seq',
+    ).toBe(true);
+    expect(r.fresh.owed.count, 'nothing left owed').toBe(0);
+    expect(r.fresh.predictor.predicted?.pos.x, 'client rests on the server tile').toBe(
+      r.server.row.x,
+    );
+    expect(
+      r.server.row.x - 5,
+      'the pre-reload step and the held walk both landed',
+    ).toBeGreaterThanOrEqual(3);
+  });
+
+  it("S15-twin: under 'accept' the row is never behind, so the same reload rejects nothing", () => {
+    const r = runReload('accept');
+    expect(r.fresh.rejections.length).toBe(0);
+    expect(r.fresh.emissions[0]?.seq, 'the first send is issued above the published ack').toBe(2);
+    expect(r.fresh.owed.count).toBe(0);
+    expect(r.fresh.predictor.predicted?.pos.x).toBe(r.server.row.x);
   });
 });
