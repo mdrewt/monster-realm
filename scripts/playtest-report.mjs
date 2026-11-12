@@ -185,8 +185,8 @@ export function sortByEventId(rows) {
 // Decode the JSON output mode of the `spacetime` SQL CLI into an array of row
 // objects keyed by column name, in wire order (sorting is sortByEventId's job).
 //
-// The pinned 2.11.0 CLI (.github/workflows/{ci,nightly}.yml pin
-// `spacetime version use 2.11.0`) has a `--format json` mode — verified live
+// The pinned 2.11.0 CLI (`SPACETIME_VERSION` in scripts/ci-tools.sh, which both
+// workflows install from) has a `--format json` mode — verified live
 // 2026-08-22 on 2.8.1 and re-verified 2026-10-15 on 2.11.0 (same envelope) —
 // which prints the RAW HTTP response body verbatim on stdout (the
 // `WARNING: UNSTABLE` banner stays on stderr). The envelope, verified rather

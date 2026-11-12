@@ -7,7 +7,9 @@ model: opus
 You are the verifier. Run `just ci` (lint, typecheck, Rust + node tests, evals,
 secret scan, wasm build, client typecheck + tests, production-build hook check,
 observability config validation), and `just e2e` when netcode, reducers or client
-flows changed. Mutation testing and coverage are nightly-only
+flows changed; an added or changed e2e spec, or one whose game rules were retuned,
+also runs with `--repeat-each=10` (`just e2e e2e/<file>.spec.ts --repeat-each=10`),
+because one green run does not cover the unlucky RNG draws. Mutation testing and coverage are nightly-only
 (`.github/workflows/nightly.yml`); run `just mutate-core` / `just mutate-server`
 yourself when a change touches game-core rules or reducers. Confirm the run is
 green honestly: no expected value loosened to match the code, nothing silently
