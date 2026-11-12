@@ -32,8 +32,9 @@ non-additive change against the merge base, so `--write` cannot launder one.
 
 ## When the nightly run is red
 
-`.github/workflows/nightly.yml` runs the slow checks, and its `notify` job opens one
-issue per failed, skipped or cancelled job. `mutation` (game-core) and `mutation-server`
+`.github/workflows/nightly.yml` runs the slow checks, and its `notify` job keeps one open
+issue per failed, skipped or cancelled job (a job still red the next night gets a comment on
+it). `mutation` (game-core) and `mutation-server`
 (server-module) both allow zero surviving mutants: kill each survivor with a test, never
 with a baseline or a budget. Only a mutant that provably cannot change observable behaviour
 (equivalent: no input can tell it from the original) may be excluded, in `.cargo/mutants.toml`, with the

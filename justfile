@@ -138,12 +138,18 @@ mutate-core shard="":
     #!/usr/bin/env bash
     set -euo pipefail
     [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-core: shard '{{shard}}' is not k/n" >&2; exit 64; }
-    shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
+    # round-robin: mutant i runs on shard i % n, so the slow files spread evenly over the shards.
+    shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}" --sharding round-robin)
     # Backstop for a runaway-allocation mutant (one once pushed ~550 MB/s until the whole 16 GB
     # runner died, see .cargo/mutants.toml #5): cap each process's address space so the allocation
     # aborts the test (= caught) instead of taking the machine down. The unmutated build + full
     # test run fits in 8 GB. `|| true`: platforms without `ulimit -v` simply run uncapped.
     ulimit -v 8000000 2>/dev/null || true
+    # cargo-mutants rebuilds once per mutant and dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0
+    # into GITHUB_ENV. Incremental cuts the game-core rebuild per mutant from ~15 s to ~4 s
+    # (measured, same verdicts).
+    export CARGO_INCREMENTAL=1
+    echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     status=0
     cargo mutants -p game-core ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts. Anything else is not a mutation verdict.
@@ -173,6 +179,8 @@ mutate-diff base="origin/master":
     git diff "{{base}}...HEAD" -- game-core server-module > "$diff_file"
     [ -s "$diff_file" ] || { echo "mutate-diff: no game-core/server-module changes vs {{base}}"; exit 0; }
     ulimit -v 8000000 2>/dev/null || true
+    # One rebuild per mutant: incremental, for the same reason as mutate-core.
+    export CARGO_INCREMENTAL=1
     status=0
     cargo mutants -p game-core -p monster-realm-module --test-tool nextest --in-diff "$diff_file" || status=$?
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
@@ -196,12 +204,13 @@ mutate-server shard="":
     #!/usr/bin/env bash
     set -euo pipefail
     [[ "{{shard}}" =~ ^([0-9]+/[0-9]+)?$ ]] || { echo "mutate-server: shard '{{shard}}' is not k/n" >&2; exit 64; }
-    shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}")
+    # round-robin: mutant i runs on shard i % n. The mutants whose tests run longest sit in the last
+    # files (tactics*, trading*), so consecutive slices leave the last shards far slower.
+    shard_args=(); [ -n "{{shard}}" ] && shard_args=(--shard "{{shard}}" --sharding round-robin)
     # Same runaway-allocation backstop as mutate-core (protects the 16 GB runner).
     ulimit -v 8000000 2>/dev/null || true
-    # dtolnay/rust-toolchain exports CARGO_INCREMENTAL=0 into GITHUB_ENV and cargo-mutants rebuilds
-    # once per mutant. Incremental cuts the server build per mutant from ~20 s to ~5 s (measured,
-    # same verdicts); game-core already rebuilds in ~0.5 s per mutant, so it is left alone.
+    # Incremental for the same reason as mutate-core: it cuts the server rebuild per mutant from
+    # ~20 s to ~5 s (measured, same verdicts).
     export CARGO_INCREMENTAL=1
     echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     status=0
