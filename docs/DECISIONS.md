@@ -861,16 +861,25 @@ tile. Same zone only; ordered NPC, then heal, then player, then by id. An entity
 within range but not in front is never a candidate, even though `talk` accepts up to
 `TALK_RANGE` (2). The UI starts trades and challenges only from a player you face.
 The server is more permissive than the client: `talk` accepts `TALK_RANGE`, and
-`open_trade_session` refuses a partner outside
+`open_trade_session` and `challenge_pvp` refuse a partner outside
 `game_core::interact::within_interact_range` (same zone, Manhattan distance at most
-`TALK_RANGE`) with one message for every out-of-range case.
+`TALK_RANGE`). Each has one message for every out-of-range case: another zone, too far
+and a missing character. The range is checked when the request is made, not when it is
+answered: a challenge can be accepted, declined or cancelled from anywhere, and a trade
+session edited, confirmed or cancelled from anywhere. In `challenge_pvp` the range
+check runs right after "target is joined and online" and before the checks that answer
+from the target's account, battles and pending challenges, so a caller out of range
+learns only whether the target is joined and online.
 
 **Why.** Interaction follows what the character faces, as in console RPGs. The
 server's range is a latency margin for an NPC or a player that steps one tile before
-the reducer runs. It is not the player's reach.
+the reducer runs. It is not the player's reach. The order in `challenge_pvp` is not a
+privacy guarantee: a player who walks up to the target still gets those answers. The
+range refusal itself reveals nothing new, because `character` is a public table.
 
 **Rules out.** A nearest-within-range target; widening the client rule to match
-`TALK_RANGE`; starting a trade or challenge remotely from a menu.
+`TALK_RANGE`; starting a trade or challenge remotely from a menu; re-checking range
+when a challenge is accepted or a trade session is confirmed.
 
 ## The battle frame has one owner per tactical phase
 
