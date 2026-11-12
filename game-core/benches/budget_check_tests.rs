@@ -45,8 +45,9 @@ use crate::budgets::Budget;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The 7 hot paths OBS-5 names (plan §6e — every signature verified).
-const EXPECTED_IDS: [&str; 7] = [
+/// The 7 hot paths OBS-5 names (plan §6e — every signature verified) and the live tactical
+/// planner (`tactics::plan`).
+const EXPECTED_IDS: [&str; 8] = [
     "apply_move",
     "derive_stats",
     "resolve_turn",
@@ -54,6 +55,7 @@ const EXPECTED_IDS: [&str; 7] = [
     "evolution_eligible_paths",
     "evolve",
     "map_for",
+    "tactics_plan",
 ];
 
 const EPS: f64 = 1e-9;
@@ -70,18 +72,19 @@ fn close(a: f64, b: f64) -> bool {
 /// no fewer.
 ///
 /// Kills: quietly dropping an id whose bench turned out to be awkward to build
-/// (the gate would still be green while covering six paths), and adding an
+/// (the gate would still be green while covering one path fewer), and adding an
 /// unnamed extra that no bench produces (which `missing` would then flag on
 /// every run until someone raised its ceiling to infinity).
 #[test]
-fn budgets_covers_exactly_the_seven_named_hot_paths() {
+fn budgets_covers_exactly_the_named_hot_paths() {
     let mut ids: Vec<&str> = budgets::BUDGETS.iter().map(|b| b.id).collect();
     ids.sort_unstable();
     let mut expected: Vec<&str> = EXPECTED_IDS.to_vec();
     expected.sort_unstable();
     assert_eq!(
         ids, expected,
-        "BUDGETS must name exactly the 7 hot paths from observability-performance-plan.md §2"
+        "BUDGETS must name exactly the 7 hot paths from observability-performance-plan.md §2 and \
+         `tactics_plan`"
     );
 
     let mut deduped = ids.clone();

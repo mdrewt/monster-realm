@@ -17,7 +17,7 @@ pub struct Budget {
     pub ceiling_ns: f64,
 }
 
-/// The 7 hot paths OBS-5 names (plan §6e). Ids are the criterion
+/// The 7 hot paths OBS-5 names (plan §6e) and the live tactical planner. Ids are the criterion
 /// `bench_function` names verbatim (criterion's dir sanitization is a no-op
 /// for `[a-z0-9_]`).
 // AM11 provenance, shared conditions for every entry below: measured mean
@@ -66,6 +66,14 @@ pub const BUDGETS: &[Budget] = &[
         // (apply_move 4.16 ns vs 1.87 ns that day); 20x = 36127, rounded up to 40000.
         id: "map_for",
         ceiling_ns: 40_000.0,
+    },
+    Budget {
+        // `tactics::plan` for the first wild on the opening board of a 3v3 on the 8x8 open
+        // field (map 4). Measured 6059.8 ns mean on 2026-11-12, same bench settings and
+        // fixtures as above, on a WSL2 machine reading apply_move 3.83 ns that day;
+        // 20x = 121196, rounded up to 125000.
+        id: "tactics_plan",
+        ceiling_ns: 125_000.0,
     },
 ];
 

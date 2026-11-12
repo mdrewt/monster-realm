@@ -130,6 +130,14 @@ fn dijkstra(board: &Board, mover: &BoardUnit, start: Cell) -> Vec<Option<(u16, O
     best
 }
 
+/// Whether a living unit other than `mover_id` stands on `c` (no Move may end there).
+fn occupied(board: &Board, mover_id: u32, c: Cell) -> bool {
+    board
+        .units
+        .iter()
+        .any(|u| u.alive && u.id != mover_id && u.pos == c)
+}
+
 /// The cheapest path for `mover_id` from `start` to `dest` (tie-break: module doc).
 /// `steps` exclude `start` and end at `dest`; `cost` is the summed entry weight.
 /// No stride budget is applied here — the caller checks `cost` against it. A tile
@@ -156,11 +164,7 @@ pub fn find_path(board: &Board, mover_id: u32, start: Cell, dest: Cell) -> Resul
     if passable.is_none() {
         return Err(PathError::DestImpassable);
     }
-    if board
-        .units
-        .iter()
-        .any(|u| u.alive && u.id != mover_id && u.pos == dest)
-    {
+    if occupied(board, mover_id, dest) {
         return Err(PathError::DestOccupied);
     }
     let best = dijkstra(board, mover, start);
@@ -178,6 +182,41 @@ pub fn find_path(board: &Board, mover_id: u32, start: Cell, dest: Cell) -> Resul
     }
     steps.reverse();
     Ok(Path { steps, cost })
+}
+
+/// Every destination [`find_path`] accepts from `start`, row-major, with its path cost: `(dest,
+/// cost)` is listed exactly when `find_path(board, mover_id, start, dest)` is `Ok` with that
+/// `cost`. One Dijkstra serves the whole board, for a caller that needs every destination and no
+/// step list.
+///
+/// # Errors
+/// [`PathError::UnknownMover`] when no living unit has `mover_id`, then
+/// [`PathError::OutOfBounds`] for an off-board `start`.
+pub(crate) fn path_costs(
+    board: &Board,
+    mover_id: u32,
+    start: Cell,
+) -> Result<Vec<(Cell, u16)>, PathError> {
+    let mover = board
+        .living(mover_id)
+        .ok_or(PathError::UnknownMover(mover_id))?;
+    if !board.contains(start) {
+        return Err(PathError::OutOfBounds);
+    }
+    let best = dijkstra(board, mover, start);
+    let mut out = Vec::new();
+    for y in 0..board.height {
+        for x in 0..board.width {
+            let dest = Cell { x, y };
+            if dest == start || occupied(board, mover_id, dest) {
+                continue;
+            }
+            if let Some((cost, _)) = best[index(board, dest)] {
+                out.push((dest, cost));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Whether a Move entry starting at `start` pays the disengage tax (+1, once per
