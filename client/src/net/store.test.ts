@@ -64,6 +64,7 @@ function char(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
     action: 'Idle',
     moveStartedAtMs: 0n,
     moveQueue: [],
+    ackedSeq: 0n,
   };
 }
 function player(identity: string, entityId: bigint, lastInputSeq = 0n): StorePlayer {
@@ -2252,6 +2253,7 @@ describe('AuthoritativeStore: upsertCharacter snap-on-teleport (M12.5d-2)', () =
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [],
+      ackedSeq: 0n,
     };
   }
 
@@ -3087,6 +3089,7 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [],
+      ackedSeq: 0n,
     };
   }
 

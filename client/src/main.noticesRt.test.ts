@@ -180,6 +180,7 @@ function batch(): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: BigInt(H.sends.length),
     },
     clock.t,
   );

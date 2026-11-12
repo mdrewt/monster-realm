@@ -1030,6 +1030,7 @@ mod nh_range {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: vec![],
+            acked_seq: 0,
         }
     }
 
@@ -1330,6 +1331,7 @@ mod nh_dialogue_security {
                 move_started_at_ms: 0,
                 sprite_id: 0,
                 move_queue: vec![],
+                acked_seq: 0,
             });
         }
         chars.seed(&Character {
@@ -1342,6 +1344,7 @@ mod nh_dialogue_security {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: vec![],
+            acked_seq: 0,
         });
         fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id)
             .seed(&Npc {
@@ -1773,6 +1776,7 @@ mod ctl16_battle_guard {
                 move_started_at_ms: 0,
                 sprite_id: 0,
                 move_queue: vec![],
+                acked_seq: 0,
             });
         }
         let npcs = fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id);

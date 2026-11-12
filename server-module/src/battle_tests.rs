@@ -2284,6 +2284,7 @@ fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
                 move_started_at_ms: 0,
                 sprite_id: 0,
                 move_queue: vec![],
+                acked_seq: 0,
             });
         fx.table_keyed::<HealLocationRow, u32>("heal_location_row", "location_id", |r| {
             r.location_id

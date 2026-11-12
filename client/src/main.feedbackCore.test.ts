@@ -406,6 +406,7 @@ function placeCharacter(entityId: bigint, tileX: number, tileY: number): StoreCh
     action: 'Idle',
     moveStartedAtMs: 0n,
     moveQueue: [] as WasmMoveInput[],
+    ackedSeq: 0n,
   };
 }
 

@@ -467,6 +467,7 @@ fn spawn_character_from_def(def: &game_core::NpcDef, entity_id: u64) -> Characte
         move_started_at_ms: 0,
         sprite_id: def.sprite_id,
         move_queue: vec![],
+        acked_seq: 0,
     }
 }
 
@@ -545,6 +546,7 @@ pub(crate) fn plan_npc_sync(
                         move_started_at_ms: ch.move_started_at_ms,
                         sprite_id: def.sprite_id, // sprite ALWAYS takes the def
                         move_queue: ch.move_queue.clone(),
+                        acked_seq: ch.acked_seq,
                     }
                 };
                 plan.push(NpcSyncAction::Update {

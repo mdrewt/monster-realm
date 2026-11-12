@@ -32,4 +32,5 @@ export default __t.row({
   get moveQueue() {
     return __t.array(MoveInput).name("move_queue");
   },
+  ackedSeq: __t.u64().name("acked_seq"),
 });

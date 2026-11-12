@@ -322,6 +322,7 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
         move_started_at_ms: 0,
         sprite_id: 0,
         move_queue: Vec::new(),
+        acked_seq: 0,
     });
 
     // --- S1 PRE: every row this test reasons about is visible ----------------

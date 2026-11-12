@@ -178,6 +178,7 @@ function batch(): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: BigInt(H.sends.length),
     },
     clock.t,
   );
@@ -256,6 +257,7 @@ function seedFacedNpc(): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     clock.t,
   );
@@ -522,6 +524,7 @@ function seedSecondNpc(): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     clock.t,
   );
@@ -676,6 +679,7 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       clock.t,
     );

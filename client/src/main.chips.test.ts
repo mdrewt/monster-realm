@@ -173,6 +173,7 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: BigInt(s.ack),
     },
     t,
   );

@@ -59,6 +59,7 @@ describe('rowConvert: character row -> store', () => {
       action: { tag: 'Walking' },
       moveStartedAtMs: 1234n,
       moveQueue: [{ tag: 'Step', value: { tag: 'North' } }, { tag: 'Jump' }],
+      ackedSeq: 0n,
     });
     expect(store.entityId).toBe(42n);
     expect(typeof store.entityId).toBe('bigint'); // never downcast to number

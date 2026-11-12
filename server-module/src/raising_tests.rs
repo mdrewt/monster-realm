@@ -2468,6 +2468,7 @@ mod nh {
                 move_started_at_ms: 0,
                 sprite_id: 0,
                 move_queue: vec![],
+                acked_seq: 0,
             });
         }
         fn snapshot(&self) -> Vec<Vec<u8>> {
@@ -3058,6 +3059,7 @@ mod nh {
                 move_started_at_ms: 0,
                 sprite_id: 0,
                 move_queue: vec![],
+                acked_seq: 0,
             });
         }
     }
@@ -3122,6 +3124,7 @@ mod nh {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: vec![],
+            acked_seq: 0,
         });
         let mut m = monster(11, a(), 0);
         m.quality_time_window_start_ms = T0;

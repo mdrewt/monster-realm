@@ -569,6 +569,7 @@ impl PvWorld<'_> {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue,
+            acked_seq: 0,
         });
     }
     /// Replace `who`'s character (the one its `player` row names) with one in `pose`.

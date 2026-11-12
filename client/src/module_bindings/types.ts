@@ -437,6 +437,7 @@ export const Character = __t.object("Character", {
   get moveQueue() {
     return __t.array(MoveInput);
   },
+  ackedSeq: __t.u64(),
 });
 export type Character = __Infer<typeof Character>;
 

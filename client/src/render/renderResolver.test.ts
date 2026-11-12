@@ -59,6 +59,7 @@ function makeChar(
       action: 'Walking',
       moveStartedAtMs: 0n,
       moveQueue: [],
+      ackedSeq: 0n,
     },
     receivedAt: latestReceivedAt,
     latest: latestSnap,
@@ -396,6 +397,7 @@ describe('RenderResolver — action/facing passthrough', () => {
         action: 'Idle', // the authoritative action for this remote
         moveStartedAtMs: 0n,
         moveQueue: [],
+        ackedSeq: 0n,
       },
       receivedAt: 0,
       latest: { tileX: 0, tileY: 0, receivedAt: 0 },
@@ -757,6 +759,7 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
       action: 'Walking',
       moveStartedAtMs: 0n,
       moveQueue: [],
+      ackedSeq: 0n,
     };
   }
 
@@ -966,6 +969,7 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
         action: 'Walking',
         moveStartedAtMs: 0n,
         moveQueue: [],
+        ackedSeq: 0n,
       },
       receivedAt: 1150,
       latest: { tileX: 1, tileY: 0, receivedAt: 1150 },
@@ -1077,6 +1081,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
         action: 'Walking',
         moveStartedAtMs: 0n,
         moveQueue: [],
+        ackedSeq: 0n,
       },
       receivedAt: 0,
       latest: { tileX, tileY, receivedAt: 0 },
@@ -1109,6 +1114,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
         action: 'Walking',
         moveStartedAtMs: 0n,
         moveQueue: [],
+        ackedSeq: 0n,
       },
       receivedAt: 200,
       latest: REMOTE_LATEST,

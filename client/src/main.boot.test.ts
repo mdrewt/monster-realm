@@ -231,6 +231,7 @@ function server(
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: s.queue ?? [],
+      ackedSeq: BigInt(s.ack),
     },
     t,
   );

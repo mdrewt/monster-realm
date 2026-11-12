@@ -229,6 +229,7 @@ function server(t: number): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: BigInt(H.sends.length),
     },
     t,
   );
@@ -880,6 +881,7 @@ function seedNpc(t: number): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );

@@ -164,6 +164,7 @@ export interface SdkCharacterRow {
   readonly action: { readonly tag: WasmAction };
   readonly moveStartedAtMs: bigint;
   readonly moveQueue: readonly SdkMoveInput[];
+  readonly ackedSeq: bigint;
 }
 
 export interface SdkPlayerRow {
@@ -184,6 +185,7 @@ export function characterRowToStore(row: SdkCharacterRow): StoreCharacter {
     action: row.action.tag,
     moveStartedAtMs: row.moveStartedAtMs,
     moveQueue: row.moveQueue.map(moveInputToWasm),
+    ackedSeq: row.ackedSeq,
   };
 }
 

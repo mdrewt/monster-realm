@@ -993,6 +993,7 @@ fn json_character(row: &Character) -> String {
         move_started_at_ms,
         sprite_id,
         move_queue,
+        acked_seq,
     } = row;
     let mut out = String::new();
     let mut first = true;
@@ -1015,6 +1016,8 @@ fn json_character(row: &Character) -> String {
     json_u32_into(&mut out, *sprite_id);
     json_field_into(&mut out, &mut first, stringify!(move_queue));
     json_move_queue_into(&mut out, move_queue);
+    json_field_into(&mut out, &mut first, stringify!(acked_seq));
+    json_u64_into(&mut out, *acked_seq);
     out.push('}');
     out
 }

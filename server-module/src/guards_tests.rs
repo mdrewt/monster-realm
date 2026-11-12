@@ -2388,6 +2388,7 @@ fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
         move_started_at_ms: 0,
         sprite_id: 0,
         move_queue: vec![],
+        acked_seq: 0,
     });
     monsters.seed(&ts0b_boxed_monster(61, me));
     ts0b_offer_table(&fx).seed(&ts0b_offer(

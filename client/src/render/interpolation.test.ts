@@ -800,6 +800,7 @@ describe('m23-s7 interpolateReducedMotion (A11Y-27)', () => {
       action: 'Idle',
       moveStartedAtMs: 1234n,
       moveQueue: [],
+      ackedSeq: 0n,
     };
 
     // NEGATIVE tiles are the value half. WRONG IMPLS KILLED:
