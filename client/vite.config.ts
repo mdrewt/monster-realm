@@ -55,6 +55,10 @@ export default defineConfig({
     // M10.5d: Verified 2026-07-04 — adding `it.only(...)` locally causes
     // `npm test` to exit non-zero with "allowOnly is false" diagnostic.
     allowOnly: false,
+    // The boot harness mounts index.html, whose stylesheet <link> resolves against the
+    // environment URL (http://localhost:3000, SpacetimeDB's default port). Loading is off so
+    // a unit test never opens a socket and runs the same with or without a listener there.
+    environmentOptions: { happyDOM: { settings: { disableCSSFileLoading: true } } },
     // Coverage scope for the nightly `just coverage` line-threshold gate.
     // The gate measures HAND-WRITTEN, UNIT-TESTABLE product LOGIC, so it must scope
     // to that — otherwise it is dominated by code vitest is not responsible for

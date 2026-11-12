@@ -9,9 +9,16 @@ permissions:
   contents: read
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Dev and test builds carry line tables only: panics and backtraces keep file:line, and the
+  # workspace crates, which no cache holds, compile faster. Local builds keep full debuginfo.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 jobs:
-  # The steps mirror the justfile `ci:` recipe, one recipe per step.
-  ci:
+  # The four jobs below run every recipe of the justfile `ci:` recipe between them, one recipe
+  # per step, grouped by toolchain. Each job has its own checkout and rust-cache prefix, so
+  # the two writers of client-wasm/pkg (`just eval`: nodejs target, `just wasm`: bundler
+  # target) never share a directory. Jobs that need the pkg build it themselves: a client test
+  # requires it to be newer than the checked-out sources.
+  rust:
     runs-on: ubuntu-latest
     steps:
       # fetch-depth 0 so gitleaks can diff the PR commit range.
@@ -26,11 +33,9 @@ jobs:
         continue-on-error: true
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
       - uses: dtolnay/rust-toolchain@stable # stable
-        with: { components: clippy, rustfmt, targets: wasm32-unknown-unknown }
+        with: { components: clippy, rustfmt }
       - uses: Swatinem/rust-cache@v2 # v2
-        with: { prefix-key: v1-ci }
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-        with: { version: 'v0.15.0' }
+        with: { prefix-key: v1-rust }
       - uses: actions/setup-node@v7 # v7
         with:
           node-version: '24.22.0'
@@ -40,8 +45,41 @@ jobs:
         with: { just-version: '1.58.0' }
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with: { tool: cargo-nextest@0.9.148 }
+      # `just lint` runs biome from client/node_modules; `just test` runs the node:test doors.
       - run: just setup
-      # Pinned spacetime CLI so the bindings-drift eval runs a real `spacetime generate`.
+      - run: just lint
+      - run: just typecheck
+      - run: just test
+      - run: just security
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-audit@0.22.2 }
+      - name: SCA (cargo audit)
+        run: cargo audit --file Cargo.lock
+
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth 0: the schema and type snapshot evals compare against the baseline at
+      # merge-base(HEAD, origin/master) and skip that comparison when git cannot resolve it.
+      - uses: actions/checkout@v6 # v6
+        with: { fetch-depth: 0 }
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { components: clippy, rustfmt, targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-eval }
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with: { version: 'v0.15.0' }
+      - uses: actions/setup-node@v7 # v7
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
+      # The account-e2e driver resolves the SDK from client/node_modules.
+      - run: just setup
+      # Pinned spacetime CLI: with `CI` set, the bindings-drift and account-e2e evals fail
+      # without it; they run a real `spacetime generate` and a live host.
       # `--yes`: the installer aborts on a non-tty runner without it.
       - name: Install SpacetimeDB CLI
         run: |
@@ -53,20 +91,41 @@ jobs:
           spacetime version install 2.11.0
           spacetime version use 2.11.0
           spacetime --version
-      - run: just lint
-      - run: just typecheck
-      - run: just test
       - run: just eval
-      - run: just security
+
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-client }
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with: { version: 'v0.15.0' }
+      - uses: actions/setup-node@v7 # v7
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
+      - run: just setup
       - run: just wasm
       - run: just client-typecheck
       - run: just client-test
-      - run: just client-verify-build
+      # --no-deps: the `just wasm` step above built the pkg this recipe depends on.
+      - run: just --no-deps client-verify-build
+
+  observability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: actions/setup-node@v7 # v7
+        with: { node-version: '24.22.0' }
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - run: just observability-validate
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
-        with: { tool: cargo-audit@0.22.2 }
-      - name: SCA (cargo audit)
-        run: cargo audit --file Cargo.lock
 
   # Two-window Playwright e2e against a real, version-pinned SpacetimeDB.
   e2e:
