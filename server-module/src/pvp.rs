@@ -35,14 +35,15 @@ use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
     reject_if_monster_locked,
 };
-use crate::marshal::now_ms;
+use crate::marshal::{char_state, now_ms};
 use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, battle_tactical, monster, player, Battle,
-    BattleAction, BattleChallenge, ChallengeStatus,
+    battle, battle_action, battle_challenge, battle_tactical, character, monster, player, Battle,
+    BattleAction, BattleChallenge, ChallengeStatus, Player,
 };
 use crate::WILD_IDENTITY;
+use game_core::interact::within_interact_range;
 use game_core::{
     is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome, BattleOutcome, SideId,
     CHALLENGE_TTL_MS,
@@ -519,7 +520,24 @@ pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
 // Reducers
 // ===========================================================================
 
-/// Send a PvP battle challenge to another online player.
+/// `challenge_pvp` reject reason when the two characters are not within interact range. One
+/// text for a character in another zone, one too far away and a missing one.
+const ERR_OUT_OF_RANGE: &str = "that player is not close enough to challenge";
+
+/// True when the characters of `a` and `b` (each found through its `player` row's
+/// `entity_id`) are within interact range of each other. A player with no character row is
+/// out of range.
+fn characters_in_interact_range(ctx: &ReducerContext, a: &Player, b: &Player) -> bool {
+    let (Some(a), Some(b)) = (
+        ctx.db.character().entity_id().find(a.entity_id),
+        ctx.db.character().entity_id().find(b.entity_id),
+    ) else {
+        return false;
+    };
+    within_interact_range(a.zone_id, char_state(&a).pos, b.zone_id, char_state(&b).pos)
+}
+
+/// Send a PvP battle challenge to another online player, face to face.
 ///
 /// Guard order (reject-not-clamp, decision-before-irreversible):
 /// 1. Caller must be joined.
@@ -527,7 +545,10 @@ pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
 ///    commitments only; live ones are untouched.
 /// 2. Cannot challenge self.
 /// 3. Target must be joined and online.
-///    3a. Both parties hold a full account (ranked-only, issue #307).
+///    3a. Both characters stand within interact range (one refusal for another zone, too
+///    far and a missing character). Sending only: accepting, declining and cancelling a
+///    challenge have no range rule.
+///    3b. Both parties hold a full account (ranked-only, issue #307).
 /// 4. Party size within bounds (1..=MAX_PARTY_SIZE).
 /// 5. Caller not already in an ongoing battle (either role).
 /// 6. Caller has no active outgoing challenge; target has no active incoming challenge targeting caller.
@@ -543,14 +564,14 @@ pub fn challenge_pvp(
     let me = ctx.sender();
 
     // Guard 1: joined.
-    if ctx.db.player().identity().find(me).is_none() {
+    let Some(my_player) = ctx.db.player().identity().find(me) else {
         let e = "not joined".to_string();
         log_reject("challenge_pvp", me, &e);
         return Err(e);
-    }
+    };
 
     // Guard 1a: a deletion-gated caller cannot OPEN a new challenge.
-    // Earlier than guard 3a on purpose: 3a's late placement bounds disclosure of a
+    // Earlier than guard 3b on purpose: 3b's late placement bounds disclosure of a
     // THIRD PARTY's account state; this is a self-property and
     // discloses nothing about the target.
     crate::guards::require_not_deleting(ctx, "challenge_pvp")?;
@@ -563,8 +584,7 @@ pub fn challenge_pvp(
     }
 
     // Guard 3: target must be joined and online.
-    let target_player = ctx.db.player().identity().find(target);
-    match &target_player {
+    let target_player = match ctx.db.player().identity().find(target) {
         None => {
             let e = "target player not found".to_string();
             log_reject("challenge_pvp", me, &e);
@@ -575,12 +595,21 @@ pub fn challenge_pvp(
             log_reject("challenge_pvp", me, &e);
             return Err(e);
         }
-        _ => {}
+        Some(p) => p,
+    };
+
+    // Guard 3a: both characters stand within interact range. Ahead of every guard that
+    // answers from the target's account, battles or challenges, so those answer only a
+    // caller standing next to the target; a caller out of range learns guard 3 and no more.
+    if !characters_in_interact_range(ctx, &my_player, &target_player) {
+        let e = ERR_OUT_OF_RANGE.to_string();
+        log_reject("challenge_pvp", me, &e);
+        return Err(e);
     }
 
-    // Guard 3a: ranked play requires a full account —
-    // BOTH parties. Placed after guard 3 so account existence is only ever
-    // disclosed for a target the caller can already observe online, never for
+    // Guard 3b: ranked play requires a full account —
+    // BOTH parties. Placed after guards 3 and 3a so account existence is only ever
+    // disclosed for an online target the caller stands next to, never for
     // arbitrary identities. The gate is inert
     // until a real auth issuer is configured.
     if let Err(reason) = ranked_account_gate(
