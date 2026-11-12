@@ -64,8 +64,8 @@
 #    keep running). Keyed by column (:25) + function.
 #
 #
-# Server-module exclusions (entries 8-17; 10 and 14 were log-line claims, refuted - log lines ARE
-# observable through a log sink, so those mutants are killed by tests and no longer excluded; 16 is unused).
+# Server-module exclusions (entries 8-17; numbers 10, 14 and 16 are unused - log lines ARE
+# observable through a log sink, so a log-line mutant is killed by tests, never excluded).
 # The server gate is zero-tolerance, like game-core: each
 # of these was first attacked with a test (an exhaustive truth table / boundary table / the full
 # suite) and survives it, because the mutated code cannot change anything observable. All are
