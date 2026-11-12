@@ -4,7 +4,10 @@
 2. Write the failing test first, then the change. A change to a game rule goes in
    `game-core`; the server and client only call it (see `docs/DECISIONS.md`).
 3. `just ci` must pass before you open a PR. Run `just e2e` when you touch netcode,
-   reducers or client flows.
+   reducers or client flows. An e2e spec you add or change, or whose game rules you
+   retune, runs repeatedly before the PR (`just e2e e2e/<file>.spec.ts --repeat-each=10`):
+   wild encounters draw species, pack size and hits from the server's RNG, so one green
+   run does not show that a spec's retry budget covers the unlucky draws.
 4. Commits follow Conventional Commits. `lefthook` checks the message
    (`scripts/check-commit-msg.mjs`) and runs the secret scan and `just lint` before
    each commit. PRs are squash-merged under a Conventional Commit title.

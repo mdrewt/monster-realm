@@ -1,0 +1,34 @@
+# The one place a workflow job gets just, wasm-pack and the SpacetimeDB CLI. The versions and
+# archive checksums are pinned in scripts/ci-tools.sh; the install directory is cached on that
+# file's hash, so a job fetches a release archive only when a pin changed or the cache is cold.
+# A cache hit needs no release host; a miss falls through to the script's bounded retries.
+name: Pinned tools
+description: just, wasm-pack and the SpacetimeDB CLI at the versions pinned in scripts/ci-tools.sh, from cache.
+inputs:
+  wasm:
+    description: >-
+      'true' in a job that runs wasm-pack: also caches wasm-pack's own download directory, so the
+      wasm-bindgen and binaryen (wasm-opt) releases it fetches during a build come from cache.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v6 # v6
+      with:
+        path: ~/.local/mr-tools
+        key: mr-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci-tools.sh') }}
+    - shell: bash
+      run: |
+        scripts/ci-tools.sh
+        echo "$HOME/.local/mr-tools/bin" >> "$GITHUB_PATH"
+    # wasm-pack picks the wasm-bindgen release that matches Cargo.lock, so the key follows the
+    # lock file; `restore-keys` hands a changed lock the job's previous directory. The key is per
+    # job because jobs download different things (a `--dev` build fetches no binaryen, a release
+    # build does) and a cache key is written once, by the first job to finish: each job caches
+    # exactly what it downloads.
+    - if: inputs.wasm == 'true'
+      uses: actions/cache@v6 # v6
+      with:
+        path: ~/.cache/.wasm-pack
+        key: wasm-pack-downloads-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: wasm-pack-downloads-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
