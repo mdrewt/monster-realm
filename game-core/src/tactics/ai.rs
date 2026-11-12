@@ -95,8 +95,8 @@ pub fn plan(
     }
 }
 
-/// A tile the wild can stand on this turn: its own (`cost 0`, `strides 0`) or one `find_path`
-/// reaches within `strides` strides for the least such count.
+/// A tile the wild can stand on this turn: its own (`cost 0`, `strides 0`) or a destination
+/// `path_costs` lists, reached within `strides` strides for the least such count.
 #[derive(Clone, Copy)]
 struct Reach {
     tile: Cell,
