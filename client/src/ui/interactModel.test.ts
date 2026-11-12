@@ -805,6 +805,43 @@ describe('marshalInteract player actions (ctl-10b, CTL10B.1)', () => {
     ).toEqual([]);
   });
 
+  it('the player directory is world-wide and the characters are not: a player with no character among those given is no candidate, a one-pass iterable gives the same answer, and the own identity is read from the directory even with no own character', () => {
+    // WRONG IMPL KILLED: a candidate made from the directory (a player in a zone this client does
+    // not hold would be offered at no position); a lookup trimmed to the characters given that
+    // also loses the own identity when the own character is not among them (own-busy would stop
+    // removing Challenge); a marshaller that walks the characters twice (a generator's second
+    // pass is empty, so every candidate would vanish).
+    const elsewhere = [
+      hexPlayer(20n, 'Far', 'f'.repeat(64)),
+      hexPlayer(21n, 'Away', 'e'.repeat(64)),
+    ];
+    const directory = [...roster(), ...elsewhere];
+    const keys = (input: InteractInput): string[] => input.candidates.map((c) => c.key);
+    expect(keys(marshalInteract([], characters, directory, [], OWN))).toEqual([
+      'player:13',
+      'player:14',
+    ]);
+    function* once(): Generator<StoreCharacter> {
+      yield* characters;
+    }
+    expect(marshalInteract([], once(), directory, [], OWN)).toEqual(
+      marshalInteract([], characters, roster(), [], OWN),
+    );
+
+    const withoutOwn = marshalInteract(
+      [],
+      [charRow(13n, 0, 5, 3)],
+      directory,
+      [],
+      OWN,
+      new Set([OWN_ID]),
+    );
+    expect(keys(withoutOwn)).toEqual(['player:13']);
+    expect(withoutOwn.candidates[0]?.actions, 'own-busy still removes Challenge').toEqual([
+      tradeOf(RIVAL_ID),
+    ]);
+  });
+
   it('CTL10B-1-CHIP-PLAYER: the chip over a lone online player is Choose (two actions) anchored at the player, and over a lone busy player it is the single Trade action', () => {
     // WRONG IMPL KILLED: a chip that stays null over a player (the player could not tell A does
     // something); a lone online player shown as a single Trade (A would trade without asking, the

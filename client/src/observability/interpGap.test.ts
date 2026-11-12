@@ -29,8 +29,11 @@ const STEP_MS = 200;
 
 /** The shape `maxRemoteGapMs` consumes — structurally satisfied by `StoredCharacter`,
  *  so main.ts can pass store rows straight through with no adapter. */
-function remote(jitterEwma: number): { readonly jitterEwma: number } {
-  return { jitterEwma };
+type Remote = { readonly jitterEwma: number; readonly row: { readonly zoneId: number } };
+/** The zone main.ts is drawing in these tests. */
+const ZONE = 3;
+function remote(jitterEwma: number, zoneId: number = ZONE): Remote {
+  return { jitterEwma, row: { zoneId } };
 }
 
 describe('maxRemoteGapMs (AM2): zero remotes produce NO sample', () => {
@@ -41,10 +44,8 @@ describe('maxRemoteGapMs (AM2): zero remotes produce NO sample', () => {
     // WRONG IMPL KILLED (2): a `0` fallback. Zero is a MEANINGFUL value here (it would mean "no
     //   interpolation delay at all"), so it cannot double as "nothing to report". `undefined`
     //   forces the caller to skip the record() call entirely.
-    expect(maxRemoteGapMs([], STEP_MS)).toBeUndefined();
-    expect(
-      maxRemoteGapMs(new Map<string, { jitterEwma: number }>().values(), STEP_MS),
-    ).toBeUndefined();
+    expect(maxRemoteGapMs([], ZONE, STEP_MS)).toBeUndefined();
+    expect(maxRemoteGapMs(new Map<string, Remote>().values(), ZONE, STEP_MS)).toBeUndefined();
   });
 });
 
@@ -53,7 +54,7 @@ describe('maxRemoteGapMs (AM2): the value IS adaptiveInterpDelayMs, imported not
     // Compared against the IMPORTED function rather than a hand-written expected number, so the
     // two can never disagree: if ADR-0090's formula is retuned, this test retunes with it.
     for (const jitter of [0, 5, 25, 50, 120]) {
-      expect(maxRemoteGapMs([remote(jitter)], STEP_MS)).toBe(
+      expect(maxRemoteGapMs([remote(jitter)], ZONE, STEP_MS)).toBe(
         adaptiveInterpDelayMs(jitter, STEP_MS),
       );
     }
@@ -67,7 +68,7 @@ describe('maxRemoteGapMs (AM2): the value IS adaptiveInterpDelayMs, imported not
     // a fabrication that no dashboard reader could ever reconcile with what they see on screen.
     const huge = 10_000;
     const expected = adaptiveInterpDelayMs(huge, STEP_MS);
-    expect(maxRemoteGapMs([remote(huge)], STEP_MS)).toBe(expected);
+    expect(maxRemoteGapMs([remote(huge)], ZONE, STEP_MS)).toBe(expected);
     // Sanity on the fixture itself: the clamp really is engaged here, so the assertion above is
     // discriminating rather than trivially true.
     expect(expected).toBeLessThan(STEP_MS + 2 * huge);
@@ -83,7 +84,11 @@ describe('maxRemoteGapMs (AM2): the value IS adaptiveInterpDelayMs, imported not
     //   in a two-element fixture — hence three remotes with the max in the MIDDLE.
     const jitters = [10, 120, 40];
     const expected = Math.max(...jitters.map((j) => adaptiveInterpDelayMs(j, STEP_MS)));
-    const got = maxRemoteGapMs(jitters.map(remote), STEP_MS);
+    const got = maxRemoteGapMs(
+      jitters.map((j) => remote(j)),
+      ZONE,
+      STEP_MS,
+    );
 
     expect(got).toBe(expected);
     // The fixture is discriminating: sum ≠ max ≠ first ≠ last ≠ mean.
@@ -106,7 +111,11 @@ describe('maxRemoteGapMs (AM2): the value IS adaptiveInterpDelayMs, imported not
         fc.integer({ min: 50, max: 1_000 }),
         (jitters, stepMs) => {
           const expected = Math.max(...jitters.map((j) => adaptiveInterpDelayMs(j, stepMs)));
-          const got = maxRemoteGapMs(jitters.map(remote), stepMs);
+          const got = maxRemoteGapMs(
+            jitters.map((j) => remote(j)),
+            ZONE,
+            stepMs,
+          );
           expect(got).toBe(expected);
           expect(Number.isFinite(got as number)).toBe(true);
         },
@@ -120,12 +129,63 @@ describe('maxRemoteGapMs (AM2): the value IS adaptiveInterpDelayMs, imported not
     // tomorrow. WRONG IMPL KILLED: an implementation that iterates twice (e.g. one pass for the
     // length check, one for the max) — the second pass over a spent generator sees nothing, so
     // the metric would silently become "the delay of the first remote".
-    function* gen(): Generator<{ readonly jitterEwma: number }> {
+    function* gen(): Generator<Remote> {
       yield remote(10);
       yield remote(90);
       yield remote(30);
     }
     const expected = Math.max(...[10, 90, 30].map((j) => adaptiveInterpDelayMs(j, STEP_MS)));
-    expect(maxRemoteGapMs(gen(), STEP_MS)).toBe(expected);
+    expect(maxRemoteGapMs(gen(), ZONE, STEP_MS)).toBe(expected);
+  });
+});
+
+describe('maxRemoteGapMs: only the zone on screen counts', () => {
+  it('a remote in another zone is skipped, however large its jitter', () => {
+    // WRONG IMPL KILLED: no zone filter. A character in a zone this client still holds but does
+    // not draw would set the metric, so it would report stutter nobody can see.
+    const here = remote(10);
+    const elsewhere = remote(5_000, ZONE + 1);
+    expect(maxRemoteGapMs([elsewhere, here, elsewhere], ZONE, STEP_MS)).toBe(
+      adaptiveInterpDelayMs(10, STEP_MS),
+    );
+    expect(adaptiveInterpDelayMs(5_000, STEP_MS)).toBeGreaterThan(
+      adaptiveInterpDelayMs(10, STEP_MS),
+    );
+  });
+
+  it('remotes only in other zones produce no sample, zone 0 included', () => {
+    // WRONG IMPL KILLED: a truthiness check on the zone id (zone 0 is the spawn zone).
+    expect(maxRemoteGapMs([remote(40, 1), remote(90, 2)], 0, STEP_MS)).toBeUndefined();
+    expect(maxRemoteGapMs([remote(40, 0), remote(90, 1)], 0, STEP_MS)).toBe(
+      adaptiveInterpDelayMs(40, STEP_MS),
+    );
+  });
+
+  it('for any mix of zones, the result is the max over the asked zone alone', () => {
+    const remoteArb = fc.record({
+      jitter: fc.double({ min: 0, max: 5_000, noNaN: true }),
+      zone: fc.integer({ min: 0, max: 3 }),
+    });
+    fc.assert(
+      fc.property(
+        fc.array(remoteArb, { maxLength: 12 }),
+        fc.integer({ min: 0, max: 3 }),
+        (rs, zone) => {
+          const inZone = rs.filter((r) => r.zone === zone);
+          const expected =
+            inZone.length === 0
+              ? undefined
+              : Math.max(...inZone.map((r) => adaptiveInterpDelayMs(r.jitter, STEP_MS)));
+          expect(
+            maxRemoteGapMs(
+              rs.map((r) => remote(r.jitter, r.zone)),
+              zone,
+              STEP_MS,
+            ),
+          ).toBe(expected);
+        },
+      ),
+      { seed: 20261112, numRuns: 300 },
+    );
   });
 });

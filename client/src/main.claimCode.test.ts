@@ -115,6 +115,7 @@ vi.mock('./net/connection', () => {
     linkFrozen: () => false,
     continueAnonymously: () => undefined,
     join: () => undefined,
+    worldScope: () => ({ own: null, zones: [], settled: false }),
     sessionState: () => 'hidden',
     startSignIn: () => undefined,
     reconnectNow: () => undefined,

@@ -17,6 +17,7 @@ import {
   ownKey,
   PREFETCH_TILES,
   RETRY_BACKOFF_MS,
+  revealAfterScopeEdge,
   type ScopeEffect,
   type ScopeInput,
   type ScopeState,
@@ -548,6 +549,26 @@ describe('describeScope', () => {
 
   it('is empty for the initial state', () => {
     expect(describeScope(INITIAL_SCOPE)).toEqual({ own: null, zones: [], settled: false });
+  });
+});
+
+describe('revealAfterScopeEdge', () => {
+  it('a settled edge always reveals', () => {
+    for (const revealed of [true, false]) {
+      for (const held of [true, false]) {
+        expect(revealAfterScopeEdge(revealed, true, held)).toBe(true);
+      }
+    }
+  });
+
+  it('an unsettled edge with no own character hides the world (a connection just opened)', () => {
+    expect(revealAfterScopeEdge(true, false, false)).toBe(false);
+    expect(revealAfterScopeEdge(false, false, false)).toBe(false);
+  });
+
+  it('an unsettled edge with an own character held keeps what was shown (a warp)', () => {
+    expect(revealAfterScopeEdge(true, false, true)).toBe(true);
+    expect(revealAfterScopeEdge(false, false, true)).toBe(false);
   });
 });
 

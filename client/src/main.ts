@@ -74,6 +74,7 @@ import {
   type StoreTacticalBattle,
   type StoreTradeSessionOffer,
 } from './net/store';
+import { describeScope, INITIAL_SCOPE, revealAfterScopeEdge } from './net/worldScope';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
@@ -2549,6 +2550,11 @@ function liveReducers() {
   return conn === undefined || conn.linkFrozen() ? undefined : conn.live()?.reducers;
 }
 
+// Whether the frame loop draws characters. A new connection's scope opens unsettled with no own
+// character in the store, and the world stays undrawn until the own zone's characters have
+// arrived, so a login or reconnect never shows the player alone in an empty zone.
+let worldRevealed = true;
+
 let resolveReady: () => void = () => {};
 const ready = new Promise<void>((r) => {
   resolveReady = r;
@@ -2592,8 +2598,8 @@ function resetPredictionState(): void {
 
 // --- M12.5c: idempotent zone-switch --------------------------------
 // Validates the new zone's map BEFORE mutating any state (12.5c-3: parse-first).
-// Does NOT call store.resetCharacters(): the render filter (currentZoneId) excludes
-// stale-zone characters, so idle remotes in the destination zone stay visible.
+// Touches no character row: the store holds each subscribed zone's characters (worldScope.ts
+// decides which zones) and the render filter (currentZoneId) draws only the current zone's.
 // Idempotent: a no-op if newZoneId already matches rawMap (prevents double-switch when
 // both onOwnWarp and the reconcile listener fire on the same live warp).
 
@@ -4193,6 +4199,7 @@ function snapshot() {
     moveRejectCount,
     characters: [...store.characters()].map((c) => ({
       entityId: c.row.entityId.toString(),
+      zoneId: c.row.zoneId,
       tileX: c.row.tileX,
       tileY: c.row.tileY,
       facing: c.row.facing,
@@ -4231,6 +4238,8 @@ function snapshot() {
       if (!b) return null;
       return { battleId: b.battleId.toString(), outcome: b.outcome, turnNumber: b.turnNumber };
     })(),
+    // The character query sets the live connection holds (worldScope.ts).
+    worldScope: conn?.worldScope() ?? describeScope(INITIAL_SCOPE),
     step,
     jump,
     // The renderer's account of what it drew (terrain, decor, post stack), and a test
@@ -5134,6 +5143,13 @@ async function main(): Promise<void> {
     onOwnWarp: (newZoneId) => {
       switchZone(newZoneId);
     },
+    onScopeSettled: (settled) => {
+      worldRevealed = revealAfterScopeEdge(
+        worldRevealed,
+        settled,
+        store.ownCharacter(identity) !== undefined,
+      );
+    },
     // Lifecycle failures become user-visible via the status
     // line (reportError also console.errors); pre-M13.5b this was console-only.
     onError: (where, message) => {
@@ -5441,7 +5457,7 @@ async function main(): Promise<void> {
       const ownEntityId = store.ownEntityId(identity);
       const predicted = predictor.predicted;
       const entities = resolver.resolve({
-        characters: store.characters(),
+        characters: worldRevealed ? store.characters() : [],
         ownEntityId,
         predicted,
         snapped,
@@ -5487,6 +5503,7 @@ async function main(): Promise<void> {
             ? undefined
             : maxRemoteGapMs(
                 Array.from(store.characters()).filter((c) => c.row.entityId !== ownEntityId),
+                rawMap.zone_id,
                 STEP_MS,
               ),
         );

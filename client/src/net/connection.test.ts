@@ -25,6 +25,16 @@ import type { RenewalOutcome } from './credentialDecision';
 import { AuthoritativeStore } from './store';
 
 type Cb = (...args: unknown[]) => void;
+/** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
+interface SubRec {
+  /** The base set's string list, or one world-scope query string. */
+  query: readonly string[] | string | undefined;
+  onApplied?: Cb;
+  onError?: Cb;
+  /** What the handle's `isActive()` answers; a test sets it when it applies the set. */
+  active: boolean;
+  unsubscribes: number;
+}
 interface BuildRec {
   token: unknown;
   onConnect?: Cb;
@@ -34,6 +44,9 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
+  /** Every subscribe call, in order: the base set first. */
+  readonly subs: SubRec[];
+  readonly disconnect: ReturnType<typeof vi.fn>;
   /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
   queries?: readonly string[];
 }
@@ -73,6 +86,8 @@ vi.mock('../module_bindings', () => {
           joinGame: vi.fn(() => Promise.resolve()),
           completeGuestClaim: vi.fn(() => Promise.resolve()),
           startGuestClaim: vi.fn(() => Promise.resolve()),
+          subs: [],
+          disconnect: vi.fn(),
         };
         H.builds.push(rec);
         const sub = {
@@ -159,19 +174,41 @@ const nextAttempt = () => vi.advanceTimersByTimeAsync(60_000);
 
 /** The connection object handed to onConnect: only subscriptionBuilder + reducers are read there. */
 function conn0(rec: BuildRec) {
-  const sub = {
-    onApplied: (cb: Cb) => {
-      rec.onApplied = cb;
-      return sub;
-    },
-    onError: () => sub,
-    subscribe: (queries: readonly string[]) => {
-      rec.queries = queries;
-      return sub;
-    },
+  // A fresh builder per call, as the SDK gives: every subscribe is its own handle with its own
+  // callbacks. The first is the base set (`rec.onApplied`, `rec.queries`); the rest are the world
+  // scope's. `unsubscribe` throws on a second call, as the SDK's does.
+  const subscriptionBuilder = () => {
+    const sub: SubRec = { query: undefined, active: false, unsubscribes: 0 };
+    const first = rec.subs.length === 0;
+    rec.subs.push(sub);
+    const builder = {
+      onApplied: (cb: Cb) => {
+        sub.onApplied = cb;
+        if (first) rec.onApplied = cb;
+        return builder;
+      },
+      onError: (cb: Cb) => {
+        sub.onError = cb;
+        return builder;
+      },
+      subscribe: (queries: readonly string[] | string) => {
+        sub.query = queries;
+        if (first) rec.queries = queries as readonly string[];
+        return {
+          isActive: () => sub.active,
+          unsubscribe: () => {
+            sub.unsubscribes += 1;
+            if (sub.unsubscribes > 1) throw new Error('Unsubscribe has already been called');
+            sub.active = false;
+          },
+        };
+      },
+    };
+    return builder;
   };
   return {
-    subscriptionBuilder: () => sub,
+    subscriptionBuilder,
+    disconnect: rec.disconnect,
     reducers: {
       joinGame: rec.joinGame,
       completeGuestClaim: rec.completeGuestClaim,
@@ -699,13 +736,12 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
     vi.useRealTimers();
   });
 
-  it('ts-4.4 the subscription batch is exactly the 30 queries below, none naming trade_offer, and no row handler is registered on the trade_offer table', async () => {
+  it('ts-4.4 the subscription batch is exactly the 29 queries below, none naming trade_offer, none an unfiltered character query, and no row handler is registered on the trade_offer table', async () => {
     // WRONG IMPL KILLED: `SELECT * FROM trade_offer` kept (every public offer reaches the
     // client); it swapped for another table (the exact set); a duplicate (the sorted list);
     // the query dropped but the trade_offer onInsert / onUpdate / onDelete handlers kept.
     const { b } = await bootAnon(makeOpts());
     const want = [
-      'character',
       'player',
       'my_monster_pub',
       'species_row',
@@ -736,8 +772,15 @@ describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it'
       'my_formation',
       'my_trade_session',
     ].map((table) => `SELECT * FROM ${table}`);
-    expect(want).toHaveLength(30);
+    expect(want).toHaveLength(29);
     expect([...(b.queries ?? [])].sort()).toEqual([...want].sort());
+    // `character` is written on every step of every player, so the base set never carries it
+    // whole; the world scope subscribes the own row and each wanted zone as sets of their own.
+    expect(
+      (b.queries ?? []).filter((q) => /^\s*SELECT\s.*\sFROM\s+character\s*;?\s*$/i.test(q)),
+      'no base string is an unfiltered character query',
+    ).toEqual([]);
+    expect((b.queries ?? []).filter((q) => /\bcharacter\b/.test(q))).toEqual([]);
     expect((b.queries ?? []).filter((q) => q.includes('trade_offer'))).toEqual([]);
     const handled = [...Object.keys(H.rowCbs), ...Object.keys(H.updCbs)];
     expect(handled, 'precondition: the row handlers were wired').toContain('my_account');

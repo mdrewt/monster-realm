@@ -391,6 +391,7 @@ vi.mock('./net/connection', () => {
     live: () => live,
     identity: () => H.identity,
     linkFrozen: () => H.frozen,
+    worldScope: () => ({ own: null, zones: [], settled: false }),
     continueAnonymously: () => undefined,
     // R-rb-128-E1: the claim-flow join is `conn.join()`, which the real connection gates on the
     // frozen link and sends as joinGame({ name }) through the same recording reducers proxy.

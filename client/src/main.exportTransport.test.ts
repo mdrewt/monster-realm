@@ -100,6 +100,7 @@ vi.mock('./net/connection', () => {
     live: () => H.live,
     identity: () => H.identity,
     linkFrozen: () => H.linkFrozen,
+    worldScope: () => ({ own: null, zones: [], settled: false }),
     continueAnonymously: () => undefined,
     // MUST be 'hidden' or every keypress in this file is swallowed by main.ts's session gate
     // before it reaches the branch under test.
