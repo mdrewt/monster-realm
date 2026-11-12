@@ -5430,3 +5430,51 @@ fn a_prequeued_recruit_popped_by_a_round_advance_is_owned_by_the_player_bt17_2()
         "the recruit belongs to the player who queued it, never the module sender"
     );
 }
+
+/// A PvP settle pays nothing when EITHER side's HP write-back fails: with a KO on the ledger (A's 11
+/// over B's 22, which a healthy settle pays in essence) and one party monster handed to a third
+/// identity before the forfeit — A's 12, then B's 21 — the battle still ends, the killer's pools
+/// are unmoved, no `Awards` line is written and the skip is logged once.
+///
+/// kills: `replace && with || in settle_pvp_battle` (one healthy side vouching for the other: the
+/// ledger is paid although a write-back aborted).
+#[test]
+fn a_pvp_settle_with_one_sides_hp_write_back_failed_pays_nothing() {
+    install_log_sink();
+    for (handed_away, label) in [(12u64, "side A's"), (21, "side B's")] {
+        let fx = fixture();
+        let w = world(&fx);
+        let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+        pvp_ko(&fx, &w, live.id, a(), live.a[0], live.b[1], T0 + 10_000);
+        assert!(
+            essence_battle_reward(bst(1)) > 0,
+            "non-vacuous: the KO of 22 (species 1) pays essence on a healthy settle"
+        );
+        let killer = w.monster(11);
+        w.edit_monster(handed_away, |m| m.owner_identity = c());
+        let skipped = captured_log_lines("tactical_settle_skipped").len();
+
+        assert_eq!(forfeit(&fx, a(), T0 + 20_000, live.id), Ok(()), "{label}");
+        assert_eq!(
+            outcome(&w, live.id),
+            BattleOutcome::SideBWins,
+            "{label} write-back failed: the battle still ends"
+        );
+        assert_eq!(
+            captured_log_lines("tactical_settle_skipped").len(),
+            skipped + 1,
+            "{label} write-back failed: the settlement took the logged skip path once"
+        );
+        assert_eq!(
+            pools(&w.monster(11)),
+            pools(&killer),
+            "{label} write-back failed: the killer is paid no essence"
+        );
+        assert!(
+            !w.events_of(live.id)
+                .iter()
+                .any(|e| matches!(&e.payload, EventPayload::Awards(_))),
+            "{label} write-back failed: no Awards line"
+        );
+    }
+}

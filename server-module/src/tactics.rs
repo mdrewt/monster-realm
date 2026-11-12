@@ -1548,14 +1548,15 @@ fn materialize(
     }
     // Dry run with placeholder ids: every per-unit and set check (`deploy_unit`,
     // `TacticalState::new`) runs BEFORE the first write, so a refusal leaves the store
-    // untouched (the native host has no rollback).
+    // untouched (the native host has no rollback). Each unit's placeholder is its index in
+    // `dry`, so the ids are distinct across both sides.
     let mut dry: Vec<TacticalUnit> = Vec::new();
     let placeholder = |n: usize| u32::MAX.saturating_sub(u32::try_from(n).unwrap_or(u32::MAX));
-    for (i, (m, pick, kit)) in staged.iter().enumerate() {
+    for (m, pick, kit) in &staged {
         let pos = map.spawn_a[usize::from(pick.slot)];
         dry.push(
             deploy_unit(
-                placeholder(i),
+                placeholder(dry.len()),
                 Side::A,
                 pick.slot,
                 pos,
@@ -1565,11 +1566,11 @@ fn materialize(
             .map_err(|e| format!("deploy: {e:?}"))?,
         );
     }
-    for (j, (m, pick, kit)) in staged_b.iter().enumerate() {
+    for (m, pick, kit) in &staged_b {
         let pos = map.spawn_b[usize::from(pick.slot)];
         dry.push(
             deploy_unit(
-                placeholder(staged.len() + j),
+                placeholder(dry.len()),
                 Side::B,
                 pick.slot,
                 pos,
@@ -1579,10 +1580,10 @@ fn materialize(
             .map_err(|e| format!("deploy: {e:?}"))?,
         );
     }
-    for (j, (w, kit, _, pos)) in wild_staged.iter().enumerate() {
+    for (w, kit, _, pos) in &wild_staged {
         dry.push(
             deploy_unit(
-                placeholder(staged.len() + staged_b.len() + j),
+                placeholder(dry.len()),
                 Side::B,
                 w.wild_index,
                 *pos,
