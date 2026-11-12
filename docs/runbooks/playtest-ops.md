@@ -55,6 +55,11 @@ cannot decode the rows: it never joins and shows no error, only uncaught excepti
 the console. Publish the module and serve the matching client build together, and have
 players reload.
 
+The module publishes each player's movement acknowledgement on `character.acked_seq`,
+written by `movement_tick`; `player.last_input_seq` stays 0. The served client must be a
+build that reads `character.ackedSeq`. Publishing the module alone is safe for such a
+client: `move_intent` is a private table, so adding it changes no row a client decodes.
+
 A publish can fail with "Aborting because publishing would require manual migration or
 deletion of data". This happens when the database holds a schema the automatic
 migration cannot convert, for example a database published by an older SpacetimeDB
