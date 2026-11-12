@@ -1,32 +1,27 @@
-// ui/tradeModel.test.ts — m15b RED-phase tests for buildTradeViewModel.
+// ui/tradeModel.test.ts — the trade side view models (the session editor's side builder).
 //
-// Contract: buildTradeViewModel(offers, identity, speciesMap, itemDefs) -> TradeScreenViewModel
-//   - TradeScreenViewModel = TradeOfferViewModel | NoTradeViewModel
-//   - NoTradeViewModel { kind: 'no-trade' } when no offers involve the viewer
-//   - Filter: initiator===identity || counterparty===identity (PUBLIC table defense-in-depth)
-//   - Multiple matching offers: select lowest tradeId (deterministic)
-//   - TradeOfferViewModel: kind, tradeId, mySide, theirSide, viewerIsInitiator, statusLabel, actions
-//   - mySide = viewer's offered side; theirSide = what viewer receives
-//   - Action table encoded exactly per spec §5
-//   - TOTAL: never throws; missing defs → "Unknown (#N)"
-//   - bigint fields never Number()-cast (monsterId, tradeId, currency)
+// Contract: buildSideViewModel(cards, items, currency, speciesMap, itemDefs) -> TradeSideViewModel
+//   - cards: one TradeCardViewModel per StoreMonsterCard, in input order, no genes
+//     (monsterId, speciesName, nickname, level, currentHp, statHp)
+//   - items: one TradeItemViewModel per StoreTradeItem, in input order (itemId, name, qty)
+//   - currency: passed through as a bigint
+//   - TOTAL: never throws; a missing species def reads "Unknown (#<speciesId>)", a missing item def
+//     "Unknown (#<itemId>)"
+//   - bigint fields never Number()-cast (monsterId, currency)
+// The module exports nothing else at runtime (ts-4 plan "Resume 2": the legacy offer view model,
+// its selectors and its action table are not part of it).
 //
 // Pattern follows shopModel.test.ts: pure function, no DOM, no SDK imports.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { StoreItemRow, StoreMonsterCard, StoreTradeItem, StoreTradeOffer } from '../net/store';
+import type { StoreItemRow, StoreMonsterCard, StoreTradeItem } from '../net/store';
+import * as tradeModel from './tradeModel';
 import {
-  buildTradeViewModel,
-  type NoTradeViewModel,
-  shownTradeOffer,
-  type TradeAction,
+  buildSideViewModel,
   type TradeCardViewModel,
   type TradeItemViewModel,
-  type TradeOfferViewModel,
-  type TradeScreenViewModel,
   type TradeSideViewModel,
-  tradeActions,
 } from './tradeModel';
 
 // ---------------------------------------------------------------------------
@@ -67,336 +62,88 @@ function makeItemDef(id: number, overrides: Partial<StoreItemRow> = {}): StoreIt
   };
 }
 
-function makeOffer(
-  tradeId: bigint,
-  initiator: string,
-  counterparty: string,
-  overrides: Partial<StoreTradeOffer> = {},
-): StoreTradeOffer {
-  return {
-    tradeId,
-    initiator,
-    counterparty,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: 'Pending',
-    createdAtMs: 0n,
-    ...overrides,
-  };
-}
+const NO_SPECIES: ReadonlyMap<number, { readonly name: string }> = new Map();
+const NO_ITEMS: ReadonlyMap<number, StoreItemRow> = new Map();
 
-// Shorthand identity strings
-const ALICE = 'alice-hex-identity';
-const BOB = 'bob-hex-identity';
-const CAROL = 'carol-hex-identity';
+/** One side with only cards. */
+const cardsSide = (
+  cards: readonly StoreMonsterCard[],
+  speciesMap: ReadonlyMap<number, { readonly name: string }> = NO_SPECIES,
+): TradeSideViewModel => buildSideViewModel(cards, [], 0n, speciesMap, NO_ITEMS);
 
-// ---------------------------------------------------------------------------
-// [m15b-TM-1] No-trade state
-// ---------------------------------------------------------------------------
-
-describe('buildTradeViewModel [m15b-TM-1]: no-trade state', () => {
-  it('[m15b-TM-1a] BITES: empty offers → { kind: "no-trade" } not a crash or stub TradeOfferViewModel', () => {
-    // Kills: an impl that returns a default TradeOfferViewModel or throws on [].length===0.
-    const result: TradeScreenViewModel = buildTradeViewModel([], ALICE, new Map(), new Map());
-    expect((result as NoTradeViewModel).kind).toBe('no-trade');
-  });
-
-  it('[m15b-TM-1b] BITES: no-trade result does NOT have tradeId, mySide, theirSide, actions', () => {
-    // Kills: an impl that returns { kind:"no-trade", tradeId:0n, ... } with spurious fields.
-    const result = buildTradeViewModel([], ALICE, new Map(), new Map());
-    expect(result).not.toHaveProperty('tradeId');
-    expect(result).not.toHaveProperty('mySide');
-    expect(result).not.toHaveProperty('theirSide');
-    expect(result).not.toHaveProperty('actions');
-  });
-
-  it('[m15b-TM-1c] BITES: offer where viewer is neither initiator nor counterparty → no-trade', () => {
-    // Kills: an impl that fails to filter by identity and returns any offer it finds.
-    // Viewer is CAROL; offer is between ALICE and BOB — must be excluded.
-    const offers = [makeOffer(1n, ALICE, BOB)];
-    const result = buildTradeViewModel(offers, CAROL, new Map(), new Map());
-    expect((result as NoTradeViewModel).kind).toBe('no-trade');
-  });
-
-  it('[m15b-TM-1d] BITES: multiple offers, all involving third parties → no-trade', () => {
-    // Kills: an impl that returns offers[0] unconditionally without checking identity.
-    const offers = [makeOffer(1n, ALICE, BOB), makeOffer(2n, BOB, CAROL)];
-    const result = buildTradeViewModel(offers, 'unknown-viewer', new Map(), new Map());
-    expect((result as NoTradeViewModel).kind).toBe('no-trade');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m15b-TM-2] Identity filter (PUBLIC table defense-in-depth)
-// ---------------------------------------------------------------------------
-
-describe('buildTradeViewModel [m15b-TM-2]: identity filter — PUBLIC table defense-in-depth', () => {
-  it('[m15b-TM-2a] BITES: unrelated offer in array alongside viewer offer is excluded; only viewer offer selected', () => {
-    // Kills: an impl that returns data from the unrelated offer (e.g. wrong tradeId).
-    // ALICE↔BOB should be selected; CAROL↔BOB should be invisible to ALICE.
-    const aliceOffer = makeOffer(10n, ALICE, BOB, { status: 'Pending' });
-    const carolOffer = makeOffer(5n, CAROL, BOB, { status: 'Pending' }); // lower tradeId but wrong parties
-    const result = buildTradeViewModel([carolOffer, aliceOffer], ALICE, new Map(), new Map());
-    expect((result as TradeOfferViewModel).kind).toBe('trade');
-    expect((result as TradeOfferViewModel).tradeId).toBe(10n); // carolOffer excluded; aliceOffer selected
-  });
-
-  it('[m15b-TM-2b] BITES: filter uses string identity equality, not object reference equality', () => {
-    // Kills: an impl that uses === on a parsed object instead of the identity string.
-    const id = 'deadbeef-cafebabe';
-    const offer = makeOffer(1n, id, BOB);
-    const result = buildTradeViewModel([offer], id, new Map(), new Map());
-    expect((result as TradeOfferViewModel).kind).toBe('trade');
-  });
-
-  it('[m15b-TM-2c] BITES: viewer as counterparty is NOT excluded by filter', () => {
-    // Kills: an impl that only checks initiator===identity and ignores counterparty.
-    const offer = makeOffer(1n, ALICE, BOB);
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()); // BOB is counterparty
-    expect((result as TradeOfferViewModel).kind).toBe('trade');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m15b-TM-3] Role detection — viewerIsInitiator and mySide/theirSide orientation
-// ---------------------------------------------------------------------------
-
-describe('buildTradeViewModel [m15b-TM-3]: role detection — viewerIsInitiator', () => {
-  it('[m15b-TM-3a] BITES: viewer is initiator → viewerIsInitiator:true', () => {
-    // Kills: an impl that always returns viewerIsInitiator:false.
-    const offer = makeOffer(1n, ALICE, BOB);
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.viewerIsInitiator).toBe(true);
-  });
-
-  it('[m15b-TM-3b] BITES: viewer is counterparty → viewerIsInitiator:false', () => {
-    // Kills: an impl that always returns viewerIsInitiator:true.
-    const offer = makeOffer(1n, ALICE, BOB);
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.viewerIsInitiator).toBe(false);
-  });
-
-  it('[m15b-TM-3c] BITES: viewer is initiator → mySide has initiator cards, theirSide has counterparty cards', () => {
-    // Puts DISTINCT monsterId on each side; checks which ends up in mySide.
-    // Kills: an impl that swaps mySide/theirSide for initiator, or ignores role entirely.
-    const initiatorCard = makeCard(100n, 1);
-    const counterpartyCard = makeCard(200n, 2);
-    const offer = makeOffer(1n, ALICE, BOB, {
-      initiatorCards: [initiatorCard],
-      counterpartyCards: [counterpartyCard],
-    });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.cards).toHaveLength(1);
-    expect(result.mySide.cards[0]!.monsterId).toBe(100n); // initiator card in mySide
-    expect(result.theirSide.cards[0]!.monsterId).toBe(200n); // counterparty card in theirSide
-  });
-
-  it('[m15b-TM-3d] BITES: viewer is counterparty → mySide has counterparty cards, theirSide has initiator cards', () => {
-    // The CRITICAL orientation test: when viewer=counterparty, mySide must be the
-    // counterparty fields (what they give), NOT the initiator fields.
-    // Kills: an impl that always assigns initiatorCards→mySide regardless of role.
-    const initiatorCard = makeCard(100n, 1);
-    const counterpartyCard = makeCard(200n, 2);
-    const offer = makeOffer(1n, ALICE, BOB, {
-      initiatorCards: [initiatorCard],
-      counterpartyCards: [counterpartyCard],
-    });
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.cards).toHaveLength(1);
-    expect(result.mySide.cards[0]!.monsterId).toBe(200n); // counterparty card in mySide
-    expect(result.theirSide.cards[0]!.monsterId).toBe(100n); // initiator card in theirSide
-  });
-
-  it('[m15b-TM-3e] BITES: currency orientation — viewer=counterparty → mySide.currency is counterpartyCurrency', () => {
-    // Kills: an impl that always puts initiatorCurrency in mySide.
-    const offer = makeOffer(1n, ALICE, BOB, {
-      initiatorCurrency: 50n,
-      counterpartyCurrency: 75n,
-    });
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.currency).toBe(75n);
-    expect(result.theirSide.currency).toBe(50n);
-  });
-
-  it('[m15b-TM-3f] BITES: items orientation — viewer=counterparty → mySide.items are counterpartyItems', () => {
-    // Kills: an impl that always assigns initiatorItems to mySide.
-    const initiatorItem = makeTradeItem(10, 2);
-    const counterpartyItem = makeTradeItem(20, 1);
-    const offer = makeOffer(1n, ALICE, BOB, {
-      initiatorItems: [initiatorItem],
-      counterpartyItems: [counterpartyItem],
-    });
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.items[0]!.itemId).toBe(20);
-    expect(result.theirSide.items[0]!.itemId).toBe(10);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m15b-TM-4] Action table — all 4 cells exactly
-// ---------------------------------------------------------------------------
-
-describe('buildTradeViewModel [m15b-TM-4]: action table — all 4 cells of spec §5', () => {
-  it('[m15b-TM-4a] initiator + Pending → actions:["cancel"], statusLabel:"Waiting for response"', () => {
-    // BITES: kills an impl that returns ['accept','reject'] for initiator+Pending,
-    // or returns a different statusLabel string (e.g. "Pending" or "Waiting...").
-    const offer = makeOffer(1n, ALICE, BOB, { status: 'Pending' });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.actions).toEqual(['cancel']);
-    expect(result.statusLabel).toBe('Waiting for response');
-  });
-
-  it('[m15b-TM-4b] counterparty + Pending → actions:["accept","reject"], statusLabel:"Offer received"', () => {
-    // BITES: kills an impl that returns ['cancel'] for counterparty+Pending
-    // (i.e. symmetric treatment ignoring viewer role), or wrong order accept/reject.
-    const offer = makeOffer(1n, ALICE, BOB, { status: 'Pending' });
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.actions).toEqual(['accept', 'reject']);
-    expect(result.statusLabel).toBe('Offer received');
-  });
-
-  it('[m15b-TM-4c] initiator + ConfirmedByCounterparty → actions:["confirm","cancel"], statusLabel:"Accepted — confirm to finalize"', () => {
-    // BITES: kills an impl that returns ['cancel'] only for initiator+ConfirmedByCounterparty
-    // (omitting the confirm action), or uses a dash/em-dash inconsistency in the label.
-    const offer = makeOffer(1n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.actions).toEqual(['confirm', 'cancel']);
-    expect(result.statusLabel).toBe('Accepted — confirm to finalize');
-  });
-
-  it('[m15b-TM-4d] counterparty + ConfirmedByCounterparty → actions:["cancel"], statusLabel:"Accepted — awaiting confirmation"', () => {
-    // BITES: kills an impl that returns ['accept','reject'] for counterparty+ConfirmedByCounterparty
-    // (forgetting to update actions after status changes), or wrong label.
-    const offer = makeOffer(1n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
-    const result = buildTradeViewModel([offer], BOB, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.actions).toEqual(['cancel']);
-    expect(result.statusLabel).toBe('Accepted — awaiting confirmation');
-  });
-
-  it('[m15b-TM-4e] BITES: actions arrays are ReadonlyArray — length check (no extra entries)', () => {
-    // Kills: an impl that appends extra actions beyond the spec table (e.g. always
-    // adds 'reject' as a trailing option regardless of status/role).
-    // TradeAction annotation verifies values are valid action literals per the contract type.
-    const pendingInitiator = makeOffer(1n, ALICE, BOB, { status: 'Pending' });
-    const r1 = buildTradeViewModel(
-      [pendingInitiator],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    const r1Actions: readonly TradeAction[] = r1.actions; // type-level contract check
-    expect(r1Actions).toHaveLength(1); // only 'cancel'
-
-    const confirmedCounterparty = makeOffer(2n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
-    const r2 = buildTradeViewModel(
-      [confirmedCounterparty],
-      BOB,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(r2.actions).toHaveLength(1); // only 'cancel'
-
-    const confirmedInitiator = makeOffer(3n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
-    const r3 = buildTradeViewModel(
-      [confirmedInitiator],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(r3.actions).toHaveLength(2); // 'confirm', 'cancel'
-
-    const pendingCounterparty = makeOffer(4n, ALICE, BOB, { status: 'Pending' });
-    const r4 = buildTradeViewModel(
-      [pendingCounterparty],
-      BOB,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(r4.actions).toHaveLength(2); // 'accept', 'reject'
-  });
-});
+/** One side with only item lines. */
+const itemsSide = (
+  items: readonly StoreTradeItem[],
+  itemDefs: ReadonlyMap<number, StoreItemRow> = NO_ITEMS,
+): TradeSideViewModel => buildSideViewModel([], items, 0n, NO_SPECIES, itemDefs);
 
 // ---------------------------------------------------------------------------
 // [m15b-TM-5] Name resolution — speciesMap and itemDefs
 // ---------------------------------------------------------------------------
 
-describe('buildTradeViewModel [m15b-TM-5]: name resolution — species and items', () => {
+describe('buildSideViewModel [m15b-TM-5]: name resolution — species and items', () => {
   it('[m15b-TM-5a] BITES: present speciesId resolves to species name (not "Unknown")', () => {
     // Kills: an impl that always returns "Unknown (#N)" regardless of speciesMap content.
-    const card = makeCard(1n, 7);
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorCards: [card] });
-    const speciesMap = new Map([[7, { name: 'Flamox' }]]);
-    const result = buildTradeViewModel(
-      [offer],
-      ALICE,
-      speciesMap,
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(result.mySide.cards[0]!.speciesName).toBe('Flamox');
+    const side = cardsSide([makeCard(1n, 7)], new Map([[7, { name: 'Flamox' }]]));
+    expect(side.cards[0]?.speciesName).toBe('Flamox');
   });
 
   it('[m15b-TM-5b] BITES: missing speciesId → speciesName is "Unknown (#N)" with the actual speciesId', () => {
     // Kills: an impl that throws on missing species, returns "" or "Unknown" without id.
-    const card = makeCard(1n, 42); // speciesId 42 not in map
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorCards: [card] });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.cards[0]!.speciesName).toBe('Unknown (#42)');
+    expect(cardsSide([makeCard(1n, 42)]).cards[0]?.speciesName).toBe('Unknown (#42)');
   });
 
-  it('[m15b-TM-5c] BITES: multiple missing species get DISTINCT "Unknown (#N)" names', () => {
-    // Kills: an impl that returns "Unknown" for all missing species (no id suffix).
-    const card1 = makeCard(1n, 10);
-    const card2 = makeCard(2n, 20);
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorCards: [card1, card2] });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    const names = result.mySide.cards.map((c) => c.speciesName);
-    expect(names).toContain('Unknown (#10)');
-    expect(names).toContain('Unknown (#20)');
+  it('[m15b-TM-5c] BITES: multiple missing species get DISTINCT "Unknown (#N)" names, a known one between them its own name, in input order', () => {
+    // Kills: an impl that returns "Unknown" for all missing species (no id suffix); one that
+    // resolves every card through the first card's species; one that reorders the cards.
+    const side = cardsSide(
+      [makeCard(1n, 10), makeCard(2n, 3), makeCard(3n, 20)],
+      new Map([[3, { name: 'Voltix' }]]),
+    );
+    expect(side.cards.map((c) => c.speciesName)).toEqual([
+      'Unknown (#10)',
+      'Voltix',
+      'Unknown (#20)',
+    ]);
+    expect(side.cards.map((c) => c.monsterId)).toEqual([1n, 2n, 3n]);
   });
 
   it('[m15b-TM-5d] BITES: present itemId resolves to item name (not "Unknown")', () => {
     // Kills: an impl that always returns "Unknown (#N)" regardless of itemDefs content.
-    const item = makeTradeItem(5, 3);
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorItems: [item] });
-    const itemDefs = new Map([[5, makeItemDef(5, { name: 'Fire Herb' })]]);
-    const result = buildTradeViewModel([offer], ALICE, new Map(), itemDefs) as TradeOfferViewModel;
-    expect(result.mySide.items[0]!.name).toBe('Fire Herb');
+    const side = itemsSide(
+      [makeTradeItem(5, 3)],
+      new Map([[5, makeItemDef(5, { name: 'Fire Herb' })]]),
+    );
+    expect(side.items[0]?.name).toBe('Fire Herb');
   });
 
   it('[m15b-TM-5e] BITES: missing itemId → name is "Unknown (#N)" with the actual itemId', () => {
     // Kills: an impl that throws on missing item def, or returns "" without id.
-    const item = makeTradeItem(99, 1); // itemId 99 not in defs
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorItems: [item] });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.items[0]!.name).toBe('Unknown (#99)');
+    expect(itemsSide([makeTradeItem(99, 1)]).items[0]?.name).toBe('Unknown (#99)');
   });
 
-  it('[m15b-TM-5f] BITES: item qty is preserved unchanged from StoreTradeItem', () => {
-    // Kills: an impl that hardcodes qty=1 or drops qty.
-    const item = makeTradeItem(3, 7);
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorItems: [item] });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result.mySide.items[0]!.qty).toBe(7);
+  it('[m15b-TM-5f] BITES: item qty is preserved unchanged from StoreTradeItem, line by line in input order', () => {
+    // Kills: an impl that hardcodes qty=1, drops qty, sums lines or sorts them.
+    const side = itemsSide([makeTradeItem(3, 7), makeTradeItem(1, 2), makeTradeItem(3, 1)]);
+    expect(side.items.map((i) => [i.itemId, i.qty])).toEqual([
+      [3, 7],
+      [1, 2],
+      [3, 1],
+    ]);
   });
 
-  it('[m15b-TM-5g] BITES: species name resolution uses theirSide cards correctly (counterparty cards for initiator viewer)', () => {
-    // Kills: an impl that resolves species names from the wrong side's card list.
-    const theirCard = makeCard(200n, 55);
-    const offer = makeOffer(1n, ALICE, BOB, { counterpartyCards: [theirCard] });
-    const speciesMap = new Map([[55, { name: 'Aquafin' }]]);
-    const result = buildTradeViewModel(
-      [offer],
-      ALICE,
-      speciesMap,
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(result.theirSide.cards[0]!.speciesName).toBe('Aquafin');
+  it('[m15b-TM-5g] BITES: the species map and the item defs are read by their own key space (an item id that is also a species id resolves as an item)', () => {
+    // Kills: an impl that resolves item names from the species map, or card names from the item
+    // defs (both are numeric-keyed maps).
+    const side = buildSideViewModel(
+      [makeCard(1n, 5)],
+      [makeTradeItem(5, 1)],
+      0n,
+      new Map([[5, { name: 'Aquafin' }]]),
+      new Map([[5, makeItemDef(5, { name: 'Mega Gem' })]]),
+    );
+    expect(side.cards[0]?.speciesName).toBe('Aquafin');
+    expect(side.items[0]?.name).toBe('Mega Gem');
   });
 });
 
@@ -404,70 +151,27 @@ describe('buildTradeViewModel [m15b-TM-5]: name resolution — species and items
 // [m15b-TM-6] Total safety — never throws
 // ---------------------------------------------------------------------------
 
-describe('buildTradeViewModel [m15b-TM-6]: total safety — never throws on any input', () => {
-  it('[m15b-TM-6a] BITES: empty offers, empty maps → no throw', () => {
-    // Kills: an impl that calls offers[0].tradeId on an empty array.
-    expect(() => {
-      buildTradeViewModel([], ALICE, new Map(), new Map());
-    }).not.toThrow();
-  });
-
-  it('[m15b-TM-6b] BITES: offer with empty card/item arrays → no throw', () => {
-    // Kills: an impl that destructures cards[0] without a guard.
-    const offer = makeOffer(1n, ALICE, BOB, {
-      initiatorCards: [],
-      counterpartyCards: [],
-      initiatorItems: [],
-      counterpartyItems: [],
+describe('buildSideViewModel [m15b-TM-6]: total safety — never throws on any input', () => {
+  it('[m15b-TM-6a] BITES: empty cards, items and maps → an empty side, no throw', () => {
+    // Kills: an impl that reads cards[0] or items[0] without a guard.
+    expect(buildSideViewModel([], [], 0n, NO_SPECIES, NO_ITEMS)).toEqual({
+      cards: [],
+      items: [],
+      currency: 0n,
     });
-    expect(() => {
-      buildTradeViewModel([offer], ALICE, new Map(), new Map());
-    }).not.toThrow();
   });
 
-  it('[m15b-TM-6c] BITES: offer with all missing defs (empty speciesMap and itemDefs) → no throw, fallback names', () => {
-    // Kills: an impl that does speciesMap.get(id).name without optional-chaining.
-    const card = makeCard(1n, 99);
-    const item = makeTradeItem(88, 1);
-    const offer = makeOffer(1n, ALICE, BOB, {
-      initiatorCards: [card],
-      initiatorItems: [item],
-    });
-    expect(() => {
-      buildTradeViewModel([offer], ALICE, new Map(), new Map());
-    }).not.toThrow();
-  });
-
-  it('[m15b-TM-6d] BITES: both valid statuses are handled without throwing', () => {
-    // Exhaustive switch handles all valid statuses; unknown statuses are now a
-    // TypeScript compile error (StoreTradeOffer.status narrowed to
-    // 'Pending' | 'ConfirmedByCounterparty' per 16.5c-2).
-    // This test verifies the runtime invariant: both known statuses produce a
-    // non-throwing result.
-    //
-    // Kills: an impl that crashes on one of the two valid status values (e.g.
-    // only handles 'Pending' and throws on 'ConfirmedByCounterparty').
-    const offerPending = makeOffer(1n, ALICE, BOB, { status: 'Pending' });
-    expect(() => {
-      buildTradeViewModel([offerPending], ALICE, new Map(), new Map());
-    }).not.toThrow();
-
-    const offerConfirmed = makeOffer(2n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
-    expect(() => {
-      buildTradeViewModel([offerConfirmed], ALICE, new Map(), new Map());
-    }).not.toThrow();
-  });
-
-  it('[m15b-TM-6e] BITES: large offer array with mixed parties → no throw', () => {
-    // Kills: an impl with an early-exit bug that throws mid-filter on large arrays.
-    const offers = Array.from({ length: 20 }, (_, i) =>
-      makeOffer(BigInt(i + 1), `party-${i}`, `party-${i}-cp`),
+  it('[m15b-TM-6c] BITES: all defs missing (empty speciesMap and itemDefs) → fallback names, no throw', () => {
+    // Kills: an impl that does speciesMap.get(id).name without optional chaining.
+    const side = buildSideViewModel(
+      [makeCard(1n, 99)],
+      [makeTradeItem(88, 1)],
+      0n,
+      NO_SPECIES,
+      NO_ITEMS,
     );
-    // Add one offer that involves ALICE
-    offers.push(makeOffer(21n, ALICE, BOB));
-    expect(() => {
-      buildTradeViewModel(offers, ALICE, new Map(), new Map());
-    }).not.toThrow();
+    expect(side.cards[0]?.speciesName).toBe('Unknown (#99)');
+    expect(side.items[0]?.name).toBe('Unknown (#88)');
   });
 });
 
@@ -475,244 +179,111 @@ describe('buildTradeViewModel [m15b-TM-6]: total safety — never throws on any 
 // [m15b-TM-7] bigint preservation — no Number() cast
 // ---------------------------------------------------------------------------
 
-describe('buildTradeViewModel [m15b-TM-7]: bigint preservation past 2^53', () => {
-  it('[m15b-TM-7a] BITES: tradeId stays bigint past 2^53 (no Number() cast)', () => {
-    // Kills: an impl that casts tradeId to Number(), losing precision for large ids.
-    // 2^53 + 1 = 9007199254740993 — lossy as a JS number.
-    const largeTradeId = 9007199254740993n;
-    const offer = makeOffer(largeTradeId, ALICE, BOB);
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(typeof result.tradeId).toBe('bigint');
-    expect(result.tradeId).toBe(largeTradeId);
-  });
-
-  it('[m15b-TM-7b] BITES: mySide.currency stays bigint past 2^53', () => {
-    // Kills: an impl that does currency = Number(offer.initiatorCurrency).
+describe('buildSideViewModel [m15b-TM-7]: bigint preservation past 2^53', () => {
+  it('[m15b-TM-7b] BITES: currency stays bigint past 2^53', () => {
+    // Kills: an impl that does currency = Number(currency).
     const largeCurrency = 9007199254740994n;
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorCurrency: largeCurrency });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(typeof result.mySide.currency).toBe('bigint');
-    expect(result.mySide.currency).toBe(largeCurrency);
+    const side = buildSideViewModel([], [], largeCurrency, NO_SPECIES, NO_ITEMS);
+    expect(typeof side.currency).toBe('bigint');
+    expect(side.currency).toBe(largeCurrency);
   });
 
-  it('[m15b-TM-7c] BITES: theirSide.currency stays bigint past 2^53', () => {
-    // Kills: an impl that casts counterpartyCurrency but not initiatorCurrency.
-    const largeCurrency = 9007199254740995n;
-    const offer = makeOffer(1n, ALICE, BOB, { counterpartyCurrency: largeCurrency });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(typeof result.theirSide.currency).toBe('bigint');
-    expect(result.theirSide.currency).toBe(largeCurrency);
-  });
-
-  it('[m15b-TM-7d] BITES: mySide.cards[].monsterId stays bigint past 2^53', () => {
+  it('[m15b-TM-7d] BITES: cards[].monsterId stays bigint past 2^53', () => {
     // Kills: an impl that maps cards through Number() or uses +monsterId.
     const largeMonsterId = 9007199254740996n;
-    const card = makeCard(largeMonsterId, 1);
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorCards: [card] });
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(typeof result.mySide.cards[0]!.monsterId).toBe('bigint');
-    expect(result.mySide.cards[0]!.monsterId).toBe(largeMonsterId);
+    const side = cardsSide([makeCard(largeMonsterId, 1)]);
+    expect(typeof side.cards[0]?.monsterId).toBe('bigint');
+    expect(side.cards[0]?.monsterId).toBe(largeMonsterId);
   });
 });
 
 // ---------------------------------------------------------------------------
-// [m15b-TM-8] Deterministic selection — lowest tradeId wins
+// [m15b-TM-9] Structural shape
 // ---------------------------------------------------------------------------
 
-describe('buildTradeViewModel [m15b-TM-8]: deterministic selection — lowest tradeId wins', () => {
-  it('[m15b-TM-8a] BITES: two offers both involving viewer → lowest tradeId selected', () => {
-    // Per spec: "should be impossible per server rule, but defensive: select lowest tradeId".
-    // Kills: an impl that picks the first array element (non-deterministic across reconnects)
-    // or the HIGHEST tradeId (wrong sort direction).
-    const offerHigh = makeOffer(100n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
-    const offerLow = makeOffer(5n, ALICE, CAROL, { status: 'Pending' });
-    // Put high-id first in array to expose sort dependency on array order.
-    const result = buildTradeViewModel(
-      [offerHigh, offerLow],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(result.tradeId).toBe(5n); // lowest tradeId wins
-    // Also verify the STATUS comes from the low-id offer (Pending, not ConfirmedByCounterparty).
-    expect(result.statusLabel).toBe('Waiting for response');
+describe('buildSideViewModel [m15b-TM-9]: output structure', () => {
+  it('[m15b-TM-9b] BITES: TradeSideViewModel has exactly cards, items, currency', () => {
+    // Kills: an impl that flattens the side object, loses a field or adds a stray one.
+    const side: TradeSideViewModel = buildSideViewModel([], [], 5n, NO_SPECIES, NO_ITEMS);
+    expect(Object.keys(side).sort()).toEqual(['cards', 'currency', 'items']);
+    expect(Array.isArray(side.cards)).toBe(true);
+    expect(Array.isArray(side.items)).toBe(true);
+    expect(side.currency).toBe(5n);
   });
 
-  it('[m15b-TM-8b] BITES: sort is stable on equal tradeId (edge case — equal ids remain stable)', () => {
-    // Degenerate case: same tradeId means same offer. Verify no crash.
-    const offer = makeOffer(7n, ALICE, BOB);
-    const result = buildTradeViewModel(
-      [offer, offer],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(result.tradeId).toBe(7n);
-  });
-
-  it('[m15b-TM-8c] BITES: array order should NOT determine selection (reverse order gives same result)', () => {
-    // Kills: an impl using Array.prototype.find instead of sort-then-first.
-    // With find, reversing the array changes the result; with sort, it cannot.
-    const offerA = makeOffer(3n, ALICE, BOB);
-    const offerB = makeOffer(9n, ALICE, BOB);
-    const r1 = buildTradeViewModel(
-      [offerA, offerB],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    const r2 = buildTradeViewModel(
-      [offerB, offerA],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(r1.tradeId).toBe(3n);
-    expect(r2.tradeId).toBe(3n); // same result regardless of input order
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m15b-TM-9] TradeOfferViewModel structural shape
-// ---------------------------------------------------------------------------
-
-describe('buildTradeViewModel [m15b-TM-9]: output structure — TradeOfferViewModel has all required fields', () => {
-  it('[m15b-TM-9a] BITES: TradeOfferViewModel has all 7 required top-level fields', () => {
-    // Kills: an impl that omits any of: kind, tradeId, mySide, theirSide,
-    // viewerIsInitiator, statusLabel, actions.
-    const offer = makeOffer(42n, ALICE, BOB);
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(result).toHaveProperty('kind', 'trade');
-    expect(result).toHaveProperty('tradeId');
-    expect(result).toHaveProperty('mySide');
-    expect(result).toHaveProperty('theirSide');
-    expect(result).toHaveProperty('viewerIsInitiator');
-    expect(result).toHaveProperty('statusLabel');
-    expect(result).toHaveProperty('actions');
-  });
-
-  it('[m15b-TM-9b] BITES: TradeSideViewModel has cards, items, currency', () => {
-    // Kills: an impl that flattens the side object and loses the nested structure.
-    // TradeSideViewModel annotation is a type-level contract check against the exported type.
-    const offer = makeOffer(1n, ALICE, BOB);
-    const result = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    const mySide: TradeSideViewModel = result.mySide; // type-level contract check
-    const theirSide: TradeSideViewModel = result.theirSide; // type-level contract check
-    expect(mySide).toHaveProperty('cards');
-    expect(mySide).toHaveProperty('items');
-    expect(mySide).toHaveProperty('currency');
-    expect(theirSide).toHaveProperty('cards');
-    expect(theirSide).toHaveProperty('items');
-    expect(theirSide).toHaveProperty('currency');
-    expect(Array.isArray(mySide.cards)).toBe(true);
-    expect(Array.isArray(mySide.items)).toBe(true);
-    expect(Array.isArray(theirSide.cards)).toBe(true);
-    expect(Array.isArray(theirSide.items)).toBe(true);
-  });
-
-  it('[m15b-TM-9c] BITES: TradeCardViewModel has all 6 required fields', () => {
-    // Kills: an impl that omits level, currentHp, statHp from the card view model.
+  it('[m15b-TM-9c] BITES: TradeCardViewModel has exactly the six card fields (no genes, no speciesId)', () => {
+    // Kills: an impl that omits level, currentHp or statHp, or leaks a source field.
     const card = makeCard(55n, 3, { nickname: 'Sparky', level: 15, currentHp: 20, statHp: 35 });
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorCards: [card] });
-    const speciesMap = new Map([[3, { name: 'Voltix' }]]);
-    const result = buildTradeViewModel(
-      [offer],
-      ALICE,
-      speciesMap,
-      new Map(),
-    ) as TradeOfferViewModel;
-    const c: TradeCardViewModel = result.mySide.cards[0]!;
-    expect(c.monsterId).toBe(55n);
-    expect(c.speciesName).toBe('Voltix');
-    expect(c.nickname).toBe('Sparky');
-    expect(c.level).toBe(15);
-    expect(c.currentHp).toBe(20);
-    expect(c.statHp).toBe(35);
+    const c: TradeCardViewModel | undefined = cardsSide([card], new Map([[3, { name: 'Voltix' }]]))
+      .cards[0];
+    expect(c).toEqual({
+      monsterId: 55n,
+      speciesName: 'Voltix',
+      nickname: 'Sparky',
+      level: 15,
+      currentHp: 20,
+      statHp: 35,
+    });
   });
 
-  it('[m15b-TM-9d] BITES: TradeItemViewModel has itemId, name, qty', () => {
+  it('[m15b-TM-9d] BITES: TradeItemViewModel has exactly itemId, name, qty', () => {
     // Kills: an impl that omits itemId or qty from the item view model.
-    const item = makeTradeItem(77, 4);
-    const offer = makeOffer(1n, ALICE, BOB, { initiatorItems: [item] });
-    const itemDefs = new Map([[77, makeItemDef(77, { name: 'Mega Gem' })]]);
-    const result = buildTradeViewModel([offer], ALICE, new Map(), itemDefs) as TradeOfferViewModel;
-    const i: TradeItemViewModel = result.mySide.items[0]!;
-    expect(i.itemId).toBe(77);
-    expect(i.name).toBe('Mega Gem');
-    expect(i.qty).toBe(4);
+    const i: TradeItemViewModel | undefined = itemsSide(
+      [makeTradeItem(77, 4)],
+      new Map([[77, makeItemDef(77, { name: 'Mega Gem' })]]),
+    ).items[0];
+    expect(i).toEqual({ itemId: 77, name: 'Mega Gem', qty: 4 });
   });
 });
 
 // ---------------------------------------------------------------------------
-// [m15b-TM-10] Property: never throws for any valid StoreTradeOffer array
+// [m15b-TM-10] Property: total and faithful for any side
 // ---------------------------------------------------------------------------
 
-describe('buildTradeViewModel [m15b-TM-10]: property — never throws on any valid input', () => {
-  it('[m15b-TM-10a] fast-check property: buildTradeViewModel never throws for any offer array', () => {
-    // Generates arbitrary offer arrays and verifies no exception is thrown.
-    // BITES: kills any impl with unguarded property access, missing null-checks,
-    // or sort comparators that throw on equal elements.
+const cardArb = fc.record({
+  monsterId: fc.bigInt({ min: 1n, max: 2n ** 64n }),
+  speciesId: fc.integer({ min: 1, max: 20 }),
+  nickname: fc.string({ maxLength: 16 }),
+  level: fc.integer({ min: 1, max: 50 }),
+  currentHp: fc.integer({ min: 0, max: 100 }),
+  statHp: fc.integer({ min: 1, max: 100 }),
+});
+const itemArb = fc.record({
+  itemId: fc.integer({ min: 1, max: 50 }),
+  qty: fc.integer({ min: 1, max: 10 }),
+});
+const knownIdsArb = fc.uniqueArray(fc.integer({ min: 1, max: 50 }), { maxLength: 10 });
+
+describe('buildSideViewModel [m15b-TM-10]: property — total and faithful on any input', () => {
+  it('[m15b-TM-10a] fast-check property: for any cards, items, currency and partial defs, the side has one card and one line per input, in order, each named from its def or "Unknown (#N)", and the currency unchanged', () => {
+    // BITES: kills any impl with unguarded property access, a reorder, a dropped or merged
+    // entry, a fallback that ignores a present def, or a cast of a bigint.
     fc.assert(
       fc.property(
-        fc.array(
-          fc.record({
-            tradeId: fc.bigInt({ min: 1n, max: 1000n }),
-            initiator: fc.constantFrom(ALICE, BOB, CAROL, 'stranger'),
-            counterparty: fc.constantFrom(ALICE, BOB, CAROL, 'stranger'),
-            initiatorMonsterIds: fc.array(fc.bigInt({ min: 1n, max: 999n }), { maxLength: 3 }),
-            initiatorItems: fc.array(
-              fc.record({
-                itemId: fc.integer({ min: 1, max: 50 }),
-                qty: fc.integer({ min: 1, max: 10 }),
-              }),
-              { maxLength: 3 },
+        fc.array(cardArb, { maxLength: 6 }),
+        fc.array(itemArb, { maxLength: 6 }),
+        fc.bigInt({ min: 0n, max: 2n ** 64n }),
+        knownIdsArb,
+        knownIdsArb,
+        (cards, items, currency, knownSpecies, knownItems) => {
+          const speciesMap = new Map(knownSpecies.map((id) => [id, { name: `S${id}` }]));
+          const itemDefs = new Map(knownItems.map((id) => [id, makeItemDef(id)]));
+          const side = buildSideViewModel(cards, items, currency, speciesMap, itemDefs);
+          expect(side.currency).toBe(currency);
+          expect(side.cards.map((c) => c.monsterId)).toEqual(cards.map((c) => c.monsterId));
+          expect(side.cards.map((c) => c.speciesName)).toEqual(
+            cards.map((c) =>
+              speciesMap.has(c.speciesId) ? `S${c.speciesId}` : `Unknown (#${c.speciesId})`,
             ),
-            initiatorCurrency: fc.bigInt({ min: 0n, max: 10000n }),
-            counterpartyMonsterIds: fc.array(fc.bigInt({ min: 1n, max: 999n }), { maxLength: 3 }),
-            counterpartyItems: fc.array(
-              fc.record({
-                itemId: fc.integer({ min: 1, max: 50 }),
-                qty: fc.integer({ min: 1, max: 10 }),
-              }),
-              { maxLength: 3 },
+          );
+          expect(side.items.map((i) => [i.itemId, i.qty])).toEqual(
+            items.map((i) => [i.itemId, i.qty]),
+          );
+          expect(side.items.map((i) => i.name)).toEqual(
+            items.map((i) =>
+              itemDefs.has(i.itemId) ? `Item-${i.itemId}` : `Unknown (#${i.itemId})`,
             ),
-            counterpartyCurrency: fc.bigInt({ min: 0n, max: 10000n }),
-            initiatorCards: fc.array(
-              fc.record({
-                monsterId: fc.bigInt({ min: 1n, max: 999n }),
-                speciesId: fc.integer({ min: 1, max: 20 }),
-                nickname: fc.string({ maxLength: 16 }),
-                level: fc.integer({ min: 1, max: 50 }),
-                currentHp: fc.integer({ min: 0, max: 100 }),
-                statHp: fc.integer({ min: 1, max: 100 }),
-              }),
-              { maxLength: 3 },
-            ),
-            counterpartyCards: fc.array(
-              fc.record({
-                monsterId: fc.bigInt({ min: 1n, max: 999n }),
-                speciesId: fc.integer({ min: 1, max: 20 }),
-                nickname: fc.string({ maxLength: 16 }),
-                level: fc.integer({ min: 1, max: 50 }),
-                currentHp: fc.integer({ min: 0, max: 100 }),
-                statHp: fc.integer({ min: 1, max: 100 }),
-              }),
-              { maxLength: 3 },
-            ),
-            // Status narrowed to 'Pending' | 'ConfirmedByCounterparty' — 'UnknownFutureStatus'
-            // removed because it is now a TypeScript compile error at the call site.
-            status: fc.constantFrom<'Pending' | 'ConfirmedByCounterparty'>(
-              'Pending',
-              'ConfirmedByCounterparty',
-            ),
-            createdAtMs: fc.bigInt({ min: 0n, max: 999999n }),
-          }),
-          { maxLength: 10 },
-        ),
-        (offers) => {
-          expect(() => {
-            buildTradeViewModel(offers, ALICE, new Map(), new Map());
-          }).not.toThrow();
+          );
         },
       ),
     );
@@ -720,196 +291,15 @@ describe('buildTradeViewModel [m15b-TM-10]: property — never throws on any val
 });
 
 // ---------------------------------------------------------------------------
-// [m15b-TM-11] Property: initiator===identity → viewerIsInitiator===true
+// ts-4 (ts-4.6): the module is the side builder alone.
 // ---------------------------------------------------------------------------
 
-describe('buildTradeViewModel [m15b-TM-11]: property — initiator role detection is exact', () => {
-  it('[m15b-TM-11a] fast-check property: for any offer where initiator===identity, viewerIsInitiator===true', () => {
-    // BITES: kills any impl that uses identity.startsWith(...) or partial match
-    // instead of strict string equality for role detection.
-    fc.assert(
-      fc.property(
-        fc.string({ minLength: 4, maxLength: 32 }), // viewer identity
-        fc.string({ minLength: 4, maxLength: 32 }), // counterparty (different)
-        fc.bigInt({ min: 1n, max: 9999n }), // tradeId
-        fc.constantFrom<'Pending' | 'ConfirmedByCounterparty'>(
-          'Pending',
-          'ConfirmedByCounterparty',
-        ),
-        (viewerId, cpId, tradeId, status) => {
-          // Skip when viewerId===cpId to avoid ambiguous cases
-          if (viewerId === cpId) return;
-          const offer = makeOffer(tradeId, viewerId, cpId, { status });
-          const result = buildTradeViewModel([offer], viewerId, new Map(), new Map());
-          // Must be trade (viewer IS a party)
-          expect((result as TradeOfferViewModel).kind).toBe('trade');
-          expect((result as TradeOfferViewModel).viewerIsInitiator).toBe(true);
-        },
-      ),
-    );
-  });
-
-  it('[m15b-TM-11b] fast-check property: for any offer where counterparty===identity (not initiator), viewerIsInitiator===false', () => {
-    // BITES: kills an impl that checks initiator===identity with a loose equality
-    // that could match the counterparty string, or that inverts the boolean.
-    fc.assert(
-      fc.property(
-        fc.string({ minLength: 4, maxLength: 32 }), // initiator (third party)
-        fc.string({ minLength: 4, maxLength: 32 }), // viewer = counterparty
-        fc.bigInt({ min: 1n, max: 9999n }),
-        fc.constantFrom<'Pending' | 'ConfirmedByCounterparty'>(
-          'Pending',
-          'ConfirmedByCounterparty',
-        ),
-        (initiatorId, viewerId, tradeId, status) => {
-          if (initiatorId === viewerId) return;
-          const offer = makeOffer(tradeId, initiatorId, viewerId, { status });
-          const result = buildTradeViewModel([offer], viewerId, new Map(), new Map());
-          expect((result as TradeOfferViewModel).kind).toBe('trade');
-          expect((result as TradeOfferViewModel).viewerIsInitiator).toBe(false);
-        },
-      ),
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m16.5c-TM-12] Exhaustive switch — type-safe status
-//
-// CONTRACT:
-//   - StoreTradeOffer.status is narrowed to 'Pending' | 'ConfirmedByCounterparty'.
-//   - deriveActionsAndLabel (called inside buildTradeViewModel) uses an exhaustive
-//     switch so TypeScript produces a compile error when a new server variant is
-//     added without handling it (the never-check pattern).
-//   - All 4 cells of the action table (role × status) must produce the correct
-//     actions and statusLabel with NO fallthrough or default catch-all that would
-//     mask a missing case.
-//
-// [m16.5c-TM-12a] BITES: all 4 role×status cells produce correct actions and labels
-//   Tests the full 2×2 action table exhaustively in a single test.
-//   Kills:
-//     - An impl with a fallthrough default arm that silently returns a wrong result
-//       for one of the four cells (masked by the catch-all).
-//     - An impl that handles only one role correctly and swaps actions for the other.
-//     - A copy-paste where initiator+ConfirmedByCounterparty accidentally returns
-//       ['confirm'] without 'cancel' (truncated action list).
-//     - A copy-paste where counterparty+ConfirmedByCounterparty returns ['accept','reject']
-//       instead of ['cancel'] (forgot to update for the ConfirmedByCounterparty branch).
-// ---------------------------------------------------------------------------
-
-describe('buildTradeViewModel [m16.5c-TM-12]: exhaustive switch — all 4 role×status cells', () => {
-  it('[m16.5c-TM-12a] BITES: all 4 cells (role × status) return correct actions and statusLabel', () => {
-    // Cell 1: initiator + Pending → ['cancel'] / 'Waiting for response'
-    // Kills: impl that returns ['accept','reject'] for initiator+Pending (role confusion).
-    const cell1 = buildTradeViewModel(
-      [makeOffer(1n, ALICE, BOB, { status: 'Pending' })],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(cell1.actions).toEqual(['cancel']);
-    expect(cell1.statusLabel).toBe('Waiting for response');
-
-    // Cell 2: counterparty + Pending → ['accept','reject'] / 'Offer received'
-    // Kills: impl that returns ['cancel'] for counterparty+Pending (swapped roles).
-    const cell2 = buildTradeViewModel(
-      [makeOffer(2n, ALICE, BOB, { status: 'Pending' })],
-      BOB,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(cell2.actions).toEqual(['accept', 'reject']);
-    expect(cell2.statusLabel).toBe('Offer received');
-
-    // Cell 3: initiator + ConfirmedByCounterparty → ['confirm','cancel'] / 'Accepted — confirm to finalize'
-    // Kills: impl with a fallthrough default that returns ['cancel'] only (missing 'confirm').
-    // Also kills: an impl that returns ['cancel','confirm'] (wrong order).
-    const cell3 = buildTradeViewModel(
-      [makeOffer(3n, ALICE, BOB, { status: 'ConfirmedByCounterparty' })],
-      ALICE,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(cell3.actions).toEqual(['confirm', 'cancel']);
-    expect(cell3.statusLabel).toBe('Accepted — confirm to finalize');
-    // Explicit length check: exactly 2 actions, no extras.
-    expect(cell3.actions).toHaveLength(2);
-
-    // Cell 4: counterparty + ConfirmedByCounterparty → ['cancel'] / 'Accepted — awaiting confirmation'
-    // Kills: impl that returns ['accept','reject'] here (forgot the ConfirmedByCounterparty branch
-    // for the counterparty role — the default catch-all masked it).
-    const cell4 = buildTradeViewModel(
-      [makeOffer(4n, ALICE, BOB, { status: 'ConfirmedByCounterparty' })],
-      BOB,
-      new Map(),
-      new Map(),
-    ) as TradeOfferViewModel;
-    expect(cell4.actions).toEqual(['cancel']);
-    expect(cell4.statusLabel).toBe('Accepted — awaiting confirmation');
-    // Explicit length check: exactly 1 action, no extras.
-    expect(cell4.actions).toHaveLength(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ctl-8d: the trade panel's selectors. The Social frame's Trades row and the trade root select
-// through the same two, so a Social row is always the offer the root shows, with its actions.
-// ---------------------------------------------------------------------------
-
-describe('ctl-8d: shownTradeOffer and tradeActions', () => {
-  it('ctl-8d: shownTradeOffer is the offer buildTradeViewModel shows (the lowest tradeId the viewer is a party to, never another pair`s; undefined when there is none) and tradeActions is the role x status action table the view model carries', () => {
-    // WRONG IMPL KILLED: a selector without the party check (another pair's offer has the lowest
-    // id), one that takes the first in store order or the highest id, a store-style tie-break
-    // that differs from the root's (a Social row acting on an offer the root does not show), and
-    // an action table that differs from the one the view model renders.
-    const offers = [
-      makeOffer(1n, BOB, CAROL),
-      makeOffer(15n, ALICE, BOB),
-      makeOffer(12n, CAROL, ALICE),
-    ];
-    expect(shownTradeOffer(offers, ALICE)?.tradeId, 'the lowest of the viewer`s').toBe(12n);
-    const vm = buildTradeViewModel(offers, ALICE, new Map(), new Map()) as TradeOfferViewModel;
-    expect(vm.tradeId, 'the root shows the same offer').toBe(12n);
-    expect(
-      shownTradeOffer(offers, 'dave-hex-identity'),
-      'no offer of the viewer`s',
-    ).toBeUndefined();
-    expect(shownTradeOffer([], ALICE), 'no offers').toBeUndefined();
-
-    const TABLE: ReadonlyArray<readonly [StoreTradeOffer, readonly TradeAction[]]> = [
-      [makeOffer(3n, ALICE, BOB, { status: 'Pending' }), ['cancel']],
-      [makeOffer(3n, BOB, ALICE, { status: 'Pending' }), ['accept', 'reject']],
-      [makeOffer(3n, ALICE, BOB, { status: 'ConfirmedByCounterparty' }), ['confirm', 'cancel']],
-      [makeOffer(3n, BOB, ALICE, { status: 'ConfirmedByCounterparty' }), ['cancel']],
-    ];
-    for (const [offer, actions] of TABLE) {
-      const label = `${offer.initiator === ALICE ? 'initiator' : 'counterparty'}, ${offer.status}`;
-      expect(tradeActions(offer, ALICE), label).toEqual(actions);
-      const one = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
-      expect(one.actions, `${label}: the view model carries the same`).toEqual(actions);
-    }
-  });
-
-  it('ctl-8d: an offer in a status this client does not know (version skew: the row converter passes it through raw) offers no action, for the viewer as initiator and as counterparty: tradeActions is [] and buildTradeViewModel shows the offer with no actions and the raw status as its label, never throwing', () => {
-    // WRONG IMPL KILLED: the pre-fix table that falls off its switch and returns undefined (a
-    // TypeError on `.actions` that reaches the Social frame's view model, which the host builds
-    // uncaught on every button, so B and Start would break); an unknown status read as Pending or
-    // as ConfirmedByCounterparty (an action offered on a row the server would refuse); and a label
-    // that hides the raw status.
-    const WEIRD = 'Weird' as StoreTradeOffer['status'];
-    for (const [role, offer] of [
-      ['initiator', makeOffer(6n, ALICE, BOB, { status: WEIRD })],
-      ['counterparty', makeOffer(6n, BOB, ALICE, { status: WEIRD })],
-    ] as const) {
-      expect(tradeActions(offer, ALICE), `${role}: no action`).toEqual([]);
-      // Called directly: a throw fails the case.
-      const vm: TradeScreenViewModel = buildTradeViewModel([offer], ALICE, new Map(), new Map());
-      expect(vm, `${role}: the offer is shown, with no action and the raw status`).toMatchObject({
-        kind: 'trade',
-        tradeId: 6n,
-        actions: [],
-        statusLabel: 'Weird',
-      });
-    }
+describe('tradeModel — the side builder alone (ts-4, ts-4.6)', () => {
+  it('ts-4.6 the module`s runtime exports are exactly buildSideViewModel: no legacy offer view model, selector or action table', () => {
+    // WRONG IMPL KILLED: buildTradeViewModel, shownTradeOffer or tradeActions left exported (a
+    // second, offer-based path a caller could still reach).
+    const exported = Object.keys(tradeModel as unknown as Record<string, unknown>).sort();
+    expect(exported).toEqual(['buildSideViewModel']);
+    expect(typeof tradeModel.buildSideViewModel).toBe('function');
   });
 });

@@ -1,12 +1,14 @@
-// ui/screens/socialScreen.test.ts — ctl-8d (CTL8D.1-.3): the Social frame's pure adapter.
+// ui/screens/socialScreen.test.ts — ctl-8d (CTL8D.1-.3), ctl-8g, ts-3, ts-4: the Social frame's
+// pure adapter.
 //
 // Node env, no DOM. `socialScreen` is driven only through `viewModel(ctx)`, `init(vm, remembered)`,
 // `onButton(vm, state, btn)`, `observe(vm, state, now)` and `paint(view, vm, state)`. Every press
 // and every observe is handed a FRESH view model built from a mutable fake world (its rows copied
 // at every read), as the host's `#step` and `observe` do, so an adapter that compares rows by
 // identity, or whose settle rebuilds an unchanged phase, is caught. The context's fake store has
-// the two reads the view model makes (`allTradeOffers`, `allChallenges`); `ctx.socialTab` is the tab
-// the open path asked for (null: a plain open).
+// exactly the reads the view model makes (`allChallenges`, `allPlayers`, `characters`,
+// `allProfiles`, `allTradeSessions`); `ctx.socialTab` is the tab the open path asked for (null: a
+// plain open).
 //
 // Where the cursor and the sheet are is read off `state.nav` / `state.phase` (the plan's
 // `SocialScreenState`), matched as a subset (the state may carry fields the contract does not
@@ -15,19 +17,21 @@
 // `challenges.paintCursor(row)`.
 //
 // The fixture world (the viewer 'aa…', Bob 'bb…', Carol 'cc…'):
-//   trade 11        between Bob and the viewer, in one of the four role x status cells
+//   session 11      between Bob and the viewer: `waiting` (Bob opened it, untouched: a waiting
+//                   request) or `opened` (the viewer opened it)
 //   challenge 21    Bob -> the viewer, Pending: incoming, a waiting request
 //   challenge 22    the viewer -> Carol, Pending: outgoing
-//   Row keys `trade-11`, `challenge-21`, `challenge-22`; ids distinct per row kind.
+//   Row keys `session-11`, `challenge-21`, `challenge-22`; ids distinct per row kind.
 //
-// The contract (plan "Functional core / imperative shell"):
+// The contract (plan "Functional core / imperative shell", ts-4 plan "Resume 2"):
 //   init     tab = requested ?? the oldest waiting request's tab ?? the remembered tab ?? players;
 //            the cursor on the opened tab's waiting row when it has one; always the list phase.
-//   list     LB/RB switch tabs and Up/Down move (a fresh press wraps, a repeat clamps); A on a row
-//            opens its sheet on the FIRST legal action; B pops; Start pops to the base; Select
-//            toggles help; a repeat never acts.
+//   list     LB/RB switch tabs and Up/Down move (a fresh press wraps, a repeat clamps); A on a
+//            challenge row opens its sheet on the FIRST legal action; A on a session row answers
+//            openTradeEditor at once; B pops; Start pops to the base; Select toggles help; a repeat
+//            never acts.
 //   sheet    Up/Down over the legal actions (fresh wraps, repeat clamps); B back to the list; A on
-//            Accept or Cancel issues the command; A on Decline or a trade's Confirm asks Yes/No on No.
+//            Accept or Cancel issues the command; A on Decline asks Yes/No on No.
 //   prompt   a fresh Up/Down flips Yes/No; A on Yes issues the command; A on No, or B, closes it.
 //   settle   the SAME state when nothing changed; a sheet whose row is gone or whose legal actions
 //            changed closes to the list; a press whose phase the settle just changed only paints.
@@ -41,13 +45,12 @@ import type {
   StoreCharacter,
   StorePlayer,
   StoreProfile,
-  StoreTradeOffer,
   StoreTradeSession,
 } from '../../net/store';
 import type { SocialRankingsPaint } from '../leaderboardView';
 import type { NavInput } from '../nav';
 import { type SocialAction, type SocialVm, socialPeopleKey } from '../socialModel';
-import type { SocialPaint } from '../tradeView';
+import type { SocialPaint, SocialSessionRow } from '../tradeView';
 import { type SocialScreenState, socialScreen } from './socialScreen';
 import type {
   ButtonStep,
@@ -62,44 +65,41 @@ const ME = 'aa'.repeat(32);
 const BOB = 'bb'.repeat(32);
 const CAROL = 'cc'.repeat(32);
 
-/** The row keys: trade 11, the incoming challenge 21, the outgoing challenge 22. */
-const TRADE = 'trade-11';
+/** The row keys: session 11, the incoming challenge 21, the outgoing challenge 22. */
+const SESSION = 'session-11';
 const INCOMING = 'challenge-21';
 const OUTGOING = 'challenge-22';
 
-/** The four cells of the trade table: the viewer's role and the offer's status. */
-type TradeCell = 'waiting' | 'sent' | 'toConfirm' | 'accepted';
-const TRADE_CELLS: readonly TradeCell[] = ['waiting', 'sent', 'toConfirm', 'accepted'];
-/** Each cell's legal actions, in sheet order. */
-const CELL_ACTIONS: Readonly<Record<TradeCell, readonly SocialAction[]>> = {
-  // The counterparty of a Pending offer: a request to answer.
-  waiting: ['accept', 'decline'],
-  // The initiator of a Pending offer.
-  sent: ['cancel'],
-  // The initiator of an offer the counterparty accepted: the final Confirm is the viewer's.
-  toConfirm: ['confirm', 'cancel'],
-  // The counterparty of an offer it accepted.
-  accepted: ['cancel'],
-};
+const NO_SIDE = { monsterIds: [], items: [], currency: 0n, cards: [] } as const;
 
-/** Trade `tradeId` (11) between Bob and the viewer, in `cell`. */
-function trade(cell: TradeCell, createdAtMs = 1_000n, tradeId = 11n): StoreTradeOffer {
-  const viewerStarted = cell === 'sent' || cell === 'toConfirm';
+function tradeSession(
+  sessionId: bigint,
+  opener: string,
+  partner: string,
+  over: Partial<StoreTradeSession> = {},
+): StoreTradeSession {
   return {
-    tradeId,
-    initiator: viewerStarted ? ME : BOB,
-    counterparty: viewerStarted ? BOB : ME,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: cell === 'waiting' || cell === 'sent' ? 'Pending' : 'ConfirmedByCounterparty',
-    createdAtMs,
+    sessionId,
+    opener,
+    partner,
+    openerOffer: NO_SIDE,
+    partnerOffer: NO_SIDE,
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs: 1_000n,
+    ...over,
   };
+}
+
+/** Who opened session 11: Bob (`waiting`: untouched, a request to the viewer) or the viewer. */
+type SessionCell = 'waiting' | 'opened';
+
+/** Session `sessionId` (11) between Bob and the viewer, in `cell`. */
+function session(cell: SessionCell, createdAtMs = 1_000n, sessionId = 11n): StoreTradeSession {
+  return cell === 'waiting'
+    ? tradeSession(sessionId, BOB, ME, { createdAtMs })
+    : tradeSession(sessionId, ME, BOB, { createdAtMs });
 }
 
 /** Bob challenges the viewer (21): a waiting request. */
@@ -126,24 +126,19 @@ function outgoing(createdAtMs = 500n): StoreBattleChallenge {
   };
 }
 
-/** What the fake store holds and the tab the open path bound; a case edits it as a batch would.
- *  ctl-8g (named intentional change): the world also holds the players, their characters and the
- *  ranked profiles the Players and Rankings tabs list; every ctl-8d world leaves them empty. */
+/** What the fake store holds and the tab the open path bound; a case edits it as a batch would. */
 interface World {
   tab: SocialTab | null;
-  offers: readonly StoreTradeOffer[];
   challenges: readonly StoreBattleChallenge[];
   players: readonly StorePlayer[];
   characters: readonly StoreCharacter[];
   profiles: readonly StoreProfile[];
-  /** ts-3 (named intentional change): the trade sessions `allTradeSessions()` answers; every
-   *  earlier world leaves it empty, so what those cases pin is unchanged. */
+  /** The trade sessions `allTradeSessions()` answers. */
   sessions: readonly StoreTradeSession[];
 }
 
 const world = (over: Partial<World> = {}): World => ({
   tab: null,
-  offers: [],
   challenges: [],
   players: [],
   characters: [],
@@ -153,16 +148,14 @@ const world = (over: Partial<World> = {}): World => ({
 });
 
 function ctxOf(w: World): ScreenContext {
-  // ctl-8g (named intentional change): the three reads the Players and Rankings rows make.
   // `characters()` answers a FRESH one-shot iterator of `{ row }` entries (the store's shape), the
-  // others fresh copies, as every read in this file does.
+  // others fresh copies, as every read in this file does. The store has no other member: a view
+  // model that reads anything else throws a TypeError here.
   const store = {
-    allTradeOffers: () => w.offers.map((o) => ({ ...o })),
     allChallenges: () => w.challenges.map((c) => ({ ...c })),
     allPlayers: () => w.players.map((p) => ({ ...p })),
     characters: () => w.characters.map((c) => ({ row: { ...c } })).values(),
     allProfiles: () => w.profiles.map((p) => ({ ...p })),
-    // ts-3 (named intentional change): the read the session rows make.
     allTradeSessions: () => w.sessions.map((s) => ({ ...s })),
   };
   return {
@@ -234,16 +227,13 @@ const sheet = (
 const POP: ScreenResult = { kind: 'pop' };
 const POP_TO_BASE: ScreenResult = { kind: 'popToBase' };
 const TOGGLE_HELP: ScreenResult = { kind: 'toggleHelp' };
-const respond = (accepted: boolean): ScreenResult => ({
-  kind: 'respondTrade',
-  tradeId: 11n,
-  accepted,
-});
+const EDIT_11: ScreenResult = { kind: 'openTradeEditor', sessionId: 11n };
+const ACCEPT_21: ScreenResult = { kind: 'acceptChallenge', challengeId: 21n };
+const DECLINE_21: ScreenResult = { kind: 'declineChallenge', challengeId: 21n };
+const CANCEL_22: ScreenResult = { kind: 'cancelChallenge', challengeId: 22n };
+const REQUEST: readonly SocialAction[] = ['accept', 'decline'];
 
-/** The panel each tab shows, spelled here. INTENTIONAL CHANGE (ctl-8g): the Players tab is painted
- *  over the leaderboard root now (the seam map: `view.rankings` paints Players and Rankings);
- *  contextStack's `socialPanel` still answers the trade root for it, so the screen picks the panel
- *  itself. Was: players 'tradeView'. */
+/** The panel each tab shows, spelled here: Players and Rankings over the leaderboard root. */
 const PANEL: Readonly<Record<SocialTab, SocialPanelId>> = {
   players: 'leaderboardView',
   trades: 'tradeView',
@@ -290,10 +280,8 @@ function paintCalls(
           },
         }
       : undefined,
-    // INTENTIONAL CHANGE (ctl-8g): the Players and Rankings tabs call `rankings.paintSocial` after
-    // the two calls recorded here. It is a no-op in this helper, so every ctl-8d sequence
-    // assertion keeps reading the same three calls; the new call is pinned, in order and with its
-    // payload, by `paintLog` and the CTL8G cases below. Was: `rankings: {}` (any call threw).
+    // The Players and Rankings tabs call `rankings.paintSocial` after the two calls recorded here.
+    // It is a no-op in this helper; `paintLog` and the CTL8G cases below pin it.
     rankings: { paintSocial: () => undefined },
     show: (panel: SocialPanelId) => {
       calls.push({ call: 'show', panel });
@@ -322,28 +310,37 @@ function paintOf(w: World, state: SocialScreenState): Painted {
   return { panel: shown.panel, paint: social.paint, cursor: cursor.row };
 }
 
-/** The paint of the list phase on `tab`. ts-3 (named intentional change): `SocialPaint` gains the
- *  session rows and their cursor; with no session in the world they are `[]` and null, so every
- *  equality below still pins exactly what it pinned. */
-const listPaint = (tab: SocialTab, tradeCursor = false): SocialPaint => ({
+/** The paint of the list phase on `tab`: exactly the five keys of `SocialPaint`. */
+const listPaint = (
+  tab: SocialTab,
+  sessions: readonly SocialSessionRow[] = [],
+  sessionCursor: string | null = null,
+): SocialPaint => ({
   tab,
-  tradeCursor,
+  sessions,
+  sessionCursor,
   sheet: null,
   confirm: null,
-  sessions: [],
-  sessionCursor: null,
 });
 
+/** Session 11 as the Trades tab paints it, Bob unknown to the store (the `#hex8` fallback). */
+const SESSION_ROW_11: SocialSessionRow = {
+  key: SESSION,
+  partnerName: `#${BOB.slice(0, 8)}`,
+  mineConfirmed: false,
+  theirsConfirmed: false,
+};
+
 describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
-  it('CTL8D-1-INIT-WAITING-TAB: with no requested tab the frame opens in the list on the oldest waiting request`s tab with the cursor on it: a trade offered to the viewer opens Trades on it, a challenge to the viewer opens Challenges on the incoming row (not the outgoing one), both open the older one`s tab, and this beats a remembered tab and a remembered cursor', () => {
+  it('CTL8D-1-INIT-WAITING-TAB: with no requested tab the frame opens in the list on the oldest waiting request`s tab with the cursor on it: a session Bob opened with the viewer opens Trades on it, a challenge to the viewer opens Challenges on the incoming row (not the outgoing one), both open the older one`s tab, and this beats a remembered tab and a remembered cursor', () => {
     // WRONG IMPL KILLED: an init that ignores waiting requests (opens on Players or the
-    // remembered tab); one that treats any listed row as waiting (an older trade the viewer sent,
-    // an older outgoing challenge); one that picks the newest request; one that switches to the
-    // request's tab but leaves the cursor on the remembered row (the outgoing one) instead of the
-    // request; and an init that opens a sheet.
+    // remembered tab); one that treats any listed row as waiting (an older session the viewer
+    // opened, an older outgoing challenge); one that picks the newest request; one that switches
+    // to the request's tab but leaves the cursor on the remembered row (the outgoing one) instead
+    // of the request; and an init that opens a sheet.
     const remembered = {
       rankings: open(world({ tab: 'rankings' })),
-      trades: open(world({ tab: 'trades', offers: [trade('sent')] })),
+      trades: open(world({ tab: 'trades', sessions: [session('opened')] })),
       outgoing: swallowed(
         world({ tab: 'challenges', challenges: [incoming(), outgoing()] }),
         open(world({ tab: 'challenges', challenges: [incoming(), outgoing()] })),
@@ -351,29 +348,30 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
       ),
     };
     expect(cursorOf(remembered.rankings), 'fixture').toEqual({ tab: 'rankings', item: null });
-    expect(cursorOf(remembered.trades), 'fixture').toEqual({ tab: 'trades', item: TRADE });
+    expect(cursorOf(remembered.trades), 'fixture').toEqual({ tab: 'trades', item: SESSION });
     expect(cursorOf(remembered.outgoing), 'fixture').toEqual({ tab: 'challenges', item: OUTGOING });
 
-    // Only a trade waits; an outgoing challenge is listed too.
-    const tradeWaits = world({ offers: [trade('waiting')], challenges: [outgoing()] });
-    // Only a challenge waits; an older trade the viewer sent and an older outgoing one are listed.
+    // Only a session waits; an outgoing challenge is listed too.
+    const sessionWaits = world({ sessions: [session('waiting')], challenges: [outgoing()] });
+    // Only a challenge waits; an older session the viewer opened and an older outgoing one are
+    // listed.
     const challengeWaits = world({
-      offers: [trade('sent', 100n)],
+      sessions: [session('opened', 100n)],
       challenges: [outgoing(100n), incoming(2_000n)],
     });
-    // Both wait, the trade older; both wait, the challenge older.
-    const tradeOlder = world({
-      offers: [trade('waiting', 1_000n)],
+    // Both wait, the session older; both wait, the challenge older.
+    const sessionOlder = world({
+      sessions: [session('waiting', 1_000n)],
       challenges: [incoming(2_000n), outgoing()],
     });
     const challengeOlder = world({
-      offers: [trade('waiting', 3_000n)],
+      sessions: [session('waiting', 3_000n)],
       challenges: [incoming(2_000n), outgoing()],
     });
     const CASES: ReadonlyArray<readonly [string, World, string, string]> = [
-      ['only a trade waits', tradeWaits, 'trades', TRADE],
+      ['only a session waits', sessionWaits, 'trades', SESSION],
       ['only a challenge waits', challengeWaits, 'challenges', INCOMING],
-      ['both wait, the trade older', tradeOlder, 'trades', TRADE],
+      ['both wait, the session older', sessionOlder, 'trades', SESSION],
       ['both wait, the challenge older', challengeOlder, 'challenges', INCOMING],
     ];
     let checked = 0;
@@ -404,8 +402,8 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
     // over a request that may be gone); a remembered cursor key kept although its row is gone (A
     // would act on nothing); and a remembered state that loses its tab when its row is gone.
     expect(socialScreen.remember, 'the frame opts in to memory').toBe(true);
-    // Nothing waits: a trade the viewer sent and its own outgoing challenge.
-    const quiet = world({ offers: [trade('sent')], challenges: [outgoing()] });
+    // Nothing waits: a session the viewer opened and its own outgoing challenge.
+    const quiet = world({ sessions: [session('opened')], challenges: [outgoing()] });
     const fresh = open(quiet);
     expect(cursorOf(fresh), 'nothing remembered: Players').toEqual({ tab: 'players', item: null });
     expect(fresh.phase).toMatchObject(LIST);
@@ -420,10 +418,10 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
       item: null,
     });
     const onTrades = swallowed(quiet, fresh, ['RB']);
-    expect(cursorOf(onTrades), 'fixture').toEqual({ tab: 'trades', item: TRADE });
+    expect(cursorOf(onTrades), 'fixture').toEqual({ tab: 'trades', item: SESSION });
     expect(cursorOf(open(quiet, onTrades)), 'remembered on Trades').toEqual({
       tab: 'trades',
-      item: TRADE,
+      item: SESSION,
     });
     expect(cursorOf(open(quiet, fresh)), 'remembered on Players').toEqual({
       tab: 'players',
@@ -440,28 +438,29 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
     });
     expect(back.phase).toMatchObject(LIST);
 
-    // A remembered sheet, and a remembered prompt, reopen in the list.
-    const offered = world({ offers: [trade('waiting')] });
-    const inSheet = swallowed(offered, open(offered), ['A']);
-    const prompted = swallowed(offered, inSheet, ['Down', 'A']);
-    expect(prompted.phase, 'fixture: the Decline prompt').toMatchObject(
-      sheet(TRADE, ['accept', 'decline'], 'decline', { yes: false }),
+    // A remembered sheet (the outgoing row's Cancel), and a remembered prompt (the request's
+    // Decline), reopen in the list.
+    const outSheet = swallowed(busy, onOutgoing, ['A']);
+    expect(outSheet.phase, 'fixture: the Cancel sheet').toMatchObject(
+      sheet(OUTGOING, ['cancel'], 'cancel'),
     );
-    // The viewer accepted elsewhere: nothing waits, so the remembered tab decides.
-    const accepted = world({ offers: [trade('accepted')] });
+    const prompted = swallowed(busy, open(busy), ['A', 'Down', 'A']);
+    expect(prompted.phase, 'fixture: the Decline prompt').toMatchObject(
+      sheet(INCOMING, REQUEST, 'decline', { yes: false }),
+    );
+    // The request was answered elsewhere: nothing waits, so the remembered tab decides.
+    const answered = world({ challenges: [outgoing()] });
     for (const [what, rem] of [
-      ['a sheet', inSheet],
+      ['a sheet', outSheet],
       ['a prompt', prompted],
     ] as const) {
-      const reopened = open(accepted, rem);
-      expect(cursorOf(reopened), `remembered ${what}: its tab and row`).toEqual({
-        tab: 'trades',
-        item: TRADE,
+      const reopened = open(answered, rem);
+      expect(cursorOf(reopened), `remembered ${what}: its tab, on a listed row`).toEqual({
+        tab: 'challenges',
+        item: OUTGOING,
       });
       expect(reopened.phase, `remembered ${what}: the list`).toMatchObject(LIST);
-      expect(open(offered, rem).phase, `remembered ${what}, the world unchanged`).toMatchObject(
-        LIST,
-      );
+      expect(open(busy, rem).phase, `remembered ${what}, the world unchanged`).toMatchObject(LIST);
     }
 
     // The remembered cursor row is gone: re-seated on a listed row (or none on an empty tab).
@@ -470,17 +469,16 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
       tab: 'challenges',
       item: INCOMING,
     });
-    const answered = world({ challenges: [outgoing()] });
     expect(cursorOf(open(answered, onRequest)), 'the request was answered').toEqual({
       tab: 'challenges',
       item: OUTGOING,
     });
-    const replaced = world({ offers: [trade('sent', 1_000n, 12n)] });
-    expect(cursorOf(open(replaced, onTrades)), 'trade 11 replaced by trade 12').toEqual({
+    const replaced = world({ sessions: [session('opened', 1_000n, 12n)] });
+    expect(cursorOf(open(replaced, onTrades)), 'session 11 replaced by session 12').toEqual({
       tab: 'trades',
-      item: 'trade-12',
+      item: 'session-12',
     });
-    expect(cursorOf(open(world(), onTrades)), 'the trade is gone: no row').toEqual({
+    expect(cursorOf(open(world(), onTrades)), 'the session is gone: no row').toEqual({
       tab: 'trades',
       item: null,
     });
@@ -495,7 +493,7 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
     expect(socialScreen.nav, 'the frame takes the D-pad').toBe(true);
     const w = world({
       tab: 'players',
-      offers: [trade('waiting')],
+      sessions: [session('waiting')],
       challenges: [incoming(), outgoing()],
     });
     const opened = open(w);
@@ -545,14 +543,14 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
       item: OUTGOING,
     });
     const viaTrades = swallowed(w, onOutgoing, ['LB']);
-    expect(cursorOf(viaTrades), 'Trades keeps its row').toEqual({ tab: 'trades', item: TRADE });
+    expect(cursorOf(viaTrades), 'Trades keeps its row').toEqual({ tab: 'trades', item: SESSION });
     expect(cursorOf(swallowed(w, viaTrades, ['RB'])), 'Trades and back').toEqual({
       tab: 'challenges',
       item: OUTGOING,
     });
     expect(cursorOf(swallowed(w, viaTrades, ['LB', 'LB', 'LB', 'LB'])), 'a full lap').toEqual({
       tab: 'trades',
-      item: TRADE,
+      item: SESSION,
     });
     // Up/Down in the list: a fresh press wraps, a repeat clamps.
     expect(cursorOf(swallowed(w, onOutgoing, ['Down'])).item, 'a fresh Down wraps').toBe(INCOMING);
@@ -576,77 +574,32 @@ describe('socialScreen — opening (ctl-8d, CTL8D.1)', () => {
 });
 
 describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
-  it('CTL8D-2-SHEET-TRADE: A on the trade row opens a sheet of exactly its legal actions, the cursor on the first, for each of the four role x status cells; Up and Down move over them (a fresh press wraps, a held one clamps on the last); B returns to the list on the row; A with no row, or on Players or Rankings, is swallowed and stays in the list', () => {
-    // WRONG IMPL KILLED: a sheet that offers every action (or the legacy table's `reject`), one on
-    // another cell's actions, one whose cursor opens on the last action (or on none), a held Down
-    // that wraps from the last action back to the first (a held key would slide from Decline onto
-    // Accept), a fresh press that clamps, a B that pops the frame from the sheet or loses the
-    // cursor's row, and an A on an empty tab or a tab with no rows that opens a sheet on nothing.
-    for (const cell of TRADE_CELLS) {
-      const actions = CELL_ACTIONS[cell];
-      const first = actions[0] as SocialAction;
-      const last = actions[actions.length - 1] as SocialAction;
-      const w = world({ tab: 'trades', offers: [trade(cell)] });
-      const opened = open(w);
-      expect(cursorOf(opened), `${cell}: fixture`).toEqual({ tab: 'trades', item: TRADE });
-      const a = press(w, opened, 'A');
-      expect(a.result, `${cell}: A opens the sheet and sends nothing`).toBe('consumed');
-      expect(a.state.phase, `${cell}: the sheet, on the first action`).toMatchObject(
-        sheet(TRADE, actions, first),
-      );
-      const second = actions[1 % actions.length] as SocialAction;
-      expect(swallowed(w, a.state, ['Down']).phase, `${cell}: Down`).toMatchObject(
-        sheet(TRADE, actions, second),
-      );
-      expect(swallowed(w, a.state, ['Up']).phase, `${cell}: a fresh Up wraps`).toMatchObject(
-        sheet(TRADE, actions, last),
-      );
-      expect(swallowed(w, a.state, [rep('Up')]).phase, `${cell}: a held Up stays`).toMatchObject(
-        sheet(TRADE, actions, first),
-      );
-      const onLast = swallowed(w, a.state, actions.length > 1 ? ['Down'] : []);
-      expect(onLast.phase, `${cell}: fixture: on the last action`).toMatchObject(
-        sheet(TRADE, actions, last),
-      );
-      expect(swallowed(w, onLast, ['Down']).phase, `${cell}: a fresh Down wraps`).toMatchObject(
-        sheet(TRADE, actions, first),
-      );
-      expect(
-        swallowed(w, onLast, [rep('Down')]).phase,
-        `${cell}: a held Down on the last stays`,
-      ).toMatchObject(sheet(TRADE, actions, last));
-      const b = press(w, onLast, 'B');
-      expect(b.result, `${cell}: B in the sheet`).toBe('consumed');
-      expect(b.state.phase, `${cell}: B returns to the list`).toMatchObject(LIST);
-      expect(cursorOf(b.state), `${cell}: on the row`).toEqual({ tab: 'trades', item: TRADE });
-    }
-
-    // A with no row under the cursor: an empty Trades tab, and the tabs that list nothing yet.
+  it('CTL8D-2-SHEET-GUARDS: A with no row under the cursor, or on Players or Rankings, is swallowed and stays in the list; with a challenge sheet or its prompt open LB, RB, Left and Right are swallowed and move nothing', () => {
+    // WRONG IMPL KILLED: an A on an empty tab or a tab with no rows that opens a sheet on
+    // nothing; LB / RB switching tabs under an open sheet or prompt (the frame would paint a stale
+    // sheet over the Trades or Rankings panel, and A would act on a row the player no longer
+    // sees), and Left / Right moving the sheet's cursor or flipping Yes/No.
     const empty = world({ tab: 'trades' });
     const none = press(empty, open(empty), 'A');
     expect(none.result, 'A on an empty Trades').toBe('consumed');
     expect(none.state.phase).toMatchObject(LIST);
     for (const tab of ['players', 'rankings'] as const) {
-      const w = world({ tab, offers: [trade('waiting')], challenges: [incoming()] });
+      const w = world({ tab, sessions: [session('waiting')], challenges: [incoming()] });
       const step = press(w, open(w), 'A');
       expect(step.result, `A on ${tab}`).toBe('consumed');
       expect(step.state.phase, `A on ${tab}: no sheet`).toMatchObject(LIST);
       expect(step.state.nav.tab, `A on ${tab}: the tab stays`).toBe(tab);
     }
 
-    // With the sheet open, or its prompt: LB, RB, Left and Right are swallowed and move nothing.
-    // WRONG IMPL KILLED: LB / RB switching tabs under an open sheet or prompt (the frame would
-    // paint a stale trade sheet over the Challenges or Rankings panel, and A would act on a row
-    // the player no longer sees), and Left / Right moving the sheet's cursor or flipping Yes/No.
     const busy = world({
-      tab: 'trades',
-      offers: [trade('waiting')],
+      tab: 'challenges',
+      sessions: [session('waiting')],
       challenges: [incoming(), outgoing()],
     });
     const busySheet = swallowed(busy, open(busy), ['A']);
     const busyPrompt = swallowed(busy, open(busy), ['A', 'Down', 'A']);
     expect(busyPrompt.phase, 'fixture: the Decline prompt').toMatchObject(
-      sheet(TRADE, ['accept', 'decline'], 'decline', { yes: false }),
+      sheet(INCOMING, REQUEST, 'decline', { yes: false }),
     );
     for (const [where, before] of [
       ['the sheet', busySheet],
@@ -656,8 +609,8 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
         const step = press(busy, before, button);
         expect(step.result, `${button} in ${where}`).toBe('consumed');
         expect(cursorOf(step.state), `${button} in ${where}: the tab and row stay`).toEqual({
-          tab: 'trades',
-          item: TRADE,
+          tab: 'challenges',
+          item: INCOMING,
         });
         expect(step.state.phase, `${button} in ${where}: the phase stays`).toEqual(before.phase);
       }
@@ -676,7 +629,6 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
       tab: 'challenges',
       item: INCOMING,
     });
-    const REQUEST: readonly SocialAction[] = ['accept', 'decline'];
     const a = press(w, opened, 'A');
     expect(a.result, 'A opens the request`s sheet').toBe('consumed');
     expect(a.state.phase).toMatchObject(sheet(INCOMING, REQUEST, 'accept'));
@@ -728,49 +680,31 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     expect(none.state.phase).toMatchObject(LIST);
   });
 
-  it('CTL8D-2-CONFIRM-DEFAULT-NO: A on a trade`s Decline, on a trade`s final Confirm and on a challenge`s Decline sends nothing and asks Yes/No on No; A on No sends nothing and closes the prompt with the sheet still on that action; a fresh Up or Down flips the answer and a held one never does; B closes the prompt and keeps the sheet; Accept and Cancel ask nothing', () => {
-    // WRONG IMPL KILLED (CTL8D.2 "Decline and the final trade Confirm default to No"): a prompt
-    // that opens on Yes (one more Enter would decline or complete the trade); a Decline or a
-    // Confirm with no prompt at all (the command on the first A); a challenge Decline that skips
-    // the prompt; an A on No that sends the command anyway or closes the whole sheet; a held arrow
-    // that flips the answer (a held key would land on Yes); a B that sends, pops the frame or
-    // closes the sheet with the prompt; and a prompt on Accept or Cancel (they act at once).
+  it('CTL8D-2-CONFIRM-DEFAULT-NO: A on a challenge`s Decline (reached by Down or by a wrapping Up, with or without the outgoing row listed) sends nothing and asks Yes/No on No; A on No sends nothing and closes the prompt with the sheet still on that action; a fresh Up or Down flips the answer and a held one never does; B closes the prompt and keeps the sheet; Accept, Cancel and a session row ask nothing', () => {
+    // WRONG IMPL KILLED (CTL8D.2 "Decline defaults to No"): a prompt that opens on Yes (one more
+    // Enter would decline); a Decline with no prompt at all (the command on the first A); an A on
+    // No that sends the command anyway or closes the whole sheet; a held arrow that flips the
+    // answer (a held key would land on Yes); a B that sends, pops the frame or closes the sheet
+    // with the prompt; and a prompt on Accept, Cancel or a session row (they act at once).
     const CASES: ReadonlyArray<{
       readonly name: string;
       readonly w: World;
-      readonly row: string;
-      readonly actions: readonly SocialAction[];
-      readonly action: SocialAction;
       readonly reach: readonly Input[];
     }> = [
       {
-        name: 'trade Decline',
-        w: world({ tab: 'trades', offers: [trade('waiting')] }),
-        row: TRADE,
-        actions: ['accept', 'decline'],
-        action: 'decline',
-        reach: ['A', 'Down'],
-      },
-      {
-        name: 'trade Confirm',
-        w: world({ tab: 'trades', offers: [trade('toConfirm')] }),
-        row: TRADE,
-        actions: ['confirm', 'cancel'],
-        action: 'confirm',
-        reach: ['A'],
-      },
-      {
-        name: 'challenge Decline',
+        name: 'challenge Decline by Down',
         w: world({ tab: 'challenges', challenges: [incoming(), outgoing()] }),
-        row: INCOMING,
-        actions: ['accept', 'decline'],
-        action: 'decline',
         reach: ['A', 'Down'],
+      },
+      {
+        name: 'challenge Decline by a wrapping Up, the request alone',
+        w: world({ tab: 'challenges', sessions: [session('opened')], challenges: [incoming()] }),
+        reach: ['A', 'Up'],
       },
     ];
     for (const c of CASES) {
       const on = (confirm: { readonly yes: boolean } | null) =>
-        sheet(c.row, c.actions, c.action, confirm);
+        sheet(INCOMING, REQUEST, 'decline', confirm);
       const onAction = swallowed(c.w, open(c.w), c.reach);
       expect(onAction.phase, `${c.name}: fixture`).toMatchObject(on(null));
 
@@ -818,71 +752,59 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
       }
     }
 
-    // Accept and Cancel act at once: a command, back on the list, no prompt.
+    // Accept, Cancel and a session row act at once: a command, back on the list, no prompt.
     const duel = world({ tab: 'challenges', challenges: [incoming(), outgoing()] });
-    const NO_PROMPT: ReadonlyArray<readonly [string, World, readonly Input[]]> = [
-      ['trade Accept', world({ tab: 'trades', offers: [trade('waiting')] }), ['A']],
-      ['trade Cancel (sent)', world({ tab: 'trades', offers: [trade('sent')] }), ['A']],
+    const NO_PROMPT: ReadonlyArray<readonly [string, World, readonly Input[], ScreenResult]> = [
+      ['challenge Accept', duel, ['A'], ACCEPT_21],
+      ['challenge Cancel', duel, ['Down', 'A'], CANCEL_22],
       [
-        'trade Cancel (to confirm)',
-        world({ tab: 'trades', offers: [trade('toConfirm')] }),
-        ['A', 'Down'],
+        'challenge Cancel, the outgoing row alone',
+        world({ tab: 'challenges', challenges: [outgoing()] }),
+        ['A'],
+        CANCEL_22,
       ],
-      ['trade Cancel (accepted)', world({ tab: 'trades', offers: [trade('accepted')] }), ['A']],
-      ['challenge Accept', duel, ['A']],
-      ['challenge Cancel', duel, ['Down', 'A']],
+      [
+        'a waiting session row',
+        world({ tab: 'trades', sessions: [session('waiting')] }),
+        [],
+        EDIT_11,
+      ],
+      [
+        'an opened session row',
+        world({ tab: 'trades', sessions: [session('opened')] }),
+        [],
+        EDIT_11,
+      ],
     ];
-    for (const [name, w, reach] of NO_PROMPT) {
+    for (const [name, w, reach, command] of NO_PROMPT) {
       const step = press(w, swallowed(w, open(w), reach), 'A');
-      expect(typeof step.result, `${name}: A issues a command`).toBe('object');
+      expect(step.result, `${name}: A issues the command`).toEqual(command);
       expect(step.state.phase, `${name}: no prompt, back on the list`).toMatchObject(LIST);
     }
   });
 
-  it('CTL8D-2-COMMANDS: the seven commands carry their exact ids (trade Accept / Decline / Confirm / Cancel on trade 11, challenge Accept / Decline on 21, Cancel on 22) and each returns to the list; A, A on a waiting request accepts it; B in the list pops, Start pops to the base in the list, the sheet and the prompt, and Select toggles help', () => {
-    // WRONG IMPL KILLED: respondTrade with the wrong `accepted` (Decline sent as an accept, or
-    // Accept as a decline); confirmTrade / cancelTrade swapped; a trade command carrying a
-    // challenge id or the other way round (the ids are distinct per row kind); acceptChallenge on
-    // the outgoing row or cancelChallenge on the request; a command that leaves the sheet open; a
-    // request that takes more than U, Enter, Enter to accept (design section 5); and a Start that
-    // a sheet or a prompt swallows (the e2e closeAll presses Start).
-    const tradeIn = (cell: TradeCell): World => world({ tab: 'trades', offers: [trade(cell)] });
+  it('CTL8D-2-COMMANDS: the commands carry their exact ids (the session row`s openTradeEditor on 11, challenge Accept / Decline on 21, Cancel on 22) and each returns to the list; A, A on a waiting challenge accepts it and A on a waiting session opens its editor; B in the list pops, Start pops to the base in the list, the sheet and the prompt, and Select toggles help', () => {
+    // WRONG IMPL KILLED: a command carrying the wrong id (the ids are distinct per row kind: a
+    // session id sent as a challenge id shows); acceptChallenge on the outgoing row or
+    // cancelChallenge on the request; Decline sent as an accept; a command that leaves the sheet
+    // open; a request that takes more than U, Enter, Enter to accept (design section 5); and a
+    // Start that a sheet or a prompt swallows (the e2e closeAll presses Start).
     const duel = world({ tab: 'challenges', challenges: [incoming(), outgoing()] });
     const CASES: ReadonlyArray<readonly [string, World, readonly Input[], ScreenResult]> = [
-      ['trade Accept', tradeIn('waiting'), ['A', 'A'], respond(true)],
-      ['trade Decline, Yes', tradeIn('waiting'), ['A', 'Down', 'A', 'Down', 'A'], respond(false)],
       [
-        'trade Confirm, Yes',
-        tradeIn('toConfirm'),
-        ['A', 'A', 'Up', 'A'],
-        { kind: 'confirmTrade', tradeId: 11n },
+        'the session row',
+        world({ tab: 'trades', sessions: [session('opened', 1_000n, 11n)] }),
+        ['A'],
+        EDIT_11,
       ],
-      ['trade Cancel (sent)', tradeIn('sent'), ['A', 'A'], { kind: 'cancelTrade', tradeId: 11n }],
-      [
-        'trade Cancel (to confirm)',
-        tradeIn('toConfirm'),
-        ['A', 'Down', 'A'],
-        { kind: 'cancelTrade', tradeId: 11n },
-      ],
-      [
-        'trade Cancel (accepted)',
-        tradeIn('accepted'),
-        ['A', 'A'],
-        { kind: 'cancelTrade', tradeId: 11n },
-      ],
-      ['challenge Accept', duel, ['A', 'A'], { kind: 'acceptChallenge', challengeId: 21n }],
-      [
-        'challenge Decline, Yes',
-        duel,
-        ['A', 'Down', 'A', 'Down', 'A'],
-        { kind: 'declineChallenge', challengeId: 21n },
-      ],
-      ['challenge Cancel', duel, ['Down', 'A', 'A'], { kind: 'cancelChallenge', challengeId: 22n }],
+      ['challenge Accept', duel, ['A', 'A'], ACCEPT_21],
+      ['challenge Decline, Yes', duel, ['A', 'Down', 'A', 'Down', 'A'], DECLINE_21],
+      ['challenge Cancel', duel, ['Down', 'A', 'A'], CANCEL_22],
       [
         'challenge Cancel, the outgoing row alone',
         world({ tab: 'challenges', challenges: [outgoing()] }),
         ['A', 'A'],
-        { kind: 'cancelChallenge', challengeId: 22n },
+        CANCEL_22,
       ],
     ];
     for (const [name, w, inputs, command] of CASES) {
@@ -892,29 +814,28 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
       expect(step.state.phase, `${name}: back on the list`).toMatchObject(LIST);
     }
 
-    // A plain open lands on the request, so A, A answers it (design section 5: U, Enter, Enter).
-    const offered = world({ offers: [trade('waiting')], challenges: [outgoing()] });
+    // A plain open lands on the request: A opens a waiting session's editor, and A, A answers a
+    // waiting challenge (design section 5: U, Enter, Enter).
+    const offered = world({ sessions: [session('waiting')], challenges: [outgoing()] });
     const plain = open(offered);
-    expect(cursorOf(plain), 'fixture: a plain open on the offer').toEqual({
+    expect(cursorOf(plain), 'fixture: a plain open on the session').toEqual({
       tab: 'trades',
-      item: TRADE,
+      item: SESSION,
     });
-    expect(press(offered, swallowed(offered, plain, ['A']), 'A').result, 'A, A').toEqual(
-      respond(true),
-    );
+    expect(press(offered, plain, 'A').result, 'A').toEqual(EDIT_11);
     const challenged = world({ tab: 'challenges', challenges: [outgoing(), incoming()] });
     expect(
       press(challenged, swallowed(challenged, open(challenged), ['A']), 'A').result,
       'P (or the auto-show), A, A',
-    ).toEqual({ kind: 'acceptChallenge', challengeId: 21n });
+    ).toEqual(ACCEPT_21);
 
     // The stack moves.
-    const w = tradeIn('waiting');
+    const w = duel;
     const list = open(w);
     const inSheet = swallowed(w, list, ['A']);
     const inPrompt = swallowed(w, list, ['A', 'Down', 'A']);
     expect(inPrompt.phase, 'fixture: a prompt').toMatchObject(
-      sheet(TRADE, ['accept', 'decline'], 'decline', { yes: false }),
+      sheet(INCOMING, REQUEST, 'decline', { yes: false }),
     );
     expect(press(w, list, 'B').result, 'B in the list pops the frame').toEqual(POP);
     for (const [where, s] of [
@@ -927,43 +848,42 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     }
   });
 
-  it('CTL8D-2-REPEAT-NEVER-ACTS: a repeat-flagged A opens no sheet from the list, sends nothing on Accept or Cancel, opens no prompt on Decline and sends nothing on Yes; a repeat-flagged B, Start or Select is swallowed in the list, the sheet and the prompt', () => {
+  it('CTL8D-2-REPEAT-NEVER-ACTS: a repeat-flagged A opens no sheet from the list and no editor from a session row, sends nothing on Accept or Cancel, opens no prompt on Decline and sends nothing on Yes; a repeat-flagged B, Start or Select is swallowed in the list, the sheet and the prompt', () => {
     // WRONG IMPL KILLED: an A whose auto-repeat acts (a held Enter would open the sheet and send
-    // Accept, or confirm a Yes, with one key press); a held B that pops the frame, or a held Start
-    // or Select that pops to the base or toggles help over and over.
-    const w = world({ tab: 'trades', offers: [trade('waiting')] });
+    // Accept, reopen the editor at repeat rate, or confirm a Yes, with one key press); a held B
+    // that pops the frame, or a held Start or Select that pops to the base or toggles help over
+    // and over.
+    const w = world({ tab: 'challenges', challenges: [incoming(), outgoing()] });
     const list = open(w);
     const heldInList = press(w, list, rep('A'));
     expect(heldInList.result, 'a held A in the list').toBe('consumed');
     expect(heldInList.state.phase, 'opens no sheet').toMatchObject(LIST);
+    const onSession = world({ tab: 'trades', sessions: [session('waiting')] });
+    const heldOnSession = press(onSession, open(onSession), rep('A'));
+    expect(heldOnSession.result, 'a held A on a session row opens no editor').toBe('consumed');
+    expect(heldOnSession.state.phase).toMatchObject(LIST);
 
-    const sent = world({ tab: 'trades', offers: [trade('sent')] });
-    const duel = world({ tab: 'challenges', challenges: [incoming(), outgoing()] });
-    const ACTING: ReadonlyArray<
-      readonly [string, World, readonly Input[], ReturnType<typeof sheet>]
-    > = [
-      ['trade Accept', w, ['A'], sheet(TRADE, ['accept', 'decline'], 'accept')],
-      ['trade Cancel', sent, ['A'], sheet(TRADE, ['cancel'], 'cancel')],
-      ['challenge Accept', duel, ['A'], sheet(INCOMING, ['accept', 'decline'], 'accept')],
-      ['challenge Cancel', duel, ['Down', 'A'], sheet(OUTGOING, ['cancel'], 'cancel')],
-      ['trade Decline', w, ['A', 'Down'], sheet(TRADE, ['accept', 'decline'], 'decline')],
+    const ACTING: ReadonlyArray<readonly [string, readonly Input[], ReturnType<typeof sheet>]> = [
+      ['challenge Accept', ['A'], sheet(INCOMING, REQUEST, 'accept')],
+      ['challenge Cancel', ['Down', 'A'], sheet(OUTGOING, ['cancel'], 'cancel')],
+      ['challenge Decline', ['A', 'Down'], sheet(INCOMING, REQUEST, 'decline')],
     ];
-    for (const [name, rows, reach, phase] of ACTING) {
-      const on = swallowed(rows, open(rows), reach);
+    for (const [name, reach, phase] of ACTING) {
+      const on = swallowed(w, open(w), reach);
       expect(on.phase, `${name}: fixture`).toMatchObject(phase);
-      const held = press(rows, on, rep('A'));
+      const held = press(w, on, rep('A'));
       expect(held.result, `${name}: a held A sends nothing`).toBe('consumed');
       expect(held.state.phase, `${name}: the sheet stays as it was`).toMatchObject(phase);
     }
 
     const onYes = swallowed(w, list, ['A', 'Down', 'A', 'Down']);
-    const yes = sheet(TRADE, ['accept', 'decline'], 'decline', { yes: true });
+    const yes = sheet(INCOMING, REQUEST, 'decline', { yes: true });
     expect(onYes.phase, 'fixture: the prompt on Yes').toMatchObject(yes);
     const heldOnYes = press(w, onYes, rep('A'));
     expect(heldOnYes.result, 'a held A on Yes sends nothing').toBe('consumed');
     expect(heldOnYes.state.phase, 'the prompt stays on Yes').toMatchObject(yes);
     expect(press(w, heldOnYes.state, 'A').result, 'ANTI-VACUITY: a fresh A there declines').toEqual(
-      respond(false),
+      DECLINE_21,
     );
 
     const inSheet = swallowed(w, list, ['A']);
@@ -999,33 +919,40 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     // rate); a settle that rebuilds an equal phase from a fresh view model (A then never acts: the
     // phase looks changed on every press); rows compared by identity rather than by value; a
     // sheet left open over a row that is gone, or re-pointed at the replacing row (A would act on
-    // another trade than the one the player chose); a sheet re-pointed at the same index or the
-    // same action when the legal actions change (the counterparty's Decline becoming the
-    // immediate Cancel under the cursor; the initiator's Cancel becoming a Confirm); a prompt left
-    // open over actions that changed; and an A in the same step as such a change that acts.
+    // another challenge than the one the player chose); a sheet re-pointed at the same index or
+    // the same action when the legal actions change (a Decline becoming the immediate Cancel under
+    // the cursor); a prompt left open over actions that changed; and an A in the same step as such
+    // a change that acts.
     const w = world({
-      tab: 'trades',
-      offers: [trade('waiting')],
+      tab: 'challenges',
+      sessions: [session('waiting')],
       challenges: [incoming(), outgoing()],
     });
     const list = open(w);
+    expect(cursorOf(list), 'fixture: the requested Challenges, on the request').toEqual({
+      tab: 'challenges',
+      item: INCOMING,
+    });
     const inSheet = swallowed(w, list, ['A']);
     const onYes = swallowed(w, list, ['A', 'Down', 'A', 'Down']);
-    const onOutgoing = swallowed(w, list, ['RB', 'Down']);
+    const onOutgoing = swallowed(w, list, ['Down']);
     expect(cursorOf(onOutgoing), 'fixture').toEqual({ tab: 'challenges', item: OUTGOING });
     const outSheet = swallowed(w, onOutgoing, ['A']);
-    // Only rows of others change: another pair's trade and a third party's challenge arrive.
+    const onTrades = swallowed(w, list, ['LB']);
+    expect(cursorOf(onTrades), 'fixture').toEqual({ tab: 'trades', item: SESSION });
+    // Only rows of others change: another pair's session and a third party's challenge arrive.
     const othersMoved: World = {
       ...w,
-      offers: [...w.offers, { ...trade('waiting', 50n, 5n), initiator: BOB, counterparty: CAROL }],
+      sessions: [...w.sessions, tradeSession(5n, BOB, CAROL, { createdAtMs: 50n })],
       challenges: [{ ...incoming(50n), challengeId: 3n, target: CAROL }, ...w.challenges],
     };
     for (const [where, s] of [
       ['the list', list],
       ['a sheet', inSheet],
       ['a prompt on Yes', onYes],
-      ['the challenges list', onOutgoing],
+      ['the outgoing row', onOutgoing],
       ['the outgoing sheet', outSheet],
+      ['the session row', onTrades],
     ] as const) {
       expect(observe(w, s), `${where}: nothing changed, the same state`).toBe(s);
       expect(observe(othersMoved, s), `${where}: only others' rows changed`).toBe(s);
@@ -1033,15 +960,16 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
 
     // After an unchanged batch, A still acts on a fresh, equal view model.
     expect(press(w, observe(w, inSheet), 'A').result, 'A on Accept after a batch').toEqual(
-      respond(true),
+      ACCEPT_21,
     );
-    expect(press(w, observe(w, onYes), 'A').result, 'A on Yes after a batch').toEqual(
-      respond(false),
-    );
+    expect(press(w, observe(w, onYes), 'A').result, 'A on Yes after a batch').toEqual(DECLINE_21);
     expect(
       press(w, observe(w, outSheet), 'A').result,
       'A on the outgoing Cancel after a batch',
-    ).toEqual({ kind: 'cancelChallenge', challengeId: 22n });
+    ).toEqual(CANCEL_22);
+    expect(press(w, observe(w, onTrades), 'A').result, 'A on the session after a batch').toEqual(
+      EDIT_11,
+    );
 
     // The sheet's row is gone: the list, the cursor re-seated on a listed row.
     const noOutgoing: World = { ...w, challenges: [incoming()] };
@@ -1049,11 +977,20 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     expect(closed.phase, 'the outgoing challenge is gone: the list').toMatchObject(LIST);
     expect(cursorOf(closed), 'the cursor re-seated').toEqual({ tab: 'challenges', item: INCOMING });
     // The sheet's row is replaced by another id: the list, on the new row; an A in that same step
-    // sends nothing (neither for trade 11 nor for trade 12).
-    const replaced: World = { ...w, offers: [trade('waiting', 1_000n, 12n)] };
+    // sends nothing (neither for challenge 21 nor for challenge 23).
+    const replaced: World = {
+      ...w,
+      challenges: [{ ...incoming(), challengeId: 23n }, outgoing()],
+    };
     const reseated = observe(replaced, inSheet);
-    expect(reseated.phase, 'trade 11 replaced by trade 12: the list').toMatchObject(LIST);
-    expect(cursorOf(reseated), 'on the new row').toEqual({ tab: 'trades', item: 'trade-12' });
+    expect(reseated.phase, 'challenge 21 replaced by challenge 23: the list').toMatchObject(LIST);
+    expect(cursorOf(reseated), 'on a listed row').not.toEqual({
+      tab: 'challenges',
+      item: INCOMING,
+    });
+    expect(['challenge-23', OUTGOING], 'the cursor re-seated on a listed row').toContain(
+      reseated.nav.item,
+    );
     const pressedAsReplaced = press(replaced, inSheet, 'A');
     expect(pressedAsReplaced.result, 'an A as the row is replaced').toBe('consumed');
     expect(pressedAsReplaced.state.phase).toMatchObject(LIST);
@@ -1061,87 +998,69 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
     expect(pressedAsGone.result, 'an A as the row goes').toBe('consumed');
     expect(pressedAsGone.state.phase).toMatchObject(LIST);
 
-    // The legal actions change under an open sheet: the initiator's Cancel alone becomes Confirm,
-    // Cancel (the counterparty accepted).
-    const sent = world({ tab: 'trades', offers: [trade('sent')] });
+    // The legal actions change under an open sheet, the row key the same: challenge 22 alone, the
+    // viewer's (Cancel), read as Carol's to the viewer (Accept, Decline); and challenge 21, Bob's
+    // to the viewer (the cursor on Decline, with the prompt open on No and on Yes), read as the
+    // viewer's to Bob (Cancel alone).
+    const sent = world({ tab: 'challenges', challenges: [outgoing()] });
     const onCancel = swallowed(sent, open(sent), ['A']);
-    expect(onCancel.phase, 'fixture').toMatchObject(sheet(TRADE, ['cancel'], 'cancel'));
-    const confirmable = world({ tab: 'trades', offers: [trade('toConfirm')] });
-    // The counterparty's Accept, Decline becomes Cancel alone (it accepted elsewhere), with the
-    // cursor on Decline, and with the prompt open on No and on Yes.
-    const offered = world({ tab: 'trades', offers: [trade('waiting')] });
-    const accepted = world({ tab: 'trades', offers: [trade('accepted')] });
-    const onDecline = swallowed(offered, open(offered), ['A', 'Down']);
-    const askedNo = swallowed(offered, onDecline, ['A']);
-    const askedYes = swallowed(offered, askedNo, ['Down']);
+    expect(onCancel.phase, 'fixture').toMatchObject(sheet(OUTGOING, ['cancel'], 'cancel'));
+    const turnedIn = world({
+      tab: 'challenges',
+      challenges: [{ ...outgoing(), challenger: CAROL, target: ME }],
+    });
+    const asked = world({ tab: 'challenges', challenges: [incoming()] });
+    const turnedOut = world({
+      tab: 'challenges',
+      challenges: [{ ...incoming(), challenger: ME, target: BOB }],
+    });
+    const onDecline = swallowed(asked, open(asked), ['A', 'Down']);
+    const askedNo = swallowed(asked, onDecline, ['A']);
+    const askedYes = swallowed(asked, askedNo, ['Down']);
     expect(askedYes.phase, 'fixture').toMatchObject(
-      sheet(TRADE, ['accept', 'decline'], 'decline', { yes: true }),
+      sheet(INCOMING, REQUEST, 'decline', { yes: true }),
     );
     let changes = 0;
-    for (const [where, before, after] of [
-      ['Cancel, now Confirm, Cancel', onCancel, confirmable],
-      ['Decline, now Cancel', onDecline, accepted],
-      ['the Decline prompt on No, now Cancel', askedNo, accepted],
-      ['the Decline prompt on Yes, now Cancel', askedYes, accepted],
+    for (const [where, before, after, row] of [
+      ['Cancel, now Accept, Decline', onCancel, turnedIn, OUTGOING],
+      ['Decline, now Cancel', onDecline, turnedOut, INCOMING],
+      ['the Decline prompt on No, now Cancel', askedNo, turnedOut, INCOMING],
+      ['the Decline prompt on Yes, now Cancel', askedYes, turnedOut, INCOMING],
     ] as const) {
       const settled = observe(after, before);
       expect(settled.phase, `${where}: observe closes the sheet`).toMatchObject(LIST);
-      expect(cursorOf(settled), `${where}: on the row`).toEqual({ tab: 'trades', item: TRADE });
+      expect(cursorOf(settled), `${where}: on the row`).toEqual({ tab: 'challenges', item: row });
       const pressed = press(after, before, 'A');
       expect(pressed.result, `${where}: an A in the same step sends nothing`).toBe('consumed');
       expect(pressed.state.phase, `${where}: and lands on the list`).toMatchObject(LIST);
       changes += 1;
     }
     expect(changes, 'ANTI-VACUITY: four changes driven').toBe(4);
-
-    // An offer in a status this client does not know (version skew: the row converter passes it
-    // through raw): the view model still builds (the host builds it uncaught on every button), the
-    // frame opens on Trades with no row, A has nothing to act on and B still closes the frame; a
-    // sheet open on the offer when its status turns unknown closes to the list.
-    // WRONG IMPL KILLED: a view model that throws on the unknown status (B and Start could no
-    // longer close the frame), a trade row with an empty sheet, and a sheet left open on it.
-    const skewed = world({
-      tab: 'trades',
-      offers: [{ ...trade('waiting'), status: 'Weird' as StoreTradeOffer['status'] }],
-    });
-    expect(() => vmOf(skewed), 'an unknown status: the view model builds').not.toThrow();
-    const skewedOpen = open(skewed);
-    expect(cursorOf(skewedOpen), 'Trades, with no row').toEqual({ tab: 'trades', item: null });
-    const skewedA = press(skewed, skewedOpen, 'A');
-    expect(skewedA.result, 'A has nothing to act on').toBe('consumed');
-    expect(skewedA.state.phase, 'and opens no sheet').toMatchObject(LIST);
-    expect(press(skewed, skewedOpen, 'B').result, 'B still closes the frame').toEqual(POP);
-    const turnedSkewed = observe(skewed, swallowed(offered, open(offered), ['A']));
-    expect(
-      turnedSkewed.phase,
-      'a sheet on the offer closes when its status turns unknown',
-    ).toMatchObject(LIST);
-    expect(cursorOf(turnedSkewed), 'on no row').toEqual({ tab: 'trades', item: null });
   });
 });
 
 describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', () => {
   it('CTL8D-3-REQUESTED-TAB-WINS: a requested tab (U, P, L, the menu leaves, the auto-show) wins over the waiting request`s tab and the remembered tab, each of the four with three distinct tabs in play; on a requested tab that holds a waiting row the cursor sits on it, even when another tab`s request is older', () => {
-    // WRONG IMPL KILLED: an init that ignores `requested` (L would open on the waiting trade or
+    // WRONG IMPL KILLED: an init that ignores `requested` (L would open on the waiting session or
     // the remembered tab, not the leaderboard); one that ranks the remembered tab or the waiting
     // request above it; one that puts the cursor on the waiting row only when the oldest request
-    // is on the opened tab (P with an older trade pending would leave the cursor off the
+    // is on the opened tab (P with an older session waiting would leave the cursor off the
     // challenge); and one that keeps the remembered cursor over the request.
     const onTab = (tab: SocialTab): SocialScreenState => {
       const s = open(world({ tab }));
       expect(s.nav.tab, `fixture: a state left on ${tab}`).toBe(tab);
       return s;
     };
-    const tradeWaits = { offers: [trade('waiting')], challenges: [outgoing()] };
-    const challengeWaits = { offers: [trade('sent')], challenges: [incoming(), outgoing()] };
+    const sessionWaits = { sessions: [session('waiting')], challenges: [outgoing()] };
+    const challengeWaits = { sessions: [session('opened')], challenges: [incoming(), outgoing()] };
     // [requested, the rows, the waiting request's tab, the remembered tab]: three distinct tabs.
     const CASES: ReadonlyArray<
-      readonly [SocialTab, Pick<World, 'offers' | 'challenges'>, SocialTab, SocialTab]
+      readonly [SocialTab, Pick<World, 'sessions' | 'challenges'>, SocialTab, SocialTab]
     > = [
-      ['rankings', tradeWaits, 'trades', 'challenges'],
-      ['players', tradeWaits, 'trades', 'challenges'],
+      ['rankings', sessionWaits, 'trades', 'challenges'],
+      ['players', sessionWaits, 'trades', 'challenges'],
       ['trades', challengeWaits, 'challenges', 'rankings'],
-      ['challenges', tradeWaits, 'trades', 'rankings'],
+      ['challenges', sessionWaits, 'trades', 'rankings'],
     ];
     for (const [requested, rows, waitingTab, rememberedTab] of CASES) {
       const remembered = onTab(rememberedTab);
@@ -1158,13 +1077,13 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
     }
 
     // On a requested tab holding a waiting row the cursor sits on it: Challenges, with an older
-    // trade waiting and the remembered cursor on the outgoing row.
+    // session waiting and the remembered cursor on the outgoing row.
     const duel = world({ tab: 'challenges', challenges: [incoming(), outgoing()] });
     const leftOnOutgoing = swallowed(duel, open(duel), ['Down']);
     expect(cursorOf(leftOnOutgoing), 'fixture').toEqual({ tab: 'challenges', item: OUTGOING });
     const autoShow = world({
       tab: 'challenges',
-      offers: [trade('waiting', 1_000n)],
+      sessions: [session('waiting', 1_000n)],
       challenges: [outgoing(), incoming(2_000n)],
     });
     expect(cursorOf(open(autoShow, leftOnOutgoing)), 'P on a pending challenge').toEqual({
@@ -1172,36 +1091,34 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
       item: INCOMING,
     });
     // Trades, with an older challenge waiting.
-    const tradeAsked = world({
+    const sessionAsked = world({
       tab: 'trades',
-      offers: [trade('waiting', 5_000n)],
+      sessions: [session('waiting', 5_000n)],
       challenges: [incoming(1_000n)],
     });
-    expect(cursorOf(open(tradeAsked, leftOnOutgoing)), 'U on a pending offer').toEqual({
+    expect(cursorOf(open(sessionAsked, leftOnOutgoing)), 'U on a waiting session').toEqual({
       tab: 'trades',
-      item: TRADE,
+      item: SESSION,
     });
   });
 
-  it('CTL8D-3-PAINT-PANEL: paint shows the state`s tab panel first (Trades the trade root, Challenges the pvp root, Players and Rankings the leaderboard root; ctl-8g moved Players off the trade root), then paints the strip into the chrome through trades.paintSocial (the trade cursor only on a listed trade on Trades, the sheet and its prompt question while open), then the challenge cursor (incoming / outgoing on Challenges, null elsewhere); it follows the state, not the requested tab; views not built yet are skipped without a throw', () => {
+  it('CTL8D-3-PAINT-PANEL: paint shows the state`s tab panel first (Trades the trade root, Challenges the pvp root, Players and Rankings the leaderboard root), then paints the strip into the chrome through trades.paintSocial (the session rows on every tab, the session cursor only on a session row on Trades, the challenge sheet and its prompt question while open), then the challenge cursor (incoming / outgoing on Challenges, null elsewhere); it follows the state, not the requested tab; views not built yet are skipped without a throw', () => {
     // WRONG IMPL KILLED: a paint that shows the requested tab's panel (or never calls show, so U,
     // P and L keep the panel the legacy key chose); one that paints the strip before `show` (a
     // later throw would leave the wrong panel up); a strip painted only on Trades (the chrome
-    // follows the shown panel); a trade cursor mark on another tab or with no trade; a sheet
+    // follows the shown panel); a session cursor on another tab or with no session; a sheet
     // painted with the wrong actions or active row, dropped under its prompt, or left on the list;
-    // the wrong prompt question (a trade Decline asking about a challenge, Confirm asking about a
-    // decline); a challenge cursor on Trades or on the wrong row; a paint into a view that does
-    // not exist yet (a TypeError before main() built the panels). INTENTIONAL CHANGE (ctl-8g): the
-    // ctl-8d pin "no call on the Rankings view" is replaced by CTL8G-1-PAINT / CTL8G-2-PAINT, which
-    // pin the call on Players and Rankings and its absence on Trades and Challenges.
+    // the wrong prompt question; a challenge cursor on Trades or on the wrong row; a paint into a
+    // view that does not exist yet (a TypeError before main() built the panels).
     const full = (tab: SocialTab | null): World =>
-      world({ tab, offers: [trade('waiting')], challenges: [incoming(), outgoing()] });
+      world({ tab, sessions: [session('waiting')], challenges: [incoming(), outgoing()] });
+    const ROWS = [SESSION_ROW_11];
 
     const LISTS: ReadonlyArray<readonly [SocialTab, SocialPaint, CursorRow]> = [
-      ['players', listPaint('players'), null],
-      ['trades', listPaint('trades', true), null],
-      ['challenges', listPaint('challenges'), 'incoming'],
-      ['rankings', listPaint('rankings'), null],
+      ['players', listPaint('players', ROWS), null],
+      ['trades', listPaint('trades', ROWS, SESSION), null],
+      ['challenges', listPaint('challenges', ROWS), 'incoming'],
+      ['rankings', listPaint('rankings', ROWS), null],
     ];
     for (const [tab, paint, cursor] of LISTS) {
       const w = full(tab);
@@ -1216,72 +1133,50 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
       expect((calls[1] as SocialCall).chrome, `${tab}: the very chrome`).toBe(CHROME);
     }
 
-    // The outgoing row under the cursor; a Trades tab with no trade holds no trade cursor.
+    // The outgoing row under the cursor; a Trades tab with no session holds no session cursor.
     const duel = full('challenges');
     expect(paintOf(duel, swallowed(duel, open(duel), ['Down'])).cursor, 'outgoing').toBe(
       'outgoing',
     );
     const bare = world({ tab: 'trades', challenges: [incoming()] });
     const barePaint = paintOf(bare, open(bare));
-    expect(barePaint.paint, 'no trade listed: no trade cursor').toEqual(listPaint('trades', false));
+    expect(barePaint.paint, 'no session listed: no session cursor').toEqual(listPaint('trades'));
     expect(barePaint.cursor).toBeNull();
 
     // The paint follows the state: requested Players, LB to Rankings.
     const asked = full('players');
     const moved = paintOf(asked, swallowed(asked, open(asked), ['LB']));
     expect(moved.panel, 'the state`s panel, not the requested one').toBe('leaderboardView');
-    expect(moved.paint, 'the state`s tab').toEqual(listPaint('rankings'));
+    expect(moved.paint, 'the state`s tab').toEqual(listPaint('rankings', ROWS));
     expect(moved.cursor).toBeNull();
 
-    // The trade sheet and its Decline prompt.
-    const trades = full('trades');
-    const OFFER: readonly SocialAction[] = ['accept', 'decline'];
-    const tSheet = swallowed(trades, open(trades), ['A']);
-    let p = paintOf(trades, tSheet);
-    expect(p.panel).toBe('tradeView');
-    expect(p.paint.tab).toBe('trades');
-    expect(p.paint.sheet, 'the sheet, on Accept').toEqual({ actions: OFFER, active: 'accept' });
-    expect(p.paint.confirm, 'no prompt').toBeNull();
-    expect(p.cursor, 'no challenge cursor on Trades').toBeNull();
-    const tDecline = swallowed(trades, tSheet, ['Down']);
-    expect(paintOf(trades, tDecline).paint.sheet).toEqual({ actions: OFFER, active: 'decline' });
-    const tAsked = swallowed(trades, tDecline, ['A']);
-    p = paintOf(trades, tAsked);
-    expect(p.paint.sheet, 'the sheet stays painted under its prompt').toEqual({
-      actions: OFFER,
-      active: 'decline',
-    });
-    expect(p.paint.confirm, 'the Decline prompt on No').toEqual({
-      question: 'declineTrade',
-      yes: false,
-    });
-    expect(paintOf(trades, swallowed(trades, tAsked, ['Down'])).paint.confirm, 'on Yes').toEqual({
-      question: 'declineTrade',
-      yes: true,
-    });
-    expect(
-      paintOf(trades, swallowed(trades, tAsked, ['B', 'B'])).paint,
-      'back on the list: no sheet, no prompt',
-    ).toEqual(listPaint('trades', true));
-
-    // The final trade Confirm.
-    const confirmable = world({ tab: 'trades', offers: [trade('toConfirm')] });
-    p = paintOf(confirmable, swallowed(confirmable, open(confirmable), ['A', 'A']));
-    expect(p.paint.sheet).toEqual({ actions: ['confirm', 'cancel'], active: 'confirm' });
-    expect(p.paint.confirm, 'the Confirm prompt on No').toEqual({
-      question: 'confirmTrade',
-      yes: false,
-    });
-
-    // The challenge sheet, its Decline prompt, and the outgoing row's sheet.
-    p = paintOf(duel, swallowed(duel, open(duel), ['A', 'Down', 'A']));
+    // The challenge sheet, its Decline prompt (No, then Yes), back to the list, and the outgoing
+    // row's sheet.
+    const dSheet = swallowed(duel, open(duel), ['A']);
+    let p = paintOf(duel, dSheet);
     expect(p.panel).toBe('pvpView');
     expect(p.paint.tab).toBe('challenges');
-    expect(p.paint.sheet).toEqual({ actions: OFFER, active: 'decline' });
+    expect(p.paint.sheet, 'the sheet, on Accept').toEqual({ actions: REQUEST, active: 'accept' });
+    expect(p.paint.confirm, 'no prompt').toBeNull();
+    expect(p.paint.sessionCursor, 'no session cursor on Challenges').toBeNull();
+    const dAsked = swallowed(duel, dSheet, ['Down', 'A']);
+    p = paintOf(duel, dAsked);
+    expect(p.paint.sheet, 'the sheet stays painted under its prompt').toEqual({
+      actions: REQUEST,
+      active: 'decline',
+    });
     expect(p.paint.confirm, 'the challenge Decline prompt on No').toEqual({
       question: 'declineChallenge',
       yes: false,
     });
+    expect(paintOf(duel, swallowed(duel, dAsked, ['Down'])).paint.confirm, 'on Yes').toEqual({
+      question: 'declineChallenge',
+      yes: true,
+    });
+    expect(
+      paintOf(duel, swallowed(duel, dAsked, ['B', 'B'])).paint,
+      'back on the list: no sheet, no prompt',
+    ).toEqual(listPaint('challenges', ROWS));
     p = paintOf(duel, swallowed(duel, open(duel), ['Down', 'A']));
     expect(p.paint.sheet).toEqual({ actions: ['cancel'], active: 'cancel' });
     expect(p.paint.confirm).toBeNull();
@@ -1452,7 +1347,7 @@ const A_INPUTS: readonly Input[] = ['A', rep('A')];
 
 describe('socialScreen — Players: the walk-up phase and the change signal (ctl-8g, CTL8G.1)', () => {
   it('CTL8G-1-WALKUP: A on a Players row enters the walk-up phase on that row and sends nothing (a held A does not); in it B returns to the list without popping the frame, a held B does nothing, A (fresh or held) stays, Up / Down / LB / RB move exactly as in the list AND return to the list, Left / Right move nothing, Start and Select act as everywhere; with no players listed A opens nothing; a walk-up whose player leaves, goes offline or is replaced closes to the list, and an A pressed as that happens only paints', () => {
-    // WRONG IMPL KILLED: an A that opens a trade sheet or sends a command on a player (no remote
+    // WRONG IMPL KILLED: an A that opens a sheet or sends a command on a player (no remote
     // action exists); a held A that enters (a held Enter would walk up on its auto-repeat); a walk-up
     // keyed on the wrong row (the first row, not the cursor's); a B that pops the frame from the
     // walk-up (it only closes the line) or one whose held repeat pops; a held B that closes it;
@@ -1590,7 +1485,7 @@ describe('socialScreen — Players: the walk-up phase and the change signal (ctl
     }
   });
 
-  it('CTL8G-1-OBSERVE: init records the players` signature (`socialPeopleKey`) in state.people; observe answers the SAME state when nothing the Players tab shows changed (a rebuilt equal vm, a third party`s trade or challenge, an offline player who is not listed, a player`s input counter ticking, a listed player moving without crossing the 12-tile line, a re-rated leaderboard) and a NEW state, with the new signature and a listed cursor, when a player joins, leaves, goes offline, is renamed, or crosses the line either way, or gains a character; the new state is then stable', () => {
+  it('CTL8G-1-OBSERVE: init records the players` signature (`socialPeopleKey`) in state.people; observe answers the SAME state when nothing the Players tab shows changed (a rebuilt equal vm, a third party`s session or challenge, an offline player who is not listed, a player`s input counter ticking, a listed player moving without crossing the 12-tile line, a re-rated leaderboard) and a NEW state, with the new signature and a listed cursor, when a player joins, leaves, goes offline, is renamed, or crosses the line either way, or gains a character; the new state is then stable', () => {
     // WRONG IMPL KILLED: an observe that answers a new object at every batch (a repaint per batch,
     // and the host's same-object pin); one that answers the SAME object when a player joins, leaves,
     // is renamed or crosses the 12-tile line while the cursor row survives (the Players list the
@@ -1613,11 +1508,11 @@ describe('socialScreen — Players: the walk-up phase and the change signal (ctl
 
     // Nothing the tab shows changed: the same state, each case a fresh view model.
     const othersMoved = swap({
-      offers: [{ ...trade('waiting', 50n, 5n), initiator: BOB, counterparty: CAROL }],
+      sessions: [tradeSession(5n, BOB, CAROL, { createdAtMs: 50n })],
       challenges: [{ ...incoming(50n), challengeId: 3n, target: CAROL }],
     });
     const SAME: ReadonlyArray<readonly [string, World]> = [
-      ['a third party`s trade and challenge', othersMoved],
+      ['a third party`s session and challenge', othersMoved],
       [
         'an offline player who is not listed',
         swap({ players: [...base.players, person(EVE, 'Eve', 5n, false)] }),
@@ -1702,16 +1597,16 @@ describe('socialScreen — Players: the walk-up phase and the change signal (ctl
 });
 
 describe('socialScreen — Rankings: a read-only list (ctl-8g, CTL8G.2)', () => {
-  it('CTL8G-2-READONLY: on a ranked row a fresh or a held A is swallowed and changes nothing (no sheet, no walk-up, no command, the very same state), on every ranked row including the viewer`s own and with a waiting trade and challenge in the store; an empty board swallows A too; Up / Down move over the ranked keys in leaderboard order (a fresh press wraps, a held one clamps) and B still pops the frame', () => {
-    // WRONG IMPL KILLED: an A on a ranked row that opens an action sheet (the trade or challenge
-    // sheet of a row that does not exist: Rankings is a view, nothing to act on), enters the
-    // walk-up (that is Players'), or sends a challenge or any command; a state rebuilt on A (a
-    // repaint per press); an A that acts only on the first row, only on a row that is not the
-    // viewer's, or only while no request waits; an empty board that throws or opens a sheet on
+  it('CTL8G-2-READONLY: on a ranked row a fresh or a held A is swallowed and changes nothing (no sheet, no walk-up, no command, the very same state), on every ranked row including the viewer`s own and with a waiting session and challenge in the store; an empty board swallows A too; Up / Down move over the ranked keys in leaderboard order (a fresh press wraps, a held one clamps) and B still pops the frame', () => {
+    // WRONG IMPL KILLED: an A on a ranked row that opens an action sheet (the challenge sheet of
+    // a row that does not exist: Rankings is a view, nothing to act on), opens a session's editor,
+    // enters the walk-up (that is Players'), or sends a challenge or any command; a state rebuilt
+    // on A (a repaint per press); an A that acts only on the first row, only on a row that is not
+    // the viewer's, or only while no request waits; an empty board that throws or opens a sheet on
     // nothing; a cursor that skips the viewer's row or walks in input order (Carol first); a held
     // arrow that wraps; and a B that stops popping.
     const busy = ranked('rankings', {
-      offers: [trade('waiting')],
+      sessions: [session('waiting')],
       challenges: [incoming(), outgoing()],
     });
     const opened = open(busy);
@@ -1885,7 +1780,7 @@ describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
     const full = (tab: SocialTab): World =>
       crowd(tab, {
         profiles: RANKED,
-        offers: [trade('waiting')],
+        sessions: [session('waiting')],
         challenges: [incoming(), outgoing()],
       });
     const WANT: ReadonlyArray<readonly [SocialTab, SocialPanelId, number]> = [
@@ -1908,14 +1803,13 @@ describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
       }
       checked += 1;
     }
-    // A sheet or prompt open on Trades or Challenges does not call it either.
-    const tradeSheet = full('trades');
-    const inSheet = swallowed(tradeSheet, open(tradeSheet), ['A']);
-    expect(
-      paintLog(vmOf(tradeSheet), inSheet).filter((c) => c.call === 'rankings'),
-      'a trade sheet: no Rankings call',
-    ).toEqual([]);
+    // A challenge sheet or prompt open on Challenges does not call it either.
     const duel = full('challenges');
+    const inSheet = swallowed(duel, open(duel), ['A']);
+    expect(
+      paintLog(vmOf(duel), inSheet).filter((c) => c.call === 'rankings'),
+      'a challenge sheet: no Rankings call',
+    ).toEqual([]);
     const inPrompt = swallowed(duel, open(duel), ['A', 'Down', 'A']);
     expect(
       paintLog(vmOf(duel), inPrompt).filter((c) => c.call === 'rankings'),
@@ -1928,56 +1822,28 @@ describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
 // ==========================================================================================
 // ts-3 (ts-3.4, ts-3.5): the session rows on the Trades tab.
 //
-// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 and
-//   memory/projects/monster-realm-ts-3-plan.md §Social › Trades: A (fresh) on a `session` row answers
-//   `{ kind: 'openTradeEditor', sessionId }` at once (no sheet, no prompt); `SocialScreenState.sessions`
-//   is `socialSessionsKey(vm)`, settled like `people`; paint passes `sessions` (the rows' paint data)
-//   and `sessionCursor` (the session row key under the cursor, else null); `tradeCursor` stays the
-//   legacy row's.
-//
-// RED REASON: the adapter reads no `allTradeSessions()`, lists no session row and paints neither
-//   `sessions` nor `sessionCursor`.
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3: A (fresh) on a `session`
+//   row answers `{ kind: 'openTradeEditor', sessionId }` at once (no sheet, no prompt);
+//   `SocialScreenState.sessions` is `socialSessionsKey(vm)`, settled like `people`; paint passes
+//   `sessions` (the rows' paint data) and `sessionCursor` (the session row key under the cursor,
+//   else null).
 //
 // Fixture: Bob opened session 101 with the viewer (untouched: a waiting request, created 500);
-//   the viewer opened 102 with Carol and confirmed it (created 4_000); a legacy offer the viewer
-//   sent (trade 11) sits above them.
+//   the viewer opened 102 with Carol and confirmed it (created 4_000).
 // ==========================================================================================
-
-const NO_SIDE = { monsterIds: [], items: [], currency: 0n, cards: [] } as const;
-
-function tradeSession(
-  sessionId: bigint,
-  opener: string,
-  partner: string,
-  over: Partial<StoreTradeSession> = {},
-): StoreTradeSession {
-  return {
-    sessionId,
-    opener,
-    partner,
-    openerOffer: NO_SIDE,
-    partnerOffer: NO_SIDE,
-    openerConfirmed: false,
-    partnerConfirmed: false,
-    revision: 1n,
-    createdAtMs: 1_000n,
-    ...over,
-  };
-}
 
 const S101 = tradeSession(101n, BOB, ME, { createdAtMs: 500n });
 const S102 = tradeSession(102n, ME, CAROL, { openerConfirmed: true, createdAtMs: 4_000n });
 const sessionWorld = (over: Partial<World> = {}): World =>
   world({
     tab: 'trades',
-    offers: [trade('sent', 9_000n)],
     sessions: [S102, S101],
     players: [ME_P, BOB_P, CAROL_P],
     ...over,
   });
 
 describe('socialScreen — the session rows (ts-3)', () => {
-  it('ts-3.4 the Trades tab walks the legacy row then the session rows with Up / Down; a fresh A on a session row answers openTradeEditor for THAT session at once, with no sheet and no prompt; a held A does nothing; B still pops', () => {
+  it('ts-3.4 the Trades tab walks the session rows with Up / Down (a fresh press wraps, a held one clamps); a fresh A on a session row answers openTradeEditor for THAT session at once, with no sheet and no prompt; a held A does nothing; B still pops', () => {
     // WRONG IMPL KILLED: a session row that opens an action sheet (actions are empty: the sheet
     // would be empty or the A swallowed, and the editor unreachable from Social); the editor
     // opened on the first session whatever the cursor (a key/id mix-up); a held A that opens it
@@ -1988,10 +1854,12 @@ describe('socialScreen — the session rows (ts-3)', () => {
       tab: 'trades',
       item: 'session-101',
     });
-    const top = swallowed(w, opened, ['Up']);
-    expect(top.nav.item, 'the legacy row is first').toBe(TRADE);
-    expect(swallowed(w, top, ['Down', 'Down']).nav.item).toBe('session-102');
-    expect(swallowed(w, top, ['Down', 'Down', 'Down']).nav.item, 'a fresh Down wraps').toBe(TRADE);
+    expect(swallowed(w, opened, ['Down']).nav.item).toBe('session-102');
+    expect(swallowed(w, opened, ['Down', 'Down']).nav.item, 'a fresh Down wraps').toBe(
+      'session-101',
+    );
+    expect(swallowed(w, opened, ['Up']).nav.item, 'a fresh Up wraps').toBe('session-102');
+    expect(swallowed(w, opened, [rep('Up')]).nav.item, 'a held Up stays').toBe('session-101');
 
     for (const [reach, id] of [
       [[], 101n],
@@ -2005,8 +1873,6 @@ describe('socialScreen — the session rows (ts-3)', () => {
       expect(held.result, `a held A on session ${id}`).toBe('consumed');
       expect(held.state.phase).toMatchObject(LIST);
     }
-    // The legacy row keeps its sheet.
-    expect(press(w, top, 'A').state.phase).toMatchObject(sheet(TRADE, ['cancel'], 'cancel'));
     expect(press(w, opened, 'B').result).toEqual(POP);
   });
 
@@ -2041,10 +1907,10 @@ describe('socialScreen — the session rows (ts-3)', () => {
     }
   });
 
-  it('ts-3.5 paint passes the session rows` paint data and the session cursor; on a session row tradeCursor is false and the challenge cursor null; off the Trades tab the cursor is null', () => {
-    // WRONG IMPL KILLED: the session rows never painted; the marks from the wrong seat; the cursor
-    // painted as the legacy row (tradeCursor true on a session row: two cursors); a session row
-    // handed to the challenge root as its cursor kind; a session cursor kept on another tab.
+  it('ts-3.5 paint passes the session rows` paint data and the session cursor; on a session row the challenge cursor is null; off the Trades tab the session cursor is null', () => {
+    // WRONG IMPL KILLED: the session rows never painted; the marks from the wrong seat; the
+    // session cursor stuck on the first row; a session row handed to the challenge root as its
+    // cursor kind; a session cursor kept on another tab.
     const w = sessionWorld();
     const s = open(w);
     const p = paintOf(w, s);
@@ -2054,13 +1920,184 @@ describe('socialScreen — the session rows (ts-3)', () => {
       { key: 'session-102', partnerName: 'Carol', mineConfirmed: true, theirsConfirmed: false },
     ]);
     expect(p.paint.sessionCursor).toBe('session-101');
-    expect(p.paint.tradeCursor, 'not the legacy row').toBe(false);
     expect(p.cursor, 'no challenge cursor on a session row').toBeNull();
-    const onLegacy = paintOf(w, swallowed(w, s, ['Up']));
-    expect(onLegacy.paint.tradeCursor).toBe(true);
-    expect(onLegacy.paint.sessionCursor).toBeNull();
+    const onSecond = paintOf(w, swallowed(w, s, ['Down']));
+    expect(onSecond.paint.sessionCursor).toBe('session-102');
     const elsewhere = paintOf(w, swallowed(w, s, ['RB']));
     expect(elsewhere.paint.tab).toBe('challenges');
     expect(elsewhere.paint.sessionCursor).toBeNull();
+  });
+});
+
+// ==========================================================================================
+// ts-4 (ts-4.6): Social › Trades lists only session rows; no trade-offer command exists.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-4 (ts-4.6) and the ts-4 plan
+//   "Resume 2": `commandOf` has no trade branch; the only question is `declineChallenge`; `paint`
+//   hands the view `{ tab, sessions, sessionCursor, sheet, confirm }`; A on a session row answers
+//   `{ kind: 'openTradeEditor', sessionId }`.
+//
+// The mixed world: Bob opened 31 with the viewer (untouched: waiting); the viewer opened 32 with
+//   Carol and confirmed its side; Carol and Bob share 33 (foreign); Bob challenges the viewer (21)
+//   and the viewer challenges Carol (22). Every state reachable from every open (a plain one and
+//   each requested tab) by up to EXPLORE_DEPTH presses of every button, fresh and held, is
+//   visited: every command, every painted prompt and every paint's shape is collected.
+// ==========================================================================================
+
+const MIXED: World = world({
+  sessions: [
+    tradeSession(33n, CAROL, BOB),
+    tradeSession(32n, ME, CAROL, { openerConfirmed: true, createdAtMs: 9_000n }),
+    tradeSession(31n, BOB, ME, { createdAtMs: 8_000n }),
+  ],
+  challenges: [outgoing(), incoming()],
+  players: [ME_P, BOB_P, CAROL_P],
+  characters: CHARS,
+});
+
+const BUTTONS: readonly VButton[] = [
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+  'A',
+  'B',
+  'LB',
+  'RB',
+  'Start',
+  'Select',
+];
+const EXPLORE_DEPTH = 7;
+
+interface Exploration {
+  /** Every command a press answered, as `kind:id` (frame results as their kind). */
+  readonly commands: ReadonlySet<string>;
+  /** Every prompt question a reachable state paints. */
+  readonly questions: ReadonlySet<string>;
+  /** Every distinct key set a reachable state's SocialPaint carries. */
+  readonly paintKeys: ReadonlySet<string>;
+  /** Every action a painted sheet offers. */
+  readonly sheetActions: ReadonlySet<string>;
+  readonly states: number;
+}
+
+/** The result as `kind:id`, the id being whichever of sessionId / challengeId / tradeId it has. */
+function commandKey(result: ScreenResult): string | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const r = result as unknown as Record<string, unknown>;
+  const id = r.sessionId ?? r.challengeId ?? r.tradeId;
+  return id === undefined ? String(r.kind) : `${String(r.kind)}:${String(id)}`;
+}
+
+function explore(w: World): Exploration {
+  const commands = new Set<string>();
+  const questions = new Set<string>();
+  const paintKeys = new Set<string>();
+  const sheetActions = new Set<string>();
+  const seen = new Set<string>();
+  const inputs: Input[] = [...BUTTONS, ...BUTTONS.map(rep)];
+  let frontier: SocialScreenState[] = [null, 'players', 'trades', 'challenges', 'rankings'].map(
+    (tab) => open({ ...w, tab: tab as SocialTab | null }),
+  );
+  for (let depth = 0; depth <= EXPLORE_DEPTH && frontier.length > 0; depth++) {
+    const next: SocialScreenState[] = [];
+    for (const s of frontier) {
+      const id = JSON.stringify(s);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const paint = paintOf(w, s).paint;
+      paintKeys.add(Object.keys(paint).sort().join(','));
+      if (paint.confirm !== null) questions.add(paint.confirm.question);
+      for (const action of paint.sheet?.actions ?? []) sheetActions.add(action);
+      for (const input of inputs) {
+        const step = press(w, s, input);
+        const key = commandKey(step.result);
+        if (key !== null) commands.add(key);
+        next.push(step.state);
+      }
+    }
+    frontier = next;
+  }
+  return { commands, questions, paintKeys, sheetActions, states: seen.size };
+}
+
+describe('socialScreen — Social › Trades lists only session rows (ts-4, ts-4.6)', () => {
+  it('ts-4.6 over every state reachable in a mixed world (sessions in both seats and a foreign one, an incoming and an outgoing challenge) the screen answers exactly openTradeEditor for each own session, acceptChallenge / declineChallenge on 21, cancelChallenge on 22 and the frame results pop / popToBase / toggleHelp: never respondTrade, confirmTrade or cancelTrade', () => {
+    // WRONG IMPL KILLED: a `commandOf` trade branch reachable from any row (a respondTrade,
+    // confirmTrade or cancelTrade answered for some (row, action)); a session row that opens a
+    // sheet whose Cancel answers cancelTrade; an editor opened on the foreign session or with the
+    // wrong id; a challenge command carrying a session id; and an exploration that never reaches
+    // a command (the anti-vacuity counts below).
+    const found = explore(MIXED);
+    expect(found.states, 'ANTI-VACUITY: many states visited').toBeGreaterThan(20);
+    expect([...found.commands].sort(), 'every answer a press gives').toEqual(
+      [
+        'acceptChallenge:21',
+        'cancelChallenge:22',
+        'declineChallenge:21',
+        'openTradeEditor:31',
+        'openTradeEditor:32',
+        'pop',
+        'popToBase',
+        'toggleHelp',
+      ].sort(),
+    );
+    for (const legacy of ['respondTrade', 'confirmTrade', 'cancelTrade']) {
+      expect(
+        [...found.commands].filter((c) => c.startsWith(`${legacy}:`) || c === legacy),
+        `no ${legacy}`,
+      ).toEqual([]);
+    }
+  });
+
+  it('ts-4.6 the only prompt question any reachable state paints is declineChallenge, every sheet offers only accept / decline / cancel, and every paint hands the view a SocialPaint with exactly the keys tab, sessions, sessionCursor, sheet, confirm', () => {
+    // WRONG IMPL KILLED: a `declineTrade` or `confirmTrade` question still asked by some row; a
+    // `confirm` action on a sheet; a paint that still carries a `tradeCursor` key (or any key
+    // beyond the five) or drops one of them.
+    const found = explore(MIXED);
+    expect([...found.questions], 'the prompt questions painted').toEqual(['declineChallenge']);
+    expect([...found.sheetActions].sort(), 'the actions a sheet offers').toEqual([
+      'accept',
+      'cancel',
+      'decline',
+    ]);
+    expect([...found.paintKeys], 'the SocialPaint key set').toEqual([
+      'confirm,sessionCursor,sessions,sheet,tab',
+    ]);
+  });
+
+  it('ts-4.6 the view model reads no trade offers: over a store whose only members are allChallenges, allPlayers, characters, allProfiles and allTradeSessions it builds, every member it reads is one of those, and Trades lists exactly the viewer`s session rows', () => {
+    // WRONG IMPL KILLED: a viewModel that still calls `store.allTradeOffers()` (a TypeError on
+    // this store), or reads any other store member; one whose Trades tab lists anything but the
+    // viewer's two sessions.
+    const ALLOWED = [
+      'allChallenges',
+      'allPlayers',
+      'characters',
+      'allProfiles',
+      'allTradeSessions',
+    ];
+    const reads = new Set<string>();
+    const base = ctxOf(MIXED) as unknown as { store: Record<string, unknown> };
+    const store = new Proxy(base.store, {
+      get(target, prop, receiver) {
+        reads.add(String(prop));
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const ctx = { ...(base as object), store } as unknown as ScreenContext;
+    expect(Reflect.has(base.store, 'allTradeOffers'), 'fixture: the store has no offer read').toBe(
+      false,
+    );
+    const vm = socialScreen.viewModel(ctx);
+    expect(
+      [...reads].filter((r) => !ALLOWED.includes(r)),
+      'store members read beyond the five',
+    ).toEqual([]);
+    expect(reads.has('allTradeSessions'), 'the session read is made').toBe(true);
+    expect(vm.trades.map((r) => [r.key, r.kind])).toEqual([
+      ['session-31', 'session'],
+      ['session-32', 'session'],
+    ]);
   });
 });

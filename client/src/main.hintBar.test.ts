@@ -232,9 +232,6 @@ const game = (): GameHook => (window as unknown as { __game: () => GameHook })._
 const stackNames = (): string[] =>
   game().stack.map((f) => (f.kind === 'screen' || f.kind === 'prompt' ? (f.id as string) : f.kind));
 
-// ts-3 (named intentional change, C): `offerFrom` (a Pending legacy trade_offer) is replaced by
-// `incomingSession` above: a legacy offer raises no notice any more.
-
 const NPC_ENTITY = 11n;
 /** A dialogue NPC on (3, 6) (the tile the player on (2, 6) facing East faces), which the stubbed
  *  wasm rule names as the faced candidate, in one batch. */
@@ -362,8 +359,7 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       online: true,
       lastInputSeq: 0n,
     });
-    // ts-3 (named intentional change, C): the waiting request is an incoming SESSION (a legacy
-    // trade_offer raises no notice any more). Was: upsertTradeOffer(offerFrom(BOB, 11n, 1_000n)).
+    // The waiting request is an incoming SESSION.
     opts.store.reconcileTradeSessionsFromView([incomingSession(BOB, 11n, 1_000n)]);
     batch();
     frame();
@@ -564,7 +560,7 @@ describe('main.ts world-sheet hint bar over the real shell (runtime, uif-12)', {
       online: true,
       lastInputSeq: 0n,
     });
-    // ts-3 (named intentional change, C): an incoming session, not a legacy trade_offer.
+    // The waiting request is an incoming session.
     opts.store.reconcileTradeSessionsFromView([incomingSession(BOB, 11n, 1_000n)]);
     batch();
     frame();

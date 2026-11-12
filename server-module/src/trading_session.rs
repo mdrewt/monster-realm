@@ -9,12 +9,9 @@
 //! `pub(crate)` write halves (`cancel_sessions_listing`, `delete_sessions_of`,
 //! `decline_sessions`).
 //!
-//! The swap machinery — display-card snapshots, the trade-time trainer-bond
-//! reset, the netted receiver-stack construction and the atomic apply of a
-//! game-core `SwapPlan` — is shared with the legacy offer path:
-//! `trading::propose_trade` snapshots cards and `trading::confirm_trade`
-//! applies its plan with `PARTY_SLOT_NONE` as every destination, so a monster
-//! traded that way arrives in Storage.
+//! The swap machinery lives here too: the trade-time trainer-bond reset, the
+//! netted receiver-stack construction and the atomic apply of a game-core
+//! `SwapPlan`. The confirm that completes a pair is its only caller.
 
 use crate::economy::{grant_currency, spend_currency, wallet_balance};
 use crate::guards::{
@@ -79,32 +76,6 @@ fn reset_trainer_bond(m: &mut Monster) {
     m.quality_time_accum_ms = quality_time_accum_ms;
     m.quality_time_window_ms = quality_time_window_ms;
     m.quality_time_window_start_ms = quality_time_window_start_ms;
-}
-
-/// Build display-only `MonsterCard` snapshots from the given monster IDs.
-/// Rejects if any ID is not found or not owned by `expected_owner`.
-pub(crate) fn snapshot_cards(
-    ctx: &ReducerContext,
-    monster_ids: &[u64],
-    expected_owner: Identity,
-    reducer: &str,
-) -> Result<Vec<MonsterCard>, String> {
-    let me = ctx.sender();
-    let mut cards = Vec::with_capacity(monster_ids.len());
-    for &mid in monster_ids {
-        let Some(m) = ctx.db.monster().monster_id().find(mid) else {
-            let e = format!("monster {mid} not found");
-            log_reject(reducer, me, &e);
-            return Err(e);
-        };
-        if m.owner_identity != expected_owner {
-            let e = format!("monster {mid} not owned by caller");
-            log_reject(reducer, me, &e);
-            return Err(e);
-        }
-        cards.push(card_of(&m));
-    }
-    Ok(cards)
 }
 
 /// The display card of `m`: the fields a trade partner sees, no hidden genes.

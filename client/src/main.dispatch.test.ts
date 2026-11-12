@@ -80,7 +80,6 @@ import type {
   StoreNpcRow,
   StoreSpeciesRow,
   StoreTacticalBattle,
-  StoreTradeOffer,
   StoreTradeSession,
 } from './net/store';
 // bt-12: the results cap the auto-advance waits for (the presentation constitution's, never a
@@ -701,42 +700,8 @@ function dispatchRows(): readonly Row[] {
       kind: 'sell',
       atBattle: 'refuse',
     },
-    {
-      label: 'trade accept',
-      view: 'TradeView',
-      handler: 'onAccept',
-      args: [81n],
-      expected: [{ name: 'respondTrade', args: { tradeId: 81n, accepted: true } }],
-      kind: 'respondTrade',
-      atBattle: 'refuse',
-    },
-    {
-      label: 'trade reject',
-      view: 'TradeView',
-      handler: 'onReject',
-      args: [82n],
-      expected: [{ name: 'respondTrade', args: { tradeId: 82n, accepted: false } }],
-      kind: 'respondTrade',
-      atBattle: 'refuse',
-    },
-    {
-      label: 'trade confirm',
-      view: 'TradeView',
-      handler: 'onConfirm',
-      args: [83n],
-      expected: [{ name: 'confirmTrade', args: { tradeId: 83n } }],
-      kind: 'confirmTrade',
-      atBattle: 'refuse',
-    },
-    {
-      label: 'trade cancel',
-      view: 'TradeView',
-      handler: 'onCancel',
-      args: [84n],
-      expected: [{ name: 'cancelTrade', args: { tradeId: 84n } }],
-      kind: 'cancelTrade',
-      atBattle: 'refuse',
-    },
+    // TradeView owns no callback (it is built with no argument: TS4-BOOT-TRADEVIEW-NO-ARGS below),
+    // so it has no row here.
     // ctl-10b (named intentional change, CTL10B.2): the 'pvp challenge' row is removed with the
     // PvpView `onChallenge` callback and its per-player Challenge buttons. A challenge is started
     // only face to face: the world action sheet's Yes dispatches the `challenge` Command (proved,
@@ -888,9 +853,8 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
 
   it('every reducer-backed view callback sends exactly its reducer with exactly its arguments, and hands the view the promise', async () => {
     // WRONG IMPL KILLED: a callback wired to a sibling's arm (setNickname vs setPartySlot,
-    // acceptChallenge vs declineChallenge vs cancelChallenge, onAccept vs onReject: one reducer,
-    // opposite `accepted`, flee vs swap vs recruit: same battleId, different second field, pvp Attack
-    // vs Swap: one reducer, a different tag), a field forced to 0 or empty or dropped (every row uses
+    // acceptChallenge vs declineChallenge vs cancelChallenge, buy vs sell), a field forced to 0 or
+    // empty or dropped (every row uses
     // distinct non-zero values), a swapped field pair (buy's shopId and itemId, train's monsterId and
     // foodItemId), a constant sent in place of a value (qty, the heal location, the free slot), a
     // party list read from the wrong monsters (the boxed one is excluded and the order is the
@@ -935,6 +899,21 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     for (const name of ['onAccept', 'onDecline', 'onCancel']) {
       expect(typeof handlers[name], `control: ${name} is still wired`).toBe('function');
     }
+  });
+
+  it('TS4-BOOT-TRADEVIEW-NO-ARGS: the TradeView is constructed with no argument (it owns no reducer callback), while the PvpView still gets its handler object', async () => {
+    // WRONG IMPL KILLED: a main.ts that still hands the trade view a handler object (its
+    // onAccept / onReject / onConfirm / onCancel would keep a client path to the respondTrade /
+    // confirmTrade / cancelTrade reducers); a check blind to the recorder (the PvpView control
+    // proves the recorder sees a constructor's arguments).
+    await bootReady();
+    server(1000);
+    const trade = H.ctorArgs.TradeView;
+    if (trade === undefined) throw new Error('TradeView was never constructed by main.ts');
+    expect(trade, 'no constructor argument').toEqual([]);
+    const pvp = H.ctorArgs.PvpView;
+    if (pvp === undefined) throw new Error('PvpView was never constructed by main.ts');
+    expect(pvp, 'control: the PvpView takes its handler object').toHaveLength(1);
   });
 
   it('QF9-2-BOOT-RAISING-NO-CALLBACKS: the RaisingView is built from its mount alone (one constructor argument, the same #app mount as the box), while the box still gets its mount and its callbacks', async () => {
@@ -1010,9 +989,8 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // 'onPvpAttack'] rows are removed with the 1v1 view. The sendGuarded path stays driven by the
     // rename and box rows below; the pvp-action path is the PvpView Accept row (ctl-10b).
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[]]> = [
-      // qf-9 (named intentional change): was ['RaisingView', 'onCare', [72n]]; the callback is gone.
-      // The performCare path is driven through the trade answer, which uses it too.
-      ['TradeView', 'onAccept', [81n]],
+      // The performCare path is driven through the shop's Buy, which runs through it.
+      ['ShopView', 'onBuy', [11, 22]],
       // ctl-10b (named intentional change): was ['PvpView', 'onChallenge', [OTHER_IDENTITY]]; the
       // PvpView callback is retired, so the pvp-action path is driven through its Accept instead.
       ['PvpView', 'onAccept', [91n]],
@@ -1045,11 +1023,9 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // SEND instead of the settle (the banner would flash back while the answer is in flight); and
     // a "fix" that drops the optimistic add (the banner would stay up until the settle on every
     // answer, rejected or not).
-    // ts-3 (named intentional change, C): a legacy `trade_offer` raises no notice any more, so the
-    // trade half answers an incoming SESSION: its decline is `cancelTradeSession`, issued by a
+    // The trade half answers an incoming SESSION: its decline is `cancelTradeSession`, issued by a
     // stand-in menu adapter on LB (the world sheet's Decline issues the same Command; the
-    // notices suite drives that surface), and its key `session-11` is the optimistic one. Was: a
-    // legacy offer answered by TradeView.onReject (respondTrade, the performCare path).
+    // notices suite drives that surface), and its key `session-11` is the optimistic one.
     await bootReady();
     opts.store.upsertPlayer({
       identity: OTHER_IDENTITY,
@@ -1080,7 +1056,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     });
     await pageUp(1150);
     press('Escape', 1160);
-    expect(stackNow(), 'precondition: Start closed the menu').toEqual([{ kind: 'world' }]);
+    expect(stackNow(), 'precondition: Escape closed the menu').toEqual([{ kind: 'world' }]);
     frame(1200);
     expect(
       banner.hidden,
@@ -1140,9 +1116,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // line is the TOAST whatever the view's visibility (the toast is the seam's, not an overlay's),
     // and the stand-ins (which no longer have `showFeedback`) must record nothing.
     // WRONG IMPL KILLED: a success line routed to a view-owned sink (any stand-in would throw on the
-    // missing method, or record it), a swapped accepted/rejected line (the player is told the
-    // opposite of what they chose), the wrong message for confirm vs cancel, a late settle that is
-    // dropped silently when the view is hidden, and a feedback that never reaches the toast.
+    // missing method, or record it), a swapped buy/sell line (the player is told the opposite of
+    // what they did), a late settle that is dropped silently when the view is hidden, and a
+    // feedback that never reaches the toast. TradeView stays in `all` as a control: it owns no
+    // action, and no action may paint on it.
     //
     // ctl-7d (named intentional change, CTL7D.4): the shop's plain `shop.feedback.purchased` /
     // `.sold` ids are deleted. A buy or sell now shows a line naming the quantity, the item and the
@@ -1167,10 +1144,6 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     ];
     // The fourth field is the exact line the action must paint.
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[], string]> = [
-      ['TradeView', 'onAccept', [81n], line('trade.feedback.accepted')],
-      ['TradeView', 'onReject', [82n], line('trade.feedback.rejected')],
-      ['TradeView', 'onConfirm', [83n], line('trade.feedback.completed')],
-      ['TradeView', 'onCancel', [84n], line('trade.feedback.cancelled')],
       ['ShopView', 'onBuy', [11, 22], enBoughtCount(1)],
       ['ShopView', 'onSell', [23], enSoldCount(1)],
       ['RenameView', 'onSubmit', ['Zed'], line('chrome.rename.updated')],
@@ -2013,9 +1986,9 @@ describe('main.ts feedback channels at the dispatch seam (runtime, uif-4)', {
 // ==========================================================================================
 //
 // Same harness and the uif-4 live-region watcher (`uif4WatchLive`: it records every write to
-// #a11y-live's textContent). The eight actions below are the shop, trade, rename and trade-propose
-// callbacks; each now ends in a toast through the one seam, and the toast is queued for the live
-// region exactly once. The eight texts are pairwise distinct on purpose: a repeated identical text is
+// #a11y-live's textContent). The actions below are the shop and rename callbacks; each ends in a
+// toast through the one seam, and the toast is queued for the live region exactly once. The
+// texts are pairwise distinct on purpose: a repeated identical text is
 // deduped by the live region by design (R-uif-4-REPEATSAY), so distinct texts are the only fair way
 // to count one announcement per toast.
 
@@ -2024,9 +1997,9 @@ describe('main.ts per-view settles are announced through the live region once (r
 }, () => {
   afterEach(teardownBoot);
 
-  it('UIF4B.4 each of the seven shop, trade and rename settles reaches #a11y-live exactly once, with its own text', async () => {
-    // ts-3 (named intentional change): the trade-propose row leaves with the wizard (retired: wizard
-    // deleted by spec §ts-3 Strangler; the session arms raise no success toast). Eight -> seven.
+  it('UIF4B.4 each of the three shop and rename settles reaches #a11y-live exactly once, with its own text', async () => {
+    // The trade session arms raise no success toast, so the per-view settles are the shop's two and
+    // the rename's one.
     // WRONG IMPL KILLED: a toast painted but never queued for the live region (a screen-reader user
     // hears nothing), a settle announced twice (the toast AND a view line, or a repeated queue), a
     // settle announced as a different text than the one shown, and one that paints the live node
@@ -2036,15 +2009,11 @@ describe('main.ts per-view settles are announced through the live region once (r
     const live = uif4WatchLive();
     const line = (key: string): string => i18n.t(key as never);
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[], string]> = [
-      ['TradeView', 'onAccept', [81n], line('trade.feedback.accepted')],
-      ['TradeView', 'onReject', [82n], line('trade.feedback.rejected')],
-      ['TradeView', 'onConfirm', [83n], line('trade.feedback.completed')],
-      ['TradeView', 'onCancel', [84n], line('trade.feedback.cancelled')],
       ['ShopView', 'onBuy', [11, 22], enBoughtCount(1)],
       ['ShopView', 'onSell', [23], enSoldCount(1)],
       ['RenameView', 'onSubmit', ['Zed'], line('chrome.rename.updated')],
     ];
-    expect(new Set(cases.map((c) => c[3])).size, 'ANTI-VACUITY: seven distinct texts').toBe(7);
+    expect(new Set(cases.map((c) => c[3])).size, 'ANTI-VACUITY: three distinct texts').toBe(3);
     let base = 1100;
     for (const [view, name, args, text] of cases) {
       await handlerOf(view, name)(...args);
@@ -2067,13 +2036,13 @@ describe('main.ts per-view settles are announced through the live region once (r
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const live = uif4WatchLive();
 
-    H.gate = uif4Rejected('zz-trade-refused');
-    await handlerOf('TradeView', 'onAccept')(81n);
+    H.gate = uif4Rejected('zz-shop-refused');
+    await handlerOf('ShopView', 'onBuy')(11, 22);
     H.gate = null;
     await flush();
     for (let k = 1; k <= 30; k += 1) frame(1100 + k * 50);
     expect(
-      live.filter((w) => w.includes('zz-trade-refused')),
+      live.filter((w) => w.includes('zz-shop-refused')),
       'the rejection is announced once',
     ).toHaveLength(1);
 
@@ -6725,33 +6694,30 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
     }
   });
 
-  it('X at the confirm screen opens the formation editor, and a monster in the player`s open trade (either side of it) is neither a candidate nor in the default formation [BT12-2-BOOT-DEPLOY-X]', async () => {
+  it('X at the confirm screen opens the formation editor, and a monster on the player`s confirmed trade-session side (as opener or as partner) is neither a candidate nor in the default formation [BT12-2-BOOT-DEPLOY-X]', async () => {
     // WRONG IMPL KILLED: the router swallowing X under a nav screen (BT12.2 "X SHALL open the
-    // editor"; R-bt-11-ROUTERX); X handled by the 1v1 path (a jump); a traded monster offered or
+    // editor"; R-bt-11-ROUTERX); X handled by the 1v1 path (a jump); a locked monster offered or
     // deployed (deploy_units refuses it: the whole deploy fails — R-bt-12-TRADEDEPLOY); only the
-    // initiator's side of the offer excluded (the counterparty's ask is locked too); the exclusion
-    // read from a stale offer.
+    // opener's side of a session read (the partner's confirmed side is locked too); the exclusion
+    // read from a stale session.
     await bootReady();
     server(1000);
-    const offer = (
-      tradeId: bigint,
-      mine: 'initiator' | 'counterparty',
+    const session = (
+      sessionId: bigint,
+      mine: 'opener' | 'partner',
       id: bigint,
-    ): StoreTradeOffer => ({
-      tradeId,
-      initiator: mine === 'initiator' ? H.identity : OTHER_IDENTITY,
-      counterparty: mine === 'initiator' ? OTHER_IDENTITY : H.identity,
-      initiatorMonsterIds: mine === 'initiator' ? [id] : [],
-      initiatorItems: [],
-      initiatorCurrency: 0n,
-      counterpartyMonsterIds: mine === 'counterparty' ? [id] : [],
-      counterpartyItems: [],
-      counterpartyCurrency: 0n,
-      initiatorCards: [],
-      counterpartyCards: [],
-      status: 'Pending',
-      createdAtMs: 1_000n,
-    });
+    ): StoreTradeSession => {
+      const side = { monsterIds: [id], items: [], currency: 0n, cards: [] };
+      return mine === 'opener'
+        ? tsSession(sessionId, H.identity, OTHER_IDENTITY, {
+            openerOffer: side,
+            openerConfirmed: true,
+          })
+        : tsSession(sessionId, OTHER_IDENTITY, H.identity, {
+            partnerOffer: side,
+            partnerConfirmed: true,
+          });
+    };
     let t = 1000;
     const at = (): number => {
       t += 100;
@@ -6762,15 +6728,15 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
         ?.textContent ?? null;
 
     for (const [side, battleId] of [
-      ['initiator', 2n ** 60n + 81n],
-      ['counterparty', 2n ** 60n + 91n],
+      ['opener', 2n ** 60n + 81n],
+      ['partner', 2n ** 60n + 91n],
     ] as const) {
       const PA = battleId + 2n;
       const PB = battleId + 4n;
       const PC = battleId + 6n;
       for (const [slot, id] of [PA, PB, PC].entries())
         opts.store.upsertMonster(bt12Monster(id, slot));
-      opts.store.upsertTradeOffer(offer(battleId, side, PB));
+      opts.store.reconcileTradeSessionsFromView([session(battleId, side, PB)]);
       opts.store.upsertBattle(bt12bAnchor(battleId, 'Ongoing', [PA, PB, PC]));
       opts.store.reconcileTacticalBattlesFromView([bt12Tactical(battleId, 'Deploying')]);
       server(at());
@@ -6804,7 +6770,7 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
       expect(bt12Sends(), `${side}: the editor's Start sends no traded monster`).toEqual([
         { battleId, picks: [bt12Pick(PA, 0), bt12Pick(PC, 1)] },
       ]);
-      opts.store.removeTradeOffer(battleId);
+      opts.store.reconcileTradeSessionsFromView([]);
       opts.store.removeBattle(battleId);
       opts.store.reconcileTacticalBattlesFromView([]);
       server(at());
@@ -6829,23 +6795,13 @@ describe('bt-12 B: the tactical shell owns the Active phase (BT12.1, BT12.2)', {
 // `partySize`; the deploy panel's pvp branch does not exist (a Pvp Deploying battle builds the wild
 // panel: the opponent's roster as the pack, `min(max_pack, spawns)` slots, no lock, no countdown).
 
-/** An open trade offer the booted player initiated, holding `ids` (the deploy-X case's shape). */
-function bt15Offer(tradeId: bigint, ids: readonly bigint[]): StoreTradeOffer {
-  return {
-    tradeId,
-    initiator: H.identity,
-    counterparty: OTHER_IDENTITY,
-    initiatorMonsterIds: [...ids],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: 'Pending',
-    createdAtMs: 1_000n,
-  };
+/** A trade session the booted player opened, its own side holding `ids` and CONFIRMED (a confirmed
+ *  side locks its monsters: the deploy-X case's shape). */
+function bt15Session(sessionId: bigint, ids: readonly bigint[]): StoreTradeSession {
+  return tsSession(sessionId, H.identity, OTHER_IDENTITY, {
+    openerOffer: { monsterIds: [...ids], items: [], currency: 0n, cards: [] },
+    openerConfirmed: true,
+  });
 }
 
 /** The challengePvp sends so far, as reducer argument objects. */
@@ -6898,7 +6854,7 @@ describe('bt-15: the sized challenge and the PvP deploy panel (BT15.1)', {
     ]) {
       opts.store.upsertMonster(m);
     }
-    opts.store.upsertTradeOffer(bt15Offer(2n ** 60n + 97n, [TRADED]));
+    opts.store.reconcileTradeSessionsFromView([bt15Session(2n ** 60n + 97n, [TRADED])]);
     server(1010);
     const target = new Identity(OTHER_IDENTITY);
     const issue: { command: unknown } = {
@@ -6934,9 +6890,9 @@ describe('bt-15: the sized challenge and the PvP deploy panel (BT15.1)', {
       { target, partyIds: [P0, P2, P3] },
     ]);
 
-    // The trade is withdrawn: TRADED (slot 5) is eligible again at send time.
+    // The trade session is gone: TRADED (slot 5) is eligible again at send time.
     opts.store.upsertMonster(own(P2, 2, 0));
-    opts.store.removeTradeOffer(2n ** 60n + 97n);
+    opts.store.reconcileTradeSessionsFromView([]);
     server(1450);
     H.calls = [];
     await pageUp(1500);
@@ -8643,5 +8599,395 @@ describe('main.ts trade sessions through the booted shell (runtime, ts-3)', {
     frame(1500);
     tsExpectEditorOn(77n, 'the rejected open lands on the existing session with Zed');
     expect(tsCalls(), 'no recovery reducer was sent').toHaveLength(1);
+  });
+});
+
+// ==========================================================================================
+// ts-4: a confirmed session side locks its monsters out of a challenge; the `__mrTrade` DEV hook
+// ==========================================================================================
+//
+// Same harness. The challenge is the real `challenge` Command, issued by a stand-in main-menu
+// adapter on LB (the world action sheet's Yes issues the same Command), and read at the stubbed
+// `challengePvp` reducer: the ids main.ts commits are `eligibleChallengeIds()`, which reads
+// `tradedIds()`.
+
+describe('main.ts session locks and __mrTrade (runtime, ts-4)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('ts-4.7 a monster on the player`s CONFIRMED session side is never committed to a challenge while the other party monster is; the same side unconfirmed (the partner confirmed) commits both', async () => {
+    // WRONG IMPL KILLED: `tradedIds()` without the `lockedSessionMonsterIds(...)` spread (the
+    // confirmed-locked monster is committed to `challengePvp`, which the server refuses: the
+    // player can never challenge while a confirmed trade waits); a lock read off EITHER side's
+    // mark (the partner's confirm would lock the player's monster in the control); a lock that
+    // ignores the confirm (an unconfirmed offer would already withhold it: lock-at-confirm).
+    await bootReady();
+    server(1000);
+    const LOCKED = 201n;
+    const FREE = 202n;
+    // Slot order puts the locked monster FIRST, so a size-1 pick shows which one was dropped.
+    opts.store.upsertMonster(monster(LOCKED, 0));
+    opts.store.upsertMonster(monster(FREE, 1));
+    const mySide: StoreTradeSession['openerOffer'] = {
+      monsterIds: [LOCKED],
+      items: [],
+      currency: 0n,
+      cards: [],
+    };
+    const withMySide = (confirmed: boolean): StoreTradeSession =>
+      tsSession(301n, H.identity, OTHER_IDENTITY, {
+        openerOffer: mySide,
+        openerConfirmed: confirmed,
+        partnerConfirmed: true,
+      });
+    const issue: { command: unknown } = { command: undefined };
+    swapAdapter('menuView', commandAdapter(issue));
+    /** The `partyIds` of every `challengePvp` one challenge of `partySize` sent. */
+    const committed = async (partySize: number, t: number): Promise<unknown[]> => {
+      H.calls = [];
+      issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize };
+      await pageUp(t);
+      return H.calls
+        .filter((c) => c.name === 'challengePvp')
+        .map((c) => (c.args as { partyIds?: unknown }).partyIds);
+    };
+
+    // Control: my side holds LOCKED but is NOT confirmed (only the partner's is): both are offered.
+    opts.store.reconcileTradeSessionsFromView([withMySide(false)]);
+    server(1100);
+    openMenuAtWorld(1200);
+    expect(await committed(2, 1300), 'unconfirmed: a size-2 challenge commits both').toEqual([
+      [LOCKED, FREE],
+    ]);
+    expect(await committed(1, 1400), 'unconfirmed: a size-1 challenge commits LOCKED').toEqual([
+      [LOCKED],
+    ]);
+    press('Escape', 1500);
+    expect(stackNow(), 'precondition: Escape closed the menu').toEqual([{ kind: 'world' }]);
+
+    // My side confirmed: LOCKED is locked, FREE is still offered.
+    opts.store.reconcileTradeSessionsFromView([withMySide(true)]);
+    server(1600);
+    openMenuAtWorld(1700);
+    expect(await committed(1, 1800), 'confirmed: a size-1 challenge commits FREE only').toEqual([
+      [FREE],
+    ]);
+    expect(
+      await committed(2, 1900),
+      'confirmed: one eligible monster, so a size-2 challenge sends nothing',
+    ).toEqual([]);
+  });
+
+  it('ts-4.7 a monster on the player`s CONFIRMED side as the session PARTNER is never committed to a challenge; the partner side unconfirmed (the opener confirmed) commits it', async () => {
+    // WRONG IMPL KILLED: a lock that reads only the opener's side (`openerConfirmed` and
+    // `openerOffer`), so the partner's confirmed monster is committed to `challengePvp` and the
+    // server refuses the challenge; a lock that reads the viewer's offer but the OTHER party's
+    // confirm flag (the opener's confirm locks the partner's monster in the control); a lock that
+    // ignores the confirm. FREE sits on no session side and is offered in every stage.
+    await bootReady();
+    server(1000);
+    const LOCKED = 211n;
+    const FREE = 212n;
+    // Slot order puts the locked monster FIRST, so a size-1 pick shows which one was dropped.
+    opts.store.upsertMonster(monster(LOCKED, 0));
+    opts.store.upsertMonster(monster(FREE, 1));
+    const mySide: StoreTradeSession['partnerOffer'] = {
+      monsterIds: [LOCKED],
+      items: [],
+      currency: 0n,
+      cards: [],
+    };
+    /** The other player opened the session; the booted player is its partner. */
+    const asPartner = (partnerConfirmed: boolean, openerConfirmed: boolean): StoreTradeSession =>
+      tsSession(311n, OTHER_IDENTITY, H.identity, {
+        partnerOffer: mySide,
+        partnerConfirmed,
+        openerConfirmed,
+      });
+    const issue: { command: unknown } = { command: undefined };
+    swapAdapter('menuView', commandAdapter(issue));
+    /** The `partyIds` of every `challengePvp` one challenge of `partySize` sent. */
+    const committed = async (partySize: number, t: number): Promise<unknown[]> => {
+      H.calls = [];
+      issue.command = { kind: 'challenge', targetIdentity: OTHER_IDENTITY, partySize };
+      await pageUp(t);
+      return H.calls
+        .filter((c) => c.name === 'challengePvp')
+        .map((c) => (c.args as { partyIds?: unknown }).partyIds);
+    };
+
+    // Control: my (partner) side holds LOCKED unconfirmed; only the opener confirmed. Both offered.
+    opts.store.reconcileTradeSessionsFromView([asPartner(false, true)]);
+    server(1100);
+    openMenuAtWorld(1200);
+    expect(
+      await committed(2, 1300),
+      'partner side unconfirmed: a size-2 challenge commits both',
+    ).toEqual([[LOCKED, FREE]]);
+    expect(
+      await committed(1, 1400),
+      'partner side unconfirmed: a size-1 challenge commits LOCKED',
+    ).toEqual([[LOCKED]]);
+    press('Escape', 1500);
+    expect(stackNow(), 'precondition: Escape closed the menu').toEqual([{ kind: 'world' }]);
+
+    // My (partner) side confirmed, the opener's not: LOCKED is withheld, FREE is still offered.
+    opts.store.reconcileTradeSessionsFromView([asPartner(true, false)]);
+    server(1600);
+    openMenuAtWorld(1700);
+    expect(
+      await committed(1, 1800),
+      'partner side confirmed: a size-1 challenge commits FREE only',
+    ).toEqual([[FREE]]);
+    expect(
+      await committed(2, 1900),
+      'partner side confirmed: one eligible monster, so a size-2 challenge sends nothing',
+    ).toEqual([]);
+  });
+
+  it('ts-4.4 window.__mrTrade has exactly six own members (allPlayers, mySessions and the four session reducers); each sends its own reducer with exactly its arguments and no legacy reducer is reachable', async () => {
+    // WRONG IMPL KILLED: a hook that carries `proposeTrade`, `respondTrade`, `confirmTrade`,
+    // `cancelTrade` or `allTradeOffers` (enumerable, non-enumerable via defineProperty, or on its
+    // prototype); a session member dropped or renamed; two session members swapped onto each
+    // other's reducer; an id or revision passed as a Number (the 2^60 + n ids lose precision) or
+    // left a string; `setTradeOffer` dropping or zeroing a field; a member that does not hand the
+    // reducer's promise back; `mySessions` listing a session the booted player is not in;
+    // `allPlayers` reading anything but the store. The hook is deleted before the import, so what
+    // is read is THIS boot's assignment (the DEV gate is on in this harness: `stackNow` reads the
+    // `__game` hook assigned beside it).
+    type Hook = Record<string, unknown>;
+    await bootReady(() => {
+      delete (window as unknown as { __mrTrade?: Hook }).__mrTrade;
+    });
+    server(1000);
+    const hook = (window as unknown as { __mrTrade?: Hook }).__mrTrade;
+    expect(hook, 'the DEV hook is assigned by this boot').toBeDefined();
+    if (hook === undefined) return;
+    const expected = [
+      'allPlayers',
+      'cancelTradeSession',
+      'confirmTradeSession',
+      'mySessions',
+      'openTradeSession',
+      'setTradeOffer',
+    ];
+    expect(
+      Object.getOwnPropertyNames(hook).sort(),
+      'exactly six own members, enumerable or not',
+    ).toEqual(expected);
+    expect(Object.keys(hook).sort(), 'every member is enumerable').toEqual(expected);
+    const ownKeys = Reflect.ownKeys(hook);
+    expect(
+      ownKeys.filter((key) => typeof key === 'symbol'),
+      'no symbol-keyed member is on the hook',
+    ).toEqual([]);
+    expect(
+      ownKeys.map((key) => String(key)).sort(),
+      'exactly six own keys, strings and symbols together',
+    ).toEqual(expected);
+    expect(
+      Object.getPrototypeOf(hook),
+      'the hook inherits from Object.prototype and nothing in between',
+    ).toBe(Object.prototype);
+    for (const name of expected) {
+      expect(typeof hook[name], `${name} is a function`).toBe('function');
+    }
+    const LEGACY = [
+      'proposeTrade',
+      'respondTrade',
+      'confirmTrade',
+      'cancelTrade',
+      'allTradeOffers',
+    ];
+    for (const name of LEGACY) {
+      expect(hook[name], `${name} reads undefined through the hook`).toBeUndefined();
+      expect(Reflect.has(hook, name), `${name} is not on the hook or its prototype`).toBe(false);
+    }
+
+    // The reads: this boot's store, the booted player's sessions only.
+    tsSeedPlayers();
+    const BIG = 2n ** 60n;
+    opts.store.reconcileTradeSessionsFromView([
+      tsSession(BIG + 55n, H.identity, OTHER_IDENTITY, {
+        openerOffer: { monsterIds: [BIG + 7n], items: [], currency: 40n, cards: [] },
+        partnerConfirmed: true,
+        revision: 4n,
+      }),
+      tsSession(BIG + 56n, OTHER_IDENTITY, TS_THIRD),
+    ]);
+    server(1100);
+    const call = (name: string, ...args: unknown[]): unknown =>
+      (hook[name] as (...a: unknown[]) => unknown)(...args);
+    const byIdentity = (a: { identity: string }, b: { identity: string }): number =>
+      a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0;
+    expect(
+      [...(call('allPlayers') as Array<{ identity: string }>)].sort(byIdentity),
+      'allPlayers reads this boot`s store, identity and name only',
+    ).toEqual(
+      [
+        { identity: H.identity, name: 'P' },
+        { identity: OTHER_IDENTITY, name: 'Zed' },
+        { identity: TS_THIRD, name: 'Ivy' },
+      ].sort(byIdentity),
+    );
+    expect(call('mySessions'), 'mySessions maps the booted player`s session only').toEqual([
+      {
+        sessionId: (BIG + 55n).toString(),
+        opener: H.identity,
+        partner: OTHER_IDENTITY,
+        revision: '4',
+        openerConfirmed: false,
+        partnerConfirmed: true,
+        openerOffer: { monsterIds: [(BIG + 7n).toString()], items: [], currency: '40' },
+        partnerOffer: { monsterIds: [], items: [], currency: '0' },
+      },
+    ]);
+
+    // The sends: one reducer per member, each with distinct values, in call order.
+    H.calls = [];
+    const sent = [
+      call('openTradeSession', TS_THIRD),
+      call('setTradeOffer', (BIG + 61n).toString(), {
+        monsterIds: [(BIG + 7n).toString(), (BIG + 9n).toString()],
+        items: [{ itemId: 3, qty: 2 }],
+        currency: (BIG + 40n).toString(),
+      }),
+      call('confirmTradeSession', (BIG + 62n).toString(), (BIG + 5n).toString()),
+      call('cancelTradeSession', (BIG + 63n).toString()),
+    ];
+    for (const p of sent) {
+      expect(p, 'each member hands the reducer`s promise back').toBeInstanceOf(Promise);
+      await p;
+    }
+    expect(H.calls, 'each member sent exactly its reducer with exactly its arguments').toEqual([
+      { name: 'openTradeSession', args: { partner: new Identity(TS_THIRD) } },
+      {
+        name: 'setTradeOffer',
+        args: {
+          sessionId: BIG + 61n,
+          monsterIds: [BIG + 7n, BIG + 9n],
+          items: [{ itemId: 3, qty: 2 }],
+          currency: BIG + 40n,
+        },
+      },
+      { name: 'confirmTradeSession', args: { sessionId: BIG + 62n, revision: BIG + 5n } },
+      { name: 'cancelTradeSession', args: { sessionId: BIG + 63n } },
+    ]);
+    const openArgs = H.calls[0]?.args as { partner?: Identity } | undefined;
+    expect(openArgs?.partner?.toHexString(), 'the partner is the identity handed in').toBe(
+      new Identity(TS_THIRD).toHexString(),
+    );
+    expect(
+      H.calls.filter((c) => LEGACY.includes(c.name)),
+      'no legacy reducer was called by any member',
+    ).toEqual([]);
+  });
+
+  it.each([
+    { wiring: 'onReconnect' as const },
+    { wiring: 'onReady' as const },
+  ])('TS4-RESET-PENDING-OPEN after the identity changes through $wiring alone, a session with the partner of the previous identity`s unanswered Trade request opens no editor, and the bound session id reads null', async ({
+    wiring,
+  }) => {
+    // WRONG IMPL KILLED: `resetTradeSessionState()` without `pendingTradeOpen = null` (the previous
+    // identity's unanswered face-to-face Trade to Zed pops the editor open on the NEW identity's
+    // session with Zed, unasked); `resetTradeSessionState()` without `boundTradeSessionId = null`
+    // (the screen context keeps reading the previous identity's session id); the reset called from
+    // only one of the two identity-change callbacks (each row fires ONE of them). The control
+    // before the change proves the same arrival opens the editor while the identity holds, and
+    // that closing the editor keeps the bound id, so the null after the change is the reset's.
+    const OLD_IDENTITY = H.identity;
+    const NEW_IDENTITY = 'ee'.repeat(32);
+    try {
+      await bootReady();
+      server(1000);
+      // The main menu's stand-in issues `openTradeEditor` on LB and records the screen context it
+      // is handed: its getters read the live bound ids.
+      const issue: { command: unknown } = { command: { kind: 'openTradeEditor', sessionId: 95n } };
+      let seen: { readonly tradeSessionId: unknown } | undefined;
+      swapAdapter('menuView', {
+        ...(commandAdapter(issue) as Record<string, unknown>),
+        viewModel: (ctx: unknown) => {
+          seen = ctx as { readonly tradeSessionId: unknown };
+          return undefined;
+        },
+      });
+      const boundId = (): unknown => {
+        if (seen === undefined) throw new Error('the menu was never handed a screen context');
+        return seen.tradeSessionId;
+      };
+      const toWorld = (label: string, t: number): void => {
+        for (let i = 0; i < 4 && stackNow().length > 1; i += 1) press('Escape', t + i * 10);
+        expect(stackNow(), `${label}: back at the bare world`).toEqual([WORLD_FRAME]);
+      };
+      const ivy = tsSession(95n, TS_THIRD, H.identity);
+      opts.store.reconcileTradeSessionsFromView([ivy]);
+      tsFacePartner(1100);
+      frame(1150);
+      tsExpectNoEditor('precondition: Ivy`s incoming session opened no frame');
+
+      // Control: with the identity unchanged, the opener's row with Zed arriving after A on Trade
+      // opens the editor on it.
+      H.calls = [];
+      tsPressTrade(1200);
+      await flush();
+      expect(
+        tsCalls().map((c) => c.name),
+        'control: A on Trade sends the open',
+      ).toEqual(['openTradeSession']);
+      tsExpectNoEditor('control: nothing open before the row');
+      opts.store.reconcileTradeSessionsFromView([ivy, tsSession(96n, H.identity, OTHER_IDENTITY)]);
+      server(1300);
+      frame(1350);
+      tsExpectEditorOn(96n, 'control: the row arriving within the wait opens the editor');
+      toWorld('control', 1400);
+      opts.store.reconcileTradeSessionsFromView([ivy]);
+      server(1500);
+      frame(1550);
+      tsExpectNoEditor('precondition: the session with Zed left');
+
+      // The editor is bound to Ivy's session, then closed: the bound id stays.
+      openMenuAtWorld(1600);
+      await pageUp(1650);
+      expect(stackNow().at(-1), 'precondition: the editor is the top frame').toEqual(
+        screenFrame('tradeSessionView'),
+      );
+      expect(tsRoot().getAttribute('data-session-id'), 'precondition: on Ivy`s session').toBe('95');
+      expect(boundId(), 'control: the context reads the bound session').toBe(95n);
+      toWorld('precondition', 1700);
+      expect(boundId(), 'control: closing the editor keeps the bound session').toBe(95n);
+
+      // The previous identity asks Zed to trade; no row arrives for it.
+      server(1800);
+      H.calls = [];
+      tsPressTrade(1900);
+      await flush();
+      expect(
+        tsCalls().map((c) => c.name),
+        'precondition: the previous identity`s open was sent',
+      ).toEqual(['openTradeSession']);
+      server(2000);
+      frame(2050);
+      tsExpectNoEditor('precondition: no row, no editor');
+
+      // The identity changes through ONE callback; the new identity opened a session with Zed,
+      // arriving well within the wait of the previous identity's request.
+      H.identity = NEW_IDENTITY;
+      if (wiring === 'onReconnect') opts.onReconnect(NEW_IDENTITY);
+      opts.store.reconcileTradeSessionsFromView([tsSession(97n, NEW_IDENTITY, OTHER_IDENTITY)]);
+      if (wiring === 'onReady') opts.onReady(NEW_IDENTITY);
+      server(2100);
+      frame(2150);
+      await flush();
+      frame(2200);
+      expect(
+        opts.store.allTradeSessions().map((s) => [s.sessionId, s.opener, s.partner]),
+        'fixture: the store holds the new identity`s session with Zed',
+      ).toEqual([[97n, NEW_IDENTITY, OTHER_IDENTITY]]);
+      tsExpectNoEditor('the new identity`s session with Zed opens no editor');
+      expect(boundId(), 'the bound session id reads null after the identity change').toBeNull();
+      expect(tsCalls(), 'and nothing more was sent').toHaveLength(1);
+    } finally {
+      H.identity = OLD_IDENTITY;
+    }
   });
 });

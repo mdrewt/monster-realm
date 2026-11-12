@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -7,83 +6,55 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { awaitTacticalActive, fleeByButtons } from './controls';
+import { awaitTacticalActive, closeAll, fleeByButtons, readWorld, walkTo } from './controls';
 
-// battle↔trade interlock e2e (EARS 17.5f-2)
+// battle↔trade interlock e2e on trade SESSIONS (EARS 17.5f-2)
 //
-// FILE NAMED `trade-interlock.spec.ts` (not `battle-*`) so it sorts AFTER
-// golden.spec.ts and recruit.spec.ts in Playwright's alphabetical run order,
-// eliminating the presenceCount===2 cross-contamination hazard from golden.spec.
+// FILE NAMED `trade-interlock.spec.ts` (not `battle-*`) so it sorts AFTER golden.spec.ts and
+// recruit.spec.ts in Playwright's alphabetical run order, eliminating the presenceCount===2
+// cross-contamination hazard from golden.spec.
 //
-// WHAT THIS KILLS
-// ===============
-// This spec exists to prove that `reject_if_in_battle` in trading.rs is ACTIVE.
-// If that guard is deleted (or never lands), step (c) below would insert a
-// trade_offer row for A-while-in-battle. The spacetime sql absence assertion at
-// the end would then see a row and FAIL RED — surfacing the missing guard.
+// WHAT THIS PROVES, BOTH DIRECTIONS
+// =================================
+//   (1) LOCK-AT-CONFIRM: a monster on a CONFIRMED session side cannot be nominated for a battle,
+//       and a monster on an UNCONFIRMED side can. The e2e-reachable nomination is
+//       `challenge_pvp` (server-module/src/pvp.rs: every party monster passes
+//       `guards::reject_if_monster_locked`, which refuses a monster on one of the caller's
+//       confirmed session sides with `REJECT_MONSTER_IN_TRADE`, guards.rs). The same guard gates
+//       `tactics::stage_side` (the deploy) and `tactics::start_wild_tactical`; a wild start's
+//       refusal is swallowed by the movement tick and reaches no client, so the grass walk is used
+//       only on the UNCONFIRMED side, where it must open a battle.
+//   (2) IN-BATTLE: a monster in an ongoing battle cannot be offered: `set_trade_offer` runs
+//       game-core `check_offer_eligibility`, whose `MonsterInBattle` reads
+//       "monster {id} is in an ongoing battle" (game-core/src/trading/session.rs).
 //
-// Trading.rs guard order (relevant excerpt):
-//   G1. joined/self guard          — player must have joined and not be self
-//   G2. active-offer guard         — player must not already have an offer
-//   G3. validate_proposal — monsters must be non-empty per side
-//   G4. currency guard             — must have sufficient currency
-//   G5. items guard                — must own offered items
-//   G6. reject_if_in_battle        — checks BOTH initiator's monsters against
-//                                    initiator's battles AND counterparty's monsters
-//                                    against counterparty's battles. In THIS test,
-//                                    it is the COUNTERPARTY (A) check that fires:
-//                                    A's starter is in counterpartyMonsterIds and
-//                                    A is currently in a wild battle.
+// The session SURVIVES battle entry (its auto-cancel fires only when an offered monster leaves
+// the party, faints or changes owner), so nothing here expects it to disappear.
 //
-// Paired positive-control design:
-//   Step (b): B successfully proposes a trade (G1-G6 all pass) and it appears.
-//   Step (b-cancel): B cancels the trade (ensuring G2 cannot confound step (c)).
-//   Step (c): B tries the IDENTICAL proposal after A enters a wild battle.
-//   The two calls differ ONLY in A's in-battle state.
-//   If step (c) inserts a row, the guard is missing — the sql absence catches it.
-//   If step (b) does NOT insert a row, the positive control fails — guards G1-G5
-//   have a bug and the interlock cannot be tested (the sql absence would be
-//   vacuously true regardless of G6).
+// PAIRED CONTROLS: every refusal has a positive control in the same test that differs from it in
+// the ONE fact under test — A's identical challenge before A confirmed; B's challenge from the
+// unconfirmed side of the same session; A's identical set_trade_offer before the battle.
+// A refusal is asserted three ways: the call was rejected (not null), as a reducer error
+// (`SenderError`, the SDK's class for a reducer's Err), with the server's exact text.
 //
-// POSITIVE-CONTROL LOAD-BEARING PROPERTY:
-//   If G2 (active-offer guard) is broken, step (b-cancel) ensures it is cleared
-//   before step (c). Without the cancel-then-assert-gone cycle, a stale offer
-//   from step (b) could confound step (c) via G2 rather than G6 — making the
-//   absence assertion vacuously pass on a G2 hit, not a G6 hit.
+// FRESH IDENTITIES / FULL HP: each browser is a fresh identity with one full-HP starter in party
+// slot 0, no items and no wallet. A offers IMMEDIATELY once its battle is ongoing, so the wild
+// cannot faint the starter first (a fainted monster would be refused for that reason instead).
 //
-// FRESH IDENTITIES / FULL-HP NOTE (F10)
-// =======================================
-// Each browser instance generates a fresh identity and a full-HP starter.
-// A proposes a trade IMMEDIATELY when ongoingBattle is non-null (before any
-// attack), so the wild monster cannot KO the party before the interlock fires.
-//
-// WILD BATTLE VIA GRASS WALK (NOT start_wild_battle)
-// ====================================================
-// The test cannot call start_wild_battle from page.evaluate() because the
-// browser's DbConnection has no auth token accessible to the test process
-// (ADR-0086 §infra; recruit.spec.ts:13-27 precedent). We grass-walk instead.
-//
-// SETTLE WINDOW / SQL ABSENCE PROOF
-// ==================================
-// After step (c)'s proposeTrade call (or rejection), we poll allTradeOffers()
-// for MAX_SETTLE_POLLS × SETTLE_POLL_INTERVAL_MS to confirm the offer count
-// stays 0 across consecutive polls. Then we run a spacetime sql query as the
-// authoritative check. The settle window closes the race: a slow server insert
-// would show up in the consecutive zero-count window.
-//
-// SETTLE WINDOW ARITHMETIC:
-//   MAX_SETTLE_POLLS = 10
-//   SETTLE_POLL_INTERVAL_MS = 500ms
-//   Total settle window: 5 000ms (5s)
-//   Rationale: a server-side reject fires within <200ms on a local instance;
-//   a genuine (buggy) insert also arrives within 200ms. 5s catches both cases
-//   with a 25× safety margin. If the server is genuinely slow (>1s), the sql
-//   assertion is the backstop.
+// WILD BATTLE VIA GRASS WALK (NOT start_wild_battle): the test has no auth token for a reducer
+// the browser does not expose (ADR-0086 §infra; recruit.spec.ts precedent), so A grass-walks.
 //
 // EARS CRITERIA COVERED
 // =====================
-//   17.5f-2 — two-context interlock: A in wild battle, B proposes trade including
-//              A's in-battle monster → assert no trade_offer row (server truth).
+//   17.5f-2 — a confirmed session side's monster cannot enter a battle, an unconfirmed side's
+//              monster can, and a monster in an ongoing battle cannot be offered.
+
+/** guards.rs `REJECT_MONSTER_IN_TRADE`: the refusal for a monster a trade holds. */
+const REJECT_MONSTER_IN_TRADE = 'monster is in an active trade';
+/** game-core trading/session.rs `TradeSessionError::MonsterInBattle`'s Display. */
+const monsterInBattle = (id: string): string => `monster ${id} is in an ongoing battle`;
+/** The SDK's error class for a reducer that returned Err (spacetimedb lib/errors.ts). */
+const SENDER_ERROR = 'SenderError';
 
 // ---------------------------------------------------------------------------
 // GameSnap interface — mirrors main.ts snapshot shape.
@@ -107,28 +78,217 @@ interface GameSnap {
 }
 
 // ---------------------------------------------------------------------------
-// MrTrade interface — re-declared locally (do NOT cross-import from trade-full.spec.ts).
+// The DEV hooks this spec calls (main.ts `mrTradeHook` / `mrPvpHook`), re-declared locally.
 // ---------------------------------------------------------------------------
+interface HookOffer {
+  monsterIds: string[];
+  items: { itemId: number; qty: number }[];
+  currency: string;
+}
+interface HookSession {
+  sessionId: string;
+  opener: string;
+  partner: string;
+  revision: string;
+  openerConfirmed: boolean;
+  partnerConfirmed: boolean;
+  openerOffer: HookOffer;
+  partnerOffer: HookOffer;
+}
 interface MrTrade {
-  proposeTrade(args: {
-    counterparty: string;
-    initiatorMonsterIds: string[];
-    initiatorItems: { itemId: number; qty: number }[];
-    initiatorCurrency: string;
-    counterpartyMonsterIds: string[];
-    counterpartyItems: { itemId: number; qty: number }[];
-    counterpartyCurrency: string;
-  }): Promise<void> | undefined;
-  respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined;
-  confirmTrade(tradeId: string): Promise<void> | undefined;
-  cancelTrade(tradeId: string): Promise<void> | undefined;
-  allTradeOffers(): Array<{
-    tradeId: string;
-    initiator: string;
-    counterparty: string;
+  allPlayers(): Array<{ identity: string; name: string }>;
+  openTradeSession(partnerHex: string): Promise<void> | undefined;
+  setTradeOffer(sessionId: string, offer: HookOffer): Promise<void> | undefined;
+  confirmTradeSession(sessionId: string, revision: string): Promise<void> | undefined;
+  cancelTradeSession(sessionId: string): Promise<void> | undefined;
+  mySessions(): HookSession[];
+}
+interface MrPvp {
+  challengePvp(targetHex: string, partyIds: string[]): Promise<void> | undefined;
+  cancelChallenge(challengeId: string): Promise<void> | undefined;
+  allChallenges(): Array<{
+    challengeId: string;
+    challenger: string;
+    target: string;
     status: string;
   }>;
-  allPlayers(): Array<{ identity: string; name: string }>;
+}
+
+/** A reducer call through the hooks, made in the page. */
+type HookCall =
+  | { kind: 'open'; partner: string }
+  | { kind: 'offer'; sessionId: string; monsterIds: string[] }
+  | { kind: 'confirm'; sessionId: string; revision: string }
+  | { kind: 'cancelSession'; sessionId: string }
+  | { kind: 'challenge'; target: string; party: string[] }
+  | { kind: 'cancelChallenge'; challengeId: string };
+
+type Refusal = { name: string; message: string };
+
+/** Sends `call` from `p` and awaits the reducer: null when it succeeded, else the rejection's name
+ *  and message as the page saw them. */
+const send = (p: Page, call: HookCall): Promise<Refusal | null> =>
+  p.evaluate(async (c: HookCall) => {
+    const w = window as unknown as { __mrTrade: MrTrade; __mrPvp: MrPvp };
+    let sent: Promise<void> | undefined;
+    switch (c.kind) {
+      case 'open':
+        sent = w.__mrTrade.openTradeSession(c.partner);
+        break;
+      case 'offer':
+        sent = w.__mrTrade.setTradeOffer(c.sessionId, {
+          monsterIds: c.monsterIds,
+          items: [],
+          currency: '0',
+        });
+        break;
+      case 'confirm':
+        sent = w.__mrTrade.confirmTradeSession(c.sessionId, c.revision);
+        break;
+      case 'cancelSession':
+        sent = w.__mrTrade.cancelTradeSession(c.sessionId);
+        break;
+      case 'challenge':
+        sent = w.__mrPvp.challengePvp(c.target, c.party);
+        break;
+      case 'cancelChallenge':
+        sent = w.__mrPvp.cancelChallenge(c.challengeId);
+        break;
+    }
+    if (sent === undefined) return { name: 'NotSent', message: `${c.kind}: no live connection` };
+    try {
+      await sent;
+      return null;
+    } catch (e) {
+      const err = e as { name?: unknown; message?: unknown } | null;
+      return { name: String(err?.name ?? typeof e), message: String(err?.message ?? e) };
+    }
+  }, call);
+
+function expectAccepted(r: Refusal | null, label: string): void {
+  expect(r, `${label}: the reducer accepted the call (got ${JSON.stringify(r)})`).toBeNull();
+}
+
+/** The three-part refusal: rejected, as a reducer error, with exactly `message`. */
+function expectRefused(r: Refusal | null, message: string, label: string): void {
+  expect(r, `${label}: the reducer refused the call`).not.toBeNull();
+  expect(r?.name, `${label}: refused as a reducer error`).toBe(SENDER_ERROR);
+  expect(r?.message, `${label}: refused for this reason`).toBe(message);
+}
+
+/** The session between `me` and `other` (either orientation) as `p`'s hook reads it, else null. */
+const sessionBetween = (p: Page, me: string, other: string): Promise<HookSession | null> =>
+  p.evaluate(
+    ({ me: a, other: b }) => {
+      const w = window as unknown as { __mrTrade: MrTrade };
+      return (
+        w.__mrTrade
+          .mySessions()
+          .find(
+            (s) => (s.opener === a && s.partner === b) || (s.opener === b && s.partner === a),
+          ) ?? null
+      );
+    },
+    { me, other },
+  );
+
+/** Polls until `p` holds a session between the two that satisfies `ok`; returns it. */
+async function waitSession(
+  p: Page,
+  me: string,
+  other: string,
+  label: string,
+  ok: (s: HookSession) => boolean = () => true,
+): Promise<HookSession> {
+  let found: HookSession | null = null;
+  await expect
+    .poll(
+      async () => {
+        found = await sessionBetween(p, me, other);
+        return found !== null && ok(found);
+      },
+      { message: `${label}: the session reaches this page in the expected state`, timeout: 20_000 },
+    )
+    .toBe(true);
+  const s = found as HookSession | null;
+  if (s === null) throw new Error(`${label}: no session`);
+  return s;
+}
+
+/** The id of `challenger`'s Pending challenge to `target` as `p` reads it, else ''. */
+const pendingChallenge = (p: Page, challenger: string, target: string): Promise<string> =>
+  p.evaluate(
+    ({ c, t }) => {
+      const w = window as unknown as { __mrPvp?: MrPvp };
+      return (
+        w.__mrPvp
+          ?.allChallenges()
+          .find((x) => x.challenger === c && x.target === t && x.status === 'Pending')
+          ?.challengeId ?? ''
+      );
+    },
+    { c: challenger, t: target },
+  );
+
+/** Polls until `p` sees `challenger`'s Pending challenge to `target`; returns its id. */
+async function waitChallenge(
+  p: Page,
+  challenger: string,
+  target: string,
+  label: string,
+): Promise<string> {
+  let id = '';
+  await expect
+    .poll(
+      async () => {
+        id = await pendingChallenge(p, challenger, target);
+        return id !== '';
+      },
+      { message: `${label}: the pending challenge reaches this page`, timeout: 20_000 },
+    )
+    .toBe(true);
+  return id;
+}
+
+/** Polls until `p` sees no Pending challenge from `challenger` to `target`. */
+async function waitNoChallenge(
+  p: Page,
+  challenger: string,
+  target: string,
+  label: string,
+): Promise<void> {
+  await expect
+    .poll(() => pendingChallenge(p, challenger, target), {
+      message: `${label}: no pending challenge remains`,
+      timeout: 20_000,
+    })
+    .toBe('');
+}
+
+/** Cleanup only (a `finally`): cancels any pending challenge between the two and any session they
+ *  share. Never the flow under test; never throws. */
+async function cleanup(pa: Page, pb: Page, a: string, b: string): Promise<void> {
+  try {
+    for (const [p, from, to] of [
+      [pa, a, b],
+      [pb, b, a],
+    ] as const) {
+      const cid = await pendingChallenge(p, from, to);
+      if (cid !== '') {
+        await send(p, { kind: 'cancelChallenge', challengeId: cid });
+        await waitNoChallenge(p, from, to, 'cleanup');
+      }
+    }
+    const left = await sessionBetween(pa, a, b);
+    if (left !== null) {
+      await send(pa, { kind: 'cancelSession', sessionId: left.sessionId });
+      await expect
+        .poll(async () => (await sessionBetween(pa, a, b)) === null, { timeout: 20_000 })
+        .toBe(true);
+    }
+  } catch (err) {
+    console.error('[trade-interlock cleanup]', err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,93 +364,14 @@ async function gameReady(p: Page): Promise<void> {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Settle window constants — see arithmetic in the header comment.
-// ---------------------------------------------------------------------------
-/** Number of consecutive zero-count polls before the settle window closes. */
-const MAX_SETTLE_POLLS = 10;
-/** Delay between polls in milliseconds. */
-const SETTLE_POLL_INTERVAL_MS = 500;
-
-// ---------------------------------------------------------------------------
-// runTradeOfferSql: authoritative spacetime sql query for trade_offer rows
-// scoped to the (initiator, counterparty) pair — BOTH directions checked.
-// Returns raw sql output. Hard-fails on CLI/infra error.
-// ---------------------------------------------------------------------------
-function runTradeOfferSql(normA: string, normB: string): string {
-  const server = process.env.STDB_SERVER ?? 'local';
-  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
-  // Literal regexes only — no new RegExp().
-  if (!/^[A-Za-z0-9:/._-]+$/.test(server)) {
-    throw new Error(`STDB_SERVER contains characters outside [A-Za-z0-9:/._-]: ${server}`);
-  }
-  if (!/^[A-Za-z0-9_-]+$/.test(db)) {
-    throw new Error(`VITE_STDB_DB contains characters outside [A-Za-z0-9_-]: ${db}`);
-  }
-  // Identity hex strings: normA/normB are lowercase hex without 0x prefix.
-  // Validate: only lowercase hex chars allowed (32 bytes = 64 hex chars).
-  if (!/^[0-9a-f]+$/.test(normA)) {
-    throw new Error(`normA identity failed hex charset validation: ${normA}`);
-  }
-  if (!/^[0-9a-f]+$/.test(normB)) {
-    throw new Error(`normB identity failed hex charset validation: ${normB}`);
-  }
-  // The trade_offer table uses Identity columns (stored with 0x prefix in sql output).
-  // We SELECT all trade_offer rows (small table) and filter client-side to avoid
-  // identity-format ambiguity in the WHERE clause.
-  let output: string;
-  try {
-    output = execSync(
-      `spacetime sql -s ${server} ${db} "SELECT trade_id, initiator, counterparty FROM trade_offer"`,
-      { encoding: 'utf8', timeout: 15_000 },
-    );
-  } catch (err) {
-    throw new Error(
-      `17.5f-2: spacetime sql trade_offer query failed (CLI/infra): ${(err as Error).message}`,
-    );
-  }
-  return output;
-}
-
-/** normalizeIdentity: lowercase + strip leading '0x'. Copied from ranked-forfeit. */
-function normalizeIdentity(id: string): string {
-  let s = id.toLowerCase();
-  if (s.startsWith('0x')) s = s.slice(2);
-  return s;
-}
-
-/** tradeOfferRowsForPair: parse sql output and return rows matching (normA, normB).
- *  Checks BOTH directions: initiator=A/counterparty=B and initiator=B/counterparty=A. */
-function tradeOfferRowsForPair(sqlOutput: string, normA: string, normB: string): number {
-  const lines = sqlOutput.split('\n').map((l) => l.trim());
-  let count = 0;
-  for (const line of lines) {
-    if (!line.includes('|')) continue;
-    if (line.includes('---')) continue;
-    const firstCol = line.split('|')[0]?.trim() ?? '';
-    // Skip header row (contains 'trade_id' as a column name).
-    if (firstCol === 'trade_id') continue;
-
-    const cols = line.split('|').map((c) => c.trim());
-    if (cols.length < 3) continue;
-    const initiator = normalizeIdentity(cols[1] ?? '');
-    const counterparty = normalizeIdentity(cols[2] ?? '');
-    // Check both directions.
-    if (
-      (initiator === normA && counterparty === normB) ||
-      (initiator === normB && counterparty === normA)
-    ) {
-      count++;
-    }
-  }
-  return count;
-}
+/** How long a refused call gets for a stray row to show up anyway before the absence check. */
+const SETTLE_MS = 1_500;
 
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
 test.describe
-  .serial('m17.5f — battle↔trade interlock e2e (17.5f-2)', () => {
+  .serial('m17.5f — battle↔trade interlock e2e 17.5f-2', () => {
     let browserA: Browser;
     let ctxA: BrowserContext;
     let pageA: Page;
@@ -314,379 +395,232 @@ test.describe
     });
 
     test.afterAll(async () => {
-      // Close both browsers; tolerate already-closed (e.g., A fled and closed,
-      // or B closed during a test error path).
-      try {
-        await browserA?.close();
-      } catch {
-        // tolerate
-      }
-      try {
-        await browserB?.close();
-      } catch {
-        // tolerate
-      }
+      // Tolerate already-closed browsers (an error path).
+      await browserA?.close().catch(() => undefined);
+      await browserB?.close().catch(() => undefined);
     });
 
     // -------------------------------------------------------------------------
-    // Battle↔trade interlock test
-    //
     // Flow:
-    //   (a)  Capture identities from both pages.
-    //   (b)  POSITIVE CONTROL (pre-battle): B proposes a trade (B's starter for
-    //        A's starter, no items/currency) → assert row APPEARS in allTradeOffers.
-    //   (b-cancel) B cancels → assert row GONE (clears G2 so it cannot confound step (c)).
-    //   (c)  A grass-walks into a wild battle (stepOne/shuttleDir helpers from recruit.spec).
-    //   (d)  Immediately (ongoingBattle !== null): B repeats the IDENTICAL proposeTrade.
-    //        The two calls differ ONLY in A's in-battle state (A is now in battle).
-    //        The battle interlock guard (G6: reject_if_in_battle) must reject the call.
-    //   (e)  Settle window: poll allTradeOffers() for 5s to confirm count stays 0.
-    //   (f)  Authoritative spacetime sql absence assertion scoped to (A,B) pair.
-    //   (g)  A flees with Run (waitForBattleCleared).
+    //   (a)  identities and starters; A walks onto B's tile and opens a session; both offer their
+    //        starter (revision 2, both unconfirmed).
+    //   (b)  CONTROL: A challenges B with its starter — accepted (unconfirmed side); A cancels it.
+    //   (c)  A confirms at revision 2 (B sees A confirmed, itself not).
+    //   (d)  A repeats the IDENTICAL challenge — REFUSED "monster is in an active trade"; no
+    //        challenge reaches B.
+    //   (e)  CONTROL: B (the unconfirmed side of the same session) challenges A with its starter —
+    //        accepted; B cancels it.
+    //   (f)  B re-sends its identical offer: revision 3, both confirms cleared.
+    //   (g)  CONTROL: A re-sends its identical offer before any battle — accepted (revision 4).
+    //   (h)  A grass-walks into a wild battle — its starter is on an UNCONFIRMED side, so the
+    //        battle opens; the session survives with the starter still offered.
+    //   (i)  A repeats the IDENTICAL offer while the battle is ongoing — REFUSED
+    //        "monster {id} is in an ongoing battle"; the revision does not move.
+    //   (j)  A flees.
     //
     // WHAT THIS KILLS:
-    //   Step (d) row appearing → reject_if_in_battle was deleted or never implemented.
-    //   Step (b) row NOT appearing → guards G1-G5 have a bug; test would give a
-    //            vacuous positive (confounding). The positive control hard-fails here.
-    //
+    //   (d) accepted → `reject_if_monster_locked` dropped from challenge_pvp, or the lock ignores
+    //       confirmed session sides; (b)/(e) refused → the lock also holds unconfirmed sides (or
+    //       the other participant's side), which would make the (d) refusal non-diagnostic.
+    //   (h) no battle → the lock holds an unconfirmed side at the wild start.
+    //   (i) accepted → the in-battle eligibility check is gone; (g) refused → the offer itself is
+    //       broken and (i) would refuse for the wrong reason (the exact text pins the reason).
     // -------------------------------------------------------------------------
-    test('battle↔trade interlock: A in wild battle, B proposeTrade rejected; positive control pre-battle succeeds (17.5f-2)', async () => {
-      // bt-16: + the tactical flee (an own live turn, the wild's turns first) and its results.
-      test.setTimeout(150_000);
+    test('battle↔trade interlock 17.5f-2: a confirmed session side`s monster cannot enter a battle, an unconfirmed side`s can, and a monster in an ongoing battle cannot be offered', async () => {
+      test.setTimeout(240_000);
+      await closeAll(pageA);
+      await closeAll(pageB);
 
-      // (a) Capture identities.
-      const identityA = await pageA.evaluate(() => {
-        return (window as unknown as { __game: () => GameSnap }).__game().identity;
-      });
-      const identityB = await pageB.evaluate(() => {
-        return (window as unknown as { __game: () => GameSnap }).__game().identity;
-      });
-      expect(identityA, 'identityA must be non-empty').not.toBe('');
-      expect(identityB, 'identityB must be non-empty').not.toBe('');
-      expect(identityA, 'identityA and identityB must differ').not.toBe(identityB);
-
-      const normA = normalizeIdentity(identityA);
-      const normB = normalizeIdentity(identityB);
-
-      // Read starters: each fresh identity gets exactly 1 starter from join_game.
-      const starterA = await pageA.evaluate(() => {
-        const g = (window as unknown as { __game: () => GameSnap }).__game();
-        const m = g.ownMonsters[0];
-        if (!m) throw new Error('17.5f-2: no starter monster for A');
-        return m.monsterId;
-      });
-      const starterB = await pageB.evaluate(() => {
-        const g = (window as unknown as { __game: () => GameSnap }).__game();
-        const m = g.ownMonsters[0];
-        if (!m) throw new Error('17.5f-2: no starter monster for B');
-        return m.monsterId;
-      });
-
-      // B waits until A appears in allPlayers().
-      await pageB.waitForFunction(
-        (aIdentity: string) => {
-          const w = window as unknown as { __mrTrade?: MrTrade };
-          if (!w.__mrTrade) return false;
-          return w.__mrTrade.allPlayers().some((pl) => pl.identity === aIdentity);
-        },
-        identityA,
-        { timeout: 15_000 },
+      // (a) Identities, starters, the session.
+      const snapA = await pageA.evaluate(() =>
+        (window as unknown as { __game: () => GameSnap }).__game(),
       );
+      const snapB = await pageB.evaluate(() =>
+        (window as unknown as { __game: () => GameSnap }).__game(),
+      );
+      const idA = snapA.identity;
+      const idB = snapB.identity;
+      expect(idA, 'identityA must be non-empty').not.toBe('');
+      expect(idB, 'identityB must be non-empty').not.toBe('');
+      expect(idA, 'identityA and identityB must differ').not.toBe(idB);
+      const starterA = snapA.ownMonsters[0]?.monsterId;
+      const starterB = snapB.ownMonsters[0]?.monsterId;
+      if (starterA === undefined) throw new Error('17.5f-2: no starter monster for A');
+      if (starterB === undefined) throw new Error('17.5f-2: no starter monster for B');
+      expect(snapA.ongoingBattle, 'precondition: A is not in a battle').toBeNull();
+      expect(await sessionBetween(pageA, idA, idB), 'precondition: no session yet').toBeNull();
 
-      // -----------------------------------------------------------------------
-      // (b) POSITIVE CONTROL (pre-battle): B proposes trade with EXACT final arg shape.
-      //     initiatorMonsterIds=[B's starter], counterpartyMonsterIds=[A's starter],
-      //     zero items and currency on both sides.
-      //     Non-empty on BOTH sides so validate_proposal (TR-1/G3) cannot fire.
-      //     Both monsters are owned by their respective players, so ownership guards pass.
-      //
-      // WHAT THIS KILLS (positive control load-bearing):
-      //     If this row does NOT appear, guards G1-G5 have a bug. The test fails here
-      //     with a clear message, preventing a vacuous absence assertion at step (f).
-      // -----------------------------------------------------------------------
-      const proposeArgs = {
-        counterparty: identityA,
-        initiatorMonsterIds: [starterB],
-        initiatorItems: [] as { itemId: number; qty: number }[],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [starterA],
-        counterpartyItems: [] as { itemId: number; qty: number }[],
-        counterpartyCurrency: '0',
-      };
-
-      // B proposes (pre-battle control). Catch rejection so we can report it as a
-      // test failure rather than an unhandled promise rejection — following trade-full
-      // pattern.
-      const controlProposalError = await pageB
-        .evaluate((args: typeof proposeArgs) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const p = w.__mrTrade.proposeTrade(args);
-          if (!p) throw new Error('17.5f-2: proposeTrade returned undefined (conn not ready?)');
-          return p;
-        }, proposeArgs)
-        .then(() => null)
-        .catch((err: Error) => err.message);
-
-      if (controlProposalError !== null) {
-        throw new Error(
-          `17.5f-2: POSITIVE CONTROL FAILED — pre-battle proposeTrade was rejected: ` +
-            `${controlProposalError}. Guards G1-G5 have a bug that confounds the interlock test.`,
+      try {
+        const there = (await readWorld(pageB)).ownAuthTile;
+        if (there === null) throw new Error('17.5f-2: B has no authoritative tile');
+        expect(await walkTo(pageA, there, 'A walks to B'), 'A reaches B by a grass-free walk').toBe(
+          'arrived',
         );
-      }
+        expectAccepted(await send(pageA, { kind: 'open', partner: idB }), 'A opens the session');
+        const opened = await waitSession(pageA, idA, idB, 'open');
+        expect(opened.opener, 'A opened it').toBe(idA);
+        const sid = opened.sessionId;
+        await waitSession(pageB, idB, idA, 'B sees the session');
 
-      // Assert the offer row appears (both pages subscribe to public trade_offer table).
-      // Scoped to the (initiator===identityB, counterparty===identityA) pair so that
-      // offers from other concurrent test runs (or leftover rows) do not produce a
-      // false-positive here. Identities are passed as Playwright's second arg (not
-      // captured via closure over page-side values).
-      const pairArg = { initiator: identityB, counterparty: identityA };
-      await Promise.all([
-        pageA.waitForFunction(
-          (pair: { initiator: string; counterparty: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade
-              .allTradeOffers()
-              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
-          },
-          pairArg,
-          { timeout: 10_000 },
-        ),
-        pageB.waitForFunction(
-          (pair: { initiator: string; counterparty: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade
-              .allTradeOffers()
-              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
-          },
-          pairArg,
-          { timeout: 10_000 },
-        ),
-      ]);
-
-      // Confirm the offer is Pending — scoped to the (B initiator, A counterparty) pair.
-      // Status is read on pageB; identities passed as Playwright arg (not closure).
-      const controlOfferStatus = await pageB.evaluate(
-        (pair: { initiator: string; counterparty: string }) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const offer = w.__mrTrade
-            .allTradeOffers()
-            .find((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
-          return offer?.status ?? '';
-        },
-        pairArg,
-      );
-      expect(
-        controlOfferStatus,
-        '17.5f-2: POSITIVE CONTROL: offer must be Pending after pre-battle proposeTrade',
-      ).toBe('Pending');
-
-      // -----------------------------------------------------------------------
-      // (b-cancel) B cancels the offer to clear G2 (active-offer guard).
-      //     Without this cancel, step (c)'s failure would be attributable to G2
-      //     (B already has an active offer) rather than G6 (A is in battle).
-      // -----------------------------------------------------------------------
-      // Retrieve the tradeId scoped to the (B initiator, A counterparty) pair
-      // (not the global [0] index — that would pick the wrong offer in concurrent runs).
-      const tradeIdForCancel = await pageB.evaluate(
-        (pair: { initiator: string; counterparty: string }) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const offer = w.__mrTrade
-            .allTradeOffers()
-            .find((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
-          return offer?.tradeId ?? '';
-        },
-        pairArg,
-      );
-      expect(tradeIdForCancel, 'tradeIdForCancel must be non-empty').not.toBe('');
-
-      await pageB.evaluate((tid: string) => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        const p = w.__mrTrade.cancelTrade(tid);
-        if (!p) throw new Error('17.5f-2: cancelTrade returned undefined');
-        return p;
-      }, tradeIdForCancel);
-
-      // Wait for the (B initiator, A counterparty) offer row to disappear from BOTH pages.
-      // Scoped to the pair so unrelated offers from other concurrent runs do not block us.
-      // Identities passed as Playwright second arg.
-      await Promise.all([
-        pageA.waitForFunction(
-          (pair: { initiator: string; counterparty: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return !w.__mrTrade
-              .allTradeOffers()
-              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
-          },
-          pairArg,
-          { timeout: 10_000 },
-        ),
-        pageB.waitForFunction(
-          (pair: { initiator: string; counterparty: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return !w.__mrTrade
-              .allTradeOffers()
-              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
-          },
-          pairArg,
-          { timeout: 10_000 },
-        ),
-      ]);
-
-      // -----------------------------------------------------------------------
-      // (c) A grass-shuttles into a wild battle.
-      //     shuttleDir/stepOne copied from recruit.spec.ts (do NOT cross-import).
-      //     We propose IMMEDIATELY on ongoingBattle !== null, before any attack,
-      //     so the wild cannot KO us before the interlock fires (R3/F10 moot).
-      // -----------------------------------------------------------------------
-      let encounterFound = false;
-      for (let i = 0; i < MAX_WALK_STEPS && !encounterFound; i++) {
-        const g = await pageA.evaluate(() => {
-          const s = (window as unknown as { __game: () => GameSnap }).__game();
-          return { tile: s.ownAuthTile, battle: s.ongoingBattle };
-        });
-        if (g.battle !== null) {
-          encounterFound = true;
-          break;
-        }
-        const tile = g.tile ?? { x: 1, y: 1 };
-        const dir = shuttleDir(tile);
-        try {
-          const outcome = await stepOne(pageA, dir, tile);
-          if (outcome === 'battle') encounterFound = true;
-        } catch {
-          // stepOne timed out (wall-bump or slow drain); try next direction.
-        }
-      }
-
-      expect(
-        encounterFound,
-        `17.5f-2: did not trigger a wild battle within MAX_WALK_STEPS=${MAX_WALK_STEPS}`,
-      ).toBe(true);
-
-      // Confirm battle is live on A's page.
-      const ongoingAfterEncounter = await pageA.evaluate(() => {
-        return (window as unknown as { __game: () => GameSnap }).__game().ongoingBattle;
-      });
-      if (ongoingAfterEncounter === null) {
-        throw new Error(
-          '17.5f-2: ongoingBattle is null after encounterFound — snapshot inconsistent',
+        expectAccepted(
+          await send(pageA, { kind: 'offer', sessionId: sid, monsterIds: [starterA] }),
+          'A offers its starter',
         );
-      }
-      expect(
-        ongoingAfterEncounter.outcome,
-        '17.5f-2: ongoingBattle.outcome must be Ongoing after encounter',
-      ).toBe('Ongoing');
+        expectAccepted(
+          await send(pageB, { kind: 'offer', sessionId: sid, monsterIds: [starterB] }),
+          'B offers its starter',
+        );
+        const both = await waitSession(
+          pageA,
+          idA,
+          idB,
+          'both offers land',
+          (s) =>
+            s.revision === '2' &&
+            s.openerOffer.monsterIds.join() === starterA &&
+            s.partnerOffer.monsterIds.join() === starterB,
+        );
+        expect([both.openerConfirmed, both.partnerConfirmed], 'nobody confirmed yet').toEqual([
+          false,
+          false,
+        ]);
 
-      // -----------------------------------------------------------------------
-      // (d) INTERLOCK CALL: B repeats the IDENTICAL proposeTrade.
-      //     The two calls (b) and (d) differ ONLY in A's in-battle state.
-      //     A rejection here is attributable to reject_if_in_battle (G6) — not G1-G5
-      //     which were proven to pass in step (b).
-      //
-      //     We catch the rejection so a Promise<void> rejection does not abort the
-      //     test via Playwright's unhandled-rejection detection. The SQL absence
-      //     assertion at step (f) is the GATE — whether the call threw or silently
-      //     succeeded, we check the authoritative server state.
-      // -----------------------------------------------------------------------
-      const interlockError = await pageB
-        .evaluate((args: typeof proposeArgs) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const p = w.__mrTrade.proposeTrade(args);
-          if (!p) {
-            // conn not ready — this would be a test-infra failure, not the guard.
-            throw new Error('17.5f-2: proposeTrade returned undefined (conn not ready?)');
+        // (b) CONTROL: the unconfirmed side's monster may be nominated for a battle.
+        expectAccepted(
+          await send(pageA, { kind: 'challenge', target: idB, party: [starterA] }),
+          '(b) A challenges B with its starter on an UNCONFIRMED side',
+        );
+        const controlA = await waitChallenge(pageA, idA, idB, '(b)');
+        expectAccepted(
+          await send(pageA, { kind: 'cancelChallenge', challengeId: controlA }),
+          '(b) A cancels its control challenge',
+        );
+        await waitNoChallenge(pageA, idA, idB, '(b) cancelled on A');
+        await waitNoChallenge(pageB, idA, idB, '(b) cancelled on B');
+
+        // (c) A confirms its side: the starter is now locked.
+        expectAccepted(
+          await send(pageA, { kind: 'confirm', sessionId: sid, revision: both.revision }),
+          '(c) A confirms at the current revision',
+        );
+        const lockedA = await waitSession(
+          pageB,
+          idB,
+          idA,
+          '(c) B sees A confirmed',
+          (s) => s.openerConfirmed,
+        );
+        expect(lockedA.partnerConfirmed, '(c) B`s side stays unconfirmed').toBe(false);
+
+        // (d) The IDENTICAL challenge from the confirmed side is refused.
+        expectRefused(
+          await send(pageA, { kind: 'challenge', target: idB, party: [starterA] }),
+          REJECT_MONSTER_IN_TRADE,
+          '(d) A challenges B with its starter on a CONFIRMED side',
+        );
+        await pageB.waitForTimeout(SETTLE_MS);
+        expect(await pendingChallenge(pageB, idA, idB), '(d) no challenge from A reached B').toBe(
+          '',
+        );
+        expect(
+          (await sessionBetween(pageA, idA, idB))?.openerConfirmed,
+          '(d) the refusal left A`s confirm in place',
+        ).toBe(true);
+
+        // (e) CONTROL: the unconfirmed side of the SAME session may still nominate its monster.
+        expectAccepted(
+          await send(pageB, { kind: 'challenge', target: idA, party: [starterB] }),
+          '(e) B challenges A with its starter on the UNCONFIRMED side',
+        );
+        const controlB = await waitChallenge(pageB, idB, idA, '(e)');
+        expectAccepted(
+          await send(pageB, { kind: 'cancelChallenge', challengeId: controlB }),
+          '(e) B cancels its control challenge',
+        );
+        await waitNoChallenge(pageB, idB, idA, '(e) cancelled on B');
+        await waitNoChallenge(pageA, idB, idA, '(e) cancelled on A');
+
+        // (f) B's identical re-offer advances the revision and clears A's confirm.
+        expectAccepted(
+          await send(pageB, { kind: 'offer', sessionId: sid, monsterIds: [starterB] }),
+          '(f) B re-sends its offer',
+        );
+        await waitSession(
+          pageA,
+          idA,
+          idB,
+          '(f) A`s confirm is cleared',
+          (s) => s.revision === '3' && !s.openerConfirmed && !s.partnerConfirmed,
+        );
+
+        // (g) CONTROL: the identical offer is accepted before any battle.
+        expectAccepted(
+          await send(pageA, { kind: 'offer', sessionId: sid, monsterIds: [starterA] }),
+          '(g) A re-sends its offer before the battle',
+        );
+        const beforeBattle = await waitSession(
+          pageA,
+          idA,
+          idB,
+          '(g) A`s re-offer lands',
+          (s) => s.revision === '4' && s.openerOffer.monsterIds.join() === starterA,
+        );
+        expect(beforeBattle.openerConfirmed, '(g) A`s side is unconfirmed').toBe(false);
+
+        // (h) A grass-shuttles into a wild battle with its starter on an UNCONFIRMED side.
+        let encounterFound = false;
+        for (let i = 0; i < MAX_WALK_STEPS && !encounterFound; i++) {
+          const g = await pageA.evaluate(() => {
+            const s = (window as unknown as { __game: () => GameSnap }).__game();
+            return { tile: s.ownAuthTile, battle: s.ongoingBattle };
+          });
+          if (g.battle !== null) {
+            encounterFound = true;
+            break;
           }
-          return p;
-        }, proposeArgs)
-        .then(() => null as string | null)
-        .catch((err: Error) => err.message);
-
-      // Log the rejection reason for CI diagnostics (the guard rejection IS expected here).
-      if (interlockError !== null) {
-        console.log(`17.5f-2: interlock proposeTrade rejected (expected): ${interlockError}`);
-      } else {
-        // The call resolved without error — this is suspicious. The sql absence is
-        // still the gate; log a warning so CI traces can spot a guard gap.
-        console.warn(
-          '17.5f-2: interlock proposeTrade RESOLVED (not rejected) — checking sql for absence. ' +
-            'If a row appears below, reject_if_in_battle is missing.',
-        );
-      }
-
-      // -----------------------------------------------------------------------
-      // (e) Settle window: poll allTradeOffers() for MAX_SETTLE_POLLS consecutive
-      //     zero-count polls, each separated by SETTLE_POLL_INTERVAL_MS.
-      //
-      //     ARITHMETIC:
-      //       10 polls × 500ms = 5 000ms total window.
-      //       A buggy insert arrives <200ms after the call on a local instance.
-      //       5 000ms / 200ms = 25× safety margin.
-      //       A genuine reject (correct behaviour) also fires in <200ms, so the
-      //       consecutive-zero window will close quickly for correct impls.
-      // -----------------------------------------------------------------------
-      // Settle window: count only offers for the (B initiator, A counterparty) pair.
-      // A global allTradeOffers().length would be polluted by unrelated concurrent offers.
-      // Identities are captured in pairArg above; passed as Playwright arg (HIGH-4 fix).
-      let consecutiveZeroPollCount = 0;
-      for (let i = 0; i < MAX_SETTLE_POLLS; i++) {
-        await pageB.waitForTimeout(SETTLE_POLL_INTERVAL_MS);
-        const pairOfferCount = await pageB.evaluate(
-          (pair: { initiator: string; counterparty: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return 0;
-            return w.__mrTrade
-              .allTradeOffers()
-              .filter((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty)
-              .length;
-          },
-          pairArg,
-        );
-        if (pairOfferCount === 0) {
-          consecutiveZeroPollCount++;
-        } else {
-          // A pair-scoped offer appeared — break immediately; the sql assertion will catch it.
-          console.warn(
-            `17.5f-2: pair-scoped allTradeOffers() count=${pairOfferCount} during settle window (poll ${i + 1}/${MAX_SETTLE_POLLS}) — reject_if_in_battle may be missing.`,
-          );
-          break;
+          const tile = g.tile ?? { x: 1, y: 1 };
+          try {
+            if ((await stepOne(pageA, shuttleDir(tile), tile)) === 'battle') encounterFound = true;
+          } catch {
+            // stepOne timed out (wall-bump or slow drain); try next direction.
+          }
         }
+        expect(
+          encounterFound,
+          `17.5f-2 (h): an unconfirmed side's monster entered no wild battle within MAX_WALK_STEPS=${MAX_WALK_STEPS}`,
+        ).toBe(true);
+        const ongoing = await pageA.evaluate(
+          () => (window as unknown as { __game: () => GameSnap }).__game().ongoingBattle,
+        );
+        expect(ongoing?.outcome, '(h) A`s battle is Ongoing').toBe('Ongoing');
+        const inBattle = await sessionBetween(pageA, idA, idB);
+        expect(inBattle?.sessionId, '(h) the session survives battle entry').toBe(sid);
+        expect(inBattle?.openerOffer.monsterIds, '(h) the starter is still offered').toEqual([
+          starterA,
+        ]);
+
+        // (i) The IDENTICAL offer, sent at once while the battle is ongoing, is refused.
+        expectRefused(
+          await send(pageA, { kind: 'offer', sessionId: sid, monsterIds: [starterA] }),
+          monsterInBattle(starterA),
+          '(i) A offers its starter while it is in an ongoing battle',
+        );
+        await pageA.waitForTimeout(SETTLE_MS);
+        expect(
+          (await sessionBetween(pageA, idA, idB))?.revision,
+          '(i) the refused offer did not advance the revision',
+        ).toBe('4');
+
+        // (j) A flees: the tactical wild battle is Active (a one-monster party auto-deploys),
+        // then the own unit's menu → Flee → A.
+        const active = await awaitTacticalActive(pageA, '17.5f-2 (j)');
+        expect(active.phase, '17.5f-2 (j): the wild battle is Active before the flee').toBe(
+          'Active',
+        );
+        await fleeByButtons(pageA);
+        await waitForBattleCleared(pageA);
+      } finally {
+        await cleanup(pageA, pageB, idA, idB);
       }
-
-      // -----------------------------------------------------------------------
-      // (f) Authoritative spacetime sql absence assertion.
-      //     This is the load-bearing gate — client subscription state could lag
-      //     or differ from server truth. The sql query is the final word.
-      //
-      //     WHAT THIS KILLS:
-      //       - A deleted/missing reject_if_in_battle guard → row appears → sql check FAILS.
-      //       - A vacuously passing test where step (b) also failed (caught above).
-      // -----------------------------------------------------------------------
-      const tradeOfferSqlOutput = runTradeOfferSql(normA, normB);
-      const rowCountForPair = tradeOfferRowsForPair(tradeOfferSqlOutput, normA, normB);
-
-      expect(
-        rowCountForPair,
-        `17.5f-2: expected 0 trade_offer rows for the (A, B) pair after the in-battle proposeTrade, ` +
-          `but spacetime sql found ${rowCountForPair} row(s). ` +
-          `reject_if_in_battle guard is absent or broken. ` +
-          `consecutive zero polls before abort: ${consecutiveZeroPollCount}/${MAX_SETTLE_POLLS}. ` +
-          `Raw sql output: ${tradeOfferSqlOutput}`,
-      ).toBe(0);
-
-      // -----------------------------------------------------------------------
-      // (g) Cleanup: A flees the battle (so afterAll can close the browser cleanly).
-      //     SURVIVING CHECK (bt-16): retired the 1v1 command list's Run (`battle-command-run`) —
-      //     the grass now opens a TACTICAL wild battle — → `awaitTacticalActive` (deploys by
-      //     buttons if the pack rolled Deploying; a one-monster party is always Active at once)
-      //     then `fleeByButtons` (the own unit's menu → Flee → A, on A's own live turn).
-      // -----------------------------------------------------------------------
-      const active = await awaitTacticalActive(pageA, '17.5f-2 (g)');
-      expect(active.phase, '17.5f-2 (g): the wild battle is Active before the flee').toBe('Active');
-      await fleeByButtons(pageA);
-      await waitForBattleCleared(pageA);
     });
   });

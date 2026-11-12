@@ -758,43 +758,23 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // boxView.ts (the Monsters frame)
   'box.sheet.careCooldown': (p) => `Ready in ${p.hours}h ${p.minutes}m`,
   // @desc: Status line of the trade overlay when the player is in no trade. One short line.
-  // tradeView.ts:93
+  // tradeView.ts
   'trade.status.none': 'No active trade',
-  // @desc: Heading of the trade overlay's left column listing what the player gives away. Two
-  // words, one line.
-  // tradeView.ts:111 (#renderSide heading argument)
-  'trade.side.offer': 'You offer',
-  // @desc: Heading of the trade overlay's right column listing what the player gets. Two words,
-  // one line.
-  // tradeView.ts:112 (#renderSide heading argument)
-  'trade.side.receive': 'You receive',
   // @desc: One monster row on a trade side; {nickname} is the monster's nickname, {species} its
   // species name, {level} its level ("Lv" abbreviates "Level") and {current}/{max} its hit
   // points. One line.
-  // tradeView.ts:133
+  // tradeSessionView.ts
   'trade.side.card': (p) => `${p.nickname} (${p.species}) Lv.${p.level} HP:${p.current}/${p.max}`,
   // @desc: Currency row on a trade side; {amount} is the number of gold coins offered. Very
   // short, one line.
-  // tradeView.ts:153
+  // tradeSessionView.ts
   'trade.side.currency': (p) => `${p.amount} gold`,
   // @desc: Placeholder row on a trade side that offers no monster, item or gold. One word in
   // parentheses.
-  // tradeView.ts:159
+  // tradeSessionView.ts
   'trade.side.nothing': '(nothing)',
-  // @desc: Feedback line in the live-trade overlay after the player accepted the offer.
-  // main.ts:2668
-  'trade.feedback.accepted': 'Trade accepted!',
-  // @desc: Feedback line in the live-trade overlay after the player rejected the offer.
-  // main.ts:2675
-  'trade.feedback.rejected': 'Trade rejected.',
-  // @desc: Feedback line in the live-trade overlay after the player confirmed and the trade went through.
-  // main.ts:2682
-  'trade.feedback.completed': 'Trade complete!',
-  // @desc: Feedback line in the live-trade overlay after the player cancelled the trade.
-  // main.ts:2689
-  'trade.feedback.cancelled': 'Trade cancelled.',
   // @desc: Status line of the Social Trades panel when the player has at least one open trade
-  // session and no legacy offer. Two words.
+  // session. Two words.
   // tradeView.ts
   'trade.status.open': 'Open trades',
   // @desc: First line of a trade-session row on the Social Trades panel; {name} is the other
@@ -996,29 +976,17 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // challenging are face to face. {name} is the player's display name. One short sentence.
   // leaderboardView.ts (the Players tab)
   'social.players.walkUp': (p) => `Walk up to ${p.name} and press A`,
-  // @desc: Row of the action sheet opened on a trade offer or a PvP challenge: accept it. One short
-  // verb.
+  // @desc: Row of the action sheet opened on a PvP challenge: accept it. One short verb.
   // tradeView.ts (the Social action sheet)
   'social.action.accept': 'Accept',
-  // @desc: Row of the action sheet opened on a trade offer or a PvP challenge: decline it (a Yes /
-  // No question follows). One short verb.
-  // tradeView.ts (the Social action sheet)
-  'social.action.decline': 'Decline',
-  // @desc: Row of the action sheet opened on an accepted trade: complete it (a Yes / No question
+  // @desc: Row of the action sheet opened on a PvP challenge: decline it (a Yes / No question
   // follows). One short verb.
   // tradeView.ts (the Social action sheet)
-  'social.action.confirm': 'Confirm',
-  // @desc: Row of the action sheet opened on the player's own trade offer or challenge: withdraw it.
-  // One short verb.
+  'social.action.decline': 'Decline',
+  // @desc: Row of the action sheet opened on the player's own PvP challenge: withdraw it. One short
+  // verb.
   // tradeView.ts (the Social action sheet)
   'social.action.cancel': 'Cancel',
-  // @desc: The Yes / No question before a trade offer is declined; No is the default answer.
-  // tradeView.ts (the Social prompt)
-  'social.confirm.declineTrade': 'Decline this trade?',
-  // @desc: The Yes / No question before an accepted trade is completed, which cannot be reversed; No
-  // is the default answer.
-  // tradeView.ts (the Social prompt)
-  'social.confirm.confirmTrade': 'Complete this trade? It cannot be undone.',
   // @desc: The Yes / No question before a PvP challenge is declined; No is the default answer.
   // tradeView.ts (the Social prompt)
   'social.confirm.declineChallenge': 'Decline this challenge?',

@@ -34,6 +34,8 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
+  /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
+  queries?: readonly string[];
 }
 
 const H = vi.hoisted(() => ({
@@ -163,7 +165,10 @@ function conn0(rec: BuildRec) {
       return sub;
     },
     onError: () => sub,
-    subscribe: () => sub,
+    subscribe: (queries: readonly string[]) => {
+      rec.queries = queries;
+      return sub;
+    },
   };
   return {
     subscriptionBuilder: () => sub,
@@ -676,6 +681,67 @@ describe('E1-JOIN Connection.join() surfaces failures', () => {
     await settle();
     expect(b.joinGame).toHaveBeenCalledTimes(2);
     expect(onSend.mock.calls).toEqual([['joinGame', [{ name: 'Tester' }]]]);
+  });
+});
+
+describe('ts-4.4 connect() subscribes no trade_offer and wires no handler on it', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.rowCbs = {};
+    H.updCbs = {};
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    vi.useRealTimers();
+  });
+
+  it('ts-4.4 the subscription batch is exactly the 30 queries below, none naming trade_offer, and no row handler is registered on the trade_offer table', async () => {
+    // WRONG IMPL KILLED: `SELECT * FROM trade_offer` kept (every public offer reaches the
+    // client); it swapped for another table (the exact set); a duplicate (the sorted list);
+    // the query dropped but the trade_offer onInsert / onUpdate / onDelete handlers kept.
+    const { b } = await bootAnon(makeOpts());
+    const want = [
+      'character',
+      'player',
+      'my_monster_pub',
+      'species_row',
+      'my_battle',
+      'skill_row',
+      'my_inventory',
+      'item_row',
+      'evolution_path',
+      'my_conversation',
+      'player_quest',
+      'heal_location_row',
+      'npc',
+      'zone_def',
+      'shop_row',
+      'shop_item_row',
+      'my_wallet',
+      'battle_challenge',
+      'profile',
+      'my_account',
+      'my_export_bundle',
+      'my_pending_evolution_notices',
+      'my_tactical_battle',
+      'my_battle_units',
+      'my_battle_queue',
+      'my_battle_deploy',
+      'my_battle_clock',
+      'my_battle_events',
+      'my_formation',
+      'my_trade_session',
+    ].map((table) => `SELECT * FROM ${table}`);
+    expect(want).toHaveLength(30);
+    expect([...(b.queries ?? [])].sort()).toEqual([...want].sort());
+    expect((b.queries ?? []).filter((q) => q.includes('trade_offer'))).toEqual([]);
+    const handled = [...Object.keys(H.rowCbs), ...Object.keys(H.updCbs)];
+    expect(handled, 'precondition: the row handlers were wired').toContain('my_account');
+    expect(handled.filter((name) => /trade_?offer/i.test(name))).toEqual([]);
   });
 });
 

@@ -1259,7 +1259,7 @@ mod census {
 const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // (i) acts on an already-open commitment, which PRV1-10 and ADR-0227 D5 keep
     // completable while a deletion is pending. Every one of these except
-    // cancel_trade_session (which only deletes) reaches two
+    // cancel_trade and cancel_trade_session (which only delete) reaches two
     // INSERT-IF-ABSENT helpers on the way out -- economy::grant_currency
     // (player_wallet) and evolution::check_and_evolve (pending_evolution_notice).
     // That is accepted under PRV1-10: during the grace window nothing has been
@@ -1275,15 +1275,9 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // a fn that does not exist has no verdict, so its row would be stale.
     (
         "cancel_trade",
-        "unwinds an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
-    ),
-    (
-        "confirm_trade",
-        "closes an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
-         reaches the insert-if-absent helpers economy::grant_currency and \
-         evolution::check_and_evolve, whose minted rows the cascade sweeps",
+        "unwinds an already-open trade offer (PRV1-10, ADR-0227 D5) by deleting the offer row \
+         and its reaper schedule row; it inserts and updates nothing, so it mints no row a \
+         deleting account could keep",
     ),
     (
         "cancel_trade_session",
@@ -1303,11 +1297,13 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
          the insert-if-absent helpers economy::grant_currency and \
          evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
-    // (ii) the decline arm runs before the stamp-aware accept gate by design.
-    (
-        "respond_trade",
-        "the decline arm unwinds the offer BEFORE the stamp-aware accept gate (ADR-0237)",
-    ),
+    // (ii) a decline arm that unwinds a commitment BEFORE a stamp-aware accept gate
+    // (ADR-0237). No reducer has this shape, so the class is EMPTY:
+    // `respond_trade`'s only statement returns the retired-path error (it reads
+    // and writes nothing), and `confirm_trade_session` has no decline arm and runs
+    // its stamp-aware deletion gate before any write. A reducer of this shape
+    // needs a row here with its basis.
+    //
     // (iii) operator-only surface, unreachable by a player caller.
     (
         "sync_content",
@@ -1408,7 +1404,6 @@ const EXPECTED_GATED: &[&str] = &[
     "heal_party",
     "join_game",
     "open_trade_session",
-    "propose_trade",
     "request_data_export",
     "sell",
     "set_move",
@@ -1421,8 +1416,14 @@ const EXPECTED_GATED: &[&str] = &[
     "train",
 ];
 
-/// Reducers that reach no classified write at all.
-const EXPECTED_NO_WRITES: &[&str] = &["start_guest_claim"];
+/// Reducers that reach no classified write at all: the guest-claim start, and the
+/// three retired legacy offer reducers, whose only statement is their fixed error.
+const EXPECTED_NO_WRITES: &[&str] = &[
+    "confirm_trade",
+    "propose_trade",
+    "respond_trade",
+    "start_guest_claim",
+];
 
 /// Vacuity floor for the manifest-derived classified set (24 tables):
 /// the set itself is derived in the test from `DATA_LIFECYCLE_MANIFEST`, so this

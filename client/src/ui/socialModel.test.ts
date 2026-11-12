@@ -1,31 +1,31 @@
 // ui/socialModel.test.ts — ctl-8d (CTL8D.1, CTL8D.2): the Social frame's pure view model.
 //
-// Pure, node env. `buildSocialVm(requested, offers, challenges, identity)` lists the viewer's own
-// trade and challenge rows out of the two PUBLIC tables, each with its legal actions in sheet
-// order; `socialLayout(vm)` is the nav layout over the four tabs; `oldestWaiting(vm)` names the tab
-// and the row of the oldest request the viewer has not answered.
+// Pure, node env. `buildSocialVm(requested, challenges, identity, people, sessions = [])` lists the
+// viewer's own trade session rows and challenge rows, each with its legal actions in sheet order;
+// `socialLayout(vm)` is the nav layout over the four tabs; `oldestWaiting(vm)` names the tab and
+// the row of the oldest request the viewer has not answered.
 //
-// Identities: the viewer 'aa…', Bob 'bb…', Carol 'cc…'. Ids are distinct per row kind (trade 11,
-// incoming challenge 21, outgoing challenge 22), so a swapped id or kind shows. Row keys:
-// `trade-<tradeId>`, `challenge-<challengeId>`.
+// Identities: the viewer 'aa…', Bob 'bb…', Carol 'cc…'. Ids are distinct per row kind (sessions
+// 1xx, incoming challenge 21, outgoing challenge 22), so a swapped id or kind shows. Row keys:
+// `session-<sessionId>`, `challenge-<challengeId>`.
 //
-// The contract (plan "Functional core / imperative shell"):
-//   trades       0..1 row: the offer the trade root shows (the viewer a party to it; the lowest
-//                tradeId). Actions by role x status: counterparty/Pending accept, decline (waiting);
-//                initiator/Pending cancel; initiator/ConfirmedByCounterparty confirm, cancel;
-//                counterparty/ConfirmedByCounterparty cancel.
+// The contract (ts-4 plan "Resume 2"):
+//   trades       one row per trade session the viewer is in (either seat), ascending sessionId,
+//                kind `session`, no actions (A opens the editor). No other row kind is listed.
 //   challenges   0..2 rows, incoming first: the oldest Pending challenge targeting the viewer (the
 //                lowest challengeId) accept, decline (waiting); then the viewer's newest Pending
 //                challenge (the highest challengeId) cancel.
-//   waiting      only an incoming request the viewer has not answered. oldestWaiting compares the
-//                rows' createdAtMs as bigints; a tie goes to the trade.
+//   waiting      an incoming request the viewer has not answered (an untouched incoming session,
+//                an incoming challenge). oldestWaiting compares the rows' createdAtMs as bigints; a
+//                tie goes to the trade.
 import { describe, expect, it } from 'vitest';
 import type {
   StoreBattleChallenge,
   StoreCharacter,
   StorePlayer,
   StoreProfile,
-  StoreTradeOffer,
+  StoreTradeSession,
+  StoreTradeSessionOffer,
 } from '../net/store';
 import { buildLeaderboardViewModel } from './leaderboardModel';
 import type { NavLayout } from './nav';
@@ -44,8 +44,8 @@ import {
   socialPeopleKey,
   socialPlayers,
   socialRows,
+  socialSessionsKey,
 } from './socialModel';
-import { buildTradeViewModel } from './tradeModel';
 
 const ME = 'aa'.repeat(32);
 const BOB = 'bb'.repeat(32);
@@ -54,27 +54,25 @@ const CAROL = 'cc'.repeat(32);
 /** Every tab in the design's order, spelled here (never read from the module under test). */
 const TABS: readonly SocialTab[] = ['players', 'trades', 'challenges', 'rankings'];
 
-function offer(
-  tradeId: bigint,
-  initiator: string,
-  counterparty: string,
-  status: StoreTradeOffer['status'] = 'Pending',
-  createdAtMs = 1_000n,
-): StoreTradeOffer {
+const NO_SIDE: StoreTradeSessionOffer = { monsterIds: [], items: [], currency: 0n, cards: [] };
+
+function tradeSession(
+  sessionId: bigint,
+  opener: string,
+  partner: string,
+  over: Partial<StoreTradeSession> = {},
+): StoreTradeSession {
   return {
-    tradeId,
-    initiator,
-    counterparty,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status,
-    createdAtMs,
+    sessionId,
+    opener,
+    partner,
+    openerOffer: NO_SIDE,
+    partnerOffer: NO_SIDE,
+    openerConfirmed: false,
+    partnerConfirmed: false,
+    revision: 1n,
+    createdAtMs: 1_000n,
+    ...over,
   };
 }
 
@@ -88,25 +86,26 @@ function challenge(
   return { challengeId, challenger, target, challengerPartyIds: [], status, createdAtMs };
 }
 
-/** Bob offers trade 11 to the viewer: the viewer is the counterparty, so it is a waiting request. */
-const TRADE_IN = offer(11n, BOB, ME, 'Pending', 1_000n);
+/** Bob opens session 11 with the viewer and nobody has touched it: the viewer is the partner, so
+ *  it is a waiting request. */
+const SESSION_IN = tradeSession(11n, BOB, ME, { createdAtMs: 1_000n });
 /** Bob challenges the viewer (21, waiting); the viewer challenges Carol (22). */
 const INCOMING = challenge(21n, BOB, ME, 'Pending', 2_000n);
 const OUTGOING = challenge(22n, ME, CAROL, 'Pending', 3_000n);
 
-/** ctl-8g (named intentional change): `buildSocialVm`'s fifth parameter, the people the Players and
- *  Rankings tabs list, is REQUIRED now. Every ctl-8d call site passes this empty world, so what
- *  those cases pin (the trade and challenge rows) is unchanged. */
+/** The people the Players and Rankings tabs list; the ctl-8d cases pass this empty world. */
 const NO_PEOPLE = { players: [], characters: [], profiles: [] } as const;
 
 /** The view model a plain open (no requested tab) builds for the viewer. */
-const vmOf = (offers: StoreTradeOffer[], challenges: StoreBattleChallenge[]): SocialVm =>
-  buildSocialVm(null, offers, challenges, ME, NO_PEOPLE);
+const vmOf = (
+  challenges: readonly StoreBattleChallenge[],
+  sessions: readonly StoreTradeSession[] = [],
+): SocialVm => buildSocialVm(null, challenges, ME, NO_PEOPLE, sessions);
 
 /** A row with every field the contract names (matched as a subset: a row may carry more). */
 const row = (
   key: string,
-  kind: 'trade' | 'incoming' | 'outgoing',
+  kind: 'session' | 'incoming' | 'outgoing',
   id: bigint,
   actions: readonly SocialAction[],
   waiting: boolean,
@@ -124,24 +123,24 @@ function itemKeys(layout: NavLayout, tab: SocialTab): readonly string[] {
 }
 
 describe('socialModel — the rows, the layout and the oldest waiting request (ctl-8d)', () => {
-  it('CTL8D-1-MODEL-ROWS: SOCIAL_TABS is players, trades, challenges, rankings; buildSocialVm lists the viewer`s trade row and its challenge rows (incoming before outgoing) with their key, kind, id, actions, waiting flag and createdAtMs, ignoring another pair`s trade, a third party`s challenge and every non-Pending row; each row is the one its legacy root shows (the lowest tradeId, the oldest incoming, the newest outgoing); an empty store or identity lists nothing; requested passes through; socialLayout is the four tabs with the rows on Trades and Challenges', () => {
-    // WRONG IMPL KILLED: tabs in another order or missing one; a trade row for another pair's
-    // offer (it sorts first by id here) or for any offer in the table; a challenge row for a third
-    // party's Pending challenge (first in store order here), for a Declined / Accepted challenge
-    // aimed at the viewer or for the viewer's Cancelled one (each has an id the selection rule
-    // would otherwise prefer); rows in store order (the outgoing one is stored first); keys that
-    // are not `trade-<id>` / `challenge-<id>`; the trade's reject spelled `reject`; a waiting flag
-    // on a row the viewer cannot answer; createdAtMs dropped or cast; an incoming row that is the
-    // first in store order rather than the oldest (lowest id), or an outgoing one that is not the
-    // newest (highest id), so the Social row and its root would show different requests; a throw
-    // or a stray row on an empty store or an empty identity; a requested tab that is dropped or
-    // rewritten; and a layout that is not tabs, puts rows on Players / Rankings, or loses one.
+  it('CTL8D-1-MODEL-ROWS: SOCIAL_TABS is players, trades, challenges, rankings; buildSocialVm lists the viewer`s session row and its challenge rows (incoming before outgoing) with their key, kind, id, actions, waiting flag and createdAtMs, ignoring another pair`s session, a third party`s challenge and every non-Pending challenge; each challenge row is the one the pvp root shows (the oldest incoming, the newest outgoing); an empty store or identity lists nothing; requested passes through; socialLayout is the four tabs with the rows on Trades and Challenges', () => {
+    // WRONG IMPL KILLED: tabs in another order or missing one; a session row for another pair's
+    // session (it sorts first by id here); a challenge row for a third party's Pending challenge
+    // (first in store order here), for a Declined / Accepted challenge aimed at the viewer or for
+    // the viewer's Cancelled one (each has an id the selection rule would otherwise prefer); rows
+    // in store order (the outgoing one is stored first); keys that are not `session-<id>` /
+    // `challenge-<id>`; a waiting flag on a row the viewer cannot answer; createdAtMs dropped or
+    // cast; an incoming row that is the first in store order rather than the oldest (lowest id),
+    // or an outgoing one that is not the newest (highest id), so the Social row and its root would
+    // show different requests; a throw or a stray row on an empty store or an empty identity; a
+    // requested tab that is dropped or rewritten; and a layout that is not tabs, puts rows on
+    // Players / Rankings, or loses one.
     expect(SOCIAL_TABS, 'the four tabs, in order').toEqual(TABS);
 
-    // Another pair's trade sorts first by id; a third party's Pending challenge is first in store
-    // order; the outgoing one is stored before the incoming one; three non-Pending rows involve
-    // the viewer, each with an id that a selector without the status filter would pick.
-    const offers = [offer(5n, BOB, CAROL), TRADE_IN];
+    // Another pair's session sorts first by id; a third party's Pending challenge is first in
+    // store order; the outgoing one is stored before the incoming one; three non-Pending rows
+    // involve the viewer, each with an id that a selector without the status filter would pick.
+    const sessions = [tradeSession(5n, BOB, CAROL), SESSION_IN];
     const challenges = [
       challenge(3n, BOB, CAROL),
       OUTGOING,
@@ -150,39 +149,30 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
       challenge(31n, CAROL, ME, 'Accepted'),
       INCOMING,
     ];
-    const vm = buildSocialVm(null, offers, challenges, ME, NO_PEOPLE);
+    const vm = buildSocialVm(null, challenges, ME, NO_PEOPLE, sessions);
     expect(vm.requested, 'a plain open').toBeNull();
-    expect(vm.trades, 'the viewer`s trade, never the other pair`s').toMatchObject([
-      row('trade-11', 'trade', 11n, ['accept', 'decline'], true, 1_000n),
+    expect(vm.trades, 'the viewer`s session, never the other pair`s').toMatchObject([
+      row('session-11', 'session', 11n, [], true, 1_000n),
     ]);
     expect(vm.challenges, 'incoming first, then outgoing; nothing else').toMatchObject([
       row('challenge-21', 'incoming', 21n, ['accept', 'decline'], true, 2_000n),
       row('challenge-22', 'outgoing', 22n, ['cancel'], false, 3_000n),
     ]);
 
-    // Two offers the viewer is a party to (TR-20 says it cannot happen), two challenges to it and
-    // two from it, each pair stored in the order a first-match rule would get wrong: every row is
-    // the one its legacy root shows, so A on a Social row acts on the block the player can see.
-    const twoOffers = [offer(15n, ME, BOB), offer(12n, CAROL, ME)];
+    // Two challenges to the viewer and two from it, each pair stored in the order a first-match
+    // rule would get wrong: every row is the one the pvp root shows, so A on a Social row acts on
+    // the block the player can see.
     const twoEach = [
       challenge(27n, CAROL, ME),
       challenge(25n, ME, BOB),
       challenge(21n, BOB, ME),
       challenge(22n, ME, CAROL),
     ];
-    const both = vmOf(twoOffers, twoEach);
-    expect(both.trades, 'the lowest tradeId the viewer is a party to').toMatchObject([
-      row('trade-12', 'trade', 12n, ['accept', 'decline'], true, 1_000n),
-    ]);
+    const both = vmOf(twoEach);
     expect(keysOf(both.challenges), 'the oldest incoming, then the newest outgoing').toEqual([
       'challenge-21',
       'challenge-25',
     ]);
-    const tradeRoot = buildTradeViewModel(twoOffers, ME, new Map(), new Map());
-    expect(
-      tradeRoot.kind === 'trade' ? tradeRoot.tradeId : null,
-      'the trade root shows that very offer',
-    ).toBe(both.trades[0]?.id);
     const pvpRoot = buildPvpChallengeViewModel(twoEach, ME, []);
     expect(pvpRoot.incoming?.challengeId, 'the pvp root shows that very request').toBe(
       both.challenges[0]?.id,
@@ -192,19 +182,19 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     );
 
     // An empty store, and an identity that is no party to anything, list nothing and never throw.
-    expect(vmOf([], []), 'an empty store').toMatchObject({
+    expect(vmOf([]), 'an empty store').toMatchObject({
       requested: null,
       trades: [],
       challenges: [],
     });
     expect(
-      buildSocialVm(null, offers, challenges, '', NO_PEOPLE),
+      buildSocialVm(null, challenges, '', NO_PEOPLE, sessions),
       'an empty identity',
     ).toMatchObject({
       trades: [],
       challenges: [],
     });
-    expect(buildSocialVm(null, [], [], '', NO_PEOPLE), 'both').toMatchObject({
+    expect(buildSocialVm(null, [], '', NO_PEOPLE), 'both').toMatchObject({
       trades: [],
       challenges: [],
     });
@@ -212,7 +202,7 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     // The requested tab passes through as given.
     for (const requested of [...TABS, null]) {
       expect(
-        buildSocialVm(requested, offers, challenges, ME, NO_PEOPLE).requested,
+        buildSocialVm(requested, challenges, ME, NO_PEOPLE, sessions).requested,
         `requested ${String(requested)}`,
       ).toBe(requested);
     }
@@ -224,34 +214,16 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
       layout.kind === 'tabs' ? layout.tabs.map((t) => t.key) : [],
       'the four tabs, in order',
     ).toEqual(TABS);
-    expect(itemKeys(layout, 'trades'), 'Trades: the trade row').toEqual(['trade-11']);
+    expect(itemKeys(layout, 'trades'), 'Trades: the session row').toEqual(['session-11']);
     expect(itemKeys(layout, 'challenges'), 'Challenges: incoming, then outgoing').toEqual([
       'challenge-21',
       'challenge-22',
     ]);
-    expect(itemKeys(layout, 'players'), 'Players lists nothing yet (ctl-8g)').toEqual([]);
-    expect(itemKeys(layout, 'rankings'), 'Rankings lists nothing yet (ctl-8g)').toEqual([]);
-    const emptyLayout = socialLayout(vmOf([], []));
+    expect(itemKeys(layout, 'players'), 'Players lists nothing in an empty world').toEqual([]);
+    expect(itemKeys(layout, 'rankings'), 'Rankings lists nothing in an empty world').toEqual([]);
+    const emptyLayout = socialLayout(vmOf([]));
     for (const tab of TABS) {
       expect(itemKeys(emptyLayout, tab), `an empty store: ${tab} lists nothing`).toEqual([]);
-    }
-
-    // An offer in a status this client does not know (version skew: the row converter passes it
-    // through raw) offers no action, so it is no row: the view model never throws (the host
-    // builds it uncaught on every button), nothing waits and Trades lists nothing.
-    // WRONG IMPL KILLED: a trade row with an empty sheet (or a throw) for an unknown status, and
-    // such a row counted as a waiting request.
-    const WEIRD = 'Weird' as StoreTradeOffer['status'];
-    for (const [role, weird] of [
-      ['the viewer as counterparty', offer(11n, BOB, ME, WEIRD)],
-      ['the viewer as initiator', offer(11n, ME, BOB, WEIRD)],
-    ] as const) {
-      // Called directly: a throw fails the case.
-      const skewed = vmOf([weird], [OUTGOING]);
-      expect(skewed.trades, `${role}: an unknown status is no row`).toEqual([]);
-      expect(keysOf(skewed.challenges), `${role}: the other rows stay`).toEqual(['challenge-22']);
-      expect(oldestWaiting(skewed), `${role}: nothing waits`).toBeNull();
-      expect(itemKeys(socialLayout(skewed), 'trades'), `${role}: Trades lists nothing`).toEqual([]);
     }
 
     // A Pending challenge from the viewer to the viewer (the server refuses it, but the table is
@@ -259,7 +231,7 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     // the layout (whose nav kit throws on a duplicate key) builds.
     // WRONG IMPL KILLED: the guard in buildSocialVm removed (two rows under one key: the layout
     // throws, and so does every button through the host).
-    const toSelf = vmOf([], [challenge(40n, ME, ME, 'Pending', 2_000n)]);
+    const toSelf = vmOf([challenge(40n, ME, ME, 'Pending', 2_000n)]);
     expect(toSelf.challenges, 'one row, the request').toMatchObject([
       row('challenge-40', 'incoming', 40n, ['accept', 'decline'], true, 2_000n),
     ]);
@@ -269,50 +241,53 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     ]);
   });
 
-  it('CTL8D-1-MODEL-OLDEST-WAITING: oldestWaiting is null when nothing waits (an outgoing challenge, a trade the viewer sent, already accepted or must still confirm), the trade or the challenge when only it waits, the one with the smaller createdAtMs when both wait (in either order, with stamps past 2^53), and the trade on a tie', () => {
+  it('CTL8D-1-MODEL-OLDEST-WAITING: oldestWaiting is null when nothing waits (an outgoing challenge, a session the viewer opened, edited or confirmed), the session or the challenge when only it waits, the one with the smaller createdAtMs when both wait (in either order, with stamps past 2^53), and the trade on a tie', () => {
     // WRONG IMPL KILLED: a waiting rule that counts every listed row (the viewer's own outgoing
-    // challenge, or a trade it sent, would open Social on it), or a trade awaiting the viewer's own
-    // final Confirm (not a request: design section 4's notice kind); one that picks the NEWEST
-    // request; one that compares Number(createdAtMs) (2^53 and 2^53 + 1 are one Number, so the
-    // challenge-older order below reads as a tie and goes to the trade); a bigint subtraction in a
-    // sort comparator (a TypeError on two bigints); a tie that goes to the challenge; and an
-    // answer naming the wrong tab or key.
-    expect(oldestWaiting(vmOf([], [])), 'an empty store').toBeNull();
+    // challenge, or a session it opened, would open Social on it), or a session the viewer already
+    // answered by editing or confirming its side; one that picks the NEWEST request; one that
+    // compares Number(createdAtMs) (2^53 and 2^53 + 1 are one Number, so the challenge-older order
+    // below reads as a tie and goes to the trade); a bigint subtraction in a sort comparator (a
+    // TypeError on two bigints); a tie that goes to the challenge; and an answer naming the wrong
+    // tab or key.
+    expect(oldestWaiting(vmOf([])), 'an empty store').toBeNull();
 
-    const NOT_WAITING: ReadonlyArray<readonly [string, StoreTradeOffer]> = [
-      ['a trade the viewer sent', offer(11n, ME, BOB, 'Pending', 1n)],
-      ['a trade the viewer already accepted', offer(11n, BOB, ME, 'ConfirmedByCounterparty', 1n)],
+    const NOT_WAITING: ReadonlyArray<readonly [string, StoreTradeSession]> = [
+      ['a session the viewer opened', tradeSession(11n, ME, BOB, { createdAtMs: 1n })],
       [
-        'a trade awaiting the viewer`s own Confirm',
-        offer(11n, ME, BOB, 'ConfirmedByCounterparty', 1n),
+        'a session whose side the viewer edited',
+        tradeSession(11n, BOB, ME, { partnerOffer: { ...NO_SIDE, currency: 1n }, createdAtMs: 1n }),
+      ],
+      [
+        'a session the viewer confirmed',
+        tradeSession(11n, BOB, ME, { partnerConfirmed: true, createdAtMs: 1n }),
       ],
     ];
     for (const [label, notWaiting] of NOT_WAITING) {
-      const vm = vmOf([notWaiting], [challenge(22n, ME, CAROL, 'Pending', 0n)]);
+      const vm = vmOf([challenge(22n, ME, CAROL, 'Pending', 0n)], [notWaiting]);
       expect(
         keysOf([...vm.trades, ...vm.challenges]),
-        `${label}: fixture: the trade and the outgoing challenge are listed`,
-      ).toEqual(['trade-11', 'challenge-22']);
+        `${label}: fixture: the session and the outgoing challenge are listed`,
+      ).toEqual(['session-11', 'challenge-22']);
       expect(oldestWaiting(vm), `${label}, and an outgoing challenge: nothing waits`).toBeNull();
     }
 
-    // Only the trade waits: an older outgoing challenge is listed too.
+    // Only the session waits: an older outgoing challenge is listed too.
     expect(
       oldestWaiting(
         vmOf(
-          [offer(11n, BOB, ME, 'Pending', 5_000n)],
           [challenge(22n, ME, CAROL, 'Pending', 100n)],
+          [tradeSession(11n, BOB, ME, { createdAtMs: 5_000n })],
         ),
       ),
-      'only the trade waits',
-    ).toEqual({ tab: 'trades', key: 'trade-11' });
-    // Only the challenge waits: an older trade the viewer sent and an older outgoing challenge are
-    // listed too.
+      'only the session waits',
+    ).toEqual({ tab: 'trades', key: 'session-11' });
+    // Only the challenge waits: an older session the viewer opened and an older outgoing challenge
+    // are listed too.
     expect(
       oldestWaiting(
         vmOf(
-          [offer(11n, ME, BOB, 'Pending', 100n)],
           [challenge(22n, ME, CAROL, 'Pending', 100n), challenge(21n, BOB, ME, 'Pending', 5_000n)],
+          [tradeSession(11n, ME, BOB, { createdAtMs: 100n })],
         ),
       ),
       'only the challenge waits',
@@ -321,14 +296,14 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     // Both wait: the smaller createdAtMs, in either order, with stamps no Number can tell apart.
     const BIG = 2n ** 53n;
     expect(Number(BIG) === Number(BIG + 1n), 'fixture: the two stamps are one Number').toBe(true);
-    const bothWaiting = (tradeAt: bigint, challengeAt: bigint): SocialVm =>
+    const bothWaiting = (sessionAt: bigint, challengeAt: bigint): SocialVm =>
       vmOf(
-        [offer(11n, BOB, ME, 'Pending', tradeAt)],
         [challenge(21n, BOB, ME, 'Pending', challengeAt)],
+        [tradeSession(11n, BOB, ME, { createdAtMs: sessionAt })],
       );
-    expect(oldestWaiting(bothWaiting(BIG, BIG + 1n)), 'the trade is older').toEqual({
+    expect(oldestWaiting(bothWaiting(BIG, BIG + 1n)), 'the session is older').toEqual({
       tab: 'trades',
-      key: 'trade-11',
+      key: 'session-11',
     });
     expect(oldestWaiting(bothWaiting(BIG + 1n, BIG)), 'the challenge is older').toEqual({
       tab: 'challenges',
@@ -336,50 +311,40 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     });
     expect(oldestWaiting(bothWaiting(BIG + 3n, BIG + 3n)), 'a tie goes to the trade').toEqual({
       tab: 'trades',
-      key: 'trade-11',
+      key: 'session-11',
     });
   });
 
-  it('CTL8D-2-MODEL-ACTIONS: each row offers its legal actions in sheet order: a trade by the viewer`s role and its status (counterparty/Pending accept, decline; initiator/Pending cancel; initiator/ConfirmedByCounterparty confirm, cancel; counterparty/ConfirmedByCounterparty cancel), an incoming challenge accept, decline and an outgoing one cancel; a row`s kind comes from the row, never from its position', () => {
-    // WRONG IMPL KILLED: the role x status table mis-transcribed (a cell swapped, Confirm offered to
-    // the counterparty, Accept offered to the initiator, Cancel missing on a confirmed offer);
-    // `reject` passed through instead of `decline`; actions in another order (the sheet opens on
-    // the FIRST: Accept for a request); a waiting flag on a trade the viewer cannot answer; and a
-    // challenge kind chosen by position (the first challenge row read as incoming: an
-    // outgoing-only list would offer Accept / Decline on the viewer's own challenge).
-    const TRADE_CELLS: ReadonlyArray<
-      readonly [string, StoreTradeOffer, readonly SocialAction[], boolean]
-    > = [
-      ['counterparty, Pending', offer(11n, BOB, ME, 'Pending'), ['accept', 'decline'], true],
-      ['initiator, Pending', offer(11n, ME, BOB, 'Pending'), ['cancel'], false],
+  it('CTL8D-2-MODEL-ACTIONS: each row offers its legal actions in sheet order: a session row none in either seat (A opens its editor), an incoming challenge accept, decline and an outgoing one cancel; a row`s kind comes from the row, never from its position', () => {
+    // WRONG IMPL KILLED: actions offered on a session row (A would open a sheet instead of the
+    // editor); actions in another order (the sheet opens on the FIRST: Accept for a request); a
+    // waiting flag on a session the viewer opened; and a challenge kind chosen by position (the
+    // first challenge row read as incoming: an outgoing-only list would offer Accept / Decline on
+    // the viewer's own challenge).
+    const SESSION_CELLS: ReadonlyArray<readonly [string, StoreTradeSession, boolean]> = [
+      ['the viewer as partner, untouched', tradeSession(11n, BOB, ME), true],
+      ['the viewer as opener', tradeSession(11n, ME, BOB), false],
       [
-        'initiator, ConfirmedByCounterparty',
-        offer(11n, ME, BOB, 'ConfirmedByCounterparty'),
-        ['confirm', 'cancel'],
-        false,
-      ],
-      [
-        'counterparty, ConfirmedByCounterparty',
-        offer(11n, BOB, ME, 'ConfirmedByCounterparty'),
-        ['cancel'],
+        'the viewer as partner, both confirmed',
+        tradeSession(11n, BOB, ME, { openerConfirmed: true, partnerConfirmed: true }),
         false,
       ],
     ];
-    for (const [label, cell, actions, waiting] of TRADE_CELLS) {
-      expect(vmOf([cell], []).trades, label).toMatchObject([
-        row('trade-11', 'trade', 11n, actions, waiting, 1_000n),
+    for (const [label, cell, waiting] of SESSION_CELLS) {
+      expect(vmOf([], [cell]).trades, label).toMatchObject([
+        row('session-11', 'session', 11n, [], waiting, 1_000n),
       ]);
     }
 
-    expect(vmOf([], [INCOMING, OUTGOING]).challenges, 'both challenge rows').toMatchObject([
+    expect(vmOf([INCOMING, OUTGOING]).challenges, 'both challenge rows').toMatchObject([
       row('challenge-21', 'incoming', 21n, ['accept', 'decline'], true, 2_000n),
       row('challenge-22', 'outgoing', 22n, ['cancel'], false, 3_000n),
     ]);
     // Alone, each row keeps its own kind and actions.
-    expect(vmOf([], [OUTGOING]).challenges, 'the outgoing row alone').toMatchObject([
+    expect(vmOf([OUTGOING]).challenges, 'the outgoing row alone').toMatchObject([
       row('challenge-22', 'outgoing', 22n, ['cancel'], false, 3_000n),
     ]);
-    expect(vmOf([], [INCOMING]).challenges, 'the incoming row alone').toMatchObject([
+    expect(vmOf([INCOMING]).challenges, 'the incoming row alone').toMatchObject([
       row('challenge-21', 'incoming', 21n, ['accept', 'decline'], true, 2_000n),
     ]);
   });
@@ -482,7 +447,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       { key: BOB, name: 'Bob', nearby: false },
     ]);
     // The same through buildSocialVm: the vm carries the same rows.
-    const vm = buildSocialVm(null, [], [], ME, {
+    const vm = buildSocialVm(null, [], ME, {
       players: [person(ME, 'Me', ME_EID), person(BOB, 'Bob', 2n)],
       characters: [at(ME_EID, 50, 50), at(2n, 1050, 1050)],
       profiles: [],
@@ -645,7 +610,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       brief(fromArray),
     );
     // And through buildSocialVm, which receives the same iterator.
-    const vm = buildSocialVm(null, [], [], ME, {
+    const vm = buildSocialVm(null, [], ME, {
       players,
       characters: oneShot(),
       profiles: [],
@@ -735,19 +700,25 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
     // WRONG IMPL KILLED: a Players tab left empty; keys that are not the identity hex (the entity
     // id, the name, an index: two players with one name would collide in the nav kit); keys in
     // input order rather than row order; a disabled row (the cursor would skip it); Players rows
-    // returned by `socialRows` (the screen would open a trade sheet on a player); and the trade and
+    // returned by `socialRows` (the screen would open a sheet on a player); and the session and
     // challenge keys lost when people are listed.
-    const vm = buildSocialVm(null, [TRADE_IN], [INCOMING, OUTGOING], ME, {
-      players: [
-        person(ME, 'Me', ME_EID),
-        person(DAN, 'Sam', 4n),
-        person(BOB, 'Sam', 2n),
-        person(CAROL, 'Abe', 3n, false),
-        person(EVE, 'Zed', 5n),
-      ],
-      characters: [at(ME_EID, 50, 50), at(4n, 50, 51)],
-      profiles: [],
-    });
+    const vm = buildSocialVm(
+      null,
+      [INCOMING, OUTGOING],
+      ME,
+      {
+        players: [
+          person(ME, 'Me', ME_EID),
+          person(DAN, 'Sam', 4n),
+          person(BOB, 'Sam', 2n),
+          person(CAROL, 'Abe', 3n, false),
+          person(EVE, 'Zed', 5n),
+        ],
+        characters: [at(ME_EID, 50, 50), at(4n, 50, 51)],
+        profiles: [],
+      },
+      [SESSION_IN],
+    );
     expect(
       keysOfPlayers(vm.players),
       'Sam (bb), Sam (dd), Zed; offline Abe and self absent',
@@ -760,7 +731,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
     ]);
     expect(socialRows(vm, 'players'), 'no actionable row on Players').toEqual([]);
     expect(socialRows(vm, 'rankings'), 'no actionable row on Rankings').toEqual([]);
-    expect(itemKeys(layout, 'trades'), 'Trades keeps its row').toEqual(['trade-11']);
+    expect(itemKeys(layout, 'trades'), 'Trades keeps its row').toEqual(['session-11']);
     expect(itemKeys(layout, 'challenges'), 'Challenges keeps its rows').toEqual([
       'challenge-21',
       'challenge-22',
@@ -770,14 +741,14 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       'the four tabs, in order',
     ).toEqual(TABS);
     // No players: an empty Players tab.
-    expect(itemsOf(socialLayout(vmOf([], [])), 'players')).toEqual([]);
+    expect(itemsOf(socialLayout(vmOf([])), 'players')).toEqual([]);
   });
 
   it('CTL8G-1-PEOPLE-KEY: socialPeopleKey is equal for equal rows built twice and differs for a changed name, a nearby flip, a joined or left player, a swapped order and a changed identity; it ignores the other tabs` rows; and no choice of separators in a name makes two different row lists collide', () => {
     // WRONG IMPL KILLED: a key built from the vm object's identity (every fresh vm differs: the
     // screen would repaint on every batch); one that drops nearby (a player crossing the 12-tile
     // line never repaints), the name (a rename never repaints) or the order; one that reads the
-    // whole vm (a trade arriving changes it: a repaint per unrelated batch); one over the
+    // whole vm (a session arriving changes it: a repaint per unrelated batch); one over the
     // player's count only; and a naive delimiter join, where a name carrying the delimiters forges
     // another list's key (stale rows kept under a "no change").
     const base: {
@@ -789,10 +760,14 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       characters: [at(ME_EID, 50, 50), at(2n, 50, 55), at(3n, 50, 70)],
       profiles: [],
     };
-    const build = (over: Partial<typeof base> = {}, offers: StoreTradeOffer[] = []): SocialVm =>
-      buildSocialVm(null, offers, [], ME, { ...base, ...over });
-    const key = (over: Partial<typeof base> = {}, offers: StoreTradeOffer[] = []): string =>
-      socialPeopleKey(build(over, offers));
+    const build = (
+      over: Partial<typeof base> = {},
+      sessions: readonly StoreTradeSession[] = [],
+    ): SocialVm => buildSocialVm(null, [], ME, { ...base, ...over }, sessions);
+    const key = (
+      over: Partial<typeof base> = {},
+      sessions: readonly StoreTradeSession[] = [],
+    ): string => socialPeopleKey(build(over, sessions));
 
     const k0 = key();
     expect(typeof k0).toBe('string');
@@ -801,7 +776,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       socialPeopleKey({ ...build(), players: build().players.map((r) => ({ ...r })) }),
       'copied row objects',
     ).toBe(k0);
-    expect(key({}, [TRADE_IN]), 'a trade arriving is not a people change').toBe(k0);
+    expect(key({}, [SESSION_IN]), 'a session arriving is not a people change').toBe(k0);
     expect(
       key({ profiles: [profile(BOB, 'Bob', 1200)] }),
       'a ranking row is not a people change',
@@ -968,7 +943,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       profile(DAN, '', 1000, 0, 1),
       profile(EVE, 'Abe', 1000, 1, 1),
     ];
-    const vm = buildSocialVm(null, [], [], ME, {
+    const vm = buildSocialVm(null, [], ME, {
       players: [
         person(ME, 'Me', ME_EID),
         person(BOB, 'Bob', 2n),
@@ -1004,7 +979,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       [...profiles].reverse(),
       [...profiles.slice(2), ...profiles.slice(0, 2)],
     ]) {
-      const again = buildSocialVm(null, [], [], ME, {
+      const again = buildSocialVm(null, [], ME, {
         players: [],
         characters: [],
         profiles: shuffled,
@@ -1028,7 +1003,7 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       [...longProfiles].reverse(),
       [...longProfiles.slice(4), ...longProfiles.slice(0, 4)],
     ]) {
-      const long = buildSocialVm(null, [], [], ME, {
+      const long = buildSocialVm(null, [], ME, {
         players: [],
         characters: [],
         profiles: input,
@@ -1052,12 +1027,12 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
     }
 
     // No profiles: no rows, an empty tab, never a throw.
-    const empty = buildSocialVm(null, [], [], ME, NO_PEOPLE);
+    const empty = buildSocialVm(null, [], ME, NO_PEOPLE);
     expect(empty.rankings).toEqual([]);
     expect(itemsOf(socialLayout(empty), 'rankings')).toEqual([]);
     // The identity passed in decides the own flag.
     expect(
-      buildSocialVm(null, [], [], BOB, { players: [], characters: [], profiles })
+      buildSocialVm(null, [], BOB, { players: [], characters: [], profiles })
         .rankings.filter((r) => r.isOwn)
         .map((r) => r.identityHex),
     ).toEqual([BOB]);
@@ -1067,45 +1042,16 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
 // ==========================================================================================
 // ts-3 (ts-3.5): one Trades row per trade session the viewer is in.
 //
-// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 (ts-3.5) and
-//   memory/projects/monster-realm-ts-3-plan.md §Social › Trades (ADDITIVE: the legacy single-offer
-//   row stays; the session rows follow it).
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 (ts-3.5) and §ts-4
+//   (ts-4.6).
 //
-// RED REASON: `buildSocialVm` takes no sixth `sessions` parameter and lists no session row;
-//   `socialSessionsKey` is not exported; `StoreTradeSession` is not a store type yet.
-//
-// Contract: `buildSocialVm(requested, offers, challenges, identity, people, sessions = [])` lists the
-// legacy row (when shown) FOLLOWED BY one row per `ownSessions(...)`, ascending sessionId:
+// Contract: `buildSocialVm(requested, challenges, identity, people, sessions = [])` lists one row
+// per `ownSessions(...)`, ascending sessionId:
 // `{ key: 'session-<id>', kind: 'session', id, actions: [], waiting: incomingUntouched(...),
 // createdAtMs, session: { partnerName, mineConfirmed, theirsConfirmed } }`; `oldestWaiting` picks the
 // oldest waiting trade row by createdAtMs (tie: the first listed); `socialSessionsKey(vm)` is what
 // the session rows paint.
 // ==========================================================================================
-
-import type { StoreTradeSession, StoreTradeSessionOffer } from '../net/store';
-import { socialSessionsKey } from './socialModel';
-
-const NO_SIDE: StoreTradeSessionOffer = { monsterIds: [], items: [], currency: 0n, cards: [] };
-
-function tradeSession(
-  sessionId: bigint,
-  opener: string,
-  partner: string,
-  over: Partial<StoreTradeSession> = {},
-): StoreTradeSession {
-  return {
-    sessionId,
-    opener,
-    partner,
-    openerOffer: NO_SIDE,
-    partnerOffer: NO_SIDE,
-    openerConfirmed: false,
-    partnerConfirmed: false,
-    revision: 1n,
-    createdAtMs: 1_000n,
-    ...over,
-  };
-}
 
 /** The people the session rows name: Bob, and Carol with an empty name. */
 const SESSION_PEOPLE = {
@@ -1116,28 +1062,25 @@ const SESSION_PEOPLE = {
 
 const sessionsVm = (
   sessions: readonly StoreTradeSession[],
-  offers: StoreTradeOffer[] = [],
-  challenges: StoreBattleChallenge[] = [],
-): SocialVm => buildSocialVm(null, offers, challenges, ME, SESSION_PEOPLE, sessions);
+  challenges: readonly StoreBattleChallenge[] = [],
+): SocialVm => buildSocialVm(null, challenges, ME, SESSION_PEOPLE, sessions);
 
 describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () => {
-  it('ts-3.5 buildSocialVm lists, after the legacy row, one session row per session the viewer is in (either seat), ascending, never a foreign one: key, kind, id, no actions, waiting, createdAtMs and the paint facts (partner name with the #hex8 fallback, both marks from the viewer`s seat); the Trades layout keys them, every row enabled', () => {
+  it('ts-3.5 buildSocialVm lists one session row per session the viewer is in (either seat), ascending, never a foreign one: key, kind, id, no actions, waiting, createdAtMs and the paint facts (partner name with the #hex8 fallback, both marks from the viewer`s seat); the Trades layout keys them, every row enabled', () => {
     // WRONG IMPL KILLED: a foreign session listed (the view is scoped; the model is the defense in
-    // depth); sessions in store order (the input is 103, 102, 101); the session rows before the
-    // legacy row (the e2e pins the legacy row as THE trade cursor row); a kind or key spelled
-    // otherwise (`trade-101` would collide with a legacy tradeId); actions offered on a session
-    // row (A must open the editor, never a sheet); the marks read by seat-blind columns
-    // (openerConfirmed shown as "mine" to the partner); a blank partner name; the default
-    // parameter missing (every ctl-8d call site passes five arguments).
+    // depth); sessions in store order (the input is 103, 102, 101); a kind or key spelled
+    // otherwise; actions offered on a session row (A must open the editor, never a sheet); the
+    // marks read by seat-blind columns (openerConfirmed shown as "mine" to the partner); a blank
+    // partner name; the default parameter missing (a four-argument call lists no session).
     const s101 = tradeSession(101n, ME, BOB, { partnerConfirmed: true, createdAtMs: 3_000n });
     const s102 = tradeSession(102n, CAROL, ME, { partnerConfirmed: true, createdAtMs: 2_000n });
     const s103 = tradeSession(103n, BOB, CAROL, { createdAtMs: 100n });
-    const vm = sessionsVm([s103, s102, s101], [TRADE_IN]);
+    const vm = sessionsVm([s103, s102, s101], [INCOMING]);
     expect(
       vm.trades.map((r) => r.key),
-      'the legacy row, then the sessions ascending',
-    ).toEqual(['trade-11', 'session-101', 'session-102']);
-    expect(vm.trades[1]).toMatchObject({
+      'the sessions ascending',
+    ).toEqual(['session-101', 'session-102']);
+    expect(vm.trades[0]).toMatchObject({
       key: 'session-101',
       kind: 'session',
       id: 101n,
@@ -1146,7 +1089,7 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
       createdAtMs: 3_000n,
       session: { partnerName: 'Bob', mineConfirmed: false, theirsConfirmed: true },
     });
-    expect(vm.trades[2]).toMatchObject({
+    expect(vm.trades[1]).toMatchObject({
       key: 'session-102',
       kind: 'session',
       id: 102n,
@@ -1158,33 +1101,28 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
         theirsConfirmed: false,
       },
     });
-    expect(vm.trades[0]?.kind).toBe('trade');
-    expect(
-      vm.trades[0] !== undefined && 'session' in vm.trades[0],
-      'no session facts on a legacy row',
-    ).toBe(false);
     expect(itemsOf(socialLayout(vm), 'trades')).toEqual([
-      { key: 'trade-11', enabled: true },
       { key: 'session-101', enabled: true },
       { key: 'session-102', enabled: true },
     ]);
     expect(socialRows(vm, 'trades').map((r) => r.key)).toEqual(vm.trades.map((r) => r.key));
-    // Sessions alone, and the five-argument call: no session row, nothing else changes.
+    // One session, and the four-argument call: no session row, the challenge rows unchanged.
     expect(sessionsVm([s101]).trades.map((r) => r.key)).toEqual(['session-101']);
+    const noSessions = buildSocialVm(null, [INCOMING], ME, SESSION_PEOPLE);
+    expect(noSessions.trades, 'no sessions argument').toEqual([]);
+    expect(keysOf(noSessions.challenges), 'no sessions argument: the challenge row').toEqual([
+      'challenge-21',
+    ]);
     expect(
-      vmOf([TRADE_IN], []).trades.map((r) => r.key),
-      'no sessions argument',
-    ).toEqual(['trade-11']);
-    expect(
-      buildSocialVm(null, [], [], '', SESSION_PEOPLE, [s101, s102]).trades,
+      buildSocialVm(null, [], '', SESSION_PEOPLE, [s101, s102]).trades,
       'an empty identity is in no session',
     ).toEqual([]);
   });
 
-  it('ts-3.5 a session row waits only while it is an untouched incoming one, and oldestWaiting picks the oldest waiting trade row by createdAtMs (a tie: the first listed), against the legacy row and against a challenge', () => {
+  it('ts-3.5 a session row waits only while it is an untouched incoming one, and oldestWaiting picks the oldest waiting trade row by createdAtMs (a tie: the first listed), among sessions and against a challenge', () => {
     // WRONG IMPL KILLED: every session the viewer is in counted as waiting (its own opened one,
-    // one it already edited or confirmed); oldestWaiting still taking the FIRST waiting trade row
-    // (the legacy row) when a session is older; a Number() compare; the tie rule reversed.
+    // one it already edited or confirmed); oldestWaiting taking the FIRST waiting trade row when a
+    // later one is older; a Number() compare; the tie rule reversed.
     const untouched = tradeSession(104n, BOB, ME, { createdAtMs: 500n });
     const edited = tradeSession(105n, BOB, ME, {
       partnerOffer: { ...NO_SIDE, currency: 1n },
@@ -1207,21 +1145,22 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
       key: 'session-104',
     });
 
-    // Older than the legacy waiting row: the session wins; younger: the legacy row.
-    const legacy = offer(11n, BOB, ME, 'Pending', 1_000n);
-    expect(oldestWaiting(sessionsVm([untouched], [legacy])), 'the session is older').toEqual({
+    // A later-listed waiting session that is older wins; a younger one does not; a tie goes to
+    // the first listed (the lower sessionId).
+    const early = tradeSession(103n, CAROL, ME, { createdAtMs: 1_000n });
+    expect(oldestWaiting(sessionsVm([early, untouched])), 'the later-listed one is older').toEqual({
       tab: 'trades',
       key: 'session-104',
     });
     const young = tradeSession(108n, CAROL, ME, { createdAtMs: 9_000n });
-    expect(oldestWaiting(sessionsVm([young], [legacy])), 'the legacy row is older').toEqual({
+    expect(oldestWaiting(sessionsVm([young, early])), 'the first-listed one is older').toEqual({
       tab: 'trades',
-      key: 'trade-11',
+      key: 'session-103',
     });
     const tied = tradeSession(109n, CAROL, ME, { createdAtMs: 1_000n });
-    expect(oldestWaiting(sessionsVm([tied], [legacy])), 'a tie: the first listed').toEqual({
+    expect(oldestWaiting(sessionsVm([tied, early])), 'a tie: the first listed').toEqual({
       tab: 'trades',
-      key: 'trade-11',
+      key: 'session-103',
     });
     const BIG = 2n ** 53n;
     const twoSessions = sessionsVm([
@@ -1235,22 +1174,22 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
 
     // Against a challenge: the older of the two, a tie to the trade (the ctl-8d rule).
     const chal = (at: bigint) => [challenge(21n, BOB, ME, 'Pending', at)];
-    expect(oldestWaiting(sessionsVm([untouched], [], chal(600n))), 'the session is older').toEqual({
+    expect(oldestWaiting(sessionsVm([untouched], chal(600n))), 'the session is older').toEqual({
       tab: 'trades',
       key: 'session-104',
     });
-    expect(oldestWaiting(sessionsVm([untouched], [], chal(499n)))).toEqual({
+    expect(oldestWaiting(sessionsVm([untouched], chal(499n)))).toEqual({
       tab: 'challenges',
       key: 'challenge-21',
     });
-    expect(oldestWaiting(sessionsVm([untouched], [], chal(500n))), 'a tie: the trade').toEqual({
+    expect(oldestWaiting(sessionsVm([untouched], chal(500n))), 'a tie: the trade').toEqual({
       tab: 'trades',
       key: 'session-104',
     });
     expect(oldestWaiting(sessionsVm([opened, edited])), 'nothing waits').toBeNull();
   });
 
-  it('ts-3.5 socialSessionsKey changes exactly when a painted session fact changes (a row arriving or leaving, a partner rename, either mark), and not for a revision bump, an offer edit with the same marks, a legacy offer or a challenge', () => {
+  it('ts-3.5 socialSessionsKey changes exactly when a painted session fact changes (a row arriving or leaving, a partner rename, either mark), and not for a revision bump, an offer edit with the same marks or a challenge either way', () => {
     // WRONG IMPL KILLED: a key over the vm's identity (a repaint every batch); a key that misses a
     // mark (a partner's confirm never repaints the row) or the partner's name; a key that reads
     // the whole row (every edit repaints the list for nothing).
@@ -1273,8 +1212,8 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
           base[1] as StoreTradeSession,
         ]),
       ],
-      ['a legacy offer', sessionsVm(base, [TRADE_IN])],
-      ['a challenge', sessionsVm(base, [], [INCOMING])],
+      ['an incoming challenge', sessionsVm(base, [INCOMING])],
+      ['an outgoing challenge', sessionsVm(base, [OUTGOING])],
     ];
     for (const [what, vm] of same) expect(socialSessionsKey(vm), what).toBe(k0);
     const changed: ReadonlyArray<readonly [string, SocialVm]> = [
@@ -1299,7 +1238,6 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
         buildSocialVm(
           null,
           [],
-          [],
           ME,
           {
             ...SESSION_PEOPLE,
@@ -1314,5 +1252,208 @@ describe('socialModel — one Trades row per trade session (ts-3, ts-3.5)', () =
       new Set([k0, ...changed.map(([, vm]) => socialSessionsKey(vm))]).size,
       'every change is a different key',
     ).toBe(changed.length + 1);
+  });
+});
+
+// ==========================================================================================
+// ts-4 (ts-4.6): Social › Trades lists only session rows.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-4 (ts-4.6) and the ts-4 plan
+// "Resume 2": `SocialRowKind = 'session' | 'incoming' | 'outgoing'`, `SocialAction = 'accept' |
+// 'decline' | 'cancel'`; `vm.trades` is exactly the viewer's session rows, in `ownSessions` order.
+//
+// The mixed world: the viewer is the OPENER of 201 (with Bob, Bob confirmed) and the PARTNER of 202
+// (Carol opened it, untouched: waiting) and 203 (Bob opened and confirmed it); 204 is Bob and
+// Carol's; Bob challenges the viewer (21, incoming) and the viewer challenges Carol (22, outgoing);
+// challenge 3 is Bob's to Carol. Store order is scrambled.
+// ==========================================================================================
+
+const MIX_SESSIONS: readonly StoreTradeSession[] = [
+  tradeSession(204n, BOB, CAROL, { createdAtMs: 10n }),
+  tradeSession(203n, BOB, ME, { openerConfirmed: true, createdAtMs: 7_000n }),
+  tradeSession(201n, ME, BOB, { partnerConfirmed: true, createdAtMs: 6_000n }),
+  tradeSession(202n, CAROL, ME, { createdAtMs: 5_000n }),
+];
+const MIX_CHALLENGES: readonly StoreBattleChallenge[] = [
+  challenge(3n, BOB, CAROL, 'Pending', 1n),
+  OUTGOING,
+  INCOMING,
+];
+
+/** Every subset of `pool`, by bitmask (2^n subsets, the empty one included). */
+function subsets<T>(pool: readonly T[]): readonly (readonly T[])[] {
+  const out: T[][] = [];
+  for (let mask = 0; mask < 1 << pool.length; mask++) {
+    out.push(pool.filter((_, i) => (mask & (1 << i)) !== 0));
+  }
+  return out;
+}
+
+/** Six sessions (the viewer in either seat, and two foreign ones) and four challenges (to and from
+ *  the viewer, a foreign one, and one the viewer already declined). */
+const SESSION_POOL: readonly StoreTradeSession[] = [
+  ...MIX_SESSIONS,
+  tradeSession(205n, ME, CAROL, { openerConfirmed: true, partnerConfirmed: true }),
+  tradeSession(206n, CAROL, BOB),
+];
+const CHALLENGE_POOL: readonly StoreBattleChallenge[] = [
+  ...MIX_CHALLENGES,
+  challenge(4n, CAROL, ME, 'Declined'),
+];
+
+/** The viewer's sessions' row keys, ascending sessionId, derived here (never from the module). */
+const ownSessionKeys = (sessions: readonly StoreTradeSession[]): readonly string[] =>
+  sessions
+    .filter((s) => s.opener === ME || s.partner === ME)
+    .map((s) => s.sessionId)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((id) => `session-${id}`);
+
+const ROW_KINDS: ReadonlySet<string> = new Set(['session', 'incoming', 'outgoing']);
+const ROW_ACTIONS: ReadonlySet<string> = new Set(['accept', 'decline', 'cancel']);
+
+describe('socialModel — Social › Trades lists only session rows (ts-4, ts-4.6)', () => {
+  it('ts-4.6 buildSocialVm(requested, challenges, identity, people, sessions) lists in vm.trades exactly the viewer`s session rows (opener and partner seats), ascending sessionId, each kind session, key session-<id>, no actions, with seat-correct marks; the challenges stay on vm.challenges', () => {
+    // WRONG IMPL KILLED: the parameter order of a signature that still takes an `offers` array
+    // second (the challenges here would be read as offers and the sessions dropped: no row); a
+    // foreign session listed; store order kept (204, 203, 201, 202 in); a challenge row put on
+    // Trades; a session row given a sheet; the marks read seat-blind (the viewer as partner of
+    // 203 would read Bob's confirm as its own).
+    const vm = buildSocialVm(null, MIX_CHALLENGES, ME, SESSION_PEOPLE, MIX_SESSIONS);
+    expect(
+      vm.trades.map((r) => [r.key, r.kind, r.id, r.actions]),
+      'the viewer`s three sessions, ascending, and nothing else',
+    ).toEqual([
+      ['session-201', 'session', 201n, []],
+      ['session-202', 'session', 202n, []],
+      ['session-203', 'session', 203n, []],
+    ]);
+    expect(
+      vm.trades.map((r) => r.session),
+      'the painted facts from the viewer`s seat',
+    ).toEqual([
+      { partnerName: 'Bob', mineConfirmed: false, theirsConfirmed: true },
+      { partnerName: `#${CAROL.slice(0, 8)}`, mineConfirmed: false, theirsConfirmed: false },
+      { partnerName: 'Bob', mineConfirmed: false, theirsConfirmed: true },
+    ]);
+    expect(vm.trades[1]?.waiting, 'the untouched incoming session waits').toBe(true);
+    expect(vm.trades[0]?.waiting, 'the session the viewer opened does not wait').toBe(false);
+    expect(
+      vm.challenges.map((r) => [r.key, r.kind, r.actions]),
+      'the challenge rows, incoming first',
+    ).toEqual([
+      ['challenge-21', 'incoming', ['accept', 'decline']],
+      ['challenge-22', 'outgoing', ['cancel']],
+    ]);
+  });
+
+  it('ts-4.6 no input yields a Trades row that is not a session row: over every subset of six sessions and four challenges, vm.trades is exactly the viewer`s sessions` keys and every row anywhere is of kind session / incoming / outgoing, never keyed trade-<id>', () => {
+    // WRONG IMPL KILLED: any path that still builds a row of kind `trade` (or keys one
+    // `trade-<id>`) from some input; a session row dropped or duplicated for some combination; a
+    // challenge row leaking onto Trades when no session is listed.
+    let built = 0;
+    let sessionRows = 0;
+    for (const sessions of subsets(SESSION_POOL)) {
+      for (const challenges of subsets(CHALLENGE_POOL)) {
+        const vm = buildSocialVm(null, challenges, ME, SESSION_PEOPLE, sessions);
+        const label = `sessions [${sessions.map((s) => s.sessionId).join(',')}], challenges [${challenges.map((c) => c.challengeId).join(',')}]`;
+        expect(
+          vm.trades.map((r) => r.key),
+          `${label}: Trades is the viewer's sessions`,
+        ).toEqual(ownSessionKeys(sessions));
+        for (const r of vm.trades) {
+          expect([r.kind, r.key, r.actions], `${label}: a Trades row is a session row`).toEqual([
+            'session',
+            `session-${r.id}`,
+            [],
+          ]);
+        }
+        for (const r of [...vm.trades, ...vm.challenges]) {
+          expect(ROW_KINDS.has(r.kind), `${label}: row kind ${r.kind}`).toBe(true);
+          expect(r.key.startsWith('trade-'), `${label}: row key ${r.key}`).toBe(false);
+        }
+        built += 1;
+        sessionRows += vm.trades.length;
+      }
+    }
+    expect(built, 'ANTI-VACUITY: 2^6 x 2^4 worlds').toBe(1024);
+    // Each of the four own sessions is in half of the 64 session subsets, times 16 challenge sets.
+    expect(sessionRows, 'ANTI-VACUITY: session rows listed').toBe(4 * 32 * 16);
+  });
+
+  it('ts-4.6 a row carries only accept / decline / cancel: over every subset of the pools the actions seen are exactly those three, an incoming challenge accept, decline and an outgoing one cancel, a session row none', () => {
+    // WRONG IMPL KILLED: a `confirm` (or any fourth) action offered by some row; a challenge row's
+    // actions reordered (the sheet opens on the first); a session row given a sheet.
+    const seen = new Set<string>();
+    for (const sessions of subsets(SESSION_POOL)) {
+      for (const challenges of subsets(CHALLENGE_POOL)) {
+        const vm = buildSocialVm(null, challenges, ME, SESSION_PEOPLE, sessions);
+        for (const r of [...vm.trades, ...vm.challenges]) {
+          for (const action of r.actions) {
+            expect(ROW_ACTIONS.has(action), `${r.key}: action ${action}`).toBe(true);
+            seen.add(action);
+          }
+          const want: readonly SocialAction[] =
+            r.kind === 'incoming' ? ['accept', 'decline'] : r.kind === 'outgoing' ? ['cancel'] : [];
+          expect(r.actions, `${r.key} (${r.kind})`).toEqual(want);
+        }
+      }
+    }
+    expect([...seen].sort(), 'ANTI-VACUITY: all three actions occur').toEqual([
+      'accept',
+      'cancel',
+      'decline',
+    ]);
+  });
+
+  it('ts-4.6 socialLayout, oldestWaiting and socialSessionsKey hold over session and challenge rows: Trades keys the viewer`s sessions, Challenges the two requests; the oldest waiting request is whichever of the untouched session and the incoming challenge is older; the session key ignores the challenges and follows a mark', () => {
+    // WRONG IMPL KILLED: a layout that keys Trades by anything but the session rows; an
+    // oldestWaiting that ignores session rows (only the challenge would ever win) or counts the
+    // viewer's own opened session or a session it was confirmed on as waiting; a session key that
+    // reads the challenge rows (a repaint per challenge) or misses a mark.
+    const vm = buildSocialVm(null, MIX_CHALLENGES, ME, SESSION_PEOPLE, MIX_SESSIONS);
+    const layout = socialLayout(vm);
+    expect(itemsOf(layout, 'trades')).toEqual([
+      { key: 'session-201', enabled: true },
+      { key: 'session-202', enabled: true },
+      { key: 'session-203', enabled: true },
+    ]);
+    expect(itemKeys(layout, 'challenges')).toEqual(['challenge-21', 'challenge-22']);
+
+    // The incoming challenge (2 000) is older than the untouched session (5 000).
+    expect(oldestWaiting(vm), 'the challenge is older').toEqual({
+      tab: 'challenges',
+      key: 'challenge-21',
+    });
+    // A younger incoming challenge: the untouched session 202 is the oldest waiting request.
+    const late = buildSocialVm(
+      null,
+      [OUTGOING, challenge(21n, BOB, ME, 'Pending', 9_000n)],
+      ME,
+      SESSION_PEOPLE,
+      MIX_SESSIONS,
+    );
+    expect(oldestWaiting(late), 'the session is older').toEqual({
+      tab: 'trades',
+      key: 'session-202',
+    });
+    // Only the viewer's opened session and a foreign one: nothing on Trades waits.
+    const notWaiting = buildSocialVm(null, [OUTGOING], ME, SESSION_PEOPLE, [
+      MIX_SESSIONS[0] as StoreTradeSession,
+      MIX_SESSIONS[2] as StoreTradeSession,
+    ]);
+    expect(notWaiting.trades.map((r) => r.key)).toEqual(['session-201']);
+    expect(oldestWaiting(notWaiting), 'nothing waits').toBeNull();
+
+    // The session key: the challenges do not move it; a mark on 203 does.
+    const k = socialSessionsKey(vm);
+    expect(socialSessionsKey(buildSocialVm(null, [], ME, SESSION_PEOPLE, MIX_SESSIONS))).toBe(k);
+    const marked = MIX_SESSIONS.map((s) =>
+      s.sessionId === 203n ? { ...s, partnerConfirmed: true } : s,
+    );
+    expect(
+      socialSessionsKey(buildSocialVm(null, MIX_CHALLENGES, ME, SESSION_PEOPLE, marked)),
+      'the viewer confirms 203',
+    ).not.toBe(k);
   });
 });

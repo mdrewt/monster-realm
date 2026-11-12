@@ -1,24 +1,21 @@
 // ui/socialModel.ts — the Social frame's pure view model (design §5 row 4; CTL8D.1, CTL8D.2).
 // No DOM, SDK, resolver, clock or module state. Total: never throws on any input.
 //
-// The frame's rows are the blocks its legacy roots show: the one offer the trade root shows, and
-// the request and the sent challenge the pvp root shows, each picked through that root's own
-// selector, so A on a row always acts on what the player sees. Trades also lists one row per trade
-// session the viewer is in: A on one opens its editor. Players lists the other online
+// Challenges lists the request and the sent challenge the pvp root shows, each picked through that
+// root's own selector, so A on a row always acts on what the player sees. Trades lists one row per
+// trade session the viewer is in: A on one opens its editor. Players lists the other online
 // players (CTL8G.1) and Rankings the leaderboard's rows (CTL8G.2): nav rows only, never a sheet.
 import type {
   StoreBattleChallenge,
   StoreCharacter,
   StorePlayer,
   StoreProfile,
-  StoreTradeOffer,
   StoreTradeSession,
 } from '../net/store';
 import { buildLeaderboardViewModel, type LeaderboardRowViewModel } from './leaderboardModel';
 import { list, type NavLayout, tabs } from './nav';
 import { incomingChallenge, outgoingChallenge } from './pvpModel';
 import type { SocialTab } from './screens/types';
-import { shownTradeOffer, type TradeAction, tradeActions } from './tradeModel';
 import { incomingUntouched, ownSessions, partnerOf, playerName } from './tradeSessionModel';
 
 /** The tabs in strip order. Built from a `Record`, so a new `SocialTab` fails client-typecheck
@@ -31,9 +28,9 @@ export const SOCIAL_TABS = Object.keys({
 } satisfies Record<SocialTab, true>) as readonly SocialTab[];
 
 /** What a row's sheet can offer. */
-export type SocialAction = 'accept' | 'decline' | 'confirm' | 'cancel';
+export type SocialAction = 'accept' | 'decline' | 'cancel';
 
-export type SocialRowKind = 'trade' | 'session' | 'incoming' | 'outgoing';
+export type SocialRowKind = 'session' | 'incoming' | 'outgoing';
 
 /** What a session row paints beside its key. */
 export interface SocialSessionFacts {
@@ -44,10 +41,10 @@ export interface SocialSessionFacts {
 }
 
 export interface SocialRow {
-  /** The nav key: `trade-<tradeId>`, `session-<sessionId>` or `challenge-<challengeId>`. */
+  /** The nav key: `session-<sessionId>` or `challenge-<challengeId>`. */
   readonly key: string;
   readonly kind: SocialRowKind;
-  /** The tradeId, the sessionId or the challengeId. */
+  /** The sessionId or the challengeId. */
   readonly id: bigint;
   /** The actions legal now, in sheet order. Empty exactly for a session row, which has no sheet:
    *  A on it opens its editor. */
@@ -82,7 +79,7 @@ interface SocialPeople {
 export interface SocialVm {
   /** The tab the open path asked for (`ScreenContext.socialTab`), else null. */
   readonly requested: SocialTab | null;
-  /** The offer the trade root shows, if any, then one row per trade session the viewer is in. */
+  /** One row per trade session the viewer is in. */
   readonly trades: readonly SocialRow[];
   /** The request the pvp root shows, then the viewer's own sent challenge. */
   readonly challenges: readonly SocialRow[];
@@ -92,27 +89,8 @@ export interface SocialVm {
   readonly rankings: readonly LeaderboardRowViewModel[];
 }
 
-/** The sheet's name for each trade action: the legacy `reject` reads Decline. */
-const TRADE_ACTION: Readonly<Record<TradeAction, SocialAction>> = {
-  accept: 'accept',
-  reject: 'decline',
-  confirm: 'confirm',
-  cancel: 'cancel',
-};
 const REQUEST_ACTIONS: readonly SocialAction[] = ['accept', 'decline'];
 const SENT_ACTIONS: readonly SocialAction[] = ['cancel'];
-
-function tradeRow(offer: StoreTradeOffer, identity: string): SocialRow {
-  return {
-    key: `trade-${offer.tradeId}`,
-    kind: 'trade',
-    id: offer.tradeId,
-    actions: tradeActions(offer, identity).map((action) => TRADE_ACTION[action]),
-    // An offer awaiting the viewer's own final Confirm is not a request (design §4).
-    waiting: offer.counterparty === identity && offer.status === 'Pending',
-    createdAtMs: offer.createdAtMs,
-  };
-}
 
 function sessionRow(
   session: StoreTradeSession,
@@ -205,13 +183,11 @@ export const socialSessionsKey = (vm: SocialVm): string =>
 
 export function buildSocialVm(
   requested: SocialTab | null,
-  offers: readonly StoreTradeOffer[],
   challenges: readonly StoreBattleChallenge[],
   identity: string,
   people: SocialPeople,
   sessions: readonly StoreTradeSession[] = [],
 ): SocialVm {
-  const offer = shownTradeOffer(offers, identity);
   const incoming = incomingChallenge(challenges, identity);
   const outgoing = outgoingChallenge(challenges, identity);
   const rows: SocialRow[] = [];
@@ -220,16 +196,11 @@ export function buildSocialVm(
   if (outgoing !== undefined && outgoing.challengeId !== incoming?.challengeId) {
     rows.push(challengeRow(outgoing, 'outgoing'));
   }
-  const trade = offer === undefined ? undefined : tradeRow(offer, identity);
   return {
     requested,
-    // An offer in a status this client does not know offers no action: it is not a row.
-    trades: [
-      ...(trade === undefined || trade.actions.length === 0 ? [] : [trade]),
-      ...ownSessions(sessions, identity).map((session) =>
-        sessionRow(session, identity, people.players),
-      ),
-    ],
+    trades: ownSessions(sessions, identity).map((session) =>
+      sessionRow(session, identity, people.players),
+    ),
     challenges: rows,
     players: socialPlayers(people.players, people.characters, identity),
     rankings: buildLeaderboardViewModel(people.profiles, identity).rows,
@@ -272,8 +243,8 @@ export function socialLayout(vm: SocialVm): NavLayout {
   );
 }
 
-/** The oldest waiting request: its tab and row key, else null. A tie goes to the trade, and among
- *  trade rows to the first listed. */
+/** The oldest waiting request: its tab and row key, else null. A tie goes to the trade session, and
+ *  among session rows to the first listed. */
 export function oldestWaiting(
   vm: SocialVm,
 ): { readonly tab: 'trades' | 'challenges'; readonly key: string } | null {

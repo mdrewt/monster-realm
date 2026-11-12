@@ -466,8 +466,7 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
         online: true,
         lastInputSeq: 0n,
       });
-      // ts-3 (named intentional change, C): the request is an incoming SESSION Dana opened (a
-      // legacy trade_offer raises no notice any more). Was: s.upsertTradeOffer({ tradeId: 41n, … }).
+      // The request is an incoming SESSION Dana opened.
       s.reconcileTradeSessionsFromView([
         {
           sessionId: 41n,

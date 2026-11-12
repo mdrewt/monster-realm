@@ -498,7 +498,10 @@ describe('main.ts the Social frame over the real panel views and a11y layer (ctl
     expect(shownRoots(), 'b, control: a switch that does not throw shows the pvp root').toEqual([
       'challenges',
     ]);
-    vi.spyOn(opts.store, 'allTradeOffers').mockImplementationOnce(() => {
+    // The trade panel reads no model when it is shown, so its throw is the panel's own `show`.
+    const trades = view.trades;
+    if (trades === undefined || trades === null) throw new Error('b: the trade panel is not lent');
+    vi.spyOn(trades, 'show').mockImplementationOnce(() => {
       throw new Error('trade model boom');
     });
     expect(() => view.show('tradeView'), 'b: the trade panel`s throw reaches the caller').toThrow(

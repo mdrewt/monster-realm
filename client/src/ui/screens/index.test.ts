@@ -3119,7 +3119,6 @@ function socialHostCtx(w: SocialHostWorld): ScreenContext {
   // INTENTIONAL CHANGE (ctl-8g): the three reads the Players and Rankings rows make (an empty
   // world: no players, no characters, no profiles).
   const store = {
-    allTradeOffers: () => [],
     // ts-3: the Social view model also reads the trade sessions (none in this world).
     allTradeSessions: () => [],
     allChallenges: () => w.challenges.map((c) => ({ ...c })),

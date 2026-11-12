@@ -361,12 +361,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     return { root: capturedRoot('shopView'), close: () => view.hide(), reopen: () => view.show() };
   },
   tradeView: () => {
-    const view = new TradeView({
-      onAccept: asyncNoop,
-      onReject: asyncNoop,
-      onConfirm: asyncNoop,
-      onCancel: asyncNoop,
-    });
+    const view = new TradeView();
     view.show();
     return { root: capturedRoot('tradeView'), close: () => view.hide(), reopen: () => view.show() };
   },

@@ -717,13 +717,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.sheet.feed': `Feed${ELLIPSIS}`, // boxView.ts
   'box.sheet.evolve': `Evolve${ELLIPSIS}`, // boxView.ts
   'box.sheet.feedNone': 'No food', // boxView.ts
-  // Trade.* (4 plain). qf-8 (named intentional change): `trade.action.{accept,reject,confirm,
-  // cancel}` ('Accept', 'Reject', 'Confirm Trade', 'Cancel') are RETIRED with the trade row's
-  // buttons; the Social sheet's `social.action.*` rows answer a trade.
+  // Trade.* (2 plain). ts-4.6: no offer-side heading (`trade.side.{offer,receive}`) is a catalog id;
+  // the trade root lists session rows only.
   'trade.status.none': 'No active trade', // tradeView.ts
-  'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
-  'trade.side.receive': 'You receive', // tradeView.ts (hoisted, #renderSide heading arg)
-  'trade.side.nothing': '(nothing)', // tradeView.ts
+  'trade.side.nothing': '(nothing)',
   // Shop.* (6 plain)
   'shop.title': 'Shop', // shopView.ts
   'shop.noShop': 'No shop available.', // shopView.ts
@@ -757,10 +754,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // 'shop.feedback.sold' are DELETED; the four parameterised `shop.feedback.{buy,sell}.{item,count}`
   // lines (SAMPLE_PARAMS / EXPECTED_PARAM_OUTPUTS) replace them, so 13 of these 15 remain.
   'chrome.feedback.disconnected': 'disconnected — try again', // careAction.ts:72 (performCare) / sessionModel.ts
-  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2668
-  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2675
-  'trade.feedback.completed': 'Trade complete!', // main.ts:2682
-  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2689
+  // ts-4.6: no `trade.feedback.*` line is a catalog id (no offer-based trade command settles).
   'chrome.rename.updated': 'Name updated!', // main.ts:2801
   // ts-3 (named intentional change, the Strangler): 'tradePropose.feedback.sent' ('Offer sent!')
   // is DELETED with the wizard (no success toast: the editor is the feedback); 12 of the 15 remain.
@@ -892,12 +886,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'social.tab.challenges': 'Challenges',
   'social.tab.rankings': 'Rankings',
   'social.players.placeholder': 'The player list is not available yet.',
+  // ts-4.6: the sheet's three rows and its one question (no offer-based trade row is listed).
   'social.action.accept': 'Accept',
   'social.action.decline': 'Decline',
-  'social.action.confirm': 'Confirm',
   'social.action.cancel': 'Cancel',
-  'social.confirm.declineTrade': 'Decline this trade?',
-  'social.confirm.confirmTrade': 'Complete this trade? It cannot be undone.',
   'social.confirm.declineChallenge': 'Decline this challenge?',
   // ts-3 (named intentional change, the Strangler): ctl-8e's 9 plain wizard keys
   // (`tradePropose.step.{target,offer,coins,ask,review}`, `tradePropose.review.{prompt,incomplete,
@@ -2346,7 +2338,10 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // `tradePropose.feedback.sent`, the 9 ctl-8e plain `tradePropose.{step,review}.*` keys and
     // `tradePropose.review.summary`), +25 (18 plain, 7 parameterised: `trade.status.open`,
     // `trade.row.{title,marks}`, `tradeSession.*`, `notice.request.trades`).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-3 roster is 536 keys').toHaveLength(536);
+    // ts-4 (named intentional change, the Strangler's second half): 536 -> 527, -9 plain
+    // (`trade.side.{offer,receive}`, `trade.feedback.{accepted,rejected,completed,cancelled}`,
+    // `social.action.confirm`, `social.confirm.{declineTrade,confirmTrade}`).
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-4 roster is 527 keys').toHaveLength(527);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2560,10 +2555,11 @@ describe('ctl-8a: catalog.fr.ts, the keys ctl-8a adds', () => {
 });
 
 // =============================================================================
-// ctl-8d: the French values of the 12 keys ctl-8d adds (the Social tabs, the Players placeholder,
-// the action sheet's rows and its three Yes / No questions), pinned exactly as the English ones are
-// in EXPECTED_PLAIN above. Before each `?` stands a U+00A0 NO-BREAK SPACE: the French typography
-// convention catalog.fr.ts documents in its header and follows in `box.evolve.confirm`.
+// ctl-8d: the French values of the Social frame's 9 plain keys (the Social tabs, the Players
+// placeholder, the action sheet's three rows and its one Yes / No question; ts-4.6: no offer-based
+// trade row or question), pinned exactly as the English ones are in EXPECTED_PLAIN above. Before the
+// `?` stands a U+00A0 NO-BREAK SPACE: the French typography convention catalog.fr.ts documents in
+// its header and follows in `box.evolve.confirm`.
 // =============================================================================
 
 /** U+00C9 (capital E acute) and U+00A0 (no-break space), built by code point so the expected
@@ -2579,21 +2575,17 @@ const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
   'social.players.placeholder': `La liste des joueurs n${RIGHT_QUOTE}est pas encore disponible.`,
   'social.action.accept': 'Accepter',
   'social.action.decline': 'Refuser',
-  'social.action.confirm': 'Confirmer',
   'social.action.cancel': 'Annuler',
-  'social.confirm.declineTrade': `Refuser cet ${E_ACUTE}change${NO_BREAK_SPACE}?`,
-  'social.confirm.confirmTrade': `Conclure cet ${E_ACUTE}change${NO_BREAK_SPACE}? Cette action est irr${E_ACUTE}versible.`,
   'social.confirm.declineChallenge': `Refuser ce d${E_ACUTE}fi${NO_BREAK_SPACE}?`,
 };
 
-describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
-  it('ctl-8d FR-PINS: the 12 new plain keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
+describe('ctl-8d: catalog.fr.ts, the Social frame`s keys', () => {
+  it('ctl-8d FR-PINS: the 9 plain Social keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
     // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot); a French entry left
-    // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser, the two
-    // trade questions); a confirm question that drops the irreversibility; a straight apostrophe
-    // (not U+2019) in the placeholder; a decomposed or missing accent; and a question mark glued
-    // to its word or set off by a plain breaking space instead of the catalog's U+00A0 (a browser
-    // could wrap the `?` onto a line of its own).
+    // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser); a straight
+    // apostrophe (not U+2019) in the placeholder; a decomposed or missing accent; and a question
+    // mark glued to its word or set off by a plain breaking space instead of the catalog's U+00A0
+    // (a browser could wrap the `?` onto a line of its own).
     for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8D_PLAIN)) {
       const en = EXPECTED_PLAIN[key];
       expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
@@ -2604,8 +2596,62 @@ describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
     }
     expect(
       Object.keys(EXPECTED_FR_CTL8D_PLAIN).length,
-      'ANTI-VACUITY: all 12 ctl-8d keys are pinned in French',
-    ).toBe(12);
+      'ANTI-VACUITY: all 9 Social keys are pinned in French',
+    ).toBe(9);
+  });
+});
+
+// =============================================================================
+// ts-4 (ts-4.6): no catalog carries an id of the offer-based trade surface; the ids the session
+// rows, the session editor and the challenge sheet read stay in both.
+// =============================================================================
+
+/** The nine ids of the offer-based trade surface (the ts-4 plan "Resume 2"). HARD-CODED. */
+const TS46_RETIRED_IDS = [
+  'trade.side.offer',
+  'trade.side.receive',
+  'trade.feedback.accepted',
+  'trade.feedback.rejected',
+  'trade.feedback.completed',
+  'trade.feedback.cancelled',
+  'social.action.confirm',
+  'social.confirm.declineTrade',
+  'social.confirm.confirmTrade',
+] as const;
+
+/** Their neighbours that stay (other readers). HARD-CODED. */
+const TS46_KEPT_IDS = [
+  'trade.status.none',
+  'trade.status.open',
+  'trade.side.card',
+  'trade.side.currency',
+  'trade.side.nothing',
+  'trade.row.title',
+  'trade.row.marks',
+  'social.action.accept',
+  'social.action.decline',
+  'social.action.cancel',
+  'social.confirm.declineChallenge',
+] as const;
+
+describe('ts-4.6: the offer-based trade ids are in no catalog', () => {
+  it('ts-4.6 CATALOG-RETIRED: the nine offer-based trade ids are own keys of neither catalog.en nor catalog.fr nor the pinned roster, while their eleven neighbours stay in both', () => {
+    // WRONG IMPL KILLED: a retired id left in one catalog (a dead key catalogParity would also
+    // flag, or an en-only deletion that leaves fr carrying a stray); a deletion that takes a
+    // neighbour with it (the status line, the session row title and marks, the session editor's
+    // side lines or the challenge sheet would read a missing id).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    for (const id of TS46_RETIRED_IDS) {
+      expect(Object.hasOwn(en, id), `en ${id} is gone`).toBe(false);
+      expect(Object.hasOwn(fr, id), `fr ${id} is gone`).toBe(false);
+      expect(EXPECTED_KEYS.includes(id), `the pinned roster does not list ${id}`).toBe(false);
+    }
+    for (const id of TS46_KEPT_IDS) {
+      expect(Object.hasOwn(en, id), `en ${id} stays`).toBe(true);
+      expect(Object.hasOwn(fr, id), `fr ${id} stays`).toBe(true);
+      expect(EXPECTED_KEYS.includes(id), `the pinned roster lists ${id}`).toBe(true);
+    }
   });
 });
 
@@ -3395,8 +3441,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
+    // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 527 keys').toBe(527);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(527);
   });
 });
 
@@ -3430,7 +3478,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 511 keys each (bt-12 increment B, named intentional change, BT12.2/BT12.6: 504 → 511, +2 tactics.* (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation, assign, prevMonster, nextMonster); bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 527 keys each (ts-4, named intentional change: 536 → 527, -9 trade.side.* / trade.feedback.* / social.action.confirm / social.confirm.{declineTrade,confirmTrade}; bt-12 increment B, named intentional change, BT12.2/BT12.6: 504 → 511, +2 tactics.* (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation, assign, prevMonster, nextMonster); bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -3467,10 +3515,8 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       'box.sheet.move',
       'box.card.evolveBadge',
       'box.card.stats',
-      // tradeView: the status line and the two side headings.
+      // tradeView: the status line.
       'trade.status.none',
-      'trade.side.offer',
-      'trade.side.receive',
       // pvpView: the title and the two request labels the Social cursor marks.
       'pvp.title.challenge',
       'pvp.incoming.label',
@@ -3479,10 +3525,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       'evolution.hint',
       'evolution.card.ready',
       'evolution.path.heading',
-      // The Social sheet's rows: where Accept / Decline / Confirm / Cancel live now.
+      // The Social sheet's rows: where Accept / Decline / Cancel live now.
       'social.action.accept',
       'social.action.decline',
-      'social.action.confirm',
       'social.action.cancel',
     ] as const;
     for (const kept of KEPT) {
@@ -3518,8 +3563,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
+    // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
+    // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 527 keys').toBe(527);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(527);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3782,7 +3829,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 511 keys (bt-12 increment B, named intentional change, BT12.2/BT12.6: 504 → 511, +2 tactics.* (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation, assign, prevMonster, nextMonster); bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the pinned one, 527 keys (ts-4, named intentional change: 536 → 527, -9 trade.side.* / trade.feedback.* / social.action.confirm / social.confirm.{declineTrade,confirmTrade}; bt-12 increment B, named intentional change, BT12.2/BT12.6: 504 → 511, +2 tactics.* (tactics.deploy.wilds, tactics.clock.stillThere), +5 chrome.chip.* (deploy, editFormation, assign, prevMonster, nextMonster); bt-12, named intentional change, BT12.2/BT12.4/BT12.6: 486 → 504; bt-11, named intentional change, BT11.1/BT11.6 then BT11.3/BT11.4/BT11.5: 425 → 486; bt-10: 365 → 425, +tactics.*) [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3827,9 +3874,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}` (the
     // `menu.options.{help,controls}.*` pairs are re-homed as `menu.{help,controls}.*`, a net zero).
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 536 keys').toBe(536);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(536);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(536);
+    // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
+    // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 527 keys').toBe(527);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(527);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(527);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4510,8 +4559,10 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // uif-16b (named intentional change): 531 -> 526: -4 menu.profile.* sub-list ids, -chrome.status.privacyOverlayBusy.
     // uif-15c (named intentional change, UIF15C.5): 526 -> 524, -2 `menu.options.{title,desc}`.
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
-    expect(Object.keys(en), 'the English roster is 536 keys (ts-3 +12)').toHaveLength(536);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(536);
+    // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
+    // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
+    expect(Object.keys(en), 'the English roster is 527 keys (ts-4 -9)').toHaveLength(527);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(527);
   });
 });
 
@@ -4626,7 +4677,9 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
       expect(typeof fr[id], `fr keeps ${id}`).toBe('string');
     }
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
-    expect(Object.keys(en), 'the English roster is 536 keys').toHaveLength(536);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(536);
+    // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
+    // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
+    expect(Object.keys(en), 'the English roster is 527 keys').toHaveLength(527);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(527);
   });
 });

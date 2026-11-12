@@ -190,8 +190,7 @@ function seedPlayer(identity: string, name: string, entityId: bigint): void {
   opts.store.upsertPlayer({ identity, entityId, name, online: true, lastInputSeq: 0n });
 }
 
-/** ts-3 (named intentional change, C): an incoming, untouched SESSION `from` opened with the booted
- *  player (a legacy trade_offer raises no notice any more). Was: `offerFrom`, a Pending offer. */
+/** An incoming, untouched SESSION `from` opened with the booted player. */
 const sessionFrom = (from: string, sessionId: bigint, createdAtMs: bigint): StoreTradeSession => ({
   sessionId,
   opener: from,
@@ -295,8 +294,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     press(Y);
     frame();
     expect(sheetShown(), 'Y (chip still shown) opens the oldest dismissed request').toBe(true);
-    // ts-3 (named intentional change, C): Accept on a session opens its editor and sends nothing.
-    // Was: respondTrade accepted:true.
+    // Accept on a session opens its editor and sends nothing.
     press(A);
     await flush();
     frame();
@@ -397,8 +395,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     opts.store.reconcileTradeSessionsFromView([sessionFrom(BOB, 11n, 1_000n)]);
     batch();
     frame();
-    // ts-3 (named intentional change, C): a trade Accept sends no reducer now, so the double answer
-    // is the Decline (cancelTradeSession). Was: Y Enter twice, one respondTrade.
+    // A trade Accept sends no reducer, so the double answer is the Decline (cancelTradeSession).
     press(Y);
     press('ArrowDown');
     press(A);

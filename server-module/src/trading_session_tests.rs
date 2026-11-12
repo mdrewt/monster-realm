@@ -1,6 +1,6 @@
 //! Seam tests for the trade-session helpers in `trading_session.rs`
-//! (`snapshot_cards`, `reset_trainer_bond`, `netted_receiver_stacks`,
-//! `apply_swap`), reached through `super::`.
+//! (`reset_trainer_bond`, `netted_receiver_stacks`, `apply_swap`), reached
+//! through `super::`.
 //!
 //! Each test pins an outcome on real rows (native host) or on a pure oracle
 //! (`game_core`'s `reset_bond_on_trade`). Every helper call runs as `carol()`,
@@ -285,8 +285,8 @@ fn ts0a_apply_swap_writes_dest_slot_owner_and_bond_reset_to_both_rows() {
     assert_eq!((p11.owner_identity, p21.owner_identity), (bob(), alice()));
 }
 
-/// The `confirm_trade` call shape: `|_| PARTY_SLOT_NONE` lands every transferred
-/// monster in Storage, on both rows, with the same owner flip and bond reset.
+/// `|_| PARTY_SLOT_NONE` as the destination lands every transferred monster in
+/// Storage, on both rows, with the same owner flip and bond reset.
 /// kills: a dest_slot-ignoring impl that hardcodes a slot, an impl that forgets
 /// to unslot the projection.
 #[test]
@@ -401,6 +401,94 @@ fn ts0a_apply_swap_currency_moves_both_ways_and_broke_sender_is_err() {
     assert!(got.is_err(), "a broke sender must be refused, got {got:?}");
 }
 
+/// A side that trades away its WHOLE stack loses the row, and nobody else's
+/// rows move: alice gives all 4 of item 5 and 30 coins, bob gives all 3 of item
+/// 6 and 20 coins, while carol (the sender of the call) and dave each hold both
+/// items and coins. Afterwards alice holds exactly one stack row (6 x 3) and bob
+/// exactly one (5 x 4) — no row is left at count 0 — the wallets net exactly,
+/// and every carol and dave row is byte-identical.
+/// kills: a debit that writes `count - qty` and keeps a row that reaches 0, a
+/// debit or credit that also lands on `ctx.sender()` or on another holder of
+/// the same item.
+#[test]
+fn ts4_apply_swap_deletes_a_drained_stack_row_and_leaves_a_bystander_untouched() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.stack(alice(), 5, 4);
+    w.stack(bob(), 6, 3);
+    w.wallet(alice(), 100);
+    w.wallet(bob(), 50);
+    for (who, n) in [(carol(), 1), (dave(), 2)] {
+        w.stack(who, 5, 7 * n);
+        w.stack(who, 6, 5 * n);
+        w.wallet(who, 80 * u64::from(n));
+    }
+    let rows_of = |who: Identity| -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let stacks: Vec<Inventory> = w
+            .stacks
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .collect();
+        let wallets: Vec<PlayerWallet> = w
+            .wallets
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .collect();
+        (sorted_bytes(&stacks), sorted_bytes(&wallets))
+    };
+    let held = |who: Identity| -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = w
+            .stacks
+            .rows()
+            .iter()
+            .filter(|r| r.owner_identity == who)
+            .map(|r| (r.item_id, r.count))
+            .collect();
+        out.sort_unstable();
+        out
+    };
+    let bystanders = [rows_of(carol()), rows_of(dave())];
+    for (stacks, wallets) in &bystanders {
+        assert_eq!(
+            (stacks.len(), wallets.len()),
+            (2, 1),
+            "setup: each bystander holds both traded items and a wallet"
+        );
+    }
+
+    let plan =
+        build_swap_plan(&[], &[], &[item(5, 4)], &[item(6, 3)], 30, 20).expect("plan builds");
+    let got = fx.run_as(carol(), |ctx| {
+        super::apply_swap(ctx, &plan, alice(), bob(), |_| crate::PARTY_SLOT_NONE)
+    });
+    assert_eq!(got, Ok(()));
+
+    assert_eq!(
+        held(alice()),
+        vec![(6, 3)],
+        "alice's drained stack of item 5 is deleted, not left at count 0"
+    );
+    assert_eq!(
+        held(bob()),
+        vec![(5, 4)],
+        "bob's drained stack of item 6 is deleted, not left at count 0"
+    );
+    assert!(
+        w.stacks.rows().iter().all(|r| r.count > 0),
+        "no inventory row is left at count 0"
+    );
+    assert_eq!(
+        (w.balance(alice()), w.balance(bob())),
+        (100 - 30 + 20, 50 - 20 + 30)
+    );
+    assert!(
+        [rows_of(carol()), rows_of(dave())] == bystanders,
+        "a bystander's stacks or wallet changed"
+    );
+}
+
 /// The receiver's post-debit effective stacks, one per RECEIVING item in
 /// `receiving` order: held count (0 with no row, only the RECEIVER's rows) minus
 /// the same item's quantity in `sending`, saturating at 0.
@@ -438,58 +526,6 @@ fn ts0a_netted_receiver_stacks_nets_saturates_and_follows_receiving_order() {
             },
         ]
     );
-}
-
-/// `snapshot_cards` returns one card per id in the CALLER-GIVEN order with the
-/// live level / hp / nickname; an unknown id and a foreign-owned id each refuse
-/// with `monster {id} not found` / `monster {id} not owned by caller`.
-/// kills: sorting the ids, stale or default card fields, dropping the owner check,
-/// `expected_owner` replaced by `ctx.sender()`, changed error text.
-#[test]
-fn ts0a_snapshot_cards_returns_live_cards_and_refuses_missing_or_foreign() {
-    let fx = fixture();
-    let w = world(&fx);
-    w.monsters.seed(&Monster {
-        nickname: "Ember".to_string(),
-        level: 12,
-        current_hp: 9,
-        stat_hp: 51,
-        species_id: 4,
-        ..bonded(21, alice(), 0, 1)
-    });
-    w.monsters.seed(&bonded(11, alice(), 1, 2));
-    w.monsters.seed(&bonded(31, bob(), 0, 3));
-    let (ok, missing, foreign) = fx.run_as(carol(), |ctx| {
-        (
-            super::snapshot_cards(ctx, &[21, 11], alice(), "propose_trade"),
-            super::snapshot_cards(ctx, &[11, 99], alice(), "propose_trade"),
-            super::snapshot_cards(ctx, &[11, 31], alice(), "propose_trade"),
-        )
-    });
-    let seeded11 = bonded(11, alice(), 1, 2);
-    assert_eq!(
-        ok,
-        Ok(vec![
-            MonsterCard {
-                monster_id: 21,
-                species_id: 4,
-                nickname: "Ember".to_string(),
-                level: 12,
-                current_hp: 9,
-                stat_hp: 51,
-            },
-            MonsterCard {
-                monster_id: 11,
-                species_id: seeded11.species_id,
-                nickname: seeded11.nickname.clone(),
-                level: seeded11.level,
-                current_hp: seeded11.current_hp,
-                stat_hp: seeded11.stat_hp,
-            },
-        ])
-    );
-    assert_eq!(missing, Err("monster 99 not found".to_string()));
-    assert_eq!(foreign, Err("monster 31 not owned by caller".to_string()));
 }
 
 /// All seven bond columns return to the game-core baseline (the oracle is the
@@ -2506,6 +2542,103 @@ fn ts2_edit_refuses_each_ineligible_offer() {
         &[],
         301,
         &E::InsufficientCurrency,
+    );
+}
+
+/// The two per-side caps bind independently at the reducer. One monster plus
+/// `MAX_TRADE_ITEMS_PER_SIDE` held item lines is accepted and stored as sent.
+/// Over both caps the refusal is the MONSTER cap; over the monster cap with the
+/// items at their cap it is the monster cap; over the item cap with one monster
+/// it is the item cap; at the monster cap with an item line the size check
+/// passes and the refusal is the first unowned id. Each size refusal comes
+/// before the session lookup, so a missing session id gets it too.
+/// kills: the item count taken as items + monsters (or the monster count as
+/// monsters + items), an items-only or a monsters-only size check in the
+/// reducer, the item cap checked before the monster cap.
+#[test]
+fn ts4_set_trade_offer_caps_monsters_and_item_lines_independently() {
+    use TradeSessionError as E;
+    let lines_at: Vec<TradeItem> = (100..)
+        .take(MAX_TRADE_ITEMS_PER_SIDE)
+        .map(|id| item(id, 1))
+        .collect();
+    let lines_over: Vec<TradeItem> = (100..)
+        .take(MAX_TRADE_ITEMS_PER_SIDE + 1)
+        .map(|id| item(id, 1))
+        .collect();
+    let mons_at: Vec<u64> = (1000..).take(MAX_TRADE_MONSTERS_PER_SIDE).collect();
+    let mons_over: Vec<u64> = (1000..).take(MAX_TRADE_MONSTERS_PER_SIDE + 1).collect();
+
+    {
+        let fx = fixture();
+        let w = s2_std(&fx);
+        for line in &lines_at {
+            w.items.seed(&s2_item_row(line.item_id));
+            w.set_stack(alice(), line.item_id, 1);
+        }
+        assert_eq!(s2_open(&fx, alice(), bob()), Ok(()), "setup open");
+        let sid = w.sid(alice(), bob());
+        assert_eq!(
+            s2_set(&fx, alice(), sid, &[11], &lines_at, 0),
+            Ok(()),
+            "one monster and the maximum item lines are within both caps"
+        );
+        let s = w.session(sid);
+        assert_eq!(
+            (s.opener_offer.monster_ids, s.opener_offer.items, s.revision),
+            (vec![11], lines_at.clone(), 1),
+            "the at-cap offer is stored as sent"
+        );
+    }
+
+    s2_edit_case(
+        "over both caps",
+        s2_no_seed,
+        &mons_over,
+        &lines_over,
+        0,
+        &E::TooManyMonsters,
+    );
+    s2_edit_case(
+        "over the monster cap, items at their cap",
+        s2_no_seed,
+        &mons_over,
+        &lines_at,
+        0,
+        &E::TooManyMonsters,
+    );
+    s2_edit_case(
+        "over the item cap, one monster",
+        s2_no_seed,
+        &[11],
+        &lines_over,
+        0,
+        &E::TooManyItems,
+    );
+    s2_edit_case(
+        "at the monster cap with an item line",
+        s2_no_seed,
+        &mons_at,
+        &[item(5, 1)],
+        0,
+        &E::MonsterNotOwned { monster_id: 1000 },
+    );
+
+    let fx = fixture();
+    let w = s2_std(&fx);
+    s2_refused(
+        &fx,
+        &w,
+        "over the monster cap, missing session",
+        &E::TooManyMonsters.to_string(),
+        || s2_set(&fx, alice(), 999, &mons_over, &[], 0),
+    );
+    s2_refused(
+        &fx,
+        &w,
+        "over the item cap, missing session",
+        &E::TooManyItems.to_string(),
+        || s2_set(&fx, alice(), 999, &[], &lines_over, 0),
     );
 }
 

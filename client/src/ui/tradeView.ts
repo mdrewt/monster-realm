@@ -1,31 +1,25 @@
-// ui/tradeView.ts — thin DOM shell for the trade overlay.
-// Pure rendering from TradeScreenViewModel. No logic — all logic is in tradeModel.ts.
-// Coverage-excluded per vite.config.ts (DOM shell; behavior validated by e2e).
+// ui/tradeView.ts — the Social frame's Trades root: a thin DOM shell over the static
+// `#trade-overlay`. Coverage-excluded per vite.config.ts (DOM shell; behavior validated by e2e).
 //
-// Every player-facing string this view renders is resolved through the i18n
-// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `trade.*` key from ui/i18n/catalog.en.ts —
-// the `#renderSide` heading arguments included; the English bytes
-// are unchanged (the catalog pins them). The item row `${item.name} ×${item.qty}` is deliberately
-// NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` is model data, rendered raw.
-// Every `t(`/`tf(` first argument is a string LITERAL. The view owns no message line: a trade's
-// outcome is a toast, routed by main.ts on its policy channel (uif-4b). No constructor-time strings: this view renders into the static index.html shell.
+// Every player-facing string this view renders is resolved through the i18n resolver (`t()`/`tf()`,
+// ui/i18n/resolver.ts) with a key from ui/i18n/catalog.en.ts. Every `t(`/`tf(` first argument is a
+// string LITERAL. The view owns no message line: a trade's outcome is a toast, routed by main.ts on
+// its policy channel (uif-4b). No constructor-time strings: this view renders into the static
+// index.html shell.
 //
 // THE SOCIAL FRAME'S PAINTER (ctl-8d, CTL8D.1-.2). The Social screen (ui/screens/socialScreen.ts)
 // paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the kit TabBar (uif-9,
 // UIF9.1: LB chip, the `#social-tabs` strip, RB chip; the chrome's first child, so it tops whichever
 // panel shows), the action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
 // child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
-// the Players placeholder, the trade row's cursor on `#trade-status` and the trade SESSION rows
-// (one per session the viewer is in, in `#trade-sessions`): kept only while this root is
-// visible, re-applied after every batch render and dropped by `hide()`. The session list is the one
-// part this view adds to the root, created by the first paint that has a session row; a root that
-// never had one keeps exactly the shell's children.
+// the status line (`#trade-status`) and the trade session rows (one per session the viewer is in,
+// in `#trade-sessions`): kept only while this root is visible and dropped by `hide()`. The session
+// list is the one part this view adds to the root, created by the first paint that has a session
+// row; a root that never had one keeps exactly the shell's children.
 //
-// NO CONTROL OF ITS OWN (qf-8, QF8.1): the `#trade-actions` buttons (Accept / Reject / Confirm
-// Trade / Cancel) were a mouse-only duplicate of the Social sheet's Trades rows and are deleted,
-// with the in-flight lock that guarded them. A trade is answered on the sheet (accept / decline /
-// confirm / cancel, by D-pad and by pointer). `#trade-actions` stays a part of the static shell
-// (the constructor requires it; Players hides it with the sides) and is never written.
+// NO CONTROL OF ITS OWN: a session row opens its editor (ui/tradeSessionView.ts), by D-pad and by
+// pointer. The view reads `#trade-overlay` and `#trade-status` only; the shell's other children
+// are never read or written.
 import { t, tf } from './i18n/resolver';
 import { list, tabs } from './nav';
 import { navTabId, renderNav } from './navRender';
@@ -33,10 +27,9 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { SocialTab } from './screens/types';
 import { SOCIAL_TABS, type SocialAction, type SocialSessionFacts } from './socialModel';
 import { createTabBar, renderTabBar, type TabBar } from './tabBar';
-import type { TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 /** The Yes / No question a Social action asks before it is sent. */
-export type SocialQuestion = 'declineTrade' | 'confirmTrade' | 'declineChallenge';
+export type SocialQuestion = 'declineChallenge';
 
 /** One trade session row as the Trades tab paints it: its nav key and its painted facts. */
 export type SocialSessionRow = SocialSessionFacts & { readonly key: string };
@@ -44,8 +37,6 @@ export type SocialSessionRow = SocialSessionFacts & { readonly key: string };
 /** What the Social screen paints. */
 export interface SocialPaint {
   readonly tab: SocialTab;
-  /** The legacy trade row holds the cursor (the Trades tab, with a legacy offer listed). */
-  readonly tradeCursor: boolean;
   /** The trade session rows of the Trades tab, in order. */
   readonly sessions: readonly SocialSessionRow[];
   /** The session row key under the cursor, else null. */
@@ -81,12 +72,9 @@ const SOCIAL_TAB_LABELS: Readonly<Record<SocialTab, () => string>> = {
 const SOCIAL_ACTION_LABELS: Readonly<Record<SocialAction, () => string>> = {
   accept: () => t('social.action.accept'),
   decline: () => t('social.action.decline'),
-  confirm: () => t('social.action.confirm'),
   cancel: () => t('social.action.cancel'),
 };
 const SOCIAL_QUESTIONS: Readonly<Record<SocialQuestion, () => string>> = {
-  declineTrade: () => t('social.confirm.declineTrade'),
-  confirmTrade: () => t('social.confirm.confirmTrade'),
   declineChallenge: () => t('social.confirm.declineChallenge'),
 };
 
@@ -166,32 +154,15 @@ function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
   );
 }
 
-/** UNREAD since qf-8 (QF8.1): the trade row's buttons these fed are deleted (see the header).
- *  Kept, with its shape, so main.ts's construction stays unchanged; nothing in this view calls
- *  any member. */
-export interface TradeCallbacks {
-  readonly onAccept: (tradeId: bigint) => Promise<void>;
-  readonly onReject: (tradeId: bigint) => Promise<void>;
-  readonly onConfirm: (tradeId: bigint) => Promise<void>;
-  readonly onCancel: (tradeId: bigint) => Promise<void>;
-}
-
 export class TradeView {
   readonly #overlay: HTMLElement;
   readonly #statusEl: HTMLElement;
-  readonly #mySideEl: HTMLElement;
-  readonly #theirSideEl: HTMLElement;
-  readonly #actionsEl: HTMLElement;
-  // The Social frame's paint for this root, kept only while the root is visible, and the status
-  // text the last render wrote (the Players placeholder is written over it).
+  // The Social frame's paint for this root, kept only while the root is visible.
   #social: SocialPaint | null = null;
-  #status = '';
-  /** Whether the last render showed no legacy offer (the status line then follows the sessions). */
-  #noOffer = true;
   /** The session rows' listbox: created by the first paint that has a row. */
   #sessionsEl: HTMLElement | null = null;
 
-  constructor(_cbs: TradeCallbacks) {
+  constructor() {
     const el = document.getElementById('trade-overlay');
     if (!el) throw new Error('trade-overlay element not found in DOM');
     this.#overlay = el;
@@ -199,21 +170,6 @@ export class TradeView {
       el.querySelector('#trade-status') ??
       (() => {
         throw new Error('trade-status missing');
-      })();
-    this.#mySideEl =
-      el.querySelector('#trade-my-side') ??
-      (() => {
-        throw new Error('trade-my-side missing');
-      })();
-    this.#theirSideEl =
-      el.querySelector('#trade-their-side') ??
-      (() => {
-        throw new Error('trade-their-side missing');
-      })();
-    this.#actionsEl =
-      el.querySelector('#trade-actions') ??
-      (() => {
-        throw new Error('trade-actions missing');
       })();
   }
 
@@ -233,7 +189,7 @@ export class TradeView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    // A hidden root holds no placeholder, no hidden part and no cursor mark.
+    // A hidden root keeps no paint: no placeholder and no session row.
     this.#social = null;
     this.#applySocial();
     // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
@@ -253,57 +209,27 @@ export class TradeView {
     if (this.#overlay.firstElementChild !== el) this.#overlay.prepend(el);
   }
 
-  /** Render or re-render the trade view from the view model. */
-  render(vm: TradeScreenViewModel): void {
-    this.#noOffer = vm.kind === 'no-trade';
-    if (vm.kind === 'no-trade') {
-      this.#status = t('trade.status.none');
-      this.#mySideEl.replaceChildren();
-      this.#theirSideEl.replaceChildren();
-      this.#applySocial();
-      return;
-    }
-
-    this.#status = vm.statusLabel;
-    this.#renderSide(this.#mySideEl, vm.mySide, t('trade.side.offer'));
-    this.#renderSide(this.#theirSideEl, vm.theirSide, t('trade.side.receive'));
-    this.#applySocial();
-  }
-
   /** The Social screen's paint (ctl-8d). The chrome is painted every time; this root keeps the
-   *  paint only while it is visible, so the next batch render re-applies it. */
+   *  paint only while it is visible. */
   paintSocial(chrome: HTMLElement, p: SocialPaint): void {
     paintSocialChrome(chrome, p);
     this.#social = this.visible ? p : null;
     this.#applySocial();
   }
 
-  /** Write the status line and apply the kept Social paint to this root. On the Players tab the
-   *  status reads the placeholder and the sides and actions are hidden; the status stays shown
-   *  (it is the dialog's focus anchor). The legacy trade row's cursor is marked on the status by
-   *  class AND aria-current, never colour alone. On the Trades tab the session rows follow, and with
-   *  no legacy offer the status names them. With no paint the root is exactly the legacy trade
-   *  overlay. */
+  /** Write the status line and apply the kept Social paint to this root. The status reads the
+   *  placeholder on the Players tab, names the session rows when the Trades tab lists any, and
+   *  otherwise says there is no trade; it stays shown (it is the dialog's focus anchor). */
   #applySocial(): void {
     const p = this.#social;
     const players = p?.tab === 'players';
     const sessions = p?.tab === 'trades' ? p.sessions : [];
     this.#statusEl.textContent = players
       ? t('social.players.placeholder')
-      : this.#noOffer && sessions.length > 0
+      : sessions.length > 0
         ? t('trade.status.open')
-        : this.#status;
+        : t('trade.status.none');
     this.#paintSessions(sessions, p?.sessionCursor ?? null);
-    for (const el of [this.#mySideEl, this.#theirSideEl, this.#actionsEl]) {
-      // A part hidden while it holds the focus would strand it on <body>.
-      if (players && el.contains(document.activeElement)) this.#statusEl.focus();
-      el.hidden = players;
-    }
-    const cursor = p?.tab === 'trades' && p.tradeCursor;
-    this.#statusEl.classList.toggle('mr-nav-item', cursor);
-    this.#statusEl.classList.toggle('is-active', cursor);
-    if (cursor) this.#statusEl.setAttribute('aria-current', 'true');
-    else this.#statusEl.removeAttribute('aria-current');
   }
 
   /** The session rows, one per session, each its partner's title over both sides' marks. With no
@@ -343,54 +269,5 @@ export class TradeView {
         },
       },
     );
-  }
-
-  #renderSide(el: HTMLElement, side: TradeSideViewModel, heading: string): void {
-    el.replaceChildren();
-    const h = document.createElement('h4');
-    h.textContent = heading;
-    el.appendChild(h);
-
-    if (side.cards.length > 0) {
-      const ul = document.createElement('ul');
-      ul.dataset.section = 'monsters';
-      for (const card of side.cards) {
-        const li = document.createElement('li');
-        li.dataset.monsterId = card.monsterId.toString();
-        li.textContent = tf('trade.side.card', {
-          nickname: card.nickname,
-          species: card.speciesName,
-          level: card.level,
-          current: card.currentHp,
-          max: card.statHp,
-        });
-        ul.appendChild(li);
-      }
-      el.appendChild(ul);
-    }
-
-    if (side.items.length > 0) {
-      const ul = document.createElement('ul');
-      ul.dataset.section = 'items';
-      for (const item of side.items) {
-        const li = document.createElement('li');
-        li.textContent = `${item.name} ×${item.qty}`;
-        ul.appendChild(li);
-      }
-      el.appendChild(ul);
-    }
-
-    if (side.currency > 0n) {
-      const p = document.createElement('p');
-      p.dataset.currency = side.currency.toString();
-      p.textContent = tf('trade.side.currency', { amount: side.currency });
-      el.appendChild(p);
-    }
-
-    if (side.cards.length === 0 && side.items.length === 0 && side.currency === 0n) {
-      const p = document.createElement('p');
-      p.textContent = t('trade.side.nothing');
-      el.appendChild(p);
-    }
   }
 }

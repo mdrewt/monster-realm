@@ -1,103 +1,33 @@
 // @vitest-environment happy-dom
-// ui/tradeView.test.ts — RED tests for m16.5c §16.5c-3: render hygiene in TradeView.
+// ui/tradeView.test.ts — the trade root (`#trade-overlay`) as the Social frame's painter.
 //
-// SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-3
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 (ts-3.5), §ts-4 (ts-4.6);
+//   the ts-4 plan "Resume 2": `new TradeView()` takes no argument and has no `render`; the
+//   constructor needs only `#trade-overlay` and `#trade-status`; it never reads or writes
+//   `#trade-my-side`, `#trade-their-side`, `#trade-actions` or `#trade-feedback`. The status line is
+//   a function of the kept Social paint alone: Players -> `social.players.placeholder`; Trades with
+//   at least one session row -> `trade.status.open`; otherwise (no paint kept, or no session row)
+//   -> `trade.status.none`. `#trade-status` never carries `mr-nav-item`, `is-active` or
+//   `aria-current`. `show` / `hide` / `toggle` / `visible` / `hostChrome` / `paintSocial` and the
+//   `#trade-sessions` list (created by the first paint that has a row) are as ctl-8d / ts-3 built
+//   them.
 //
-// RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending; RETIRED by qf-8 with
-// the buttons, see the qf-8 NAMED REMOVALS below):
-//   TradeView.#renderActions() recreates buttons via replaceChildren() then createElement.
-//   Each freshly-created button sets btn.disabled = false ONLY in the click handler's
-//   finally block — but the handler never fires during a re-render.  The button is
-//   created with no explicit disabled assignment, so it defaults to disabled=false.
-//   When #pending=true and a server batch triggers render() again, the new buttons
-//   land with disabled=false even though a reducer call is in flight.  The player can
-//   double-click before the finally() runs.
-//   After fix: render() (or #renderActions()) checks #pending and sets btn.disabled=true
-//   for every newly-created button when #pending is already true.
-//
-// RED REASON (m16.5c-TV-2 — stale feedback not cleared on offer-state change):
-//   TradeView.render() never touches #feedbackEl.  Once showFeedback('Trade accepted!')
-//   is called, that text persists through every subsequent render() call, including
-//   when the server changes status (e.g. Pending→ConfirmedByCounterparty) and a new
-//   statusLabel appears in #trade-status.  The "Trade accepted!" message stays visible
-//   after the status has already changed, which is stale and misleading.
-//   After fix: render() clears #feedbackEl when the statusLabel (or kind) changes
-//   relative to the previous render call.
-//
-// RED REASON (m16.5c-TV-3 — feedback not cleared on kind transition no-trade→trade):
-//   Same root cause: render() with kind='no-trade' does not touch #feedbackEl.
-//   If showFeedback() was called during a prior trade session, then the offer is
-//   removed (kind='no-trade'), then a new offer arrives (kind='trade'), the stale
-//   feedback from the previous session is still visible.
-//   After fix: the kind transition from 'no-trade' to 'trade' (or any state change)
-//   clears #feedbackEl.
-//
-// WRONG IMPL KILLED per test:
-//   TV-1: any impl where #renderActions() creates buttons with disabled=false when
-//         #pending=true — the double-send vector is open. (RETIRED by qf-8: no button is left.)
-//   TV-2: any impl where render() with a changed statusLabel does NOT clear
-//         #feedbackEl — "Trade accepted!" persists after the server advances the offer.
-//   TV-3: any impl where render() with kind='trade' does NOT clear #feedbackEl when
-//         previously in kind='no-trade' — stale cross-session feedback leaks.
-//
-// qf-8 (QF8.1, QF8.2) NAMED REMOVALS: the `#trade-actions` buttons (Accept / Reject / Confirm Trade
-// / Cancel), their `#pending` lock and `#dispatch` are DELETED as a mouse-only duplicate of the
-// Social sheet's Trades rows (screens/socialScreen.ts: accept / decline / confirm / cancel).
-//   - TV-1 and TV-4 (the in-flight lock over those buttons) are RETIRED: no button is left to
-//     double-send. Survivors: the absence of every trade button, document-wide and under the spy
-//     matrix (no click / pointer / key reaches a TradeCallbacks entry), reachability.test.ts
-//     [QF8-2-TRADE-RETIRED] / [QF8-2-TRADE-NATIVE]; the sheet's commands,
-//     screens/socialScreen.test.ts CTL8D-2-COMMANDS; the pointer route,
-//     reachability.test.ts [QF8-1-SOCIAL-TRADE-POINTER].
-//   - X6d keeps "the actions container is empty after no-trade" (now trivially; its "buttons were
-//     there" precondition is dropped); TV-01 / TV-02 lose the `trade.action.*` ids (also from
-//     M24S4_TV_PLAIN_KEYS); CTL8D-1-VIEW-PLACEHOLDER / CTL8D-2-VIEW-SHEET lose the
-//     "a Tab-focused legacy button" strand check (no such button renders).
-// `makeCallbacks` stays: TradeView still takes TradeCallbacks (main.ts constructs it; unread).
-//
-// Pattern follows battleView.test.ts: @vitest-environment happy-dom, DOM set up
-// before construction, vi.fn() callbacks, no SDK/wasm/network.
-//
-// ---------------------------------------------------------------------------
-// m23-s3 ADDITION (2026-08-24) — overlay a11y wiring. ADDITIVE ONLY: nothing above was weakened
-// or deleted; the mount helper gained the `role`/`aria-modal`/`tabindex` attributes
-// client/index.html:36-37 has always shipped, and a file-level a11y sweep was added.
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2, §6 (A11Y-13/14/16);
-//   memory/projects/monster-realm-m23-s3-plan.md §0 F1/F2/F7, §1 D1/D2/D7/D8, §4, §7 A1/A3/A6/A7/A8;
-//   memory/projects/gates/m23-s3.gates.md X1/X2/X3/X6/X8; ADR-0205 D1-D4, A3.
-//
-// RED REASON (m23-s3): `client/src/ui/tradeView.ts` DOES NOT CALL openOverlayA11y/closeOverlayA11y
-// at all today — show() is a single `style.display = ''` (ui/tradeView.ts:63-65). Every S3-* test
-// below therefore fails now; every m16.5c test above still passes.
-//
-// TWO ORACLES, BOTH REQUIRED (plan A3, measured by red-team):
+// The overlay a11y wiring (m23-s3; M23-accessibility.spec.md §2.2, §6 A11Y-13/14/16; ADR-0205
+// D1-D4, A3) is pinned by TWO oracles, both required:
 //   * VALUE oracle  — `aria-label === t(OVERLAY_A11Y['tradeView'].labelKey)`. `role`/`aria-modal`
-//     are ALREADY static literals on the shell in client/index.html:36 (m23-s2), so asserting them
-//     ALONE is VACUOUS: a view that calls nothing passes. They are asserted only alongside
-//     aria-label, and their ABSENCE after close is the anti-vacuity partner (attack V1).
+//     are static literals on the shell (client/index.html), so asserting them ALONE is vacuous.
+//     They are asserted only alongside aria-label, and their ABSENCE after close is the
+//     anti-vacuity partner.
 //   * MECHANISM oracle — `vi.mock('./overlayA11y', { spy: true })` records the calls AND calls
-//     through to the real implementation, so a cheat that hand-writes the three attributes with the
-//     correct copied literal (no trap, no return-focus record, no timer) still reds.
+//     through, so a cheat that hand-writes the three attributes with the copied literal still reds.
 //
-// TEST-ISOLATION DEVICE (plan A8 / V7, copied from ui/overlayA11y.test.ts:97-105): overlayA11y.ts
-// holds ONE module-private Map and exports no reset hook, so the file-level beforeEach/afterEach
-// call the PRODUCTION closeOverlayA11y(id, null) for every OverlayId and flush ONE REAL MACROTASK
-// — legal because close-without-open is a documented no-op (ui/overlayA11y.ts:41-45). It also
-// cancels the deferred-focus timer every pre-existing `view.show()` above will schedule once the
-// wiring lands (plan residual A12). `vi.clearAllMocks()` runs LAST so the sweep's own calls never
-// pollute a count.
+// TEST-ISOLATION DEVICE: overlayA11y.ts holds ONE module-private Map and exports no reset hook, so
+// the file-level beforeEach/afterEach call the PRODUCTION closeOverlayA11y(id, null) for every
+// OverlayId and flush ONE REAL MACROTASK (close-without-open is a documented no-op).
+// `vi.clearAllMocks()` runs LAST so the sweep's own calls never pollute a count.
 //
-// m23-s3 WRONG-IMPL-KILLED index:
-//   - never opens / attribute-only cheat                 -> S3-tradeView-OPEN-ARIA + -HELPER-CALLED
-//   - copy-pasted WRONG OverlayId                        -> S3-tradeView-OPEN-ARIA (label) + -HELPER-CALLED (id arg)
-//   - synchronous focus (no defer)                       -> S3-tradeView-DEFER-FOCUS (negative polarity)
-//   - focuses nothing / a wrapper, not the anchor         -> S3-tradeView-DEFER-FOCUS (identity)
-//   - close never strips ARIA / never restores focus      -> S3-tradeView-CLOSE-RESTORE
-//   - UNGUARDED show() / `this.visible` read AFTER the write -> S3-tradeView-REPEAT-NO-REOPEN
-//   - `fallbackFocus` passed as undefined/an element       -> S3-tradeView-HELPER-CALLED (literal null)
-//   - GUARDED close in hide() (plan anti-pattern #3 — kills S1's A13 self-heal)
-//                                                        -> S3-tradeView-CLOSE-UNGUARDED
+// Expected copy is resolved through the real (spied) resolver from its literal catalog ids, never
+// hand-typed English, except the byte-identity pins the i18n migration (m24s4) owns.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
@@ -106,25 +36,22 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import type { SocialTab } from './screens/types';
 import type { SocialAction } from './socialModel';
-import type { TradeScreenViewModel } from './tradeModel';
-import type { SocialPaint, SocialQuestion, TradeCallbacks } from './tradeView';
+import type { SocialPaint, SocialQuestion, SocialSessionRow } from './tradeView';
 import { TradeView } from './tradeView';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
-// m24s4 MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
-// the real resolver, so TV-01's DOM byte-identity assertions still work.
+// m24s4 MECHANISM oracle, same shape: records every t()/tf() call AND calls through to the real
+// resolver, so TV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
 /** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
- *  and fake timers are banned for this defer (plan anti-pattern #10). */
+ *  and fake timers are banned for this defer. */
 async function flushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// NEW file-level isolation hooks (this file previously had none — every test mounted and
-// removed its own overlay inline, which leaks on a failed assertion).
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
   await flushMacrotask();
@@ -138,45 +65,39 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
+/** The four static shell parts the view never touches (index.html keeps them as empty nodes). */
+const STATIC_PARTS = ['trade-my-side', 'trade-their-side', 'trade-actions', 'trade-feedback'];
+/** The five trade-shell parts, in shell order. */
+const TRADE_PARTS = ['trade-status', ...STATIC_PARTS];
+
 // ---------------------------------------------------------------------------
-// DOM setup helper — mirrors the structure in client/index.html that TradeView
-// expects.  Must be called before constructing TradeView in each test so the
-// constructor querySelector calls succeed.
+// DOM setup helper — mirrors the structure in client/index.html. `full: false` mounts only the
+// two nodes the constructor requires: the root and its status line.
 // ---------------------------------------------------------------------------
-function mountTradeOverlay(): HTMLElement {
+function mountTradeOverlay({ full = true }: { readonly full?: boolean } = {}): HTMLElement {
   const overlay = document.createElement('div');
   overlay.id = 'trade-overlay';
   overlay.style.display = 'none';
-  // m23-s3 FIXTURE FIDELITY: the shell has shipped these two as STATIC LITERALS
-  // since m23-s2. They are copied here NOT to be asserted on their own — that is vacuous, a view
-  // calling nothing passes — but so that "all three attributes ABSENT after close" is a real
-  // tooth: only closeOverlayA11y can remove them.
+  // FIXTURE FIDELITY: the shell ships these two as STATIC LITERALS. They are copied here NOT to
+  // be asserted on their own (vacuous), but so that "all three attributes ABSENT after close" is a
+  // real tooth: only closeOverlayA11y can remove them.
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
 
   const statusEl = document.createElement('div');
   statusEl.id = 'trade-status';
-  // m23-s3: the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
-  // only — happy-dom focuses a bare <div> with no tabindex at all, so this buys ZERO test power
-  // (plan A7) and a passing A11Y-14 here is NOT proof a real browser would honour the focus.
+  // The OVERLAY_A11Y initialFocusSelector anchor. happy-dom focuses a bare <div> with no tabindex
+  // at all, so this buys no test power; it is copied for fidelity only.
   statusEl.setAttribute('tabindex', '-1');
   overlay.appendChild(statusEl);
 
-  const mySideEl = document.createElement('div');
-  mySideEl.id = 'trade-my-side';
-  overlay.appendChild(mySideEl);
-
-  const theirSideEl = document.createElement('div');
-  theirSideEl.id = 'trade-their-side';
-  overlay.appendChild(theirSideEl);
-
-  const actionsEl = document.createElement('div');
-  actionsEl.id = 'trade-actions';
-  overlay.appendChild(actionsEl);
-
-  const feedbackEl = document.createElement('div');
-  feedbackEl.id = 'trade-feedback';
-  overlay.appendChild(feedbackEl);
+  if (full) {
+    for (const id of STATIC_PARTS) {
+      const part = document.createElement('div');
+      part.id = id;
+      overlay.appendChild(part);
+    }
+  }
 
   document.body.appendChild(overlay);
   return overlay;
@@ -186,143 +107,6 @@ function removeOverlay(overlay: HTMLElement): void {
   if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
 }
 
-// ---------------------------------------------------------------------------
-// Minimal callbacks factory — TradeCallbacks with vi.fn() stubs.
-// onAccept/onReject/onConfirm/onCancel all return a never-settling Promise (an in-flight
-// reducer). qf-8: no control of the view calls them any more (the TV-1 lock they fed is retired).
-// ---------------------------------------------------------------------------
-function makeCallbacks(): TradeCallbacks {
-  const pending = new Promise<void>(() => {
-    /* intentionally never resolves */
-  });
-  return {
-    onAccept: vi.fn(() => pending),
-    onReject: vi.fn(() => pending),
-    onConfirm: vi.fn(() => pending),
-    onCancel: vi.fn(() => pending),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Minimal TradeScreenViewModel factories.
-// ---------------------------------------------------------------------------
-
-function makePendingTradeVM(
-  statusLabel = 'Offer received',
-  actions: Array<'accept' | 'reject' | 'confirm' | 'cancel'> = ['accept', 'reject'],
-): TradeScreenViewModel {
-  return {
-    kind: 'trade',
-    tradeId: 1n,
-    mySide: { cards: [], items: [], currency: 0n },
-    theirSide: { cards: [], items: [], currency: 0n },
-    viewerIsInitiator: false,
-    statusLabel,
-    actions,
-  };
-}
-
-function makeNoTradeVM(): TradeScreenViewModel {
-  return { kind: 'no-trade' };
-}
-
-// ---------------------------------------------------------------------------
-// [m16.5c-TV-1] RETIRED by qf-8 (NAMED REMOVAL): "re-render while #pending=true must create
-// buttons with disabled=true" locked the `#trade-actions` buttons, which are deleted (QF8.1). With
-// no button there is no double-send vector for a lock to close; the Social sheet sends each
-// command once per A (screens/socialScreen.test.ts CTL8D-2-COMMANDS). Survivors: reachability.test.ts
-// [QF8-2-TRADE-RETIRED] (no trade button anywhere, and no event on any element reaches a
-// TradeCallbacks entry) and [QF8-2-TRADE-NATIVE] (no native control added).
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// [m16.5c-TV-2] BITES: stale feedback cleared on offer-state change (statusLabel changes)
-//
-// Procedure:
-//   1. Construct TradeView, show()
-//   2. render() with statusLabel='Offer received', actions=['accept','reject']
-//   3. showFeedback('Trade accepted!')
-//   4. Verify #trade-feedback text is 'Trade accepted!'
-//   5. render() again with SAME statusLabel='Offer received' (same state)
-//   6. Verify feedback STILL 'Trade accepted!' — no clear on SAME state (intentional)
-//   7. render() with CHANGED statusLabel='Accepted — awaiting confirmation'
-//   8. Verify #trade-feedback is now EMPTY (cleared on state change)
-//
-// ---------------------------------------------------------------------------
-describe('TradeView [m16.5c-TV-2]: the view owns no feedback line any more (uif-4b)', () => {
-  it('UIF4B.5 [m16.5c-TV-2] the view has no showFeedback, and a status change touches no #trade-feedback text', () => {
-    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): NAMED REMOVAL of TV-2 ("feedback persists on a
-    // same-status re-render but clears when statusLabel changes"). The view's `showFeedback` and its
-    // read/write of `#trade-feedback` are retired: every trade message goes through the one seam (a
-    // timed toast), so there is no view-owned line to go stale. Survivors: the toast's own expiry
-    // (ui/toast.test.ts), and main.feedbackCore.test.ts UIF4B.3 (a late settle writes nothing into
-    // any overlay). Was: showFeedback('Trade accepted!') then renders, reading #trade-feedback.
-    // WRONG IMPL KILLED: a surviving showFeedback (a second channel), and a view that still writes
-    // the node that stays in index.html as an empty residual (R-uif-4b-TRADEFEEDBACK-NODE).
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    view.show();
-    const feedbackEl = document.getElementById('trade-feedback') as HTMLElement;
-    feedbackEl.textContent = 'sentinel the view must leave alone';
-    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
-    view.render(makePendingTradeVM('Accepted — awaiting confirmation', ['cancel']));
-    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
-    expect(feedbackEl.textContent, 'the view neither reads nor clears that node').toBe(
-      'sentinel the view must leave alone',
-    );
-    removeOverlay(overlay);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m16.5c-TV-3] BITES: feedback cleared when offer transitions from no-trade to trade
-//
-// Procedure:
-//   1. Construct TradeView, show()
-//   2. render() with kind='no-trade'
-//   3. showFeedback('stale!') directly (simulate feedback from a prior trade session)
-//   4. render() with kind='trade' (new offer appeared from server)
-//   5. Verify #trade-feedback is empty (cleared on kind transition)
-//
-// ---------------------------------------------------------------------------
-describe('TradeView [m16.5c-TV-3]: no feedback line to clear on a kind transition (uif-4b)', () => {
-  it('UIF4B.5 [m16.5c-TV-3] hide() and the no-trade to trade transition run with no #trade-feedback node at all', () => {
-    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): NAMED REMOVAL of TV-3 ("stale feedback from a prior
-    // session must be cleared when a new offer arrives"), for the reason TV-2 above gives: no
-    // view-owned line remains. Was: showFeedback('stale!') then a no-trade to trade render, reading
-    // #trade-feedback. Survivor: the view must not NEED the node (it stays in index.html only as an
-    // empty residual for socialScreen.boot.test.ts), so it is mounted here WITHOUT it.
-    // WRONG IMPL KILLED: a constructor or render that still looks the node up (a TypeError on null).
-    const overlay = mountTradeOverlay();
-    document.getElementById('trade-feedback')?.remove();
-    const view = new TradeView(makeCallbacks());
-    view.show();
-    expect(() => {
-      view.render(makeNoTradeVM());
-      view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
-      view.hide();
-    }).not.toThrow();
-    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
-    removeOverlay(overlay);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// [m16.5c-TV-4] RETIRED by qf-8 (NAMED REMOVAL): "after a mid-flight render + Promise resolve, live
-// buttons must be disabled=false" pinned the release of the TV-1 lock on the `#trade-actions`
-// buttons; buttons and lock are deleted together (QF8.1), so there is nothing left to stay stuck
-// disabled. The Social sheet holds no lock by design (a repeated A re-sends; the reducers are the
-// authority). Survivors: reachability.test.ts [QF8-2-TRADE-RETIRED] / [QF8-2-TRADE-NATIVE];
-// screens/socialScreen.test.ts CTL8D-2-COMMANDS.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
-// ---------------------------------------------------------------------------
-
-const S3_ID: OverlayId = 'tradeView';
-const S3_META = OVERLAY_A11Y[S3_ID];
-
 /** A focusable OUTSIDE the overlay: the "pre-overlay" element a close must restore focus to. */
 function s3OutsideSentinel(): HTMLButtonElement {
   const btn = document.createElement('button');
@@ -331,659 +115,14 @@ function s3OutsideSentinel(): HTMLButtonElement {
   return btn;
 }
 
-/** A focusable INSIDE the overlay, as a DIRECT child of the root — render() only rebuilds the
- *  side/action containers, so if this loses focus something RE-OPENED the overlay. */
+/** A focusable INSIDE the overlay, as a DIRECT child of the root: if this loses focus something
+ *  RE-OPENED the overlay. */
 function s3InsideSentinel(root: HTMLElement): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.id = 's3-inside-sentinel';
   root.appendChild(btn);
   return btn;
 }
-
-describe('TradeView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
-  it('S3-tradeView-OPEN-ARIA BITES: the first show() from a display:none shell labels the root from OVERLAY_A11Y/t()', () => {
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-
-    // VACUITY ATTACK V4, closed here: without `display:none` the FIRST show() is a NO-EDGE and
-    // every open assertion below is silently vacuous. This also pins WIK-3 — an impl that reads
-    // `this.visible` AFTER writing `style.display` sees a constant `true` and never opens.
-    expect(view.visible, 'V4: the shell must start hidden, so the first show() IS an edge').toBe(
-      false,
-    );
-
-    view.show();
-
-    // Every expectation is DERIVED from the table at assert time — never a literal (V5).
-    expect(overlay.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S3_META.role);
-    expect(overlay.getAttribute('aria-modal')).toBe('true');
-    expect(
-      overlay.getAttribute('aria-label'),
-      'THE tooth: role/aria-modal are static literals in index.html:36 and pass a view that calls ' +
-        'nothing; aria-label is absent from every shell, so only a real open can produce it — and ' +
-        'because all 16 catalog values are distinct, this also kills the wrong-OverlayId impl',
-    ).toBe(t(S3_META.labelKey));
-  });
-
-  it('S3-tradeView-DEFER-FOCUS BITES: both polarities — NOT focused synchronously, focused after ONE real macrotask, and the defer is owned by openOverlayA11y', async () => {
-    const overlay = mountTradeOverlay();
-    const target = overlay.querySelector<HTMLElement>(S3_META.initialFocusSelector);
-    expect(target, `the fixture must contain ${S3_META.initialFocusSelector}`).not.toBeNull();
-    const view = new TradeView(makeCallbacks());
-
-    view.show();
-
-    expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
-      target,
-    );
-    expect(
-      vi.mocked(openOverlayA11y),
-      'the deferred focus must be scheduled by openOverlayA11y, not by the view (A11Y-15)',
-    ).toHaveBeenCalledTimes(1);
-
-    await flushMacrotask();
-
-    // IDENTITY, never `root.contains(activeElement)` — that passes on any decorative wrapper.
-    expect(document.activeElement).toBe(target);
-  });
-
-  it('S3-tradeView-CLOSE-RESTORE BITES: hide() strips role, aria-modal AND aria-label from the root and hands focus back to the pre-overlay element', async () => {
-    const overlay = mountTradeOverlay();
-    const outside = s3OutsideSentinel();
-    outside.focus();
-    expect(document.activeElement, 'precondition: focus starts OUTSIDE the overlay').toBe(outside);
-
-    const view = new TradeView(makeCallbacks());
-    view.show();
-    await flushMacrotask();
-    expect(
-      document.activeElement,
-      'precondition: the open moved focus INTO the overlay, so the restore below is a real move',
-    ).not.toBe(outside);
-
-    view.hide();
-
-    // VACUITY ATTACK V1: the two static literals can only be ABSENT if closeOverlayA11y really ran.
-    expect(
-      overlay.getAttribute('role'),
-      'a display:none node must not keep claiming to be a dialog',
-    ).toBeNull();
-    expect(overlay.getAttribute('aria-modal')).toBeNull();
-    expect(overlay.getAttribute('aria-label')).toBeNull();
-
-    expect(document.activeElement, 'focus must return to the pre-overlay element').toBe(outside);
-  });
-
-  it('S3-tradeView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer.
-    // INVISIBLE to every attribute assertion, so it is proven twice: by a call COUNT and by the
-    // sentinel still holding focus.
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-
-    view.show();
-    await flushMacrotask();
-
-    const inside = s3InsideSentinel(overlay);
-    inside.focus();
-    expect(document.activeElement, 'precondition: focus is parked INSIDE the overlay').toBe(inside);
-
-    view.show();
-    await flushMacrotask();
-
-    expect(document.activeElement, 'a repeat show() must NOT re-run the deferred focus').toBe(
-      inside,
-    );
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('S3-tradeView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
-    // THE MECHANISM ORACLE (plan A3): a view that hand-writes the three attributes with the correct
-    // copied literal passes every VALUE assertion here while shipping NO trap, NO return-focus
-    // record and NO timer. The literal `null` pins ADR-0205 A3 / plan D8.
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-
-    view.show();
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S3_ID, overlay);
-
-    view.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
-  });
-
-  it('S3-tradeView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
-    // Plan D2's deliberate asymmetry, and plan ANTI-PATTERN #3. Measured by red-team: wrapping
-    // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
-    // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
-    // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
-    // timer and a stale return target PERMANENT. Unguarded, hide() HEALS it, and a close with no
-    // record is a documented pure no-op, so nothing is risked.
-    mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    expect(view.visible, 'precondition: never opened').toBe(false);
-
-    expect(() => view.hide()).not.toThrow();
-    expect(
-      vi.mocked(closeOverlayA11y),
-      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
-    ).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
-
-    view.hide();
-    expect(
-      vi.mocked(closeOverlayA11y),
-      'unguarded means unguarded: every hide() calls the close',
-    ).toHaveBeenCalledTimes(2);
-
-    // And the same holds after a real open/close cycle: the second hide() still calls it.
-    vi.clearAllMocks();
-    view.show();
-    view.hide();
-    view.hide();
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// m24s0 sink elimination — tradeView clears (X6c/X6d)
-// ---------------------------------------------------------------------------
-
-function tradeCard(monsterId: bigint, nickname: string) {
-  return {
-    monsterId,
-    speciesName: 'Sparkling',
-    nickname,
-    level: 5,
-    currentHp: 10,
-    statHp: 10,
-  };
-}
-
-describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
-  it("m24s0 X6c: #renderSide REPLACES a side's content on re-render rather than appending", () => {
-    // Kills: dropping `el.replaceChildren()` in #renderSide — an
-    // append-only re-render would leave TWO <h4> and TWO section <ul>s instead of one.
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    view.show();
-
-    const vm1: TradeScreenViewModel = {
-      kind: 'trade',
-      tradeId: 1n,
-      mySide: { cards: [tradeCard(1n, 'Rex')], items: [], currency: 0n },
-      theirSide: { cards: [tradeCard(2n, 'Fluffy')], items: [], currency: 0n },
-      viewerIsInitiator: false,
-      statusLabel: 'Offer received',
-      actions: ['accept', 'reject'],
-    };
-    view.render(vm1);
-
-    const mySide = document.getElementById('trade-my-side') as HTMLElement;
-    expect(mySide.querySelectorAll('h4').length).toBe(1);
-    expect(mySide.querySelectorAll('ul[data-section="monsters"]').length).toBe(1);
-    expect(mySide.querySelectorAll('li').length).toBe(1);
-    expect(mySide.textContent).toContain('Rex');
-
-    const vm2: TradeScreenViewModel = {
-      ...vm1,
-      mySide: { cards: [tradeCard(3n, 'Nova')], items: [], currency: 0n },
-    };
-    view.render(vm2);
-
-    expect(mySide.querySelectorAll('h4').length).toBe(1);
-    expect(mySide.querySelectorAll('ul[data-section="monsters"]').length).toBe(1);
-    expect(mySide.querySelectorAll('li').length).toBe(1);
-    expect(mySide.textContent).toContain('Nova');
-    expect(mySide.textContent).not.toContain('Rex');
-
-    removeOverlay(overlay);
-  });
-
-  it('m24s0 X6d: a trade → no-trade transition EMPTIES both sides and the actions container', () => {
-    // Kills: dropping either side's clear at tradeView.ts:94-96 — a stale populated side would
-    // survive the kind transition to 'no-trade'.
-    // qf-8 (named intentional change): the actions container is never filled any more (its buttons
-    // are deleted, QF8.1), so its "buttons were there" precondition is dropped; its emptiness after
-    // no-trade is kept (any child left there would be a stale control or a stray node).
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    view.show();
-
-    const vm: TradeScreenViewModel = {
-      kind: 'trade',
-      tradeId: 1n,
-      mySide: { cards: [tradeCard(1n, 'Rex')], items: [], currency: 0n },
-      theirSide: { cards: [tradeCard(2n, 'Fluffy')], items: [], currency: 0n },
-      viewerIsInitiator: false,
-      statusLabel: 'Offer received',
-      actions: ['accept', 'reject'],
-    };
-    view.render(vm);
-
-    const mySide = document.getElementById('trade-my-side') as HTMLElement;
-    const theirSide = document.getElementById('trade-their-side') as HTMLElement;
-    const actionsEl = document.getElementById('trade-actions') as HTMLElement;
-    expect(mySide.childNodes.length).toBeGreaterThan(0); // precondition
-    expect(theirSide.childNodes.length).toBeGreaterThan(0); // precondition
-
-    view.render({ kind: 'no-trade' });
-
-    expect(mySide.childNodes.length).toBe(0);
-    expect(theirSide.childNodes.length).toBe(0);
-    expect(actionsEl.childNodes.length).toBe(0);
-    expect(document.getElementById('trade-status')!.textContent).toBe('No active trade');
-
-    removeOverlay(overlay);
-  });
-});
-
-// =============================================================================
-// i18n migration batch B: tradeView.ts routes its migrated
-// sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
-// English literals.
-//
-// =============================================================================
-
-/** RT6: tradeModel's action sets are mutually exclusive — this VM needs an explicit
- *  `actions` argument so TV-01/TV-02 render both sets across two renders (['confirm','cancel']
- *  then ['accept','reject']); since qf-8 neither set draws a control or a `trade.action.*`
- *  label (the ids are deleted), and the two renders pin that for every action. Reuses the
- *  file's own `makePendingTradeVM` for the statusLabel/tradeId/theirSide/kind
- *  scaffolding and overrides `mySide` with a card + an item + a positive currency
- *  so a single render also reaches trade.side.card/trade.side.currency. Every
- *  fixture value is chosen to contain NONE of the M24S4_TV_ROSTER words. */
-function m24s4TradeVm(
-  actions: Array<'accept' | 'reject' | 'confirm' | 'cancel'>,
-): Extract<TradeScreenViewModel, { statusLabel: string }> {
-  return {
-    ...makePendingTradeVM('Awaiting counterparty', actions),
-    mySide: {
-      cards: [
-        {
-          monsterId: 1n,
-          speciesName: 'Mossback',
-          nickname: 'Sproutle',
-          level: 7,
-          currentHp: 3,
-          statHp: 9,
-        },
-      ],
-      items: [{ itemId: 1, name: 'Charm', qty: 3 }],
-      currency: 250n,
-    },
-  } as Extract<TradeScreenViewModel, { statusLabel: string }>;
-}
-
-/** `JSON.stringify` throws on a bare bigint (trade currency IS bigint,
- *  tradeModel.ts:37) — every sentinel `tf` mock in this block must use this. */
-function m24s4BigintReplacer(_key: string, value: unknown): unknown {
-  return typeof value === 'bigint' ? String(value) : value;
-}
-
-// m24s4 hardening (mirrors m24s3's H1, battleView.test.ts): the tradeView keys this
-// sentinel matrix can legitimately produce — a bracket span whose content is not
-// EXACTLY one of these must be LEFT IN PLACE (never elided) rather than blindly
-// stripped, or a decoy bracket pair around raw English would silently launder it
-// past the roster-word scan below.
-const M24S4_TV_PLAIN_KEYS = new Set([
-  'trade.status.none',
-  'trade.side.offer',
-  'trade.side.receive',
-  'trade.side.nothing',
-  // INTENTIONAL CHANGE (qf-8): the four `trade.action.*` ids leave with the `#trade-actions`
-  // buttons (a «trade.action.accept» span is now an unexpected sentinel). 'Accept', 'Reject',
-  // 'Confirm Trade' and 'Cancel' stay in M24S4_TV_ROSTER, so they may appear nowhere in the root.
-]);
-
-const M24S4_TV_PARAM_KEYS = new Set(['trade.side.card', 'trade.side.currency']);
-
-/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
- *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
- *  PARAM key and the tail after the FIRST `|` parses to a plain (non-array,
- *  non-null) object. */
-function m24s4TvIsExpectedSentinelSpan(content: string): boolean {
-  const bar = content.indexOf('|');
-  if (bar === -1) {
-    return M24S4_TV_PLAIN_KEYS.has(content) || M24S4_TV_PARAM_KEYS.has(content);
-  }
-  const key = content.slice(0, bar);
-  if (!M24S4_TV_PARAM_KEYS.has(key)) return false;
-  const tail = content.slice(bar + 1);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(tail);
-  } catch {
-    return false;
-  }
-  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
-}
-
-/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp) and reports every OTHER `«...»` span
- *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
- *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
-function m24s4TvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
-  let out = '';
-  const unexpectedSpans: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const open = text.indexOf('«', i);
-    if (open === -1) {
-      out += text.slice(i);
-      break;
-    }
-    out += text.slice(i, open);
-    const close = text.indexOf('»', open + 1);
-    if (close === -1) {
-      // Unterminated bracket: never a legitimate sentinel — leave it in place.
-      out += text.slice(open);
-      break;
-    }
-    const span = text.slice(open, close + 1);
-    const content = text.slice(open + 1, close);
-    if (m24s4TvIsExpectedSentinelSpan(content)) {
-      // Elide — this is a real, correctly-formed sentinel.
-    } else {
-      out += span;
-      unexpectedSpans.push(span);
-    }
-    i = close + 1;
-  }
-  return { stripped: out, unexpectedSpans };
-}
-
-/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
- *  element's `title` attribute, and every `<option>`'s text — never a per-element
- *  spot check. */
-function m24s4TvWalkSubtree(root: HTMLElement): string[] {
-  const texts: string[] = [];
-  const stack: Element[] = [root];
-  while (stack.length > 0) {
-    const el = stack.pop()!;
-    const titleAttr = el.getAttribute('title');
-    if (titleAttr) texts.push(titleAttr);
-    if (el.tagName === 'OPTION') texts.push(el.textContent ?? '');
-    for (const node of Array.from(el.childNodes)) {
-      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
-    }
-    for (const child of Array.from(el.children)) stack.push(child);
-  }
-  return texts;
-}
-
-const M24S4_TV_ROSTER = [
-  'No active trade',
-  'You offer',
-  'You receive',
-  'Lv.',
-  'HP:',
-  'gold',
-  '(nothing)',
-  'Accept',
-  'Reject',
-  'Confirm Trade',
-  'Cancel',
-];
-
-function m24s4TvAssertNoRosterWord(texts: readonly string[], label: string): void {
-  const { stripped, unexpectedSpans } = m24s4TvSplitSentinels(texts.join('\n'));
-  // A FORGED bracket span (raw English wrapped in `«...»` by something other than
-  // the resolver, e.g. a decoy `.append('«Cancel»')`) is never elided — it must not
-  // exist at all under a correct implementation.
-  expect(
-    unexpectedSpans,
-    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
-      `bracket span around raw content is not exempted from the roster scan)`,
-  ).toEqual([]);
-  for (const word of M24S4_TV_ROSTER) {
-    expect(
-      stripped.includes(word),
-      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
-    ).toBe(false);
-  }
-}
-
-describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/tf()', () => {
-  it('m24s4 TV-01: every migrated sink calls t()/tf() with the exact key and params, the item row/statusLabel/feedback stay raw, and every DOM string stays byte-identical', () => {
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    view.show();
-
-    // (a) kind: 'no-trade' -> trade.status.none
-    view.render(makeNoTradeVM());
-    expect(i18nT).toHaveBeenCalledWith('trade.status.none');
-    expect(document.getElementById('trade-status')!.textContent).toBe('No active trade');
-
-    // (b) active trade, actions=['confirm','cancel'] -- reaches both #renderSide
-    // headings, the card/currency ★ params and the empty (theirSide) nothing branch.
-    // INTENTIONAL CHANGE (qf-8): it no longer reaches any trade.action.* label (the buttons and
-    // their ids are deleted); the actions container stays empty whatever `actions` holds.
-    vi.mocked(i18nT).mockClear();
-    vi.mocked(i18nTf).mockClear();
-    const vmA = m24s4TradeVm(['confirm', 'cancel']);
-    view.render(vmA);
-
-    expect(
-      i18nT,
-      '#renderSide heading arg (plan: scanner-invisible hoisted literal)',
-    ).toHaveBeenCalledWith('trade.side.offer');
-    expect(i18nT).toHaveBeenCalledWith('trade.side.receive');
-    expect(i18nT, 'theirSide is empty -> trade.side.nothing').toHaveBeenCalledWith(
-      'trade.side.nothing',
-    );
-    expect(i18nTf).toHaveBeenCalledWith('trade.side.card', {
-      nickname: 'Sproutle',
-      species: 'Mossback',
-      level: 7,
-      current: 3,
-      max: 9,
-    });
-    expect(i18nTf).toHaveBeenCalledWith('trade.side.currency', { amount: 250n });
-
-    const mySide = document.getElementById('trade-my-side')!;
-    const theirSide = document.getElementById('trade-their-side')!;
-    expect(mySide.querySelector('h4')?.textContent).toBe('You offer');
-    expect(theirSide.querySelector('h4')?.textContent).toBe('You receive');
-    expect(mySide.querySelector('ul[data-section="monsters"] li')?.textContent).toBe(
-      'Sproutle (Mossback) Lv.7 HP:3/9',
-    );
-    expect(
-      mySide.querySelector('ul[data-section="items"] li')?.textContent,
-      'the item row stays untouched raw glyph-only text -- never a resolver call',
-    ).toBe('Charm ×3');
-    expect(mySide.querySelector('p[data-currency]')?.textContent).toBe('250 gold');
-    expect(theirSide.querySelector('p')?.textContent).toBe('(nothing)');
-    expect(document.getElementById('trade-status')!.textContent).toBe(vmA.statusLabel);
-    const actionsEl = document.getElementById('trade-actions')!;
-    expect(actionsEl.childNodes.length, 'qf-8: no Confirm Trade / Cancel control renders').toBe(0);
-
-    // Untouched model-data strings must never be requested AS a resolver key.
-    expect(i18nT).not.toHaveBeenCalledWith('Charm ×3');
-    expect(i18nT).not.toHaveBeenCalledWith(vmA.statusLabel);
-    expect(i18nTf).not.toHaveBeenCalledWith('Charm ×3', expect.anything());
-
-    // (c) the other action set (RT6 -- mutually exclusive action sets): still no control.
-    // INTENTIONAL CHANGE (qf-8): was "reaches trade.action.accept / .reject and renders Accept /
-    // Reject"; both ids and both buttons are deleted.
-    vi.mocked(i18nT).mockClear();
-    const vmB = m24s4TradeVm(['accept', 'reject']);
-    view.render(vmB);
-    expect(actionsEl.childNodes.length, 'qf-8: no Accept / Reject control renders').toBe(0);
-
-    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the "showFeedback never touches the resolver" clause is
-    // dropped with the method (retired; trade messages are the seam's). Was:
-    // `view.showFeedback('a raw feedback line')` read back from #trade-feedback. Survivor: the
-    // view has no showFeedback at all.
-    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
-
-    removeOverlay(overlay);
-  });
-
-  it('m24s4 TV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
-    const overlay = mountTradeOverlay();
-    // m24s4 hardening (mirrors m24s3 H3, battleView.test.ts/pvpView.test.ts): the view is
-    // CONSTRUCTED here, BEFORE the sentinel mockImplementation is installed below, so a
-    // future regression that hoists a t()/tf() call into the constructor would resolve
-    // against the REAL (call-through) resolver and surface as stale, unbracketed English
-    // in the very first m24s4TvAssertNoRosterWord below.
-    const view = new TradeView(makeCallbacks());
-
-    try {
-      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
-      vi.mocked(i18nTf).mockImplementation((key: string, params: unknown) => {
-        return `«${key}|${JSON.stringify(params, m24s4BigintReplacer)}»`;
-      });
-
-      view.show();
-      view.render(makeNoTradeVM());
-      let texts = m24s4TvWalkSubtree(overlay);
-      m24s4TvAssertNoRosterWord(texts, 'no-trade');
-      expect(texts.join('\n')).toContain('«trade.status.none»');
-
-      view.render(m24s4TradeVm(['confirm', 'cancel']));
-      texts = m24s4TvWalkSubtree(overlay);
-      m24s4TvAssertNoRosterWord(texts, 'active trade, confirm/cancel');
-      let joined = texts.join('\n');
-      expect(joined).toContain('«trade.side.offer»');
-      expect(joined).toContain('«trade.side.receive»');
-      expect(joined).toContain('«trade.side.nothing»');
-      // INTENTIONAL CHANGE (qf-8): no «trade.action.confirm» / «trade.action.cancel»: the buttons
-      // and their ids are deleted (such a span would now be an unexpected sentinel above).
-      expect(joined).not.toContain('«trade.action.confirm»');
-      expect(joined).not.toContain('«trade.action.cancel»');
-      expect(joined).toContain(
-        '«trade.side.card|{"nickname":"Sproutle","species":"Mossback","level":7,"current":3,"max":9}»',
-      );
-      expect(joined).toContain('«trade.side.currency|{"amount":"250"}»');
-      expect(joined, 'the item row stays raw -- glyph-only, untouched').toContain('Charm ×3');
-      expect(joined, 'vm.statusLabel stays raw').toContain('Awaiting counterparty');
-
-      view.render(m24s4TradeVm(['accept', 'reject']));
-      texts = m24s4TvWalkSubtree(overlay);
-      m24s4TvAssertNoRosterWord(texts, 'active trade, accept/reject');
-      joined = texts.join('\n');
-      // INTENTIONAL CHANGE (qf-8): no «trade.action.accept» / «trade.action.reject» either.
-      expect(joined).not.toContain('«trade.action.accept»');
-      expect(joined).not.toContain('«trade.action.reject»');
-      expect(joined, 'the second render drew its sides').toContain('«trade.side.offer»');
-
-      // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the closing `showFeedback('a raw feedback line')`
-      // clause is dropped with the method (retired). Was: the line was written and then found in
-      // the walked subtree.
-    } finally {
-      vi.mocked(i18nT).mockRestore();
-      vi.mocked(i18nTf).mockRestore();
-    }
-
-    // Post-restore call-through control (an existing S1 key -- the new trade.* keys do not
-    // exist in the catalog until the specialist ships them).
-    expect(i18nT('chrome.help.title')).toBe('How to Play');
-
-    removeOverlay(overlay);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ctl-8s (CTL8S.3): the Social frame's chrome. main.ts builds ONE chrome element and moves it into
-// whichever Social panel shows, through that panel's `hostChrome(el)`: `el` becomes the root's
-// FIRST child (a tab strip ctl-8d paints there sits above the panel), nothing else on the root
-// changes, and a second call with `el` already first is a no-op (a re-insert would drop focus from
-// a tab inside it on every panel switch).
-//
-// happy-dom limit (measured on ctl-4): re-inserting a node before itself (`insertBefore(el, el)`,
-// which an unconditional `prepend(el)` amounts to when `el` is already first) records no mutation
-// and keeps focus here, so that one churn mutant is invisible at this tier. A remove-then-insert is
-// not: it records two mutations.
-// ---------------------------------------------------------------------------
-
-describe('TradeView.hostChrome (ctl-8s, CTL8S.3)', () => {
-  it('CTL8S-3-HOST-CHROME-TRADE: hostChrome(el) moves el out of wherever it was to be the FIRST child of #trade-overlay; the other children, their order and ids, the hidden shell and its dialog state are unchanged; a second call with el already first records no mutation and keeps focus inside el', async () => {
-    // WRONG IMPL KILLED: an append (el lands LAST, under the trade actions); a clone
-    // (`prepend(el.cloneNode(true))`: the node main.ts paints is not the node shown, and the
-    // original stays where it was); a host that also shows the view or opens its dialog (a modal
-    // root with no frame on the stack); one that replaces the root's children (the status, both
-    // sides and the actions are gone); and a re-host that removes el and inserts it again when it is
-    // already first (a focused tab drops focus on every panel switch).
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    const before = [...overlay.children];
-    expect(
-      before.map((c) => c.id),
-      'precondition: the shell children',
-    ).toEqual([
-      'trade-status',
-      'trade-my-side',
-      'trade-their-side',
-      'trade-actions',
-      'trade-feedback',
-    ]);
-    const elsewhere = document.createElement('div');
-    document.body.appendChild(elsewhere);
-    const chrome = document.createElement('div');
-    const tab = document.createElement('button');
-    chrome.appendChild(tab);
-    elsewhere.appendChild(chrome);
-
-    view.hostChrome(chrome);
-
-    expect(overlay.firstElementChild, 'el is the first child of the root').toBe(chrome);
-    expect(chrome.parentElement, 'moved, not cloned').toBe(overlay);
-    expect(elsewhere.childElementCount, 'and no longer where it was').toBe(0);
-    expect(overlay.childElementCount, 'one child more, nothing replaced').toBe(before.length + 1);
-    for (const [i, child] of before.entries()) {
-      expect(overlay.children[i + 1], `#${child.id}: kept, in its order`).toBe(child);
-    }
-    expect(
-      before.map((c) => c.id),
-      'their ids are unchanged',
-    ).toEqual([
-      'trade-status',
-      'trade-my-side',
-      'trade-their-side',
-      'trade-actions',
-      'trade-feedback',
-    ]);
-    expect(overlay.id).toBe('trade-overlay');
-    expect(overlay.style.display, 'the shell stays hidden').toBe('none');
-    expect(view.visible, 'the view stays hidden').toBe(false);
-    expect(overlay.getAttribute('aria-label'), 'no dialog was opened').toBeNull();
-
-    // On the shown panel, a second host of the element already first moves nothing.
-    view.show();
-    await flushMacrotask();
-    const records: MutationRecord[] = [];
-    const observer = new MutationObserver((batch) => {
-      records.push(...batch);
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    tab.focus();
-    expect(document.activeElement, 'precondition: focus is on a tab inside the chrome').toBe(tab);
-    view.hostChrome(chrome);
-    await flushMacrotask();
-    observer.disconnect();
-    expect(records.length, 'no node was removed or inserted').toBe(0);
-    expect(document.activeElement, 'focus inside the chrome survives').toBe(tab);
-    expect(overlay.firstElementChild).toBe(chrome);
-    expect(overlay.childElementCount).toBe(before.length + 1);
-    expect(view.visible, 'the shown panel stays shown').toBe(true);
-
-    removeOverlay(overlay);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ctl-8d (CTL8D.1, CTL8D.2): the Social frame's one painter. The Social adapter paints through
-// `TradeView.paintSocial(chrome, p)`: its chrome half (the tab strip, the action sheet and the
-// Yes / No prompt) is painted INSIDE the chrome element main.ts moves into whichever panel shows,
-// on every paint, whether or not the trade root is the shown panel; its root half (the Players
-// placeholder and the trade row's cursor mark) applies to the trade root and is kept while that
-// root is visible, re-applied after every batch `render`, and dropped by `hide()`.
-//
-// Expected copy is resolved through the real (spied) resolver from its literal catalog ids, never
-// hand-typed English, as the m24s4 cases above do.
-// ---------------------------------------------------------------------------
 
 /** The Social tabs in strip order (design §5: Players | Trades | Challenges | Rankings). */
 const SOCIAL_TAB_ORDER: readonly SocialTab[] = ['players', 'trades', 'challenges', 'rankings'];
@@ -999,12 +138,9 @@ const SOCIAL_TAB_LABEL: Readonly<Record<SocialTab, () => string>> = {
 const SOCIAL_ACTION_LABEL: Readonly<Record<SocialAction, () => string>> = {
   accept: () => i18nT('social.action.accept'),
   decline: () => i18nT('social.action.decline'),
-  confirm: () => i18nT('social.action.confirm'),
   cancel: () => i18nT('social.action.cancel'),
 };
 const SOCIAL_QUESTION_TEXT: Readonly<Record<SocialQuestion, () => string>> = {
-  declineTrade: () => i18nT('social.confirm.declineTrade'),
-  confirmTrade: () => i18nT('social.confirm.confirmTrade'),
   declineChallenge: () => i18nT('social.confirm.declineChallenge'),
 };
 
@@ -1021,33 +157,14 @@ const SOCIAL_PART_IDS = [
   'social-confirm',
 ];
 
-/** The five trade-shell parts, in shell order. */
-const TRADE_PARTS = [
-  'trade-status',
-  'trade-my-side',
-  'trade-their-side',
-  'trade-actions',
-  'trade-feedback',
-];
-
-/** What the Players tab hides: both sides and the actions container (never the status or
- *  feedback). qf-8: the container renders no button any more; it stays a shell part. */
-const PLAYERS_HIDDEN = ['trade-my-side', 'trade-their-side', 'trade-actions'];
-
-/** The cursor mark on a legacy row: the nav-item class, the active class, aria-current. */
-const MARKED = [true, true, 'true'] as const;
-const UNMARKED = [false, false, null] as const;
-
-/** ts-3 (named intentional change): `SocialPaint` gains `sessions` and `sessionCursor`; every
- *  earlier case paints none (`[]`, null), so what it pins is unchanged. */
+/** A SocialPaint with exactly its five keys. */
 function socialPaint(overrides: Partial<SocialPaint> = {}): SocialPaint {
   return {
     tab: 'trades',
-    tradeCursor: false,
-    sheet: null,
-    confirm: null,
     sessions: [],
     sessionCursor: null,
+    sheet: null,
+    confirm: null,
     ...overrides,
   };
 }
@@ -1060,6 +177,8 @@ function byId(id: string): HTMLElement {
 
 const hiddenTradeParts = (): string[] => TRADE_PARTS.filter((id) => byId(id).hidden);
 
+/** The status line's cursor mark: the nav-item class, the active class, aria-current. */
+const UNMARKED = [false, false, null] as const;
 function statusMark(): [boolean, boolean, string | null] {
   const status = byId('trade-status');
   return [
@@ -1097,15 +216,481 @@ function expectChildren(root: HTMLElement, expected: readonly Element[], label: 
   });
 }
 
+const BOB_ROW: SocialSessionRow = {
+  key: 'session-101',
+  partnerName: 'Bob',
+  mineConfirmed: false,
+  theirsConfirmed: true,
+};
+const CAROL_ROW: SocialSessionRow = {
+  key: 'session-102',
+  partnerName: 'Carol',
+  mineConfirmed: true,
+  theirsConfirmed: false,
+};
+
+/** No session list shows: absent, or hidden. */
+function expectNoSessionRows(label: string): void {
+  const ul = document.getElementById('trade-sessions');
+  if (ul === null) return;
+  expect(ul.hidden, `${label}: #trade-sessions is hidden`).toBe(true);
+}
+
+// ---------------------------------------------------------------------------
+// uif-4b (UIF4B.5): the view owns no feedback line.
+// ---------------------------------------------------------------------------
+describe('TradeView: the view owns no feedback line (uif-4b)', () => {
+  it('UIF4B.5 the view has no showFeedback, and paints on every tab leave the #trade-feedback text as it was', () => {
+    // WRONG IMPL KILLED: a surviving showFeedback (a second channel beside the toast seam), and a
+    // view that still writes the node that stays in index.html as an empty residual.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView();
+    view.show();
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    const feedbackEl = byId('trade-feedback');
+    feedbackEl.textContent = 'sentinel the view must leave alone';
+    for (const tab of SOCIAL_TAB_ORDER) {
+      view.paintSocial(chrome, socialPaint({ tab, sessions: [BOB_ROW] }));
+    }
+    view.hide();
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+    expect(feedbackEl.textContent, 'the view neither reads nor clears that node').toBe(
+      'sentinel the view must leave alone',
+    );
+    removeOverlay(overlay);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overlay a11y wiring on the show()/hide() edge (m23-s3)
+// ---------------------------------------------------------------------------
+
+const S3_ID: OverlayId = 'tradeView';
+const S3_META = OVERLAY_A11Y[S3_ID];
+
+describe('TradeView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
+  it('S3-tradeView-OPEN-ARIA BITES: the first show() from a display:none shell labels the root from OVERLAY_A11Y/t()', () => {
+    const overlay = mountTradeOverlay();
+    const view = new TradeView();
+
+    // VACUITY ATTACK V4, closed here: without `display:none` the FIRST show() is a NO-EDGE and
+    // every open assertion below is silently vacuous. This also pins WIK-3 — an impl that reads
+    // `this.visible` AFTER writing `style.display` sees a constant `true` and never opens.
+    expect(view.visible, 'V4: the shell must start hidden, so the first show() IS an edge').toBe(
+      false,
+    );
+
+    view.show();
+
+    // Every expectation is DERIVED from the table at assert time — never a literal (V5).
+    expect(overlay.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S3_META.role);
+    expect(overlay.getAttribute('aria-modal')).toBe('true');
+    expect(
+      overlay.getAttribute('aria-label'),
+      'THE tooth: role/aria-modal are static literals in index.html and pass a view that calls ' +
+        'nothing; aria-label is absent from every shell, so only a real open can produce it — and ' +
+        'because all catalog values are distinct, this also kills the wrong-OverlayId impl',
+    ).toBe(t(S3_META.labelKey));
+  });
+
+  it('S3-tradeView-DEFER-FOCUS BITES: both polarities — NOT focused synchronously, focused after ONE real macrotask, and the defer is owned by openOverlayA11y', async () => {
+    const overlay = mountTradeOverlay();
+    const target = overlay.querySelector<HTMLElement>(S3_META.initialFocusSelector);
+    expect(target, `the fixture must contain ${S3_META.initialFocusSelector}`).not.toBeNull();
+    const view = new TradeView();
+
+    view.show();
+
+    expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
+      target,
+    );
+    expect(
+      vi.mocked(openOverlayA11y),
+      'the deferred focus must be scheduled by openOverlayA11y, not by the view (A11Y-15)',
+    ).toHaveBeenCalledTimes(1);
+
+    await flushMacrotask();
+
+    // IDENTITY, never `root.contains(activeElement)` — that passes on any decorative wrapper.
+    expect(document.activeElement).toBe(target);
+  });
+
+  it('S3-tradeView-CLOSE-RESTORE BITES: hide() strips role, aria-modal AND aria-label from the root and hands focus back to the pre-overlay element', async () => {
+    const overlay = mountTradeOverlay();
+    const outside = s3OutsideSentinel();
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus starts OUTSIDE the overlay').toBe(outside);
+
+    const view = new TradeView();
+    view.show();
+    await flushMacrotask();
+    expect(
+      document.activeElement,
+      'precondition: the open moved focus INTO the overlay, so the restore below is a real move',
+    ).not.toBe(outside);
+
+    view.hide();
+
+    // VACUITY ATTACK V1: the two static literals can only be ABSENT if closeOverlayA11y really ran.
+    expect(
+      overlay.getAttribute('role'),
+      'a display:none node must not keep claiming to be a dialog',
+    ).toBeNull();
+    expect(overlay.getAttribute('aria-modal')).toBeNull();
+    expect(overlay.getAttribute('aria-label')).toBeNull();
+
+    expect(document.activeElement, 'focus must return to the pre-overlay element').toBe(outside);
+  });
+
+  it('S3-tradeView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
+    // A re-open clears and re-schedules the deferred-focus timer. INVISIBLE to every attribute
+    // assertion, so it is proven twice: by a call COUNT and by the sentinel still holding focus.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView();
+
+    view.show();
+    await flushMacrotask();
+
+    const inside = s3InsideSentinel(overlay);
+    inside.focus();
+    expect(document.activeElement, 'precondition: focus is parked INSIDE the overlay').toBe(inside);
+
+    view.show();
+    await flushMacrotask();
+
+    expect(document.activeElement, 'a repeat show() must NOT re-run the deferred focus').toBe(
+      inside,
+    );
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S3-tradeView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
+    // THE MECHANISM ORACLE: a view that hand-writes the three attributes with the correct copied
+    // literal passes every VALUE assertion here while shipping NO trap, NO return-focus record and
+    // NO timer. The literal `null` pins ADR-0205 A3.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView();
+
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S3_ID, overlay);
+
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+  });
+
+  it('S3-tradeView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
+    // A guarded hide() reads `visible === false` and SKIPS the close whenever a record ever
+    // desynchronised from the DOM, making a live capture listener, a pending timer and a stale
+    // return target PERMANENT. Unguarded, hide() HEALS it, and a close with no record is a
+    // documented pure no-op.
+    mountTradeOverlay();
+    const view = new TradeView();
+    expect(view.visible, 'precondition: never opened').toBe(false);
+
+    expect(() => view.hide()).not.toThrow();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'unguarded means unguarded: every hide() calls the close',
+    ).toHaveBeenCalledTimes(2);
+
+    // And the same holds after a real open/close cycle: the second hide() still calls it.
+    vi.clearAllMocks();
+    view.show();
+    view.hide();
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+});
+
+// =============================================================================
+// i18n (m24s4, ADR-0260): tradeView.ts routes its sinks through t()/tf().
+// =============================================================================
+
+/** `JSON.stringify` throws on a bare bigint; every sentinel `tf` mock uses this. Nested sentinels
+ *  (a resolved mark handed to `trade.row.marks`) are re-bracketed with `<`/`>` so a span never
+ *  holds another span. */
+function m24s4Replacer(_key: string, value: unknown): unknown {
+  if (typeof value === 'bigint') return String(value);
+  if (typeof value === 'string') return value.replaceAll('«', '<').replaceAll('»', '>');
+  return value;
+}
+
+/** The tradeView keys the sentinel matrix can legitimately produce. A bracket span whose content
+ *  is not EXACTLY one of these is LEFT IN PLACE (never elided), so a decoy bracket pair around raw
+ *  English is not laundered past the roster-word scan. */
+const M24S4_TV_PLAIN_KEYS = new Set([
+  'trade.status.none',
+  'trade.status.open',
+  'social.players.placeholder',
+  'tradeSession.mark.confirmed',
+  'tradeSession.mark.unconfirmed',
+]);
+
+const M24S4_TV_PARAM_KEYS = new Set(['trade.row.title', 'trade.row.marks']);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an expected
+ *  sentinel: a bare roster key, or `key|<json>` where `key` is a PARAM key and the tail after the
+ *  FIRST `|` parses to a plain (non-array, non-null) object. */
+function m24s4TvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S4_TV_PLAIN_KEYS.has(content) || M24S4_TV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S4_TV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (a manual indexOf loop, no
+ *  RegExp) and reports every OTHER `«...»` span verbatim in `unexpectedSpans`. */
+function m24s4TvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (!m24s4TvIsExpectedSentinelSpan(content)) {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk: every descendant's own text-node children, every element's `title`
+ *  attribute, and every `<option>`'s text. */
+function m24s4TvWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop() as Element;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    if (el.tagName === 'OPTION') texts.push(el.textContent ?? '');
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? '');
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+describe('m24s4 (ADR-0260): tradeView.ts routes its sinks through t()/tf()', () => {
+  it('m24s4 TV-01: the status line and the session rows call t()/tf() with the exact key and params, and the no-session status stays byte-identical', () => {
+    // WRONG IMPL KILLED: a status line written from a raw English literal; a session row title or
+    // marks built by string concatenation instead of `trade.row.title` / `trade.row.marks`; marks
+    // resolved from the wrong seat.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView();
+    view.show();
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    const confirmed = i18nT('tradeSession.mark.confirmed');
+    const unconfirmed = i18nT('tradeSession.mark.unconfirmed');
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    expect(i18nT).toHaveBeenCalledWith('trade.status.none');
+    expect(byId('trade-status').textContent).toBe('No active trade');
+
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', sessions: [BOB_ROW] }));
+    expect(i18nT).toHaveBeenCalledWith('trade.status.open');
+    expect(byId('trade-status').textContent).toBe(i18nT('trade.status.open'));
+    expect(i18nTf).toHaveBeenCalledWith('trade.row.title', { name: 'Bob' });
+    expect(i18nTf).toHaveBeenCalledWith('trade.row.marks', {
+      mine: unconfirmed,
+      theirs: confirmed,
+    });
+
+    vi.mocked(i18nT).mockClear();
+    view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
+    expect(i18nT).toHaveBeenCalledWith('social.players.placeholder');
+    expect('showFeedback' in view, 'no showFeedback on the view').toBe(false);
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s4 TV-02: under «key» sentinels, the trade root shows resolver output and never an English roster word outside a sentinel, on every tab, with and without session rows', () => {
+    const overlay = mountTradeOverlay();
+    // The view is CONSTRUCTED before the sentinel mockImplementation is installed, so a
+    // regression that hoists a t()/tf() call into the constructor resolves against the REAL
+    // resolver and surfaces as unbracketed English in the first scan below.
+    const view = new TradeView();
+    const roster = [
+      'No active trade',
+      i18nT('trade.status.open'),
+      i18nT('social.players.placeholder'),
+      i18nT('tradeSession.mark.confirmed'),
+      i18nT('tradeSession.mark.unconfirmed'),
+      'You offer',
+      'You receive',
+      'Accept',
+      'Reject',
+      'Confirm Trade',
+      'Cancel',
+    ];
+    const scan = (label: string): string => {
+      const texts = m24s4TvWalkSubtree(overlay);
+      const { stripped, unexpectedSpans } = m24s4TvSplitSentinels(texts.join('\n'));
+      expect(unexpectedSpans, `${label}: only exact sentinels`).toEqual([]);
+      for (const word of roster) {
+        expect(stripped.includes(word), `${label}: no raw "${word}"`).toBe(false);
+      }
+      return texts.join('\n');
+    };
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params, m24s4Replacer)}»`,
+      );
+
+      view.show();
+      // The chrome is hosted elsewhere: this scan reads the trade root's own sinks.
+      const chrome = document.createElement('div');
+      document.body.appendChild(chrome);
+      view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+      expect(scan('Trades, no session')).toContain('«trade.status.none»');
+      view.paintSocial(chrome, socialPaint({ tab: 'trades', sessions: [BOB_ROW, CAROL_ROW] }));
+      const joined = scan('Trades, two sessions');
+      expect(joined).toContain('«trade.status.open»');
+      expect(joined).toContain('«trade.row.title|{"name":"Bob"}»');
+      expect(joined).toContain('«trade.row.title|{"name":"Carol"}»');
+      expect(joined).toContain(
+        '«trade.row.marks|{"mine":"<tradeSession.mark.unconfirmed>","theirs":"<tradeSession.mark.confirmed>"}»',
+      );
+      view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
+      expect(scan('Players')).toContain('«social.players.placeholder»');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control.
+    expect(i18nT('chrome.help.title')).toBe('How to Play');
+
+    removeOverlay(overlay);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8s (CTL8S.3): the Social frame's chrome. main.ts builds ONE chrome element and moves it into
+// whichever Social panel shows, through that panel's `hostChrome(el)`: `el` becomes the root's
+// FIRST child, nothing else on the root changes, and a second call with `el` already first is a
+// no-op (a re-insert would drop focus from a tab inside it on every panel switch).
+//
+// happy-dom limit (measured on ctl-4): re-inserting a node before itself records no mutation and
+// keeps focus here, so that one churn mutant is invisible at this tier. A remove-then-insert is
+// not: it records two mutations.
+// ---------------------------------------------------------------------------
+
+describe('TradeView.hostChrome (ctl-8s, CTL8S.3)', () => {
+  it('CTL8S-3-HOST-CHROME-TRADE: hostChrome(el) moves el out of wherever it was to be the FIRST child of #trade-overlay; the other children, their order and ids, the hidden shell and its dialog state are unchanged; a second call with el already first records no mutation and keeps focus inside el', async () => {
+    // WRONG IMPL KILLED: an append (el lands LAST); a clone (`prepend(el.cloneNode(true))`: the
+    // node main.ts paints is not the node shown); a host that also shows the view or opens its
+    // dialog; one that replaces the root's children; and a re-host that removes el and inserts it
+    // again when it is already first (a focused tab drops focus on every panel switch).
+    const overlay = mountTradeOverlay();
+    const view = new TradeView();
+    const before = [...overlay.children];
+    expect(
+      before.map((c) => c.id),
+      'precondition: the shell children',
+    ).toEqual(TRADE_PARTS);
+    const elsewhere = document.createElement('div');
+    document.body.appendChild(elsewhere);
+    const chrome = document.createElement('div');
+    const tab = document.createElement('button');
+    chrome.appendChild(tab);
+    elsewhere.appendChild(chrome);
+
+    view.hostChrome(chrome);
+
+    expect(overlay.firstElementChild, 'el is the first child of the root').toBe(chrome);
+    expect(chrome.parentElement, 'moved, not cloned').toBe(overlay);
+    expect(elsewhere.childElementCount, 'and no longer where it was').toBe(0);
+    expect(overlay.childElementCount, 'one child more, nothing replaced').toBe(before.length + 1);
+    for (const [i, child] of before.entries()) {
+      expect(overlay.children[i + 1], `#${child.id}: kept, in its order`).toBe(child);
+    }
+    expect(
+      before.map((c) => c.id),
+      'their ids are unchanged',
+    ).toEqual(TRADE_PARTS);
+    expect(overlay.id).toBe('trade-overlay');
+    expect(overlay.style.display, 'the shell stays hidden').toBe('none');
+    expect(view.visible, 'the view stays hidden').toBe(false);
+    expect(overlay.getAttribute('aria-label'), 'no dialog was opened').toBeNull();
+
+    // On the shown panel, a second host of the element already first moves nothing.
+    view.show();
+    await flushMacrotask();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => {
+      records.push(...batch);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    tab.focus();
+    expect(document.activeElement, 'precondition: focus is on a tab inside the chrome').toBe(tab);
+    view.hostChrome(chrome);
+    await flushMacrotask();
+    observer.disconnect();
+    expect(records.length, 'no node was removed or inserted').toBe(0);
+    expect(document.activeElement, 'focus inside the chrome survives').toBe(tab);
+    expect(overlay.firstElementChild).toBe(chrome);
+    expect(overlay.childElementCount).toBe(before.length + 1);
+    expect(view.visible, 'the shown panel stays shown').toBe(true);
+
+    removeOverlay(overlay);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8d (CTL8D.1, CTL8D.2): the Social frame's one painter. The Social adapter paints through
+// `TradeView.paintSocial(chrome, p)`: its chrome half (the tab strip, the action sheet and the
+// Yes / No prompt) is painted INSIDE the chrome element main.ts moves into whichever panel shows,
+// on every paint, whether or not the trade root is the shown panel; its root half (the status
+// line and the session rows) applies to the trade root and is kept while that root is visible,
+// and dropped by `hide()`.
+// ---------------------------------------------------------------------------
+
 /** The tab strip inside `chrome`: one tablist with the frame's tab-strip class, held by the kit
  *  TabBar that is the first of the chrome's three parts (TabBar, sheet, prompt), the four tabs in
- *  order with their catalogued labels, exactly `active` selected; every chrome part at most once,
- *  and inside the chrome.
- *
- *  NAMED INTENTIONAL CHANGE (uif-9, UIF9.1): was the chrome's children
- *  ['social-tabs', 'social-sheet', 'social-prompt'] (the bare strip first) and the selected tab
- *  `is-active`; now the chrome's first child is the TabBar root (no id) that holds the strip, and
- *  the selected tab is `is-selected` and never `is-active` (the row cursor's class). */
+ *  order with their catalogued labels, exactly `active` selected (`is-selected`, never the row
+ *  cursor's `is-active`); every chrome part at most once, and inside the chrome. */
 function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): void {
   expect(document.querySelectorAll('#social-tabs').length, `${label}: one #social-tabs`).toBe(1);
   const strip = byId('social-tabs');
@@ -1131,27 +716,27 @@ function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): voi
   ).toBe(chrome.firstElementChild);
   const tabs = [...strip.children] as HTMLElement[];
   expect(
-    tabs.map((t) => t.id),
+    tabs.map((tb) => tb.id),
     `${label}: the four tabs, in order`,
-  ).toEqual(SOCIAL_TAB_ORDER.map((t) => `social-tab-${t}`));
+  ).toEqual(SOCIAL_TAB_ORDER.map((tb) => `social-tab-${tb}`));
   expect(
-    tabs.map((t) => t.getAttribute('role')),
+    tabs.map((tb) => tb.getAttribute('role')),
     `${label}: each a tab`,
   ).toEqual(SOCIAL_TAB_ORDER.map(() => 'tab'));
   expect(
-    tabs.map((t) => t.textContent),
+    tabs.map((tb) => tb.textContent),
     `${label}: the catalogued labels`,
-  ).toEqual(SOCIAL_TAB_ORDER.map((t) => SOCIAL_TAB_LABEL[t]()));
+  ).toEqual(SOCIAL_TAB_ORDER.map((tb) => SOCIAL_TAB_LABEL[tb]()));
   expect(
-    tabs.map((t) => t.getAttribute('aria-selected')),
+    tabs.map((tb) => tb.getAttribute('aria-selected')),
     `${label}: only ${active} is aria-selected`,
-  ).toEqual(SOCIAL_TAB_ORDER.map((t) => (t === active ? 'true' : 'false')));
+  ).toEqual(SOCIAL_TAB_ORDER.map((tb) => (tb === active ? 'true' : 'false')));
   expect(
-    tabs.map((t) => t.classList.contains('is-selected')),
+    tabs.map((tb) => tb.classList.contains('is-selected')),
     `${label}: only ${active} is-selected`,
-  ).toEqual(SOCIAL_TAB_ORDER.map((t) => t === active));
+  ).toEqual(SOCIAL_TAB_ORDER.map((tb) => tb === active));
   expect(
-    tabs.map((t) => t.classList.contains('is-active')),
+    tabs.map((tb) => tb.classList.contains('is-active')),
     `${label}: no tab is is-active (the row cursor's class)`,
   ).toEqual(SOCIAL_TAB_ORDER.map(() => false));
   for (const id of SOCIAL_PART_IDS) {
@@ -1210,16 +795,15 @@ function expectNoPrompt(label: string): void {
 }
 
 describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
-  it('CTL8D-1-VIEW-TABS: paintSocial paints a tablist #social-tabs inside the chrome holding the four tabs Players, Trades, Challenges, Rankings in that order with their catalogued labels and exactly the painted tab selected (is-selected and aria-selected, never is-active: NAMED INTENTIONAL CHANGE uif-9, UIF9.1, was is-active); it paints on every call, with the trade root hidden and never rendered too, reuses its parts (one strip, no duplicate id) and never adds a child to #trade-overlay', () => {
+  it('CTL8D-1-VIEW-TABS: paintSocial paints a tablist #social-tabs inside the chrome holding the four tabs Players, Trades, Challenges, Rankings in that order with their catalogued labels and exactly the painted tab selected; it paints on every call, with the trade root hidden too, reuses its parts (one strip, no duplicate id) and adds no child to #trade-overlay while no session row is painted', () => {
     // WRONG IMPL KILLED: a paintSocial that returns early while the trade root is hidden (on
-    // Challenges and Rankings the strip would keep the last tab painted over the trade root); a
-    // strip that keeps the first tab selected, or marks a tab by class only or by aria only; tabs
-    // in another order or with hand-typed labels; a strip created again on every paint (two
-    // #social-tabs, two of each tab id); a part created in the trade root, or in the document,
-    // instead of in the chrome element it is handed; a strip without the frame's tab-strip class
-    // (the tabs stack); and the prompt created before the sheet (DOM, visual and Tab order).
+    // Challenges and Rankings the strip would keep the last tab painted); a strip that keeps the
+    // first tab selected, or marks a tab by class only or by aria only; tabs in another order or
+    // with hand-typed labels; a strip created again on every paint; a part created in the trade
+    // root, or in the document, instead of in the chrome element it is handed; a strip without
+    // the frame's tab-strip class; and the prompt created before the sheet.
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     const shell = [...overlay.children];
     // While another panel shows, production keeps the chrome in that panel's root.
     const otherRoot = document.createElement('div');
@@ -1227,7 +811,7 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     const chrome = document.createElement('div');
     otherRoot.appendChild(chrome);
 
-    // (a) The trade root hidden and never rendered: the strip is painted all the same.
+    // (a) The trade root hidden: the strip is painted all the same.
     expect(view.visible, 'precondition: the trade root is hidden').toBe(false);
     view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
     expectStrip(chrome, 'challenges', 'hidden root, Challenges');
@@ -1241,7 +825,6 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
 
     // (b) The trade root shown, hosting the chrome as its first child.
     view.show();
-    view.render(makeNoTradeVM());
     view.hostChrome(chrome);
     for (const tab of ['players', 'trades'] as const) {
       view.paintSocial(chrome, socialPaint({ tab }));
@@ -1261,154 +844,109 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     removeOverlay(overlay);
   });
 
-  it('CTL8D-1-VIEW-PLACEHOLDER: on the Players tab the shown trade root reads the catalogued placeholder in #trade-status with both sides and the actions hidden and the status and feedback shown; a no-trade and a trade render keep it; Players to Trades with no render in between restores the last rendered status and unhides everything; hide() drops it; a view never painted renders as before', () => {
-    // WRONG IMPL KILLED: a placeholder written once and overwritten by the next batch render (the
-    // trade render writes its status label, the no-trade render returns early before re-applying
-    // the paint); a placeholder that survives the switch to Trades when no render runs between
-    // (the status keeps reading "not available" over a live trade); one that survives hide() or a
-    // reopen; a Players tab that also hides the feedback line (a trade result vanishes) or the
-    // status (the dialog's focus anchor); a Players tab that hides a part holding the focus and
-    // strands the focus on <body>, or pulls the focus from outside the root; a paint kept on a
-    // hidden root (a stale placeholder or mark at the next open); and a paint that changes a view
-    // nobody painted.
+  it('CTL8D-1-VIEW-PLACEHOLDER: on the Players tab the shown trade root reads the catalogued placeholder in #trade-status and hides no shell part; Players to Trades restores the session-driven status; a session list hidden while it holds the focus hands it to #trade-status, focus outside the root stays put; hide() drops the paint and a paint on the hidden root is not kept', () => {
+    // WRONG IMPL KILLED: a placeholder that survives the switch to Trades (the status keeps
+    // reading "not available" over open trades); one that survives hide() or a reopen; a Players
+    // tab that hides the status (the dialog's focus anchor) or any static part; a hidden session
+    // list that strands the focus on <body>, or a hand-off that pulls the focus from outside the
+    // root; a paint kept on a hidden root (a stale placeholder at the next open).
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     const status = byId('trade-status');
-    const feedback = byId('trade-feedback');
-    const offerStatus = 'Offer received';
-    const offer = makePendingTradeVM(offerStatus, ['accept', 'reject']);
     const none = i18nT('trade.status.none');
+    const open = i18nT('trade.status.open');
     const placeholder = i18nT('social.players.placeholder');
-    expect([none, offerStatus].includes(placeholder), 'fixture: three distinct status texts').toBe(
-      false,
-    );
+    expect(new Set([none, open, placeholder]).size, 'fixture: three distinct status texts').toBe(3);
 
-    // Never painted: both renders as today.
     view.show();
-    view.render(makeNoTradeVM());
-    expect(status.textContent, 'never painted: the no-trade status').toBe(none);
-    expect(hiddenTradeParts(), 'never painted: nothing hidden').toEqual([]);
-    view.render(offer);
-    expect(status.textContent, 'never painted: the offer status').toBe(offerStatus);
-    expect(hiddenTradeParts(), 'never painted: nothing hidden').toEqual([]);
-    expect(statusMark(), 'never painted: no mark').toEqual(UNMARKED);
-
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
 
-    // Players hides a part holding the focus: the focus goes to #trade-status, the dialog's
-    // anchor, never stranded on <body> in a real browser.
-    // qf-8 (named intentional change): the focused element was a Tab-focused legacy button in
-    // #trade-actions, deleted (QF8.1); no control of the view renders in a part Players hides now,
-    // so a test-owned focusable is placed in #trade-my-side (one of the three parts the rescue
-    // covers) to keep the hand-off pinned.
-    const inPart = document.createElement('button');
-    byId('trade-my-side').appendChild(inPart);
-    inPart.focus();
-    expect(document.activeElement, 'precondition: an element in a side holds the focus').toBe(
-      inPart,
-    );
-    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
-    expect(document.activeElement, 'Players: the hidden part hands the focus to the anchor').toBe(
+    // A session row holds the focus; Players hides the list: the focus goes to the anchor.
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW], sessionCursor: BOB_ROW.key }));
+    const row = byId('trade-sessions').querySelector<HTMLElement>('[data-nav-key]');
+    expect(row, 'fixture: a session row').not.toBeNull();
+    row?.setAttribute('tabindex', '-1');
+    row?.focus();
+    expect(document.activeElement, 'precondition: the session row holds the focus').toBe(row);
+    // The session list is named by the Trades tab, which is painted in the chrome.
+    expect(
+      byId('trade-sessions').getAttribute('aria-labelledby'),
+      'the session list is named by the Trades tab',
+    ).toBe('social-tab-trades');
+    const tradesTab = document.getElementById('social-tab-trades');
+    expect(
+      tradesTab !== null && chrome.contains(tradesTab),
+      'the tab naming the session list is in the chrome',
+    ).toBe(true);
+    expect(tradesTab?.textContent, 'and it is the Trades tab').toBe(SOCIAL_TAB_LABEL.trades());
+    view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
+    expect(document.activeElement, 'Players: the hidden list hands the focus to the anchor').toBe(
       status,
     );
     // Control: the same paint with the focus outside the root moves nothing.
-    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
     const outside = document.createElement('button');
     document.body.appendChild(outside);
     outside.focus();
     expect(document.activeElement, 'precondition: the focus is outside the root').toBe(outside);
-    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
     expect(document.activeElement, 'Players with the focus outside the root moves nothing').toBe(
       outside,
     );
-    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
 
-    // Players: the placeholder; the sides and the actions hidden; the status and feedback shown.
-    // INTENTIONAL CHANGE (uif-4b, UIF4B.5): the view no longer owns a feedback line, so the
-    // `showFeedback('a trade result line')` setup and its "Players: the feedback line stays" read
-    // are dropped; a sentinel the test writes into the residual node proves the view leaves it
-    // alone. Was: `view.showFeedback('a trade result line')` read back after the Players paint.
-    feedback.textContent = 'a sentinel the view must not touch';
-    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    // Players: the placeholder, no shell part hidden.
     expect(status.textContent, 'Players: the placeholder').toBe(placeholder);
-    expect(hiddenTradeParts(), 'Players: the sides and the actions hidden').toEqual(PLAYERS_HIDDEN);
-    expect(feedback.textContent, 'Players: the residual node is left alone').toBe(
-      'a sentinel the view must not touch',
-    );
+    expect(hiddenTradeParts(), 'Players: no shell part hidden').toEqual([]);
+    expectNoSessionRows('Players');
 
-    // Batch renders keep it, on both render branches.
-    view.render(offer);
-    expect(status.textContent, 'a trade render keeps the placeholder').toBe(placeholder);
-    expect(hiddenTradeParts(), 'a trade render keeps the parts hidden').toEqual(PLAYERS_HIDDEN);
-    view.render(makeNoTradeVM());
-    expect(status.textContent, 'a no-trade render keeps the placeholder').toBe(placeholder);
-    expect(hiddenTradeParts(), 'a no-trade render keeps the parts hidden').toEqual(PLAYERS_HIDDEN);
-    view.render(offer);
-    expect(status.textContent, 'a second trade render keeps it').toBe(placeholder);
-    expect(hiddenTradeParts()).toEqual(PLAYERS_HIDDEN);
-
-    // Players to Trades with no render between: the status last rendered, nothing hidden.
-    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
-    expect(status.textContent, 'Trades: the offer status is back').toBe(offerStatus);
-    expect(hiddenTradeParts(), 'Trades: nothing hidden').toEqual([]);
-
-    // The same over a no-trade render.
-    view.render(makeNoTradeVM());
+    // Players to Trades: the status follows the session rows.
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
+    expect(status.textContent, 'Trades with a session').toBe(open);
     view.paintSocial(chrome, socialPaint({ tab: 'players' }));
-    expect(status.textContent, 'precondition: Players over no trade').toBe(placeholder);
-    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
-    expect(status.textContent, 'Trades: the no-trade status is back').toBe(none);
-    expect(hiddenTradeParts(), 'Trades over no trade: nothing hidden').toEqual([]);
+    view.paintSocial(chrome, socialPaint());
+    expect(status.textContent, 'Trades with no session').toBe(none);
 
     // hide() drops the paint: the hidden root holds no placeholder, and a reopen starts clean.
     view.paintSocial(chrome, socialPaint({ tab: 'players' }));
     expect(status.textContent, 'precondition: Players again').toBe(placeholder);
     view.hide();
     expect(status.textContent, 'hidden: no placeholder left').toBe(none);
-    expect(hiddenTradeParts(), 'hidden: nothing left hidden').toEqual([]);
-    // A paint on the hidden root is not kept: no mark, no placeholder, nothing hidden, and the
-    // reopen below shows none of it (a kept Players paint would greet the next open).
-    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
-    expect(statusMark(), 'hidden root, tradeCursor: no mark').toEqual(UNMARKED);
+    expect(hiddenTradeParts(), 'hidden: nothing hidden').toEqual([]);
+    // A paint on the hidden root is not kept.
     view.paintSocial(chrome, socialPaint({ tab: 'players' }));
-    expect(status.textContent, 'hidden root, Players: the last rendered status').toBe(none);
-    expect(hiddenTradeParts(), 'hidden root, Players: nothing hidden').toEqual([]);
-    view.render(makeNoTradeVM());
+    expect(status.textContent, 'hidden root, Players: not kept').toBe(none);
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
+    expect(status.textContent, 'hidden root, a session: not kept').toBe(none);
     view.show();
-    expect(status.textContent, 'reopened: the no-trade status').toBe(none);
-    expect(hiddenTradeParts(), 'reopened: nothing hidden').toEqual([]);
+    expect(status.textContent, 'reopened: no paint kept').toBe(none);
     expect(statusMark(), 'reopened: no mark').toEqual(UNMARKED);
 
     removeOverlay(overlay);
   });
 
-  it('CTL8D-2-VIEW-SHEET: a sheet paints #social-sheet in the chrome with one row per legal action in order, labelled from the catalog, exactly the active row marked; a prompt paints its question and the Yes / No rows with the cursor row marked while the sheet stays painted beneath; no prompt leaves #social-prompt hidden and empty, no sheet leaves #social-sheet hidden and empty; a part hidden while it holds the focus hands it to the trade root`s anchor and focus elsewhere stays put', async () => {
+  it('CTL8D-2-VIEW-SHEET: a sheet paints #social-sheet in the chrome with one row per legal action in order, labelled from the catalog, exactly the active row marked; the Decline prompt paints its question and the Yes / No rows with the cursor row marked while the sheet stays painted beneath; no prompt leaves #social-prompt hidden and empty, no sheet leaves #social-sheet hidden and empty; a part hidden while it holds the focus hands it to the hosting root`s anchor and focus elsewhere stays put', async () => {
     // WRONG IMPL KILLED: a sheet with no cursor, two cursors, or the cursor on the first row
-    // whatever `active` says; rows in a fixed order or with the legacy trade labels ("Reject",
-    // "Confirm Trade"); a prompt that hides the sheet beneath it or marks Yes when `yes` is false
-    // (the default-No prompt would read as a default Yes); a question text swapped between the
-    // three questions; a closed prompt or sheet that is only hidden and keeps its stale rows; a
-    // hidden part that strands the focus inside itself (on <body> in a real browser); a handoff
-    // that pulls the focus to the anchor on every paint (an element focused elsewhere in the root
-    // would lose it); a handoff hard-coded to #trade-status (hidden on Challenges: the focus is stranded);
-    // and a nameless sheet or Yes / No listbox (no aria-labelledby).
+    // whatever `active` says; rows in a fixed order or with hand-typed labels; a prompt that hides
+    // the sheet beneath it or marks Yes when `yes` is false (the default-No prompt would read as a
+    // default Yes); a closed prompt or sheet that is only hidden and keeps its stale rows; a
+    // hidden part that strands the focus inside itself; a handoff that pulls the focus to the
+    // anchor on every paint; a handoff hard-coded to #trade-status (hidden on Challenges: the
+    // focus is stranded); and a nameless sheet or Yes / No listbox (no aria-labelledby).
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     view.show();
     await flushMacrotask(); // the open's deferred focus lands now, so it cannot move focus later
-    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
     const anchor = byId('trade-status');
 
     // Sheets: every action label, every cursor position.
     const sheets: readonly SheetCase[] = [
-      { tab: 'trades', actions: ['accept', 'decline'], active: 'accept' },
-      { tab: 'trades', actions: ['accept', 'decline'], active: 'decline' },
-      { tab: 'trades', actions: ['confirm', 'cancel'], active: 'cancel' },
-      { tab: 'trades', actions: ['confirm', 'cancel'], active: 'confirm' },
+      { tab: 'challenges', actions: ['accept', 'decline'], active: 'accept' },
+      { tab: 'challenges', actions: ['accept', 'decline'], active: 'decline' },
       { tab: 'challenges', actions: ['cancel'], active: 'cancel' },
+      { tab: 'trades', actions: ['accept', 'decline'], active: 'decline' },
     ];
     for (const c of sheets) {
       const label = `sheet ${c.actions.join('/')} on ${c.active}`;
@@ -1420,28 +958,21 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
       expectNoPrompt(label);
     }
 
-    // Prompts: each question, Yes and No; the sheet stays painted beneath.
+    // The prompt: Yes and No; the sheet stays painted beneath.
     const prompts: readonly PromptCase[] = [
-      {
-        tab: 'trades',
-        actions: ['accept', 'decline'],
-        active: 'decline',
-        question: 'declineTrade',
-        yes: false,
-      },
-      {
-        tab: 'trades',
-        actions: ['confirm', 'cancel'],
-        active: 'confirm',
-        question: 'confirmTrade',
-        yes: true,
-      },
       {
         tab: 'challenges',
         actions: ['accept', 'decline'],
         active: 'decline',
         question: 'declineChallenge',
         yes: false,
+      },
+      {
+        tab: 'challenges',
+        actions: ['accept', 'decline'],
+        active: 'decline',
+        question: 'declineChallenge',
+        yes: true,
       },
     ];
     for (const c of prompts) {
@@ -1524,7 +1055,7 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
       socialPaint({
         tab: 'trades',
         sheet: { actions: ['accept', 'decline'], active: 'decline' },
-        confirm: { question: 'declineTrade', yes: false },
+        confirm: { question: 'declineChallenge', yes: false },
       }),
     );
     byId('social-confirm').focus();
@@ -1537,9 +1068,7 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     );
     expect(document.activeElement, 'the closed prompt hands the focus to the anchor').toBe(anchor);
 
-    // Control: a part hidden while the focus is elsewhere moves nothing.
-    // qf-8 (named intentional change): "elsewhere" was a legacy trade button (deleted, QF8.1); it is
-    // now a test-owned focusable in the same trade root, outside the chrome.
+    // Control: a part hidden while the focus is elsewhere in the root moves nothing.
     const elsewhere = s3InsideSentinel(overlay);
     elsewhere.focus();
     expect(document.activeElement, 'precondition: an element in the root holds the focus').toBe(
@@ -1549,8 +1078,8 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     expect(document.activeElement, 'focus outside the hidden sheet stays put').toBe(elsewhere);
 
     // On another panel the chrome is that panel's root's first child (the pvp shell's shape), so
-    // the hand-off goes to THAT root's anchor: #trade-status is hidden there, and focus sent to it
-    // would be stranded.
+    // the hand-off goes to THAT root's anchor: focus sent to the hidden #trade-status would be
+    // stranded.
     view.hide();
     const standInRoot = document.createElement('div');
     const standInAnchor = document.createElement('div');
@@ -1577,68 +1106,21 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
 
     removeOverlay(overlay);
   });
-
-  it('CTL8D-2-VIEW-TRADE-CURSOR: tradeCursor on the Trades tab marks #trade-status with mr-nav-item, is-active and aria-current="true", and a batch render of the same offer keeps the mark; tradeCursor false, another tab and hide() leave none of the three, and a reopened root carries no mark', () => {
-    // WRONG IMPL KILLED: a mark lost on the next batch render (the adapter does not repaint an
-    // unchanged state); a mark that is never cleared when the cursor leaves the row or the tab
-    // changes, or that ignores the tab; a mark by class alone (no aria-current, invisible to
-    // assistive technology); and one that survives hide(), so a reopened panel shows a stale cursor.
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
-    const offer = makePendingTradeVM('Offer received', ['accept', 'reject']);
-    view.show();
-    view.render(offer);
-    const chrome = document.createElement('div');
-    view.hostChrome(chrome);
-    expect(statusMark(), 'precondition: no mark before any paint').toEqual(UNMARKED);
-
-    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
-    expect(statusMark(), 'tradeCursor on Trades: marked').toEqual(MARKED);
-    view.render(offer);
-    expect(statusMark(), 'the mark survives a batch render of the same offer').toEqual(MARKED);
-    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: false }));
-    expect(statusMark(), 'tradeCursor false: no mark').toEqual(UNMARKED);
-
-    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
-    expect(statusMark(), 'precondition: marked again').toEqual(MARKED);
-    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
-    expect(statusMark(), 'another tab: no mark').toEqual(UNMARKED);
-    view.paintSocial(chrome, socialPaint({ tab: 'players', tradeCursor: true }));
-    expect(statusMark(), 'tradeCursor off the Trades tab: no mark').toEqual(UNMARKED);
-
-    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
-    expect(statusMark(), 'precondition: marked once more').toEqual(MARKED);
-    view.hide();
-    expect(statusMark(), 'hide(): no mark').toEqual(UNMARKED);
-    view.render(offer);
-    view.show();
-    expect(statusMark(), 'reopened: no mark from the last visit').toEqual(UNMARKED);
-
-    removeOverlay(overlay);
-  });
 });
 
 // ---------------------------------------------------------------------------
 // uif-9 (UIF9.1): the Social tabs render through the ONE kit TabBar, held by the shared chrome.
-// The chrome's first child is the TabBar root (an LB chip, the `#social-tabs` tablist, an RB chip),
-// so the bar is the first thing in whichever panel hosts the chrome.
-//
-// UIF9.4 (Trades): the Trades tab's RowCard migration is DEFERRED to M-trade-sessions ts-3, which
-// rebuilds that tab; until then the trade root holds no `.mr-card` (pinned below so the deferral
-// is explicit, not an omission).
 // ---------------------------------------------------------------------------
 
 describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
   it('UIF9.1 the chrome`s first child is the TabBar root (class mr-tabbar, not hidden) holding, in order, an LB chip, the #social-tabs tablist and an RB chip (chips aria-hidden, data-button, no text); the four tabs in order carry the catalogued labels with the painted one aria-selected and is-selected and never is-active; a repaint, on any tab and on a moved chrome, reuses the same bar and strip nodes; the chrome is [TabBar, #social-sheet, #social-prompt] and the trade root gains only the hosted chrome', () => {
     // WRONG IMPL KILLED: the bare strip left as the chrome's first child (no `.mr-tabbar` root, no
     // chips); a TabBar appended after the sheet or the prompt (not top-anchored); a second bar
-    // created on every paint or per panel (two `.mr-tabbar`, two `#social-tabs`); chips that carry
-    // text or are not aria-hidden (a screen reader reads "LB"); the selected tab marked `is-active`
-    // (the row cursor's class: two cursors on one screen) or by aria alone; a bar left `hidden`
-    // after a paint; a strip without role=tablist; a bar or tab created inside the trade root's own
-    // children instead of the chrome handed to the painter.
+    // created on every paint or per panel; chips that carry text or are not aria-hidden; the
+    // selected tab marked `is-active` or by aria alone; a bar left `hidden` after a paint; a strip
+    // without role=tablist; a bar created inside the trade root's own children.
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     const shell = [...overlay.children];
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
@@ -1675,7 +1157,7 @@ describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
       expect(
         [...(strip as HTMLElement).children].map((el) => el.classList.contains('is-selected')),
         `${tab}: is-selected on the painted tab alone`,
-      ).toEqual(SOCIAL_TAB_ORDER.map((t) => t === tab));
+      ).toEqual(SOCIAL_TAB_ORDER.map((tb) => tb === tab));
     }
 
     // The trade root: only the hosted chrome was added.
@@ -1703,13 +1185,12 @@ describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
     removeOverlay(overlay);
   });
 
-  it('UIF9.1 the TabBar is created in the chrome handed to the painter even when the trade root is hidden and never rendered, and a chrome that already holds one bar is not given a second', () => {
-    // WRONG IMPL KILLED: a painter that returns early while the trade root is hidden (on
-    // Challenges and Rankings the chrome would hold no bar); a bar created into the document or the
-    // trade root instead of the chrome; a locate-by-id that misses the bar and builds a second one
-    // on the next paint (two chips pairs, two strips).
+  it('UIF9.1 the TabBar is created in the chrome handed to the painter even when the trade root is hidden, and a chrome that already holds one bar is not given a second', () => {
+    // WRONG IMPL KILLED: a painter that returns early while the trade root is hidden; a bar
+    // created into the document or the trade root instead of the chrome; a locate-by-id that
+    // misses the bar and builds a second one on the next paint.
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     const chrome = document.createElement('div');
     const elsewhere = document.createElement('div');
     document.body.appendChild(elsewhere);
@@ -1731,24 +1212,24 @@ describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
     removeOverlay(overlay);
   });
 
-  it('UIF9.4 the Trades panel holds no RowCard: its migration is deferred to M-trade-sessions ts-3, which rebuilds that tab, so a rendered trade and an empty one both leave the root with no .mr-card', () => {
-    // The reason this is pinned: the Trades tab is rebuilt in M-trade-sessions ts-3 (feedback 086),
-    // so uif-9 migrates only the Challenges rows; a RowCard added here would be thrown away.
-    // WRONG IMPL KILLED: a card wrapped around the trade status or either side (migrating a tab
-    // whose rebuild is another slice's); a card the trade root keeps after a render.
+  it('UIF9.4 the Trades panel holds no RowCard: session rows painted with the cursor on one, and an empty Trades tab, both leave the root with no .mr-card', () => {
+    // WRONG IMPL KILLED: a card wrapped around the trade status or a session row; a card the trade
+    // root keeps after the rows go.
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     const chrome = document.createElement('div');
     view.show();
     view.hostChrome(chrome);
-    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
-    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
-    expect(statusMark(), 'precondition: the Trades paint is live (cursor on the row)').toEqual(
-      MARKED,
+    view.paintSocial(
+      chrome,
+      socialPaint({ sessions: [BOB_ROW, CAROL_ROW], sessionCursor: BOB_ROW.key }),
     );
-    expect(overlay.querySelectorAll('.mr-card').length, 'a trade offer: no card').toBe(0);
-    view.render(makeNoTradeVM());
-    expect(overlay.querySelectorAll('.mr-card').length, 'no trade: no card').toBe(0);
+    expect(navRows(byId('trade-sessions')).activeByAria, 'precondition: the rows are live').toEqual(
+      [BOB_ROW.key],
+    );
+    expect(overlay.querySelectorAll('.mr-card').length, 'session rows: no card').toBe(0);
+    view.paintSocial(chrome, socialPaint());
+    expect(overlay.querySelectorAll('.mr-card').length, 'no session: no card').toBe(0);
     expect(overlay.querySelectorAll('.mr-card-title').length, 'and no card title').toBe(0);
 
     removeOverlay(overlay);
@@ -1756,52 +1237,22 @@ describe('TradeView.paintSocial hosts the kit TabBar (uif-9, UIF9.1)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ts-3 (ts-3.5): the session rows on the Trades panel.
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M-trade-sessions.spec.md §ts-3 (ts-3.5) and
-//   memory/projects/monster-realm-ts-3-plan.md §Social › Trades: the rows are painted into a runtime
-//   `ul#trade-sessions` (renderNav, frame `socialTrades`) appended to the root, `hidden` while there
-//   are none or the tab is not Trades; each row reads `trade.row.title` and `trade.row.marks`; with no
-//   legacy offer and at least one session the status line reads `trade.status.open`. Constructor,
-//   `render(vm)` and every static child are unchanged.
-//
-// RED REASON: paintSocial paints no session row and never reads `trade.status.open`.
-//
+// ts-3 (ts-3.5): the session rows on the Trades panel. The rows are painted into a runtime
+// `#trade-sessions` (renderNav, frame `socialTrades`) appended to the root, `hidden` while there
+// are none or the tab is not Trades; each row reads `trade.row.title` and `trade.row.marks`.
 // The list is created at RUNTIME (never by the constructor: CTL8S-3-HOST-CHROME-TRADE and
-// CTL8D-1-VIEW-TABS pin the shell's children with no session painted), so before the first session
-// it may be absent or hidden; once painted it is a child of the root.
+// CTL8D-1-VIEW-TABS pin the shell's children with no session painted).
 // ---------------------------------------------------------------------------
-
-const BOB_ROW = {
-  key: 'session-101',
-  partnerName: 'Bob',
-  mineConfirmed: false,
-  theirsConfirmed: true,
-};
-const CAROL_ROW = {
-  key: 'session-102',
-  partnerName: 'Carol',
-  mineConfirmed: true,
-  theirsConfirmed: false,
-};
-
-/** No session list shows: absent, or hidden with no row. */
-function expectNoSessionRows(label: string): void {
-  const ul = document.getElementById('trade-sessions');
-  if (ul === null) return;
-  expect(ul.hidden, `${label}: #trade-sessions is hidden`).toBe(true);
-}
 
 describe('TradeView.paintSocial — the session rows (ts-3, ts-3.5)', () => {
   it('ts-3.5 on the Trades tab paintSocial paints one #trade-sessions row per session in order, each reading its partner`s title and its marks, the cursor on sessionCursor alone; the list is a child of the root and hidden off the Trades tab and with no session', () => {
     // WRONG IMPL KILLED: one row for all sessions (or only the first); rows out of order; a row
-    // without the partner's name or with both marks read the same; no cursor or the cursor on the
-    // legacy status line too; a list painted over the Challenges panel or left showing after the
-    // last session closed; a list created by the constructor (the static shell pins).
+    // without the partner's name or with both marks read the same; no cursor, or a cursor mark on
+    // the status line too; a list painted over the Challenges panel or left showing after the
+    // last session closed; a list created by the constructor.
     const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+    const view = new TradeView();
     view.show();
-    view.render(makeNoTradeVM());
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
     expectNoSessionRows('before any session');
@@ -1822,7 +1273,7 @@ describe('TradeView.paintSocial — the session rows (ts-3, ts-3.5)', () => {
     expect(rows.texts[0], 'the marks differ, so the row texts differ past the name').not.toBe(
       rows.texts[1]?.replace('Carol', 'Bob'),
     );
-    expect(statusMark(), 'the legacy status carries no cursor').toEqual(UNMARKED);
+    expect(statusMark(), 'the status line carries no cursor').toEqual(UNMARKED);
 
     // No cursor on a session: no row selected.
     view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW, CAROL_ROW], sessionCursor: null }));
@@ -1841,30 +1292,236 @@ describe('TradeView.paintSocial — the session rows (ts-3, ts-3.5)', () => {
 
     removeOverlay(overlay);
   });
+});
 
-  it('ts-3.5 the status line reads trade.status.open with no legacy offer and at least one session, trade.status.none with neither, and a legacy offer keeps its own status label', () => {
-    // WRONG IMPL KILLED: "No active trade" shown over a list of open trades; "Open trades" kept
-    // after the last session closed; the legacy offer's label overwritten by the session count.
-    const overlay = mountTradeOverlay();
-    const view = new TradeView(makeCallbacks());
+// ---------------------------------------------------------------------------
+// ts-4 (ts-4.6): the trade root lists only session rows; the legacy offer surface is gone.
+// ---------------------------------------------------------------------------
+
+/** Every paint shape the Social screen can hand the view: each tab, with no / one / two session
+ *  rows, the session cursor on a row or none, a sheet and a prompt. */
+function paintMatrix(): readonly SocialPaint[] {
+  const out: SocialPaint[] = [];
+  for (const tab of SOCIAL_TAB_ORDER) {
+    for (const sessions of [[], [BOB_ROW], [BOB_ROW, CAROL_ROW]] as const) {
+      out.push(socialPaint({ tab, sessions }));
+      if (sessions.length > 0 && tab === 'trades') {
+        out.push(socialPaint({ tab, sessions, sessionCursor: BOB_ROW.key }));
+      }
+      out.push(
+        socialPaint({
+          tab,
+          sessions,
+          sheet: { actions: ['accept', 'decline'], active: 'decline' },
+          confirm: { question: 'declineChallenge', yes: false },
+        }),
+      );
+    }
+  }
+  return out;
+}
+
+/** The status line the contract derives from a kept paint (null: no paint kept). */
+function expectedStatus(p: SocialPaint | null): string {
+  if (p === null) return i18nT('trade.status.none');
+  if (p.tab === 'players') return i18nT('social.players.placeholder');
+  return p.tab === 'trades' && p.sessions.length > 0
+    ? i18nT('trade.status.open')
+    : i18nT('trade.status.none');
+}
+
+describe('TradeView — only session rows on the trade root (ts-4, ts-4.6)', () => {
+  it('ts-4.6 new TradeView() takes no argument and the view has no render member', () => {
+    // WRONG IMPL KILLED: a constructor that still declares a callbacks parameter (TradeCallbacks
+    // kept); a `render` method (the legacy-offer render path) left on the class or the instance.
+    mountTradeOverlay();
+    expect(TradeView.length, 'the constructor declares no parameter').toBe(0);
+    const view = new TradeView();
+    expect(Reflect.has(view, 'render'), 'no render member on the instance').toBe(false);
+    expect(
+      Reflect.has(TradeView.prototype as unknown as Record<string, unknown>, 'render'),
+      'no render on the prototype',
+    ).toBe(false);
+  });
+
+  it('ts-4.6 the constructor needs only #trade-overlay and #trade-status: over a shell without the four static parts it constructs, shows, paints every shape and hides without a throw', () => {
+    // WRONG IMPL KILLED: a constructor that still looks up #trade-my-side, #trade-their-side,
+    // #trade-actions or #trade-feedback (a throw on this shell); a paint that reaches for one of
+    // them (a TypeError on null).
+    const overlay = mountTradeOverlay({ full: false });
+    expect(
+      [...overlay.children].map((c) => c.id),
+      'fixture: the status line alone',
+    ).toEqual(['trade-status']);
+    let view: TradeView | null = null;
+    expect(() => {
+      view = new TradeView();
+    }, 'construct').not.toThrow();
+    const v = view as unknown as TradeView;
+    const chrome = document.createElement('div');
+    expect(() => {
+      v.show();
+      v.hostChrome(chrome);
+      for (const p of paintMatrix()) v.paintSocial(chrome, p);
+      v.toggle();
+      v.toggle();
+      v.hide();
+    }, 'show, paint, toggle and hide').not.toThrow();
+    expect(byId('trade-status').textContent, 'and the status line is written').toBe(
+      i18nT('trade.status.none'),
+    );
+    // Without #trade-status the constructor refuses (it is the dialog's focus anchor).
+    document.body.innerHTML = '';
+    const bare = document.createElement('div');
+    bare.id = 'trade-overlay';
+    document.body.appendChild(bare);
+    expect(() => new TradeView(), 'no status line: a throw').toThrow();
+  });
+
+  it('ts-4.6 the status line is a function of the kept Social paint alone: Players reads the placeholder, Trades with a session row reads trade.status.open, Trades with none and every other tab read trade.status.none, and with no paint kept (never painted, after hide, a paint on the hidden root) it reads trade.status.none', () => {
+    // WRONG IMPL KILLED: a status kept from an earlier paint or render (a stale "Open trades"
+    // after the last session closed, or "No active trade" over open sessions); a status that is
+    // '' or the shell's text before any paint is kept; the session count read on the Challenges or
+    // Rankings tab; a hidden root that keeps its paint.
+    mountTradeOverlay();
+    const view = new TradeView();
+    const status = byId('trade-status');
+    const chrome = document.createElement('div');
+    view.hide();
+    expect(status.textContent, 'never painted, hidden: none').toBe(expectedStatus(null));
+    view.show();
+    view.hostChrome(chrome);
+    // Every paint, in order and then reversed, so each follows a different predecessor.
+    const matrix = paintMatrix();
+    let checked = 0;
+    for (const p of [...matrix, ...[...matrix].reverse()]) {
+      view.paintSocial(chrome, p);
+      expect(
+        status.textContent,
+        `${p.tab}, ${p.sessions.length} session(s), sheet ${p.sheet !== null}`,
+      ).toBe(expectedStatus(p));
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: every shape both ways').toBe(matrix.length * 2);
+    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
+    expect(status.textContent, 'precondition: open').toBe(
+      expectedStatus(socialPaint({ sessions: [BOB_ROW] })),
+    );
+    view.hide();
+    expect(status.textContent, 'hidden: no paint kept').toBe(expectedStatus(null));
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(status.textContent, 'a paint on the hidden root is not kept').toBe(expectedStatus(null));
+  });
+
+  it('ts-4.6 #trade-status never carries mr-nav-item, is-active or aria-current, whatever the paint (every tab, session cursor or none, a sheet, a prompt, and a paint object that also carries a stray tradeCursor: true)', () => {
+    // WRONG IMPL KILLED: the legacy trade row's cursor mark kept on the status line (it would
+    // paint a second cursor beside the session row's); a mark switched on by a stray paint field.
+    mountTradeOverlay();
+    const view = new TradeView();
     view.show();
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
-    const status = byId('trade-status');
+    let checked = 0;
+    for (const p of paintMatrix()) {
+      for (const paint of [p, { ...p, tradeCursor: true } as unknown as SocialPaint]) {
+        view.paintSocial(chrome, paint);
+        expect(statusMark(), `${paint.tab}, ${paint.sessions.length} session(s)`).toEqual(UNMARKED);
+        checked += 1;
+      }
+    }
+    expect(checked, 'ANTI-VACUITY: every shape, with and without the stray field').toBe(
+      paintMatrix().length * 2,
+    );
+    view.hide();
+    expect(statusMark(), 'hidden').toEqual(UNMARKED);
+  });
 
-    view.render(makeNoTradeVM());
-    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW] }));
-    expect(status.textContent).toBe(i18nT('trade.status.open'));
-    view.render(makeNoTradeVM());
-    expect(status.textContent, 'a batch render keeps it').toBe(i18nT('trade.status.open'));
-    view.paintSocial(chrome, socialPaint({ sessions: [] }));
-    expect(status.textContent).toBe(i18nT('trade.status.none'));
+  it('ts-4.6 the view never writes #trade-my-side, #trade-their-side, #trade-actions or #trade-feedback: through show, every paint shape, toggle and hide each keeps its exact children, text, hidden flag and attributes, and no mutation is recorded on any of them', async () => {
+    // WRONG IMPL KILLED: a Players tab that still hides the sides and the actions; a view that
+    // clears (replaceChildren) or writes a side; any attribute or child written on one of the
+    // four static nodes.
+    mountTradeOverlay();
+    const view = new TradeView();
+    const parts = STATIC_PARTS.map(byId);
+    for (const part of parts) {
+      const sentinel = document.createElement('span');
+      sentinel.textContent = `${part.id} sentinel`;
+      part.appendChild(sentinel);
+    }
+    const snapshot = () =>
+      parts.map((part) => ({
+        id: part.id,
+        html: part.outerHTML,
+        hidden: part.hidden,
+        children: [...part.childNodes],
+      }));
+    const before = snapshot();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => {
+      records.push(...batch);
+    });
+    for (const part of parts) {
+      observer.observe(part, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    }
 
-    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
-    view.paintSocial(chrome, socialPaint({ sessions: [BOB_ROW], tradeCursor: true }));
-    expect(status.textContent, 'the legacy offer`s own label').toBe('Offer received');
-    expect(statusMark(), 'and its own cursor').toEqual(MARKED);
+    const chrome = document.createElement('div');
+    view.show();
+    view.hostChrome(chrome);
+    for (const p of paintMatrix()) view.paintSocial(chrome, p);
+    view.toggle();
+    view.toggle();
+    view.paintSocial(chrome, socialPaint({ tab: 'players', sessions: [BOB_ROW] }));
+    view.hide();
+    await flushMacrotask();
+    observer.disconnect();
 
-    removeOverlay(overlay);
+    expect(snapshot(), 'each static part exactly as it was').toEqual(before);
+    expect(
+      records.map((r) => `${(r.target as Element).id || r.target.nodeName}:${r.type}`),
+      'no mutation on the four static parts',
+    ).toEqual([]);
+  });
+
+  it('ts-4.6 the sheet offers only Accept, Decline and Cancel, each read from its social.action id, and the only prompt question is the challenge Decline`s', () => {
+    // WRONG IMPL KILLED: a sheet label resolved from another id (a legacy trade label); a prompt
+    // question resolved from another id than social.confirm.declineChallenge.
+    mountTradeOverlay();
+    const view = new TradeView();
+    view.show();
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    vi.mocked(i18nT).mockClear();
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline', 'cancel'], active: 'cancel' },
+        confirm: { question: 'declineChallenge', yes: true },
+      }),
+    );
+    // Read off the spy before the assertions below resolve their expected labels through it.
+    const ids = new Set(vi.mocked(i18nT).mock.calls.map(([id]) => String(id)));
+    expect(
+      [...ids]
+        .filter((id) => id.startsWith('social.action.') || id.startsWith('social.confirm.'))
+        .sort(),
+      'the action and question ids the paint read',
+    ).toEqual([
+      'social.action.accept',
+      'social.action.cancel',
+      'social.action.decline',
+      'social.confirm.declineChallenge',
+    ]);
+    expect(navRows(byId('social-sheet')).texts, 'the three labels, in order').toEqual([
+      SOCIAL_ACTION_LABEL.accept(),
+      SOCIAL_ACTION_LABEL.decline(),
+      SOCIAL_ACTION_LABEL.cancel(),
+    ]);
+    expect(byId('social-prompt-text').textContent).toBe(SOCIAL_QUESTION_TEXT.declineChallenge());
   });
 });

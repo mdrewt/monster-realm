@@ -54,7 +54,6 @@ import type {
   StoreSpeciesRow,
   StoreTacticalBattle,
   StoreTradeItem,
-  StoreTradeOffer,
   StoreTradeSession,
   StoreTradeSessionOffer,
   StoreTurnState,
@@ -73,7 +72,7 @@ import type {
 //      server-added variant widens types.ts on regen and turns those pins RED until
 //      the registry (and the handling code) are consciously updated.
 //   2. Widening a registry entry widens narrowTag's inferred T at its call site;
-//      assigning that wider union to a narrower store field (StoreTradeOffer.status)
+//      assigning that wider union to a narrower store field (StoreTacticalBattle.phase)
 //      is a tsc error — forcing a deliberate store-union + consumer decision.
 //   3. narrowTag is the runtime net: an unknown tag is logged and passed through
 //      (fail-soft — NEVER throw: a throw inside a view reconcile would drop that
@@ -83,7 +82,6 @@ import type {
 //
 // The variant lists mirror module_bindings/types.ts EXACTLY (unit-test-pinned).
 export const HANDLED_ENUM_VARIANTS = {
-  TradeStatus: ['Pending', 'ConfirmedByCounterparty'],
   ChallengeStatus: ['Pending', 'Accepted', 'Declined', 'Cancelled'],
   BattleOutcome: ['Ongoing', 'SideAWins', 'SideBWins', 'Fled'],
   Affinity: ['Fire', 'Water', 'Plant', 'Electric', 'Earth', 'Wind', 'Light', 'Dark'],
@@ -884,7 +882,7 @@ export function npcRowToStore(row: SdkNpcRow): StoreNpcRow {
   };
 }
 
-// --- trade_offer converter ---------------------------------------------
+// --- trade card / item converters (shared by the my_trade_session converter) ---
 
 interface SdkMonsterCard {
   readonly monsterId: bigint;
@@ -900,22 +898,6 @@ interface SdkTradeItem {
   readonly qty: number;
 }
 
-export interface SdkTradeOfferRow {
-  readonly tradeId: bigint;
-  readonly initiator: { toHexString(): string };
-  readonly counterparty: { toHexString(): string };
-  readonly initiatorMonsterIds: readonly bigint[];
-  readonly initiatorItems: readonly SdkTradeItem[];
-  readonly initiatorCurrency: bigint;
-  readonly counterpartyMonsterIds: readonly bigint[];
-  readonly counterpartyItems: readonly SdkTradeItem[];
-  readonly counterpartyCurrency: bigint;
-  readonly initiatorCards: readonly SdkMonsterCard[];
-  readonly counterpartyCards: readonly SdkMonsterCard[];
-  readonly status: { readonly tag: string };
-  readonly createdAtMs: bigint;
-}
-
 function sdkCardToStore(card: SdkMonsterCard): StoreMonsterCard {
   return {
     monsterId: card.monsterId,
@@ -929,26 +911,6 @@ function sdkCardToStore(card: SdkMonsterCard): StoreMonsterCard {
 
 function sdkTradeItemToStore(item: SdkTradeItem): StoreTradeItem {
   return { itemId: item.itemId, qty: item.qty };
-}
-
-export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
-  return {
-    tradeId: row.tradeId,
-    initiator: row.initiator.toHexString(),
-    counterparty: row.counterparty.toHexString(),
-    initiatorMonsterIds: [...row.initiatorMonsterIds],
-    initiatorItems: row.initiatorItems.map(sdkTradeItemToStore),
-    initiatorCurrency: row.initiatorCurrency,
-    counterpartyMonsterIds: [...row.counterpartyMonsterIds],
-    counterpartyItems: row.counterpartyItems.map(sdkTradeItemToStore),
-    counterpartyCurrency: row.counterpartyCurrency,
-    initiatorCards: row.initiatorCards.map(sdkCardToStore),
-    counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
-    // SDK boundary (supersedes the old trust-cast): an unknown
-    // TradeStatus variant is logged and passed through raw via narrowTag (fail-soft).
-    status: narrowTag(row.status.tag, HANDLED_ENUM_VARIANTS.TradeStatus, 'TradeStatus'),
-    createdAtMs: row.createdAtMs,
-  };
 }
 
 // --- my_trade_session converter ------------------------------------------

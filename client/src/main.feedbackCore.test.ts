@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 /**
- * main.feedbackCore.test.ts — booted-app gate for slice pgcc-a: the nine main.ts feedback sites
- * (care, shop buy/sell, trade accept/reject/confirm/cancel, rename, trade-propose) all route through
- * ONE core (`performCare`, ui/careAction.ts). The core is unit-tested over injected fakes
+ * main.feedbackCore.test.ts — booted-app gate for slice pgcc-a: the four main.ts feedback sites
+ * (care, shop buy/sell, rename) all route through ONE core (`performCare`, ui/careAction.ts). The core is unit-tested over injected fakes
  * (careAction.test.ts); what that suite cannot see is each main.ts ADAPTER: the `where` tag it
  * passes, the success key it resolves, the visibility guard its `showFeedback` closure owns, the
  * frozen-link path, and whether it RETURNS the core's promise so the view's in-flight lock holds.
@@ -13,44 +12,32 @@
  * listeners recorded and detached per test). Reducer spies return promises the test controls.
  * Table-driven tests boot a fresh app per site (`resetApp()` between rows) inside ONE `it`.
  *
- * OPENING: trade (KeyU) and rename (KeyN) open through their real shortcuts; care opens on the
- * Monsters sheet (V opens Monsters, A on the monster opens its sheet, ArrowDown moves to Care, A
- * presses it); trade-propose opens face to face (A at the world on a faced player, then A on Trade;
- * ctl-10b). Shop is the one documented short-circuit (a real open needs an NPC + dialogue
- * round-trip): flip `#shop-overlay`'s display — the flag `ShopView.visible` reads — and flush a
- * store batch so the real listener renders the real Buy/Sell buttons.
+ * OPENING: rename (KeyN) opens through its real shortcut; care opens on the Monsters sheet (V opens
+ * Monsters, A on the monster opens its sheet, ArrowDown moves to Care, A presses it); the face-to-
+ * face Trade (A at the world on a faced player, then A on Trade; ctl-10b) opens a session. Shop is
+ * the one documented short-circuit (a real open needs an NPC + dialogue round-trip): flip
+ * `#shop-overlay`'s display — the flag `ShopView.visible` reads — and flush a store batch so the
+ * real listener renders the real Buy/Sell buttons.
  *
- * qf-8 (named intentional change, QF8.1): the trade panel's action buttons are deleted. Each trade
- * site's activation is the player's key sequence over the Social sheet U opened on the trade row
- * (`TRADE_SHEET_KEYS`: Accept; Decline then Yes for the trade `reject`; Confirm then Yes; Cancel);
- * the oracles (the reducer, its args, the `#trade-feedback` line) are unchanged. The sheet holds no
- * in-flight lock by design, so the four trade rows leave PGCCA-A1-LOCK-HELD (named there).
- *
- * qf-9 (named intentional change, QF9.3): the care site used to open the Raising card (KeyI, the
- * card`s Care button, `#raising-feedback`). The card and its line are deleted (QF9.2), so the site
- * is rewritten against the Monsters sheet and qf-2`s invoking-surface sink: the answer lands on the
- * Monsters frame`s own `.mr-frame-feedback` line. Every site now carries a `feedback()` reader (the
- * other eight read their overlay`s feedback node by id, exactly as before). The Raising card held
- * the ONLY in-flight lock, so PGCCA-A1-LOCK-HELD on the sheet path needs main.ts`s per-monster care
- * guard (QF9.3). Intent preserved, not deleted: titles keep their ids and the nine sites.
+ * The care site is the Monsters sheet with qf-2's invoking-surface sink: the answer lands on the
+ * Monsters frame's own `.mr-frame-feedback` line. Every site carries a `feedback()` reader. On the
+ * sheet path nothing in the view holds an in-flight lock, so PGCCA-A1-LOCK-HELD's care row needs
+ * main.ts's per-monster care guard (QF9.3).
  *
  * HIDING: each view's `visible` getter reads its overlay's own `style.display !== 'none'`, so the
  * hidden tests flip exactly that flag (care has no hidden test: the Monsters frame`s own sink
- * guards the hidden case, pinned by main.controls.test.ts QF2-1-BOOT-SINK-FIXED-AT-SEND). A
- * feedback node still EMPTY after the call settles proves the closure did not paint into a hidden
- * overlay.
+ * guards the hidden case, pinned by main.controls.test.ts QF2-1-BOOT-SINK-FIXED-AT-SEND).
  *
  * Every test asserts the reducer spy's call count, so none can pass with the action never firing.
  *
- * uif-4b (named intentional change, UIF4B.1 / UIF4B.3): every per-view line is retired, so the eight
- * non-care sites' message is read off `#toast` (the one seam, a timed channel) and the overlay's
- * subtree must hold no copy of it. The four HIDDEN tests no longer pin a silent drop: after a late
- * settle the overlay holds no message, `#status` nothing stale, and the toast carries the outcome.
- * Care keeps the Monsters sheet's own line. Was: each site read its own overlay's feedback node.
+ * The three non-care sites' message is read off `#toast` (the one seam, a timed channel) and the
+ * overlay's subtree must hold no copy of it. After a late settle the overlay holds no message,
+ * `#status` nothing stale, and the toast carries the outcome. Care keeps the Monsters sheet's own
+ * line.
  *
  * TESTS (each tag appears in exactly one title):
- *   PGCCA-A4-HIDDEN-SHOP / -TRADE / -RENAME / -PROPOSE  paint only while the overlay is visible,
- *                                                        with the reducer's exact args asserted
+ *   PGCCA-A4-HIDDEN-SHOP / -RENAME  a late settle paints no overlay, the toast carries it,
+ *                                   with the reducer's exact args asserted
  *   PGCCA-A4-WHERE-PER-SITE    a SenderError rejection paints reduceErrorMessage(err, <site tag>)
  *   PGCCA-A1-FROZEN-PER-SITE   a frozen link paints the disconnected line and calls no reducer
  *   PGCCA-A1-LOCK-HELD         the view's in-flight lock holds until the core's promise settles
@@ -74,7 +61,6 @@ import type {
   StorePlayer,
   StoreShopItemRow,
   StoreShopRow,
-  StoreTradeOffer,
   StoreWallet,
 } from './net/store';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
@@ -84,17 +70,13 @@ import { reduceErrorMessage } from './ui/statusModel';
 const EN = CATALOG_EN as unknown as Record<string, string>;
 const FR = CATALOG_FR as unknown as Record<string, string>;
 
-/** A second identity (64 hex chars, `Identity`-constructible) for the trade counterparty. */
+/** A second identity (64 hex chars, `Identity`-constructible) for the faced trade partner. */
 const OTHER = 'cd'.repeat(32);
-const TRADE_ID = 10n;
 
 const H = vi.hoisted(() => {
   const spy = () => vi.fn((_args: unknown) => Promise.resolve());
   const buy = spy();
   const sell = spy();
-  const respondTrade = spy();
-  const confirmTrade = spy();
-  const cancelTrade = spy();
   const setProfileName = spy();
   const proposeTrade = spy();
   // ts-3: the face-to-face Trade's reducer (the no-success-line case below).
@@ -110,9 +92,6 @@ const H = vi.hoisted(() => {
     interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
     buy,
     sell,
-    respondTrade,
-    confirmTrade,
-    cancelTrade,
     setProfileName,
     proposeTrade,
     openTradeSession,
@@ -121,9 +100,6 @@ const H = vi.hoisted(() => {
       reducers: {
         buy,
         sell,
-        respondTrade,
-        confirmTrade,
-        cancelTrade,
         setProfileName,
         proposeTrade,
         openTradeSession,
@@ -137,9 +113,6 @@ type ReducerSpy = typeof H.buy;
 const ALL_SPIES: readonly ReducerSpy[] = [
   H.buy,
   H.sell,
-  H.respondTrade,
-  H.confirmTrade,
-  H.cancelTrade,
   H.setProfileName,
   H.proposeTrade,
   H.openTradeSession,
@@ -212,7 +185,6 @@ interface StoreHandle {
   upsertShopItem(row: StoreShopItemRow): void;
   upsertItemDef(row: StoreItemRow): void;
   upsertWallet(row: StoreWallet): void;
-  upsertTradeOffer(row: StoreTradeOffer): void;
   upsertPlayer(row: StorePlayer): void;
   upsertCharacter(row: StoreCharacter, nowMs: number): void;
   reconcileInventoryFromView(rows: readonly StoreInventory[]): void;
@@ -409,60 +381,6 @@ function openShop(kind: 'buy' | 'sell'): Activate {
   return () => clickFirst(selector, kind === 'buy' ? 'Buy' : 'Sell');
 }
 
-type TradeAction = 'accept' | 'reject' | 'confirm' | 'cancel';
-
-/** qf-8 (named intentional change, QF8.1): the trade panel's buttons are deleted, so each trade
- *  action is the key sequence over the Social sheet that U opened on the trade row (tradeModel.ts's
- *  action table: an offer TO the player reads Accept / Decline, one the player sent reads Cancel,
- *  one awaiting the player's final Confirm reads Confirm / Cancel; the trade `reject` is the
- *  sheet's Decline). Decline and Confirm ask Yes / No on No first, so their sequence moves to Yes. */
-const TRADE_SHEET_KEYS: Readonly<Record<TradeAction, readonly string[]>> = {
-  accept: ['Enter', 'Enter'], // the sheet (on Accept), A on Accept
-  reject: ['Enter', 'ArrowDown', 'Enter', 'ArrowUp', 'Enter'], // Decline, its prompt, Yes
-  confirm: ['Enter', 'Enter', 'ArrowUp', 'Enter'], // the sheet (on Confirm), its prompt, Yes
-  cancel: ['Enter', 'Enter'], // the one-row sheet (on Cancel), A on Cancel
-};
-
-function openTrade(action: TradeAction): Activate {
-  // Seed an offer shaped so exactly the action under test is available (feedbackI18n's table).
-  const viewerIsInitiator = action === 'confirm' || action === 'cancel';
-  seedOffer({
-    viewerIsInitiator,
-    status: action === 'confirm' ? 'ConfirmedByCounterparty' : 'Pending',
-  });
-  focusCanvasAndPressKey('KeyU');
-  expect(
-    document.getElementById('trade-status')?.getAttribute('aria-current'),
-    `trade ${action}: the Social cursor must be on the trade row`,
-  ).toBe('true');
-  return () => {
-    for (const code of TRADE_SHEET_KEYS[action]) tapWorldKey(code);
-  };
-}
-
-function seedOffer(o: {
-  readonly viewerIsInitiator: boolean;
-  readonly status: 'Pending' | 'ConfirmedByCounterparty';
-}): void {
-  const store = storeHandle();
-  store.upsertTradeOffer({
-    tradeId: TRADE_ID,
-    initiator: o.viewerIsInitiator ? H.identity : OTHER,
-    counterparty: o.viewerIsInitiator ? OTHER : H.identity,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: o.status,
-    createdAtMs: 0n,
-  });
-  store.flushBatch();
-}
-
 function openRename(): Activate {
   focusCanvasAndPressKey('KeyN');
   const input = document.getElementById('rename-input') as HTMLInputElement;
@@ -547,10 +465,7 @@ function toastText(): string {
   return el.hidden ? '' : (el.textContent ?? '');
 }
 
-/** INTENTIONAL CHANGE (uif-4b, UIF4B.1): the eight non-care sites' message is the TOAST, not a node
- *  of their own overlay. Was: `feedbackById(<the site's own feedback line id>)`, which read
- *  `#shop-feedback`, `#trade-feedback`, `#rename-feedback` or `#tradepropose-feedback` (retired or
- *  unwritten now). */
+/** The non-care sites' message is the TOAST, not a node of their own overlay. */
 const onToast = (): (() => string) => toastText;
 
 /** The exact en success line of each non-care site (literal bytes, built from code points where a
@@ -560,10 +475,6 @@ const MINUS = String.fromCharCode(0x2212);
 const SUCCESS_TEXT: Readonly<Record<string, string>> = {
   buy: `${CHECK} Bought 1 Potion (${MINUS}10g)`,
   sell: `${CHECK} Sold 1 Herb (+5g)`,
-  accept: 'Trade accepted!',
-  reject: 'Trade rejected.',
-  confirm: 'Trade complete!',
-  cancel: 'Trade cancelled.',
   rename: 'Name updated!',
 };
 
@@ -596,42 +507,6 @@ const SITES: readonly Site[] = [
     open: () => openShop('sell'),
   },
   {
-    name: 'accept',
-    tag: 'respond-trade',
-    feedback: onToast(),
-    overlayId: 'trade-overlay',
-    reducer: H.respondTrade,
-    args: { tradeId: TRADE_ID, accepted: true },
-    open: () => openTrade('accept'),
-  },
-  {
-    name: 'reject',
-    tag: 'respond-trade',
-    feedback: onToast(),
-    overlayId: 'trade-overlay',
-    reducer: H.respondTrade,
-    args: { tradeId: TRADE_ID, accepted: false },
-    open: () => openTrade('reject'),
-  },
-  {
-    name: 'confirm',
-    tag: 'confirm-trade',
-    feedback: onToast(),
-    overlayId: 'trade-overlay',
-    reducer: H.confirmTrade,
-    args: { tradeId: TRADE_ID },
-    open: () => openTrade('confirm'),
-  },
-  {
-    name: 'cancel',
-    tag: 'cancel-trade',
-    feedback: onToast(),
-    overlayId: 'trade-overlay',
-    reducer: H.cancelTrade,
-    args: { tradeId: TRADE_ID },
-    open: () => openTrade('cancel'),
-  },
-  {
     name: 'rename',
     tag: 'set-profile-name',
     feedback: onToast(),
@@ -640,12 +515,9 @@ const SITES: readonly Site[] = [
     args: { name: 'NewName' },
     open: openRename,
   },
-  // ts-3 (named intentional change, the Strangler): the 'propose' site (the wizard's submit,
-  // proposeTrade, tag propose-trade, the "Offer sent!" success line) is removed with the wizard
-  // (retired: wizard deleted by spec §ts-3 Strangler). The session arms have NO success line (the
-  // editor is the feedback); their rejection toast with the server's reason is
-  // main.dispatch.test.ts UIF4.5's openTradeSession / setTradeOffer / confirmTradeSession /
-  // cancelTradeSession rows and ts-3.1 (d). Nine sites -> eight.
+  // The trade session arms are not sites here: they have NO success line (the editor is the
+  // feedback); their rejection toast with the server's reason is main.dispatch.test.ts UIF4.5's
+  // openTradeSession / setTradeOffer / confirmTradeSession / cancelTradeSession rows and ts-3.1 (d).
 ];
 
 function siteNamed(name: string): Site {
@@ -706,20 +578,13 @@ describe('main.ts a message that fires after its overlay closed paints nothing s
     await expectOutcomeOnToastNotInOverlay('buy');
   });
 
-  it('UIF4B.3 PGCCA-A4-HIDDEN-TRADE: an Accept that settles after #trade-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast', async () => {
-    // WRONG IMPL KILLED: a trade sink that still writes #trade-feedback (the residual node), or
-    // drops the message.
-    await expectOutcomeOnToastNotInOverlay('accept');
-  });
-
   it('UIF4B.3 PGCCA-A4-HIDDEN-RENAME: a rename that settles after #rename-overlay was hidden leaves no message in the overlay, nothing on #status, and the outcome on the toast', async () => {
     // WRONG IMPL KILLED: a rename sink that still paints into the hidden overlay, or drops it.
     await expectOutcomeOnToastNotInOverlay('rename');
   });
 
-  // ts-3 (named intentional change, the Strangler): 'UIF4B.3 PGCCA-A4-HIDDEN-PROPOSE' is DELETED →
-  // survivor: PGCCA-A4-HIDDEN-RENAME / -SHOP / -TRADE above (the same late-settle rule) | retired:
-  // wizard deleted by spec §ts-3 Strangler (the session arms paint no success line at all).
+  // The session arms paint no success line at all: the late-settle rule is PGCCA-A4-HIDDEN-RENAME
+  // and -SHOP above.
 
   it('ts-3.1 E: A on Trade face to face sends openTradeSession once for Bob (never proposeTrade), and its Ok paints NO success line: no toast, nothing on #status, no copy in #tradepropose-overlay', async () => {
     // WRONG IMPL KILLED: the wizard's "Offer sent!" kept as the session open's success line (an Ok
@@ -742,16 +607,18 @@ describe('main.ts a message that fires after its overlay closed paints nothing s
 });
 
 describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1/A4)', () => {
-  it('UIF4B.1 PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 8 sites, on the TOAST at the seven overlay sites (never in their overlay) and care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
-    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the eight non-care sites read `#toast`, and their overlay
-    // subtree must hold no copy of the line. Was: each read its own overlay's feedback node.
+  it('UIF4B.1 PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 4 sites, on the TOAST at the three overlay sites (never in their overlay) and care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
+    // The three non-care sites read `#toast`, and their overlay subtree must hold no copy of the
+    // line.
     // WRONG IMPL KILLED: a site passing the wrong `where` (a copy-pasted care/buy tag), or reverted
     // to an inline pattern that drops the error arm; a rejection left on a view-owned line (the
-    // overlay holds a copy) or on #status. qf-9: the care site is the Monsters sheet, its line the
+    // overlay holds a copy) or on #status. The care site is the Monsters sheet, its line the
     // Monsters frame's own `.mr-frame-feedback` (a care rejection painted on the status line or
     // nowhere reads '' there).
-    // ts-3 (named intentional change): nine -> eight sites (the wizard's 'propose' left).
-    expect(SITES.length, 'ANTI-VACUITY: all eight sites').toBe(8);
+    expect(
+      SITES.map((s) => s.name),
+      'ANTI-VACUITY: all four sites',
+    ).toEqual(['care', 'buy', 'sell', 'rename']);
     for (const [i, site] of SITES.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
@@ -782,21 +649,13 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     }
   }, 60_000);
 
-  it('UIF4B.1 PGCCA-A1-FROZEN-PER-SITE: a frozen link puts the disconnected line on the toast (never in the overlay) and calls no reducer at the 6 overlay sites feedbackI18n does not cover, and care keeps it on the Monsters sheet`s own line [QF9-3-FROZEN-CARE-SHEET]', async () => {
-    // INTENTIONAL CHANGE (uif-4b, UIF4B.1): the six non-care sites read `#toast` (kind
-    // link-down-send), with no copy in their overlay. Was: each read its own overlay's feedback node.
+  it('UIF4B.1 PGCCA-A1-FROZEN-PER-SITE: a frozen link puts the disconnected line on the toast (never in the overlay) and calls no reducer at the 2 overlay sites feedbackI18n does not cover, and care keeps it on the Monsters sheet`s own line [QF9-3-FROZEN-CARE-SHEET]', async () => {
+    // The two overlay sites read `#toast` (kind link-down-send), with no copy in their overlay.
     // WRONG IMPL KILLED: a site that lost the frozen gate (it would call a dead connection and hang
     // or paint a false success), or one that paints something other than the disconnected line, or
     // leaves it on a view-owned line.
-    const sites = SITES.filter((s) => s.name !== 'buy' && s.name !== 'accept');
-    expect(sites.map((s) => s.name)).toEqual([
-      'care',
-      'sell',
-      'reject',
-      'confirm',
-      'cancel',
-      'rename',
-    ]);
+    const sites = SITES.filter((s) => s.name !== 'buy');
+    expect(sites.map((s) => s.name)).toEqual(['care', 'sell', 'rename']);
     for (const [i, site] of sites.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
@@ -823,15 +682,15 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     }
   }, 60_000);
 
-  it('UIF4B.1 PGCCA-A1-SUCCESS-PER-SITE: a settled success puts the exact success line on the toast (visible), with no copy in the overlay, at all 7 overlay sites', async () => {
+  it('UIF4B.1 PGCCA-A1-SUCCESS-PER-SITE: a settled success puts the exact success line on the toast (visible), with no copy in the overlay, at all 3 overlay sites', async () => {
     // WRONG IMPL KILLED: a success still painted on a view-owned line (an overlay copy), on #status,
-    // or not shown at all; a swapped trade line (accepted <-> rejected, completed <-> cancelled); a
-    // success tagged with a rejection kind (the line would still show but on the wrong channel).
+    // or not shown at all; a swapped shop line (bought <-> sold); a success tagged with a rejection
+    // kind (the line would still show but on the wrong channel).
     const sites = SITES.filter((s) => s.overlayId !== undefined);
     expect(
       sites.map((s) => s.name),
-      'ANTI-VACUITY: the seven overlay sites (ts-3: the wizard`s propose left)',
-    ).toEqual(['buy', 'sell', 'accept', 'reject', 'confirm', 'cancel', 'rename']);
+      'ANTI-VACUITY: the three overlay sites',
+    ).toEqual(['buy', 'sell', 'rename']);
     for (const [i, site] of sites.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
@@ -853,27 +712,14 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     }
   }, 60_000);
 
-  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at the 5 sites that keep an in-flight lock (the four trade sites answer on the Social sheet since qf-8), care on the Monsters sheet [QF9-3-LOCK-CARE-SHEET]', async () => {
+  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at all 4 sites, care on the Monsters sheet [QF9-3-LOCK-CARE-SHEET]', async () => {
     // WRONG IMPL KILLED: an adapter that does not RETURN the core's promise (`void performCare(...)`
     // or a pre-resolved stand-in) — the view's in-flight lock would release at once and a second
-    // click would double-spend. Every view here locks on the handler's returned promise.
-    // qf-9 (named intentional change): the care site's lock used to be the Raising card's per-monster
-    // lock, deleted with the card. On the Monsters sheet path NOTHING in the view holds one (A on
-    // Care is a keyed screen command), so this row reds until main.ts keeps a per-monster care
-    // guard that releases when the care settles: a second A while pending sends no reducer call.
-    // qf-8 (NAMED REMOVAL of the four trade rows, protected category: a reviewer adjudicates): the
-    // trade sites' lock was the trade panel's own `#pending` over its Accept / Reject / Confirm /
-    // Cancel buttons, deleted with them (QF8.1). The Social sheet sends one command per A and holds
-    // no in-flight lock by design (socialScreen.ts's header: the reducers are the authority and
-    // refuse a duplicate), and main.ts's trade arms keep none, so a second key sequence while the
-    // first answer is pending sends again: there is no lock left to pin. Survivors: one A, one
-    // command, socialScreen.test.ts CTL8D-2-COMMANDS; the trade arms still RETURN the core's promise
-    // and route its outcome, PGCCA-A4-WHERE-PER-SITE (all four trade rows), PGCCA-A1-FROZEN-PER-SITE
-    // (reject, confirm, cancel; accept's frozen line is main.feedbackI18n.test.ts's) and
-    // PGCCA-A4-HIDDEN-TRADE above.
-    const lockSites = SITES.filter(
-      (s) => !['accept', 'reject', 'confirm', 'cancel'].includes(s.name),
-    );
+    // click would double-spend. Every view here locks on the handler's returned promise. On the
+    // Monsters sheet path nothing in the view holds a lock (A on Care is a keyed screen command), so
+    // the care row needs main.ts's per-monster care guard that releases when the care settles: a
+    // second A while pending sends no reducer call.
+    const lockSites = SITES;
     expect(
       lockSites.map((s) => s.name),
       'the sites whose view (or main.ts) keeps an in-flight lock',

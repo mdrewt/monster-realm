@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -7,242 +6,197 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { readWorld, walkTo } from './controls';
+import { ownerSql } from './stdb';
 
-// Trading reducer NEGATIVE-PATH suite.
+// Trade SESSION reducer NEGATIVE-PATH suite: the caller's own-side refusals, the no-oracle cases
+// (ts-4.2: no outcome depends on the partner's holdings), cancel roles, non-participant lookups
+// and the stale-revision rule.
 //
-// No assertion in this file may ever be relaxed to match a
-// buggy implementation — a wrong assertion is re-derived FROM the reducer source, never
-// from the observed behaviour.
+// No assertion in this file may ever be relaxed to match a buggy implementation. A wrong
+// assertion is re-derived FROM the reducer source (server-module/src/trading_session.rs,
+// game-core/src/trading/session.rs), never from the observed behaviour.
 //
 // WHY THE FILE NAME IS `trade-zz-negative.spec.ts` (LOAD-BEARING)
 // ==============================================================
 // Playwright runs spec files in alphabetical order under `workers: 1` against ONE shared
-// published database, so file name IS run order.
-//   - `trade-propose.spec.ts` reads `allTradeOffers()[0]` GLOBALLY (:288/:307/:321) — an
-//     offer left behind by another file lands in its `[0]` slot and corrupts it. `zz`
-//     sorts after `propose`, so this file runs AFTER trade-propose and can never feed it
-//     a foreign offer row.
-//   - `-` is 0x2D and `.` is 0x2E, so `trade-zz-negative.spec.ts` still sorts BEFORE
-//     `trade.spec.ts`, keeping this file inside the trade block.
-// Precedent: m17.5f named its interlock spec `trade-interlock.spec.ts` (not `battle-*`)
-// for exactly this reason — see that file's header, "FILE NAMED `trade-interlock.spec.ts`
-// ... so it sorts AFTER golden.spec.ts and recruit.spec.ts".
+// published database, so file name IS run order. `zz` sorts after every other `trade-*` spec,
+// so no session this file opens is ever live while another trade spec runs; and since `-` is
+// 0x2D and `.` is 0x2E, it still sorts before a `trade.spec.ts`. The acceptance ledger and the
+// bite-proof register also select this file by path and its tests by title prefix (`1b:`, `3b:`
+// ...), so neither the name nor the prefixes may change.
 //
 // THREE CONTEXTS, ONE BROWSER
 // ===========================
-// A = initiator, B = counterparty, C = a joined NON-PARTY (the third identity is what
-// makes 5a and 6a possible at all). One `chromium.launch()` + three `newContext()` gives
-// three distinct SpacetimeDB identities (precedent wallet-balance.spec.ts:825-857) and
-// exactly one `browser.close()` to leak.
+// A = the opener, B = the partner, C = a joined NON-PARTICIPANT (the third identity is what
+// makes 5a and 6a possible at all). One `chromium.launch()` + three `newContext()` gives three
+// distinct SpacetimeDB identities, each freshly joined: one starter monster in party slot 0, NO
+// player_wallet row, NO inventory row.
+//
+// RANGE. open_trade_session needs both characters in the same zone within interact range
+// (game-core/src/interact.rs `within_interact_range`: same zone, Manhattan <= TALK_RANGE). All
+// three join at the zone spawn; every test that opens a session first calls `ensureInRange`,
+// which walks A onto B's tile when they stand apart, so a `-g`-selected single test still has
+// its range. The hook open is otherwise exactly the reducer: no UI is driven here.
 //
 // EVERY TEST IS SELF-CONTAINED — DO NOT "OPTIMISE" THIS AWAY
 // ==========================================================
-// Each test creates its own offer, acts, asserts, cleans up, and asserts the world is
-// clean again. The bite-proofs run ONE test at a time (`npm run e2e -- e2e/trade-zz-
-// negative.spec.ts -g "<title>"`), so a test that depended on a sibling's setup would run
-// against an EMPTY world. That failure mode is silent, not loud: with no offer row, the
-// tradeId would be '' , `BigInt('')` is `0n`, `cancel_trade(0)` returns "trade offer not
-// found", and a `toContain`-style assertion would go GREEN having proven nothing. Two
-// defences: (1) no cross-test state, (2) `pairOfferTradeId` hard-fails unless the id is a
+// Each test opens its own session, acts, asserts, cleans up, and asserts the world is clean
+// again (no session for the pair, no snapshot row and no reaper row for any session id it used).
+// The bite-proofs run ONE test at a time (`-g "<title>"`), so a test that depended on a sibling's
+// setup would run against an EMPTY world — and the failure would be silent: a session id of ''
+// becomes `BigInt('')` = 0n inside the hook, session 0 does not exist, and the reducer answers
+// "trade session not found", which looks exactly like the non-participant refusal 5a/6a pin.
+// Two defences: (1) no cross-test state, (2) `pairSessionId` hard-fails unless the id is a
 // non-empty decimal integer read from server truth for THIS pair.
-// `test.describe` is deliberately NOT `.serial`: under `.serial` one failure SKIPS the
-// remaining tests, and the register needs the status of EVERY test per mutation.
+// `test.describe` is deliberately NOT `.serial`: under `.serial` one failure SKIPS the remaining
+// tests, and the register needs the status of EVERY test per mutation.
 //
-// TEST TITLES ARE `-g` REGEX-SAFE: no parentheses and no square brackets anywhere in a
-// title, so the orchestrator can paste a full title into `-g` and have it match literally.
+// TEST TITLES ARE `-g` REGEX-SAFE: no parentheses, square brackets, braces, `?`, `+`, `*`, `|`
+// or `$` in any title, so a full title pasted into `-g` matches literally.
 //
 // ASSERTION DISCIPLINE
 // ====================
-//   - Reducer rejections are asserted THREE-part: not-null, name === 'SenderError'
-//     (statusModel.ts:20 keys off the name string), message toBe EXACT. Never toContain:
-//     "insufficient inventory for item N" is emitted by BOTH trading.rs:331 AND the
-//     qty == 0 path in game-core rules.rs:92-98 via types.rs:114-116, and the two are
-//     indistinguishable by substring.
-//   - Every Err test carries a CONTROL in the same test, but the controls are of two
-//     DIFFERENT kinds and neither should be described as the other:
-//       * LEG-DIFFERENTIAL (1a/1b/3a/3b): the identical proposal MINUS the offending leg
-//         must resolve Ok. That attributes the rejection to the intended guard rather
-//         than to any of the eight guards that run before it.
-//       * ROLE-DIFFERENTIAL (5a/6a): the SAME reducer, same offer, called by a party for
-//         whom it must succeed (5a's initiator cleanup cancel; 6a's counterparty accept),
-//         alongside the call by the identity for whom it must fail. What varies is the
-//         CALLER, not the payload.
-//       * 5b/5c are pure positive controls — they ARE the "must succeed" half of 5a.
-//       * 6b has NO same-reducer positive control in this file; see its header for why.
-//   - State is read from SERVER TRUTH via `spacetime sql`, always scoped to the A/B pair
-//     or to one trade_id — never `allTradeOffers()[0]`, never a global row count.
+//   - Reducer rejections are asserted THREE-part: not-null, name === 'SenderError', message toBe
+//     EXACT (never toContain: the session errors share words — "your offer is empty" vs "the other
+//     offer is empty" — and only the exact string says which rule fired).
+//   - Every Err test carries a CONTROL in the same test, of one of three kinds:
+//       * LEG-DIFFERENTIAL (1a/3a): the identical offer MINUS the offending leg resolves Ok.
+//       * ROLE-DIFFERENTIAL (5a/6a): the same reducer on the same session, called by a
+//         participant, succeeds; only the CALLER varies.
+//       * REVISION-DIFFERENTIAL (6b): the same participant's confirm at the CURRENT revision
+//         reaches the side check instead; only the revision varies.
+//     5b/5c are the positive halves of 5a; 4 is a positive delete-site test with a two-sided
+//     arming assert.
+//   - 1b/3b are PARTNER-STATE DIFFERENTIALS: the same caller script, two partner states proven
+//     different by server truth, outcome lists deep-equal (and equal to the pinned expectation).
+//   - State is read from SERVER TRUTH via owner `spacetime sql`, always scoped to the A/B pair or
+//     to one session id — never a global row count.
 //
-// EARS / GUARD MAP
+// EARS / GUARD MAP (rule file and symbol; the strings are pinned below with file:line)
 // ================
-//   1a  trading.rs:330  initiator item qty > on-hand            → insufficient inventory
-//   1b  trading.rs:355  counterparty item qty > on-hand         → counterparty ... item
-//   3a  trading.rs:287  initiator currency > balance            → insufficient currency
-//   3b  trading.rs:304  counterparty currency > balance         → counterparty ... currency
-//   4   trading.rs:439  respond(accepted=false) deletes the row
-//       trading.rs:442  ...and disarms the reaper schedule
-//   5a  trading.rs:747  non-party cancel rejected, offer survives
-//   5b  trading.rs:747  counterparty may cancel
-//   5c  trading.rs:747  initiator may cancel
-//   6a  trading.rs:433  role checked BEFORE status on respond
-//   6b  trading.rs:472  role checked BEFORE status on confirm
+//   1a  set_trade_offer → check_offer_eligibility → check_offered_item
+//       (session.rs): an item the CALLER does not hold → InsufficientItems
+//   1b  ts-4.2: every caller-visible outcome is independent of the PARTNER's inventory
+//   3a  set_trade_offer → check_offer_eligibility (session.rs): more coins than the CALLER
+//       has → InsufficientCurrency
+//   3b  ts-4.2: every caller-visible outcome is independent of the PARTNER's wallet
+//   4   cancel_trade_session → delete_session (trading_session.rs): the partner cancels; the
+//       session row, its snapshot rows and its reaper schedule row are all deleted
+//   5a  find_own_session (trading_session.rs): a non-participant's cancel is the not-found
+//       refusal, byte-identical to a missing session's; the session survives
+//   5b  cancel_trade_session: the partner may cancel
+//   5c  cancel_trade_session: the opener may cancel
+//   6a  find_own_session in set_trade_offer AND confirm_trade_session: a non-participant gets
+//       exactly what a missing session id gets; the session is unchanged
+//   6b  can_confirm (session.rs): a stale revision is refused FIRST, for a participant, with
+//       the stale-revision error and not a role or side error
 //
-// PARKED, NOT FORGOTTEN — recorded in ADR-0184 D4, in PROSE only:
-//   P1 item exact-boundary accept  — no item faucet reaches a browser identity.
-//   P2 near-cap bilateral swap     — same blocker.
-//   P3 currency exact boundary     — the quest_001 50-gold faucet costs 4-6 min and has
-//      a flake history; the `>` vs `>=` mutants at :330/:355/:287/:304 therefore survive
-//      this suite by construction.
-//
-// SEMGREP / PROJECT BANS OBSERVED IN THIS FILE: no dynamic `new RegExp`, no URL schemes
-// anywhere including in comments (Semgrep matches comment text — say "the local server"),
-// no focused-test marker.
+// SEMGREP / PROJECT BANS OBSERVED IN THIS FILE: no dynamic `new RegExp`, no URL schemes anywhere
+// including in comments (Semgrep matches comment text — say "the local server"), no focused-test
+// marker, no shell: owner SQL goes through stdb.ts `ownerSql` (execFileSync, charset-checked).
 
 // ---------------------------------------------------------------------------
-// Shapes crossing the page.evaluate boundary.
-// Re-declared locally on purpose: sibling specs are frozen and must not be imported
-// from, and page.evaluate crosses a structured-clone boundary the type system cannot
-// check. Verified against client/src/main.ts:1840-1955 this session.
+// Shapes crossing the page.evaluate boundary. Re-declared locally on purpose: page.evaluate
+// crosses a structured-clone boundary the type system cannot check. They mirror the
+// `mrTradeHook` object in client/src/main.ts, whose members are exactly allPlayers,
+// openTradeSession, setTradeOffer, confirmTradeSession, cancelTradeSession and mySessions
+// (trade-full.spec.ts m16.5d-1 pins that key set).
 // ---------------------------------------------------------------------------
-// Only the members this file actually uses are declared. `__game().ownInventory` and
-// `__mrTrade.allTradeOffers()` / `.allPlayers()` are deliberately ABSENT: every state
-// assertion here reads server truth through `spacetime sql`, and re-declaring the client
-// readers would invite a future edit to assert on the subscription cache instead.
 interface GameSnap {
   identity: string;
   ownAuthTile: { x: number; y: number } | null;
   presenceCount: number;
   ownMonsters: Array<{
     monsterId: string; // bigint serialised as string — BigInt cannot cross evaluate
-    speciesId: number;
-    nickname: string;
-    level: number;
     partySlot: number;
   }>;
 }
 
-interface MrTrade {
-  proposeTrade(args: {
-    counterparty: string;
-    initiatorMonsterIds: string[];
-    initiatorItems: { itemId: number; qty: number }[];
-    initiatorCurrency: string;
-    counterpartyMonsterIds: string[];
-    counterpartyItems: { itemId: number; qty: number }[];
-    counterpartyCurrency: string;
-  }): Promise<void> | undefined;
-  respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined;
-  confirmTrade(tradeId: string): Promise<void> | undefined;
-  cancelTrade(tradeId: string): Promise<void> | undefined;
+interface HookOffer {
+  monsterIds: string[];
+  items: { itemId: number; qty: number }[];
+  currency: string;
 }
 
-/** One reducer-promise rejection, flattened to clonable primitives INSIDE the page
- *  (an Error instance does not survive the structured-clone boundary). */
+interface HookSession {
+  sessionId: string;
+  opener: string;
+  partner: string;
+  revision: string;
+  openerConfirmed: boolean;
+  partnerConfirmed: boolean;
+  openerOffer: HookOffer;
+  partnerOffer: HookOffer;
+}
+
+interface MrTrade {
+  openTradeSession(partnerHex: string): Promise<void> | undefined;
+  setTradeOffer(sessionId: string, offer: HookOffer): Promise<void> | undefined;
+  confirmTradeSession(sessionId: string, revision: string): Promise<void> | undefined;
+  cancelTradeSession(sessionId: string): Promise<void> | undefined;
+  mySessions(): HookSession[];
+}
+
+/** One reducer-promise rejection, flattened to clonable primitives INSIDE the page. */
 interface ReducerRejection {
   name: string;
   message: string;
 }
 
-interface TradeItemArg {
-  itemId: number;
-  qty: number;
-}
-
-/** A reducer call, described as data so it can be passed THROUGH page.evaluate.
- *  a data
- *  descriptor rather than a source string, because evaluating a string inside the page
- *  would be dynamic code execution (a Semgrep magnet) and would lose type-checking on
- *  the hook's argument shapes — the exact thing that must stay pinned to main.ts. */
+/** A reducer call described as data, so it can pass THROUGH page.evaluate without evaluating a
+ *  source string in the page (dynamic code execution, and no type-checking of the hook args). */
 type TradeAction =
-  | {
-      kind: 'propose';
-      counterparty: string;
-      initiatorMonsterIds: string[];
-      initiatorItems: TradeItemArg[];
-      initiatorCurrency: string;
-      counterpartyMonsterIds: string[];
-      counterpartyItems: TradeItemArg[];
-      counterpartyCurrency: string;
-    }
-  | { kind: 'respond'; tradeId: string; accepted: boolean }
-  | { kind: 'confirm'; tradeId: string }
-  | { kind: 'cancel'; tradeId: string };
-
-/** The base proposal every test in this file builds on: A offers ONE monster, nothing
- *  else, to `counterparty`. It is the >= 1 asset that satisfies the EmptyOffer rule and
- *  it is the LEG-DIFFERENTIAL baseline — a test adds exactly one offending leg with a
- *  spread (`{ ...monsterOnlyProposal(idB, monA), initiatorItems: [phantom] }`) so the
- *  control and the negative differ in exactly that leg and nothing else.
- *
- *  A PURE FACTORY, deliberately: it closes over nothing and returns a fresh object each
- *  call, so tests remain fully self-contained and a `-g`-selected single test still
- *  builds its whole world. Do NOT hoist a shared object literal here. */
-function monsterOnlyProposal(
-  counterparty: string,
-  monsterId: string,
-): Extract<TradeAction, { kind: 'propose' }> {
-  return {
-    kind: 'propose',
-    counterparty,
-    initiatorMonsterIds: [monsterId],
-    initiatorItems: [],
-    initiatorCurrency: '0',
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: '0',
-  };
-}
+  | { kind: 'open'; partner: string }
+  | { kind: 'setOffer'; sessionId: string; offer: HookOffer }
+  | { kind: 'confirm'; sessionId: string; revision: string }
+  | { kind: 'cancel'; sessionId: string };
 
 // ---------------------------------------------------------------------------
-// EXPECTED SERVER MESSAGES — the pinned strings, each with its source line.
-// Read from source this session; a change to any of them is a deliberate API change and
-// must be made HERE and in the ADR, never by loosening an assertion.
+// EXPECTED SERVER MESSAGES — each pinned from source, with the line it sits on.
+// A change to any of them is a deliberate API change made HERE, never by loosening an assertion.
 // ---------------------------------------------------------------------------
-/** server-module/src/trading.rs:331 (guard :330). NOTE: byte-identical to the qty == 0
- *  rejection in game-core/src/trading/rules.rs:92-98 via types.rs:114-116 — which is
- *  precisely why test 1a guards the qty constant as > 0 and runs a leg-differential
- *  control instead of trusting the message alone. */
-const errInsufficientItem = (itemId: number): string => `insufficient inventory for item ${itemId}`;
-/** server-module/src/trading.rs:356-358 (guard :355). */
-const errCounterpartyInsufficientItem = (itemId: number): string =>
-  `counterparty has insufficient inventory for item ${itemId}`;
-/** server-module/src/trading.rs:288 (guard :287). */
-const ERR_INSUFFICIENT_CURRENCY = 'insufficient currency for trade offer';
-/** server-module/src/trading.rs:305 (guard :304). */
-const ERR_COUNTERPARTY_INSUFFICIENT_CURRENCY =
-  'counterparty has insufficient currency for this trade';
-/** server-module/src/trading.rs:748 (guard :747). */
-const ERR_NOT_A_PARTY = 'not a party to this trade';
-/** game-core/src/trading/types.rs:107-109, raised by rules.rs:445-447 (authorize_respond,
- *  ROLE arm — checked BEFORE status). */
-const ERR_NOT_COUNTERPARTY = 'only the trade counterparty can perform this action';
-/** game-core/src/trading/types.rs:104-106, raised by rules.rs:460-462 (authorize_confirm,
- *  ROLE arm — checked BEFORE status). */
-const ERR_NOT_INITIATOR = 'only the trade initiator can perform this action';
-/** game-core/src/trading/types.rs:110, raised by rules.rs:448-450. NEVER an expected
- *  result in this file: it is the STATUS message a status-first authorize_respond would
- *  leak to a non-party in test 6a, and naming it here documents what 6a's exact-message
- *  pin is discriminating against. */
-const ERR_NOT_PENDING = 'trade offer is not in Pending state';
-/** game-core/src/trading/types.rs:111-113, raised by rules.rs:463-465. Same role as
- *  ERR_NOT_PENDING, for test 6b: under the :472 `==`→`!=` mutant, 6b's rejection message
- *  flips from ERR_NOT_INITIATOR to this string and the exact-match assertion goes red. */
-const ERR_NOT_CONFIRMED_BY_COUNTERPARTY = 'trade offer is not in ConfirmedByCounterparty state';
+/** server-module/src/trading_session.rs:282 `ERR_SESSION_NOT_FOUND`, returned by
+ *  `find_own_session` (:566-582) for a missing session AND for one the caller is not party to. */
+const ERR_SESSION_NOT_FOUND = 'trade session not found';
+/** game-core/src/trading/session.rs:230-232 `TradeSessionError::InsufficientItems` Display,
+ *  raised by `check_offered_item` (:356-360) against the CALLER's own stack. */
+const errNotEnoughItem = (itemId: number): string => `not enough of item ${itemId} to offer`;
+/** game-core/src/trading/session.rs:233 `InsufficientCurrency` Display, raised by
+ *  `check_offer_eligibility` (:323-325) against the CALLER's own wallet. */
+const ERR_NOT_ENOUGH_CURRENCY = 'not enough currency to offer';
+/** game-core/src/trading/session.rs:234 `OwnSideEmpty` Display (`side_check` :386-388). */
+const ERR_OWN_OFFER_EMPTY = 'your offer is empty';
+/** game-core/src/trading/session.rs:235 `OtherSideEmpty` Display (`side_check` :389-391). */
+const ERR_OTHER_OFFER_EMPTY = 'the other offer is empty';
+/** game-core/src/trading/session.rs:241 `StaleRevision` Display (`can_confirm` :425-427),
+ *  returned by confirm_trade_session (trading_session.rs:1164-1170) before anything else. */
+const ERR_STALE_REVISION = 'the trade changed since you reviewed it';
 
-/** An item id no joined identity can own: `join_game` grants a starter monster and NO
- *  items, there is no item faucet reachable from a browser identity, and propose_trade
- *  never checks that an item id exists in content — it only counts inventory rows.
- *  So the inventory count is provably 0 and qty 1 > 0. */
-const PHANTOM_ITEM_ID = 424242;
-/** MUST be > 0: qty == 0 is rejected UPSTREAM by validate_proposal with
- *  the IDENTICAL message, which would move the rejection off the guard under test. */
-const PHANTOM_ITEM_QTY = 1;
-/** 1 unit of currency against a provably empty wallet: a fresh identity has no
- *  player_wallet row at all, and economy.rs's zero-guard prevents a phantom one. */
+/** A KNOWN item id (an `item_row` exists — check_offered_item refuses an unknown id FIRST with
+ *  "unknown item N", session.rs:225/:350-352, which would move 1a/1b off the stack rule). Item 1
+ *  is the bait recruit.spec.ts seeds; every test that uses it re-proves `item_row` holds it. */
+const ITEM_X = 1;
+/** The item quantity A offers in 1a/1b. > 0: qty 0 is ZeroItemQuantity (session.rs:353-355). */
+const ITEM_X_QTY = 1;
+/** What 1b seeds into B's stack of ITEM_X — strictly more than ITEM_X_QTY, so a reducer that
+ *  reads the PARTNER's stack instead of the caller's finds enough and accepts. */
+const PARTNER_ITEM_X_SEED = 5;
+/** The coins A offers in 3a/3b against a provably empty own wallet. */
 const OVERDRAWN_CURRENCY = '1';
+/** What 3b seeds as B's balance — strictly more than OVERDRAWN_CURRENCY, so a reducer that read
+ *  the PARTNER's wallet instead of the caller's finds enough and accepts. */
+const PARTNER_WALLET_SEED = 100;
+/** game-core `PARTY_SIZE` (game-core/src/world.rs): slots 0..6 are the party. */
+const PARTY_SIZE = 6;
+/** Walk A onto B's tile when they stand further apart than this (the server's range,
+ *  game-core interact.rs `within_interact_range`, is wider; 1 leaves a latency margin). */
+const WALK_IF_FURTHER_THAN = 1;
+/** An offset no live session id reaches during a run (session_id is auto_inc, never reused):
+ *  the "session that does not exist" of 5a/6a is `live id + GHOST_OFFSET`, proven absent. */
+const GHOST_OFFSET = 1_000_000;
 
-/** Settle window for server-truth reads: 20 polls x 500 ms = 10 s. A reducer promise
- *  only resolves after the transaction commits, so one read is normally enough; the
- *  window exists so a slow local server produces a slow PASS, never a fast false RED. */
+/** Settle window for server-truth reads: 20 polls x 500 ms = 10 s. */
 const SQL_POLLS = 20;
 const SQL_POLL_MS = 500;
 
@@ -252,61 +206,18 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 // ---------------------------------------------------------------------------
-// Server truth via `spacetime sql` — OWN COPY (do not import from a sibling spec).
-// Modelled on wallet-balance.spec.ts:597-662, NOT on trade-interlock's tolerant parser:
-// an unrecognised table shape must THROW, because a silently-empty parse would turn
-// every "the row is gone" assertion in this file into a vacuous pass.
-// The CLI runs as the module OWNER, so it can read the PRIVATE
-// trade_offer_reaper_schedule table directly (ADR-0087: the closed channel is client
-// SUBSCRIPTIONS, not owner queries).
+// Server truth via owner `spacetime sql` (stdb.ts `ownerSql`: execFileSync, no shell, a literal
+// statement charset). The CLI runs as the module OWNER, so it reads the PRIVATE trade_session,
+// trade_session_snapshot, trade_session_reaper_schedule, inventory and player_wallet tables.
+// Every session-table read PROJECTS scalar columns only: the nested offer columns and the
+// reaper's ScheduleAt sum type are never selected, so no cell rendering can shift the columns.
 // ---------------------------------------------------------------------------
 
-/** Only `server` and `db` are interpolated into the shell string, and the query slot is
- *  charset-checked so nothing but `SELECT * FROM <table>` shapes can reach the shell.
- *  Literal regexes only — `new RegExp(dynamic)` is banned project-wide.
- *  The charset deliberately admits `SELECT * FROM trade_offer_reaper_schedule` and
- *  deliberately does NOT admit a comma or a WHERE clause: every filter in this file is
- *  applied in JS after parsing. */
-function sqlQuery(query: string, label: string): string {
-  const server = process.env.STDB_SERVER ?? 'local';
-  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
-  if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
-    throw new Error(
-      `${label}: STDB_SERVER/VITE_STDB_DB failed charset validation: ${server} ${db}`,
-    );
-  }
-  if (!/^[A-Za-z0-9_ *]+$/.test(query)) {
-    throw new Error(`${label}: refusing to run a non-literal-shaped sql query: ${query}`);
-  }
-  try {
-    return execSync(`spacetime sql -s ${server} ${db} "${query}"`, {
-      encoding: 'utf8',
-      timeout: 15_000,
-    });
-  } catch (err) {
-    throw new Error(
-      `${label}: spacetime sql could not run — CLI/infra failure, NOT a row mismatch: ` +
-        `${(err as Error).message}`,
-    );
-  }
-}
-
-/** Parse `spacetime sql` stdout into row objects keyed BY HEADER NAME.
- *
- *  Contract, and why each clause exists:
- *   - header line, then a `-+-` separator, then zero or more data lines;
- *   - header + separator + ZERO data lines is a VALID EMPTY result, not an error (this
- *     is the shape every "the offer is gone" assertion in this file depends on);
- *   - anything else THROWS. A tolerant parser returning [] on a shape surprise would
- *     make every absence assertion here vacuously true;
- *   - a data line whose cell count differs from the header's column count THROWS. The
- *     reaper table's `scheduled_at` is a ScheduleAt SUM TYPE whose CLI rendering is not
- *     pinned by anything in this repo; if it ever renders a `|` the column mapping would
- *     silently shift and `trade_id` would be read from the wrong cell. Failing loud here
- *     is deliberate: the orchestrator repairs this parser against real output at first
- *     run rather than shipping a quietly-misaligned reader. */
+/** Parse `spacetime sql` stdout into row objects keyed BY HEADER NAME — STRICT, not stdb.ts's
+ *  tolerant `sqlRows`: a header + separator + zero data lines is a valid EMPTY result; anything
+ *  else, or a row whose cell count differs from the header's, THROWS. A tolerant parser returning
+ *  [] on a shape surprise would make every "the row is gone" assertion here vacuously true. */
 function parseSqlTable(stdout: string, label: string): Record<string, string>[] {
-  // shift() rather than [0]/[1] so the undefined-ness is in the type under every tsconfig.
   const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
   const header = lines.shift();
   const separator = lines.shift();
@@ -322,8 +233,8 @@ function parseSqlTable(stdout: string, label: string): Record<string, string>[] 
     if (cells.length !== columns.length) {
       throw new Error(
         `${label}: sql row has ${cells.length} cells but the header has ${columns.length} ` +
-          `columns — a cell almost certainly contains a pipe character, so mapping columns ` +
-          `by position would read the wrong values. Header: ${header.trim()} | Row: ${line.trim()}`,
+          `columns, so mapping by position would read the wrong values. Header: ` +
+          `${header.trim()} | Row: ${line.trim()}`,
       );
     }
     const row: Record<string, string> = {};
@@ -334,55 +245,109 @@ function parseSqlTable(stdout: string, label: string): Record<string, string>[] 
   });
 }
 
-/** lowercase + strip a leading 0x. `spacetime sql` renders Identity as 0x + 64 lowercase
- *  hex; `__game().identity` is the SDK's Identity.toHexString. Normalising both ends makes
- *  the comparison prefix-agnostic. */
+function sqlSelect(query: string, label: string): Record<string, string>[] {
+  return parseSqlTable(ownerSql(query, label), label);
+}
+
+/** lowercase + strip a leading 0x (`spacetime sql` renders an Identity as 0x + 64 hex). */
 function normalizeIdentity(id: string): string {
   const lower = id.toLowerCase();
   return lower.startsWith('0x') ? lower.slice(2) : lower;
 }
 
-/** Sum-type cells are rendered differently by different CLI versions: 2.6.0 printed the bare
- *  variant name (`Pending`); 2.8.1 prints a tagged form (`(pending = ())`). Normalising both sides
- *  to lowercase alphanumerics makes the token check survive that.
- *
- *  This is a STRENGTHENING, not a loosening, and the negative asserts are why. Under 2.8.1
- *  rendering the literal string `ConfirmedByCounterparty` appears in NO status cell, so
- *  `.not.toContain('ConfirmedByCounterparty')` passed for every possible status — vacuous, a gate
- *  that could no longer fail. Normalising restores its teeth. The two variant tokens stay disjoint
- *  after normalisation (`pending` vs `confirmedbycounterparty`), so the check is still exact. */
-function statusToken(cell: string): string {
-  return (cell ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+/** The identity as the 64-hex literal an owner statement needs; throws on anything else. */
+function identityHex(id: string, label: string): string {
+  const hex = normalizeIdentity(id);
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new Error(`${label}: identity ${JSON.stringify(id)} is not 64 hex digits`);
+  }
+  return hex;
 }
 
-/** Every trade_offer row whose party pair is exactly {a, b}, in EITHER direction.
- *  PAIR-SCOPED ON PURPOSE: a global count would be satisfied (or broken) by any other
- *  identity's offer, and `allTradeOffers()[0]` is the exact anti-pattern this file exists
- *  to avoid re-committing. */
-function tradeOfferRowsForPair(a: string, b: string, label: string): Record<string, string>[] {
-  const rows = parseSqlTable(sqlQuery('SELECT * FROM trade_offer', label), label);
-  const normA = normalizeIdentity(a);
-  const normB = normalizeIdentity(b);
-  return rows.filter((r) => {
-    const initiator = normalizeIdentity(r.initiator ?? '');
-    const counterparty = normalizeIdentity(r.counterparty ?? '');
-    return (
-      (initiator === normA && counterparty === normB) ||
-      (initiator === normB && counterparty === normA)
+function assertDecimal(value: string, what: string, label: string): string {
+  if (!/^[0-9]+$/.test(value)) {
+    throw new Error(
+      `${label}: ${what} ${JSON.stringify(value)} is not a decimal integer — refusing to use it`,
     );
-  });
+  }
+  return value;
 }
 
-/** Every trade_offer_reaper_schedule row armed for ONE trade_id. Scoped to the id, never
- *  a global count: other specs' offers arm their own schedule rows in the same table. */
-function reaperRowsFor(tradeId: string, label: string): Record<string, string>[] {
-  const rows = parseSqlTable(sqlQuery('SELECT * FROM trade_offer_reaper_schedule', label), label);
-  return rows.filter((r) => (r.trade_id ?? '').trim() === tradeId);
+/** One trade_session row, scalar columns only. Booleans lowercased. */
+interface SessionRow {
+  sessionId: string;
+  opener: string;
+  partner: string;
+  revision: string;
+  openerConfirmed: string;
+  partnerConfirmed: string;
 }
 
-/** All trade_offer rows (teardown only — the per-test assertions are always scoped). */
-function allTradeOfferRows(label: string): Record<string, string>[] {
-  return parseSqlTable(sqlQuery('SELECT * FROM trade_offer', label), label);
+function allSessionRows(label: string): SessionRow[] {
+  return sqlSelect(
+    'SELECT session_id, opener, partner, revision, opener_confirmed, partner_confirmed FROM trade_session',
+    label,
+  ).map((r) => ({
+    sessionId: (r.session_id ?? '').trim(),
+    opener: normalizeIdentity(r.opener ?? ''),
+    partner: normalizeIdentity(r.partner ?? ''),
+    revision: (r.revision ?? '').trim(),
+    openerConfirmed: (r.opener_confirmed ?? '').trim().toLowerCase(),
+    partnerConfirmed: (r.partner_confirmed ?? '').trim().toLowerCase(),
+  }));
+}
+
+/** Every session whose pair is exactly {a, b}, in EITHER orientation. */
+function pairSessionRows(a: string, b: string, label: string): SessionRow[] {
+  const na = normalizeIdentity(a);
+  const nb = normalizeIdentity(b);
+  return allSessionRows(label).filter(
+    (r) => (r.opener === na && r.partner === nb) || (r.opener === nb && r.partner === na),
+  );
+}
+
+function sessionRowsById(sessionId: string, label: string): SessionRow[] {
+  return allSessionRows(label).filter((r) => r.sessionId === sessionId);
+}
+
+/** The trade_session_snapshot rows of one session, as `snapshot_id:monster_id`, sorted. */
+function snapshotRowsFor(sessionId: string, label: string): string[] {
+  return sqlSelect('SELECT snapshot_id, session_id, monster_id FROM trade_session_snapshot', label)
+    .filter((r) => (r.session_id ?? '').trim() === sessionId)
+    .map((r) => `${(r.snapshot_id ?? '').trim()}:${(r.monster_id ?? '').trim()}`)
+    .sort();
+}
+
+/** The trade_session_reaper_schedule rows armed for one session (scheduled ids). */
+function reaperRowsFor(sessionId: string, label: string): string[] {
+  return sqlSelect('SELECT scheduled_id, session_id FROM trade_session_reaper_schedule', label)
+    .filter((r) => (r.session_id ?? '').trim() === sessionId)
+    .map((r) => (r.scheduled_id ?? '').trim());
+}
+
+/** `owner`'s inventory rows of `itemId` (inventory is all-scalar: inv_id, owner_identity,
+ *  item_id, count). */
+function inventoryRowsOf(owner: string, itemId: number, label: string): Record<string, string>[] {
+  const hex = normalizeIdentity(owner);
+  return sqlSelect('SELECT * FROM inventory', label).filter(
+    (r) =>
+      normalizeIdentity(r.owner_identity ?? '') === hex && (r.item_id ?? '').trim() === `${itemId}`,
+  );
+}
+
+/** `owner`'s player_wallet rows (PK owner_identity, so 0 or 1). */
+function walletRowsOf(owner: string, label: string): Record<string, string>[] {
+  const hex = normalizeIdentity(owner);
+  return sqlSelect('SELECT * FROM player_wallet', label).filter(
+    (r) => normalizeIdentity(r.owner_identity ?? '') === hex,
+  );
+}
+
+/** A wallet's spendable balance as server truth holds it: no row reads 0. */
+function balanceOf(owner: string, label: string): string {
+  const rows = walletRowsOf(owner, label);
+  if (rows.length > 1) throw new Error(`${label}: ${rows.length} wallet rows for one owner`);
+  return (rows[0]?.balance ?? '0').trim();
 }
 
 async function pollSql<T>(read: () => T, done: (v: T) => boolean): Promise<T> {
@@ -394,69 +359,77 @@ async function pollSql<T>(read: () => T, done: (v: T) => boolean): Promise<T> {
   return value;
 }
 
-/** Wait for, and assert, the number of pair-scoped offer rows in server truth. */
-async function expectPairOfferRows(
+/** Wait for, and assert, the number of pair-scoped session rows in server truth. */
+async function expectPairSessions(
   a: string,
   b: string,
   expected: number,
   label: string,
-): Promise<Record<string, string>[]> {
+): Promise<SessionRow[]> {
   const rows = await pollSql(
-    () => tradeOfferRowsForPair(a, b, label),
+    () => pairSessionRows(a, b, label),
     (r) => r.length === expected,
   );
   expect(
     rows.length,
-    `${label}: server truth must hold exactly ${expected} trade_offer row(s) for the ` +
-      `A/B pair after the settle window, found ${rows.length}`,
+    `${label}: server truth must hold exactly ${expected} trade_session row(s) for the pair ` +
+      `after the settle window, found ${rows.length}`,
   ).toBe(expected);
   return rows;
 }
 
-/** Wait for, and assert, the number of reaper schedule rows armed for one trade_id. */
-async function expectReaperRows(tradeId: string, expected: number, label: string): Promise<void> {
-  const rows = await pollSql(
-    () => reaperRowsFor(tradeId, label),
-    (r) => r.length === expected,
-  );
-  expect(
-    rows.length,
-    `${label}: server truth must hold exactly ${expected} trade_offer_reaper_schedule ` +
-      `row(s) for trade_id=${tradeId} after the settle window, found ${rows.length}`,
-  ).toBe(expected);
-}
-
-/** The single pair-scoped offer's trade_id, hard-validated.
- *  THE VACUOUS-GREEN ENGINE THIS KILLS: an empty or garbage id string reaches
- *  `BigInt(tradeId)` inside the hook, `BigInt('')` is `0n`, and `cancel_trade(0)` returns
- *  "trade offer not found" — a rejection that looks like a guard firing while proving
- *  nothing at all. Nothing in this file may call a reducer with an unvalidated id. */
-function pairOfferTradeId(rows: Record<string, string>[], label: string): string {
+/** The single pair-scoped session's id, hard-validated, and that A opened it with B. */
+function pairSessionId(rows: SessionRow[], opener: string, label: string): string {
   if (rows.length !== 1) {
-    throw new Error(
-      `${label}: expected exactly 1 pair-scoped trade_offer row to read a trade_id from, ` +
-        `found ${rows.length}`,
-    );
+    throw new Error(`${label}: expected exactly 1 pair-scoped session row, found ${rows.length}`);
   }
   const row = rows[0];
   if (row === undefined) throw new Error(`${label}: row 0 missing after a length check`);
-  const tradeId = (row.trade_id ?? '').trim();
-  if (!/^[0-9]+$/.test(tradeId)) {
-    throw new Error(
-      `${label}: trade_id cell ${JSON.stringify(tradeId)} is not a decimal integer — ` +
-        `refusing to drive a reducer with it`,
-    );
-  }
-  return tradeId;
+  expect(row.opener, `${label}: the session's opener is the caller`).toBe(
+    normalizeIdentity(opener),
+  );
+  return assertDecimal(row.sessionId, 'session_id', label);
+}
+
+/** The session, its snapshot rows and its reaper row are ALL gone (each polled). */
+async function expectSessionGone(sessionId: string, label: string, why = ''): Promise<void> {
+  const rows = await pollSql(
+    () => sessionRowsById(sessionId, label),
+    (r) => r.length === 0,
+  );
+  expect(rows.length, `${label}: trade_session ${sessionId} must be deleted ${why}`).toBe(0);
+  const snaps = await pollSql(
+    () => snapshotRowsFor(sessionId, label),
+    (r) => r.length === 0,
+  );
+  expect(
+    snaps,
+    `${label}: no trade_session_snapshot row may outlive session ${sessionId} ${why}`,
+  ).toEqual([]);
+  const reapers = await pollSql(
+    () => reaperRowsFor(sessionId, label),
+    (r) => r.length === 0,
+  );
+  expect(
+    reapers,
+    `${label}: no trade_session_reaper_schedule row may outlive session ${sessionId} ${why}`,
+  ).toEqual([]);
+}
+
+/** Everything server truth says about one live session that a refused call must not change. */
+function sessionFacts(sessionId: string, label: string): string {
+  const rows = sessionRowsById(sessionId, label);
+  return JSON.stringify({
+    rows,
+    snapshots: snapshotRowsFor(sessionId, label),
+    reapers: reaperRowsFor(sessionId, label),
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Page helpers.
 // ---------------------------------------------------------------------------
 
-/** Wait until __game() exists, the identity is assigned, and the player has been placed
- *  on the map. join_game grants the starter monster synchronously, so a non-null
- *  ownAuthTile implies the grant has been processed. */
 async function gameReady(p: Page): Promise<void> {
   await p.waitForFunction(
     () => {
@@ -470,18 +443,8 @@ async function gameReady(p: Page): Promise<void> {
   );
 }
 
-/** EXACT presence, never `>=`, for two reasons — and NOT for the one you might assume.
- *  (It is NOT about a foreign player's active offer: the one-active-offer rule checks only
- *  `me` and `counterparty`, trading.rs:254-255, so a fourth identity's offer cannot make
- *  A's proposal fail.)
- *   1. MUTUAL-VISIBILITY CONVERGENCE. `presenceCount` is `store.playerCount`, so waiting
- *      for exactly 3 on ALL THREE pages proves each page has actually received the other
- *      two players' rows. Without it, A could propose to an identity B has not yet
- *      observed, and the counterparty-joined guard could fire on a
- *      race instead of on the guard under test.
- *   2. FAIL LOUD ON A LINGERING FOREIGN IDENTITY. `>= 3` would silently tolerate a leaked
- *      browser from an earlier spec file; `=== 3` turns that shared-world contamination
- *      into an immediate, named beforeAll failure instead of a mystery later. */
+/** EXACT presence on every page: proves each page holds the other two players' rows, and fails
+ *  loud on a leaked identity from an earlier spec file (`>= 3` would tolerate it). */
 async function waitForPresence3(p: Page): Promise<void> {
   await p.waitForFunction(
     () => (window as unknown as { __game: () => GameSnap }).__game().presenceCount === 3,
@@ -490,11 +453,7 @@ async function waitForPresence3(p: Page): Promise<void> {
   );
 }
 
-/** PROJECT the three fields this file needs — never return `__game()` wholesale.
- *  The real snapshot carries `step`/`jump`/`setRawMapZoneForTest` FUNCTIONS and the raw
- *  wasm map object, none of which survive the structured-clone
- *  boundary; returning it whole makes page.evaluate throw on serialisation.
- *  (trade-full.spec.ts:105-118 projects for the same reason.) */
+/** PROJECT the fields this file needs — `__game()` carries functions that do not clone. */
 async function snap(
   p: Page,
 ): Promise<Pick<GameSnap, 'identity' | 'presenceCount' | 'ownMonsters'>> {
@@ -503,68 +462,80 @@ async function snap(
     return {
       identity: g.identity,
       presenceCount: g.presenceCount,
-      ownMonsters: g.ownMonsters,
+      ownMonsters: g.ownMonsters.map((m) => ({ monsterId: m.monsterId, partySlot: m.partySlot })),
     };
   });
 }
 
-/** The identity's own starter monster id — the >= 1 asset that satisfies the EmptyOffer
- *  rule in every proposal in this file. Positive controls NEVER confirm a
- *  trade, so this monster stays with A for the whole run. */
-async function starterMonsterId(p: Page, label: string): Promise<string> {
-  const g = await snap(p);
-  const first = g.ownMonsters[0];
+/** The identity's lowest-slot PARTY monster — the asset every offer here lists. Nothing in this
+ *  file executes a trade, so it never leaves its owner. */
+async function partyMonsterId(p: Page, label: string): Promise<string> {
+  const party = (await snap(p)).ownMonsters
+    .filter((m) => m.partySlot < PARTY_SIZE)
+    .sort((x, y) => x.partySlot - y.partySlot);
+  const first = party[0];
   if (first === undefined) {
-    throw new Error(
-      `${label}: this identity owns no monster, so no proposal in this file can satisfy ` +
-        `the EmptyOffer rule — join_game must grant exactly one starter`,
-    );
+    throw new Error(`${label}: this identity has no party monster — join_game grants a starter`);
   }
-  return first.monsterId;
+  return assertDecimal(first.monsterId, 'monster id', label);
 }
 
-/** Drive ONE reducer through window.__mrTrade and report its outcome as data.
- *
- *  Returns null when the reducer resolved Ok, or {name, message} when it rejected.
- *
- *  Three traps closed inside the evaluate:
- *   1. HOOK MISSING → throw with a named diagnosis, rather than a TypeError on undefined.
- *   2. HOOK RETURNED undefined → throw. The hook's signature is `Promise<void> | undefined`
- *      and it returns undefined when the connection is not live;
- *      `await undefined` RESOLVES, which would counterfeit a successful reducer call and
- *      turn every positive control in this file green for free.
- *   3. THE AWAIT HAPPENS INSIDE THE EVALUATE. An un-awaited hook promise that later
- *      rejects raises `unhandledrejection`, which main.ts:729 pushes into the error ring
- *      and paints as a persistent #mr-error-overlay — it would then intercept whatever a
- *      later test does with the page. */
-async function errorOf(p: Page, action: TradeAction): Promise<ReducerRejection | null> {
+const manhattan = (a: { x: number; y: number }, b: { x: number; y: number }): number =>
+  Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+/** Puts `mover` within range of `anchor` for open_trade_session: same zone required; walks onto
+ *  the anchor's tile (grass-free, warp-free `walkTo`) when further than WALK_IF_FURTHER_THAN. */
+async function ensureInRange(mover: Page, anchor: Page, label: string): Promise<void> {
+  const there = await readWorld(anchor);
+  const here = await readWorld(mover);
+  if (there.ownAuthTile === null || here.ownAuthTile === null) {
+    throw new Error(`${label}: a character has no authoritative tile`);
+  }
+  expect(here.map.zone_id, `${label}: opener and partner must be in the same zone`).toBe(
+    there.map.zone_id,
+  );
+  if (manhattan(here.ownAuthTile, there.ownAuthTile) > WALK_IF_FURTHER_THAN) {
+    if ((await walkTo(mover, there.ownAuthTile, label)) === 'battle') {
+      throw new Error(`${label}: a battle started on the grass-free walk to the partner`);
+    }
+  }
+  const after = await readWorld(mover);
+  if (after.ownAuthTile === null) throw new Error(`${label}: no own tile after the walk`);
+  expect(
+    manhattan(after.ownAuthTile, there.ownAuthTile),
+    `${label}: the opener must stand next to the partner before the open`,
+  ).toBeLessThanOrEqual(WALK_IF_FURTHER_THAN);
+}
+
+/** Drive ONE reducer through window.__mrTrade and report its outcome as data: null when it
+ *  resolved Ok, {name, message} when it rejected. Ids are validated BEFORE the page sees them.
+ *  Inside the evaluate: a missing hook throws; a hook returning undefined (connection not live)
+ *  throws, because `await undefined` resolves and would fake an Ok; the await happens IN the
+ *  page so a rejection never becomes an unhandledrejection (and an error overlay). */
+async function errorOf(
+  p: Page,
+  action: TradeAction,
+  label: string,
+): Promise<ReducerRejection | null> {
+  if (action.kind === 'open') identityHex(action.partner, label);
+  else assertDecimal(action.sessionId, 'session id', label);
+  if (action.kind === 'confirm') assertDecimal(action.revision, 'revision', label);
   return p.evaluate(async (a: TradeAction): Promise<ReducerRejection | null> => {
     const hook = (window as unknown as { __mrTrade?: MrTrade }).__mrTrade;
     if (hook === undefined) {
-      throw new Error(
-        'window.__mrTrade is missing on this page — the DEV-gated trade hook ' +
-          '(main.ts:1910-1955) is not installed, so no reducer can be driven',
-      );
+      throw new Error('window.__mrTrade is missing — the DEV-gated trade hook is not installed');
     }
     const call =
-      a.kind === 'propose'
-        ? hook.proposeTrade({
-            counterparty: a.counterparty,
-            initiatorMonsterIds: a.initiatorMonsterIds,
-            initiatorItems: a.initiatorItems,
-            initiatorCurrency: a.initiatorCurrency,
-            counterpartyMonsterIds: a.counterpartyMonsterIds,
-            counterpartyItems: a.counterpartyItems,
-            counterpartyCurrency: a.counterpartyCurrency,
-          })
-        : a.kind === 'respond'
-          ? hook.respondTrade(a.tradeId, a.accepted)
+      a.kind === 'open'
+        ? hook.openTradeSession(a.partner)
+        : a.kind === 'setOffer'
+          ? hook.setTradeOffer(a.sessionId, a.offer)
           : a.kind === 'confirm'
-            ? hook.confirmTrade(a.tradeId)
-            : hook.cancelTrade(a.tradeId);
+            ? hook.confirmTradeSession(a.sessionId, a.revision)
+            : hook.cancelTradeSession(a.sessionId);
     if (call === undefined) {
       throw new Error(
-        `__mrTrade.${a.kind} returned undefined — the connection is not live. Awaiting ` +
+        `__mrTrade ${a.kind} returned undefined — the connection is not live; awaiting ` +
           'undefined would resolve and fake a successful reducer call',
       );
     }
@@ -580,7 +551,7 @@ async function errorOf(p: Page, action: TradeAction): Promise<ReducerRejection |
 
 /** POSITIVE CONTROL: the call must resolve Ok. */
 async function expectOk(p: Page, action: TradeAction, label: string): Promise<void> {
-  const rejection = await errorOf(p, action);
+  const rejection = await errorOf(p, action, label);
   expect(
     rejection,
     `${label}: POSITIVE CONTROL must resolve Ok — it rejected with ${JSON.stringify(rejection)}. ` +
@@ -596,29 +567,85 @@ function expectRejection(
 ): void {
   expect(
     rejection,
-    `${label}: the reducer RESOLVED — the guard did not fire at all. Expected a rejection ` +
-      `carrying ${JSON.stringify(expectedMessage)}`,
+    `${label}: the reducer RESOLVED — the rule did not fire. Expected a rejection carrying ` +
+      `${JSON.stringify(expectedMessage)}`,
   ).not.toBeNull();
   expect(
     rejection?.name,
-    `${label}: rejection must be a SenderError, i.e. a reducer Err the server addressed to ` +
-      `the caller. An InternalError here means the reducer panicked instead of rejecting`,
+    `${label}: the rejection must be a SenderError (a reducer Err addressed to the caller); an ` +
+      `InternalError means the reducer panicked instead of refusing`,
   ).toBe('SenderError');
   expect(
     rejection?.message,
-    `${label}: EXACT server message mismatch — a different guard fired, or the guard's ` +
-      `message changed. Expected ${JSON.stringify(expectedMessage)}, got ` +
-      `${JSON.stringify(rejection?.message)}`,
+    `${label}: EXACT server message mismatch — a different rule fired. Expected ` +
+      `${JSON.stringify(expectedMessage)}, got ${JSON.stringify(rejection?.message)}`,
   ).toBe(expectedMessage);
 }
 
+/** Opens a session A→B through the hook (range ensured first) and returns its server-truth id. */
+async function openSession(
+  opener: Page,
+  partnerPage: Page,
+  openerId: string,
+  partnerId: string,
+  label: string,
+): Promise<string> {
+  await ensureInRange(opener, partnerPage, label);
+  await expectPairSessions(openerId, partnerId, 0, `${label} precondition: no session yet`);
+  await expectOk(opener, { kind: 'open', partner: partnerId }, `${label} open`);
+  const rows = await expectPairSessions(openerId, partnerId, 1, `${label} after open`);
+  const sid = pairSessionId(rows, openerId, `${label} after open`);
+  expect(rows[0]?.revision, `${label}: a fresh session has revision 0`).toBe('0');
+  return sid;
+}
+
+const monsterOffer = (monsterId: string): HookOffer => ({
+  monsterIds: [monsterId],
+  items: [],
+  currency: '0',
+});
+const EMPTY_OFFER: HookOffer = { monsterIds: [], items: [], currency: '0' };
+
 // ---------------------------------------------------------------------------
-// Suite
+// The 1b/3b caller script and its normalised record.
 // ---------------------------------------------------------------------------
-test.describe('14r-b — trading reducer negative paths, three identities, server truth', () => {
-  // `Browser | undefined`, not `Browser`: if beforeAll throws (a ready-wait or the
-  // presence convergence), the teardown still runs and must not blow up on an
-  // unassigned handle before it can report the real failure.
+
+/** A's `mySessions()` row for the pair with the session id and the identities normalised out:
+ *  the session id differs between the two runs by construction (auto_inc), nothing else may. */
+interface NormalisedSession {
+  session: string;
+  opener: string;
+  partner: string;
+  revision: string;
+  openerConfirmed: boolean;
+  partnerConfirmed: boolean;
+  openerOffer: HookOffer;
+  partnerOffer: HookOffer;
+}
+
+interface StepRecord {
+  step: string;
+  result: ReducerRejection | 'Ok';
+  /** Server truth for the pair after the step: `revision/openerConfirmed/partnerConfirmed`. */
+  server: string[];
+  /** A's own view after the step (the hook's mySessions, normalised). */
+  view: NormalisedSession[];
+}
+
+const pairView = (p: Page, me: string, other: string): Promise<HookSession[]> =>
+  p.evaluate(
+    ({ me: a, other: b }) => {
+      const hook = (window as unknown as { __mrTrade?: MrTrade }).__mrTrade;
+      if (hook === undefined) throw new Error('window.__mrTrade is missing');
+      return hook
+        .mySessions()
+        .filter((s) => (s.opener === a && s.partner === b) || (s.opener === b && s.partner === a));
+    },
+    { me, other },
+  );
+
+test.describe('ts-4 — trade session negative paths, three identities, server truth', () => {
+  // `| undefined`: if beforeAll throws, teardown still runs and must not blow up first.
   let browser: Browser | undefined;
   let ctxA: BrowserContext;
   let ctxB: BrowserContext;
@@ -630,72 +657,193 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   let identityB = '';
   let identityC = '';
 
-  /** Cancel every live offer involving A, B or C and await it GONE from server truth.
-   *
-   *  Runs after EVERY test (afterEach) and once more at teardown (afterAll). The
-   *  afterEach call is the isolation guarantee: a test that fails midway — say a mutation
-   *  makes cancel_trade reject its own initiator — would otherwise leave an offer row
-   *  behind, and every later sibling's `expectPairOfferRows(..., 0, 'precondition')` would
-   *  fail on the debris rather than on its own guard, turning one real red into nine
-   *  misleading ones. It cannot weaken anything: it runs strictly AFTER a test's
-   *  expectations have been evaluated, and it only removes state.
-   *
-   *  It is also an ASSERTION, not best-effort cleanup: if a cancel cannot clear the row,
-   *  that is itself a finding and it fails loudly with the reducer's own rejection text. */
-  async function sweepPartyOffers(label: string): Promise<void> {
+  const role = (id: string): string => {
+    const n = normalizeIdentity(id);
+    if (n === normalizeIdentity(identityA)) return 'A';
+    if (n === normalizeIdentity(identityB)) return 'B';
+    return `other:${n}`;
+  };
+
+  const pairFacts = (label: string): string[] =>
+    pairSessionRows(identityA, identityB, label).map(
+      (r) => `${r.revision}/${r.openerConfirmed}/${r.partnerConfirmed}`,
+    );
+
+  /** Waits until A's hook view of the pair agrees with server truth (rows, revision, confirms)
+   *  and returns both, normalised. Makes each recorded projection deterministic: a reducer
+   *  promise and its subscription update need not land in the same tick. */
+  async function settledRecord(
+    step: string,
+    result: ReducerRejection | null,
+    label: string,
+  ): Promise<StepRecord> {
+    const viewFacts = async (): Promise<string[]> =>
+      (await pairView(pageA, identityA, identityB)).map(
+        (s) => `${s.revision}/${s.openerConfirmed}/${s.partnerConfirmed}`,
+      );
+    await expect
+      .poll(async () => JSON.stringify(await viewFacts()) === JSON.stringify(pairFacts(label)), {
+        message: `${label} ${step}: A's mySessions view converges on server truth`,
+        timeout: 15_000,
+      })
+      .toBe(true);
+    const view = (await pairView(pageA, identityA, identityB)).map(
+      (s): NormalisedSession => ({
+        session: '<session>',
+        opener: role(s.opener),
+        partner: role(s.partner),
+        revision: s.revision,
+        openerConfirmed: s.openerConfirmed,
+        partnerConfirmed: s.partnerConfirmed,
+        openerOffer: s.openerOffer,
+        partnerOffer: s.partnerOffer,
+      }),
+    );
+    return { step, result: result ?? 'Ok', server: pairFacts(label), view };
+  }
+
+  /** THE caller script of 1b and 3b, run by A against B. B does NOTHING in it, so B's side is
+   *  empty in every run. Returns every step's outcome and A's view, plus the session id (for
+   *  the cleanup check only — it is normalised out of the records). */
+  async function runCallerScript(
+    monsterA: string,
+    label: string,
+  ): Promise<{ records: StepRecord[]; sessionId: string }> {
+    const records: StepRecord[] = [];
+    await ensureInRange(pageA, pageB, label);
+    await expectPairSessions(identityA, identityB, 0, `${label} precondition: no session yet`);
+    const opened = await errorOf(pageA, { kind: 'open', partner: identityB }, label);
+    records.push(await settledRecord('open', opened, label));
+    if (opened !== null) return { records, sessionId: '' };
+    const sid = pairSessionId(
+      await expectPairSessions(identityA, identityB, 1, `${label} after open`),
+      identityA,
+      label,
+    );
+    const step = async (name: string, action: TradeAction): Promise<void> => {
+      records.push(await settledRecord(name, await errorOf(pageA, action, label), label));
+    };
+    await step('set own monster', {
+      kind: 'setOffer',
+      sessionId: sid,
+      offer: monsterOffer(monsterA),
+    });
+    await step('set own monster plus an item A does not hold', {
+      kind: 'setOffer',
+      sessionId: sid,
+      offer: { ...monsterOffer(monsterA), items: [{ itemId: ITEM_X, qty: ITEM_X_QTY }] },
+    });
+    await step('set own monster plus a coin A does not have', {
+      kind: 'setOffer',
+      sessionId: sid,
+      offer: { ...monsterOffer(monsterA), currency: OVERDRAWN_CURRENCY },
+    });
+    const seen = (await pairView(pageA, identityA, identityB))[0]?.revision ?? '';
+    await step('confirm at the revision A sees', {
+      kind: 'confirm',
+      sessionId: sid,
+      revision: seen,
+    });
+    await step('confirm at revision 0', { kind: 'confirm', sessionId: sid, revision: '0' });
+    await step('cancel', { kind: 'cancel', sessionId: sid });
+    return { records, sessionId: sid };
+  }
+
+  /** What the caller script MUST produce, whatever the partner holds. */
+  function expectedScript(monsterA: string): StepRecord[] {
+    const rej = (message: string): ReducerRejection => ({ name: 'SenderError', message });
+    const live = (revision: string, mine: HookOffer): NormalisedSession[] => [
+      {
+        session: '<session>',
+        opener: 'A',
+        partner: 'B',
+        revision,
+        openerConfirmed: false,
+        partnerConfirmed: false,
+        openerOffer: mine,
+        partnerOffer: EMPTY_OFFER,
+      },
+    ];
+    const offered = monsterOffer(monsterA);
+    return [
+      { step: 'open', result: 'Ok', server: ['0/false/false'], view: live('0', EMPTY_OFFER) },
+      {
+        step: 'set own monster',
+        result: 'Ok',
+        server: ['1/false/false'],
+        view: live('1', offered),
+      },
+      {
+        step: 'set own monster plus an item A does not hold',
+        result: rej(errNotEnoughItem(ITEM_X)),
+        server: ['1/false/false'],
+        view: live('1', offered),
+      },
+      {
+        step: 'set own monster plus a coin A does not have',
+        result: rej(ERR_NOT_ENOUGH_CURRENCY),
+        server: ['1/false/false'],
+        view: live('1', offered),
+      },
+      {
+        step: 'confirm at the revision A sees',
+        result: rej(ERR_OTHER_OFFER_EMPTY),
+        server: ['1/false/false'],
+        view: live('1', offered),
+      },
+      {
+        step: 'confirm at revision 0',
+        result: rej(ERR_STALE_REVISION),
+        server: ['1/false/false'],
+        view: live('1', offered),
+      },
+      { step: 'cancel', result: 'Ok', server: [], view: [] },
+    ];
+  }
+
+  /** A's own side holds no ITEM_X and no coin, and ITEM_X is a known item: the preconditions
+   *  that make "not enough of item X" / "not enough currency" the CALLER's own refusal. */
+  function expectCallerHoldsNothing(label: string): void {
+    const known = sqlSelect('SELECT id FROM item_row', label).map((r) => (r.id ?? '').trim());
+    expect(known, `${label}: item ${ITEM_X} must exist in item_row`).toContain(`${ITEM_X}`);
+    expect(
+      inventoryRowsOf(identityA, ITEM_X, label),
+      `${label}: A must hold no stack of item ${ITEM_X}`,
+    ).toEqual([]);
+    expect(balanceOf(identityA, label), `${label}: A must hold no coin`).toBe('0');
+  }
+
+  /** Cancel every live session involving A, B or C and await it — and its snapshot and reaper
+   *  rows — GONE. Runs after EVERY test and at teardown: a test that fails midway would
+   *  otherwise leave a session and every later sibling's "no session yet" precondition would
+   *  fail on the debris. It runs strictly AFTER a test's expectations and only removes state. */
+  async function sweepSessions(label: string): Promise<void> {
     const parties: Array<{ page: Page; identity: string }> = [
       { page: pageA, identity: identityA },
       { page: pageB, identity: identityB },
       { page: pageC, identity: identityC },
     ];
-    const rows = allTradeOfferRows(label);
-    for (const row of rows) {
-      const initiator = normalizeIdentity(row.initiator ?? '');
-      const counterparty = normalizeIdentity(row.counterparty ?? '');
+    for (const row of allSessionRows(label)) {
       const owner = parties.find((p) => {
         const norm = normalizeIdentity(p.identity);
-        // An EMPTY identity matches nothing. Without this, a beforeAll that failed before
-        // assigning the identities would leave norm === '' and, if a foreign row rendered
-        // an empty party cell, the sweep would "own" someone else's offer and try to
-        // cancel it from a page that is not a party.
-        if (norm === '') return false;
-        return norm === initiator || norm === counterparty;
+        // An EMPTY identity (beforeAll failed early) matches nothing.
+        return norm !== '' && (norm === row.opener || norm === row.partner);
       });
-      if (owner === undefined) continue;
-      const tradeId = (row.trade_id ?? '').trim();
-      if (!/^[0-9]+$/.test(tradeId)) continue;
-      // Keep the rejection (if any) — a swept cancel that the server REFUSED is the most
-      // informative thing the teardown can report, and discarding it hides the cause of
-      // the row that then fails the assertions below.
-      const cancelRejection = await errorOf(owner.page, { kind: 'cancel', tradeId });
-      // Await it GONE from server truth — a fire-and-forget cancel would leave the next
-      // test (or the next spec file) racing a row this file created.
-      const remainingOffers = await pollSql(
-        () => allTradeOfferRows(label).filter((r) => (r.trade_id ?? '').trim() === tradeId),
-        (r) => r.length === 0,
+      if (owner === undefined || !/^[0-9]+$/.test(row.sessionId)) continue;
+      const rejection = await errorOf(
+        owner.page,
+        { kind: 'cancel', sessionId: row.sessionId },
+        label,
       );
-      expect(
-        remainingOffers.length,
-        `${label}: trade_offer trade_id=${tradeId} survived the sweep cancel — the world is ` +
-          `not clean for the next test or spec file. The cancel itself returned ` +
-          `${JSON.stringify(cancelRejection)}`,
-      ).toBe(0);
-      const remainingReapers = await pollSql(
-        () => reaperRowsFor(tradeId, label),
-        (r) => r.length === 0,
+      await expectSessionGone(
+        row.sessionId,
+        label,
+        `by the sweep cancel, which returned ${JSON.stringify(rejection)}`,
       );
-      expect(
-        remainingReapers.length,
-        `${label}: trade_id=${tradeId} still has ${remainingReapers.length} armed reaper ` +
-          `row(s) after the sweep cancel. The cancel itself returned ` +
-          `${JSON.stringify(cancelRejection)}`,
-      ).toBe(0);
     }
   }
 
   test.beforeAll(async () => {
-    // Three 30 s ready-waits plus three 30 s presence-waits can legitimately outrun the
-    // 45 s config default under CI load.
     test.setTimeout(150_000);
     const launched = await chromium.launch();
     browser = launched;
@@ -709,470 +857,555 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     await pageB.goto('/');
     await pageC.goto('/');
     await Promise.all([gameReady(pageA), gameReady(pageB), gameReady(pageC)]);
-    // Converge to EXACTLY three players on ALL three pages before any test runs.
     await Promise.all([waitForPresence3(pageA), waitForPresence3(pageB), waitForPresence3(pageC)]);
     const [ga, gb, gc] = await Promise.all([snap(pageA), snap(pageB), snap(pageC)]);
     identityA = ga.identity;
     identityB = gb.identity;
     identityC = gc.identity;
-    // Pairwise distinct, each with the consequence named: two contexts sharing an
-    // identity would make propose_trade fail the self-trade rule (A vs B), or would make
-    // C a PARTY to the offer, which silently converts tests 5a and 6a from "a non-party
-    // is rejected" into "a party is accepted" — passing for the wrong reason.
-    expect(
-      identityA,
-      'A and B must be distinct identities — if they share one, every propose in this ' +
-        'file hits the self-trade rule instead of the guard under test',
-    ).not.toBe(identityB);
-    expect(
-      identityA,
-      'A and C must be distinct identities — if they share one, C is the INITIATOR and ' +
-        'tests 5a/6a stop testing the non-party path entirely',
-    ).not.toBe(identityC);
-    expect(
-      identityB,
-      'B and C must be distinct identities — if they share one, C is the COUNTERPARTY ' +
-        'and tests 5a/6a stop testing the non-party path entirely',
-    ).not.toBe(identityC);
+    // Pairwise distinct, each with its consequence: A = B makes every open a SelfTrade; C equal
+    // to A or B makes C a PARTICIPANT and turns 5a/6a into "a participant is accepted".
+    expect(identityA, 'A and B must be distinct identities').not.toBe(identityB);
+    expect(identityA, 'A and C must be distinct identities').not.toBe(identityC);
+    expect(identityB, 'B and C must be distinct identities').not.toBe(identityC);
   });
 
   test.afterEach(async () => {
-    // ISOLATION BOUNDARY. Runs after the test body's expectations, so it can only remove
-    // debris — never mask a failure. See sweepPartyOffers for the full rationale.
-    // NOTE ON BUDGET: a setTimeout call here would extend the TEST's timeout (Playwright
-    // semantics — only beforeAll/afterAll own a separate hook budget), and every test in
-    // this file already claims 120 s while spending ~20 s, so the sweep runs inside that
-    // slack. A sweep is one sql read on the common path.
-    await sweepPartyOffers('afterEach sweep');
+    await sweepSessions('afterEach sweep');
   });
 
   test.afterAll(async () => {
-    // A hook inherits the 45 s config default, and this sweep can legitimately run long
-    // when a cancel-breaking mutation forces every poll to burn its full settle window.
-    // Without this, the HOOK TIMEOUT would fire first and hide the sweep's diagnostic.
     test.setTimeout(120_000);
-    // Cancel anything this file left live BEFORE closing, or the next spec file inherits
-    // an offer row (and, under the one-active-offer rule, a wedged player).
-    // try/finally, not try/catch: the close still runs even if the sweep throws, and the
-    // sweep's error still propagates — nothing is swallowed.
     try {
-      await sweepPartyOffers('afterAll sweep');
+      await sweepSessions('afterAll sweep');
     } finally {
-      // Optional-call, not a try/catch: an unassigned handle (beforeAll threw before the
-      // launch resolved) is skipped, but a close that FAILS still propagates.
       await browser?.close();
     }
   });
 
   // -------------------------------------------------------------------------
-  // 1a — trading.rs:330 (initiator item leg). Register: B7.
+  // 1a — the CALLER's own item leg (check_offered_item, session.rs).
   //
-  // WHAT THE DIFFERENTIAL CONTROL BUYS: propose_trade runs eight guards before the
-  // initiator item loop. Without the control, an implementation that rejected EVERY
-  // proposal (or that broke the counterparty-joined check, or the active-offer rule)
-  // would produce a rejection and this test would look green on a substring. The control
-  // is the SAME proposal minus the item leg: it must resolve Ok, which proves guards
-  // 0-7 all pass for this world, so the only difference left is the phantom item.
-  //
-  // WHAT THIS KILLS: `>` → `<` at trading.rs:330 (B7) — 1 < 0 is false, the phantom item
-  // is accepted, the proposal RESOLVES and the not-null assertion fails.
-  // HONEST GAP: `>` → `>=` survives (0 items on hand, so no exact-boundary probe exists);
-  // recorded in ADR-0184 D4 as a named park, not a silent omission.
+  // LEG-DIFFERENTIAL: the same offer minus the item resolves Ok first, so the refusal is the
+  // item leg's and not the session lookup's, the size cap's or the monster's.
+  // WHAT THIS KILLS: `item.qty > unlocked` → `<` or deleted (the unheld item is accepted and
+  // the call resolves); a refused edit that still writes (the revision or the snapshot rows
+  // move); a message other than the caller's own stack refusal.
   // -------------------------------------------------------------------------
-  test('1a: propose listing a phantom item on the initiator leg is rejected — guard trading.rs:330', async () => {
+  test('1a: set_trade_offer listing an item the caller does not hold is refused with the own-side error, and the same offer without it is accepted', async () => {
     test.setTimeout(120_000);
     const label = '1a';
-    // CONSTANT GUARD, not a runtime precondition: this asserts on a literal const, so it
-    // can only ever fire when someone EDITS the constant. Its job is to make that edit
-    // fail here with an explanation rather than silently relocate the rejection to
-    // validate_proposal, which emits the identical message for qty == 0.
-    expect(
-      PHANTOM_ITEM_QTY,
-      '1a constant guard: PHANTOM_ITEM_QTY must be > 0. A qty of 0 is rejected UPSTREAM by ' +
-        'validate_proposal with the IDENTICAL message, which would move this test off ' +
-        'the guard it claims to cover',
-    ).toBeGreaterThan(0);
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+    expectCallerHoldsNothing(label);
+    const monsterA = await partyMonsterId(pageA, label);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
 
-    // --- LEG-DIFFERENTIAL CONTROL: identical proposal WITHOUT the item leg → Ok ---
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
-    const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
-    const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
-    await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
-    // The control MUST be cleared before the negative half: a surviving offer would make
-    // the next propose fail the one-active-offer rule (AlreadyInTrade), not the item guard.
-    await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
+    await expectOk(
+      pageA,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterA) },
+      `${label} control: the offer without the item`,
+    );
+    await expect
+      .poll(() => sessionRowsById(sid, label)[0]?.revision ?? null, {
+        message: `${label}: the accepted edit advances the revision to 1`,
+        timeout: 10_000,
+      })
+      .toBe('1');
+    const before = sessionFacts(sid, label);
+    expect(snapshotRowsFor(sid, label).length, `${label}: one snapshot row for one monster`).toBe(
+      1,
+    );
 
-    // --- NEGATIVE: the same proposal PLUS a phantom item on A's leg ---
-    const rejection = await errorOf(pageA, {
-      ...monsterOnlyProposal(identityB, monsterA),
-      initiatorItems: [{ itemId: PHANTOM_ITEM_ID, qty: PHANTOM_ITEM_QTY }],
-    });
-    expectRejection(rejection, errInsufficientItem(PHANTOM_ITEM_ID), label);
-    // No row may have been written: a reject-then-insert impl would leave an offer behind.
-    await expectPairOfferRows(identityA, identityB, 0, `${label} no row written`);
+    const rejection = await errorOf(
+      pageA,
+      {
+        kind: 'setOffer',
+        sessionId: sid,
+        offer: { ...monsterOffer(monsterA), items: [{ itemId: ITEM_X, qty: ITEM_X_QTY }] },
+      },
+      label,
+    );
+    expectRejection(rejection, errNotEnoughItem(ITEM_X), label);
+    expect(sessionFacts(sid, label), `${label}: the refused edit wrote nothing`).toBe(before);
+
+    await expectOk(pageA, { kind: 'cancel', sessionId: sid }, `${label} cleanup cancel`);
+    await expectSessionGone(sid, `${label} cleanup`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 1b — trading.rs:355 (counterparty item leg). Register: B8.
+  // 1b — ts-4.2, the PARTNER's INVENTORY (the no-oracle security case).
   //
-  // Same leg-differential structure as 1a. The distinct message is the whole point: the
-  // two loops are copy-paste siblings, and only the message distinguishes which one fired.
-  // WHAT THIS KILLS: `>` → `<` at trading.rs:355 (B8) — the phantom item is accepted and
-  // the proposal resolves.
+  // The same caller script runs twice against B: run 1 with B holding NO stack of ITEM_X,
+  // run 2 with B holding PARTNER_ITEM_X_SEED of it (owner SQL), the difference proven by a
+  // server-truth SELECT before run 2. The two outcome lists — every call's Ok or exact error,
+  // plus server truth and A's own view after each step — must be deep-equal, and equal to the
+  // pinned expectation.
   //
-  // HONEST GAP — WRONG-PARTY OPERAND MUTANTS SURVIVE THIS TEST. Do NOT claim this test
-  // kills "an impl that checks only the initiator's inventory". It does not, and cannot
-  // in this world: BOTH identities hold ZERO of the phantom item, so
-  //   trading.rs:341  `.filter(counterparty)` → `.filter(me)`
-  // reads a different party's inventory and gets the SAME count (0), the same guard fires,
-  // and the same message is emitted. The mutant is invisible here by construction.
-  // Killing it needs an ASYMMETRIC world — one party holding N > 0 of the item — which
-  // needs an asset faucet reachable from a browser identity (parks P1/P2; the unblocker is
-  // the client/src grant-hook slice named in ADR-0184 D4). The same shape applies to the
-  // `escrowed_item_qty(...)` party operand at trading.rs:346-353.
+  // A reducer that never reads the partner passes this by construction, so its bite is a wrong
+  // reducer, not a red first run. WHAT THIS KILLS: a session reducer whose result or error text
+  // depends on the partner's stack (one that answers "counterparty has insufficient inventory
+  // for item N" when the partner lacks the item fails here), and the wrong-party operand: an
+  // eligibility check that reads `stacks` of the partner instead of the caller accepts A's
+  // one-unit item leg in run 2 only.
   // -------------------------------------------------------------------------
-  test('1b: propose listing a phantom item on the counterparty leg is rejected — guard trading.rs:355', async () => {
-    test.setTimeout(120_000);
+  test('1b: every caller-visible trade session outcome is identical whether or not the partner holds the item', async () => {
+    test.setTimeout(180_000);
     const label = '1b';
-    // Constant guard (see 1a), not a runtime precondition.
+    expectCallerHoldsNothing(label);
+    const monsterA = await partyMonsterId(pageA, label);
+    const hexB = identityHex(identityB, label);
     expect(
-      PHANTOM_ITEM_QTY,
-      '1b constant guard: PHANTOM_ITEM_QTY must be > 0, see 1a',
-    ).toBeGreaterThan(0);
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+      inventoryRowsOf(identityB, ITEM_X, label),
+      `${label} state 1: B holds no stack of item ${ITEM_X}`,
+    ).toEqual([]);
 
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
-    const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
-    const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
-    await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
+    let seededInvId = '';
+    try {
+      const run1 = await runCallerScript(monsterA, `${label} run 1, partner without the item`);
+      // One live session per pair: run 1's must be gone, rows and all, before B changes.
+      if (run1.sessionId !== '') await expectSessionGone(run1.sessionId, `${label} run 1 end`);
+      await expectPairSessions(identityA, identityB, 0, `${label} between the runs`);
 
-    const rejection = await errorOf(pageA, {
-      ...monsterOnlyProposal(identityB, monsterA),
-      counterpartyItems: [{ itemId: PHANTOM_ITEM_ID, qty: PHANTOM_ITEM_QTY }],
-    });
-    expectRejection(rejection, errCounterpartyInsufficientItem(PHANTOM_ITEM_ID), label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} no row written`);
+      const state1 = inventoryRowsOf(identityB, ITEM_X, `${label} state 1`);
+      ownerSql(
+        `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${hexB}, ${ITEM_X}, ${PARTNER_ITEM_X_SEED})`,
+        `${label} seed the partner's stack`,
+      );
+      const state2 = await pollSql(
+        () => inventoryRowsOf(identityB, ITEM_X, `${label} state 2`),
+        (r) => r.length === 1,
+      );
+      seededInvId = assertDecimal((state2[0]?.inv_id ?? '').trim(), 'inv_id', label);
+      // THE NON-VACUITY PROOF: the two partner states really differ in server truth.
+      expect(state1, `${label} state 1: no stack`).toEqual([]);
+      expect(state2.length, `${label} state 2: exactly one stack`).toBe(1);
+      expect((state2[0]?.count ?? '').trim(), `${label} state 2: the seeded count`).toBe(
+        `${PARTNER_ITEM_X_SEED}`,
+      );
+      expect(
+        Number((state2[0]?.count ?? '0').trim()),
+        `${label}: the partner holds MORE than A's item leg asks, so a partner-reading rule would accept`,
+      ).toBeGreaterThan(ITEM_X_QTY);
+
+      const run2 = await runCallerScript(monsterA, `${label} run 2, partner holding the item`);
+      if (run2.sessionId !== '') await expectSessionGone(run2.sessionId, `${label} run 2 end`);
+      expect(run2.sessionId, `${label}: run 2 opened a NEW session`).not.toBe(run1.sessionId);
+
+      expect(
+        run2.records,
+        `${label}: the caller-visible outcome must not depend on the partner's inventory`,
+      ).toEqual(run1.records);
+      expect(run1.records, `${label}: the outcome is the caller-own-side script`).toEqual(
+        expectedScript(monsterA),
+      );
+      expect(
+        inventoryRowsOf(identityB, ITEM_X, `${label} partner untouched`).map((r) =>
+          (r.count ?? '').trim(),
+        ),
+        `${label}: nothing moved the partner's stack`,
+      ).toEqual([`${PARTNER_ITEM_X_SEED}`]);
+    } finally {
+      if (seededInvId !== '') {
+        ownerSql(`DELETE FROM inventory WHERE inv_id = ${seededInvId}`, `${label} restore`);
+      }
+      const left = await pollSql(
+        () => inventoryRowsOf(identityB, ITEM_X, `${label} restore`),
+        (r) => r.length === 0,
+      );
+      expect(left, `${label} restore: B's seeded stack is gone`).toEqual([]);
+    }
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 3a — trading.rs:287 (initiator currency leg). Register: B9.
+  // 3a — the CALLER's own coins (check_offer_eligibility's currency rule, session.rs).
   //
-  // A fresh identity has NO player_wallet row: join_game grants no gold, and economy.rs's
-  // zero-guard prevents a phantom row, so wallet_balance is provably 0 and escrow is
-  // provably 0 (the active-offer rule already rejected any party holding an offer).
-  // WHAT THIS KILLS: `>` → `<` at trading.rs:287 (B9) — 1 < 0 is false, so the overdrawn
-  // currency leg is accepted and the proposal resolves.
+  // A fresh identity has no player_wallet row: the balance is provably 0 (re-proven below).
+  // WHAT THIS KILLS: `currency > balance - locked` → `<` or deleted (the coin is accepted and
+  // the call resolves); a refused edit that still writes.
   // -------------------------------------------------------------------------
-  test('3a: propose listing currency the initiator does not have is rejected — guard trading.rs:287', async () => {
+  test('3a: set_trade_offer listing more coins than the caller has is refused with the own-side error, and the same offer without them is accepted', async () => {
     test.setTimeout(120_000);
     const label = '3a';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+    expectCallerHoldsNothing(label);
+    const monsterA = await partyMonsterId(pageA, label);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
 
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
-    const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
-    const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
-    await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
+    await expectOk(
+      pageA,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterA) },
+      `${label} control: the offer without the coins`,
+    );
+    await expect
+      .poll(() => sessionRowsById(sid, label)[0]?.revision ?? null, {
+        message: `${label}: the accepted edit advances the revision to 1`,
+        timeout: 10_000,
+      })
+      .toBe('1');
+    const before = sessionFacts(sid, label);
 
-    const rejection = await errorOf(pageA, {
-      ...monsterOnlyProposal(identityB, monsterA),
-      initiatorCurrency: OVERDRAWN_CURRENCY,
-    });
-    expectRejection(rejection, ERR_INSUFFICIENT_CURRENCY, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} no row written`);
+    const rejection = await errorOf(
+      pageA,
+      {
+        kind: 'setOffer',
+        sessionId: sid,
+        offer: { ...monsterOffer(monsterA), currency: OVERDRAWN_CURRENCY },
+      },
+      label,
+    );
+    expectRejection(rejection, ERR_NOT_ENOUGH_CURRENCY, label);
+    expect(sessionFacts(sid, label), `${label}: the refused edit wrote nothing`).toBe(before);
+
+    await expectOk(pageA, { kind: 'cancel', sessionId: sid }, `${label} cleanup cancel`);
+    await expectSessionGone(sid, `${label} cleanup`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 3b — trading.rs:304 (counterparty currency leg). Register: B10.
+  // 3b — ts-4.2, the PARTNER's WALLET (the second security case).
   //
-  // This is the anti-griefing guard: without it the initiator could name any
-  // counterparty_currency at all, the offer would stick, and confirm would fail forever
-  // while the counterparty's single trade slot stayed occupied.
-  // WHAT THIS KILLS: `>` → `<` at trading.rs:304 (B10) — the overdrawn counterparty leg
-  // is accepted and the proposal resolves.
+  // Same caller script, two partner states: run 1 with B holding no coin (no player_wallet row,
+  // or a zero balance), run 2 with B's balance seeded to PARTNER_WALLET_SEED by owner SQL; the
+  // difference proven by a server-truth SELECT before run 2; the two outcome lists deep-equal.
   //
-  // HONEST GAP — WRONG-PARTY OPERAND MUTANTS SURVIVE THIS TEST. Do NOT claim this test
-  // kills "an impl that balance-checks only the caller's own wallet". It does not: BOTH
-  // identities are freshly joined and hold ZERO gold (no player_wallet row at all), so
-  //   trading.rs:294  `wallet_balance(ctx, counterparty)` → `wallet_balance(ctx, me)`
-  // reads the wrong party's wallet and gets the SAME balance (0), the same guard fires,
-  // the same message is emitted. Killing it needs an ASYMMETRIC world — one party holding
-  // gold the other lacks — i.e. the quest_001 faucet, which is park P3 (4-6 min per run
-  // plus a flake history). The same shape applies to the
-  // `escrowed_currency_amount(...)` party operand at trading.rs:296-303.
+  // As in 1b, a reducer that never reads the partner passes by construction. WHAT THIS KILLS: a
+  // session reducer whose result or error text depends on the partner's wallet (one that
+  // answers "counterparty has insufficient currency for this trade" when the partner is broke
+  // fails here), and the wrong-party operand: a currency rule that reads the partner's balance
+  // instead of the caller's accepts A's one-coin leg in run 2 only.
   // -------------------------------------------------------------------------
-  test('3b: propose listing currency the counterparty does not have is rejected — guard trading.rs:304', async () => {
-    test.setTimeout(120_000);
+  test('3b: every caller-visible trade session outcome is identical whether or not the partner has coins', async () => {
+    test.setTimeout(180_000);
     const label = '3b';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+    expectCallerHoldsNothing(label);
+    const monsterA = await partyMonsterId(pageA, label);
+    const hexB = identityHex(identityB, label);
+    const original = walletRowsOf(identityB, `${label} state 1`);
+    expect(original.length, `${label}: at most one wallet row for B`).toBeLessThanOrEqual(1);
+    expect(balanceOf(identityB, label), `${label} state 1: B holds no coin`).toBe('0');
+    const hadRow = original.length === 1;
 
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
-    const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
-    const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
-    await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
+    let seeded = false;
+    try {
+      const run1 = await runCallerScript(monsterA, `${label} run 1, partner without coins`);
+      if (run1.sessionId !== '') await expectSessionGone(run1.sessionId, `${label} run 1 end`);
+      await expectPairSessions(identityA, identityB, 0, `${label} between the runs`);
 
-    const rejection = await errorOf(pageA, {
-      ...monsterOnlyProposal(identityB, monsterA),
-      counterpartyCurrency: OVERDRAWN_CURRENCY,
-    });
-    expectRejection(rejection, ERR_COUNTERPARTY_INSUFFICIENT_CURRENCY, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} no row written`);
+      const state1 = balanceOf(identityB, `${label} state 1`);
+      ownerSql(
+        hadRow
+          ? `UPDATE player_wallet SET balance = ${PARTNER_WALLET_SEED} WHERE owner_identity = 0x${hexB}`
+          : `INSERT INTO player_wallet (owner_identity, balance) VALUES (0x${hexB}, ${PARTNER_WALLET_SEED})`,
+        `${label} seed the partner's wallet`,
+      );
+      seeded = true;
+      const state2 = await pollSql(
+        () => balanceOf(identityB, `${label} state 2`),
+        (b) => b === `${PARTNER_WALLET_SEED}`,
+      );
+      // THE NON-VACUITY PROOF: the two partner states really differ in server truth.
+      expect(state1, `${label} state 1: zero`).toBe('0');
+      expect(state2, `${label} state 2: the seeded balance`).toBe(`${PARTNER_WALLET_SEED}`);
+      expect(
+        PARTNER_WALLET_SEED,
+        `${label}: the partner holds MORE than A's coin leg asks, so a partner-reading rule would accept`,
+      ).toBeGreaterThan(Number(OVERDRAWN_CURRENCY));
+
+      const run2 = await runCallerScript(monsterA, `${label} run 2, partner with coins`);
+      if (run2.sessionId !== '') await expectSessionGone(run2.sessionId, `${label} run 2 end`);
+      expect(run2.sessionId, `${label}: run 2 opened a NEW session`).not.toBe(run1.sessionId);
+
+      expect(
+        run2.records,
+        `${label}: the caller-visible outcome must not depend on the partner's wallet`,
+      ).toEqual(run1.records);
+      expect(run1.records, `${label}: the outcome is the caller-own-side script`).toEqual(
+        expectedScript(monsterA),
+      );
+      expect(balanceOf(identityB, `${label} partner untouched`), `${label}: B's coins stay`).toBe(
+        `${PARTNER_WALLET_SEED}`,
+      );
+    } finally {
+      if (seeded) {
+        ownerSql(
+          hadRow
+            ? `UPDATE player_wallet SET balance = 0 WHERE owner_identity = 0x${hexB}`
+            : `DELETE FROM player_wallet WHERE owner_identity = 0x${hexB}`,
+          `${label} restore`,
+        );
+      }
+      const restored = await pollSql(
+        () => walletRowsOf(identityB, `${label} restore`).length,
+        (n) => n === (hadRow ? 1 : 0),
+      );
+      expect(restored, `${label} restore: B's wallet row count is back`).toBe(hadRow ? 1 : 0);
+      expect(balanceOf(identityB, `${label} restore`), `${label} restore: B holds no coin`).toBe(
+        '0',
+      );
+    }
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 4 — respond_trade(accepted=false): row deleted AND reaper disarmed.
-  // Register: B5 covers assertion 4a, B6 covers assertion 4b.
+  // 4 — the partner cancels: delete_session removes the session row, its snapshot rows AND its
+  // reaper schedule row (trading_session.rs `delete_session` → `delete_session_rows`).
   //
-  // TWO-SIDED ARMING ASSERT, AND WHY IT IS NOT OPTIONAL: "the schedule row is gone"
-  // proves nothing unless a schedule row provably EXISTED first. Deleting the arming
-  // call in propose_trade would otherwise make the disarm assertion pass trivially. So
-  // this test asserts 1 armed row immediately after propose, then 0 after the decline.
-  //
-  // WHAT THIS KILLS:
-  //   B5 `!accepted` → `accepted` at trading.rs:439 — the decline then takes the ACCEPT
-  //      branch: the row survives with status ConfirmedByCounterparty, so 4a sees 1 row.
-  //   B6 delete the disarm line at trading.rs:442 — 4a still passes, 4b sees 1 orphaned
-  //      schedule row. The two assertions are deliberately independent.
+  // TWO-SIDED ARMING: each "is gone" is preceded by "exactly this existed", so deleting the
+  // arming (`arm_session_reaper`) or the snapshot insert cannot make the disarm pass trivially.
+  // WHAT THIS KILLS: a cancel that leaves the reaper row (the schedule loop dropped), that
+  // leaves the snapshot rows (`delete_snapshots` dropped), or that refuses the partner.
   // -------------------------------------------------------------------------
-  test('4: respondTrade with accepted=false deletes the offer row and disarms its reaper — guards trading.rs:439 and trading.rs:442', async () => {
+  test('4: the partner cancels and the session row, its snapshot rows and its reaper schedule row are all gone', async () => {
     test.setTimeout(120_000);
     const label = '4';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+    const monsterA = await partyMonsterId(pageA, label);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
+    await expectOk(
+      pageA,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterA) },
+      `${label} A offers its monster`,
+    );
 
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
-    const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
-    const tradeId = pairOfferTradeId(rows, `${label} after propose`);
-    const proposed = rows[0];
-    if (proposed === undefined) throw new Error(`${label}: pair row missing after a length check`);
-    // TradeStatus is a sum type; its CLI rendering is not pinned by anything in this repo,
-    // but the two variant names are disjoint tokens, so a two-sided token check is exact.
+    const snaps = await pollSql(
+      () => snapshotRowsFor(sid, label),
+      (r) => r.length === 1,
+    );
     expect(
-      statusToken(proposed.status ?? ''),
-      `${label}: a freshly proposed offer must be Pending in server truth — status cell was ` +
-        `${JSON.stringify(proposed.status ?? '')}`,
-    ).toContain(statusToken('Pending'));
-    expect(
-      statusToken(proposed.status ?? ''),
-      `${label}: a freshly proposed offer must NOT already be ConfirmedByCounterparty`,
-    ).not.toContain(statusToken('ConfirmedByCounterparty'));
-    // ARMED side of the two-sided assert.
-    await expectReaperRows(tradeId, 1, `${label} armed after propose`);
+      snaps.map((s) => s.split(':')[1]),
+      `${label}: armed — one snapshot row, for A's offered monster`,
+    ).toEqual([monsterA]);
+    expect(reaperRowsFor(sid, label).length, `${label}: armed — one reaper schedule row`).toBe(1);
 
-    // The counterparty declines.
-    await expectOk(pageB, { kind: 'respond', tradeId, accepted: false }, `${label} decline`);
-
-    // 4a — offer row deleted (escrow released, no assets moved).
-    await expectPairOfferRows(identityA, identityB, 0, `${label}a offer deleted after decline`);
-    // 4b — reaper schedule disarmed for that exact trade_id.
-    await expectReaperRows(tradeId, 0, `${label}b reaper disarmed after decline`);
+    await expectOk(pageB, { kind: 'cancel', sessionId: sid }, `${label} the partner cancels`);
+    await expectSessionGone(sid, `${label} after the partner's cancel`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 5a — trading.rs:747: a non-party cannot cancel. Register: B3.
+  // 5a — a NON-participant cannot cancel (find_own_session, trading_session.rs).
   //
-  // C is joined but is neither initiator nor counterparty. The load-bearing assertion is
-  // the EXACT rejection; the "offer survives" read that follows is a belt-and-braces
-  // regression pin, honestly labelled at its call site (transactional rollback means it
-  // cannot fail on its own). The other half of this criterion — that a real party CAN
-  // cancel — is the role-differential cleanup at the end of this test, and tests 5b/5c.
-  //
-  // WHAT THIS KILLS: both `!=` → `==` at trading.rs:747 (B3) — the condition becomes
-  // `initiator == me && counterparty == me`, false for C, so C's cancel SUCCEEDS: the
-  // rejection assertion fails AND the survival assertion fails.
-  // (B4, `&&` → `||`, leaves 5a green by design — it is 5b that catches that one.)
+  // C is joined but neither opener nor partner. C's cancel on the live session must be the
+  // byte-identical refusal C gets for a session id that does not exist (so it leaks nothing
+  // about the session), and the session must survive untouched. ROLE-DIFFERENTIAL half: the
+  // same reducer on the same session, called by the opener, succeeds.
+  // WHAT THIS KILLS: a cancel with no participant check (C deletes it); a distinct "not a
+  // party" message that confirms the session exists; a cancel that refuses everyone.
   // -------------------------------------------------------------------------
-  test('5a: a non-party cancel_trade is rejected and the offer survives — guard trading.rs:747', async () => {
+  test('5a: a non-participant cancel_trade_session is refused exactly like a missing session and the session survives', async () => {
     test.setTimeout(120_000);
     const label = '5a';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
+    const ghost = (BigInt(sid) + BigInt(GHOST_OFFSET)).toString();
+    expect(sessionRowsById(ghost, label), `${label}: session ${ghost} does not exist`).toEqual([]);
+    const before = sessionFacts(sid, label);
+    expect(reaperRowsFor(sid, label).length, `${label}: the session is armed`).toBe(1);
 
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
-    const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
-    const tradeId = pairOfferTradeId(rows, `${label} after propose`);
+    const onLive = await errorOf(pageC, { kind: 'cancel', sessionId: sid }, `${label} live`);
+    const onGhost = await errorOf(pageC, { kind: 'cancel', sessionId: ghost }, `${label} ghost`);
+    expectRejection(onLive, ERR_SESSION_NOT_FOUND, `${label} on the live session`);
+    expectRejection(onGhost, ERR_SESSION_NOT_FOUND, `${label} on a missing session`);
+    expect(onLive, `${label}: the live-session refusal is byte-identical to a missing one`).toEqual(
+      onGhost,
+    );
+    // Transactional rollback makes this unable to fail on its own while the refusal holds; it
+    // stays to catch a delete moved OUT of the reducer transaction.
+    expect(sessionFacts(sid, label), `${label}: the session survives untouched`).toBe(before);
 
-    const rejection = await errorOf(pageC, { kind: 'cancel', tradeId });
-    expectRejection(rejection, ERR_NOT_A_PARTY, label);
-    // BELT-AND-BRACES REGRESSION PIN ON TRANSACTIONAL ROLLBACK — stated honestly: this
-    // cannot fail independently of the message assertion above. SpacetimeDB rolls back the
-    // WHOLE transaction when a reducer returns Err, so a guard that deleted the row and
-    // then rejected would have its delete rolled back too; there is no reachable state in
-    // which the rejection fires and the row is gone. It stays because it is the assertion
-    // that would catch a future refactor moving the delete OUT of the reducer transaction
-    // (a scheduled or post-commit deletion), and it costs one sql read.
-    await expectPairOfferRows(identityA, identityB, 1, `${label} offer survives non-party cancel`);
-
-    // ROLE-DIFFERENTIAL half: the SAME reducer on the SAME offer, called by a party, must
-    // succeed. Without it, "C was rejected" is consistent with cancel_trade rejecting
-    // everyone (the `||` mutant), and this test would pass on a completely dead guard.
-    await expectOk(pageA, { kind: 'cancel', tradeId }, `${label} cleanup cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} cleanup verified`);
+    await expectOk(pageA, { kind: 'cancel', sessionId: sid }, `${label} the opener cancels`);
+    await expectSessionGone(sid, `${label} cleanup`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 5b — trading.rs:747: the COUNTERPARTY may cancel. Register: B4.
-  //
-  // WHAT THIS KILLS: `&&` → `||` at trading.rs:747 — for B, `initiator != me` is true, so
-  // the disjunction is true and B is rejected from cancelling their own trade. The Ok
-  // control fails immediately.
+  // 5b — the PARTNER may cancel an untouched session.
+  // WHAT THIS KILLS: a participant check that admits only the opener (`side_of` matching
+  // `opener` alone); a cancel that refuses the partner.
   // -------------------------------------------------------------------------
-  test('5b: the counterparty may cancel and the offer row is gone — guard trading.rs:747', async () => {
+  test('5b: the partner may cancel and the session row and its reaper row are gone', async () => {
     test.setTimeout(120_000);
     const label = '5b';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
-
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
-    const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
-    const tradeId = pairOfferTradeId(rows, `${label} after propose`);
-
-    await expectOk(pageB, { kind: 'cancel', tradeId }, `${label} counterparty cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} offer gone after cancel`);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
+    expect(reaperRowsFor(sid, label).length, `${label}: the session is armed`).toBe(1);
+    await expectOk(pageB, { kind: 'cancel', sessionId: sid }, `${label} the partner cancels`);
+    await expectSessionGone(sid, `${label} after the partner's cancel`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 5c — trading.rs:747: the INITIATOR may cancel. Register: B11.
-  //
-  // WHY THIS TEST EXISTS AT ALL: without it, a mutant that replaces the FIRST clause with
-  // `true` (`true && offer.counterparty != me`) survives the entire rest of the suite —
-  // 5a still rejects C, 5b still lets B cancel, and only the initiator's own cancel breaks.
-  // WHAT THIS KILLS: first-clause → `true` at trading.rs:747 — A is then rejected from
-  // cancelling A's own offer, so the Ok control fails.
+  // 5c — the OPENER may cancel, with an offer on the table.
+  // WHAT THIS KILLS: a participant check that admits only the partner (`side_of` matching
+  // `partner` alone); a cancel that refuses the opener or leaves rows behind.
   // -------------------------------------------------------------------------
-  test('5c: the initiator may cancel and the offer row is gone — guard trading.rs:747', async () => {
+  test('5c: the opener may cancel and the session row, its snapshot rows and its reaper row are gone', async () => {
     test.setTimeout(120_000);
     const label = '5c';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
+    const monsterA = await partyMonsterId(pageA, label);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
+    await expectOk(
+      pageA,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterA) },
+      `${label} A offers its monster`,
+    );
+    const snaps = await pollSql(
+      () => snapshotRowsFor(sid, label),
+      (r) => r.length === 1,
+    );
+    expect(snaps.length, `${label}: armed — one snapshot row`).toBe(1);
+    expect(reaperRowsFor(sid, label).length, `${label}: armed — one reaper row`).toBe(1);
 
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
-    const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
-    const tradeId = pairOfferTradeId(rows, `${label} after propose`);
-
-    await expectOk(pageA, { kind: 'cancel', tradeId }, `${label} initiator cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} offer gone after cancel`);
+    await expectOk(pageA, { kind: 'cancel', sessionId: sid }, `${label} the opener cancels`);
+    await expectSessionGone(sid, `${label} after the opener's cancel`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 6a — trading.rs:433 / rules.rs:444-451: ROLE is authorized BEFORE STATUS.
-  // Register: B1.
+  // 6a — no leak to a non-participant through set_trade_offer or confirm_trade_session.
   //
-  // THE SETUP IS THE PROOF. C responds to an offer that is NO LONGER Pending. A
-  // status-first implementation would answer with the STATUS message
-  // ("trade offer is not in Pending state"), leaking the state of a trade C is not party
-  // to. A role-first implementation answers with the ROLE message. Both are rejections —
-  // only the EXACT message distinguishes them, which is why toContain is banned here and
-  // why this assertion is what makes bite-proof B1 bite.
-  //
-  // WHAT THIS KILLS: `==` → `!=` at trading.rs:433 — the role boolean inverts, so B's own
-  // accept is rejected as NotCounterparty and the positive control fails first.
-  // CASCADE NOTE for the register: B5 also reds this test, because under B5 the accept
-  // branch deletes the row instead of advancing it, so the ConfirmedByCounterparty
-  // precondition never arrives.
+  // C calls both reducers on the LIVE session and on a session id that does not exist; each
+  // pair of results must be equal (name AND message) and equal to the not-found refusal, and
+  // the session must be unchanged. ROLE-DIFFERENTIAL: the participants' calls to the SAME
+  // reducers on the SAME session succeed — A's and B's edits, then A's confirm is recorded
+  // (B is not confirmed, so nothing executes and no monster moves).
+  // WHAT THIS KILLS: a reducer that answers a non-participant with a side or revision error
+  // ("the trade changed since you reviewed it", "your offer is empty") — which proves the
+  // session exists and leaks its state — or that applies C's edit to a side; a lookup that
+  // refuses everyone.
   // -------------------------------------------------------------------------
-  test('6a: a non-counterparty responding to a ConfirmedByCounterparty offer gets the ROLE error, not the status — guard trading.rs:433', async () => {
+  test('6a: a non-participant set_trade_offer or confirm_trade_session on a live session gets exactly what a missing session id gets and the session is unchanged', async () => {
     test.setTimeout(120_000);
     const label = '6a';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
-
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
-    const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
-    const tradeId = pairOfferTradeId(rows, `${label} after propose`);
-
-    // The counterparty accepts — this is BOTH the positive control for the role boolean
-    // and the setup that takes the offer out of Pending.
-    await expectOk(pageB, { kind: 'respond', tradeId, accepted: true }, `${label} accept`);
-    const advanced = await pollSql(
-      () => tradeOfferRowsForPair(identityA, identityB, `${label} status`),
-      (r) => r.length === 1 && (r[0]?.status ?? '').includes('ConfirmedByCounterparty'),
+    const monsterA = await partyMonsterId(pageA, label);
+    const monsterB = await partyMonsterId(pageB, label);
+    const monsterC = await partyMonsterId(pageC, label);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
+    await expectOk(
+      pageA,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterA) },
+      `${label} control: the opener's edit`,
     );
-    const advancedRow = advanced[0];
-    expect(
-      statusToken(advancedRow?.status ?? ''),
-      `${label}: the offer must be ConfirmedByCounterparty in server truth before the ` +
-        `non-party responds — otherwise this test degenerates into "a non-party responded ` +
-        `to a Pending offer", which a status-first implementation also passes`,
-    ).toContain(statusToken('ConfirmedByCounterparty'));
+    await expect
+      .poll(() => sessionRowsById(sid, label)[0]?.revision ?? null, { timeout: 10_000 })
+      .toBe('1');
+    const ghost = (BigInt(sid) + BigInt(GHOST_OFFSET)).toString();
+    expect(sessionRowsById(ghost, label), `${label}: session ${ghost} does not exist`).toEqual([]);
+    const before = sessionFacts(sid, label);
 
-    // A non-party responds to a NON-Pending offer. Role first ⇒ the ROLE message.
-    const rejection = await errorOf(pageC, { kind: 'respond', tradeId, accepted: true });
+    const offerC = monsterOffer(monsterC);
+    const setLive = await errorOf(
+      pageC,
+      { kind: 'setOffer', sessionId: sid, offer: offerC },
+      `${label} set live`,
+    );
+    const setGhost = await errorOf(
+      pageC,
+      { kind: 'setOffer', sessionId: ghost, offer: offerC },
+      `${label} set ghost`,
+    );
+    const confirmLive = await errorOf(
+      pageC,
+      { kind: 'confirm', sessionId: sid, revision: '1' },
+      `${label} confirm live`,
+    );
+    const confirmGhost = await errorOf(
+      pageC,
+      { kind: 'confirm', sessionId: ghost, revision: '1' },
+      `${label} confirm ghost`,
+    );
+    expectRejection(setLive, ERR_SESSION_NOT_FOUND, `${label} set_trade_offer on the live session`);
+    expectRejection(setGhost, ERR_SESSION_NOT_FOUND, `${label} set_trade_offer on a missing one`);
+    expect(setLive, `${label}: set_trade_offer — live and missing are byte-identical`).toEqual(
+      setGhost,
+    );
     expectRejection(
-      rejection,
-      ERR_NOT_COUNTERPARTY,
-      `${label} — a status-first authorize_respond would answer ` +
-        `${JSON.stringify(ERR_NOT_PENDING)} here, leaking the offer's state to a non-party`,
+      confirmLive,
+      ERR_SESSION_NOT_FOUND,
+      `${label} confirm_trade_session on the live session`,
     );
+    expectRejection(
+      confirmGhost,
+      ERR_SESSION_NOT_FOUND,
+      `${label} confirm_trade_session on a missing one`,
+    );
+    expect(confirmLive, `${label}: confirm — live and missing are byte-identical`).toEqual(
+      confirmGhost,
+    );
+    expect(sessionFacts(sid, label), `${label}: the session is unchanged`).toBe(before);
 
-    // Cleanup: cancel from a real party, then verify.
-    await expectOk(pageA, { kind: 'cancel', tradeId }, `${label} cleanup cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} cleanup verified`);
+    // ROLE-DIFFERENTIAL: the partner edits, then the opener's confirm at the current revision
+    // is recorded.
+    await expectOk(
+      pageB,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterB) },
+      `${label} control: the partner's edit`,
+    );
+    await expect
+      .poll(() => sessionRowsById(sid, label)[0]?.revision ?? null, { timeout: 10_000 })
+      .toBe('2');
+    await expectOk(
+      pageA,
+      { kind: 'confirm', sessionId: sid, revision: '2' },
+      `${label} control: the opener's confirm`,
+    );
+    await expect
+      .poll(
+        () => {
+          const r = sessionRowsById(sid, label)[0];
+          return r === undefined
+            ? null
+            : `${r.revision}/${r.openerConfirmed}/${r.partnerConfirmed}`;
+        },
+        {
+          message: `${label}: the opener's confirm is recorded, nothing executes`,
+          timeout: 10_000,
+        },
+      )
+      .toBe('2/true/false');
+
+    await expectOk(pageA, { kind: 'cancel', sessionId: sid }, `${label} cleanup cancel`);
+    await expectSessionGone(sid, `${label} cleanup`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 
   // -------------------------------------------------------------------------
-  // 6b — trading.rs:472 / rules.rs:459-466: ROLE before STATUS on confirm.
-  // Register: B2.
+  // 6b — a PARTICIPANT confirming a stale revision gets the stale-revision error FIRST
+  // (can_confirm, session.rs; confirm_trade_session returns it before the drift and side
+  // checks, trading_session.rs:1164-1170).
   //
-  // The offer is left PENDING and the COUNTERPARTY calls confirm. Role-first answers
-  // NotInitiator. Under the `==` → `!=` mutant at :472 the role boolean inverts: B reads
-  // as "the initiator", the role arm passes, and the STATUS arm fires instead — the
-  // message flips to "trade offer is not in ConfirmedByCounterparty state" and this
-  // exact-match assertion goes red. Both branches reject; only the message separates them.
-  //
-  // STRUCTURAL GAP, DISCLOSED: this test has NO same-reducer positive control — nothing in
-  // this file ever proves confirm_trade CAN succeed. That is deliberate, not an oversight:
-  // a successful confirm executes the atomic swap and moves A's starter monster to B,
-  // destroying the >= 1 asset every other test in this file proposes with. The positive
-  // control for confirm_trade lives OUT OF FILE, in trade-full.spec.ts (propose → respond →
-  // confirm → ownership transferred + row deleted) and trade-propose.spec.ts. Consequence
-  // to keep in view: a mutant that makes confirm_trade reject unconditionally is red in
-  // those files, not here.
+  // B (the partner, side empty) confirms revisions behind AND ahead of the current one: stale
+  // both times — not the not-found refusal (B IS a participant) and not "your offer is empty"
+  // (the side check must not run first). REVISION-DIFFERENTIAL: B's confirm at the CURRENT
+  // revision reaches the side check and answers "your offer is empty", so only the revision
+  // separates the two answers.
+  // WHAT THIS KILLS: `reviewed != current` → `<` (the ahead revision passes) or deleted; the
+  // side check ordered before the revision check; a participant lookup that misses the partner;
+  // a stale confirm that writes.
   // -------------------------------------------------------------------------
-  test('6b: the counterparty confirming a Pending offer gets the ROLE error, not the status — guard trading.rs:472', async () => {
+  test('6b: a participant confirming a stale revision gets the stale-revision error, not a role or side error', async () => {
     test.setTimeout(120_000);
     const label = '6b';
-    const monsterA = await starterMonsterId(pageA, label);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
-
-    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
-    const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
-    const tradeId = pairOfferTradeId(rows, `${label} after propose`);
-    const pending = rows[0];
-    if (pending === undefined) throw new Error(`${label}: pair row missing after a length check`);
-    // TWO-SIDED, mirroring test 4: the positive token alone would go vacuous the day a
-    // third TradeStatus variant whose name contains "Pending" is added, so the negative
-    // token pins that the offer is specifically NOT the confirmable status.
-    expect(
-      statusToken(pending.status ?? ''),
-      `${label}: the offer must still be Pending when the counterparty confirms — that is ` +
-        `the wrong-status condition the role-first ordering is proven against. Status cell ` +
-        `was ${JSON.stringify(pending.status ?? '')}`,
-    ).toContain(statusToken('Pending'));
-    expect(
-      statusToken(pending.status ?? ''),
-      `${label}: the offer must NOT be ConfirmedByCounterparty — against that status the ` +
-        `role and status arms would agree and the message could not discriminate them`,
-    ).not.toContain(statusToken('ConfirmedByCounterparty'));
-
-    const rejection = await errorOf(pageB, { kind: 'confirm', tradeId });
-    expectRejection(
-      rejection,
-      ERR_NOT_INITIATOR,
-      `${label} — under an inverted role boolean the message flips to ` +
-        `${JSON.stringify(ERR_NOT_CONFIRMED_BY_COUNTERPARTY)}`,
+    const monsterA = await partyMonsterId(pageA, label);
+    const sid = await openSession(pageA, pageB, identityA, identityB, label);
+    await expectOk(
+      pageA,
+      { kind: 'setOffer', sessionId: sid, offer: monsterOffer(monsterA) },
+      `${label} A offers its monster`,
     );
+    await expect
+      .poll(() => sessionRowsById(sid, label)[0]?.revision ?? null, { timeout: 10_000 })
+      .toBe('1');
+    const before = sessionFacts(sid, label);
 
-    // The offer must be untouched, then cleaned up by its initiator.
-    await expectPairOfferRows(identityA, identityB, 1, `${label} offer survives rejected confirm`);
-    await expectOk(pageA, { kind: 'cancel', tradeId }, `${label} cleanup cancel`);
-    await expectPairOfferRows(identityA, identityB, 0, `${label} cleanup verified`);
+    const behind = await errorOf(pageB, { kind: 'confirm', sessionId: sid, revision: '0' }, label);
+    expectRejection(behind, ERR_STALE_REVISION, `${label} revision behind`);
+    const ahead = await errorOf(pageB, { kind: 'confirm', sessionId: sid, revision: '2' }, label);
+    expectRejection(ahead, ERR_STALE_REVISION, `${label} revision ahead`);
+    expect(sessionFacts(sid, label), `${label}: a stale confirm writes nothing`).toBe(before);
+
+    const current = await errorOf(pageB, { kind: 'confirm', sessionId: sid, revision: '1' }, label);
+    expectRejection(current, ERR_OWN_OFFER_EMPTY, `${label} control: the current revision`);
+    expect(sessionFacts(sid, label), `${label}: the refused confirm writes nothing`).toBe(before);
+
+    await expectOk(pageA, { kind: 'cancel', sessionId: sid }, `${label} cleanup cancel`);
+    await expectSessionGone(sid, `${label} cleanup`);
+    await expectPairSessions(identityA, identityB, 0, `${label} world clean`);
   });
 });

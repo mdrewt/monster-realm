@@ -43,11 +43,9 @@ import {
   type SdkMonsterPubRow,
   type SdkSkillRowRow,
   type SdkTacticalBattleRow,
-  type SdkTradeOfferRow,
   skillRowToStore,
   speciesRowToStore,
   tacticalBattleRowToStore,
-  tradeOfferRowToStore,
 } from './rowConvert';
 
 describe('rowConvert: character row -> store', () => {
@@ -1979,125 +1977,6 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
 });
 
 // =============================================================================
-// tradeOfferRowToStore — SDK Identity.toHexString() gate (RT-TO-01)
-//
-// The trade_offer table is PUBLIC (both parties see all rows — ADR-0106 D3).
-// buildTradeViewModel filters by string equality: o.initiator === identity.
-// If toHexString() is NOT called on initiator/counterparty in tradeOfferRowToStore,
-// the store holds raw Identity objects, and the string equality check always fails —
-// the viewer permanently sees "no-trade" even when a live offer involves them.
-//
-// TEETH CONTRACT (what is killed):
-//   - An impl that stores raw SDK Identity objects → string equality filter always fails
-//   - An impl that calls toString() instead of toHexString() → wrong format
-//   - An impl that omits status.tag extraction → raw {tag:'Pending'} in StoreTradeOffer
-//   - An impl that casts tradeId/currency to Number() → precision loss past 2^53
-// =============================================================================
-
-function makeSdkTradeOfferRow(overrides: Partial<SdkTradeOfferRow> = {}): SdkTradeOfferRow {
-  return {
-    tradeId: 42n,
-    initiator: { toHexString: () => 'aaaa1111' },
-    counterparty: { toHexString: () => 'bbbb2222' },
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: { tag: 'Pending' },
-    createdAtMs: 0n,
-    ...overrides,
-  };
-}
-
-describe('rowConvert m15b: tradeOfferRowToStore — identity toHexString() gate (RT-TO-01)', () => {
-  it('RT-TO-01a BITES: initiator.toHexString() is called; store field is a string not an object', () => {
-    // Kills: an impl that stores the raw SDK Identity object instead of calling toHexString().
-    // Downstream: buildTradeViewModel filter (o.initiator === identity) uses string equality;
-    // if initiator is an object the filter always fails → viewer always sees no-trade.
-    const sdk = makeSdkTradeOfferRow({
-      initiator: { toHexString: () => 'deadbeef1234' },
-    });
-    const stored = tradeOfferRowToStore(sdk);
-    expect(typeof stored.initiator).toBe('string');
-    expect(stored.initiator).toBe('deadbeef1234');
-  });
-
-  it('RT-TO-01b BITES: counterparty.toHexString() is called; store field is a string not an object', () => {
-    // Kills: an impl that calls toHexString() on initiator but forgets counterparty.
-    // A counterparty-role player would permanently see no-trade.
-    const sdk = makeSdkTradeOfferRow({
-      counterparty: { toHexString: () => 'cafebabe5678' },
-    });
-    const stored = tradeOfferRowToStore(sdk);
-    expect(typeof stored.counterparty).toBe('string');
-    expect(stored.counterparty).toBe('cafebabe5678');
-  });
-
-  it('RT-TO-01c BITES: status.tag is extracted; store field is a bare string not a tagged-union object', () => {
-    // Kills: an impl that passes { tag: 'Pending' } through unchanged.
-    // Downstream: deriveActionsAndLabel compares status === 'ConfirmedByCounterparty' (string equality);
-    // if status is an object, the comparison always fails → wrong actions rendered.
-    const sdk = makeSdkTradeOfferRow({ status: { tag: 'ConfirmedByCounterparty' } });
-    const stored = tradeOfferRowToStore(sdk);
-    expect(typeof stored.status).toBe('string');
-    expect(stored.status).toBe('ConfirmedByCounterparty');
-  });
-
-  it('RT-TO-01d BITES: tradeId stays bigint past 2^53 (no Number() cast)', () => {
-    // Kills: an impl that casts tradeId to Number(), losing precision for large server IDs.
-    // The identity filter in buildTradeViewModel sorts by tradeId using bigint comparison.
-    const largeId = 9007199254740993n; // 2^53 + 1 — lossy as JS number
-    const sdk = makeSdkTradeOfferRow({ tradeId: largeId });
-    const stored = tradeOfferRowToStore(sdk);
-    expect(typeof stored.tradeId).toBe('bigint');
-    expect(stored.tradeId).toBe(largeId);
-  });
-
-  it('RT-TO-01e BITES: initiatorCurrency and counterpartyCurrency stay bigint past 2^53', () => {
-    // Kills: an impl that casts currency fields to Number().
-    // buildTradeViewModel passes currency directly to TradeSideViewModel.currency (bigint).
-    const largeCurrency = 9007199254740994n;
-    const sdk = makeSdkTradeOfferRow({
-      initiatorCurrency: largeCurrency,
-      counterpartyCurrency: largeCurrency + 1n,
-    });
-    const stored = tradeOfferRowToStore(sdk);
-    expect(typeof stored.initiatorCurrency).toBe('bigint');
-    expect(stored.initiatorCurrency).toBe(largeCurrency);
-    expect(typeof stored.counterpartyCurrency).toBe('bigint');
-    expect(stored.counterpartyCurrency).toBe(largeCurrency + 1n);
-  });
-
-  it('RT-TO-01f BITES: initiatorCards and counterpartyCards are mapped (monsterId stays bigint)', () => {
-    // Kills: an impl that passes card arrays through as raw SDK objects without mapping.
-    // StoreMonsterCard.monsterId is bigint; if cards are not mapped the downstream
-    // li.dataset.monsterId = card.monsterId.toString() would produce '[object Object]'.
-    const largeMonsterId = 9007199254740995n;
-    const sdk = makeSdkTradeOfferRow({
-      initiatorCards: [
-        {
-          monsterId: largeMonsterId,
-          speciesId: 3,
-          nickname: 'Sparky',
-          level: 10,
-          currentHp: 20,
-          statHp: 30,
-        },
-      ],
-    });
-    const stored = tradeOfferRowToStore(sdk);
-    expect(stored.initiatorCards).toHaveLength(1);
-    expect(typeof stored.initiatorCards[0]!.monsterId).toBe('bigint');
-    expect(stored.initiatorCards[0]!.monsterId).toBe(largeMonsterId);
-    expect(stored.initiatorCards[0]!.nickname).toBe('Sparky');
-  });
-});
-
-// =============================================================================
 // profileRowToStore: SdkProfileRow -> StoreProfile (RL-13 boundary ingest)
 //
 // Contract:
@@ -2233,10 +2112,10 @@ describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04
 // =============================================================================
 // narrowTag + HANDLED_ENUM_VARIANTS (EARS 17.5f-3, T4)
 //
-// SCOPE: narrowTag is applied at ONE site only — rowConvert.ts:525 (the
-//   `as 'Pending' | 'ConfirmedByCounterparty'` cast on row.status.tag).
-//   Other .tag reads feed bare-string store fields where narrowing is a type
-//   no-op.
+// SCOPE: narrowTag is the generic fail-soft narrower for a boundary enum tag: a known
+//   tag comes back typed, an unknown one comes back raw with one console.warn. These
+//   tests drive it with registry entries (HANDLED_ENUM_VARIANTS.Phase) and inline
+//   variant lists; .tag reads that feed bare-string store fields need no narrowing.
 //
 // PvpAction is EXCLUDED from the registry because rowConvert never READS it
 //   (PvpAction is a write-direction enum: the client writes it in submitPvpAction
@@ -2253,9 +2132,6 @@ describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04
 //                                would let the eval pass for the wrong types.
 //   "registry missing enum key" — the eval cannot check an enum that is not in
 //                                the registry; the key-set test enforces coverage.
-//   "tradeOfferRowToStore crash on future variant" — if rowConvert.ts throws on
-//                                an unknown tag, live subscription batches would
-//                                be disrupted; the fail-soft test catches this.
 // =============================================================================
 
 import { HANDLED_ENUM_VARIANTS, narrowTag } from './rowConvert';
@@ -2264,31 +2140,23 @@ import { HANDLED_ENUM_VARIANTS, narrowTag } from './rowConvert';
 // T4-1: narrowTag returns typed value for a known tag (identity for known input)
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: narrowTag — known tag passes through typed (T4-1)', () => {
-  it('BITES: narrowTag("Pending", [...], "TradeStatus") returns "Pending" typed', () => {
+  it('BITES: narrowTag("Deploying", HANDLED_ENUM_VARIANTS.Phase, "Phase") returns "Deploying" typed', () => {
     // Kills: an impl that returns undefined or throws for a known tag.
     // A SetMove replayed as a raw append would land on wrong tile — this assertion
     // catches a narrowTag that coerces known tags to something else.
-    const result = narrowTag(
-      'Pending',
-      ['Pending', 'ConfirmedByCounterparty'] as const,
-      'TradeStatus',
-    );
-    expect(result).toBe('Pending');
+    const result = narrowTag('Deploying', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
+    expect(result).toBe('Deploying');
     expect(typeof result).toBe('string');
   });
 
-  it('BITES: narrowTag("ConfirmedByCounterparty", [...], "TradeStatus") returns the same string', () => {
+  it('BITES: narrowTag("Finished", HANDLED_ENUM_VARIANTS.Phase, "Phase") returns the same string', () => {
     // Kills: an impl that only handles the first element of the known array.
-    const result = narrowTag(
-      'ConfirmedByCounterparty',
-      ['Pending', 'ConfirmedByCounterparty'] as const,
-      'TradeStatus',
-    );
-    expect(result).toBe('ConfirmedByCounterparty');
+    const result = narrowTag('Finished', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
+    expect(result).toBe('Finished');
   });
 
-  it('BITES: narrowTag works for each Affinity variant (not just TradeStatus)', () => {
-    // Kills: an impl hard-coded only for TradeStatus.
+  it('BITES: narrowTag works for each Affinity variant (not just Phase)', () => {
+    // Kills: an impl hard-coded only for Phase.
     const affinities = [
       'Fire',
       'Water',
@@ -2313,13 +2181,14 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
   it('BITES: unknown tag returns the raw string (fail-soft — no throw)', () => {
     // Kills: an impl that returns undefined, null, or the first known variant
     // when encountering an unknown tag (future server addition).
-    const result = narrowTag(
-      'FutureVariant',
-      ['Pending', 'ConfirmedByCounterparty'] as const,
-      'TradeStatus',
-    );
-    // The raw string must be returned — fail-soft passthrough.
-    expect(result).toBe('FutureVariant');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = narrowTag('FutureVariant', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
+      // The raw string must be returned — fail-soft passthrough.
+      expect(result).toBe('FutureVariant');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('BITES: unknown tag logs via console.warn exactly once, message contains enum name and tag', () => {
@@ -2328,11 +2197,11 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
     // The message must contain both the enum name and the unknown tag so log grep works.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      narrowTag('NewServerVariant', ['Pending', 'ConfirmedByCounterparty'] as const, 'TradeStatus');
+      narrowTag('NewServerVariant', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const message = String(warnSpy.mock.calls[0]?.[0] ?? '');
       // The log must contain the enum name so operators know WHICH enum has a new variant.
-      expect(message).toContain('TradeStatus');
+      expect(message).toContain('Phase');
       // The log must contain the raw tag so operators know WHICH variant is unhandled.
       expect(message).toContain('NewServerVariant');
     } finally {
@@ -2344,7 +2213,7 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
     // Kills: an impl that logs for every call regardless of whether the tag is known.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      narrowTag('Pending', ['Pending', 'ConfirmedByCounterparty'] as const, 'TradeStatus');
+      narrowTag('Active', HANDLED_ENUM_VARIANTS.Phase, 'Phase');
       expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
@@ -2384,69 +2253,23 @@ describe('rowConvert m17.5f: narrowTag — never throws for any input (T4-3)', (
 });
 
 // ---------------------------------------------------------------------------
-// T4-4: tradeOfferRowToStore with {tag:'FutureVariant'} does NOT throw and
-//        produces status 'FutureVariant' (fail-soft passthrough via narrowTag)
+// T4-5: no trade_offer converter is exported and HANDLED_ENUM_VARIANTS has no TradeStatus key
 // ---------------------------------------------------------------------------
-describe('rowConvert m17.5f: tradeOfferRowToStore — fail-soft on unknown status tag (T4-4)', () => {
-  it('BITES: {tag:"FutureVariant"} does not throw AND produces status "FutureVariant"', () => {
-    // A new server-side TradeStatus variant (e.g. 'Expired') must not crash the client.
-    // Without narrowTag, the existing `as 'Pending' | 'ConfirmedByCounterparty'` cast
-    // would silently assign the wrong type. With narrowTag, the raw value is returned
-    // and logged — callers see 'FutureVariant' in status and can handle unknown variants.
-    //
-    // WHAT THIS KILLS:
-    //   - An impl that throws on unknown tag (crashes the subscription batch).
-    //   - An impl that returns undefined instead of the raw string (downstream
-    //     status === 'Pending' check never matches AND status is undefined — double bug).
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const sdk: SdkTradeOfferRow = {
-        tradeId: 99n,
-        initiator: { toHexString: () => 'aaa' },
-        counterparty: { toHexString: () => 'bbb' },
-        initiatorMonsterIds: [],
-        initiatorItems: [],
-        initiatorCurrency: 0n,
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: 0n,
-        initiatorCards: [],
-        counterpartyCards: [],
-        status: { tag: 'FutureVariant' },
-        createdAtMs: 0n,
-      };
-
-      let stored: ReturnType<typeof tradeOfferRowToStore> | undefined;
-      expect(() => {
-        stored = tradeOfferRowToStore(sdk);
-      }).not.toThrow();
-
-      // The status must be the raw string 'FutureVariant' (fail-soft passthrough).
-      // A type assertion is required because StoreTradeOffer.status is typed as
-      // 'Pending' | 'ConfirmedByCounterparty'; the raw passthrough widens it at runtime.
-      expect((stored as unknown as { status: string }).status).toBe('FutureVariant');
-
-      // The warn was emitted (logged once for the unknown tag).
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// T4-5: HANDLED_ENUM_VARIANTS.TradeStatus deep-equals the current generated variants
-// ---------------------------------------------------------------------------
-describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matches types.ts (T4-5)', () => {
-  it('BITES: TradeStatus registry deep-equals [Pending, ConfirmedByCounterparty]', () => {
-    // Verified against client/src/module_bindings/types.ts:
-    //   export const TradeStatus = __t.enum("TradeStatus", {
-    //     Pending: __t.unit(),
-    //     ConfirmedByCounterparty: __t.unit(),
-    //   });
-    //
-    // Kills: an impl that lists stale/extra variants.
-    expect(HANDLED_ENUM_VARIANTS.TradeStatus).toEqual(['Pending', 'ConfirmedByCounterparty']);
+describe('rowConvert ts-4.4: no trade_offer converter and no TradeStatus boundary read (T4-5)', () => {
+  it('ts-4.4 rowConvert exports no tradeOfferRowToStore, HANDLED_ENUM_VARIANTS has no TradeStatus key, and the session converter is exported', () => {
+    // `TradeStatus` is still generated in module_bindings/types.ts (the drained `trade_offer`
+    // table keeps its column), but no converter reads a `trade_offer` row, so it is not a
+    // row-read boundary enum and the registry must not list it.
+    // WRONG IMPL KILLED: the converter left exported "because nothing calls it" (a dead path
+    // that still ships and still compiles a trade_offer row into store shape); the TradeStatus
+    // registry entry kept (the eval keeps checking an enum no boundary reads); the session
+    // converter deleted along with it (the anti-vacuity leg).
+    const exported = rowConvertModule as unknown as Record<string, unknown>;
+    expect(exported.tradeOfferRowToStore).toBeUndefined();
+    expect(Object.hasOwn(HANDLED_ENUM_VARIANTS, 'TradeStatus')).toBe(false);
+    expect(Reflect.has(HANDLED_ENUM_VARIANTS, 'TradeStatus')).toBe(false);
+    expect(typeof exported.tradeSessionRowToStore).toBe('function');
+    expect(Object.keys(HANDLED_ENUM_VARIANTS)).toHaveLength(20);
   });
 });
 
@@ -2461,7 +2284,6 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //     BattleOutcome  — battleRowToStore: row.state.outcome.tag
 //     StatusKind     — itemRowToStore: row.cureStatus?.tag (SdkItemRowRow.cureStatus)
 //     WeatherEffect  — battleRowToStore: row.state.weather?.tag
-//     TradeStatus    — tradeOfferRowToStore: row.status.tag (the narrowTag site)
 //     ChallengeStatus — battleChallengeRowToStore: row.status.tag
 //     NpcInteraction — npcRowToStore: row.interaction.tag  // uxd2: registered — ADR-0161
 //     TrustTier      — monsterPubRowToStore: row.trustTier.tag;                  // EG4
@@ -2482,6 +2304,8 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //     EventPayload   — battleEventRowToStore: row.payload.tag (the 17 event kinds)
 //
 //   Excluded (write-direction or non-.tag reads):
+//     TradeStatus    — generated for the drained `trade_offer` table; no converter reads a
+//                      trade_offer row, so no boundary reads its tag (ts-4.4)
 //     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
 //                      reads a PvpAction .tag from an incoming row
 //     StatKind       — itemRowToStore reads row.trainStat?.tag (a write-direction
@@ -2498,7 +2322,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //   So StatKind is NOT in the required set per plan §C T4.
 //
 // The exact required registry keys are:
-//   TradeStatus, ChallengeStatus, BattleOutcome, Affinity,
+//   ChallengeStatus, BattleOutcome, Affinity,
 //   StatusKind, WeatherEffect, ActionState, Direction,
 //   NpcInteraction,                       // uxd2: NpcInteraction registered — ADR-0161
 //   TrustTier,                            // EG4: monsterPubRowToStore reads
@@ -2509,12 +2333,11 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //   StatusEffect, QueuedAction, ActionTarget, EventPayload   // bt-12: the tactical views
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)', () => {
-  it('BITES: registry contains all TWENTY-ONE required boundary enum keys (EG4: +TrustTier; bt-12: +11 tactical enums)', () => {
+  it('BITES: registry contains all TWENTY required boundary enum keys (EG4: +TrustTier; bt-12: +11 tactical enums)', () => {
     // These are the enums whose .tag values cross the SDK→store boundary in rowConvert.ts.
     // Verified by reading each .tag access site in rowConvert.ts.
     // Kills: an impl that omits any boundary enum (eval cannot check an unregistered enum).
     const requiredKeys = [
-      'TradeStatus',
       'ChallengeStatus',
       'BattleOutcome',
       'Affinity',
@@ -2565,7 +2388,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     ).toBe(false);
   });
 
-  it('BITES: registry has EXACTLY 21 keys — no extra keys allowed (T4-6 exact-count pin; bt-12: was 10)', () => {
+  it('BITES: registry has EXACTLY 20 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
     // Exact-count gate: the required set is exactly the boundary-read enums listed
     // in the T4-6 comment above. No more, no less. This kills:
     //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
@@ -2577,12 +2400,12 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // that no additional keys were added.
     expect(
       Object.keys(HANDLED_ENUM_VARIANTS).length,
-      'HANDLED_ENUM_VARIANTS must have EXACTLY 21 keys: TradeStatus, ChallengeStatus, ' +
+      'HANDLED_ENUM_VARIANTS must have EXACTLY 20 keys: ChallengeStatus, ' +
         'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction, ' +
         'NpcInteraction, TrustTier, BattleKind, Phase, TurnState, SideRow, UnitState, ' +
         'StanceRow, BudgetLastEntry, StatusEffect, QueuedAction, ActionTarget, EventPayload. ' +
         `Got ${Object.keys(HANDLED_ENUM_VARIANTS).length} keys: ${Object.keys(HANDLED_ENUM_VARIANTS).sort().join(', ')}`,
-    ).toBe(21);
+    ).toBe(20);
   });
 
   it('★ BITES (EG4): TrustTier registry matches types.ts variants in DECLARATION order', () => {
@@ -3976,8 +3799,8 @@ describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () 
     //   `store.ownEvolutionNotices(identity)` compares with `===` against a hex
     //   STRING, so the filter never matches and the banner never appears — while
     //   the row sits happily in the store and every other gate stays green. This
-    //   is the same defect class that already bit playerRowToStore and
-    //   tradeOfferRowToStore in this file.
+    //   is the same defect class playerRowToStore and tradeSessionRowToStore are
+    //   pinned against in this file.
     // WRONG IMPL KILLED (b): passing `row.entries` THROUGH by reference without
     //   mapping. It looks identical today, and it silently re-exports whatever
     //   extra SDK-only keys the binding happens to carry into the store — the
@@ -4122,11 +3945,20 @@ describe('rowConvert: HANDLED_ENUM_VARIANTS mirrors the generated binding enums'
   }
 
   it('the comparison bites: a stale extra variant or a missing one is unequal', () => {
-    const generated = generatedVariants('TradeStatus');
-    expect(generated).toEqual(['Pending', 'ConfirmedByCounterparty']);
-    expect([...HANDLED_ENUM_VARIANTS.TradeStatus, 'Stale']).not.toEqual(generated);
-    expect(HANDLED_ENUM_VARIANTS.TradeStatus.slice(1)).not.toEqual(generated);
+    const generated = generatedVariants('Phase');
+    expect(generated).toEqual(['Deploying', 'Active', 'Finished']);
+    expect([...HANDLED_ENUM_VARIANTS.Phase, 'Stale']).not.toEqual(generated);
+    expect(HANDLED_ENUM_VARIANTS.Phase.slice(1)).not.toEqual(generated);
     expect(generatedVariants('NoSuchEnum')).toBeUndefined();
+  });
+
+  it('ts-4.4 TradeStatus is a generated binding enum with no registry entry: no row converter reads a trade_offer row', () => {
+    // WRONG IMPL KILLED: a TradeStatus registry entry kept in step with the binding (the
+    // per-key mirror above would pass it, so only this leg catches it). The generated-side
+    // leg keeps the case non-vacuous: the enum is still declared in module_bindings/types.ts.
+    expect(generatedVariants('TradeStatus')).toEqual(['Pending', 'ConfirmedByCounterparty']);
+    expect(Object.hasOwn(HANDLED_ENUM_VARIANTS, 'TradeStatus')).toBe(false);
+    expect(Object.keys(HANDLED_ENUM_VARIANTS)).not.toContain('TradeStatus');
   });
 });
 
@@ -4857,14 +4689,14 @@ describe('rowConvert bt-12: the seven tactical views (BT12.1)', () => {
     ).toEqual([]);
   });
 
-  it('the boundary registry lists the 21 enums the converters read, the eleven tactical ones appended in declaration order with exactly their generated variants [BT12-1-REGISTRY]', () => {
+  it('the boundary registry lists the 20 enums the converters read, the eleven tactical ones appended in declaration order with exactly their generated variants [BT12-1-REGISTRY]', () => {
     // WRONG IMPL KILLED: a tactical enum left unregistered (a server-added variant would cross the
     // boundary unnoticed: the per-key mirror below only checks what is registered); MoveClassRow
     // registered (movement is not stored: YAGNI); an entry with a variant missing, extra or out
-    // of order (TurnState, UnitState and the 17 EventPayload kinds included); and the old ten
-    // reordered or dropped on the way.
-    expect(Object.keys(HANDLED_ENUM_VARIANTS), 'the 21 keys, in order').toEqual([
-      'TradeStatus',
+    // of order (TurnState, UnitState and the 17 EventPayload kinds included); the nine
+    // non-tactical ones reordered or dropped; TradeStatus listed (no converter reads a
+    // trade_offer row, so it is not a row-read boundary enum).
+    expect(Object.keys(HANDLED_ENUM_VARIANTS), 'the 20 keys, in order').toEqual([
       'ChallengeStatus',
       'BattleOutcome',
       'Affinity',

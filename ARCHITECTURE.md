@@ -55,7 +55,7 @@ used by the determinism eval). The Rust toolchain is pinned in `rust-toolchain.t
 | `taming` | dev-only `grant_bait`; the tactical recruit is a `submit_queue` entry (the 1v1 `attempt_recruit` is deleted since bt-17) |
 | `evolution` | Evolution-graph eligibility and the transform. |
 | `raising` | Care cooldown (`CARE_COOLDOWN_MS`, 6 h) and focus training. |
-| `currency`, `trading` | Balance arithmetic; trade proposal validation, headroom checks, the ordered swap plan; the trade-session rules (`trading::session`: eligibility, edits and confirms by revision, the per-side check, the execute verdict, snapshot drift, arrival slots). |
+| `currency`, `trading` | Balance arithmetic; headroom checks, the ordered swap plan; the offer proposal and role rules, which no reducer calls; the trade-session rules (`trading::session`: eligibility, edits and confirms by revision, the per-side check, the execute verdict, snapshot drift, arrival slots). |
 | `ranking` | Elo rating update (`INITIAL_RATING` 1000). |
 | `npc`, `dialogue`, `quest` | NPC wander decisions, dialogue trees, quest triggers. |
 | `accounts` | Deletion grace (`DELETION_GRACE_MS_DEFAULT`, 7 days), export chunk size, tombstone constants. |
@@ -145,7 +145,7 @@ writes:
 | `monster_mgmt` | `set_nickname`, `set_party_slot` |
 | `economy` | `buy`, `sell` |
 | `npc` | `talk`, `advance_dialogue`, `dismiss_dialogue` |
-| `trading` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, scheduled `trade_offer_reaper` |
+| `trading` | `cancel_trade`, scheduled `trade_offer_reaper`; `propose_trade`, `respond_trade` and `confirm_trade` are retired and return one fixed error |
 | `trading_session` | `open_trade_session`, `set_trade_offer`, `confirm_trade_session`, `cancel_trade_session`, scheduled `trade_session_reaper` |
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `pvp_deadline_reaper` (never armed since bt-17: the 1v1 secret-pick path that armed it is deleted; its scheduled-ness is fixed at first publish) and `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
@@ -207,10 +207,12 @@ drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
   battle (`tactics::start_pvp_tactical`) whose deploy picks are revealed by copy; the
   tactical clocks and auto-pass rules end a stalled battle. Ranked results update the
   public `profile` table.
-- **Trading.** Offers are public `trade_offer` rows with a one-hour TTL
-  (`TRADE_OFFER_TTL_MS`). Offered assets stay where they are, and guards stop them
-  being spent, sold or evolved while the offer is open. `confirm_trade` checks
-  receiver headroom and applies an ordered swap plan (debits first).
+- **Trading.** Trades run through trade sessions (next item). The public
+  `trade_offer` table is drain-only: no reducer inserts a row. A row still in it keeps
+  its assets guarded (they cannot be spent, sold or evolved) until `cancel_trade`, a
+  disconnect, account deletion or the one-hour TTL reaper (`TRADE_OFFER_TTL_MS`)
+  deletes it. The client neither subscribes to the table nor sends `cancel_trade`: the
+  disconnect sweep and the reaper are a remaining row's way out.
 - **Trade sessions.** `open_trade_session` opens a blank private `trade_session` row
   with a player within interact range (one per pair, at most four opened per player,
   one-hour TTL). Each side replaces only its own offer with `set_trade_offer`; every
@@ -260,7 +262,8 @@ part of the schema:
 | Class | Tables | Client read path |
 |---|---|---|
 | Public content | `species_row`, `skill_row`, `item_row`, `type_relation_row`, `zone_def`, `shop_row`, `shop_item_row`, `heal_location_row`, `npc`, `evolution_path`, `config` | direct subscription |
-| Public world state | `character`, `player`, `profile`, `trade_offer`, `battle_challenge`, `player_quest` | direct subscription |
+| Public world state | `character`, `player`, `profile`, `battle_challenge`, `player_quest` | direct subscription |
+| Public, drain-only | `trade_offer` | none in the client: no query subscribes to it and the store holds no offer state |
 | Private, owner-readable | `monster_pub`, `inventory`, `player_wallet`, `player_conversation`, `account`, `pending_evolution_notice`, `export_bundle` | views `my_monster_pub`, `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_pending_evolution_notices`, `my_export_bundle` |
 | Private, owner-readable (tactical) | `battle_queue`, `battle_deploy`, `player_formation` | views `my_battle_queue`, `my_battle_deploy`, `my_formation` |
 | Private, participant-readable | `battle`, `battle_tactical`, `battle_unit`, `battle_event`, `battle_clock`, `trade_session` | views `my_battle`, `my_tactical_battle`, `my_battle_units`, `my_battle_events`, `my_battle_clock` (either side, joined through `battle`), `my_trade_session` (opener or partner) |
@@ -285,9 +288,9 @@ body is the whole security boundary.
   and `battle_unit` carries no queue or ready field (`docs/DECISIONS.md`, "Tactical
   battle privacy is structural"). `battle_secret`, `battle_wild_unit` and
   `battle_summary` have no client read path.
-- **Accepted exposures.** `trade_offer` is public so both parties can see it, so the
-  amounts offered reveal a lower bound on the offering player's balance. The display
-  cards in an offer carry public-projection fields only.
+- **Accepted exposures.** `trade_offer` is public, so the amounts in a row still
+  draining from it reveal a lower bound on the offering player's balance; no reducer
+  adds rows. The display cards in an offer carry public-projection fields only.
 - **Data lifecycle.** `schema::DATA_LIFECYCLE_MANIFEST` gives every table a deletion
   policy (Erase, Anonymize, ViaJoin, NotOwned), a written basis, and an `exportable`
   flag. A test in `accounts_tests.rs` compares it with the generated module
@@ -356,8 +359,8 @@ with thin shells.
 
 `net/connection.ts` builds the SpacetimeDB connection (URI and database from
 `VITE_STDB_URI`/`VITE_STDB_DB`; a production build refuses the dev-default database,
-`net/connectionConfig.ts`). It subscribes to the public tables and the owner-scoped
-views in one batch; the character subscription covers all zones, and off-zone
+`net/connectionConfig.ts`). It subscribes to the public tables it renders (never the
+drain-only `trade_offer`) and the owner-scoped views in one batch; the character subscription covers all zones, and off-zone
 characters are filtered at render time. The SDK fires per-row callbacks.
 `net/batch.ts` coalesces a transaction's callbacks within one microtask so the store
 flushes once per burst, and the predictor reconciles against a consistent snapshot.

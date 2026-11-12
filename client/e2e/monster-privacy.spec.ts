@@ -7,7 +7,19 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, pressAccel, startPvpByButtons, TACTICS } from './controls';
+import {
+  closeAll,
+  openFaceToFace,
+  pressAccel,
+  pressButton,
+  readChip,
+  readWorld,
+  safeTile,
+  startPvpByButtons,
+  TACTICS,
+  type Tile,
+  walkTo,
+} from './controls';
 
 /** bt-16: the tactical battle shell (the PvP leg's battle UI since the cutover). */
 const TACTICS_SHELL = TACTICS.shell;
@@ -77,16 +89,14 @@ function speciesNameById(speciesId: number, label: string): string {
 // the battle/trade tests assert their overlays render FULLY (a real species name,
 // real HP numbers) at the same moment.
 //
-// TWO SESSIONS, DELIBERATELY. The PvP flow and the trade flow cannot share one
-// pair of browsers: `confirm_trade` clears `party_slot` on every transferred
-// monster, so after a trade the receiver's new monster sits in the BOX and the
-// giver's party is empty — neither side can then be challenged. And the battle/trade
-// interlock forbids trading while a battle is ongoing. Rather than sequence a KO
-// (non-deterministic) or re-seat party slots through the box UI (a lot of unrelated
-// machinery), each flow gets its own pair of fresh browsers, i.e. fresh identities
-// with fresh starters in party slot 0. Session 1's players disconnect in its
-// afterAll, which settles its battle by forfeit and deletes both player rows, before
-// session 2 launches.
+// TWO PAIRS OF BROWSERS, DELIBERATELY. The PvP flow and the trade flow do not share
+// one pair: the battle/trade interlock refuses to offer a monster that is in an
+// ongoing battle, and the PvP test leaves its battle running. Rather than sequence a
+// KO (non-deterministic) or a forfeit through the battle UI (unrelated machinery),
+// each flow gets its own pair of fresh browsers, i.e. fresh identities with fresh
+// starters in party slot 0. The first pair disconnects in its afterAll, which settles
+// its battle by forfeit and deletes both player rows, before the second pair
+// launches.
 //
 // FILE-ORDERING AUDIT (the pvp-side-b.spec.ts idiom — recorded so a future
 // reviewer never re-derives it): playwright.config.ts documents single-worker,
@@ -99,11 +109,12 @@ function speciesNameById(speciesId: number, label: string): string {
 // EARS CRITERIA COVERED
 // =====================
 //   13r-e-1  a client receives its OWN monster_pub rows and NO other player's
-//   13r-e-2  the battle overlay and the trade window render FULLY while the
+//   13r-e-2  the battle UI and the trade session editor render FULLY while the
 //            client holds ZERO other-player monster rows (the empty engaged-view
 //            delivery set of ADR-0194 D3)
-//   13r-e-3  a live ownership transfer migrates the row between the two clients'
-//            views with NO reconnect (the reveal/revoke analogue)
+//   13r-e-3  a live ownership transfer (the session swap) migrates each row
+//            between the two clients' views with NO reload (the reveal/revoke
+//            analogue)
 //
 // WHAT EARS 3 CAN AND CANNOT BE TESTED FOR HERE — stated so the coverage is not
 // over-read. EARS 3 has two halves: (i) revelation CEASES when an engagement
@@ -146,26 +157,33 @@ interface GameSnap {
   } | null;
 }
 
+/** One side of a trade session, as the `__mrTrade` hook hands it across the evaluate boundary. */
+interface HookOffer {
+  monsterIds: string[];
+  items: { itemId: number; qty: number }[];
+  currency: string;
+}
+
+/** A trade session row as `__mrTrade.mySessions()` returns it (bigints as decimal strings). */
+interface HookSession {
+  sessionId: string;
+  opener: string;
+  partner: string;
+  revision: string;
+  openerConfirmed: boolean;
+  partnerConfirmed: boolean;
+  openerOffer: HookOffer;
+  partnerOffer: HookOffer;
+}
+
+/** The `window.__mrTrade` session hook (main.ts `mrTradeHook`). */
 interface MrTrade {
-  proposeTrade(args: {
-    counterparty: string;
-    initiatorMonsterIds: string[];
-    initiatorItems: { itemId: number; qty: number }[];
-    initiatorCurrency: string;
-    counterpartyMonsterIds: string[];
-    counterpartyItems: { itemId: number; qty: number }[];
-    counterpartyCurrency: string;
-  }): Promise<void> | undefined;
-  respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined;
-  confirmTrade(tradeId: string): Promise<void> | undefined;
-  cancelTrade(tradeId: string): Promise<void> | undefined;
-  allTradeOffers(): Array<{
-    tradeId: string;
-    initiator: string;
-    counterparty: string;
-    status: string;
-  }>;
   allPlayers(): Array<{ identity: string; name: string }>;
+  openTradeSession(partnerHex: string): Promise<void> | undefined;
+  setTradeOffer(sessionId: string, offer: HookOffer): Promise<void> | undefined;
+  confirmTradeSession(sessionId: string, revision: string): Promise<void> | undefined;
+  cancelTradeSession(sessionId: string): Promise<void> | undefined;
+  mySessions(): HookSession[];
 }
 
 /** The monster-bearing slice of the debug bundle — the only part this spec judges. */
@@ -585,13 +603,204 @@ test.describe
   });
 
 // ===========================================================================
-// SESSION 2 — the trade window + a live ownership transfer
-// (EARS 13r-e-2b). Fresh browsers: see the two-sessions rationale in
-// the file header (confirm_trade clears party_slot, and the ADR-0112 interlock
-// forbids trading during a battle).
+// SECOND PAIR — the trade session editor + a live ownership transfer
+// (EARS 13r-e-2 trade half, 13r-e-3). Fresh browsers: see the two-pairs rationale in
+// the file header.
+//
+// HOW THE EDITOR OPENS (trade-session.spec.ts precedent): A opens the session face to
+// face (`openFaceToFace`: A walks onto B's tile, A, `Trade — <B>`, A), which opens A's
+// editor on it; B answers from the banner (B stands apart so Y has no target, Y opens
+// the request sheet on Accept, A opens B's editor on that session). The offers and the
+// confirms then go through the DEV `__mrTrade` hook: the editor's buttons are
+// trade-session.spec.ts's subject, and this test is about what each client RECEIVES.
 // ===========================================================================
+
+/** The editor's DOM contract (ui/tradeSessionView.ts): the static shell it mounts on, and the
+ *  monster cards of one side. */
+const EDITOR = '#tradepropose-overlay';
+const sideCard = (side: 'mine' | 'theirs', monsterId: string): string =>
+  `#tradesession-${side} ul[data-section="monsters"] > li[data-monster-id="${monsterId}"]`;
+const sideCards = (side: 'mine' | 'theirs'): string =>
+  `#tradesession-${side} ul[data-section="monsters"] > li`;
+const BANNER = '#notice-banner';
+
+/** The context stack as base-first names. */
+const stackNames = (p: Page): Promise<string[]> =>
+  p.evaluate(() => {
+    const g = (
+      window as unknown as { __game: () => { stack: Array<{ kind: string; id?: string }> } }
+    ).__game();
+    return g.stack.map((f) => f.id ?? f.kind);
+  });
+
+/** The session between `me` and `other` (either orientation) as `p`'s hook reads it, else null. */
+const sessionBetween = (p: Page, me: string, other: string): Promise<HookSession | null> =>
+  p.evaluate(
+    ({ me: a, other: b }) => {
+      const w = window as unknown as { __mrTrade: MrTrade };
+      return (
+        w.__mrTrade
+          .mySessions()
+          .find(
+            (s) => (s.opener === a && s.partner === b) || (s.opener === b && s.partner === a),
+          ) ?? null
+      );
+    },
+    { me, other },
+  );
+
+/** Polls until `p` holds a session between the two that satisfies `ok`; returns it. */
+async function waitSession(
+  p: Page,
+  me: string,
+  other: string,
+  label: string,
+  ok: (s: HookSession) => boolean = () => true,
+): Promise<HookSession> {
+  let found: HookSession | null = null;
+  await expect
+    .poll(
+      async () => {
+        found = await sessionBetween(p, me, other);
+        return found !== null && ok(found);
+      },
+      { message: `${label}: the session reaches this page in the expected state`, timeout: 20_000 },
+    )
+    .toBe(true);
+  const s = found as HookSession | null;
+  if (s === null) throw new Error(`${label}: no session`);
+  return s;
+}
+
+/** A session reducer call through the hook, made in the page. */
+type SessionCall =
+  | { kind: 'offer'; sessionId: string; monsterIds: string[] }
+  | { kind: 'confirm'; sessionId: string; revision: string }
+  | { kind: 'cancel'; sessionId: string };
+
+/** Sends `call` from `p` and awaits the reducer: null on success, else the rejection's name and
+ *  message as the page saw them. */
+const sendSession = (
+  p: Page,
+  call: SessionCall,
+): Promise<{ name: string; message: string } | null> =>
+  p.evaluate(async (c: SessionCall) => {
+    const w = window as unknown as { __mrTrade: MrTrade };
+    let sent: Promise<void> | undefined;
+    switch (c.kind) {
+      case 'offer':
+        sent = w.__mrTrade.setTradeOffer(c.sessionId, {
+          monsterIds: c.monsterIds,
+          items: [],
+          currency: '0',
+        });
+        break;
+      case 'confirm':
+        sent = w.__mrTrade.confirmTradeSession(c.sessionId, c.revision);
+        break;
+      case 'cancel':
+        sent = w.__mrTrade.cancelTradeSession(c.sessionId);
+        break;
+    }
+    if (sent === undefined) return { name: 'NotSent', message: `${c.kind}: no live connection` };
+    try {
+      await sent;
+      return null;
+    } catch (e) {
+      const err = e as { name?: unknown; message?: unknown } | null;
+      return { name: String(err?.name ?? typeof e), message: String(err?.message ?? e) };
+    }
+  }, call);
+
+/** Cleanup only (a `finally`): cancels any session the two still share. Never throws. */
+async function cancelLeftover(pa: Page, pb: Page, a: string, b: string): Promise<void> {
+  try {
+    const left = await sessionBetween(pa, a, b);
+    if (left !== null) {
+      await sendSession(pa, { kind: 'cancel', sessionId: left.sessionId });
+      await expect
+        .poll(async () => (await sessionBetween(pa, a, b)) === null, { timeout: 20_000 })
+        .toBe(true);
+    }
+  } catch (err) {
+    console.error('[monster-privacy cleanup]', err);
+  }
+  await closeAll(pa).catch(() => undefined);
+  await closeAll(pb).catch(() => undefined);
+}
+
+/** Walks `page`'s player a few tiles away along a safe path until the world chip clears (nothing
+ *  faced), so Y opens the request sheet (respond-request.spec.ts's helper, copied). */
+async function standApart(page: Page): Promise<void> {
+  const w = await readWorld(page);
+  const from = w.ownAuthTile;
+  if (from === null) throw new Error('standApart: no authoritative own tile');
+  const candidates: Tile[] = [];
+  for (let dy = -6; dy <= 6; dy++) {
+    for (let dx = -6; dx <= 6; dx++) {
+      const dist = Math.abs(dx) + Math.abs(dy);
+      const t = { x: from.x + dx, y: from.y + dy };
+      if (dist >= 3 && dist <= 6 && safeTile(w.map, t)) candidates.push(t);
+    }
+  }
+  candidates.sort(
+    (a, b) =>
+      Math.abs(a.x - from.x) +
+      Math.abs(a.y - from.y) -
+      (Math.abs(b.x - from.x) + Math.abs(b.y - from.y)),
+  );
+  for (const target of candidates.slice(0, 8)) {
+    if ((await walkTo(page, target, 'standApart')) === 'battle') {
+      throw new Error('standApart: a battle started on a grass-free walk');
+    }
+    const clear = await expect
+      .poll(() => readChip(page), { timeout: 3_000 })
+      .toBeNull()
+      .then(() => true)
+      .catch(() => false);
+    if (clear) return;
+  }
+  throw new Error('standApart: no nearby tile leaves the character with nothing faced');
+}
+
+/** The request sheet's rows inside `#interact-prompt`. */
+const sheetRows = (p: Page): Promise<Array<{ text: string; selected: boolean }>> =>
+  p.evaluate(() =>
+    [...document.querySelectorAll('#interact-prompt [role="option"]')].map((row) => ({
+      text: (row.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      selected: row.getAttribute('aria-selected') === 'true',
+    })),
+  );
+
+/** The partner answers an incoming session from the banner: it stands apart, Y opens the request
+ *  sheet on Accept, A opens the editor on that session (trade-session.spec.ts `openFromBanner`). */
+async function openFromBanner(p: Page, sessionId: string, label: string): Promise<void> {
+  await expect(p.locator(BANNER), `${label}: the banner shows`).toBeVisible({ timeout: 20_000 });
+  await standApart(p);
+  await expect(p.locator(BANNER), `${label}: the banner still waits`).toBeVisible();
+  await pressButton(p, 'Y');
+  await expect
+    .poll(async () => (await sheetRows(p)).map((r) => r.text), {
+      message: `${label}: Y opens the request sheet`,
+      timeout: 5_000,
+    })
+    .toEqual(['Accept', 'Decline', 'View', 'Close']);
+  expect(
+    (await sheetRows(p)).findIndex((r) => r.selected),
+    `${label}: on Accept`,
+  ).toBe(0);
+  await pressButton(p, 'A');
+  await expect
+    .poll(() => stackNames(p), { message: `${label}: Accept opens the editor`, timeout: 10_000 })
+    .toEqual(['world', 'tradeSessionView']);
+  await expect(p.locator(EDITOR), `${label}: on THIS session`).toHaveAttribute(
+    'data-session-id',
+    sessionId,
+  );
+}
+
 test.describe
-  .serial('13r-e — monster_pub privacy: the trade window + live ownership transfer (ADR-0194)', () => {
+  .serial('13r-e — monster_pub privacy: the trade session editor + live ownership transfer, ADR-0194', () => {
     let browserA: Browser;
     let ctxA: BrowserContext;
     let pageA: Page;
@@ -625,8 +834,8 @@ test.describe
       }
     });
 
-    test('EARS 13r-e-2 + 13r-e-3: the trade window renders both parties` cards, and the transfer migrates the row live with NO reconnect', async () => {
-      test.setTimeout(120_000);
+    test('EARS 13r-e-2 + 13r-e-3: the trade session editor renders both parties` offered cards while each client holds zero foreign monster rows, and the confirmed swap migrates both rows live with NO reload', async () => {
+      test.setTimeout(180_000);
 
       await Promise.all([
         pageA.waitForFunction(
@@ -640,6 +849,8 @@ test.describe
           { timeout: 20_000 },
         ),
       ]);
+      await closeAll(pageA);
+      await closeAll(pageB);
 
       const beforeA = await monsterView(pageA);
       const beforeB = await monsterView(pageB);
@@ -648,243 +859,242 @@ test.describe
 
       const identityA = beforeA.identity;
       const identityB = beforeB.identity;
-      // biome-ignore lint/style/noNonNullAssertion: expectOnlyOwnMonsters proved length >= 1
-      const transferredId = beforeB.ownMonsters[0]!.monsterId;
+      expect(identityA, 'the two clients must have distinct identities').not.toBe(identityB);
+      expect(
+        await sessionBetween(pageA, identityA, identityB),
+        'precondition: no session yet',
+      ).toBeNull();
+      // Each side offers its lowest-slot party monster (the starter of a fresh identity).
+      const offerOf = (v: MonsterView, label: string): GameSnap['ownMonsters'][number] => {
+        const m = [...v.ownMonsters]
+          .filter((x) => x.partySlot < 6)
+          .sort((x, y) => x.partySlot - y.partySlot)[0];
+        if (m === undefined) throw new Error(`${label}: no party monster to offer`);
+        return m;
+      };
+      const monA = offerOf(beforeA, 'client A');
+      const monB = offerOf(beforeB, 'client B');
+      // The species each card must name, from the server's PUBLIC species_row (owner SQL),
+      // keyed by the OFFERING page's own row — never a literal.
+      const speciesA = speciesNameById(monA.speciesId, 'client A');
+      const speciesB = speciesNameById(monB.speciesId, 'client B');
 
-      // B (the giver) proposes: B offers its own monster to A, nothing in return.
-      // Initiator-offers-own-monster is the shape trade-full.spec.ts already
-      // proves works end to end; making B the initiator gives the B -> A transfer
-      // direction this criterion asks for without inventing a new reducer shape.
-      await pageB.waitForFunction(
-        (myIdentity: string) => {
-          const w = window as unknown as { __mrTrade?: MrTrade };
-          if (!w.__mrTrade) return false;
-          return w.__mrTrade.allPlayers().some((pl) => pl.identity !== myIdentity);
-        },
-        identityB,
-        { timeout: 20_000 },
-      );
-
-      await pageB.evaluate(
-        (args: { counterparty: string; monsterId: string }) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const p = w.__mrTrade.proposeTrade({
-            counterparty: args.counterparty,
-            initiatorMonsterIds: [args.monsterId],
-            initiatorItems: [],
-            initiatorCurrency: '0',
-            counterpartyMonsterIds: [],
-            counterpartyItems: [],
-            counterpartyCurrency: '0',
-          });
-          if (!p) throw new Error('13r-e: proposeTrade returned undefined (hook not ready?)');
-          return p;
-        },
-        { counterparty: identityA, monsterId: transferredId },
-      );
-
-      // Both sides see the Pending offer (trade_offer is a PUBLIC table; both
-      // parties subscribe it).
-      //
-      // MATCHED BY PARTY, never by index: `trade_offer` is world-readable and the
-      // e2e world is shared, so `allTradeOffers()[0]` can be a LEFTOVER offer
-      // between two other players from an earlier spec (or an earlier run that
-      // exited before its cancel). Grabbing its tradeId would drive the rest of
-      // this test against someone else's trade and fail somewhere unrelated.
-      await Promise.all([
-        pageA.waitForFunction(
-          (args: { a: string; b: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade
-              .allTradeOffers()
-              .some((o) => o.initiator === args.b && o.counterparty === args.a);
-          },
-          { a: identityA, b: identityB },
-          { timeout: 20_000 },
-        ),
-        pageB.waitForFunction(
-          (args: { a: string; b: string }) => {
-            const w = window as unknown as { __mrTrade?: MrTrade };
-            if (!w.__mrTrade) return false;
-            return w.__mrTrade
-              .allTradeOffers()
-              .some((o) => o.initiator === args.b && o.counterparty === args.a);
-          },
-          { a: identityA, b: identityB },
-          { timeout: 20_000 },
-        ),
-      ]);
-
-      // --- EARS 13r-e-2 (trade half): BOTH parties' cards render fully --------
-      // The trade window renders from the MonsterCard snapshots embedded in the
-      // trade_offer row, so `#trade-their-side` on A shows B's offered monster —
-      // a monster_pub row A no longer receives — and must still name a real
-      // species.
-      //
-      // WHAT THIS PROVES, PRECISELY: that the trade UI is COMPLETE under the new
-      // privacy regime, at the same instant as the monsterCount assertion below.
-      // It is NOT a proof of non-dependence: tradeModel resolves the name from
-      // `speciesMap` (the PUBLIC species_row table) keyed by the speciesId carried
-      // in the offer's MonsterCard, so it never had a monster_pub dependency to
-      // lose either. `Unknown (#N)` is that lookup's fallback, not a monster_pub
-      // sentinel. The pairing — full render WITH an empty foreign-row set — is the
-      // evidence for ADR-0194 D3's deferral; the static half is owned by the
-      // store-accessor deletion test.
-      for (const [page, label] of [
-        [pageA, 'client A'],
-        [pageB, 'client B'],
-      ] as const) {
-        await closeAll(page);
-        if (!(await page.locator('#trade-overlay').isVisible())) {
-          await pressAccel(page, 'U');
-        }
-        await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 10_000 });
-
-        const mySide = await page.locator('#trade-my-side').innerText();
-        const theirSide = await page.locator('#trade-their-side').innerText();
-        const both = `${mySide}\n${theirSide}`;
-        expect(
-          both.trim().length,
-          `${label}: POSITIVE ANCHOR — the trade window must render both sides' content ` +
-            '(an empty window would satisfy any negative-only check)',
-        ).toBeGreaterThan(0);
-        expect(
-          both.includes('Unknown (#'),
-          `${label}: a trade card degraded to a placeholder species name. The window renders ` +
-            'from the MonsterCard snapshots embedded in trade_offer (ADR-0194 D3), so it must ' +
-            'be unaffected by monster_pub going private — this is the tooth on that claim. ' +
-            `my-side=${mySide} their-side=${theirSide}`,
-        ).toBe(false);
-        // The offered monster's id must NOT be needed for the render to work, but
-        // the window must clearly be showing the live offer.
-        expect(
-          both.length,
-          `${label}: the trade window rendered no card text at all`,
-        ).toBeGreaterThan(1);
-
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(200);
+      // A page-side marker: still present at the end means neither page reloaded.
+      for (const p of [pageA, pageB]) {
+        await p.evaluate(() => {
+          (window as unknown as { __mrNoReload?: boolean }).__mrNoReload = true;
+        });
       }
 
-      // Still no foreign monster rows while the trade window is open.
-      const midA = await monsterView(pageA);
-      const midB = await monsterView(pageB);
-      expectOnlyOwnMonsters(midA, 'client A (offer pending)');
-      expectOnlyOwnMonsters(midB, 'client B (offer pending)');
-      expectNoForeignIds(midA, midB, 'client A (offer pending)');
+      try {
+        // --- open the editor on both pages -----------------------------------------
+        await openFaceToFace(pageA, 'Trade', undefined, pageB);
+        const opened = await waitSession(pageA, identityA, identityB, 'A opens');
+        expect(opened.opener, 'A opened it').toBe(identityA);
+        const sid = opened.sessionId;
+        await expect
+          .poll(() => stackNames(pageA), { message: 'A: the editor opens', timeout: 10_000 })
+          .toEqual(['world', 'tradeSessionView']);
+        await expect(pageA.locator(EDITOR), 'A: the editor is on the new session').toHaveAttribute(
+          'data-session-id',
+          sid,
+        );
+        await waitSession(pageB, identityB, identityA, 'B sees the session');
+        await openFromBanner(pageB, sid, 'B');
 
-      // --- complete the trade -------------------------------------------------
-      // Resolved by PARTY PAIR, never by index (see the wait above): a leftover
-      // world-readable offer between two other players must not be able to supply
-      // the tradeId this test then responds to and confirms.
-      const tradeId = await pageA.evaluate(
-        (args: { a: string; b: string }) => {
-          const w = window as unknown as { __mrTrade: MrTrade };
-          const ours = w.__mrTrade
-            .allTradeOffers()
-            .find((o) => o.initiator === args.b && o.counterparty === args.a);
-          return ours?.tradeId ?? '';
-        },
-        { a: identityA, b: identityB },
-      );
-      expect(tradeId, 'the tradeId for the offer B->A must resolve to a non-empty string').not.toBe(
-        '',
-      );
+        // --- both offer their monster ------------------------------------------------
+        const offeredA = await sendSession(pageA, {
+          kind: 'offer',
+          sessionId: sid,
+          monsterIds: [monA.monsterId],
+        });
+        expect(offeredA, `A offers: ${JSON.stringify(offeredA)}`).toBeNull();
+        const offeredB = await sendSession(pageB, {
+          kind: 'offer',
+          sessionId: sid,
+          monsterIds: [monB.monsterId],
+        });
+        expect(offeredB, `B offers: ${JSON.stringify(offeredB)}`).toBeNull();
+        const both = await waitSession(
+          pageA,
+          identityA,
+          identityB,
+          'both offers land',
+          (s) =>
+            s.revision === '2' &&
+            s.openerOffer.monsterIds.join() === monA.monsterId &&
+            s.partnerOffer.monsterIds.join() === monB.monsterId,
+        );
 
-      // A (the counterparty) accepts.
-      await pageA.evaluate((tid: string) => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        const p = w.__mrTrade.respondTrade(tid, true);
-        if (!p) throw new Error('13r-e: respondTrade returned undefined');
-        return p;
-      }, tradeId);
-
-      await pageB.waitForFunction(
-        (tid: string) => {
-          const w = window as unknown as { __mrTrade?: MrTrade };
-          if (!w.__mrTrade) return false;
-          return (
-            w.__mrTrade.allTradeOffers().find((o) => o.tradeId === tid)?.status ===
-            'ConfirmedByCounterparty'
+        // --- EARS 13r-e-2 (trade half): BOTH parties' cards render fully ------------
+        // Each side's cards are the MonsterCard snapshots the server stored in the session's
+        // offer, so A's `#tradesession-theirs` shows B's offered monster — a monster_pub row A
+        // never receives — and must name its real species.
+        //
+        // WHAT THIS PROVES, PRECISELY: that the session editor is COMPLETE under the privacy
+        // regime, at the same instant as the monsterCount assertion below. It is NOT a proof of
+        // non-dependence: the editor resolves the name from `speciesMap` (the PUBLIC species_row
+        // table) keyed by the speciesId the card carries, so it never had a monster_pub
+        // dependency to lose. `Unknown (#N)` is that lookup's fallback, not a monster_pub
+        // sentinel. The pairing — full render WITH an empty foreign-row set — is the evidence
+        // for ADR-0194 D3's deferral; the static half is owned by the store-accessor deletion
+        // test.
+        for (const [page, label, mine, theirs, mySpecies, theirSpecies] of [
+          [pageA, 'client A', monA, monB, speciesA, speciesB],
+          [pageB, 'client B', monB, monA, speciesB, speciesA],
+        ] as const) {
+          await expect(page.locator(EDITOR), `${label}: the editor is open`).toBeVisible();
+          await expect(page.locator(EDITOR)).toHaveAttribute('data-revision', '2', {
+            timeout: 15_000,
+          });
+          const own = page.locator(sideCard('mine', mine.monsterId));
+          const other = page.locator(sideCard('theirs', theirs.monsterId));
+          await expect(own, `${label}: its own offered card renders`).toHaveCount(1, {
+            timeout: 15_000,
+          });
+          await expect(
+            other,
+            `${label}: POSITIVE ANCHOR — the OTHER player's offered card renders`,
+          ).toHaveCount(1, { timeout: 15_000 });
+          await expect(page.locator(sideCards('mine')), `${label}: one own card`).toHaveCount(1);
+          await expect(page.locator(sideCards('theirs')), `${label}: one other card`).toHaveCount(
+            1,
           );
-        },
-        tradeId,
-        { timeout: 20_000 },
-      );
+          await expect(
+            other,
+            `${label}: the other player's card names its REAL species (${theirSpecies})`,
+          ).toContainText(theirSpecies);
+          await expect(
+            own,
+            `${label}: its own card names its REAL species (${mySpecies})`,
+          ).toContainText(mySpecies);
+          const cardsText = `${(await own.textContent()) ?? ''}\n${(await other.textContent()) ?? ''}`;
+          expect(
+            cardsText.includes('Unknown (#'),
+            `${label}: a session card degraded to a placeholder species name. The editor renders ` +
+              'from the MonsterCard snapshots the server stores in the session offer (ADR-0194 ' +
+              'D3), so it must be unaffected by monster_pub going private. ' +
+              `cards=${cardsText}`,
+          ).toBe(false);
+        }
 
-      // B (the initiator) confirms — this is the reducer that transfers ownership.
-      await pageB.evaluate((tid: string) => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        const p = w.__mrTrade.confirmTrade(tid);
-        if (!p) throw new Error('13r-e: confirmTrade returned undefined');
-        return p;
-      }, tradeId);
+        // At the SAME time, neither client holds a foreign monster row.
+        const midA = await monsterView(pageA);
+        const midB = await monsterView(pageB);
+        expectOnlyOwnMonsters(midA, 'client A (session open)');
+        expectOnlyOwnMonsters(midB, 'client B (session open)');
+        expectNoForeignIds(midA, midB, 'client A (session open)');
+        expectNoForeignIds(midB, midA, 'client B (session open)');
 
-      // --- EARS 13r-e-3: the row MIGRATES between the two views, live ----------
-      // NO reload, NO reconnect: the view's row set changes under a live
-      // subscription, and each client's store must converge on it. This is the
-      // reveal/revoke analogue — A gains visibility of a row it could never see
-      // before, and B loses it in the same transaction.
-      //
-      // WRONG IMPL KILLED: `my_wallet`-style insert-only wiring. A would gain the
-      // monster and B would KEEP it forever (the row is stranded in B's store
-      // because the view's onDelete is never handled) — B's assertion below is
-      // what catches that, and no amount of waiting fixes it.
-      await Promise.all([
-        pageA.waitForFunction(
-          (id: string) => {
-            const g = (window as unknown as { __game: () => GameSnap }).__game();
-            return g.ownMonsters.some((m) => m.monsterId === id);
-          },
-          transferredId,
-          { timeout: 30_000 },
-        ),
-        pageB.waitForFunction(
-          (id: string) => {
-            const g = (window as unknown as { __game: () => GameSnap }).__game();
-            return !g.ownMonsters.some((m) => m.monsterId === id);
-          },
-          transferredId,
-          { timeout: 30_000 },
-        ),
-      ]);
+        // --- both confirm: the last confirm executes the swap ---------------------------
+        const confirmedA = await sendSession(pageA, {
+          kind: 'confirm',
+          sessionId: sid,
+          revision: both.revision,
+        });
+        expect(confirmedA, `A confirms: ${JSON.stringify(confirmedA)}`).toBeNull();
+        const half = await waitSession(
+          pageB,
+          identityB,
+          identityA,
+          'B sees A`s confirm',
+          (s) => s.openerConfirmed,
+        );
+        const confirmedB = await sendSession(pageB, {
+          kind: 'confirm',
+          sessionId: sid,
+          revision: half.revision,
+        });
+        expect(confirmedB, `B confirms: ${JSON.stringify(confirmedB)}`).toBeNull();
 
-      const afterA = await monsterView(pageA);
-      const afterB = await monsterView(pageB);
+        // --- EARS 13r-e-3: each row MIGRATES between the two views, live --------------
+        // NO reload: the view's row set changes under a live subscription, and each client's
+        // store must converge on it. This is the reveal/revoke analogue — each client gains a
+        // row it could never see before and loses the one it gave, in the same transaction.
+        //
+        // WRONG IMPL KILLED: `my_wallet`-style insert-only wiring. Each client would gain the
+        // received monster and KEEP the given one forever (stranded in its store because the
+        // view's onDelete is never handled) — the monsterCount assertions below catch that, and
+        // no amount of waiting fixes it.
+        await Promise.all([
+          pageA.waitForFunction(
+            (ids: { gained: string; gave: string }) => {
+              const g = (window as unknown as { __game: () => GameSnap }).__game();
+              return (
+                g.ownMonsters.some((m) => m.monsterId === ids.gained) &&
+                !g.ownMonsters.some((m) => m.monsterId === ids.gave)
+              );
+            },
+            { gained: monB.monsterId, gave: monA.monsterId },
+            { timeout: 30_000 },
+          ),
+          pageB.waitForFunction(
+            (ids: { gained: string; gave: string }) => {
+              const g = (window as unknown as { __game: () => GameSnap }).__game();
+              return (
+                g.ownMonsters.some((m) => m.monsterId === ids.gained) &&
+                !g.ownMonsters.some((m) => m.monsterId === ids.gave)
+              );
+            },
+            { gained: monA.monsterId, gave: monB.monsterId },
+            { timeout: 30_000 },
+          ),
+        ]);
 
-      expect(
-        afterA.ownMonsters.map((m) => m.monsterId),
-        `client A must now own the transferred monster ${transferredId}`,
-      ).toContain(transferredId);
-      expect(
-        afterB.ownMonsters.map((m) => m.monsterId),
-        `client B must no longer own the transferred monster ${transferredId}`,
-      ).not.toContain(transferredId);
+        const afterA = await monsterView(pageA);
+        const afterB = await monsterView(pageB);
+        expect(
+          afterA.ownMonsters.map((m) => m.monsterId).sort(),
+          'client A: gave its monster, received B`s',
+        ).toEqual(
+          [
+            ...beforeA.ownMonsters.map((m) => m.monsterId).filter((id) => id !== monA.monsterId),
+            monB.monsterId,
+          ].sort(),
+        );
+        expect(
+          afterB.ownMonsters.map((m) => m.monsterId).sort(),
+          'client B: gave its monster, received A`s',
+        ).toEqual(
+          [
+            ...beforeB.ownMonsters.map((m) => m.monsterId).filter((id) => id !== monB.monsterId),
+            monA.monsterId,
+          ].sort(),
+        );
 
-      // The invariant still holds on BOTH sides after the migration: B must not
-      // keep a stale copy of the row it gave away (that would be a live leak of a
-      // monster it no longer owns), and A must not have gained anything except
-      // the transferred row.
-      expect(
-        afterA.monsterCount,
-        'client A: after the transfer the store must hold exactly its own rows — ' +
-          `monsterCount=${afterA.monsterCount} vs ownMonsters=${afterA.ownMonsters.length}`,
-      ).toBe(afterA.ownMonsters.length);
-      expect(afterA.ownMonsters.length, 'client A must have gained exactly one monster').toBe(
-        beforeA.ownMonsters.length + 1,
-      );
-      expect(
-        afterB.monsterCount,
-        'client B: the row it gave away must be GONE from the store, not merely filtered out ' +
-          `of ownMonsters — monsterCount=${afterB.monsterCount} vs ownMonsters=` +
-          `${afterB.ownMonsters.length}. A stale copy here is the my_wallet insert-only ` +
-          'failure ADR-0194 D4 names: the traded-away monster is stranded in the client',
-      ).toBe(afterB.ownMonsters.length);
-      expect(afterB.ownMonsters.length, 'client B must have lost exactly one monster').toBe(
-        beforeB.ownMonsters.length - 1,
-      );
-      expectNoForeignIds(afterA, afterB, 'client A (post-transfer)');
-      expectNoForeignIds(afterB, afterA, 'client B (post-transfer)');
+        // The invariant still holds on BOTH sides after the migration: neither client keeps a
+        // stale copy of the row it gave away (a live leak of a monster it no longer owns).
+        expect(
+          afterA.monsterCount,
+          'client A: the row it gave away must be GONE from the store, not merely filtered out ' +
+            `of ownMonsters — monsterCount=${afterA.monsterCount} vs ownMonsters=` +
+            `${afterA.ownMonsters.length}. A stale copy here is the my_wallet insert-only ` +
+            'failure ADR-0194 D4 names: the traded-away monster is stranded in the client',
+        ).toBe(afterA.ownMonsters.length);
+        expect(
+          afterB.monsterCount,
+          'client B: the row it gave away must be GONE from the store — ' +
+            `monsterCount=${afterB.monsterCount} vs ownMonsters=${afterB.ownMonsters.length}`,
+        ).toBe(afterB.ownMonsters.length);
+        expectNoForeignIds(afterA, afterB, 'client A (post-transfer)');
+        expectNoForeignIds(afterB, afterA, 'client B (post-transfer)');
+
+        for (const [p, label] of [
+          [pageA, 'client A'],
+          [pageB, 'client B'],
+        ] as const) {
+          expect(
+            await p.evaluate(
+              () => (window as unknown as { __mrNoReload?: boolean }).__mrNoReload === true,
+            ),
+            `${label}: the page never reloaded during the migration`,
+          ).toBe(true);
+          expect((await monsterView(p)).identity, `${label}: the same identity throughout`).toBe(
+            label === 'client A' ? identityA : identityB,
+          );
+        }
+      } finally {
+        await cancelLeftover(pageA, pageB, identityA, identityB);
+      }
     });
   });
