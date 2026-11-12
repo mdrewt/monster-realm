@@ -91,9 +91,47 @@ build:
 publish:
     spacetime publish --module-path server-module {{db}}
 
-# Playwright multi-client e2e (both projects) against a running spacetime; CI's e2e job.
-e2e: wasm
-    cd client && npm run e2e
+# Playwright multi-client e2e (both projects) against a running spacetime. `args` go to
+# Playwright: CI's e2e job runs one `--shard=i/N` per runner.
+e2e *args: wasm
+    cd client && npm run e2e -- {{args}}
+
+# The whole e2e suite as MR_E2E_SHARDS concurrent Playwright shard processes against the ONE
+# running SpacetimeDB (STDB_SERVER / VITE_STDB_URI as for `just e2e`). Each shard owns a database
+# ({{db}}-shard-<i>) and a vite port (MR_E2E_PORT, default 5290, plus <i>), so the specs' exact
+# live-population assertions hold per shard. The dev_reducers module is built here and always
+# passed as MR_DEV_MODULE_WASM: a publish without that feature passes globalSetup and then fails
+# every spec that calls a dev reducer. Exits non-zero naming each failed shard and its log.
+e2e-shards: wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    n="${MR_E2E_SHARDS:-4}"
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "e2e-shards: MR_E2E_SHARDS '$n' is not a positive integer" >&2; exit 64; }
+    base_port="${MR_E2E_PORT:-5290}"
+    cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
+    MR_DEV_MODULE_WASM="$(realpath "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/monster_realm_module.wasm")"
+    export MR_DEV_MODULE_WASM
+    cd client
+    out=test-results/shards
+    mkdir -p "$out"
+    pids=()
+    trap 'kill "${pids[@]}" 2>/dev/null || true' INT TERM
+    for i in $(seq 1 "$n"); do
+        VITE_STDB_DB="{{db}}-shard-$i" MR_E2E_PORT=$((base_port + i)) \
+            npm run --silent e2e -- --shard="$i/$n" --output="$out/shard-$i" > "$out/shard-$i.log" 2>&1 &
+        pids+=("$!")
+    done
+    failed=0
+    for i in $(seq 1 "$n"); do
+        status=ok
+        wait "${pids[$((i - 1))]}" || { status=FAILED; failed=$((failed + 1)); }
+        counts="$(grep -E '^ +[0-9]+ (passed|failed|flaky|skipped|did not run)' "$out/shard-$i.log" | tr -s ' \n' ' ' || true)"
+        echo "e2e-shards: shard $i/$n $status —${counts:- no summary }— client/$out/shard-$i.log"
+    done
+    if [ "$failed" -gt 0 ]; then
+        echo "e2e-shards: $failed of $n shards failed" >&2
+        exit 1
+    fi
 
 # Inner loop for one crate.
 ci-fast crate:

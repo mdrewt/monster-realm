@@ -86,8 +86,10 @@ const frameName = (f: Frame): string => {
 /** Presses Start only while `__game().stack` is above its base; returns once it is at the base.
  *  Fails naming the stuck top frame after `CLOSE_ALL_MAX_PRESSES` presses (CTL6A.1). Never
  *  presses at a base, so it is safe both before and after Escape becomes Start (ctl-6b). Start's
- *  key is re-read from the live table before every press (ctl-12b: a remap moves it). */
-export async function closeAll(page: Page): Promise<void> {
+ *  key is re-read from the live table before every press (ctl-12b: a remap moves it).
+ *  `settleMs` is how long one press may take to change the stack; only a test whose fake stack
+ *  never changes passes a shorter one. */
+export async function closeAll(page: Page, settleMs = CLOSE_ALL_SETTLE_MS): Promise<void> {
   for (let presses = 0; ; presses++) {
     const before = await readStack(page);
     if (before.length <= 1) return;
@@ -105,7 +107,7 @@ export async function closeAll(page: Page): Promise<void> {
     await page.keyboard.press(start);
     const was = JSON.stringify(before);
     await expect
-      .poll(async () => JSON.stringify(await readStack(page)), { timeout: CLOSE_ALL_SETTLE_MS })
+      .poll(async () => JSON.stringify(await readStack(page)), { timeout: settleMs })
       .not.toBe(was)
       .catch(() => undefined); // unchanged: press again, up to the bound
   }

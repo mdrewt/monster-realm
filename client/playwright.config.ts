@@ -1,11 +1,10 @@
 import { defineConfig } from '@playwright/test';
 
-// M0b e2e: drives the REAL browser against a running SpacetimeDB instance with
-// the `monster-realm` module published. In CI this runs against a containerized
-// spacetime; locally it reuses a running instance + dev server.
-// e2e port env-driven (default 5290) so concurrent suites use distinct ports
-// (set MR_E2E_PORT). Pairs with VITE_STDB_DB (server publish + client connect)
-// to give each run its own db + port; the dev server (vite) reads MR_E2E_PORT too.
+// Drives a real browser against a running SpacetimeDB. One Playwright process owns one
+// database (VITE_STDB_DB: globalSetup publishes it, the client connects to it) and one vite
+// dev server (MR_E2E_PORT, default 5290; vite reads it too). Runs split with `--shard=i/N`
+// give every shard its own pair: CI's e2e matrix runs one shard per runner, each with its
+// own SpacetimeDB, and `just e2e-shards` runs N processes against one local SpacetimeDB.
 const e2ePort = process.env.MR_E2E_PORT ?? '5290';
 const e2eBaseUrl = `http://localhost:${e2ePort}`;
 
@@ -20,16 +19,14 @@ export default defineConfig({
   globalSetup: './e2e/global-setup.ts',
   timeout: 45_000,
   fullyParallel: false,
-  // ONE shared world, ONE worker (13.5h). All spec files share a single published
-  // db; golden.spec asserts an EXACT player population (presenceCount === 2), so a
-  // concurrently running spec file that keeps its own player joined (recruit.spec
-  // holds one for minutes) makes that unreachable. `fullyParallel: false` only
-  // serializes tests WITHIN a file — separate files still fan out across workers
-  // (observed: 3 workers locally, 2 on 4-vCPU CI runners). Single-worker completes
-  // the serialization this config always intended.
+  // One worker per process: every spec file in a process shares its one database, and
+  // specs assert the EXACT live population (golden.spec: presenceCount === 2) or pick "the
+  // other player", so a second file with a player joined at the same time breaks them.
+  // `fullyParallel: false` only serializes tests WITHIN a file; `workers: 1` serializes the
+  // files. Parallelism comes from shards, each with its own database, never from workers.
   workers: 1,
   // `dot` on CI and `list` locally are Playwright's own defaults, spelled out only so CI
-  // can add a per-test timing file (uploaded as an artifact by the e2e job): slow specs
+  // can add a per-test timing file (each e2e shard job uploads its own as an artifact): slow specs
   // become visible without scraping logs. The JSON holds titles, durations and error
   // text, so an assertion message must never embed a token.
   reporter: process.env.CI ? [['dot'], ['json', { outputFile: 'test-results/e2e.json' }]] : 'list',
@@ -55,8 +52,7 @@ export default defineConfig({
   //     project inherits `testDir` and collects the WHOLE e2e suite under
   //     forced reduced motion — including `client/e2e/a11y.spec.ts`, whose own
   //     header forbids a second context on that file (`golden.spec.ts` asserts
-  //     an exact `presenceCount === 2`), and which would double half 3's
-  //     `stats.expected` floor in `just a11y-e2e`. `testMatch` is deliberately
+  //     an exact `presenceCount === 2`). `testMatch` is deliberately
   //     narrower than a `testIgnore` on this side: it cannot silently widen
   //     when a future spec file is added.
   //
@@ -70,8 +66,8 @@ export default defineConfig({
   // `contextOptions` form below is the one that reaches `browser.newContext()`.
   //
   // Scoped to this project ALONE, never hoisted into the config-level `use:`
-  // above — hoisting merges it into EVERY project and would run all 20 e2e spec
-  // files under forced reduced motion, invisibly to the collection counts.
+  // above — hoisting merges it into EVERY project and would run every e2e spec
+  // file under forced reduced motion, invisibly to the collection counts.
   // Project `use` merges OVER config `use`, so both projects still inherit
   // `baseURL` and `headless`.
   projects: [
