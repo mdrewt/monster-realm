@@ -6925,16 +6925,6 @@ fn the_spawn_roll_seed_mix_pins_the_wild_species_and_levels_of_known_encounters_
     }
 }
 
-// bt-16 (BT16.1): `dev_start_tactical_wild_admits_only_the_player_and_the_module_owner_mutw3` was
-// deleted with its subject — the `dev_start_tactical_wild` reducer is deleted by BT16.1; the live
-// wild start is `movement_tick`'s grass trigger (no caller-named player). Surviving checks:
-// `nh_accept_challenge_is_target_only_and_opens_the_battle` (now
-// `nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1`), the `EXPECTED_GATED`
-// census (privacy_enforcement_tests.rs),
-// `start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1`,
-// `start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1`,
-// and the movement-path `nh_movement_tick_opens_a_tactical_wild_battle_only_on_a_triggered_grass_step_bt16_1`.
-
 /// Under the PvP ruleset side B's clock row is load-bearing (its windows, idle time and strikes
 /// live there): a PvP battle whose side-B row is gone does not load, so a submit is refused with
 /// the loader's text and writes nothing — it never plays on with a blank side-B clock.
@@ -7089,3 +7079,13 @@ fn a_practice_player_queues_cancels_and_plays_a_side_b_unit_as_side_b() {
         "the side-B unit's turn ended and the next unit holds the window"
     );
 }
+
+// bt-16 (BT16.1): `dev_start_tactical_wild_admits_only_the_player_and_the_module_owner_mutw3` was
+// deleted with its subject — the `dev_start_tactical_wild` reducer is deleted by BT16.1; the live
+// wild start is `movement_tick`'s grass trigger (no caller-named player). Surviving checks:
+// `nh_accept_challenge_is_target_only_and_opens_the_battle` (now
+// `nh_accept_challenge_is_target_only_and_opens_a_tactical_pvp_battle_bt16_1`), the `EXPECTED_GATED`
+// census (privacy_enforcement_tests.rs),
+// `start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1`,
+// `start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1`,
+// and the movement-path `nh_movement_tick_opens_a_tactical_wild_battle_only_on_a_triggered_grass_step_bt16_1`.
