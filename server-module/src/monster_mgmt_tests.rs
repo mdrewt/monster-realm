@@ -707,6 +707,16 @@ fn dw_insert_sites() {
             })
             .writable()
             .unique();
+        let ticks = fx
+            .table_keyed::<crate::movement::MovementTickSchedule, u64>(
+                "movement_tick_schedule",
+                "id",
+                |r| r.id,
+            )
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.id, |r, id| r.id = id);
         // An earlier character, so the new one's auto-inc id is not the default 0 or 1.
         characters.seed(&Character {
             entity_id: 40,
@@ -740,6 +750,11 @@ fn dw_insert_sites() {
             intent_rows,
             vec![(joined[0], vec![], 0)],
             "join_game creates the joiner's empty move_intent row, keyed by its character"
+        );
+        assert_eq!(
+            ticks.rows().iter().map(|t| t.zone_id).collect::<Vec<_>>(),
+            vec![crate::ZONE_0],
+            "join_game arms the spawn zone's tick"
         );
         let rows = w.monsters.rows();
         assert_eq!(rows.len(), 1, "one starter");

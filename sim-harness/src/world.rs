@@ -87,6 +87,9 @@ impl ServerWorld {
     /// resolved unconditionally. The battle-guard IS now modeled: characters with
     /// `battle_locked = true` have their move drain skipped each tick (queue remains
     /// intact) — mirroring the server's battle-lock check in `movement_tick`.
+    /// The harness has no schedule and no NPCs: the caller decides which zone
+    /// ticks. The server ticks a zone only while a player's character is in it;
+    /// a call here for a zone with no character changes nothing, as there.
     pub fn tick_zone(&mut self, zone: u32, now: Millis, map: &TileMap) {
         let ids: Vec<u64> = self
             .chars

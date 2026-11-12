@@ -92,6 +92,12 @@ pub(crate) fn heartbeat_fields(content_version: u32) -> String {
 /// 60s: four Prometheus scrapes per beat at the 15s scrape interval
 /// gives the dead-man alert resolution without putting a write-free
 /// reducer on the scheduler every tick. Name mirrors `PLAYTEST_REAP_INTERVAL`.
+///
+/// The beat runs whether or not anyone is connected. In a world with no player
+/// no zone ticks, so this line is the only thing the module logs; the
+/// `AlloyIngestStalled` alert (`ops/observability/grafana/provisioning/alerting/rules.yml`)
+/// fires when no module log bytes arrive for ten minutes, and without the beat
+/// it would fire on every quiet world.
 pub(crate) const MR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 // PRIVATE scheduled table colocated with its reducer.

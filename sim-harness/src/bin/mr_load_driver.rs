@@ -133,6 +133,10 @@
 //! - Warm-up (AM6): the FIRST raw reading of every per-level series — histogram
 //!   snapshots AND queue gauges alike — is discarded ([`usable_window`]); it
 //!   contains the connect burst. Hence `--hold-scrapes` ≥ 4.
+//! - Cold start: a zone ticks only while a player is in it, so a host nobody has
+//!   joined exports no `movement_tick` series. In-window scrapes taken before the
+//!   level's first tick are skipped ([`tick_snapshots`]); the series vanishing
+//!   after it appeared is still fatal.
 //! - Growth (AM7): within-level strict monotonic growth over the usable window
 //!   is the OBS-27 breach signal. Cross-level plateau growth is a REPORTED
 //!   DIAGNOSTIC (`cross_level_growth` note), never a breach — a queue flat at an
@@ -2429,6 +2433,34 @@ fn detect_counter_reset(baseline: &[Sample], scrapes: &[Vec<Sample>], db_identit
     false
 }
 
+/// The `movement_tick` latency snapshot of each in-window scrape, oldest first.
+///
+/// A zone ticks only while a player is in it, so a host on which nobody has
+/// joined since it started exports no `movement_tick` series at all: scrapes
+/// taken before the level's first client joined carry none, and they are
+/// skipped. A level whose series never appears yields no snapshot and is judged
+/// invalid by its counters (`join_failed` / `no_load_reached` /
+/// `insufficient_samples`), never healthy.
+///
+/// # Errors
+/// The series is absent from a scrape taken AFTER one that carried it (AM26
+/// fail loud), or a present series is malformed ([`histogram_snapshot`]).
+pub fn tick_snapshots(
+    scrapes: &[Vec<Sample>],
+    db_identity: &str,
+) -> Result<Vec<BucketSnapshot>, String> {
+    let pin = txn_match(db_identity, REDUCER_MOVEMENT_TICK);
+    let mut snapshots = Vec::with_capacity(scrapes.len());
+    for scrape in scrapes {
+        if snapshots.is_empty() && select_subset(scrape, TXN_ELAPSED_BUCKET_FAMILY, &pin).is_empty()
+        {
+            continue;
+        }
+        snapshots.push(histogram_snapshot(scrape, TXN_ELAPSED_BUCKET_FAMILY, &pin)?);
+    }
+    Ok(snapshots)
+}
+
 /// Fold the raw per-scrape samples + the thread counters into one [`LevelSample`].
 ///
 /// Counter DELTAS span `baseline` (taken before any client joined) → the last
@@ -2442,14 +2474,7 @@ fn build_level_sample(
     baseline: &[Sample],
     scrapes: &[Vec<Sample>],
 ) -> Result<LevelSample, String> {
-    let mut p95_snapshots = Vec::with_capacity(scrapes.len());
-    for scrape in scrapes {
-        p95_snapshots.push(histogram_snapshot(
-            scrape,
-            TXN_ELAPSED_BUCKET_FAMILY,
-            &txn_match(db_identity, REDUCER_MOVEMENT_TICK),
-        )?);
-    }
+    let p95_snapshots = tick_snapshots(scrapes, db_identity)?;
 
     let mut queue_readings = Vec::with_capacity(QUEUE_FAMILIES.len());
     for family in QUEUE_FAMILIES {
@@ -3550,6 +3575,69 @@ mod tests {
         let samples = parse_exposition("other_family 1\n").expect("valid exposition");
         assert!(
             histogram_snapshot(&samples, TXN_ELAPSED_BUCKET_FAMILY, &txn_match("d", "r")).is_err()
+        );
+    }
+
+    /// A host nobody has joined exports no `movement_tick` series (a zone ticks
+    /// only while a player is in it): the scrapes taken before the first tick
+    /// are skipped, the later ones are read in order.
+    ///
+    /// Kills: treating a leading absence as fatal (a cold-start run aborts),
+    /// keeping a placeholder for the skipped scrapes, dropping present scrapes.
+    #[test]
+    fn t04_tick_snapshots_skip_the_scrapes_before_the_first_tick() {
+        let absent = parse_exposition("other_family 1\n").expect("valid exposition");
+        let tick = |count: u64| {
+            parse_exposition(&hist_text(
+                "d",
+                REDUCER_MOVEMENT_TICK,
+                "Reducer",
+                &["0.1", "+Inf"],
+                &[count, count],
+            ))
+            .expect("valid exposition")
+        };
+        let scrapes = vec![absent.clone(), absent.clone(), tick(3), tick(8)];
+        let got = tick_snapshots(&scrapes, "d").expect("leading absence is not an error");
+        assert_eq!(got.len(), 2, "only the scrapes that carry the series");
+        assert!(close(got[0].counts[1], 3.0));
+        assert!(close(got[1].counts[1], 8.0));
+
+        let never = tick_snapshots(&[absent.clone(), absent.clone()], "d")
+            .expect("a series that never appears is not a tool error");
+        assert!(never.is_empty(), "no snapshot: the level is judged invalid");
+        assert_eq!(p95_windowed(&never).expect("no le conflict"), P95::TooFew);
+    }
+
+    /// TEETH: once the series has appeared, a scrape without it is the AM26
+    /// fault (wrong identity, renamed family, a host restart) and fails loud;
+    /// another database's tick series does not count as present.
+    #[test]
+    fn t04_tick_snapshots_fail_loud_when_the_series_disappears() {
+        let absent = parse_exposition("other_family 1\n").expect("valid exposition");
+        let tick = |db: &str| {
+            parse_exposition(&hist_text(
+                db,
+                REDUCER_MOVEMENT_TICK,
+                "Reducer",
+                &["0.1", "+Inf"],
+                &[1, 2],
+            ))
+            .expect("valid exposition")
+        };
+        assert!(
+            tick_snapshots(&[tick("d"), absent.clone()], "d").is_err(),
+            "a series that vanishes mid-level must not be skipped"
+        );
+        assert!(
+            tick_snapshots(&[tick("other"), tick("d"), tick("other")], "d").is_err(),
+            "another database's series is absence, and absence after presence is fatal"
+        );
+        assert_eq!(
+            tick_snapshots(&[tick("other"), tick("d")], "d")
+                .expect("leading absence")
+                .len(),
+            1
         );
     }
 

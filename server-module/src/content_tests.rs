@@ -318,10 +318,11 @@ fn m13_5c_stale_zone_def_ids_output_sorted_ascending() {
 // diff logic (lib.rs) so "no schedule row remains for a removed zone" is an
 // honest behavioral test, not a structural one.
 //
-// Contract: `crate::plan_schedule_reconcile(zone_ids: &[u32],
+// Contract: `crate::plan_schedule_reconcile(zone_ids: &[u32], occupied: &[u32],
 //   scheduled: &[(u64, u32)]) -> (Vec<u64>, Vec<u32>)`
-// where `scheduled` is (schedule row id, zone_id) pairs; returns
-// (schedule row ids to remove, zone ids to add).
+// where `occupied` lists the zone of each player's character (repeats allowed)
+// and `scheduled` is (schedule row id, zone_id) pairs; returns
+// (schedule row ids to remove, zone ids to arm).
 // ---------------------------------------------------------------------------
 
 /// zone 2's zone_def was removed → its schedule row (id=11) must be
@@ -336,7 +337,8 @@ fn m13_5c_plan_schedule_reconcile_removes_row_for_deleted_zone() {
     let zone_ids: Vec<u32> = vec![1, 3];
     let scheduled: Vec<(u64, u32)> = vec![(10, 1), (11, 2), (12, 3)];
 
-    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &scheduled);
+    // A player still stands in the removed zone: its row goes all the same.
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &[1, 2, 3], &scheduled);
 
     assert_eq!(
         to_remove,
@@ -363,23 +365,24 @@ fn m13_5c_plan_schedule_reconcile_removes_row_for_deleted_zone() {
     );
 }
 
-/// A zone present in zone_ids but with no schedule row must be
-/// planned for addition.
+/// A zone that exists, holds a player's character and has no schedule row must
+/// be planned for arming — once, however many players stand in it.
 ///
-/// KILLS: a remove-only (or vacuous empty-plan) reconcile — a newly added
-/// zone would never get a movement tick and its NPCs would freeze.
+/// KILLS: a remove-only (or vacuous empty-plan) reconcile — a zone whose row was
+/// lost would never tick again and its players could not move; a plan that
+/// repeats the zone per player.
 #[test]
 fn m13_5c_plan_schedule_reconcile_adds_unscheduled_zone() {
     let zone_ids: Vec<u32> = vec![1, 2];
     let scheduled: Vec<(u64, u32)> = vec![(10, 1)]; // zone 2 has no row yet
 
-    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &scheduled);
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &[2, 1, 2], &scheduled);
 
     assert_eq!(
         to_add,
         vec![2u32],
-        "TEETH(13.5c-2): zone 2 exists but is unscheduled — to_add must be \
-         exactly [2] or the new zone never ticks"
+        "TEETH(13.5c-2): zone 2 exists, is occupied and is unscheduled — to_add \
+         must be exactly [2] or the zone never ticks"
     );
     assert!(
         to_remove.is_empty(),
@@ -398,13 +401,56 @@ fn m13_5c_plan_schedule_reconcile_steady_state_is_empty() {
     let zone_ids: Vec<u32> = vec![1, 2];
     let scheduled: Vec<(u64, u32)> = vec![(10, 1), (11, 2)];
 
-    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &scheduled);
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &[1, 2], &scheduled);
 
     assert!(
         to_remove.is_empty() && to_add.is_empty(),
         "TEETH(13.5c-2 idempotence): steady state must produce an empty plan; \
          got to_remove={to_remove:?}, to_add={to_add:?} — a non-empty plan \
          here means delete+reinsert churn on every sync"
+    );
+}
+
+/// A zone nobody is in is never armed by the reconcile, and an occupied zone
+/// that is not in zone_def is not armed either; several unscheduled occupied
+/// zones come back ascending.
+///
+/// KILLS: arming every zone_def zone (an empty world would tick), arming from
+/// `occupied` without the zone_def check (a tick that logs a map error every
+/// step), an unsorted plan.
+#[test]
+fn sr10_plan_schedule_reconcile_arms_only_occupied_live_zones() {
+    let zone_ids: Vec<u32> = vec![1, 2, 3, 4];
+
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &[4, 9, 2], &[]);
+
+    assert_eq!(
+        to_add,
+        vec![2u32, 4],
+        "only the occupied zones that exist are armed, ascending"
+    );
+    assert!(
+        to_remove.is_empty(),
+        "nothing is scheduled, nothing to remove"
+    );
+
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &[], &[]);
+    assert!(
+        to_remove.is_empty() && to_add.is_empty(),
+        "a world with no players plans no schedule at all; got {to_add:?}"
+    );
+}
+
+/// A scheduled zone with nobody in it is left to its own tick: the reconcile
+/// neither removes the row (the tick must first send the NPCs home) nor adds one.
+///
+/// KILLS: a reconcile that deletes every unoccupied zone's row.
+#[test]
+fn sr10_plan_schedule_reconcile_leaves_an_armed_empty_zone_to_its_tick() {
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&[1, 2], &[1], &[(10, 1), (11, 2)]);
+    assert!(
+        to_remove.is_empty() && to_add.is_empty(),
+        "zone 2 is armed and empty: its row stays; got to_remove={to_remove:?}, to_add={to_add:?}"
     );
 }
 
@@ -1850,6 +1896,10 @@ mod nh_sync {
             .unique()
             .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
         let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        // The schedule reconcile scans `player` for the zones that are occupied.
+        let _ = fx
+            .table::<crate::schema::Player>("player", "identity", |r| r.identity)
+            .scannable();
         let _ = fx
             .table_keyed::<SkillRow, u32>("skill_row", "id", |r| r.id)
             .writable()
@@ -2217,67 +2267,137 @@ mod nh_sync {
         v
     }
 
-    /// A republish: `init` on a fresh DB, then the owner's `sync_content` twice
-    /// (the first after one zone's schedule was lost). After every step each
-    /// zone_def zone has EXACTLY one movement tick schedule; sync_content heals the
-    /// lost one, and no pass adds, drops or re-mints any other schedule row or zone.
-    /// kills: ensure_zone_schedules dropped from init or from sync_content (no
-    /// schedule / a zone stops ticking), a non-additive reconcile (duplicate rows or
-    /// fresh ids every republish), zone_def delete+reinsert.
+    /// The ids of `zone`'s schedule rows.
+    fn schedule_of(w: &World<'_>, zone: u32) -> Vec<u64> {
+        ticks_by_zone(w)
+            .into_iter()
+            .filter(|(z, _)| *z == zone)
+            .map(|(_, id)| id)
+            .collect()
+    }
+
+    /// `init` on a fresh DB seeds the zones and arms no zone: nobody is in the
+    /// world, so nothing recurring is scheduled for movement. The owner's
+    /// `sync_content` (reseed path, then the equal-version skip path) leaves it so.
+    /// The heartbeat is armed all the same.
+    /// kills: init or sync_content arming every zone_def zone; the heartbeat
+    /// disarmed in an empty world.
     #[test]
-    fn nh_init_then_sync_content_keeps_one_tick_schedule_per_zone() {
+    fn nh_init_and_sync_content_arm_no_zone_in_an_empty_world() {
         let fx = fixture();
         let w = world(&fx);
         fx.run_as(owner(), crate::init);
-        let zone_ids = |w: &World<'_>| {
-            let mut z: Vec<u32> = w.zones.rows().iter().map(|z| z.zone_id).collect();
-            z.sort_unstable();
-            z
-        };
-        let zones = zone_ids(&w);
-        assert!(!zones.is_empty(), "init seeds the shipped zones");
-        let after_init = ticks_by_zone(&w);
-        assert_eq!(
-            after_init.iter().map(|(z, _)| *z).collect::<Vec<_>>(),
-            zones,
-            "init: exactly one tick schedule per zone"
-        );
+        assert!(!w.zones.rows().is_empty(), "init seeds the shipped zones");
         assert_eq!(version(&w), CONTENT_VERSION, "init stamps the version");
-
-        // Pass 1 takes the reseed path with one zone's schedule lost (the state a
-        // republish must heal); pass 2 takes the equal-version skip path.
-        let (lost_zone, lost_id) = after_init[0];
-        assert_eq!(
-            w.ticks.remove(lost_id),
-            1,
-            "dropped zone {lost_zone}'s schedule"
-        );
+        assert_eq!(ticks_by_zone(&w), vec![], "init arms no zone");
         seed_config(&w, 0);
-        let got = fx.run_as(owner(), crate::sync_content);
-        assert_eq!(got, Ok(()), "sync_content pass 1");
-        assert_eq!(zone_ids(&w), zones, "pass 1: zone set unchanged");
-        let after_pass1 = ticks_by_zone(&w);
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "reseed");
+        assert_eq!(ticks_by_zone(&w), vec![], "a reseed arms no zone");
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "skip path");
+        assert_eq!(ticks_by_zone(&w), vec![], "the skip path arms no zone");
+        // The 60 s heartbeat is the one recurring schedule of an empty world:
+        // its log line is what the AlloyIngestStalled alert reads as "the log
+        // pipeline is alive" when nobody is playing.
+        let beats = fx
+            .table_keyed::<MrHeartbeatSchedule, u64>("mr_heartbeat_schedule", "id", |r| r.id)
+            .rows();
         assert_eq!(
-            after_pass1.iter().map(|(z, _)| *z).collect::<Vec<_>>(),
-            zones,
-            "pass 1: sync_content restores exactly one schedule per zone"
+            beats.len(),
+            1,
+            "the heartbeat stays armed with nobody connected"
         );
-        assert!(
-            after_init
-                .iter()
-                .filter(|(z, _)| *z != lost_zone)
-                .all(|t| after_pass1.contains(t)),
-            "pass 1: untouched zones keep their schedule rows and ids"
-        );
+    }
 
-        let got = fx.run_as(owner(), crate::sync_content);
-        assert_eq!(got, Ok(()), "sync_content pass 2");
-        assert_eq!(zone_ids(&w), zones, "pass 2: zone set unchanged");
+    /// A republish over a world whose schema armed every zone, with one player
+    /// connected: `sync_content` keeps every existing schedule row and its id
+    /// (the occupied zone keeps ticking; an empty zone's own next tick removes
+    /// its row), drops a row whose zone is gone, and re-arms the occupied zone
+    /// when its row was lost — exactly once, on both the reseed and the skip path.
+    /// kills: ensure_zone_schedules dropped from sync_content (the lost row is
+    /// never restored, the orphan row survives), a reconcile that deletes empty
+    /// zones' rows or re-mints ids, a second row for the occupied zone, a
+    /// reconcile that reads the wrong character for a player.
+    #[test]
+    fn nh_sync_content_converges_a_world_that_armed_every_zone() {
+        use crate::schema::Player;
+        use spacetimedb::ScheduleAt;
+        let fx = fixture();
+        let w = world(&fx);
+        let players = fx
+            .table::<Player>("player", "identity", |r| r.identity)
+            .scannable();
+        fx.run_as(owner(), crate::init);
+        let mut zones: Vec<u32> = w.zones.rows().iter().map(|z| z.zone_id).collect();
+        zones.sort_unstable();
+        assert!(zones.len() >= 2, "the shipped world has at least two zones");
+        let occupied = zones[1];
+        const GONE_ZONE: u32 = 9_999;
+        assert!(!zones.contains(&GONE_ZONE));
+        // The upgraded world: one row per zone, one for a zone that no longer
+        // exists, and a player standing in `occupied` (the NPCs `init` seeded
+        // are characters that belong to no player).
+        let row = |id: u64, zone_id: u32| MovementTickSchedule {
+            id,
+            zone_id,
+            scheduled_at: ScheduleAt::Interval(std::time::Duration::from_millis(200).into()),
+        };
+        for (i, &z) in zones.iter().enumerate() {
+            w.ticks.seed(&row(100 + i as u64, z));
+        }
+        w.ticks.seed(&row(900, GONE_ZONE));
+        const PLAYER_ENTITY: u64 = 70_000;
+        let ch = |entity_id: u64, zone_id: u32| Character {
+            entity_id,
+            zone_id,
+            tile_x: 1,
+            tile_y: 1,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+            acked_seq: 0,
+        };
+        fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .seed(&ch(PLAYER_ENTITY, occupied));
+        players.seed(&Player {
+            identity: Identity::from_byte_array([0xA1; 32]),
+            entity_id: PLAYER_ENTITY,
+            name: "Ada".to_string(),
+            online: true,
+            last_input_seq: 0,
+        });
+        let before: Vec<(u32, u64)> = ticks_by_zone(&w)
+            .into_iter()
+            .filter(|(z, _)| *z != GONE_ZONE)
+            .collect();
+
+        seed_config(&w, 0);
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "reseed");
         assert_eq!(
             ticks_by_zone(&w),
-            after_pass1,
-            "pass 2: the same one schedule row per zone, same ids"
+            before,
+            "every live zone keeps its row and id; the gone zone's row is removed"
         );
+
+        // The occupied zone's row is lost: the skip path restores exactly one.
+        let lost = schedule_of(&w, occupied);
+        assert_eq!(w.ticks.remove(lost[0]), 1);
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "skip path");
+        let healed = schedule_of(&w, occupied);
+        assert_eq!(healed.len(), 1, "the occupied zone is armed exactly once");
+        assert!(
+            before
+                .iter()
+                .filter(|(z, _)| *z != occupied)
+                .all(|t| ticks_by_zone(&w).contains(t)),
+            "the other zones keep their rows and ids"
+        );
+        assert_eq!(ticks_by_zone(&w).len(), zones.len(), "no row is added");
+
+        let settled = ticks_by_zone(&w);
+        assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "again");
+        assert_eq!(ticks_by_zone(&w), settled, "a further sync changes nothing");
     }
 
     /// A half-orphan npc row (no character) is repaired into a fresh PAIR: the

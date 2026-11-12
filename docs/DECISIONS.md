@@ -309,6 +309,44 @@ public table for the ack; any writer of `character.move_queue` or `character.ack
 other than `movement_tick`; a tick branch that holds an intent row and does not call
 `publish_intent`.
 
+## An empty zone does no work; no state depends on a tick having run
+
+**Decision.** A zone's `movement_tick` is scheduled only while a player's character is in the zone.
+Entering arms it (`movement::arm_zone_tick`, from `join_game` and the tick's warp arm; one row per
+zone at most). The tick that finds no player's character in its zone resets the zone's ambient state
+and removes its own schedule row, so every way of leaving — walking out through a warp,
+disconnecting, timing out, account deletion — ends in the same code path one tick later. State is one
+of three kinds, and the kind decides what an empty zone does with it:
+
+- **Ambient** — what the world does by itself, that no player caused and none would miss (today: an
+  NPC's wander position and action). Frozen while the zone is empty and reset to its authored default
+  as the zone empties: each NPC goes back to `npc.home_x`/`home_y`, Idle. Facing has no authored
+  default and is left as it is.
+- **Player-caused** — what a player did and expects to still be true (a quest step, an item taken, a
+  purchase). Never reset; it is written by the reducer the player called and needs no tick.
+- **Time-driven** — what should have moved on while nobody watched (a respawn, a restock, a growth
+  timer). Stored as a time or a deadline and computed from elapsed time when it is next read, never
+  advanced by a tick.
+
+The NPC wander counter is the server clock divided by `STEP_MS`, so it is the same number whether or
+not the zone ticked in between. The 60 s `mr_heartbeat` keeps running in an empty world; per-entity
+deadlines (the reapers) fire once, when something is owed.
+
+**Why.** The same module runs on a player's own machine and on the official server (see "One game,
+three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time, wake-ups and
+commit-log writes in proportion to the number of zones, with nobody there to see the result. Resetting
+on the way out, instead of catching up on the way in, means nobody is subscribed when the reset is
+written and the next player always finds the zone in a known state with nothing to wait for. One
+disarm path, driven by the tick itself, means a new way of leaving a zone cannot forget to disarm it.
+The heartbeat stays because the `AlloyIngestStalled` alert treats ten minutes without module log
+bytes as a stalled log pipeline, and an empty world logs nothing else.
+
+**Rules out.** State that is only correct if a tick ran (a counter of ticks, a timer decremented per
+tick, an effect that expires after N ticks of an unwatched zone); elapsed-time catch-up loops when a
+zone is entered; a second schedule row for a zone; disarming a zone from the paths that remove a
+character instead of from the tick; resetting anything a player caused; arming every zone at
+`init` or `sync_content`.
+
 ## Bounded client prediction
 
 **Decision.** The client never predicts further ahead than the server would accept.
@@ -782,7 +820,8 @@ table.
 **Decision.** Server signals come from the SpacetimeDB host: `/v1/metrics` for
 Prometheus and the module's log files for Alloy→Loki. New server log lines go through
 `observability::mr_log` (one JSON envelope). A 60 s `mr_heartbeat` scheduled reducer
-logs the deployed content version and writes nothing. OpenTelemetry spans and metrics
+logs the deployed content version and writes nothing; it is the one recurring schedule
+of a world with nobody connected. OpenTelemetry spans and metrics
 are client-side only. The self-hosted stack (Prometheus, Alloy, Loki, Tempo, Grafana,
 node_exporter, Caddy, and a trace relay) lives in `ops/observability/`, bound to
 loopback.
