@@ -2915,7 +2915,7 @@ export default async function () {
         pass: false,
         detail:
           'CI: the live toolchain is absent (' +
-          `spacetime=${hasSpacetime}, cargo=${hasCargo}) — the CLI install step in the ci job ` +
+          `spacetime=${hasSpacetime}, cargo=${hasCargo}) — the CLI install step of the eval job in ci.yml ` +
           'appears to have regressed. G22 must never silently skip in CI: without it the entire ' +
           'guest-to-account claim flow ships unexercised.',
       };

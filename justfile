@@ -8,7 +8,8 @@ setup:
     cargo fetch
     cd client && npm install --include=dev
 
-# The merge gate. ci.yml runs these same recipes as individual steps.
+# The merge gate. ci.yml runs these same recipes, one per step, split across parallel jobs.
+# `eval` stays ahead of `wasm`: the parity evals leave a nodejs-target pkg that `wasm` replaces.
 ci: lint typecheck test eval security wasm client-typecheck client-test client-verify-build observability-validate
 
 lint:
@@ -28,7 +29,9 @@ test:
     set -euo pipefail
     cargo nextest run --workspace
     # The dev-reducer tests are compiled out of the default build, so they only run with the feature.
-    cargo nextest run -p monster-realm-module --features dev_reducers
+    # `--workspace` plus a package filter keeps the workspace's unified dependency features, so
+    # only the module recompiles; `-p` resolves features for the one package and rebuilds its deps.
+    cargo nextest run --workspace --features monster-realm-module/dev_reducers -E 'package(monster-realm-module)'
     cargo test --doc --workspace
     door() {
         local label=$1 want=$2 floor=$3 out pass fail
@@ -52,7 +55,7 @@ test:
     }
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
-    door "scripts node suites" 3 18 scripts/*.test.mjs
+    door "scripts node suites" 4 20 scripts/*.test.mjs
 
 eval:
     node evals/run.mjs
