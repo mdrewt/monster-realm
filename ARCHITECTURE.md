@@ -661,5 +661,6 @@ root, so opening one never closes a sibling.
 
 `just ci` is the merge gate: lint, typecheck, test, eval, security, wasm,
 client-typecheck, client-test, client-verify-build, and observability-validate.
-`.github/workflows/ci.yml` runs the same recipes plus dependency review,
-`cargo audit` and the e2e jobs.
+`.github/workflows/ci.yml` runs the same recipes as parallel jobs grouped by
+toolchain (`rust`, `eval`, `client`, `observability`), plus dependency review,
+`cargo audit` and the sharded e2e jobs.
