@@ -4561,12 +4561,17 @@ fn assert_pvp_tuning() {
 
 /// The `pvp: true` maps, in content order.
 pub(crate) fn pvp_pool() -> Vec<u32> {
-    load_battle_maps()
-        .expect("battle map content loads")
-        .into_iter()
-        .filter(|m| m.pvp)
-        .map(|m| m.id)
-        .collect()
+    // Parsed once per process: `pvp_map_for` asks per seed.
+    static POOL: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        load_battle_maps()
+            .expect("battle map content loads")
+            .into_iter()
+            .filter(|m| m.pvp)
+            .map(|m| m.id)
+            .collect()
+    })
+    .clone()
 }
 
 /// The PvP map a start seed lands by the plan's rule: `pool[splitmix64(seed ^ PVP_MAP_SALT) % n]`.
