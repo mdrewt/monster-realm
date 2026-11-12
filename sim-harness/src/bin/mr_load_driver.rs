@@ -2050,8 +2050,7 @@ pub fn sats_direction(d: Direction) -> &'static str {
     }
 }
 
-/// SATS-JSON for a `MoveInput`: `{"step":{"east":[]}}` / `{"jump":[]}`
-/// (live-verified end-to-end — the bot moved (1,1)→(2,1)).
+/// SATS-JSON for a `MoveInput`: `{"step":{"east":[]}}` / `{"jump":[]}`.
 #[must_use]
 pub fn sats_move_input(input: MoveInput) -> String {
     match input {
@@ -5373,7 +5372,7 @@ mod tests {
     /// the clear. A server closes the connection on an unmasked client frame.
     #[test]
     fn t14_client_frames_are_masked_not_plaintext() {
-        let payload = "{\"Jump\":[]}";
+        let payload = "{\"jump\":[]}";
         let f = encode_text_frame(payload, M);
         assert_eq!(f[1] & 0x80, 0x80, "the mask bit must be set");
         assert_eq!(&f[2..6], &M, "the mask key follows the length");
