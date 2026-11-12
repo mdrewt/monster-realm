@@ -232,8 +232,8 @@ fn ea_ra_06b_issuers_configured_matrix() {
 use crate::native_host_tests::{fixture as pv_fixture, Fixture as PvFixture, Handle as PvHandle};
 use crate::schema::{
     Account as PvAccount, Battle as PvBattle, BattleAction as PvAction,
-    BattleChallenge as PvChallenge, ChallengeStatus as PvStatus, Monster as PvMonster,
-    MonsterPub as PvMonsterPub, Player as PvPlayer, Profile as PvProfile,
+    BattleChallenge as PvChallenge, ChallengeStatus as PvStatus, Character as PvCharacter,
+    Monster as PvMonster, MonsterPub as PvMonsterPub, Player as PvPlayer, Profile as PvProfile,
 };
 use game_core::{BattleOutcome as PvOutcome, PvpAction as PvPick};
 use spacetimedb::{Identity as PvId, ScheduleAt as PvAt, Timestamp as PvTs};
@@ -374,9 +374,20 @@ fn pv_challenge(id: u64, challenger: PvId, target: PvId, status: PvStatus) -> Pv
     }
 }
 
+/// Where a character stands: (zone, tile x, tile y).
+type PvTile = (u32, i32, i32);
+/// The one tile `PvWorld::join` stands every joined player's character on.
+const PV_HERE: PvTile = (crate::ZONE_0, 1, 1);
+
+/// The character `entity_id` `PvWorld::join` writes on `who`'s `player` row.
+fn pv_entity(who: PvId) -> u64 {
+    u64::from(who.to_byte_array()[0])
+}
+
 /// Every table the PvP / ranking surface reads or writes, under each index it uses.
 struct PvWorld<'a> {
     players: PvHandle<'a, PvPlayer>,
+    characters: PvHandle<'a, PvCharacter, u64>,
     accounts: PvHandle<'a, PvAccount>,
     battles: PvHandle<'a, PvBattle, u64>,
     challenges: PvHandle<'a, PvChallenge, u64>,
@@ -498,6 +509,11 @@ fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
     }
     let w = PvWorld {
         players: fx.table::<PvPlayer>("player", "identity", |r| r.identity),
+        // `unique` keeps the primary-key constraint a world registered underneath this one
+        // (`pv_accept_world`'s tactical world) already set on the same index.
+        characters: fx
+            .table_keyed::<PvCharacter, u64>("character", "entity_id", |r| r.entity_id)
+            .unique(),
         accounts: fx.table::<PvAccount>("account", "identity", |r| r.identity),
         battles,
         challenges,
@@ -514,14 +530,77 @@ fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
 }
 
 impl PvWorld<'_> {
+    /// Joined, with a character on the shared tile `PV_HERE`.
     fn join(&self, who: PvId, online: bool) {
+        self.join_as(who, pv_entity(who), online);
+        self.place(pv_entity(who), PV_HERE);
+    }
+    /// A `player` row for `who` naming character `entity_id`; no character row.
+    fn join_as(&self, who: PvId, entity_id: u64, online: bool) {
         self.players.seed(&PvPlayer {
             identity: who,
-            entity_id: u64::from(who.to_byte_array()[0]),
+            entity_id,
             name: format!("p{:02x}", who.to_byte_array()[0]),
             online,
             last_input_seq: 0,
         });
+    }
+    /// Replace `who`'s `player` row with one naming character `entity_id`; character rows stay.
+    fn rejoin_as(&self, who: PvId, entity_id: u64, online: bool) {
+        assert_eq!(self.players.remove(who), 1, "rejoin_as: no player row");
+        self.join_as(who, entity_id, online);
+    }
+    /// A character row `entity_id` standing at `at`.
+    fn place(&self, entity_id: u64, (zone_id, tile_x, tile_y): PvTile) {
+        self.characters.seed(&PvCharacter {
+            entity_id,
+            zone_id,
+            tile_x,
+            tile_y,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: Vec::new(),
+        });
+    }
+    /// The character `entity_id` on `who`'s `player` row.
+    fn entity_of(&self, who: PvId) -> u64 {
+        self.players
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| p.entity_id)
+            .expect("entity_of: no player row")
+    }
+    /// Move character row `entity_id` to `at`.
+    fn move_entity(&self, entity_id: u64, at: PvTile) {
+        assert_eq!(
+            self.characters.remove(entity_id),
+            1,
+            "move_entity: no character {entity_id}"
+        );
+        self.place(entity_id, at);
+    }
+    /// Move `who`'s character (the one its `player` row names) to `at`.
+    fn move_to(&self, who: PvId, at: PvTile) {
+        self.move_entity(self.entity_of(who), at);
+    }
+    /// Delete `who`'s character (the one its `player` row names); the `player` row stays.
+    fn unplace(&self, who: PvId) {
+        assert_eq!(
+            self.characters.remove(self.entity_of(who)),
+            1,
+            "unplace: no character"
+        );
+    }
+    /// Every challenge row as (challenger, target, status), in store order.
+    fn sent(&self) -> Vec<(PvId, PvId, PvStatus)> {
+        self.challenges
+            .rows()
+            .iter()
+            .map(|c| (c.challenger, c.target, c.status))
+            .collect()
     }
     fn monster(&self, id: u64, owner: PvId, party_slot: u8) {
         let m = pv_monster(id, owner, party_slot);
@@ -594,6 +673,7 @@ impl PvWorld<'_> {
             to_vec(&self.monsters.rows()).unwrap(),
             to_vec(&self.pubs.rows()).unwrap(),
             to_vec(&self.profiles.rows()).unwrap(),
+            to_vec(&self.characters.rows()).unwrap(),
         ]
     }
 }
@@ -1864,5 +1944,451 @@ fn accept_challenge_refuses_a_foreign_missing_or_boxed_acceptor_party_bt17_2() {
             before,
             "{label}: refused before any write"
         );
+    }
+}
+
+// ===========================================================================
+// The challenge range rule (spec M-trade-sessions ts-5.1). `challenge_pvp` refuses unless both
+// characters, each found through its `player` row's `entity_id`, pass
+// `game_core::interact::within_interact_range` (the same zone, Manhattan distance <= 2), with ONE
+// refusal text for another zone, too far and a missing character. It is checked after the joined,
+// deletion-gate, self-challenge and target checks, before every later guard, and never when a
+// challenge is answered (accept, decline, cancel).
+// ===========================================================================
+
+/// The one refusal `challenge_pvp` gives for another zone, too far and a missing character.
+const PV_OUT_OF_RANGE: &str = "that player is not close enough to challenge";
+
+/// What an in-range challenge (or accept) between two players without accounts returns: the
+/// ranked gate's verdict for that pair (inert today: `ranked_enforcement_active()` is false).
+fn pv_guest_verdict() -> Result<(), String> {
+    super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
+        .map_err(str::to_string)
+}
+
+/// `caller` challenges `target` with `party` at `PV_T0`. A refusal leaves the whole PvP store,
+/// character rows included, byte-identical.
+fn pv_send(
+    fx: &PvFixture,
+    w: &PvWorld<'_>,
+    caller: PvId,
+    target: PvId,
+    party: Vec<u64>,
+) -> Result<(), String> {
+    let before = w.snapshot();
+    let got = fx.run_as_at(caller, pv_at(PV_T0), |ctx| {
+        super::challenge_pvp(ctx, target, party)
+    });
+    if got.is_err() {
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "a refused challenge writes nothing: {got:?}"
+        );
+    }
+    got
+}
+
+/// One fresh world: A and B joined, A's party monster 11, each character at its given place
+/// (`None` = no character row). A challenges B. An accepted challenge inserts exactly one Pending
+/// row from A to B; a refused one inserts nothing.
+fn pv_range_case(caller_at: Option<PvTile>, target_at: Option<PvTile>) -> Result<(), String> {
+    let fx = pv_fixture();
+    let w = pv_world(&fx, true);
+    w.monster(11, pv_a(), 0);
+    for (who, at) in [(pv_a(), caller_at), (pv_b(), target_at)] {
+        match at {
+            Some(tile) => w.move_to(who, tile),
+            None => w.unplace(who),
+        }
+    }
+    let got = pv_send(&fx, &w, pv_a(), pv_b(), vec![11]);
+    if got.is_ok() {
+        assert_eq!(
+            w.sent(),
+            vec![(pv_a(), pv_b(), PvStatus::Pending)],
+            "an accepted challenge inserts one Pending row from the caller to the target"
+        );
+    } else {
+        assert!(w.sent().is_empty(), "a refused challenge inserts nothing");
+    }
+    got
+}
+
+/// ONE refusal text for every range failure, each writing nothing: another zone at the same
+/// coordinates; Manhattan distance 3 or 4 in each straight direction and on two diagonals,
+/// including (2,1) and (2,2), which sit within Chebyshev distance 2 and within 2 on each axis;
+/// coordinates at opposite ends of `i32` (refused, never wrapped into range or panicking); the
+/// target's character gone with its `player` row present; the caller's character gone. Distance 2
+/// straight and diagonal, and the same tile, are accepted with one Pending challenge from the
+/// caller to the target.
+#[test]
+fn ts5_challenge_out_of_range_is_one_string_for_zone_distance_and_missing_characters() {
+    let (zone, x, y) = PV_HERE;
+    let at = |dx: i32, dy: i32| Some((zone, x + dx, y + dy));
+    let out = Err(PV_OUT_OF_RANGE.to_string());
+    let far: [(&str, Option<PvTile>); 9] = [
+        ("another zone, same coordinates", Some((zone + 1, x, y))),
+        ("3 east", at(3, 0)),
+        ("3 west", at(-3, 0)),
+        ("3 south", at(0, 3)),
+        ("3 north", at(0, -3)),
+        ("2 east 1 south", at(2, 1)),
+        ("2 east 2 south", at(2, 2)),
+        ("2 west 2 north", at(-2, -2)),
+        ("the target has no character", None),
+    ];
+    for (label, target_at) in far {
+        assert_eq!(pv_range_case(Some(PV_HERE), target_at), out, "{label}");
+    }
+    assert_eq!(
+        pv_range_case(None, Some(PV_HERE)),
+        out,
+        "the caller has no character"
+    );
+    let top = Some((zone, i32::MAX, i32::MAX));
+    let bottom = Some((zone, i32::MIN, i32::MIN));
+    assert_eq!(pv_range_case(top, bottom), out, "opposite ends of i32");
+
+    let near: [(&str, Option<PvTile>); 5] = [
+        ("2 east", at(2, 0)),
+        ("2 north", at(0, -2)),
+        ("1 east 1 south", at(1, 1)),
+        ("1 west 1 north", at(-1, -1)),
+        ("same tile", Some(PV_HERE)),
+    ];
+    for (label, target_at) in near {
+        assert_eq!(
+            pv_range_case(Some(PV_HERE), target_at),
+            pv_guest_verdict(),
+            "{label}: in reach"
+        );
+    }
+}
+
+/// The checks before the range rule keep their own exact text with the characters far apart or
+/// absent, each refusal writing nothing: an unjoined caller, a deletion-gated caller (with and
+/// without a character), a self-challenge by a caller with no character, a target with no
+/// `player` row (with no character and with a stray far one) and an offline target (far, and
+/// with no character). With each earlier condition lifted, the same call gets the range text.
+#[test]
+fn ts5_challenge_range_is_checked_after_the_joined_deletion_self_and_target_checks() {
+    let far: PvTile = (crate::ZONE_0 + 1, 1, 1);
+    let out = Err(PV_OUT_OF_RANGE.to_string());
+
+    // An unjoined caller (a stray character on the shared tile, the target far): "not joined".
+    {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.move_to(pv_b(), far);
+        w.place(pv_entity(pv_c()), PV_HERE);
+        assert_eq!(
+            pv_send(&fx, &w, pv_c(), pv_b(), vec![11]),
+            Err("not joined".to_string()),
+            "unjoined caller, far target"
+        );
+        w.join_as(pv_c(), pv_entity(pv_c()), true);
+        assert_eq!(
+            pv_send(&fx, &w, pv_c(), pv_b(), vec![11]),
+            out,
+            "joined caller, far target"
+        );
+    }
+
+    // A deletion-gated caller: the gate text, far target, with and without its own character.
+    {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.move_to(pv_b(), far);
+        w.deleting(pv_a());
+        let gated = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_b(), vec![11]),
+            gated,
+            "gated caller, far target"
+        );
+        w.unplace(pv_a());
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_b(), vec![11]),
+            gated,
+            "gated caller with no character"
+        );
+        assert_eq!(w.accounts.remove(pv_a()), 1);
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_b(), vec![11]),
+            out,
+            "ungated caller with no character, far target"
+        );
+    }
+
+    // A self-challenge by a caller with no character: "cannot challenge yourself".
+    {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.unplace(pv_a());
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_a(), vec![11]),
+            Err("cannot challenge yourself".to_string()),
+            "self-challenge, no character"
+        );
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_b(), vec![11]),
+            out,
+            "another player, no character"
+        );
+    }
+
+    // A target with no `player` row: "target player not found", with or without a character.
+    {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        let missing = Err("target player not found".to_string());
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_c(), vec![11]),
+            missing,
+            "no player row, no character"
+        );
+        w.place(pv_entity(pv_c()), far);
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_c(), vec![11]),
+            missing,
+            "no player row, a stray far character"
+        );
+        w.join_as(pv_c(), pv_entity(pv_c()), true);
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_c(), vec![11]),
+            out,
+            "joined target, far"
+        );
+    }
+
+    // An offline target: "target player is offline", far and with no character.
+    {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.join_as(pv_d(), pv_entity(pv_d()), false);
+        w.place(pv_entity(pv_d()), far);
+        let offline = Err("target player is offline".to_string());
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_d(), vec![11]),
+            offline,
+            "offline target, far"
+        );
+        w.rejoin_as(pv_d(), pv_entity(pv_d()), true);
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_d(), vec![11]),
+            out,
+            "online target, far"
+        );
+        w.rejoin_as(pv_d(), pv_entity(pv_d()), false);
+        w.unplace(pv_d());
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_d(), vec![11]),
+            offline,
+            "offline target, no character"
+        );
+        w.rejoin_as(pv_d(), pv_entity(pv_d()), true);
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_d(), vec![11]),
+            out,
+            "online target, no character"
+        );
+    }
+}
+
+/// The range rule runs before the later guards: with the target 3 tiles away, an empty party, a
+/// target busy in an Ongoing battle and a target already holding a pending incoming challenge
+/// from someone else each get the range text and write nothing. With the target moved onto the
+/// caller's tile, each gets that later guard's own text.
+#[test]
+fn ts5_challenge_range_is_checked_before_party_size_busy_target_and_pending_challenge() {
+    type Later = (&'static str, Vec<u64>, PvSetup, &'static str);
+    let cases: [Later; 3] = [
+        ("empty party", vec![], |_| {}, "at least one monster"),
+        (
+            "target busy",
+            vec![11],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_d(),
+                    pv_b(),
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "target is already in an ongoing battle",
+        ),
+        (
+            "target holds a pending incoming challenge",
+            vec![11],
+            |w| {
+                w.challenges
+                    .seed(&pv_challenge(100, pv_d(), pv_b(), PvStatus::Pending))
+            },
+            "target already has a pending incoming challenge",
+        ),
+    ];
+    let (zone, x, y) = PV_HERE;
+    for (label, party, setup, later) in cases {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.join(pv_d(), true);
+        w.monster(11, pv_a(), 0);
+        setup(&w);
+        w.move_to(pv_b(), (zone, x + 3, y));
+        assert_eq!(
+            pv_send(&fx, &w, pv_a(), pv_b(), party.clone()),
+            Err(PV_OUT_OF_RANGE.to_string()),
+            "{label}, target far"
+        );
+        w.move_to(pv_b(), PV_HERE);
+        match pv_send(&fx, &w, pv_a(), pv_b(), party) {
+            Err(e) => assert!(
+                e.contains(later),
+                "{label}, target in reach: wrong refusal {e:?} (want {later:?})"
+            ),
+            Ok(()) => panic!("{label}, target in reach: must be refused"),
+        }
+    }
+}
+
+/// Each character is found through its OWN `player` row's `entity_id`, on both sides. The re-keyed
+/// `player` row names character 900 (B) or 901 (A), never the identity-derived id `pv_entity`
+/// gives, and a decoy character sits under that identity-derived id, so a lookup by any other key
+/// reads the decoy. The true character far with the decoy in reach is refused; the true
+/// character in reach with the decoy far is accepted.
+#[test]
+fn ts5_challenge_reads_each_character_through_its_player_rows_entity_id() {
+    let (zone, x, y) = PV_HERE;
+    let far: PvTile = (zone, x + 5, y);
+    let beside: PvTile = (zone, x + 1, y);
+    // (label, the re-keyed player, its character id, its character's tile, the decoy's tile,
+    // accepted). The other player stays on `PV_HERE`.
+    type Keyed = (&'static str, PvId, u64, PvTile, PvTile, bool);
+    let cases: [Keyed; 4] = [
+        (
+            "target's character far, a decoy on the caller's tile",
+            pv_b(),
+            900,
+            far,
+            PV_HERE,
+            false,
+        ),
+        (
+            "target's character beside the caller, a decoy far",
+            pv_b(),
+            900,
+            beside,
+            far,
+            true,
+        ),
+        (
+            "caller's character far, a decoy beside the target",
+            pv_a(),
+            901,
+            far,
+            beside,
+            false,
+        ),
+        (
+            "caller's character beside the target, a decoy far",
+            pv_a(),
+            901,
+            beside,
+            far,
+            true,
+        ),
+    ];
+    for (label, who, key, true_at, decoy_at, accepted) in cases {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.monster(11, pv_a(), 0);
+        w.rejoin_as(who, key, true);
+        w.move_entity(pv_entity(who), decoy_at);
+        w.place(key, true_at);
+        let got = pv_send(&fx, &w, pv_a(), pv_b(), vec![11]);
+        if !accepted {
+            assert_eq!(got, Err(PV_OUT_OF_RANGE.to_string()), "{label}");
+            continue;
+        }
+        assert_eq!(got, pv_guest_verdict(), "{label}");
+        if got.is_ok() {
+            assert_eq!(
+                w.sent(),
+                vec![(pv_a(), pv_b(), PvStatus::Pending)],
+                "{label}: one Pending challenge from the caller to the target"
+            );
+        }
+    }
+}
+
+/// Range is checked when a challenge is SENT, never when it is answered. With challenge 100
+/// (A -> B) Pending and the two characters in different zones, or either character gone: B's
+/// accept still opens the battle (A against B, challenge 100 consumed), B's decline and A's cancel
+/// still delete challenge 100 and its reaper.
+#[test]
+fn ts5_challenge_answers_are_not_range_checked() {
+    type Call = fn(&spacetimedb::ReducerContext, u64) -> Result<(), String>;
+    const PV_ELSEWHERE: PvTile = (crate::ZONE_0 + 1, 40, 40);
+    let placements: [(&str, PvSetup); 3] = [
+        ("different zones", |w| w.move_to(pv_b(), PV_ELSEWHERE)),
+        ("the target's character gone", |w| w.unplace(pv_b())),
+        ("the challenger's character gone", |w| w.unplace(pv_a())),
+    ];
+    let answers: [(&str, Call, PvId); 2] = [
+        ("decline", super::decline_challenge, pv_b()),
+        ("cancel", super::cancel_challenge, pv_a()),
+    ];
+    for (label, apart) in placements {
+        {
+            let fx = pv_fixture();
+            let (w, _tactics) = pv_accept_world(&fx, 1);
+            apart(&w);
+            let got = fx.run_as_at(pv_b(), pv_at(PV_T0 + 5_000), |ctx| {
+                super::accept_challenge(ctx, 100, vec![21])
+            });
+            assert_eq!(got, pv_guest_verdict(), "accept, {label}");
+            if got.is_ok() {
+                let opened: Vec<(PvId, PvId)> = w
+                    .battles
+                    .rows()
+                    .iter()
+                    .map(|b| (b.player_identity, b.opponent_identity))
+                    .collect();
+                assert_eq!(
+                    opened,
+                    vec![(pv_a(), pv_b())],
+                    "accept, {label}: one battle, A against B"
+                );
+                assert_eq!(
+                    w.challenge_ids(),
+                    vec![101, 102],
+                    "accept, {label}: challenge 100 consumed"
+                );
+            }
+        }
+        for (answer, call, who) in answers {
+            let fx = pv_fixture();
+            let w = pv_world(&fx, false);
+            w.challenges
+                .seed(&pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending));
+            w.reaper(500, 100);
+            apart(&w);
+            assert_eq!(
+                fx.run_as(who, |ctx| call(ctx, 100)),
+                Ok(()),
+                "{answer}, {label}"
+            );
+            assert!(
+                w.challenge_ids().is_empty(),
+                "{answer}, {label}: challenge 100 deleted"
+            );
+            assert!(
+                w.reaper_challenge_ids().is_empty(),
+                "{answer}, {label}: its reaper disarmed"
+            );
+        }
     }
 }
