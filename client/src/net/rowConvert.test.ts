@@ -59,7 +59,7 @@ describe('rowConvert: character row -> store', () => {
       action: { tag: 'Walking' },
       moveStartedAtMs: 1234n,
       moveQueue: [{ tag: 'Step', value: { tag: 'North' } }, { tag: 'Jump' }],
-      ackedSeq: 0n,
+      ackedSeq: 9n,
     });
     expect(store.entityId).toBe(42n);
     expect(typeof store.entityId).toBe('bigint'); // never downcast to number
@@ -67,6 +67,8 @@ describe('rowConvert: character row -> store', () => {
     expect(store.action).toBe('Walking');
     expect(store.moveStartedAtMs).toBe(1234n); // i64 stays bigint
     expect(store.moveQueue).toEqual([{ Step: 'North' }, 'Jump']); // SDK -> wasm shape
+    expect(store.ackedSeq).toBe(9n); // the reconciliation ack reaches the store
+    expect(typeof store.ackedSeq).toBe('bigint');
   });
 });
 

@@ -10,7 +10,8 @@
  *   - both continuation emitters (frame loop and reconcile divergence) respect the
  *     hold-commit threshold (mvi) and the outstanding-steps gate (nh2);
  *   - the post-warp seq floor, and same-epoch rejection repair (nh3);
- *   - a held key survives a warp rebuild but not a reconnect (nh5).
+ *   - a held key survives a warp rebuild but not a reconnect (nh5);
+ *   - an input sent on a dropped socket is not owed after the reconnect.
  *
  * Harness: the main.reducedMotionWiring.test.ts pattern (vi.resetModules + a fresh
  * import per test, recorded window/document listeners detached in afterEach, a
@@ -512,5 +513,27 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     frame(1310);
     frame(1500);
     expect(H.sends).toHaveLength(1);
+  });
+
+  it('OWED-RECONNECT: an input lost on the dropped socket is not owed on the new one', async () => {
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0 });
+    key('ArrowRight', 1000); // seq 1: its call never settles, the socket drops under it
+    key('ArrowRight', 1001, 'keyup');
+    opts.onReconnect(H.identity);
+    server(1300, { x: 2, y: 2, ack: 0 }); // the new connection's rows never ack seq 1
+    key('ArrowRight', 1310);
+    expect(H.sends.map((s) => s.seq)).toEqual([1n, 2n]);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    H.sends[1].reject(new Error('rejected')); // so no ack at or above seq 1 arrives
+    await flushMicrotasks();
+    frame(1459);
+    expect(H.sends, 'held < 150 ms is still a tap: no continuation').toHaveLength(2);
+    frame(1460);
+    expect(
+      H.sends.map(step),
+      'seq 1 was sent on the dropped socket; it must not keep the held key from continuing',
+    ).toEqual(['East', 'East', 'East']);
+    expect(H.sends[2].seq).toBe(3n);
   });
 });
