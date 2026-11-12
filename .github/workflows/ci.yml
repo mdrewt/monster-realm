@@ -127,9 +127,17 @@ jobs:
         with: { just-version: '1.58.0' }
       - run: just observability-validate
 
-  # Two-window Playwright e2e against a real, version-pinned SpacetimeDB.
-  e2e:
+  # Two-window Playwright e2e against a real, version-pinned SpacetimeDB. The suite is split
+  # with Playwright's `--shard`, one shard per runner: every spec file runs in exactly one
+  # shard, and each shard has its own SpacetimeDB, so a file still shares its world only with
+  # the files of its own shard. The total is `strategy.job-total`, so adding a matrix entry
+  # is the whole change. `fail-fast: false`: one red shard never hides another's result.
+  e2e-shard:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
@@ -184,12 +192,35 @@ jobs:
           VITE_STDB_URI: ws://127.0.0.1:3000
           VITE_STDB_DB: monster-realm
           MR_DEV_MODULE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
-        run: just e2e
-      - name: Upload e2e per-test timings
+        run: just e2e --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+      # The whole suite's test list, for the `e2e` job to compare the shards' union against.
+      # Taken here because this runner already has everything the spec files import.
+      - name: List the whole suite
+        if: always()
+        run: |
+          cd client && mkdir -p test-results
+          npx playwright test --list --reporter=json > test-results/e2e-list.json
+      - name: Upload e2e per-test timings and the suite list
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: e2e-timings
-          path: client/test-results/e2e.json
+          name: e2e-timings-${{ matrix.shard }}
+          path: |
+            client/test-results/e2e.json
+            client/test-results/e2e-list.json
           if-no-files-found: warn
           retention-days: 14
+
+  # Green only when the shards together ran every listed test exactly once with no failure:
+  # an empty shard, a missing shard or a shard total above the number of shard jobs fails here.
+  e2e:
+    needs: [e2e-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: e2e-timings-*
+          path: e2e-shards
+      - run: node scripts/e2e-shard-union.mjs e2e-shards

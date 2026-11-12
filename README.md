@@ -115,7 +115,38 @@ as that same identity; other callers are refused.
 | `just client-test` | vitest |
 | `just gen` | Regenerate `client/src/module_bindings` after a schema or reducer change (never edit them by hand) |
 | `just e2e` | Playwright two-window e2e against a running SpacetimeDB (needs the `dev_reducers` build; see `client/e2e/global-setup.ts`) |
+| `just e2e-shards` | The same suite as `MR_E2E_SHARDS` concurrent Playwright shards (default 8) against the one running SpacetimeDB, each shard with its own database and vite port; builds the `dev_reducers` module itself. See below |
 | `just mutate-core` / `just mutate-server` / `just coverage` / `just perf-budget` / `just smoke-republish` | The nightly checks |
+
+### Running the e2e suite locally
+
+Both recipes need a running SpacetimeDB; `STDB_SERVER` (default: the CLI nickname `local`) and
+`VITE_STDB_URI` say where. `just e2e` runs the suite serially in one database and publishes
+the module without `dev_reducers` unless `MR_DEV_MODULE_WASM` points at a build that has the
+feature. `just e2e-shards` is the fast full run: it builds that module once, then starts
+`MR_E2E_SHARDS` Playwright processes, shard `i` in database `<VITE_STDB_DB>-shard-<i>` on vite
+port `MR_E2E_PORT + i`. It prints one line per shard with its log path and exits non-zero if
+any shard failed.
+
+`MR_E2E_SHARDS` is a plain environment variable (no recipe loads a `.env` file). Its default,
+8, is the fastest measured count whose peak memory stays under half of a 45 GB machine's RAM
+(22 GB). Measured on 32 logical CPUs; memory is the peak of summed PSS over SpacetimeDB and
+every descendant of the recipe (Playwright runners, vite servers, every chromium process):
+
+| `MR_E2E_SHARDS` | wall | peak memory |
+|---|---|---|
+| serial `just e2e` | 535 s | |
+| 2 | 389 s | 3.2 GB |
+| 4 | 332 s | 4.6 GB |
+| 6 | 265 s | 6.3 GB |
+| 8 | 246 s, 228 s (two runs) | 8.0 GB |
+
+Each further shard costs about 0.8 GB. At 8 the shard that holds the suite's one 133 s test
+takes 3.6 to 3.9 minutes of the wall on its own. Lower the value on a smaller machine or while
+Rust builds and other suites share the box.
+
+Stopping the recipe (Ctrl-C or SIGTERM) stops every shard's runner, vite server and browsers.
+With `CI` set, each shard also writes its JSON report to `client/test-results/shards/shard-<i>.json`.
 
 ## Repository map
 
