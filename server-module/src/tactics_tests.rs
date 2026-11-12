@@ -3348,6 +3348,14 @@ fn enqueue_move_refuses_while_a_deploying_tactical_battle_holds_the_player_bt8_4
         crate::movement::enqueue_move(ctx, MoveInput::Step(Direction::North), 1)
     });
     assert_eq!(got, Err("cannot move during an ongoing battle".to_string()));
+    // A seq `authorize_move` would answer "stale seq": the interlock sits above it.
+    let stale = fx.run_as_at(a(), at(T0 + 1_000), |ctx| {
+        crate::movement::enqueue_move(ctx, MoveInput::Step(Direction::North), 0)
+    });
+    assert_eq!(
+        stale,
+        Err("cannot move during an ongoing battle".to_string())
+    );
     assert_eq!(changed(&before, &w.snapshot()), none());
 }
 
@@ -3361,6 +3369,14 @@ fn set_move_refuses_while_a_deploying_tactical_battle_holds_the_player_bt8_4() {
         crate::movement::set_move(ctx, MoveInput::Step(Direction::North), 1)
     });
     assert_eq!(got, Err("cannot move during an ongoing battle".to_string()));
+    // A seq `authorize_move` would answer "stale seq": the interlock sits above it.
+    let stale = fx.run_as_at(a(), at(T0 + 1_000), |ctx| {
+        crate::movement::set_move(ctx, MoveInput::Step(Direction::North), 0)
+    });
+    assert_eq!(
+        stale,
+        Err("cannot move during an ongoing battle".to_string())
+    );
     assert_eq!(changed(&before, &w.snapshot()), none());
 }
 

@@ -177,7 +177,8 @@ fn publish_standing(ctx: &ReducerContext, mut row: Character, intent: &MoveInten
 
 /// Append one intent to the bounded queue (anti-flood: reject when full). Buffers
 /// intent only — NEVER computes movement. One private `move_intent` write carries
-/// the queue and the seq; no `character` or `player` row is read or written.
+/// the queue and the seq. The caller's `player` row is read for its entity id;
+/// no `character` row is read, and neither table is written.
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.

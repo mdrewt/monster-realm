@@ -188,8 +188,9 @@ Movement is paced by the server, per zone. A client sends intent (`enqueue_move`
 in the private `move_intent` table, one row per player character: the undrained queue
 (capped at `MOVE_QUEUE_CAP`) and `last_input_seq`. `guards::authorize_move` rejects a
 seq at or below that value, and the reducer then writes the queue and the new seq in
-one `move_intent` update. An accepted input reads and writes no `character` or
-`player` row, so it changes nothing any client subscribes to.
+one `move_intent` update. An accepted input reads the caller's `player` row for its
+entity id, reads no `character` row, and writes neither, so it changes nothing any
+client subscribes to.
 
 Each zone has an interval schedule row that runs `movement_tick` every `STEP_MS`. A
 tick drains at most one move per character through `game_core::apply_move`, moves NPCs

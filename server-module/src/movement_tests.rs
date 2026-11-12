@@ -677,9 +677,13 @@ mod nh {
     /// and still cancels. Positive control: once the battle is decided the very
     /// same call is admitted and queues the intent.
     ///
-    /// kills: the lock deleted / moved below `authorize_move` (the seq ack is
-    /// written) / side-A-only predicate (the side-B arm) / keyed on the wrong
-    /// identity / clear_queue gaining the lock.
+    /// The lock sits above `authorize_move`: a seq at the guard value, which
+    /// `authorize_move` would answer "stale seq", gets the battle error.
+    ///
+    /// kills: the lock deleted (a fresh seq is admitted) / moved below
+    /// `authorize_move` (a stale seq answers "stale seq") / side-A-only
+    /// predicate (the side-B arm) / keyed on the wrong identity / clear_queue
+    /// gaining the lock.
     #[test]
     fn nh_intake_refuses_movement_during_an_ongoing_battle_in_either_role() {
         let arms: [(&str, Identity, Identity); 3] = [
@@ -707,6 +711,22 @@ mod nh {
                 )),
                 Err(REJECT_IN_BATTLE.to_string()),
                 "{label}: set_move"
+            );
+            // Seq 0 is at the joined row's `last_input_seq`, so only the gate
+            // order decides which error comes back.
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 0)),
+                Err(REJECT_IN_BATTLE.to_string()),
+                "{label}: enqueue_move, stale seq: the lock answers first"
+            );
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| set_move(
+                    ctx,
+                    MoveInput::Step(Direction::North),
+                    0
+                )),
+                Err(REJECT_IN_BATTLE.to_string()),
+                "{label}: set_move, stale seq: the lock answers first"
             );
             assert_eq!(w.snapshot(), before, "{label}: refused before any write");
 
