@@ -83,7 +83,7 @@
 //! own-row-only disconnect fix it also destroyed a concurrent WS session's join state. On top
 //! of that, the dominant server cost at concurrency N is
 //! subscription fan-out (every accepted move updates a `character` row broadcast
-//! to N subscribers); with zero subscriptions,
+//! to every subscriber of its zone); with zero subscriptions,
 //! `spacetime_subscription_send_queue_length` is flat at 0 forever and one of
 //! OBS-27's two named signals is blind. The report carries a fixed
 //! `"transport":"ws"` literal.
@@ -148,13 +148,37 @@
 //!   `txn_type="Reducer"` — an `txn_type="Update"` row exists per reducer and
 //!   would double-count accepted/rejected deltas.
 //! - Accept/reject truth comes from `spacetime_num_txns_total` deltas alone
-//!   (S1), so the WS reader never parses a data payload.
+//!   (S1), so the WS reader never parses a data payload as JSON. It reads two
+//!   numbers out of the stream by their surrounding text ([`RowScan`]): the
+//!   bot's `entity_id` from its own `player` row and the `zone_id` of its own
+//!   `character` row.
+//!
+//! ## What a bot subscribes to
+//!
+//! What the real client holds of `character` (`client/src/net/worldScope.ts`),
+//! in the same order and the same SQL text, so the host shares each zone query
+//! between bots and clients alike:
+//!
+//! 1. `SELECT * FROM player WHERE identity = 0x<own>`, then `join_game`.
+//! 2. The own `player` row names the entity:
+//!    `SELECT * FROM character WHERE entity_id = <E>`.
+//! 3. The own `character` row names the zone: that query plus
+//!    `SELECT * FROM character WHERE zone_id = <Z>`.
+//! 4. A later own row in another zone: both strings again with the new `<Z>`.
+//!
+//! This protocol's `Subscribe` REPLACES the connection's whole query set, so
+//! each step sends every string the bot is to hold. `character` is never
+//! subscribed whole, and a bot holds none of the client's other tables.
 //!
 //! ## Level validity (AM5) — an invalid level can never be the breaking point
 //!
 //! - `join_failed` — the cumulative `join_game{committed="true"}` delta is short
 //!   of the level's client count. A driver-side auth/name/validation drift, and
 //!   therefore a LOUD tool error, never a server verdict.
+//! - `scope_unsettled` — fewer bots than the level's client count subscribed
+//!   their own row and its zone. A bot without its zone receives no one else's
+//!   steps, so the level's fan-out is short of its concurrency and its readings
+//!   would flatter the server. The level also gains a `scope_short:<n>/<N>` note.
 //! - `no_load_reached` — accepted + rejected `enqueue_move` delta is 0: nothing
 //!   reached the server (driver stall / connection collapse).
 //! - `counter_reset` — a cumulative counter decreased (host restart).
@@ -228,10 +252,40 @@ pub const QUEUE_FAMILIES: [&str; 2] = [
     "spacetime_worker_instance_operation_queue_length",
 ];
 
-/// The subscription set each bot opens — the single hot, per-move-updated
-/// public table, and the real client's own first query
-/// (`client/src/net/connection.ts:611-632`).
-pub const SUBSCRIBE_QUERIES: [&str; 1] = ["SELECT * FROM character"];
+/// The query a bot opens with: its own `player` row, which names the entity it
+/// was given by `join_game`. `identity_hex` is the bare hex of `POST /v1/identity`.
+#[must_use]
+pub fn own_player_query(identity_hex: &str) -> String {
+    format!("SELECT * FROM player WHERE identity = 0x{identity_hex}")
+}
+
+/// The own-row `character` query. Byte-identical to `ownCharacterQuery` in
+/// `client/src/net/worldScope.ts`: the host shares a query among subscribers by
+/// its SQL text, so a bot's set costs the host what a real client's does.
+#[must_use]
+pub fn own_character_query(entity_id: u64) -> String {
+    format!("SELECT * FROM character WHERE entity_id = {entity_id}")
+}
+
+/// One zone's `character` query. Byte-identical to `zoneQuery` in
+/// `client/src/net/worldScope.ts`, and so shared with every bot and client in
+/// that zone.
+#[must_use]
+pub fn zone_query(zone_id: u32) -> String {
+    format!("SELECT * FROM character WHERE zone_id = {zone_id}")
+}
+
+/// The `character` set a bot holds, as the real client scopes it: its own row,
+/// and the zone that row is in once the row has said which. `character` is never
+/// subscribed whole.
+#[must_use]
+pub fn scope_queries(entity_id: u64, zone_id: Option<u32>) -> Vec<String> {
+    let mut queries = vec![own_character_query(entity_id)];
+    if let Some(zone_id) = zone_id {
+        queries.push(zone_query(zone_id));
+    }
+    queries
+}
 
 /// Hard client cap (fail-loud above it): thread + FD ceilings, 256 KiB stacks.
 pub const MAX_CLIENTS: u32 = 500;
@@ -1135,6 +1189,8 @@ pub fn ramp_levels(start: u32, step: u32, max: u32) -> Vec<u32> {
 pub struct LevelSample {
     pub concurrency: u32,
     pub clients_connected: u32,
+    /// Bots that subscribed their own `character` row and its zone.
+    pub clients_scoped: u32,
     /// Cumulative `join_game{committed="true"}` delta since RUN start (AM5).
     pub join_committed_total_delta: f64,
     pub enqueue_accepted_delta: f64,
@@ -1175,9 +1231,10 @@ pub struct LevelVerdict {
 ///
 /// 1. `counter_reset` — `counter_decreased`, or the p95 window saw a decrease.
 /// 2. `join_failed` — `join_committed_total_delta < concurrency`.
-/// 3. `no_load_reached` — `accepted + rejected == 0`.
-/// 4. `insufficient_samples` — [`P95::TooFew`].
-/// 5. `p95_indeterminate` — [`P95::AboveTop`] below the budget.
+/// 3. `scope_unsettled` — `clients_scoped < concurrency`.
+/// 4. `no_load_reached` — `accepted + rejected == 0`.
+/// 5. `insufficient_samples` — [`P95::TooFew`].
+/// 6. `p95_indeterminate` — [`P95::AboveTop`] below the budget.
 ///
 /// `accepted == 0 && rejected > 0` is VALID and gains [`REJECTION_STORM_NOTE`]:
 /// a saturated server's readings are real measurements, and rejection volume is
@@ -1214,6 +1271,8 @@ pub fn evaluate_level(sample: &LevelSample) -> Result<LevelVerdict, String> {
             Some("counter_reset")
         } else if sample.join_committed_total_delta < f64::from(sample.concurrency) {
             Some("join_failed")
+        } else if sample.clients_scoped < sample.concurrency {
+            Some("scope_unsettled")
         } else if accepted + rejected <= 0.0 {
             Some("no_load_reached")
         } else if matches!(p95, P95::TooFew) {
@@ -1233,6 +1292,12 @@ pub fn evaluate_level(sample: &LevelSample) -> Result<LevelVerdict, String> {
         notes.push(format!(
             "clients_short:{}/{}",
             sample.clients_connected, sample.concurrency
+        ));
+    }
+    if sample.clients_scoped < sample.concurrency {
+        notes.push(format!(
+            "scope_short:{}/{}",
+            sample.clients_scoped, sample.concurrency
         ));
     }
     if sample.send_errors > 0 {
@@ -1747,10 +1812,12 @@ pub enum ControlFrame {
     Close,
 }
 
-/// AM2: the streaming skip machine. The reader NEVER parses a data payload
-/// (accept/reject truth comes from S1 counters), so it needs no fragment
+/// AM2: the streaming skip machine. The reader never parses a data payload as
+/// JSON (accept/reject truth comes from S1 counters), so it needs no fragment
 /// reassembly — just a remaining-bytes-to-skip counter that survives partial
-/// reads, plus a leftover buffer for a split header.
+/// reads, plus a leftover buffer for a split header. Payload bytes are shown to
+/// a sink on their way out ([`drain_feed_into`]); the one consumer is
+/// [`RowScan`], which finds the bot's own row in them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DrainState {
     /// Payload bytes of the current DATA frame still to be discarded.
@@ -1786,6 +1853,20 @@ pub struct DrainOutcome {
 /// An unknown opcode, a control frame longer than 125 bytes, or an illegal
 /// 64-bit length — fail loud rather than desynchronise the stream.
 pub fn drain_feed(state: &mut DrainState, bytes: &[u8]) -> Result<DrainOutcome, String> {
+    drain_feed_into(state, bytes, &mut |_| {})
+}
+
+/// [`drain_feed`], with every DATA payload byte handed to `payload` exactly once
+/// and in stream order as it is discarded (in as many pieces as the reads and
+/// frames cut it into). Headers and control frames are never shown.
+///
+/// # Errors
+/// As [`drain_feed`].
+pub fn drain_feed_into(
+    state: &mut DrainState,
+    bytes: &[u8],
+    payload: &mut dyn FnMut(&[u8]),
+) -> Result<DrainOutcome, String> {
     let mut outcome = DrainOutcome::default();
     state.buf.extend_from_slice(bytes);
 
@@ -1795,6 +1876,7 @@ pub fn drain_feed(state: &mut DrainState, bytes: &[u8]) -> Result<DrainOutcome, 
             let avail = state.buf.len() as u64;
             let take = state.skip_remaining.min(avail);
             let take_usize = usize::try_from(take).expect("take <= buf.len()");
+            payload(&state.buf[..take_usize]);
             state.buf.drain(0..take_usize);
             state.skip_remaining -= take;
             if state.skip_remaining == 0 {
@@ -2063,6 +2145,187 @@ pub fn sats_move_input(input: MoveInput) -> String {
     }
 }
 
+/// Finds ONE row in the server's data payloads and reads the unsigned decimal
+/// that follows its leading columns, without parsing the JSON around it.
+///
+/// A row reaches a client as a JSON string inside an `"inserts":[…]` or
+/// `"deletes":[…]` list, in one of two spellings (live-verified, host 2.11.0,
+/// `v1.json.spacetimedb`): an OBJECT in an `InitialSubscription`
+/// (`"{\"entity_id\":9,\"zone_id\":0,…}"`) and a positional ARRAY in a
+/// `TransactionUpdate` / `TransactionUpdateLight` (`"[9,0,1,1,…]"`). The scan is
+/// given the row's opening text in both spellings, from the string's opening
+/// quote up to the number wanted, and matches it only where a list element can
+/// start (after `[` or `,`) and only inside an `inserts` list: an update carries
+/// one `{deletes, inserts}` pair PER QUERY in no promised order, so the old row
+/// in a `deletes` list can come after the new one.
+///
+/// Streaming: bytes arrive cut anywhere. Whatever could still be the start of a
+/// match is carried to the next feed (bounded by the longest opening plus 20
+/// digits); everything else is forgotten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowScan {
+    /// The two row openings, object spelling then array spelling.
+    openings: [Vec<u8>; 2],
+    in_inserts: bool,
+    carry: Vec<u8>,
+}
+
+const INSERTS_MARK: &[u8] = b"\"inserts\":[";
+const DELETES_MARK: &[u8] = b"\"deletes\":[";
+/// A u64 has at most 20 decimal digits; a longer run is not a number this scan reads.
+const MAX_DIGITS: usize = 20;
+
+impl RowScan {
+    /// The bot's own `player` row; the number read is its `entity_id`.
+    #[must_use]
+    pub fn own_player(identity_hex: &str) -> Self {
+        Self::new(
+            format!("\"{{\\\"identity\\\":{{\\\"__identity__\\\":\\\"0x{identity_hex}\\\"}},\\\"entity_id\\\":"),
+            format!("\"[[\\\"0x{identity_hex}\\\"],"),
+        )
+    }
+
+    /// The bot's own `character` row; the number read is its `zone_id`.
+    #[must_use]
+    pub fn own_character(entity_id: u64) -> Self {
+        Self::new(
+            format!("\"{{\\\"entity_id\\\":{entity_id},\\\"zone_id\\\":"),
+            format!("\"[{entity_id},"),
+        )
+    }
+
+    fn new(object_opening: String, array_opening: String) -> Self {
+        Self {
+            openings: [object_opening.into_bytes(), array_opening.into_bytes()],
+            in_inserts: false,
+            carry: Vec::new(),
+        }
+    }
+
+    /// Feed the next payload bytes. Returns the number of the LAST complete
+    /// match these bytes finished, if any.
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<u64> {
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(bytes);
+        let mut found = None;
+        // Where an unfinished candidate starts; it and the byte before it are carried.
+        let mut unfinished = None;
+        let mut i = 0usize;
+        'scan: while i < buf.len() {
+            if buf[i] != b'"' {
+                i += 1;
+                continue;
+            }
+            let rest = &buf[i..];
+            if rest.starts_with(INSERTS_MARK) {
+                self.in_inserts = true;
+                i += INSERTS_MARK.len();
+                continue;
+            }
+            if rest.starts_with(DELETES_MARK) {
+                self.in_inserts = false;
+                i += DELETES_MARK.len();
+                continue;
+            }
+            let cut_short = |needle: &[u8]| rest.len() < needle.len() && needle.starts_with(rest);
+            if cut_short(INSERTS_MARK) || cut_short(DELETES_MARK) {
+                unfinished = Some(i);
+                break;
+            }
+            let starts_element = i > 0 && matches!(buf[i - 1], b'[' | b',');
+            if self.in_inserts && starts_element {
+                for opening in &self.openings {
+                    if cut_short(opening) {
+                        unfinished = Some(i);
+                        break 'scan;
+                    }
+                    if !rest.starts_with(opening) {
+                        continue;
+                    }
+                    let digits = rest[opening.len()..]
+                        .iter()
+                        .take_while(|b| b.is_ascii_digit())
+                        .count();
+                    if digits > MAX_DIGITS {
+                        break;
+                    }
+                    if opening.len() + digits == rest.len() {
+                        // The number may continue in the next feed.
+                        unfinished = Some(i);
+                        break 'scan;
+                    }
+                    let text = &rest[opening.len()..opening.len() + digits];
+                    if let Some(value) = std::str::from_utf8(text)
+                        .ok()
+                        .and_then(|t| t.parse::<u64>().ok())
+                    {
+                        found = Some(value);
+                    }
+                    break;
+                }
+            }
+            i += 1;
+        }
+        // Keep the unfinished candidate with the byte before it (the list-element
+        // test reads that byte); with none, keep only the last byte for that test.
+        let keep_from = unfinished.map_or(buf.len().saturating_sub(1), |at| at.saturating_sub(1));
+        buf.drain(..keep_from);
+        self.carry = buf;
+        found
+    }
+}
+
+/// What a bot subscribes to, driven by its own rows as they arrive: the real
+/// client's sequence (`client/src/net/worldScope.ts`). It opens with its own
+/// `player` row; that row's `entity_id` names the own-row `character` query; the
+/// own `character` row's `zone_id` names the zone query; and a later `zone_id`
+/// replaces it. Zone 0 is never assumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BotScope {
+    scan: RowScan,
+    entity_id: Option<u64>,
+    zone_id: Option<u32>,
+}
+
+impl BotScope {
+    #[must_use]
+    pub fn new(identity_hex: &str) -> Self {
+        Self {
+            scan: RowScan::own_player(identity_hex),
+            entity_id: None,
+            zone_id: None,
+        }
+    }
+
+    /// Feed payload bytes. Returns the query set to send when these bytes changed
+    /// what the bot must hold: always the WHOLE set, because a `Subscribe`
+    /// replaces the one before it.
+    pub fn on_payload(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
+        let value = self.scan.feed(bytes)?;
+        match self.entity_id {
+            None => {
+                self.entity_id = Some(value);
+                self.scan = RowScan::own_character(value);
+                Some(scope_queries(value, None))
+            }
+            Some(entity_id) => {
+                let zone_id = u32::try_from(value).ok()?;
+                if self.zone_id == Some(zone_id) {
+                    return None;
+                }
+                self.zone_id = Some(zone_id);
+                Some(scope_queries(entity_id, Some(zone_id)))
+            }
+        }
+    }
+
+    /// The bot has asked for its own row and the zone that row is in.
+    #[must_use]
+    pub fn scoped(&self) -> bool {
+        self.zone_id.is_some()
+    }
+}
+
 /// `join_game` args ARRAY: `["LoadBot 3"]`.
 #[must_use]
 pub fn args_join_game(name: &str) -> String {
@@ -2075,10 +2338,12 @@ pub fn args_enqueue_move(input: MoveInput, seq: u64) -> String {
     format!("[{},{}]", sats_move_input(input), seq)
 }
 
-/// `{"Subscribe":{"query_strings":[…],"request_id":N}}` over [`SUBSCRIBE_QUERIES`].
+/// `{"Subscribe":{"query_strings":[…],"request_id":N}}`. On this protocol a
+/// `Subscribe` REPLACES the connection's whole query set, so every send names
+/// every query the bot is to hold.
 #[must_use]
-pub fn client_msg_subscribe(request_id: u32) -> String {
-    let queries: Vec<String> = SUBSCRIBE_QUERIES.iter().map(|q| json_str(q)).collect();
+pub fn client_msg_subscribe(queries: &[String], request_id: u32) -> String {
+    let queries: Vec<String> = queries.iter().map(|q| json_str(q)).collect();
     format!(
         "{{\"Subscribe\":{{\"query_strings\":[{}],\"request_id\":{}}}}}",
         queries.join(","),
@@ -2107,6 +2372,8 @@ pub fn client_msg_call_reducer(reducer: &str, args: &str, request_id: u32) -> St
 #[derive(Debug, Default)]
 pub struct ClientCounters {
     pub connected: std::sync::atomic::AtomicU64,
+    /// Bots that have asked for their own row and its zone ([`BotScope::scoped`]).
+    pub scoped: std::sync::atomic::AtomicU64,
     pub attempted_sends: std::sync::atomic::AtomicU64,
     pub send_errors: std::sync::atomic::AtomicU64,
     pub drain_cap_hits: std::sync::atomic::AtomicU64,
@@ -2179,16 +2446,37 @@ fn scrape_once(host: &str, token: &str) -> Result<Vec<Sample>, String> {
     parse_exposition(&body)
 }
 
+/// The bearer token of one fresh identity: the run-level token that scrapes
+/// metrics and resolves the database name.
+fn mint_identity_token(host: &str) -> Result<String, String> {
+    Ok(mint_identity(host)?.token)
+}
+
+/// One minted identity: its bare hex and the bearer token that connects as it.
+struct MintedIdentity {
+    identity_hex: String,
+    token: String,
+}
+
 /// Mint ONE fresh identity + bearer token (`POST /v1/identity`). Each simulated
 /// client needs its own so `join_game` creates a distinct player+character —
 /// otherwise every connection re-uses one identity, one character exists, and the
-/// O(N²) subscription fan-out OBS-27 measures collapses to O(N).
-fn mint_identity_token(host: &str) -> Result<String, String> {
+/// O(N²) subscription fan-out OBS-27 measures collapses to O(N). The identity is
+/// kept beside the token: a bot names its own `player` row by it
+/// ([`own_player_query`]).
+fn mint_identity(host: &str) -> Result<MintedIdentity, String> {
     let (head, body) = http_roundtrip(host, &http_post_request(host, "/v1/identity", "", None))?;
     if http_status(&head)? != 200 {
         return Err(format!("POST /v1/identity failed: {head}"));
     }
-    extract_json_string_field(&body, "token")
+    let identity_hex = extract_json_string_field(&body, "identity")?;
+    if identity_hex.is_empty() || !identity_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("POST /v1/identity returned an identity that is not bare hex".to_string());
+    }
+    Ok(MintedIdentity {
+        identity_hex,
+        token: extract_json_string_field(&body, "token")?,
+    })
 }
 
 /// Read an HTTP response head (up to the blank line) from a live socket.
@@ -2213,14 +2501,16 @@ fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
     Err("connection closed before the handshake completed".to_string())
 }
 
-/// Open a WS connection, handshake, subscribe, and `join_game`.
+/// Open a WS connection, handshake, subscribe to the own `player` row, and
+/// `join_game`.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
 fn connect_client(
     host: &str,
     cfg: &Config,
     client_index: u32,
-    token: &str,
+    identity: &MintedIdentity,
 ) -> Result<TcpStream, String> {
+    let token = &identity.token;
     let mut stream = connect_timeout(host)?;
     // Generous timeouts for the connect burst (a large handshake/subscribe/join
     // write must not fail on a brief hiccup); tightened to the drain allowance
@@ -2242,8 +2532,9 @@ fn connect_client(
         return Err(format!("websocket handshake rejected: {head}"));
     }
 
-    // The single hot subscription (frame 0), then join_game (frame 1).
-    let subscribe = client_msg_subscribe(1);
+    // The own `player` row (frame 0), then join_game (frame 1): the join's row
+    // names the entity, and BotScope takes the subscription from there.
+    let subscribe = client_msg_subscribe(&[own_player_query(&identity.identity_hex)], 1);
     let sub_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), 0);
     stream
         .write_all(&encode_text_frame(&subscribe, sub_mask))
@@ -2269,16 +2560,17 @@ fn connect_client(
     Ok(stream)
 }
 
-/// One thread per client: bounded drain (AM2) → one intent → open-loop sleep (AM1).
+/// One thread per client: bounded drain (AM2) → any change of scope → one intent
+/// → open-loop sleep (AM1).
 fn client_thread(
     host: &str,
     cfg: &Config,
     client_index: u32,
-    token: &str,
+    identity: &MintedIdentity,
     counters: &ClientCounters,
     running: &AtomicBool,
 ) {
-    let mut stream = match connect_client(host, cfg, client_index, token) {
+    let mut stream = match connect_client(host, cfg, client_index, identity) {
         Ok(stream) => {
             counters.connected.fetch_add(1, Ordering::Relaxed);
             stream
@@ -2290,6 +2582,8 @@ fn client_thread(
     };
 
     let mut drain = DrainState::default();
+    let mut scope = BotScope::new(&identity.identity_hex);
+    let mut was_scoped = false;
     let mut buf = [0u8; 8192];
     let mut step_index = 0u64;
     let mut frame_index = 2u64; // frames 0 (subscribe) and 1 (join) are spent
@@ -2301,13 +2595,17 @@ fn client_thread(
         // backpressure from inflating the server's subscription queue (false breach).
         let mut skipped_this_iter: u64 = 0;
         let mut stop = false;
+        // Query sets the own rows asked for during this drain, oldest first.
+        let mut resubscribes: Vec<Vec<String>> = Vec::new();
         loop {
             match stream.read(&mut buf) {
                 Ok(0) => {
                     stop = true; // peer closed
                     break;
                 }
-                Ok(n) => match drain_feed(&mut drain, &buf[..n]) {
+                Ok(n) => match drain_feed_into(&mut drain, &buf[..n], &mut |payload| {
+                    resubscribes.extend(scope.on_payload(payload));
+                }) {
                     Ok(out) => {
                         skipped_this_iter += out.data_frames_skipped;
                         for control in out.control {
@@ -2348,6 +2646,22 @@ fn client_thread(
         }
         if stop {
             break;
+        }
+
+        // The own rows changed what this bot must hold: send the whole set.
+        for queries in resubscribes {
+            let mask = mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
+            frame_index += 1;
+            let message = client_msg_subscribe(&queries, 1);
+            if stream
+                .write_all(&encode_text_frame(&message, mask))
+                .is_err()
+            {
+                counters.send_errors.fetch_add(1, Ordering::Relaxed);
+            } else if scope.scoped() && !was_scoped {
+                was_scoped = true;
+                counters.scoped.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         // One movement intent.
@@ -2506,6 +2820,7 @@ fn build_level_sample(
         concurrency,
         clients_connected: u32::try_from(counters.connected.load(Ordering::Relaxed))
             .unwrap_or(u32::MAX),
+        clients_scoped: u32::try_from(counters.scoped.load(Ordering::Relaxed)).unwrap_or(u32::MAX),
         join_committed_total_delta: delta(REDUCER_JOIN_GAME, "true"),
         enqueue_accepted_delta: delta(REDUCER_ENQUEUE_MOVE, "true"),
         enqueue_rejected_delta: delta(REDUCER_ENQUEUE_MOVE, "false"),
@@ -2531,7 +2846,7 @@ fn run_level(
     // stacking on zone-0 row 1 (no collision rule) → real O(N²) fan-out.
     let mut client_tokens = Vec::with_capacity(concurrency as usize);
     for _ in 0..concurrency {
-        client_tokens.push(mint_identity_token(host)?);
+        client_tokens.push(mint_identity(host)?);
     }
 
     // Baseline BEFORE any client joins, so the join/enqueue/tick deltas span the
@@ -3445,7 +3760,85 @@ mod tests {
                 "spacetime_worker_instance_operation_queue_length",
             ]
         );
-        assert_eq!(SUBSCRIBE_QUERIES, ["SELECT * FROM character"]);
+    }
+
+    /// the three query strings, byte for byte, and the sets built from them.
+    #[test]
+    fn t03_scope_queries_are_byte_exact() {
+        assert_eq!(
+            own_player_query("c200ab"),
+            "SELECT * FROM player WHERE identity = 0xc200ab"
+        );
+        assert_eq!(
+            own_character_query(7),
+            "SELECT * FROM character WHERE entity_id = 7"
+        );
+        assert_eq!(
+            own_character_query(u64::MAX),
+            "SELECT * FROM character WHERE entity_id = 18446744073709551615"
+        );
+        assert_eq!(zone_query(0), "SELECT * FROM character WHERE zone_id = 0");
+        assert_eq!(
+            zone_query(u32::MAX),
+            "SELECT * FROM character WHERE zone_id = 4294967295"
+        );
+        assert_eq!(
+            scope_queries(7, None),
+            ["SELECT * FROM character WHERE entity_id = 7"]
+        );
+        assert_eq!(
+            scope_queries(7, Some(3)),
+            [
+                "SELECT * FROM character WHERE entity_id = 7",
+                "SELECT * FROM character WHERE zone_id = 3",
+            ]
+        );
+    }
+
+    /// `character` is never subscribed whole: every query a bot can send that
+    /// names the table filters it by the own entity or by one zone.
+    #[test]
+    fn t03_no_query_subscribes_character_unfiltered() {
+        let mut sent = vec![own_player_query("c200ab")];
+        sent.extend(scope_queries(7, None));
+        sent.extend(scope_queries(7, Some(0)));
+        sent.extend(scope_queries(7, Some(1)));
+        let mut character_queries = 0;
+        for query in &sent {
+            if !query.contains("FROM character") {
+                continue;
+            }
+            character_queries += 1;
+            assert!(
+                query.contains(" WHERE entity_id = ") || query.contains(" WHERE zone_id = "),
+                "an unfiltered character query delivers every step of every player: {query}"
+            );
+        }
+        assert_eq!(
+            character_queries, 5,
+            "the loop above looked at the bot's sets"
+        );
+    }
+
+    /// the host shares a query among subscribers by its SQL text, so the driver's
+    /// two `character` strings must be the real client's, byte for byte. The
+    /// client builds them in `worldScope.ts` and nowhere else.
+    #[test]
+    fn t03_scope_queries_match_the_clients_text() {
+        let client = include_str!("../../../client/src/net/worldScope.ts");
+        assert!(
+            client.contains("`SELECT * FROM character WHERE entity_id = ${entityId.toString(10)}`"),
+            "worldScope.ts ownCharacterQuery no longer builds the text own_character_query does"
+        );
+        assert!(
+            client.contains("`SELECT * FROM character WHERE zone_id = ${zoneId.toString(10)}`"),
+            "worldScope.ts zoneQuery no longer builds the text zone_query does"
+        );
+        assert_eq!(
+            client.matches("SELECT * FROM character").count(),
+            2,
+            "worldScope.ts builds a character query this driver does not mirror"
+        );
     }
 
     /// whole-body parse keeps every series and propagates a bad line.
@@ -4335,6 +4728,7 @@ mod tests {
         LevelSample {
             concurrency,
             clients_connected: concurrency,
+            clients_scoped: concurrency,
             join_committed_total_delta: f64::from(concurrency),
             enqueue_accepted_delta: 100.0,
             enqueue_rejected_delta: 0.0,
@@ -4622,6 +5016,55 @@ mod tests {
 
     /// T8 PRECEDENCE: a join shortfall explains the missing load, so a level
     /// with BOTH problems reports the tool error, not its symptom.
+    #[test]
+    fn t08_a_bot_without_its_scope_makes_the_level_invalid() {
+        let s = LevelSample {
+            clients_scoped: 9,
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&s).expect("consistent bounds");
+        assert!(!v.valid);
+        assert_eq!(v.invalid_reason.as_deref(), Some("scope_unsettled"));
+        assert!(v.notes.contains(&"scope_short:9/10".to_string()));
+
+        let all = evaluate_level(&base_sample(10)).expect("consistent bounds");
+        assert!(all.valid);
+        assert!(!all.notes.iter().any(|n| n.starts_with("scope_short")));
+    }
+
+    /// T8 PRECEDENCE: a bot that never joined has no row to scope by, and a level
+    /// with no scope offers no fan-out: join_failed, then scope_unsettled, then
+    /// no_load_reached.
+    #[test]
+    fn t08_scope_unsettled_sits_between_join_failed_and_no_load_reached() {
+        let unjoined = LevelSample {
+            join_committed_total_delta: 4.0,
+            clients_scoped: 4,
+            ..base_sample(10)
+        };
+        assert_eq!(
+            evaluate_level(&unjoined)
+                .expect("consistent bounds")
+                .invalid_reason
+                .as_deref(),
+            Some("join_failed")
+        );
+        let silent = LevelSample {
+            clients_scoped: 0,
+            enqueue_accepted_delta: 0.0,
+            enqueue_rejected_delta: 0.0,
+            ..base_sample(10)
+        };
+        assert_eq!(
+            evaluate_level(&silent)
+                .expect("consistent bounds")
+                .invalid_reason
+                .as_deref(),
+            Some("scope_unsettled")
+        );
+    }
+
+    /// T8 PRECEDENCE: bots that never joined offered nothing; the cause is named.
     #[test]
     fn t08_join_failed_takes_precedence_over_no_load_reached() {
         let s = LevelSample {
@@ -5938,8 +6381,12 @@ mod tests {
     #[test]
     fn t17_subscribe_envelope_is_byte_exact() {
         assert_eq!(
-            client_msg_subscribe(1),
-            r#"{"Subscribe":{"query_strings":["SELECT * FROM character"],"request_id":1}}"#
+            client_msg_subscribe(&scope_queries(7, Some(0)), 1),
+            r#"{"Subscribe":{"query_strings":["SELECT * FROM character WHERE entity_id = 7","SELECT * FROM character WHERE zone_id = 0"],"request_id":1}}"#
+        );
+        assert_eq!(
+            client_msg_subscribe(&[own_player_query("c200ab")], 1),
+            r#"{"Subscribe":{"query_strings":["SELECT * FROM player WHERE identity = 0xc200ab"],"request_id":1}}"#
         );
     }
 
@@ -6016,13 +6463,245 @@ mod tests {
     /// order, using the driver's own bot name — proving the pieces compose.
     #[test]
     fn t17_per_connection_message_sequence() {
-        let subscribe = client_msg_subscribe(1);
+        let subscribe = client_msg_subscribe(&[own_player_query("c200ab")], 1);
         let join = client_msg_call_reducer(REDUCER_JOIN_GAME, &args_join_game(&bot_name(3)), 2);
         assert!(subscribe.starts_with(r#"{"Subscribe":"#));
+        assert!(
+            !subscribe.contains("character"),
+            "a bot opens with its own player row; its character set follows from that row"
+        );
         assert_eq!(
             join,
             r#"{"CallReducer":{"reducer":"join_game","args":"[\"LoadBot 3\"]","request_id":2,"flags":0}}"#
         );
+    }
+
+    // =======================================================================
+    // T19 — the bot's scope: its own rows, read out of live-captured payloads.
+    // =======================================================================
+
+    /// Live capture (host 2.11.0, `v1.json.spacetimedb`): one bot's login and
+    /// its walk down column x=1 of zone 0 through the warp on (1,5). The bot is
+    /// entity 9; entity 1 is an NPC of zone 0.
+    const CAP_IDENTITY: &str = "c200e3e11bdc04f9df8581cdcfde6a17d4df630d445aae935ce6a9c5764d11e9";
+    /// `join_game` committed: the own `player` row, ARRAY spelling.
+    const CAP_JOIN: &str = r#"{"TransactionUpdate":{"status":{"Committed":{"tables":[{"table_id":4132,"table_name":"player","num_rows":1,"updates":[{"deletes":[],"inserts":["[[\"0xc200e3e11bdc04f9df8581cdcfde6a17d4df630d445aae935ce6a9c5764d11e9\"],9,\"CapBot\",true,0]"]}]}]}},"timestamp":{"__timestamp_micros_since_unix_epoch__":1794516008439102},"caller_identity":{"__identity__":"0xc200e3e11bdc04f9df8581cdcfde6a17d4df630d445aae935ce6a9c5764d11e9"},"caller_connection_id":{"__connection_id__":52813399826296617148516742223373806858},"reducer_call":{"reducer_name":"join_game","reducer_id":32,"args":"[\"CapBot\"]","request_id":2},"energy_quanta_used":{"quanta":31765},"total_host_execution_duration":{"__time_duration_micros__":214}}}"#;
+    /// `Subscribe [own]` applied: the own `character` row, OBJECT spelling.
+    const CAP_OWN_APPLIED: &str = r#"{"InitialSubscription":{"database_update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":1,"updates":[{"deletes":[],"inserts":["{\"entity_id\":9,\"zone_id\":0,\"tile_x\":1,\"tile_y\":1,\"facing\":[1,{}],\"action\":[0,{}],\"move_started_at_ms\":1794516008439,\"sprite_id\":0,\"move_queue\":[],\"acked_seq\":0}"]}]}]},"request_id":3,"total_host_execution_duration":{"__time_duration_micros__":1170}}}"#;
+    /// `Subscribe [own, zone 0]` applied: the own row once per query.
+    const CAP_PAIR_APPLIED: &str = r#"{"InitialSubscription":{"database_update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":1,"updates":[{"deletes":[],"inserts":["{\"entity_id\":9,\"zone_id\":0,\"tile_x\":1,\"tile_y\":1,\"facing\":[1,{}],\"action\":[0,{}],\"move_started_at_ms\":1794516008439,\"sprite_id\":0,\"move_queue\":[],\"acked_seq\":0}"]}]},{"table_id":4113,"table_name":"character","num_rows":2,"updates":[{"deletes":[],"inserts":["{\"entity_id\":1,\"zone_id\":0,\"tile_x\":5,\"tile_y\":5,\"facing\":[3,{}],\"action\":[0,{}],\"move_started_at_ms\":1794515997895,\"sprite_id\":10,\"move_queue\":[],\"acked_seq\":0}","{\"entity_id\":9,\"zone_id\":0,\"tile_x\":1,\"tile_y\":1,\"facing\":[1,{}],\"action\":[0,{}],\"move_started_at_ms\":1794516008439,\"sprite_id\":0,\"move_queue\":[],\"acked_seq\":0}"]}]}]},"request_id":4,"total_host_execution_duration":{"__time_duration_micros__":507}}}"#;
+    /// One step in zone 0: a `{deletes, inserts}` pair per query.
+    const CAP_STEP: &str = r#"{"TransactionUpdateLight":{"request_id":0,"update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":6,"updates":[{"deletes":["[1,0,4,5,[3,[]],[1,[]],1794516008841,10,[],0]","[9,0,1,1,[1,[]],[0,[]],1794516008439,0,[],0]"],"inserts":["[9,0,1,2,[1,[]],[1,[]],1794516009040,0,[],1]","[1,0,4,5,[3,[]],[0,[]],1794516008841,10,[],0]"]},{"deletes":["[9,0,1,1,[1,[]],[0,[]],1794516008439,0,[],0]"],"inserts":["[9,0,1,2,[1,[]],[1,[]],1794516009040,0,[],1]"]}]}]}}}"#;
+    /// The warp: the zone query deletes the own row, the own-row query updates
+    /// it into zone 1.
+    const CAP_WARP: &str = r#"{"TransactionUpdateLight":{"request_id":0,"update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":5,"updates":[{"deletes":["[1,0,4,5,[3,[]],[0,[]],1794516008841,10,[],0]","[9,0,1,4,[1,[]],[1,[]],1794516009641,0,[],3]"],"inserts":["[1,0,3,5,[3,[]],[1,[]],1794516009841,10,[],0]"]},{"deletes":["[9,0,1,4,[1,[]],[1,[]],1794516009641,0,[],3]"],"inserts":["[9,1,1,5,[1,[]],[0,[]],1794516009841,0,[],4]"]}]}]}}}"#;
+
+    /// Feed `text` in pieces of `size` bytes; the last number any piece finished.
+    fn scan_in_pieces(scan: &mut RowScan, text: &str, size: usize) -> Option<u64> {
+        let mut last = None;
+        for piece in text.as_bytes().chunks(size) {
+            if let Some(value) = scan.feed(piece) {
+                last = Some(value);
+            }
+        }
+        last
+    }
+
+    /// both spellings of both rows are read, whole and cut at every byte.
+    #[test]
+    fn t19_row_scan_reads_the_own_rows_however_the_bytes_are_cut() {
+        for size in (1..=64).chain([4096]) {
+            assert_eq!(
+                scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), CAP_JOIN, size),
+                Some(9),
+                "the entity id from the join, in pieces of {size}"
+            );
+            assert_eq!(
+                scan_in_pieces(&mut RowScan::own_character(9), CAP_OWN_APPLIED, size),
+                Some(0),
+                "the zone from the object spelling, in pieces of {size}"
+            );
+            assert_eq!(
+                scan_in_pieces(&mut RowScan::own_character(9), CAP_STEP, size),
+                Some(0),
+                "the zone from the array spelling, in pieces of {size}"
+            );
+            assert_eq!(
+                scan_in_pieces(&mut RowScan::own_character(9), CAP_WARP, size),
+                Some(1),
+                "the warp's zone, in pieces of {size}"
+            );
+        }
+    }
+
+    /// the object spelling of the own `player` row (a bot whose row is there when
+    /// its first set applies).
+    #[test]
+    fn t19_row_scan_reads_the_player_row_in_its_object_spelling() {
+        let applied = format!(
+            r#"{{"InitialSubscription":{{"database_update":{{"tables":[{{"table_id":4132,"table_name":"player","num_rows":1,"updates":[{{"deletes":[],"inserts":["{{\"identity\":{{\"__identity__\":\"0x{CAP_IDENTITY}\"}},\"entity_id\":10,\"name\":\"CapBot\",\"online\":true,\"last_input_seq\":0}}"]}}]}}]}},"request_id":1}}}}"#
+        );
+        for size in [1, 7, 4096] {
+            assert_eq!(
+                scan_in_pieces(&mut RowScan::own_player(CAP_IDENTITY), &applied, size),
+                Some(10)
+            );
+        }
+    }
+
+    /// a row in a `deletes` list is the row as it WAS. An update carries one
+    /// `{deletes, inserts}` pair per query in no promised order, so the old row
+    /// can be the last one in the message.
+    #[test]
+    fn t19_row_scan_ignores_deletes_whatever_the_order() {
+        // The warp with its two per-query pairs swapped: own-row query first.
+        let swapped = r#"{"TransactionUpdateLight":{"request_id":0,"update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":5,"updates":[{"deletes":["[9,0,1,4,[1,[]],[1,[]],1794516009641,0,[],3]"],"inserts":["[9,1,1,5,[1,[]],[0,[]],1794516009841,0,[],4]"]},{"deletes":["[1,0,4,5,[3,[]],[0,[]],1794516008841,10,[],0]","[9,0,1,4,[1,[]],[1,[]],1794516009641,0,[],3]"],"inserts":["[1,0,3,5,[3,[]],[1,[]],1794516009841,10,[],0]"]}]}]}}}"#;
+        for size in [1, 5, 4096] {
+            assert_eq!(
+                scan_in_pieces(&mut RowScan::own_character(9), swapped, size),
+                Some(1),
+                "the last own row in the message is a delete in zone 0; the zone is 1"
+            );
+        }
+        // Only deleted (the bot's character is gone): nothing is read.
+        let deleted = r#"{"TransactionUpdateLight":{"request_id":0,"update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":1,"updates":[{"deletes":["[9,0,1,4,[1,[]],[1,[]],1794516009641,0,[],3]"],"inserts":[]}]}]}}}"#;
+        assert_eq!(
+            scan_in_pieces(&mut RowScan::own_character(9), deleted, 4096),
+            None
+        );
+    }
+
+    /// only the own row is read: not a row whose id merely starts or ends with
+    /// the same digits, not another entity's, and not a number that is no row's
+    /// first column.
+    #[test]
+    fn t19_row_scan_reads_no_other_row() {
+        let others = r#"{"TransactionUpdateLight":{"request_id":0,"update":{"tables":[{"table_id":4113,"table_name":"character","num_rows":4,"updates":[{"deletes":[],"inserts":["[19,5,1,4,[1,[]],[1,[]],9,0,[],3]","[90,6,9,0,[1,[]],[1,[]],9,0,[],3]","[1,7,9,0,[1,[]],[0,[]],9,10,[],0]","{\"entity_id\":90,\"zone_id\":8,\"tile_x\":9}","{\"entity_id\":19,\"zone_id\":8}"]}]}]}}}"#;
+        assert_eq!(
+            scan_in_pieces(&mut RowScan::own_character(9), others, 4096),
+            None
+        );
+        assert_eq!(
+            scan_in_pieces(&mut RowScan::own_character(9), others, 3),
+            None
+        );
+        // A reducer's args string opens like a row but is no list element.
+        let args = r#"{"TransactionUpdate":{"status":{"Committed":{"tables":[{"table_name":"character","updates":[{"deletes":[],"inserts":[]}]}]}},"reducer_call":{"reducer_name":"x","args":"[9,4,1]","request_id":5}}}"#;
+        assert_eq!(
+            scan_in_pieces(&mut RowScan::own_character(9), args, 4096),
+            None
+        );
+        // Another identity's player row names no entity for this bot.
+        assert_eq!(
+            scan_in_pieces(&mut RowScan::own_player(&"ab".repeat(32)), CAP_JOIN, 4096),
+            None
+        );
+    }
+
+    /// what the scan carries between feeds is bounded: a megabyte of rows that are
+    /// not the bot's leaves a few bytes behind.
+    #[test]
+    fn t19_row_scan_carry_is_bounded() {
+        let mut scan = RowScan::own_character(9);
+        for _ in 0..2_000 {
+            scan.feed(CAP_STEP.replace("[9,", "[8,").as_bytes());
+            assert!(scan.carry.len() <= 64, "carry grew to {}", scan.carry.len());
+        }
+        // An endless run of digits after the opening is not a number: let it go.
+        let mut scan = RowScan::own_character(9);
+        scan.feed(br#""inserts":["[9,"#);
+        for _ in 0..100 {
+            scan.feed(&[b'7'; 1000]);
+        }
+        assert!(scan.carry.len() <= 64, "carry grew to {}", scan.carry.len());
+    }
+
+    /// the whole login and a warp, from the captured stream: the own row names
+    /// the entity, then the zone, and a new zone resends BOTH strings.
+    #[test]
+    fn t19_bot_scope_follows_its_own_rows() {
+        for size in [1, 3, 64, 4096] {
+            let mut scope = BotScope::new(CAP_IDENTITY);
+            let mut sent: Vec<Vec<String>> = Vec::new();
+            let mut feed = |scope: &mut BotScope, text: &str| {
+                for piece in text.as_bytes().chunks(size) {
+                    sent.extend(scope.on_payload(piece));
+                }
+            };
+            assert!(!scope.scoped());
+            feed(&mut scope, CAP_JOIN);
+            assert!(!scope.scoped(), "the own row alone is not the scope");
+            feed(&mut scope, CAP_OWN_APPLIED);
+            assert!(scope.scoped());
+            feed(&mut scope, CAP_PAIR_APPLIED);
+            feed(&mut scope, CAP_STEP);
+            feed(&mut scope, CAP_STEP);
+            feed(&mut scope, CAP_WARP);
+            feed(&mut scope, CAP_WARP);
+            assert_eq!(
+                sent,
+                [
+                    vec!["SELECT * FROM character WHERE entity_id = 9".to_string()],
+                    vec![
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                        "SELECT * FROM character WHERE zone_id = 0".to_string(),
+                    ],
+                    vec![
+                        "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                        "SELECT * FROM character WHERE zone_id = 1".to_string(),
+                    ],
+                ],
+                "in pieces of {size}: one send per change, steps inside a zone send nothing"
+            );
+        }
+    }
+
+    /// the zone is the one the own row is in, never an assumed one: a bot whose
+    /// character stands in zone 1 when its own-row set applies asks for zone 1.
+    #[test]
+    fn t19_bot_scope_never_assumes_zone_0() {
+        let mut scope = BotScope::new(CAP_IDENTITY);
+        assert_eq!(
+            scope.on_payload(CAP_OWN_APPLIED.as_bytes()),
+            None,
+            "no entity yet: a character row decides nothing"
+        );
+        scope.on_payload(CAP_JOIN.as_bytes());
+        let in_zone_1 = CAP_OWN_APPLIED.replace(r#"\"zone_id\":0"#, r#"\"zone_id\":1"#);
+        assert_ne!(in_zone_1, CAP_OWN_APPLIED);
+        assert_eq!(
+            scope.on_payload(in_zone_1.as_bytes()),
+            Some(vec![
+                "SELECT * FROM character WHERE entity_id = 9".to_string(),
+                "SELECT * FROM character WHERE zone_id = 1".to_string(),
+            ])
+        );
+    }
+
+    /// the drain shows every payload byte to the sink exactly once and in order,
+    /// and never a header or a control frame, however the stream is cut.
+    #[test]
+    fn t19_drain_hands_payload_bytes_to_the_sink() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&server_frame(1, true, CAP_JOIN.as_bytes()));
+        stream.extend_from_slice(&server_frame(0x9, true, b"ping"));
+        stream.extend_from_slice(&server_frame(1, true, b""));
+        stream.extend_from_slice(&server_frame(1, true, CAP_WARP.as_bytes()));
+        let expected = [CAP_JOIN.as_bytes(), CAP_WARP.as_bytes()].concat();
+        for size in [1, 2, 7, 125, 126, 8192] {
+            let mut st = DrainState::default();
+            let mut seen = Vec::new();
+            let mut frames = 0;
+            for piece in stream.chunks(size) {
+                let out = drain_feed_into(&mut st, piece, &mut |payload| {
+                    seen.extend_from_slice(payload);
+                })
+                .expect("valid stream");
+                frames += out.data_frames_skipped;
+            }
+            assert_eq!(frames, 3, "in pieces of {size}");
+            assert_eq!(seen, expected, "in pieces of {size}");
+        }
     }
 
     // =======================================================================
