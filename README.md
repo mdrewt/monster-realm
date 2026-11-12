@@ -1,6 +1,7 @@
 # Monster Realm
 
-A multiplayer, browser-based monster-taming game. The server is a SpacetimeDB module
+A monster-taming game designed to be played alone, with friends on a private server, or on one official
+server — the same game in all three. The client runs in a browser. The server is a SpacetimeDB module
 written in Rust; the client is TypeScript and PixiJS. Every game rule lives in one
 pure Rust crate that both the server and the browser run, so the client can predict
 movement instantly while the server stays the only authority.
@@ -26,7 +27,9 @@ The design rests on four pillars:
 4. **A living social fabric.** Trading and PvP make individual monsters matter to
    other players.
 
-It is deliberately not an action game, not idle or farmable, and not pay-to-win.
+It is deliberately not an action game, not idle or farmable, not pay-to-win, and not
+online-only: single-player worlds and friends hosting are the planned early-access shape,
+and today the repository runs the one-server case they are built from.
 
 **The core loop (intent):** explore a zone, step into grass, meet a wild monster, and
 either weaken it to recruit it or defeat it for XP. Between fights, train and care for
