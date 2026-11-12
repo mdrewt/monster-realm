@@ -54,8 +54,9 @@ import {
 // would yield ONE identity and challenge_pvp would reject the self-challenge).
 //
 // FILE-ORDERING AUDIT (reviewer, recorded so a future reviewer never has to re-derive
-// this): playwright.config.ts:23-29 documents single-worker, alphabetical-across-files
-// execution over ONE shared world as load-bearing (golden.spec.ts asserts an EXACT
+// this): the `workers: 1` comment in playwright.config.ts documents single-worker,
+// alphabetical-across-files execution within one Playwright process (one shard) over that
+// process's ONE shared world as load-bearing (golden.spec.ts asserts an EXACT
 // player population, so a concurrently-joined player from a differently-ordered spec
 // would make that unreachable) — docs/specs/m17.5f-plan.md T3 records a prior incident
 // where trade-interlock.spec.ts was deliberately NAMED to sort after golden.spec.ts and
