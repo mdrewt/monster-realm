@@ -6934,3 +6934,158 @@ fn the_spawn_roll_seed_mix_pins_the_wild_species_and_levels_of_known_encounters_
 // `start_pvp_tactical_refuses_bad_formats_overlaps_unconscious_sides_and_busy_players_bt14_1`,
 // `start_pvp_tactical_accepts_a_side_with_one_conscious_monster_which_then_deploys_alone_bt14_1`,
 // and the movement-path `nh_movement_tick_opens_a_tactical_wild_battle_only_on_a_triggered_grass_step_bt16_1`.
+
+/// Under the PvP ruleset side B's clock row is load-bearing (its windows, idle time and strikes
+/// live there): a PvP battle whose side-B row is gone does not load, so a submit is refused with
+/// the loader's text and writes nothing — it never plays on with a blank side-B clock.
+///
+/// kills: `replace match guard tactical.kind.uses_pvp_rules() with false in load` (the missing row
+/// read as `ClockState::default()`: the submit is accepted and B's strikes restart from zero).
+#[test]
+fn a_pvp_battle_missing_its_side_b_clock_row_refuses_to_load() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pvp(&fx, &w, &PAIR, &B_PAIR);
+    let clock_b = w.clock_of(live.id, SideRow::B);
+    assert_eq!(
+        w.clocks.remove(clock_b.clock_id),
+        1,
+        "PRECONDITION: side B's clock row is removed"
+    );
+    let before = w.snapshot();
+    assert_eq!(
+        submit(
+            &fx,
+            a(),
+            T0 + 10_000,
+            live.id,
+            live.a[0],
+            vec![QueuedAction::EndTurn],
+        ),
+        Err(format!("battle {} has no side-B clock row", live.id))
+    );
+    assert_eq!(
+        changed(&before, &w.snapshot()),
+        none(),
+        "the refused submit writes nothing"
+    );
+}
+
+/// Each side's consciousness guard answers for its own side before anything later can: with BOTH
+/// parties fainted the challenger's message wins, and a fainted opponent party is refused as such
+/// even when one of its monsters names a species content no longer carries (the control arm: the
+/// same party, conscious, is refused by the species lookup).
+///
+/// kills: `replace > with >= in start_pvp_tactical`, both guards. The challenger guard vacuous: the
+/// both-fainted start answers "opponent party has no conscious monster". The opponent guard
+/// vacuous: the fainted, unknown-species party answers "species 9999 not in content".
+#[test]
+fn start_pvp_tactical_reports_each_unconscious_side_ahead_of_every_later_check() {
+    let (pa, pb) = (ids(&PAIR), ids(&B_PAIR));
+    assert_pvp_start_refused(
+        "both parties fainted",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "challenger party has no conscious monster",
+        |_, w| {
+            for mid in [11, 12, 21, 22] {
+                w.edit_monster(mid, |m| m.current_hp = 0);
+            }
+        },
+    );
+    assert_pvp_start_refused(
+        "CONTROL: a conscious opponent party with an unknown species",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "species 9999 not in content",
+        |_, w| w.edit_monster(21, |m| m.species_id = 9999),
+    );
+    assert_pvp_start_refused(
+        "a fainted opponent party with an unknown species",
+        (a(), &pa),
+        (b(), &pb),
+        2,
+        "opponent party has no conscious monster",
+        |_, w| {
+            w.edit_monster(21, |m| m.species_id = 9999);
+            for mid in [21, 22] {
+                w.edit_monster(mid, |m| m.current_hp = 0);
+            }
+        },
+    );
+}
+
+/// In a Practice battle the one player acts for whichever side the named unit is on: a pre-queue
+/// for a side-B unit is stored for that unit, a cancel deletes it, and the unit's live turn is the
+/// player's to end — while side A's waiting unit keeps its window throughout.
+///
+/// kills: `replace == with != in sender_side` (a Practice sender resolved through the anchor, so
+/// always side A: every side-B call is refused); `replace == with != in submit_queue` and
+/// `replace == with != in cancel_queue` (the side read off some OTHER unit's row — side A's first
+/// unit here — so the side-B submit / cancel is refused).
+#[test]
+fn a_practice_player_queues_cancels_and_plays_a_side_b_unit_as_side_b() {
+    let fx = fixture();
+    let w = world(&fx);
+    w.join(a(), 1);
+    w.seed_party(a(), &QUAD);
+    let id = start_pvp(&fx, a(), &[11, 12], a(), &[13, 14], 2, pvp_seed(7), T0);
+    assert_eq!(w.tactical(id).kind, BattleKind::Practice);
+    deploy(&fx, a(), T0 + 2_000, id, vec![pick(11, 0), pick(12, 1)]).expect("side A staged");
+    deploy(&fx, a(), T0 + 3_000, id, vec![pick(13, 0), pick(14, 1)])
+        .expect("side B staged: the reveal");
+    let side = |s: SideRow| -> Vec<u32> { w.side_units(id, s).iter().map(|u| u.unit_id).collect() };
+    let (ua, ub) = (side(SideRow::A), side(SideRow::B));
+    assert_eq!(
+        (ua.len(), ub.len()),
+        (2, 2),
+        "PRECONDITION: both sides deployed"
+    );
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(ua[0]),
+        "PRECONDITION: side A's fastest unit holds the first window"
+    );
+
+    assert_eq!(
+        submit(&fx, a(), T0 + 4_000, id, ub[0], vec![QueuedAction::EndTurn]),
+        Ok(()),
+        "the pre-queue for a side-B unit is accepted"
+    );
+    let stored: Vec<u32> = w.queues_of(id).iter().map(|q| q.unit_id).collect();
+    assert_eq!(stored, vec![ub[0]], "the READY row is the side-B unit's");
+
+    assert_eq!(
+        cancel(&fx, a(), T0 + 5_000, id, ub[0]),
+        Ok(()),
+        "the cancel for a side-B unit is accepted"
+    );
+    assert!(w.queues_of(id).is_empty(), "the READY row is deleted");
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(ua[0]),
+        "side A's window is untouched by the side-B pre-queue and cancel"
+    );
+
+    for (i, unit) in [ua[0], ua[1]].into_iter().enumerate() {
+        let t = T0 + 6_000 + 1_000 * i64::try_from(i).expect("a small index");
+        submit(&fx, a(), t, id, unit, vec![QueuedAction::EndTurn]).expect("side A ends its turn");
+    }
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(ub[0]),
+        "PRECONDITION: side B's fastest unit holds the window"
+    );
+    assert_eq!(
+        submit(&fx, a(), T0 + 8_000, id, ub[0], vec![QueuedAction::EndTurn]),
+        Ok(()),
+        "the live submit for the waiting side-B unit is accepted"
+    );
+    assert_eq!(
+        w.tactical(id).turn_state,
+        TurnState::Waiting(ub[1]),
+        "the side-B unit's turn ended and the next unit holds the window"
+    );
+}
