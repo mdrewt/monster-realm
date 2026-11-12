@@ -115,7 +115,34 @@ as that same identity; other callers are refused.
 | `just client-test` | vitest |
 | `just gen` | Regenerate `client/src/module_bindings` after a schema or reducer change (never edit them by hand) |
 | `just e2e` | Playwright two-window e2e against a running SpacetimeDB (needs the `dev_reducers` build; see `client/e2e/global-setup.ts`) |
+| `just e2e-shards` | The same suite as `MR_E2E_SHARDS` concurrent Playwright shards (default 8) against the one running SpacetimeDB, each shard with its own database and vite port; builds the `dev_reducers` module itself. See below |
 | `just mutate-core` / `just mutate-server` / `just coverage` / `just perf-budget` / `just smoke-republish` | The nightly checks |
+
+### Running the e2e suite locally
+
+Both recipes need a running SpacetimeDB; `STDB_SERVER` (default: the CLI nickname `local`) and
+`VITE_STDB_URI` say where. `just e2e` runs the suite serially in one database and publishes
+the module without `dev_reducers` unless `MR_DEV_MODULE_WASM` points at a build that has the
+feature. `just e2e-shards` is the fast full run: it builds that module once, then starts
+`MR_E2E_SHARDS` Playwright processes, shard `i` in database `<VITE_STDB_DB>-shard-<i>` on vite
+port `MR_E2E_PORT + i`. It prints one line per shard with its log path and exits non-zero if
+any shard failed.
+
+`MR_E2E_SHARDS` is a plain environment variable (no recipe loads a `.env` file). Its default,
+8, is the fastest measured count whose peak memory stays under half of a 45 GB machine's RAM
+(22 GB), measured on 32 logical CPUs over the whole process tree (SpacetimeDB, vite servers,
+every chromium):
+
+| `MR_E2E_SHARDS` | wall | peak memory |
+|---|---|---|
+| serial `just e2e` | 535 s | |
+| 2 | 479 s | 1.9 GB |
+| 4 | 376 s | 3.7 GB |
+| 6 | 299 s | 3.9 GB |
+| 8 | 240 s | 4.7 GB |
+
+Memory is not the limit at these counts; CPU and the suite's one 133 s test are. Lower the
+value on a smaller machine or while Rust builds and other suites share the box.
 
 ## Repository map
 

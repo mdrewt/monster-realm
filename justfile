@@ -102,10 +102,14 @@ e2e *args: wasm
 # live-population assertions hold per shard. The dev_reducers module is built here and always
 # passed as MR_DEV_MODULE_WASM: a publish without that feature passes globalSetup and then fails
 # every spec that calls a dev reducer. Exits non-zero naming each failed shard and its log.
+# MR_E2E_SHARDS defaults to 8, the fastest measured count whose peak memory (SpacetimeDB + vite
+# servers + every chromium, summed PSS) stays under a 22 GB budget on a 32-CPU / 45 GB machine:
+#   N=2 479 s 1.9 GB · N=4 376 s 3.7 GB · N=6 299 s 3.9 GB · N=8 240 s 4.7 GB (serial: 535 s).
+# Lower it on a smaller or busier machine; past 8 the 133 s tactics-pvp test bounds the wall.
 e2e-shards: wasm
     #!/usr/bin/env bash
     set -euo pipefail
-    n="${MR_E2E_SHARDS:-4}"
+    n="${MR_E2E_SHARDS:-8}"
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "e2e-shards: MR_E2E_SHARDS '$n' is not a positive integer" >&2; exit 64; }
     base_port="${MR_E2E_PORT:-5290}"
     cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
