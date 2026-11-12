@@ -5416,9 +5416,10 @@ async function main(): Promise<void> {
       // gate, so it never walks under a frame or a battle + hold-commit tap/hold
       // discrimination. A frame's push clears the held set, so a hold does NOT resume when
       // the frame closes (ctl-2, deliberately reversing the old resume-after-overlay rule).
-      // Only while the server owes nothing and no sent input is unaccounted for. sendIntent routes through the backpressured
-      // predictor.enqueue + reducer send, and no-ops if declined. Pure NOT-EMIT: it never
-      // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
+      // Only while the server owes nothing and no sent input is unaccounted for. sendIntent
+      // routes through the backpressured predictor.enqueue + reducer send, and no-ops if
+      // declined. Pure NOT-EMIT: it never cancels or writes predictor state, so
+      // reconcileFromStore stays the one repair path.
       if (predictor.outstandingSteps === 0 && owed.count === 0 && movementGate()) {
         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
         if (heldDir !== undefined) sendIntent({ Step: heldDir });
