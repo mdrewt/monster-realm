@@ -198,8 +198,8 @@ another module's table directly.
 ## Reject, don't clamp
 
 **Decision.** Invalid input is refused with `Err`, never silently corrected. Examples
-in code: an over-cap move enqueue returns `Err("queue full")`; a stale input seq is
-rejected in `guards::authorize_move`; an oversized party is rejected by
+in code: an over-cap move enqueue returns `Err("queue full")`; an input seq at or
+below `move_intent.last_input_seq` is rejected in `guards::authorize_move`; an oversized party is rejected by
 `check_party_size`, not truncated; `BattleSide::set_active` returns a typed
 `SwapError`; `tactics::submit_queue` refuses a fainted unit's act with the typed error; a
 shop purchase or trade that would push the receiver past `MAX_ITEM_STACK` or
@@ -227,7 +227,9 @@ client read path at all: `monster` (IVs, EVs, nature), `encounter` (spawn weight
 `battle_wild` and `battle_wild_unit` (wild individuality seeds), `battle_secret` (the
 tactical seed), `battle_summary` (telemetry), `battle_action` (secret PvP picks),
 `trade_session_snapshot` (the review copy of each monster offered in a trade session,
-genes included), `heal_cooldown`, `guest_claim`, `player_session`.
+genes included), `move_intent` (each character's undrained input queue and seq guard;
+`movement_tick` publishes a copy on the public `character` row), `heal_cooldown`,
+`guest_claim`, `player_session`.
 
 **Why.** Hidden stats, item stock, balances and a pending PvP pick are competitive
 information. The view body is the entire boundary, so each view takes only the
@@ -281,13 +283,41 @@ would miss wild units and could never be indexed); a cascade that finds tactical
 only through the `battle` anchor (the reaper's first step can delete an ongoing wild
 anchor before the sweep runs); `u8` codes for game-core enums in a row. Also ruled out: a lock flag on `battle_tactical` or a lock mirror on `battle_unit`; writing one side's units at its own lock (`materialize` runs only once both are locked, `tactics.rs` `stage_pvp`); routing a tactical anchor through `battle::write_back_battle_results` (its side-A XP and currency grant, `battle.rs`, are the M16a asymmetry that design §7 removes); a second `apply_pvp_rating` caller.
 
+## Movement intent is private; the tick publishes it
+
+**Decision.** A player's movement intent is stored in the private `move_intent` table
+(`server-module/src/schema.rs`): the undrained queue and the monotonic seq guard, keyed
+by `character.entity_id`. `enqueue_move`, `set_move` and `clear_queue` write that one
+row and touch no public row. `movement_tick` is the only writer of
+`character.move_queue` and `character.acked_seq`: through `movement::publish_intent`
+it copies the private pair onto the `character` row in the update that carries the
+position, and it writes that row only when something changed. Whenever the private
+pair differs from the published pair, the next tick publishes it, so the owner learns
+of every accepted input within one tick. There is no view and no extra subscription;
+the owner reads the queue and the ack from its own `character` row.
+
+**Why.** A public row written per input is delivered to every subscriber of the table,
+so the deliveries grow with the square of the players walking. With intent private, a
+walking character costs one public row write per step. An owner-scoped view for the ack
+would be evaluated on the module's single reducer thread for every subscriber on every
+write, which costs more of that thread than the bytes it saves. Publishing position,
+queue and ack as one row in one transaction also means the client can never see one
+without the others, so it cannot replay an input the position already includes.
+
+**Rules out.** A `character` or `player` write in an intent reducer; a view or a second
+public table for the ack; any writer of `character.move_queue` or `character.acked_seq`
+other than `movement_tick`; a tick branch that holds an intent row and does not call
+`publish_intent`.
+
 ## Bounded client prediction
 
 **Decision.** The client never predicts further ahead than the server would accept.
 The `Predictor` (`client/src/prediction/predictor.ts`) refuses an enqueue past
 `MOVE_QUEUE_CAP` (2, the game-core value) and applies backpressure at 16 unacknowledged
 ops. It records queue *operations* (`Enqueue`/`SetMove`/`Clear`) rather than raw moves
-and replays them onto the server's queue on reconcile. Each predictor carries a
+and replays them onto the server's queue on reconcile. The acknowledgement it prunes
+against is the own row's `character.acked_seq`, which arrives with the queue and the
+position in one row. Each predictor carries a
 generation id (`PredictorEpoch`), so a rejection addressed to a predictor discarded by
 a warp or reconnect does nothing. A rebuilt predictor starts its sequence numbers
 above the highest one already sent. Zone warps resolve only server-side, in
@@ -736,7 +766,10 @@ publish, so scheduled tables ship together with their reducer. A new table needs
 entry in `schema::DATA_LIFECYCLE_MANIFEST` (a test fails otherwise). A new column on
 an exportable table breaks the compile of the exhaustive export fixtures in
 `server-module/src/privacy_tests.rs`, which forces an explicit export-or-omit
-decision in that table's serializer in `privacy.rs`.
+decision in that table's serializer in `privacy.rs`. A column whose job has moved stays
+in the table: `player.last_input_seq` is retired (the seq guard is
+`move_intent.last_input_seq`), is written as 0 by `join_game` and never again, and is
+still exported.
 
 **Why.** SpacetimeDB's automatic migration accepts only appended columns with
 defaults. Anything else needs `--delete-data`, which wipes every player.

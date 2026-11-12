@@ -5,12 +5,12 @@
 //! validators.
 
 use crate::schema::{
-    battle, character, player, trade_offer, trade_session, Battle, Character, TradeOffer,
-    TradeSession,
+    battle, character, move_intent, player, trade_offer, trade_session, Battle, MoveIntent,
+    TradeOffer, TradeSession,
 };
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
 use game_core::trading::TradeSessionOffer;
-use spacetimedb::{Identity, ReducerContext};
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Escape a string for interpolation into a hand-built JSON log line.
 /// Backslash and double quote are escaped; 0x0A / 0x0D / 0x09
@@ -197,38 +197,46 @@ pub(crate) fn validate_name(name: &str) -> Result<String, String> {
 }
 
 /// Shared ownership + monotonic-seq guard for the move reducers. Returns the
-/// owned character row on success.
+/// caller's `move_intent` row with `last_input_seq` already advanced to `seq`,
+/// NOT yet written: the caller edits the queue and does the one
+/// `move_intent` update, so the queue and the seq are a single row write and a
+/// later `Err("queue full")` returns before any write of an existing row.
+///
+/// A joined caller with no intent row is a session that pre-dates the table:
+/// the row is created from the published character row (`seed_intent`), which
+/// keeps its queued steps and its seq guard. An `Err` after that insert rolls
+/// it back with the rest of the transaction.
 pub(crate) fn authorize_move(
     ctx: &ReducerContext,
     reducer: &str,
     seq: u64,
-) -> Result<Character, String> {
+) -> Result<MoveIntent, String> {
     let me = ctx.sender();
-    let Some(mut player) = ctx.db.player().identity().find(me) else {
+    let Some(player) = ctx.db.player().identity().find(me) else {
         let e = "not joined".to_string();
         log_reject(reducer, me, &e);
         return Err(e);
     };
-    if seq <= player.last_input_seq {
+    let mut intent = match ctx.db.move_intent().entity_id().find(player.entity_id) {
+        Some(intent) => intent,
+        None => {
+            let Some(ch) = ctx.db.character().entity_id().find(player.entity_id) else {
+                let e = "no character".to_string();
+                log_reject(reducer, me, &e);
+                return Err(e);
+            };
+            ctx.db
+                .move_intent()
+                .insert(crate::movement::seed_intent(&ch, Some(&player)))
+        }
+    };
+    if seq <= intent.last_input_seq {
         let e = "stale seq".to_string();
         log_reject(reducer, me, &e);
         return Err(e);
     }
-    let Some(ch) = ctx.db.character().entity_id().find(player.entity_id) else {
-        let e = "no character".to_string();
-        log_reject(reducer, me, &e);
-        return Err(e);
-    };
-    // Advance the seq guard the moment intent is accepted (not applied). The caller
-    // writes the same seq to `character.acked_seq`, the ack the client reads.
-    // Advancing here is safe even though `enqueue_move` may still reject an over-cap
-    // queue with `Err("queue full")` AFTER this returns Ok — that Err rolls the WHOLE
-    // SpacetimeDB transaction back (including this update), so "the seq advances only
-    // on a successful enqueue" holds by transaction semantics. Do not split this write
-    // out of `authorize_move` to "fix" it (the rollback already guarantees it).
-    player.last_input_seq = seq;
-    ctx.db.player().identity().update(player);
-    Ok(ch)
+    intent.last_input_seq = seq;
+    Ok(intent)
 }
 
 // --- Battle-input validators -------------------------------

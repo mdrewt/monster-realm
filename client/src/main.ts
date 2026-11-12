@@ -92,7 +92,7 @@ import { motionPreferenceFromWindow } from './render/motionPreference';
 import type { PostStackToggles } from './render/postStack';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
-import { WorldRenderer } from './render/world';
+import { type RenderEntity, WorldRenderer } from './render/world';
 import { clockVM } from './tactics/clock';
 import { DeployPanel, type DeployVM, deployVM } from './tactics/deployPanel';
 import { isAlreadyActing } from './tactics/draft';
@@ -447,6 +447,9 @@ let lastCamY = 0;
 // (proves the slide clock is wired, not raw integer tiles). Never reset to false
 // except on reconnect. The e2e reads it via window.__game().
 let sawFractionalOwnMotion = false;
+// DEV observation: the positions the frame loop last handed the renderer, so the e2e can
+// watch a REMOTE sprite move between its authoritative tiles. Read via window.__game().
+let lastRendered: readonly RenderEntity[] = [];
 
 let identity = '';
 // event-emit latches (rules: ui/battleEmitModel.ts). `battleEmit` is the battleStart/battleEnd
@@ -4177,6 +4180,14 @@ function snapshot() {
     ownEntityId: store.ownEntityId(identity)?.toString() ?? null,
     ownPredictedTile: pred ? { x: pred.pos.x, y: pred.pos.y } : null,
     ownAuthTile: own ? { x: own.row.tileX, y: own.row.tileY } : null,
+    // The own row's sync columns as last applied: its zone, the published queue and the ack.
+    ownSync: own
+      ? {
+          zoneId: own.row.zoneId,
+          moveQueue: own.row.moveQueue,
+          ackedSeq: own.row.ackedSeq.toString(),
+        }
+      : null,
     sawFractionalOwnMotion,
     moveSendCount,
     moveRejectCount,
@@ -4186,7 +4197,10 @@ function snapshot() {
       tileY: c.row.tileY,
       facing: c.row.facing,
       action: c.row.action,
+      // The interpolation ring, oldest first: one entry per row update received.
+      history: c.snapshots.map((s) => ({ x: s.tileX, y: s.tileY })),
     })),
+    rendered: lastRendered.map((e) => ({ entityId: e.entityId.toString(), x: e.x, y: e.y })),
     monsterCount: store.monsterCount,
     battleCount: store.battleCount,
     ownMonsters: store.ownMonsters(identity).map((m) => ({
@@ -5435,6 +5449,7 @@ async function main(): Promise<void> {
         currentZoneId: rawMap.zone_id,
         reduceMotion: motionPreference.reduceMotion,
       });
+      lastRendered = entities;
       // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
       // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never
       // the interpolation fallback. This keeps the e2e proving the slide clock specifically,

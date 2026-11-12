@@ -22,11 +22,12 @@ use spacetimedb::{ConnectionId, Identity, ReducerContext, Table};
 // --- Tables (additive; world tables carry an indexed zone_id) ---
 
 /// One renderable entity. The enum/queue columns are the EXACT M1 `game-core`
-/// types (the shared type IS the schema, never re-declared). `move_queue` is
-/// bounded + public so the owner's client reconciles against the undrained queue,
-/// and `acked_seq` is the owner's reconciliation ack: the highest input seq the
-/// server has accepted for this character, written in the same row as the queue
-/// so the two cannot be torn. Remote clients ignore both.
+/// types (the shared type IS the schema, never re-declared). `move_queue` and
+/// `acked_seq` are the owner's reconciliation pair: the undrained queue and the
+/// highest accepted input seq, both copied from the private `move_intent` row by
+/// `movement_tick` in the same update that carries the position, so the three
+/// cannot be torn. `movement_tick` is their only writer. Remote clients ignore
+/// both.
 #[spacetimedb::table(accessor = character, public)]
 pub struct Character {
     #[primary_key]
@@ -45,9 +46,11 @@ pub struct Character {
     pub acked_seq: u64,
 }
 
-/// Links a connection identity to its character. `last_input_seq` is the
-/// monotonic seq guard `authorize_move` checks and advances at accept-time; the
-/// client reads its ack from `character.acked_seq`, not from this column.
+/// Links a connection identity to its character. `last_input_seq` is retired:
+/// `join_game` writes 0 and nothing writes it again (the seq guard is
+/// `move_intent.last_input_seq`). The column stays because schema changes are
+/// additive; `seed_intent` reads it once for a session that pre-dates
+/// `move_intent`.
 #[spacetimedb::table(accessor = player, public)]
 pub struct Player {
     #[primary_key]
@@ -56,6 +59,18 @@ pub struct Player {
     pub entity_id: u64,
     pub name: String,
     pub online: bool,
+    pub last_input_seq: u64,
+}
+
+/// One player character's movement intent: the undrained input queue and the
+/// monotonic seq guard. PRIVATE, so an accepted input changes no row any client
+/// subscribes to; `movement_tick` publishes both onto the `character` row it
+/// writes once per step. Keyed by `character.entity_id`; NPCs have no row.
+#[spacetimedb::table(accessor = move_intent)]
+pub struct MoveIntent {
+    #[primary_key]
+    pub entity_id: u64,
+    pub queue: Vec<MoveInput>,
     pub last_input_seq: u64,
 }
 
@@ -1975,6 +1990,14 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         basis: "no Identity column; erased via the owning player row's entity_id join, \
                 sequenced BEFORE the player tombstone write",
         exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "move_intent",
+        policy: DeletionPolicy::ViaJoin("player"),
+        basis: "no Identity column; the character's undrained input queue and seq guard, \
+                erased beside the character via the owning player row's entity_id join; \
+                never exported, the character row already carries the published copy",
+        exportable: false,
     },
     DataLifecycleEntry {
         table: "battle_wild",

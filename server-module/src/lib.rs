@@ -14,7 +14,8 @@
 use crate::content::sync_content_inner;
 use crate::movement::{movement_tick_schedule, MovementTickSchedule};
 use crate::schema::{
-    character, config, player, player_conversation, player_session, zone_def, Config, PlayerSession,
+    character, config, move_intent, player, player_conversation, player_session, zone_def, Config,
+    PlayerSession,
 };
 use game_core::STEP_MS;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
@@ -247,8 +248,8 @@ pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Iden
     pvp::cancel_challenges_on_disconnect(ctx, identity);
 }
 
-/// erase the `character` row reachable via the live `player` anchor's
-/// `entity_id` join — strictly BEFORE the player display-name tombstone
+/// erase the `character` row and its `move_intent` row, both reachable via the
+/// live `player` anchor's `entity_id` join — strictly BEFORE the player display-name tombstone
 /// write (the spec's character-before-player order pin). Usually a no-op:
 /// presence rows are deleted on disconnect, so only a connected-at-fire
 /// session has one. Never touches the `player` row itself (it survives as
@@ -256,6 +257,7 @@ pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Iden
 pub(crate) fn erase_character_rows(ctx: &ReducerContext, owner: Identity) {
     if let Some(p) = ctx.db.player().identity().find(owner) {
         ctx.db.character().entity_id().delete(p.entity_id);
+        ctx.db.move_intent().entity_id().delete(p.entity_id);
     }
 }
 
@@ -326,6 +328,7 @@ pub fn on_disconnect(ctx: &ReducerContext) {
     ctx.db.player_conversation().owner_identity().delete(me);
     if let Some(p) = ctx.db.player().identity().find(me) {
         ctx.db.character().entity_id().delete(p.entity_id);
+        ctx.db.move_intent().entity_id().delete(p.entity_id);
         ctx.db.player().identity().delete(me);
     }
 }

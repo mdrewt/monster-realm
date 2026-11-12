@@ -2369,8 +2369,17 @@ fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
         .table_keyed::<crate::schema::Character, u64>("character", "entity_id", |r| r.entity_id)
         .writable()
         .unique();
+    let intents = fx
+        .table_keyed::<crate::schema::MoveIntent, u64>("move_intent", "entity_id", |r| r.entity_id)
+        .writable()
+        .unique();
     let monsters =
         fx.table::<crate::schema::Monster>("monster", "owner_identity", |r| r.owner_identity);
+    intents.seed(&crate::schema::MoveIntent {
+        entity_id: 7,
+        queue: vec![],
+        last_input_seq: 0,
+    });
     players.seed(&crate::schema::Player {
         identity: me,
         entity_id: 7,
@@ -2405,18 +2414,42 @@ fn enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b() {
         "fixture: a joined caller with a fresh seq and an empty queue must have its move \
          accepted; it returned {moved:?}, so the test never reached the party check."
     );
-    let queues: Vec<_> = characters
+    let queues: Vec<_> = intents
         .rows()
         .into_iter()
-        .map(|c| c.move_queue)
+        .map(|i| (i.entity_id, i.queue, i.last_input_seq))
         .collect();
     assert_eq!(
         queues,
-        vec![vec![MoveInput::Jump]],
-        "fixture: the accepted move must be queued on the caller's one character row."
+        vec![(7, vec![MoveInput::Jump], 1)],
+        "fixture: the accepted move must be queued on the caller's one move_intent row."
+    );
+    let published: Vec<_> = characters
+        .rows()
+        .into_iter()
+        .map(|c| (c.move_queue, c.acked_seq))
+        .collect();
+    assert_eq!(
+        published,
+        vec![(vec![], 0)],
+        "the accepted move must not touch the caller's character row."
     );
 
     let after_move = fx.requested_indexes();
+    assert!(
+        after_move
+            .iter()
+            .any(|n| n.as_str() == "move_intent_entity_id_idx_btree"),
+        "recorder control: `enqueue_move` reads the caller's intent row through \
+         `move_intent_entity_id_idx_btree`; the recorder holds {after_move:?}."
+    );
+    assert!(
+        !after_move
+            .iter()
+            .any(|n| n.as_str() == "character_entity_id_idx_btree"),
+        "hot path FAIL: `enqueue_move` for a caller whose intent row exists asked the host \
+         for the character row. Every index asked for: {after_move:?}"
+    );
     let trade_reads: Vec<&String> = after_move
         .iter()
         .filter(|name| name.starts_with("trade_offer_"))

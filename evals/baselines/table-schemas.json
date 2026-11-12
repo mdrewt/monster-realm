@@ -1730,5 +1730,23 @@
       "session_id"
     ],
     "scheduled": "trade_session_reaper"
+  },
+  "move_intent": {
+    "pk": "entity_id",
+    "visibility": "private",
+    "columns": {
+      "entity_id": "u64",
+      "queue": "Vec<MoveInput>",
+      "last_input_seq": "u64"
+    },
+    "order": [
+      "entity_id",
+      "queue",
+      "last_input_seq"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   }
 }

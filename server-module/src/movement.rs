@@ -1,9 +1,11 @@
 //! `movement` — server-module domain submodule.
 //!
-//! Server-paced, per-zone movement: clients buffer intent; the
-//! scheduled `movement_tick` drains at most one move/character/tick (a character
-//! whose player is in an ongoing battle drains none — its queue stays frozen)
-//! and runs the grass-encounter trigger, which opens a TACTICAL wild battle through
+//! Server-paced, per-zone movement: clients buffer intent in the PRIVATE
+//! `move_intent` table (an accepted input writes that one row and no public
+//! row); the scheduled `movement_tick` drains at most one move/character/tick (a
+//! character whose player is in an ongoing battle drains none — its queue stays
+//! frozen), publishes the remaining queue and the accepted seq on the
+//! `character` row it writes, and runs the grass-encounter trigger, which opens a TACTICAL wild battle through
 //! `tactics::start_wild_tactical` (bt-16: the one live wild path). The
 //! `movement_tick_schedule` scheduled `#[table]`
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
@@ -21,8 +23,8 @@ use crate::marshal::{
 };
 use crate::raising::accrue_quality_time;
 use crate::schema::{
-    character, encounter, monster, monster_pub, npc, player, player_conversation, species_row,
-    Character, Player, PlayerConversation,
+    character, encounter, monster, monster_pub, move_intent, npc, player, player_conversation,
+    species_row, Character, MoveIntent, Player, PlayerConversation,
 };
 use crate::tactics::start_wild_tactical;
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
@@ -45,7 +47,7 @@ pub struct MovementTickSchedule {
     pub scheduled_at: ScheduleAt,
 }
 
-/// Join: one `player` + one `character` at the spawn + one starter `monster`
+/// Join: one `player` + one `character` at the spawn + its `move_intent` row + one starter `monster`
 /// (idempotent: a returning player gets character+player only, not a second
 /// monster). Rejects a double-join within the same session.
 #[spacetimedb::reducer]
@@ -71,6 +73,12 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         sprite_id: SPRITE_PLAYER,
         move_queue: Vec::new(),
         acked_seq: 0,
+    });
+    // Created here so a move reducer finds the row and never takes its seeding branch.
+    ctx.db.move_intent().insert(MoveIntent {
+        entity_id: ch.entity_id,
+        queue: Vec::new(),
+        last_input_seq: 0,
     });
     ctx.db.player().insert(Player {
         identity: me,
@@ -128,8 +136,49 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The `move_intent` row for a character that has none: a session that joined
+/// before the table existed. It starts from what the character row publishes, so
+/// queued steps survive, and from the higher of the two seq columns, so the
+/// guard never moves backwards (`player.last_input_seq` held it before
+/// `character.acked_seq` did).
+pub(crate) fn seed_intent(ch: &Character, player: Option<&Player>) -> MoveIntent {
+    MoveIntent {
+        entity_id: ch.entity_id,
+        queue: ch.move_queue.clone(),
+        last_input_seq: ch.acked_seq.max(player.map_or(0, |p| p.last_input_seq)),
+    }
+}
+
+/// Copy the private queue and seq onto the character row. Returns whether the
+/// row changed, so a tick that has nothing new to tell the owner writes nothing.
+/// Every `movement_tick` branch that holds an intent row publishes through here.
+pub(crate) fn publish_intent(row: &mut Character, queue: &[MoveInput], seq: u64) -> bool {
+    let changed = row.move_queue != queue || row.acked_seq != seq;
+    if changed {
+        row.move_queue = queue.to_vec();
+        row.acked_seq = seq;
+    }
+    changed
+}
+
+/// A character that does not move this tick (nothing queued, or battle-locked):
+/// publish its intent and normalise `action` to Idle, writing the row only if
+/// either changed it.
+fn publish_standing(ctx: &ReducerContext, mut row: Character, intent: &MoveIntent) {
+    let mut dirty = publish_intent(&mut row, &intent.queue, intent.last_input_seq);
+    if row.action != ActionState::Idle {
+        row.action = ActionState::Idle;
+        dirty = true;
+    }
+    if dirty {
+        ctx.db.character().entity_id().update(row);
+    }
+}
+
 /// Append one intent to the bounded queue (anti-flood: reject when full). Buffers
-/// intent only — NEVER computes movement. Atomic: queue + ack in one transaction.
+/// intent only — NEVER computes movement. One private `move_intent` write carries
+/// the queue and the seq. The caller's `player` row is read for its entity id;
+/// no `character` row is read, and neither table is written.
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.
@@ -142,15 +191,14 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
         log_reject("enqueue_move", ctx.sender(), &e);
         return Err(e);
     }
-    let mut ch = authorize_move(ctx, "enqueue_move", seq)?;
-    if ch.move_queue.len() >= MOVE_QUEUE_CAP {
+    let mut intent = authorize_move(ctx, "enqueue_move", seq)?;
+    if intent.queue.len() >= MOVE_QUEUE_CAP {
         let e = "queue full".to_string();
         log_reject("enqueue_move", ctx.sender(), &e);
         return Err(e);
     }
-    ch.move_queue.push(input);
-    ch.acked_seq = seq;
-    ctx.db.character().entity_id().update(ch);
+    intent.queue.push(input);
+    ctx.db.move_intent().entity_id().update(intent);
     // THE movement call site — a genuinely player-triggered reducer
     // (never movement_tick). Once per party monster over lead_party's
     // FULL id list (not just the lead); accrual first, auto-evolution
@@ -195,11 +243,10 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
         log_reject("set_move", ctx.sender(), &e);
         return Err(e);
     }
-    let mut ch = authorize_move(ctx, "set_move", seq)?;
-    ch.move_queue.clear();
-    ch.move_queue.push(input);
-    ch.acked_seq = seq;
-    ctx.db.character().entity_id().update(ch);
+    let mut intent = authorize_move(ctx, "set_move", seq)?;
+    intent.queue.clear();
+    intent.queue.push(input);
+    ctx.db.move_intent().entity_id().update(intent);
     Ok(())
 }
 
@@ -212,10 +259,9 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     // cannot cause movement. Guarding it would force the stale pre-battle queue
     // to survive to battle end and deny an honest key-release cancel while the
     // battle overlay is opening.
-    let mut ch = authorize_move(ctx, "clear_queue", seq)?;
-    ch.move_queue.clear();
-    ch.acked_seq = seq;
-    ctx.db.character().entity_id().update(ch);
+    let mut intent = authorize_move(ctx, "clear_queue", seq)?;
+    intent.queue.clear();
+    ctx.db.move_intent().entity_id().update(intent);
     Ok(())
 }
 
@@ -289,6 +335,11 @@ static WILD_START_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
 /// Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute
 /// the outcome via `game_core::apply_move`, write back. Scheduler-only.
+///
+/// The tick is the only writer of `character.move_queue` and
+/// `character.acked_seq`: whenever a character's private `move_intent` pair
+/// differs from the published pair, this tick writes the character row, and a
+/// drained step carries position, remaining queue and seq in that one write.
 #[spacetimedb::reducer]
 pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
     if ctx.sender() != ctx.database_identity() {
@@ -322,11 +373,28 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         let Some(mut row) = ctx.db.character().entity_id().find(id) else {
             continue;
         };
-        if row.move_queue.is_empty() {
-            if row.action != ActionState::Idle {
-                row.action = ActionState::Idle;
-                ctx.db.character().entity_id().update(row);
+        let mut intent = match ctx.db.move_intent().entity_id().find(id) {
+            Some(intent) => intent,
+            // No intent row and nothing published to drain: an NPC, or an idle
+            // session that pre-dates `move_intent`. Normalise to Idle write-on-change.
+            None if row.move_queue.is_empty() => {
+                if row.action != ActionState::Idle {
+                    row.action = ActionState::Idle;
+                    ctx.db.character().entity_id().update(row);
+                }
+                continue;
             }
+            // A published queue with no intent row: a session that was mid-walk
+            // when `move_intent` was added. Its row is created from what it published.
+            None => {
+                let player = ctx.db.player().entity_id().filter(id).next();
+                ctx.db
+                    .move_intent()
+                    .insert(seed_intent(&row, player.as_ref()))
+            }
+        };
+        if intent.queue.is_empty() {
+            publish_standing(ctx, row, &intent);
             continue;
         }
         // Drain-time battle lock: while this character's player is
@@ -350,13 +418,11 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             .map(|p| is_in_ongoing_battle(ctx, p.identity))
             .unwrap_or(false);
         if battle_locked {
-            if row.action != ActionState::Idle {
-                row.action = ActionState::Idle;
-                ctx.db.character().entity_id().update(row);
-            }
+            // The intent queue stays intact; the owner still learns of it once.
+            publish_standing(ctx, row, &intent);
             continue;
         }
-        let input = row.move_queue.remove(0);
+        let input = intent.queue.remove(0);
         let prev = char_state(&row).pos; // capture BEFORE apply_move
         let next = apply_move(&char_state(&row), input, map, now);
         apply_state(&mut row, &next);
@@ -388,17 +454,22 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                     row.zone_id = to_zone;
                     row.tile_x = tx;
                     row.tile_y = ty;
-                    row.move_queue.clear(); // clear queued moves across zone boundary
+                    intent.queue.clear(); // clear queued moves across zone boundary
                     row.action = ActionState::Idle; // arrive idle in new zone
+                    publish_intent(&mut row, &intent.queue, intent.last_input_seq);
                     ctx.db.character().entity_id().update(row);
+                    ctx.db.move_intent().entity_id().update(intent);
                     // skip grass-encounter trigger — a warp step is not a grass step
                     continue;
                 }
             }
         }
 
-        // Normal (non-warp) one-write path — position + drained move_queue (atomic).
+        // Normal (non-warp) path — ONE character write carries position, the
+        // post-drain queue and the accepted seq.
+        publish_intent(&mut row, &intent.queue, intent.last_input_seq);
         ctx.db.character().entity_id().update(row);
+        ctx.db.move_intent().entity_id().update(intent);
 
         // M8c grass-encounter trigger. EVERY failure mode below is a
         // no-op, never a panic. Draw `ctx.random()` only after `stepped_onto_grass` +

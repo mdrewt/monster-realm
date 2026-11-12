@@ -3,9 +3,8 @@
 //
 // The model is the wire, not main.ts: two FIFO links (client→server calls, server→client
 // row snapshots and rejections) and a server that keeps a queue and a seq guard and
-// publishes `(position, queue, ackedSeq)` as ONE row. `ackDelivery` picks when an accepted
-// input reaches that row: 'accept' publishes it with the reducer call, 'tick' publishes it
-// with the next tick's write. Every property holds under both.
+// publishes `(position, queue, ackedSeq)` as ONE row, written by the tick only: an accepted
+// input changes nothing the client can see until the next tick.
 //
 // Properties:
 //   P1 (within a predictor generation) after every reconcile the local queue is
@@ -25,8 +24,6 @@ import { type ApplyMove, Predictor, type PredictorEpoch, type QueueOp } from './
 
 const STEP_MS = 200;
 const QUEUE_CAP = 2;
-
-type AckDelivery = 'accept' | 'tick';
 
 const DELTA: Record<WasmDirection, { dx: number; dy: number }> = {
   North: { dx: 0, dy: -1 },
@@ -106,7 +103,7 @@ class World {
     return moved(state, input, now);
   };
 
-  constructor(readonly ackDelivery: AckDelivery) {
+  constructor() {
     this.#predictor = new Predictor(this.#applyMove, STEP_MS, QUEUE_CAP);
     this.#publish(); // the login snapshot
   }
@@ -222,7 +219,6 @@ class World {
     if (op.kind === 'Enqueue') this.#queue.push(op.input);
     else if (op.kind === 'SetMove') this.#queue = [op.input];
     else this.#queue = [];
-    if (this.ackDelivery === 'accept') this.#publish();
   }
   /** movement_tick for this character. `warpTo` is the zone a drained step lands in. */
   tick(warpTo?: number): void {
@@ -349,14 +345,11 @@ function run(world: World, commands: readonly Command[]): void {
   world.settleAndCheck();
 }
 
-describe.each<AckDelivery>([
-  'accept',
-  'tick',
-])('ack on the character row, delivered at %s: random interleavings', (ackDelivery) => {
+describe('ack on the character row, published by the tick: random interleavings', () => {
   it('P1 queue and outstandingSteps within a generation, P2 the gate across rebuilds, P3 liveness', () => {
     fc.assert(
       fc.property(fc.array(commandArb, { maxLength: 80 }), (commands) => {
-        run(new World(ackDelivery), commands);
+        run(new World(), commands);
       }),
       { numRuns: 1500, seed: 0x5e11ce1 },
     );
@@ -367,7 +360,7 @@ describe.each<AckDelivery>([
     let reached = 0;
     fc.assert(
       fc.property(fc.array(commandArb, { maxLength: 80 }), (commands) => {
-        const world = new World(ackDelivery);
+        const world = new World();
         run(world, commands);
         if (world.rebuildsWithInputOnTheWire > 0) reached += 1;
       }),
@@ -381,15 +374,13 @@ describe('ack on the character row: the property has teeth', () => {
   it('a rebuild with an input on the wire reads outstandingSteps 0, and only the owed set keeps the gate shut', () => {
     // The shrunk shape P2 exists for, pinned as an example: without OwedInputs the sum
     // below would be 0 while the server is about to accept a step.
-    for (const ackDelivery of ['accept', 'tick'] as const) {
-      const world = new World(ackDelivery);
-      world.receive(); // login snapshot
-      world.send('Enqueue', { Step: 'East' });
-      world.rebuild();
-      world.checkGate();
-      world.deliver();
-      world.checkGate();
-      world.settleAndCheck();
-    }
+    const world = new World();
+    world.receive(); // login snapshot
+    world.send('Enqueue', { Step: 'East' });
+    world.rebuild();
+    world.checkGate();
+    world.deliver();
+    world.checkGate();
+    world.settleAndCheck();
   });
 });

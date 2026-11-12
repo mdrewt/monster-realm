@@ -184,17 +184,33 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
 ### Movement
 
 Movement is paced by the server, per zone. A client sends intent (`enqueue_move`,
-`set_move`, `clear_queue`) tagged with a strictly increasing `seq`;
-`guards::authorize_move` rejects a stale seq and records the new one as
-`player.last_input_seq`. The reducer then writes the queue
-(`character.move_queue`, capped at `MOVE_QUEUE_CAP`) and the accepted seq
-(`character.acked_seq`) in one update of the character row. Both are public so the
-owner can reconcile against them: the acknowledgement and what is left of the queue
-arrive in the same row as the position. Each zone has an interval schedule row
-that runs `movement_tick` every `STEP_MS`. A tick drains at most one move per
-character through `game_core::apply_move`, moves NPCs with `npc_decide`, accrues
-Quality-Time, and rolls grass encounters. A character whose player is in a battle
-drains nothing, and `enqueue_move`/`set_move` reject new moves during a battle.
+`set_move`, `clear_queue`) tagged with a strictly increasing `seq`. The intent lives
+in the private `move_intent` table, one row per player character: the undrained queue
+(capped at `MOVE_QUEUE_CAP`) and `last_input_seq`. `guards::authorize_move` rejects a
+seq at or below that value, and the reducer then writes the queue and the new seq in
+one `move_intent` update. An accepted input reads the caller's `player` row for its
+entity id, reads no `character` row, and writes neither, so it changes nothing any
+client subscribes to.
+
+Each zone has an interval schedule row that runs `movement_tick` every `STEP_MS`. A
+tick drains at most one move per character through `game_core::apply_move`, moves NPCs
+with `npc_decide`, and rolls grass encounters. The tick is the only writer of
+`character.move_queue` and `character.acked_seq`: it copies the private queue and seq
+onto the character row (`movement::publish_intent`) in the same update that carries
+the position, and writes the row only when something changed. The owner therefore
+receives the acknowledgement and what is left of the queue together with the position,
+up to one tick after the input was accepted, and every other client receives one
+`character` update per step. A character whose player is in a battle drains nothing
+(its queue is published once and stays intact), and `enqueue_move`/`set_move` reject
+new moves during a battle. Quality-Time accrues in `enqueue_move`.
+
+`join_game` creates the `move_intent` row with the character; the last disconnect and
+the account-deletion cascade delete it with the character. A character with no intent
+row is an NPC, or a session that joined before the table existed: such a session's row
+is created from its published queue and the higher of `character.acked_seq` and
+`player.last_input_seq` (`movement::seed_intent`) by its first move call or by the
+tick. `player.last_input_seq` is otherwise unused: `join_game` writes 0 and nothing
+writes it again.
 
 ### Battles, trades and the rest
 
@@ -404,7 +420,11 @@ player immediately:
 3. **Reconcile.** On each flushed batch, `reconcile` drops acknowledged operations
    (`seq <=` the own character row's `acked_seq`), rebuilds the queue from the server's
    `move_queue`, replays the pending operations, resets to the authoritative position,
-   and drains. It reports whether the corrected tile differs from the prediction.
+   and drains. It reports whether the corrected tile differs from the prediction. The
+   server publishes the ack and the queue only with `movement_tick`, so an accepted
+   input stays a pending operation until the tick that drains or publishes it; a page
+   that loads while its rows survive can seed from an ack one tick old, and its first
+   send is then rejected as stale and re-issued.
 4. **Rejections.** A rejected intent is removed with `dropRejected(seq, epoch)`,
    followed by a forced reconcile. The epoch makes a rejection addressed to a
    discarded predictor (after a warp or reconnect) a no-op, and rebuilt predictors
