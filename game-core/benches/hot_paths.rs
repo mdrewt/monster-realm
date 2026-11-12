@@ -1,5 +1,5 @@
 //! `hot_paths` — the criterion harness + perf-budget gate. `fn main` is ours (`harness = false`): clean the
-//! criterion output dirs (AM1), bench the 7 budgeted hot paths over REAL
+//! criterion output dirs (AM1), bench the budgeted hot paths over REAL
 //! shipped content (the public `load_*` loaders — never cfg(test) builders),
 //! read criterion's `mean.point_estimate` back, and exit non-zero on any
 //! violation, missing measurement, or unreadable estimate.
@@ -15,6 +15,10 @@ mod budgets;
 
 use budgets::BUDGETS;
 use criterion::{BatchSize, Criterion};
+use game_core::tactics::{
+    build_kits, deploy_unit, load_battle_maps, load_tactics_skills, load_tactics_species,
+    load_tactics_tuning, plan, BattleKind, QueuedAction, Side, Stance, TacticalState, UnitKit,
+};
 use game_core::{
     apply_move, build_monster, derive_stats, eligible_evolution_paths, evolve, load_encounters,
     load_evolution_paths, load_skills, load_species, load_type_chart, load_zone_maps, map_for,
@@ -141,6 +145,75 @@ fn main() {
     };
     let stat_level = Level::new(50).expect("valid level");
 
+    // The opening board of a wild 3v3 on the first 8x8 PvE map, every unit the first Aggressive
+    // battler (the stance that weighs its whole reach); the planned unit is the first wild.
+    let tuning = load_tactics_tuning().expect("tactics tuning content must load");
+    let kits = build_kits(
+        &species,
+        &skills,
+        &load_tactics_skills().expect("tactics skill content must load"),
+        &load_tactics_species().expect("tactics species content must load"),
+    )
+    .expect("the shipped kits join");
+    let battler = kits
+        .iter()
+        .find(|k| k.stance == Stance::Aggressive)
+        .expect("an Aggressive battler exists");
+    let battler_species = species
+        .iter()
+        .find(|s| s.id == battler.species_id)
+        .expect("the battler's species exists");
+    let battle_maps = load_battle_maps().expect("battle-map content must load");
+    let arena = &battle_maps
+        .iter()
+        .find(|m| !m.pvp && m.map.width == 8 && m.map.height == 8)
+        .expect("an 8x8 PvE battle map exists")
+        .map;
+    let battler_stats =
+        build_monster(9, battler_species, Level::new(50).expect("valid level")).derived_stats;
+    let battler_kit = UnitKit {
+        species_id: battler.species_id,
+        affinity: battler_species.affinity,
+        level: 50,
+        stats: battler_stats,
+        base_speed: battler.base_speed,
+        class: battler.movement,
+        skills: vec![battler.light.clone(), battler.heavy.clone()],
+    };
+    let wild_id = 101;
+    let wild_spawn = arena.spawn_b[0];
+    let mut tactical_units = Vec::new();
+    for slot in 0..3u8 {
+        let i = usize::from(slot);
+        for (id_base, side, spawns) in [
+            (1, Side::A, &arena.spawn_a),
+            (wild_id, Side::B, &arena.spawn_b),
+        ] {
+            tactical_units.push(
+                deploy_unit(
+                    id_base + u32::from(slot),
+                    side,
+                    slot,
+                    spawns[i],
+                    battler_kit.clone(),
+                    battler_stats.hp,
+                )
+                .expect("a level-50 battler deploys"),
+            );
+        }
+    }
+    let tactical = TacticalState::new(BattleKind::Wild, 7, arena, tactical_units)
+        .expect("the 3v3 opening board is legal");
+    // The bench must measure a full plan (reach, candidates, a chosen tile), not the `[EndTurn]`
+    // early return of a refused board.
+    assert!(
+        matches!(
+            plan(&tactical, wild_id, Stance::Aggressive, wild_spawn, &tuning).first(),
+            Some(QueuedAction::Move(_))
+        ),
+        "the first wild opens the 3v3 with a Move"
+    );
+
     // --- Bench: fixed configuration, no CLI parsing (`cargo bench` passes
     // libtest-style flags this binary must ignore, so `configure_from_args` is
     // deliberately NOT called).
@@ -209,6 +282,18 @@ fn main() {
 
     c.bench_function("map_for", |b| {
         b.iter(|| map_for(black_box(0), black_box(&zone_maps)))
+    });
+
+    c.bench_function("tactics_plan", |b| {
+        b.iter(|| {
+            plan(
+                black_box(&tactical),
+                black_box(wild_id),
+                black_box(Stance::Aggressive),
+                black_box(wild_spawn),
+                black_box(&tuning),
+            )
+        })
     });
 
     c.final_summary();

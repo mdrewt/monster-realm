@@ -20,8 +20,8 @@ use proptest::prelude::*;
 
 use super::geometry::{Board, BoardUnit, Cell, Side};
 use super::movement::{
-    disengage_taxed, find_path, stride_for_base_speed, terrain_weight, MoveClass, Path, PathError,
-    Terrain,
+    disengage_taxed, find_path, path_costs, stride_for_base_speed, terrain_weight, MoveClass, Path,
+    PathError, Terrain,
 };
 
 // ---------------------------------------------------------------------------
@@ -475,6 +475,33 @@ fn bt1_6_path_errors_bounds_and_same_tile() {
 }
 
 #[test]
+fn bt1_6_path_costs_refuses_an_unknown_mover_then_an_off_board_start() {
+    let b = board(&PLAIN_3X3, vec![me(MoveClass::Walk, 0, 0)]);
+    assert_eq!(
+        path_costs(&b, 99, c(0, 0)),
+        Err(PathError::UnknownMover(99))
+    );
+    let d = board(&PLAIN_3X3, vec![dead(me(MoveClass::Walk, 0, 0))]);
+    assert_eq!(path_costs(&d, 1, c(0, 0)), Err(PathError::UnknownMover(1)));
+    // `(3, 0)` is off the board although its row-major index (3) is inside the grid.
+    assert_eq!(
+        path_costs(&b, 1, c(3, 0)),
+        Err(PathError::OutOfBounds),
+        "x == width"
+    );
+    assert_eq!(
+        path_costs(&b, 1, c(0, 3)),
+        Err(PathError::OutOfBounds),
+        "y == height"
+    );
+    // UnknownMover beats OutOfBounds.
+    assert_eq!(
+        path_costs(&b, 99, c(9, 9)),
+        Err(PathError::UnknownMover(99))
+    );
+}
+
+#[test]
 fn bt1_6_path_error_order_is_pairwise_fixed() {
     let b = board(&PLAIN_3X3, vec![me(MoveClass::Walk, 0, 0)]);
     // UnknownMover beats OutOfBounds.
@@ -847,6 +874,17 @@ proptest! {
                 }
             }
         }
+        // `path_costs` lists, row-major, exactly the destinations `find_path` accepts, each with
+        // that path's cost.
+        let mut want_costs = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                if let Ok(p) = find_path(&b, 1, start, c(x, y)) {
+                    want_costs.push((c(x, y), p.cost));
+                }
+            }
+        }
+        prop_assert_eq!(path_costs(&b, 1, start), Ok(want_costs));
         // Out-of-bounds destinations are typed, not clamped.
         prop_assert_eq!(find_path(&b, 1, start, c(w, 0)), Err(PathError::OutOfBounds));
         prop_assert_eq!(find_path(&b, 1, start, c(0, h)), Err(PathError::OutOfBounds));

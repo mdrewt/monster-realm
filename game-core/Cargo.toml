@@ -23,7 +23,7 @@ spacetimedb = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-# Perf-budget gate (m20a, OBS-5/OBS-6): criterion measures the 7 hot paths;
+# Perf-budget gate (m20a, OBS-5/OBS-6): criterion measures the budgeted hot paths;
 # serde_json reads criterion's estimates.json back for the ceiling comparison.
 # Dev-deps ONLY — OBS-7/D7 forbids observability deps in the shipped library.
 criterion = { workspace = true }

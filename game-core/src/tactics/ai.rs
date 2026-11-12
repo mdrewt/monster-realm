@@ -10,10 +10,12 @@
 //! one `min_by_key` over an explicit tuple, so native and wasm agree byte for byte.
 //!
 //! The plan is executed by the same executor as player queues (`queue::TacticalBattle`), so every
-//! emitted entry is one `validate_at_pop` accepts: paths come from `movement::find_path`, aims
-//! from `geometry::target_set`, the disengage tax from `movement::disengage_taxed`, stride points
-//! from `queue::stride_points`, costs from `economy::plan_cost` (the trailing `EndTurn` included),
-//! and every target-set unit passes `resolve::validate_unit`. No rule is re-implemented here.
+//! emitted entry is one `validate_at_pop` accepts: path costs come from `movement::path_costs`
+//! (the cost `movement::find_path` returns for the same destination, every destination from one
+//! search), aims from `geometry::target_set`, the disengage tax from `movement::disengage_taxed`,
+//! stride points from `queue::stride_points`, costs from `economy::plan_cost` (the trailing
+//! `EndTurn` included), and every target-set unit passes `resolve::validate_unit`. No rule is
+//! re-implemented here.
 //!
 //! Tie-breaks: a target by `(Manhattan distance from the wild, cur_hp, slot, y, x)`; a tile by
 //! `(the stance's primary, path cost, y, x)` — the wild's own tile costs 0, so staying put wins
@@ -25,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::economy::{plan_cost, Entry, Tier, TurnBudget};
 use super::geometry::{manhattan, target_set, Board, Cell, Origin};
-use super::movement::{disengage_taxed, find_path};
+use super::movement::{disengage_taxed, path_costs};
 use super::queue::stride_points;
 use super::resolve::{can_act, validate_unit, SkillTactics, TacticalState, TacticalUnit};
 use super::tuning::TacticsTuning;
@@ -168,36 +170,29 @@ impl<'a> View<'a> {
             .unwrap_or(u16::MAX)
     }
 
-    /// Every tile the wild can stand on this turn, row-major, its own tile first. Path cost is at
-    /// least the Manhattan distance, so tiles beyond the stride budget are pruned before pathing.
+    /// Every tile the wild can stand on this turn, row-major, its own tile first: each destination
+    /// `path_costs` lists whose cost some stride count within the turn's cap covers.
     fn reach(&self) -> Vec<Reach> {
         let pos = self.actor.pos;
         let base_speed = self.actor.kit.base_speed;
-        let max_points = stride_points(self.t.max_strides_per_turn, base_speed);
         let mut out = vec![Reach {
             tile: pos,
             cost: 0,
             strides: 0,
         }];
-        for y in 0..self.board.height {
-            for x in 0..self.board.width {
-                let tile = Cell { x, y };
-                if manhattan(pos, tile) > max_points {
-                    continue;
-                }
-                // The own tile is already in `out`: `find_path` refuses it as `SameTile`.
-                let Ok(path) = find_path(&self.board, self.actor.id, pos, tile) else {
-                    continue;
-                };
-                let strides = (1..=self.t.max_strides_per_turn)
-                    .find(|&s| stride_points(s, base_speed) >= path.cost);
-                if let Some(strides) = strides {
-                    out.push(Reach {
-                        tile,
-                        cost: path.cost,
-                        strides,
-                    });
-                }
+        // `View::of` admits only an actor `disengage_taxed` accepts, which `path_costs` accepts too.
+        let Ok(costs) = path_costs(&self.board, self.actor.id, pos) else {
+            return out;
+        };
+        for (tile, cost) in costs {
+            let strides =
+                (1..=self.t.max_strides_per_turn).find(|&s| stride_points(s, base_speed) >= cost);
+            if let Some(strides) = strides {
+                out.push(Reach {
+                    tile,
+                    cost,
+                    strides,
+                });
             }
         }
         out
