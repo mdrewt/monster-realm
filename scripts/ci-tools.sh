@@ -24,12 +24,12 @@ mkdir -p "$root/bin" "$root/stamp"
 tmp="$(mktemp -d)"
 trap 'rm -r "$tmp"' EXIT
 
-# Download $1 to $2 and require sha256 $3. curl retries a failed transfer or an HTTP error up to 8
-# times with doubling waits (1 s to 128 s, about 4 minutes in all), which outlasts a release-host
-# blip; a longer outage is what the cache in front of this script is for.
+# Download $1 to $2 and require sha256 $3. curl retries a failed transfer or an HTTP error with
+# doubling waits and gives up 5 minutes after the first try, which outlasts a release-host blip; a
+# longer outage is what the cache in front of this script is for.
 fetch() {
-    curl --fail --silent --show-error --location --connect-timeout 20 --max-time 300 \
-        --retry 8 --retry-all-errors --retry-max-time 900 --output "$2" "$1"
+    curl --fail --silent --show-error --location --connect-timeout 20 --max-time 120 \
+        --retry 8 --retry-all-errors --retry-max-time 300 --output "$2" "$1"
     echo "$3  $2" | sha256sum --check --quiet -
 }
 
