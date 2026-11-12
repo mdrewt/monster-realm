@@ -19,7 +19,7 @@ import {
 // mutants alive that no source scan and no discrete-event sim can see (a `|| true` folded
 // into a continuation guard; a second ungated emitter outside the scanned region).
 //
-// THE FIRST FOUR SCENARIOS AND WHAT EACH ONE IS FOR (E and F, from ctl-1, say so at each test):
+// THE FIRST FOUR SCENARIOS AND WHAT EACH ONE IS FOR (E, F and G say so at each test):
 //   A  GREEN GUARD  single-code taps -> exactly 1 tile. Passes on the pre-fix tree; it is a
 //                   runtime mutant-guard for `committedActive` -> `active` reverts and
 //                   HOLD_COMMIT_MS -> 0, NOT a defect tooth. (Labelled per the
@@ -85,6 +85,17 @@ interface KeyEvt {
    *  main.ts's frame body is a self-re-arming rAF callback too, so one count is one run of it).
    *  Read only by scenario B, to prove a frame boundary fell between its two keydowns. */
   frame: number;
+}
+
+/** One distinct state of the own character row, as scenario G's in-page recorder saw it. */
+interface OwnRowObs {
+  zone: number;
+  x: number;
+  y: number;
+  /** Length of the row's published `moveQueue`. */
+  queued: number;
+  /** The row's `ackedSeq` (a u64 on the wire; these runs stay far below 2^53). */
+  ack: number;
 }
 
 /** ADR-0158's contract band: a press of <= 140ms is a TAP and must move exactly one tile
@@ -829,5 +840,146 @@ test.describe
       ).toBeVisible({ timeout: 3_000 });
       await page.keyboard.press('KeyP');
       await expect(overlay).toBeHidden({ timeout: 3_000 });
+    });
+
+    // -------------------------------------------------------------------------------
+    // G — the row that moves the character carries its queue and its ack
+    // -------------------------------------------------------------------------------
+    // LAST on purpose: it ends in zone 1, and every scenario above measures in zone 0.
+    test('G: across a held walk and a warp, every position the own row shows arrives with the drained queue and the ack of the step that made it', async () => {
+      // The server publishes position, remaining queue and accepted seq in ONE character
+      // row write per step. A write split in two would show the client an in-between row:
+      // the new tile with the drained step still queued (it is replayed on top of itself:
+      // a one-tile overshoot and pull-back), or the ack ahead of the tile. An in-page
+      // recorder reads the own row once per animation frame, which is finer than the
+      // server's write cadence, and keeps every distinct state it sees.
+      //
+      // The path: (1,1) south down the zone-0 x=1 column to (1,5), the warp tile to zone 1.
+      await recenter(page, 1);
+      const start = await snap(page);
+      expect(start.map.zone_id, 'precondition: the walk starts in zone 0').toBe(0);
+      for (let y = CORRIDOR_Y; y <= 5; y += 1) {
+        const i = y * start.map.width + 1;
+        if (start.map.walkable[i] !== true || start.map.grass[i] === true) {
+          throw new Error(
+            `scenario G precondition: (1, ${y}) must be walkable and grass-free in the live ` +
+              'zone-0 map; the column this scenario walks to the warp no longer exists',
+          );
+        }
+      }
+
+      await page.evaluate(() => {
+        interface Sync {
+          zoneId: number;
+          moveQueue: unknown[];
+          ackedSeq: string;
+        }
+        interface G {
+          ownAuthTile: { x: number; y: number } | null;
+          ownSync: Sync | null;
+        }
+        const w = window as unknown as {
+          __game: () => G;
+          __ownRowLog: OwnRowObs[];
+          __ownRowRec: boolean;
+        };
+        w.__ownRowLog = [];
+        w.__ownRowRec = true;
+        const sample = (): void => {
+          if (!w.__ownRowRec) return;
+          const g = w.__game();
+          if (g.ownAuthTile !== null && g.ownSync !== null) {
+            const obs: OwnRowObs = {
+              zone: g.ownSync.zoneId,
+              x: g.ownAuthTile.x,
+              y: g.ownAuthTile.y,
+              queued: g.ownSync.moveQueue.length,
+              ack: Number(g.ownSync.ackedSeq),
+            };
+            const last = w.__ownRowLog[w.__ownRowLog.length - 1];
+            if (
+              last === undefined ||
+              last.zone !== obs.zone ||
+              last.x !== obs.x ||
+              last.y !== obs.y ||
+              last.queued !== obs.queued ||
+              last.ack !== obs.ack
+            ) {
+              w.__ownRowLog.push(obs);
+            }
+          }
+          requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      });
+
+      // The held walk: down the column until the authoritative tile is two short of the warp.
+      await page.keyboard.down('ArrowDown');
+      await page.waitForFunction(
+        () => ((window as unknown as { __game: () => Snap }).__game().ownAuthTile?.y ?? 0) >= 3,
+        null,
+        { timeout: 10_000 },
+      );
+      await page.keyboard.up('ArrowDown');
+      await settle(page, 400);
+      // The warp: single taps until the zone flips (the hold above stops on y=3, 4 or 5).
+      for (let tap = 0; tap < 4 && (await snap(page)).map.zone_id === 0; tap += 1) {
+        await page.keyboard.down('ArrowDown');
+        await page.waitForTimeout(90);
+        await page.keyboard.up('ArrowDown');
+        await settle(page, 400);
+      }
+      const end = await snap(page);
+      expect(end.map.zone_id, 'the walk must end through the warp, in zone 1').toBe(1);
+
+      const log = await page.evaluate(() => {
+        const w = window as unknown as { __ownRowLog: OwnRowObs[]; __ownRowRec: boolean };
+        w.__ownRowRec = false;
+        return w.__ownRowLog.slice();
+      });
+      const trail = log
+        .map((o) => `z${o.zone}(${o.x},${o.y}) q${o.queued} ack${o.ack}`)
+        .join(' → ');
+
+      let moves = 0;
+      let warps = 0;
+      let acks = 0;
+      for (let i = 1; i < log.length; i += 1) {
+        const prev = log[i - 1];
+        const cur = log[i];
+        const moved = cur.zone !== prev.zone || cur.x !== prev.x || cur.y !== prev.y;
+        if (cur.ack > prev.ack) acks += 1;
+        if (!moved) continue;
+        moves += 1;
+        if (cur.zone !== prev.zone) warps += 1;
+        expect(
+          cur.queued,
+          `the row that shows z${cur.zone}(${cur.x},${cur.y}) must not still queue the step ` +
+            `that was drained to get there. Trail: ${trail}`,
+        ).toBe(0);
+        expect(
+          cur.ack,
+          `the row that shows z${cur.zone}(${cur.x},${cur.y}) must carry the ack of the input ` +
+            `that moved the character there, above the previous row's ${prev.ack}. A tile that ` +
+            `arrives without its ack means the position and the ack were written apart. ` +
+            `Trail: ${trail}`,
+        ).toBeGreaterThan(prev.ack);
+      }
+      expect(
+        moves,
+        `ANTI-VACUITY: the recorder must have seen the walk (4 tiles: three down the column ` +
+          `and the warp). Trail: ${trail}`,
+      ).toBeGreaterThanOrEqual(4);
+      expect(warps, `exactly one zone change was recorded. Trail: ${trail}`).toBe(1);
+      expect(
+        acks,
+        `every ack arrived on a row that moved the character: an ack that advances on a row ` +
+          `of its own was published apart from its step. Trail: ${trail}`,
+      ).toBe(moves);
+      const last = log[log.length - 1];
+      expect(
+        { zone: last.zone, x: last.x, y: last.y },
+        `the last recorded row is the warp landing. Trail: ${trail}`,
+      ).toEqual({ zone: 1, x: 1, y: 5 });
     });
   });
