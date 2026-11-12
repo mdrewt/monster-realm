@@ -913,6 +913,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         ("battle_wild", "battle"),
         ("battle_wild_unit", "battle"),
         ("character", "player"),
+        ("move_intent", "player"),
         ("pvp_deadline_schedule", "battle"),
         ("tactical_advance_sched", "battle"),
         ("tactical_deadline_sched", "battle"),
@@ -922,11 +923,12 @@ fn data_lifecycle_partition_matches_spec_section3() {
     ];
     assert_eq!(
         join_only, expected_join_only,
-        "T2 / spec §3 JOIN-ONLY: the fourteen structurally-invisible tables and their OWNING \
+        "T2 / spec §3 JOIN-ONLY: the fifteen structurally-invisible tables and their OWNING \
          PARENTS are pinned by value. These tables carry no Identity column, so \
          findIdentityColumns cannot see them and nothing else in the repo can re-derive the \
          parent. Each parent here was checked against the real join column: \
-         character.entity_id -> player.entity_id, battle_wild.battle_id -> battle, \
+         character.entity_id -> player.entity_id, move_intent.entity_id -> \
+         player.entity_id, battle_wild.battle_id -> battle, \
          pvp_deadline_schedule.battle_id -> battle, \
          battle_challenge_reaper_schedule.challenge_id -> battle_challenge, \
          trade_offer_reaper_schedule.trade_id -> trade_offer, and bt-7's four tactical \
@@ -998,11 +1000,12 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
     }
     assert_eq!(
         pairs.len(),
-        14,
+        15,
         "T3 non-vacuity: spec §3 names five JOIN-ONLY tables, bt-7 adds four (the tactical \
          join tables) and bt-8 three (the tactical schedule tables), all swept via `battle`, \
-         and the two trade-session children (snapshot and reaper schedule) are swept via \
-         `trade_session`, so this scan must have fourteen parents to check. Zero ViaJoin \
+         the two trade-session children (snapshot and reaper schedule) are swept via \
+         `trade_session`, and `move_intent` is swept via `player` beside `character`, so \
+         this scan must have fifteen parents to check. Zero ViaJoin \
          entries would make every clause below vacuously true."
     );
 
@@ -2982,6 +2985,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::MonsterPub as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "move_intent",
+            <crate::schema::MoveIntent as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "movement_tick_schedule",
             <crate::movement::MovementTickSchedule as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3191,14 +3198,14 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 59,
+        registry_len, 60,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 59 (21 ERASE + 5 ANONYMIZE + 14 JOIN-ONLY + 19 NOT-OWNED) — \
+         manifest carries exactly 60 (21 ERASE + 5 ANONYMIZE + 15 JOIN-ONLY + 19 NOT-OWNED) — \
          40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
          trade-session tables (`trade_session`, `trade_session_snapshot`, \
-         `trade_session_reaper_schedule`). \
+         `trade_session_reaper_schedule`), plus `move_intent`. \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -3211,7 +3218,7 @@ fn m22s6_table_row_registry_matches_manifest() {
     }
     assert_eq!(
         identity_bearing, 30,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 59 registered row types \
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 60 registered row types \
          carry an Identity column at some depth; exactly 30 is the live count (the 26 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
          exceptions R3 below names). `trade_session` adds one (its `opener` and `partner` \
@@ -3375,9 +3382,9 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
         );
     }
     assert_eq!(
-        population, 14,
+        population, 15,
         "[m22s6/x2-population] {population} manifest entries are classified ViaJoin; the live \
-         set is exactly 14 (character, battle_wild, pvp_deadline_schedule, \
+         set is exactly 15 (character, move_intent, battle_wild, pvp_deadline_schedule, \
          battle_challenge_reaper_schedule, trade_offer_reaper_schedule, bt-7's \
          battle_tactical, battle_secret, battle_wild_unit, battle_event, bt-8's \
          tactical_deadline_sched, tactical_advance_sched, battle_gc_sched, and the two \
@@ -4190,13 +4197,14 @@ fn rb65_cascade_line_composes_into_the_envelope() {
 /// whose subject keeps its player row) and battle_tests.rs `rb129_*`.
 #[test]
 fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
-    use crate::schema::{character, Character, Player};
+    use crate::schema::{character, move_intent, Character, MoveIntent, Player};
     use game_core::{ActionState, Direction};
 
     // --- S0: seed the subject's player + character rows ---------------------
     let fx = crate::native_host_tests::fixture();
     let player_t = fx.table::<Player>("player", "identity", |r| r.identity);
     let character_t = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
+    let intent_t = fx.table_keyed::<MoveIntent, u64>("move_intent", "entity_id", |r| r.entity_id);
     let ctx = fx.ctx();
 
     // NEVER [0u8; 32]: that is ctx.sender() under __dummy() and equals
@@ -4225,6 +4233,11 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         sprite_id: 0,
         move_queue: Vec::new(),
         acked_seq: 0,
+    });
+    intent_t.seed(&MoveIntent {
+        entity_id: ENTITY_ID,
+        queue: Vec::new(),
+        last_input_seq: 0,
     });
 
     // --- S1 PRE: both rows visible BEFORE the call ---------------------------
@@ -4262,6 +4275,17 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         ctx.db.character().entity_id().find(ENTITY_ID).is_some(),
         "[rb72/post-character] resolve_all_live_interactions must not delete the character \
          row — same D2 correction as the player assertion above."
+    );
+    assert!(
+        ctx.db.move_intent().entity_id().find(ENTITY_ID).is_some(),
+        "[rb72/post-intent] resolve_all_live_interactions must not delete the move_intent row: \
+         it goes with the character, in on_disconnect's own body."
+    );
+    assert_eq!(
+        intent_t.remove(ENTITY_ID),
+        1,
+        "[rb72/control-remove-intent] exactly one seeded move_intent row must be removable, or \
+         the presence assertion above is not falsifiable"
     );
 
     // --- S4 CONTROL: the read channel CAN observe an absence -----------------
@@ -4984,9 +5008,9 @@ fn tactical_manifest_entries_are_classified_and_never_exported_bt7_4() {
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        59,
+        60,
         "[bt7/manifest-census] 43 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
-         schedule tables plus the three trade-session tables"
+         schedule tables plus the three trade-session tables plus move_intent"
     );
 }
 
@@ -5133,6 +5157,7 @@ mod acct_nh {
         wallet: Handle<'a, PlayerWallet>,
         profile: Handle<'a, Profile>,
         character: Handle<'a, Character, u64>,
+        intent: Handle<'a, crate::schema::MoveIntent, u64>,
         trade: Handle<'a, TradeOffer>,
         trade_reaper: Handle<'a, TradeOfferReaperSchedule, u64>,
         challenge: Handle<'a, BattleChallenge>,
@@ -5372,6 +5397,11 @@ mod acct_nh {
             character: fx
                 .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
                 .writable(),
+            intent: fx
+                .table_keyed::<crate::schema::MoveIntent, u64>("move_intent", "entity_id", |r| {
+                    r.entity_id
+                })
+                .writable(),
             trade: fx
                 .table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator)
                 .writable(),
@@ -5551,6 +5581,20 @@ mod acct_nh {
             move_queue: Vec::new(),
             acked_seq: 0,
         }
+    }
+
+    fn intent_row(entity_id: u64) -> crate::schema::MoveIntent {
+        crate::schema::MoveIntent {
+            entity_id,
+            queue: vec![game_core::MoveInput::Jump],
+            last_input_seq: 4,
+        }
+    }
+
+    fn intent_ids(w: &W<'_>) -> Vec<u64> {
+        let mut ids: Vec<u64> = w.intent.rows().into_iter().map(|r| r.entity_id).collect();
+        ids.sort_unstable();
+        ids
     }
 
     fn trade_row(trade_id: u64, initiator: Identity, counterparty: Identity) -> TradeOffer {
@@ -6436,6 +6480,7 @@ mod acct_nh {
         for (who, entity) in [(me, 5u64), (stranger, 6)] {
             w.player.seed(&player_row(who, entity, "p"));
             w.character.seed(&character_row(entity));
+            w.intent.seed(&intent_row(entity));
             w.conversation.seed(&PlayerConversation {
                 owner_identity: who,
                 npc_entity_id: 1,
@@ -6475,6 +6520,11 @@ mod acct_nh {
             "a live sibling connection keeps every presence row"
         );
         assert!(w.character.rows().iter().any(|r| r.entity_id == 5));
+        assert_eq!(
+            intent_ids(&w),
+            vec![5, 6],
+            "a live sibling connection keeps the move_intent row"
+        );
 
         fx.run_as_conn_at(me, sibling_conn, None, at(T0 + 1), crate::on_disconnect);
         assert!(conns(&w).is_empty());
@@ -6483,6 +6533,11 @@ mod acct_nh {
             "the last disconnect removes the presence rows"
         );
         assert!(w.character.rows().iter().all(|r| r.entity_id != 5));
+        assert_eq!(
+            intent_ids(&w),
+            vec![6],
+            "the last disconnect deletes the move_intent row with the character, and only it"
+        );
         assert_eq!(
             owned_by(&w, stranger),
             stranger_before,
@@ -7266,6 +7321,7 @@ mod acct_nh {
         w.player
             .seed(&player_row(who, 600 + k, &format!("name{k}")));
         w.character.seed(&character_row(600 + k));
+        w.intent.seed(&intent_row(600 + k));
         w.conversation.seed(&PlayerConversation {
             owner_identity: who,
             npc_entity_id: 3,
@@ -7526,6 +7582,11 @@ mod acct_nh {
         assert!(
             w.character.rows().iter().all(|r| r.entity_id != 601),
             "the character reachable through the player join is erased"
+        );
+        assert_eq!(
+            intent_ids(&w),
+            vec![602],
+            "the move_intent row reachable through the same join is erased, the bystander's kept"
         );
         assert!(w.trade_reaper.rows().iter().all(|r| r.trade_id != 901));
         assert!(w
@@ -8339,9 +8400,9 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            59,
+            60,
             "[bt7/manifest-totality-census] 43 pre-bt-7 tables plus the ten tactical tables plus \
-             bt-8's three schedule tables plus the three trade-session tables"
+             bt-8's three schedule tables plus the three trade-session tables plus move_intent"
         );
         for table in [
             "battle_tactical",

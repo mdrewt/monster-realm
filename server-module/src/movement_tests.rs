@@ -378,11 +378,14 @@ fn rate_limiter_extreme_clock_operands_never_panic() {
 mod nh {
     use crate::marshal::pub_from_monster;
     use crate::movement::{
-        clear_queue, enqueue_move, movement_tick, set_move, MovementTickSchedule,
+        clear_queue, enqueue_move, movement_tick, publish_intent, seed_intent, set_move,
+        MovementTickSchedule,
     };
     use crate::native_host_tests::{fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY};
     use crate::raising::QT_TICK_MS;
-    use crate::schema::{Battle, Character, Monster, MonsterPub, Player, SpeciesRow, TradeOffer};
+    use crate::schema::{
+        Battle, Character, Monster, MonsterPub, MoveIntent, Player, SpeciesRow, TradeOffer,
+    };
     // bt-16: the grass-path tests run over the tactical world (its tables, content and helpers).
     use crate::tactics::tactics_tests as tt;
     use game_core::{ActionState, Affinity, BattleOutcome, Direction, MoveInput, TradeStatus};
@@ -547,17 +550,27 @@ mod nh {
         }
     }
 
+    fn intent(entity_id: u64, queue: Vec<MoveInput>, last_input_seq: u64) -> MoveIntent {
+        MoveIntent {
+            entity_id,
+            queue,
+            last_input_seq,
+        }
+    }
+
     struct World<'a> {
         players: Handle<'a, Player>,
         chars: Handle<'a, Character, u64>,
+        intents: Handle<'a, MoveIntent, u64>,
         battles: Handle<'a, Battle>,
         monsters: Handle<'a, Monster, u64>,
         pubs: Handle<'a, MonsterPub, u64>,
         offers: Handle<'a, TradeOffer>,
     }
 
-    /// Every table the movement reducers read or write: `player` (seq ack),
-    /// `character` (queue), both battle-role indexes (the ADR-0122 SSOT), and
+    /// Every table the movement reducers read or write: `player` (the caller's
+    /// entity), `move_intent` (queue + seq guard), `character` (position and the
+    /// published queue + ack), both battle-role indexes (the ADR-0122 SSOT), and
     /// the growth tail's monster / monster_pub / trade_offer / species rows.
     fn world(fx: &Fixture) -> World<'_> {
         let _ = fx.table_keyed::<Player, u64>("player", "entity_id", |r| r.entity_id);
@@ -576,6 +589,10 @@ mod nh {
                 .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
                 .writable()
                 .unique(),
+            intents: fx
+                .table_keyed::<MoveIntent, u64>("move_intent", "entity_id", |r| r.entity_id)
+                .writable()
+                .unique(),
             battles: fx.table::<Battle>("battle", "player_identity", |r| r.player_identity),
             monsters: fx
                 .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
@@ -590,6 +607,8 @@ mod nh {
     }
 
     impl World<'_> {
+        /// A joined player whose intent row is already published: the private
+        /// queue and seq equal the character row's `move_queue` and `acked_seq`.
         fn join(&self, who: Identity, entity_id: u64, ch: Character) {
             self.players.seed(&Player {
                 identity: who,
@@ -598,7 +617,29 @@ mod nh {
                 online: true,
                 last_input_seq: 0,
             });
+            self.intents
+                .seed(&intent(entity_id, ch.move_queue.clone(), ch.acked_seq));
             self.chars.seed(&ch);
+        }
+        /// Replace the private intent row, leaving the published pair as it was.
+        fn set_intent(&self, row: MoveIntent) {
+            self.intents.remove(row.entity_id);
+            self.intents.seed(&row);
+        }
+        /// The private `(queue, last_input_seq)` of `entity_id`.
+        fn intent(&self, entity_id: u64) -> (Vec<MoveInput>, u64) {
+            let row = self
+                .intents
+                .rows()
+                .into_iter()
+                .find(|i| i.entity_id == entity_id)
+                .expect("move_intent row");
+            (row.queue, row.last_input_seq)
+        }
+        /// The published `(move_queue, acked_seq)` on the character row.
+        fn published(&self, entity_id: u64) -> (Vec<MoveInput>, u64) {
+            let row = self.character(entity_id);
+            (row.move_queue, row.acked_seq)
         }
         fn seed_monster(&self, m: &Monster) {
             self.pubs.seed(&pub_from_monster(m, 1));
@@ -624,14 +665,15 @@ mod nh {
                 to_vec(&self.players.rows()).unwrap(),
                 to_vec(&self.chars.rows()).unwrap(),
                 to_vec(&self.monsters.rows()).unwrap(),
+                to_vec(&self.intents.rows()).unwrap(),
             ]
         }
     }
 
     /// ADR-0168 D2 intake lock, both roles: while the caller is in an Ongoing
     /// battle as side A (PvE or PvP) OR as the PvP side-B opponent,
-    /// `enqueue_move` and `set_move` refuse before any write (no seq ack, no
-    /// queued intent). `clear_queue` is deliberately NOT guarded
+    /// `enqueue_move` and `set_move` refuse before any write (no seq advance, no
+    /// queued intent, on any of player / character / move_intent). `clear_queue` is deliberately NOT guarded
     /// and still cancels. Positive control: once the battle is decided the very
     /// same call is admitted and queues the intent.
     ///
@@ -668,15 +710,13 @@ mod nh {
             );
             assert_eq!(w.snapshot(), before, "{label}: refused before any write");
 
-            w.chars.remove(1);
-            w.chars
-                .seed(&character(1, vec![MoveInput::Jump], ActionState::Idle));
+            w.set_intent(intent(1, vec![MoveInput::Jump], 0));
             assert_eq!(
                 fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 3)),
                 Ok(()),
                 "{label}: clear_queue is pure cancellation and stays open in battle"
             );
-            assert!(w.character(1).move_queue.is_empty(), "{label}: cancelled");
+            assert_eq!(w.intent(1), (vec![], 3), "{label}: cancelled");
 
             assert_eq!(w.battles.remove(player), 1);
             w.battles
@@ -686,7 +726,7 @@ mod nh {
                 Ok(()),
                 "{label}: a decided battle no longer locks intake"
             );
-            assert_eq!(w.character(1).move_queue, vec![MoveInput::Jump], "{label}");
+            assert_eq!(w.intent(1), (vec![MoveInput::Jump], 4), "{label}");
 
             // authorize_move's replay guard (guards.rs `seq <= last_input_seq`):
             // re-sending the ACKED seq is stale and queues nothing; the next seq
@@ -697,39 +737,62 @@ mod nh {
                 "{label}: the acked seq replayed"
             );
             assert_eq!(
-                w.character(1).move_queue.len(),
-                1,
-                "{label}: nothing queued"
+                w.intent(1),
+                (vec![MoveInput::Jump], 4),
+                "{label}: nothing queued, the guard not advanced"
             );
             assert_eq!(
                 fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 5)),
                 Ok(()),
                 "{label}: the next seq"
             );
-            assert_eq!(w.character(1).move_queue.len(), 2, "{label}");
+            assert_eq!(
+                w.intent(1),
+                (vec![MoveInput::Jump, MoveInput::Jump], 5),
+                "{label}"
+            );
         }
     }
 
-    /// The owner's reconciliation ack rides the character row: each accepted
-    /// move reducer writes `acked_seq == seq` in the same row update that
-    /// carries its queue change, and a refused call leaves the ack where it was.
+    /// An accepted move reducer writes the private `move_intent` row and nothing
+    /// a client can subscribe to: the queue change and `last_input_seq == seq`
+    /// land in ONE `move_intent` write, with zero write calls (not even a
+    /// byte-identical update) on `character` or `player`. A refused call writes
+    /// nothing anywhere and leaves the seq guard where it was.
     ///
-    /// kills: the ack assignment dropped from any one reducer / written from a
-    /// constant or the previous ack instead of the accepted seq / written on a
+    /// kills: a `character` or `player` write restored in any one reducer / the
+    /// seq written from a constant or the previous seq instead of the accepted
+    /// one / the queue edit dropped / a second intent write / a write on a
     /// refused call.
     #[test]
-    fn nh_each_move_reducer_writes_the_accepted_seq_on_the_character_row() {
+    fn nh_an_accepted_move_reducer_writes_only_the_intent_row() {
         let fx = fixture();
         let w = world(&fx);
         w.join(a(), 1, character(1, vec![], ActionState::Idle));
+        let public = |w: &World<'_>| {
+            (
+                to_vec(&w.players.rows()).unwrap(),
+                to_vec(&w.chars.rows()).unwrap(),
+            )
+        };
+        let public_before = public(&w);
+        let writes = |fx: &Fixture| {
+            (
+                fx.writes_to("move_intent"),
+                fx.writes_to("character"),
+                fx.writes_to("player"),
+            )
+        };
 
+        fx.reset_writes();
         assert_eq!(
             fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 3)),
             Ok(())
         );
-        let ch = w.character(1);
-        assert_eq!((ch.acked_seq, ch.move_queue.len()), (3, 1), "enqueue_move");
+        assert_eq!(w.intent(1), (vec![MoveInput::Jump], 3), "enqueue_move");
+        assert_eq!(writes(&fx), (1, 0, 0), "enqueue_move");
 
+        fx.reset_writes();
         assert_eq!(
             fx.run_as_at(a(), at(T0), |ctx| set_move(
                 ctx,
@@ -738,21 +801,33 @@ mod nh {
             )),
             Ok(())
         );
-        let ch = w.character(1);
         assert_eq!(
-            (ch.acked_seq, ch.move_queue.clone()),
-            (7, vec![MoveInput::Step(Direction::North)]),
+            w.intent(1),
+            (vec![MoveInput::Step(Direction::North)], 7),
             "set_move"
         );
+        assert_eq!(writes(&fx), (1, 0, 0), "set_move");
 
+        fx.reset_writes();
         assert_eq!(
             fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 12)),
             Ok(())
         );
-        let ch = w.character(1);
-        assert_eq!((ch.acked_seq, ch.move_queue.len()), (12, 0), "clear_queue");
+        assert_eq!(w.intent(1), (vec![], 12), "clear_queue");
+        assert_eq!(writes(&fx), (1, 0, 0), "clear_queue");
+
+        assert!(
+            public(&w) == public_before,
+            "three accepted inputs left the player and character tables byte-identical"
+        );
+        assert_eq!(
+            w.published(1),
+            (vec![], 0),
+            "nothing is published until the tick"
+        );
 
         let before = w.snapshot();
+        fx.reset_writes();
         for (label, got) in [
             (
                 "enqueue_move",
@@ -770,16 +845,55 @@ mod nh {
             assert_eq!(got, Err("stale seq".to_string()), "{label}");
         }
         assert_eq!(w.snapshot(), before, "a stale call writes nothing");
+        assert_eq!(writes(&fx), (0, 0, 0), "a stale call makes no write call");
+        assert_eq!(w.intent(1).1, 12, "the seq guard stays at the last accept");
+    }
+
+    /// A full queue refuses `enqueue_move` with `Err("queue full")` BEFORE the
+    /// intent write: the row keeps its queue and its seq (so the refused seq is
+    /// still usable), and no table sees a write call. One slot below the cap the
+    /// same call is admitted and fills the queue.
+    ///
+    /// kills: the cap check dropped or moved after the write / `>=` weakened to
+    /// `>` (cap + 1 entries) / the seq advanced on the refused call.
+    #[test]
+    fn nh_a_queue_full_reject_leaves_the_intent_row_untouched() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1, character(1, vec![], ActionState::Idle));
+        let full = vec![MoveInput::Jump; game_core::MOVE_QUEUE_CAP];
+        w.set_intent(intent(1, full.clone(), 4));
+        let before = w.snapshot();
+        fx.reset_writes();
         assert_eq!(
-            w.character(1).acked_seq,
-            12,
-            "the ack stays at the last accept"
+            fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 5)),
+            Err("queue full".to_string())
         );
+        assert_eq!(w.snapshot(), before, "refused before any write");
+        assert_eq!(
+            (
+                fx.writes_to("move_intent"),
+                fx.writes_to("character"),
+                fx.writes_to("player")
+            ),
+            (0, 0, 0)
+        );
+
+        let mut one_short = full.clone();
+        one_short.pop();
+        w.set_intent(intent(1, one_short, 4));
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 5)),
+            Ok(()),
+            "the refused seq is still usable once there is room"
+        );
+        assert_eq!(w.intent(1), (full, 5));
     }
 
     /// ADR-0168 D1 drain lock, both roles: the scheduled `movement_tick`
-    /// (running as the module) SKIPS an in-battle character with its queue
-    /// INTACT and its position unchanged, normalising `action` to Idle; the
+    /// (running as the module) SKIPS an in-battle character with its private
+    /// queue INTACT (and the published copy equal to it) and its position
+    /// unchanged, normalising `action` to Idle; the
     /// lock is keyed on the CHARACTER's player identity, never the module
     /// sender. Positive control: after the battle is decided the next tick
     /// drains the queued move.
@@ -810,7 +924,15 @@ mod nh {
                 "{label}"
             );
             let frozen = w.character(1);
-            assert_eq!(frozen.move_queue, queued, "{label}: queue kept intact");
+            assert_eq!(
+                w.intent(1),
+                (queued.clone(), 0),
+                "{label}: queue kept intact"
+            );
+            assert_eq!(
+                frozen.move_queue, queued,
+                "{label}: the published queue is the intact one"
+            );
             assert_eq!(
                 (frozen.zone_id, frozen.tile_x, frozen.tile_y),
                 (0, 1, 1),
@@ -830,9 +952,15 @@ mod nh {
                 Ok(()),
                 "{label}"
             );
-            assert!(
-                w.character(1).move_queue.len() < queued.len(),
+            assert_eq!(
+                w.intent(1),
+                (queued[1..].to_vec(), 0),
                 "{label}: once the battle is decided the tick drains again"
+            );
+            assert_eq!(
+                w.published(1),
+                w.intent(1),
+                "{label}: the drain publishes what is left"
             );
         }
     }
@@ -946,6 +1074,11 @@ mod nh {
             player.move_queue.is_empty(),
             "queued moves are cleared across the zone boundary"
         );
+        assert_eq!(
+            w.intent(1),
+            (vec![], 0),
+            "the private queue is cleared with the published one"
+        );
         assert_eq!(player.action, ActionState::Idle, "and it arrives Idle");
         let npc = w.character(2);
         assert_eq!(
@@ -953,6 +1086,547 @@ mod nh {
             (zone, warp.from.x, warp.from.y),
             "an NPC walks onto the warp tile but never leaves its home zone"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The private intent row and its one publisher, `movement_tick`.
+    //
+    // The move reducers write `move_intent` only; the tick copies the private
+    // `(queue, last_input_seq)` onto `character.(move_queue, acked_seq)` in the
+    // write that carries the position, and writes nothing when the published
+    // pair is already current. `Fixture::writes_to` counts write CALLS, so a
+    // byte-identical update (which a subscriber would still be sent) is seen.
+    // -----------------------------------------------------------------------
+
+    /// `publish_intent` is the one copy from the private pair onto the character
+    /// row. An equal pair returns false and leaves the row alone; a queue-only
+    /// and a seq-only difference each return true and land both values.
+    ///
+    /// kills: the changed flag constant true (a write every tick) or constant
+    /// false (never published) / `||` -> `&&` in the comparison / either
+    /// assignment dropped / either comparison dropped.
+    #[test]
+    fn publish_intent_reports_and_applies_only_a_real_change() {
+        let q = vec![MoveInput::Step(Direction::East), MoveInput::Jump];
+        let base = || Character {
+            acked_seq: 4,
+            ..character(1, q.clone(), ActionState::Walking)
+        };
+        let bytes = |c: &Character| to_vec(c).unwrap();
+
+        let mut row = base();
+        assert!(!publish_intent(&mut row, &q, 4), "equal pair");
+        assert!(bytes(&row) == bytes(&base()), "equal pair: row untouched");
+
+        let mut row = base();
+        assert!(publish_intent(&mut row, &q[1..], 4), "queue differs");
+        assert_eq!(
+            (row.move_queue.clone(), row.acked_seq),
+            (q[1..].to_vec(), 4)
+        );
+
+        let mut row = base();
+        assert!(publish_intent(&mut row, &q, 5), "seq differs");
+        assert_eq!((row.move_queue.clone(), row.acked_seq), (q.clone(), 5));
+
+        let mut row = base();
+        assert!(publish_intent(&mut row, &[], 9), "both differ");
+        assert_eq!((row.move_queue.clone(), row.acked_seq), (vec![], 9));
+        let untouched = Character {
+            move_queue: vec![],
+            acked_seq: 9,
+            ..base()
+        };
+        assert!(
+            bytes(&row) == bytes(&untouched),
+            "only the published pair is written"
+        );
+    }
+
+    /// `seed_intent` builds the row for a character that has none: its key, the
+    /// queue the character publishes, and the HIGHER of `character.acked_seq`
+    /// and `player.last_input_seq` (no player: the character's own).
+    ///
+    /// kills: `max` -> `min` / either operand dropped / an empty queue / the
+    /// wrong entity id.
+    #[test]
+    fn seed_intent_carries_the_published_queue_and_the_higher_seq() {
+        let q = vec![MoveInput::Jump, MoveInput::Step(Direction::West)];
+        let ch = |acked_seq: u64| Character {
+            acked_seq,
+            ..character(41, q.clone(), ActionState::Idle)
+        };
+        let player = |last_input_seq: u64| Player {
+            identity: a(),
+            entity_id: 41,
+            name: String::new(),
+            online: true,
+            last_input_seq,
+        };
+        for (label, acked, from_player, want) in [
+            ("player column higher", 4, Some(9), 9),
+            ("character column higher", 12, Some(9), 12),
+            ("equal", 7, Some(7), 7),
+            ("no player row", 5, None, 5),
+        ] {
+            let p = from_player.map(player);
+            let got = seed_intent(&ch(acked), p.as_ref());
+            assert_eq!(
+                (got.entity_id, got.queue, got.last_input_seq),
+                (41, q.clone(), want),
+                "{label}"
+            );
+        }
+    }
+
+    /// A plain zone-0 tile whose step in the returned direction lands on another
+    /// plain tile, and a module-run zone-0 tick.
+    struct Walk {
+        start: game_core::TilePos,
+        dir: Direction,
+    }
+
+    impl Walk {
+        fn new() -> Self {
+            let (start, dir) = bt16_approach(false);
+            Self { start, dir }
+        }
+        fn step(&self) -> MoveInput {
+            MoveInput::Step(self.dir)
+        }
+        /// A character standing on the start tile, publishing `(queue, acked_seq)`.
+        fn character(&self, queue: Vec<MoveInput>, acked_seq: u64) -> Character {
+            Character {
+                tile_x: self.start.x,
+                tile_y: self.start.y,
+                acked_seq,
+                ..character(1, queue, ActionState::Idle)
+            }
+        }
+        /// What game-core says `input` does to `before` at `now`.
+        fn after(before: &Character, input: MoveInput, now: i64) -> game_core::CharacterState {
+            let map = crate::content_cache::cached_zone_tile_map(0).expect("zone 0 map");
+            game_core::apply_move(
+                &crate::marshal::char_state(before),
+                input,
+                map,
+                game_core::Millis(now),
+            )
+        }
+        fn tick(fx: &Fixture, now: i64) {
+            let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+            let sched = MovementTickSchedule {
+                id: 1,
+                zone_id: 0,
+                scheduled_at: ScheduleAt::Time(at(now)),
+            };
+            fx.reset_writes();
+            assert_eq!(
+                fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched)),
+                Ok(())
+            );
+        }
+    }
+
+    /// `(character, move_intent)` write calls since the last `Walk::tick`.
+    fn tick_writes(fx: &Fixture) -> (u32, u32) {
+        (fx.writes_to("character"), fx.writes_to("move_intent"))
+    }
+
+    fn state_of(c: &Character) -> game_core::CharacterState {
+        crate::marshal::char_state(c)
+    }
+
+    /// A drain is ONE character write carrying the new position, the post-drain
+    /// queue and the ack, and that published pair equals the intent row. Two
+    /// queued inputs accepted as seqs 3 and 7 publish the high-water seq 7 with
+    /// the first drain already, and again with the second.
+    ///
+    /// kills: the position and the queue split over two writes / the queue or
+    /// the ack not published on the drain / the pre-drain queue published / the
+    /// ack published as the drained input's own seq / the intent row not
+    /// written back (the same step drains twice).
+    #[test]
+    fn nh_a_drain_publishes_position_queue_and_ack_in_one_character_write() {
+        let fx = fixture();
+        let w = world(&fx);
+        let walk = Walk::new();
+        w.join(a(), 1, walk.character(vec![], 0));
+        for seq in [3, 7] {
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, walk.step(), seq)),
+                Ok(())
+            );
+        }
+        assert_eq!(w.published(1), (vec![], 0), "nothing published at accept");
+
+        let before = w.character(1);
+        let want = Walk::after(&before, walk.step(), T0 + 100);
+        assert_ne!(want.pos, state_of(&before).pos, "fixture: the step moves");
+        Walk::tick(&fx, T0 + 100);
+        assert_eq!(tick_writes(&fx), (1, 1), "first drain");
+        assert!(state_of(&w.character(1)) == want, "first drain: the step");
+        assert_eq!(w.intent(1), (vec![walk.step()], 7), "first drain");
+        assert_eq!(w.published(1), w.intent(1), "first drain: published");
+
+        let before = w.character(1);
+        let want = Walk::after(&before, walk.step(), T0 + 200);
+        Walk::tick(&fx, T0 + 200);
+        assert_eq!(tick_writes(&fx), (1, 1), "second drain");
+        assert!(state_of(&w.character(1)) == want, "second drain: the step");
+        assert_eq!(w.intent(1), (vec![], 7), "second drain");
+        assert_eq!(w.published(1), w.intent(1), "second drain: published");
+    }
+
+    /// A held walk costs exactly one character write per step. Once the queue is
+    /// empty the next tick writes once more (Walking -> Idle), and every tick
+    /// after that, with the published pair current, writes nothing at all.
+    ///
+    /// kills: an unconditional publish write in the empty-queue arm / a second
+    /// character write per step / an intent write on an idle tick.
+    #[test]
+    fn nh_a_held_walk_is_one_character_write_per_step_and_an_idle_tick_is_none() {
+        let fx = fixture();
+        let w = world(&fx);
+        let walk = Walk::new();
+        w.join(a(), 1, walk.character(vec![], 0));
+        // Held key: one input accepted per step, drained by the next tick. The
+        // walk goes out and back between the two plain tiles, so every step moves.
+        let back = MoveInput::Step(match walk.dir {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        });
+        for (n, seq) in (1u64..=4).enumerate() {
+            let now = T0 + 100 * (n as i64 + 1);
+            let input = if n % 2 == 0 { walk.step() } else { back };
+            assert_eq!(
+                fx.run_as_at(a(), at(now - 50), |ctx| enqueue_move(ctx, input, seq)),
+                Ok(())
+            );
+            let before = state_of(&w.character(1)).pos;
+            Walk::tick(&fx, now);
+            assert_eq!(tick_writes(&fx), (1, 1), "step {seq}");
+            assert_ne!(state_of(&w.character(1)).pos, before, "step {seq} moved");
+            assert_eq!(w.published(1), (vec![], seq), "step {seq}");
+        }
+        assert_ne!(w.character(1).action, ActionState::Idle, "mid-walk");
+        Walk::tick(&fx, T0 + 500);
+        assert_eq!(tick_writes(&fx), (1, 0), "the action settles to Idle once");
+        assert_eq!(w.character(1).action, ActionState::Idle);
+        for n in 6..9 {
+            Walk::tick(&fx, T0 + 100 * n);
+            assert_eq!(tick_writes(&fx), (0, 0), "idle and published: tick {n}");
+        }
+        assert_eq!(w.published(1), (vec![], 4));
+    }
+
+    /// A battle-locked character is published ONCE: the first locked tick
+    /// writes the intact queue and the ack, later locked ticks write nothing,
+    /// and the private queue never drains. A `clear_queue` during the lock
+    /// (the one move reducer the lock admits) reaches the owner on the next
+    /// tick through the empty-queue arm, once.
+    ///
+    /// kills: the publish dropped from the locked arm / written on every locked
+    /// tick / the locked arm draining or clearing the private queue / the
+    /// empty-queue arm not publishing a seq-only or queue-only change.
+    #[test]
+    fn nh_a_battle_locked_character_is_published_once_then_silent() {
+        let fx = fixture();
+        let w = world(&fx);
+        let walk = Walk::new();
+        let queued = vec![walk.step(), MoveInput::Jump];
+        w.join(a(), 1, walk.character(vec![], 0));
+        w.set_intent(intent(1, queued.clone(), 9));
+        w.battles.seed(&battle(
+            1,
+            a(),
+            crate::WILD_IDENTITY,
+            BattleOutcome::Ongoing,
+        ));
+        let pos = state_of(&w.character(1)).pos;
+
+        Walk::tick(&fx, T0 + 100);
+        assert_eq!(tick_writes(&fx), (1, 0), "first locked tick publishes");
+        assert_eq!(w.published(1), (queued.clone(), 9));
+        for n in 2..4 {
+            Walk::tick(&fx, T0 + 100 * n);
+            assert_eq!(tick_writes(&fx), (0, 0), "locked tick {n} is silent");
+        }
+        assert_eq!(w.intent(1), (queued, 9), "the private queue is intact");
+        assert!(state_of(&w.character(1)).pos == pos, "no move applied");
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0 + 450), |ctx| clear_queue(ctx, 10)),
+            Ok(())
+        );
+        Walk::tick(&fx, T0 + 500);
+        assert_eq!(tick_writes(&fx), (1, 0), "the cancel is published");
+        assert_eq!(w.published(1), (vec![], 10));
+        Walk::tick(&fx, T0 + 600);
+        assert_eq!(tick_writes(&fx), (0, 0));
+    }
+
+    /// `set_move` and `clear_queue` reach the owner through the tick like any
+    /// other intent. A replaced queue is drained and published with its seq; a
+    /// cancel on an already-empty queue still publishes its ack (seq-only
+    /// change), once.
+    ///
+    /// kills: the tick reading the published queue instead of the private one
+    /// (the replaced input never drains) / a seq-only change not published.
+    #[test]
+    fn nh_set_move_and_clear_queue_are_published_by_the_next_tick() {
+        let fx = fixture();
+        let w = world(&fx);
+        let walk = Walk::new();
+        // Published and private: one stale Jump. set_move replaces it privately.
+        w.join(a(), 1, walk.character(vec![MoveInput::Jump], 2));
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| set_move(ctx, walk.step(), 7)),
+            Ok(())
+        );
+        assert_eq!(w.published(1), (vec![MoveInput::Jump], 2));
+        let want = Walk::after(&w.character(1), walk.step(), T0 + 100);
+        Walk::tick(&fx, T0 + 100);
+        assert_eq!(tick_writes(&fx), (1, 1));
+        assert!(
+            state_of(&w.character(1)) == want,
+            "the replacing step is the one drained"
+        );
+        assert_eq!(w.published(1), (vec![], 7));
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0 + 150), |ctx| clear_queue(ctx, 8)),
+            Ok(())
+        );
+        assert_eq!(w.published(1), (vec![], 7), "not published at accept");
+        Walk::tick(&fx, T0 + 200);
+        assert_eq!(w.published(1), (vec![], 8), "the ack advances");
+        assert_eq!(w.intent(1), (vec![], 8));
+        assert_eq!(fx.writes_to("move_intent"), 0);
+        Walk::tick(&fx, T0 + 300);
+        assert_eq!(tick_writes(&fx), (0, 0));
+    }
+
+    /// A warp is ONE character write: destination zone and tile, Idle, the
+    /// emptied queue and the ack together, with the private queue cleared in
+    /// the same tick.
+    ///
+    /// kills: the ack or the empty queue left off the warp row / a second
+    /// character write for the warp / the private queue surviving the warp (the
+    /// leftover input drains in the destination zone).
+    #[test]
+    fn nh_a_warp_is_one_character_write_with_zone_tile_queue_and_ack() {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let dirs = [
+            (Direction::North, Direction::South),
+            (Direction::South, Direction::North),
+            (Direction::East, Direction::West),
+            (Direction::West, Direction::East),
+        ];
+        let (zone, warp, start, dir) = zone_maps
+            .iter()
+            .flat_map(|def| def.warps.iter().map(move |w| (def.zone_id, w.clone())))
+            .find_map(|(zone, w)| {
+                let map = game_core::map_for(zone, zone_maps).ok()?;
+                dirs.iter().find_map(|&(dir, back)| {
+                    let start = w.from.step(back);
+                    (map.is_walkable(start) && map.warp_at(start).is_none()).then_some((
+                        zone,
+                        w.clone(),
+                        start,
+                        dir,
+                    ))
+                })
+            })
+            .expect("shipped content has a warp with a walkable, non-warp approach tile");
+        let fx = fixture();
+        let w = world(&fx);
+        let queued = vec![MoveInput::Step(dir), MoveInput::Jump];
+        w.join(
+            a(),
+            1,
+            Character {
+                zone_id: zone,
+                tile_x: start.x,
+                tile_y: start.y,
+                ..character(1, vec![], ActionState::Idle)
+            },
+        );
+        w.set_intent(intent(1, queued, 5));
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = MovementTickSchedule {
+            id: 1,
+            zone_id: zone,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        fx.reset_writes();
+        assert_eq!(
+            fx.run_as_at(module, at(T0), |ctx| movement_tick(ctx, sched)),
+            Ok(())
+        );
+        assert_eq!(tick_writes(&fx), (1, 1));
+        let ch = w.character(1);
+        assert_eq!(
+            (ch.zone_id, ch.tile_x, ch.tile_y, ch.action),
+            (
+                warp.to_zone,
+                warp.to_tile.x,
+                warp.to_tile.y,
+                ActionState::Idle
+            )
+        );
+        assert_eq!(w.published(1), (vec![], 5));
+        assert_eq!(w.intent(1), (vec![], 5));
+    }
+
+    /// An NPC (a character with no `player` and no `move_intent` row) costs the
+    /// tick one intent lookup and nothing else: no write on either table, no
+    /// intent row created, and no `player` lookup. One whose action is not Idle
+    /// is normalised with a single character write.
+    ///
+    /// The index-name half relies on one process per test (nextest), as
+    /// `enqueue_move_without_a_party_reads_no_trade_offer_index_ts0b` does.
+    ///
+    /// kills: an intent row seeded for every character with none / an
+    /// unconditional write in the no-intent arm / the player lookup hoisted
+    /// above the intent lookup / the Idle normalise dropped from that arm.
+    #[test]
+    fn nh_an_npc_tick_is_one_intent_miss_and_no_write() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.chars.seed(&character(2, vec![], ActionState::Idle));
+        Walk::tick(&fx, T0 + 100);
+        assert_eq!(tick_writes(&fx), (0, 0));
+        assert!(w.intents.rows().is_empty(), "no intent row is created");
+        let asked = fx.requested_indexes();
+        assert!(
+            asked.iter().any(|n| n == "move_intent_entity_id_idx_btree"),
+            "the tick looked the intent row up: {asked:?}"
+        );
+        assert!(
+            !asked.iter().any(|n| n == "player_entity_id_idx_btree"),
+            "an idle NPC costs no player lookup: {asked:?}"
+        );
+
+        w.chars.seed(&character(3, vec![], ActionState::Walking));
+        Walk::tick(&fx, T0 + 200);
+        assert_eq!(
+            tick_writes(&fx),
+            (1, 0),
+            "only the Walking one is normalised"
+        );
+        assert_eq!(w.character(3).action, ActionState::Idle);
+        assert!(w.intents.rows().is_empty());
+    }
+
+    /// A joined player with NO intent row (a session that pre-dates the table)
+    /// gets one from its public rows on its first move call: the published queue
+    /// is carried over and the seq guard starts at the higher of
+    /// `character.acked_seq` and `player.last_input_seq`, so a seq at or below
+    /// either is still stale. A player with no character is refused
+    /// `Err("no character")` with nothing created; a caller who never joined is
+    /// refused `Err("not joined")`.
+    ///
+    /// (This host has no rollback, so the row seeded by a call that then
+    /// refuses stays; on a real host that insert rolls back and the next call
+    /// seeds the same row again.)
+    ///
+    /// kills: the seeding branch replaced by an empty row (queued steps lost,
+    /// the guard reset to 0) / `max` -> `min` / the stale check run before the
+    /// seed / the no-character refusal dropped.
+    #[test]
+    fn nh_a_move_call_without_an_intent_row_seeds_it_from_the_public_rows() {
+        for (label, acked, player_seq) in [("player higher", 4, 9), ("character higher", 9, 4)] {
+            let fx = fixture();
+            let w = world(&fx);
+            w.players.seed(&Player {
+                identity: a(),
+                entity_id: 1,
+                name: String::new(),
+                online: true,
+                last_input_seq: player_seq,
+            });
+            w.chars.seed(&Character {
+                acked_seq: acked,
+                ..character(1, vec![MoveInput::Jump], ActionState::Idle)
+            });
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 9)),
+                Err("stale seq".to_string()),
+                "{label}: the highest seq either column holds is already used"
+            );
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(
+                    ctx,
+                    MoveInput::Step(Direction::North),
+                    10
+                )),
+                Ok(()),
+                "{label}"
+            );
+            assert_eq!(
+                w.intent(1),
+                (vec![MoveInput::Jump, MoveInput::Step(Direction::North)], 10),
+                "{label}: the published step is kept ahead of the new one"
+            );
+            assert_eq!(fx.writes_to("character"), 0, "{label}");
+            assert_eq!(fx.writes_to("player"), 0, "{label}");
+        }
+
+        let fx = fixture();
+        let w = world(&fx);
+        w.players.seed(&Player {
+            identity: a(),
+            entity_id: 1,
+            name: String::new(),
+            online: true,
+            last_input_seq: 0,
+        });
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 1)),
+            Err("no character".to_string())
+        );
+        assert!(w.intents.rows().is_empty());
+        assert_eq!(
+            fx.run_as_at(b(), at(T0), |ctx| clear_queue(ctx, 1)),
+            Err("not joined".to_string())
+        );
+        assert_eq!(fx.writes_to("move_intent"), 0);
+    }
+
+    /// A character that publishes a queue but has no intent row (a session that
+    /// was mid-walk when the table was added) is seeded BY THE TICK and drained
+    /// in that same tick: the first published step is applied, the rest stays
+    /// queued, and the seq guard is the higher of the two public seq columns.
+    ///
+    /// kills: the tick's seeding arm dropped (the walk freezes until the next
+    /// input) / seeded without the player's seq (the guard moves backwards) /
+    /// the seeded row not drained in the same tick.
+    #[test]
+    fn nh_the_tick_seeds_a_mid_walk_character_that_has_no_intent_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        let walk = Walk::new();
+        w.players.seed(&Player {
+            identity: a(),
+            entity_id: 1,
+            name: String::new(),
+            online: true,
+            last_input_seq: 8,
+        });
+        w.chars
+            .seed(&walk.character(vec![walk.step(), MoveInput::Jump], 6));
+        let want = Walk::after(&w.character(1), walk.step(), T0 + 100);
+        Walk::tick(&fx, T0 + 100);
+        assert!(
+            state_of(&w.character(1)) == want,
+            "the first step is applied"
+        );
+        assert_eq!(w.intent(1), (vec![MoveInput::Jump], 8));
+        assert_eq!(w.published(1), w.intent(1));
+        assert_eq!(fx.writes_to("character"), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -1051,6 +1725,7 @@ mod nh {
             tile_y: start.y,
             ..character(1, vec![MoveInput::Step(dir)], ActionState::Idle)
         });
+        w.intents.seed(&intent(1, vec![MoveInput::Step(dir)], 0));
         for m in &party {
             w.seed_monster(m);
         }
@@ -1423,6 +2098,8 @@ mod nh {
             tile_y: start.y,
             ..character(1, vec![MoveInput::Step(dir)], ActionState::Idle)
         });
+        assert_eq!(w.intents.remove(1), 1, "and so is its intent row");
+        w.intents.seed(&intent(1, vec![MoveInput::Step(dir)], 0));
         bt16_tick(&fx, t + 1);
         assert_eq!(
             bt16_walker_at(&w),

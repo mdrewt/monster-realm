@@ -397,6 +397,8 @@ pub(crate) struct World<'a> {
     pub(crate) configs: Handle<'a, Config, u32>,
     pub(crate) players: Handle<'a, Player>,
     pub(crate) characters: Handle<'a, Character, u64>,
+    /// The move reducers and `movement_tick` write it; `on_disconnect` deletes through it.
+    pub(crate) intents: Handle<'a, crate::schema::MoveIntent, u64>,
     pub(crate) sessions: Handle<'a, PlayerSession>,
     pub(crate) conversations: Handle<'a, PlayerConversation>,
     pub(crate) encounters: Handle<'a, EncounterRow, u32>,
@@ -501,6 +503,12 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
             .unique(),
         characters: fx
             .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .writable()
+            .unique(),
+        intents: fx
+            .table_keyed::<crate::schema::MoveIntent, u64>("move_intent", "entity_id", |r| {
+                r.entity_id
+            })
             .writable()
             .unique(),
         sessions: fx
@@ -642,6 +650,11 @@ impl World<'_> {
             move_queue: Vec::new(),
             acked_seq: 0,
         });
+        self.intents.seed(&crate::schema::MoveIntent {
+            entity_id,
+            queue: Vec::new(),
+            last_input_seq: 0,
+        });
     }
 
     pub(crate) fn seed_monster(&self, m: &Monster) {
@@ -667,6 +680,7 @@ impl World<'_> {
             ("config", row_set(&self.configs.rows())),
             ("player", row_set(&self.players.rows())),
             ("character", row_set(&self.characters.rows())),
+            ("move_intent", row_set(&self.intents.rows())),
             ("player_session", row_set(&self.sessions.rows())),
             ("player_conversation", row_set(&self.conversations.rows())),
             ("encounter", row_set(&self.encounters.rows())),

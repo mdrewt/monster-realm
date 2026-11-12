@@ -696,15 +696,51 @@ fn dw_insert_sites() {
     {
         let fx = fixture();
         let w = dw_world(&fx);
-        let _ = fx
+        let characters = fx
             .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
             .writable()
             .unique()
             .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
+        let intents = fx
+            .table_keyed::<crate::schema::MoveIntent, u64>("move_intent", "entity_id", |r| {
+                r.entity_id
+            })
+            .writable()
+            .unique();
+        // An earlier character, so the new one's auto-inc id is not the default 0 or 1.
+        characters.seed(&Character {
+            entity_id: 40,
+            zone_id: 0,
+            tile_x: 0,
+            tile_y: 0,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+            acked_seq: 0,
+        });
         let got = fx.run_as_at(dw_c(), dw_at(DW_T0), |ctx| {
             crate::movement::join_game(ctx, "Cee".to_string())
         });
         assert_eq!(got, Ok(()), "join_game; asked {:?}", fx.requested_indexes());
+        let joined: Vec<u64> = characters
+            .rows()
+            .into_iter()
+            .map(|c| c.entity_id)
+            .filter(|&id| id != 40)
+            .collect();
+        assert_eq!(joined.len(), 1, "one character for the joiner");
+        let intent_rows: Vec<_> = intents
+            .rows()
+            .into_iter()
+            .map(|i| (i.entity_id, i.queue, i.last_input_seq))
+            .collect();
+        assert_eq!(
+            intent_rows,
+            vec![(joined[0], vec![], 0)],
+            "join_game creates the joiner's empty move_intent row, keyed by its character"
+        );
         let rows = w.monsters.rows();
         assert_eq!(rows.len(), 1, "one starter");
         assert_eq!(rows[0].owner_identity, dw_c());

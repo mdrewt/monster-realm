@@ -841,6 +841,15 @@ export const MoveInput = __t.enum("MoveInput", {
 });
 export type MoveInput = __Infer<typeof MoveInput>;
 
+export const MoveIntent = __t.object("MoveIntent", {
+  entityId: __t.u64(),
+  get queue() {
+    return __t.array(MoveInput);
+  },
+  lastInputSeq: __t.u64(),
+});
+export type MoveIntent = __Infer<typeof MoveIntent>;
+
 export const MovedEvent = __t.object("MovedEvent", {
   unit: __t.u32(),
   fromX: __t.u8(),

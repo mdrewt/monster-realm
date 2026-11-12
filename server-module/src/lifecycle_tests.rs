@@ -20,7 +20,9 @@
 
 #![cfg(test)]
 
-use crate::schema::{character, player, player_session, Character, Player, PlayerSession};
+use crate::schema::{
+    character, move_intent, player, player_session, Character, MoveIntent, Player, PlayerSession,
+};
 use game_core::{ActionState, Direction};
 use spacetimedb::{ConnectionId, Identity};
 
@@ -256,8 +258,8 @@ fn rb73_sessions_stranger_rows_are_not_mine() {
 // ===========================================================================
 
 /// ADR-0245 D3, executed: with a live `player_session` row for `ctx.sender()`,
-/// `on_disconnect` performs NO side effect — the `player` and `character`
-/// presence rows survive the call.
+/// `on_disconnect` performs NO side effect — the `player`, `character` and
+/// `move_intent` presence rows survive the call.
 ///
 /// THE SUBJECT MUST BE `ctx.sender()`. Under `ReducerContext::__dummy()` that is
 /// `Identity::from_byte_array([0u8; 32])`, which is also `crate::WILD_IDENTITY`
@@ -271,8 +273,8 @@ fn rb73_sessions_stranger_rows_are_not_mine() {
 /// WHY THIS EXECUTES AT ALL. `__dummy()`'s `connection_id()` is `None`, so the
 /// fixed body takes `leaving = None`, skips the own-row delete entirely, finds
 /// the seeded session row through `has_live_session(ctx, me)` and returns
-/// before ANY write. Only `player`, `character` and `player_session` are
-/// registered: `player_conversation` deliberately is not.
+/// before ANY write. Only `player`, `character`, `move_intent` and
+/// `player_session` are registered: `player_conversation` deliberately is not.
 ///
 /// Once the table and the helper exist but the guard does not — which is
 /// exactly mutant M1, "guard deleted" — the reducer walks on to the
@@ -293,6 +295,7 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
     let player_t = fx.table::<Player>("player", "identity", |r| r.identity);
     let character_t = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
     let session_t = fx.table::<PlayerSession>("player_session", "identity", |r| r.identity);
+    let intent_t = fx.table_keyed::<MoveIntent, u64>("move_intent", "entity_id", |r| r.entity_id);
     let ctx = fx.ctx();
 
     let me = ctx.sender();
@@ -324,6 +327,11 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
         move_queue: Vec::new(),
         acked_seq: 0,
     });
+    intent_t.seed(&MoveIntent {
+        entity_id: ENTITY_ID,
+        queue: vec![game_core::MoveInput::Jump],
+        last_input_seq: 3,
+    });
 
     // --- S1 PRE: every row this test reasons about is visible ----------------
     assert_eq!(
@@ -344,6 +352,11 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
         "[rb73/skip/pre-character] the seeded character row must be visible through ctx.db \
          BEFORE on_disconnect runs, or the POST assertion is vacuous"
     );
+    assert!(
+        ctx.db.move_intent().entity_id().find(ENTITY_ID).is_some(),
+        "[rb73/skip/pre-intent] the seeded move_intent row must be visible through ctx.db \
+         BEFORE on_disconnect runs, or the POST assertion is vacuous"
+    );
 
     // --- S2: execute the shipped lifecycle hook ------------------------------
     crate::on_disconnect(&ctx);
@@ -361,6 +374,16 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
         ctx.db.character().entity_id().find(ENTITY_ID).is_some(),
         "[rb73/skip/post-character] on_disconnect deleted the character presence row while \
          another live connection exists — same ADR-0245 D3 criterion as the player row above"
+    );
+    assert!(
+        ctx.db
+            .move_intent()
+            .entity_id()
+            .find(ENTITY_ID)
+            .is_some_and(|i| i.queue == [game_core::MoveInput::Jump] && i.last_input_seq == 3),
+        "[rb73/skip/post-intent] on_disconnect deleted or rewrote the move_intent row while \
+         another live connection exists: the surviving session would lose its queued input \
+         and its seq guard"
     );
     assert_eq!(
         ctx.db.player_session().identity().filter(me).count(),
@@ -385,6 +408,11 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
          removable, or the S1/S3 presence assertions are not falsifiable by anything"
     );
     assert_eq!(
+        intent_t.remove(ENTITY_ID),
+        1,
+        "[rb73/skip/control-remove-intent] exactly one seeded move_intent row must be removable"
+    );
+    assert_eq!(
         session_t.remove(me),
         1,
         "[rb73/skip/control-remove-session] exactly one seeded session row must be removable"
@@ -397,6 +425,10 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
     assert!(
         ctx.db.character().entity_id().find(ENTITY_ID).is_none(),
         "[rb73/skip/control-absent-character] same falsifiability proof for the character read"
+    );
+    assert!(
+        ctx.db.move_intent().entity_id().find(ENTITY_ID).is_none(),
+        "[rb73/skip/control-absent-intent] same falsifiability proof for the move_intent read"
     );
     assert_eq!(
         ctx.db.player_session().identity().filter(me).count(),
@@ -689,5 +721,61 @@ fn ts2_disconnect_cancels_sessions() {
          (partner) — must be gone with every snapshot row and their schedule rows, and the \
          strangers' session 3 must be whole. Indexes the code asked the host for: {:?}",
         fx.requested_indexes()
+    );
+}
+
+/// Both presence deletes that key on `player.entity_id` — the `character` row
+/// and its `move_intent` row — are issued inside `on_disconnect`'s
+/// player-found block BEFORE the `player` row itself is deleted, and
+/// `erase_character_rows` deletes both through the same join. The native host
+/// cannot observe statement order, so this reads the source: comment lines are
+/// dropped, then each needle must appear exactly once per function, in order.
+///
+/// kills: the `move_intent` delete dropped from either function (an orphan row
+/// a later character could never collide with but nothing would ever sweep) /
+/// moved after the `player` delete / duplicated outside the player-found block.
+#[test]
+fn presence_deletes_take_the_intent_row_with_the_character_before_the_player() {
+    let src = include_str!("lib.rs");
+    let body = |header: &str| -> String {
+        let from = src.find(header).unwrap_or_else(|| panic!("`{header}`"));
+        let rest = &src[from..];
+        let to = rest.find("\n}\n").expect("the function's closing brace");
+        rest[..to]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let once = |code: &str, needle: &str| -> usize {
+        assert_eq!(code.matches(needle).count(), 1, "exactly one `{needle}`");
+        code.find(needle).unwrap()
+    };
+    const CHARACTER: &str = "ctx.db.character().entity_id().delete(p.entity_id);";
+    const INTENT: &str = "ctx.db.move_intent().entity_id().delete(p.entity_id);";
+
+    let disconnect = body("pub fn on_disconnect(ctx: &ReducerContext) {");
+    let found = once(
+        &disconnect,
+        "if let Some(p) = ctx.db.player().identity().find(me) {",
+    );
+    let character = once(&disconnect, CHARACTER);
+    let intent = once(&disconnect, INTENT);
+    let player = once(&disconnect, "ctx.db.player().identity().delete(me);");
+    assert!(
+        found < character && character < intent && intent < player,
+        "on_disconnect: player lookup ({found}), character ({character}), move_intent \
+         ({intent}), then the player row last ({player})"
+    );
+
+    let erase = body("pub(crate) fn erase_character_rows(ctx: &ReducerContext, owner: Identity) {");
+    let found = once(
+        &erase,
+        "if let Some(p) = ctx.db.player().identity().find(owner) {",
+    );
+    assert!(found < once(&erase, CHARACTER) && found < once(&erase, INTENT));
+    assert!(
+        !erase.contains("player().identity().delete"),
+        "erase_character_rows never deletes the player anchor"
     );
 }

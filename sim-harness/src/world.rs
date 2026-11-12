@@ -314,11 +314,11 @@ mod tests {
             Some(game_core::TilePos { x: 1, y: 5 }),
             "landing pos in zone 1 must be (1,5) — warp to_tile (1,5) → (1,5)"
         );
-        // Queue must be cleared on warp (mirrors movement.rs:225).
+        // Queue must be cleared on warp (mirrors `movement_tick`'s warp arm).
         assert_eq!(
             w.queue_len(id),
             0,
-            "queue must be cleared on warp (mirrors movement.rs:225 move_queue.clear())"
+            "queue must be cleared on warp (mirrors movement_tick's warp arm, intent.queue.clear())"
         );
     }
 
