@@ -1965,12 +1965,11 @@ fn accept_challenge_refuses_a_foreign_missing_or_boxed_acceptor_party_bt17_2() {
 }
 
 // ===========================================================================
-// The challenge range rule (spec M-trade-sessions ts-5.1). `challenge_pvp` refuses unless both
-// characters, each found through its `player` row's `entity_id`, pass
-// `game_core::interact::within_interact_range` (the same zone, Manhattan distance <= 2), with ONE
-// refusal text for another zone, too far and a missing character. It is checked after the joined,
-// deletion-gate, self-challenge and target checks, before every later guard, and never when a
-// challenge is answered (accept, decline, cancel).
+// The challenge range rule. `challenge_pvp` refuses unless both characters, each found through
+// its `player` row's `entity_id`, pass `game_core::interact::within_interact_range` (the same
+// zone, Manhattan distance <= 2), with ONE refusal text for another zone, too far and a missing
+// character. It is checked after the joined, deletion-gate, self-challenge and target checks,
+// before every later guard, and never when a challenge is answered (accept, decline, cancel).
 // ===========================================================================
 
 /// The one refusal `challenge_pvp` gives for another zone, too far and a missing character.
