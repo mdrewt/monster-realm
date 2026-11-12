@@ -13,8 +13,11 @@ import {
 //   12.5c-1 — State-based zone sync: when own character's authoritative zoneId
 //              disagrees with rawMap.zone_id on a batch, the reconcile listener
 //              MUST call switchZone (not wait for an onUpdate edge trigger).
-//   12.5c-2 — Zone switch MUST NOT call store.resetCharacters(); idle remotes in
-//              the destination zone remain visible after the switch.
+//   12.5c-2 — A zone switch touches no character row. The store holds the rows of
+//              the zones the connection is subscribed to (the own row's zone, plus
+//              one it left within the linger); which rows it holds is decided by
+//              those subscriptions, never by switchZone. Idle characters of the
+//              destination zone are therefore still there after the switch.
 //   12.5c-3 — All fallible parsing (TileMap.fromRaw) happens BEFORE any state
 //              mutation; a bad zone never leaves split-brain state.
 //   12.5c-5 — Proof-of-teeth: setRawMapZoneForTest hook exists on window.__game()
@@ -24,9 +27,10 @@ import {
 //   "zone stays stale"   — removing the state-based check from the reconcile
 //                          listener leaves map.zone_id = 1 forever → BITES on the
 //                          waitForFunction(zone_id === 0) assertion.
-//   "resetCharacters"    — an impl that still calls store.resetCharacters() on zone
-//                          switch loses idle remote characters → BITES on the
-//                          remote-visibility assertion in the idle-remote test.
+//   "switch clears rows" — an impl whose zone switch empties the character map
+//                          loses idle characters, which no later row update
+//                          restores → BITES on the count assertion in the
+//                          idle-remote test.
 //   "parse-after-mutate" — an impl that mutates rawMap/set_active_zone before
 //                          TileMap.fromRaw → split-brain after a bad zone map →
 //                          BITES on the zone-unchanged assertion in the parse-order
@@ -225,28 +229,25 @@ test.describe
     // ---------------------------------------------------------------------------
     // Idle remote characters remain visible after a zone switch.
     //
-    // Scenario: we have at least one NPC (or remote player) whose character row
-    // exists in the store from the global subscription.  After we force a zone
-    // switch via setRawMapZoneForTest + step() (which calls switchZone()), the
-    // characters array must still contain the same count as before — because
-    // switchZone MUST NOT call store.resetCharacters().
+    // Scenario: the store holds the own row and zone 0's NPC, from the own-row set
+    // and the zone-0 set. We force only the client's MAP to zone 1
+    // (setRawMapZoneForTest) and step: the own row is still in zone 0, so the
+    // subscriptions do not change, and the reconcile calls switchZone(0). The
+    // characters array must hold at least as many rows as before, because a zone
+    // switch touches no character row.
     //
-    // WITHOUT 12.5c-2 fix: resetCharacters() clears the store → characters array
-    // empties → assertion on count fails.  The NPC / remote never re-appears
-    // because movement_tick skips idle rows.
-    //
-    // BITES: an impl that still calls store.resetCharacters() in the zone-switch
-    // body will lose all characters → characterCount drops → assertion fails.
+    // BITES: an impl whose zone switch empties the character map loses the idle
+    // NPC, which never re-appears (the server writes no row for an idle
+    // character) → the count drops → the assertion fails.
     // ---------------------------------------------------------------------------
     test('12.5c-2: zone switch does not clear idle remote characters from store', async () => {
-      // After the previous test the client is back at zone 0.  Allow time for
-      // NPC rows to be delivered via the global subscription (they are seeded at
-      // module init in M12b).
+      // After the previous test the client is back at zone 0. Wait for the zone's
+      // NPC row beside the own row: it arrives with the zone-0 set, one round trip
+      // after the own row.
       await page.waitForFunction(
         () => {
           const g = (window as unknown as { __game: () => ZoneSyncSnap }).__game();
-          // At least one NPC character (seeded on init) should be present.
-          return g.characters.length >= 1;
+          return g.characters.some((c) => c.entityId !== g.ownEntityId);
         },
         null,
         { timeout: 15_000 },
@@ -254,8 +255,8 @@ test.describe
 
       const beforeSwitch = await snap(page);
       const characterCountBefore = beforeSwitch.characters.length;
-      // Must have at least 1 character in store (NPC or own).
-      expect(characterCountBefore).toBeGreaterThanOrEqual(1);
+      // The own row and at least one other character.
+      expect(characterCountBefore).toBeGreaterThanOrEqual(2);
 
       // Force a zone mismatch then trigger the reconcile-driven switchZone.
       await page.evaluate(() => {
@@ -286,8 +287,7 @@ test.describe
       );
 
       const afterSwitch = await snap(page);
-      // BITES: if resetCharacters() is called, afterSwitch.characters.length === 0
-      // (or < characterCountBefore) — this assertion fails.
+      // BITES: a switch that empties the character map leaves fewer rows than before.
       expect(afterSwitch.characters.length).toBeGreaterThanOrEqual(characterCountBefore);
     });
 

@@ -95,17 +95,20 @@ test.describe
       await b.goto('/');
       await ready(a);
       await ready(b);
-      // Both joined: each window converges, via its subscription, to seeing 2 characters.
-      await a.waitForFunction(
-        () => (window as unknown as { __game: () => Snap }).__game().presenceCount === 2,
-        null,
-        { timeout: 30_000 },
-      );
-      await b.waitForFunction(
-        () => (window as unknown as { __game: () => Snap }).__game().presenceCount === 2,
-        null,
-        { timeout: 30_000 },
-      );
+      // Both joined: each window holds both `player` rows, and its world scope has settled, so
+      // the zone's characters (which arrive one round trip after the own row) are in the store.
+      for (const p of [a, b]) {
+        await p.waitForFunction(
+          () => {
+            const g = (
+              window as unknown as { __game: () => Snap & { worldScope: { settled: boolean } } }
+            ).__game();
+            return g.presenceCount === 2 && g.worldScope.settled;
+          },
+          null,
+          { timeout: 30_000 },
+        );
+      }
     });
 
     test.afterAll(async () => {

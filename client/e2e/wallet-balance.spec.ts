@@ -126,9 +126,10 @@ import {
 //   - tideglass_shopkeeper: pinned on (8,1); its walkable 4-neighbours are (7,1) only ((8,2)
 //     and (9,1) rock, (8,0) wall), so the post is (7,1) facing East. One press suffices.
 //
-// CROSS-ZONE NOISE IN THE IN-FRONT POLL: `__game().characters` carries NO zoneId and the
-//   `character` subscription is globally unfiltered, so a player
-//   standing in zone 1 can still hold zone-0 character rows. Checked: the zone-1 faced tile
+// CROSS-ZONE NOISE IN THE IN-FRONT POLL: the helpers' poll does not read a character's zone,
+//   and a client holds the characters of the zone it left for a few seconds after a warp
+//   (the subscription's linger), so a player standing in zone 1 can still hold zone-0
+//   character rows. Checked: the zone-1 faced tile
 //   (8,1) and its post (7,1) are Manhattan 7 and 6 from elder_oak's home (5,5), far outside
 //   his radius-2 disc; the zone-0 reach tiles (5,5) and (4,5) are never the zone-1
 //   shopkeeper's pinned (8,1). So the poll predicate cannot be fooled at either post, and
@@ -151,11 +152,10 @@ import {
 // ---------------------------------------------------------------------------------------
 // WHY A MUTATION-RECORD RECORDER, AND NOT JUST A RETRYING toHaveText
 // ---------------------------------------------------------------------------------------
-// `movement_tick` runs for a zone at `STEP_MS = 200` while a player's character is in it,
-// and A stands in zone 0 for the whole test. elder_oak keeps wandering there, every wander writes a
-// `character` row, the subscription is globally unfiltered, and the M13d shop batch listener
-// re-renders an OPEN overlay on every batch. So an open overlay is re-rendered about once a
-// second (the elder's post-qf-5 step cadence) WITH NO PLAYER INPUT, and a retrying
+// A's overlay stays open in zone 1 while B walks through that zone. A client is subscribed to
+// the characters of the zone it stands in, every step of B's writes a `character` row there,
+// and the M13d shop batch listener re-renders an OPEN overlay on every batch. So an open
+// overlay is re-rendered WITH NO INPUT FROM ITS PLAYER, and a retrying
 // `toHaveText('Gold: 50')` cannot distinguish a correct implementation from one that
 // patched only the batch-listener call site (:1436) and blanks on open.
 //
@@ -1305,9 +1305,8 @@ test.describe
     // The witness is a RENDER COUNTER on #shop-balance's own writes, not "the other player
     // moved": character rows are written by the row callback directly and main.ts:1429-1452
     // swallows listener throws, so a dead listener still shows movement beside a stale DOM.
-    // Batches are guaranteed: movement_tick runs at STEP_MS = 200 for the zone A stands in
-    // and elder_oak wanders there (about one step a second since qf-5) on the
-    // globally unfiltered `character` subscription — plus B's whole walk just happened.
+    // Batches are guaranteed: B's whole walk through zone 1 happened since the baseline, and
+    // each of its steps is a `character` row in the zone whose characters A is subscribed to.
     // -------------------------------------------------------------------------
     test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 50"', async () => {
       test.setTimeout(120_000);
