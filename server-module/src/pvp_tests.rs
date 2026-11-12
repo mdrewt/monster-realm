@@ -378,6 +378,8 @@ fn pv_challenge(id: u64, challenger: PvId, target: PvId, status: PvStatus) -> Pv
 type PvTile = (u32, i32, i32);
 /// The one tile `PvWorld::join` stands every joined player's character on.
 const PV_HERE: PvTile = (crate::ZONE_0, 1, 1);
+/// A character's tile, what it is doing and its queued moves.
+type PvPose = (PvTile, game_core::ActionState, Vec<game_core::MoveInput>);
 
 /// The character `entity_id` `PvWorld::join` writes on `who`'s `player` row.
 fn pv_entity(who: PvId) -> u64 {
@@ -550,19 +552,34 @@ impl PvWorld<'_> {
         assert_eq!(self.players.remove(who), 1, "rejoin_as: no player row");
         self.join_as(who, entity_id, online);
     }
-    /// A character row `entity_id` standing at `at`.
-    fn place(&self, entity_id: u64, (zone_id, tile_x, tile_y): PvTile) {
+    /// A character row `entity_id` standing at `at`, Idle with an empty move queue.
+    fn place(&self, entity_id: u64, at: PvTile) {
+        self.place_posed(entity_id, (at, game_core::ActionState::Idle, Vec::new()));
+    }
+    /// A character row `entity_id` in `pose`: its tile, its action and its queued moves.
+    fn place_posed(&self, entity_id: u64, pose: PvPose) {
+        let ((zone_id, tile_x, tile_y), action, move_queue) = pose;
         self.characters.seed(&PvCharacter {
             entity_id,
             zone_id,
             tile_x,
             tile_y,
             facing: game_core::Direction::South,
-            action: game_core::ActionState::Idle,
+            action,
             move_started_at_ms: 0,
             sprite_id: 0,
-            move_queue: Vec::new(),
+            move_queue,
         });
+    }
+    /// Replace `who`'s character (the one its `player` row names) with one in `pose`.
+    fn pose(&self, who: PvId, pose: PvPose) {
+        let entity_id = self.entity_of(who);
+        assert_eq!(
+            self.characters.remove(entity_id),
+            1,
+            "pose: no character {entity_id}"
+        );
+        self.place_posed(entity_id, pose);
     }
     /// The character `entity_id` on `who`'s `player` row.
     fn entity_of(&self, who: PvId) -> u64 {
@@ -1960,7 +1977,7 @@ fn accept_challenge_refuses_a_foreign_missing_or_boxed_acceptor_party_bt17_2() {
 const PV_OUT_OF_RANGE: &str = "that player is not close enough to challenge";
 
 /// What an in-range challenge (or accept) between two players without accounts returns: the
-/// ranked gate's verdict for that pair (inert today: `ranked_enforcement_active()` is false).
+/// ranked gate's verdict for that pair (inert while the configured issuer is the placeholder).
 fn pv_guest_verdict() -> Result<(), String> {
     super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
         .map_err(str::to_string)
@@ -2388,6 +2405,155 @@ fn ts5_challenge_answers_are_not_range_checked() {
             assert!(
                 w.reaper_challenge_ids().is_empty(),
                 "{answer}, {label}: its reaper disarmed"
+            );
+        }
+    }
+}
+
+/// One fresh world (A and B joined on `PV_HERE`) where A owns every monster in `party`, the
+/// first in party slot 0, the next in slot 1, and so on.
+fn pv_party_world<'a>(fx: &'a PvFixture, party: &[u64]) -> PvWorld<'a> {
+    let w = pv_world(fx, true);
+    for (slot, &id) in (0u8..).zip(party) {
+        w.monster(id, pv_a(), slot);
+    }
+    w
+}
+
+/// The range rule holds for every party size: with the target 3 tiles away, a party of 2
+/// monsters and a party of `MAX_PARTY_SIZE`, each monster owned by the caller in its own party
+/// slot, are each refused with the range text and write nothing. With the target on the caller's
+/// tile the same party is accepted: one Pending challenge from the caller to the target, naming
+/// exactly that party.
+#[test]
+fn ts5_challenge_range_refuses_a_far_target_for_a_party_of_two_or_the_maximum_size() {
+    // (challenger, target, status, challenger_party_ids)
+    type Sent = (PvId, PvId, PvStatus, Vec<u64>);
+    let (zone, x, y) = PV_HERE;
+    let sizes: [u8; 2] = [2, crate::MAX_PARTY_SIZE];
+    for size in sizes {
+        let party: Vec<u64> = (0..size).map(|slot| 11 + u64::from(slot)).collect();
+
+        {
+            let fx = pv_fixture();
+            let w = pv_party_world(&fx, &party);
+            w.move_to(pv_b(), (zone, x + 3, y));
+            assert_eq!(
+                pv_send(&fx, &w, pv_a(), pv_b(), party.clone()),
+                Err(PV_OUT_OF_RANGE.to_string()),
+                "a party of {size}, the target 3 tiles away"
+            );
+            assert!(
+                w.challenges.rows().is_empty(),
+                "a party of {size}, the target far: nothing inserted"
+            );
+        }
+
+        {
+            let fx = pv_fixture();
+            let w = pv_party_world(&fx, &party);
+            let got = pv_send(&fx, &w, pv_a(), pv_b(), party.clone());
+            assert_eq!(
+                got,
+                pv_guest_verdict(),
+                "a party of {size}, the target on the caller's tile"
+            );
+            if got.is_ok() {
+                let sent: Vec<Sent> = w
+                    .challenges
+                    .rows()
+                    .into_iter()
+                    .map(|c| (c.challenger, c.target, c.status, c.challenger_party_ids))
+                    .collect();
+                assert_eq!(
+                    sent,
+                    vec![(pv_a(), pv_b(), PvStatus::Pending, party.clone())],
+                    "a party of {size}, in reach: one Pending challenge naming exactly that party"
+                );
+            }
+        }
+    }
+}
+
+/// The range rule judges each character's stored tile, whatever it is doing. With the two
+/// characters in range a challenge is accepted when the target, the caller or both are Walking
+/// with moves queued, when the target is Jumping with a jump queued and when the caller is
+/// Jumping with nothing queued. With the characters 3 tiles apart, a Walking character whose
+/// queued steps lead to the other is refused with the range text and writes nothing.
+#[test]
+fn ts5_challenge_range_judges_the_stored_tile_of_a_walking_or_jumping_character() {
+    use game_core::{ActionState as PvActing, Direction as PvDir, MoveInput as PvMove};
+    // (label, the caller's pose, the target's pose, accepted)
+    type Posed = (&'static str, PvPose, PvPose, bool);
+    let (zone, x, y) = PV_HERE;
+    let beside: PvTile = (zone, x + 1, y);
+    let two_south: PvTile = (zone, x, y + 2);
+    let far: PvTile = (zone, x + 3, y);
+    let north = PvMove::Step(PvDir::North);
+    let east = PvMove::Step(PvDir::East);
+    let west = PvMove::Step(PvDir::West);
+    let cases: [Posed; 7] = [
+        (
+            "the target walking east, beside the caller",
+            (PV_HERE, PvActing::Idle, vec![]),
+            (beside, PvActing::Walking, vec![east]),
+            true,
+        ),
+        (
+            "the caller walking north, beside the target",
+            (PV_HERE, PvActing::Walking, vec![north; 2]),
+            (beside, PvActing::Idle, vec![]),
+            true,
+        ),
+        (
+            "both walking toward each other, side by side",
+            (PV_HERE, PvActing::Walking, vec![east]),
+            (beside, PvActing::Walking, vec![west]),
+            true,
+        ),
+        (
+            "the target jumping on the caller's tile",
+            (PV_HERE, PvActing::Idle, vec![]),
+            (PV_HERE, PvActing::Jumping, vec![PvMove::Jump]),
+            true,
+        ),
+        (
+            "the caller jumping, 2 tiles from the target",
+            (two_south, PvActing::Jumping, vec![]),
+            (PV_HERE, PvActing::Idle, vec![]),
+            true,
+        ),
+        (
+            "the target walking to the caller from 3 tiles away",
+            (PV_HERE, PvActing::Idle, vec![]),
+            (far, PvActing::Walking, vec![west; 3]),
+            false,
+        ),
+        (
+            "the caller walking to the target from 3 tiles away",
+            (far, PvActing::Walking, vec![west; 3]),
+            (PV_HERE, PvActing::Idle, vec![]),
+            false,
+        ),
+    ];
+    for (label, caller, target, accepted) in cases {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.monster(11, pv_a(), 0);
+        w.pose(pv_a(), caller);
+        w.pose(pv_b(), target);
+        let got = pv_send(&fx, &w, pv_a(), pv_b(), vec![11]);
+        if !accepted {
+            assert_eq!(got, Err(PV_OUT_OF_RANGE.to_string()), "{label}");
+            assert!(w.sent().is_empty(), "{label}: nothing inserted");
+            continue;
+        }
+        assert_eq!(got, pv_guest_verdict(), "{label}");
+        if got.is_ok() {
+            assert_eq!(
+                w.sent(),
+                vec![(pv_a(), pv_b(), PvStatus::Pending)],
+                "{label}: one Pending challenge from the caller to the target"
             );
         }
     }

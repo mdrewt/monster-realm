@@ -310,7 +310,7 @@ test.describe
       }
     });
 
-    test('ctl-13: B challenges A; A sees the banner with nothing opened, presses Y then Enter, and a battle starts for both', async () => {
+    test('ctl-13: B challenges A in range; A sees the banner with nothing opened, stands apart, presses Y then Enter, and a battle starts for both', async () => {
       test.setTimeout(120_000);
       const snapA = await snapOf(pageA);
       const snapB = await snapOf(pageB);

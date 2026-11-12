@@ -517,7 +517,7 @@ pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
 }
 
 // ===========================================================================
-// Reducers
+// Challenge range
 // ===========================================================================
 
 /// `challenge_pvp` reject reason when the two characters are not within interact range. One
@@ -536,6 +536,10 @@ fn characters_in_interact_range(ctx: &ReducerContext, a: &Player, b: &Player) ->
     };
     within_interact_range(a.zone_id, char_state(&a).pos, b.zone_id, char_state(&b).pos)
 }
+
+// ===========================================================================
+// Reducers
+// ===========================================================================
 
 /// Send a PvP battle challenge to another online player, face to face.
 ///
@@ -600,7 +604,8 @@ pub fn challenge_pvp(
 
     // Guard 3a: both characters stand within interact range. Ahead of every guard that
     // answers from the target's account, battles or challenges, so those answer only a
-    // caller standing next to the target; a caller out of range learns guard 3 and no more.
+    // caller within interact range of the target; a caller out of range learns guard 3 and
+    // no more.
     if !characters_in_interact_range(ctx, &my_player, &target_player) {
         let e = ERR_OUT_OF_RANGE.to_string();
         log_reject("challenge_pvp", me, &e);
@@ -609,9 +614,10 @@ pub fn challenge_pvp(
 
     // Guard 3b: ranked play requires a full account —
     // BOTH parties. Placed after guards 3 and 3a so account existence is only ever
-    // disclosed for an online target the caller stands next to, never for
+    // disclosed for an online target within the caller's interact range, never for
     // arbitrary identities. The gate is inert
-    // until a real auth issuer is configured.
+    // until a real auth issuer is configured, and while it is inert no test can observe
+    // its order against guard 3a.
     if let Err(reason) = ranked_account_gate(
         ranked_enforcement_active(),
         crate::accounts::is_account_holder(ctx, me),
