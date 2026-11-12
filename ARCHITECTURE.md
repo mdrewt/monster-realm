@@ -656,10 +656,10 @@ root, so opening one never closes a sibling.
 | Client unit tests | `client/src/**/*.test.ts` (vitest, happy-dom) | `just client-test` |
 | Evals | `evals/*.eval.mjs`: wasm parity, feature isolation, determinism, schema and type snapshots, append-only ids, content version, bindings drift, client-surface privacy, sprite-sheet format, and the live account flow | `just eval` |
 | Node suites | `ops/observability/**/*.test.mjs`, `scripts/*.test.mjs` | `just test` |
-| Browser e2e | `client/e2e/*.spec.ts` (Playwright, two windows against a real SpacetimeDB and a `dev_reducers` build) | `just e2e`, CI `e2e` job |
+| Browser e2e | `client/e2e/*.spec.ts` (Playwright, two windows against a real SpacetimeDB and a `dev_reducers` build) | `just e2e`, CI `e2e-shard` jobs (one shard each; `e2e` checks their union is the whole suite) |
 | Nightly | game-core mutation testing (zero missed), server mutation survivor cap, client coverage (report only), criterion perf budgets, republish-over-live-data smoke | `.github/workflows/nightly.yml` |
 
 `just ci` is the merge gate: lint, typecheck, test, eval, security, wasm,
 client-typecheck, client-test, client-verify-build, and observability-validate.
 `.github/workflows/ci.yml` runs the same recipes plus dependency review,
-`cargo audit` and the e2e job.
+`cargo audit` and the e2e jobs.

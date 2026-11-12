@@ -92,7 +92,7 @@ publish:
     spacetime publish --module-path server-module {{db}}
 
 # Playwright multi-client e2e (both projects) against a running spacetime. `args` go to
-# Playwright: CI's e2e job runs one `--shard=i/N` per runner.
+# Playwright: each of CI's e2e-shard jobs runs one `--shard=i/N`.
 e2e *args: wasm
     cd client && npm run e2e -- {{args}}
 
@@ -101,11 +101,10 @@ e2e *args: wasm
 # ({{db}}-shard-<i>) and a vite port (MR_E2E_PORT, default 5290, plus <i>), so the specs' exact
 # live-population assertions hold per shard. The dev_reducers module is built here and always
 # passed as MR_DEV_MODULE_WASM: a publish without that feature passes globalSetup and then fails
-# every spec that calls a dev reducer. Exits non-zero naming each failed shard and its log.
-# MR_E2E_SHARDS defaults to 8, the fastest measured count whose peak memory (SpacetimeDB + vite
-# servers + every chromium, summed PSS) stays under a 22 GB budget on a 32-CPU / 45 GB machine:
-#   N=2 479 s 1.9 GB · N=4 376 s 3.7 GB · N=6 299 s 3.9 GB · N=8 240 s 4.7 GB (serial: 535 s).
-# Lower it on a smaller or busier machine; past 8 the 133 s tactics-pvp test bounds the wall.
+# every spec that calls a dev reducer. Exits non-zero naming each failed shard and its log; a
+# shard that passed no test counts as failed, because `--shard` lets an empty shard exit 0.
+# MR_E2E_SHARDS defaults to 8; README "Running the e2e suite locally" has the measurements and
+# the budget rule.
 e2e-shards: wasm
     #!/usr/bin/env bash
     set -euo pipefail
@@ -119,17 +118,28 @@ e2e-shards: wasm
     out=test-results/shards
     mkdir -p "$out"
     pids=()
-    trap 'kill "${pids[@]}" 2>/dev/null || true' INT TERM
+    # Stopping the recipe stops every shard's whole tree: npm does not pass the signal on, and
+    # Playwright starts vite and chromium in sessions of their own, where a vite left behind
+    # keeps its port and fails that shard's next run.
+    stop_tree() {
+        local child
+        for child in $(pgrep -P "$1"); do stop_tree "$child"; done
+        kill "$1" 2>/dev/null || true
+    }
+    trap 'for pid in "${pids[@]}"; do stop_tree "$pid"; done' INT TERM
     for i in $(seq 1 "$n"); do
         VITE_STDB_DB="{{db}}-shard-$i" MR_E2E_PORT=$((base_port + i)) \
+            PLAYWRIGHT_JSON_OUTPUT_FILE="$out/shard-$i.json" \
             npm run --silent e2e -- --shard="$i/$n" --output="$out/shard-$i" > "$out/shard-$i.log" 2>&1 &
         pids+=("$!")
     done
     failed=0
     for i in $(seq 1 "$n"); do
         status=ok
-        wait "${pids[$((i - 1))]}" || { status=FAILED; failed=$((failed + 1)); }
+        wait "${pids[$((i - 1))]}" || status=FAILED
         counts="$(grep -E '^ +[0-9]+ (passed|failed|flaky|skipped|did not run)' "$out/shard-$i.log" | tr -s ' \n' ' ' || true)"
+        [[ "$counts" == *" passed"* ]] || status=FAILED
+        [ "$status" = ok ] || failed=$((failed + 1))
         echo "e2e-shards: shard $i/$n $status —${counts:- no summary }— client/$out/shard-$i.log"
     done
     if [ "$failed" -gt 0 ]; then

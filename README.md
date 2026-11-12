@@ -130,19 +130,23 @@ any shard failed.
 
 `MR_E2E_SHARDS` is a plain environment variable (no recipe loads a `.env` file). Its default,
 8, is the fastest measured count whose peak memory stays under half of a 45 GB machine's RAM
-(22 GB), measured on 32 logical CPUs over the whole process tree (SpacetimeDB, vite servers,
-every chromium):
+(22 GB). Measured on 32 logical CPUs; memory is the peak of summed PSS over SpacetimeDB and
+every descendant of the recipe (Playwright runners, vite servers, every chromium process):
 
 | `MR_E2E_SHARDS` | wall | peak memory |
 |---|---|---|
 | serial `just e2e` | 535 s | |
-| 2 | 479 s | 1.9 GB |
-| 4 | 376 s | 3.7 GB |
-| 6 | 299 s | 3.9 GB |
-| 8 | 240 s | 4.7 GB |
+| 2 | 389 s | 3.2 GB |
+| 4 | 332 s | 4.6 GB |
+| 6 | 265 s | 6.3 GB |
+| 8 | 246 s, 228 s (two runs) | 8.0 GB |
 
-Memory is not the limit at these counts; CPU and the suite's one 133 s test are. Lower the
-value on a smaller machine or while Rust builds and other suites share the box.
+Each further shard costs about 0.8 GB. At 8 the shard that holds the suite's one 133 s test
+takes 3.6 to 3.9 minutes of the wall on its own. Lower the value on a smaller machine or while
+Rust builds and other suites share the box.
+
+Stopping the recipe (Ctrl-C or SIGTERM) stops every shard's runner, vite server and browsers.
+With `CI` set, each shard also writes its JSON report to `client/test-results/shards/shard-<i>.json`.
 
 ## Repository map
 
