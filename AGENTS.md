@@ -15,8 +15,10 @@ Project rules for coding agents. Inherits the workspace `AGENTS.md`. Architectur
 ## Run
 
 `just setup` · `just wasm` · `just ci` (the merge gate) · `just ci-fast <crate>` ·
-`just test` · `just lint` · `just eval` · `just client-test` · `just gen` · `just e2e`
-(needs a running SpacetimeDB). Local play: `just playtest-up` (see `README.md`).
+`just test` · `just lint` · `just eval` · `just client-test` · `just gen` · `just e2e` ·
+`just e2e-shards` (both need a running SpacetimeDB; `e2e-shards` is the fast full local run:
+`MR_E2E_SHARDS` concurrent shards, each with its own database, see `README.md`).
+Local play: `just playtest-up` (see `README.md`).
 
 ## Invariants
 

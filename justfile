@@ -94,9 +94,61 @@ build:
 publish:
     spacetime publish --module-path server-module {{db}}
 
-# Playwright multi-client e2e (both projects) against a running spacetime; CI's e2e job.
-e2e: wasm
-    cd client && npm run e2e
+# Playwright multi-client e2e (both projects) against a running spacetime. `args` go to
+# Playwright: each of CI's e2e-shard jobs runs one `--shard=i/N`.
+e2e *args: wasm
+    cd client && npm run e2e -- {{args}}
+
+# The whole e2e suite as MR_E2E_SHARDS concurrent Playwright shard processes against the ONE
+# running SpacetimeDB (STDB_SERVER / VITE_STDB_URI as for `just e2e`). Each shard owns a database
+# ({{db}}-shard-<i>) and a vite port (MR_E2E_PORT, default 5290, plus <i>), so the specs' exact
+# live-population assertions hold per shard. The dev_reducers module is built here and always
+# passed as MR_DEV_MODULE_WASM: a publish without that feature passes globalSetup and then fails
+# every spec that calls a dev reducer. Exits non-zero naming each failed shard and its log; a
+# shard that passed no test counts as failed, because `--shard` lets an empty shard exit 0.
+# MR_E2E_SHARDS defaults to 8; README "Running the e2e suite locally" has the measurements and
+# the budget rule.
+e2e-shards: wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    n="${MR_E2E_SHARDS:-8}"
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "e2e-shards: MR_E2E_SHARDS '$n' is not a positive integer" >&2; exit 64; }
+    base_port="${MR_E2E_PORT:-5290}"
+    cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
+    MR_DEV_MODULE_WASM="$(realpath "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/monster_realm_module.wasm")"
+    export MR_DEV_MODULE_WASM
+    cd client
+    out=test-results/shards
+    mkdir -p "$out"
+    pids=()
+    # Stopping the recipe stops every shard's whole tree: npm does not pass the signal on, and
+    # Playwright starts vite and chromium in sessions of their own, where a vite left behind
+    # keeps its port and fails that shard's next run.
+    stop_tree() {
+        local child
+        for child in $(pgrep -P "$1"); do stop_tree "$child"; done
+        kill "$1" 2>/dev/null || true
+    }
+    trap 'for pid in "${pids[@]}"; do stop_tree "$pid"; done' INT TERM
+    for i in $(seq 1 "$n"); do
+        VITE_STDB_DB="{{db}}-shard-$i" MR_E2E_PORT=$((base_port + i)) \
+            PLAYWRIGHT_JSON_OUTPUT_FILE="$out/shard-$i.json" \
+            npm run --silent e2e -- --shard="$i/$n" --output="$out/shard-$i" > "$out/shard-$i.log" 2>&1 &
+        pids+=("$!")
+    done
+    failed=0
+    for i in $(seq 1 "$n"); do
+        status=ok
+        wait "${pids[$((i - 1))]}" || status=FAILED
+        counts="$(grep -E '^ +[0-9]+ (passed|failed|flaky|skipped|did not run)' "$out/shard-$i.log" | tr -s ' \n' ' ' || true)"
+        [[ "$counts" == *" passed"* ]] || status=FAILED
+        [ "$status" = ok ] || failed=$((failed + 1))
+        echo "e2e-shards: shard $i/$n $status —${counts:- no summary }— client/$out/shard-$i.log"
+    done
+    if [ "$failed" -gt 0 ]; then
+        echo "e2e-shards: $failed of $n shards failed" >&2
+        exit 1
+    fi
 
 # Inner loop for one crate.
 ci-fast crate:

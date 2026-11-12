@@ -15,6 +15,10 @@ interface FakeWin {
 const WORLD = { kind: 'world' } as const;
 const screen = (id: FrameId): UpperFrame => ({ kind: 'screen', id });
 
+/** Settle wait for the stuck-stack tests: their fake never changes the stack, so every press
+ *  waits this out in full. The other tests keep `closeAll`'s default. */
+const STUCK_SETTLE_MS = 300;
+
 /** A `pops` entry meaning "this Escape clears every upper frame at once". */
 const POP_ALL = -1;
 
@@ -60,7 +64,7 @@ test.describe('ctl-6a controls.ts', () => {
       ],
       [],
     );
-    const failure = await closeAll(page).then(
+    const failure = await closeAll(page, STUCK_SETTLE_MS).then(
       () => null,
       (e: unknown) => (e instanceof Error ? e.message : String(e)),
     );
@@ -81,7 +85,7 @@ test.describe('ctl-6a controls.ts', () => {
       [WORLD, screen('menuView'), { kind: 'textEntry', owner: 'profileView' }],
       [],
     );
-    const failure = await closeAll(page).then(
+    const failure = await closeAll(page, STUCK_SETTLE_MS).then(
       () => null,
       (e: unknown) => (e instanceof Error ? e.message : String(e)),
     );

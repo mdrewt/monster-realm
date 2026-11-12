@@ -591,9 +591,10 @@ const readBalance = (p: Page): Promise<BalanceReading> =>
 // SUBSCRIPTIONS, not owner queries). Failures are HARD failures, never warn-and-continue.
 //
 // ⚠ EVERY WALLET ASSERTION MUST BE IDENTITY-SCOPED. `global-setup.ts` republishes with
-// --delete-data ONCE PER RUN, `workers: 1`, and 15 spec files share that one database;
-// this file is 14th alphabetically. By the time it runs, `recruit.spec.ts` has won wild
-// battles (battle.rs:1074 pays `bst/10` per KO, accumulating) and `dialogue.spec.ts`'s
+// --delete-data ONCE PER RUN, `workers: 1`, and every spec file of the same Playwright
+// process (one shard) shares that one database, in alphabetical order. An earlier file of
+// the shard can have paid other identities: `recruit.spec.ts` wins wild battles
+// (battle.rs:1074 pays `bst/10` per KO, accumulating) and `dialogue.spec.ts`'s
 // advance-retry path can itself complete quest_001 for exactly 50. So `player_wallet` is
 // NOT a one-row table here, and a substring test like `output.includes('50')` passes on
 // ANY foreign balance containing "50" (50 / 150 / 250 / 502 / …) while A's own row reads 0.

@@ -19,8 +19,9 @@ import { ownerSql } from './stdb';
 //
 // WHY THE FILE NAME IS `trade-zz-negative.spec.ts` (LOAD-BEARING)
 // ==============================================================
-// Playwright runs spec files in alphabetical order under `workers: 1` against ONE shared
-// published database, so file name IS run order. `zz` sorts after every other `trade-*` spec,
+// Within one Playwright process (one shard) spec files run in alphabetical order under
+// `workers: 1` against that process's ONE published database, so file name IS run order
+// there. `zz` sorts after every other `trade-*` spec,
 // so no session this file opens is ever live while another trade spec runs; and since `-` is
 // 0x2D and `.` is 0x2E, it still sorts before a `trade.spec.ts`. The acceptance ledger and the
 // bite-proof register also select this file by path and its tests by title prefix (`1b:`, `3b:`
