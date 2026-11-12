@@ -82,8 +82,8 @@ function applyOp(queue: readonly WasmMoveInput[], op: QueueOp): WasmMoveInput[] 
 const SNAP_GAP_STEPS = 4;
 
 /**
- * Bound the server's authoritative `last_input_seq` (a u64 `bigint`) before it enters
- * the predictor's number-typed seq space (`reconcile`'s `ackedSeq` and `seedSeq`).
+ * Bound the server's authoritative acked seq (`character.acked_seq`, a u64 `bigint`) before
+ * it enters the predictor's number-typed seq space (`reconcile`'s `ackedSeq` and `seedSeq`).
  *
  * The seq increments once per accepted intent; at the step cadence reaching
  * 2^53 would take tens of thousands of years, so the narrowing is safe in practice —
@@ -95,7 +95,7 @@ const SNAP_GAP_STEPS = 4;
  */
 export function boundSeq(seq: bigint): number {
   if (seq < 0n || seq > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new RangeError(`last_input_seq ${seq} outside the safe-integer seq bound`);
+    throw new RangeError(`acked_seq ${seq} outside the safe-integer seq bound`);
   }
   return Number(seq);
 }
@@ -241,7 +241,7 @@ export class Predictor {
    * lowers it.
    *
    * WHY (reconnect): a reconnect builds a FRESH `Predictor` whose `#nextSeq`
-   * restarts at 0, while the server has persisted a far-higher `player.last_input_seq`.
+   * restarts at 0, while the server has persisted a far-higher `character.acked_seq`.
    * Without re-seeding, every post-reconnect intent records a seq ≤ the server's ack,
    * so `reconcile`'s `seq > ackedSeq` filter drops it on the next snapshot — the player
    * appears frozen. Seeding `#nextSeq` to the server ack fixes that: the next intent's
@@ -257,7 +257,7 @@ export class Predictor {
   /**
    * Reconcile against an authoritative own-row update. `authBaseline` is the row's
    * CharacterState already rebased to local time (see convert.characterToPredictedBaseline);
-   * `authQueue` is the server's move_queue; `ackedSeq` is the server's last_input_seq.
+   * `authQueue` is the server's move_queue; `ackedSeq` is the same row's acked_seq.
    * Returns `true` iff the corrected tile differs from the pre-reconcile predicted
    * tile (a genuine server disagreement), so M4 can clear a committed direction and
    * re-issue a held key. Returns `false` on agreement and on the seeding reconcile.
@@ -368,30 +368,22 @@ export class Predictor {
    * `#queue` to empty — it reads 0 while the server still owes work, which is exactly the
    * over-emission this gate exists to stop.
    *
-   * The two terms never double-count: `authorize_move` writes the ack in the SAME
-   * transaction as the queue push (server guards.rs), so anything in `authQueue` is already
-   * acked and has been pruned from `#pending` by reconcile's `seq > ackedSeq` filter. The
-   * reconcile cap-clamp can make this OVER-count, which is the safe direction (it keeps the
-   * gate shut). It never UNDER-counts *within one predictor generation*.
+   * The two terms never double-count: the server publishes the queue and the ack in ONE
+   * character row, so an entry in `authQueue` belongs to a seq the same row's `ackedSeq`
+   * covers, and reconcile's `seq > ackedSeq` filter has already pruned it from `#pending`.
+   * The reconcile cap-clamp can make this OVER-count, which is the safe direction (it keeps
+   * the gate shut). It never UNDER-counts *within one predictor generation*.
    *
-   * OPEN RESIDUAL (named, deliberately NOT fixed by nh3): a fresh `Predictor` (zone warp /
-   * reconnect, main.ts `resetPredictionState`) starts with `#lastAuthQueueLen = 0` while the
-   * server may still owe a queued step, so exactly one extra continuation can slip through
-   * per rebuild. nh3 closed the OTHER two rebuild hazards in this family — the
-   * cross-generation EVICTION (the `dropRejected` epoch guard) and, with the main.ts
-   * send-seq floor, the seq COLLISION itself — but neither touches this under-count. Its
-   * window is near-zero in practice, for a DIFFERENT reason per rebuild path (desync-guard
-   * review): on a zone warp the rebuild is followed in the SAME microtask flush by a
-   * reconcile (the warp's own row burst → MicrotaskBatcher → reconcileFromStore), which
-   * rewrites `#lastAuthQueueLen` from the authoritative queue; on a RECONNECT that reconcile
-   * may be deferred (when the server's on_disconnect deleted the player/character rows —
-   * only if the old socket was the identity's LAST live connection —
-   * reconcileFromStore early-returns until joinGame round-trips; when the rows survived the
-   * overlap it runs on the first post-reconnect batch instead), and in the deferred case the
-   * guarantee rests on `held.clear()` ALONE — no held continuation survives the rebuild, so
-   * nothing emits into the gap. That makes `held.clear()` load-bearing for the reconnect arm: an nh5-style
-   * change to held-key retention across rebuilds must revisit this residual. Bounded and
-   * self-correcting on the next reconcile either way.
+   * ACROSS a rebuild it can: a fresh `Predictor` (zone warp / reconnect, main.ts
+   * `resetPredictionState`) has an empty `#pending`, so an input that was on the wire when
+   * the instance was replaced is counted by nobody here until the row that acks it arrives.
+   * That input is what `OwedInputs` (owedInputs.ts) counts: main.ts keeps it outside the
+   * predictor, and both continuation emitters require `owed.count === 0` as well as this
+   * getter reading 0. On a zone warp the rebuild is followed in the SAME microtask flush by
+   * a reconcile from the warp's own row, which rewrites `#lastAuthQueueLen`. On a RECONNECT
+   * `owed` is cleared (nothing sent on the dropped socket is answered) and the reconcile may
+   * be deferred until joinGame round-trips, so there the guarantee rests on `held.clear()`:
+   * no held continuation survives that rebuild, so nothing emits into the gap.
    */
   get outstandingSteps(): number {
     return this.#lastAuthQueueLen + this.#pending.length;

@@ -70,6 +70,7 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         move_started_at_ms: now_ms(ctx),
         sprite_id: SPRITE_PLAYER,
         move_queue: Vec::new(),
+        acked_seq: 0,
     });
     ctx.db.player().insert(Player {
         identity: me,
@@ -148,6 +149,7 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
         return Err(e);
     }
     ch.move_queue.push(input);
+    ch.acked_seq = seq;
     ctx.db.character().entity_id().update(ch);
     // THE movement call site — a genuinely player-triggered reducer
     // (never movement_tick). Once per party monster over lead_party's
@@ -196,6 +198,7 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
     let mut ch = authorize_move(ctx, "set_move", seq)?;
     ch.move_queue.clear();
     ch.move_queue.push(input);
+    ch.acked_seq = seq;
     ctx.db.character().entity_id().update(ch);
     Ok(())
 }
@@ -211,6 +214,7 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     // battle overlay is opening.
     let mut ch = authorize_move(ctx, "clear_queue", seq)?;
     ch.move_queue.clear();
+    ch.acked_seq = seq;
     ctx.db.character().entity_id().update(ch);
     Ok(())
 }

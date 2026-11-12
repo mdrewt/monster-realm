@@ -640,6 +640,7 @@ impl World<'_> {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: Vec::new(),
+            acked_seq: 0,
         });
     }
 

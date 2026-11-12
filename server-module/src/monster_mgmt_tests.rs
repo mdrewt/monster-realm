@@ -615,6 +615,7 @@ fn dw_raising_sites() {
                 move_started_at_ms: 0,
                 sprite_id: 0,
                 move_queue: vec![],
+                acked_seq: 0,
             });
         fx.table_keyed::<HealLocationRow, u32>("heal_location_row", "location_id", |r| {
             r.location_id

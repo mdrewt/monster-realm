@@ -10,7 +10,8 @@
  *   - both continuation emitters (frame loop and reconcile divergence) respect the
  *     hold-commit threshold (mvi) and the outstanding-steps gate (nh2);
  *   - the post-warp seq floor, and same-epoch rejection repair (nh3);
- *   - a held key survives a warp rebuild but not a reconnect (nh5).
+ *   - a held key survives a warp rebuild but not a reconnect (nh5);
+ *   - an input sent on a dropped socket is not owed after the reconnect.
  *
  * Harness: the main.reducedMotionWiring.test.ts pattern (vi.resetModules + a fresh
  * import per test, recorded window/document listeners detached in afterEach, a
@@ -208,10 +209,19 @@ async function bootReady(): Promise<void> {
 }
 
 const EID = 7n;
-/** Deliver one authoritative batch: own player + character row at clock `t`. */
+/** Deliver one authoritative batch: own player + character row at clock `t`. `ack` is the
+ *  character row's `ackedSeq`; `playerSeq` is `player.lastInputSeq`, which the server writes
+ *  to the same value unless a test separates them. */
 function server(
   t: number,
-  s: { x: number; y: number; ack: number; zone?: number; queue?: WasmMoveInput[] },
+  s: {
+    x: number;
+    y: number;
+    ack: number;
+    zone?: number;
+    queue?: WasmMoveInput[];
+    playerSeq?: number;
+  },
 ): void {
   clock.t = t;
   opts.store.upsertPlayer({
@@ -219,7 +229,7 @@ function server(
     entityId: EID,
     name: 'P',
     online: true,
-    lastInputSeq: BigInt(s.ack),
+    lastInputSeq: BigInt(s.playerSeq ?? s.ack),
   });
   opts.store.upsertCharacter(
     {
@@ -231,6 +241,7 @@ function server(
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: s.queue ?? [],
+      ackedSeq: BigInt(s.ack),
     },
     t,
   );
@@ -421,6 +432,77 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     expect(H.sends.map(step)).toEqual(['East', 'East']);
   });
 
+  it('ACK-ROW-SOURCE: the ack is the ackedSeq of the character row; player.lastInputSeq is not read', async () => {
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0 });
+    key('ArrowRight', 1000);
+    // The player row claims seq 1; the character row does not. Nothing is acked.
+    server(1050, { x: 2, y: 2, ack: 0, playerSeq: 1 });
+    frame(1200);
+    frame(1400);
+    expect(H.sends, 'an ack on the player row alone must not open the gate').toHaveLength(1);
+    // The character row acks seq 1 while the player row still reads 0: acked.
+    server(1450, { x: 3, y: 2, ack: 1, playerSeq: 0 });
+    frame(1460);
+    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    expect(H.sends[1].seq).toBe(2n);
+  });
+
+  it('OWED-FRAME: an input in flight across a warp keeps the frame-loop continuation shut until the row acks it', async () => {
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0 });
+    key('ArrowRight', 1000);
+    // The NH5-WARP shape, except the warp row does NOT ack seq 1: it is still on the wire.
+    server(1300, { zone: 1, x: 5, y: 5, ack: 0 });
+    frame(1310);
+    frame(1500);
+    expect(
+      H.sends,
+      'the rebuilt predictor reads nothing outstanding, but seq 1 is still owed',
+    ).toHaveLength(1);
+    server(1510, { zone: 1, x: 5, y: 5, ack: 1, queue: [{ Step: 'East' }] });
+    frame(1520);
+    expect(H.sends, 'acked, and now the server queue holds the step').toHaveLength(1);
+    server(1700, { zone: 1, x: 6, y: 5, ack: 1 });
+    frame(1710);
+    expect(H.sends.map(step)).toEqual(['East', 'East']);
+    expect(H.sends[1].seq, 'the continuation is issued above the in-flight seq').toBe(2n);
+  });
+
+  it('OWED-REJECT: a rejection of the in-flight input settles it, even though its predictor is gone', async () => {
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0 });
+    key('ArrowRight', 1000);
+    server(1300, { zone: 1, x: 5, y: 5, ack: 0 });
+    frame(1310);
+    expect(H.sends).toHaveLength(1);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    H.sends[0].reject(new Error('rejected')); // addressed to the pre-warp predictor
+    await flushMicrotasks();
+    frame(1320);
+    expect(
+      H.sends.map(step),
+      'nothing is owed once the call has rejected, so the held key continues',
+    ).toEqual(['East', 'East']);
+  });
+
+  it('OWED-RECONCILE: the divergence re-issue stays shut while an input is owed', async () => {
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0 });
+    key('ArrowRight', 1000);
+    server(1300, { zone: 1, x: 5, y: 5, ack: 0 }); // warp; seq 1 in flight
+    frame(1310);
+    // A server reposition the client did not predict: diverged, the hold is committed and
+    // the rebuilt predictor has nothing outstanding — only the owed input blocks.
+    server(1320, { zone: 1, x: 7, y: 5, ack: 0 });
+    expect(H.sends, 'diverged with an input still owed: no re-issue').toHaveLength(1);
+    server(1330, { zone: 1, x: 9, y: 5, ack: 1 });
+    expect(
+      H.sends.map(step),
+      'the same divergence with the input acked re-issues from the reconcile, no frame needed',
+    ).toEqual(['East', 'East']);
+  });
+
   it('NH5-RECONNECT: a reconnect rebuild clears the hold (only the warp path preserves it)', async () => {
     await bootReady();
     server(1000, { x: 2, y: 2, ack: 0 });
@@ -431,5 +513,27 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     frame(1310);
     frame(1500);
     expect(H.sends).toHaveLength(1);
+  });
+
+  it('OWED-RECONNECT: an input lost on the dropped socket is not owed on the new one', async () => {
+    await bootReady();
+    server(1000, { x: 2, y: 2, ack: 0 });
+    key('ArrowRight', 1000); // seq 1: its call never settles, the socket drops under it
+    key('ArrowRight', 1001, 'keyup');
+    opts.onReconnect(H.identity);
+    server(1300, { x: 2, y: 2, ack: 0 }); // the new connection's rows never ack seq 1
+    key('ArrowRight', 1310);
+    expect(H.sends.map((s) => s.seq)).toEqual([1n, 2n]);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    H.sends[1].reject(new Error('rejected')); // so no ack at or above seq 1 arrives
+    await flushMicrotasks();
+    frame(1459);
+    expect(H.sends, 'held < 150 ms is still a tap: no continuation').toHaveLength(2);
+    frame(1460);
+    expect(
+      H.sends.map(step),
+      'seq 1 was sent on the dropped socket; it must not keep the held key from continuing',
+    ).toEqual(['East', 'East', 'East']);
+    expect(H.sends[2].seq).toBe(3n);
   });
 });

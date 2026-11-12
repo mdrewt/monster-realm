@@ -176,6 +176,7 @@ function batch(): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: BigInt(H.sends.length),
     },
     clock.t,
   );
@@ -1046,6 +1047,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
           action: 'Idle',
           moveStartedAtMs: 0n,
           moveQueue: [] as WasmMoveInput[],
+          ackedSeq: BigInt(H.sends.length),
         },
         clock.t,
       );
@@ -1181,6 +1183,7 @@ describe('main.ts world sheets on the kit (runtime, uif-12)', { sequential: true
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       clock.t,
     );

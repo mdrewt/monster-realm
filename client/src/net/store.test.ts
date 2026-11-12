@@ -64,6 +64,7 @@ function char(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
     action: 'Idle',
     moveStartedAtMs: 0n,
     moveQueue: [],
+    ackedSeq: 0n,
   };
 }
 function player(identity: string, entityId: bigint, lastInputSeq = 0n): StorePlayer {
@@ -172,6 +173,45 @@ describe('AuthoritativeStore ADR-0090: burst detection + jitter EWMA', () => {
     const stored = s.character(1n)!;
     // After one update with deviation=50: ewma = alpha*50 + (1-alpha)*0 = 0.125*50 = 6.25
     expect(stored.jitterEwma).toBeCloseTo(6.25, 5);
+  });
+});
+
+describe('AuthoritativeStore: a remote walker written once per step fills the ring with real positions', () => {
+  const STEP_MS = 200;
+  // Arrival offsets of a few ms either side of the tick: ordinary delivery jitter.
+  const JITTER = [0, 8, -6, 4, -3, 7, -5, 2];
+
+  it('BITES: one update per STEP_MS leaves four distinct consecutive tiles in the ring and a near-zero jitter estimate', () => {
+    const s = new AuthoritativeStore(STEP_MS);
+    JITTER.forEach((j, k) => {
+      s.upsertCharacter(char(1n, k, 0), 1000 + k * STEP_MS + j);
+    });
+    const stored = s.character(1n)!;
+    expect(stored.snapshots.map((snap) => snap.tileX)).toEqual([4, 5, 6, 7]);
+    for (let i = 1; i < stored.snapshots.length; i++) {
+      const span = stored.snapshots[i]!.receivedAt - stored.snapshots[i - 1]!.receivedAt;
+      expect(Math.abs(span - STEP_MS), `bracket ${i} spans about one step`).toBeLessThanOrEqual(15);
+    }
+    // Every interval is within 15 ms of STEP_MS, so the EWMA of the deviation is too.
+    expect(stored.jitterEwma).toBeGreaterThan(0);
+    expect(stored.jitterEwma).toBeLessThan(15);
+  });
+
+  it('CONTRAST: a second same-tile write between steps halves the ring and reads as heavy jitter', () => {
+    // The same walk, with one extra row update 60 ms after each step that changes no tile (a
+    // queue-only write). The ring cannot tell it from a position sample.
+    const s = new AuthoritativeStore(STEP_MS);
+    JITTER.forEach((j, k) => {
+      const t = 1000 + k * STEP_MS + j;
+      s.upsertCharacter(char(1n, k, 0), t);
+      s.upsertCharacter(char(1n, k, 0), t + 60);
+    });
+    const stored = s.character(1n)!;
+    expect(
+      new Set(stored.snapshots.map((snap) => snap.tileX)).size,
+      'four snapshots, two real positions',
+    ).toBe(2);
+    expect(stored.jitterEwma, 'intervals alternate 60 / 140 ms').toBeGreaterThan(50);
   });
 });
 
@@ -2252,6 +2292,7 @@ describe('AuthoritativeStore: upsertCharacter snap-on-teleport (M12.5d-2)', () =
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [],
+      ackedSeq: 0n,
     };
   }
 
@@ -3087,6 +3128,7 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [],
+      ackedSeq: 0n,
     };
   }
 

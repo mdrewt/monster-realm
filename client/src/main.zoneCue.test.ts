@@ -229,6 +229,7 @@ function character(zoneId: number, tileX: number, tileY: number): StoreCharacter
     action: 'Idle',
     moveStartedAtMs: 0n,
     moveQueue: [] as WasmMoveInput[],
+    ackedSeq: 0n,
   };
 }
 

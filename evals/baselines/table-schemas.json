@@ -151,7 +151,8 @@
       "action": "ActionState",
       "move_started_at_ms": "i64",
       "sprite_id": "u32",
-      "move_queue": "Vec<MoveInput>"
+      "move_queue": "Vec<MoveInput>",
+      "acked_seq": "u64"
     },
     "order": [
       "entity_id",
@@ -162,9 +163,12 @@
       "action",
       "move_started_at_ms",
       "sprite_id",
-      "move_queue"
+      "move_queue",
+      "acked_seq"
     ],
-    "defaults": [],
+    "defaults": [
+      "acked_seq"
+    ],
     "unique": [],
     "indexes": [
       "zone_id"

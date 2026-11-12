@@ -219,12 +219,13 @@ pub(crate) fn authorize_move(
         log_reject(reducer, me, &e);
         return Err(e);
     };
-    // Accept-time ack: record receipt the moment intent is accepted (not applied).
-    // this ack is safe to write here even though `enqueue_move` may still
-    // reject an over-cap queue with `Err("queue full")` AFTER this returns Ok — that
-    // Err rolls the WHOLE SpacetimeDB transaction back (including this update), so
-    // "ack only on a successful enqueue" holds by transaction semantics. Do not split
-    // the ack out of `authorize_move` to "fix" this (the rollback already guarantees it).
+    // Advance the seq guard the moment intent is accepted (not applied). The caller
+    // writes the same seq to `character.acked_seq`, the ack the client reads.
+    // Advancing here is safe even though `enqueue_move` may still reject an over-cap
+    // queue with `Err("queue full")` AFTER this returns Ok — that Err rolls the WHOLE
+    // SpacetimeDB transaction back (including this update), so "the seq advances only
+    // on a successful enqueue" holds by transaction semantics. Do not split this write
+    // out of `authorize_move` to "fix" it (the rollback already guarantees it).
     player.last_input_seq = seq;
     ctx.db.player().identity().update(player);
     Ok(ch)

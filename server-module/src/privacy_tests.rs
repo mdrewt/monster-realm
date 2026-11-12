@@ -1783,6 +1783,7 @@ fn m22s4_serializer_per_table_shape() {
         move_started_at_ms: 47,
         sprite_id: 0,
         move_queue: vec![MoveInput::Step(Direction::North), MoveInput::Jump],
+        acked_seq: 77,
     };
     let out_character = super::json_character(&character);
     assert_eq!(
@@ -1806,6 +1807,7 @@ fn m22s4_serializer_per_table_shape() {
                     m22s4_obj(&[("kind", m22s4_qtxt("Jump"))]),
                 ]),
             ),
+            ("acked_seq", m22s4_quoted_num(77)),
         ]),
         "m22s4 [X1/character]: tile_x and tile_y are i32 and render BARE and SIGNED; facing and \
          action are the LAST variants of their enums; the move queue is an array of tagged \
@@ -1964,6 +1966,7 @@ fn m22s4_serializer_empty_owner() {
         move_started_at_ms: 0,
         sprite_id: 0,
         move_queue: vec![],
+        acked_seq: 0,
     };
     let out_character = super::json_character(&character);
     assert_eq!(
@@ -1978,6 +1981,7 @@ fn m22s4_serializer_empty_owner() {
             ("move_started_at_ms", m22s4_quoted_num(0)),
             ("sprite_id", m22s4_bare(0)),
             ("move_queue", m22s4_arr(&[])),
+            ("acked_seq", m22s4_quoted_num(0)),
         ]),
         "m22s4 [X1/zero-state]: an empty move queue renders an empty array."
     );

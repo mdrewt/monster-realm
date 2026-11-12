@@ -969,6 +969,7 @@ impl S2World<'_> {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: vec![],
+            acked_seq: 0,
         });
     }
     fn move_to(&self, who: Identity, zone_id: u32, tile_x: i32, tile_y: i32) {

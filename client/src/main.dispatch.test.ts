@@ -523,6 +523,7 @@ function server(t: number): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );
@@ -2191,6 +2192,7 @@ function seedNpcs(t: number): void {
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       t,
     );
@@ -2908,6 +2910,7 @@ function placeNpc(
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );
@@ -7978,6 +7981,7 @@ function tsFacePartner(t: number): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );
@@ -8213,6 +8217,7 @@ describe('main.ts trade sessions through the booted shell (runtime, ts-3)', {
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       1050,
     );

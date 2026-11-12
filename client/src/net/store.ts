@@ -48,6 +48,9 @@ export interface StoreCharacter {
   readonly action: WasmAction;
   readonly moveStartedAtMs: bigint;
   readonly moveQueue: readonly WasmMoveInput[];
+  /** The owner's reconciliation ack: the highest input seq the server has accepted for this
+   *  character. Only the owner reads it. */
+  readonly ackedSeq: bigint;
 }
 
 /** A player row, normalized (identity as its hex key string). */

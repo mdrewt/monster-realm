@@ -48,6 +48,13 @@ Re-running it republishes and re-syncs content without a wipe. Run
 `just playtest-down` first if a preview is already running: a second `playtest-up`
 overwrites the PID file, and the first preview then has to be stopped by hand.
 
+A republish that adds a column to a table clients subscribe to disconnects every
+connected client (the CLI prints "All clients will be disconnected due to breaking
+schema changes"). A client bundle built before the column existed then reconnects but
+cannot decode the rows: it never joins and shows no error, only uncaught exceptions in
+the console. Publish the module and serve the matching client build together, and have
+players reload.
+
 A publish can fail with "Aborting because publishing would require manual migration or
 deletion of data". This happens when the database holds a schema the automatic
 migration cannot convert, for example a database published by an older SpacetimeDB

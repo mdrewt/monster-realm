@@ -4224,6 +4224,7 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         move_started_at_ms: 0,
         sprite_id: 0,
         move_queue: Vec::new(),
+        acked_seq: 0,
     });
 
     // --- S1 PRE: both rows visible BEFORE the call ---------------------------
@@ -5548,6 +5549,7 @@ mod acct_nh {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: Vec::new(),
+            acked_seq: 0,
         }
     }
 

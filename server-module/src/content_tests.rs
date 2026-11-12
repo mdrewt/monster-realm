@@ -489,6 +489,7 @@ fn m13_5c_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
             move_started_at_ms: 0,
             sprite_id: def.sprite_id,
             move_queue: vec![],
+            acked_seq: 0,
         },
     )
 }
@@ -1376,6 +1377,7 @@ fn uxd2_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
             move_started_at_ms: 0,
             sprite_id: def.sprite_id,
             move_queue: vec![],
+            acked_seq: 0,
         },
     )
 }
@@ -2527,6 +2529,7 @@ mod nh_sync {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: vec![],
+            acked_seq: 0,
         }
     }
 

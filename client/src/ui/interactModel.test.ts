@@ -94,6 +94,7 @@ function charRow(entityId: bigint, zoneId: number, tileX: number, tileY: number)
     action: 'Idle',
     moveStartedAtMs: 0n,
     moveQueue: [],
+    ackedSeq: 0n,
   };
 }
 

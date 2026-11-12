@@ -1258,6 +1258,7 @@ const at = (entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCh
   action: 'Idle',
   moveStartedAtMs: 0n,
   moveQueue: [],
+  ackedSeq: 0n,
 });
 
 const profile = (identity: string, name: string, rating: number): StoreProfile => ({

@@ -543,6 +543,7 @@ mod nh {
             move_started_at_ms: 0,
             sprite_id: 0,
             move_queue: queue,
+            acked_seq: 0,
         }
     }
 
@@ -707,6 +708,73 @@ mod nh {
             );
             assert_eq!(w.character(1).move_queue.len(), 2, "{label}");
         }
+    }
+
+    /// The owner's reconciliation ack rides the character row: each accepted
+    /// move reducer writes `acked_seq == seq` in the same row update that
+    /// carries its queue change, and a refused call leaves the ack where it was.
+    ///
+    /// kills: the ack assignment dropped from any one reducer / written from a
+    /// constant or the previous ack instead of the accepted seq / written on a
+    /// refused call.
+    #[test]
+    fn nh_each_move_reducer_writes_the_accepted_seq_on_the_character_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1, character(1, vec![], ActionState::Idle));
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 3)),
+            Ok(())
+        );
+        let ch = w.character(1);
+        assert_eq!((ch.acked_seq, ch.move_queue.len()), (3, 1), "enqueue_move");
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| set_move(
+                ctx,
+                MoveInput::Step(Direction::North),
+                7
+            )),
+            Ok(())
+        );
+        let ch = w.character(1);
+        assert_eq!(
+            (ch.acked_seq, ch.move_queue.clone()),
+            (7, vec![MoveInput::Step(Direction::North)]),
+            "set_move"
+        );
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 12)),
+            Ok(())
+        );
+        let ch = w.character(1);
+        assert_eq!((ch.acked_seq, ch.move_queue.len()), (12, 0), "clear_queue");
+
+        let before = w.snapshot();
+        for (label, got) in [
+            (
+                "enqueue_move",
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 12)),
+            ),
+            (
+                "set_move",
+                fx.run_as_at(a(), at(T0), |ctx| set_move(ctx, MoveInput::Jump, 5)),
+            ),
+            (
+                "clear_queue",
+                fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 12)),
+            ),
+        ] {
+            assert_eq!(got, Err("stale seq".to_string()), "{label}");
+        }
+        assert_eq!(w.snapshot(), before, "a stale call writes nothing");
+        assert_eq!(
+            w.character(1).acked_seq,
+            12,
+            "the ack stays at the last accept"
+        );
     }
 
     /// ADR-0168 D1 drain lock, both roles: the scheduled `movement_tick`

@@ -184,6 +184,7 @@ function seedOwnCharacter(): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     clock.t,
   );

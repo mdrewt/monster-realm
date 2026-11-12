@@ -23,7 +23,10 @@ use spacetimedb::{ConnectionId, Identity, ReducerContext, Table};
 
 /// One renderable entity. The enum/queue columns are the EXACT M1 `game-core`
 /// types (the shared type IS the schema, never re-declared). `move_queue` is
-/// bounded + public so the owner's client reconciles against the undrained queue.
+/// bounded + public so the owner's client reconciles against the undrained queue,
+/// and `acked_seq` is the owner's reconciliation ack: the highest input seq the
+/// server has accepted for this character, written in the same row as the queue
+/// so the two cannot be torn. Remote clients ignore both.
 #[spacetimedb::table(accessor = character, public)]
 pub struct Character {
     #[primary_key]
@@ -38,10 +41,13 @@ pub struct Character {
     pub move_started_at_ms: i64,
     pub sprite_id: u32,
     pub move_queue: Vec<MoveInput>,
+    #[default(0u64)]
+    pub acked_seq: u64,
 }
 
 /// Links a connection identity to its character. `last_input_seq` is the
-/// reconciliation ack (set at accept-time) — NEVER trusted for authority.
+/// monotonic seq guard `authorize_move` checks and advances at accept-time; the
+/// client reads its ack from `character.acked_seq`, not from this column.
 #[spacetimedb::table(accessor = player, public)]
 pub struct Player {
     #[primary_key]

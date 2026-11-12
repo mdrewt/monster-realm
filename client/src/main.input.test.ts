@@ -396,6 +396,7 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: BigInt(s.ack),
     },
     t,
   );
@@ -1028,6 +1029,7 @@ function seedWorld(t: number): void {
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );
@@ -2089,6 +2091,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       1005,
     );
@@ -2840,6 +2843,7 @@ function placeNpc(
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );
@@ -2885,6 +2889,7 @@ function placePlayer(
       action: 'Idle',
       moveStartedAtMs: 0n,
       moveQueue: [] as WasmMoveInput[],
+      ackedSeq: 0n,
     },
     t,
   );
@@ -2981,6 +2986,7 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       1010,
     );
@@ -3049,6 +3055,7 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
         action: 'Idle',
         moveStartedAtMs: 0n,
         moveQueue: [] as WasmMoveInput[],
+        ackedSeq: 0n,
       },
       1040,
     );

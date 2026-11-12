@@ -85,6 +85,7 @@ import {
   startClientTelemetry,
 } from './observability/telemetry';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
+import { OwedInputs } from './prediction/owedInputs';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
 import { motionPreferenceFromWindow } from './render/motionPreference';
@@ -421,6 +422,10 @@ const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
 const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+// Sent inputs the server has neither rejected nor acked on the own row. Deliberately NOT
+// part of `resetPredictionState`: an input on the wire when a warp rebuilds the predictor is
+// still owed, and this is the only place that still counts it. Cleared on reconnect.
+const owed = new OwedInputs();
 // Routes own (slide clock) vs remote (interpolation buffer) renders (M8.6b).
 const resolver = new RenderResolver(STEP_MS);
 // Closes render/motionPreference.ts's S7 cross-slice contract. Constructed ONCE
@@ -2682,16 +2687,19 @@ function reconcileFromStore(): void {
       moveStartedAtMs: own.row.moveStartedAtMs,
     };
     const baseline = characterToPredictedBaseline(sdkFields, now, STEP_MS);
+    // The ack is the own character row's `ackedSeq`, so it is from the same row, and the
+    // same transaction, as the position and queue this reconcile reads.
     // Fail-loud u64→number bound (M8.8e §B) replacing the unbounded downcast.
-    // A last_input_seq past the safe-integer bound is a corrupt/hostile server
+    // An acked seq past the safe-integer bound is a corrupt/hostile server
     // field — log loudly and skip THIS batch's reconcile, never wedge the UI.
     let ackedSeq: number;
     try {
-      ackedSeq = boundSeq(player.lastInputSeq);
+      ackedSeq = boundSeq(own.row.ackedSeq);
     } catch (err) {
       console.error(`[reconcile] ${(err as Error).message}; skipping batch`);
       return;
     }
+    owed.acked(ackedSeq);
     // Reconnect re-seed (M8.8e §A): keep #nextSeq ≥ the server ack at all times.
     predictor.seedSeq(ackedSeq);
     // predictor.reconcile is inside the outer try-catch: a wasm throw
@@ -2704,10 +2712,12 @@ function reconcileFromStore(): void {
     // corrected baseline (same held-state-guarded dedup + hold-commit tap/hold
     // discrimination as the rAF frame loop).
     // gate this second continuation emitter on the same outstanding-work
-    // predicate as the rAF loop. Cost is bounded by the next authoritative batch
-    // (<= ~STEP_MS + RTT), never stuck: every server-side queue mutation writes the
-    // character row, and the reject path force-reconciles here.
-    if (diverged && predictor.outstandingSteps === 0 && movementGate()) {
+    // predicate as the rAF loop: nothing the server still owes this predictor, and no
+    // sent input still unaccounted for (`owed`, which outlives a predictor rebuild). Cost
+    // is bounded by the next authoritative batch (<= ~STEP_MS + RTT), never stuck: every
+    // server-side queue mutation writes the character row with its ack, and the reject
+    // path settles `owed` and force-reconciles here.
+    if (diverged && predictor.outstandingSteps === 0 && owed.count === 0 && movementGate()) {
       const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }
@@ -2786,6 +2796,7 @@ function sendIntent(input: WasmMoveInput): void {
   // Unreachable-undefined given the frozen gate above (G26 invariant), but tsc requires the check.
   const live = conn.live();
   if (live === undefined) return;
+  owed.sent(seq);
   const sent = live.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) });
   sent
     .then(() => {
@@ -2818,6 +2829,9 @@ function sendIntent(input: WasmMoveInput): void {
       // turn) are harmless — the microtask checkpoint drains before the next rAF, the
       // renderer reads predictor state only in rAF, and each reconcile is a total
       // re-derivation from store truth (idempotent, converging). No coalescing needed.
+      // `owed` settles whatever the predictor generation: a rejected input is no longer
+      // owed even when the instance that issued it has been replaced.
+      owed.rejected(seq);
       const dropped = predictor.dropRejected(seq, epoch);
       if (dropped) reconcileFromStore();
       noteMoveRejection(seq, dropped);
@@ -5033,6 +5047,9 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
+      // A reducer call issued on the dropped socket may never settle, so nothing sent on it
+      // can still be owed on this one.
+      owed.clear();
       // The stack closes what the reset drops (so-1): synced first, so an overlay shown since the
       // last sync is a frame too, then every frame `reconnectSweep` names is popped and closed
       // through its view's own hide path (`hideFrame`) — the menu and what it opened (a child may
@@ -5399,10 +5416,11 @@ async function main(): Promise<void> {
       // gate, so it never walks under a frame or a battle + hold-commit tap/hold
       // discrimination. A frame's push clears the held set, so a hold does NOT resume when
       // the frame closes (ctl-2, deliberately reversing the old resume-after-overlay rule).
-      // Only while the server owes nothing. sendIntent routes through the backpressured
-      // predictor.enqueue + reducer send, and no-ops if declined. Pure NOT-EMIT: it never
-      // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
-      if (predictor.outstandingSteps === 0 && movementGate()) {
+      // Only while the server owes nothing and no sent input is unaccounted for. sendIntent
+      // routes through the backpressured predictor.enqueue + reducer send, and no-ops if
+      // declined. Pure NOT-EMIT: it never cancels or writes predictor state, so
+      // reconcileFromStore stays the one repair path.
+      if (predictor.outstandingSteps === 0 && owed.count === 0 && movementGate()) {
         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
         if (heldDir !== undefined) sendIntent({ Step: heldDir });
       }

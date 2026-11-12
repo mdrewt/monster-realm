@@ -389,6 +389,7 @@ function at(entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCh
     action: 'Idle',
     moveStartedAtMs: 0n,
     moveQueue: [],
+    ackedSeq: 0n,
   };
 }
 
