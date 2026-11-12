@@ -277,14 +277,87 @@ describe('syncScope: linger and unsubscribe', () => {
     expect(after.effects).toEqual([]);
   });
 
-  it('the old zone is kept past LINGER_MS while the own zone is still pending', () => {
+  it('a single warp left unapplied never reaches an unsubscribe: the timeout drops first', () => {
+    // LINGER_MS is not shorter than APPLY_TIMEOUT_MS, so after one warp the old zone's linger
+    // cannot end while the new zone is still within its timeout.
+    expect(LINGER_MS).toBeGreaterThanOrEqual(APPLY_TIMEOUT_MS);
     const warped = syncScope(settledInZone0(), input(100, 1)).state;
-    // Past the linger the own zone has also been pending past the timeout, and that step is a
-    // drop with no unsubscribe; one tick before the timeout nothing happens at all.
     const late = syncScope(warped, input(100 + LINGER_MS + 1, 1));
     expect(late.effects.some((e) => e.kind === 'unsubscribe')).toBe(false);
     const justBefore = syncScope(warped, input(100 + APPLY_TIMEOUT_MS - 1, 1));
     expect(justBefore.effects).toEqual([]);
+  });
+
+  it('a zone past its linger is held while the own zone is pending, and goes when it applies (two warps)', () => {
+    // WRONG IMPL KILLED: an unsubscribe that does not ask whether the own zone's set is applied.
+    // The second warp is what makes the state reachable: zone 0's linger ends while zone 2's
+    // set is one second old, well inside its timeout.
+    const { state, effects } = run(
+      [
+        { sync: input(100, 1) }, // zone 0 unwanted from 100
+        { applied: Z1, now: 101 },
+        { sync: input(101, 1) },
+        { sync: input(4100, 2) }, // on to zone 2, which stays pending
+      ],
+      settledInZone0(),
+    );
+    expect(effects.filter((e) => e.kind === 'unsubscribe')).toEqual([]);
+    expect(describeScope(state).zones).toEqual([
+      { zoneId: 0, state: 'active' },
+      { zoneId: 1, state: 'active' },
+      { zoneId: 2, state: 'pending' },
+    ]);
+
+    const held = syncScope(state, input(100 + LINGER_MS, 2));
+    expect(held.effects, 'zone 0 has lingered; the own zone is not applied').toEqual([]);
+    const stillHeld = syncScope(held.state, input(100 + LINGER_MS + 900, 2));
+    expect(stillHeld.effects).toEqual([]);
+
+    const applied = run(
+      [{ applied: Z2, now: 100 + LINGER_MS + 950 }, { sync: input(100 + LINGER_MS + 950, 2) }],
+      stillHeld.state,
+    );
+    expect(applied.effects).toEqual([
+      { kind: 'unsubscribe', key: Z0 },
+      { kind: 'settled', settled: true },
+    ]);
+    // Zone 1 was left at 4100 and has its own linger.
+    expect(syncScope(applied.state, input(4100 + LINGER_MS - 1, 2)).effects).toEqual([]);
+    expect(syncScope(applied.state, input(4100 + LINGER_MS, 2)).effects).toEqual([
+      { kind: 'unsubscribe', key: Z1 },
+    ]);
+  });
+
+  it('a zone past its linger is held while the own zone is being retried, and goes when it applies', () => {
+    // A retry is a new set with a new timeout, so the old zone's linger ends while the own
+    // zone's second attempt is still pending.
+    const rejectedAt = 4000;
+    const retriedAt = rejectedAt + RETRY_BACKOFF_MS[0];
+    const { state, effects } = run(
+      [
+        { sync: input(100, 1) }, // zone 0 unwanted from 100
+        { rejected: Z1, now: rejectedAt },
+        { sync: input(rejectedAt, 1) },
+        { sync: input(retriedAt, 1) },
+      ],
+      settledInZone0(),
+    );
+    expect(effects).toEqual([
+      { kind: 'subscribe', key: Z1, query: zoneQuery(1) },
+      { kind: 'settled', settled: false },
+      { kind: 'subscribe', key: Z1, query: zoneQuery(1) },
+    ]);
+
+    const held = syncScope(state, input(100 + LINGER_MS + 500, 1));
+    expect(held.effects, 'zone 0 has lingered; the own zone is not applied').toEqual([]);
+    const applied = run(
+      [{ applied: Z1, now: 100 + LINGER_MS + 600 }, { sync: input(100 + LINGER_MS + 600, 1) }],
+      held.state,
+    );
+    expect(applied.effects).toEqual([
+      { kind: 'unsubscribe', key: Z0 },
+      { kind: 'settled', settled: true },
+    ]);
   });
 
   it('with the own zone applied late, the old zone goes on the next sync after its linger', () => {
@@ -577,98 +650,211 @@ describe('revealAfterScopeEdge', () => {
 // the effects open and close, and answers pending handles with applied / rejected events.
 // ---------------------------------------------------------------------------
 
-type Action =
-  | { readonly t: 'sync'; readonly ownZone: number | undefined; readonly extra: number[] }
-  | { readonly t: 'answer'; readonly pick: number; readonly ok: boolean }
-  | { readonly t: 'wait'; readonly ms: number };
+type Action = (
+  | {
+      readonly t: 'sync';
+      readonly entity: bigint | undefined;
+      /** `stay` keeps the own zone of the sync before it. */
+      readonly zone: number | undefined | 'stay';
+      readonly extra: number[];
+    }
+  | { readonly t: 'answer'; readonly pick: number; readonly roll: number }
+) & {
+  /** Time that passes after the action, ended by a sync (the shell's timer). */
+  readonly thenMs: number;
+};
 
+const E2 = 8n;
 const zoneArb = fc.integer({ min: 0, max: 3 });
+// Nothing, longer than any retry backoff, part of a linger, or a whole linger.
+const thenMsArb = fc.oneof(
+  { weight: 4, arbitrary: fc.constant(0) },
+  { weight: 3, arbitrary: fc.integer({ min: Math.max(...RETRY_BACKOFF_MS), max: 1200 }) },
+  { weight: 1, arbitrary: fc.integer({ min: 2000, max: 4000 }) },
+  { weight: 1, arbitrary: fc.integer({ min: LINGER_MS, max: LINGER_MS + 500 }) },
+);
 const actionArb: fc.Arbitrary<Action> = fc.oneof(
-  {
-    weight: 4,
-    arbitrary: fc.record({
-      t: fc.constant('sync' as const),
-      ownZone: fc.option(zoneArb, { nil: undefined, freq: 8 }),
-      extra: fc.uniqueArray(zoneArb, { maxLength: 2 }),
-    }),
-  },
-  {
-    weight: 4,
-    arbitrary: fc.record({
-      t: fc.constant('answer' as const),
-      pick: fc.nat(8),
-      ok: fc.boolean(),
-    }),
-  },
   {
     weight: 3,
     arbitrary: fc.record({
-      t: fc.constant('wait' as const),
-      ms: fc.integer({ min: 0, max: LINGER_MS + 500 }),
+      t: fc.constant('sync' as const),
+      // Mostly the one entity; sometimes none (the own-row key goes unwanted) or another.
+      entity: fc.oneof(
+        { weight: 10, arbitrary: fc.constant<bigint | undefined>(E) },
+        { weight: 1, arbitrary: fc.constant<bigint | undefined>(undefined) },
+        { weight: 1, arbitrary: fc.constant<bigint | undefined>(E2) },
+      ),
+      // Most syncs find the character where it was; a warp or a lost row is the exception.
+      zone: fc.oneof(
+        { weight: 7, arbitrary: fc.constant<number | undefined | 'stay'>('stay') },
+        { weight: 3, arbitrary: zoneArb },
+        { weight: 1, arbitrary: fc.constant<number | undefined | 'stay'>(undefined) },
+      ),
+      extra: fc.uniqueArray(zoneArb, { maxLength: 2 }),
+      thenMs: thenMsArb,
+    }),
+  },
+  {
+    weight: 6,
+    arbitrary: fc.record({
+      t: fc.constant('answer' as const),
+      pick: fc.nat(8),
+      // Compared with the run's applied rate, so one run is mostly applies or mostly rejections.
+      roll: fc.nat(99),
+      thenMs: thenMsArb,
     }),
   },
 );
+/** The share of answers that are `applied` in one run: a healthy host, or one that rejects. */
+const appliedPercentArb = fc.constantFrom(92, 92, 5);
 
 describe('worldScope invariants (property)', () => {
-  it('never unsubscribes a pending or ended handle, never the own zone, never an old zone before the own zone is applied', () => {
+  it('never unsubscribes a pending, ended or wanted handle, never the own zone, never an old zone before the own zone is applied', () => {
+    const RUNS = 500;
+    // How many runs reached each state the invariants are about. Floors are asserted after the
+    // property so a generator change cannot quietly stop reaching them.
+    const reach = {
+      unsubscribe: 0,
+      ownRowUnsubscribe: 0,
+      heldByPendingOwnZone: 0,
+      retry: 0,
+      rejectedDrop: 0,
+      timeoutDrop: 0,
+    };
     fc.assert(
-      fc.property(fc.array(actionArb, { maxLength: 60 }), (actions) => {
-        let state = INITIAL_SCOPE;
-        let now = 0;
-        // key -> the phase the SHELL knows for the handle the effects opened.
-        const handles = new Map<string, 'pending' | 'active'>();
-        let ownZone: number | undefined;
-        let lastInput: ScopeInput | undefined;
+      fc.property(
+        fc.array(actionArb, { minLength: 20, maxLength: 60, size: 'max' }),
+        appliedPercentArb,
+        (actions, appliedPercent) => {
+          let state = INITIAL_SCOPE;
+          let now = 0;
+          // key -> the phase the SHELL knows for the handle the effects opened.
+          const handles = new Map<string, 'pending' | 'active'>();
+          let ownZone: number | undefined;
+          let lastInput: ScopeInput | undefined;
+          const saw = new Set<keyof typeof reach>();
+          // key -> when the shell last saw its handle go unwanted; absent while wanted.
+          const unwantedAt = new Map<string, number>();
+          const wantedKeys = (input: ScopeInput): Set<string> => {
+            const keys = new Set([...input.wantZones].map(zoneKey));
+            if (input.wantEntity !== undefined) keys.add(ownKey(input.wantEntity));
+            if (input.ownZone !== undefined) keys.add(zoneKey(input.ownZone));
+            return keys;
+          };
 
-        const apply = (effects: readonly ScopeEffect[]): boolean => {
-          for (const effect of effects) {
-            if (effect.kind === 'subscribe') {
-              // One live handle per key: a second subscribe would leak the first.
-              expect(handles.has(effect.key)).toBe(false);
-              handles.set(effect.key, 'pending');
-            } else if (effect.kind === 'unsubscribe') {
-              expect(handles.get(effect.key)).toBe('active');
-              if (ownZone !== undefined) {
-                expect(effect.key).not.toBe(zoneKey(ownZone));
-                expect(handles.get(zoneKey(ownZone))).toBe('active');
+          const apply = (effects: readonly ScopeEffect[], input: ScopeInput): boolean => {
+            for (const effect of effects) {
+              if (effect.kind === 'subscribe') {
+                // One live handle per key: a second subscribe would leak the first.
+                expect(handles.has(effect.key)).toBe(false);
+                handles.set(effect.key, 'pending');
+              } else if (effect.kind === 'unsubscribe') {
+                saw.add('unsubscribe');
+                if (effect.key.startsWith('own:')) saw.add('ownRowUnsubscribe');
+                expect(handles.get(effect.key)).toBe('active');
+                expect(wantedKeys(input).has(effect.key)).toBe(false);
+                // Unwanted for a whole linger, without a break.
+                expect(
+                  input.now - (unwantedAt.get(effect.key) ?? input.now),
+                ).toBeGreaterThanOrEqual(LINGER_MS);
+                if (ownZone !== undefined) {
+                  expect(handles.get(zoneKey(ownZone))).toBe('active');
+                }
+                handles.delete(effect.key);
+                unwantedAt.delete(effect.key);
+              } else if (effect.kind === 'drop') {
+                saw.add(effect.reason === 'rejected' ? 'rejectedDrop' : 'timeoutDrop');
+                return true;
               }
-              handles.delete(effect.key);
-            } else if (effect.kind === 'drop') {
-              return true;
+            }
+            return false;
+          };
+
+          /** One sync at `now`, with every invariant checked on what it returns. */
+          const sync = (): void => {
+            if (lastInput === undefined) return;
+            const input = { ...lastInput, now };
+            const retrying = new Set(state.retry.keys());
+            const out = syncScope(state, input);
+            state = out.state;
+            if (out.effects.some((e) => e.kind === 'subscribe' && retrying.has(e.key))) {
+              saw.add('retry');
+            }
+            const wanted = wantedKeys(input);
+            for (const key of handles.keys()) {
+              if (wanted.has(key)) unwantedAt.delete(key);
+              else if (!unwantedAt.has(key)) unwantedAt.set(key, now);
+            }
+            if (apply(out.effects, input)) {
+              // A drop hands back the empty state; the shell discards its handles
+              // unsubscribed, and the rebuilt connection starts from nothing.
+              expect(state).toBe(INITIAL_SCOPE);
+              handles.clear();
+              unwantedAt.clear();
+              return;
+            }
+            // The state and the shell agree on every handle.
+            expect(new Map([...state.entries].map(([k, e]) => [k, e.phase]))).toEqual(handles);
+            if (
+              ownZone !== undefined &&
+              handles.get(zoneKey(ownZone)) === 'pending' &&
+              [...state.entries.values()].some(
+                (e) =>
+                  e.phase === 'active' &&
+                  e.unwantedSince !== undefined &&
+                  now - e.unwantedSince >= LINGER_MS,
+              )
+            ) {
+              saw.add('heldByPendingOwnZone');
+            }
+          };
+
+          for (const action of actions) {
+            if (action.t === 'sync') {
+              if (action.zone !== 'stay') ownZone = action.zone;
+              lastInput = {
+                wantEntity: action.entity,
+                ownZone,
+                wantZones: new Set(action.extra),
+                now,
+              };
+            } else {
+              const pending = [...handles].filter(([, phase]) => phase === 'pending');
+              if (pending.length > 0) {
+                const key = pending[action.pick % pending.length][0];
+                const ok = action.roll < appliedPercent;
+                if (ok) handles.set(key, 'active');
+                else handles.delete(key);
+                state = onScopeEvent(state, { kind: ok ? 'applied' : 'rejected', key, now });
+              }
+            }
+            // The shell syncs after every own-row change and every answer, and on its timer.
+            sync();
+            if (action.thenMs > 0) {
+              now += action.thenMs;
+              sync();
             }
           }
-          return false;
-        };
-
-        for (const action of actions) {
-          if (action.t === 'wait') {
-            now += action.ms;
-            continue;
-          }
-          if (action.t === 'sync') {
-            ownZone = action.ownZone;
-            lastInput = { wantEntity: E, ownZone, wantZones: new Set(action.extra), now };
-          } else {
-            const pending = [...handles].filter(([, phase]) => phase === 'pending');
-            if (pending.length === 0) continue;
-            const key = pending[action.pick % pending.length][0];
-            if (action.ok) handles.set(key, 'active');
-            else handles.delete(key);
-            state = onScopeEvent(state, { kind: action.ok ? 'applied' : 'rejected', key, now });
-          }
-          if (lastInput === undefined) continue;
-          const out = syncScope(state, { ...lastInput, now });
-          state = out.state;
-          if (apply(out.effects)) {
-            // A drop hands back the empty state; the shell discards its handles unsubscribed.
-            expect(state).toBe(INITIAL_SCOPE);
-            return;
-          }
-          // The state and the shell agree on every handle.
-          expect(new Map([...state.entries].map(([k, e]) => [k, e.phase]))).toEqual(handles);
-        }
-      }),
-      { numRuns: 500 },
+          for (const key of saw) reach[key] += 1;
+        },
+      ),
+      { numRuns: RUNS },
+    );
+    // Each floor is under half the rate this generator reaches (about 67%, 37%, 6%, 64%, 13%
+    // and 76% of runs), so it holds on any seed and fails if the generator stops reaching it.
+    const floor = (share: number): number => RUNS * share;
+    expect(reach.unsubscribe, 'runs with an unsubscribe').toBeGreaterThanOrEqual(floor(0.3));
+    expect(reach.ownRowUnsubscribe, 'runs releasing an own-row set').toBeGreaterThanOrEqual(
+      floor(0.15),
+    );
+    expect(
+      reach.heldByPendingOwnZone,
+      'runs where a lingered zone waits on a pending own zone',
+    ).toBeGreaterThanOrEqual(floor(0.02));
+    expect(reach.retry, 'runs with an in-place retry').toBeGreaterThanOrEqual(floor(0.3));
+    expect(reach.rejectedDrop, 'runs dropped by rejections').toBeGreaterThanOrEqual(floor(0.05));
+    expect(reach.timeoutDrop, 'runs dropped by the apply timeout').toBeGreaterThanOrEqual(
+      floor(0.3),
     );
   });
 
@@ -681,23 +867,20 @@ describe('worldScope invariants (property)', () => {
         (actions, finalZone, finalExtra) => {
           let state = INITIAL_SCOPE;
           let now = 0;
+          let ownZone: number | undefined;
           let lastInput: ScopeInput | undefined;
           const pendingKeys = (): string[] =>
             [...state.entries].filter(([, e]) => e.phase === 'pending').map(([k]) => k);
+          const sync = (): void => {
+            if (lastInput === undefined) return;
+            const out = syncScope(state, { ...lastInput, now });
+            expect(out.effects.some((e) => e.kind === 'drop')).toBe(false);
+            state = out.state;
+          };
           for (const action of actions) {
-            if (action.t === 'wait') {
-              // Every set is answered before time passes, so no run ends on the apply timeout.
-              for (const key of pendingKeys()) {
-                state = onScopeEvent(state, { kind: 'applied', key, now });
-              }
-              now += action.ms;
-            } else if (action.t === 'sync') {
-              lastInput = {
-                wantEntity: E,
-                ownZone: action.ownZone,
-                wantZones: new Set(action.extra),
-                now,
-              };
+            if (action.t === 'sync') {
+              if (action.zone !== 'stay') ownZone = action.zone;
+              lastInput = { wantEntity: E, ownZone, wantZones: new Set(action.extra), now };
             } else {
               // Applied only: this property is about quiescence, not the failure ladder.
               const pending = pendingKeys();
@@ -706,10 +889,14 @@ describe('worldScope invariants (property)', () => {
                 state = onScopeEvent(state, { kind: 'applied', key, now });
               }
             }
-            if (lastInput !== undefined) {
-              const out = syncScope(state, { ...lastInput, now });
-              expect(out.effects.some((e) => e.kind === 'drop')).toBe(false);
-              state = out.state;
+            sync();
+            if (action.thenMs > 0) {
+              // Every set is answered before time passes, so no run ends on the apply timeout.
+              for (const key of pendingKeys()) {
+                state = onScopeEvent(state, { kind: 'applied', key, now });
+              }
+              now += action.thenMs;
+              sync();
             }
           }
           // Quiesce: fix the wants, apply everything pending, let the linger pass.

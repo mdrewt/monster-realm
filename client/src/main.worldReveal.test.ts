@@ -11,6 +11,9 @@
  * What is read: `__game().rendered`, the entities the frame loop resolved on its last frame, and
  * `__game().characters`, the store's rows, which the gate never touches.
  *
+ * The store also holds the zone the player has just left, for as long as that zone's set lingers.
+ * Those rows are not drawn, so the last test pins that the interp-gap sample leaves them out.
+ *
  * Harness: main.zoneCue.test.ts's, reduced (a fresh import per test, recorded listeners detached
  * in afterEach, one controllable clock, a stubbed wasm pkg and SDK connection, the real
  * index.html shell, a pumped rAF, rows through the REAL AuthoritativeStore).
@@ -27,10 +30,13 @@ import {
 } from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { AuthoritativeStore, StoreCharacter } from './net/store';
+import { adaptiveInterpDelayMs } from './render/interpolation';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
   connectOpts: null as ConnectionOptions | null,
+  /** Every value main.ts handed to telemetry.recordInterpGap, oldest first. */
+  gaps: [] as (number | undefined)[],
 }));
 
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock());
@@ -57,9 +63,19 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) =>
-  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
-);
+vi.mock('./observability/telemetry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./observability/telemetry')>();
+  return {
+    ...telemetryMock(actual),
+    startClientTelemetry: () =>
+      Promise.resolve({
+        ...actual.NOOP_TELEMETRY,
+        recordInterpGap: (gapMs: number | undefined) => {
+          H.gaps.push(gapMs);
+        },
+      }),
+  };
+});
 
 vi.mock('./render/world', () => worldRendererMock());
 
@@ -95,6 +111,7 @@ let opts: ConnectionOptions;
 /** Boot main.ts up to the captured connect() options. No lifecycle callback has run yet. */
 async function boot(): Promise<void> {
   H.connectOpts = null;
+  H.gaps = [];
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -282,5 +299,40 @@ describe('main.ts draws the world once its scope has settled', { sequential: tru
     frame(1250);
     expect(storeIds()).toEqual(['40']);
     expect(renderedIds()).toEqual([]);
+  });
+  it('the interp-gap sample is the worst remote of the zone being drawn; a held zone that is not drawn does not count [WS-GAP-ZONE]', async () => {
+    // WRONG IMPL KILLED: the sample taken over every character in the store, or over a fixed
+    // zone: a jittery remote in the zone just left would be reported as stutter nobody sees.
+    await boot();
+    settled(false);
+    opts.onReady(H.identity);
+    batch(1100, (s) => {
+      ownRows(s, 1100);
+      s.upsertCharacter(character(NPC, 0, 4, 6), 1100);
+    });
+    settled(true);
+    opts.onOwnWarp?.(1);
+    batch(1200, (s) => {
+      s.upsertCharacter(character(OWN, 1, 1, 5), 1200);
+      s.upsertCharacter(character(41n, 1, 3, 5), 1200);
+    });
+    // Zone 1's remote arrives on the step; the zone-0 one, still held, arrives off it.
+    for (const t of [1400, 1600, 1800, 2000]) {
+      batch(t, (s) => s.upsertCharacter(character(41n, 1, 3, 5), t));
+    }
+    batch(1600, (s) => s.upsertCharacter(character(NPC, 0, 4, 6), 1600));
+    batch(2000, (s) => s.upsertCharacter(character(NPC, 0, 4, 6), 2000));
+
+    const delayOf = (entityId: bigint): number => {
+      const held = Array.from(opts.store.characters()).find((c) => c.row.entityId === entityId);
+      if (held === undefined) throw new Error(`no character ${entityId}`);
+      return adaptiveInterpDelayMs(held.jitterEwma, 200);
+    };
+    expect(delayOf(NPC), 'the held zone-0 remote is the jittery one').toBeGreaterThan(delayOf(41n));
+
+    // One frame past the one-second sample window that opened at boot.
+    expect(H.gaps).toEqual([]);
+    frame(2050);
+    expect(H.gaps).toEqual([delayOf(41n)]);
   });
 });

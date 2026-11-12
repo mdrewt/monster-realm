@@ -1388,7 +1388,7 @@ describe('connect(): the world scope', { sequential: true }, () => {
     expect(w.onScopeSettled.mock.calls).toEqual([[false]]);
     expect(wsUnsubscribes(b), 'the old zone is held').toBe(0);
 
-    // The old zone outlives its linger while the new zone is still not applied.
+    // Four seconds on the new zone is still not applied: the old zone is held.
     await vi.advanceTimersByTimeAsync(4_000);
     expect(wsUnsubscribes(b)).toBe(0);
     wsApply(wsSubs(b)[2]);
@@ -1400,6 +1400,29 @@ describe('connect(): the world scope', { sequential: true }, () => {
     expect(wsUnsubscribes(b)).toBe(1);
     expect(b.subs).toHaveLength(4);
     expect(w.onOwnWarp).toHaveBeenCalledTimes(1);
+  });
+
+  it('a zone whose linger has ended is held while the own zone is not applied, and released once it is [WS-WARP-CHAIN]', async () => {
+    // WRONG IMPL KILLED: the old zone released on its linger alone. After a second warp the
+    // first zone's linger ends while the third zone's set is still inside its timeout; with
+    // zone 0 gone the store would hold no zone the player has been drawn in.
+    const { b } = await wsSettled(0);
+    const zone0 = wsSubs(b)[1];
+    wsFire('character', 'update', [wsChar(WS_E, 0, 1, 5), wsChar(WS_E, 1, 1, 5)]);
+    wsApply(wsSubs(b)[2]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    wsFire('character', 'update', [wsChar(WS_E, 1, 1, 5), wsChar(WS_E, 2, 1, 5)]);
+    expect(wsQueries(b)).toEqual([WS_OWN_QUERY, wsZoneQuery(0), wsZoneQuery(1), wsZoneQuery(2)]);
+
+    // 5.5 s after zone 0 was left, 1.5 s into zone 2's subscribe.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(wsUnsubscribes(b), 'zone 0 has lingered; zone 2 is not applied').toBe(0);
+
+    wsApply(wsSubs(b)[3]);
+    expect(zone0.unsubscribes, 'released in the step that applied the own zone').toBe(1);
+    expect(wsUnsubscribes(b), 'zone 1 was left 1.5 s ago').toBe(1);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(wsSubs(b).map((sub) => sub.unsubscribes)).toEqual([0, 1, 1, 0]);
   });
 
   it('a bounce back into the old zone inside the linger re-subscribes nothing and unsubscribes nothing until the zone left last has lingered [WS-BOUNCE]', async () => {
