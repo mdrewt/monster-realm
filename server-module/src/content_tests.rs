@@ -2295,9 +2295,10 @@ mod nh_sync {
         assert_eq!(ticks_by_zone(&w), vec![], "a reseed arms no zone");
         assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()), "skip path");
         assert_eq!(ticks_by_zone(&w), vec![], "the skip path arms no zone");
-        // The 60 s heartbeat is the one recurring schedule of an empty world:
-        // its log line is what the AlloyIngestStalled alert reads as "the log
-        // pipeline is alive" when nobody is playing.
+        // The 60 s heartbeat keeps running in an empty world: its log line is
+        // what the AlloyIngestStalled alert reads as "the log pipeline is alive"
+        // when nobody is playing. (The playtest and export-bundle interval
+        // reapers, 300 s and 3600 s, keep running too.)
         let beats = fx
             .table_keyed::<MrHeartbeatSchedule, u64>("mr_heartbeat_schedule", "id", |r| r.id)
             .rows();

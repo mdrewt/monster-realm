@@ -3225,6 +3225,41 @@ mod nh {
         assert_eq!(w.armed().len(), 2, "an occupied zone keeps its row");
     }
 
+    /// An empty zone whose map does not load disarms like any other: the
+    /// occupancy check runs before the map is read, so the zone's NPC goes home
+    /// and the schedule row is removed on the first tick.
+    ///
+    /// kills: the disarm gated on the map loading (the row would stay and the
+    /// zone would log `movement_tick_error` at 5 Hz for ever).
+    #[test]
+    fn sr10_an_empty_zone_without_a_map_still_disarms() {
+        const NO_MAP_ZONE: u32 = 9_999;
+        assert!(
+            crate::content_cache::cached_zone_tile_map(NO_MAP_ZONE).is_err(),
+            "the zone under test ships no map"
+        );
+        let (home, _) = qf5_homes();
+        let away = game_core::TilePos {
+            x: home.x + 1,
+            y: home.y,
+        };
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        let w = &q.w;
+        sr10_npc(&q, 906, NO_MAP_ZONE, home, away, ActionState::Walking);
+        w.ticks.seed(&sr10_row(6, NO_MAP_ZONE));
+
+        sr10_tick(&fx, NO_MAP_ZONE, 6, sr10_stepping_now(906, home));
+
+        assert_eq!(w.armed(), vec![], "the zone's schedule row is removed");
+        let npc = w.character(906);
+        assert_eq!(
+            (npc.tile_x, npc.tile_y, npc.action),
+            (home.x, home.y, ActionState::Idle),
+            "and its NPC is sent home"
+        );
+    }
+
     /// A zone stays armed for every kind of player presence: a player with an
     /// intent row, a player in an ongoing battle, and a session that has a
     /// `player` row but no `move_intent` row. Its NPCs are not sent home.

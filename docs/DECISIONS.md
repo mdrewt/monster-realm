@@ -329,17 +329,25 @@ of three kinds, and the kind decides what an empty zone does with it:
   advanced by a tick.
 
 The NPC wander counter is the server clock divided by `STEP_MS`, so it is the same number whether or
-not the zone ticked in between. The 60 s `mr_heartbeat` keeps running in an empty world; per-entity
-deadlines (the reapers) fire once, when something is owed.
+not the zone ticked in between. No `movement_tick` runs in a world with nobody connected. Three
+interval schedules do keep running there, as accepted exceptions: the 60 s `mr_heartbeat`, the 300 s
+`playtest_reaper` and the 3600 s `export_bundle_reaper`. Each deletes only what has expired, so with
+nothing to reap it writes no row. Every other reaper is a one-shot deadline armed when something is
+owed.
 
 **Why.** The same module runs on a player's own machine and on the official server (see "One game,
 three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time, wake-ups and
 commit-log writes in proportion to the number of zones, with nobody there to see the result. Resetting
-on the way out, instead of catching up on the way in, means nobody is subscribed when the reset is
-written and the next player always finds the zone in a known state with nothing to wait for. One
-disarm path, driven by the tick itself, means a new way of leaving a zone cannot forget to disarm it.
+on the way out, instead of catching up on the way in, means nobody in the zone renders it, so the jump
+home is never seen, and the next player always finds the zone in a known state with nothing to wait
+for. The reset is a one-off write of at most one row per NPC that differs; the `character`
+subscription covers all zones, so clients in other zones receive those rows and drop them at render.
+One disarm path, driven by the tick itself, means a new way of leaving a zone cannot forget to disarm
+it.
 The heartbeat stays because the `AlloyIngestStalled` alert treats ten minutes without module log
-bytes as a stalled log pipeline, and an empty world logs nothing else.
+bytes as a stalled log pipeline, and an empty world logs nothing else that often. The two interval
+reapers stay because each bounds a table by age (playtest events, export bundles) whether or not
+anyone is connected, and one call every 300 s or 3600 s costs nothing measurable.
 
 **Rules out.** State that is only correct if a tick ran (a counter of ticks, a timer decremented per
 tick, an effect that expires after N ticks of an unwatched zone); elapsed-time catch-up loops when a
@@ -820,8 +828,8 @@ table.
 **Decision.** Server signals come from the SpacetimeDB host: `/v1/metrics` for
 Prometheus and the module's log files for Alloy→Loki. New server log lines go through
 `observability::mr_log` (one JSON envelope). A 60 s `mr_heartbeat` scheduled reducer
-logs the deployed content version and writes nothing; it is the one recurring schedule
-of a world with nobody connected. OpenTelemetry spans and metrics
+logs the deployed content version and writes nothing; it keeps running in a world with
+nobody connected. OpenTelemetry spans and metrics
 are client-side only. The self-hosted stack (Prometheus, Alloy, Loki, Tempo, Grafana,
 node_exporter, Caddy, and a trace relay) lives in `ops/observability/`, bound to
 loopback.
