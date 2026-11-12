@@ -9,8 +9,8 @@ permissions:
   contents: read
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Dev and test builds carry line tables only: panics and backtraces keep file:line, and the
-  # workspace crates, which no cache holds, compile faster. Local builds keep full debuginfo.
+  # Dev and test builds carry line tables only; panics and backtraces keep file:line. Local
+  # builds keep full debuginfo.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 jobs:
   # The four jobs below run every recipe of the justfile `ci:` recipe between them, one recipe
@@ -60,11 +60,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # fetch-depth 0: the schema and type snapshot evals compare against the baseline at
-      # merge-base(HEAD, origin/master) and skip that comparison when git cannot resolve it.
+      # merge-base(HEAD, origin/master) and fail when git cannot resolve it.
       - uses: actions/checkout@v6 # v6
         with: { fetch-depth: 0 }
       - uses: dtolnay/rust-toolchain@stable # stable
-        with: { components: clippy, rustfmt, targets: wasm32-unknown-unknown }
+        with: { components: clippy, targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-eval }
       - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0

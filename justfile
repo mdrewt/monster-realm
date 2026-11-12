@@ -55,7 +55,7 @@ test:
     }
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
-    door "scripts node suites" 3 18 scripts/*.test.mjs
+    door "scripts node suites" 4 20 scripts/*.test.mjs
 
 eval:
     node evals/run.mjs

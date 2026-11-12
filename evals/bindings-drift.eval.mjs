@@ -113,7 +113,7 @@ export default async function () {
         pass: false,
         detail:
           'CI: spacetime CLI required, cannot verify bindings parity — ' +
-          'the CLI install step appears to have been regressed; add spacetime CLI to the ci job',
+          'the CLI install step appears to have been regressed; add the spacetime CLI to the eval job in ci.yml',
       };
     }
     return {
