@@ -22,11 +22,13 @@ runs:
         scripts/ci-tools.sh
         echo "$HOME/.local/mr-tools/bin" >> "$GITHUB_PATH"
     # wasm-pack picks the wasm-bindgen release that matches Cargo.lock, so the key follows the
-    # lock file; `restore-keys` hands a changed lock the previous directory, which still holds
-    # binaryen and usually the right wasm-bindgen.
+    # lock file; `restore-keys` hands a changed lock the job's previous directory. The key is per
+    # job because jobs download different things (a `--dev` build fetches no binaryen, a release
+    # build does) and a cache key is written once, by the first job to finish: each job caches
+    # exactly what it downloads.
     - if: inputs.wasm == 'true'
       uses: actions/cache@v6 # v6
       with:
         path: ~/.cache/.wasm-pack
-        key: wasm-pack-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-        restore-keys: wasm-pack-downloads-${{ runner.os }}-${{ runner.arch }}-
+        key: wasm-pack-downloads-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: wasm-pack-downloads-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
