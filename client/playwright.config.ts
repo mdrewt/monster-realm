@@ -24,8 +24,9 @@ export default defineConfig({
   // other player", so a second file with a player joined at the same time breaks them.
   // `fullyParallel: false` only serializes tests WITHIN a file; `workers: 1` serializes the
   // files. Parallelism comes from shards, each with its own database, never from workers.
-  // The exact-population assertions also catch a player left joined by an earlier file, but
-  // only by a file of the same shard: a file's leak is seen by the later files of its shard.
+  // The exact-population assertions also catch a player left joined by an earlier file. A
+  // sharded run sees only the files of the same shard; the nightly `e2e-serial` job runs the
+  // whole suite in one process, where every earlier file is seen.
   workers: 1,
   // `dot` on CI and `list` locally are Playwright's own defaults, spelled out only so CI
   // can add a per-test timing file (each e2e shard job uploads its own as an artifact): slow specs

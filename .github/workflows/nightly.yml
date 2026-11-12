@@ -113,6 +113,60 @@ jobs:
         with: { just-version: '1.58.0' }
       - run: just perf-budget
 
+  # The whole e2e suite in ONE Playwright process on ONE database. CI runs it as shards with a
+  # database each, so there a spec's exact live-population assertion sees only the files of its own
+  # shard; here it sees every earlier file, which is what catches a player one file leaves joined.
+  e2e-serial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-e2e }
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with: { version: 'v0.15.0' }
+      - uses: actions/setup-node@v7 # v7
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
+      - name: Install SpacetimeDB CLI
+        run: |
+          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
+          sh /tmp/spacetime-install.sh --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin spacetime 2.11.0
+        run: |
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
+          spacetime --version
+      - name: Build dev_reducers module wasm
+        run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
+      - name: Start SpacetimeDB
+        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-e2e.log 2>&1 &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "spacetime did not become ready on :3000" >&2; cat /tmp/stdb-e2e.log >&2 || true; exit 1
+      - name: Install client deps
+        run: cd client && npm ci
+      - name: Install Playwright chromium
+        run: cd client && npx playwright install chromium
+      - name: Whole e2e suite, one process
+        env:
+          STDB_SERVER: http://127.0.0.1:3000
+          VITE_STDB_URI: ws://127.0.0.1:3000
+          VITE_STDB_DB: monster-realm
+          MR_DEV_MODULE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
+        run: just e2e
+
   # Republish over live data without --delete-data; data must survive and re-seed.
   smoke-republish:
     runs-on: ubuntu-latest
@@ -161,7 +215,7 @@ jobs:
   # notifier that swallows its errors looks like a green night. Default branch only: a manual run on
   # another branch reports through its own run page, not the issue tracker.
   notify:
-    needs: [mutation, mutation-server, coverage, perf-budget, smoke-republish]
+    needs: [mutation, mutation-server, coverage, perf-budget, e2e-serial, smoke-republish]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     permissions:

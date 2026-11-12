@@ -43,6 +43,9 @@ job cap; every shard is its own verdict. Each shard uploads its `mutants.out/` a
 artifact (`mutants-out-core-<n>` / `mutants-out-server-<n>`, kept 14 days); download the
 failing run's and read its `missed.txt`. A `smoke-republish` failure means publishing over
 live data would fail or lose data, so fix it before the next publish.
+An `e2e-serial` failure that the
+sharded PR `e2e` jobs did not show means one spec file left state behind (usually a joined
+player) that a file in another shard trips over: fix the file that leaks.
 
 To check a change before pushing, `just mutate-diff` mutates only the `game-core` /
 `server-module` lines changed against `origin/master` (pass another base, e.g. `just mutate-diff
