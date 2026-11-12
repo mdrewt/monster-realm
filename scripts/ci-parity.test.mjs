@@ -46,3 +46,51 @@ test('a recipe that is absent, commented out, or only a prefix of a step is repo
   assert.deepEqual(missing(justfile, `${workflow}\n      - run: just test-all`), ['test']);
   assert.deepEqual(missing(justfile, `${workflow}\n      - run: just test`), []);
 });
+
+// A job that fetches a tool release itself fails whenever the release host does. Every job gets
+// its tools from .github/actions/tools, which serves them from cache.
+const jobs = (workflow) =>
+  workflow
+    .slice(workflow.indexOf('\njobs:\n'))
+    .split(/\n(?=  [\w-]+:\n)/)
+    .slice(1)
+    .map((body) => ({ name: body.slice(2, body.indexOf(':')), body }));
+
+const TOOL = /\b(just|wasm-pack|spacetime)\s/;
+const usesTool = (body) => body.split('\n').some((l) => !l.trim().startsWith('#') && TOOL.test(l));
+const jobsWithoutTools = (workflow) =>
+  jobs(workflow)
+    .filter(
+      ({ body }) => usesTool(body) && !/^\s+- uses: \.\/\.github\/actions\/tools$/m.test(body),
+    )
+    .map(({ name }) => name);
+
+for (const file of ['ci.yml', 'nightly.yml']) {
+  test(`every ${file} job that runs just, wasm-pack or spacetime takes them from the tools action`, () => {
+    const workflow = read(`.github/workflows/${file}`);
+    assert.ok(
+      jobs(workflow).some(({ body }) => usesTool(body)),
+      'no job runs a tool',
+    );
+    assert.deepEqual(jobsWithoutTools(workflow), []);
+  });
+}
+
+test('a job that runs a tool without the tools action is reported', () => {
+  const workflow = [
+    'jobs:',
+    '  good:',
+    '    steps:',
+    '      - uses: ./.github/actions/tools',
+    '      - run: just lint',
+    '  commented:',
+    '    steps:',
+    '      # - uses: ./.github/actions/tools',
+    '      - run: spacetime start',
+    '  no-tool:',
+    '    steps:',
+    '      # just a comment',
+    '      - run: node scripts/e2e-shard-union.mjs e2e-shards',
+  ].join('\n');
+  assert.deepEqual(jobsWithoutTools(`name: x\n${workflow}`), ['commented']);
+});
