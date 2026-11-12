@@ -111,15 +111,30 @@ mod census {
         classified: &BTreeSet<&str>,
         owners: &[&str],
     ) -> Result<Report, CensusError> {
+        census_parsed(&parse_sources(sources)?, classified, owners)
+    }
+
+    /// The parse half of [`census`], for a caller that censuses one corpus more than once.
+    pub(super) fn parse_sources(
+        sources: &[(String, String)],
+    ) -> Result<Vec<(&str, syn::File)>, CensusError> {
         let mut files: Vec<(&str, syn::File)> = Vec::with_capacity(sources.len());
         for (module, source) in sources {
             files.push((module.as_str(), parse_module(module, source)?));
         }
-        let corpus = Corpus::collect(&files)?;
+        Ok(files)
+    }
+
+    pub(super) fn census_parsed(
+        files: &[(&str, syn::File)],
+        classified: &BTreeSet<&str>,
+        owners: &[&str],
+    ) -> Result<Report, CensusError> {
+        let corpus = Corpus::collect(files)?;
         let tables: BTreeSet<String> = classified.iter().map(|t| (*t).to_string()).collect();
         Ok(Report {
             verdicts: corpus.verdicts(&tables, owners)?,
-            modules: sources.iter().map(|(name, _)| name.clone()).collect(),
+            modules: files.iter().map(|(name, _)| (*name).to_string()).collect(),
         })
     }
 
@@ -1661,7 +1676,9 @@ fn rb45_synthetic_ungated_reducer_is_flagged() {
 
     let mut injected_sources = census::real_sources().expect("real_sources must read the crate");
     injected_sources.push((String::from("synth"), synthetic));
-    let injected = census::census(&injected_sources, &classified, owners)
+    // Parsed once: the real corpus is the injected one minus its last (synthetic) file.
+    let injected_files = census::parse_sources(&injected_sources).expect("the corpus must parse");
+    let injected = census::census_parsed(&injected_files, &classified, owners)
         .expect("the real corpus plus one synthetic module must census cleanly");
     let failure = roster_mismatch(&injected, DELIBERATE_EXEMPTIONS)
         .expect_err("an injected ungated writer must fail the roster comparison");
@@ -1670,8 +1687,8 @@ fn rb45_synthetic_ungated_reducer_is_flagged() {
         "the roster failure must name the offending reducer, got: {failure}"
     );
 
-    let real_sources = census::real_sources().expect("real_sources must read the crate");
-    let real = census::census(&real_sources, &classified, owners)
+    let real_files = &injected_files[..injected_files.len() - 1];
+    let real = census::census_parsed(real_files, &classified, owners)
         .expect("the real corpus must census cleanly");
     if let Err(msg) = roster_mismatch(&real, DELIBERATE_EXEMPTIONS) {
         panic!("{msg}");
@@ -1896,9 +1913,11 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
     // census being per table, NOT the other two tables' writers).
     let mut injected_sources = census::real_sources().expect("real_sources must read the crate");
     injected_sources.push((String::from("synth"), fixture_synthetic_retired_writers()));
+    // Parsed once: the real corpus is the injected one minus its last (synthetic) file.
+    let injected_files = census::parse_sources(&injected_sources).expect("the corpus must parse");
     for table in RETIRED_1V1_TABLES {
         let only: BTreeSet<&str> = [*table].into_iter().collect();
-        let injected = census::census(&injected_sources, &only, no_owners)
+        let injected = census::census_parsed(&injected_files, &only, no_owners)
             .expect("the real corpus plus the synthetic writers must census cleanly");
         let flagged = writers(&injected);
         for other in RETIRED_1V1_TABLES {
@@ -1912,10 +1931,10 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
         }
     }
 
-    let sources = census::real_sources().expect("real_sources must read the crate");
+    let real_files = &injected_files[..injected_files.len() - 1];
     let per_table = |table: &str| -> (BTreeSet<String>, Vec<String>) {
         let only: BTreeSet<&str> = [table].into_iter().collect();
-        let report = census::census(&sources, &only, no_owners)
+        let report = census::census_parsed(real_files, &only, no_owners)
             .expect("the real corpus must census cleanly");
         let set = writers(&report);
         let described = set

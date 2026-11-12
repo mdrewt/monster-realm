@@ -2038,24 +2038,24 @@ pub fn extract_json_string_field(json: &str, key: &str) -> Result<String, String
     Err(format!("field {key:?} not found"))
 }
 
-/// SATS-JSON name of a direction (externally-tagged enum variant).
+/// SATS-JSON name of a direction (externally-tagged enum variant), in the casing the host
+/// publishes in the module schema (`GET /v1/database/<db>/schema`): its decoder rejects any other.
 #[must_use]
 pub fn sats_direction(d: Direction) -> &'static str {
     match d {
-        Direction::North => "North",
-        Direction::South => "South",
-        Direction::East => "East",
-        Direction::West => "West",
+        Direction::North => "north",
+        Direction::South => "south",
+        Direction::East => "east",
+        Direction::West => "west",
     }
 }
 
-/// SATS-JSON for a `MoveInput`: `{"Step":{"East":[]}}` / `{"Jump":[]}`
-/// (live-verified end-to-end — the bot moved (1,1)→(2,1)).
+/// SATS-JSON for a `MoveInput`: `{"step":{"east":[]}}` / `{"jump":[]}`.
 #[must_use]
 pub fn sats_move_input(input: MoveInput) -> String {
     match input {
-        MoveInput::Step(d) => format!("{{\"Step\":{{\"{}\":[]}}}}", sats_direction(d)),
-        MoveInput::Jump => "{\"Jump\":[]}".to_string(),
+        MoveInput::Step(d) => format!("{{\"step\":{{\"{}\":[]}}}}", sats_direction(d)),
+        MoveInput::Jump => "{\"jump\":[]}".to_string(),
     }
 }
 
@@ -2065,7 +2065,7 @@ pub fn args_join_game(name: &str) -> String {
     format!("[{}]", json_str(name))
 }
 
-/// `enqueue_move` args ARRAY: `[{"Step":{"East":[]}},7]`.
+/// `enqueue_move` args ARRAY: `[{"step":{"east":[]}},7]`.
 #[must_use]
 pub fn args_enqueue_move(input: MoveInput, seq: u64) -> String {
     format!("[{},{}]", sats_move_input(input), seq)
@@ -5372,7 +5372,7 @@ mod tests {
     /// the clear. A server closes the connection on an unmasked client frame.
     #[test]
     fn t14_client_frames_are_masked_not_plaintext() {
-        let payload = "{\"Jump\":[]}";
+        let payload = "{\"jump\":[]}";
         let f = encode_text_frame(payload, M);
         assert_eq!(f[1] & 0x80, 0x80, "the mask bit must be set");
         assert_eq!(&f[2..6], &M, "the mask key follows the length");
@@ -5871,10 +5871,10 @@ mod tests {
     #[test]
     fn t17_enqueue_move_call_reducer_envelope_is_byte_exact() {
         let args = args_enqueue_move(MoveInput::Step(Direction::East), 7);
-        assert_eq!(args, r#"[{"Step":{"East":[]}},7]"#);
+        assert_eq!(args, r#"[{"step":{"east":[]}},7]"#);
         assert_eq!(
             client_msg_call_reducer("enqueue_move", &args, 3),
-            r#"{"CallReducer":{"reducer":"enqueue_move","args":"[{\"Step\":{\"East\":[]}},7]","request_id":3,"flags":0}}"#
+            r#"{"CallReducer":{"reducer":"enqueue_move","args":"[{\"step\":{\"east\":[]}},7]","request_id":3,"flags":0}}"#
         );
     }
 
@@ -5885,31 +5885,31 @@ mod tests {
     fn t17_move_input_sats_encoding() {
         assert_eq!(
             sats_move_input(MoveInput::Step(Direction::East)),
-            r#"{"Step":{"East":[]}}"#
+            r#"{"step":{"east":[]}}"#
         );
         assert_eq!(
             sats_move_input(MoveInput::Step(Direction::West)),
-            r#"{"Step":{"West":[]}}"#
+            r#"{"step":{"west":[]}}"#
         );
         assert_eq!(
             sats_move_input(MoveInput::Step(Direction::North)),
-            r#"{"Step":{"North":[]}}"#
+            r#"{"step":{"north":[]}}"#
         );
         assert_eq!(
             sats_move_input(MoveInput::Step(Direction::South)),
-            r#"{"Step":{"South":[]}}"#
+            r#"{"step":{"south":[]}}"#
         );
-        assert_eq!(sats_move_input(MoveInput::Jump), r#"{"Jump":[]}"#);
+        assert_eq!(sats_move_input(MoveInput::Jump), r#"{"jump":[]}"#);
     }
 
     /// the direction names are exact and distinct — a swapped pair would
     /// send bots north into grass while every local test still passed.
     #[test]
     fn t17_direction_names_are_exact() {
-        assert_eq!(sats_direction(Direction::North), "North");
-        assert_eq!(sats_direction(Direction::South), "South");
-        assert_eq!(sats_direction(Direction::East), "East");
-        assert_eq!(sats_direction(Direction::West), "West");
+        assert_eq!(sats_direction(Direction::North), "north");
+        assert_eq!(sats_direction(Direction::South), "south");
+        assert_eq!(sats_direction(Direction::East), "east");
+        assert_eq!(sats_direction(Direction::West), "west");
     }
 
     /// a name needing escapes still produces a valid nested-string
