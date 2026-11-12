@@ -186,9 +186,11 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
 Movement is paced by the server, per zone. A client sends intent (`enqueue_move`,
 `set_move`, `clear_queue`) tagged with a strictly increasing `seq`;
 `guards::authorize_move` rejects a stale seq and records the new one as
-`player.last_input_seq` (the acknowledgement the client reconciles against). The
-character's queue (`character.move_queue`, capped at `MOVE_QUEUE_CAP`) is public so
-the owner can reconcile against what is left. Each zone has an interval schedule row
+`player.last_input_seq`. The reducer then writes the queue
+(`character.move_queue`, capped at `MOVE_QUEUE_CAP`) and the accepted seq
+(`character.acked_seq`) in one update of the character row. Both are public so the
+owner can reconcile against them: the acknowledgement and what is left of the queue
+arrive in the same row as the position. Each zone has an interval schedule row
 that runs `movement_tick` every `STEP_MS`. A tick drains at most one move per
 character through `game_core::apply_move`, moves NPCs with `npc_decide`, accrues
 Quality-Time, and rolls grass encounters. A character whose player is in a battle
@@ -400,7 +402,7 @@ player immediately:
    the queue cap per drain. After a long gap (a backgrounded tab) it reports `snapped`
    so the renderer jumps instead of replaying.
 3. **Reconcile.** On each flushed batch, `reconcile` drops acknowledged operations
-   (`seq <= player.last_input_seq`), rebuilds the queue from the server's
+   (`seq <=` the own character row's `acked_seq`), rebuilds the queue from the server's
    `move_queue`, replays the pending operations, resets to the authoritative position,
    and drains. It reports whether the corrected tile differs from the prediction.
 4. **Rejections.** A rejected intent is removed with `dropRejected(seq, epoch)`,
@@ -410,9 +412,12 @@ player immediately:
 
 Held keys (`prediction/heldKeys.ts`) keep a most-recent-first stack of held
 directions. The frame loop re-issues the active direction only after it has been held
-150 ms and only when the predictor has no outstanding steps. OS key-repeat is ignored.
-A zone warp (`switchZone` in `main.ts`) rebuilds prediction state but keeps the held
-stack.
+150 ms and only when the predictor has no outstanding steps and no sent input is
+still owed. OS key-repeat is ignored. A zone warp (`switchZone` in `main.ts`) rebuilds
+prediction state but keeps the held stack. The rebuilt predictor has forgotten an
+input that was on the wire at the warp, so `prediction/owedInputs.ts` counts sent
+inputs outside the predictor: each stays owed until the own row's `acked_seq` covers
+it or its reducer call rejects, and a reconnect clears the set.
 
 ### Rendering
 
