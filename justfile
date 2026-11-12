@@ -132,7 +132,7 @@ mutate:
 # tolerated only when missed=0.
 #
 # `shard` ("k/n", 0-based; empty = the whole crate) is how the nightly fits under GitHub's 6 h job cap:
-# the crate outgrew one serial job (2052 mutants), so CI runs n shards in a matrix. Each shard is
+# the crate outgrew one serial job, so CI runs n shards in a matrix. Each shard is
 # its own zero-tolerance verdict, so the AND over the shards equals the unsharded gate.
 mutate-core shard="":
     #!/usr/bin/env bash

@@ -34,17 +34,15 @@ non-additive change against the merge base, so `--write` cannot launder one.
 
 `.github/workflows/nightly.yml` runs the slow checks, and its `notify` job keeps one open
 issue per failed, skipped or cancelled job (a job still red the next night gets a comment on
-it). `mutation` (game-core) and `mutation-server`
-(server-module) both allow zero surviving mutants: kill each survivor with a test, never
-with a baseline or a budget. Only a mutant that provably cannot change observable behaviour
-(equivalent: no input can tell it from the original) may be excluded, in `.cargo/mutants.toml`, with the
-written proof, keyed by file + function + operator + column. Both gates are sharded (6 and 8
-shards) to fit GitHub's 6 h job cap; every shard is its own verdict. Each
-shard uploads its `mutants.out/` as a workflow artifact (`mutants-out-core-<n>` /
-`mutants-out-server-<n>`, kept 14 days); download the failing run's and read its `missed.txt`.
-A
-`smoke-republish` failure means publishing over live data would fail or lose data, so
-fix it before the next publish.
+it). `mutation` (game-core) and `mutation-server` (server-module) both allow zero surviving
+mutants: kill each survivor with a test, never with a baseline or a budget. Only a mutant
+that provably cannot change observable behaviour (equivalent: no input can tell it from the
+original) may be excluded, in `.cargo/mutants.toml`, with the written proof, keyed by file +
+function + operator + column. Both gates are sharded (6 and 8 shards) to fit GitHub's 6 h
+job cap; every shard is its own verdict. Each shard uploads its `mutants.out/` as a workflow
+artifact (`mutants-out-core-<n>` / `mutants-out-server-<n>`, kept 14 days); download the
+failing run's and read its `missed.txt`. A `smoke-republish` failure means publishing over
+live data would fail or lose data, so fix it before the next publish.
 
 To check a change before pushing, `just mutate-diff` mutates only the `game-core` /
 `server-module` lines changed against `origin/master` (pass another base, e.g. `just mutate-diff

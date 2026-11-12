@@ -922,9 +922,11 @@ proof (function + operator + column keys, so line drift cannot re-expose a runaw
 lines are observable (a log sink asserts them), so a mutant that only changes a log line is killed,
 not excluded. Four guaranteed-hang `tiled_import` mutants and one runaway-allocation mutant are
 excluded there too. `mutate-core` and `mutate-server` carry an 8 GB `ulimit -v` backstop so a
-runaway allocation aborts its test instead of killing the runner. `mutate-server` builds
-incrementally (`CARGO_INCREMENTAL=1`; CI's toolchain action sets 0): about 4x faster rebuilds per
-mutant with identical verdicts; `just mutate-diff` mutates only the lines committed since a base.
+runaway allocation aborts its test instead of killing the runner. All three `mutate-*` recipes
+build incrementally (`CARGO_INCREMENTAL=1`; CI's toolchain action sets 0) under
+`[profile.mutants]` (the test profile without debuginfo), and the nightly shards are round-robin
+so slow files spread evenly; verdicts are identical. `just mutate-diff` mutates only the lines
+committed since a base.
 `just test` also runs the server tests with `--features dev_reducers`, which the default build
 compiles out.
 
