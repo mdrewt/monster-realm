@@ -6546,6 +6546,148 @@ mod acct_nh {
         assert!(w.character.rows().iter().any(|r| r.entity_id == 6));
     }
 
+    /// SR10 with the QF5.1 pin: the only player in a zone is mid-conversation,
+    /// so the NPC is pinned where it wandered to. The player's last connection
+    /// closes: `on_disconnect` deletes the conversation and the character, and
+    /// the zone's next tick — the one code path for every way of leaving —
+    /// finds the zone empty, puts the NPC back on its home tile and removes the
+    /// zone's schedule row.
+    ///
+    /// kills: a disconnect that leaves the zone armed forever (the row survives
+    /// the next tick), an empty tick that honours a pin and leaves the NPC where
+    /// it stood, a pin that no longer holds while the player is present.
+    #[test]
+    fn sr10_last_player_disconnecting_mid_conversation_homes_the_npc_and_disarms_the_zone() {
+        use crate::movement::{movement_tick, MovementTickSchedule};
+        use crate::schema::Npc;
+        use game_core::npc::rules::npc_step_due;
+        use game_core::TilePos;
+        const NPC: u64 = 1;
+        const ROW: u64 = 3;
+        let fx = fixture();
+        let w = world(&fx);
+        let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        let _ = fx.table_keyed::<Player, u64>("player", "entity_id", |r| r.entity_id);
+        let _ = fx.table_keyed::<Npc, u32>("npc", "zone_id", |r| r.zone_id);
+        let npcs = fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id);
+        // The tick's conversation pin scans the whole table.
+        let _ = fx
+            .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .scannable();
+        let ticks = fx
+            .table_keyed::<MovementTickSchedule, u64>("movement_tick_schedule", "id", |r| r.id)
+            .writable()
+            .scannable()
+            .unique();
+        let me = id(0x15);
+        // The player stands on `character_row`'s tile (1,2); the NPC stands one
+        // tile south of it, two tiles west of its home.
+        let stood = TilePos { x: 1, y: 3 };
+        let home = TilePos { x: 3, y: 3 };
+        w.player.seed(&player_row(me, 5, "p"));
+        w.character.seed(&character_row(5));
+        w.intent.seed(&intent_row(5));
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(conn_of(me)),
+            identity: me,
+        });
+        w.conversation.seed(&PlayerConversation {
+            owner_identity: me,
+            npc_entity_id: NPC,
+            current_node_id: "n".to_string(),
+        });
+        npcs.seed(&Npc {
+            entity_id: NPC,
+            npc_id: "elder".to_string(),
+            zone_id: 0,
+            home_x: home.x,
+            home_y: home.y,
+            wander_radius: 2,
+            dialogue_tree_id: String::new(),
+            interaction: game_core::NpcInteraction::Dialogue,
+        });
+        w.character.seed(&Character {
+            tile_x: stood.x,
+            tile_y: stood.y,
+            ..character_row(NPC)
+        });
+        ticks.seed(&MovementTickSchedule {
+            id: ROW,
+            zone_id: 0,
+            scheduled_at: ScheduleAt::Interval(std::time::Duration::from_millis(200).into()),
+        });
+        let map = crate::content_cache::cached_zone_tile_map(0).expect("zone 0 map");
+        let counter = |now: i64| now.unsigned_abs() / game_core::STEP_MS.unsigned_abs();
+        // A due tick on which the unpinned NPC would step off `stood`.
+        let now = (0..200)
+            .map(|k| T0 + k * 200)
+            .find(|&n| {
+                npc_step_due(NPC, counter(n))
+                    && game_core::npc_decide(
+                        stood,
+                        home,
+                        2,
+                        game_core::Direction::South,
+                        NPC,
+                        counter(n),
+                        map,
+                    )
+                    .is_some()
+            })
+            .expect("a due tick on which the NPC would step");
+        let tick = |now: i64| {
+            fx.run_as_at(scheduler(), at(now), |ctx| {
+                movement_tick(
+                    ctx,
+                    MovementTickSchedule {
+                        id: ROW,
+                        zone_id: 0,
+                        scheduled_at: ScheduleAt::Time(at(now)),
+                    },
+                )
+            })
+        };
+        let npc_tile = |w: &W<'_>| {
+            let c = w
+                .character
+                .rows()
+                .into_iter()
+                .find(|c| c.entity_id == NPC)
+                .expect("the NPC's character");
+            (c.tile_x, c.tile_y)
+        };
+
+        assert_eq!(tick(now), Ok(()));
+        assert_eq!(
+            npc_tile(&w),
+            (stood.x, stood.y),
+            "the conversation pins the NPC"
+        );
+        assert_eq!(ticks.rows().len(), 1, "the occupied zone stays armed");
+
+        as_conn(&fx, me, None, now + 1, crate::on_disconnect);
+        assert!(w.conversation.rows().is_empty(), "the conversation is gone");
+        assert!(w.character.rows().iter().all(|c| c.entity_id != 5));
+        assert_eq!(
+            ticks.rows().len(),
+            1,
+            "the disconnect itself leaves the schedule to the next tick"
+        );
+
+        assert_eq!(tick(now + 200), Ok(()));
+        assert_eq!(
+            npc_tile(&w),
+            (home.x, home.y),
+            "the emptied zone's NPC is back on its home tile"
+        );
+        assert!(
+            ticks.rows().is_empty(),
+            "no schedule row is left: nothing fires in the empty world"
+        );
+    }
+
     // --- guest claim ----------------------------------------------------------
 
     /// Seed a LIVE claim for `guest` (as `start_guest_claim` would write it at

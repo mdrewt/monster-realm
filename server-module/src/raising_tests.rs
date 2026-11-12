@@ -3112,6 +3112,9 @@ mod nh {
         let fx = fixture();
         let w = world(&fx, false);
         let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        // The tick finds the zone's player through this index (the zone ticks
+        // only while a player's character is in it).
+        let _ = fx.table_keyed::<Player, u64>("player", "entity_id", |r| r.entity_id);
         w.join(a(), 1, 0);
         w.chars.remove(1);
         w.chars.seed(&Character {

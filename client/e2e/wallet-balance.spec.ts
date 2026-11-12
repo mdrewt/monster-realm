@@ -151,9 +151,8 @@ import {
 // ---------------------------------------------------------------------------------------
 // WHY A MUTATION-RECORD RECORDER, AND NOT JUST A RETRYING toHaveText
 // ---------------------------------------------------------------------------------------
-// `movement_tick` is scheduled PER ZONE unconditionally, one row per zone_def, at
-// `STEP_MS = 200` — it does not depend on a player being
-// present in that zone. elder_oak keeps wandering in zone 0 forever, every wander writes a
+// `movement_tick` runs for a zone at `STEP_MS = 200` while a player's character is in it,
+// and A stands in zone 0 for the whole test. elder_oak keeps wandering there, every wander writes a
 // `character` row, the subscription is globally unfiltered, and the M13d shop batch listener
 // re-renders an OPEN overlay on every batch. So an open overlay is re-rendered about once a
 // second (the elder's post-qf-5 step cadence) WITH NO PLAYER INPUT, and a retrying
@@ -1306,8 +1305,8 @@ test.describe
     // The witness is a RENDER COUNTER on #shop-balance's own writes, not "the other player
     // moved": character rows are written by the row callback directly and main.ts:1429-1452
     // swallows listener throws, so a dead listener still shows movement beside a stale DOM.
-    // Batches are guaranteed: movement_tick is scheduled per zone unconditionally at
-    // STEP_MS = 200 and elder_oak wanders forever (about one step a second since qf-5) on the
+    // Batches are guaranteed: movement_tick runs at STEP_MS = 200 for the zone A stands in
+    // and elder_oak wanders there (about one step a second since qf-5) on the
     // globally unfiltered `character` subscription — plus B's whole walk just happened.
     // -------------------------------------------------------------------------
     test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 50"', async () => {

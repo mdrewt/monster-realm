@@ -4,7 +4,8 @@
 //! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone**: clients
-//! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick.
+//! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick
+//! and runs only for zones a player's character is in.
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 2.x.
 //!
 //! The former monolith is split into cohesive domain submodules.
@@ -12,14 +13,12 @@
 //! lifecycle reducers (`init` / `sync_content` / `on_disconnect`).
 
 use crate::content::sync_content_inner;
-use crate::movement::{movement_tick_schedule, MovementTickSchedule};
+use crate::movement::movement_tick_schedule;
 use crate::schema::{
     character, config, move_intent, player, player_conversation, player_session, zone_def, Config,
     PlayerSession,
 };
-use game_core::STEP_MS;
-use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
-use std::time::Duration;
+use spacetimedb::{Identity, ReducerContext, Table};
 
 // --- Domain modules ---------
 mod accounts;
@@ -84,14 +83,17 @@ pub(crate) const TOMBSTONE_IDENTITY: Identity =
 
 // --- Private helpers --------------------------------------------------------
 
-/// Pure reconcile seam: given the live zone ids and the currently
-/// scheduled `(schedule row id, zone_id)` pairs, plan `(row ids to remove,
-/// zone ids to add)`. Extracted from `ensure_zone_schedules` so "no schedule
-/// row remains for a removed zone" is a behavioral test, not a structural one.
-/// Both halves come back sorted ascending (deterministic apply order — HashSet
-/// iteration order must not leak into row writes).
+/// Pure reconcile seam: given the live zone ids, the zones that hold a
+/// player's character, and the current `(schedule row id, zone_id)` pairs, plan
+/// `(row ids to remove, zone ids to arm)`. A row is removed only when its zone no
+/// longer exists; a zone is armed only when it exists, is occupied and has no
+/// row. A scheduled zone with nobody in it is left alone: its own next tick
+/// sends its NPCs home and removes the row. Both halves come back sorted
+/// ascending (deterministic apply order — HashSet iteration order must not leak
+/// into row writes).
 pub(crate) fn plan_schedule_reconcile(
     zone_ids: &[u32],
+    occupied: &[u32],
     scheduled: &[(u64, u32)],
 ) -> (Vec<u64>, Vec<u32>) {
     let live: std::collections::HashSet<u32> = zone_ids.iter().copied().collect();
@@ -103,43 +105,43 @@ pub(crate) fn plan_schedule_reconcile(
         .map(|&(row_id, _)| row_id)
         .collect();
     to_remove.sort_unstable();
-    let mut to_add: Vec<u32> = zone_ids
+    let mut to_add: Vec<u32> = occupied
         .iter()
         .copied()
-        .filter(|zone_id| !scheduled_zones.contains(zone_id))
+        .filter(|zone_id| live.contains(zone_id) && !scheduled_zones.contains(zone_id))
         .collect();
     to_add.sort_unstable();
+    to_add.dedup();
     (to_remove, to_add)
 }
 
-/// Idempotent per-zone schedule management: inserts a
-/// `MovementTickSchedule` row for every zone that does not yet have one, and
-/// removes orphaned rows for zones that no longer exist in `zone_def` (orphaned
-/// rows fire `map_for` errors every tick — remove them to prevent log-flood).
-/// Called from both `init` and `sync_content`. Imperative shell: the diff is
-/// owned by the pure `plan_schedule_reconcile` seam above.
+/// Idempotent schedule reconcile, called from both `init` and `sync_content`:
+/// removes rows for zones that no longer exist in `zone_def` (they would log a
+/// map error every tick) and arms any zone a player's character is in that has
+/// lost its row. A world with no players ends with no zone armed by this
+/// function. Imperative shell: the diff is owned by the pure
+/// `plan_schedule_reconcile` seam above.
 fn ensure_zone_schedules(ctx: &ReducerContext) {
     let zone_ids: Vec<u32> = ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
+    let occupied: Vec<u32> = ctx
+        .db
+        .player()
+        .iter()
+        .filter_map(|p| ctx.db.character().entity_id().find(p.entity_id))
+        .map(|c| c.zone_id)
+        .collect();
     let scheduled: Vec<(u64, u32)> = ctx
         .db
         .movement_tick_schedule()
         .iter()
         .map(|s| (s.id, s.zone_id))
         .collect();
-    let (to_remove, to_add) = plan_schedule_reconcile(&zone_ids, &scheduled);
+    let (to_remove, to_add) = plan_schedule_reconcile(&zone_ids, &occupied, &scheduled);
     for row_id in to_remove {
         ctx.db.movement_tick_schedule().id().delete(row_id);
     }
     for zone_id in to_add {
-        ctx.db
-            .movement_tick_schedule()
-            .insert(MovementTickSchedule {
-                id: 0,
-                zone_id,
-                scheduled_at: ScheduleAt::Interval(
-                    Duration::from_millis(STEP_MS.unsigned_abs()).into(),
-                ),
-            });
+        crate::movement::arm_zone_tick(ctx, zone_id);
     }
 }
 

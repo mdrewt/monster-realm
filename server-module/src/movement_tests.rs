@@ -566,6 +566,7 @@ mod nh {
         monsters: Handle<'a, Monster, u64>,
         pubs: Handle<'a, MonsterPub, u64>,
         offers: Handle<'a, TradeOffer>,
+        ticks: Handle<'a, MovementTickSchedule, u64>,
     }
 
     /// Every table the movement reducers read or write: `player` (the caller's
@@ -603,8 +604,20 @@ mod nh {
                 .writable()
                 .unique(),
             offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
+            ticks: fx
+                .table_keyed::<MovementTickSchedule, u64>("movement_tick_schedule", "id", |r| r.id)
+                .writable()
+                .scannable()
+                .unique()
+                .auto_inc(|r| r.id, |r, v| r.id = v),
         }
     }
+
+    /// The identity of [`World::bystander`].
+    fn bystander() -> Identity {
+        Identity::from_byte_array([0xEE; 32])
+    }
+    const BYSTANDER: u64 = 9_000;
 
     impl World<'_> {
         /// A joined player whose intent row is already published: the private
@@ -620,6 +633,30 @@ mod nh {
             self.intents
                 .seed(&intent(entity_id, ch.move_queue.clone(), ch.acked_seq));
             self.chars.seed(&ch);
+        }
+        /// A joined player standing idle in `zone_id` with nothing queued: the
+        /// zone ticks only while a player's character is in it, and this one
+        /// never moves, talks or rolls an encounter.
+        fn bystander(&self, zone_id: u32) {
+            self.join(
+                bystander(),
+                BYSTANDER,
+                Character {
+                    zone_id,
+                    ..character(BYSTANDER, vec![], ActionState::Idle)
+                },
+            );
+        }
+        /// The armed zones as `(zone_id, schedule row id)`, ascending.
+        fn armed(&self) -> Vec<(u32, u64)> {
+            let mut v: Vec<(u32, u64)> = self
+                .ticks
+                .rows()
+                .iter()
+                .map(|t| (t.zone_id, t.id))
+                .collect();
+            v.sort_unstable();
+            v
         }
         /// Replace the private intent row, leaving the published pair as it was.
         fn set_intent(&self, row: MoveIntent) {
@@ -1501,8 +1538,8 @@ mod nh {
         assert_eq!(w.intent(1), (vec![], 5));
     }
 
-    /// An NPC (a character with no `player` and no `move_intent` row) costs the
-    /// tick one intent lookup and nothing else: no write on either table, no
+    /// An NPC (a character with no `player` and no `move_intent` row) in a zone a
+    /// player stands in costs the tick one intent lookup and nothing else: no write on either table, no
     /// intent row created, and no `player` lookup. One whose action is not Idle
     /// is normalised with a single character write.
     ///
@@ -1516,10 +1553,13 @@ mod nh {
     fn nh_an_npc_tick_is_one_intent_miss_and_no_write() {
         let fx = fixture();
         let w = world(&fx);
+        w.bystander(0);
         w.chars.seed(&character(2, vec![], ActionState::Idle));
         Walk::tick(&fx, T0 + 100);
         assert_eq!(tick_writes(&fx), (0, 0));
-        assert!(w.intents.rows().is_empty(), "no intent row is created");
+        let only_the_bystander =
+            |w: &World<'_>| w.intents.rows().iter().map(|i| i.entity_id).eq([BYSTANDER]);
+        assert!(only_the_bystander(&w), "no intent row is created");
         let asked = fx.requested_indexes();
         assert!(
             asked.iter().any(|n| n == "move_intent_entity_id_idx_btree"),
@@ -1538,7 +1578,7 @@ mod nh {
             "only the Walking one is normalised"
         );
         assert_eq!(w.character(3).action, ActionState::Idle);
-        assert!(w.intents.rows().is_empty());
+        assert!(only_the_bystander(&w));
     }
 
     /// A joined player with NO intent row (a session that pre-dates the table)
@@ -2219,6 +2259,7 @@ mod nh {
             let q = qf5_world(&fx);
             q.npcs.seed(&qf5_npc_row(NPC, home));
             q.w.chars.seed(&start());
+            q.w.bystander(zone);
             assert_eq!(
                 fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched())),
                 Ok(())
@@ -2464,6 +2505,7 @@ mod nh {
     /// the owners' world state (owner byte, standing); runs ONE tick at `now` and
     /// returns each NPC's (tile_x, tile_y, facing) afterwards, in input order.
     /// Owner characters have an empty queue, so they never move or roll encounters.
+    /// A bystander who owns no conversation keeps the zone occupied in every arm.
     fn qf5_one_tick(
         npcs: &[(u64, game_core::TilePos)],
         convs: &[(u8, u64)],
@@ -2502,6 +2544,7 @@ mod nh {
         for &(owner, npc) in convs {
             q.conv.seed(&qf5_conversation(owner, npc));
         }
+        q.w.bystander(QF5_ZONE);
         qf5_tick(&fx, now);
         let out: Vec<(i32, i32, Direction)> = npcs
             .iter()
@@ -2761,6 +2804,7 @@ mod nh {
         let q = qf5_world(&fx);
         q.npcs.seed(&qf5_npc_row(NPC, home));
         q.w.chars.seed(&qf5_char(NPC, home));
+        q.w.bystander(QF5_ZONE);
         let manhattan = |ax: i32, ay: i32, bx: i32, by: i32| {
             (i64::from(ax) - i64::from(bx)).abs() + (i64::from(ay) - i64::from(by)).abs()
         };
@@ -2825,6 +2869,471 @@ mod nh {
             moves >= 5,
             "the NPC must actually wander over 18 due ticks (lower bound); moved {moves} times"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // SR10 — a zone with no player's character in it does no work.
+    //
+    // A zone's `movement_tick_schedule` row exists only while a player's
+    // character is in the zone: `arm_zone_tick` inserts it on entry (join, warp,
+    // the content sync's reconcile) and the tick that finds the zone empty sends
+    // its NPCs home and deletes the row. The host fires a scheduled reducer only
+    // for rows in the schedule table, so "no row" is "no further tick".
+    // -----------------------------------------------------------------------
+
+    use crate::movement::arm_zone_tick;
+
+    /// One shipped `movement_tick` for `zone` through schedule row `id` at `now`.
+    fn sr10_tick(fx: &Fixture, zone: u32, id: u64, now: i64) {
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = MovementTickSchedule {
+            id,
+            zone_id: zone,
+            scheduled_at: ScheduleAt::Time(at(now)),
+        };
+        fx.reset_writes();
+        assert_eq!(
+            fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched)),
+            Ok(())
+        );
+    }
+
+    /// A schedule row as `arm_zone_tick` writes it, with a chosen id.
+    fn sr10_row(id: u64, zone_id: u32) -> MovementTickSchedule {
+        MovementTickSchedule {
+            id,
+            zone_id,
+            scheduled_at: ScheduleAt::Interval(
+                std::time::Duration::from_millis(game_core::STEP_MS.unsigned_abs()).into(),
+            ),
+        }
+    }
+
+    /// An NPC of `zone` (role row + character) standing at `at_tile`, `action`,
+    /// facing East, with a non-zero `move_started_at_ms` the reset must keep.
+    fn sr10_npc(
+        q: &Qf5<'_>,
+        entity_id: u64,
+        zone: u32,
+        home: game_core::TilePos,
+        at_tile: game_core::TilePos,
+        action: ActionState,
+    ) -> Character {
+        q.npcs.seed(&crate::schema::Npc {
+            zone_id: zone,
+            ..qf5_npc_row(entity_id, home)
+        });
+        let ch = Character {
+            zone_id: zone,
+            facing: Direction::East,
+            action,
+            move_started_at_ms: 123,
+            ..qf5_char(entity_id, at_tile)
+        };
+        q.w.chars.seed(&ch);
+        ch
+    }
+
+    /// A due tick of `npc` on which `npc_decide` moves it off `home` (facing East).
+    fn sr10_stepping_now(npc: u64, home: game_core::TilePos) -> i64 {
+        (0..200)
+            .map(|k| T0 + k * 200 + 37)
+            .find(|&n| {
+                qf5_due(npc, n) && qf5_decision(home, Direction::East, npc, home, n).is_some()
+            })
+            .expect("a due tick on which the NPC steps")
+    }
+
+    /// `arm_zone_tick` inserts one `STEP_MS` interval row for a zone that has
+    /// none and leaves an armed zone's row alone; zones are armed independently.
+    ///
+    /// kills: the already-armed check dropped or inverted (a second row per call,
+    /// or never a row), the check comparing another column, a wrong interval, a
+    /// row written for another zone.
+    #[test]
+    fn sr10_arm_zone_tick_arms_each_zone_exactly_once() {
+        let fx = fixture();
+        let w = world(&fx);
+        fx.run_as(a(), |ctx| arm_zone_tick(ctx, 3));
+        let rows = w.ticks.rows();
+        assert_eq!(rows.len(), 1, "one row for the zone");
+        assert_eq!(rows[0].zone_id, 3);
+        assert_eq!(
+            rows[0].scheduled_at,
+            sr10_row(0, 3).scheduled_at,
+            "the tick interval is STEP_MS (5 Hz)"
+        );
+        let first = w.armed();
+        fx.run_as(a(), |ctx| arm_zone_tick(ctx, 3));
+        assert_eq!(w.armed(), first, "arming an armed zone changes nothing");
+        fx.run_as(a(), |ctx| arm_zone_tick(ctx, 5));
+        fx.run_as(a(), |ctx| arm_zone_tick(ctx, 3));
+        fx.run_as(a(), |ctx| arm_zone_tick(ctx, 5));
+        let armed = w.armed();
+        assert_eq!(
+            armed.iter().map(|&(z, _)| z).collect::<Vec<_>>(),
+            vec![3, 5],
+            "one row per armed zone"
+        );
+        assert_eq!(armed[0], first[0], "zone 3 keeps its row");
+    }
+
+    /// `join_game` arms the spawn zone; a second player joining the armed zone
+    /// adds no row.
+    ///
+    /// kills: the arm dropped from join_game, a row per joiner.
+    #[test]
+    fn sr10_join_game_arms_the_spawn_zone_once() {
+        let fx = fixture();
+        let w = world(&fx);
+        let _ = fx
+            .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
+        // A monster each, so join_game grants no starter.
+        w.seed_monster(&monster(11, a(), 0));
+        w.seed_monster(&monster(12, b(), 0));
+        assert!(w.armed().is_empty(), "nobody has joined: no zone is armed");
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| crate::movement::join_game(
+                ctx,
+                "Ada".to_string()
+            )),
+            Ok(())
+        );
+        let armed = w.armed();
+        assert_eq!(
+            armed.iter().map(|&(z, _)| z).collect::<Vec<_>>(),
+            vec![crate::ZONE_0],
+            "the first join arms the spawn zone"
+        );
+        assert_eq!(
+            fx.run_as_at(b(), at(T0 + 1), |ctx| crate::movement::join_game(
+                ctx,
+                "Bea".to_string()
+            )),
+            Ok(())
+        );
+        assert_eq!(w.armed(), armed, "a second join keeps the one row");
+        assert_eq!(w.players.rows().len(), 2, "both joined");
+    }
+
+    /// The first shipped warp with a walkable, warp-free approach tile:
+    /// `(source zone, warp, approach tile, step direction)`.
+    fn sr10_warp() -> (u32, game_core::WarpDef, game_core::TilePos, Direction) {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let dirs = [
+            (Direction::North, Direction::South),
+            (Direction::South, Direction::North),
+            (Direction::East, Direction::West),
+            (Direction::West, Direction::East),
+        ];
+        zone_maps
+            .iter()
+            .flat_map(|def| def.warps.iter().map(move |w| (def.zone_id, w.clone())))
+            .find_map(|(zone, w)| {
+                let map = game_core::map_for(zone, zone_maps).ok()?;
+                dirs.iter().find_map(|&(dir, back)| {
+                    let start = w.from.step(back);
+                    (map.is_walkable(start) && map.warp_at(start).is_none()).then_some((
+                        zone,
+                        w.clone(),
+                        start,
+                        dir,
+                    ))
+                })
+            })
+            .expect("shipped content has a warp with a walkable, non-warp approach tile")
+    }
+
+    /// A warp arms the destination zone in the tick that moves the player, and
+    /// the source zone — still armed in that tick, because the player was in it —
+    /// sends its NPC home and disarms on its NEXT tick. The destination keeps
+    /// ticking while the player stands in it. A destination that is already
+    /// armed keeps its one row.
+    ///
+    /// kills: the arm dropped from the warp arm or keyed on the source zone, the
+    /// source disarmed in the warp tick itself or never, the empty tick deleting
+    /// another zone's row, a second row for an armed destination.
+    #[test]
+    fn sr10_a_warp_arms_the_destination_and_the_source_disarms_on_its_next_tick() {
+        let (zone, warp, start, dir) = sr10_warp();
+        assert_ne!(zone, warp.to_zone, "the warp crosses zones");
+        const SRC_ROW: u64 = 7;
+        for dest_already_armed in [false, true] {
+            let fx = fixture();
+            let q = qf5_world(&fx);
+            let w = &q.w;
+            w.join(
+                a(),
+                1,
+                Character {
+                    zone_id: zone,
+                    tile_x: start.x,
+                    tile_y: start.y,
+                    ..character(1, vec![], ActionState::Idle)
+                },
+            );
+            w.set_intent(intent(1, vec![MoveInput::Step(dir)], 1));
+            let home = game_core::TilePos { x: 2, y: 2 };
+            let away = game_core::TilePos { x: 3, y: 2 };
+            sr10_npc(&q, 901, zone, home, away, ActionState::Idle);
+            w.ticks.seed(&sr10_row(SRC_ROW, zone));
+            if dest_already_armed {
+                w.ticks.seed(&sr10_row(50, warp.to_zone));
+            }
+
+            sr10_tick(&fx, zone, SRC_ROW, T0);
+            assert_eq!(w.character(1).zone_id, warp.to_zone, "the player warped");
+            let armed = w.armed();
+            let dest: Vec<u64> = armed
+                .iter()
+                .filter(|&&(z, _)| z == warp.to_zone)
+                .map(|&(_, id)| id)
+                .collect();
+            assert_eq!(dest.len(), 1, "the destination is armed exactly once");
+            if dest_already_armed {
+                assert_eq!(dest, vec![50], "an armed destination keeps its row");
+            }
+            assert!(
+                armed.contains(&(zone, SRC_ROW)),
+                "the source stays armed in the tick the player left through"
+            );
+            assert_eq!(armed.len(), 2);
+
+            // 37 ms off the step grid, like the scheduler's own jitter.
+            sr10_tick(&fx, zone, SRC_ROW, T0 + 237);
+            assert_eq!(
+                w.armed(),
+                vec![(warp.to_zone, dest[0])],
+                "the source's next tick disarms it and only it"
+            );
+            let npc = w.character(901);
+            assert_eq!(
+                (npc.tile_x, npc.tile_y),
+                (home.x, home.y),
+                "the emptied zone's NPC is back on its home tile"
+            );
+
+            sr10_tick(&fx, warp.to_zone, dest[0], T0 + 437);
+            assert_eq!(
+                w.armed(),
+                vec![(warp.to_zone, dest[0])],
+                "the destination keeps ticking while the player is in it"
+            );
+        }
+    }
+
+    /// The tick that finds no player's character in its zone puts each NPC of
+    /// the zone on its home tile, Idle, writing only the rows that differ, runs
+    /// no wander step, and deletes the zone's schedule row. Another zone's NPCs
+    /// and schedule row are untouched. Afterwards the schedule table holds no
+    /// row for the zone, so the host has nothing left to fire for it.
+    ///
+    /// Entering again arms a fresh row, and the first tick steps the NPC exactly
+    /// as the cadence rule says for that tick's clock time: the tick counter is
+    /// the clock in STEP_MS units, so it is the value a zone that never
+    /// disarmed would read at the same instant.
+    ///
+    /// kills: the reset dropped, or writing every NPC, or skipping one that is
+    /// off its home column / row only, or one that is home but Walking; a reset
+    /// that reaches another zone's NPCs; the schedule row surviving the empty
+    /// tick or a different row deleted; the wander block running on the empty
+    /// tick; a tick counter that restarts or counts ticks after a re-arm.
+    #[test]
+    fn sr10_the_empty_tick_sends_npcs_home_disarms_and_a_re_entry_resumes_the_clock() {
+        let (home, second) = qf5_homes();
+        let east = |p: game_core::TilePos| game_core::TilePos { x: p.x + 1, y: p.y };
+        let south = |p: game_core::TilePos| game_core::TilePos { x: p.x, y: p.y + 1 };
+        let now = sr10_stepping_now(901, home);
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        let w = &q.w;
+        let at_home = sr10_npc(&q, 901, QF5_ZONE, home, home, ActionState::Idle);
+        let off_column = sr10_npc(&q, 902, QF5_ZONE, home, east(home), ActionState::Idle);
+        let off_row = sr10_npc(&q, 903, QF5_ZONE, second, south(second), ActionState::Idle);
+        let walking = sr10_npc(&q, 904, QF5_ZONE, second, second, ActionState::Walking);
+        let elsewhere = sr10_npc(&q, 905, 1, home, east(home), ActionState::Walking);
+        w.ticks.seed(&sr10_row(4, QF5_ZONE));
+        w.ticks.seed(&sr10_row(8, 1));
+
+        sr10_tick(&fx, QF5_ZONE, 4, now);
+
+        let homed = |ch: &Character, home: game_core::TilePos| Character {
+            entity_id: ch.entity_id,
+            zone_id: ch.zone_id,
+            tile_x: home.x,
+            tile_y: home.y,
+            facing: ch.facing,
+            action: ActionState::Idle,
+            move_started_at_ms: ch.move_started_at_ms,
+            sprite_id: ch.sprite_id,
+            move_queue: ch.move_queue.clone(),
+            acked_seq: ch.acked_seq,
+        };
+        let row = |id: u64| to_vec(&w.character(id)).unwrap();
+        assert_eq!(
+            row(901),
+            to_vec(&at_home).unwrap(),
+            "an NPC already home and Idle is not touched, and takes no wander step"
+        );
+        assert_eq!(row(902), to_vec(&homed(&off_column, home)).unwrap());
+        assert_eq!(row(903), to_vec(&homed(&off_row, second)).unwrap());
+        assert_eq!(row(904), to_vec(&homed(&walking, second)).unwrap());
+        assert_eq!(
+            row(905),
+            to_vec(&elsewhere).unwrap(),
+            "another zone's NPC is not reset"
+        );
+        assert_eq!(
+            fx.writes_to("character"),
+            3,
+            "exactly the three NPCs that differed are written"
+        );
+        assert_eq!(
+            w.armed(),
+            vec![(1, 8)],
+            "the empty zone's row is gone and the other zone's row stays"
+        );
+
+        // Nothing is armed for the zone until a player enters it again.
+        w.bystander(QF5_ZONE);
+        fx.run_as(bystander(), |ctx| arm_zone_tick(ctx, QF5_ZONE));
+        let rearmed: Vec<(u32, u64)> = w
+            .armed()
+            .into_iter()
+            .filter(|&(z, _)| z == QF5_ZONE)
+            .collect();
+        assert_eq!(rearmed.len(), 1, "re-entry arms one fresh row");
+        let later = sr10_stepping_now(901, home) + 40 * 200;
+        let later = (0..200)
+            .map(|k| later + k * 200)
+            .find(|&n| {
+                qf5_due(901, n) && qf5_decision(home, Direction::East, 901, home, n).is_some()
+            })
+            .expect("a later due tick on which the NPC steps");
+        sr10_tick(&fx, QF5_ZONE, rearmed[0].1, later);
+        assert_eq!(
+            qf5_pos(&w.character(901)),
+            qf5_expected(home, Direction::East, 901, home, later),
+            "the first tick after re-entry reads the clock-derived tick counter"
+        );
+        assert_ne!(
+            qf5_pos(&w.character(901)),
+            qf5_pos(&at_home),
+            "and the NPC wanders again"
+        );
+        assert_eq!(w.armed().len(), 2, "an occupied zone keeps its row");
+    }
+
+    /// An empty zone whose map does not load disarms like any other: the
+    /// occupancy check runs before the map is read, so the zone's NPC goes home
+    /// and the schedule row is removed on the first tick.
+    ///
+    /// kills: the disarm gated on the map loading (the row would stay and the
+    /// zone would log `movement_tick_error` at 5 Hz for ever).
+    #[test]
+    fn sr10_an_empty_zone_without_a_map_still_disarms() {
+        const NO_MAP_ZONE: u32 = 9_999;
+        assert!(
+            crate::content_cache::cached_zone_tile_map(NO_MAP_ZONE).is_err(),
+            "the zone under test ships no map"
+        );
+        let (home, _) = qf5_homes();
+        let away = game_core::TilePos {
+            x: home.x + 1,
+            y: home.y,
+        };
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        let w = &q.w;
+        sr10_npc(&q, 906, NO_MAP_ZONE, home, away, ActionState::Walking);
+        w.ticks.seed(&sr10_row(6, NO_MAP_ZONE));
+
+        sr10_tick(&fx, NO_MAP_ZONE, 6, sr10_stepping_now(906, home));
+
+        assert_eq!(w.armed(), vec![], "the zone's schedule row is removed");
+        let npc = w.character(906);
+        assert_eq!(
+            (npc.tile_x, npc.tile_y, npc.action),
+            (home.x, home.y, ActionState::Idle),
+            "and its NPC is sent home"
+        );
+    }
+
+    /// A zone stays armed for every kind of player presence: a player with an
+    /// intent row, a player in an ongoing battle, and a session that has a
+    /// `player` row but no `move_intent` row. Its NPCs are not sent home.
+    ///
+    /// kills: presence read from the intent row alone (a session without one is
+    /// treated as absent), from the battle lock, or from a constant.
+    #[test]
+    fn sr10_a_zone_with_any_player_in_it_stays_armed() {
+        let (home, _) = qf5_homes();
+        let away = game_core::TilePos {
+            x: home.x + 1,
+            y: home.y,
+        };
+        for arm in ["intent row", "in battle", "no intent row"] {
+            let fx = fixture();
+            let q = qf5_world(&fx);
+            let w = &q.w;
+            w.join(a(), 1, character(1, vec![], ActionState::Idle));
+            match arm {
+                "in battle" => w.battles.seed(&battle(1, a(), b(), BattleOutcome::Ongoing)),
+                "no intent row" => assert_eq!(w.intents.remove(1), 1),
+                _ => {}
+            }
+            // 904 % NPC_STEP_TICKS picks ticks other than this one: T0 is not due.
+            let npc = sr10_npc(&q, 904, QF5_ZONE, home, away, ActionState::Idle);
+            let now = (0..5)
+                .map(|k| T0 + k * 200)
+                .find(|&n| !qf5_due(904, n))
+                .expect("a tick on which the NPC is not due");
+            w.ticks.seed(&sr10_row(4, QF5_ZONE));
+            sr10_tick(&fx, QF5_ZONE, 4, now);
+            assert_eq!(
+                w.armed(),
+                vec![(QF5_ZONE, 4)],
+                "{arm}: the zone stays armed"
+            );
+            assert_eq!(
+                to_vec(&w.character(904)).unwrap(),
+                to_vec(&npc).unwrap(),
+                "{arm}: the NPC is not sent home while a player is present"
+            );
+        }
+    }
+
+    /// A world that armed every zone converges by ticking: of two armed zones,
+    /// the one a player stands in keeps its row and the empty one removes its own.
+    ///
+    /// kills: an empty tick that leaves its row, or that removes rows by zone
+    /// membership of the wrong zone.
+    #[test]
+    fn sr10_armed_zones_converge_to_the_occupied_ones() {
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        let w = &q.w;
+        w.join(
+            a(),
+            1,
+            Character {
+                zone_id: 1,
+                ..character(1, vec![], ActionState::Idle)
+            },
+        );
+        w.ticks.seed(&sr10_row(1, 0));
+        w.ticks.seed(&sr10_row(2, 1));
+        sr10_tick(&fx, 1, 2, T0);
+        assert_eq!(
+            w.armed(),
+            vec![(0, 1), (1, 2)],
+            "the occupied zone ticks on"
+        );
+        sr10_tick(&fx, 0, 1, T0 + 10);
+        assert_eq!(w.armed(), vec![(1, 2)], "the empty zone disarms itself");
+        sr10_tick(&fx, 1, 2, T0 + 200);
+        assert_eq!(w.armed(), vec![(1, 2)]);
     }
 
     /// Code-only view of a Rust source: comments (line, nested block) and the

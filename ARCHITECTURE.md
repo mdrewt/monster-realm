@@ -90,7 +90,9 @@ Content is data, not code. Each registry is a directory under `game-core/content
    `heal_location_row`, `npc`, `evolution_path`, `type_relation_row`), the private
    `encounter` table, and the NPCs' `character` rows whenever
    `config.content_version` differs from `CONTENT_VERSION` in
-   `server-module/src/lib.rs`. It also reconciles one movement schedule row per zone.
+   `server-module/src/lib.rs`. It also reconciles the movement schedule: a row for a
+   zone that no longer exists is removed, and a zone a player stands in is armed if
+   its row is missing.
    A reseed also re-derives every existing monster: stats are recomputed from the new
    species base stats with the monster's own IVs, EVs, Nature and level, `current_hp`
    is clamped down to the new maximum (a reseed never heals), and the `monster_pub`
@@ -167,7 +169,8 @@ as a JSON line through `guards::log_reject`. Scheduled reducers first check
 ### Lifecycle
 
 - `init` (first publish only) records the publisher as `config.owner_identity`, seeds
-  content, reconciles zone schedules, and arms the reapers and heartbeat.
+  content, reconciles zone schedules (a new world has no player, so no zone is
+  armed), and arms the reapers and heartbeat.
 - `sync_content` does the same reseed for the owner on later publishes. It refuses
   other callers.
 - `on_connect` records the connection in the private `player_session` table and, for
@@ -192,8 +195,20 @@ one `move_intent` update. An accepted input reads the caller's `player` row for 
 entity id, reads no `character` row, and writes neither, so it changes nothing any
 client subscribes to.
 
-Each zone has an interval schedule row that runs `movement_tick` every `STEP_MS`. A
-tick drains at most one move per character through `game_core::apply_move`, moves NPCs
+A zone has an interval schedule row that runs `movement_tick` every `STEP_MS` only
+while a player's character is in it. `movement::arm_zone_tick` inserts the row when a
+player enters (`join_game`, the tick's warp arm) and never adds a second row for a
+zone. The tick that finds no player's character in its zone puts each of the zone's
+NPCs back on its home tile, Idle, writing only the rows that differ, and deletes the
+zone's row, so leaving, warping out, disconnecting and timing out all disarm the zone
+through that one path and a world with nobody connected runs no `movement_tick`. A
+player in a battle is still in their zone. NPC wander reads a tick counter that is the
+server clock divided by `STEP_MS`, not a count of ticks that ran, so a zone that
+empties and is entered again continues from the clock. After a republish, zones that
+still hold a row from before keep ticking if occupied and disarm on their next tick if
+not.
+
+A tick drains at most one move per character through `game_core::apply_move`, moves NPCs
 with `npc_decide`, and rolls grass encounters. The tick is the only writer of
 `character.move_queue` and `character.acked_seq`: it copies the private queue and seq
 onto the character row (`movement::publish_intent`) in the same update that carries
@@ -654,7 +669,9 @@ root, so opening one never closes a sibling.
 
 - **Server.** The module emits JSON log lines. New code uses `observability::mr_log`;
   refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed
-  content version and writes nothing. The module never measures time itself or makes
+  content version and writes nothing; it runs with nobody connected, because the
+  `AlloyIngestStalled` alert reads ten minutes without module log bytes as a stalled
+  log pipeline and an empty world logs nothing else. The module never measures time itself or makes
   outbound calls; the SpacetimeDB host exposes `/v1/metrics` and writes module logs
   to files.
 - **Stack.** `ops/observability/` is a Docker Compose stack on the host network,

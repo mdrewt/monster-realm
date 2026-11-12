@@ -7,7 +7,9 @@
 //! frozen), publishes the remaining queue and the accepted seq on the
 //! `character` row it writes, and runs the grass-encounter trigger, which opens a TACTICAL wild battle through
 //! `tactics::start_wild_tactical` (bt-16: the one live wild path). The
-//! `movement_tick_schedule` scheduled `#[table]`
+//! A zone ticks only while a player's character is in it (`arm_zone_tick` on
+//! entry; the tick that finds the zone empty sends its NPCs home and removes the
+//! schedule). The `movement_tick_schedule` scheduled `#[table]`
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
 //! reference resolves within the module.
 
@@ -35,9 +37,12 @@ use game_core::{
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
 use std::sync::Mutex;
+use std::time::Duration;
 
-/// Per-zone movement schedule: one interval-row per active zone makes the
-/// scheduler call `movement_tick` for THAT zone every `STEP_MS`.
+/// Per-zone movement schedule: an interval row makes the scheduler call
+/// `movement_tick` for THAT zone every `STEP_MS`. A zone holds a row only while a
+/// player's character is in it: `arm_zone_tick` inserts it on entry and the tick
+/// that finds the zone empty deletes it, so an empty zone costs no reducer call.
 #[spacetimedb::table(accessor = movement_tick_schedule, scheduled(movement_tick))]
 pub struct MovementTickSchedule {
     #[primary_key]
@@ -45,6 +50,67 @@ pub struct MovementTickSchedule {
     pub id: u64,
     pub zone_id: u32,
     pub scheduled_at: ScheduleAt,
+}
+
+/// Arm `zone_id`'s tick. Idempotent: a zone that already holds a schedule row
+/// keeps that row, so there is never more than one tick per zone per `STEP_MS`.
+/// Called by every path that puts a player's character into a zone (`join_game`,
+/// the tick's warp arm) and by the content sync's reconcile. The scan is over at
+/// most one row per occupied zone.
+pub(crate) fn arm_zone_tick(ctx: &ReducerContext, zone_id: u32) {
+    if ctx
+        .db
+        .movement_tick_schedule()
+        .iter()
+        .any(|s| s.zone_id == zone_id)
+    {
+        return;
+    }
+    ctx.db
+        .movement_tick_schedule()
+        .insert(MovementTickSchedule {
+            id: 0,
+            zone_id,
+            scheduled_at: ScheduleAt::Interval(
+                Duration::from_millis(STEP_MS.unsigned_abs()).into(),
+            ),
+        });
+}
+
+/// Is this character a player's? The `player` row is the one fact that separates
+/// a player's character from an NPC's.
+fn is_player_character(ctx: &ReducerContext, entity_id: u64) -> bool {
+    ctx.db
+        .player()
+        .entity_id()
+        .filter(entity_id)
+        .next()
+        .is_some()
+}
+
+/// Put every NPC of `zone` back on its home tile, Idle. NPC position is ambient
+/// state: nobody is in the zone to see it, and the next player to enter finds
+/// each NPC where its content places it. Writes only the rows that differ.
+fn reset_npcs_home(ctx: &ReducerContext, zone: u32) {
+    let npcs: Vec<(u64, i32, i32)> = ctx
+        .db
+        .npc()
+        .zone_id()
+        .filter(zone)
+        .map(|n| (n.entity_id, n.home_x, n.home_y))
+        .collect();
+    for (entity_id, home_x, home_y) in npcs {
+        let Some(mut ch) = ctx.db.character().entity_id().find(entity_id) else {
+            continue;
+        };
+        if ch.tile_x == home_x && ch.tile_y == home_y && ch.action == ActionState::Idle {
+            continue;
+        }
+        ch.tile_x = home_x;
+        ch.tile_y = home_y;
+        ch.action = ActionState::Idle;
+        ctx.db.character().entity_id().update(ch);
+    }
 }
 
 /// Join: one `player` + one `character` at the spawn + its `move_intent` row + one starter `monster`
@@ -87,6 +153,7 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         online: true,
         last_input_seq: 0,
     });
+    arm_zone_tick(ctx, ZONE_0);
 
     // Grant starter if this identity has no monsters yet (idempotent on reconnect).
     let has_monsters = ctx
@@ -346,6 +413,35 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         return Err("movement_tick is scheduler-only".to_string());
     }
     let zone = sched.zone_id;
+    // Snapshot BEFORE mutating (never mutate the table mid-iteration): each
+    // character of the zone with its private intent row, if it has one.
+    let chars: Vec<(u64, Option<MoveIntent>)> = ctx
+        .db
+        .character()
+        .zone_id()
+        .filter(zone)
+        .map(|c| {
+            let intent = ctx.db.move_intent().entity_id().find(c.entity_id);
+            (c.entity_id, intent)
+        })
+        .collect();
+    // A zone with no player's character in it does no work: this tick puts its
+    // NPCs home and removes the schedule row, so no further tick fires until
+    // `arm_zone_tick` runs for the zone. Leaving, warping out, disconnecting and
+    // timing out all end here, because each of them removes the character from
+    // the zone and the next tick sees the zone without it. An intent row is
+    // proof of a player (only a player's character ever gets one), so a zone
+    // with a player in it pays no `player` read for this; the `player` lookups
+    // run only when no character has an intent row, where they find a session
+    // that pre-dates `move_intent`. Checked before the map is read so a zone
+    // whose content fails to load still stops ticking.
+    let occupied = chars.iter().any(|(_, intent)| intent.is_some())
+        || chars.iter().any(|&(id, _)| is_player_character(ctx, id));
+    if !occupied {
+        reset_npcs_home(ctx, zone);
+        ctx.db.movement_tick_schedule().id().delete(sched.id);
+        return Ok(());
+    }
     let now = Millis(now_ms(ctx));
     // The zone's map: built once per process from the compile-time-embedded
     // RON, borrowed here every tick (never rebuilt per tick).
@@ -361,19 +457,11 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             return Ok(()); // logged no-op: a content failure must not abort the tick
         }
     };
-    // Snapshot ids BEFORE mutating (never mutate the table mid-iteration).
-    let ids: Vec<u64> = ctx
-        .db
-        .character()
-        .zone_id()
-        .filter(zone)
-        .map(|c| c.entity_id)
-        .collect();
-    for id in ids {
+    for (id, intent) in chars {
         let Some(mut row) = ctx.db.character().entity_id().find(id) else {
             continue;
         };
-        let mut intent = match ctx.db.move_intent().entity_id().find(id) {
+        let mut intent = match intent {
             Some(intent) => intent,
             // No intent row and nothing published to drain: an NPC, or an idle
             // session that pre-dates `move_intent`. Normalise to Idle write-on-change.
@@ -459,6 +547,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                     publish_intent(&mut row, &intent.queue, intent.last_input_seq);
                     ctx.db.character().entity_id().update(row);
                     ctx.db.move_intent().entity_id().update(intent);
+                    arm_zone_tick(ctx, to_zone);
                     // skip grass-encounter trigger — a warp step is not a grass step
                     continue;
                 }
@@ -561,7 +650,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     }
 
     // NPC wander: deterministic, cadence-gated wander via game_core::npc_decide.
-    // Tick counter derived from server clock — avoids wall-clock entropy.
+    // The tick counter is the server clock in `STEP_MS` units, never a count of
+    // ticks that ran: it keeps advancing while a zone's schedule is removed, so a
+    // zone that empties and is entered again cannot replay or rewind an NPC's
+    // step sequence.
     let tick_counter: u64 = now.0.unsigned_abs() / (STEP_MS.unsigned_abs().max(1));
     let npc_entity_ids: Vec<u64> = ctx
         .db
