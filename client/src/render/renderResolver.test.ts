@@ -1334,9 +1334,9 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
 
   it('S7T-ZONE: reduced motion does not bypass the zone filter — off-zone characters stay out', () => {
     // WRONG IMPL KILLED: a reduced-motion arm hoisted ABOVE the
-    // `currentZoneId` continue (or above the isOwn split). The global subscription
-    // delivers every zone, so that lands every character in the
-    // world on screen — a visible cross-zone leak that only shows up in production.
+    // `currentZoneId` continue (or above the isOwn split). The store also holds the zone the
+    // player has just left while its set lingers, so that lands another zone's characters on
+    // screen — a visible cross-zone leak that only shows up in production.
     const resolver = new RenderResolver(STEP_MS);
     const own = ownRowAt(9, 9); // zoneId 1
     const remote = remoteDecoupled(true); // zoneId 1

@@ -85,7 +85,8 @@ export class RenderResolver {
     const out: RenderEntity[] = [];
 
     for (const c of characters) {
-      // Global subscription delivers all zones; only render the current zone.
+      // The store holds the own zone and any zone whose set still lingers; only the current
+      // zone is drawn.
       if (currentZoneId !== undefined && c.row.zoneId !== currentZoneId) continue;
       const isOwn =
         ownEntityId !== undefined && c.row.entityId === ownEntityId && predicted !== undefined;

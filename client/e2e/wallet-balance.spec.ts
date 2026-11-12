@@ -1359,8 +1359,9 @@ test.describe
       expect(
         everUnknown,
         "A's #shop-balance must NEVER have been written as `unknown` — not on open, not on " +
-          'any of the roughly once-a-second re-renders the shop batch listener performs while the ' +
-          'overlay is up. Any hit here is a call site that omitted store.ownWallet(identity) ' +
+          'any of the re-renders the shop batch listener performs while the overlay is up, one per ' +
+          "batch of B's steps through A's zone. " +
+          'Any hit here is a call site that omitted store.ownWallet(identity) ' +
           '(ADR-0169 D4). A wallet-owning player never legitimately renders the unknown arm: ' +
           'the my_wallet row arrives with the initial subscription, minutes before this open.',
       ).toBe(false);

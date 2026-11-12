@@ -369,14 +369,25 @@ both query strings and the state of the sets; the connection executes what it de
   set. Zone 0 is never assumed.
 - **Settled.** The scope is settled when the own-row set and the own zone's set are both applied.
   `main.ts` draws no character on a new connection until then. A warp into a zone whose set is not
-  applied yet leaves the world drawn while the zone fills in.
+  applied yet leaves the world drawn while the zone fills in. Every warp is that case: the
+  destination is subscribed when the own row arrives in it, so the player is drawn there alone
+  and the zone's NPCs and players appear together one round trip later (1 or 2 frames on
+  loopback, 17 frames measured at a 300 ms round trip).
+- **No own character, no characters.** The wanted zones come from the own character row. A client
+  without one (an account pending deletion, a join the server refused, an own row that was
+  deleted) wants no zone, so it holds no `character` row and draws none, NPCs included.
 - **Subscribe new before unsubscribing old.** On a warp the new zone is subscribed inside the own
   row's update callback. The old zone's set is released only once the new one is applied and the old
   one has gone unwanted for `LINGER_MS` (5 s). Nothing is unsubscribed on a connection that is being
   dropped.
 - **Failure.** A rejected own-row or own-zone set is retried in place after 250, 500 and 1000 ms;
   one more rejection sends the connection down the drop-and-reconnect path. One not applied within
-  5 s takes that path at once.
+  5 s takes that path at once. That path costs the player their place: the server deletes a
+  character when its last connection ends, so the reconnect joins again at the zone 0 spawn with
+  a new entity id. A link that stalls for 5 s while one of the two sets is pending (at login, or
+  just after a warp) ends that way; the same stall with both sets applied drops nothing and the
+  player stays where they were (measured with a 7 s hold on a 300 ms link: alone on the
+  destination map for 5.2 s, then back at the zone 0 spawn).
 - **`player` is a world directory.** It stays in the base set, unfiltered: the Players tab, names,
   presence counts and trade and challenge targeting read it.
 
@@ -429,7 +440,7 @@ server-first with a client fallback for older modules.
 text anywhere but `worldScope.ts` (a formatting difference stops the host sharing it); taking the
 zone from `rawMap` or assuming one; releasing the old zone before the new one is applied;
 unsubscribing on a dropped connection; drawing characters on a new connection before the scope has
-settled; a sender-scoped view of "players in my zone" (a view is evaluated on the reducer thread for
+settled; subscribing a zone for a client that has no own character row; a sender-scoped view of "players in my zone" (a view is evaluated on the reducer thread for
 every subscriber on every write); scoping `player` before its trigger.
 
 ## Bounded client prediction

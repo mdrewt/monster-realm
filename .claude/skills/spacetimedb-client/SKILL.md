@@ -24,11 +24,17 @@ description: Writing the monster-realm TS client against the SpacetimeDB SDK —
 - The builder takes the URI and database from `VITE_STDB_URI`/`VITE_STDB_DB`
   (`net/connectionConfig.ts`); a production build refuses the dev database
   `monster-realm`.
-- One subscription batch covers everything: `character` and `player` (all zones;
-  off-zone characters are filtered at render time), public content, `trade_offer`,
-  `battle_challenge`, `profile`, `player_quest`, and the owner-scoped views
-  (`my_monster_pub`, `my_battle`, `my_inventory`, `my_wallet`, `my_conversation`,
-  `my_account`, `my_export_bundle`, `my_pending_evolution_notices`).
+- The base subscription batch covers everything except `character`: `player` (every
+  player, unfiltered), public content, `trade_offer`, `battle_challenge`, `profile`,
+  `player_quest`, and the owner-scoped views (`my_monster_pub`, `my_battle`,
+  `my_inventory`, `my_wallet`, `my_conversation`, `my_account`, `my_export_bundle`,
+  `my_pending_evolution_notices`).
+- `character` is never subscribed whole. Each connection holds one set for its own row
+  (`WHERE entity_id = <E>`) and one per wanted zone (`WHERE zone_id = <Z>`).
+  `net/worldScope.ts` builds both query strings and decides when a set is subscribed
+  and released; `connection.ts` executes that. A zone just left stays subscribed for
+  `LINGER_MS`, so the store can hold a zone that is not drawn; the render filter
+  leaves it out.
 - **Never subscribe to a private table.** It fails the whole batch, and `onApplied`
   never fires. Subscribe to its view.
 - `onApplied` fires once, for the initial snapshot. Treat it as a readiness gate, not
