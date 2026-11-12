@@ -589,9 +589,9 @@ interface InReachOpts {
  *  `stand` facing `facing` and a non-player character is in A's reach: on the faced tile
  *  `stepTile(stand, facing)` or on `stand` itself (the two tiers of game-core
  *  `interact_candidates`), plus the chip check; false on timeout. The poll reads no zone, and
- *  the store still holds the characters of a zone the player left within the subscription's
- *  linger, so callers pick posts whose two reach tiles no NPC of another zone can occupy (each
- *  spec's WORLD FACTS say why). */
+ *  the store also holds the characters of the zone behind a warp within four tiles and of a zone
+ *  the player left within the subscription's linger, so callers pick posts whose two reach tiles
+ *  no NPC of another zone can occupy (each spec's WORLD FACTS say why). */
 async function waitForNpcInReach(page: Page, o: InReachOpts): Promise<boolean> {
   const front = stepTile(o.stand, o.facing);
   return page

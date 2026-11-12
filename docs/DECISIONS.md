@@ -367,19 +367,33 @@ both query strings and the state of the sets; the connection executes what it de
 - **The scope follows the authoritative own row, not the map being drawn.** The own `player` row
   names the entity, the own-row set delivers the character, and that row's `zone_id` names the zone
   set. Zone 0 is never assumed.
+- **Wanted zones.** The zone the own row is in, plus the destination of every warp of that zone
+  within `PREFETCH_TILES` (4, Manhattan) of the own row's tile. The warps come from the content's
+  zone map for the zone the row is in (`zoneWarps`, which `main.ts` serves from `zone_map`). A
+  destination is therefore subscribed about four steps (800 ms of walking) before the warp, its
+  rows wait in the store undrawn, and the arrival draws that zone's NPCs and players on its first
+  frame. The warp itself subscribes nothing and the scope stays settled through it. A prefetched
+  set never gates anything: it is not part of settled, a rejection is tried again after 1 s while
+  the zone is still wanted, and neither a rejection nor a missing applied ends the connection.
+  The arrival tile of each warp is the tile of the warp back, so a player standing where they
+  arrived holds both zones until they walk five tiles off. The zone 0 spawn (1,1) is four tiles
+  from the warp on (1,5), so a player standing on the spawn holds zone 1 as well.
 - **Settled.** The scope is settled when the own-row set and the own zone's set are both applied.
   `main.ts` draws no character on a new connection until then. A warp into a zone whose set is not
-  applied yet leaves the world drawn while the zone fills in. Every warp is that case: the
-  destination is subscribed when the own row arrives in it, so the player is drawn there alone
-  and the zone's NPCs and players appear together one round trip later (1 or 2 frames on
-  loopback, 17 frames measured at a 300 ms round trip).
+  applied yet leaves the world drawn while the zone fills in: the player is drawn there alone and
+  the zone's NPCs and players appear together when the set applies. That takes a link whose round
+  trip is longer than the walk from the prefetch line to the warp, or a move that puts the
+  character in a zone with no warp walked to (without the prefetch it is every warp: 1 or 2
+  frames on loopback, 17 frames measured at a 300 ms round trip).
 - **No own character, no characters.** The wanted zones come from the own character row. A client
   without one (an account pending deletion, a join the server refused, an own row that was
   deleted) wants no zone, so it holds no `character` row and draws none, NPCs included.
-- **Subscribe new before unsubscribing old.** On a warp the new zone is subscribed inside the own
-  row's update callback. The old zone's set is released only once the new one is applied and the old
-  one has gone unwanted for `LINGER_MS` (5 s). Nothing is unsubscribed on a connection that is being
-  dropped.
+- **Subscribe new before unsubscribing old.** A zone that becomes wanted is subscribed inside the
+  own row's update callback: the step that comes within range of a warp, or the warp itself when
+  the destination is not held yet. A set is released only once the own zone's set is applied and
+  it has gone unwanted for `LINGER_MS` (5 s), so pacing across the prefetch line or through a door
+  costs at most one subscribe and one unsubscribe per zone per 5 s. Nothing is unsubscribed on a
+  connection that is being dropped.
 - **Failure.** A rejected own-row or own-zone set is retried in place after 250, 500 and 1000 ms;
   one more rejection sends the connection down the drop-and-reconnect path. One not applied within
   5 s takes that path at once. That path costs the player their place: the server deletes a
@@ -438,7 +452,9 @@ server-first with a client fallback for older modules.
 
 **Rules out.** A `character` query in the base set, or one with no `WHERE`; building either query's
 text anywhere but `worldScope.ts` (a formatting difference stops the host sharing it); taking the
-zone from `rawMap` or assuming one; releasing the old zone before the new one is applied;
+zone from `rawMap` or assuming one; taking the prefetch position from the predicted tile, or the
+warps from the drawn map; a prefetched zone on the own zone's retry ladder or timeout; a standing
+subscription to every neighbouring zone; releasing the old zone before the new one is applied;
 unsubscribing on a dropped connection; drawing characters on a new connection before the scope has
 settled; subscribing a zone for a client that has no own character row; a sender-scoped view of "players in my zone" (a view is evaluated on the reducer thread for
 every subscriber on every write); scoping `player` before its trigger.

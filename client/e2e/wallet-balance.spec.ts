@@ -127,9 +127,9 @@ import {
 //     and (9,1) rock, (8,0) wall), so the post is (7,1) facing East. One press suffices.
 //
 // CROSS-ZONE NOISE IN THE IN-FRONT POLL: the helpers' poll does not read a character's zone,
-//   and a client holds the characters of the zone it left for a few seconds after a warp
-//   (the subscription's linger), so a player standing in zone 1 can still hold zone-0
-//   character rows. Checked: the zone-1 faced tile
+//   and a client holds the characters of the zone behind a warp while within four tiles of it,
+//   and of the zone it left for a few seconds after a warp (the subscription's linger), so a
+//   player standing in zone 1 can hold zone-0 character rows. Checked: the zone-1 faced tile
 //   (8,1) and its post (7,1) are Manhattan 7 and 6 from elder_oak's home (5,5), far outside
 //   his radius-2 disc; the zone-0 reach tiles (5,5) and (4,5) are never the zone-1
 //   shopkeeper's pinned (8,1). So the poll predicate cannot be fooled at either post, and

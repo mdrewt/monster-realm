@@ -37,9 +37,27 @@ const H = vi.hoisted(() => ({
   connectOpts: null as ConnectionOptions | null,
   /** Every value main.ts handed to telemetry.recordInterpGap, oldest first. */
   gaps: [] as (number | undefined)[],
+  /** The zone id of every `zone_map` call, oldest first. */
+  zoneMaps: [] as number[],
 }));
 
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock());
+// wasm pkg: the walking mock, with a warp in each of zones 0 and 1 (into the other) and no map
+// at all for zone 9.
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
+  const base = wasmPkgWalkingMock();
+  return {
+    ...base,
+    zone_map: (zoneId: number) => {
+      H.zoneMaps.push(zoneId);
+      if (zoneId === 9) throw new Error('no map for zone 9');
+      const warps =
+        zoneId === 0 || zoneId === 1
+          ? [{ from: { x: 1, y: 5 }, to_zone: 1 - zoneId, to_tile: { x: 1, y: 5 } }]
+          : [];
+      return { ...base.zone_map(zoneId), warps };
+    },
+  };
+});
 
 vi.mock('./net/connection', () => {
   const reducers = new Proxy({}, { get: () => (): Promise<void> => Promise.resolve() });
@@ -194,6 +212,27 @@ describe('main.ts draws the world once its scope has settled', { sequential: tru
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     document.body.replaceChildren();
+  });
+
+  it("connect() is given each zone's warps from the content, by the zone asked for and read once per zone; a zone the content lacks has none [WS-ZONE-WARPS]", async () => {
+    // WRONG IMPL KILLED: no zoneWarps (nothing is prefetched, every warp shows an empty zone for
+    // a round trip); the warps of the drawn map (rawMap) whatever zone is asked for; a zone_map
+    // call per scope run; a throw out of the scope run for an unknown zone.
+    await boot();
+    const zoneWarps = opts.zoneWarps;
+    if (zoneWarps === undefined) throw new Error('main.ts must pass connect() a zoneWarps');
+    H.zoneMaps = [];
+    // The drawn map is zone 0; the scope asks by the authoritative row's zone.
+    expect(zoneWarps(1).map((w) => [w.from, w.to_zone])).toEqual([[{ x: 1, y: 5 }, 0]]);
+    expect(zoneWarps(0).map((w) => [w.from, w.to_zone])).toEqual([[{ x: 1, y: 5 }, 1]]);
+    expect(zoneWarps(2)).toEqual([]);
+    expect(zoneWarps(9), 'no such zone: no warps, and no throw').toEqual([]);
+    for (let i = 0; i < 50; i += 1) {
+      zoneWarps(0);
+      zoneWarps(1);
+      zoneWarps(9);
+    }
+    expect(H.zoneMaps, 'one content read per zone').toEqual([1, 0, 2, 9]);
   });
 
   it('login: the own character alone is not drawn; after the settled edge the whole zone is, on the next frame [WS-REVEAL-LOGIN]', async () => {
