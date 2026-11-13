@@ -1877,7 +1877,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "last_position",
         policy: DeletionPolicy::Erase,
-        basis: "the zone and tile the owner's character stood on at its last disconnect, deleted outright at cascade time; re-keyed by the claim flow; not exported because the row exists only while the owner has no character, and an owner in the game has the same position in the exported character row",
+        basis: "the zone and tile the owner's character stood on at its last disconnect, deleted outright at cascade time; re-keyed by the claim flow; not exported: an owner in the game has no row and has the same position in the exported character row, and an export requested by an account with no character omits its saved position",
         exportable: false,
     },
     DataLifecycleEntry {

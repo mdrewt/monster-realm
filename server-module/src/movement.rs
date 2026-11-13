@@ -124,6 +124,9 @@ pub(crate) fn save_last_position(ctx: &ReducerContext, owner: Identity, entity_i
     let Some(ch) = ctx.db.character().entity_id().find(entity_id) else {
         return;
     };
+    // A row already on record for this owner would make the insert a
+    // primary-key conflict, aborting `on_disconnect` with the presence rows
+    // still in place.
     ctx.db.last_position().owner_identity().delete(owner);
     ctx.db.last_position().insert(LastPosition {
         owner_identity: owner,

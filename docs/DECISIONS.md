@@ -392,8 +392,11 @@ character had when the account's last connection closed. The position is kept in
   like any other. The guest claim re-keys the row onto the claiming account
   (`movement::rekey_last_position`), and a row counts as game data for the claim's
   destination-is-empty guard, so the claimed account's first join puts it where the guest stood.
-- **Not exported.** An export is requested from a session that has joined, where the row does not
-  exist and the same position is in the exported `character` row.
+- **Not exported.** The row exists only while the account has no character. An account in the game
+  has no row, and the same position is in its exported `character` row. `request_data_export` also
+  accepts an account that has not joined on any connection; that export omits the saved position,
+  which is an accepted limit: the game client joins before it can request an export, and the
+  position is in the next export made from inside the game.
 
 **Why.** With every session starting in zone 0, the spawn zone holds every player's first minutes
 and is the population peak the per-client byte budget has to survive, however the rest of the
