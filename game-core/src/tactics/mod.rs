@@ -22,10 +22,10 @@
 //! - `clock`      — the idle clock: pure window / pad / reset / strike arithmetic.
 //! - `queue`      — `TacticalBattle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
 //! - `ai`         — the wild planner: the three stances + Exhausted, seed-free (a pure function of the public board).
-//! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement.
+//! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement; the deploy slot count.
 //! - `recruit`    — the recruit rules behind the turn machine's gate: quantized odds + line items, preflight, the roll, the rebuild.
 //! - `rewards`    — the KO hook's in-battle ledger (XP split, essence, currency) and the battle-end payout.
-//! - `content`    — the bt-6 sidecar registries (skills/species/items/zones/maps + tuning), the kit join, the lints.
+//! - `content`    — the bt-6 sidecar registries (skills/species/items/zones/maps + tuning), the kit join, the per-unit kit join, the lints.
 
 pub mod ai;
 #[cfg(test)]

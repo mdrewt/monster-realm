@@ -1,5 +1,5 @@
 //! Multi-wild encounter generation — design §3.4: the pack-size roll, the clamp, the per-wild seed
-//! derivation, the map pick and the `spawn_b` placement.
+//! derivation, the map pick and the `spawn_b` placement — and the player side's deploy slot count.
 //!
 //! Everything here is a pure function of the ONE encounter seed the server already draws
 //! (`ctx.random()`, a u32 — widened to u64 by the shell) plus content parameters that bt-6 joins
@@ -22,8 +22,8 @@ pub const MAX_PACK: u8 = 3;
 /// side-A spawn cells.
 #[must_use]
 pub fn deploy_slots(map: &BattleMapDef) -> u8 {
-    let _ = map;
-    todo!("ts-6b-4 API freeze")
+    // A count past `u8::MAX` is above the cap whatever it is.
+    u8::try_from(map.spawn_a.len()).map_or(MAX_PACK, |cells| cells.min(MAX_PACK))
 }
 
 /// The per-mille scale the weights are expressed in (the carried `roll % 1000 < threshold` idiom).

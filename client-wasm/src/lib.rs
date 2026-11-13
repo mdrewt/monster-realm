@@ -597,8 +597,9 @@ pub fn tactics_golden(cases: JsValue) -> Result<JsValue, JsValue> {
 //
 // The client's view of the tactical rules (BT11.7, the bt-10 overlay port BT10.4): every export
 // below converts a JS value, calls game-core's `tactics::*` and converts the answer back. No rule
-// lives here — the shell only joins compile-time content (the server's `unit_of_row` join), loops
-// tiles / units / skills over game-core calls and copies trace fields into booleans. The TWO
+// lives here — the shell only looks up compile-time content (the kit itself is game-core's
+// `unit_kit`, as on the server), loops tiles / units / skills over game-core calls and copies trace
+// fields into booleans. The TWO
 // restated predicates (`stab`, the carried `combat/damage.rs` STAB test, and `status_blocked`, the
 // resolver's status preconditions) are flagged at their sites and differentially tested against
 // `damage_pipeline` / `resolve_attack` in `tactics_tests.rs`.
@@ -614,15 +615,15 @@ pub fn tactics_golden(cases: JsValue) -> Result<JsValue, JsValue> {
 use serde::{Deserialize, Serialize};
 
 use game_core::tactics::{
-    build_kits, damage_pipeline, disengage_taxed, find_path, guard_granted, is_exhausted,
-    is_flanked, load_battle_maps, load_tactics_skills, load_tactics_species, load_tactics_tuning,
-    order as initiative_order, plan as ai_plan, plan_cost, priority_for_round, recruit_odds, spend,
-    status_blocks_turn, target_set, validate_at_pop, validate_battle_maps, validate_unit,
-    BattleKind, BattleMapDef, BattleMapEntry, Board, BoardUnit, Cell, EconomyError, Entry,
-    EventPayload, GeometryError, HaltReason, Hooks, MoveAction, MoveClass, Path, PathError,
-    PipelineTrace, QueuedAction, RecruitAction, RecruitError, RecruitOdds, RollPair, Side,
-    SkillGeometry, SkillTactics, SpeciesTactics, Stance, TacticalState, TacticalUnit,
-    TacticsTuning, TurnBudget, TurnEndCause, UnitKit, UnitState, Validated,
+    build_kits, damage_pipeline, deploy_slots, disengage_taxed, find_path, guard_granted,
+    is_exhausted, is_flanked, load_battle_maps, load_tactics_skills, load_tactics_species,
+    load_tactics_tuning, order as initiative_order, plan as ai_plan, plan_cost, priority_for_round,
+    recruit_odds, spend, status_blocks_turn, target_set, unit_kit, validate_at_pop,
+    validate_battle_maps, validate_unit, BattleKind, BattleMapDef, BattleMapEntry, Board,
+    BoardUnit, Cell, EconomyError, Entry, EventPayload, GeometryError, HaltReason, Hooks,
+    MoveAction, MoveClass, Path, PathError, PipelineTrace, QueuedAction, RecruitAction,
+    RecruitError, RecruitOdds, RollPair, Side, SkillGeometry, SkillTactics, SpeciesTactics, Stance,
+    TacticalState, TacticalUnit, TacticsTuning, TurnBudget, TurnEndCause, UnitState, Validated,
 };
 use game_core::{
     accuracy_check, load_skills, load_species, load_type_chart, BattleOutcome, Effectiveness,
@@ -874,9 +875,9 @@ pub fn fresh_budget() -> Result<TurnBudget, String> {
     Ok(TurnBudget::fresh(&tactics_content()?.tuning))
 }
 
-/// The server's `unit_of_row` join (server-module `tactics.rs::unit_kit` + `unit_of_row`): the
-/// kit is the species' affinity, the content kit's base speed / movement / `[light, heavy]`, and
-/// the ROW's level and stats; every other field is copied.
+/// A `battle_unit` row as the rules' unit, as the server's `unit_of_row` builds it: the kit is
+/// game-core's `unit_kit` over the row's species and kit rows with the ROW's level and stats; every
+/// other field is copied.
 ///
 /// # Errors
 /// Unknown species / kit.
@@ -896,15 +897,7 @@ pub fn unit_of_row(row: &UnitRow) -> Result<TacticalUnit, String> {
         id: row.id,
         side: row.side,
         slot: row.slot,
-        kit: UnitKit {
-            species_id: row.species_id,
-            affinity: species.affinity,
-            level: row.level,
-            stats: row.stats,
-            base_speed: kit.base_speed,
-            class: kit.movement,
-            skills: vec![kit.light.clone(), kit.heavy.clone()],
-        },
+        kit: unit_kit(species, kit, row.level, row.stats),
         pos: row.pos,
         cur_hp: row.cur_hp,
         status: row.status,
@@ -1699,7 +1692,7 @@ pub fn tuning_out_of(tuning: &TacticsTuning) -> TacticsTuningOut {
     TacticsTuningOut {
         surge_start_round: tuning.surge_start_round,
         wild_round_cap: tuning.wild_round_cap,
-        autopass_forfeit: 0,
+        autopass_forfeit: tuning.autopass_forfeit,
     }
 }
 
@@ -1717,8 +1710,7 @@ pub fn tuning_out() -> Result<TacticsTuningOut, String> {
 /// # Errors
 /// Unknown map id.
 pub fn deploy_slots_of(map_id: u32) -> Result<u8, String> {
-    let _ = map_id;
-    todo!("ts-6b-4 API freeze")
+    Ok(deploy_slots(map_of(map_id)?))
 }
 
 /// The NEXT round's initiative over `board`'s conscious units — `initiative::order` under the side
