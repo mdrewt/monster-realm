@@ -260,7 +260,9 @@ the clock, queue, deploy and summary identity columns, and a scan of `battle_uni
 sweeps the whole battle's per-battle rows by `battle_id` before `battle::anonymize_battles`
 tombstones the anchor, and leaves `battle_summary` with the deleting side swapped to the
 tombstone identity. The other participant's rows of a shared battle go with it: the
-anchor is forced terminal for both sides and the transcript is GC-bound. Game-core's
+anchor is forced terminal for both sides and the transcript is GC-bound. A guest claim
+runs the same two steps for the guest identity it retires; there every anchor is already
+terminal, because the claim refuses while either identity is in an ongoing battle. Game-core's
 non-wire enums (`Side`, `MoveClass`, `Stance`, `Entry`) are stored through schema-local
 `SpacetimeType` twins (`SideRow`, `MoveClassRow`, `StanceRow`, `BudgetLastEntry`), never
 as integer codes.
@@ -874,8 +876,11 @@ progress to an account like this. The browser mints a 256-bit claim code
 identity calls `complete_guest_claim`, which runs every caller-state guard before it
 looks up the code, then re-keys the guest's persistent game data onto the account
 (`rekey_all`: monsters, inventory, quests, wallet, profile and the rest),
-purges the guest's export bundles, and consumes the code. The destination must own no
-game data. That holds because the client does not call `join_game` on a signed-in
+purges the guest's export bundles, erases the guest's finished battles as the deletion
+cascade erases its subject's (`schema::erase_tactical_rows`, then
+`battle::anonymize_battles`: the per-battle tactical rows go, and the guest's side of
+each `battle` and `battle_summary` row becomes the tombstone identity), and consumes
+the code. The destination must own no game data. That holds because the client does not call `join_game` on a signed-in
 connection while an unconsumed claim code is stored; it claims first
 (`client/src/net/connection.ts`). A claim expires after `CLAIM_TTL_MS` (15 min),
 cleaned up by a scheduled reaper.
@@ -884,10 +889,16 @@ cleaned up by a scheduled reaper.
 the server's RNG. Checking caller state before resolving the code means the reducer
 cannot be used to test whether a code exists; malformed and already-used codes return
 the same error. Registering the code before the redirect is what lets the claim
-survive the round trip to the identity provider.
+survive the round trip to the identity provider. A finished battle is history shared
+with an opponent, not progress, and the guest identity retires at the claim. Nothing
+else reliably removes what names it: every sweep and the 24 h GC keep `battle_summary`,
+a wild or practice anchor is swept only on its own player's next battle, and a PvP
+anchor waits on the opponent's next battle in the same role.
 
 **Rules out.** Server-minted claim codes; storing email or JWT subjects; rejecting
-anonymous connections; widening the audience allowlist to more than this game's client.
+anonymous connections; widening the audience allowlist to more than this game's client;
+re-keying battle rows onto the claiming account (a re-key helper per tactical table, to
+carry history that only telemetry reads).
 
 ## Account deletion and data export
 

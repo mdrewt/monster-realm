@@ -674,7 +674,12 @@ pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> 
 /// evolution write-back, and no `battle_action` sweep. A forced row emits one
 /// `deletion_cascade_forced_battle_terminal` line carrying only the battle id:
 /// it marks a 6a-resolver gap to investigate, and the cascade line carries the
-/// subject. Called only from `accounts::account_deletion_reaper`.
+/// subject.
+///
+/// Two callers: `accounts::account_deletion_reaper`, for the account it erases,
+/// and `accounts::complete_guest_claim`, for the guest identity it retires. The
+/// claim refuses while any row naming the guest is `Ongoing` (its guard 10), so
+/// there every row is already settled: nothing is forced and nothing is logged.
 pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
     let mut rows: Vec<Battle> = ctx.db.battle().player_identity().filter(owner).collect();
     rows.extend(

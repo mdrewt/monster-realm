@@ -1849,6 +1849,14 @@ fn fixture_synthetic_retired_writers() -> String {
 const BT17_BATTLE_WILD_SWEEPERS: &[&str] =
     &["cancel_queue", "deploy_units", "forfeit", "submit_queue"];
 
+/// The client-callable reducers that reach `battle_wild` AND `pvp_deadline_schedule` by erasing a
+/// retired identity's battles: `complete_guest_claim` calls `battle::anonymize_battles` for the
+/// guest identity it retires, which, per battle row naming that identity, deletes the row's
+/// `battle_wild` roster and runs `pvp::disarm_pvp_deadlines` (a delete on
+/// `pvp_deadline_schedule`). Neither helper inserts into either table, and neither touches
+/// `battle_action`. Pinned as an exact set.
+const BT17_RETIRED_IDENTITY_ERASERS: &[&str] = &["complete_guest_claim"];
+
 /// The seven 1v1 reducers bt-17 deletes, plus the deleted dev-only `start_wild_battle`.
 const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
     "start_battle",
@@ -1864,22 +1872,22 @@ const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
 /// BT17.1 "retired from use (no new rows written)", as a census over the real crate, run once PER
 /// retired table (the classified set narrowed to that one table, NO owner exemption), so every
 /// reducer that reaches a write verb on it (gated or not) is listed for that table:
-///   (a) `pvp_deadline_schedule` — reached by NO reducer (only `submit_pvp_action` armed it);
-///   (b) `battle_action` — reached by EXACTLY the same four (`pvp::settle_pvp_battle`'s stale-action
-///       delete under the settle funnel; measured on the purged tree — only `submit_pvp_action` ever
-///       INSERTED one);
+///   (a) `pvp_deadline_schedule` — reached by EXACTLY [`BT17_RETIRED_IDENTITY_ERASERS`]
+///       (`battle::anonymize_battles` → `pvp::disarm_pvp_deadlines`, a delete; nothing inserts into
+///       the table);
+///   (b) `battle_action` — reached by EXACTLY [`BT17_BATTLE_WILD_SWEEPERS`]
+///       (`pvp::settle_pvp_battle`'s stale-action delete under the settle funnel; nothing inserts
+///       into the table);
 ///   (c) `battle_wild` — reached by EXACTLY [`BT17_BATTLE_WILD_SWEEPERS`] (the tactical terminal
-///       sweep's deletes; the 1v1 starts and `write_back_battle_results` callers are gone);
+///       sweep's deletes) plus [`BT17_RETIRED_IDENTITY_ERASERS`] (`anonymize_battles`' delete of
+///       each erased battle's roster);
 ///   (d) none of [`BT17_RETIRED_1V1_REDUCERS`] appears in any table's set.
-/// Lifecycle and scheduled reducers keep their own verdicts and are out of scope (the
-/// `pvp_deadline_reaper` stays scheduled: its scheduled-ness is fixed at first publish, and it only
-/// consumes rows nothing arms).
-///
-/// Correction (tester round 2, from the spec): round 1 asserted that NO reducer reaches any of the
-/// three tables, but BT17.1 says "no NEW rows written", and the census cannot tell an insert from
-/// a delete — the four tactical reducers above reach `battle_wild` only through the sweep's delete,
-/// which is not a new row. The bite is kept: the exact-set pin on (c) still fails a new writer, and
-/// (a), (b) and (d) still fail every 1v1 path.
+/// BT17.1 says "no NEW rows written", and the census cannot tell an insert from a delete, so a
+/// delete-only reach is listed; every listed reach is a delete, and the exact-set pins fail any
+/// reducer outside them. Lifecycle and scheduled reducers keep their own verdicts and are out of
+/// scope (the `pvp_deadline_reaper` stays scheduled: its scheduled-ness is fixed at first publish,
+/// and it only consumes rows nothing arms; `account_deletion_reaper`, which also runs
+/// `anonymize_battles`, is scheduled).
 ///
 /// RED BEFORE bt-17: `submit_pvp_action` (a client-callable reducer until bt-17, now deleted)
 /// reached all three tables (`battle_action`, `pvp_deadline_schedule`, and `battle_wild` through
@@ -1887,10 +1895,12 @@ const BT17_RETIRED_1V1_REDUCERS: &[&str] = &[
 /// reached `battle_wild` through the same write-back; `start_wild_battle` inserted `battle_wild`.
 ///
 /// kills: a 1v1 reducer left a reducer (its attribute kept — it then reaches a retired table and the
-/// exact-set pins fail); any reducer OUTSIDE the four reaching a retired table; any client-callable
-/// reducer reaching `pvp_deadline_schedule` (lifecycle and scheduled reducers keep their own verdicts). NOT killed (the census sees a reach, not a verb): an insert
-/// added INSIDE one of the four, or a de-attributed body re-wired into one of them — those are the
-/// reviewer's and the continuation's (which deletes the bodies).
+/// exact-set pins fail); any reducer OUTSIDE the pinned sets reaching a retired table; any
+/// client-callable reducer other than `complete_guest_claim` reaching `pvp_deadline_schedule`;
+/// `complete_guest_claim` reaching `battle_action` (lifecycle and scheduled reducers keep their own
+/// verdicts). NOT killed (the census sees a reach, not a verb): an insert added INSIDE one of the
+/// pinned reducers or their helpers, or a de-attributed body re-wired into one of them — those are
+/// the reviewer's and the continuation's (which deletes the bodies).
 #[test]
 fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
     let no_owners: &[&str] = &[];
@@ -1944,11 +1954,18 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
         (set, described)
     };
 
+    let erasers: BTreeSet<String> = BT17_RETIRED_IDENTITY_ERASERS
+        .iter()
+        .map(|s| String::from(*s))
+        .collect();
+
     let (deadline, deadline_desc) = per_table("pvp_deadline_schedule");
-    assert!(
-        deadline.is_empty(),
-        "(a) no reducer may reach pvp_deadline_schedule (BT17.1: the 1v1 secret-pick deadline is \
-         armed by nothing); reached by: {deadline_desc:#?}"
+    assert_eq!(
+        deadline, erasers,
+        "(a) pvp_deadline_schedule is reached by EXACTLY the reducers that erase a retired \
+         identity's battles through battle::anonymize_battles -> pvp::disarm_pvp_deadlines (a \
+         delete; BT17.1: the 1v1 secret-pick deadline is armed by nothing); reached by: \
+         {deadline_desc:#?}"
     );
 
     let sweepers: BTreeSet<String> = BT17_BATTLE_WILD_SWEEPERS
@@ -1969,11 +1986,13 @@ fn no_reducer_writes_a_retired_1v1_table_bt17_1() {
     );
 
     let (wild, wild_desc) = per_table("battle_wild");
+    let wild_expected: BTreeSet<String> = sweepers.union(&erasers).cloned().collect();
     assert_eq!(
-        wild, sweepers,
+        wild, wild_expected,
         "(c) battle_wild is reached by EXACTLY the tactical reducers whose terminal path runs \
-         tactics::finish -> tactics_settle::settle -> battle::sweep_prior_terminals (a delete of \
-         the finished anchor's roster, not a new row); reached by: {wild_desc:#?}"
+         tactics::finish -> tactics_settle::settle -> battle::sweep_prior_terminals, plus the \
+         reducers that erase a retired identity's battles through battle::anonymize_battles \
+         (each a delete of a finished anchor's roster, not a new row); reached by: {wild_desc:#?}"
     );
 
     for name in BT17_RETIRED_1V1_REDUCERS {

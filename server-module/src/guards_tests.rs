@@ -3202,3 +3202,63 @@ fn ts2_lock_at_confirm_sessions_of_yields_the_owners_sessions_in_both_roles() {
         );
     }
 }
+
+/// The refusal a mid-grace caller reads, whichever gated reducer it called: one sentence that
+/// is true for movement, dialogue and shopping alike, compared as the literal a player sees.
+const TS6B_DELETION_GATED_TEXT: &str =
+    "account deletion requested; this action is unavailable until the deletion is cancelled";
+
+/// A mid-grace caller gets the one deletion refusal, word for word, from `enqueue_move`,
+/// `set_move`, `talk` and `buy`; the same caller with an `Active` account gets each reducer's
+/// ordinary answer instead.
+///
+/// The caller is joined (`talk` and `buy` check `not joined` before the gate) and has no
+/// character, NPC or shop stock, so every admitted call stops at a read.
+///
+/// kills: a refusal that names specific actions (trades, battles, challenges or any other list);
+/// a per-reducer refusal text (move, talk or shop phrasing of its own); a reducer that formats the reason with its own name or
+/// prefix; a constant refusal (the `Active` control answers with the ordinary errors).
+#[test]
+fn a_mid_grace_caller_gets_the_same_reason_from_move_talk_and_buy() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    rb128_seed_player(&fx, me);
+
+    let call = |what: &str| -> Result<(), String> {
+        match what {
+            "enqueue_move" => crate::movement::enqueue_move(&ctx, game_core::MoveInput::Jump, 1),
+            "set_move" => crate::movement::set_move(&ctx, game_core::MoveInput::Jump, 1),
+            "talk" => crate::npc::talk(&ctx, 1),
+            "buy" => crate::economy::buy(&ctx, 1, 1, 1),
+            other => panic!("no gated reducer called {other}"),
+        }
+    };
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    acct.seed(&active);
+    for (what, ordinary) in [
+        ("talk", "character not found"),
+        ("buy", "shop 1 does not stock item 1"),
+    ] {
+        assert_eq!(
+            call(what),
+            Err(ordinary.to_string()),
+            "`{what}` with an Active account must answer with its own ordinary refusal, never the \
+             deletion text"
+        );
+    }
+
+    assert_eq!(acct.remove(me), 1, "fixture: one Active row for the caller");
+    acct.seed(&crate::accounts::requested_deletion(active, 1));
+    for what in ["enqueue_move", "set_move", "talk", "buy"] {
+        assert_eq!(
+            call(what),
+            Err(TS6B_DELETION_GATED_TEXT.to_string()),
+            "`{what}` refused a mid-grace caller with the wrong text: every gated reducer gives \
+             the one sentence that holds for any action, never a text naming specific actions \
+             or one of its own"
+        );
+    }
+}

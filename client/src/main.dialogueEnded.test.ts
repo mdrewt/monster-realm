@@ -131,7 +131,7 @@ const ENDED_NPC_GONE = 'Conversation ended: they are no longer here.';
 const QUEST_001_ACK = 'Quest complete: quest_001. You received 50 gold.';
 /** The server's single deletion-gate refusal (server-module guards.rs REJECT_DELETION_GATED). */
 const DELETION_GATED =
-  'account deletion requested; new trades, battles and challenges are unavailable';
+  'account deletion requested; this action is unavailable until the deletion is cancelled';
 
 /** An existing a11y label (M23 copy, not this slice's): what the live region says on an edge. */
 function a11yLabel(key: string): string {

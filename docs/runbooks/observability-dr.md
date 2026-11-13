@@ -155,6 +155,14 @@ a lost issuer database orphans every account.
   deletion. The `Identity` key and timestamps remain in shared historical rows
   (pseudonymisation, not erasure).
 - Retuning the grace period is a code change to that constant.
+- **Logs keep the key too.** The cascade ends with one `account_deletion_cascade` log line
+  naming the erased account's `Identity` (`subject`), and a guest claim ends with one
+  `guest_claim_export_purge` line naming the retired guest's (`guest`). These two lines tie
+  an identity to its erasure or its claim. Like every other module log line that carries a
+  caller's `Identity` (refusals and challenges, for example), they stay in Loki for its
+  30-day retention (section 4). Alloy reads them from the host's
+  `replicas/<id>/module_logs/*.log` files, which Loki's retention does not cover and nothing
+  in this stack removes.
 - **A deletion looks stuck:** check the account's `status`, `deletion_requested_at_ms`
   and `terminal_at_ms`, and whether it has an `account_deletion_reaper_schedule` row.
   A `PendingDeletion` account with no schedule row is re-armed by
@@ -162,8 +170,8 @@ a lost issuer database orphans every account.
   `sync_content` as the owner). The cascade runs as one transaction and stamps
   `terminal_at_ms` last, so a half-erased account cannot persist.
 - **Export bundles** are a second copy of one player's data. They are purged when the
-  owner requests a new export, by the deletion cascade, and by
-  `export_bundle_reaper` after 7 days (`EXPORT_BUNDLE_TTL_MS`,
+  owner requests a new export, by the deletion cascade, by a guest claim (the retired
+  guest's bundles), and by `export_bundle_reaper` after 7 days (`EXPORT_BUNDLE_TTL_MS`,
   `server-module/src/privacy.rs`). The reaper has one schedule row while bundles exist,
   a one-shot at the oldest bundle's expiry, and none otherwise; it runs at most once an
   hour, so a bundle is gone within an hour of its expiry. Nothing re-checks the row
