@@ -171,8 +171,8 @@ a lost issuer database orphans every account.
   call), its row is consumed and not replaced, and bundles then stay until the next
   export request, purge, `init` or `sync_content` re-arms it, which on a quiet server
   can be past the 7 days. To check, compare the two private tables as the owner:
-  `spacetime sql <db> "SELECT COUNT(*) FROM export_bundle"` non-zero with
-  `SELECT COUNT(*) FROM export_bundle_reaper_schedule` zero means bundles are waiting
+  `spacetime sql <db> "SELECT COUNT(*) AS n FROM export_bundle"` non-zero with
+  `SELECT COUNT(*) AS n FROM export_bundle_reaper_schedule` zero means bundles are waiting
   with no run armed; call `sync_content` as the owner to re-arm it (the run follows
   an hour later when a bundle has already expired). `playtest_event` and `playtest_reaper_schedule` behave the same
   way, with a 5-minute delay and the next recruit attempt as the write that re-arms. Bundles in a backup live as long as the
