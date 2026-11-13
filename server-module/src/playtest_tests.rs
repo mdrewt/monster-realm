@@ -1155,6 +1155,149 @@ fn nh_ensure_playtest_reaper_converges_any_schedule_on_the_table() {
     );
 }
 
+/// `rearm_wake_ms`: a run that has just happened arms the next one no sooner
+/// than one retry delay from now. Nothing owed stays nothing; a run already
+/// further out than that is left where it is.
+///
+/// kills: the floor dropped (a constant or pass-through return), `max` turned
+/// into `min`, the floor taken from the wake time instead of from now, `+`
+/// turned into `-` or `*`.
+#[test]
+fn rearm_wake_is_never_sooner_than_one_retry_from_now() {
+    let f = |wake| super::rearm_wake_ms(wake, 5_000, 30);
+    assert_eq!(f(None), None, "nothing owed: no run");
+    assert_eq!(f(Some(5_001)), Some(5_030), "1 ms out: floored");
+    assert_eq!(
+        f(Some(5_029)),
+        Some(5_030),
+        "just inside the delay: floored"
+    );
+    assert_eq!(f(Some(5_030)), Some(5_030), "exactly one delay out");
+    assert_eq!(f(Some(5_031)), Some(5_031), "further out: kept");
+    assert_eq!(f(Some(9_000)), Some(9_000));
+    assert_eq!(
+        super::rearm_wake_ms(Some(7), i64::MAX - 1, 30),
+        Some(i64::MAX),
+        "saturates instead of overflowing"
+    );
+}
+
+/// Rows that expire 1 ms apart are one run per retry delay, not one run per
+/// row. The run at the first row's expiry reaps that row and arms exactly one
+/// next run at now + retry (the second row expires 1 ms later, the third 2 ms
+/// later); that run reaps both and, with the table empty, arms nothing.
+///
+/// kills: the reaper re-arming at the exact next expiry (a full scan per
+/// distinct expiry), the floor applied with the wrong constant.
+#[test]
+fn nh_rows_expiring_1ms_apart_rearm_once_at_now_plus_retry() {
+    use crate::native_host_tests::fixture;
+    let fx = fixture();
+    let events = event_table(&fx);
+    let schedule = schedule_table(&fx);
+    let player = Identity::from_byte_array([0x29; 32]);
+    let module = Identity::from_byte_array(MODULE);
+    fx.set_database_identity(module);
+    events.seed(&event_row(1, player, NOW - TTL));
+    events.seed(&event_row(2, player, NOW - TTL + 1));
+    events.seed(&event_row(3, player, NOW - TTL + 2));
+    schedule.seed(&one_shot(5, NOW));
+    let run = |id: u64, ms: i64| {
+        fx.run_as_at(module, ts(ms), |ctx| {
+            super::playtest_reaper(ctx, one_shot(id, ms))
+        })
+    };
+    assert_eq!(run(5, NOW), Ok(()));
+    assert_eq!(events.rows().len(), 2, "only the expired row went");
+    let next: Vec<(u64, Option<i64>)> = wakes(&schedule).into_iter().filter(|w| w.0 != 5).collect();
+    assert_eq!(next.len(), 1, "exactly one re-arm: {next:?}");
+    assert_eq!(
+        next[0].1,
+        Some(NOW + RETRY),
+        "one retry delay from the run, not 1 ms"
+    );
+    assert_eq!(schedule.remove(5), 1);
+    assert_eq!(run(next[0].0, NOW + RETRY), Ok(()));
+    assert_eq!(events.rows().len(), 0, "one run reaped both later rows");
+    assert_eq!(
+        wakes(&schedule),
+        next,
+        "an empty table is left no row but the one that fired"
+    );
+}
+
+/// `insert_arm_from_ms`: with a run armed the insert arms from its own row and
+/// reads nothing; with none it arms from the table's oldest row.
+///
+/// kills: the branches swapped, a constant return, the scan run when a run is
+/// armed.
+#[test]
+fn insert_arms_from_the_oldest_row_only_when_no_run_is_armed() {
+    assert_eq!(
+        super::insert_arm_from_ms(true, 5_000, || -> Option<i64> {
+            panic!("the events are not read while a run is armed")
+        }),
+        5_000
+    );
+    assert_eq!(
+        super::insert_arm_from_ms(false, 5_000, || Some(1_200)),
+        1_200
+    );
+    assert_eq!(super::insert_arm_from_ms(false, 5_000, || None), 5_000);
+}
+
+/// Rows left with no run armed (the reaper's transaction was lost after the
+/// runtime consumed its schedule row) are picked up by the next insert, which
+/// arms from the table's true oldest row: one retry delay out when that row has
+/// already expired, at its expiry when it has not. A legacy interval row is not
+/// a run armed, so the same holds beside one, and the interval row goes.
+///
+/// kills: the insert arming at its own row's expiry when no run is armed (old
+/// rows outliving the TTL by a second TTL), an interval row counted as a run.
+#[test]
+fn nh_insert_with_no_run_armed_arms_from_the_true_oldest_row() {
+    use crate::native_host_tests::fixture;
+    let player = Identity::from_byte_array([0x2A; 32]);
+    let record = |fx: &crate::native_host_tests::Fixture, ms: i64| {
+        fx.run_as_at(player, ts(ms), |ctx| {
+            super::record_recruit_event(ctx, player, 9, 3, 400, None, false)
+        })
+    };
+    {
+        let fx = fixture();
+        let events = event_table(&fx);
+        let schedule = schedule_table(&fx);
+        events.seed(&event_row(101, player, NOW - TTL - 9));
+        events.seed(&event_row(102, player, NOW - 50));
+        record(&fx, NOW);
+        let armed = wakes(&schedule);
+        assert_eq!(armed.len(), 1, "exactly one row: {armed:?}");
+        assert_eq!(armed[0].1, Some(NOW + RETRY), "an expired row is waiting");
+    }
+    {
+        let fx = fixture();
+        let events = event_table(&fx);
+        let schedule = schedule_table(&fx);
+        events.seed(&event_row(101, player, NOW - 800));
+        events.seed(&event_row(102, player, NOW - 50));
+        record(&fx, NOW);
+        let armed = wakes(&schedule);
+        assert_eq!(armed.len(), 1, "exactly one row: {armed:?}");
+        assert_eq!(armed[0].1, Some(NOW - 800 + TTL), "the oldest row's expiry");
+    }
+    {
+        let fx = fixture();
+        let events = event_table(&fx);
+        let schedule = schedule_table(&fx);
+        events.seed(&event_row(101, player, NOW - 800));
+        schedule.seed(&interval(1));
+        record(&fx, NOW);
+        let armed = wakes(&schedule);
+        assert_eq!(armed.len(), 1, "the interval row is replaced: {armed:?}");
+        assert_eq!(armed[0].1, Some(NOW - 800 + TTL), "the oldest row's expiry");
+    }
+}
+
 /// Erasing an identity's events removes the schedule row when that empties the
 /// table and leaves it when another identity's rows remain.
 ///

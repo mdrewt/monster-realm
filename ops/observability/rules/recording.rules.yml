@@ -186,10 +186,11 @@ groups:
       #           already watched by mr:heartbeat:rate5m above, and alerting on the watchdog's own
       #           lateness is circular.
       #         - `playtest_reaper`: the TTL-and-cap sweep of `playtest_event`, a one-shot at the
-      #           oldest row's 7-day expiry (armed only while rows exist); minutes of lateness
-      #           are harmless.
+      #           oldest row's 7-day expiry (armed only while rows exist, at most one run per
+      #           300 s); minutes of lateness are harmless.
       #         - `export_bundle_reaper`: the TTL sweep of `export_bundle` chunks, a one-shot at
-      #           the oldest bundle's 7-day expiry (armed only while bundles exist) — the same
+      #           the oldest bundle's 7-day expiry (armed only while bundles exist, at most one
+      #           run per hour) — the same
       #           long-horizon class as `guest_claim_reaper`; a sweep that starts minutes late
       #           is invisible to the player and to the operator.
       #         - `account_deletion_reaper`: the one-shot armed at delete time for

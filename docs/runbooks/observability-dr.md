@@ -165,8 +165,17 @@ a lost issuer database orphans every account.
   owner requests a new export, by the deletion cascade, and by
   `export_bundle_reaper` after 7 days (`EXPORT_BUNDLE_TTL_MS`,
   `server-module/src/privacy.rs`). The reaper has one schedule row while bundles exist,
-  a one-shot at the oldest bundle's expiry, and none otherwise. A missing row is re-armed
-  by the next export request or by `init`/`sync_content`. Bundles in a backup live as long as the
+  a one-shot at the oldest bundle's expiry, and none otherwise; it runs at most once an
+  hour, so a bundle is gone within an hour of its expiry. Nothing re-checks the row
+  periodically. If a reaper run fails (the host logs the failed `export_bundle_reaper`
+  call), its row is consumed and not replaced, and bundles then stay until the next
+  export request, purge, `init` or `sync_content` re-arms it, which on a quiet server
+  can be past the 7 days. To check, compare the two private tables as the owner:
+  `spacetime sql <db> "SELECT COUNT(*) FROM export_bundle"` non-zero with
+  `SELECT COUNT(*) FROM export_bundle_reaper_schedule` zero means bundles are waiting
+  with no run armed; call `sync_content` as the owner to re-arm it (the run follows
+  an hour later when a bundle has already expired). `playtest_event` and `playtest_reaper_schedule` behave the same
+  way, with a 5-minute delay and the next recruit attempt as the write that re-arms. Bundles in a backup live as long as the
   backup does.
 - Nothing prunes backups when an account is deleted. Once a retention window is chosen,
   prune with a dry run first:

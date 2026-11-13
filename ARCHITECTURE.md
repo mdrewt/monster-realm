@@ -679,8 +679,9 @@ root, so opening one never closes a sibling.
   chunks into the private `export_bundle` table, read back through
   `my_export_bundle`. It enforces a per-caller cooldown, a unique creation stamp per
   bundle, and a global live-row cap (smaller for callers without an account, smaller
-  still without a wallet). A reaper deletes bundles older than 7 days at their expiry;
-  it is scheduled only while bundles exist, one one-shot at the oldest expiry. The
+  still without a wallet). A reaper deletes bundles older than 7 days within an hour
+  of their expiry; it is scheduled only while bundles exist, one one-shot at the oldest
+  expiry, and runs at most once an hour. The
   client assembles the chunks (`ui/exportAssembly.ts`) and offers the file for
   download from the privacy overlay, which opens from the account overlay (`C`).
 - **Ranked PvP** will require accounts on both sides once a real issuer is set
@@ -709,7 +710,8 @@ root, so opening one never closes a sibling.
   (`server-module/src/playtest.rs`); `playtest_reaper` keeps it under a 7-day TTL
   and a 20 000-row cap. It is scheduled only while events exist: one one-shot at the
   oldest event's expiry, pulled in to 5 minutes out when an insert takes the table over
-  the cap. `just playtest-report` summarises it.
+  the cap. It runs at most once per 5 minutes, so an event is reaped within 5 minutes of
+  its expiry. `just playtest-report` summarises it.
 - **Load.** `sim-harness`'s `mr_load_driver` connects many WebSocket clients to a
   live module and reads the breaking point from `/v1/metrics`. It never runs in CI.
 

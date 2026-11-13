@@ -8468,22 +8468,88 @@ mod acct_nh {
         let after = export_wakes(&w);
         assert_eq!(after.len(), 2, "the fired row and one new row: {after:?}");
         let next: Vec<(u64, Option<i64>)> = after.into_iter().filter(|r| r.0 != fired_id).collect();
+        assert_eq!(next.len(), 1, "exactly one re-arm: {next:?}");
         assert_eq!(
             next[0].1,
-            Some(T0 + 5_000 + ttl),
-            "the next bundle's expiry"
+            Some(T0 + ttl + 3_600_000),
+            "the next bundle expires 5 s later: one interval from the tick, not 5 s"
         );
 
         // The runtime removes the fired row; the next run is the row armed above.
         assert_eq!(w.export_reaper.remove(fired_id), 1);
         let firing = w.export_reaper.rows().remove(0);
-        assert_eq!(export_tick(&fx, firing, T0 + 5_000 + ttl), Ok(()));
+        assert_eq!(export_tick(&fx, firing, T0 + ttl + 3_600_000), Ok(()));
         assert!(w.export.rows().is_empty());
         assert_eq!(
             export_wakes(&w),
             next,
             "an empty table is left no row but the one that fired"
         );
+    }
+
+    /// Bundles that expire 1 ms apart are one tick per interval, not one tick
+    /// (and one `export_bundle_reap` line) per bundle: the tick at the first
+    /// expiry arms exactly one next tick an hour out. A bundle expiring further
+    /// out than an hour is armed at its own expiry, and so is every arm that is
+    /// not the reaper's (`ensure_export_bundle_reaper` here), whatever the gap.
+    ///
+    /// kills: the reaper re-arming at the exact next expiry, the floor applied
+    /// to the arms that are not the reaper's, the floor replacing a later
+    /// expiry.
+    #[test]
+    fn acct_export_bundles_expiring_1ms_apart_rearm_once_an_hour_out() {
+        let fx = fixture();
+        let w = world(&fx);
+        let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+        let hour = 3_600_000;
+        let now = T0 + ttl;
+        w.export.seed(&export_row(9001, id(0xC8), T0));
+        w.export.seed(&export_row(9002, id(0xC8), T0 + 1));
+        w.export.seed(&export_row(9003, id(0xC8), T0 + 2));
+        w.export.seed(&export_row(9004, id(0xC8), T0 + 2 * hour));
+        let fired = ExportBundleReaperSchedule {
+            id: 50,
+            scheduled_at: ScheduleAt::Time(at(now)),
+        };
+        w.export_reaper.seed(&fired);
+        assert_eq!(export_tick(&fx, fired, now), Ok(()));
+        assert_eq!(w.export.rows().len(), 3, "only the expired bundle went");
+        let next: Vec<(u64, Option<i64>)> =
+            export_wakes(&w).into_iter().filter(|r| r.0 != 50).collect();
+        assert_eq!(next.len(), 1, "exactly one re-arm: {next:?}");
+        assert_eq!(
+            next[0].1,
+            Some(now + hour),
+            "an hour from the tick, not 1 ms"
+        );
+
+        assert_eq!(w.export_reaper.remove(50), 1);
+        let firing = w.export_reaper.rows().remove(0);
+        let fired_id = firing.id;
+        assert_eq!(export_tick(&fx, firing, now + hour), Ok(()));
+        assert_eq!(w.export.rows().len(), 1, "one tick reaped both");
+        let next: Vec<(u64, Option<i64>)> = export_wakes(&w)
+            .into_iter()
+            .filter(|r| r.0 != fired_id)
+            .collect();
+        assert_eq!(next.len(), 1);
+        assert_eq!(
+            next[0].1,
+            Some(now + 2 * hour),
+            "further out than an hour: at the bundle's own expiry"
+        );
+
+        // An arm that is not the reaper's has no floor: with no row armed and a
+        // bundle expiring in 1 ms, it arms at that expiry.
+        for s in w.export_reaper.rows() {
+            w.export_reaper.remove(s.id);
+        }
+        fx.run_as_at(scheduler(), at(now + 2 * hour - 1), |ctx| {
+            crate::privacy::ensure_export_bundle_reaper(ctx)
+        });
+        let armed = export_wakes(&w);
+        assert_eq!(armed.len(), 1);
+        assert_eq!(armed[0].1, Some(now + 2 * hour), "at the expiry itself");
     }
 
     /// A tick that leaves expired bundles behind (its stamp cap bound) runs again

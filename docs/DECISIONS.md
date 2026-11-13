@@ -334,10 +334,21 @@ schedule does keep running there: the 60 s `mr_heartbeat`, which writes no row. 
 one-shot armed when something is owed. A reaper that serves one entity (a trade offer, a challenge,
 an account deletion) has a row per entity at its deadline. The two that bound a table by age,
 `playtest_reaper` and `export_bundle_reaper`, have at most one row for the whole table, at the
-oldest row's expiry: the insert arms it, the reaper re-arms it from the rows it leaves, an empty
-table has none, and `init` and `sync_content` restore it when rows are waiting without one. Work
-owed at once (a table over its cap, a backlog one run could not finish) runs after a fixed delay
-(300 s and 3600 s), never immediately.
+oldest row's expiry: the insert arms it, the reaper re-arms it from the rows it leaves, and an
+empty table has none. Each has a fixed delay (300 s and 3600 s). The reaper arms its own next run
+no sooner than that delay from now, so it runs at most once per delay however closely rows expire,
+and a row is reaped within one delay of its expiry. Work owed at once (a table over its cap, a
+backlog one run could not finish) also runs after that delay, never immediately.
+
+A one-shot row is consumed by the runtime even when its reducer's transaction fails, and the re-arm
+rolls back with that transaction, so a failed reaper run leaves rows with no run armed. The next
+write to the table re-arms from the table's true oldest row (a recruit attempt for
+`playtest_event`; an export request or a purge for `export_bundle`), and so do `init` and
+`sync_content`. Until one of those happens nothing reaps the table, so on a server where none
+happens an export bundle can outlive its 7-day ceiling. This is accepted: it is the same recovery
+the per-entity reapers have, a periodic re-check would have to ride the heartbeat, and the
+heartbeat is to do nothing but beat. The runbook says how to see it and that `sync_content` fixes
+it.
 
 **Why.** The same module runs on a player's own machine and on the official server (see "One game,
 three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time, wake-ups and
@@ -353,8 +364,11 @@ The heartbeat stays because it is the operator's dead-man's switch for the whole
 line is the one thing that says the module is alive when nobody is playing, and the
 `AlloyIngestStalled` alert treats ten minutes without module log bytes as a stalled log pipeline.
 The two table reapers are armed on demand because a table's oldest row already says when the next
-reap is due, so a periodic sweep adds calls and nothing else; a row is reaped at its expiry instead
-of up to one interval later.
+reap is due, so a periodic sweep of a table with nothing due is a call that does nothing. What the
+interval did give, at most one run per interval, is kept by the delay on the reaper's own re-arm: a
+playtest run is a scan and sort of the whole table, and without the delay a burst of recruit
+attempts would come back seven days later as one scan per attempt. A row is reaped within one
+interval of its expiry, the same bound as the periodic sweep.
 
 **Rules out.** State that is only correct if a tick ran (a counter of ticks, a timer decremented per
 tick, an effect that expires after N ticks of an unwatched zone); elapsed-time catch-up loops when a
@@ -831,7 +845,7 @@ private `export_bundle` chunks (`EXPORT_CHUNK_ROWS` 500) for `my_export_bundle`,
 each live bundle a unique creation stamp (rejecting under contention), admits requests
 against a global live-row cap that is halved for callers without an account and
 halved again for callers without a wallet, and a reaper deletes chunks older
-than 7 days, at their expiry (`server-module/src/privacy.rs`).
+than 7 days, within an hour of their expiry (`server-module/src/privacy.rs`).
 
 **Why.** A new table must not silently keep personal data after a deletion, so its
 classification is part of the schema. Blocking new commitments during the grace

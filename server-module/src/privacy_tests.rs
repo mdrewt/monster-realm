@@ -8785,3 +8785,30 @@ fn rb132_tier_selection_is_exhaustive_over_account_and_wallet() {
          never credited currency is not a lesser account holder."
     );
 }
+
+/// The two wake rules of the export reaper, by value. `export_wake_ms` (a write
+/// to the table, init / sync_content): no chunk, no tick; an unexpired oldest
+/// chunk, its expiry; an expired one, an hour from now. `export_rearm_ms` (the
+/// reaper arming its own next tick): the same, never sooner than an hour from
+/// now.
+///
+/// kills: either rule replaced by a constant or by the other, the over-cap flag
+/// set, the wrong TTL or interval.
+#[test]
+fn export_wake_rules_are_the_expiry_and_the_hourly_floor() {
+    const TTL: i64 = 604_800_000;
+    const HOUR: i64 = 3_600_000;
+    const NOW: i64 = 10 * TTL;
+    let wake = crate::privacy::export_wake_ms;
+    let rearm = crate::privacy::export_rearm_ms;
+    assert_eq!(wake(None, NOW), None);
+    assert_eq!(rearm(None, NOW), None);
+    assert_eq!(wake(Some(NOW - TTL + 1), NOW), Some(NOW + 1));
+    assert_eq!(rearm(Some(NOW - TTL + 1), NOW), Some(NOW + HOUR));
+    assert_eq!(wake(Some(NOW - TTL + HOUR + 7), NOW), Some(NOW + HOUR + 7));
+    assert_eq!(rearm(Some(NOW - TTL + HOUR + 7), NOW), Some(NOW + HOUR + 7));
+    assert_eq!(wake(Some(NOW - TTL), NOW), Some(NOW + HOUR));
+    assert_eq!(rearm(Some(NOW - TTL), NOW), Some(NOW + HOUR));
+    assert_eq!(wake(Some(NOW - 5), NOW), Some(NOW - 5 + TTL));
+    assert_eq!(rearm(Some(NOW - 5), NOW), Some(NOW - 5 + TTL));
+}

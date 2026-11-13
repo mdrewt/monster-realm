@@ -2,15 +2,17 @@
 //! Server-only playtest OBSERVABILITY (not a game rule). Additive PRIVATE
 //! append-only `playtest_event` table fed by the tactical recruit glue;
 //! bounded by a TTL+cap reaper that runs only when something is owed: one
-//! one-shot schedule row at the oldest row's expiry, none while the table is empty.
+//! one-shot schedule row at the oldest row's expiry (at most one run per five
+//! minutes), none while the table is empty.
 use crate::marshal::now_ms;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 
 pub(crate) const PLAYTEST_EVENT_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000; // 7 days
 pub(crate) const PLAYTEST_EVENT_CAP: u64 = 20_000;
-// How long after "work is owed now" the reaper runs: after an insert takes the table over the
-// cap, and after a reap that hit its batch limit. Five minutes bounds both the time the table
-// spends over the cap and the full-table scans a burst of inserts can cause.
+// How long after "work is owed now" the reaper runs (an insert took the table over the cap, a
+// reap hit its batch limit), and the least time between two runs while rows remain. Five
+// minutes bounds the time the table spends over the cap and holds the reaper, a full-table
+// scan and sort, to one run per five minutes however closely the rows' expiries are spaced.
 pub(crate) const PLAYTEST_REAP_RETRY_MS: i64 = 300_000;
 pub(crate) const PLAYTEST_REAP_MAX_DELETE_PER_TICK: usize = 8192;
 
@@ -128,6 +130,14 @@ pub(crate) fn next_wake_ms(
     }
 }
 
+// The next run as armed by a reaper that has just run: never sooner than `retry_ms` from now.
+// Rows whose expiries are closer together than that are reaped by one later run instead of
+// one run each, so a row is reaped within `retry_ms` of its expiry and the reaper runs at most
+// once per `retry_ms`.
+pub(crate) fn rearm_wake_ms(wake_ms: Option<i64>, now_ms: i64, retry_ms: i64) -> Option<i64> {
+    wake_ms.map(|at| at.max(now_ms.saturating_add(retry_ms)))
+}
+
 // A schedule row's fire time in ms when it is a one-shot; `None` for an interval row.
 pub(crate) fn one_shot_ms(at: &ScheduleAt) -> Option<i64> {
     match at {
@@ -179,7 +189,7 @@ pub(crate) fn firing_one_shot(id: u64, at: &ScheduleAt) -> Option<u64> {
     one_shot_ms(at).map(|_| id)
 }
 
-// The reaper's next run given the rows left in the table as (event_id, created_at_ms).
+// The first run a table in this state is owed, given its rows as (event_id, created_at_ms).
 pub(crate) fn playtest_wake_ms(rows: &[(u64, i64)], now_ms: i64) -> Option<i64> {
     let cap = usize::try_from(PLAYTEST_EVENT_CAP).unwrap_or(usize::MAX);
     next_wake_ms(
@@ -189,6 +199,23 @@ pub(crate) fn playtest_wake_ms(rows: &[(u64, i64)], now_ms: i64) -> Option<i64> 
         PLAYTEST_EVENT_TTL_MS,
         PLAYTEST_REAP_RETRY_MS,
     )
+}
+
+// The creation time an insert at `now_ms` arms from. With a run already armed the new row
+// stands in for the oldest one (that run covers every older row), so nothing is read. With no
+// run armed the table's true oldest row decides, so rows left without a run (the reaper's
+// transaction was lost after the runtime consumed its schedule row) are reaped one retry
+// delay after the next insert instead of a whole TTL after it.
+pub(crate) fn insert_arm_from_ms(
+    run_armed: bool,
+    now_ms: i64,
+    oldest_created_ms: impl FnOnce() -> Option<i64>,
+) -> i64 {
+    if run_armed {
+        now_ms
+    } else {
+        oldest_created_ms().unwrap_or(now_ms)
+    }
 }
 
 // Sole writer of `playtest_reaper_schedule`: apply `plan_wake`. `firing` is the row the
@@ -263,11 +290,23 @@ pub(crate) fn record_recruit_event(
     ctx.db.playtest_event().insert(ev);
     // The row just written is owed a reap at its expiry, or sooner when it took the table
     // over the cap. An existing run that is early enough is kept, so this writes a schedule
-    // row only for the first event and on crossing the cap. No scan: the new row stands in
-    // for the oldest one, which the existing run already covers.
+    // row only for the first event and on crossing the cap, and scans the events only when no
+    // run is armed (`insert_arm_from_ms`).
     let over_cap = ctx.db.playtest_event().count() > PLAYTEST_EVENT_CAP;
+    let run_armed = ctx
+        .db
+        .playtest_reaper_schedule()
+        .iter()
+        .any(|s| one_shot_ms(&s.scheduled_at).is_some());
+    let arm_from = insert_arm_from_ms(run_armed, now, || {
+        ctx.db
+            .playtest_event()
+            .iter()
+            .map(|e| e.created_at_ms)
+            .min()
+    });
     let wanted = next_wake_ms(
-        Some(now),
+        Some(arm_from),
         over_cap,
         now,
         PLAYTEST_EVENT_TTL_MS,
@@ -277,7 +316,8 @@ pub(crate) fn record_recruit_event(
 }
 
 // Scheduler-only reducer. GUARD FIRST (before any delete). It reaps, then arms its own next
-// run from the rows it left: none when the table is empty.
+// run from the rows it left: none when the table is empty, otherwise at the oldest expiry and
+// never sooner than one retry delay from now (`rearm_wake_ms`).
 #[spacetimedb::reducer]
 pub fn playtest_reaper(ctx: &ReducerContext, sched: PlaytestReaperSchedule) -> Result<(), String> {
     if ctx.sender() != ctx.database_identity() {
@@ -305,7 +345,7 @@ pub fn playtest_reaper(ctx: &ReducerContext, sched: PlaytestReaperSchedule) -> R
     rows.retain(|(id, _)| to_delete.binary_search(id).is_err());
     set_playtest_wake(
         ctx,
-        playtest_wake_ms(&rows, now),
+        rearm_wake_ms(playtest_wake_ms(&rows, now), now, PLAYTEST_REAP_RETRY_MS),
         firing_one_shot(sched.id, &sched.scheduled_at),
     );
     Ok(())
