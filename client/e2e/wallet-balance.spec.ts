@@ -986,9 +986,10 @@ test.describe
           // DialogueView.render() rebuilds every choice button on each store batch, and a
           // pointer click needs one node to stay attached and stable across animation frames,
           // which a starved CI runner may not see within 5 s. dispatchEvent resolves the node
-          // and fires a bubbling click in ONE page task; main.ts's document-level
-          // [data-choice-idx] delegation sends advance_dialogue for it as for a real click,
-          // which relies on that delegation listening for `click`. Pointer reachability is
+          // and fires a bubbling click in ONE page task; the pointer source on #game-screen
+          // routes it as a real click (a seek plus A through the dialogue screen), which relies on
+          // that source listening for `click`. A click during the text reveal only finishes the
+          // reveal; the next attempt's click then advances. Pointer reachability is
           // covered by dialogue.spec.ts's 13.5c-5 test, which presses this same choice with a
           // real pointer and must STAY a pointer press: copying this dispatch there would
           // leave no pointer press on a dialogue choice anywhere.
@@ -1136,7 +1137,10 @@ test.describe
       await expect(a.locator('#dialogue-node-text')).toHaveText(SHOPKEEPER_GREETING);
       const shopButton = a.locator('[data-shop-id]');
       await expect(shopButton).toBeVisible({ timeout: 10_000 });
-      await shopButton.click();
+      // A double click: a click during the greeting's text reveal only finishes the reveal, and a
+      // second one inside the resend guard sends nothing more, so this opens the shop exactly once
+      // whether or not the reveal is still running (ts-6b-5.1).
+      await shopButton.dblclick();
       await expect(a.locator('#shop-overlay')).toBeVisible({ timeout: 20_000 });
       await expect(a.locator('#dialogue-overlay')).toBeHidden({ timeout: 20_000 });
 
@@ -1234,7 +1238,10 @@ test.describe
       await expect(b.locator('#dialogue-node-text')).toHaveText(SHOPKEEPER_GREETING);
       const shopButtonB = b.locator('[data-shop-id]');
       await expect(shopButtonB).toBeVisible({ timeout: 10_000 });
-      await shopButtonB.click();
+      // A double click: a click during the greeting's text reveal only finishes the reveal, and a
+      // second one inside the resend guard sends nothing more, so this opens the shop exactly once
+      // whether or not the reveal is still running (ts-6b-5.1).
+      await shopButtonB.dblclick();
       await expect(b.locator('#shop-overlay')).toBeVisible({ timeout: 20_000 });
       await expect(b.locator('#dialogue-overlay')).toBeHidden({ timeout: 20_000 });
 

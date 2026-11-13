@@ -18,7 +18,7 @@ import { healScreen } from './healScreen';
 import { helpScreen } from './helpScreen';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
-import { monstersScreen } from './monstersScreen';
+import { type MonstersScreenState, monstersScreen } from './monstersScreen';
 import { controlsScreen } from './optionsScreen';
 import { profileScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
@@ -176,6 +176,12 @@ export class ScreenHost {
   /** The world base's open request sheet, else null. */
   get request(): RequestSheet | null {
     return this.#request;
+  }
+
+  /** Whether the Monsters frame's kept state is in its list, where X is quick Move (the hint bar). */
+  get monstersQuickMove(): boolean {
+    const state = this.#states.get('boxView') as MonstersScreenState | undefined;
+    return state?.phase.kind === 'list';
   }
 
   /** Whether either world sheet is open: movement and held input key on this, never `sheet`. */

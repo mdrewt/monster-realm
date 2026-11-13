@@ -1,7 +1,7 @@
 // input/pointerSource.ts — the pointer and touch source: ONE dispatcher on #game-screen (ctl-15,
 // CTL15.1 to CTL15.5). Like the keyboard source it only presses virtual buttons, so the router and
-// every screen adapter decide what a click means; game logic never sees a coordinate. The two
-// dialogue buttons the old document click delegate owned are the only commands it sends itself.
+// every screen adapter decide what a click means; game logic never sees a coordinate. It sends no
+// command of its own: a dialogue choice or Shop button is a nav row like any other.
 //
 // A click on a row of the top frame (once any open sheet is closed, below) is a SEEK: the D-pad
 // presses that walk that container's cursor to the row, then A. The DOM cannot say which container
@@ -47,10 +47,6 @@ export interface PointerDeps {
   /** Whether Options › Controls waits for a key. */
   capturing(): boolean;
   cancelCapture(): void;
-  /** A dialogue choice button (`data-choice-idx`). */
-  choice(idx: number): void;
-  /** The dialogue's greet-then-shop button (`data-shop-id`). */
-  shop(shopId: number): void;
 }
 
 export interface PointerClock {
@@ -295,24 +291,16 @@ export class PointerSource {
     this.#closeOnly = null;
     if (closeOnly || this.#deps.capturing() || !(e.target instanceof Element)) return;
     const target = e.target;
-    const shopBtn = target.closest<HTMLElement>('[data-shop-id]');
-    if (shopBtn !== null) {
-      const id = Number(shopBtn.dataset.shopId);
-      if (!Number.isNaN(id)) this.#deps.shop(id);
-      return;
-    }
-    const choiceBtn = target.closest<HTMLElement>('[data-choice-idx]');
-    if (choiceBtn !== null) {
-      const idx = Number.parseInt(choiceBtn.dataset.choiceIdx ?? '', 10);
-      if (!Number.isNaN(idx)) this.#deps.choice(idx);
-      return;
-    }
     const chip = chipAt(target);
     if (chip !== null) {
       if (isVButton(chip.dataset.button)) this.#deps.press(chip.dataset.button);
       return;
     }
-    if (target.closest(NATIVE) !== null || target.closest('[data-pointer-own]') !== null) return;
+    // A native control keeps its own click, unless it is itself a nav row (the dialogue's
+    // choice and Shop buttons): that row routes like any other.
+    const native = target.closest(NATIVE);
+    if (native !== null && !native.hasAttribute('data-nav-key')) return;
+    if (target.closest('[data-pointer-own]') !== null) return;
     const top = this.#deps.top();
     // A row of the open sheet seeks before the top switch: a world sheet's top is `other`.
     const sheet = this.#openSheet(top);
@@ -575,10 +563,11 @@ export class PointerSource {
       return moved;
     }
     // One row: driven only if every other shown container is a list a Down probe would move,
-    // and none did.
+    // and none did. Inside an open context sheet only the sheet's other containers compete: the
+    // shown sheet is what its frame drives, so a base list under it is never a rival.
     const root =
-      container.closest<HTMLElement>('[aria-modal="true"]') ??
-      container.closest<HTMLElement>(SHEET);
+      container.closest<HTMLElement>(SHEET) ??
+      container.closest<HTMLElement>('[aria-modal="true"]');
     if (root === null) return false;
     const others = new Set<HTMLElement>();
     for (const row of root.querySelectorAll<HTMLElement>('[data-nav-key]')) {

@@ -499,7 +499,10 @@ test.describe
           'NpcInteraction enum (never from choice text) — ADR-0161 D4',
       ).toBeVisible({ timeout: 10_000 });
 
-      await shopButton.click();
+      // A double click: a click during the greeting's text reveal only finishes the reveal, and a
+      // second one inside the resend guard sends nothing more, so this opens the shop exactly once
+      // whether or not the reveal is still running (ts-6b-5.1).
+      await shopButton.dblclick();
 
       await expect(shop, 'the Shop action must open the shop overlay').toBeVisible({
         timeout: 20_000,

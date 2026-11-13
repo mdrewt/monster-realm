@@ -4061,7 +4061,7 @@ describe('main.ts batches reach observe (runtime, ctl-7d)', { sequential: true }
     // adapter). Its own calls are noted only outside the pick press (`pressing`), so the claim
     // below, that no BATCH ever calls a frame without observe, is the one it was.
     const dialogueCalls: string[] = [];
-    const pressing = false;
+    let pressing = false;
     const note = (call: string): void => {
       if (!pressing) dialogueCalls.push(call);
     };
