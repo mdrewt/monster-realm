@@ -948,9 +948,9 @@ client-callable through the flip), `submit_attack`, `swap_active`, `flee`, `use_
 dispatch arms and copy. What stays of the 1v1 engine is deliberate: `game-core`'s `combat::*` is
 the type home of the stored `Battle.state` and of the carried rules the tactical engine reuses; the
 module keeps the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical
-settle funnel calls; ten row→`BattleMonster` marshaling helpers in `marshal.rs` /
-`content_cache.rs` compile only under `cfg(test)` (their tests still exercise them; a production caller is a
-compile error) until they are deleted with named survivors. The 1v1
+settle funnel calls. `marshal.rs` has no 1v1 row→`BattleMonster` marshaling helper and
+`content_cache.rs` no 1v1 skill, ability or type-chart cache: a helper only its own tests call is
+dead code, not a fallback engine. The 1v1
 tables (`battle_action`, `battle_wild`, `pvp_deadline_schedule`) are retired from use, never
 dropped or reordered (see "Schema changes are additive"): a census test pins that no client-callable reducer
 reaches `pvp_deadline_schedule` (the erase cascade's disarm still deletes from it), and that `battle_action` and `battle_wild` are reached by exactly
