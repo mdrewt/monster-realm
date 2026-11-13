@@ -1686,3 +1686,41 @@ describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
     expect(getComputedStyle(hidden).display, 'with quests: hidden').toBe('none');
   });
 });
+
+// ts-6b-8 (TS6B8.1): a batch render with an unchanged vm keeps the rows and the empty-state node.
+describe('QuestLogView ts-6b-8: kept rows', () => {
+  it('a batch render with an unchanged view model keeps the same row and button nodes', () => {
+    // WRONG IMPL KILLED: a render that replaceChildren()s the list (and swaps the empty-state
+    // element) on every store batch; a keep that loses the painted cursor; a view that never
+    // re-renders (the changed-step case must rebuild its row).
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(ctl8fSteps());
+    view.paint({ questId: 'beta', detail: null });
+
+    const rows = ctl8fRows();
+    const empty = document.getElementById('quest-log-empty');
+    expect(rows).toHaveLength(3);
+    expect(empty, 'precondition: the empty-state node exists').not.toBeNull();
+
+    view.render(ctl8fSteps());
+    const again = ctl8fRows();
+    expect(again).toHaveLength(3);
+    again.forEach((li, i) => {
+      expect(li, `row ${i} is the same node`).toBe(rows[i]);
+    });
+    expect(document.getElementById('quest-log-empty'), 'the empty-state node is kept').toBe(empty);
+    expect(again[1]?.classList.contains('is-active')).toBe(true);
+    expect(again[1]?.getAttribute('aria-selected')).toBe('true');
+    expect(again[0]?.getAttribute('aria-selected')).toBe('false');
+
+    // Counter-case: a changed step rebuilds that row.
+    const changed = ctl8fSteps();
+    (changed.active[1] as { stepIndex: number }).stepIndex = 9;
+    view.render(changed);
+    const rebuilt = ctl8fRows();
+    expect(rebuilt[1], 'a changed step rebuilds its row').not.toBe(rows[1]);
+    expect(rebuilt[1]?.textContent).toContain('9');
+    expect(rebuilt[1]?.getAttribute('aria-selected'), 'the kept paint still applies').toBe('true');
+  });
+});

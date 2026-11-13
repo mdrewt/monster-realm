@@ -2711,3 +2711,46 @@ describe('EvolutionView ctl-7b: the evolution root is a class-styled frame, inli
     expect(ctl7bInline(root).get('display')).toBe('none');
   });
 });
+
+// ts-6b-8 (TS6B8.1): a batch refresh with an unchanged vm keeps the card and path-row nodes.
+describe('EvolutionView ts-6b-8: kept cards', () => {
+  it('a batch render with an unchanged view model keeps the same row and button nodes', () => {
+    // WRONG IMPL KILLED: a refresh that rebuilds every card and path row on each store batch; a
+    // view that NEVER re-renders (the changed-level case must rebuild); an identity-only compare
+    // that misses an equal-but-fresh vm (every vm below is a new object graph).
+    const { parent, view } = mount();
+    const build = (level: number): EvolutionViewModel =>
+      viewModel(
+        monsterVm({
+          level,
+          paths: [pathVm({ gates: FIVE_GATES.map((g) => ({ ...g })) }), metPathVm({ edgeId: 5 })],
+        }),
+        monsterVm({ monsterId: 78n, nickname: 'Ember', paths: [pathVm({ edgeId: 9 })] }),
+      );
+    view.show();
+    view.refresh(build(30));
+    const cards = [...parent.querySelectorAll(CARD_SELECTOR)];
+    const rows = [...parent.querySelectorAll(PATH_ROW_SELECTOR)];
+    expect(cards).toHaveLength(2);
+    expect(rows).toHaveLength(3);
+
+    view.refresh(build(30));
+    const cardsAgain = [...parent.querySelectorAll(CARD_SELECTOR)];
+    const rowsAgain = [...parent.querySelectorAll(PATH_ROW_SELECTOR)];
+    expect(cardsAgain).toHaveLength(2);
+    expect(rowsAgain).toHaveLength(3);
+    cardsAgain.forEach((el, i) => {
+      expect(el, `card ${i} is the same node`).toBe(cards[i]);
+    });
+    rowsAgain.forEach((el, i) => {
+      expect(el, `path row ${i} is the same node`).toBe(rows[i]);
+    });
+
+    // Counter-case: a changed level rebuilds the changed monster's card.
+    view.refresh(build(31));
+    const changed = [...parent.querySelectorAll(CARD_SELECTOR)];
+    expect(changed).toHaveLength(2);
+    expect(changed[0], 'a changed level rebuilds the card').not.toBe(cards[0]);
+    expect(changed[0]?.textContent).toContain('31');
+  });
+});

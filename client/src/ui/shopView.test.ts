@@ -1692,3 +1692,133 @@ describe('ShopView qf-17: the wallet balance in the shop overlay (QF17.3)', () =
     removeOverlay(overlay);
   });
 });
+
+// =============================================================================
+// ts-6b-8 (TS6B8.1 / TS6B8.3): a batch render with an unchanged view model keeps the row and
+// button nodes (and the Buy button's in-flight lock); a tab switch never strands focus on a
+// hidden list.
+// =============================================================================
+
+/** A FRESH object graph every call: equal data, never the same identity. */
+function ts6b8Vm(
+  over: { buyPrice?: bigint; balance?: ShopScreenViewModel['balance'] } = {},
+): ShopScreenViewModel {
+  return {
+    kind: 'shop',
+    shopId: 3,
+    shopName: 'Wayside Stall',
+    forSale: [
+      { shopItemId: 31n, itemId: 7, name: 'Charm', buyPrice: over.buyPrice ?? 17n },
+      { shopItemId: 32n, itemId: 10, name: 'Lantern', buyPrice: 40n },
+    ],
+    forSaleByPlayer: [
+      { invId: 101n, itemId: 7, name: 'Charm', count: 5, sellPrice: 9n, canSell: true },
+      { invId: 102n, itemId: 9, name: 'Talisman', count: 1, sellPrice: 0n, canSell: false },
+    ],
+    balance: over.balance ?? knownBalance(250n),
+  };
+}
+
+const ts6b8Rows = (listId: string): HTMLElement[] =>
+  Array.from(ctl8aShopEl(listId).querySelectorAll<HTMLElement>('li'));
+const ts6b8Buttons = (listId: string): HTMLElement[] =>
+  Array.from(ctl8aShopEl(listId).querySelectorAll<HTMLElement>('button'));
+
+describe('ShopView ts-6b-8: batch renders keep nodes; tab switches keep focus', () => {
+  it('a batch render with an unchanged view model keeps the same row and button nodes', () => {
+    // WRONG IMPL KILLED: a render that replaceChildren()s both lists on every batch (the lock on a
+    // pending Buy button dies with its node, so a second click double-spends); a keep that also
+    // freezes the balance readout; a view that NEVER re-renders (the changed-price case); a keep
+    // that drops the kept paint (the cursor row loses is-active).
+    const overlay = mountShopOverlay();
+    const view = new ShopView({
+      onBuy: vi.fn(() => new Promise<void>(() => {})),
+      onSell: vi.fn(),
+    });
+    view.show();
+    view.render(ts6b8Vm());
+    view.paint(ctl8aPaint({ activeKey: ctl8aBuyKeys()[1] as string }));
+
+    const buyLis = ts6b8Rows('shop-for-sale');
+    const sellLis = ts6b8Rows('shop-inventory');
+    const buyBtns = ts6b8Buttons('shop-for-sale');
+    const sellBtns = ts6b8Buttons('shop-inventory');
+    expect(buyLis).toHaveLength(2);
+    expect(sellLis).toHaveLength(2);
+    expect(buyBtns).toHaveLength(2);
+    expect(sellBtns).toHaveLength(1);
+
+    buyBtns[0]?.click();
+    expect((buyBtns[0] as HTMLButtonElement).disabled, 'precondition: the click locks it').toBe(
+      true,
+    );
+
+    const expectKept = (when: string): void => {
+      const nowBuyLis = ts6b8Rows('shop-for-sale');
+      const nowSellLis = ts6b8Rows('shop-inventory');
+      expect(nowBuyLis, `${when}: buy row count`).toHaveLength(buyLis.length);
+      expect(nowSellLis, `${when}: sell row count`).toHaveLength(sellLis.length);
+      nowBuyLis.forEach((li, i) => {
+        expect(li, `${when}: buy li ${i}`).toBe(buyLis[i]);
+      });
+      nowSellLis.forEach((li, i) => {
+        expect(li, `${when}: sell li ${i}`).toBe(sellLis[i]);
+      });
+      ts6b8Buttons('shop-for-sale').forEach((b, i) => {
+        expect(b, `${when}: buy button ${i}`).toBe(buyBtns[i]);
+      });
+      ts6b8Buttons('shop-inventory').forEach((b, i) => {
+        expect(b, `${when}: sell button ${i}`).toBe(sellBtns[i]);
+      });
+      expect((buyBtns[0] as HTMLButtonElement).disabled, `${when}: the lock survives`).toBe(true);
+    };
+
+    // An equal, freshly built vm (new objects, same data).
+    view.render(ts6b8Vm());
+    expectKept('equal vm');
+    ctl8aExpectRow('shop-for-sale', ctl8aBuyKeys()[1]);
+
+    // A balance-only change: the readout follows, the rows stay.
+    view.render(ts6b8Vm({ balance: knownBalance(300n) }));
+    expectKept('balance-only change');
+    expect(ctl8aShopEl('shop-balance').textContent).toBe('Gold: 300');
+    ctl8aExpectRow('shop-for-sale', ctl8aBuyKeys()[1]);
+
+    // Discriminating counter-case: a changed row DOES rebuild the changed list.
+    view.render(ts6b8Vm({ buyPrice: 18n }));
+    const rebuilt = ts6b8Rows('shop-for-sale');
+    expect(rebuilt[0], 'a changed price rebuilds the buy row').not.toBe(buyLis[0]);
+    expect(rebuilt[0]?.textContent).toContain('18');
+
+    removeOverlay(overlay);
+  });
+
+  it('switching tabs with focus on the Buy list moves focus to the Sell list', () => {
+    // WRONG IMPL KILLED: a tab switch that only hides the Buy list and leaves focus on its (now
+    // hidden) button, so the next key goes nowhere; a fix that always yanks focus to the shown list
+    // even when focus was elsewhere in the frame (the second half).
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+    view.render(ts6b8Vm());
+    view.paint(ctl8aPaint({ tab: 'buy' }));
+
+    const buyBtn = ts6b8Buttons('shop-for-sale')[0] as HTMLElement;
+    buyBtn.focus();
+    expect(document.activeElement, 'precondition: focus is on the Buy button').toBe(buyBtn);
+
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    expect(ctl8aShopEl('shop-inventory').contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(document.body);
+
+    // Focus outside the hidden list stays put.
+    view.paint(ctl8aPaint({ tab: 'buy' }));
+    const title = ctl8aShopEl('shop-title');
+    title.focus();
+    expect(document.activeElement, 'precondition: focus is on the title').toBe(title);
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    expect(document.activeElement, 'focus outside the hidden list is untouched').toBe(title);
+
+    removeOverlay(overlay);
+  });
+});

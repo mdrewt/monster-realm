@@ -2141,9 +2141,14 @@ const UIF14_PLAIN_IDS: readonly string[] = [
  *  Report a problem row. Its en and fr bytes are pinned by the 'uif-14b' describe below. */
 const UIF14B_PLAIN_IDS: readonly string[] = ['help.intro.report'];
 
+/** ts-6b-8 (named intentional change, R-uif-10-TITLES): the one plain id the slice adds, the Heal
+ *  frame's title. Its en and fr bytes are pinned by the 'ts-6b-8' describe below. */
+const TS6B8_PLAIN_IDS: readonly string[] = ['heal.title'];
+
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN)
   .concat(UIF14_PLAIN_IDS)
   .concat(UIF14B_PLAIN_IDS)
+  .concat(TS6B8_PLAIN_IDS)
   .concat(Object.keys(SAMPLE_PARAMS))
   .sort();
 
@@ -2341,7 +2346,8 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // ts-4 (named intentional change, the Strangler's second half): 536 -> 527, -9 plain
     // (`trade.side.{offer,receive}`, `trade.feedback.{accepted,rejected,completed,cancelled}`,
     // `social.action.confirm`, `social.confirm.{declineTrade,confirmTrade}`).
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-4 roster is 527 keys').toHaveLength(527);
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ts-6b-8 roster is 528 keys').toHaveLength(528);
     expect(
       EXPECTED_KEYS.filter((k) => k.startsWith('battle.')),
       'bt-17: the four surviving battle.* keys, and no other',
@@ -2782,6 +2788,19 @@ describe('uif-8: the Bag EmptyState keys in both catalogs', () => {
 // =============================================================================
 // uif-14b (UIF14B.1): the Introduction's Report a problem row label in both catalogs.
 // =============================================================================
+
+describe('ts-6b-8: the Heal title in both catalogs', () => {
+  it('ts-6b-8 heal.title is "Heal" in en and "Soins" in fr, both plain strings, the fr a translation', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot and the Heal frame is
+    // untitled); an fr entry left as the English copy; a reworded title (the spec names it).
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(en['heal.title']).toBe('Heal');
+    expect(fr['heal.title']).toBe('Soins');
+    expect(fr['heal.title']).not.toBe(en['heal.title']);
+  });
+});
 
 describe('uif-14b: the Report a problem label in both catalogs', () => {
   it('UIF14B.1 help.intro.report is "Report a problem" in en and "Signaler un probleme" (e grave, by code point) in fr, both plain strings, the fr a translation', () => {
@@ -3443,8 +3462,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 527 keys').toBe(527);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(527);
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 528 keys').toBe(528);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(528);
   });
 });
 
@@ -3565,8 +3585,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 527 keys').toBe(527);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(527);
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 528 keys').toBe(528);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(528);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3698,6 +3719,8 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       Object.keys(EXPECTED_PLAIN).length +
       UIF14_PLAIN_IDS.length +
       UIF14B_PLAIN_IDS.length +
+      // ts-6b-8 (named intentional change, R-uif-10-TITLES): + the plain `heal.title` id.
+      TS6B8_PLAIN_IDS.length +
       2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);
@@ -3876,9 +3899,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 527 keys').toBe(527);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(527);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(527);
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 528 keys').toBe(528);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(528);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(528);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -4561,8 +4585,9 @@ describe('uif-15b: the Social sub-list ids are retired in both catalogs', () => 
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
-    expect(Object.keys(en), 'the English roster is 527 keys (ts-4 -9)').toHaveLength(527);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(527);
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    expect(Object.keys(en), 'the English roster is 528 keys (ts-6b-8 +1)').toHaveLength(528);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(528);
   });
 });
 
@@ -4679,7 +4704,8 @@ describe('uif-15c: the Options menu ids are retired and re-homed in both catalog
     // ts-3: 524 -> 536 (-13 wizard, +25 session keys).
     // ts-4 (named intentional change): 536 -> 527, -9 trade.side.* / trade.feedback.* /
     // social.action.confirm / social.confirm.{declineTrade,confirmTrade}.
-    expect(Object.keys(en), 'the English roster is 527 keys').toHaveLength(527);
-    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(527);
+    // ts-6b-8 (named intentional change, R-uif-10-TITLES): 527 -> 528, +heal.title.
+    expect(Object.keys(en), 'the English roster is 528 keys').toHaveLength(528);
+    expect(Object.keys(fr), 'and the French one matches it').toHaveLength(528);
   });
 });

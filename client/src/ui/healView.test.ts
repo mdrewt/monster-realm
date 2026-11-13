@@ -73,7 +73,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import { formatHealCostLine, type HealLocationViewModel, type HealViewModel } from './healModel';
 import { HealView } from './healView';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { currentLocale, t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -654,5 +654,79 @@ describe('HealView uif-10: the list reset (UIF10.3)', () => {
     view.hide();
     view.render(healVm([healLocation()]));
     expectReset('after reopen');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ts-6b-8 (TS6B8.1 / TS6B8.4): a batch render with an unchanged vm keeps the row nodes; the frame
+// opens under a localized title bar.
+// ---------------------------------------------------------------------------
+describe('HealView ts-6b-8: kept rows and the localized title', () => {
+  const startLocale = currentLocale();
+  afterEach(() => {
+    setLocale(startLocale);
+  });
+
+  it('a batch render with an unchanged view model keeps the same row and button nodes', () => {
+    // WRONG IMPL KILLED: a render that replaceChildren()s #heal-list on every store batch; a view
+    // that NEVER re-renders (the changed-location case must rebuild); a keep that also drops the
+    // option nodes the prompt owns.
+    mountHealOverlay();
+    const view = new HealView();
+    const build = (cost: bigint) =>
+      healVm([
+        healLocation({ locationId: 1 }),
+        healLocation({ locationId: 2, isFree: cost === 0n, costCurrency: cost }),
+      ]);
+    view.render(build(0n));
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+    const options = Array.from(document.querySelectorAll<HTMLElement>('#heal-options > *'));
+    expect(rows).toHaveLength(2);
+    expect(options.length, 'precondition: the prompt has options').toBeGreaterThan(0);
+
+    view.render(build(0n));
+    const again = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+    expect(again).toHaveLength(2);
+    again.forEach((li, i) => {
+      expect(li, `row ${i} is the same node`).toBe(rows[i]);
+    });
+    const optionsAgain = Array.from(document.querySelectorAll<HTMLElement>('#heal-options > *'));
+    expect(optionsAgain).toHaveLength(options.length);
+    optionsAgain.forEach((el, i) => {
+      expect(el, `option ${i} is the same node`).toBe(options[i]);
+    });
+
+    // Counter-case: a changed location rebuilds the list.
+    view.render(build(5n));
+    const changed = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+    expect(changed).toHaveLength(2);
+    expect(changed[1], 'a changed cost rebuilds its row').not.toBe(rows[1]);
+    expect(changed[1]?.textContent).toBe(
+      i18nTf('heal.location', { cost: formatHealCostLine(build(5n).locations[1] as never) }),
+    );
+  });
+
+  it('the heal frame opens with a localized title', () => {
+    // WRONG IMPL KILLED: no title bar at all; a hard-coded English title that ignores the locale;
+    // a title written at construction (before the locale is known) and never again; a title bar
+    // placed after the list instead of first.
+    const overlay = mountHealOverlay();
+    const view = new HealView();
+
+    const bar = overlay.firstElementChild as HTMLElement | null;
+    expect(bar?.classList.contains('mr-frame-titlebar'), 'the title bar is first').toBe(true);
+    const h2 = bar?.querySelector('h2#heal-title.mr-frame-title') ?? null;
+    expect(h2, 'the bar holds h2#heal-title.mr-frame-title').not.toBeNull();
+
+    view.render(healVm());
+    expect(document.getElementById('heal-title')?.textContent).toBe('Heal');
+    const list = document.getElementById('heal-list') as HTMLElement;
+    expect(
+      (bar as HTMLElement).compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    setLocale('fr');
+    view.render(healVm());
+    expect(document.getElementById('heal-title')?.textContent).toBe('Soins');
   });
 });

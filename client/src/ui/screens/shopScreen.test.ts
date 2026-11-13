@@ -528,8 +528,11 @@ describe('shopScreen — settle and no shop (ctl-8a, CTL8A.2)', () => {
     const soldOut = vmOf({ ...w, stock: STOCK.filter((r) => r.shopItemId !== 32n) });
     const afterSoldOut = observe(soldOut, potionQty);
     expect(afterSoldOut).not.toBe(potionQty);
-    expect(paintOf(soldOut, afterSoldOut), 'back on the list, first row').toEqual(
-      browse('buy', buyKey(soldOut, 0)),
+    // ts-6b-8 (named intentional change, R-ctl-8a-CTL8A.2): the vanished row's cursor now lands on
+    // its neighbour (Berry, the row now at Potion's index), not on the first row. Was:
+    // `browse('buy', buyKey(soldOut, 0))` with the message 'back on the list, first row'.
+    expect(paintOf(soldOut, afterSoldOut), 'back on the list, on the neighbouring row').toEqual(
+      browse('buy', buyKey(soldOut, 1)),
     );
 
     // The Bait stack vanishes under the Sell confirm.
@@ -724,8 +727,10 @@ describe('shopScreen — review-lens settle cases (ctl-8a, CTL8A.2)', () => {
     const soldOut = vmOf({ ...w, stock: STOCK.filter((row) => row.shopItemId !== 32n) });
     const reseated = observe(soldOut, onPotion);
     expect(reseated, 'the cursor`s row is gone: a new state').not.toBe(onPotion);
-    expect(paintOf(soldOut, reseated), 'on the first row, nothing described').toEqual(
-      browse('buy', buyKey(soldOut, 0)),
+    // ts-6b-8 (named intentional change, R-ctl-8a-CTL8A.2): the re-seat lands on the neighbour
+    // (Berry, now at Potion's index), nothing described. Was: `buyKey(soldOut, 0)`, the first row.
+    expect(paintOf(soldOut, reseated), 'on the neighbouring row, nothing described').toEqual(
+      browse('buy', buyKey(soldOut, 1)),
     );
 
     expect(observe(vmOf(w), onPotion), 'a batch that changes nothing: the same object').toBe(
@@ -736,11 +741,59 @@ describe('shopScreen — review-lens settle cases (ctl-8a, CTL8A.2)', () => {
     // Another row going away leaves the cursor's row, and its description, in place.
     const onBait = swallowed(vm, shopScreen.init(vm), ['Y']);
     const keptBait = observe(soldOut, onBait);
-    expect(keptBait, 'the cursor did not move: the same object').toBe(onBait);
+    // ts-6b-8 (named intentional change, R-ctl-8a-CTL8A.2): the adapter keeps the last layout in
+    // its state, so a layout change answers a NEW state object even when the cursor did not move.
+    // Was: `expect(keptBait).toBe(onBait)` ('the cursor did not move: the same object'). The claim
+    // that matters, the cursor and the Y description unchanged, is the paint below.
     expect(paintOf(soldOut, keptBait), 'Bait still described').toEqual({
       ...browse('buy', buyKey(soldOut, 0)),
       description: BAIT.description,
     });
+  });
+});
+
+describe('shopScreen — ts-6b-8: a vanished cursor row seats on its neighbour', () => {
+  it("selling out the cursor's stack seats the cursor on the neighbouring row, not the first", () => {
+    // WRONG IMPL KILLED: the old re-seat on the FIRST row (the player loses their place in a long
+    // list after every sale); a re-seat on the previous row for a middle row; a clamp that seats a
+    // vanished LAST row on the first row instead of the new last row; a Buy-only fix.
+    const w = world({
+      inventory: [bag(101n, 7, 5), bag(102n, 9, 2), bag(103n, 8, 1), bag(104n, 10, 3)],
+    });
+    const vm = vmOf(w);
+    const sellRows = rows(vm).forSaleByPlayer;
+    expect(sellRows, 'fixture: four sell rows').toHaveLength(4);
+    const without = (i: number) => {
+      const gone = (sellRows[i] as ShopInventoryItemViewModel).invId;
+      return vmOf({ ...w, inventory: w.inventory.filter((r) => r.invId !== gone) });
+    };
+
+    // A MIDDLE row (index 1) vanishes: the row now at index 1 takes the cursor.
+    const onSecond = swallowed(vm, shopScreen.init(vm), ['RB', 'Down']);
+    expect(paintOf(vm, onSecond), 'fixture: cursor on sell row 1').toEqual(
+      browse('sell', sellKey(vm, 1)),
+    );
+    const afterMiddle = without(1);
+    expect(sellKey(afterMiddle, 1), 'fixture: the row at index 1 changed').not.toBe(sellKey(vm, 1));
+    expect(paintOf(afterMiddle, observe(afterMiddle, onSecond))).toEqual(
+      browse('sell', sellKey(afterMiddle, 1)),
+    );
+
+    // The LAST row (index 3) vanishes: the new last row takes the cursor.
+    const onLast = swallowed(vm, shopScreen.init(vm), ['RB', 'Down', 'Down', 'Down']);
+    expect(paintOf(vm, onLast), 'fixture: cursor on the last sell row').toEqual(
+      browse('sell', sellKey(vm, 3)),
+    );
+    const afterLast = without(3);
+    expect(paintOf(afterLast, observe(afterLast, onLast))).toEqual(
+      browse('sell', sellKey(afterLast, 2)),
+    );
+
+    // Buy tab: Potion (index 1) sells out, Berry (now index 1) takes the cursor, not Bait.
+    const onPotion = swallowed(vm, shopScreen.init(vm), ['Down']);
+    const soldOut = vmOf({ ...w, stock: STOCK.filter((r) => r.shopItemId !== 32n) });
+    expect(paintOf(soldOut, observe(soldOut, onPotion))).toEqual(browse('buy', buyKey(soldOut, 1)));
+    expect(buyKey(soldOut, 1)).not.toBe(buyKey(soldOut, 0));
   });
 });
 
