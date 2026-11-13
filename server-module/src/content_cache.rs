@@ -94,7 +94,7 @@ pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String>
     (*ITEMS).as_ref().map_err(Clone::clone)
 }
 
-/// Heal-locations registry: parsed once per process (the eighth LazyLock).
+/// Heal-locations registry: parsed once per process.
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.

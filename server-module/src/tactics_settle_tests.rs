@@ -5511,7 +5511,7 @@ fn a_pvp_settle_with_one_sides_hp_write_back_failed_pays_nothing() {
 }
 
 // ===========================================================================
-// A tactical win's level-up: stat recompute, heal, auto-evolve (R-bt-17-SETTLEFAILPATHS)
+// A tactical win's level-up: stat recompute, heal, auto-evolve
 // ===========================================================================
 
 /// The monster's HP the unit carries into the finishing KO — below every max HP in play.
@@ -5701,6 +5701,55 @@ fn w_species_of_11() -> u32 {
         .expect("monster 11 is in PAIR")
 }
 
+/// The row as the level-up leaves it, BEFORE any evolution: the award's XP and level, the six
+/// stats `derive_stats` gives for the new level over the species base, and the healed HP.
+fn leveled_row(pre: &Monster, xp_gain: u32, old_max_hp: u16) -> Monster {
+    let (xp, lvl) = after_gain(pre.xp, xp_gain);
+    let derived = derived_for(pre, &species_def(pre.species_id).base_stats, lvl);
+    let mut m = pre.clone();
+    m.xp = xp;
+    m.level = lvl;
+    m.stat_hp = derived.hp;
+    m.stat_attack = derived.attack;
+    m.stat_defense = derived.defense;
+    m.stat_speed = derived.speed;
+    m.stat_sp_attack = derived.sp_attack;
+    m.stat_sp_defense = derived.sp_defense;
+    m.current_hp =
+        game_core::combat::xp::level_up_healed_hp(pre.current_hp, old_max_hp, derived.hp);
+    m
+}
+
+/// The evolved row equals `game_core::evolve` of the leveled row onto `to_species`: species,
+/// the six stats, HP and every essence pool (game-core is the oracle).
+fn assert_evolved_like_the_oracle(run: &LevelUpRun, to_species: u32) {
+    let leveled = leveled_row(&run.pre, run.xp_gain, run.old_max_hp);
+    let want = game_core::evolve(
+        &crate::marshal::monster_to_instance(&leveled).expect("the leveled row is a monster"),
+        &species_def(to_species),
+    );
+    let got = &run.post;
+    assert!(
+        want.current_hp > LEVEL_UP_PRE_HP,
+        "PRECONDITION: the oracle's HP keeps the heal observable"
+    );
+    assert_eq!(got.species_id, want.species_id, "the evolved species");
+    assert_eq!(
+        six_of_row(got),
+        six_of_block(&want.derived_stats),
+        "every stat is re-derived from the TARGET species at the new level"
+    );
+    assert_eq!(
+        got.current_hp, want.current_hp,
+        "HP carried through the evolve"
+    );
+    assert_eq!(
+        pools(got),
+        AFFINITIES.map(|af| want.essence[af.index()]),
+        "an evolution spends every pool"
+    );
+}
+
 /// A tactical win whose award carries the killer over a level boundary: the level-up writes the
 /// stats `derive_stats` gives for the new level, heals the max-HP growth (`level_up_healed_hp`
 /// against the anchor's battle-time max), and the unconditional evolution check then applies the
@@ -5788,23 +5837,7 @@ fn a_tactical_win_that_levels_a_monster_up_recomputes_stats_heals_and_auto_evolv
         "the check ran after the level-up and applied the one eligible edge"
     );
     assert_eq!(evolved_run.pub_species, to_species, "the public mirror too");
-    let target = species_def(to_species);
-    let target_stats = derived_for(&evolved_run.pre, &target.base_stats, want_level);
-    assert_eq!(
-        six_of_row(evolved),
-        six_of_block(&target_stats),
-        "an evolution re-derives every stat from the TARGET species at the new level"
-    );
-    assert!(
-        target_stats.hp > LEVEL_UP_PRE_HP,
-        "PRECONDITION: the target's max HP leaves the healed HP observable"
-    );
-    assert_eq!(
-        evolved.current_hp,
-        healed.min(target_stats.hp),
-        "the level-up heal precedes the evolution, which only clamps HP to the new max"
-    );
-    assert_eq!(pools(evolved), [0; 8], "an evolution spends every pool");
+    assert_evolved_like_the_oracle(&evolved_run, to_species);
     assert_eq!(
         evolved_run.reveals,
         vec![(11, pre.species_id, to_species)],
@@ -5861,4 +5894,130 @@ fn a_failed_write_back_with_a_fainted_member_adds_no_unfavorable_trust() {
         before,
         "a failed write-back applies no faint penalty"
     );
+}
+
+/// A KO'd ledger award that levels the killer up pays through a FLEE just as through a win, and
+/// the evolution check still runs: `credit_monster`'s check is unconditional, while the
+/// trust-favorable credit is wild-win-only (`favorable` is false on a Fled close). Pack 2: u1
+/// KOs one wild, the battle goes on, u2 flees (`close_after_ko`). Monster 11 is one XP short of
+/// level 6 with one level-only edge (species 1 -> 2) whose `min_level` is the post-award level,
+/// so it is eligible only after the level-up. Expected values come from `game_core::evolve` over
+/// the leveled row.
+///
+/// kills: the evolution check gated on `favorable` (`if favorable { check_and_evolve(..) }`): the
+/// species would stay 1 here.
+#[test]
+fn a_ledger_level_up_on_a_flee_after_a_ko_still_auto_evolves() {
+    let fx = fixture();
+    let w = world(&fx);
+    let species_rows = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+    let paths = fx
+        .table_keyed::<crate::schema::EvolutionPathRow, u64>("evolution_path", "path_id", |r| {
+            r.path_id
+        })
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.path_id, |r, id| r.path_id = id);
+    let notices = fx
+        .table::<crate::schema::PendingEvolutionNotice>(
+            "pending_evolution_notice",
+            "owner_identity",
+            |r| r.owner_identity,
+        )
+        .writable()
+        .unique();
+    let to_species = 2;
+    species_rows.seed(&species_row_of(&species_def(to_species)));
+    let scene = ko_scene(&fx, &w);
+
+    let real = w.monster(11);
+    assert_ne!(real.species_id, to_species, "the edge changes the species");
+    let old_max_hp = derived_for(
+        &real,
+        &species_def(real.species_id).base_stats,
+        LEVEL_UP_FROM,
+    )
+    .hp;
+    let next_level_xp = game_core::xp_for_level(level(LEVEL_UP_FROM + 1)).value();
+    w.edit_monster(11, |m| {
+        m.level = LEVEL_UP_FROM;
+        m.xp = next_level_xp - LEVEL_UP_XP_SHORT;
+        m.stat_hp = old_max_hp;
+        m.stat_attack = 701;
+        m.stat_defense = 702;
+        m.stat_speed = 703;
+        m.stat_sp_attack = 704;
+        m.stat_sp_defense = 705;
+        m.current_hp = LEVEL_UP_PRE_HP;
+    });
+    w.edit_unit(scene.u1, |u| u.cur_hp = LEVEL_UP_PRE_HP);
+    let mut anchor = w.anchor(scene.id).expect("the anchor exists");
+    let i = anchor
+        .party_monster_ids
+        .iter()
+        .position(|&m| m == 11)
+        .expect("monster 11 is in the party");
+    anchor.state.side_a.team[i].max_hp = old_max_hp;
+    assert_eq!(w.battles.remove(scene.id), 1, "the anchor edited in place");
+    w.battles.seed(&anchor);
+    let pre = w.monster(11);
+    let xp_gain = scene
+        .payout
+        .awards
+        .iter()
+        .find(|aw| aw.unit == scene.u1)
+        .expect("the killer's unit is paid")
+        .xp;
+    assert!(xp_gain > 0, "PRECONDITION: the KO pays XP");
+    let (_, want_level) = after_gain(pre.xp, xp_gain);
+    assert!(
+        want_level > LEVEL_UP_FROM,
+        "PRECONDITION: the award crosses a level boundary"
+    );
+    paths.seed(&crate::schema::EvolutionPathRow {
+        path_id: 1,
+        edge_id: 1,
+        from_species: pre.species_id,
+        to_species,
+        min_level: want_level,
+        essence: vec![],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    });
+
+    close_after_ko(&fx, &w, &scene, Closer::Flee);
+
+    assert_eq!(
+        outcome(&w, scene.id),
+        BattleOutcome::Fled,
+        "PRECONDITION: a flee, so no favorable credit"
+    );
+    let run = LevelUpRun {
+        pre: pre.clone(),
+        post: w.monster(11),
+        pub_species: w.monster_pub(11).species_id,
+        xp_gain,
+        old_max_hp,
+        reveals: notices
+            .rows()
+            .into_iter()
+            .flat_map(|n| n.entries)
+            .filter(|e| e.monster_id == 11)
+            .map(|e| (e.monster_id, e.from_species, e.to_species))
+            .collect(),
+    };
+    assert_eq!(
+        (run.post.xp, run.post.level),
+        after_gain(pre.xp, xp_gain),
+        "the flee pays the killer's ledger XP"
+    );
+    assert_eq!(
+        run.post.species_id, to_species,
+        "the evolution check runs on a non-win close"
+    );
+    assert_eq!(run.pub_species, to_species, "the public mirror too");
+    assert_evolved_like_the_oracle(&run, to_species);
+    assert_eq!(run.reveals, vec![(11, pre.species_id, to_species)]);
 }

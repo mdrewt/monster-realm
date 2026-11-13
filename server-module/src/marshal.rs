@@ -140,7 +140,6 @@ pub(crate) fn table_from_encounter_row(row: &EncounterRow) -> Result<EncounterTa
     })
 }
 
-/// Build a wild `BattleMonster` (no owned `monster` row) from a species, the
 /// Derive the public projection from a private monster row. No hidden fields.
 ///
 /// `tier` comes from the CALLER — fresh from the species row at the 4

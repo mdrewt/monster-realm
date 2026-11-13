@@ -1313,7 +1313,6 @@ fn a_territorial_ranged_wild_attacks_from_the_cheapest_tile_not_the_farthest() {
         vec![hit(HEAVY, P1), END],
         "the Territorial wild attacks from its own, cheapest tile"
     );
-    assert_ne!(plan_of(&st, Stance::Territorial, spawn), skittish);
 }
 
 // ===========================================================================

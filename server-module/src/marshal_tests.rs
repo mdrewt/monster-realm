@@ -1,9 +1,6 @@
-//! `marshal` domain-submodule tests (M8.9c — test relocation).
-//!
-//! Extracted verbatim from the former inline `#[cfg(test)] mod tests` in
-//! `marshal.rs`; every assertion, fixture, and helper is unchanged. Declared
-//! from `marshal.rs` as `#[path = "marshal_tests.rs"] mod marshal_tests;`, so
-//! `super` still resolves to `marshal` exactly as the inline module did.
+//! `marshal` domain-submodule tests. Declared from `marshal.rs` as
+//! `#[path = "marshal_tests.rs"] mod marshal_tests;`, so `super` resolves to
+//! `marshal`.
 
 use super::*;
 use crate::PARTY_SLOT_NONE;

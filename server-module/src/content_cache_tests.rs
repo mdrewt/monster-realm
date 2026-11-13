@@ -355,7 +355,6 @@ fn cached_battle_maps_ptr_eq_second_call_bt6_6() {
 
 // ===========================================================================
 // Heal-locations cache
-//
 // ===========================================================================
 
 /// `cached_heal_locations()` returns exactly the same data as
