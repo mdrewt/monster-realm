@@ -994,8 +994,8 @@ test.describe
           // real pointer and must STAY a pointer press: copying this dispatch there would
           // leave no pointer press on a dialogue choice anywhere.
           // The overlay can vanish between isVisible() and this dispatch (an earlier attempt's
-          // slow row-delete landing); render(null) only hides it, so its stale button can still
-          // take the click, the server refuses the advance and the hidden-wait below recovers.
+          // slow row-delete landing); a hidden overlay's stale button routes nothing, and the
+          // hidden-wait below recovers.
           const dispatchResult = await a
             .locator('#dialogue-choices')
             .getByText(QUEST_CHOICE, { exact: true })

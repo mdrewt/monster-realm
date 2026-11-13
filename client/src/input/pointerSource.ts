@@ -297,7 +297,8 @@ export class PointerSource {
       return;
     }
     // A native control keeps its own click, unless it is itself a nav row (the dialogue's
-    // choice and Shop buttons): that row routes like any other.
+    // choice and Shop buttons): that row routes like any other, so such a row must carry no
+    // click listener of its own (it would act twice).
     const native = target.closest(NATIVE);
     if (native !== null && !native.hasAttribute('data-nav-key')) return;
     if (target.closest('[data-pointer-own]') !== null) return;
