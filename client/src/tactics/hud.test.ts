@@ -496,7 +496,7 @@ describe('renderInfoBoxes: the DOM rows (BT10.2)', () => {
     );
 
     expect(pipsFor(6, 0, 4), 'apMax 4, a unit at 6 AP: four full pips').toEqual(rep('full', 4));
-    expect(pipsFor(6, 1, 4), 'apMax 4, ap 6, drafted 1').toEqual([
+    expect(pipsFor(6, 3, 4), 'apMax 4, ap 6, drafted 3').toEqual([
       ...rep('full', 3),
       ...rep('drafted', 1),
     ]);

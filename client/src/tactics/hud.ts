@@ -1,13 +1,13 @@
 // tactics/hud.ts — the per-side info boxes (BT10.2): one compact row per unit (name, level, HP,
 // affinity), the hovered-or-targeted unit's row expanded with its status / Guard / First Stand /
-// role / stance chips, and the ACTIVE unit's six action-point pips with drafted spend blinking.
+// role / stance chips, and the ACTIVE unit's action-point pips (one per point of the turn's AP, which
+// the caller reads through the rules port) with drafted spend blinking.
 //
 // `infoBoxes` is pure (no DOM); `renderInfoBoxes` paints a view-model with createElement +
 // textContent only. Every word comes from tactics/strings.ts.
 import type { Stance, StatusTag, TacticalUnit } from './boardModel';
 import * as s from './strings';
 
-export const AP_PIPS = 6;
 export type PipState = 'full' | 'drafted' | 'spent';
 export interface InfoRowVM {
   readonly unitId: number;
@@ -32,12 +32,13 @@ export interface InfoBoxesVM {
   readonly foe: readonly InfoRowVM[];
 }
 
-/** pips[i]: i < ap-drafted -> full; i < ap -> drafted; else spent (drafted clamped to [0, ap]). */
-function pipStates(ap: number, draftedAp: number): PipState[] {
+/** `apMax` pips. pips[i]: i < ap-drafted -> full; i < ap -> drafted; else spent (drafted clamped to
+ *  [0, ap]). */
+function pipStates(ap: number, draftedAp: number, apMax: number): PipState[] {
   const have = Math.max(0, ap);
   const drafted = Math.min(Math.max(0, draftedAp), have);
   const pips: PipState[] = [];
-  for (let i = 0; i < AP_PIPS; i++) {
+  for (let i = 0; i < apMax; i++) {
     if (i < have - drafted) pips.push('full');
     else if (i < have) pips.push('drafted');
     else pips.push('spent');
@@ -51,6 +52,8 @@ export function infoBoxes(
     readonly activeUnitId: number | null;
     readonly focusUnitId: number | null;
     readonly draftedAp: number;
+    /** A fresh turn's AP (the tuning's, from the rules port): how many pips the active row draws. */
+    readonly apMax: number;
   },
 ): InfoBoxesVM {
   const own: InfoRowVM[] = [];
@@ -76,7 +79,9 @@ export function infoBoxes(
             }
           : null,
       pips:
-        o.activeUnitId === u.unitId && u.state === 'Active' ? pipStates(u.ap, o.draftedAp) : null,
+        o.activeUnitId === u.unitId && u.state === 'Active'
+          ? pipStates(u.ap, o.draftedAp, o.apMax)
+          : null,
     };
     (u.mine ? own : foe).push(row);
   }
@@ -122,9 +127,9 @@ function paintRow(vm: InfoRowVM): HTMLElement {
   if (pips !== null) {
     const bar = el('span', 'tactics-pips');
     bar.setAttribute('role', 'group');
-    // The AP count is the pips that are not spent, out of AP_PIPS.
+    // The AP count is the pips that are not spent, out of the pips drawn.
     const apLeft = pips.filter(isLive).length;
-    bar.setAttribute('aria-label', s.hudAp(apLeft, AP_PIPS));
+    bar.setAttribute('aria-label', s.hudAp(apLeft, pips.length));
     for (const state of pips) {
       const pip = el('span', `tactics-pip tactics-pip--${state}`);
       if (state === 'drafted') pip.classList.add('tactics-blink');

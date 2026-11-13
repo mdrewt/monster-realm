@@ -475,7 +475,7 @@ let battleMount: HTMLElement | undefined;
 let tacticsRulesPort: TacticsClientRules | null = null;
 /** The tactics rules port, bound on first use (see the `wasmPkg` import note). */
 const tacticsRules = (): TacticsClientRules => (tacticsRulesPort ??= bindTacticsRules(wasmPkg));
-/** The client-facing tuning (the Surge start, the wild round cap, the pack cap), read once. */
+/** The client-facing tuning (the Surge start, the wild round cap, the strikes that forfeit), read once. */
 let tacticsTuning: TacticsTuning | null = null;
 const tuningOf = (): TacticsTuning => (tacticsTuning ??= tacticsRules().tuning());
 /** The tactical battle a battle view shows (the deploy panel or the shell), set BEFORE its render:
@@ -3444,17 +3444,14 @@ function ownMonsterName(m: StoreMonsterPub): string {
   return m.nickname || store.species(m.speciesId)?.name || `#${m.monsterId}`;
 }
 
-/** What the client keeps of a battle map — its size and its side-A spawn count — read once per
- *  mapId through the rules port (a whole map definition crosses the wasm boundary for three numbers). */
-const tacticsMapFacts = new Map<
-  number,
-  { readonly width: number; readonly height: number; readonly spawns: number }
->();
-function mapFactsOf(mapId: number): { width: number; height: number; spawns: number } {
+/** What the client keeps of a battle map — its size — read once per mapId through the rules port (a
+ *  whole map definition crosses the wasm boundary for two numbers). */
+const tacticsMapFacts = new Map<number, { readonly width: number; readonly height: number }>();
+function mapFactsOf(mapId: number): { width: number; height: number } {
   let facts = tacticsMapFacts.get(mapId);
   if (facts === undefined) {
     const map = tacticsRules().map(mapId);
-    facts = { width: map.width, height: map.height, spawns: map.spawn_a.length };
+    facts = { width: map.width, height: map.height };
     tacticsMapFacts.set(mapId, facts);
   }
   return facts;
@@ -3471,9 +3468,10 @@ function mySideOf(battleId: bigint): RuleSide {
 /** The deploy panel and its view model for the own-perspective anchor `battle` (bt-12, BT12.2 /
  *  BT12.3): the anchor's party order joined with the own monster rows (a member with no own row is
  *  dropped; one in the player's open trade is neither offered nor defaulted — `deploy_units` refuses
- *  it), the remembered formation, the pack from the anchor's side B and the slot count
- *  `min(max_pack, spawn_a.length)` (the server's own cap). Builds the panel on first use. null
- *  (reported once) when the rules port or the map cannot be read — the frame keeps its current owner (B17). */
+ *  it), the remembered formation, the pack from the anchor's side B and the slot count the rules
+ *  answer for the battle's map (game-core's `deploy_slots`, the server's own cap). Builds the panel on
+ *  first use. null (reported once) when the rules port or the map cannot be read — the frame keeps its
+ *  current owner (B17). */
 function buildDeployPanel(
   battle: {
     readonly battleId: bigint;
@@ -3527,7 +3525,7 @@ function buildDeployPanel(
         : {
             mode: 'wild',
             ...base,
-            slotCount: Math.min(tuningOf().max_pack, mapFactsOf(row.mapId).spawns),
+            slotCount: tacticsRules().deploySlots(row.mapId),
             // The pack (bt-12 B): the server seats every wild in the anchor's side B at the start.
             wilds: battle.sideB.team.map((w) => ({
               speciesId: w.speciesId,
@@ -3823,6 +3821,7 @@ function pumpClock(wallNowMs: number): void {
       mySide: shown.mySide,
       playerName: (id) => store.player(id)?.name ?? store.profile(id)?.name ?? '',
       nowMs: wallNowMs,
+      strikesMax: tuningOf().autopass_forfeit,
     }),
   );
 }

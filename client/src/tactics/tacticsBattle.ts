@@ -1365,6 +1365,7 @@ export class TacticsBattle implements BattleOpsView {
       activeUnitId: vm.activeUnitId,
       focusUnitId: (target ?? under)?.unitId ?? null,
       draftedAp: p !== null && p.unitId === vm.activeUnitId ? p.draftedAp : 0,
+      apMax: rules.freshBudget().ap,
     });
     const turnBar = turnBarVM({
       kind: vm.kind,
