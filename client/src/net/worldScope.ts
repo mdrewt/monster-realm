@@ -96,11 +96,18 @@ export interface ScopeRetry {
 export interface ScopeState {
   readonly entries: ReadonlyMap<ScopeKey, ScopeEntry>;
   readonly retry: ReadonlyMap<ScopeKey, ScopeRetry>;
+  /** The own zone's key as of the last sync: a different one now means the character changed zone. */
+  readonly ownZone: ScopeKey | undefined;
   /** The own-row set and the own zone's set are both applied. */
   readonly settled: boolean;
 }
 
-export const INITIAL_SCOPE: ScopeState = { entries: new Map(), retry: new Map(), settled: false };
+export const INITIAL_SCOPE: ScopeState = {
+  entries: new Map(),
+  retry: new Map(),
+  ownZone: undefined,
+  settled: false,
+};
 
 export type ScopeEffect =
   | { readonly kind: 'subscribe'; readonly key: ScopeKey; readonly query: string }
@@ -141,7 +148,8 @@ function dropped(state: ScopeState, reason: 'rejected' | 'timeout', key: ScopeKe
  * the rows on screen are never dropped before their replacements arrive. The own-row set and the
  * own zone's set are the two the client needs: a rejection of either is retried after
  * `RETRY_BACKOFF_MS`, and one that outlasts the retries, or stays unapplied for
- * `APPLY_TIMEOUT_MS`, yields `drop`.
+ * `APPLY_TIMEOUT_MS`, yields `drop`. Both are counted from the moment the set became needed: a zone
+ * prefetched before a warp enters the warp with a fresh timeout and no rejections against it.
  */
 export function syncScope(state: ScopeState, input: ScopeInput): ScopeStep {
   const { wantEntity, ownZone, now } = input;
@@ -159,6 +167,15 @@ export function syncScope(state: ScopeState, input: ScopeInput): ScopeStep {
   const retry = new Map([...state.retry].filter(([key]) => wanted.has(key)));
   const subscribes: ScopeEffect[] = [];
   const unsubscribes: ScopeEffect[] = [];
+
+  // The character has just entered this zone. While its set was a prefetch, nothing waited on it,
+  // so its age and its rejections say nothing about the link now: the timeout and the retry
+  // ladder start here.
+  if (ownZoneK !== undefined && ownZoneK !== state.ownZone) {
+    const held = entries.get(ownZoneK);
+    if (held?.phase === 'pending') entries.set(ownZoneK, { ...held, issuedAt: now });
+    retry.delete(ownZoneK);
+  }
 
   for (const [key, query] of wanted) {
     const entry = entries.get(key);
@@ -205,7 +222,7 @@ export function syncScope(state: ScopeState, input: ScopeInput): ScopeStep {
   // New sets are requested before old ones are released.
   const effects: ScopeEffect[] = [...subscribes, ...unsubscribes];
   if (settled !== state.settled) effects.push({ kind: 'settled', settled });
-  return { state: { entries, retry, settled }, effects };
+  return { state: { entries, retry, ownZone: ownZoneK, settled }, effects };
 }
 
 export interface ScopeEvent {
@@ -231,7 +248,7 @@ export function onScopeEvent(state: ScopeState, event: ScopeEvent): ScopeState {
       rejectedAt: event.now,
     });
   }
-  return { entries, retry, settled: state.settled };
+  return { entries, retry, ownZone: state.ownZone, settled: state.settled };
 }
 
 export interface ScopeSummary {

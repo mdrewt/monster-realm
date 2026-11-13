@@ -375,6 +375,9 @@ both query strings and the state of the sets; the connection executes what it de
   frame. The warp itself subscribes nothing and the scope stays settled through it. A prefetched
   set never gates anything: it is not part of settled, a rejection is tried again after 1 s while
   the zone is still wanted, and neither a rejection nor a missing applied ends the connection.
+  When the player warps into a zone whose prefetched set is still not applied, that set becomes
+  the own zone's with nothing held against it: the 5 s timeout runs from the warp, and a set that
+  was rejected as a prefetch is subscribed at the warp with all three retries ahead of it.
   The arrival tile of each warp is the tile of the warp back, so a player standing where they
   arrived holds both zones until they walk five tiles off. The zone 0 spawn (1,1) is four tiles
   from the warp on (1,5), so a player standing on the spawn holds zone 1 as well.
@@ -453,7 +456,8 @@ server-first with a client fallback for older modules.
 **Rules out.** A `character` query in the base set, or one with no `WHERE`; building either query's
 text anywhere but `worldScope.ts` (a formatting difference stops the host sharing it); taking the
 zone from `rawMap` or assuming one; taking the prefetch position from the predicted tile, or the
-warps from the drawn map; a prefetched zone on the own zone's retry ladder or timeout; a standing
+warps from the drawn map; a prefetched zone on the own zone's retry ladder or timeout, or its age or rejections as a
+prefetch counted once the player is in it; a standing
 subscription to every neighbouring zone; releasing the old zone before the new one is applied;
 unsubscribing on a dropped connection; drawing characters on a new connection before the scope has
 settled; subscribing a zone for a client that has no own character row; a sender-scoped view of "players in my zone" (a view is evaluated on the reducer thread for

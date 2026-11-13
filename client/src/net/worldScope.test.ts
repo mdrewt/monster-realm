@@ -602,6 +602,79 @@ describe('syncScope: a set the client needs that never applies', () => {
   });
 });
 
+describe('syncScope: a prefetched zone the character warps into', () => {
+  /** Settled in zone 0 with zone 1 prefetched (pending) since `issuedAt`. */
+  const prefetching = (issuedAt: number): ScopeState =>
+    syncScope(settledInZone0(), input(issuedAt, 0, [1])).state;
+
+  it('a prefetch pending longer than APPLY_TIMEOUT_MS does not drop at the warp: the timeout starts there', () => {
+    const warpAt = 100 + APPLY_TIMEOUT_MS + 200;
+    const stale = syncScope(prefetching(100), input(warpAt - 1, 0, [1]));
+    expect(stale.effects).toEqual([]);
+    const warp = syncScope(stale.state, input(warpAt, 1, [0]));
+    expect(warp.effects).toEqual([{ kind: 'settled', settled: false }]);
+    expect(warp.state.entries.get(Z1)).toMatchObject({ phase: 'pending', issuedAt: warpAt });
+    expect(syncScope(warp.state, input(warpAt + APPLY_TIMEOUT_MS - 1, 1, [0])).effects).toEqual([]);
+    const out = syncScope(warp.state, input(warpAt + APPLY_TIMEOUT_MS, 1, [0]));
+    expect(out.effects).toEqual([{ kind: 'drop', reason: 'timeout', key: Z1 }]);
+  });
+
+  it('a prefetch issued shortly before the warp gets the whole timeout from the warp', () => {
+    const warp = syncScope(prefetching(100), input(1700, 1, [0]));
+    expect(syncScope(warp.state, input(100 + APPLY_TIMEOUT_MS, 1, [0])).effects).toEqual([]);
+    expect(syncScope(warp.state, input(1700 + APPLY_TIMEOUT_MS - 1, 1, [0])).effects).toEqual([]);
+    expect(syncScope(warp.state, input(1700 + APPLY_TIMEOUT_MS, 1, [0])).effects).toEqual([
+      { kind: 'drop', reason: 'timeout', key: Z1 },
+    ]);
+  });
+
+  it('the timeout is not restarted by later syncs in the same zone', () => {
+    const warp = syncScope(prefetching(100), input(1700, 1, [0]));
+    const later = syncScope(warp.state, input(3000, 1, [0]));
+    expect(later.state.entries.get(Z1)?.issuedAt).toBe(1700);
+  });
+
+  it('prefetch rejections do not count at the warp: it is subscribed at once and has every retry', () => {
+    let state = prefetching(0);
+    let now = 0;
+    for (let i = 0; i <= RETRY_BACKOFF_MS.length; i += 1) {
+      state = onScopeEvent(state, { kind: 'rejected', key: Z1, now });
+      now += OPTIONAL_RETRY_MS;
+      state = syncScope(state, input(now, 0, [1])).state;
+    }
+    // Rejected a fifth time and inside its 1 s wait when the character warps.
+    state = onScopeEvent(state, { kind: 'rejected', key: Z1, now });
+    expect(state.retry.get(Z1)?.attempts).toBe(RETRY_BACKOFF_MS.length + 2);
+    now += 1;
+    const warp = syncScope(state, input(now, 1, [0]));
+    expect(warp.effects).toEqual([
+      { kind: 'subscribe', key: Z1, query: zoneQuery(1) },
+      { kind: 'settled', settled: false },
+    ]);
+    state = warp.state;
+    for (const wait of RETRY_BACKOFF_MS) {
+      state = onScopeEvent(state, { kind: 'rejected', key: Z1, now });
+      expect(syncScope(state, input(now + wait - 1, 1, [0])).effects).toEqual([]);
+      now += wait;
+      const retried = syncScope(state, input(now, 1, [0]));
+      expect(retried.effects).toEqual([{ kind: 'subscribe', key: Z1, query: zoneQuery(1) }]);
+      state = retried.state;
+    }
+    state = onScopeEvent(state, { kind: 'rejected', key: Z1, now });
+    expect(syncScope(state, input(now, 1, [0])).effects).toEqual([
+      { kind: 'drop', reason: 'rejected', key: Z1 },
+    ]);
+  });
+
+  it('a prefetch already applied is untouched by the warp and the scope stays settled', () => {
+    const held = run([{ applied: Z1, now: 150 }], prefetching(100)).state;
+    const warp = syncScope(held, input(900, 1, [0]));
+    expect(warp.effects).toEqual([]);
+    expect(warp.state.settled).toBe(true);
+    expect(warp.state.entries.get(Z1)).toMatchObject({ phase: 'active', issuedAt: 100 });
+  });
+});
+
 describe('describeScope', () => {
   it('lists zones in ascending id order with their phase', () => {
     const state = run([

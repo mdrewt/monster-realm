@@ -29,6 +29,11 @@ import { safeTile, walkPath } from './controls';
 // back on; row y=1 of zone 1 is clean floor for x=1..8; (2,1) is clean floor in both zones.
 // The spawn (1,1) is exactly four tiles from the warp, so a character standing on it holds both
 // zones; (2,1) is five tiles away, the nearest tile where it holds its own zone alone.
+//
+// NOT COVERED HERE: a warp into a zone whose set is not held (subscribed inside the warp's own-row
+// callback, rows one round trip later). Every walkable approach to the warp crosses the prefetch
+// line four tiles out, so a real client has always subscribed the destination before it arrives. That path
+// is pinned against the fake SDK by `[WS-WARP]` in src/net/connection.runtime.test.ts.
 
 interface Tile {
   x: number;
