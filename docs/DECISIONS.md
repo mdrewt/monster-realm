@@ -890,9 +890,10 @@ the server's RNG. Checking caller state before resolving the code means the redu
 cannot be used to test whether a code exists; malformed and already-used codes return
 the same error. Registering the code before the redirect is what lets the claim
 survive the round trip to the identity provider. A finished battle is history shared
-with an opponent, not progress, and the guest identity retires at the claim: the 24 h
-GC keeps the anchor, the tactical row and the summary, and the prior-terminal sweep
-runs on an identity's next battle, so nothing else would ever remove rows naming it.
+with an opponent, not progress, and the guest identity retires at the claim. Nothing
+else reliably removes what names it: every sweep and the 24 h GC keep `battle_summary`,
+a wild or practice anchor is swept only on its own player's next battle, and a PvP
+anchor waits on the opponent's next battle in the same role.
 
 **Rules out.** Server-minted claim codes; storing email or JWT subjects; rejecting
 anonymous connections; widening the audience allowlist to more than this game's client;

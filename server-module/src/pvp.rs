@@ -861,7 +861,7 @@ pub fn accept_challenge(
         .delete(challenge_id);
     disarm_challenge_reaper(ctx, challenge_id);
 
-    // Guard 8: the battle has started, so an open NPC conversation of either party ends with
+    // Step 8: the battle has started, so an open NPC conversation of either party ends with
     // it. `talk` and `advance_dialogue` refuse in a battle, so the row could never advance,
     // and the client keeps its dialogue frame above the battle for as long as the row exists.
     for who in [me, challenge.challenger] {

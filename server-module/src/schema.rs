@@ -1590,11 +1590,13 @@ pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity
 /// `battle.rs` can delete an anchor row BEFORE this step runs. (2) For every id
 /// in the set: delete the `battle_tactical`, `battle_secret`,
 /// `battle_wild_unit`, `battle_event`, `battle_unit`, `battle_queue`,
-/// `battle_deploy` and `battle_clock` rows by `battle_id` — the whole battle's
-/// tactical rows go, the other participant's included: the anchor is terminal
-/// for both sides by the end of the caller's transaction (the cascade forces
-/// it, the claim refuses without it) and the transcript is GC-bound. (3) Owner-keyed
-/// defence-in-depth deletes for rows naming the identity directly
+/// `battle_deploy` and `battle_clock` rows by `battle_id`, and its
+/// `tactical_deadline_sched`, `tactical_advance_sched` and `battle_gc_sched`
+/// rows — the whole battle's tactical rows go, the other participant's
+/// included: the anchor is terminal for both sides by the end of the caller's
+/// transaction (the cascade forces it, the claim refuses without it) and the
+/// transcript is GC-bound. (3) Owner-keyed defence-in-depth deletes for rows
+/// naming the identity directly
 /// (`battle_queue.owner`, `battle_deploy.owner`, `battle_clock.player`,
 /// `player_formation`). (4) Every `battle_summary` row naming the owner on
 /// either side is UPDATED once with `crate::TOMBSTONE_IDENTITY` on the matching
