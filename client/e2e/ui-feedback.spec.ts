@@ -31,7 +31,9 @@ import { closeAll, pressAccel, pressButton } from './controls';
 // after the state under test is reached (the toast or the strip is proven visible with its exact text
 // first, so the "after" is never a vacuous no-op), and no control is clicked or focused between the
 // two reads (a click scrolls its target into view at 640x240 and would move rects by itself): the
-// rename submits with Enter in its focused field, and the Controls capture is driven by keys.
+// rename submits with Enter in its focused field, and the Controls capture is driven by keys. A
+// frame's own deferred initial focus is such a focus too, so it has landed before the first read:
+// the rename waits for its field to be focused, and `openControls` for the rows.
 //
 // SHARED-WORLD HYGIENE (playwright.config.ts `workers: 1`, one published db). This file sorts after
 // ui-chrome and before ui-scale. It joins exactly ONE player in ONE browser context, closed in
@@ -169,6 +171,18 @@ test.describe
         .poll(() => stackNames(page), { message: `${label}: A opens Controls over the menu` })
         .toEqual(['world', 'menuView', 'controlsView']);
       await expect(page.locator('#controls-overlay')).toBeVisible();
+      // SETTLE. The overlay moves focus to its rows one macrotask AFTER it opens (the deferred
+      // initial focus of ui/overlayA11y.ts), and that focus scrolls the 640x240 shell. A key or a
+      // rect read that beats it races it: the cursor scrolls the shell part of the way, then the
+      // late focus scrolls it further and every box inside the shell moves. The open is over once
+      // the rows have the focus (the pending timer is inert from then on). The rows do get it in
+      // this spec: every open here starts with focus outside the frame, because the menu beneath
+      // is blurred as Controls opens over it. A retried predicate with the expect timeout as its
+      // bound, not a sleep.
+      await expect(
+        page.locator('#controls-rows'),
+        `${label}: the open settled on the rows`,
+      ).toBeFocused();
     };
 
     test.beforeAll(async () => {
