@@ -2519,8 +2519,6 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
       press: drive,
       capturing: () => false,
       cancelCapture: () => {},
-      choice: () => {},
-      shop: () => {},
     };
     // Wired by construction alone: the source listens on `gameScreen` and keeps no handle here.
     new PointerSource(gameScreen, () => null, deps);
@@ -2654,8 +2652,6 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
       press: drive,
       capturing: () => false,
       cancelCapture: () => {},
-      choice: () => {},
-      shop: () => {},
     });
     const click = (selector: string): void => {
       const target = gameScreen.querySelector<HTMLElement>(selector);
@@ -2809,8 +2805,6 @@ function uif7PointerWorld(): Uif7Pointer {
     press: drive,
     capturing: () => false,
     cancelCapture: () => {},
-    choice: () => {},
-    shop: () => {},
   });
   const click = (selector: string): void => {
     const target = gameScreen.querySelector<HTMLElement>(selector);
@@ -3072,8 +3066,6 @@ function qf8SocialHarness(
     press: drive,
     capturing: () => false,
     cancelCapture: () => {},
-    choice: () => {},
-    shop: () => {},
   });
   const clickOn = (target: Element | null, what: string): void => {
     expect(target, `precondition: ${what} is painted`).not.toBeNull();

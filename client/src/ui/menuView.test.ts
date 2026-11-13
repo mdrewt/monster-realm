@@ -339,8 +339,6 @@ describe('MenuView — uif-5 wheel', () => {
         press,
         capturing: () => false,
         cancelCapture: () => undefined,
-        choice: () => undefined,
-        shop: () => undefined,
       },
       { now: () => 0, setTimeout: () => 0, clearTimeout: () => undefined },
     );
@@ -831,8 +829,6 @@ describe('MenuView — input', () => {
       press,
       capturing: () => false,
       cancelCapture: vi.fn(),
-      choice: vi.fn(),
-      shop: vi.fn(),
     });
     expect(source).toBeInstanceOf(PointerSource);
 

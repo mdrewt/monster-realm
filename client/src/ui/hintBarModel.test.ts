@@ -203,6 +203,35 @@ describe('hintBar: Help on the Introduction (uif-14b, UIF14B.1)', () => {
   });
 });
 
+describe('hintBar: the Monsters frame quick Move (ts-6b-5.4)', () => {
+  it('the Monsters frame lists X as Move between B and Start', () => {
+    // WRONG IMPL KILLED: no X chip on the Monsters list (the quick Move is invisible); the chip
+    // shown in the sheet / summary phases (where X does nothing) or on every screen; X after
+    // Start; a literal verb instead of the Move catalog entry.
+    const BOX_VIEW: Stack = [{ kind: 'world' }, { kind: 'screen', id: 'boxView' }];
+    const buttons = (chips: readonly HintChip[]): string[] => chips.map((c) => c.button);
+    const on = hintBar(BOX_VIEW, DEFAULT_BINDINGS, NO_NOTICES, undefined, undefined, {
+      quickMove: true,
+    });
+    expect(buttons(on)).toEqual(['A', 'B', 'X', 'Start', 'Select']);
+    expect(on.find((c) => c.button === 'X')?.verb).toBe(t('box.sheet.move'));
+    const off = hintBar(BOX_VIEW, DEFAULT_BINDINGS, NO_NOTICES, undefined, undefined, {
+      quickMove: false,
+    });
+    expect(buttons(off)).toEqual(['A', 'B', 'Start', 'Select']);
+    expect(buttons(hintBar(BOX_VIEW, DEFAULT_BINDINGS, NO_NOTICES))).toEqual([
+      'A',
+      'B',
+      'Start',
+      'Select',
+    ]);
+    const menu = hintBar(OVER_WORLD_SCREEN, DEFAULT_BINDINGS, NO_NOTICES, undefined, undefined, {
+      quickMove: true,
+    });
+    expect(buttons(menu), 'another screen shows no X').toEqual(['A', 'B', 'Start', 'Select']);
+  });
+});
+
 describe('hintBar: every other top of stack (ctl-13, CTL13.1)', () => {
   it('CTL13-1-MODEL-FRAMES: a battle base shows A ok / Start / Select; any screen or prompt frame over either base shows A ok / B back / Start close / Select; a text entry on top shows only A ok and Start done; the Start badge follows a waiting request at both bases; and the verbs follow the active locale', () => {
     // WRONG IMPL KILLED: a bar that ignores the stack top (the world chips under a menu); a battle

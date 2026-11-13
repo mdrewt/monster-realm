@@ -412,6 +412,8 @@ describe('DialogueView render(): existing paint behaviour (pinned, not changed b
     expect(buttons).toHaveLength(vm.choices.length);
     expect(Array.from(buttons).map((b) => b.textContent)).toEqual(vm.choices.map((c) => c.text));
     expect(Array.from(buttons).map((b) => b.dataset.choiceIdx)).toEqual(['0', '1']);
+    // ts-6b-5.1: a choice button is an ordinary nav row the pointer seeks (key `c<idx>`).
+    expect(Array.from(buttons).map((b) => b.dataset.navKey)).toEqual(['c0', 'c1']);
   });
 
   it('BITES: a shopAction renders ONE extra button carrying data-shop-id and NO data-choice-idx (uxd2/ADR-0161 D4)', () => {
@@ -429,6 +431,9 @@ describe('DialogueView render(): existing paint behaviour (pinned, not changed b
     const shopBtn = buttons[1];
     expect(shopBtn.dataset.shopId).toBe('7');
     expect(shopBtn.dataset.choiceIdx).toBeUndefined();
+    // ts-6b-5.1: the Shop button is the `shop` nav row; the choice keeps its `c<idx>` key.
+    expect(shopBtn.dataset.navKey).toBe('shop');
+    expect(buttons[0].dataset.navKey).toBe('c0');
   });
 
   it('BITES: a second render REPLACES the choice buttons rather than appending them', () => {
