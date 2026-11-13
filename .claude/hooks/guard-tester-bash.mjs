@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 // PreToolUse guard, SCOPED TO THE "tester" SUBAGENT ONLY (lp-tester-tools).
 //
+// IN THIS REPO the tester's tool list (.claude/agents/tester.md) carries no `Bash`: its tests are
+// TypeScript and Rust, which none of the four shapes below can check, and reconnaissance belongs
+// to Read/Grep/Glob. This hook stays registered as the backstop -- an agent definition that names
+// `Bash` for agent_type "tester" gets exactly this allowlist and nothing wider.
+// Both tester guards act on agent_type exactly "tester" and on no other name: an agent defined
+// under another name (a tester variant, an experiment arm) is outside both, so it either runs as
+// agent_type "tester" with a model/effort override, or its file carries the same Bash-free
+// `tools:` line and both scope gates name it, with fixtures.
+//
 // WHY: tester.md's own doctrine (ownership is split to prevent reward-hacking: the
 // specialist implements, the verifier runs) is why tester's frontmatter historically
 // carried no Bash at all. A real lp-skills session hit the cost of that absolute
@@ -336,6 +345,30 @@ function runSelftest() {
     check("tester: arbitrary python -c payload (not the exact idiom)", "tester",
       "python3 -c \"import os;os.system('rm -rf /')\"", true);
     check("tester: bash -n on two paths (only the first would be checked)", "tester", "bash -n a.sh b.sh", true);
+
+    // tester: BLOCKED -- reconnaissance and bookkeeping. Read/Grep/Glob/Write answer each of these
+    // in one call; a shell form would need quoting, pipes and absolute paths parsed safely, which
+    // is the surface this allowlist exists not to have.
+    check("tester: grep for a symbol", "tester", 'grep -n "pub struct TradeSession" server-module/src/schema.rs', true);
+    check("tester: recursive grep", "tester", "grep -rn notice-banner client/src", true);
+    check("tester: ls a directory", "tester", "ls client/e2e", true);
+    check("tester: wc -l on a test file", "tester", "wc -l client/src/ui/frame.test.ts", true);
+    check("tester: sed line range", "tester", "sed -n 1,60p client/e2e/controls.ts", true);
+    check("tester: tail a file", "tester", "tail -n 30 client/src/main.notices.test.ts", true);
+    check("tester: git status", "tester", "git status --short", true);
+    check("tester: git diff --stat", "tester", "git diff --stat", true);
+    check("tester: touch a done marker", "tester", "touch /tmp/slice-tester.done", true);
+    check("tester: heredoc append to a test file", "tester", "cat >> client/src/a.test.ts <<'EOF'\nx\nEOF", true);
+    check("tester: bare true", "tester", "true", true);
+    check("tester: echo", "tester", "echo noop", true);
+    check("tester: allowed shape on /dev/null", "tester", "bash -n /dev/null", true);
+    // The tail is allowed on its own (first fixture above), so the chaining alone is what blocks.
+    check("tester: cd before an allowed shape", "tester",
+      `cd . && bash -n ${scratchRel}/extensionless-tool`, true);
+    check("tester: allowed shape piped to head", "tester", `bash -n ${scratchRel}/extensionless-tool 2>&1 | head -1`, true);
+    check("tester: type check", "tester", "npx tsc --noEmit -p client", true);
+    check("tester: biome check", "tester", "client/node_modules/.bin/biome check client/src/a.test.ts", true);
+    check("tester: bash -n on a Rust source (wrong extension for the shape)", "tester", "bash -n server-module/src/schema.rs", true);
 
     // tester: BLOCKED -- path-shape rejections
     check("tester: absolute path", "tester", "bash -n /etc/passwd", true);
