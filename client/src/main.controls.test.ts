@@ -91,7 +91,8 @@ const H = vi.hoisted(() => ({
 // tactical one; the battle cases below seed a tactical row (`putBattle`) and the deploy / results
 // panel is the shown owner. The deploy slot count is read through the lazily bound tactics rules port,
 // which refuses a pkg missing any of its exports: these are main.dispatch.test.ts's minimal shapes
-// (three spawn cells, max_pack 3); nothing here reads anything past the deploy and results panels.
+// (three spawn cells, three deploy slots from `tactics_deploy_slots`, an auto-pass forfeit of 4);
+// nothing here reads anything past the deploy and results panels.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
   ...wasmPkgWalkingMock({
     interact: (...args: unknown[]) => H.interact(...args),
@@ -131,8 +132,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => ({
     shield: [],
     intents: [],
   }),
-  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+  tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, autopass_forfeit: 4 }),
   tactics_next_initiative: () => [],
+  tactics_deploy_slots: () => 3,
 }));
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its

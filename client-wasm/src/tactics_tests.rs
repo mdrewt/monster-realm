@@ -8,9 +8,9 @@
 //! below goes through them.
 //!
 //! HOW THE EXPECTED VALUES ARE BUILT: from game-core directly, never from what the shell prints —
-//! the content join from `build_kits` / `load_species` (the server's `unit_of_row`,
-//! server-module/src/tactics.rs:425 + :325), the state field by field (golden.rs:315-329), the
-//! forecast traces from `damage_pipeline` at the first hitting roll and variance 85 / 100
+//! the content join from `build_kits` / `load_species` through game-core's `tactics::unit_kit`
+//! (species 1 also pinned by a hand-built literal), the state field by field (golden.rs:315-329),
+//! the forecast traces from `damage_pipeline` at the first hitting roll and variance 85 / 100
 //! (resolve.rs:512, combat/damage.rs:97), reach from `validate_at_pop` with `super::InertHooks`
 //! (queue.rs:547, plan A3), danger from the A4 probe sweep over `target_set` (geometry.rs:134),
 //! the plan from `spend` / `plan_cost` / `guard_granted` (economy.rs:136-203), and the status
@@ -73,9 +73,10 @@ fn live() -> Live {
     }
 }
 
-/// The server's `unit_of_row` join, by hand (server-module/src/tactics.rs:325-337 + :425-445):
-/// affinity from the species row, base speed / class / `[light, heavy]` from the kit, level and
-/// stats from the ROW, everything else copied.
+/// A row joined the way both shells join it: the kit is game-core's `tactics::unit_kit` over the
+/// row's species and kit rows at the ROW's level and stats (the one join the server's
+/// `TacticsContent::unit_kit` also calls); every other field is copied from the row. Species 1's
+/// hand-built `want` in `bt11_unit_join` is the independent oracle of the join itself.
 fn join(l: &Live, r: &UnitRow) -> TacticalUnit {
     let species = l
         .species
@@ -91,15 +92,7 @@ fn join(l: &Live, r: &UnitRow) -> TacticalUnit {
         id: r.id,
         side: r.side,
         slot: r.slot,
-        kit: UnitKit {
-            species_id: r.species_id,
-            affinity: species.affinity,
-            level: r.level,
-            stats: r.stats,
-            base_speed: kit.base_speed,
-            class: kit.movement,
-            skills: vec![kit.light.clone(), kit.heavy.clone()],
-        },
+        kit: game_core::tactics::unit_kit(species, kit, r.level, r.stats),
         pos: r.pos,
         cur_hp: r.cur_hp,
         status: r.status,
@@ -2155,28 +2148,26 @@ fn bt11_type_factor_matches_chart() {
 // ---------------------------------------------------------------------------
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-bt-12-plan-b.md §2.1 as amended by REV B2.5 / B2.6
-// (`TacticsTuningOut` keeps `{ surge_start_round, wild_round_cap, max_pack }`; `tuning_out_of` is pure
-// and tested with distinct values) and F4 (the next round's priority is `priority_for_round(this, 2)`:
-// game-core's alternation applied from the CURRENT side, never a restated flip). Names start `bt12_`
-// (the BT12.1 CHECK filters `test(/bt12_/)`). RED REASON: `tuning_out_of` and `next_initiative_of`
-// are `todo!()` on the API freeze.
+// (`tuning_out_of` is pure and tested with distinct values) and F4 (the next round's priority is
+// `priority_for_round(this, 2)`: game-core's alternation applied from the CURRENT side, never a
+// restated flip), with ts-6b-4's shape: `TacticsTuningOut` is `{ surge_start_round, wild_round_cap,
+// autopass_forfeit }` (the deploy slot count is `deploy_slots_of`, not a tuning field). Names start
+// `bt12_` (the BT12.1 CHECK filters `test(/bt12_/)`).
 
 use game_core::tactics::{
     order as initiative_order, priority_for_round as initiative_priority_for_round,
-    Contender as InitiativeContender, MAX_PACK as GAME_MAX_PACK,
+    Contender as InitiativeContender,
 };
 
-/// `TacticsTuningOut` mirrors the LOADED tuning field by field and game-core's `MAX_PACK`, and the
-/// pure `tuning_out_of` reads each field from the tuning it is given (a hand-built tuning whose
-/// values differ from the design's and from each other).
+/// `TacticsTuningOut` mirrors the LOADED tuning field by field, and the pure `tuning_out_of` reads
+/// each field from the tuning it is given (a hand-built tuning whose values differ from the
+/// design's and from each other).
 ///
-/// WRONG IMPL KILLED: the `todo!()` body; `surge_start_round` and `wild_round_cap` swapped (both
-/// u16); a field read from `TacticsTuning::DESIGN` instead of the tuning given (the hand-built one
-/// differs); a literal `max_pack: 3` instead of `MAX_PACK` (equal today: pinned by identity to the
-/// constant, and the hand-built tuning proves it does not come from the tuning); `tuning_out`
-/// applying the mapper to anything but the loaded content.
+/// WRONG IMPL KILLED: `surge_start_round` and `wild_round_cap` swapped (both u16); a field read
+/// from `TacticsTuning::DESIGN` instead of the tuning given (the hand-built one differs);
+/// `tuning_out` applying the mapper to anything but the loaded content.
 #[test]
-fn bt12_tuning_out_mirrors_the_loaded_tuning_and_max_pack() {
+fn bt12_tuning_out_mirrors_the_loaded_tuning() {
     let loaded = load_tactics_tuning().expect("tactics_tuning RON");
     let out = super::tuning_out().expect("the loaded content");
     assert_eq!(
@@ -2188,15 +2179,11 @@ fn bt12_tuning_out_mirrors_the_loaded_tuning_and_max_pack() {
         "wild_round_cap from the loaded tuning"
     );
     assert_eq!(
-        out.max_pack, GAME_MAX_PACK,
-        "max_pack is game-core's MAX_PACK"
-    );
-    assert_eq!(
         out,
         super::TacticsTuningOut {
             surge_start_round: loaded.surge_start_round,
             wild_round_cap: loaded.wild_round_cap,
-            max_pack: GAME_MAX_PACK,
+            autopass_forfeit: loaded.autopass_forfeit,
         },
         "the whole struct"
     );
@@ -2225,15 +2212,104 @@ fn bt12_tuning_out_mirrors_the_loaded_tuning_and_max_pack() {
         super::TacticsTuningOut {
             surge_start_round: 17,
             wild_round_cap: 41,
-            max_pack: GAME_MAX_PACK,
+            autopass_forfeit: T.autopass_forfeit,
         },
-        "the pure mapper reads the tuning it is given; the pack cap is game-core's, not the tuning's"
+        "the pure mapper reads the tuning it is given"
     );
     assert_eq!(
         super::tuning_out_of(&loaded),
         out,
         "tuning_out is tuning_out_of over the loaded tuning"
     );
+}
+
+/// ts-6b-4.3: `TacticsTuningOut.autopass_forfeit` is the tuning's own `autopass_forfeit` — over a
+/// hand-built tuning whose forfeit (7) equals no other `u8` field of that tuning (DESIGN's u8
+/// fields are 6, 2, 2, 1, 2, 4, 2, 3, 6, 6, 0, 2, 3, 4, 5, 4, 5, 3), over the loaded tuning, and
+/// through `tuning_out()`.
+///
+/// WRONG IMPL KILLED: a literal 4 (the shipped value); `ap_turn` (6) or `max_windows_per_turn` (3)
+/// read instead; the design value read instead of the tuning given; `tuning_out` over anything but
+/// the loaded tuning.
+#[test]
+fn tuning_out_carries_autopass_forfeit() {
+    let hand = TacticsTuning {
+        autopass_forfeit: 7,
+        ..TacticsTuning::DESIGN
+    };
+    for (name, value) in [
+        ("ap_turn", hand.ap_turn),
+        ("max_windows_per_turn", hand.max_windows_per_turn),
+        ("guard_min_ap", hand.guard_min_ap),
+        ("surge_pct_per_round", hand.surge_pct_per_round),
+        ("recruit_cost", hand.recruit_cost),
+        ("heavy_cost", hand.heavy_cost),
+    ] {
+        assert_ne!(value, 7, "fixture: {name} must not equal the forfeit");
+    }
+    assert_eq!(
+        super::tuning_out_of(&hand).autopass_forfeit,
+        7,
+        "the hand-built tuning's forfeit"
+    );
+
+    let loaded = load_tactics_tuning().expect("tactics_tuning RON");
+    assert_eq!(
+        loaded.autopass_forfeit, 4,
+        "the shipped forfeit (tactics_tuning.ron), which the hand-built 7 differs from"
+    );
+    assert_eq!(
+        super::tuning_out_of(&loaded).autopass_forfeit,
+        loaded.autopass_forfeit,
+        "the loaded tuning's forfeit"
+    );
+    assert_eq!(
+        super::tuning_out(),
+        Ok(super::tuning_out_of(&loaded)),
+        "tuning_out is tuning_out_of over the loaded tuning"
+    );
+    assert_eq!(
+        super::tuning_out().map(|o| o.autopass_forfeit),
+        Ok(4),
+        "the loaded forfeit reaches the client"
+    );
+}
+
+/// ts-6b-4.2: `deploy_slots_of(id)` is game-core's `deploy_slots` over the content map `id`, for
+/// every shipped map; an unknown id (4242, `u32::MAX`) is refused with an error naming it — the
+/// refusals are what tell an export that ignores `map_id` apart, since every shipped map has three
+/// side-A cells.
+///
+/// WRONG IMPL KILLED: a constant `Ok(3)` or `Ok(MAX_PACK)` (the unknown ids answer `Ok`); an id
+/// lookup that falls back to a default map; an error that does not name the id.
+#[test]
+fn deploy_slots_export_equals_game_core_for_every_content_map() {
+    let l = live();
+    assert!(
+        l.maps.len() >= 8,
+        "ANTI-VACUITY: the shipped map roster, got {}",
+        l.maps.len()
+    );
+    for entry in &l.maps {
+        assert_eq!(
+            super::deploy_slots_of(entry.id),
+            Ok(game_core::tactics::deploy_slots(&entry.map)),
+            "content map {}",
+            entry.id
+        );
+    }
+    for unknown in [4242_u32, u32::MAX] {
+        assert!(
+            l.maps.iter().all(|m| m.id != unknown),
+            "fixture: {unknown} is not a content map"
+        );
+        let err = super::deploy_slots_of(unknown)
+            .expect_err("an unknown map id is refused, not answered");
+        assert!(
+            err.contains(&unknown.to_string()),
+            "the error names the map id {unknown}: {err}"
+        );
+    }
 }
 
 /// `next_initiative_of(board, this_round_priority)` is `order(contenders, priority_for_round(this,

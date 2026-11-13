@@ -19,9 +19,10 @@
 //!
 //! Test names end in the criterion tag `_bt4_7`.
 
+use super::content::load_battle_maps;
 use super::encounter::{
-    effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles, wild_seed,
-    Encounter, EncounterError, PackWeights, MAX_PACK,
+    deploy_slots, effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles,
+    wild_seed, Encounter, EncounterError, PackWeights, MAX_PACK,
 };
 use super::geometry::Cell;
 use super::map::{validate_battle_map, BattleMapDef, TileDef};
@@ -542,4 +543,66 @@ fn generate_encounter_reports_the_first_failure_in_declaration_order_bt4_7() {
         generate_encounter(&weights(0, 0, 1000), 1, 0, 0),
         Err(EncounterError::NoConsciousParty)
     );
+}
+
+// ===========================================================================
+// ts-6b-4.2 — the deploy slot count
+// ===========================================================================
+
+/// An unvalidated 7×7 map with `a` side-A cells and `b` side-B cells (all `(0, 0)`: only the
+/// counts are read).
+fn map_with_spawn_counts(a: usize, b: usize) -> BattleMapDef {
+    BattleMapDef {
+        spawn_a: vec![rt::c(0, 0); a],
+        spawn_b: vec![rt::c(0, 0); b],
+        ..rt::open_map()
+    }
+}
+
+/// ts-6b-4.2: `deploy_slots` is `min(MAX_PACK, spawn_a.len())`, counted without narrowing: 0, 1,
+/// 2, 3, 4, 255, 256, 258 and 300 side-A cells answer 0, 1, 2, 3, 3, 3, 3, 3, 3. Every case's
+/// `spawn_b` has a length whose `min(3, len)` differs from the expected answer (4 cells when
+/// `spawn_a` has 0 or 1, else 1 cell), so the side-B count never decides it. Every shipped map
+/// answers `MAX_PACK`.
+///
+/// Kills: `spawn_a.len() as u8` before the min (256 → 0, 258 → 2); the count read from
+/// `spawn_b`; a constant 3 (0 → 3); `max` instead of `min` (0 → 3, 4 → 4); no cap (4 → 4).
+#[test]
+fn deploy_slots_is_the_pack_cap_bounded_by_the_side_a_spawns() {
+    let cases: [(usize, u8); 9] = [
+        (0, 0),
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 3),
+        (255, 3),
+        (256, 3),
+        (258, 3),
+        (300, 3),
+    ];
+    for (a, want) in cases {
+        let b = if a <= 1 { 4 } else { 1 };
+        assert_eq!(
+            deploy_slots(&map_with_spawn_counts(a, b)),
+            want,
+            "{a} side-A cells (and {b} side-B cells)"
+        );
+    }
+    assert_eq!(MAX_PACK, 3, "the pack cap the cases are derived from");
+
+    let maps = load_battle_maps().expect("battle_maps RON");
+    assert!(
+        maps.len() >= 8,
+        "ANTI-VACUITY: the shipped map roster, got {}",
+        maps.len()
+    );
+    for entry in &maps {
+        assert_eq!(
+            deploy_slots(&entry.map),
+            MAX_PACK,
+            "shipped map {} ({} side-A cells)",
+            entry.id,
+            entry.map.spawn_a.len()
+        );
+    }
 }

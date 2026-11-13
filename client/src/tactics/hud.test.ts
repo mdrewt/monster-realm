@@ -8,8 +8,11 @@
 // block). `infoBoxes` is pure; `renderInfoBoxes` paints a hand-built InfoBoxesVM, so the DOM tests
 // do not depend on infoBoxes.
 //
+// ts-6b-4.4: the pip count is the caller's `apMax` (the shell passes the rules port's fresh-budget
+// AP); the six-pip cases pass `apMax: 6`.
+//
 // DOM CONTRACT PINNED HERE BEYOND THE FREEZE TEXT: the AP count label (`tactics.hud.ap`, ap = the
-// pips that are not spent, max = AP_PIPS) is reachable from the active unit's row as text or as an
+// pips that are not spent, max = the number of pips) is reachable from the active unit's row as text or as an
 // aria-label/title (InfoRowVM carries no ap number, so the renderer derives it from the pips).
 //
 // RED REASON: infoBoxes / renderInfoBoxes throw `bt-10: not implemented`.
@@ -19,14 +22,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { CATALOG_EN } from '../ui/i18n/catalog.en';
 import type { Stance, StatusTag, TacticalUnit } from './boardModel';
-import {
-  AP_PIPS,
-  type InfoBoxesVM,
-  type InfoRowVM,
-  infoBoxes,
-  type PipState,
-  renderInfoBoxes,
-} from './hud';
+import { type InfoBoxesVM, type InfoRowVM, infoBoxes, type PipState, renderInfoBoxes } from './hud';
 
 const EN = CATALOG_EN as unknown as Record<string, unknown>;
 
@@ -69,18 +65,20 @@ function focus(
   focusUnitId: number | null,
   activeUnitId = 1,
 ): InfoBoxesVM {
-  return infoBoxes(units, { activeUnitId, focusUnitId, draftedAp: 0 });
+  return infoBoxes(units, { activeUnitId, focusUnitId, draftedAp: 0, apMax: 6 });
 }
 
 function allRows(vm: InfoBoxesVM): InfoRowVM[] {
   return [...vm.own, ...vm.foe];
 }
 
-function pipsFor(ap: number, drafted: number): readonly PipState[] | null {
+/** The active unit's pips at `ap` with `drafted` AP drafted, out of `apMax` (6 unless given). */
+function pipsFor(ap: number, drafted: number, apMax = 6): readonly PipState[] | null {
   const vm = infoBoxes([unit({ unitId: 1, ap })], {
     activeUnitId: 1,
     focusUnitId: null,
     draftedAp: drafted,
+    apMax,
   });
   return vm.own[0].pips;
 }
@@ -214,7 +212,6 @@ describe('infoBoxes: the per-side rows (BT10.2)', () => {
     // read three drafted); a negative drafted count adding pips; ap above 6 growing the array;
     // ap 0 reading anything but spent; pips on the focus unit instead of the active one; pips on
     // a Fainted or unknown active unit.
-    expect(AP_PIPS, 'six pips').toBe(6);
     expect(pipsFor(4, 2), 'ap 4, drafted 2').toEqual([
       ...rep('full', 2),
       ...rep('drafted', 2),
@@ -244,7 +241,7 @@ describe('infoBoxes: the per-side rows (BT10.2)', () => {
       foe({ unitId: 2, ap: 6 }),
       unit({ unitId: 3, ap: 5 }),
     ];
-    const vm = infoBoxes(units, { activeUnitId: 3, focusUnitId: 1, draftedAp: 1 });
+    const vm = infoBoxes(units, { activeUnitId: 3, focusUnitId: 1, draftedAp: 1, apMax: 6 });
     expect(
       allRows(vm)
         .filter((r) => r.pips !== null)
@@ -261,17 +258,28 @@ describe('infoBoxes: the per-side rows (BT10.2)', () => {
       activeUnitId: 1,
       focusUnitId: null,
       draftedAp: 0,
+      apMax: 6,
     });
     expect(
       allRows(fainted).every((r) => r.pips === null),
       'a Fainted active unit gets no pips',
     ).toBe(true);
-    const unknown = infoBoxes(units, { activeUnitId: 404, focusUnitId: null, draftedAp: 0 });
+    const unknown = infoBoxes(units, {
+      activeUnitId: 404,
+      focusUnitId: null,
+      draftedAp: 0,
+      apMax: 6,
+    });
     expect(
       allRows(unknown).every((r) => r.pips === null),
       'an unknown active unit gets no pips',
     ).toBe(true);
-    const none = infoBoxes(units, { activeUnitId: null, focusUnitId: null, draftedAp: 0 });
+    const none = infoBoxes(units, {
+      activeUnitId: null,
+      focusUnitId: null,
+      draftedAp: 0,
+      apMax: 6,
+    });
     expect(
       allRows(none).every((r) => r.pips === null),
       'no active unit, no pips',
@@ -418,7 +426,7 @@ describe('renderInfoBoxes: the DOM rows (BT10.2)', () => {
       q(parent, '.tactics-info-row[data-unit-id="3"]').querySelectorAll('.tactics-pip'),
     ).toHaveLength(0);
 
-    const label = en('tactics.hud.ap', { ap: 4, max: AP_PIPS });
+    const label = en('tactics.hud.ap', { ap: 4, max: 6 });
     const reachable =
       (row.textContent ?? '').includes(label) ||
       [row, ...row.querySelectorAll('[aria-label],[title]')].some(
@@ -426,7 +434,7 @@ describe('renderInfoBoxes: the DOM rows (BT10.2)', () => {
       );
     expect(
       reachable,
-      `the AP label "${label}" (non-spent pips of ${AP_PIPS}) is on the active row`,
+      `the AP label "${label}" (non-spent pips of the six painted) is on the active row`,
     ).toBe(true);
 
     // Re-render with different pips: repainted, not appended.
@@ -440,6 +448,68 @@ describe('renderInfoBoxes: the DOM rows (BT10.2)', () => {
       parent.querySelectorAll('.tactics-info-row'),
       'rows replaced, not appended',
     ).toHaveLength(1);
+  });
+
+  it('the active row draws apMax pips from its input: nine at apMax 9 (full, drafted, spent) labelled "<non-spent> of 9", four at apMax 4 for a unit at 6 AP, and a hand-built nine-pip row is painted and labelled at nine [ts-6b-4.4]', () => {
+    // WRONG IMPL KILLED: a literal 6 (AP_PIPS) in infoBoxes or in the renderer's label; the
+    // unit's own AP used as the pip count (4 at apMax 9, 6 at apMax 4); the drafted pips taken
+    // from the wrong end; a renderer label whose max is a constant rather than the row's pips.
+    const units = [unit({ unitId: 1, ap: 4 }), foe({ unitId: 2, ap: 9 }), unit({ unitId: 3 })];
+    const nine = infoBoxes(units, { activeUnitId: 1, focusUnitId: 2, draftedAp: 1, apMax: 9 });
+    expect(nine.own[0].pips, 'apMax 9, ap 4, drafted 1: nine pips').toEqual([
+      ...rep('full', 3),
+      ...rep('drafted', 1),
+      ...rep('spent', 5),
+    ]);
+    expect(
+      allRows(nine)
+        .filter((r) => r.pips !== null)
+        .map((r) => r.unitId),
+      'only the active row has pips',
+    ).toEqual([1]);
+
+    const parent = mount();
+    renderInfoBoxes(parent, nine);
+    const row = q(parent, '.tactics-info-row[data-unit-id="1"]');
+    const els = [...row.querySelectorAll<HTMLElement>('.tactics-pip')];
+    expect(
+      els.map((e) =>
+        (['full', 'drafted', 'spent'] as const).find((s) =>
+          e.classList.contains(`tactics-pip--${s}`),
+        ),
+      ),
+      'nine pips painted in state order',
+    ).toEqual([...rep('full', 3), ...rep('drafted', 1), ...rep('spent', 5)]);
+    expect(parent.querySelectorAll('.tactics-pip'), 'no pips on any other row').toHaveLength(9);
+    const reachable = (r: HTMLElement, label: string): boolean =>
+      (r.textContent ?? '').includes(label) ||
+      [r, ...r.querySelectorAll('[aria-label],[title]')].some(
+        (e) => e.getAttribute('aria-label') === label || e.getAttribute('title') === label,
+      );
+    const label9 = en('tactics.hud.ap', { ap: 4, max: 9 });
+    expect(label9, 'fixture: the max shows in the label').not.toBe(
+      en('tactics.hud.ap', { ap: 4, max: 6 }),
+    );
+    expect(reachable(row, label9), `the AP label "${label9}" is on the active row`).toBe(true);
+    expect(reachable(row, en('tactics.hud.ap', { ap: 4, max: 6 })), 'not labelled out of six').toBe(
+      false,
+    );
+
+    expect(pipsFor(6, 0, 4), 'apMax 4, a unit at 6 AP: four full pips').toEqual(rep('full', 4));
+    expect(pipsFor(6, 1, 4), 'apMax 4, ap 6, drafted 1').toEqual([
+      ...rep('full', 3),
+      ...rep('drafted', 1),
+    ]);
+    expect(pipsFor(2, 0, 9), 'apMax 9, ap 2').toEqual([...rep('full', 2), ...rep('spent', 7)]);
+
+    // The renderer labels a hand-built row by its own pips (no infoBoxes in between).
+    const hand = mount();
+    const pips: PipState[] = ['full', 'full', 'drafted', ...rep('spent', 6)];
+    renderInfoBoxes(hand, { own: [rowVM({ unitId: 5, pips })], foe: [] });
+    const handRow = q(hand, '.tactics-info-row[data-unit-id="5"]');
+    expect(handRow.querySelectorAll('.tactics-pip'), 'nine painted').toHaveLength(9);
+    const label3of9 = en('tactics.hud.ap', { ap: 3, max: 9 });
+    expect(reachable(handRow, label3of9), `the label "${label3of9}"`).toBe(true);
   });
 
   it('BT10-2-HUD-DOM-CHIPS: the expanded row carries exactly the chips whose datum is present (guard false -> no guard chip) with catalog text, and only that row is expanded', () => {

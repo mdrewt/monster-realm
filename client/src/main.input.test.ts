@@ -170,9 +170,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     // bt-17 (named fixture change, BT17.1): with the 1v1 view purged, a battle the player can SEE is
     // a tactical one, so the cases below that assert a shown battle seed a Deploying tactical row and
     // the deploy panel is the shown owner. The panel's slot count is read through the lazily bound
-    // tactics rules port (`min(tuning.max_pack, map.spawn_a.length)`), which refuses a pkg missing any
-    // of its exports: these are main.dispatch.test.ts's minimal shapes (three spawn cells, max_pack
-    // 3); nothing here reads anything past the deploy panel.
+    // tactics rules port (`tactics_deploy_slots(mapId)`), which refuses a pkg missing any of its
+    // exports: these are main.dispatch.test.ts's minimal shapes (three spawn cells, three deploy
+    // slots, an auto-pass forfeit of 4); nothing here reads anything past the deploy panel.
     tactics_map: () => ({
       width: 7,
       height: 5,
@@ -207,8 +207,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
       shield: [],
       intents: [],
     }),
-    tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, max_pack: 3 }),
+    tactics_tuning: () => ({ surge_start_round: 11, wild_round_cap: 37, autopass_forfeit: 4 }),
     tactics_next_initiative: () => [],
+    tactics_deploy_slots: () => 3,
   };
 });
 
