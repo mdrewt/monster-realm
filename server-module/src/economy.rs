@@ -184,7 +184,7 @@ fn require_shop_in_reach(
 ///    shortfall, and one the balance covers but a trade has locked as in a trade.
 /// 5. Receiver-cap headroom — `check_item_headroom` on the
 ///    RAW stack count, reject-not-destroy BEFORE the spend.
-/// 6. `spend_currency` — reject if insufficient funds or no wallet.
+/// 6. `spend_currency` — debit the total; step 4 has already ruled out a shortfall.
 /// 7. `grant_item` — credit the purchased items.
 ///
 /// Prices come from the `shop_item_row` content table; the client never provides

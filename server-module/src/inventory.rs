@@ -68,11 +68,11 @@ pub(crate) fn item_count(ctx: &ReducerContext, owner: Identity, item_id: u32) ->
 }
 
 /// Debit `qty` of `item_id` from `owner`'s stack with one lookup and one write. A `qty` of
-/// 0 is a no-op. Rejects (`Err`) with the stack left as it was when the stack is absent or
-/// holds fewer than `qty`: `checked_sub`, NEVER a bare subtraction, so a short stack can
-/// never underflow into a 2^32 windfall. Delete-at-zero on both paths: a pre-existing
-/// empty row (`count == 0`) is deleted before the reject, and a stack drained to 0 is
-/// deleted rather than left as an empty row.
+/// 0 is a no-op. Rejects (`Err`) when the stack is absent or holds fewer than `qty`, and a
+/// stack of 1 or more units is then left exactly as it was: `checked_sub`, NEVER a bare
+/// subtraction, so a short stack can never underflow into a 2^32 windfall. Delete-at-zero
+/// on both paths: a pre-existing empty row (`count == 0`) is deleted before the reject,
+/// and a stack drained to 0 is deleted rather than left as an empty row.
 // Crate-internal; the sole inventory debit.
 pub(crate) fn consume_n(
     ctx: &ReducerContext,

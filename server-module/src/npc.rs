@@ -105,7 +105,7 @@ fn load_player_dialogue_state(ctx: &ReducerContext, owner: Identity) -> PlayerDi
 }
 
 /// Write flags + done_quests back to `player_dialogue_state` (upsert).
-/// Called ONCE per reducer at the very end (F2 — single authoritative write).
+/// Called ONCE per reducer, after every DB-side effect (F2 — single authoritative write).
 /// active_quests are NOT written here — they live in `player_quest` rows.
 fn write_player_dialogue_state(ctx: &ReducerContext, owner: Identity, state: &PlayerDialogueState) {
     let flags = dialogue_state_flags_to_vec(state);
@@ -183,9 +183,14 @@ fn apply_effects_to_db(
     effects: &[DialogueEffect],
 ) -> Result<(), String> {
     let mut credits = RewardCredits::default();
+    // Exhaustive on purpose: an effect that credits an asset must be counted here.
     for effect in effects {
-        if let DialogueEffect::GrantItem(item_id, qty) = effect {
-            credits.add_item(*item_id, *qty);
+        match effect {
+            DialogueEffect::GrantItem(item_id, qty) => credits.add_item(*item_id, *qty),
+            DialogueEffect::StartQuest(_)
+            | DialogueEffect::SetFlag(_)
+            | DialogueEffect::ClearFlag(_)
+            | DialogueEffect::GrantXp(_) => {}
         }
     }
     check_reward_headroom(ctx, owner, &credits)?;
@@ -231,7 +236,7 @@ fn apply_effects_to_db(
 ///
 /// MUST accept `state: &mut PlayerDialogueState` — MUST NOT call
 /// `load_player_dialogue_state` internally. The caller owns the in-memory state
-/// and calls `write_player_dialogue_state` ONCE at the very end (F2).
+/// and calls `write_player_dialogue_state` ONCE, after this returns (F2).
 fn apply_quest_trigger(
     ctx: &ReducerContext,
     owner: Identity,
@@ -298,14 +303,19 @@ fn apply_quest_trigger(
         let Some(advance) = process_trigger(def, &progress, &next, event) else {
             continue;
         };
-        if let QuestAdvance::QuestComplete { reward } = &advance {
-            // Moved to done on the copy at once, so a later quest's step conditions see it.
-            next.active_quests.remove(&row.quest_id);
-            next.done_quests.insert(row.quest_id.clone());
-            for item in &reward.items {
-                credits.add_item(item.item_id, item.qty);
+        // Exhaustive on purpose: an advance that credits an asset must be counted here.
+        match &advance {
+            QuestAdvance::QuestComplete { reward } => {
+                // Moved to done on the copy at once, so a later quest's step conditions
+                // see it.
+                next.active_quests.remove(&row.quest_id);
+                next.done_quests.insert(row.quest_id.clone());
+                for item in &reward.items {
+                    credits.add_item(item.item_id, item.qty);
+                }
+                credits.add_currency(reward.currency);
             }
-            credits.add_currency(reward.currency);
+            QuestAdvance::StepComplete { .. } => {}
         }
         advances.push((row, advance));
     }

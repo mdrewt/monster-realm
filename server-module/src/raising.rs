@@ -342,19 +342,17 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         let escrowed = escrowed_currency_of(ctx, me);
         (wallet_balance(ctx, me), escrowed)
     })?;
-    // A cost item one of the caller's trades has locked is not theirs to spend. Only a stack
-    // that covers the cost is judged here: one that does not is `consume_n`'s refusal, and
-    // that debit is the first write below.
+
+    // Step 6: take the cost. The item goes first: its debit can still refuse, and it does so
+    // ahead of every other write of this call.
     if let Some(item_id) = loc.cost_item_id {
+        // A cost item one of the caller's trades has locked is not theirs to spend. Only a
+        // stack that covers the cost is judged for that: one that does not is `consume_n`'s
+        // own refusal.
         let held = item_count(ctx, me, item_id);
         if held >= loc.cost_qty {
             check_item_spend(loc.cost_qty, held, escrowed_item_qty_of(ctx, me, item_id))?;
         }
-    }
-
-    // Step 6: take the cost. The item debit goes first: it can still refuse a short stack,
-    // and nothing has been written yet when it does.
-    if let Some(item_id) = loc.cost_item_id {
         consume_n(ctx, me, item_id, loc.cost_qty)?;
     }
     if let Some(currency_cost) = currency_cost {
@@ -635,8 +633,8 @@ pub fn essence_train(
 }
 
 /// Consume a crystalized-essence item: grant the ITEM's essence to the matching
-/// pool, sharing `essence_train`'s cooldown clock. Exactly two decision
-/// rejects (wrong item; cooldown), both BEFORE `consume_one` — a reject never
+/// pool, sharing `essence_train`'s cooldown clock. Every refusal (the spend rule,
+/// a wrong item, the cooldown) comes BEFORE `consume_one` — a reject never
 /// burns the item. Item defs come from the compile-time content
 /// registry: `ItemRow` carries no essence columns.
 #[spacetimedb::reducer]
