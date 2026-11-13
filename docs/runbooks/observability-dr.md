@@ -162,10 +162,11 @@ a lost issuer database orphans every account.
   `sync_content` as the owner). The cascade runs as one transaction and stamps
   `terminal_at_ms` last, so a half-erased account cannot persist.
 - **Export bundles** are a second copy of one player's data. They are purged when the
-  owner requests a new export, by the deletion cascade, and by the hourly
+  owner requests a new export, by the deletion cascade, and by
   `export_bundle_reaper` after 7 days (`EXPORT_BUNDLE_TTL_MS`,
-  `server-module/src/privacy.rs`). A missing reaper schedule is re-armed by the next
-  export request or by `init`/`sync_content`. Bundles in a backup live as long as the
+  `server-module/src/privacy.rs`). The reaper has one schedule row while bundles exist,
+  a one-shot at the oldest bundle's expiry, and none otherwise. A missing row is re-armed
+  by the next export request or by `init`/`sync_content`. Bundles in a backup live as long as the
   backup does.
 - Nothing prunes backups when an account is deleted. Once a retention window is chosen,
   prune with a dry run first:

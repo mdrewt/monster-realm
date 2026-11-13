@@ -462,6 +462,17 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
     // bt-9: the settlement's evolution check reads the edges out of a species (none seeded).
     let _ = fx
         .table_keyed::<EvolutionPathRow, u32>("evolution_path", "from_species", |r| r.from_species);
+    // `record_recruit_event` arms the playtest reaper for the row it writes.
+    let _ = fx
+        .table_keyed::<crate::playtest::PlaytestReaperSchedule, u64>(
+            "playtest_reaper_schedule",
+            "id",
+            |r| r.id,
+        )
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.id, |r, id| r.id = id);
     let w = World {
         battles: fx
             .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)

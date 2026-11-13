@@ -2170,8 +2170,8 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "export_bundle_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "global hourly TTL reaper schedule for the export_bundle table: an \
-                interval singleton with no Identity column, armed by request_data_export \
+        basis: "global TTL reaper schedule for the export_bundle table: at most one \
+                one-shot row with no Identity column, armed by request_data_export \
                 and by init and sync_content, never keyed to any player",
         exportable: false,
     },

@@ -199,7 +199,7 @@ fn rb22p_dq() -> char {
 //   plus the S4 guards (subject existence, deletion gate, cooldown), the battle
 //   redaction, and the owner-scoped view that is the entire client read path.
 //   PRV1-14 (the TTL reaper) LANDED in rb-48 and is gated by the
-//   rb48_ block at the end of this file: a global hourly interval singleton, a
+//   rb48_ block at the end of this file: one global one-shot schedule row, a
 //   scheduler-only reducer, and the pure plan_export_reap seam that carries the
 //   whole behavioural proof.
 //
@@ -3449,9 +3449,9 @@ fn rb48_plan_export_reap_noop_when_nothing_due() {
     assert!(
         crate::privacy::plan_export_reap(&[], 0, 1, 8).is_empty(),
         "rb48 [E2/noop-empty]: an EMPTY sweep must plan NOTHING. This is the reaper's steady \
-         state, not an edge case — it ticks hourly forever, and most databases hold no export \
-         bundle at all most of the time — so a seam that fabricates an id from an empty input \
-         would delete a row the sweep never saw, on every tick, in the quietest database. Every \
+         state, not an edge case — a tick whose bundle was purged before its expiry finds \
+         nothing — so a seam that fabricates an id from an empty input \
+         would delete a row the sweep never saw, in the quietest database. Every \
          other case in this block feeds a non-empty slice, so nothing else here would notice."
     );
 }
@@ -3566,7 +3566,7 @@ fn rb48_plan_export_reap_caps_per_tick_oldest_first() {
         crate::privacy::plan_export_reap(&rows, now, ttl, 99),
         [10u64, 20, 30, 40, 50],
         "rb48 [E1/cap-slack]: a batch larger than the expired population is not an error and \
-         selects exactly that population — an interval reaper must be able to catch up."
+         selects exactly that population — a reaper with a backlog must be able to catch up."
     );
 }
 
@@ -5454,10 +5454,9 @@ fn rb87_reap_line_is_the_exact_json_envelope() {
              `evt` FIRST, then the reaper fragment verbatim, and nothing else. This is the string \
              an operator greps, a dashboard rule matches and the derived \
              `mr_log_events_total{{reducer,evt}}` series is labelled from, so it is pinned by \
-             VALUE rather than by shape. The zero row is the ordinary quiet hour and must still \
-             produce a full five-key line: the ABSENCE of this line at the hourly cadence is the \
-             dead-man signal that the tick is aborting, and a line that renders empty or partial \
-             on a quiet hour makes absence mean two different things at once."
+             VALUE rather than by shape. The zero row is a tick that found nothing and must still \
+             produce a full five-key line: a line that renders empty or partial \
+             on a quiet tick cannot be told from a tick that aborted."
         );
     }
 }
@@ -6658,8 +6657,8 @@ fn rb109_oversized_tick_is_bounded_and_reaps_the_oldest_bundles_whole() {
         open, 0,
         "[rb109/iters-closed]: {open} host iterator(s) are still open after the tick. The module \
          takes 256 rows from a scan of 340 and then DROPS it, so the iterator is abandoned \
-         unfinished and the bindings must close it; a leak here is a real datastore resource the \
-         hourly tick would strand once an hour, forever."
+         unfinished and the bindings must close it; a leak here is a real datastore resource \
+         every tick would strand, forever."
     );
 }
 
@@ -6795,8 +6794,8 @@ fn rb109_repeated_ticks_drain_to_the_live_set() {
         assert_eq!(
             open,
             0,
-            "[rb109/drain-bounds]: tick {} left {open} host iterator(s) open. Once an hour, \
-             forever, is what an hourly reaper does with a leak.",
+            "[rb109/drain-bounds]: tick {} left {open} host iterator(s) open. Once a tick, \
+             forever, is what a reaper does with a leak.",
             ticks.len()
         );
         assert!(

@@ -329,11 +329,15 @@ of three kinds, and the kind decides what an empty zone does with it:
   advanced by a tick.
 
 The NPC wander counter is the server clock divided by `STEP_MS`, so it is the same number whether or
-not the zone ticked in between. No `movement_tick` runs in a world with nobody connected. Three
-interval schedules do keep running there, as accepted exceptions: the 60 s `mr_heartbeat`, the 300 s
-`playtest_reaper` and the 3600 s `export_bundle_reaper`. Each deletes only what has expired, so with
-nothing to reap it writes no row. Every other reaper is a one-shot deadline armed when something is
-owed.
+not the zone ticked in between. No `movement_tick` runs in a world with nobody connected. One
+schedule does keep running there: the 60 s `mr_heartbeat`, which writes no row. Every reaper is a
+one-shot armed when something is owed. A reaper that serves one entity (a trade offer, a challenge,
+an account deletion) has a row per entity at its deadline. The two that bound a table by age,
+`playtest_reaper` and `export_bundle_reaper`, have at most one row for the whole table, at the
+oldest row's expiry: the insert arms it, the reaper re-arms it from the rows it leaves, an empty
+table has none, and `init` and `sync_content` restore it when rows are waiting without one. Work
+owed at once (a table over its cap, a backlog one run could not finish) runs after a fixed delay
+(300 s and 3600 s), never immediately.
 
 **Why.** The same module runs on a player's own machine and on the official server (see "One game,
 three ways to play"). A tick for every zone at 5 Hz costs reducer-thread time, wake-ups and
@@ -345,16 +349,19 @@ by zone (see "World rows are subscribed by zone"), so it reaches only a client s
 emptied zone's set after leaving it, which does not draw that zone.
 One disarm path, driven by the tick itself, means a new way of leaving a zone cannot forget to disarm
 it.
-The heartbeat stays because the `AlloyIngestStalled` alert treats ten minutes without module log
-bytes as a stalled log pipeline, and an empty world logs nothing else that often. The two interval
-reapers stay because each bounds a table by age (playtest events, export bundles) whether or not
-anyone is connected, and one call every 300 s or 3600 s costs nothing measurable.
+The heartbeat stays because it is the operator's dead-man's switch for the whole server: its log
+line is the one thing that says the module is alive when nobody is playing, and the
+`AlloyIngestStalled` alert treats ten minutes without module log bytes as a stalled log pipeline.
+The two table reapers are armed on demand because a table's oldest row already says when the next
+reap is due, so a periodic sweep adds calls and nothing else; a row is reaped at its expiry instead
+of up to one interval later.
 
 **Rules out.** State that is only correct if a tick ran (a counter of ticks, a timer decremented per
 tick, an effect that expires after N ticks of an unwatched zone); elapsed-time catch-up loops when a
 zone is entered; a second schedule row for a zone; disarming a zone from the paths that remove a
 character instead of from the tick; resetting anything a player caused; arming every zone at
-`init` or `sync_content`.
+`init` or `sync_content`; an interval schedule for a reaper; a schedule row for a table with nothing
+to reap.
 
 ## World rows are subscribed by zone
 
@@ -823,8 +830,8 @@ commitments that predate the request stay completable. `request_data_export` wri
 private `export_bundle` chunks (`EXPORT_CHUNK_ROWS` 500) for `my_export_bundle`, gives
 each live bundle a unique creation stamp (rejecting under contention), admits requests
 against a global live-row cap that is halved for callers without an account and
-halved again for callers without a wallet, and an hourly reaper deletes chunks older
-than 7 days (`server-module/src/privacy.rs`).
+halved again for callers without a wallet, and a reaper deletes chunks older
+than 7 days, at their expiry (`server-module/src/privacy.rs`).
 
 **Why.** A new table must not silently keep personal data after a deletion, so its
 classification is part of the schema. Blocking new commitments during the grace

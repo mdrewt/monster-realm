@@ -91,7 +91,7 @@ pub(crate) fn heartbeat_fields(content_version: u32) -> String {
 
 /// 60s: four Prometheus scrapes per beat at the 15s scrape interval
 /// gives the dead-man alert resolution without putting a write-free
-/// reducer on the scheduler every tick. Name mirrors `PLAYTEST_REAP_INTERVAL`.
+/// reducer on the scheduler every tick.
 ///
 /// The beat runs whether or not anyone is connected. In a world with no player
 /// no zone ticks, so this line is the only thing the module logs; the
@@ -127,8 +127,8 @@ pub fn mr_heartbeat(ctx: &ReducerContext, _sched: MrHeartbeatSchedule) -> Result
     Ok(())
 }
 
-/// Idempotent self-healing singleton arm (mirrors `ensure_playtest_reaper`;
-/// reuses `playtest::plan_reaper_arm`). The ONLY writer in this module.
+/// Idempotent self-healing singleton arm (`playtest::plan_reaper_arm` is the
+/// one-row rule). The ONLY writer in this module.
 pub(crate) fn ensure_mr_heartbeat(ctx: &ReducerContext) {
     let existing: Vec<u64> = ctx
         .db
