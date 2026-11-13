@@ -114,7 +114,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     // their row so they stop being joinable and ensure_zone_schedules (which
     // runs after this) reaps their movement_tick_schedule rows. Delete ALWAYS:
     // characters still standing in the zone only get a warn — the
-    // disconnect-to-recover contract (respawn in zone 0).
+    // disconnect-to-recover contract: `join_game` starts a character whose
+    // saved zone has no map on the zone 0 spawn.
     // NPCs of a removed zone leave the registry in the same sync
     // (validators force it), so removes them below.
     let existing_zone_ids: Vec<u32> = ctx.db.zone_def().iter().map(|z| z.zone_id).collect();

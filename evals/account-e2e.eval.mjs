@@ -120,13 +120,13 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 60-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 61-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|move_intent:ViaJoin(player)::0|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_gc_sched:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|last_position:Erase:owner_identity:0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|move_intent:ViaJoin(player)::0|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|tactical_advance_sched:ViaJoin(battle)::0|tactical_deadline_sched:ViaJoin(battle)::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|trade_session:Erase:opener+partner:0|trade_session_reaper_schedule:ViaJoin(trade_session)::0|trade_session_snapshot:ViaJoin(trade_session)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED (red-team MEDIUM-8): the
@@ -1142,9 +1142,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 60) {
+  if (!Array.isArray(entries) || entries.length !== 61) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 60',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 61',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1937,10 +1937,11 @@ const DRIVER_SRC = [
   '  // It is NEVER confirmed: an unconfirmed side locks nothing, so challenge2 and',
   '  // the wild battle below still take the same monster.',
   '  // RANGE: open_trade_session needs both characters in one zone within',
-  '  // Manhattan 2. join_game puts every new character on the zone-0 spawn tile;',
-  '  // the D disconnect above deleted the old D character, so the d2 rejoin spawned',
-  '  // a fresh one there; A joined at S9-A-join and has queued no move yet (the',
-  '  // first enqueueMove is after challenge2). So A and d2 share the spawn tile.',
+  '  // Manhattan 2. join_game puts a first character on the zone-0 spawn tile and a',
+  '  // returning one where its last character stood; D never moved, so the D',
+  '  // disconnect above saved the spawn tile and the d2 rejoin stands there; A joined',
+  '  // at S9-A-join and has queued no move yet (the first enqueueMove is after',
+  '  // challenge2). So A and d2 share the spawn tile.',
   '  // A refusal (out of range, wrong zone and a missing character are one error',
   '  // string) is emitted ok:false WITH its text and the flow goes on, so the',
   '  // strict milestone verdict reports that text instead of a later stall.',
@@ -2678,6 +2679,26 @@ async function runLivePhase() {
           s9.refs.battle1Id,
         ))
           await sqlDml(stmt);
+        // `last_position` holds a row only while its owner has no character, and
+        // the subject stays in the game through the cascade. Its `facing` column
+        // is an enum, which SQL DML cannot INSERT (probed: 400), so the row is
+        // written by a real disconnect and then re-owned: the module owner joins
+        // and leaves over one CLI connection, which saves its position, and the
+        // row's key is updated to the subject.
+        const seedJoin = await runAsync(
+          'spacetime',
+          ['call', '-s', dbUrl, DB_NAME, 'join_game', '"s9 seed"'],
+          { timeout: SQL_CALL_TIMEOUT_MS },
+        );
+        if (!seedJoin.ok) throw new Error('[s9/seed-position] join_game: ' + seedJoin.stderr);
+        const owner = await sqlJsonRows('SELECT owner_identity FROM config');
+        if (owner.length !== 1) throw new Error('[s9/seed-position] config row not found');
+        await sqlDml(
+          'UPDATE last_position SET owner_identity = ' +
+            s9.refs.aHex +
+            ' WHERE owner_identity = 0x' +
+            identityCellHex(owner[0].owner_identity),
+        );
         writeGo(1);
         const evSeed = await waitEvent('S9-seed-ready', 240_000);
         s9.refs.wildId = String(evSeed.data.wildBattleId);

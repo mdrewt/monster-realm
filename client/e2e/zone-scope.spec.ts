@@ -23,7 +23,7 @@ import { safeTile, walkPath } from './controls';
 //   rendered[]              the entities the frame loop drew on its last frame
 //   presenceCount           the `player` rows held
 //
-// WORLD FACTS (asserted at runtime, loudly): both players spawn on (1,1) in zone 0; column x=1
+// WORLD FACTS (asserted at runtime, loudly): both players, new identities, spawn on (1,1) in zone 0; column x=1
 // is clean floor for y=1..4 in both zones; the warp tile is (1,5) in each zone and lands on (1,5)
 // in the other; a character that lands on a warp tile does not warp again until it steps off and
 // back on; row y=1 of zone 1 is clean floor for x=1..8; (2,1) is clean floor in both zones.
@@ -576,5 +576,71 @@ test.describe
       const after = await snap(a);
       expect(after.presenceCount).toBe(2);
       expect(after.characters.some((c) => c.entityId === bId)).toBe(true);
+    });
+
+    test('A leaves the game in zone 1 and comes back as the same identity: it resumes in zone 1 on the tile it left, as a new character', async () => {
+      // One tile further along row y=1, so the tile left is not one an earlier test stood on.
+      const start = await snap(a);
+      expect(start.map.zone_id, 'precondition: A is in zone 1').toBe(1);
+      expect(start.ownAuthTile, 'precondition: A stands on (2,1)').toEqual(AWAY);
+      const left: Tile = { x: AWAY.x + 1, y: AWAY.y };
+      if (!safeTile(start.map, left)) {
+        throw new Error('zone-scope precondition: (3, 1) of zone 1 is not clean floor');
+      }
+      expect(await walkPath(a, ['East'], 'A to (3,1)'), '(3,1) is grass-free').toBe('arrived');
+      expect((await snap(a)).ownAuthTile).toEqual(left);
+
+      // The identity is the token in the tab's sessionStorage; the next tab is given the same one.
+      const stored = await a.evaluate(() => Object.entries(sessionStorage));
+      expect(stored.length, 'ANTI-VACUITY: the tab holds a stored token').toBeGreaterThan(0);
+      await a.close();
+      // A's last connection closed: the server deleted its player and character rows.
+      await expect
+        .poll(async () => (await snap(b)).presenceCount, {
+          message: 'B sees A leave',
+          timeout: 30_000,
+        })
+        .toBe(1);
+      await expect
+        .poll(async () => (await snap(b)).characters.some((c) => c.entityId === aId), {
+          message: 'A`s character is gone from zone 1',
+          timeout: 30_000,
+        })
+        .toBe(false);
+
+      a = await ctxA.newPage();
+      await a.addInitScript((entries: [string, string][]) => {
+        for (const [key, value] of entries) sessionStorage.setItem(key, value);
+      }, stored);
+      await a.goto('/');
+      await settledIn(a, 1, 'A, back in the game');
+      const back = await snap(a);
+      expect(back.identity, 'the same identity').toBe(start.identity);
+      expect(back.ownEntityId, 'a new character row').not.toBe(aId);
+      expect(back.ownAuthTile, 'on the tile A left').toEqual(left);
+      expect(back.worldScope, 'zone 1 and nothing else: zone 0 was never subscribed').toEqual({
+        own: 'active',
+        zones: [{ zoneId: 1, state: 'active' }],
+        settled: true,
+      });
+      expect(
+        back.characters.filter((c) => c.zoneId !== 1),
+        'A holds no character outside zone 1',
+      ).toEqual([]);
+      expect(
+        back.characters.some((c) => c.entityId === bId),
+        'and it holds B, who is in zone 1',
+      ).toBe(true);
+      // B, who never left, sees the new character on that tile.
+      await expect
+        .poll(
+          async () => {
+            const c = (await snap(b)).characters.find((r) => r.entityId === back.ownEntityId);
+            return c ? { zoneId: c.zoneId, x: c.tileX, y: c.tileY } : null;
+          },
+          { message: 'B holds A`s new character where A left', timeout: 30_000 },
+        )
+        .toEqual({ zoneId: 1, x: left.x, y: left.y });
+      expect((await snap(b)).presenceCount).toBe(2);
     });
   });

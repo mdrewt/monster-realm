@@ -717,6 +717,17 @@ export const KoEvent = __t.object("KoEvent", {
 });
 export type KoEvent = __Infer<typeof KoEvent>;
 
+export const LastPosition = __t.object("LastPosition", {
+  ownerIdentity: __t.identity(),
+  zoneId: __t.u32(),
+  tileX: __t.i32(),
+  tileY: __t.i32(),
+  get facing() {
+    return Direction;
+  },
+});
+export type LastPosition = __Infer<typeof LastPosition>;
+
 export const MissedEvent = __t.object("MissedEvent", {
   attacker: __t.u32(),
   target: __t.u32(),

@@ -109,9 +109,9 @@ pub use types::{
     ActionState, CharacterState, Direction, Millis, MoveInput, NpcInteraction, TileKind, TilePos,
 };
 pub use world::{
-    apply_move, apply_move_coded, check_party_slot, map_for, spawn, stepped_onto_grass,
-    validate_zone_maps, zone_0, SlotError, TileMap, ZoneTileMaps, MOVE_QUEUE_CAP, PARTY_SIZE,
-    PARTY_SLOT_NONE, STEP_MS,
+    apply_move, apply_move_coded, can_resume_at, check_party_slot, map_for, spawn,
+    stepped_onto_grass, validate_zone_maps, zone_0, SlotError, TileMap, ZoneTileMaps,
+    MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE, STEP_MS,
 };
 
 /// a pure, deterministic state transition over an

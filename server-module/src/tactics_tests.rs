@@ -399,6 +399,8 @@ pub(crate) struct World<'a> {
     pub(crate) characters: Handle<'a, Character, u64>,
     /// The move reducers and `movement_tick` write it; `on_disconnect` deletes through it.
     pub(crate) intents: Handle<'a, crate::schema::MoveIntent, u64>,
+    /// `on_disconnect` writes it as it deletes the character.
+    pub(crate) last_positions: Handle<'a, crate::schema::LastPosition>,
     pub(crate) sessions: Handle<'a, PlayerSession>,
     pub(crate) conversations: Handle<'a, PlayerConversation>,
     pub(crate) encounters: Handle<'a, EncounterRow, u32>,
@@ -508,6 +510,12 @@ pub(crate) fn world(fx: &Fixture) -> World<'_> {
         intents: fx
             .table_keyed::<crate::schema::MoveIntent, u64>("move_intent", "entity_id", |r| {
                 r.entity_id
+            })
+            .writable()
+            .unique(),
+        last_positions: fx
+            .table::<crate::schema::LastPosition>("last_position", "owner_identity", |r| {
+                r.owner_identity
             })
             .writable()
             .unique(),
@@ -681,6 +689,7 @@ impl World<'_> {
             ("player", row_set(&self.players.rows())),
             ("character", row_set(&self.characters.rows())),
             ("move_intent", row_set(&self.intents.rows())),
+            ("last_position", row_set(&self.last_positions.rows())),
             ("player_session", row_set(&self.sessions.rows())),
             ("player_conversation", row_set(&self.conversations.rows())),
             ("encounter", row_set(&self.encounters.rows())),
@@ -3572,6 +3581,20 @@ fn on_disconnect_waits_for_the_last_session_then_resolves_the_tactical_battle_bt
             identity: a(),
         });
     }
+    let stands = w
+        .characters
+        .rows()
+        .into_iter()
+        .find(|c| c.entity_id == 1)
+        .expect("a's character");
+    assert_eq!(w.characters.remove(1), 1);
+    w.characters.seed(&Character {
+        zone_id: 1,
+        tile_x: 3,
+        tile_y: 4,
+        facing: Direction::West,
+        ..stands
+    });
     let before = w.snapshot();
     fx.run_as_conn_at(a(), CONN_A, None, at(T0 + 5_000), crate::on_disconnect);
     assert_eq!(
@@ -3599,6 +3622,17 @@ fn on_disconnect_waits_for_the_last_session_then_resolves_the_tactical_battle_bt
     assert!(
         w.players.rows().iter().all(|p| p.identity != a()),
         "the last disconnect still clears the presence rows"
+    );
+    let saved: Vec<(Identity, u32, i32, i32, Direction)> = w
+        .last_positions
+        .rows()
+        .iter()
+        .map(|p| (p.owner_identity, p.zone_id, p.tile_x, p.tile_y, p.facing))
+        .collect();
+    assert_eq!(
+        saved,
+        vec![(a(), 1, 3, 4, Direction::West)],
+        "a disconnect in a wild battle saves the tile the character stands on"
     );
 }
 

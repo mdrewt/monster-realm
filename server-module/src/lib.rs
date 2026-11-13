@@ -309,6 +309,8 @@ pub(crate) fn erase_player_sessions(ctx: &ReducerContext, owner: Identity) {
 /// Lifecycle: the disconnecting socket's row goes first; the trade / PvP /
 /// wild-battle / challenge force-resolves and the presence deletes run ONLY
 /// when no other connection of this identity is on record.
+/// The character's position is saved as it is deleted, after the force-resolves
+/// (none of them moves a character), so a returning account resumes there.
 /// A lone ephemeral connection is still last-out, so a CLI `join_game` still
 /// leaves no presence row.
 #[spacetimedb::reducer(client_disconnected)]
@@ -329,6 +331,8 @@ pub fn on_disconnect(ctx: &ReducerContext) {
     // advance a stale dialogue from a different zone/position.
     ctx.db.player_conversation().owner_identity().delete(me);
     if let Some(p) = ctx.db.player().identity().find(me) {
+        // Where the character stands now is where the next `join_game` puts it.
+        movement::save_last_position(ctx, me, p.entity_id);
         ctx.db.character().entity_id().delete(p.entity_id);
         ctx.db.move_intent().entity_id().delete(p.entity_id);
         ctx.db.player().identity().delete(me);
