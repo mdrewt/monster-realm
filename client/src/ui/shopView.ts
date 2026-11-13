@@ -12,11 +12,16 @@
 // THE TABS, THE CURSOR AND THE PROMPTS (ctl-8a, CTL8A.2). The shop screen (ui/screens/
 // shopScreen.ts) paints `ShopPaint`: the tab, the cursor row, the Y description and the quantity /
 // confirm prompt, into elements this view creates (locate-or-create, no strings at construction).
-// BOTH lists are still built by every `render(vm)` — main.ts's feedback tests click their buttons
-// after a bare batch, and wallet-balance.spec.ts reads `#shop-for-sale` at first paint — the tabs
-// only hide the inactive one and move the cursor. The kept paint is re-applied after every batch
-// render and reset to its opening value (Buy, the first row) by a render while hidden and by the
-// hidden→visible edge, so a reopened shop never sits under the last visit's confirm.
+// BOTH lists are built by `render(vm)` — main.ts's feedback tests click their buttons after a bare
+// batch, and wallet-balance.spec.ts reads `#shop-for-sale` at first paint — the tabs only hide the
+// inactive one and move the cursor. A render whose title, rows and locale are what the lists already
+// show keeps their nodes (the balance alone is rewritten): a store batch arrives several times a
+// second, and a rebuilt row drops a pointer press that spans it. A button rebuilt while a command is
+// in flight is built disabled, and focus on a node a rebuild destroys moves to the list that held it.
+// The kept paint is re-applied after every batch render and reset to its opening value (Buy, the
+// first row) by a render while hidden and by the hidden→visible edge, so a reopened shop never sits
+// under the last visit's confirm. A tab switch that hides the list holding focus moves focus to the
+// shown list (each list is focusable from script, `tabindex="-1"`, never a Tab stop).
 //
 // THE KIT (uif-10, UIF10.1/UIF10.3). The frame is title bar → the kit TabBar (strip `#shop-tabs`) →
 // `#shop-body` (the lists, the description, the quantity row, the sheet). The confirm is the frame's
@@ -30,7 +35,7 @@ import {
   placeContextSheet,
   renderContextSheet,
 } from './contextSheet';
-import { t, tf } from './i18n/resolver';
+import { currentLocale, t, tf } from './i18n/resolver';
 import { list, tabs } from './nav';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import {
@@ -139,7 +144,13 @@ export class ShopView {
   readonly #cbs: ShopCallbacks;
   // In-flight lock: prevents double-spend when a reducer Promise is pending.
   #pending = false;
+  /** Counts locks; a command's settle ends the lock only while it is still the newest one (a close
+   *  ends a lock early, and a reopened shop may already hold a newer one). */
+  #lockGen = 0;
   #paint: ShopPaint = OPENING;
+  /** What the title and the two lists show: the view model less its balance, and the locale, as
+   *  JSON with bigints as decimal strings. Null until the first render. */
+  #shownLists: string | null = null;
   /** The cursor row last scrolled into view (`tab:key`), so a batch render does not scroll again. */
   #scrolledKey: string | null = null;
 
@@ -213,6 +224,7 @@ export class ShopView {
       listEl.classList.add('mr-scroll');
       listEl.style.margin = '0';
       listEl.style.padding = '0';
+      listEl.tabIndex = -1;
     }
     this.#body.append(this.#forSaleList, this.#inventoryList);
     const body = this.#body;
@@ -264,7 +276,7 @@ export class ShopView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    this.#pending = false;
+    this.#unlock();
     // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
@@ -288,11 +300,29 @@ export class ShopView {
     // openPendingShop renders BEFORE show(): a render while hidden is an open, so it starts over.
     if (!this.visible) this.#paint = OPENING;
 
+    const { balance: _balance, ...lists } = vm;
+    const key = JSON.stringify([currentLocale(), lists], (_, v: unknown) =>
+      typeof v === 'bigint' ? `${v}` : v,
+    );
+    if (key !== this.#shownLists) {
+      const focused = document.activeElement;
+      const holder = [this.#forSaleList, this.#inventoryList].find((l) => l.contains(focused));
+      this.#shownLists = null;
+      this.#renderLists(vm);
+      this.#shownLists = key;
+      if (holder !== undefined && focused instanceof HTMLElement && !focused.isConnected) {
+        holder.focus();
+      }
+    }
+    this.#apply();
+  }
+
+  /** Rebuilds the title and both lists from `vm`. */
+  #renderLists(vm: ShopScreenViewModel): void {
     if (vm.kind === 'no-shop') {
       this.#title.textContent = t('shop.title');
       this.#forSaleList.replaceChildren(emptyRow(t('shop.noShop')));
       this.#inventoryList.replaceChildren();
-      this.#apply();
       return;
     }
 
@@ -312,7 +342,6 @@ export class ShopView {
     if (vm.forSaleByPlayer.length === 0) {
       this.#inventoryList.replaceChildren(emptyRow(t('shop.inventory.empty')));
     }
-    this.#apply();
   }
 
   /** The screen's paint: kept, so the next batch render re-applies it. */
@@ -331,10 +360,13 @@ export class ShopView {
       frame: 'shop',
       label: (tab) => (tab.key === 'buy' ? t('shop.tab.buy') : t('shop.tab.sell')),
     });
-    this.#forSaleList.hidden = p.tab !== 'buy';
-    this.#inventoryList.hidden = p.tab !== 'sell';
-
     const active = p.tab === 'buy' ? this.#forSaleList : this.#inventoryList;
+    const inactive = p.tab === 'buy' ? this.#inventoryList : this.#forSaleList;
+    const strandsFocus = !inactive.hidden && inactive.contains(document.activeElement);
+    active.hidden = false;
+    inactive.hidden = true;
+    if (strandsFocus) active.focus();
+
     const rows = Array.from(active.querySelectorAll<HTMLElement>('li[data-nav-key]'));
     const key = p.activeKey ?? rows[0]?.dataset.navKey ?? null;
     for (const listEl of [this.#forSaleList, this.#inventoryList]) {
@@ -389,24 +421,45 @@ export class ShopView {
     placeContextSheet(this.#sheet, this.#body, slot);
   }
 
+  /** A row's Buy / Sell button. A click sends `send` unless a command is in flight, and the button
+   *  stays disabled until it settles; a button built while one is in flight is built disabled. */
+  #commandButton(label: string, itemId: number, send: () => unknown): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.dataset.itemId = String(itemId);
+    btn.disabled = this.#pending;
+    btn.addEventListener('click', () => {
+      if (this.#pending) return;
+      this.#pending = true;
+      const gen = ++this.#lockGen;
+      btn.disabled = true;
+      void Promise.resolve(send()).finally(() => {
+        if (gen === this.#lockGen) this.#unlock();
+      });
+    });
+    return btn;
+  }
+
+  /** Ends the in-flight lock: every row button is enabled again, and an older command's settle no
+   *  longer ends anything. */
+  #unlock(): void {
+    this.#lockGen += 1;
+    this.#pending = false;
+    for (const listEl of [this.#forSaleList, this.#inventoryList]) {
+      for (const btn of Array.from(listEl.querySelectorAll('button'))) btn.disabled = false;
+    }
+  }
+
   #makeBuyRow(shopId: number, item: ShopItemViewModel): HTMLElement {
     const li = document.createElement('li');
     li.className = 'mr-nav-item';
     li.dataset.navKey = shopBuyKey(item);
     li.textContent = tf('shop.buy.row', { name: item.name, price: item.buyPrice });
-    const btn = document.createElement('button');
-    btn.textContent = t('shop.buy.submit');
-    btn.dataset.itemId = String(item.itemId);
-    btn.addEventListener('click', () => {
-      if (this.#pending) return;
-      this.#pending = true;
-      btn.disabled = true;
-      void Promise.resolve(this.#cbs.onBuy(shopId, item.itemId)).finally(() => {
-        this.#pending = false;
-        btn.disabled = false;
-      });
-    });
-    li.appendChild(btn);
+    li.appendChild(
+      this.#commandButton(t('shop.buy.submit'), item.itemId, () =>
+        this.#cbs.onBuy(shopId, item.itemId),
+      ),
+    );
     return li;
   }
 
@@ -420,19 +473,11 @@ export class ShopView {
         count: item.count,
         price: item.sellPrice,
       });
-      const btn = document.createElement('button');
-      btn.textContent = t('shop.sell.submit');
-      btn.dataset.itemId = String(item.itemId);
-      btn.addEventListener('click', () => {
-        if (this.#pending) return;
-        this.#pending = true;
-        btn.disabled = true;
-        void Promise.resolve(this.#cbs.onSell(item.itemId)).finally(() => {
-          this.#pending = false;
-          btn.disabled = false;
-        });
-      });
-      li.appendChild(btn);
+      li.appendChild(
+        this.#commandButton(t('shop.sell.submit'), item.itemId, () =>
+          this.#cbs.onSell(item.itemId),
+        ),
+      );
     } else {
       li.textContent = tf('shop.sell.unsellable', { name: item.name, count: item.count });
     }

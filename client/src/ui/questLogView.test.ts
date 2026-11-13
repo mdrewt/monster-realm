@@ -463,7 +463,7 @@ describe('QuestLogView render(): existing paint behaviour (pinned, not changed b
 // only, so a missing module reds that case alone.
 // ---------------------------------------------------------------------------
 
-import { tf as ctl8fTf, t as qf4T } from './i18n/resolver';
+import { tf as ctl8fTf, t as qf4T, setLocale } from './i18n/resolver';
 
 const ctl8fListEl = (): HTMLElement => document.getElementById('quest-log-list') as HTMLElement;
 /** The list's own <li> children (a nested one, were a detail ever put inside, would not count). */
@@ -622,11 +622,20 @@ describe('QuestLogView ctl-8f: the Journal cursor and detail (CTL8F.3)', () => {
 
     // Survives renders, including one that adds a quest.
     view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    // INTENTIONAL CHANGE (ts-6b-8, R-ci-fix-20261002T0901Z-VIEWREBUILD): the rows are keyed on
+    // [locale, vm.active] and an equal-vm render keeps them. Was: `view.render(questVm(3))` (an EQUAL
+    // vm) followed by `expect(ctl8fRows()[0], 'precondition: the rows were rebuilt').not.toBe(before[0])`.
+    // Kept: the cursor and detail survive a render that really rebuilds the rows; that precondition
+    // now runs on a vm that DIFFERS (questVm(4)), so the survival is still asserted across a rebuild.
     const before = ctl8fRows();
     view.render(questVm(3));
+    expect(ctl8fCursor(), 'the cursor survives an equal-vm render').toEqual(['quest_1']);
+    expect(ctl8fDetailShown(), 'the detail survives an equal-vm render').toBe(true);
+    view.render(questVm(4));
+    expect(ctl8fRows(), 'a new quest adds a row').toHaveLength(4);
     expect(ctl8fRows()[0], 'precondition: the rows were rebuilt').not.toBe(before[0]);
-    expect(ctl8fCursor(), 'the cursor survives a render').toEqual(['quest_1']);
-    expect(ctl8fDetailShown(), 'the detail survives a render').toBe(true);
+    expect(ctl8fCursor(), 'the cursor survives a rebuilding render').toEqual(['quest_1']);
+    expect(ctl8fDetailShown(), 'the detail survives a rebuilding render').toBe(true);
     expect(ctl8fDetailEl()?.textContent ?? '').toContain('quest_1');
     expect(document.getElementById(ctl8fListEl().getAttribute('aria-activedescendant') ?? '')).toBe(
       ctl8fRows()[1],
@@ -1684,5 +1693,105 @@ describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
     openFreshJournal(previous, questVm(2));
     const hidden = document.getElementById('quest-log-empty') as HTMLElement;
     expect(getComputedStyle(hidden).display, 'with quests: hidden').toBe('none');
+  });
+});
+
+// ts-6b-8 (TS6B8.1): a batch render with an unchanged vm keeps the rows and the empty-state node.
+describe('QuestLogView ts-6b-8: kept rows', () => {
+  it('a batch render with an unchanged view model keeps the same row and button nodes', () => {
+    // WRONG IMPL KILLED: a render that replaceChildren()s the list (and swaps the empty-state
+    // element) on every store batch; a keep that loses the painted cursor; a view that never
+    // re-renders (the changed-step case must rebuild its row).
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(ctl8fSteps());
+    view.paint({ questId: 'beta', detail: null });
+
+    const rows = ctl8fRows();
+    const empty = document.getElementById('quest-log-empty');
+    expect(rows).toHaveLength(3);
+    expect(empty, 'precondition: the empty-state node exists').not.toBeNull();
+
+    view.render(ctl8fSteps());
+    const again = ctl8fRows();
+    expect(again).toHaveLength(3);
+    again.forEach((li, i) => {
+      expect(li, `row ${i} is the same node`).toBe(rows[i]);
+    });
+    expect(document.getElementById('quest-log-empty'), 'the empty-state node is kept').toBe(empty);
+    expect(again[1]?.classList.contains('is-active')).toBe(true);
+    expect(again[1]?.getAttribute('aria-selected')).toBe('true');
+    expect(again[0]?.getAttribute('aria-selected')).toBe('false');
+
+    // Counter-case: a changed step rebuilds that row.
+    const changed = ctl8fSteps();
+    (changed.active[1] as { stepIndex: number }).stepIndex = 9;
+    view.render(changed);
+    const rebuilt = ctl8fRows();
+    expect(rebuilt[1], 'a changed step rebuilds its row').not.toBe(rows[1]);
+    expect(rebuilt[1]?.textContent).toContain('9');
+    expect(rebuilt[1]?.getAttribute('aria-selected'), 'the kept paint still applies').toBe('true');
+  });
+
+  it('ts-6b-8 lens: a locale switch rebuilds the rows and the empty state and they read in the new locale', () => {
+    // WRONG IMPL KILLED: a rows key that drops currentLocale(), so an equal vm after
+    // setLocale('fr') keeps English rows ("alpha (step 4)") and the English empty sentence.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    try {
+      view.render(ctl8fSteps());
+      const rows = ctl8fRows();
+      expect(rows[0]?.textContent, 'precondition: English').toBe('alpha (step 4)');
+      setLocale('fr');
+      view.render(ctl8fSteps());
+      const rebuilt = ctl8fRows();
+      expect(rebuilt).toHaveLength(3);
+      rebuilt.forEach((li, i) => {
+        expect(li, `row ${i} is a new node`).not.toBe(rows[i]);
+      });
+      expect(rebuilt[0]?.textContent).toBe(ctl8fTf('questLog.entry', { name: 'alpha', step: 4 }));
+      expect(rebuilt[1]?.textContent).toBe(ctl8fTf('questLog.entry', { name: 'beta', step: 7 }));
+      expect(rebuilt[0]?.textContent).not.toBe('alpha (step 4)');
+
+      setLocale('en');
+      view.render({ active: [] });
+      const emptyEn = document.getElementById('quest-log-empty');
+      setLocale('fr');
+      view.render({ active: [] });
+      const emptyFr = document.getElementById('quest-log-empty');
+      expect(emptyFr, 'the empty state is a new node').not.toBe(emptyEn);
+      expect(emptyFr?.textContent).toContain(qf4T('journal.empty'));
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('ts-6b-8 lens: changing any ONE displayed field of a quest rebuilds its row', () => {
+    // WRONG IMPL KILLED: a rows key that omits questId (the row's dataset id goes stale), the
+    // display name or the step index (the row text goes stale).
+    const variants: Array<{
+      field: string;
+      over: { questId?: string; displayName?: string; stepIndex?: number };
+      text: boolean;
+    }> = [
+      { field: 'questId', over: { questId: 'betax' }, text: false },
+      { field: 'displayName', over: { displayName: 'Beta!' }, text: true },
+      { field: 'stepIndex', over: { stepIndex: 8 }, text: true },
+    ];
+    for (const v of variants) {
+      mountQuestLogOverlay();
+      const view = new QuestLogView();
+      view.render(ctl8fSteps());
+      const before = ctl8fRows()[1] as HTMLElement;
+      const beforeText = before.textContent;
+      const changed = ctl8fSteps();
+      changed.active = changed.active.map((q, i) => (i === 1 ? { ...q, ...v.over } : q));
+      view.render(changed);
+      const after = ctl8fRows()[1] as HTMLElement;
+      expect(after, `${v.field}: the row is a new node`).not.toBe(before);
+      if (v.text) expect(after.textContent, `${v.field}: text changed`).not.toBe(beforeText);
+      else expect(after.dataset.questId, `${v.field}: the id is carried`).toBe('betax');
+      view.hide();
+    }
   });
 });

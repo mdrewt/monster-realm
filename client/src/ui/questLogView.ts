@@ -23,7 +23,9 @@
 // its index — model data, interpolated verbatim.
 //
 // ctl-8f: this root is the Journal frame. `paint(JournalPaint)` (screens/journalScreen.ts) is kept
-// and re-applied after every `render(vm)`, which rebuilds the rows each batch: the cursor row
+// and re-applied after every `render(vm)`. A render whose quests and locale are what the list
+// already shows keeps its rows and the empty state (a store batch arrives several times a second,
+// and a rebuilt row drops a pointer press that spans it); any change rebuilds them. The cursor row
 // carries the nav kit's marks (`mr-nav-item`, `is-active`, `aria-selected`) on the existing `<li>`
 // (an e2e pins their text), and `#quest-log-detail`, built here after the list and the empty
 // state, shows the open quest's name and step. The hidden-to-visible edge resets the paint to the
@@ -34,7 +36,7 @@
 // pins. Both are written on every render, before the a11y open. The empty state sits OUTSIDE the
 // listbox: a row inside it would be painted as the cursor. While it shows, it describes the list.
 import { createEmptyState } from './emptyState';
-import { t, tf } from './i18n/resolver';
+import { currentLocale, t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
 import type { JournalPaint } from './screens/journalScreen';
@@ -50,6 +52,9 @@ export class QuestLogView {
   /** The cursor row last scrolled into view, so a batch render does not scroll again. */
   private scrolledId: string | null = null;
   private rendered: QuestLogViewModel = { active: [] };
+  /** What the rows and the empty state show (the quests and the locale, JSON); null until the
+   *  first render. */
+  private shownRows: string | null = null;
   private kept: JournalPaint = OPENING;
 
   constructor() {
@@ -136,6 +141,22 @@ export class QuestLogView {
     }
     this.overlay.style.display = 'block';
     this.heading.textContent = t('journal.title');
+    const key = JSON.stringify([currentLocale(), vm.active]);
+    if (key !== this.shownRows) {
+      this.shownRows = null;
+      this.renderRows(vm);
+      this.shownRows = key;
+    }
+    this.rendered = vm;
+    this.applyPaint();
+    // The null->non-null EDGE, and only the edge -- paint first, then claim the
+    // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
+    // `initialFocusSelector` against a fully-painted root).
+    if (!wasVisible) openOverlayA11y('questLogView', this.overlay);
+  }
+
+  /** Rebuilds the rows and the empty state from `vm`. */
+  private renderRows(vm: QuestLogViewModel): void {
     const isEmpty = vm.active.length === 0;
     const empty = this.emptyState(isEmpty ? t('journal.empty') : '');
     this.empty.replaceWith(empty);
@@ -151,12 +172,6 @@ export class QuestLogView {
       li.setAttribute('role', 'option');
       this.list.appendChild(li);
     });
-    this.rendered = vm;
-    this.applyPaint();
-    // The null->non-null EDGE, and only the edge -- paint first, then claim the
-    // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
-    // `initialFocusSelector` against a fully-painted root).
-    if (!wasVisible) openOverlayA11y('questLogView', this.overlay);
   }
 
   /** The kit EmptyState (UIF10.2): `journal.empty` is one sentence, so it is the reason alone. An

@@ -274,11 +274,23 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
     ).toBe('No active quests yet. Talk to villagers to find out who needs help.');
 
     try {
-      vi.mocked(i18nT).mockClear();
       vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
 
-      view.render(questVm([]));
+      // INTENTIONAL CHANGE (ts-6b-8, R-ci-fix-20261002T0901Z-VIEWREBUILD): an equal vm in the same
+      // locale keeps the empty node (its text only changes with the locale, which is in the render
+      // key). Was: the swap followed by `view.render(questVm([]))` (the SAME empty vm) expecting the
+      // sentinel. Now a non-empty render comes first, then the empty vm again; both are non-edge
+      // renders with the Journal open, and the empty line must still be resolved through `t` then.
+      view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
       expect(view.visible, 'still open: the second render is not an edge').toBe(true);
+      expect(
+        document.getElementById('quest-log-empty')?.textContent,
+        'cleared once a quest exists',
+      ).toBe('');
+
+      vi.mocked(i18nT).mockClear();
+      view.render(questVm([]));
+      expect(view.visible, 'still open: the third render is not an edge').toBe(true);
       const empty = document.getElementById('quest-log-empty');
       expect(empty, 'the empty element exists').not.toBeNull();
       expect(empty?.textContent, 'exactly the resolver output').toBe('«journal.empty»');

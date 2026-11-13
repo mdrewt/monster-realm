@@ -73,7 +73,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import { formatHealCostLine, type HealLocationViewModel, type HealViewModel } from './healModel';
 import { HealView } from './healView';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { currentLocale, t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -654,5 +654,134 @@ describe('HealView uif-10: the list reset (UIF10.3)', () => {
     view.hide();
     view.render(healVm([healLocation()]));
     expectReset('after reopen');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ts-6b-8 (TS6B8.1 / TS6B8.4): a batch render with an unchanged vm keeps the row nodes; the frame
+// opens under a localized title bar.
+// ---------------------------------------------------------------------------
+describe('HealView ts-6b-8: kept rows and the localized title', () => {
+  const startLocale = currentLocale();
+  afterEach(() => {
+    setLocale(startLocale);
+  });
+
+  it('a batch render with an unchanged view model keeps the same row and button nodes', () => {
+    // WRONG IMPL KILLED: a render that replaceChildren()s #heal-list on every store batch; a view
+    // that NEVER re-renders (the changed-location case must rebuild); a keep that also drops the
+    // option nodes the prompt owns.
+    mountHealOverlay();
+    const view = new HealView();
+    const build = (cost: bigint) =>
+      healVm([
+        healLocation({ locationId: 1 }),
+        healLocation({ locationId: 2, isFree: cost === 0n, costCurrency: cost }),
+      ]);
+    view.render(build(0n));
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+    const options = Array.from(document.querySelectorAll<HTMLElement>('#heal-options > *'));
+    expect(rows).toHaveLength(2);
+    expect(options.length, 'precondition: the prompt has options').toBeGreaterThan(0);
+
+    view.render(build(0n));
+    const again = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+    expect(again).toHaveLength(2);
+    again.forEach((li, i) => {
+      expect(li, `row ${i} is the same node`).toBe(rows[i]);
+    });
+    const optionsAgain = Array.from(document.querySelectorAll<HTMLElement>('#heal-options > *'));
+    expect(optionsAgain).toHaveLength(options.length);
+    optionsAgain.forEach((el, i) => {
+      expect(el, `option ${i} is the same node`).toBe(options[i]);
+    });
+
+    // Counter-case: a changed location rebuilds the list.
+    view.render(build(5n));
+    const changed = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+    expect(changed).toHaveLength(2);
+    expect(changed[1], 'a changed cost rebuilds its row').not.toBe(rows[1]);
+    expect(changed[1]?.textContent).toBe(
+      i18nTf('heal.location', { cost: formatHealCostLine(build(5n).locations[1] as never) }),
+    );
+  });
+
+  it('the heal frame opens with a localized title', () => {
+    // WRONG IMPL KILLED: no title bar at all; a hard-coded English title that ignores the locale;
+    // a title written at construction (before the locale is known) and never again; a title bar
+    // placed after the list instead of first.
+    const overlay = mountHealOverlay();
+    const view = new HealView();
+
+    const bar = overlay.firstElementChild as HTMLElement | null;
+    expect(bar?.classList.contains('mr-frame-titlebar'), 'the title bar is first').toBe(true);
+    const h2 = bar?.querySelector('h2#heal-title.mr-frame-title') ?? null;
+    expect(h2, 'the bar holds h2#heal-title.mr-frame-title').not.toBeNull();
+
+    view.render(healVm());
+    expect(document.getElementById('heal-title')?.textContent).toBe('Heal');
+    const list = document.getElementById('heal-list') as HTMLElement;
+    expect(
+      (bar as HTMLElement).compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    setLocale('fr');
+    view.render(healVm());
+    expect(document.getElementById('heal-title')?.textContent).toBe('Soins');
+  });
+
+  it('ts-6b-8 lens: a locale switch rebuilds the rows and they read in the new locale', () => {
+    // WRONG IMPL KILLED: a rows key that drops currentLocale(), so an equal vm after
+    // setLocale('fr') keeps the English "Heal here (...)" rows.
+    mountHealOverlay();
+    const view = new HealView();
+    const loc = healLocation({ costItemName: 'Herb', costQty: 3, isFree: false });
+    try {
+      view.render(healVm([loc]));
+      const row = document.querySelector('#heal-list > li');
+      expect(row?.textContent, 'precondition: English').toBe('Heal here (3x Herb)');
+      setLocale('fr');
+      view.render(healVm([{ ...loc }]));
+      const rebuilt = document.querySelector('#heal-list > li');
+      expect(rebuilt, 'the row is a new node').not.toBe(row);
+      expect(rebuilt?.textContent).toBe(i18nTf('heal.location', { cost: formatHealCostLine(loc) }));
+      expect(rebuilt?.textContent).not.toBe('Heal here (3x Herb)');
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('ts-6b-8 lens: changing any ONE displayed field of a location rebuilds its row', () => {
+    // WRONG IMPL KILLED: a rows key that omits a field the row shows (locationId, the cost item
+    // name, the quantity, the currency, the free flag), leaving a stale row on screen.
+    const baseLoc = (): HealLocationViewModel =>
+      healLocation({ locationId: 1, costItemName: 'Herb', costQty: 3, isFree: false });
+    const variants: Array<{
+      field: string;
+      over: Partial<HealLocationViewModel>;
+      text: boolean;
+    }> = [
+      { field: 'locationId', over: { locationId: 2 }, text: false },
+      { field: 'costItemName', over: { costItemName: 'Root' }, text: true },
+      { field: 'costQty', over: { costQty: 4 }, text: true },
+      { field: 'costCurrency', over: { costCurrency: 5n }, text: true },
+      { field: 'isFree', over: { isFree: true }, text: true },
+    ];
+    for (const v of variants) {
+      mountHealOverlay();
+      const view = new HealView();
+      const other = healLocation({ locationId: 9, costCurrency: 7n, isFree: false });
+      view.render(healVm([baseLoc(), other]));
+      const rowsBefore = Array.from(document.querySelectorAll<HTMLElement>('#heal-list > li'));
+      const before = rowsBefore[0] as HTMLElement;
+      const beforeText = before.textContent;
+
+      view.render(healVm([{ ...baseLoc(), ...v.over }, { ...other }]));
+      const after = document.querySelector('#heal-list > li') as HTMLElement;
+      expect(after, `${v.field}: the row is a new node`).not.toBe(before);
+      if (v.text) expect(after.textContent, `${v.field}: text changed`).not.toBe(beforeText);
+      else expect(after.dataset.locationId, `${v.field}: the id is carried`).toBe('2');
+      view.hide();
+    }
   });
 });

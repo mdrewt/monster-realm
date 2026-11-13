@@ -4,8 +4,10 @@
 // No game logic, no SDK imports, no store writes, no eligibility computation of its own —
 // one-way flow only, and the eligibility decision is the model's (it is the SAME
 // predicate game-core runs, so the shell must never re-derive or second-guess it).
-// The loop calls refresh() on batch-applied. Nothing here sends an intent: the view is
-// informational (qf-8 deleted its choice buttons), and the constructor's callbacks are unread.
+// The loop calls refresh() on batch-applied; a refresh whose view model and locale are what the
+// cards already show keeps them (a store batch arrives several times a second). Nothing here sends
+// an intent: the view is informational (it renders no control), and the constructor's callbacks
+// are unread.
 // Coverage-excluded shell.
 //
 // TWO RULES THIS FILE MUST NOT BREAK:
@@ -66,7 +68,7 @@ import type {
   EvolutionPathViewModel,
   EvolutionViewModel,
 } from './evolutionModel';
-import { t, tf } from './i18n/resolver';
+import { currentLocale, t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export interface EvolutionViewCallbacks {
@@ -83,6 +85,9 @@ export class EvolutionView {
   readonly #hintEl: HTMLParagraphElement;
   readonly #listEl: HTMLDivElement;
   #visible = false;
+  /** What `#listEl` shows: the view model and the locale, as JSON with bigints as decimal strings
+   *  (never Number: ids past 2^53 would collide). Null until the first refresh. */
+  #shown: string | null = null;
 
   constructor(parent: HTMLElement, _callbacks: EvolutionViewCallbacks) {
     this.#root = document.createElement('div');
@@ -156,7 +161,16 @@ export class EvolutionView {
   }
 
   refresh(vm: EvolutionViewModel): void {
-    // replaceChildren, not append: refresh() fires on EVERY batch-applied.
+    const key = JSON.stringify([currentLocale(), vm], (_, v: unknown) =>
+      typeof v === 'bigint' ? `${v}` : v,
+    );
+    if (key === this.#shown) return;
+    this.#shown = null;
+    this.#renderList(vm);
+    this.#shown = key;
+  }
+
+  #renderList(vm: EvolutionViewModel): void {
     this.#listEl.replaceChildren();
     if (vm.monsters.length === 0) {
       const empty = document.createElement('p');

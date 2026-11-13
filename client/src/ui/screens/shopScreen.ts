@@ -9,7 +9,8 @@
 // defaults to Yes, Sell to No; a fresh Up/Down flips it, a repeat never does; Yes issues the
 // command and returns to the list). Y describes the cursor row until the next move. Every step
 // first settles the state against the rows a batch may have moved: a vanished row closes its
-// prompt, a shrunken stack caps the sell quantity, a gone cursor is re-seated.
+// prompt, a shrunken stack caps the sell quantity, a gone cursor is re-seated on its nearest
+// neighbour (the state keeps the layout it last settled against, as bagScreen's does).
 //
 // The feedback line ("✓ Bought 2 Bait (−40g)") is dispatch's (CTL7D.4): this screen adds none.
 
@@ -62,6 +63,9 @@ export interface ShopScreenState {
   readonly phase: ShopPhase;
   /** Y: the cursor row's description is shown until the next move. */
   readonly info: boolean;
+  /** The layout the cursor was last settled against, and its signature (JSON). */
+  readonly layout: NavLayout;
+  readonly layoutKey: string;
 }
 
 const BROWSE: ShopPhase = { kind: 'browse' };
@@ -120,13 +124,15 @@ const rowFor = (vm: ShopScreenVm, tab: ShopTab, itemId: number): Row | undefined
  *  the reducer accepts (a sell above the owned count is refused). */
 const clampQty = (n: number, row: Row): number => Math.min(Math.max(1, n), row.max);
 
-/** `state` settled against the view model's rows: the SAME object when nothing changed. A gone or
- *  null cursor is re-seated (on the first row, its description cleared); a prompt whose row is
+/** `state` settled against the view model's rows: the SAME object when nothing changed. A gone
+ *  cursor is re-seated on the row now at its index (the new last row when it was last) and a null
+ *  one on the first row, its description cleared; a prompt whose row is
  *  gone or disabled closes; a sell quantity above the stack drops to it; a prompt whose price or
  *  name changed takes the live ones (so it is repainted before Yes can act on them). */
 function settle(vm: ShopScreenVm, state: ShopScreenState): ShopScreenState {
   const layout = layoutOf(vm);
-  const nav = navReconcile(layout, layout, state.nav);
+  const layoutKey = JSON.stringify(layout);
+  const nav = navReconcile(state.layout, layout, state.nav);
   let phase = state.phase;
   if (phase.kind !== 'browse') {
     const row = rowFor(vm, phase.tab, phase.itemId);
@@ -140,13 +146,13 @@ function settle(vm: ShopScreenVm, state: ShopScreenState): ShopScreenState {
       phase = { ...phase, qty: clampQty(phase.qty, row), name: row.name, unitPrice: row.unitPrice };
     }
   }
-  if (nav === state.nav && phase === state.phase) return state;
-  return { nav, phase, info: nav === state.nav && state.info };
+  if (nav === state.nav && phase === state.phase && layoutKey === state.layoutKey) return state;
+  return { nav, phase, info: nav === state.nav && state.info, layout, layoutKey };
 }
 
 /** A step that only moves the cursor: the description is cleared with it. */
 const moved = (state: ShopScreenState, nav: NavState): ShopScreenState =>
-  nav === state.nav ? state : { nav, phase: state.phase, info: false };
+  nav === state.nav ? state : { ...state, nav, info: false };
 
 export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> = {
   nav: true,
@@ -177,7 +183,14 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
 
   /** The Buy tab on its first row. */
   init(vm): ShopScreenState {
-    return { nav: navInit(layoutOf(vm)), phase: BROWSE, info: false };
+    const layout = layoutOf(vm);
+    return {
+      nav: navInit(layout),
+      phase: BROWSE,
+      info: false,
+      layout,
+      layoutKey: JSON.stringify(layout),
+    };
   },
 
   onButton(vm, kept, btn): ButtonStep<ShopScreenState> {
