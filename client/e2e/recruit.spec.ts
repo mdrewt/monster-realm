@@ -318,8 +318,8 @@ async function waitForBattleCleared(p: Page): Promise<void> {
 // WORLD FACTS (re-derived from game-core/content this session):
 //   - heal_locations/000-core.ron: exactly ONE row — location_id 1, ZONE 0, tile
 //     (8,3), cost_item_id None (free), cooldown_ms 30000. heal_party is
-//     zone-scoped and REJECTED silently inside the 30 s cooldown, hence the
-//     bounded retry below.
+//     refused more than 2 tiles (Manhattan) from that tile and REJECTED silently
+//     inside the 30 s cooldown, hence the bounded retry below.
 //   - zone_maps/000-core.ron zone 0: (8,3) is PATH ('=', row y=3; tall grass until wap-8).
 //     Its 4-neighbours: (7,3) floor, (8,2) grass, (8,4) grass, (9,3) wall. So
 //     the ONLY grass-free tile beside it is (7,3), and facing it means ARRIVING
