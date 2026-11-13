@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::PARTY_SLOT_NONE;
-use game_core::{roll_starter, ActionState, Affinity, Direction};
+use game_core::{roll_starter, ActionState, Affinity, Direction, EVs, StatBlock};
 
 fn row() -> Character {
     Character {

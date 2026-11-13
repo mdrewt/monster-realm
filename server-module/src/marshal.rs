@@ -8,12 +8,6 @@
 use crate::schema::{
     Character, EncounterEntryRow, EncounterRow, EvolutionPathRow, Monster, MonsterPub, SpeciesRow,
 };
-#[cfg(test)]
-use crate::schema::{SkillRow, TypeRelationRow};
-#[cfg(test)]
-use game_core::{
-    derive_stats, roll_individuality, AbilityDef, AbilityStore, EVs, SkillDef, StatBlock, TypeChart,
-};
 use game_core::{
     Affinity, BattleMonster, CharacterState, EncounterEntry, EncounterTable, Level, Millis,
     MonsterInstance, StatKind, TilePos,
@@ -147,58 +141,6 @@ pub(crate) fn table_from_encounter_row(row: &EncounterRow) -> Result<EncounterTa
 }
 
 /// Build a wild `BattleMonster` (no owned `monster` row) from a species, the
-/// server-loaded skill ids, a level, and the individuality seed.
-/// PURE / deterministic in `seed` — no `ctx`. Full-HP, EVs zero; IVs+nature come
-/// from `roll_individuality(seed)` and stats from `derive_stats`, so the stored
-/// seed rebuilds THIS exact wild in M8d. `known_skill_ids` = the species'
-/// `learnable_skill_ids` intersected with `skill_ids`, iterated in learnable order
-/// (so `[1,2,3] ∩ [2,3,9] == [2,3]`). An out-of-range `level` is a loud `Err`,
-/// never a panic.
-/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg(test)]
-pub(crate) fn wild_battle_monster(
-    species: &SpeciesRow,
-    skill_ids: &[u32],
-    level: u8,
-    seed: u32,
-) -> Result<BattleMonster, String> {
-    let lvl = Level::new(level)?;
-    let (ivs, nature) = roll_individuality(seed);
-    let evs = EVs::zero();
-    let base = StatBlock {
-        hp: species.base_hp,
-        attack: species.base_attack,
-        defense: species.base_defense,
-        speed: species.base_speed,
-        sp_attack: species.base_sp_attack,
-        sp_defense: species.base_sp_defense,
-    };
-    let stats = derive_stats(&base, &ivs, &evs, &nature, lvl);
-    let known_skill_ids: Vec<u32> = species
-        .learnable_skill_ids
-        .iter()
-        .copied()
-        .filter(|id| skill_ids.contains(id))
-        .collect();
-    if known_skill_ids.is_empty() {
-        return Err(format!(
-            "species {} has no known skills after filtering learnable_skill_ids against loaded skills; \
-             an empty moveset would panic the AI (defense-in-depth)",
-            species.id
-        ));
-    }
-    Ok(BattleMonster {
-        species_id: species.id,
-        affinity: species.affinity,
-        level,
-        current_hp: stats.hp,
-        max_hp: stats.hp,
-        stats,
-        known_skill_ids,
-        status: None,
-    })
-}
-
 /// Derive the public projection from a private monster row. No hidden fields.
 ///
 /// `tier` comes from the CALLER — fresh from the species row at the 4
@@ -377,94 +319,12 @@ pub(crate) fn evolution_path_from_row(
     })
 }
 
-/// Build an [`AbilityStore`] for a battle from the ability IDs recorded on each
-/// slot's species row.
-///
-/// `side_a_ability_ids` and `side_b_ability_ids` are parallel slices aligned to
-/// team slots (index 0 = slot 0, etc.). Each element is the `ability: Option<u32>`
-/// column from the matching `SpeciesRow`. Unknown IDs (no matching `AbilityDef`)
-/// silently resolve to `None` so a stale or missing def does not crash battle start.
-/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg(test)]
-pub(crate) fn build_ability_store(
-    side_a_ability_ids: &[Option<u32>],
-    side_b_ability_ids: &[Option<u32>],
-    ability_defs: &[AbilityDef],
-) -> AbilityStore {
-    let resolve = |id: Option<u32>| -> Option<game_core::AbilityEffect> {
-        let id = id?;
-        ability_defs
-            .iter()
-            .find(|d| d.id == id)
-            .map(|d| d.effect.clone())
-    };
-    AbilityStore {
-        side_a: side_a_ability_ids.iter().map(|&id| resolve(id)).collect(),
-        side_b: side_b_ability_ids.iter().map(|&id| resolve(id)).collect(),
-    }
-}
-
-// --- Battle helpers (M7b, pure marshaling — no ctx) ---------------------------
-
-/// Marshal a Monster row + its species + its known skills into a BattleMonster.
-///
-/// Trust boundary (reject-not-clamp): a row with `stat_defense == 0`
-/// is rejected with `Err` rather than passed into the pure core, where it would
-/// divide-by-zero in `calc_damage`.
-/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg(test)]
-pub(crate) fn battle_monster_from_row(
-    monster: &Monster,
-    species: &SpeciesRow,
-    skills: &[SkillRow],
-) -> Result<BattleMonster, String> {
-    if monster.stat_defense == 0 {
-        return Err(format!(
-            "monster {} has stat_defense 0 (illegal: would divide-by-zero in calc_damage)",
-            monster.monster_id
-        ));
-    }
-    // Canonical content order: iterate species.learnable_skill_ids and retain
-    // only those present in the provided skills slice (mirrors wild_battle_monster,
-    // so owned and wild monsters have the same ordering).
-    let known_skill_ids: Vec<u32> = species
-        .learnable_skill_ids
-        .iter()
-        .copied()
-        .filter(|id| skills.iter().any(|s| s.id == *id))
-        .collect();
-    if known_skill_ids.is_empty() {
-        return Err(format!(
-            "monster {} (species {}) has no known skills after filtering learnable_skill_ids \
-             against loaded skills; an empty moveset would panic the AI (defense-in-depth)",
-            monster.monster_id, species.id
-        ));
-    }
-    Ok(BattleMonster {
-        species_id: monster.species_id,
-        affinity: species.affinity,
-        level: monster.level,
-        current_hp: monster.current_hp,
-        max_hp: monster.stat_hp,
-        stats: StatBlock {
-            hp: monster.stat_hp,
-            attack: monster.stat_attack,
-            defense: monster.stat_defense,
-            speed: monster.stat_speed,
-            sp_attack: monster.stat_sp_attack,
-            sp_defense: monster.stat_sp_defense,
-        },
-        known_skill_ids,
-        status: None,
-    })
-}
-
 /// Write post-battle HP back from a BattleMonster to the persistent Monster row,
 /// clamped to the ROW's current `stat_hp`. A mid-battle `sync_content`
 /// nerf can lower the row's `stat_hp` while the in-flight BattleMonster still
 /// carries the stale pre-nerf `max_hp` — so the clamp target is the ROW's
 /// `stat_hp`, NOT `bm.max_hp`. Ordering caveat: this clamp is correct because
-/// write-back (battle.rs:614) runs BEFORE the XP/level-up recompute — the
+/// write-back (`battle::write_back_party_hp`) runs BEFORE the XP/level-up recompute — the
 /// level-up heal re-derives stats from the SSOT and uses the post-re-derive
 /// `stat_hp` afterwards.
 pub(crate) fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
@@ -486,71 +346,6 @@ pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
         sp_defense: species.base_sp_defense,
     };
     game_core::base_stat_total(&base)
-}
-
-/// Build a `Vec<SkillDef>` from the DB skill rows.
-///
-/// The retired 1v1 battle paths used `cached_skills()` (content cache). This function is retained
-/// for marshal boundary tests (power > 0, accuracy ∈ [1, 100]); it sets
-/// `sets_weather: None, applies_status: None` which is intentional for unit tests
-/// that exercise the validation logic only.
-#[cfg(test)]
-pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, String> {
-    rows.iter()
-        .map(|r| {
-            if r.power == 0 {
-                return Err(format!("skill {} has power=0 at marshal boundary", r.id));
-            }
-            if r.accuracy == 0 || r.accuracy > 100 {
-                return Err(format!(
-                    "skill {} has accuracy {} (must be 1..=100) at marshal boundary",
-                    r.id, r.accuracy
-                ));
-            }
-            Ok(SkillDef {
-                id: r.id,
-                name: r.name.clone(),
-                affinity: r.affinity,
-                power: r.power,
-                accuracy: r.accuracy,
-                pp: r.pp,
-                // DB SkillRow has no sets_weather or applies_status columns; these are
-                // only populated via cached_skills() (content cache).
-                // The retired 1v1 resolution paths used cached_skills(). skill_defs_from_rows is used only for schema
-                // validation and marshal tests where sets_weather/applies_status are not needed.
-                sets_weather: None,
-                applies_status: None,
-            })
-        })
-        .collect()
-}
-
-/// Build the type chart from DB rows.
-///
-/// Trust boundary: re-validates `effectiveness ∈ {0, 5, 10, 20}` —
-/// the seed-time constraint from `validate_content`. An out-of-range value would
-/// scale damage by the raw number (`TypeChart::effectiveness` returns it verbatim)
-/// while `classify` would panic via `unreachable!` (M14.5g hardening).
-/// Test-only since bt-17 deleted the 1v1 reducer bodies (R-bt-17-MARSHALTESTONLY).
-#[cfg(test)]
-pub(crate) fn type_chart_from_rows(
-    rows: impl Iterator<Item = TypeRelationRow>,
-) -> Result<TypeChart, String> {
-    let mut rels: Vec<game_core::TypeRelation> = Vec::new();
-    for r in rows {
-        if !matches!(r.effectiveness, 0 | 5 | 10 | 20) {
-            return Err(format!(
-                "type relation ({:?},{:?}) has illegal effectiveness {} (must be 0, 5, 10, or 20)",
-                r.attacker, r.defender, r.effectiveness
-            ));
-        }
-        rels.push(game_core::TypeRelation {
-            attacker: r.attacker,
-            defender: r.defender,
-            effectiveness: r.effectiveness,
-        });
-    }
-    Ok(game_core::TypeChart::new(&rels))
 }
 
 #[cfg(test)]
