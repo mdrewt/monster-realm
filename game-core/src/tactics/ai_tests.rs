@@ -1276,6 +1276,46 @@ fn a_territorial_wild_that_cannot_attack_ends_its_turn_guarded_through_the_execu
         .any(|e| matches!(e, EventPayload::Moved(m) if m.unit == WILD)));
 }
 
+/// BT4.3 (a ranged Territorial wild keeps its cheapest tile): wild at (3,3), spawn (3,3), ranged
+/// kit (Light r2–3, Heavy r2–3, both enemies-only singles), P1 at (3,1) — 2 away, untaxed (nothing
+/// is adjacent). From its own tile (cost 0) both skills already hit P1, so tier Heavy is chosen and
+/// the tile key `(0, cost, y, x)` takes the own tile at cost 0 → `[Heavy 20 → P1, End]`, `[Heavy,
+/// End]` costing 4 of 6 AP. Every other attack tile costs at least 1.
+///
+/// The board really does hold a farther attack tile inside the leash, so the Skittish plan on the
+/// same board must move. One stride (2 stride points, 6 AP with the Heavy) reaches only tiles of
+/// path cost at most 2; the Heavy hits P1 from a tile 2–3 away. The farthest such tiles are 3 from
+/// P1: (2,3), (4,3) and (3,4), all cost 1 ((1,2) and (5,2) are 3 from P1 but cost 3, which takes a
+/// second stride and 8 AP, refused). Skittish ranks `(Reverse(d), cost, y, x)`: y 3 before y 4, x 2
+/// before x 4 → `[Move (2,3) ×1, Heavy 20 → P1, End]`, and (2,3) is 1 from the spawn, inside the
+/// leash — so a Territorial wild that wrongly shared the farthest-tile rule would plan the same.
+///
+/// Kills: the farthest-tile predicate admitting Territorial (`stance != Aggressive`), which plans
+/// `[Move (2,3) ×1, Heavy 20 → P1, End]` here instead of staying put.
+#[test]
+fn a_territorial_ranged_wild_attacks_from_the_cheapest_tile_not_the_farthest() {
+    let st = board(
+        vec![
+            wild(3, 3, 100, 100, 30, ranged_kit()),
+            player(P1, 0, 3, 1, 100),
+        ],
+        &[],
+    );
+    let spawn = rt::c(3, 3);
+    let skittish = plan_of(&st, Stance::Skittish, spawn);
+    assert_eq!(
+        skittish,
+        vec![mv(2, 3, 1), hit(HEAVY, P1), END],
+        "PRECONDITION: a farther attack tile is in reach inside the leash"
+    );
+    assert_eq!(
+        plan_of(&st, Stance::Territorial, spawn),
+        vec![hit(HEAVY, P1), END],
+        "the Territorial wild attacks from its own, cheapest tile"
+    );
+    assert_ne!(plan_of(&st, Stance::Territorial, spawn), skittish);
+}
+
 // ===========================================================================
 // BT4.4 — Skittish (Heavy only; farthest attack tile; kite within heavy range_max + 2)
 // ===========================================================================

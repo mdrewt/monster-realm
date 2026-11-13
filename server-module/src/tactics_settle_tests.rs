@@ -5509,3 +5509,356 @@ fn a_pvp_settle_with_one_sides_hp_write_back_failed_pays_nothing() {
         );
     }
 }
+
+// ===========================================================================
+// A tactical win's level-up: stat recompute, heal, auto-evolve (R-bt-17-SETTLEFAILPATHS)
+// ===========================================================================
+
+/// The monster's HP the unit carries into the finishing KO — below every max HP in play.
+const LEVEL_UP_PRE_HP: u16 = 2;
+/// The XP the killer is short of the next level before the win (any award at all crosses it).
+const LEVEL_UP_XP_SHORT: u32 = 1;
+/// A level-5 monster 11 (the fixture's level) is about to reach level 6.
+const LEVEL_UP_FROM: u8 = 5;
+
+fn six_of_row(m: &Monster) -> [u16; 6] {
+    [
+        m.stat_hp,
+        m.stat_attack,
+        m.stat_defense,
+        m.stat_speed,
+        m.stat_sp_attack,
+        m.stat_sp_defense,
+    ]
+}
+
+fn six_of_block(s: &StatBlock) -> [u16; 6] {
+    [
+        s.hp,
+        s.attack,
+        s.defense,
+        s.speed,
+        s.sp_attack,
+        s.sp_defense,
+    ]
+}
+
+/// The row's individuality run through `derive_stats` at `lvl` over `base` — what a level-up (or
+/// an evolution onto `base`'s species) must write.
+fn derived_for(m: &Monster, base: &StatBlock, lvl: u8) -> StatBlock {
+    let ivs = game_core::IVs::new(
+        m.iv_hp,
+        m.iv_attack,
+        m.iv_defense,
+        m.iv_speed,
+        m.iv_sp_attack,
+        m.iv_sp_defense,
+    )
+    .expect("the fixture's IVs are valid");
+    let evs = game_core::EVs::new(
+        m.ev_hp,
+        m.ev_attack,
+        m.ev_defense,
+        m.ev_speed,
+        m.ev_sp_attack,
+        m.ev_sp_defense,
+    )
+    .expect("the fixture's EVs are valid");
+    game_core::derive_stats(
+        base,
+        &ivs,
+        &evs,
+        &game_core::Nature::new(m.nature_kind),
+        level(lvl),
+    )
+}
+
+/// What one levelling tactical win left behind.
+struct LevelUpRun {
+    /// Monster 11 as the finishing KO found it (level 5, one XP short of 6, stats sentinel).
+    pre: Monster,
+    /// Monster 11 after the whole settle.
+    post: Monster,
+    /// Its `monster_pub` species after the settle.
+    pub_species: u32,
+    /// The ledger's XP award to its unit.
+    xp_gain: u32,
+    /// The anchor's side-A max HP for it — the `old_max_hp` `credit_monster` heals against.
+    old_max_hp: u16,
+    /// Every queued reveal as `(monster_id, from_species, to_species)`.
+    reveals: Vec<(u64, u32, u32)>,
+}
+
+/// A pack-1 wild win by monster 11 (u2 fell first, so 11 alone earns) from a fresh fixture:
+/// 11 is a real level-5 monster one XP short of level 6 at `LEVEL_UP_PRE_HP` HP, its five non-HP
+/// stats are sentinels no `derive_stats` value reaches, and the anchor's side-A max HP for it is
+/// its real level-5 max HP, so a level-up grows the max and heals exactly the growth. With
+/// `edge_to = Some((species, min_level))` one level-only edge out of its species is seeded.
+fn level_up_win(edge_to: Option<(u32, u8)>) -> LevelUpRun {
+    let fx = fixture();
+    let w = world(&fx);
+    let species_rows = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+    let paths = fx
+        .table_keyed::<crate::schema::EvolutionPathRow, u64>("evolution_path", "path_id", |r| {
+            r.path_id
+        })
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.path_id, |r, id| r.path_id = id);
+    let notices = fx
+        .table::<crate::schema::PendingEvolutionNotice>(
+            "pending_evolution_notice",
+            "owner_identity",
+            |r| r.owner_identity,
+        )
+        .writable()
+        .unique();
+    if let Some((to_species, min_level)) = edge_to {
+        species_rows.seed(&species_row_of(&species_def(to_species)));
+        paths.seed(&crate::schema::EvolutionPathRow {
+            path_id: 1,
+            edge_id: 1,
+            from_species: w_species_of_11(),
+            to_species,
+            min_level,
+            essence: vec![],
+            min_trust_tier: None,
+            min_quality_time_tier: None,
+            min_nutrition_pct: None,
+        });
+    }
+    let live = live_pair(&fx, &w);
+    fall_in_battle(&w, live.id, live.u2);
+    ready_ko(&w, &live);
+    let wild_species = w.unit(live.wild).species_id;
+
+    let real = w.monster(11);
+    let species = species_def(real.species_id);
+    let old_max_hp = derived_for(&real, &species.base_stats, LEVEL_UP_FROM).hp;
+    let next_level_xp = game_core::xp_for_level(level(LEVEL_UP_FROM + 1)).value();
+    w.edit_monster(11, |m| {
+        m.level = LEVEL_UP_FROM;
+        m.xp = next_level_xp - LEVEL_UP_XP_SHORT;
+        m.stat_hp = old_max_hp;
+        m.stat_attack = 701;
+        m.stat_defense = 702;
+        m.stat_speed = 703;
+        m.stat_sp_attack = 704;
+        m.stat_sp_defense = 705;
+        m.current_hp = LEVEL_UP_PRE_HP;
+    });
+    w.edit_unit(live.u1, |u| u.cur_hp = LEVEL_UP_PRE_HP);
+    let mut anchor = w.anchor(live.id).expect("the anchor exists");
+    let i = anchor
+        .party_monster_ids
+        .iter()
+        .position(|&m| m == 11)
+        .expect("monster 11 is in the party");
+    anchor.state.side_a.team[i].max_hp = old_max_hp;
+    assert_eq!(w.battles.remove(live.id), 1, "the anchor edited in place");
+    w.battles.seed(&anchor);
+    let pre = w.monster(11);
+
+    let t1 = T0 + 25_000;
+    ko_submit(&fx, &w, &live, t1);
+    let fin = loaded(&fx, live.id, t1).state;
+    let mut ledger = Ledger::default();
+    on_unit_defeated(&mut ledger, &fin, live.u1, live.wild, bst(wild_species))
+        .expect("the KO is creditable");
+    let payout = pay(&ledger, &fin);
+    assert_eq!(
+        payout.awards.len(),
+        1,
+        "non-vacuous: only the conscious killer earns (u2 fell first)"
+    );
+    let award = payout
+        .awards
+        .iter()
+        .find(|aw| aw.unit == live.u1)
+        .expect("the killer's unit is paid");
+    LevelUpRun {
+        pre,
+        post: w.monster(11),
+        pub_species: w.monster_pub(11).species_id,
+        xp_gain: award.xp,
+        old_max_hp,
+        reveals: notices
+            .rows()
+            .into_iter()
+            .flat_map(|n| n.entries)
+            .map(|e| (e.monster_id, e.from_species, e.to_species))
+            .collect(),
+    }
+}
+
+/// The species monster 11 holds in `PAIR` (read off the spec, not the row, because the evolution
+/// edge is seeded before the battle's rows exist).
+fn w_species_of_11() -> u32 {
+    PAIR.iter()
+        .find(|&&(id, ..)| id == 11)
+        .map(|&(_, species, ..)| species)
+        .expect("monster 11 is in PAIR")
+}
+
+/// A tactical win whose award carries the killer over a level boundary: the level-up writes the
+/// stats `derive_stats` gives for the new level, heals the max-HP growth (`level_up_healed_hp`
+/// against the anchor's battle-time max), and the unconditional evolution check then applies the
+/// one level-only edge the new level makes eligible. Two runs from fresh fixtures separate the
+/// steps: without an edge the level-up is observable on its own (species unchanged); with the edge
+/// the evolved species, its re-derived stats, its clamped HP, the zeroed essence and the one reveal
+/// are observable, and the edge's `min_level` is the post-win level, so the check can only fire
+/// AFTER the level-up.
+///
+/// kills: the six `stat_*` writes deleted from `battle::credit_monster` (run 1: the stats stay
+/// the sentinels); the `current_hp = level_up_healed_hp(..)` line deleted (run 1: HP stays at
+/// `LEVEL_UP_PRE_HP`; run 2: the clamped HP is that too); the `check_and_evolve(ctx, mid)` call
+/// deleted (run 2: the species stays and no reveal is queued).
+#[test]
+fn a_tactical_win_that_levels_a_monster_up_recomputes_stats_heals_and_auto_evolves() {
+    // Run 1 — no edge: the level-up alone.
+    let run = level_up_win(None);
+    let (pre, post) = (&run.pre, &run.post);
+    let species = species_def(pre.species_id);
+    assert!(run.xp_gain > 0, "PRECONDITION: the win pays XP");
+    let (want_xp, want_level) = after_gain(pre.xp, run.xp_gain);
+    assert!(
+        want_level > pre.level,
+        "PRECONDITION: the award crosses a level boundary ({} -> {want_level})",
+        pre.level
+    );
+    assert_eq!(
+        (post.xp, post.level),
+        (want_xp, want_level),
+        "the killer gains exactly the ledger's XP"
+    );
+    let derived = derived_for(pre, &species.base_stats, want_level);
+    assert!(
+        derived.hp > run.old_max_hp,
+        "PRECONDITION: the level-up grows max HP, so a heal is owed"
+    );
+    assert!(
+        six_of_block(&derived)
+            .iter()
+            .zip(six_of_row(pre))
+            .all(|(d, p)| *d != p),
+        "PRECONDITION: every sentinel stat differs from its derived value"
+    );
+    assert_eq!(
+        six_of_row(post),
+        six_of_block(&derived),
+        "all six stats are recomputed for the new level from the species base"
+    );
+    let healed =
+        game_core::combat::xp::level_up_healed_hp(LEVEL_UP_PRE_HP, run.old_max_hp, derived.hp);
+    assert!(
+        healed > LEVEL_UP_PRE_HP,
+        "PRECONDITION: the heal is visible"
+    );
+    assert_eq!(
+        post.current_hp, healed,
+        "the HP gained from max-HP growth heals exactly its own gain"
+    );
+    assert_eq!(post.species_id, pre.species_id, "no edge: no evolution");
+    assert_eq!(run.pub_species, pre.species_id);
+    assert!(run.reveals.is_empty(), "no edge: no reveal");
+    assert_ne!(
+        pools(post),
+        [0; 8],
+        "non-vacuous: the win paid essence, which an evolution would spend"
+    );
+
+    // Run 2 — the same win with one level-only edge into species 2, eligible only from the
+    // post-win level.
+    let to_species = 2;
+    assert_ne!(to_species, pre.species_id, "the edge changes the species");
+    let evolved_run = level_up_win(Some((to_species, want_level)));
+    let evolved = &evolved_run.post;
+    assert_eq!(
+        evolved_run.pre.level, LEVEL_UP_FROM,
+        "PRECONDITION: the edge (min_level {want_level}) is not eligible before the win"
+    );
+    assert_eq!(
+        (evolved.xp, evolved.level),
+        (want_xp, want_level),
+        "the same award, the same level"
+    );
+    assert_eq!(
+        evolved.species_id, to_species,
+        "the check ran after the level-up and applied the one eligible edge"
+    );
+    assert_eq!(evolved_run.pub_species, to_species, "the public mirror too");
+    let target = species_def(to_species);
+    let target_stats = derived_for(&evolved_run.pre, &target.base_stats, want_level);
+    assert_eq!(
+        six_of_row(evolved),
+        six_of_block(&target_stats),
+        "an evolution re-derives every stat from the TARGET species at the new level"
+    );
+    assert!(
+        target_stats.hp > LEVEL_UP_PRE_HP,
+        "PRECONDITION: the target's max HP leaves the healed HP observable"
+    );
+    assert_eq!(
+        evolved.current_hp,
+        healed.min(target_stats.hp),
+        "the level-up heal precedes the evolution, which only clamps HP to the new max"
+    );
+    assert_eq!(pools(evolved), [0; 8], "an evolution spends every pool");
+    assert_eq!(
+        evolved_run.reveals,
+        vec![(11, pre.species_id, to_species)],
+        "one reveal for the one applied edge"
+    );
+}
+
+/// A wild win whose HP write-back fails (monster 11, the conscious killer, is handed to another
+/// player, so `write_back_party_hp` aborts at it) applies NO faint penalty either: the settlement
+/// logs the skip and leaves party member 12, fainted in the anchor and still the player's, with the
+/// trust it had. The non-vacuity: the same fainted member costs exactly one unfavorable trust on
+/// every terminal path with a healthy write-back
+/// (`every_terminal_with_a_fainted_party_member_adds_exactly_one_unfavorable_trust_bt9_3`), and the
+/// fainted member's own row is the player's, so `apply_faint_penalties` WOULD bump it.
+///
+/// kills: `settle`'s write-back-failed arm also calling `apply_faint_penalties` (monster 12 gains
+/// one unfavorable trust).
+#[test]
+fn a_failed_write_back_with_a_fainted_member_adds_no_unfavorable_trust() {
+    let fx = fixture();
+    let w = world(&fx);
+    let live = live_pair(&fx, &w);
+    fall_in_battle(&w, live.id, live.u2);
+    ready_ko(&w, &live);
+    w.edit_monster(11, |m| m.owner_identity = b());
+    let anchor = w.anchor(live.id).expect("the anchor exists");
+    let i = anchor
+        .party_monster_ids
+        .iter()
+        .position(|&m| m == 12)
+        .expect("monster 12 is in the party");
+    assert!(
+        anchor.state.side_a.team[i].is_fainted(),
+        "PRECONDITION: monster 12 is fainted in the anchor"
+    );
+    assert_eq!(
+        w.monster(12).owner_identity,
+        a(),
+        "PRECONDITION: the fainted member is still the player's, so a penalty would land"
+    );
+    let handed = enc(&w.monster(11));
+    let before = w.monster(12).trust_unfavorable_count;
+
+    ko_submit(&fx, &w, &live, T0 + 25_000);
+
+    assert_eq!(
+        enc(&w.monster(11)),
+        handed,
+        "PRECONDITION: the write-back aborted at the handed-away killer (nothing written, nothing paid)"
+    );
+    assert_eq!(wallet(&w), 0, "PRECONDITION: no currency was paid");
+    assert_eq!(
+        w.monster(12).trust_unfavorable_count,
+        before,
+        "a failed write-back applies no faint penalty"
+    );
+}
