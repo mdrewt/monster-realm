@@ -20,7 +20,8 @@ lint:
 typecheck:
     cargo check --workspace --all-targets
 
-# Rust tests, then two fail-closed node:test doors (ops observability suites, scripts/ tooling).
+# Rust tests, then two fail-closed node:test doors (ops observability suites, scripts/ tooling),
+# then the tester guards' own fixture batteries (.claude/hooks), each held to a fixture floor.
 # `node --test` exits 0 on a zero-test file, an all-skip file, or a failure followed by
 # process.exit(0), so each door also checks the file count, parses the summary (unparsed = fatal),
 # requires fail=0 and pass >= floor. Re-derive a floor after adding or removing a test.
@@ -56,6 +57,18 @@ test:
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
     door "scripts node suites" 4 24 scripts/*.test.mjs
+    guard() {
+        local hook=$1 ok=$2 floor=$3 out n
+        out="$(CLAUDE_PROJECT_DIR="$PWD" node "$hook" --selftest 2>&1)" || { echo "$out" >&2; exit 1; }
+        echo "$out"
+        n="$(grep -Eo "^$ok [0-9]+ fixtures" <<<"$out" | grep -Eo '[0-9]+' | tail -1)"
+        if [ -z "$n" ] || [ "$n" -lt "$floor" ]; then
+            echo "$hook: fixtures=${n:-unparsed} (floor $floor)" >&2
+            exit 1
+        fi
+    }
+    guard .claude/hooks/guard-tester-bash.mjs TESTER-GUARD-SELFTEST-OK 54
+    guard .claude/hooks/guard-tester-write.mjs TESTER-WRITE-GUARD-SELFTEST-OK 23
 
 eval:
     node evals/run.mjs

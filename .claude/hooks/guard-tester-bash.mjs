@@ -5,6 +5,10 @@
 // TypeScript and Rust, which none of the four shapes below can check, and reconnaissance belongs
 // to Read/Grep/Glob. This hook stays registered as the backstop -- an agent definition that names
 // `Bash` for agent_type "tester" gets exactly this allowlist and nothing wider.
+// Both tester guards act on agent_type exactly "tester" and on no other name: an agent defined
+// under another name (a tester variant, an experiment arm) is outside both, so it either runs as
+// agent_type "tester" with a model/effort override, or its file carries the same Bash-free
+// `tools:` line and both scope gates name it, with fixtures.
 //
 // WHY: tester.md's own doctrine (ownership is split to prevent reward-hacking: the
 // specialist implements, the verifier runs) is why tester's frontmatter historically
@@ -358,8 +362,9 @@ function runSelftest() {
     check("tester: bare true", "tester", "true", true);
     check("tester: echo", "tester", "echo noop", true);
     check("tester: allowed shape on /dev/null", "tester", "bash -n /dev/null", true);
-    check("tester: cd into a worktree before an allowed shape", "tester",
-      `cd ${scratchRel} && bash -n extensionless-tool`, true);
+    // The tail is allowed on its own (first fixture above), so the chaining alone is what blocks.
+    check("tester: cd before an allowed shape", "tester",
+      `cd . && bash -n ${scratchRel}/extensionless-tool`, true);
     check("tester: allowed shape piped to head", "tester", `bash -n ${scratchRel}/extensionless-tool 2>&1 | head -1`, true);
     check("tester: type check", "tester", "npx tsc --noEmit -p client", true);
     check("tester: biome check", "tester", "client/node_modules/.bin/biome check client/src/a.test.ts", true);
